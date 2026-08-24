@@ -23,6 +23,7 @@
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
         "@types/bun": "catalog:",
+        "fast-check": "catalog:",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
       },
