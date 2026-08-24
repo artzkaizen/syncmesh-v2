@@ -1,6 +1,7 @@
 {
-  "name": "@syncmesh/result",
+  "name": "@syncmesh/temporal",
   "version": "0.0.0",
+  "description": "Temporal, re-exported from temporal-polyfill so every device computes time the same way",
   "license": "MIT",
   "files": [
     "dist"
@@ -15,12 +16,11 @@
     }
   },
   "dependencies": {
-    "better-result": "^3.0.1"
+    "temporal-polyfill": "catalog:"
   },
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
     "@types/bun": "catalog:",
-    "fast-check": "catalog:",
     "typescript": "catalog:",
     "vite-plus": "catalog:"
   }

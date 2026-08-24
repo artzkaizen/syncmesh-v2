@@ -10,12 +10,14 @@
   "sideEffects": false,
   "exports": {
     ".": {
+      "@syncmesh/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
   },
   "dependencies": {
-    "@syncmesh/result": "workspace:*"
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/temporal": "workspace:*"
   },
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
