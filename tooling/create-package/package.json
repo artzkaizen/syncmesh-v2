@@ -1,0 +1,22 @@
+{
+  "name": "create-package",
+  "version": "0.0.0",
+  "private": true,
+  "description": "vp create package — a new workspace package with the house shape",
+  "keywords": [
+    "vite-plus-generator"
+  ],
+  "bin": "./bin/index.ts",
+  "type": "module",
+  "dependencies": {
+    "bingo": "^0.9.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  }
+}

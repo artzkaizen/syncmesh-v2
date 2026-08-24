@@ -1,18 +1,12 @@
 # @syncmesh/tsconfig
 
-Two configs, one rule.
+One config: `base.json` — strict, `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`,
+`types: []`, `lib: ES2022`. **No runtime globals.**
 
-- `base.json` — strict, `types: []`, `lib: ES2022`. **No runtime globals.** A package
-  that compiles against this cannot see `Bun`, `process`, `window` or `document`.
-- `library.json` — `base` + emit to `dist/` with declarations.
+Each package's `tsconfig.json` extends it, adds `types: ["bun"]` (so `bun:test` resolves)
+and `noEmit`. Building is `vp pack` (tsdown), which follows imports from `src/index.ts`,
+so tests never reach `dist/` and there is no second tsconfig.
 
-Every package has two tsconfigs:
-
-- `tsconfig.build.json` — extends `library.json`, includes `src` minus tests, `types: []`.
-  This is what `build` runs. If `src` reaches for a runtime global, the build fails —
-  that is the D01-B guard.
-- `tsconfig.json` — extends `library.json`, includes tests too, `types: ["bun"]` so
-  `bun:test` resolves. `typecheck` runs this one; editors read it.
-
-Adapters (`adapters/*`) opt into their runtime's types in _both_ files. That is the
-only place they are allowed.
+Runtime-neutrality of `packages/*` is enforced by lint (`vite.config.ts`, the D01-B
+override): `bun:*` / `node:*` imports and the `Bun` / `process` / `window` / `document`
+globals are errors in `packages/*/src/**`. Adapters are exempt — that is what they are for.

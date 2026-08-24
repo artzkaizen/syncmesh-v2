@@ -13,11 +13,6 @@
       "default": "./dist/index.js"
     }
   },
-  "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json",
-    "test": "bun test",
-    "typecheck": "tsc -p tsconfig.json"
-  },
   "dependencies": {
     "better-result": "^3.0.1"
   },
@@ -25,6 +20,7 @@
     "@syncmesh/tsconfig": "workspace:*",
     "@types/bun": "catalog:",
     "fast-check": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
   }
 }

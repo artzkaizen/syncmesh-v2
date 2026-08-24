@@ -1,7 +1,8 @@
 node_modules
 dist
 *.tsbuildinfo
-.turbo
+.vite-task
+node_modules/.vite-task
 coverage
 *.tgz
 .DS_Store

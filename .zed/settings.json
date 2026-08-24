@@ -10,16 +10,16 @@
     "TypeScript": {
       "formatter": {
         "external": {
-          "command": "node_modules/.bin/oxfmt",
-          "arguments": ["--stdin-filepath", "{buffer_path}"]
+          "command": "node_modules/.bin/vp",
+          "arguments": ["fmt", "--stdin-filepath", "{buffer_path}"]
         }
       }
     },
     "JSON": {
       "formatter": {
         "external": {
-          "command": "node_modules/.bin/oxfmt",
-          "arguments": ["--stdin-filepath", "{buffer_path}"]
+          "command": "node_modules/.bin/vp",
+          "arguments": ["fmt", "--stdin-filepath", "{buffer_path}"]
         }
       }
     }

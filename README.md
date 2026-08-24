@@ -46,7 +46,8 @@ syncmesh/
 ├── conformance/         frozen wire vectors + the byte-for-byte harness   E03
 ├── bench/               E04
 ├── tooling/
-│   ├── tsconfig/        ✓ E00   base (strict, types: []) + library (emit to dist)
+│   ├── tsconfig/        ✓ E00   one strict base; packages build with `vp pack`
+│   ├── create-package/  ✓ E00   `vp create package` — every package gets the same shape
 │   └── verify-node-consumer/   E09   pack each package, import it from real Node
 ├── plan/                epics, decisions, the plan page
 └── research/            reference, not the plan
@@ -64,8 +65,10 @@ syncmesh/
 
 ```
 bun install
-bun run ci          # build · typecheck · test · lint · fmt:check — what CI runs
-bun test            # every test, every package, direct
+bun run ci                 # vp check (fmt · lint · types) then build · typecheck · test — what CI runs
+vp check --fix             # format + lint, fixing what it can
+vp run -r test             # every package's tests (bun test), dependencies built first
+vp create package -- --name kernel --description "…"      # --group adapters for a runtime binding
 ```
 
 ## Running the plan

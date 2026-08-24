@@ -4,5 +4,5 @@
     "noEmit": true,
     "types": ["bun"]
   },
-  "include": ["plan/tool", "turbo/generators"]
+  "include": ["plan/tool", "vite.config.ts"]
 }
