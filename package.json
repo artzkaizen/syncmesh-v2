@@ -21,7 +21,7 @@
   "type": "module",
   "scripts": {
     "ci": "vp check && vp run -r build && vp run -r typecheck && vp run -r test",
-    "gen": "vp create package",
+    "gen": "node tooling/create-package/bin/index.ts",
     "plan": "bun plan/tool/serve.ts"
   },
   "devDependencies": {

@@ -11,6 +11,20 @@
         "vite-plus": "catalog:",
       },
     },
+    "packages/kernel": {
+      "name": "@syncmesh/kernel",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/result": "workspace:*",
+        "@syncmesh/tsconfig": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncmesh/tsconfig": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+    },
     "packages/result": {
       "name": "@syncmesh/result",
       "version": "0.0.0",
@@ -220,6 +234,8 @@
     "@sindresorhus/merge-streams": ["@sindresorhus/merge-streams@4.0.0", "", {}, "sha512-tlqY9xq5ukxTUZBmoOp+m61cqwQD5pHJtFY3Mn8CA8ps6yghLH/Hw8UPdqg4OLmFW3IFlcXnQNmo/dh8HzXYIQ=="],
 
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
+
+    "@syncmesh/kernel": ["@syncmesh/kernel@workspace:packages/kernel"],
 
     "@syncmesh/result": ["@syncmesh/result@workspace:packages/result"],
 

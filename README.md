@@ -68,7 +68,7 @@ bun install
 bun run ci                 # vp check (fmt · lint · types) then build · typecheck · test — what CI runs
 vp check --fix             # format + lint, fixing what it can
 vp run -r test             # every package's tests (bun test), dependencies built first
-vp create package -- --name kernel --description "…"      # --group adapters for a runtime binding
+bun run gen --name kernel --description "…"   # new package; --group adapters for a runtime binding
 ```
 
 ## Running the plan

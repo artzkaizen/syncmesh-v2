@@ -15,7 +15,8 @@ import pkgJson from "../package.json" with { type: "json" };
  *
  * Run from the repo root. Lands in <group>/<name>; --group defaults to packages (runtime-neutral),
  * pass --group adapters for a runtime binding:
- *   vp create package -- --name kernel --description "HLC, stamps, merge"
+ *   bun run gen --name kernel --description "HLC, stamps, merge"
+ * (`vp create package` works too, but vp then asks about workspace deps the template already wrote)
  */
 export default createTemplate({
   about: { name: pkgJson.name, description: pkgJson.description },
