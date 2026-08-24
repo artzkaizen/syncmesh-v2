@@ -1,4 +1,4 @@
-import type { HlcClock, MergeSpec, PeerId, State } from "@syncmesh/kernel";
+import type { HlcClock, MergeSpec, PeerId, RowKey, State, TableName } from "@syncmesh/kernel";
 
 import { applyChange, emptyState } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
@@ -27,15 +27,41 @@ export interface MutateOptions {
 
 export type MutateError = EmptyMutation | StoreFailure;
 
+export type FoldSource = "local" | "remote";
+
+/** One notification per fold, however many events it covered. `writeKeys` is exact: live queries (E10) trust it. */
+export interface FoldBatch {
+  readonly source: FoldSource;
+  readonly eventCount: number;
+  readonly writeTables: ReadonlySet<TableName>;
+  readonly writeKeys: ReadonlyMap<TableName, ReadonlySet<RowKey>>;
+}
+
+export interface ReceiveReport {
+  readonly folded: number;
+  /** Own events, duplicates within the batch, and events already stored. */
+  readonly skipped: number;
+}
+
+export type Unsubscribe = () => void;
+
 export interface Engine {
   readonly peerId: PeerId;
-  /** Records, stamps, numbers, appends, folds — in that order; a write is real once appended. */
+  /** Records, stamps, numbers, appends, folds, then hands the event to `onOutbound` — a write is real once appended. */
   readonly mutate: (
     procedure: Procedure,
     fn: (tx: Tx) => void,
     options?: MutateOptions,
   ) => Promise<Result<SyncEvent, MutateError>>;
+  /** Folds events from another peer once each; own and already-stored events are skipped. */
+  readonly receiveBatch: (
+    events: readonly SyncEvent[],
+  ) => Promise<Result<ReceiveReport, StoreFailure>>;
+  readonly receive: (event: SyncEvent) => Promise<Result<ReceiveReport, StoreFailure>>;
   readonly state: () => State;
+  readonly onFoldBatch: (listener: (batch: FoldBatch) => void) => Unsubscribe;
+  /** Fires for every synced event this engine authors, never for `local` ones. */
+  readonly onOutbound: (listener: (event: SyncEvent) => void) => Unsubscribe;
 }
 
 export interface EngineOptions {
@@ -48,6 +74,29 @@ export interface EngineOptions {
 export function createEngine(options: EngineOptions): Engine {
   const { peerId, clock, store, merge } = options;
   let state = emptyState();
+  const foldListeners = new Set<(batch: FoldBatch) => void>();
+  const outboundListeners = new Set<(event: SyncEvent) => void>();
+
+  const fold = (events: readonly SyncEvent[], source: FoldSource): void => {
+    if (events.length === 0) return;
+    const writeKeys = new Map<TableName, Set<RowKey>>();
+    for (const event of events) {
+      const stamp = stampOf(event);
+      for (const change of event.changes) {
+        state = applyChange(state, change, stamp, merge);
+        const keys = writeKeys.get(change.table) ?? new Set<RowKey>();
+        keys.add(change.key);
+        writeKeys.set(change.table, keys);
+      }
+    }
+    const batch: FoldBatch = {
+      source,
+      eventCount: events.length,
+      writeTables: new Set(writeKeys.keys()),
+      writeKeys,
+    };
+    for (const listener of foldListeners) listener(batch);
+  };
 
   const mutate: Engine["mutate"] = (procedure, fn, mutateOptions = {}) =>
     Result.gen(async function* () {
@@ -60,11 +109,29 @@ export function createEngine(options: EngineOptions): Engine {
       const hlc = clock.tick();
       const scope = mutateOptions.local === true ? "local" : "synced";
       const last = yield* Result.await(store.lastSeq(peerId, scope));
-      const seqNum = nextSeq(last);
-      const event = build(procedure, hlc, seqNum, changes, mutateOptions);
+      const event = build(procedure, hlc, nextSeq(last), changes, mutateOptions);
       yield* Result.await(store.append(event));
-      state = fold(state, event, merge);
+      fold([event], "local");
+      if (event.local !== true) for (const listener of outboundListeners) listener(event);
       return Result.ok(event);
+    });
+
+  const receiveBatch: Engine["receiveBatch"] = (events) =>
+    Result.gen(async function* () {
+      const fresh: SyncEvent[] = [];
+      const seen = new Set<string>();
+      for (const event of events) {
+        if (event.peerId === peerId || seen.has(event.id)) continue;
+        seen.add(event.id);
+        if (yield* Result.await(store.has(event.id))) continue;
+        fresh.push(event);
+      }
+      for (const event of fresh) {
+        clock.receive(event.hlc);
+        yield* Result.await(store.append(event));
+      }
+      fold(fresh, "remote");
+      return Result.ok({ folded: fresh.length, skipped: events.length - fresh.length });
     });
 
   const build = (
@@ -89,13 +156,25 @@ export function createEngine(options: EngineOptions): Engine {
     return base;
   };
 
-  return { peerId, mutate, state: () => state };
+  const subscribe =
+    <L>(listeners: Set<L>) =>
+    (listener: L): Unsubscribe => {
+      listeners.add(listener);
+      return () => void listeners.delete(listener);
+    };
+
+  return {
+    peerId,
+    mutate,
+    receiveBatch,
+    receive: (event) => receiveBatch([event]),
+    state: () => state,
+    onFoldBatch: subscribe(foldListeners),
+    onOutbound: subscribe(outboundListeners),
+  };
 }
 
 const nextSeq = (last: SeqNum | undefined): SeqNum => {
   // SAFETY: last is a SeqNum (positive safe integer) or absent; +1 from 0 or from it stays one
   return ((last ?? 0) + 1) as SeqNum;
 };
-
-const fold = (state: State, event: SyncEvent, merge: MergeSpec | undefined): State =>
-  event.changes.reduce((s, change) => applyChange(s, change, stampOf(event), merge), state);

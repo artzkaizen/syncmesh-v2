@@ -17,5 +17,14 @@ export {
 export type { EventStore, SeqScope } from "./store.js";
 export { StoreFailure, createMemoryEventStore } from "./store.js";
 export type { Tx } from "./tx.js";
-export type { Engine, EngineOptions, MutateError, MutateOptions } from "./engine.js";
+export type {
+  Engine,
+  EngineOptions,
+  FoldBatch,
+  FoldSource,
+  MutateError,
+  MutateOptions,
+  ReceiveReport,
+  Unsubscribe,
+} from "./engine.js";
 export { EmptyMutation, createEngine } from "./engine.js";

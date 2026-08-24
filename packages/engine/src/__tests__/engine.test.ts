@@ -2,17 +2,7 @@ import { readRow } from "@syncmesh/kernel";
 import { describe, expect, test } from "bun:test";
 
 import { createEngine } from "../engine.js";
-import { createMemoryEventStore } from "../store.js";
-import { fakeClock, N1, NOTES, PEER_A, procedure, row } from "./fixtures.js";
-
-const setup = () => {
-  const store = createMemoryEventStore();
-  const clock = fakeClock(100);
-  const engine = createEngine({ peerId: PEER_A, clock, store });
-  return { store, clock, engine };
-};
-
-const CREATE = procedure("notes.create");
+import { CREATE, fakeClock, N1, NOTES, PEER_A, row, setup } from "./fixtures.js";
 
 describe("engine.mutate", () => {
   test("records the tx as changes, stamps, numbers from 1, appends, folds", async () => {

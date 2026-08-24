@@ -5,6 +5,9 @@ import { Temporal } from "@syncmesh/temporal";
 
 import type { Procedure } from "../event.js";
 
+import { createEngine } from "../engine.js";
+import { createMemoryEventStore } from "../store.js";
+
 export const PEER_A = parsePeerId("a".repeat(64)).unwrap();
 export const PEER_B = parsePeerId("b".repeat(64)).unwrap();
 
@@ -39,3 +42,12 @@ export const row = (values: Readonly<Record<string, CellValue>>): Row =>
 
 export const NOTES = table("notes");
 export const N1 = key("n1");
+
+export const setup = (peerId = PEER_A, startMs = 100) => {
+  const store = createMemoryEventStore();
+  const clock = fakeClock(startMs);
+  const engine = createEngine({ peerId, clock, store });
+  return { store, clock, engine };
+};
+
+export const CREATE = procedure("notes.create");
