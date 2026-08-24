@@ -1,11 +1,19 @@
 import type { HlcClock, MergeSpec, PeerId, RowKey, State, TableName } from "@syncmesh/kernel";
 
 import { applyChange, emptyState } from "@syncmesh/kernel";
-import { Result, TaggedError } from "@syncmesh/result";
+import { Result } from "@syncmesh/result";
 
 import type { EventStore, StoreFailure } from "./store.js";
 import type { Cursors } from "./sync.js";
 
+import {
+  CannotRevert,
+  EmptyMutation,
+  ListenerFailure,
+  type EngineError,
+  type MutateError,
+  type RevertError,
+} from "./errors.js";
 import {
   eventId,
   stampOf,
@@ -15,27 +23,15 @@ import {
   type SeqNum,
   type SyncEvent,
 } from "./event.js";
+import { createHub, type Unsubscribe } from "./listeners.js";
+import { timed, type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
 import { record, type Tx } from "./tx.js";
 import { invert, replay, REVERT, type Undo } from "./undo.js";
-
-export class EmptyMutation extends TaggedError("EmptyMutation")<{
-  procedure: Procedure;
-  message: string;
-}> {}
 
 export interface MutateOptions {
   readonly partition?: PartitionKey;
   readonly local?: boolean;
 }
-
-export type MutateError = EmptyMutation | StoreFailure;
-
-export class CannotRevert extends TaggedError("CannotRevert")<{
-  eventId: EventId;
-  message: string;
-}> {}
-
-export type RevertError = CannotRevert | MutateError;
 
 export type FoldSource = "local" | "remote";
 
@@ -52,8 +48,6 @@ export interface ReceiveReport {
   /** Own events, duplicates within the batch, and events already stored. */
   readonly skipped: number;
 }
-
-export type Unsubscribe = () => void;
 
 export interface Engine {
   readonly peerId: PeerId;
@@ -79,6 +73,9 @@ export interface Engine {
   readonly onFoldBatch: (listener: (batch: FoldBatch) => void) => Unsubscribe;
   /** Fires for every synced event this engine authors, never for `local` ones. */
   readonly onOutbound: (listener: (event: SyncEvent) => void) => Unsubscribe;
+  /** A listener threw; the fold itself is unaffected. */
+  readonly onError: (listener: (error: EngineError) => void) => Unsubscribe;
+  readonly onTelemetry: (listener: TelemetryListener) => Unsubscribe;
 }
 
 export interface EngineOptions {
@@ -94,33 +91,41 @@ export function createEngine(options: EngineOptions): Engine {
   const { peerId, clock, store, merge, undoDepth = 0 } = options;
   let state = emptyState();
   const undo: Undo[] = [];
-  const foldListeners = new Set<(batch: FoldBatch) => void>();
-  const outboundListeners = new Set<(event: SyncEvent) => void>();
+  const errors = createHub<EngineError>();
+  const report = (hook: ListenerFailure["hook"]) => (cause: unknown) =>
+    errors.emit(new ListenerFailure({ hook, message: `${hook} listener threw`, cause }));
+  const folds = createHub<FoldBatch>(report("onFoldBatch"));
+  const outbound = createHub<SyncEvent>(report("onOutbound"));
+  const telemetry = createHub<TelemetryEvent>();
 
   const fold = (events: readonly SyncEvent[], source: FoldSource): void => {
     if (events.length === 0) return;
-    const writeKeys = new Map<TableName, Set<RowKey>>();
-    for (const event of events) {
-      const stamp = stampOf(event);
-      for (const change of event.changes) {
-        state = applyChange(state, change, stamp, merge);
-        const keys = writeKeys.get(change.table) ?? new Set<RowKey>();
-        keys.add(change.key);
-        writeKeys.set(change.table, keys);
+    const [batch, duration] = timed((): FoldBatch => {
+      const writeKeys = new Map<TableName, Set<RowKey>>();
+      for (const event of events) {
+        const stamp = stampOf(event);
+        for (const change of event.changes) {
+          state = applyChange(state, change, stamp, merge);
+          const keys = writeKeys.get(change.table) ?? new Set<RowKey>();
+          keys.add(change.key);
+          writeKeys.set(change.table, keys);
+        }
       }
-    }
-    const batch: FoldBatch = {
-      source,
-      eventCount: events.length,
-      writeTables: new Set(writeKeys.keys()),
-      writeKeys,
-    };
-    for (const listener of foldListeners) listener(batch);
+      return {
+        source,
+        eventCount: events.length,
+        writeTables: new Set(writeKeys.keys()),
+        writeKeys,
+      };
+    });
+    const keys = [...batch.writeKeys.values()].reduce((n, set) => n + set.size, 0);
+    telemetry.emit({ type: "engine.fold", sizes: { events: events.length, keys }, duration });
+    folds.emit(batch);
   };
 
   const mutate: Engine["mutate"] = (procedure, fn, mutateOptions = {}) =>
     Result.gen(async function* () {
-      const changes = record(fn);
+      const [changes, duration] = timed(() => record(fn));
       if (changes.length === 0) {
         return Result.err(
           new EmptyMutation({ procedure, message: `${procedure} changed nothing` }),
@@ -132,12 +137,13 @@ export function createEngine(options: EngineOptions): Engine {
       const last = yield* Result.await(store.lastSeq(peerId, scope));
       const event = build(procedure, hlc, nextSeq(last), changes, mutateOptions);
       yield* Result.await(store.append(event));
+      telemetry.emit({ type: "engine.mutate", sizes: { changes: changes.length }, duration });
       fold([event], "local");
       if (undoDepth > 0) {
         undo.push({ event, inverse });
         if (undo.length > undoDepth) undo.shift();
       }
-      if (event.local !== true) for (const listener of outboundListeners) listener(event);
+      if (event.local !== true) outbound.emit(event);
       return Result.ok(event);
     });
 
@@ -202,13 +208,6 @@ export function createEngine(options: EngineOptions): Engine {
     return mutate(REVERT, (tx) => replay(tx, entry.inverse), options);
   };
 
-  const subscribe =
-    <L>(listeners: Set<L>) =>
-    (listener: L): Unsubscribe => {
-      listeners.add(listener);
-      return () => void listeners.delete(listener);
-    };
-
   const cursors: Engine["cursors"] = () =>
     Result.gen(async function* () {
       const all = yield* Result.await(store.allSince(new Map()));
@@ -227,8 +226,10 @@ export function createEngine(options: EngineOptions): Engine {
     canRevert: (id) => undo.some((u) => u.event.id === id),
     cursors,
     eventsSince: (theirs) => store.allSince(theirs),
-    onFoldBatch: subscribe(foldListeners),
-    onOutbound: subscribe(outboundListeners),
+    onFoldBatch: folds.subscribe,
+    onOutbound: outbound.subscribe,
+    onError: errors.subscribe,
+    onTelemetry: telemetry.subscribe,
   };
 }
 

@@ -1,9 +1,10 @@
 import { Result } from "@syncmesh/result";
 
-import type { Engine, Unsubscribe } from "./engine.js";
+import type { Engine } from "./engine.js";
 import type { SyncEvent } from "./event.js";
 import type { StoreFailure } from "./store.js";
 
+import { createHub, type Unsubscribe } from "./listeners.js";
 import {
   generateSyncMessage,
   initialSyncState,
@@ -13,6 +14,8 @@ import {
 } from "./sync.js";
 
 export interface Link {
+  /** A live-forwarded event could not be stored on the receiving side. */
+  readonly onError: (listener: (error: StoreFailure) => void) => Unsubscribe;
   readonly setOnline: (online: boolean) => void;
   readonly online: () => boolean;
   /** Runs the sync protocol both ways until neither side has anything to send. */
@@ -28,10 +31,14 @@ export function createLink(a: Engine, b: Engine): Link {
   let queue: Promise<unknown> = Promise.resolve();
   let stateA = initialSyncState;
   let stateB = initialSyncState;
+  const errors = createHub<StoreFailure>();
 
   const forward = (to: Engine) => (event: SyncEvent) => {
     if (!online) return;
-    queue = queue.then(() => to.receive(event));
+    queue = queue.then(async () => {
+      const r = await to.receive(event);
+      if (r.isErr()) errors.emit(r.error);
+    });
   };
   const subscriptions: Unsubscribe[] = [a.onOutbound(forward(b)), b.onOutbound(forward(a))];
 
@@ -72,6 +79,7 @@ export function createLink(a: Engine, b: Engine): Link {
     });
 
   return {
+    onError: errors.subscribe,
     setOnline: (next) => void (online = next),
     online: () => online,
     catchUp,
