@@ -34,6 +34,7 @@ syncmesh/
 │   ├── react/             E10   LiveQuery, useLiveQuery
 │   ├── transport/         E11   Transport port, framed links, routing
 │   ├── relay/             E12–E19
+│   │                      E26   counter · set · text column kinds — CRDTs inside a cell, added to kernel/
 │   └── testing/           E04   runDriverTests · E11 runTransportTests — shipped acceptance suites
 ├── adapters/            one runtime binding each — the only place runtime imports are allowed
 │   ├── sqlite-bun/ sqlite-node/ sqlite-wasm/ sqlite-do/   E04
