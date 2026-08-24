@@ -3,10 +3,15 @@ import type { Cell, ColumnName, RowRecord } from "./record.js";
 import type { State, TableState } from "./state.js";
 
 import { compareStamp, type Stamp } from "./stamp.js";
-import { strategies, type MergeSpec, type Strategy } from "./strategy.js";
+import { strategies, type MergeSpec, type StrategyName } from "./strategy.js";
 
-const later = (a: Stamp | undefined, b: Stamp): Stamp =>
-  a !== undefined && compareStamp(a, b) > 0 ? a : b;
+type ColumnStrategies = ReadonlyMap<ColumnName, StrategyName> | undefined;
+
+const later = (a: Stamp | undefined, b: Stamp | undefined): Stamp | undefined => {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return compareStamp(a, b) > 0 ? a : b;
+};
 
 const EMPTY_RECORD: RowRecord = { cells: new Map() };
 
@@ -19,38 +24,61 @@ const EMPTY_RECORD: RowRecord = { cells: new Map() };
  * strategy per column, defaulting to `lww`.
  */
 export function applyChange(state: State, change: Change, stamp: Stamp, merge?: MergeSpec): State {
-  const table = state.get(change.table) ?? new Map<RowKey, RowRecord>();
-  const current = table.get(change.key) ?? EMPTY_RECORD;
-  const next =
+  const incoming: RowRecord =
     change.kind === "delete"
-      ? { ...current, deleteStamp: later(current.deleteStamp, stamp) }
+      ? { cells: new Map(), deleteStamp: stamp }
       : {
-          ...current,
-          cells: mergeCells(
-            current.cells,
-            change.kind === "insert" ? change.row : change.patch,
-            stamp,
-            merge?.get(change.table),
-          ),
-          writeStamp: later(current.writeStamp, stamp),
+          cells: stampAll(change.kind === "insert" ? change.row : change.patch, stamp),
+          writeStamp: stamp,
         };
-  return withRecord(state, change.table, table, change.key, next);
+  return mergeRecord(state, change.table, change.key, incoming, merge);
 }
+
+/** Joins a whole record — a snapshot row — into the state; equivalent to folding its cells and stamps as changes. */
+export function mergeRecord(
+  state: State,
+  table: TableName,
+  key: RowKey,
+  record: RowRecord,
+  merge?: MergeSpec,
+): State {
+  const tableState = state.get(table) ?? new Map<RowKey, RowRecord>();
+  const current = tableState.get(key) ?? EMPTY_RECORD;
+  const joined = {
+    cells: mergeCells(current.cells, record.cells, merge?.get(table)),
+    ...stampFields(
+      later(current.writeStamp, record.writeStamp),
+      later(current.deleteStamp, record.deleteStamp),
+    ),
+  };
+  return withRecord(state, table, tableState, key, joined);
+}
+
+const stampAll = (row: Row, stamp: Stamp): ReadonlyMap<ColumnName, Cell> =>
+  new Map([...row].map(([column, value]) => [column, { value, stamp }]));
 
 function mergeCells(
   current: ReadonlyMap<ColumnName, Cell>,
-  incoming: Row,
-  stamp: Stamp,
-  columnStrategies: ReadonlyMap<ColumnName, keyof typeof strategies> | undefined,
+  incoming: ReadonlyMap<ColumnName, Cell>,
+  columnStrategies: ColumnStrategies,
 ): ReadonlyMap<ColumnName, Cell> {
   const cells = new Map(current);
-  for (const [column, value] of incoming) {
-    const candidate: Cell = { value, stamp };
+  for (const [column, candidate] of incoming) {
     const existing = cells.get(column);
-    const strategy: Strategy = strategies[columnStrategies?.get(column) ?? "lww"];
+    const strategy = strategies[columnStrategies?.get(column) ?? "lww"];
     cells.set(column, existing === undefined ? candidate : strategy(candidate, existing));
   }
   return cells;
+}
+
+function stampFields(
+  writeStamp: Stamp | undefined,
+  deleteStamp: Stamp | undefined,
+): Pick<RowRecord, "writeStamp" | "deleteStamp"> {
+  if (writeStamp !== undefined && deleteStamp !== undefined) return { writeStamp, deleteStamp };
+  if (writeStamp !== undefined) return { writeStamp };
+  if (deleteStamp !== undefined) return { deleteStamp };
+  return {};
 }
 
 function withRecord(

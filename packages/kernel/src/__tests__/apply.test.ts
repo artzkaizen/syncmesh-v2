@@ -3,7 +3,9 @@ import * as fc from "fast-check";
 
 import type { MergeSpec } from "../strategy.js";
 
-import { readRow } from "../state.js";
+import { mergeRecord } from "../apply.js";
+import { getRecord, readRow } from "../state.js";
+import { emptyState } from "../state.js";
 import {
   applyAll,
   column,
@@ -116,28 +118,38 @@ describe("applyChange — per-column strategies", () => {
 
 describe("applyChange — properties", () => {
   const peers = [PEER_A, PEER_B];
-  const arbStamped: fc.Arbitrary<Stamped> = fc
-    .tuple(
-      fc.nat({ max: 50 }),
-      fc.nat({ max: 2 }),
-      fc.nat({ max: 1 }),
-      fc.constantFrom("insert", "update", "delete"),
-      fc.dictionary(fc.constantFrom("title", "body", "bid"), fc.nat({ max: 20 }), { maxKeys: 3 }),
-    )
-    .map(([ms, l, p, kind, values]) => {
-      const at = stamp(ms, l, peers[p] ?? PEER_A);
-      return kind === "delete"
-        ? remove(at)
-        : kind === "insert"
-          ? insert(values, at)
-          : update(values, at);
-    });
+  const arbStampKey = fc.tuple(fc.nat({ max: 50 }), fc.nat({ max: 2 }), fc.nat({ max: 1 }));
+  const arbBody = fc.tuple(
+    fc.constantFrom("insert", "update", "delete"),
+    fc.dictionary(fc.constantFrom("title", "body", "bid"), fc.nat({ max: 20 }), { maxKeys: 3 }),
+  );
+  // Every change gets a distinct stamp, as every real event does; only replay repeats one.
+  const arbChanges = (min: number, max: number): fc.Arbitrary<Stamped[]> =>
+    fc.array(arbBody, { minLength: min, maxLength: max }).chain((bodies) =>
+      fc
+        .uniqueArray(arbStampKey, {
+          minLength: bodies.length,
+          maxLength: bodies.length,
+          comparator: (a, b) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2],
+        })
+        .map((keys) =>
+          bodies.map(([kind, values], i) => {
+            const [ms, l, p] = keys[i] ?? [0, 0, 0];
+            const at = stamp(ms, l, peers[p] ?? PEER_A);
+            return kind === "delete"
+              ? remove(at)
+              : kind === "insert"
+                ? insert(values, at)
+                : update(values, at);
+          }),
+        ),
+    );
   const merge: MergeSpec = new Map([[NOTES, new Map([[column("bid"), "max" as const]])]]);
 
   test("commutative + associative + idempotent: any order, any duplication → one state", () => {
     fc.assert(
       fc.property(
-        fc.array(arbStamped, { minLength: 1, maxLength: 12 }),
+        arbChanges(1, 12),
         fc.array(fc.nat({ max: 11 }), { maxLength: 12 }),
         (changes, dupes) => {
           const shuffled = [...changes].reverse();
@@ -152,6 +164,30 @@ describe("applyChange — properties", () => {
           expect(plainState(applyAll(duplicated, merge))).toEqual(reference);
         },
       ),
+      { numRuns: 2_000 },
+    );
+  });
+
+  test("mergeRecord of a folded record equals the fold; merging is idempotent and order-free", () => {
+    fc.assert(
+      fc.property(arbChanges(2, 16), fc.nat({ max: 15 }), (changes, split) => {
+        const cut = 1 + (split % (changes.length - 1));
+        const left = changes.slice(0, cut);
+        const right = changes.slice(cut);
+        const l = getRecord(applyAll(left, merge), NOTES, N1);
+        const r = getRecord(applyAll(right, merge), NOTES, N1);
+        if (l === undefined || r === undefined) return;
+        const folded = plainState(applyAll([...left, ...right], merge));
+        const lr = plainState(mergeRecord(applyAll(left, merge), NOTES, N1, r, merge));
+        const rl = plainState(mergeRecord(applyAll(right, merge), NOTES, N1, l, merge));
+        const twice = plainState(
+          mergeRecord(mergeRecord(emptyState(), NOTES, N1, l, merge), NOTES, N1, l, merge),
+        );
+        expect(lr).toEqual(folded);
+        expect(rl).toEqual(folded);
+        expect(twice).toEqual(plainState(applyAll(left, merge)));
+      }),
+      { numRuns: 1_000 },
     );
   });
 

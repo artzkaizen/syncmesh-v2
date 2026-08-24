@@ -12,4 +12,4 @@ export type { MergeSpec, Strategy, StrategyName } from "./strategy.js";
 export { compareValue, strategies } from "./strategy.js";
 export type { State, TableState } from "./state.js";
 export { emptyState, getRecord, readRow } from "./state.js";
-export { applyChange } from "./apply.js";
+export { applyChange, mergeRecord } from "./apply.js";
