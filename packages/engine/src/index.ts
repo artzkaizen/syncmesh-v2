@@ -14,3 +14,8 @@ export {
   parseSeqNum,
   stampOf,
 } from "./event.js";
+export type { EventStore, SeqScope } from "./store.js";
+export { StoreFailure, createMemoryEventStore } from "./store.js";
+export type { Tx } from "./tx.js";
+export type { Engine, EngineOptions, MutateError, MutateOptions } from "./engine.js";
+export { EmptyMutation, createEngine } from "./engine.js";

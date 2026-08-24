@@ -1,3 +1,5 @@
+import type { CellValue, ColumnName, Row, RowKey, TableName } from "@syncmesh/kernel";
+
 import { createHlcClock, parsePeerId } from "@syncmesh/kernel";
 import { Temporal } from "@syncmesh/temporal";
 
@@ -13,3 +15,27 @@ export const procedure = (label: string): Procedure => {
 
 export const hlcAt = (ms: number) =>
   createHlcClock({ now: () => Temporal.Instant.fromEpochMilliseconds(ms) }).tick();
+
+export const fakeClock = (start: number) => {
+  let ms = start;
+  const clock = createHlcClock({ now: () => Temporal.Instant.fromEpochMilliseconds(ms) });
+  return { ...clock, set: (next: number) => void (ms = next) };
+};
+
+export const table = (name: string): TableName => {
+  // SAFETY: test fixture; table naming rules arrive with the schema (E05)
+  return name as TableName;
+};
+export const key = (value: string): RowKey => {
+  // SAFETY: test fixture; keys are opaque strings in the kernel
+  return value as RowKey;
+};
+export const column = (name: string): ColumnName => {
+  // SAFETY: test fixture; column naming rules arrive with the schema (E05)
+  return name as ColumnName;
+};
+export const row = (values: Readonly<Record<string, CellValue>>): Row =>
+  new Map(Object.entries(values).map(([name, value]) => [column(name), value]));
+
+export const NOTES = table("notes");
+export const N1 = key("n1");

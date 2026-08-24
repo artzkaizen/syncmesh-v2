@@ -23,6 +23,8 @@ export interface SyncEvent {
   readonly procedure: Procedure;
   readonly partition?: PartitionKey;
   readonly changes: readonly Change[];
+  /** Never leaves this device; numbered in its own sequence namespace. */
+  readonly local?: true;
 }
 
 export class InvalidSeqNum extends TaggedError("InvalidSeqNum")<{
