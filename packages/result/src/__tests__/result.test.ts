@@ -9,7 +9,7 @@ import {
   TaggedError,
   unreachable,
   type InferErr,
-} from "./index.js";
+} from "../index.js";
 
 class NoSuchTable extends TaggedError("NoSuchTable")<{ table: string; message: string }> {}
 class EmptyTx extends TaggedError("EmptyTx")<{ message: string }> {}

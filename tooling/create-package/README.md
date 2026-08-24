@@ -8,7 +8,7 @@ The generator behind `bun run gen`. Produces one workspace package with the hous
   vite.config.ts    export default library()
   tsconfig.json     extends @syncmesh/config, bun types for bun:test
   src/index.ts
-  src/index.test.ts one todo — red until the first real test
+  src/__tests__/index.test.ts   one todo — red until the first real test
 ```
 
 ```

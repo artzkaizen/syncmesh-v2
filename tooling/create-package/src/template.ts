@@ -56,12 +56,14 @@ export default library();
         src: {
           "index.ts": `export {};
 `,
-          "index.test.ts": `import { describe, test } from "bun:test";
+          __tests__: {
+            "index.test.ts": `import { describe, test } from "bun:test";
 
 describe("@syncmesh/${name}", () => {
   test.todo("first test — a task is done when its test exists and passes", () => {});
 });
 `,
+          },
         },
       },
       scripts: [{ commands: ["vp fmt --write .", "bun install"], phase: 0 }],

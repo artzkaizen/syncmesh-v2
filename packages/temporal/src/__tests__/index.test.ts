@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { Temporal } from "./index.js";
+import { Temporal } from "../index.js";
 
 describe("@syncmesh/temporal", () => {
   test("is the polyfill, not the runtime's Temporal, so every device agrees", () => {

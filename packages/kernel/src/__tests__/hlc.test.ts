@@ -2,7 +2,7 @@ import { Temporal } from "@syncmesh/temporal";
 import { describe, expect, test } from "bun:test";
 import * as fc from "fast-check";
 
-import { compareHlc, createHlcClock, type Hlc, type Logical } from "./hlc.js";
+import { compareHlc, createHlcClock, type Hlc, type Logical } from "../hlc.js";
 
 const at = (ms: number) => Temporal.Instant.fromEpochMilliseconds(ms);
 const stamp = (ms: number, l: number): Hlc => {
