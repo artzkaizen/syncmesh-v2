@@ -1,14 +1,3 @@
-/**
- * `@syncmesh/result` — the one place syncmesh imports its Result from (D02, option A).
- *
- * It is `better-result`, re-exported. Every package imports from here, never from
- * `better-result` directly, so there is exactly one nominal `Result` for the
- * "no floating Result" lint to target and one place to swap if the library ever changes.
- *
- * Rules (README rule 4):
- * - a runtime failure is a value: return `Result.err(new SomeTaggedError({...}))`
- * - a definition mistake throws: `panic("table `x` declared twice")`
- */
 export {
   Result,
   Ok,
@@ -33,9 +22,17 @@ export type {
 import { panic } from "better-result";
 
 /**
- * Exhaustiveness proof for a `switch` over `_tag` (or any union). Adding a member to
- * the union becomes a compile error until every switch handles it; reaching it at
- * runtime is a defect, so it panics.
+ * Asserts a `switch` over a union is exhaustive; panics if reached at runtime.
+ *
+ * @param value The narrowed-to-`never` value from the `default` branch.
+ * @param what Label for the panic message.
+ * @throws {Panic} Always, when called.
+ *
+ * @example
+ * switch (error._tag) {
+ *   case "NoSuchTable": return error.table;
+ *   default: return unreachable(error, "WriteError");
+ * }
  */
 export function unreachable(value: never, what = "case"): never {
   return panic(`unhandled ${what}: ${JSON.stringify(value)}`);

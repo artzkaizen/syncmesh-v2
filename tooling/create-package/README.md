@@ -1,35 +1,21 @@
-# Vite+ Code Generator Starter
+# create-package
 
-A starter for creating a Vite+ code generator.
+The generator behind `bun run gen`. Produces one workspace package with the house layout:
 
-## Usage
-
-From monorepo root:
-
-```bash
-# run and select the generator
-vp create
+```
+<group>/<name>/
+  package.json      exports → dist (plus the @syncmesh/source condition), depends on @syncmesh/result
+  vite.config.ts    export default library()
+  tsconfig.json     extends @syncmesh/config, bun types for bun:test
+  src/index.ts
+  src/index.test.ts one todo — red until the first real test
 ```
 
-## Development
-
-```bash
-# Edit the template
-code src/template.ts
-
-# Test the generator CLI
-vp run dev
-
-# Run tests
-vp run test
+```
+bun run gen --name kernel --description "HLC, stamps, merge"
+bun run gen --name sqlite-bun --group adapters --description "bun:sqlite driver"
 ```
 
-## Customization
-
-Edit `src/template.ts` to customize:
-
-- Options schema (using Zod)
-- File generation logic
-- Scripts and suggestions
-
-More information about the [Bingo Templates](https://create.bingo/) can be found [here](https://create.bingo/build/concepts/creations).
+`--group` defaults to `packages`. Runs offline, formats the output and runs `bun install`.
+`vp create package` also works but then asks about workspace dependencies the template
+already wrote; prefer `bun run gen`. Template: `src/template.ts` (bingo + zod 3).

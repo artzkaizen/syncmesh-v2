@@ -2,43 +2,44 @@ import type { Temporal } from "@syncmesh/temporal";
 
 import { panic } from "@syncmesh/result";
 
-/**
- * Hybrid logical clock — E01, RFC-0003.
- *
- * `[physical, logical]`: a wall-clock instant plus a counter that only matters when two
- * stamps share the same millisecond. Strictly monotonic on one device even when the wall
- * clock jumps backwards; receiving a remote stamp ratchets the local clock forward so
- * causality is never inverted.
- *
- * On the wire (E03) `physical` is encoded as `epochMilliseconds`; in memory it is an
- * `Instant`, so it cannot be confused with a duration or an arbitrary number.
- */
+/** A hybrid logical clock stamp: a wall-clock instant, then a per-millisecond counter. See RFC-0003. */
 export type Hlc = readonly [physical: Temporal.Instant, logical: Logical];
 
-/** Tie-breaker within one millisecond. Resets to 0 whenever `physical` advances. */
+/** The counter half of an {@link Hlc}; 0 whenever the instant advances. */
 export type Logical = number & { readonly __brand: "Logical" };
 
+/** Issues strictly increasing {@link Hlc} stamps for one device. */
 export interface HlcClock {
-  /** A new stamp strictly greater than every stamp this clock has produced or received. */
+  /** Returns a stamp greater than every stamp this clock has issued or received. */
   readonly tick: () => Hlc;
-  /** Fold in a stamp seen from another peer; the next `tick()` is greater than it. */
+  /** Records a stamp received from another peer so later ticks stay ahead of it. */
   readonly receive: (remote: Hlc) => void;
-  /** The last stamp produced or received, without advancing. */
+  /** Returns the latest stamp issued or received, without advancing. */
   readonly last: () => Hlc;
 }
 
+/** Options for {@link createHlcClock}. */
 export interface HlcClockOptions {
-  /** Wall clock. Injected so tests can drive it backwards. */
+  /** Source of wall-clock time. */
   readonly now: () => Temporal.Instant;
-  /** A remote stamp further than this ahead of `now()` is a broken clock, not the future. */
+  /** Remote stamps further ahead of `now()` than this are clamped instead of adopted. */
   readonly maxDrift?: Temporal.Duration;
 }
 
+/**
+ * Creates a clock whose stamps never go backwards, even when `now()` does.
+ *
+ * @example
+ * const clock = createHlcClock({ now: () => Temporal.Now.instant() });
+ * const a = clock.tick();
+ * const b = clock.tick();
+ * compareHlc(a, b); // -1
+ */
 export function createHlcClock(_options: HlcClockOptions): HlcClock {
   return panic("not implemented");
 }
 
-/** Total order: physical first, then logical. */
+/** Total order on stamps: instant first, then logical counter. */
 export function compareHlc(_a: Hlc, _b: Hlc): -1 | 0 | 1 {
   return panic("not implemented");
 }

@@ -6,8 +6,7 @@ import { dirname, join, resolve } from "node:path";
 
 import template from "../src/template.ts";
 
-// `vp create` runs this with cwd = tooling/ and keeps --directory for itself, so resolve the
-// destination ourselves: <workspace root>/<group>/<name>, group defaults to packages.
+// vp create runs this with cwd = tooling/ and swallows --directory; derive <root>/<group>/<name> here.
 const argv = process.argv;
 const valueOf = (flag: string): string | undefined => {
   const i = argv.indexOf(flag);
@@ -35,8 +34,6 @@ for (const flag of ["--offline", "--skip-requests"]) {
   if (!argv.includes(flag)) argv.push(flag);
 }
 
-// SAFETY: bingo's runTemplateCLI takes the base Template<ZodRawShape>, and Template is invariant in its
-// options shape, so the precisely typed template cannot be passed or singly asserted. This is the
-// scaffold's own idiom; nothing is widened except at this one call into the library.
-// oxlint-disable-next-line anti-slop/no-chained-type-assertions -- third-party invariance, see above
+// SAFETY: runTemplateCLI takes Template<ZodRawShape>; Template is invariant in its shape, so this is the only cast that compiles.
+// oxlint-disable-next-line anti-slop/no-chained-type-assertions -- third-party invariance
 process.exitCode = await runTemplateCLI(template as unknown as Template);

@@ -1,10 +1,5 @@
 import { defineConfig } from "vite-plus";
 
-/**
- * Every package's `vite.config.ts` is two lines: import a preset, export it.
- * The policy — how a package builds, type-checks and tests — lives here, once.
- */
-
 type Platform = "neutral" | "node" | "browser";
 
 const tasks = {
@@ -29,8 +24,8 @@ const preset = (platform: Platform) =>
     run: { tasks },
   });
 
-/** `packages/*` — pure TypeScript, no runtime assumed (D01-B). */
+/** Vite+ preset for a runtime-neutral library in `packages/*`. */
 export const library = () => preset("neutral");
 
-/** `adapters/*` — one runtime binding; say which. */
+/** Vite+ preset for a runtime adapter in `adapters/*`, built for one platform. */
 export const adapter = (platform: Exclude<Platform, "neutral">) => preset(platform);

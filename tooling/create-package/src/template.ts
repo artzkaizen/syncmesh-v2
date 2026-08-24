@@ -3,21 +3,7 @@ import { z } from "zod";
 
 import pkgJson from "../package.json" with { type: "json" };
 
-/**
- * `vp create package` — one new workspace package, the same shape every time:
- *
- *   <group>/<name>/
- *     package.json      exports → dist, depends on @syncmesh/result
- *     vite.config.ts    export default library()  — the preset from @syncmesh/config
- *     tsconfig.json     editor + typecheck; bun types so bun:test resolves
- *     src/index.ts
- *     src/index.test.ts one todo — red until the first real test (README rule 1)
- *
- * Run from the repo root. Lands in <group>/<name>; --group defaults to packages (runtime-neutral),
- * pass --group adapters for a runtime binding:
- *   bun run gen --name kernel --description "HLC, stamps, merge"
- * (`vp create package` works too, but vp then asks about workspace deps the template already wrote)
- */
+/** Template for `bun run gen`: one workspace package with the house layout. */
 export default createTemplate({
   about: { name: pkgJson.name, description: pkgJson.description },
 

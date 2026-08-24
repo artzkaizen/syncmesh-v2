@@ -1,7 +1,5 @@
 import { describe, test } from "bun:test";
 
-// `createHlcClock`, `compareHlc` — every case here comes from plan/epics/E01.md § Tests.
-
 describe("compareHlc", () => {
   test.todo("orders by physical ms first, then logical", () => {});
   test.todo("equal stamps compare 0 — both components", () => {});
