@@ -1,6 +1,7 @@
 import { Temporal } from "@syncmesh/temporal";
 
 import type { Hlc, Logical } from "../hlc.js";
+import type { Cell, CellValue, ColumnName, RowRecord } from "../record.js";
 import type { Stamp } from "../stamp.js";
 
 import { parsePeerId, type PeerId } from "../peer-id.js";
@@ -32,4 +33,23 @@ export const fakeClock = (start: number) => {
       ms = next;
     },
   };
+};
+
+export const column = (name: string): ColumnName => {
+  // SAFETY: test fixture; column naming rules arrive with the schema (E05)
+  return name as ColumnName;
+};
+
+export const cell = (value: CellValue, at: Stamp): Cell => ({ value, stamp: at });
+
+export const record = (
+  writeStamp: Stamp,
+  cells: readonly (readonly [string, Cell])[] = [],
+  deleteStamp?: Stamp,
+): RowRecord => {
+  const base: RowRecord = {
+    cells: new Map(cells.map(([name, c]) => [column(name), c])),
+    writeStamp,
+  };
+  return deleteStamp === undefined ? base : { ...base, deleteStamp };
 };
