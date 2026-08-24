@@ -1,0 +1,30 @@
+{
+  "name": "@syncmesh/result",
+  "version": "0.0.0",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "test": "bun test",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "better-result": "^3.0.1"
+  },
+  "devDependencies": {
+    "@syncmesh/tsconfig": "workspace:*",
+    "@types/bun": "catalog:",
+    "fast-check": "catalog:",
+    "typescript": "catalog:"
+  }
+}

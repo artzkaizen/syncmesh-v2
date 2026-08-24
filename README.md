@@ -9,12 +9,48 @@ research — options, tradeoffs, prior art, and the plan — never the code.
 
 ## Where things are
 
-| | |
-|---|---|
-| `plan/` | the whole project as epics, tasks and decisions. Open with `bun plan/tool/serve.ts` |
-| `plan/decisions/` | every design decision, one file each. `status: open` until **you** decide |
-| `plan/epics/` | one file per epic: goal, dependencies, tasks (`- [ ]`), what to watch out for, tests, done-when |
-| `research/` | reference from the exploration: the API as it was designed, 21 RFCs, wire vectors, learnings, competitor reads. **Reference, not the plan** |
+|                   |                                                                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plan/`           | the whole project as epics, tasks and decisions. Open with `bun plan/tool/serve.ts`                                                         |
+| `plan/decisions/` | every design decision, one file each. `status: open` until **you** decide                                                                   |
+| `plan/epics/`     | one file per epic: goal, dependencies, tasks (`- [ ]`), what to watch out for, tests, done-when                                             |
+| `research/`       | reference from the exploration: the API as it was designed, 21 RFCs, wire vectors, learnings, competitor reads. **Reference, not the plan** |
+
+## Layout — what exists (✓) and which epic adds the rest
+
+```
+syncmesh/
+├── packages/            pure TypeScript, runtime-neutral (D01-B): no bun:/node:/DOM imports, lint-enforced
+│   ├── result/          ✓ E00   better-result re-exported — the one Result / TaggedError import
+│   ├── kernel/            E01   HLC, stamps, row records, merge
+│   ├── engine/            E02   engine, events, in-process sync, telemetry seam
+│   ├── wire/              E03   canonical CBOR, Ed25519, envelope, hex ↔ bytes
+│   ├── storage/           E04   SqliteDriver port, event store, state store
+│   ├── schema/            E05   table definitions, contract
+│   ├── policy/            E06   policy AST (data; syncs as a `_policy` row)
+│   ├── identity/          E07   grants, bring-your-own-auth
+│   ├── partitions/        E08
+│   ├── client/            E09   createMesh, collections, tx
+│   ├── react/             E10   LiveQuery, useLiveQuery
+│   ├── transport/         E11   Transport port, framed links, routing
+│   ├── relay/             E12–E19
+│   └── testing/           E04   runDriverTests · E11 runTransportTests — shipped acceptance suites
+├── adapters/            one runtime binding each — the only place runtime imports are allowed
+│   ├── sqlite-bun/ sqlite-node/ sqlite-wasm/ sqlite-do/   E04
+│   ├── transport-ws/      E12
+│   ├── drizzle/           E17
+│   ├── expo/              E09
+│   └── ble-channel/ wifi-aware-channel/                    E22 · E23
+├── native/              Swift / Kotlin modules; package.json scripts wrap xcodebuild / gradle   E22 · E23
+├── apps/                relay-do · relay-rivet · relay-embedded · example-expo   E25 · E09
+├── conformance/         frozen wire vectors + the byte-for-byte harness   E03
+├── bench/               E04
+├── tooling/
+│   ├── tsconfig/        ✓ E00   base (strict, types: []) + library (emit to dist)
+│   └── verify-node-consumer/   E09   pack each package, import it from real Node
+├── plan/                epics, decisions, the plan page
+└── research/            reference, not the plan
+```
 
 ## Rules
 
@@ -23,6 +59,14 @@ research — options, tradeoffs, prior art, and the plan — never the code.
 3. Nothing about the wire changes without a new frozen vector.
 4. Runtime failures are values. Definition mistakes throw.
 5. No function takes the engine as its first argument. No magic strings.
+
+## Running the code
+
+```
+bun install
+bun run ci          # build · typecheck · test · lint · fmt:check — what CI runs
+bun test            # every test, every package, direct
+```
 
 ## Running the plan
 

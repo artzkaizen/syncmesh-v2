@@ -1,0 +1,14 @@
+node_modules
+dist
+*.tsbuildinfo
+.turbo
+coverage
+*.tgz
+.DS_Store
+*.log
+.env
+.env*.local
+.zed/*
+!.zed/settings.json
+.idea
+.fallow
