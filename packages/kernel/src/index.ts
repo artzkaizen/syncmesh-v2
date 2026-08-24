@@ -1,5 +1,4 @@
-export type { Brand } from "./brand.js";
-export type { Ordering } from "./ordering.js";
+export type { Brand, Ordering } from "./primitives.js";
 export type { Hlc, Logical, HlcClock, HlcClockOptions } from "./hlc.js";
 export { createHlcClock, compareHlc } from "./hlc.js";
 export type { PeerId } from "./peer-id.js";

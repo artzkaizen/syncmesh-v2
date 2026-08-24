@@ -1,5 +1,5 @@
-import type { Ordering } from "./ordering.js";
 import type { PeerId } from "./peer-id.js";
+import type { Ordering } from "./primitives.js";
 
 import { compareHlc, type Hlc } from "./hlc.js";
 

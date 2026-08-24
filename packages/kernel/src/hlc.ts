@@ -1,7 +1,6 @@
 import { Temporal } from "@syncmesh/temporal";
 
-import type { Brand } from "./brand.js";
-import type { Ordering } from "./ordering.js";
+import type { Brand, Ordering } from "./primitives.js";
 
 /** A hybrid logical clock stamp: a wall-clock instant, then a per-millisecond counter. See RFC-0003. */
 export type Hlc = readonly [physical: Temporal.Instant, logical: Logical];

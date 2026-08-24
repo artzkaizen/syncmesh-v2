@@ -1,6 +1,6 @@
 import { Result, TaggedError } from "@syncmesh/result";
 
-import type { Brand } from "./brand.js";
+import type { Brand } from "./primitives.js";
 
 /** A device identity: its Ed25519 public key as 64 lowercase hex characters. See RFC-0002. */
 export type PeerId = Brand<string, "PeerId">;
