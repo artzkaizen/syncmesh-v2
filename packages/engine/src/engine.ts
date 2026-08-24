@@ -4,6 +4,7 @@ import { applyChange, emptyState } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
 
 import type { EventStore, StoreFailure } from "./store.js";
+import type { Cursors } from "./sync.js";
 
 import {
   eventId,
@@ -59,6 +60,10 @@ export interface Engine {
   ) => Promise<Result<ReceiveReport, StoreFailure>>;
   readonly receive: (event: SyncEvent) => Promise<Result<ReceiveReport, StoreFailure>>;
   readonly state: () => State;
+  /** Highest synced sequence number held per author. */
+  readonly cursors: () => Promise<Result<Cursors, StoreFailure>>;
+  /** Synced events the holder of `theirs` lacks. */
+  readonly eventsSince: (theirs: Cursors) => Promise<Result<readonly SyncEvent[], StoreFailure>>;
   readonly onFoldBatch: (listener: (batch: FoldBatch) => void) => Unsubscribe;
   /** Fires for every synced event this engine authors, never for `local` ones. */
   readonly onOutbound: (listener: (event: SyncEvent) => void) => Unsubscribe;
@@ -163,12 +168,22 @@ export function createEngine(options: EngineOptions): Engine {
       return () => void listeners.delete(listener);
     };
 
+  const cursors: Engine["cursors"] = () =>
+    Result.gen(async function* () {
+      const all = yield* Result.await(store.allSince(new Map()));
+      const max = new Map<PeerId, SeqNum>();
+      for (const e of all) if ((max.get(e.peerId) ?? 0) < e.seqNum) max.set(e.peerId, e.seqNum);
+      return Result.ok(max);
+    });
+
   return {
     peerId,
     mutate,
     receiveBatch,
     receive: (event) => receiveBatch([event]),
     state: () => state,
+    cursors,
+    eventsSince: (theirs) => store.allSince(theirs),
     onFoldBatch: subscribe(foldListeners),
     onOutbound: subscribe(outboundListeners),
   };
