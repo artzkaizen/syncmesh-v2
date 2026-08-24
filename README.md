@@ -46,7 +46,7 @@ syncmesh/
 ├── conformance/         frozen wire vectors + the byte-for-byte harness   E03
 ├── bench/               E04
 ├── tooling/
-│   ├── tsconfig/        ✓ E00   one strict base; packages build with `vp pack`
+│   ├── config/          ✓ E00   tsconfig base + Vite+ presets (`library()`, `adapter()`) every package composes
 │   ├── create-package/  ✓ E00   `vp create package` — every package gets the same shape
 │   └── verify-node-consumer/   E09   pack each package, import it from real Node
 ├── plan/                epics, decisions, the plan page

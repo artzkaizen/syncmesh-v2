@@ -8,7 +8,7 @@ import pkgJson from "../package.json" with { type: "json" };
  *
  *   <group>/<name>/
  *     package.json      exports → dist, depends on @syncmesh/result
- *     vite.config.ts    pack (tsdown, platform neutral, dts) + run tasks build/typecheck/test
+ *     vite.config.ts    export default library()  — the preset from @syncmesh/config
  *     tsconfig.json     editor + typecheck; bun types so bun:test resolves
  *     src/index.ts
  *     src/index.test.ts one todo — red until the first real test (README rule 1)
@@ -46,43 +46,18 @@ export default createTemplate({
           sideEffects: false,
           dependencies: { "@syncmesh/result": "workspace:*" },
           devDependencies: {
-            "@syncmesh/tsconfig": "workspace:*",
+            "@syncmesh/config": "workspace:*",
             "@types/bun": "catalog:",
             typescript: "catalog:",
             "vite-plus": "catalog:",
           },
         }),
-        "vite.config.ts": `import { defineConfig } from "vite-plus";
+        "vite.config.ts": `import { library } from "@syncmesh/config/vite";
 
-export default defineConfig({
-  pack: {
-    entry: ["src/index.ts"],
-    format: ["esm"],
-    platform: "neutral",
-    dts: true,
-    clean: true,
-  },
-  run: {
-    tasks: {
-      build: {
-        command: "vp pack",
-        dependsOn: [{ task: "build", from: "dependencies" }],
-        output: ["dist/**"],
-      },
-      typecheck: {
-        command: "tsc -p tsconfig.json",
-        dependsOn: [{ task: "build", from: "dependencies" }],
-      },
-      test: {
-        command: "bun test",
-        dependsOn: [{ task: "build", from: "dependencies" }],
-      },
-    },
-  },
-});
+export default library();
 `,
         "tsconfig.json": json({
-          extends: "@syncmesh/tsconfig/base.json",
+          extends: "@syncmesh/config/tsconfig.base.json",
           compilerOptions: { types: ["bun"], noEmit: true },
           include: ["src", "vite.config.ts"],
         }),
