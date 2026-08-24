@@ -31,7 +31,7 @@ export default createTemplate({
 
   produce({ options }) {
     const { name, description } = options;
-    const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
+    const json = <T extends object>(value: T) => `${JSON.stringify(value, null, 2)}\n`;
 
     return {
       files: {
@@ -42,7 +42,13 @@ export default createTemplate({
           type: "module",
           license: "MIT",
           files: ["dist"],
-          exports: { ".": { types: "./dist/index.d.ts", default: "./dist/index.js" } },
+          exports: {
+            ".": {
+              "@syncmesh/source": "./src/index.ts",
+              types: "./dist/index.d.ts",
+              default: "./dist/index.js",
+            },
+          },
           sideEffects: false,
           dependencies: { "@syncmesh/result": "workspace:*" },
           devDependencies: {
@@ -58,7 +64,7 @@ export default library();
 `,
         "tsconfig.json": json({
           extends: "@syncmesh/config/tsconfig.base.json",
-          compilerOptions: { types: ["bun"], noEmit: true },
+          compilerOptions: { types: ["bun"], noEmit: true, customConditions: ["@syncmesh/source"] },
           include: ["src", "vite.config.ts"],
         }),
         src: {

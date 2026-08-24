@@ -18,8 +18,41 @@ export default defineConfig({
     env: { builtin: true },
     categories: { correctness: "error" },
     options: { typeAware: true, typeCheck: true },
-    ignorePatterns: ["**/dist/**", "research/**", "plan/**", ".agents/**", ".claude/**"],
+    ignorePatterns: [
+      "**/dist/**",
+      "research/**",
+      "plan/**",
+      ".agent/**",
+      ".agents/**",
+      ".claude/**",
+      ".codex/**",
+      ".continue/**",
+      ".cursor/**",
+      ".gemini/**",
+      ".opencode/**",
+      ".pi/**",
+      ".roo/**",
+      ".windsurf/**",
+      "tools/oxlint/anti-slop/**",
+    ],
+    jsPlugins: [{ name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" }],
     rules: {
+      "anti-slop/no-chained-type-assertions": "error",
+      "anti-slop/no-conditional-empty-object-spread": "error",
+      "anti-slop/no-known-value-widening": "error",
+      "anti-slop/no-module-mocking": "error",
+      "anti-slop/no-object-parameters": "error",
+      "anti-slop/no-reflect-apply": "error",
+      "anti-slop/no-reflect-get": "error",
+      "anti-slop/no-runtime-typeof": "error",
+      "anti-slop/no-shape-in-symbol-names": "error",
+      "anti-slop/no-unknown-parameters": "error",
+      "anti-slop/no-unknown-returns": "error",
+      "anti-slop/no-unknown-type-aliases": "error",
+      "anti-slop/no-unsafe-dictionary-type": "error",
+      "anti-slop/no-widen-then-assert": "error",
+      "anti-slop/require-safety-comment-for-type-assertion": "error",
+
       "no-deprecated": "warn",
       "typescript/no-misused-spread": "off",
 
@@ -193,7 +226,7 @@ export default defineConfig({
       },
       {
         files: ["**/*.config.ts", "**/*.config.js", "**/*.config.mjs", "**/*.config.mts"],
-        rules: { "node/no-process-env": "off" },
+        rules: { "node/no-process-env": "off", "max-lines": "off" },
       },
       {
         files: ["scripts/**", "tooling/**", "bench/**"],
@@ -217,7 +250,23 @@ export default defineConfig({
 
   // ---------------------------------------------------------------- fmt (oxfmt)
   fmt: {
-    ignorePatterns: ["**/dist/**", "research/**", "plan/**"],
+    ignorePatterns: [
+      "**/dist/**",
+      "research/**",
+      "plan/**",
+      ".agent/**",
+      ".agents/**",
+      ".claude/**",
+      ".codex/**",
+      ".continue/**",
+      ".cursor/**",
+      ".gemini/**",
+      ".opencode/**",
+      ".pi/**",
+      ".roo/**",
+      ".windsurf/**",
+      "tools/oxlint/anti-slop/**",
+    ],
     sortPackageJson: { sortScripts: true },
     sortImports: {
       groups: [

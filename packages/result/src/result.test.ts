@@ -94,6 +94,7 @@ describe("Result (better-result)", () => {
 
   test("try captures a throw at the boundary as a value", () => {
     const r = Result.try({
+      // SAFETY: JSON.parse returns `any`; widening to unknown is the honest type for untrusted input
       try: () => JSON.parse("{") as unknown,
       catch: (t) => (t instanceof Error ? t.message : String(t)),
     });
@@ -126,6 +127,7 @@ describe("TaggedError", () => {
   test("a switch over _tag is exhaustive via unreachable", () => {
     expect(describeError(new NoSuchTable({ table: "t", message: "" }))).toBe("t");
     expect(describeError(new EmptyTx({ message: "" }))).toBe("empty");
+    // SAFETY: deliberately feeding a non-never value to prove unreachable() panics at runtime
     expect(() => unreachable("nope" as never)).toThrow(Panic);
   });
 

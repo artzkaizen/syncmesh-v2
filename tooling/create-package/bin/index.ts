@@ -35,7 +35,8 @@ for (const flag of ["--offline", "--skip-requests"]) {
   if (!argv.includes(flag)) argv.push(flag);
 }
 
-// runTemplateCLI accepts the base `Template` type, which is wider than the
-// strongly typed template returned by createTemplate(). Cast through `unknown`
-// to bridge the two.
+// SAFETY: bingo's runTemplateCLI takes the base Template<ZodRawShape>, and Template is invariant in its
+// options shape, so the precisely typed template cannot be passed or singly asserted. This is the
+// scaffold's own idiom; nothing is widened except at this one call into the library.
+// oxlint-disable-next-line anti-slop/no-chained-type-assertions -- third-party invariance, see above
 process.exitCode = await runTemplateCLI(template as unknown as Template);

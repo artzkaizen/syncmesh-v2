@@ -12,3 +12,10 @@ Shared config, composed — never copied — by every package.
 Runtime-neutrality of `packages/*` is enforced by lint (root `vite.config.ts`, the D01-B
 override): `bun:*` / `node:*` imports and the `Bun` / `process` / `window` / `document`
 globals are errors in `packages/*/src/**`. Adapters are exempt — that is what they are for.
+
+## Cross-package imports before a build
+
+Each package's `exports` starts with a `@syncmesh/source` condition → `./src/index.ts`, and
+its `tsconfig.json` sets `customConditions: ["@syncmesh/source"]`. Editors, `vp check` and
+`typecheck` therefore resolve `@syncmesh/*` to source without `dist/`. `vp pack` does not
+use that condition, so emitted output — and any real consumer — resolves to `dist/`.
