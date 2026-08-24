@@ -9,12 +9,14 @@ import type { Cursors } from "./sync.js";
 import {
   eventId,
   stampOf,
+  type EventId,
   type PartitionKey,
   type Procedure,
   type SeqNum,
   type SyncEvent,
 } from "./event.js";
 import { record, type Tx } from "./tx.js";
+import { invert, replay, REVERT, type Undo } from "./undo.js";
 
 export class EmptyMutation extends TaggedError("EmptyMutation")<{
   procedure: Procedure;
@@ -27,6 +29,13 @@ export interface MutateOptions {
 }
 
 export type MutateError = EmptyMutation | StoreFailure;
+
+export class CannotRevert extends TaggedError("CannotRevert")<{
+  eventId: EventId;
+  message: string;
+}> {}
+
+export type RevertError = CannotRevert | MutateError;
 
 export type FoldSource = "local" | "remote";
 
@@ -60,6 +69,9 @@ export interface Engine {
   ) => Promise<Result<ReceiveReport, StoreFailure>>;
   readonly receive: (event: SyncEvent) => Promise<Result<ReceiveReport, StoreFailure>>;
   readonly state: () => State;
+  /** Writes the compensating event for one of this engine's last `undoDepth` writes, in that event's partition. */
+  readonly revert: (id: EventId) => Promise<Result<SyncEvent, RevertError>>;
+  readonly canRevert: (id: EventId) => boolean;
   /** Highest synced sequence number held per author. */
   readonly cursors: () => Promise<Result<Cursors, StoreFailure>>;
   /** Synced events the holder of `theirs` lacks. */
@@ -74,11 +86,14 @@ export interface EngineOptions {
   readonly clock: HlcClock;
   readonly store: EventStore;
   readonly merge?: MergeSpec;
+  /** How many of this engine's own writes stay revertable. Default 0. */
+  readonly undoDepth?: number;
 }
 
 export function createEngine(options: EngineOptions): Engine {
-  const { peerId, clock, store, merge } = options;
+  const { peerId, clock, store, merge, undoDepth = 0 } = options;
   let state = emptyState();
+  const undo: Undo[] = [];
   const foldListeners = new Set<(batch: FoldBatch) => void>();
   const outboundListeners = new Set<(event: SyncEvent) => void>();
 
@@ -111,12 +126,17 @@ export function createEngine(options: EngineOptions): Engine {
           new EmptyMutation({ procedure, message: `${procedure} changed nothing` }),
         );
       }
+      const inverse = undoDepth > 0 ? invert(state, changes) : [];
       const hlc = clock.tick();
       const scope = mutateOptions.local === true ? "local" : "synced";
       const last = yield* Result.await(store.lastSeq(peerId, scope));
       const event = build(procedure, hlc, nextSeq(last), changes, mutateOptions);
       yield* Result.await(store.append(event));
       fold([event], "local");
+      if (undoDepth > 0) {
+        undo.push({ event, inverse });
+        if (undo.length > undoDepth) undo.shift();
+      }
       if (event.local !== true) for (const listener of outboundListeners) listener(event);
       return Result.ok(event);
     });
@@ -161,6 +181,27 @@ export function createEngine(options: EngineOptions): Engine {
     return base;
   };
 
+  const revert: Engine["revert"] = (id) => {
+    const index = undo.findIndex((u) => u.event.id === id);
+    const entry = undo[index];
+    if (entry === undefined) {
+      return Promise.resolve(
+        Result.err(
+          new CannotRevert({
+            eventId: id,
+            message: `not among the last ${undoDepth} writes of this engine`,
+          }),
+        ),
+      );
+    }
+    undo.splice(index, 1);
+    const { partition, local } = entry.event;
+    const options: MutateOptions = {};
+    if (partition !== undefined) Object.assign(options, { partition });
+    if (local === true) Object.assign(options, { local });
+    return mutate(REVERT, (tx) => replay(tx, entry.inverse), options);
+  };
+
   const subscribe =
     <L>(listeners: Set<L>) =>
     (listener: L): Unsubscribe => {
@@ -182,6 +223,8 @@ export function createEngine(options: EngineOptions): Engine {
     receiveBatch,
     receive: (event) => receiveBatch([event]),
     state: () => state,
+    revert,
+    canRevert: (id) => undo.some((u) => u.event.id === id),
     cursors,
     eventsSince: (theirs) => store.allSince(theirs),
     onFoldBatch: subscribe(foldListeners),

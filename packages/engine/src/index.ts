@@ -27,7 +27,7 @@ export type {
   ReceiveReport,
   Unsubscribe,
 } from "./engine.js";
-export { EmptyMutation, createEngine } from "./engine.js";
+export { CannotRevert, EmptyMutation, createEngine } from "./engine.js";
 export type { Cursors, SyncDoc, SyncMessage, SyncState } from "./sync.js";
 export {
   coversCursors,
