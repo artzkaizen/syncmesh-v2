@@ -1,10 +1,13 @@
 import { Temporal } from "@syncmesh/temporal";
 
+import type { Brand } from "./brand.js";
+import type { Ordering } from "./ordering.js";
+
 /** A hybrid logical clock stamp: a wall-clock instant, then a per-millisecond counter. See RFC-0003. */
 export type Hlc = readonly [physical: Temporal.Instant, logical: Logical];
 
 /** Tie-breaker between stamps that share an instant. */
-export type Logical = number & { readonly __brand: "Logical" };
+export type Logical = Brand<number, "Logical">;
 
 /** Issues strictly increasing {@link Hlc} stamps for one device. */
 export interface HlcClock {
@@ -67,7 +70,7 @@ const clamp = (stamp: Hlc, limit: Temporal.Instant): Hlc =>
   Temporal.Instant.compare(stamp[0], limit) > 0 ? [limit, stamp[1]] : stamp;
 
 /** Total order on stamps: instant first, then logical counter. */
-export function compareHlc(a: Hlc, b: Hlc): -1 | 0 | 1 {
+export function compareHlc(a: Hlc, b: Hlc): Ordering {
   const byInstant = Temporal.Instant.compare(a[0], b[0]);
   if (byInstant < 0) return -1;
   if (byInstant > 0) return 1;

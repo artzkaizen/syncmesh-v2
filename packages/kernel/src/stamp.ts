@@ -1,3 +1,4 @@
+import type { Ordering } from "./ordering.js";
 import type { PeerId } from "./peer-id.js";
 
 import { compareHlc, type Hlc } from "./hlc.js";
@@ -9,7 +10,7 @@ export interface Stamp {
 }
 
 /** Total order on stamps: by {@link Hlc}, then by peer id. Equal stamps compare 0. */
-export function compareStamp(a: Stamp, b: Stamp): -1 | 0 | 1 {
+export function compareStamp(a: Stamp, b: Stamp): Ordering {
   const byHlc = compareHlc(a.hlc, b.hlc);
   if (byHlc !== 0) return byHlc;
   return a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0;

@@ -1,20 +1,9 @@
-import { Temporal } from "@syncmesh/temporal";
 import { describe, expect, test } from "bun:test";
 import * as fc from "fast-check";
 
-import type { Hlc, Logical } from "../hlc.js";
-
-import { parsePeerId, type PeerId } from "../peer-id.js";
-import { compareStamp, type Stamp } from "../stamp.js";
-
-const A = parsePeerId("a".repeat(64)).unwrap();
-const B = parsePeerId("b".repeat(64)).unwrap();
-
-const hlc = (ms: number, l: number): Hlc => {
-  // SAFETY: test fixture; l is always a small non-negative integer
-  return [Temporal.Instant.fromEpochMilliseconds(ms), l as Logical];
-};
-const stamp = (ms: number, l: number, peer: PeerId): Stamp => ({ hlc: hlc(ms, l), peer });
+import { PEER_ID_HEX, parsePeerId } from "../peer-id.js";
+import { compareStamp } from "../stamp.js";
+import { PEER_A, PEER_B, stamp } from "./fixtures.js";
 
 describe("parsePeerId", () => {
   test("accepts 64 lowercase hex characters", () => {
@@ -32,24 +21,24 @@ describe("parsePeerId", () => {
 
 describe("compareStamp", () => {
   test("orders by hlc first", () => {
-    expect(compareStamp(stamp(1, 9, B), stamp(2, 0, A))).toBe(-1);
-    expect(compareStamp(stamp(2, 0, A), stamp(1, 9, B))).toBe(1);
-    expect(compareStamp(stamp(1, 0, B), stamp(1, 1, A))).toBe(-1);
+    expect(compareStamp(stamp(1, 9, PEER_B), stamp(2, 0, PEER_A))).toBe(-1);
+    expect(compareStamp(stamp(2, 0, PEER_A), stamp(1, 9, PEER_B))).toBe(1);
+    expect(compareStamp(stamp(1, 0, PEER_B), stamp(1, 1, PEER_A))).toBe(-1);
   });
 
   test("same hlc → peer id breaks the tie", () => {
-    expect(compareStamp(stamp(1, 0, A), stamp(1, 0, B))).toBe(-1);
-    expect(compareStamp(stamp(1, 0, B), stamp(1, 0, A))).toBe(1);
+    expect(compareStamp(stamp(1, 0, PEER_A), stamp(1, 0, PEER_B))).toBe(-1);
+    expect(compareStamp(stamp(1, 0, PEER_B), stamp(1, 0, PEER_A))).toBe(1);
   });
 
   test("equal stamps compare exactly 0 — never -1 or 1", () => {
-    expect(compareStamp(stamp(5, 3, A), stamp(5, 3, A))).toBe(0);
-    expect(compareStamp(stamp(5, 3, A), stamp(5, 4, A))).toBe(-1);
-    expect(compareStamp(stamp(5, 3, A), stamp(5, 3, B))).toBe(-1);
+    expect(compareStamp(stamp(5, 3, PEER_A), stamp(5, 3, PEER_A))).toBe(0);
+    expect(compareStamp(stamp(5, 3, PEER_A), stamp(5, 4, PEER_A))).toBe(-1);
+    expect(compareStamp(stamp(5, 3, PEER_A), stamp(5, 3, PEER_B))).toBe(-1);
   });
 
   test("property: antisymmetric, transitive, and 0 only for equal stamps", () => {
-    const hex = fc.stringMatching(/^[0-9a-f]{64}$/);
+    const hex = fc.stringMatching(PEER_ID_HEX);
     const arb = fc
       .tuple(fc.nat({ max: 1_000 }), fc.nat({ max: 3 }), hex)
       .map(([ms, l, p]) => stamp(ms, l, parsePeerId(p).unwrap()));
