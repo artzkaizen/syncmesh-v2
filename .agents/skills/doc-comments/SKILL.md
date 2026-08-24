@@ -8,17 +8,31 @@ description: How syncmesh documents its public API — JSDoc conventions modelle
 syncmesh is a library. Its comments are read by consumers in editor hovers and in
 generated `.d.ts` files, not by us. Write them the way Zod, better-result and Effect do.
 
-## The shape
+## The one test
 
-Every **exported** symbol gets a `/** */` JSDoc block. Nothing else does by default.
+**A comment exists only when it says something the name and the type do not.**
+
+`ColumnName`, `RowRecord.writeStamp`, `HlcClockOptions.now`, `Stamp { hlc, peer }` — the
+name is the documentation. A comment there is noise a reader has to skip, and it trains
+readers to skip the ones that matter. Most exports need nothing. Zod does not document
+`ZodString`; better-result does not document `Ok.value`.
+
+Write one when there is a contract the signature cannot carry:
+
+- an invariant or guarantee: *"stamps never go backwards, even when `now()` does"*
+- a rule with a source: *"visible iff no delete or `writeStamp > deleteStamp` — RFC-0014 §1"*
+- a non-obvious meaning: *"the counter half of an Hlc; tie-breaker within one instant"*
+- a surprising choice a consumer must know: *"always the polyfill, never the runtime's"*
+- an example, when the call shape is not obvious from the types
+
+## The shape, when one is warranted
 
 ```ts
-/** Throw an unrecoverable Panic. */
-export const panic: (message: string, cause?: unknown) => never;
+/** Total order on stamps: instant first, then logical counter. */
+export function compareHlc(a: Hlc, b: Hlc): Ordering;
 ```
 
-One sentence, third person, ends with a period, says what it does or is. That is the
-whole comment for most symbols. Expand only when a consumer needs more:
+One sentence, third person, ends with a period. Expand only when a consumer needs more:
 
 ```ts
 /**
@@ -35,7 +49,7 @@ whole comment for most symbols. Expand only when a consumer needs more:
 
 Order inside a block: summary · blank line · `@template` · `@param` · `@returns` ·
 `@throws` · blank line · `@example`. An example is one or two lines with the result in a
-trailing comment. Members of an interface get their own one-liner.
+trailing comment. Do not add `@param` lines that restate the parameter name.
 
 ## What does not go in a code comment
 
@@ -45,7 +59,8 @@ trailing comment. Members of an interface get their own one-liner.
   README or decision sentence, not a comment on an export.
 - **Usage manuals at the top of a file.** If a file needs a paragraph to be understood,
   the API is unclear; fix the names or split the module.
-- **Restating the signature.** `/** The options. */ options: Options` says nothing.
+- **Restating the name or signature.** `/** A column identifier. */ ColumnName`,
+  `/** Options for createX. */ XOptions`, `/** Source of wall-clock time. */ now` — delete.
 - **Comments on non-exported code**, unless the code is genuinely non-obvious — then a
   short `//` line, and prefer a better name first.
 
@@ -59,8 +74,8 @@ trailing comment. Members of an interface get their own one-liner.
 
 ## Checklist before committing an export
 
-1. Is there a `/** */` block? Does its first line stand alone as the hover text?
-2. Does it say *what*, not *why*?
+1. Delete the comment. Is anything lost that the name and type do not carry? If not, it stays deleted.
+2. If it stays: does its first line stand alone as the hover text, and does it say *what*, not *why*?
 3. Would it still be correct if the internals were rewritten?
 4. Is every `@param` name real and every `@example` runnable as written?
 5. Could a reader mistake a `number`/`string` parameter for something else? If so the

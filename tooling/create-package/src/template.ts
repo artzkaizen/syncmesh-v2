@@ -3,7 +3,6 @@ import { z } from "zod";
 
 import pkgJson from "../package.json" with { type: "json" };
 
-/** Template for `bun run gen`: one workspace package with the house layout. */
 export default createTemplate({
   about: { name: pkgJson.name, description: pkgJson.description },
 

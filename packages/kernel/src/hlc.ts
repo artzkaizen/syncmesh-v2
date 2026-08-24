@@ -8,19 +8,14 @@ export type Hlc = readonly [physical: Temporal.Instant, logical: Logical];
 /** Tie-breaker between stamps that share an instant. */
 export type Logical = Brand<number, "Logical">;
 
-/** Issues strictly increasing {@link Hlc} stamps for one device. */
 export interface HlcClock {
   /** Returns a stamp greater than every stamp this clock has issued or received. */
   readonly tick: () => Hlc;
-  /** Records a stamp received from another peer. */
   readonly receive: (remote: Hlc) => void;
-  /** Returns the latest stamp issued or received, without advancing. */
   readonly last: () => Hlc;
 }
 
-/** Options for {@link createHlcClock}. */
 export interface HlcClockOptions {
-  /** Source of wall-clock time. */
   readonly now: () => Temporal.Instant;
   /** Maximum lead a received stamp may have over `now()`. */
   readonly maxDrift?: Temporal.Duration;
@@ -36,8 +31,6 @@ const EPOCH = Temporal.Instant.fromEpochMilliseconds(0);
 
 /**
  * Creates a clock whose stamps never go backwards, even when `now()` does.
- *
- * @param options Wall clock and drift bound.
  *
  * @example
  * const clock = createHlcClock({ now: () => Temporal.Now.instant() });

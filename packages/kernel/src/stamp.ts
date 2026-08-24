@@ -3,7 +3,6 @@ import type { Ordering } from "./primitives.js";
 
 import { compareHlc, type Hlc } from "./hlc.js";
 
-/** What every write carries: an {@link Hlc} and the peer that issued it. */
 export interface Stamp {
   readonly hlc: Hlc;
   readonly peer: PeerId;
