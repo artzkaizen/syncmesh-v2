@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 
 import template from "../src/template.ts";
 
-// vp create runs this with cwd = tooling/ and swallows --directory; derive <root>/<group>/<name> here.
+// vp create swallows --directory and runs with cwd = tooling/; derive the destination here.
 const argv = process.argv;
 const valueOf = (flag: string): string | undefined => {
   const i = argv.indexOf(flag);
@@ -29,7 +29,7 @@ if (name !== undefined && !argv.includes("--directory")) {
   argv.push("--directory", join(workspaceRoot(), group, name));
 }
 
-// A workspace package is local files only: never touch git remotes or the network.
+// bingo defaults to git/GitHub setup; this generator only writes files.
 for (const flag of ["--offline", "--skip-requests"]) {
   if (!argv.includes(flag)) argv.push(flag);
 }

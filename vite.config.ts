@@ -1,7 +1,6 @@
 import { defineConfig } from "vite-plus";
 
 export default defineConfig({
-  // ---------------------------------------------------------------- generators (vp create)
   create: {
     templates: [
       {
@@ -12,7 +11,6 @@ export default defineConfig({
     ],
   },
 
-  // ---------------------------------------------------------------- lint (oxlint)
   lint: {
     plugins: ["unicorn", "typescript", "oxc", "node", "import"],
     env: { builtin: true },
@@ -178,7 +176,7 @@ export default defineConfig({
     },
     overrides: [
       {
-        // D01-B: packages/* are runtime-neutral. Runtime bindings live in adapters/* behind a port.
+        // D01-B: packages/* must not touch a runtime; adapters/* may.
         files: ["packages/*/src/**"],
         rules: {
           "no-restricted-imports": [
@@ -248,7 +246,6 @@ export default defineConfig({
     ],
   },
 
-  // ---------------------------------------------------------------- fmt (oxfmt)
   fmt: {
     ignorePatterns: [
       "**/dist/**",

@@ -54,10 +54,7 @@ export default library();
           include: ["src", "vite.config.ts"],
         }),
         src: {
-          "index.ts": `/**
- * @syncmesh/${name} — ${description}
- */
-export {};
+          "index.ts": `export {};
 `,
           "index.test.ts": `import { describe, test } from "bun:test";
 
