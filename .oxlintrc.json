@@ -229,5 +229,12 @@
     "typeCheck": true
   },
   "globals": {},
-  "ignorePatterns": ["**/dist/**", "research/**", "plan/**", ".agents/**", ".claude/**"]
+  "ignorePatterns": [
+    "**/dist/**",
+    "research/**",
+    "plan/**",
+    "turbo/generators/templates/**",
+    ".agents/**",
+    ".claude/**"
+  ]
 }
