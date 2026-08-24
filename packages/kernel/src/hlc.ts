@@ -29,8 +29,8 @@ const logical = (n: number): Logical => {
   return n as Logical;
 };
 
-const ZERO: Logical = logical(0);
-const EPOCH: Temporal.Instant = Temporal.Instant.fromEpochMilliseconds(0);
+const ZERO = logical(0);
+const EPOCH = Temporal.Instant.fromEpochMilliseconds(0);
 
 /**
  * Creates a clock whose stamps never go backwards, even when `now()` does.

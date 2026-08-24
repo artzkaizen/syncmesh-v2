@@ -8,11 +8,11 @@ import template from "../src/template.ts";
 
 // vp create swallows --directory and runs with cwd = tooling/; derive the destination here.
 const argv = process.argv;
-const valueOf = (flag: string): string | undefined => {
+const valueOf = (flag: string) => {
   const i = argv.indexOf(flag);
   return i === -1 ? undefined : argv[i + 1];
 };
-const workspaceRoot = (): string => {
+const workspaceRoot = () => {
   let dir = resolve(import.meta.dirname);
   while (!existsSync(join(dir, "vite.config.ts")) || !existsSync(join(dir, "bun.lock"))) {
     const parent = dirname(dir);

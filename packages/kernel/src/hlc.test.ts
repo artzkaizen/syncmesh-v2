@@ -4,7 +4,7 @@ import * as fc from "fast-check";
 
 import { compareHlc, createHlcClock, type Hlc, type Logical } from "./hlc.js";
 
-const at = (ms: number): Temporal.Instant => Temporal.Instant.fromEpochMilliseconds(ms);
+const at = (ms: number) => Temporal.Instant.fromEpochMilliseconds(ms);
 const stamp = (ms: number, l: number): Hlc => {
   // SAFETY: test fixture; l is always a small non-negative integer
   return [at(ms), l as Logical];

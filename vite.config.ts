@@ -152,6 +152,7 @@ export default defineConfig({
       "typescript/triple-slash-reference": "warn",
       "typescript/consistent-type-definitions": "error",
       "typescript/consistent-type-imports": "error",
+      "typescript/no-inferrable-types": "error",
       "typescript/unbound-method": "warn",
       "unicorn/no-await-in-promise-methods": "warn",
       "unicorn/no-empty-file": "warn",
