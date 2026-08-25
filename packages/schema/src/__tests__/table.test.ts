@@ -3,7 +3,7 @@ import type { Temporal } from "@syncmesh/temporal";
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 
-import { t } from "../column.js";
+import { columnFromDef, t, type AnyColumn } from "../column.js";
 import { parseColumnName, parseTableName, reservedTableName } from "../names.js";
 import { checkRow, table, type InsertRow, type Row } from "../table.js";
 
@@ -34,11 +34,12 @@ describe("table()", () => {
     expect(() => table("things", { id: t.integer().primaryKey() })).not.toThrow();
   });
 
-  test("a nullable or defaulted primary key is refused — 'null' and shared keys cannot exist", () => {
-    expect(() => table("things", { id: t.text().primaryKey().nullable() })).toThrow(
-      "cannot be nullable",
-    );
-    expect(() => table("things", { id: t.text().primaryKey().default("x") })).toThrow(
+  test("a nullable or defaulted primary key def is refused even past the builder's types", () => {
+    // the builder makes these unwritable; a def can still arrive from outside it (fromDrizzle)
+    const forge = (patch: Partial<AnyColumn["def"]>): AnyColumn =>
+      columnFromDef({ ...t.text().primaryKey().def, ...patch });
+    expect(() => table("things", { id: forge({ nullable: true }) })).toThrow("cannot be nullable");
+    expect(() => table("things", { id: forge({ hasDefault: true, defaultValue: "x" }) })).toThrow(
       "cannot have a default",
     );
   });

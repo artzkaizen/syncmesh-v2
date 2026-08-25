@@ -38,10 +38,19 @@ export interface Column<
   PrimaryKey extends boolean = false,
 > {
   readonly def: ColumnDef;
-  readonly nullable: () => Column<T, true, HasDefault, PrimaryKey>;
-  readonly primaryKey: () => Column<T, Nullable, HasDefault, true>;
+  /** Gone once `primaryKey()` was called: a key column is required on every row. */
+  readonly nullable: PrimaryKey extends true ? never : () => Column<T, true, HasDefault, false>;
+  /** Gone once `nullable()` or `default()` was called: a key is required and unique per row. */
+  readonly primaryKey: Nullable extends true
+    ? never
+    : HasDefault extends true
+      ? never
+      : () => Column<T, false, false, true>;
   readonly unique: () => Column<T, Nullable, HasDefault, PrimaryKey>;
-  readonly default: (value: T) => Column<T, Nullable, true, PrimaryKey>;
+  /** Gone once `primaryKey()` was called: a shared default would collide every row. */
+  readonly default: PrimaryKey extends true
+    ? never
+    : (value: T) => Column<T, Nullable, true, false>;
   readonly check: <S extends StandardSchemaV1>(
     schema: S,
   ) => Column<Output<S> & T, Nullable, HasDefault, PrimaryKey>;
@@ -69,17 +78,22 @@ export function columnFromDef<T, N extends boolean, D extends boolean, P extends
   const next = <T2, N2 extends boolean, D2 extends boolean, P2 extends boolean>(
     patch: Partial<ColumnDef>,
   ) => columnFromDef<T2, N2, D2, P2>({ ...def, ...patch });
-  return {
+  const column = {
     def,
-    nullable: () => next<T, true, D, P>({ nullable: true }),
-    primaryKey: () => next<T, N, D, true>({ primaryKey: true }),
+    nullable: () => next<T, true, D, false>({ nullable: true }),
+    primaryKey: () => next<T, false, false, true>({ primaryKey: true }),
     unique: () => next<T, N, D, P>({ unique: true }),
-    default: (value) =>
+    default: (value: T) =>
       // SAFETY: T is the column's declared app-facing value type, which is always an AppValue
-      next<T, N, true, P>({ hasDefault: true, defaultValue: toWireValue(value as AppValue) }),
-    check: (schema) => next<Output<typeof schema> & T, N, D, P>({ check: schema }),
-    onConflict: (strategy) => next<T, N, D, P>({ onConflict: strategy }),
+      next<T, N, true, false>({ hasDefault: true, defaultValue: toWireValue(value as AppValue) }),
+    check: (schema: StandardSchemaV1) =>
+      next<Output<typeof schema> & T, N, D, P>({ check: schema }),
+    onConflict: (strategy: StrategyFor<T>) => next<T, N, D, P>({ onConflict: strategy }),
   };
+  // SAFETY: the runtime column always carries every method; the Column type erases the ones whose
+  // combination is meaningless (nullable/default on a key, primaryKey on a nullable or defaulted
+  // column), and table() panics on those combinations when a def arrives from outside the builder
+  return column as Column<T, N, D, P>;
 }
 
 const base = (kind: ColumnKind): ColumnDef => ({

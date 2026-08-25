@@ -48,3 +48,18 @@ describe("compile-time guarantees", () => {
     expect(true).toBe(true);
   });
 });
+
+describe("a key column cannot be weakened, at the type level", () => {
+  test("nullable and default are gone after primaryKey; primaryKey is gone after either", () => {
+    void (() => {
+      // @ts-expect-error a key column is required on every row
+      t.text().primaryKey().nullable();
+      // @ts-expect-error a shared default would collide every row
+      t.text().primaryKey().default("x");
+      // @ts-expect-error a nullable column cannot become the key
+      t.text().nullable().primaryKey();
+      // @ts-expect-error a defaulted column cannot become the key
+      t.text().default("x").primaryKey();
+    });
+  });
+});
