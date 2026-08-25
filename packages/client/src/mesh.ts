@@ -18,6 +18,7 @@ import { createGrantRegistry } from "@syncmesh/wire";
 
 import type { Collection, Write, Writes } from "./collection.js";
 import type { Placement, PlacementEntry } from "./context.js";
+import type { DeliveredOptions } from "./delivered.js";
 import type { MeshRevertError, TxError, UnknownPartitionKind, WriteError } from "./errors.js";
 import type { Visible } from "./live-query.js";
 import type { QueryDescriptor } from "./query.js";
@@ -26,6 +27,7 @@ import type { TxCollections } from "./tx.js";
 
 import { createCollection } from "./collection.js";
 import { createContext } from "./context.js";
+import { createDelivered } from "./delivered.js";
 import { CrossPartitionTx } from "./errors.js";
 import { createMeshGrants, type MeshGrants, type MeshGrantsOptions } from "./grants.js";
 import { specOf } from "./query.js";
@@ -52,6 +54,11 @@ export interface MeshOptions<P extends PartitionTree, RS extends Roles<P>, C ext
   readonly now?: () => Temporal.Instant;
 }
 
+/** One committed `tx`: the event it appended, for `delivered` and `revert`. */
+export interface TxReceipt {
+  readonly eventId: EventId;
+}
+
 export interface MeshBase<C extends ColumnsMap> {
   readonly engine: Engine;
   readonly grants: MeshGrants;
@@ -61,7 +68,13 @@ export interface MeshBase<C extends ColumnsMap> {
   /** One event, one partition; refused before anything is written when the tables disagree. */
   readonly tx: (
     fn: (collections: TxCollections<C>) => Result<void, WriteError>,
-  ) => Promise<Result<void, TxError>>;
+  ) => Promise<Result<TxReceipt, TxError>>;
+  /**
+   * Resolves once a peer is known — through a cursor exchange — to hold the event (or, with no
+   * event, everything this device has synced so far). Delivery, not approval: every receiver
+   * runs the same policy itself, and an authority's verdict is E12/E16's to add.
+   */
+  readonly delivered: (options?: DeliveredOptions) => Promise<void>;
   /** `"table.op"` against the same rules every receiver enforces. */
   readonly can: (what: `${string}.${string}`, row?: WireCells) => boolean;
   /** A maintained result for a `list` descriptor; identical descriptors share one. */
@@ -207,7 +220,7 @@ export function createMesh<
       }
       const label = [...new Set(writes.map((w) => w.label))].join("+");
       const where = placements[0] ?? {};
-      yield* Result.await(
+      const event = yield* Result.await(
         engine.mutate(
           // SAFETY: `table.op` labels joined with `+`; procedure naming is the client's to define (E09)
           label as Procedure,
@@ -217,8 +230,10 @@ export function createMesh<
           where,
         ),
       );
-      return Result.ok(undefined);
+      return Result.ok({ eventId: event.id });
     });
+
+  const delivered = createDelivered(engine, identity.peerId);
 
   const transportContext: TransportContext = { engine, identity, grants, now };
   if (options.onGrantRequest !== undefined)
@@ -238,6 +253,7 @@ export function createMesh<
     active: context.active,
     tx,
     can,
+    delivered,
     liveQuery,
     releaseQuery: (handle) => releases.get(handle)?.(),
     revert: (id) => engine.revert(id),
