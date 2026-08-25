@@ -42,6 +42,13 @@ describe("eventId", () => {
     const parsed = parseEventId(eventId(PEER_A, seq(42))).unwrap();
     expect(parsed.peerId).toBe(PEER_A);
     expect(parsed.seqNum).toBe(seq(42));
+    expect(parsed.local).toBe(false);
+  });
+
+  test("a local write and a synced write with the same number never share an id", () => {
+    const local = eventId(PEER_A, seq(42), true);
+    expect(local).not.toBe(eventId(PEER_A, seq(42)));
+    expect(parseEventId(local).unwrap()).toEqual({ peerId: PEER_A, seqNum: seq(42), local: true });
   });
 
   test("parseEventId rejects malformed ids as a value", () => {
@@ -68,7 +75,7 @@ describe("eventId", () => {
         (hex, n) => {
           const peerId = parsePeerId(hex).unwrap();
           const parsed = parseEventId(eventId(peerId, seq(n))).unwrap();
-          expect(parsed).toEqual({ peerId, seqNum: seq(n) });
+          expect(parsed).toEqual({ peerId, seqNum: seq(n), local: false });
         },
       ),
     );

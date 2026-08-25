@@ -15,6 +15,7 @@ export { emptyState, getRecord, readRow } from "./state.js";
 export { applyChange, mergeRecord } from "./apply.js";
 export type {
   EventId,
+  ParsedEventId,
   PartitionKey,
   Procedure,
   ProtocolVersion,

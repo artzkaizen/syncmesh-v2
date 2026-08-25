@@ -3,18 +3,12 @@ import type { RowKey, RowRecord, State, SyncEvent, TableName } from "@syncmesh/k
 import { Result, TaggedError } from "@syncmesh/result";
 
 import type { StoreFailure } from "./store.js";
-import type { Cursors } from "./sync.js";
+import type { Coverage } from "./sync.js";
+
+import { EMPTY_COVERAGE } from "./sync.js";
 
 /** A persisted row failed to decode; the cache is rebuilt from the log. */
 export class StateCorrupt extends TaggedError("StateCorrupt")<{ message: string }> {}
-
-/** The sequence numbers a state has folded, per author and scope. */
-export interface Coverage {
-  readonly synced: Cursors;
-  readonly local: Cursors;
-}
-
-export const EMPTY_COVERAGE: Coverage = { synced: new Map(), local: new Map() };
 
 export interface RowWrite {
   readonly table: TableName;

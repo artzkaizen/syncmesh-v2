@@ -12,17 +12,19 @@ export type {
 export { createEngine } from "./engine.js";
 export type { Boot } from "./boot.js";
 export { openEngine } from "./boot.js";
-export type { Coverage, RowWrite, StateStore, WriteKeys } from "./state-store.js";
+export type { RowWrite, StateStore, WriteKeys } from "./state-store.js";
 export {
-  EMPTY_COVERAGE,
   StateCorrupt,
   allRows,
   createMemoryStateStore,
   rowsFor,
   writeKeysOf,
 } from "./state-store.js";
+export type { Ack, CompactError, CompactOptions, Compaction } from "./compaction.js";
+export type { LinkOptions } from "./link.js";
 export {
   CannotRevert,
+  CompactionRefused,
   EmptyMutation,
   GrantDeviceMismatch,
   ListenerFailure,
@@ -38,8 +40,9 @@ export {
 export type { EngineError, MutateError, RevertError, ValidationError } from "./errors.js";
 export type { Hub, Unsubscribe } from "./listeners.js";
 export { createHub } from "./listeners.js";
-export type { Cursors, SyncDoc, SyncMessage, SyncState } from "./sync.js";
+export type { Coverage, Cursors, SyncDoc, SyncMessage, SyncState } from "./sync.js";
 export {
+  EMPTY_COVERAGE,
   coversCursors,
   generateSyncMessage,
   initialSyncState,

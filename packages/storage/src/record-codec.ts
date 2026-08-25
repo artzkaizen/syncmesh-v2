@@ -1,9 +1,8 @@
-import type { Cell, ColumnName, Hlc, Logical, RowRecord, Stamp } from "@syncmesh/kernel";
+import type { Cell, ColumnName, RowRecord, Stamp } from "@syncmesh/kernel";
 import type { CborValue } from "@syncmesh/wire";
 
 import { parsePeerId } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
-import { Temporal } from "@syncmesh/temporal";
 import {
   bytesToHex,
   cellFromCbor,
@@ -14,6 +13,8 @@ import {
   isSafeNonNegative,
   isString,
 } from "@syncmesh/wire";
+
+import { hlcOf } from "./sql.js";
 
 export class MalformedRecord extends TaggedError("MalformedRecord")<{ message: string }> {}
 
@@ -94,9 +95,5 @@ function stampFromCbor(value: CborValue | undefined): Result<Stamp, MalformedRec
   if (!(peer instanceof Uint8Array)) return malformed("stamp peer is not bytes");
   return parsePeerId(bytesToHex(peer))
     .mapError((e) => new MalformedRecord({ message: e.message }))
-    .map((peerId) => {
-      // SAFETY: checked non-negative safe integer, which is the Logical invariant
-      const hlc: Hlc = [Temporal.Instant.fromEpochMilliseconds(ms), logical as Logical];
-      return { hlc, peer: peerId };
-    });
+    .map((peerId) => ({ hlc: hlcOf(ms, logical), peer: peerId }));
 }

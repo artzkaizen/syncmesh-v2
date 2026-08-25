@@ -1,6 +1,7 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
 import { Result } from "@syncmesh/result";
+import { Temporal } from "@syncmesh/temporal";
 
 import type { Engine } from "./engine.js";
 import type { StoreFailure } from "./store.js";
@@ -13,6 +14,11 @@ import {
   type SyncDoc,
   type SyncState,
 } from "./sync.js";
+
+export interface LinkOptions {
+  /** Stamps the acks a cursor exchange records; defaults to the wall clock. */
+  readonly now?: () => Temporal.Instant;
+}
 
 export interface Link {
   /** A live-forwarded event could not be stored on the receiving side. */
@@ -27,7 +33,8 @@ export interface Link {
 }
 
 /** Two engines in one process: live forwarding while online, cursor-driven catch-up on demand. */
-export function createLink(a: Engine, b: Engine): Link {
+export function createLink(a: Engine, b: Engine, options: LinkOptions = {}): Link {
+  const { now = () => Temporal.Now.instant() } = options;
   let online = true;
   let queue: Promise<unknown> = Promise.resolve();
   let stateA = initialSyncState;
@@ -59,7 +66,8 @@ export function createLink(a: Engine, b: Engine): Link {
       const doc = yield* Result.await(docOf(from));
       const [nextFrom, message] = generateSyncMessage(fromState, doc);
       if (message === undefined) return Result.ok({ from: nextFrom, to: toState, sent: false });
-      const [nextTo, events] = receiveSyncMessage(message);
+      const [nextTo, events] = receiveSyncMessage(toState, message);
+      to.acknowledge(from.peerId, message.cursors, now());
       yield* Result.await(to.receiveBatch(events));
       return Result.ok({ from: nextFrom, to: nextTo, sent: true });
     });

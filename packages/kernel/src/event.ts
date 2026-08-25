@@ -61,28 +61,32 @@ export function parseSeqNum(input: number): Result<SeqNum, InvalidSeqNum> {
   return Result.ok(input as SeqNum);
 }
 
-/** `${peerId}-${seqNum}` — the key every engine dedups on. */
-export function eventId(peerId: PeerId, seqNum: SeqNum): EventId {
+/** `${peerId}-${seqNum}`, or `${peerId}-L${seqNum}` for a local write — the two sequences never share an id. */
+export function eventId(peerId: PeerId, seqNum: SeqNum, local = false): EventId {
   // SAFETY: built from two already-validated brands in the documented format
-  return `${peerId}-${seqNum}` as EventId;
+  return `${peerId}-${local ? "L" : ""}${seqNum}` as EventId;
 }
 
-const EVENT_ID = new RegExp(`^(${PEER_ID_HEX.source.slice(1, -1)})-([1-9][0-9]*)$`);
+const EVENT_ID = new RegExp(`^(${PEER_ID_HEX.source.slice(1, -1)})-(L?)([1-9][0-9]*)$`);
 
-export function parseEventId(
-  input: string,
-): Result<{ readonly peerId: PeerId; readonly seqNum: SeqNum }, InvalidEventId> {
+export interface ParsedEventId {
+  readonly peerId: PeerId;
+  readonly seqNum: SeqNum;
+  readonly local: boolean;
+}
+
+export function parseEventId(input: string): Result<ParsedEventId, InvalidEventId> {
   const match = EVENT_ID.exec(input);
   const peerHex = match?.[1];
-  const seqText = match?.[2];
+  const seqText = match?.[3];
   if (peerHex === undefined || seqText === undefined) {
-    return Result.err(new InvalidEventId({ input, message: "expected <peerId>-<seqNum>" }));
+    return Result.err(new InvalidEventId({ input, message: "expected <peerId>-[L]<seqNum>" }));
   }
   return Result.gen(function* () {
     const peerId = yield* parsePeerId(peerHex);
     const seqNum = yield* parseSeqNum(Number(seqText));
-    return Result.ok({ peerId, seqNum });
-  }).mapError(() => new InvalidEventId({ input, message: "expected <peerId>-<seqNum>" }));
+    return Result.ok({ peerId, seqNum, local: match?.[2] === "L" });
+  }).mapError(() => new InvalidEventId({ input, message: "expected <peerId>-[L]<seqNum>" }));
 }
 
 export const stampOf = (event: SyncEvent): Stamp => ({ hlc: event.hlc, peer: event.peerId });

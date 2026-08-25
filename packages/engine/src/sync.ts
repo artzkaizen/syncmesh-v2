@@ -4,11 +4,21 @@ import type { SeqNum, SyncEvent } from "@syncmesh/kernel";
 /** Per author, the highest sequence number a peer holds. */
 export type Cursors = ReadonlyMap<PeerId, SeqNum>;
 
+/** Cursors per scope: what a state has folded, or what a log has compacted below. */
+export interface Coverage {
+  readonly synced: Cursors;
+  readonly local: Cursors;
+}
+
+export const EMPTY_COVERAGE: Coverage = { synced: new Map(), local: new Map() };
+
 /** What one side remembers about the other between messages; a received message replaces it whole. */
 export interface SyncState {
   readonly theirCursors?: Cursors;
   /** A message is out and unanswered; nothing more is sent until a reply clears it. */
   readonly inFlight: boolean;
+  /** Our cursors have gone out at least once, so the other side can ack us even if it has nothing to send. */
+  readonly sentCursors: boolean;
 }
 
 export type SyncMessage =
@@ -21,33 +31,39 @@ export interface SyncDoc {
   readonly eventsSince: (theirs: Cursors) => readonly SyncEvent[];
 }
 
-export const initialSyncState: SyncState = { inFlight: false };
+export const initialSyncState: SyncState = { inFlight: false, sentCursors: false };
 
-/** Decides what to send next, or nothing: cursors first, then only the events the other side lacks. */
+/** Decides what to send next, or nothing: our cursors once, then only the events the other side lacks. */
 export function generateSyncMessage(
   state: SyncState,
   doc: SyncDoc,
 ): readonly [SyncState, SyncMessage | undefined] {
   if (state.inFlight) return [state, undefined];
-  if (state.theirCursors === undefined) {
+  if (!state.sentCursors) {
     return [
-      { ...state, inFlight: true },
+      { ...state, inFlight: true, sentCursors: true },
       { kind: "cursors", cursors: doc.cursors },
     ];
   }
+  if (state.theirCursors === undefined) return [state, undefined];
   const events = doc.eventsSince(state.theirCursors);
   if (events.length === 0) return [state, undefined];
   return [
-    { theirCursors: advance(state.theirCursors, events), inFlight: true },
+    { theirCursors: advance(state.theirCursors, events), inFlight: true, sentCursors: true },
     { kind: "events", events, cursors: doc.cursors },
   ];
 }
 
 /** Absorbs a message: learns the other side's cursors, clears `inFlight`, and returns the events to fold. */
 export function receiveSyncMessage(
+  state: SyncState,
   message: SyncMessage,
 ): readonly [SyncState, readonly SyncEvent[]] {
-  const next: SyncState = { theirCursors: message.cursors, inFlight: false };
+  const next: SyncState = {
+    theirCursors: message.cursors,
+    inFlight: false,
+    sentCursors: state.sentCursors,
+  };
   return [next, message.kind === "events" ? message.events : []];
 }
 

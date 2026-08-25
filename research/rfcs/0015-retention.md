@@ -61,6 +61,15 @@ Compaction deletes those events, drops tombstones below the floor, and
 writes a **checkpoint** `{ floorCursors, stateHash }` — a durable record of
 "state as of these cursors" [proposed].
 
+### 2a · Dead peers [decided, D15]
+
+A known peer that never returns would pin `ackFloor` forever. `forgetPeersAfter` bounds it: a peer
+whose last ack is older than the window is no longer counted. The teeth: a forgotten peer that
+returns below the floor cannot delta-sync — the events are gone — and rejoins from state (§3).
+Acks are held in memory, so a restarted device counts nobody until peers talk again; that errs
+towards keeping. The store persists the floor it compacted below, and a corrupt state cache over a
+compacted log refuses to boot rather than rebuild a partial state from half a log.
+
 **The invariant (tested): compaction is unobservable.** For every device D
 and peer P: fold(snapshot + remaining events) ≡ fold(full history), and P
 ends in the same state whether it synced before or after D compacted.
@@ -121,7 +130,7 @@ every phone's floor bootstrap from it — the peer with the deepest log.
 | `snapshotEvery: N` through the EventStore's optional tier (RFC-0004); boot = snapshot + tail, never a full-log refold; tier-less stores full-refold | built (M16, `tests/staged-snapshots.test.ts`) |
 | compaction clamped to the PERSISTED snapshot's coverage — a restart can never lose the tail | built (engine `snapshotCursors` ceiling) |
 | blob store, relay verify-on-put, client verify-on-fetch | built (M17) |
-| ack-floor policy: automatic floors from peer acks + `keepAtLeastDays` | proposed — today the caller supplies cursors |
+| ack-floor policy: automatic floors from link acks + `keepAtLeast` + `forgetPeersAfter` | built (v2, `engine.compact`, `compaction.test`) |
 | checkpoint record `{ floorCursors, stateHash }` | proposed |
 | per-partition retention overrides; zero-arg developer `engine.compact()` | proposed |
 | chunked snapshot wire messages (manifest, hot tier, resume) | proposed — today `installSnapshot(snapshot())` is in-process |
@@ -141,5 +150,4 @@ every phone's floor bootstrap from it — the peer with the deepest log.
 - Blob GC: when no synced row references a hash — refcount over live rows, TTL, or explicit delete? Deletes race with offline references.
 - Blob obligation: who MUST hold a blob — the author until relay ack, the relay forever, every partition member?
 - Blob quotas: per-partition byte budgets, and what a peer does when a partition exceeds them.
-- Dead peers pin the floor: a device that never returns freezes `ackFloor` — evicting it from the known-peer set has data-loss teeth.
 - Checkpoint trust: is `stateHash` signed, and may a joiner treat a matching hash as verification of a received snapshot?

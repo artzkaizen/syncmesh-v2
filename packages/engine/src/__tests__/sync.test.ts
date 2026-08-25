@@ -36,7 +36,7 @@ describe("generateSyncMessage / receiveSyncMessage", () => {
     expect(s1.inFlight).toBe(true);
 
     const theirs: Cursors = new Map([[PEER_A, seq(1)]]);
-    const [s2] = receiveSyncMessage({ kind: "cursors", cursors: theirs });
+    const [s2] = receiveSyncMessage(s1, { kind: "cursors", cursors: theirs });
     expect(s2.inFlight).toBe(false);
 
     const [s3, m3] = generateSyncMessage(s2, doc);
@@ -44,7 +44,7 @@ describe("generateSyncMessage / receiveSyncMessage", () => {
     expect(s3.inFlight).toBe(true);
     expect(s3.theirCursors?.get(PEER_A)).toBe(events[2]?.seqNum);
 
-    const [s4] = receiveSyncMessage({ kind: "cursors", cursors: doc.cursors });
+    const [s4] = receiveSyncMessage(s3, { kind: "cursors", cursors: doc.cursors });
     expect(generateSyncMessage(s4, doc)[1]).toBeUndefined();
   });
 
@@ -53,13 +53,13 @@ describe("generateSyncMessage / receiveSyncMessage", () => {
     const [s1, m1] = generateSyncMessage(initialSyncState, doc);
     expect(m1).toBeDefined();
     expect(generateSyncMessage(s1, doc)[1]).toBeUndefined();
-    const [s2] = receiveSyncMessage({ kind: "cursors", cursors: new Map() });
+    const [s2] = receiveSyncMessage(s1, { kind: "cursors", cursors: new Map() });
     expect(generateSyncMessage(s2, doc)[1]?.kind).toBe("events");
   });
 
   test("receiving events returns them to fold and records the sender's cursors", async () => {
     const { doc, events } = await docWith(2);
-    const [state, toFold] = receiveSyncMessage({
+    const [state, toFold] = receiveSyncMessage(initialSyncState, {
       kind: "events",
       events,
       cursors: doc.cursors,

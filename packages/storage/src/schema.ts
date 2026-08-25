@@ -27,6 +27,16 @@ const MIGRATIONS: readonly (readonly string[])[] = [
       PRIMARY KEY (peer, local)
     ) WITHOUT ROWID`,
   ],
+  [
+    `CREATE TABLE IF NOT EXISTS compaction (
+      peer TEXT NOT NULL,
+      local INTEGER NOT NULL,
+      seq INTEGER NOT NULL,
+      hlc_ms INTEGER NOT NULL,
+      hlc_logical INTEGER NOT NULL,
+      PRIMARY KEY (peer, local)
+    ) WITHOUT ROWID`,
+  ],
 ];
 
 /** Brings the database up to the current schema; a no-op when it already is. */

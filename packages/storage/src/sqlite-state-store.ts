@@ -1,15 +1,14 @@
 import type { StateStore } from "@syncmesh/engine";
-import type { PeerId, RowKey, RowRecord, SeqNum, State, TableName } from "@syncmesh/kernel";
+import type { RowKey, RowRecord, State, TableName } from "@syncmesh/kernel";
 
 import { StateCorrupt, type StoreFailure } from "@syncmesh/engine";
-import { parsePeerId } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
 import type { SqlRow, SqlValue, SqliteDriver } from "./driver.js";
 
 import { decodeRecord, encodeRecord } from "./record-codec.js";
 import { migrate } from "./schema.js";
-import { attempt, inTransaction, seqOf } from "./sql.js";
+import { attempt, coverageOf, inTransaction } from "./sql.js";
 
 const UPSERT_ROW = `INSERT OR REPLACE INTO state_rows (tbl, key, record) VALUES (?, ?, ?)`;
 const UPSERT_CURSOR = `INSERT OR REPLACE INTO state_cursors (peer, local, seq) VALUES (?, ?, ?)`;
@@ -28,18 +27,6 @@ function decodeRow(row: SqlRow): Result<readonly [TableName, RowKey, RowRecord],
       // SAFETY: these columns were written from a TableName and a RowKey by commit(); the record's decode is the check that the row is intact
       return [String(table) as TableName, String(key) as RowKey, decoded] as const;
     });
-}
-
-function decodeCursor(
-  row: SqlRow,
-): Result<readonly [PeerId, boolean, SeqNum], StateCorrupt | StoreFailure> {
-  const [peer, local, seq] = row;
-  return Result.gen(function* () {
-    const peerId = yield* parsePeerId(String(peer)).mapError((e) => corrupt(e.message));
-    const seqNum = yield* seqOf(seq);
-    if (seqNum === undefined) return Result.err(corrupt("cursor without a sequence number"));
-    return Result.ok([peerId, local === 1, seqNum] as const);
-  });
 }
 
 /**
@@ -69,16 +56,7 @@ export function sqliteStateStore(driver: SqliteDriver): Promise<Result<StateStor
         return Result.ok<State>(state);
       }),
     loadCursors: () =>
-      Result.gen(async function* () {
-        const rows = yield* Result.await(query("loadCursors failed", SELECT_CURSORS));
-        const synced = new Map<PeerId, SeqNum>();
-        const local = new Map<PeerId, SeqNum>();
-        for (const row of rows) {
-          const [peer, isLocal, seq] = yield* decodeCursor(row);
-          (isLocal ? local : synced).set(peer, seq);
-        }
-        return Result.ok({ synced, local });
-      }),
+      query("loadCursors failed", SELECT_CURSORS).then((rows) => rows.andThen(coverageOf)),
     commit: (rows, coverage) =>
       attempt("commit failed", () =>
         inTransaction(driver, async () => {

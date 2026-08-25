@@ -15,6 +15,9 @@ export class CannotRevert extends TaggedError("CannotRevert")<{
   message: string;
 }> {}
 
+/** Nothing persists state, so the log is its only copy and nothing may be removed from it. */
+export class CompactionRefused extends TaggedError("CompactionRefused")<{ message: string }> {}
+
 export class ListenerFailure extends TaggedError("ListenerFailure")<{
   hook: "onFoldBatch" | "onOutbound";
   message: string;

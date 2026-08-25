@@ -1,4 +1,5 @@
 import type { HlcClock, MergeSpec, PeerId, RowKey, State, TableName } from "@syncmesh/kernel";
+import type { Temporal } from "@syncmesh/temporal";
 
 import { applyChange, emptyState, readRow } from "@syncmesh/kernel";
 import {
@@ -13,12 +14,14 @@ import {
 import { Result } from "@syncmesh/result";
 
 import type { Boot } from "./boot.js";
-import type { Coverage, StateStore } from "./state-store.js";
+import type { Ack, CompactError, CompactOptions, Compaction } from "./compaction.js";
+import type { StateStore } from "./state-store.js";
 import type { EventStore, StoreFailure } from "./store.js";
-import type { Cursors } from "./sync.js";
+import type { Coverage, Cursors } from "./sync.js";
 import type { ProbeEvent, RowLookup, Validator } from "./validate.js";
 
 import { admit } from "./admit.js";
+import { compactLog } from "./compaction.js";
 import { trackCoverage } from "./coverage.js";
 import {
   CannotRevert,
@@ -84,6 +87,10 @@ export interface Engine {
   readonly cursors: () => Promise<Result<Cursors, StoreFailure>>;
   /** What this engine has folded, per author and scope. */
   readonly coverage: () => Coverage;
+  /** Records what `peer` holds, as of `at`; links call it on every cursor exchange. Feeds `compact`. */
+  readonly acknowledge: (peer: PeerId, cursors: Cursors, at: Temporal.Instant) => void;
+  /** Removes events every counted peer has acked and the state store has persisted; unobservable to peers. See RFC-0015 §2. */
+  readonly compact: (options: CompactOptions) => Promise<Result<Compaction, CompactError>>;
   /** Synced events the holder of `theirs` lacks. */
   readonly eventsSince: (theirs: Cursors) => Promise<Result<readonly SyncEvent[], StoreFailure>>;
   readonly onFoldBatch: (listener: (batch: FoldBatch) => void) => Unsubscribe;
@@ -123,6 +130,7 @@ export function createEngine(options: EngineOptions): Engine {
   const telemetry = createHub<TelemetryEvent>();
   const quarantine = createHub<Quarantined>();
   const before: RowLookup = (table, key) => readRow(state, table, key);
+  const acks = new Map<PeerId, Ack>();
 
   const fold = (events: readonly SyncEvent[], source: FoldSource): FoldBatch => {
     const [batch, duration] = timed((): FoldBatch => {
@@ -235,6 +243,8 @@ export function createEngine(options: EngineOptions): Engine {
     canRevert: (id) => undo.some((u) => u.event.id === id),
     cursors: () => Promise.resolve(Result.ok(coverage.current().synced)),
     coverage: coverage.current,
+    acknowledge: (peer, cursors, at) => void acks.set(peer, { cursors, at }),
+    compact: (options) => compactLog({ store, stateStore, acks }, options),
     eventsSince: (theirs) => store.allSince(theirs),
     onFoldBatch: folds.subscribe,
     onOutbound: outbound.subscribe,
@@ -259,7 +269,7 @@ function buildEvent(
 ): SyncEvent {
   const base = {
     v: 1 as const,
-    id: eventId(peerId, seqNum),
+    id: eventId(peerId, seqNum, local === true),
     peerId,
     seqNum,
     hlc,

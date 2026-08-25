@@ -3,8 +3,9 @@ import type { EventId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 
 import { compareHlc } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
+import { Temporal } from "@syncmesh/temporal";
 
-import type { Cursors } from "./sync.js";
+import type { Coverage, Cursors } from "./sync.js";
 
 export class StoreFailure extends TaggedError("StoreFailure")<{
   message: string;
@@ -32,6 +33,20 @@ export interface EventStore {
     scope: SeqScope,
   ) => Promise<Result<SeqNum | undefined, StoreFailure>>;
   readonly maxHlc: () => Promise<Result<Hlc | undefined, StoreFailure>>;
+  /** Deletes events in the scope at or below `floor` and stamped before `olderThan`; returns how many, and remembers the floor for `compactedBelow`. */
+  readonly compactBelow: (
+    floor: Cursors,
+    scope: SeqScope,
+    olderThan: Temporal.Instant,
+  ) => Promise<Result<number, StoreFailure>>;
+  /** Per author and scope, the highest sequence number compaction has removed; empty until the first compaction. */
+  readonly compactedBelow: () => Promise<Result<Coverage, StoreFailure>>;
+}
+
+/** What compaction removed for one author in one scope: the highest sequence and stamp gone. */
+interface Floor {
+  readonly seq: SeqNum;
+  readonly hlc: Hlc;
 }
 
 const inScope = (event: SyncEvent, scope: SeqScope) =>
@@ -39,6 +54,7 @@ const inScope = (event: SyncEvent, scope: SeqScope) =>
 
 export function createMemoryEventStore(): EventStore {
   const events = new Map<EventId, SyncEvent>();
+  const floors = { synced: new Map<PeerId, Floor>(), local: new Map<PeerId, Floor>() };
   const ok = <T>(value: T) => Promise.resolve(Result.ok(value));
 
   return {
@@ -61,7 +77,7 @@ export function createMemoryEventStore(): EventStore {
           ),
       ),
     lastSeq: (peer, scope) => {
-      let last: SeqNum | undefined;
+      let last = floors[scope].get(peer)?.seq;
       for (const event of events.values()) {
         if (
           event.peerId === peer &&
@@ -72,11 +88,36 @@ export function createMemoryEventStore(): EventStore {
       }
       return ok(last);
     },
+    compactBelow: (floor, scope, olderThan) => {
+      let removed = 0;
+      const recorded = floors[scope];
+      for (const [id, event] of events) {
+        const below = event.seqNum <= (floor.get(event.peerId) ?? 0);
+        const old = Temporal.Instant.compare(event.hlc[0], olderThan) < 0;
+        if (!inScope(event, scope) || !below || !old) continue;
+        events.delete(id);
+        removed += 1;
+        const known = recorded.get(event.peerId);
+        recorded.set(event.peerId, {
+          seq: known === undefined || known.seq < event.seqNum ? event.seqNum : known.seq,
+          hlc: known === undefined || compareHlc(known.hlc, event.hlc) < 0 ? event.hlc : known.hlc,
+        });
+      }
+      return ok(removed);
+    },
+    compactedBelow: () =>
+      ok({
+        synced: new Map([...floors.synced].map(([peer, f]) => [peer, f.seq])),
+        local: new Map([...floors.local].map(([peer, f]) => [peer, f.seq])),
+      }),
     maxHlc: () => {
       let max: Hlc | undefined;
-      for (const event of events.values()) {
-        if (max === undefined || compareHlc(event.hlc, max) > 0) max = event.hlc;
-      }
+      const consider = (hlc: Hlc) => {
+        if (max === undefined || compareHlc(hlc, max) > 0) max = hlc;
+      };
+      for (const event of events.values()) consider(event.hlc);
+      for (const f of floors.synced.values()) consider(f.hlc);
+      for (const f of floors.local.values()) consider(f.hlc);
       return ok(max);
     },
   };

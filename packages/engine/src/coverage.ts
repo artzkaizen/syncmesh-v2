@@ -1,6 +1,6 @@
 import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 
-import { EMPTY_COVERAGE, type Coverage } from "./state-store.js";
+import { EMPTY_COVERAGE, type Coverage } from "./sync.js";
 
 export interface CoverageTracker {
   /** Raises the author's cursor in the event's scope; never lowers it. */

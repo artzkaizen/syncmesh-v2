@@ -2,7 +2,7 @@ import type { JsonValue, PartitionKey, PeerId } from "@syncmesh/kernel";
 
 import { parsePartitionKey, parsePeerId } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
-import { Temporal } from "@syncmesh/temporal";
+import { Temporal, addToInstant } from "@syncmesh/temporal";
 
 import { decodeCbor, type MalformedCbor } from "./cbor-decode.js";
 import { encodeCbor, type CborKey, type CborValue } from "./cbor.js";
@@ -67,13 +67,6 @@ export function encodeGrant(grant: Grant): Uint8Array {
   return encodeCbor(core);
 }
 
-/** `now + validFor`, with days and weeks read as UTC calendar days; an Instant alone cannot add them. */
-const after = (now: Temporal.Instant, validFor: Temporal.Duration): Temporal.Instant =>
-  Temporal.Instant.fromEpochMilliseconds(
-    now.epochMilliseconds +
-      validFor.total({ unit: "milliseconds", relativeTo: now.toZonedDateTimeISO("UTC") }),
-  );
-
 /** Mints a signed grant as wire bytes: `[core, sig]`, the same envelope events use. */
 export function issueGrant(issuer: Identity, request: GrantRequest): Uint8Array {
   const base = {
@@ -82,7 +75,7 @@ export function issueGrant(issuer: Identity, request: GrantRequest): Uint8Array 
     device: request.device,
     partitions: request.partitions,
     issuedAt: request.now,
-    expiresAt: after(request.now, request.validFor),
+    expiresAt: addToInstant(request.now, request.validFor),
     claims: request.claims ?? {},
   };
   const core = encodeGrant(request.role === undefined ? base : { ...base, role: request.role });
