@@ -51,13 +51,22 @@ export function decodeRecord(bytes: Uint8Array): Result<RowRecord, MalformedReco
       const [column, cell] = yield* decodeCell(entry);
       cells.set(column, cell);
     }
-    const record: { cells: typeof cells; writeStamp?: Stamp; deleteStamp?: Stamp } = { cells };
     const writeStamp = yield* optionalStamp(writeValue);
     const deleteStamp = yield* optionalStamp(deleteValue);
-    if (writeStamp !== undefined) record.writeStamp = writeStamp;
-    if (deleteStamp !== undefined) record.deleteStamp = deleteStamp;
-    return Result.ok(record);
+    return Result.ok(withStamps(cells, writeStamp, deleteStamp));
   });
+}
+
+function withStamps(
+  cells: ReadonlyMap<ColumnName, Cell>,
+  writeStamp: Stamp | undefined,
+  deleteStamp: Stamp | undefined,
+): RowRecord {
+  if (writeStamp !== undefined && deleteStamp !== undefined)
+    return { cells, writeStamp, deleteStamp };
+  if (writeStamp !== undefined) return { cells, writeStamp };
+  if (deleteStamp !== undefined) return { cells, deleteStamp };
+  return { cells };
 }
 
 function decodeCell(value: CborValue): Result<readonly [ColumnName, Cell], MalformedRecord> {

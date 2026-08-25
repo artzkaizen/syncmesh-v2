@@ -31,6 +31,22 @@
         "vite-plus": "catalog:",
       },
     },
+    "bench": {
+      "name": "@syncmesh/bench",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@syncmesh/config": "workspace:*",
+        "@syncmesh/engine": "workspace:*",
+        "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/sqlite-bun": "workspace:*",
+        "@syncmesh/storage": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
+        "@types/bun": "catalog:",
+        "mitata": "1.0.34",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+    },
     "conformance": {
       "name": "@syncmesh/conformance",
       "version": "0.0.0",
@@ -387,6 +403,8 @@
 
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
 
+    "@syncmesh/bench": ["@syncmesh/bench@workspace:bench"],
+
     "@syncmesh/config": ["@syncmesh/config@workspace:tooling/config"],
 
     "@syncmesh/conformance": ["@syncmesh/conformance@workspace:conformance"],
@@ -684,6 +702,8 @@
     "lz-string": ["lz-string@1.5.0", "", { "bin": { "lz-string": "bin/bin.js" } }, "sha512-h5bgJWpxJNswbU7qCrV0tIKQCaS3blPDrqKWx+QxzuzL1zGUzij9XCWLrSLsJPu5t+eWA/ycetzYAO5IOMcWAQ=="],
 
     "magic-string": ["magic-string@0.30.21", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.5" } }, "sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ=="],
+
+    "mitata": ["mitata@1.0.34", "", {}, "sha512-Mc3zrtNBKIMeHSCQ0XqRLo1vbdIx1wvFV9c8NJAiyho6AjNfMY8bVhbS12bwciUdd1t4rj8099CH3N3NFahaUA=="],
 
     "mrmime": ["mrmime@2.0.1", "", {}, "sha512-Y3wQdFg2Va6etvQ5I82yUhGdsKrcYox6p7FfL1LbK2J4V01F9TGlepTIhnK24t7koZibmg82KGglhA1XK5IsLQ=="],
 

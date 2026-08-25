@@ -1,7 +1,7 @@
 import type { StateStore } from "@syncmesh/engine";
 import type { PeerId, RowKey, RowRecord, SeqNum, State, TableName } from "@syncmesh/kernel";
 
-import { StateCorrupt, StoreFailure } from "@syncmesh/engine";
+import { StateCorrupt, type StoreFailure } from "@syncmesh/engine";
 import { parsePeerId } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 

@@ -26,6 +26,7 @@ const preset = (platform: Platform) =>
       platform,
       dts: true,
       clean: true,
+      fixedExtension: false,
       external: [/^(bun|node|cloudflare):/],
     },
     run: { tasks },

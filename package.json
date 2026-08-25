@@ -8,7 +8,8 @@
       "apps/*",
       "native/*",
       "tooling/*",
-      "conformance"
+      "conformance",
+      "bench"
     ],
     "catalog": {
       "typescript": "^7.0.2",
@@ -22,6 +23,7 @@
   },
   "type": "module",
   "scripts": {
+    "bench": "bun run --cwd bench storage",
     "ci": "vp check && vp run -r build && vp run -r typecheck && vp run -r test",
     "gen": "node tooling/create-package/bin/index.ts",
     "plan": "bun plan/tool/serve.ts"
