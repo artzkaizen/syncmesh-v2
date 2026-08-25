@@ -1,9 +1,8 @@
 import type { CellValue, ColumnName, Row, RowKey, TableName } from "@syncmesh/kernel";
+import type { Procedure } from "@syncmesh/kernel";
 
 import { createHlcClock, parsePeerId } from "@syncmesh/kernel";
 import { Temporal } from "@syncmesh/temporal";
-
-import type { Procedure } from "../event.js";
 
 import { createEngine } from "../engine.js";
 import { createMemoryEventStore } from "../store.js";

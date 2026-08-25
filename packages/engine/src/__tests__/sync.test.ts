@@ -1,6 +1,6 @@
+import { parseSeqNum, type SyncEvent } from "@syncmesh/kernel";
 import { describe, expect, test } from "bun:test";
 
-import { parseSeqNum, type SyncEvent } from "../event.js";
 import {
   coversCursors,
   generateSyncMessage,

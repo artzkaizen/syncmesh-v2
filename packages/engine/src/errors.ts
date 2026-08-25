@@ -1,6 +1,7 @@
+import type { EventId, Procedure } from "@syncmesh/kernel";
+
 import { TaggedError } from "@syncmesh/result";
 
-import type { EventId, Procedure } from "./event.js";
 import type { StoreFailure } from "./store.js";
 
 export class EmptyMutation extends TaggedError("EmptyMutation")<{

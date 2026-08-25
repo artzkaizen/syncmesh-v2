@@ -1,7 +1,8 @@
+import type { SyncEvent } from "@syncmesh/kernel";
+
 import { Result } from "@syncmesh/result";
 
 import type { Engine } from "./engine.js";
-import type { SyncEvent } from "./event.js";
 import type { StoreFailure } from "./store.js";
 
 import { createHub, type Unsubscribe } from "./listeners.js";

@@ -1,7 +1,9 @@
+import type { SyncEvent } from "@syncmesh/kernel";
+
 import { readRow } from "@syncmesh/kernel";
 import { describe, expect, test } from "bun:test";
 
-import type { FoldBatch, SyncEvent } from "../index.js";
+import type { FoldBatch } from "../index.js";
 
 import { CREATE, key, N1, NOTES, PEER_B, row, setup } from "./fixtures.js";
 

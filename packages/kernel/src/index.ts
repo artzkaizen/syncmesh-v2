@@ -13,3 +13,19 @@ export { compareValue, strategies } from "./strategy.js";
 export type { State, TableState } from "./state.js";
 export { emptyState, getRecord, readRow } from "./state.js";
 export { applyChange, mergeRecord } from "./apply.js";
+export type {
+  EventId,
+  PartitionKey,
+  Procedure,
+  ProtocolVersion,
+  SeqNum,
+  SyncEvent,
+} from "./event.js";
+export {
+  InvalidEventId,
+  InvalidSeqNum,
+  eventId,
+  parseEventId,
+  parseSeqNum,
+  stampOf,
+} from "./event.js";

@@ -1,6 +1,15 @@
 import type { HlcClock, MergeSpec, PeerId, RowKey, State, TableName } from "@syncmesh/kernel";
 
 import { applyChange, emptyState } from "@syncmesh/kernel";
+import {
+  eventId,
+  stampOf,
+  type EventId,
+  type PartitionKey,
+  type Procedure,
+  type SeqNum,
+  type SyncEvent,
+} from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
 import type { EventStore, StoreFailure } from "./store.js";
@@ -14,15 +23,6 @@ import {
   type MutateError,
   type RevertError,
 } from "./errors.js";
-import {
-  eventId,
-  stampOf,
-  type EventId,
-  type PartitionKey,
-  type Procedure,
-  type SeqNum,
-  type SyncEvent,
-} from "./event.js";
 import { createHub, type Unsubscribe } from "./listeners.js";
 import { timed, type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
 import { record, type Tx } from "./tx.js";

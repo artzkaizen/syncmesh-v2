@@ -6,6 +6,7 @@
   "type": "module",
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
+    "@syncmesh/kernel": "workspace:*",
     "@syncmesh/result": "workspace:*",
     "@syncmesh/wire": "workspace:*",
     "@types/bun": "catalog:",

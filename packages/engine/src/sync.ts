@@ -1,6 +1,5 @@
 import type { PeerId } from "@syncmesh/kernel";
-
-import type { SeqNum, SyncEvent } from "./event.js";
+import type { SeqNum, SyncEvent } from "@syncmesh/kernel";
 
 /** Per author, the highest sequence number a peer holds. */
 export type Cursors = ReadonlyMap<PeerId, SeqNum>;

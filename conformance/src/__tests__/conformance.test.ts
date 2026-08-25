@@ -1,4 +1,14 @@
-import { bytesToHex, decodeCbor, encodeCbor, hexToBytes } from "@syncmesh/wire";
+import type { SyncEvent } from "@syncmesh/kernel";
+
+import {
+  bytesToHex,
+  decodeCbor,
+  decodeEventCore,
+  encodeCbor,
+  encodeEventCore,
+  hexToBytes,
+  verify,
+} from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import { checkVector, type WireCodec } from "../harness.js";
@@ -37,10 +47,12 @@ describe("the oracle is wired", () => {
 });
 
 describe("wire vectors", () => {
-  // E03 tasks 3–5 replace `undefined` with the real codec.
-  const codec: WireCodec<never> | undefined = undefined;
+  const codec: WireCodec<SyncEvent> = {
+    decodeCore: (core) => decodeEventCore(core).unwrap(),
+    encodeCore: encodeEventCore,
+    verify,
+  };
   for (const v of wireVectors.vectors) {
-    if (codec === undefined) test.todo(v.description, () => {});
-    else test(v.description, () => expect(checkVector(codec, v)).toEqual({ ok: true }));
+    test(v.description, () => expect(checkVector(codec, v)).toEqual({ ok: true }));
   }
 });

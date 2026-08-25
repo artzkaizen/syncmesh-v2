@@ -1,9 +1,9 @@
 import type { Hlc, PeerId } from "@syncmesh/kernel";
+import type { EventId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 
 import { compareHlc } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
 
-import type { EventId, SeqNum, SyncEvent } from "./event.js";
 import type { Cursors } from "./sync.js";
 
 export class StoreFailure extends TaggedError("StoreFailure")<{

@@ -1,8 +1,8 @@
 import { PEER_ID_HEX, parsePeerId } from "@syncmesh/kernel";
+import { eventId, parseEventId, parseSeqNum, stampOf, type SyncEvent } from "@syncmesh/kernel";
 import { describe, expect, test } from "bun:test";
 import * as fc from "fast-check";
 
-import { eventId, parseEventId, parseSeqNum, stampOf, type SyncEvent } from "../event.js";
 import { hlcAt, PEER_A, procedure } from "./fixtures.js";
 
 const seq = (n: number) => parseSeqNum(n).unwrap();

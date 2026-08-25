@@ -1,8 +1,8 @@
 import type { Change, ColumnName, State } from "@syncmesh/kernel";
+import type { Procedure, SyncEvent } from "@syncmesh/kernel";
 
 import { readRow } from "@syncmesh/kernel";
 
-import type { Procedure, SyncEvent } from "./event.js";
 import type { Tx } from "./tx.js";
 
 export interface Undo {
