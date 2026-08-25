@@ -88,6 +88,12 @@ export function table<const C extends Columns>(name: string, columns: C): Table<
   }
   // SAFETY: exactly one primary key was found above and it is a key of C
   const primaryKey = primaryKeys[0] as PrimaryKey<C>;
+  const pkKind = columns[primaryKey]?.def.kind;
+  if (pkKind !== "text" && pkKind !== "uuid" && pkKind !== "integer") {
+    panic(
+      `${name}.${String(primaryKey)}: a primary key must be text, uuid or integer, not ${String(pkKind)}`,
+    );
+  }
   // SAFETY: columnNames was built from Object.keys(columns), so its keys are exactly keyof C
   const names = columnNames as Table<C>["columnNames"];
   return { name: tableName, columns, primaryKey, columnNames: names };

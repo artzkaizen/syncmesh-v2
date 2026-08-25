@@ -67,8 +67,8 @@ export function matches<T extends Table>(where: Where<T> | undefined, row: Row<T
   if (where === undefined) return true;
   if (where instanceof Function) return where(row);
   for (const [column, expected] of Object.entries(where)) {
-    // SAFETY: a partial row's values are the columns' app values
-    if (compareValues(valueOf(row, column), expected as AppValue) !== 0) return false;
+    // SAFETY: a partial row's values are the columns' app values, or undefined for an omitted one
+    if (compareValues(valueOf(row, column), expected as AppValue | undefined) !== 0) return false;
   }
   return true;
 }

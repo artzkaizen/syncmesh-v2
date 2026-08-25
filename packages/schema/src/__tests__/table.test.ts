@@ -24,6 +24,16 @@ type Equal<A, B> =
 const assertType = <_T extends true>() => undefined;
 
 describe("table()", () => {
+  test("a primary key must be a keyable kind — blob, json, float, boolean and timestamp are refused", () => {
+    for (const bad of [t.blob(), t.json(), t.float(), t.boolean(), t.timestamp()]) {
+      expect(() => table("things", { id: bad.primaryKey(), n: t.integer() })).toThrow(
+        "must be text, uuid or integer",
+      );
+    }
+    expect(() => table("things", { id: t.uuid().primaryKey() })).not.toThrow();
+    expect(() => table("things", { id: t.integer().primaryKey() })).not.toThrow();
+  });
+
   test("returns name, columns, the primary key and validated column names", () => {
     expect(String(books.name)).toBe("books");
     expect(books.primaryKey).toBe("id");

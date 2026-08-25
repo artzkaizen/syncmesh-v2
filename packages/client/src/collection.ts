@@ -76,7 +76,7 @@ export function createCollection<T extends Table>(
   deps: CollectionDeps,
 ): Collection<T> & { readonly writes: Writes<T> } {
   const { engine, placement, can, queries } = deps;
-  const name = String(table.name);
+  const name = table.name;
   const keyOf = (key: KeyOf<T>) => rowKey(String(key));
 
   const held = (key: RowKey): WireCells | undefined => visible().get(key);
@@ -103,7 +103,7 @@ export function createCollection<T extends Table>(
     if (checked.isErr()) return checked;
     const pk = table.columnNames[table.primaryKey];
     const pkValue = pk === undefined ? undefined : cells.get(pk);
-    // SAFETY: the primary key column is text, integer or uuid, and checkRow above validated its value
+    // SAFETY: table() refuses any primary key that is not text, uuid or integer, and checkRow above validated its value
     const key = rowKey(String(pkValue as string | number));
     return Result.ok({
       key,
