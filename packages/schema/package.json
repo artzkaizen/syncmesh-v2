@@ -1,0 +1,31 @@
+{
+  "name": "@syncmesh/schema",
+  "version": "0.0.0",
+  "description": "Columns, tables and the manifest an app author writes; validation that runs on every peer before the fold",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@syncmesh/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/temporal": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncmesh/config": "workspace:*",
+    "@types/bun": "catalog:",
+    "fast-check": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:",
+    "zod": "^4.4.3"
+  }
+}
