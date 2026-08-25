@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/policy": "workspace:*",
     "@syncmesh/result": "workspace:*",
     "@syncmesh/temporal": "workspace:*"
   },

@@ -1,10 +1,12 @@
+import type { PolicyNode } from "@syncmesh/policy";
+
 import { describe, expect, test } from "bun:test";
 
 import { t } from "../column.js";
 import { defineSchema } from "../manifest.js";
 
 const id = () => t.uuid().primaryKey();
-const none = () => ({});
+const none = ({ deny }: { readonly deny: PolicyNode }) => ({ $default: deny });
 
 const schema = defineSchema({
   partitions: { org: { shelf: {} } },

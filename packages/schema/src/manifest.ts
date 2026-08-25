@@ -1,7 +1,11 @@
 import type { ColumnName, MergeSpec, StrategyName, TableName } from "@syncmesh/kernel";
+import type { AllowBlock } from "@syncmesh/policy";
 
 import { panic } from "@syncmesh/result";
 
+import type { AllowFn } from "./bind.js";
+
+import { combinators } from "./bind.js";
 import { sourceName } from "./from-drizzle.js";
 import { reservedTables } from "./reserved.js";
 import { table, type Columns, type PrimaryKey, type Table } from "./table.js";
@@ -31,23 +35,24 @@ export type Roles<P extends PartitionTree> = {
   readonly [K in Kinds<P>]?: readonly string[];
 };
 
-/** A node of the policy AST. E06 defines the members; until then only the shape is fixed. */
-export interface PolicyNode {
-  readonly kind: string;
-}
-/** The combinators bound to one table, handed to `allow`. E06 fills it in. */
-export interface PolicyCombinators {
-  readonly bound: "E06";
-}
-export type AllowRules = Readonly<Record<string, PolicyNode>>;
+/** Every role named anywhere in the manifest's ladders. */
+export type RoleNames<R extends Roles<PartitionTree>> = R[keyof R] extends
+  | readonly (infer X)[]
+  | undefined
+  ? X & string
+  : never;
 
 /** Every table is written the same way: its columns, where its rows live, and who may do what. */
-export type TableEntry<P extends PartitionTree> =
+export type TableEntry<
+  P extends PartitionTree,
+  R extends Roles<P> = Roles<P>,
+  C extends Columns = Columns,
+> =
   | {
-      readonly columns: Columns;
+      readonly columns: C;
       /** A declared kind needs `allow`; omitted means `global`. */
       readonly partition: Kinds<P>;
-      readonly allow: (combinators: PolicyCombinators) => AllowRules;
+      readonly allow: AllowFn<C, RoleNames<R>>;
       readonly visibility?: undefined;
     }
   | {
@@ -57,43 +62,38 @@ export type TableEntry<P extends PartitionTree> =
       readonly visibility?: undefined;
     }
   | {
-      readonly columns: Columns;
+      readonly columns: C;
       /** The relay decides which rows reach which device, from the app's own data (RFC-0020). */
       readonly visibility: "authority";
       readonly partition?: undefined;
       readonly allow?: undefined;
     };
 
-export interface Manifest<
-  P extends PartitionTree,
-  R extends Roles<P>,
-  T extends Readonly<Record<string, TableEntry<P>>>,
-> {
+export type ColumnsMap = Readonly<Record<string, Columns>>;
+
+/** `C` — each table's columns — is inferred first, so every entry's `allow` is typed to its own table. */
+export interface Manifest<P extends PartitionTree, R extends Roles<P>, C extends ColumnsMap> {
   readonly partitions?: P;
   readonly roles?: R;
-  readonly tables: T;
+  readonly tables: { readonly [K in keyof C]: TableEntry<P, R, C[K]> };
 }
 
 export interface SchemaEntry<P extends PartitionTree = PartitionTree> {
   readonly table: Table;
   readonly partition: PartitionKind<P>;
   readonly visibility: "partition" | "authority";
+  /** The rules, as data — what the `_policy` row will carry. Absent for user, local and global tables. */
+  readonly allow?: AllowBlock;
 }
 
-export type TablesOf<T extends Readonly<Record<string, { readonly columns: Columns }>>> = {
-  readonly [K in keyof T]: T[K]["columns"] extends infer C extends Columns
-    ? Table<C, PrimaryKey<C>>
-    : never;
+export type TablesOf<C extends ColumnsMap> = {
+  readonly [K in keyof C]: Table<C[K], PrimaryKey<C[K]>>;
 };
 
-export interface Schema<
-  P extends PartitionTree,
-  R extends Roles<P>,
-  T extends Readonly<Record<string, TableEntry<P>>>,
-> {
+export interface Schema<P extends PartitionTree, R extends Roles<P>, C extends ColumnsMap> {
   readonly partitions: P;
   readonly roles: R;
-  readonly tables: TablesOf<T>;
+  readonly tables: TablesOf<C>;
   readonly entries: readonly SchemaEntry<P>[];
   readonly reserved: readonly Table[];
   readonly merge: MergeSpec;
@@ -110,8 +110,8 @@ const RESERVED = new Set<string>(["global", "user", "local"]);
 export function defineSchema<
   const P extends PartitionTree,
   const R extends Roles<P>,
-  const T extends Readonly<Record<string, TableEntry<P>>>,
->(manifest: Manifest<P, R, T>): Schema<P, R, T> {
+  const C extends ColumnsMap,
+>(manifest: Manifest<P, R, C>): Schema<P, R, C> {
   // SAFETY: an absent tree declares no kinds, which every P admits; an absent roles map declares none, which every R admits
   const partitions = manifest.partitions ?? ({} as P);
   // SAFETY: as above
@@ -123,14 +123,20 @@ export function defineSchema<
   const built: Record<string, Table> = {};
   const entries: SchemaEntry<P>[] = [];
   const merge = new Map<TableName, Map<ColumnName, StrategyName>>();
-  for (const [name, entry] of Object.entries(manifest.tables)) {
+  const tables: Readonly<Record<string, TableEntry<P, R, Columns>>> = manifest.tables;
+  for (const [name, entry] of Object.entries(tables)) {
     const source = sourceName(entry.columns);
     if (source !== undefined && source !== name)
       panic(`${name}: imported columns come from the Drizzle table "${source}"`);
     const tbl = table(name, entry.columns);
-    const partition = partitionOf(name, entry, parents);
+    const partition = partitionOf<P, R>(name, entry, parents);
     built[name] = tbl;
-    entries.push({ table: tbl, partition, visibility: entry.visibility ?? "partition" });
+    const base: SchemaEntry<P> = {
+      table: tbl,
+      partition,
+      visibility: entry.visibility ?? "partition",
+    };
+    entries.push(entry.allow === undefined ? base : { ...base, allow: entry.allow(combinators()) });
     const rules = mergeRulesFor(name, tbl);
     if (rules.size > 0) merge.set(tbl.name, rules);
   }
@@ -139,7 +145,7 @@ export function defineSchema<
     partitions,
     roles,
     // SAFETY: built has exactly the keys of T, each the table its entry describes
-    tables: built as Schema<P, R, T>["tables"],
+    tables: built as Schema<P, R, C>["tables"],
     entries,
     reserved: reservedTables,
     merge,
@@ -151,9 +157,9 @@ export function defineSchema<
   };
 }
 
-function partitionOf<P extends PartitionTree>(
+function partitionOf<P extends PartitionTree, R extends Roles<P>>(
   name: string,
-  entry: TableEntry<P>,
+  entry: TableEntry<P, R, Columns>,
   parents: ReadonlyMap<string, string | undefined>,
 ): PartitionKind<P> {
   if (entry.visibility === "authority") return "global";

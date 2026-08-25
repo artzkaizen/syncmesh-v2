@@ -60,6 +60,21 @@
         "vite-plus": "catalog:",
       },
     },
+    "packages/policy": {
+      "name": "@syncmesh/policy",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/result": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncmesh/config": "workspace:*",
+        "@types/bun": "catalog:",
+        "fast-check": "catalog:",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+    },
     "packages/result": {
       "name": "@syncmesh/result",
       "version": "0.0.0",
@@ -79,6 +94,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/policy": "workspace:*",
         "@syncmesh/result": "workspace:*",
         "@syncmesh/temporal": "workspace:*",
       },
@@ -340,6 +356,8 @@
     "@syncmesh/engine": ["@syncmesh/engine@workspace:packages/engine"],
 
     "@syncmesh/kernel": ["@syncmesh/kernel@workspace:packages/kernel"],
+
+    "@syncmesh/policy": ["@syncmesh/policy@workspace:packages/policy"],
 
     "@syncmesh/result": ["@syncmesh/result@workspace:packages/result"],
 

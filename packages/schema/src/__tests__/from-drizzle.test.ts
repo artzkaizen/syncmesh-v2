@@ -154,12 +154,12 @@ describe("fromDrizzle — end to end", () => {
         books: {
           columns: fromDrizzle(books, { onConflict: { rating: "max" } }),
           partition: "org",
-          allow: () => ({}),
+          allow: ({ deny }) => ({ $default: deny }),
         },
         plain: {
           columns: fromDrizzle(pgTable("plain", { id: uuid("id").primaryKey(), n: integer("n") })),
           partition: "org",
-          allow: () => ({}),
+          allow: ({ deny }) => ({ $default: deny }),
         },
       },
     });

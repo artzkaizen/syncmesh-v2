@@ -26,19 +26,20 @@ export {
   table,
 } from "./table.js";
 export type {
-  AllowRules,
   Manifest,
   PartitionKind,
   PartitionTree,
-  PolicyCombinators,
-  PolicyNode,
   ReservedKind,
+  RoleNames,
   Roles,
   Schema,
   SchemaEntry,
+  ColumnsMap,
   TableEntry,
   TablesOf,
 } from "./manifest.js";
+export type { AllowFn, Combinators } from "./bind.js";
+export { combinators } from "./bind.js";
 export { defineSchema } from "./manifest.js";
 export { correctionsTable, policyTable, reservedTable, reservedTables } from "./reserved.js";
 export type {
