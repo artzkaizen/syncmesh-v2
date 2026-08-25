@@ -16,3 +16,5 @@ export {
   issueGrant,
   verifyGrant,
 } from "./grant.js";
+export type { GrantRegistry, GrantRegistryOptions } from "./grant-registry.js";
+export { createGrantRegistry } from "./grant-registry.js";
