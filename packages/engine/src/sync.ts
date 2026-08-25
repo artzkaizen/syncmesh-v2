@@ -21,6 +21,8 @@ export interface SyncState {
   readonly inFlight: boolean;
   /** Our cursors have gone out at least once, so the other side can ack us even if it has nothing to send. */
   readonly sentCursors: boolean;
+  /** The cursors we last told them we hold; folding their events advances ours past this, and that progress must be said. */
+  readonly lastSent?: Cursors;
 }
 
 export type SyncMessage =
@@ -35,7 +37,11 @@ export interface SyncDoc {
 
 export const initialSyncState: SyncState = { inFlight: false, sentCursors: false };
 
-/** Decides what to send next, or nothing: our cursors once, then only the events the other side lacks. */
+/**
+ * Decides what to send next, or nothing: our cursors first, the events the other side lacks,
+ * and a fresh `cursors` whenever ours advanced past what we last said — without that ack, a
+ * peer that only receives would never be known to hold anything (`acknowledge`, `compact`).
+ */
 export function generateSyncMessage(
   state: SyncState,
   doc: SyncDoc,
@@ -43,15 +49,27 @@ export function generateSyncMessage(
   if (state.inFlight) return [state, undefined];
   if (!state.sentCursors) {
     return [
-      { ...state, inFlight: true, sentCursors: true },
+      { ...state, inFlight: true, sentCursors: true, lastSent: doc.cursors },
       { kind: "cursors", cursors: doc.cursors },
     ];
   }
   if (state.theirCursors === undefined) return [state, undefined];
   const events = doc.eventsSince(state.theirCursors);
-  if (events.length === 0) return [state, undefined];
+  if (events.length === 0) {
+    if (state.lastSent !== undefined && coversCursors(state.lastSent, doc.cursors))
+      return [state, undefined];
+    return [
+      { ...state, inFlight: true, lastSent: doc.cursors },
+      { kind: "cursors", cursors: doc.cursors },
+    ];
+  }
   return [
-    { theirCursors: advance(state.theirCursors, events), inFlight: true, sentCursors: true },
+    {
+      theirCursors: advance(state.theirCursors, events),
+      inFlight: true,
+      sentCursors: true,
+      lastSent: doc.cursors,
+    },
     { kind: "events", events, cursors: doc.cursors },
   ];
 }
@@ -61,11 +79,7 @@ export function receiveSyncMessage(
   state: SyncState,
   message: SyncMessage,
 ): readonly [SyncState, readonly StoredEvent[]] {
-  const next: SyncState = {
-    theirCursors: message.cursors,
-    inFlight: false,
-    sentCursors: state.sentCursors,
-  };
+  const next: SyncState = { ...state, theirCursors: message.cursors, inFlight: false };
   return [next, message.kind === "events" ? message.events : []];
 }
 

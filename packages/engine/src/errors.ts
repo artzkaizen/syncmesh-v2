@@ -19,7 +19,7 @@ export class CannotRevert extends TaggedError("CannotRevert")<{
 export class CompactionRefused extends TaggedError("CompactionRefused")<{ message: string }> {}
 
 export class ListenerFailure extends TaggedError("ListenerFailure")<{
-  hook: "onFoldBatch" | "onOutbound";
+  hook: "onFoldBatch" | "onOutbound" | "onAcknowledge";
   message: string;
   cause: unknown;
 }> {}

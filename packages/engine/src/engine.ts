@@ -90,6 +90,10 @@ export interface Engine {
   readonly coverage: () => Coverage;
   /** Records what `peer` holds, as of `at`; links call it on every cursor exchange. Feeds `compact`. */
   readonly acknowledge: (peer: PeerId, cursors: Cursors, at: Temporal.Instant) => void;
+  /** What each peer was last acknowledged as holding. */
+  readonly acks: () => ReadonlyMap<PeerId, Cursors>;
+  /** Fires after `acknowledge` records what a peer holds. */
+  readonly onAcknowledge: (listener: (peer: PeerId) => void) => Unsubscribe;
   /** Removes events every counted peer has acked and the state store has persisted; unobservable to peers. See RFC-0015 §2. */
   readonly compact: (options: CompactOptions) => Promise<Result<Compaction, CompactError>>;
   /** Synced events the holder of `theirs` lacks. */
@@ -130,6 +134,7 @@ export function createEngine(options: EngineOptions): Engine {
   const outbound = createHub<SyncEvent>(report("onOutbound"));
   const telemetry = createHub<TelemetryEvent>();
   const quarantine = createHub<Quarantined>();
+  const ackHub = createHub<PeerId>(report("onAcknowledge"));
   const before = {
     row: (table, key) => readRow(state, table, key),
     partition: (table, key) => getRecord(state, table, key)?.partition,
@@ -254,7 +259,12 @@ export function createEngine(options: EngineOptions): Engine {
     canRevert: (id) => undo.some((u) => u.event.id === id),
     cursors: () => Promise.resolve(Result.ok(coverage.current().synced)),
     coverage: coverage.current,
-    acknowledge: (peer, cursors, at) => void acks.set(peer, { cursors, at }),
+    acknowledge: (peer, cursors, at) => {
+      acks.set(peer, { cursors, at });
+      ackHub.emit(peer);
+    },
+    acks: () => new Map([...acks].map(([peer, ack]) => [peer, ack.cursors])),
+    onAcknowledge: ackHub.subscribe,
     compact: (options) => compactLog({ store, stateStore, acks }, options),
     eventsSince: (theirs) => store.allSince(theirs),
     onFoldBatch: folds.subscribe,
