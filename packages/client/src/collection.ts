@@ -5,7 +5,7 @@ import type { InsertRow, Row, Table } from "@syncmesh/schema";
 
 import { EmptyMutation } from "@syncmesh/engine";
 import { readRows, readRowsIn } from "@syncmesh/kernel";
-import { Result } from "@syncmesh/result";
+import { Result, panic } from "@syncmesh/result";
 import { checkRow, fromWireRow, toWireRow, withDefaults } from "@syncmesh/schema";
 import { bytesEqual } from "@syncmesh/wire";
 
@@ -102,8 +102,10 @@ export function createCollection<T extends Table>(
     const checked = checkRow(table, Object.fromEntries(cells), "insert");
     if (checked.isErr()) return checked;
     const pk = table.columnNames[table.primaryKey];
-    const pkValue = pk === undefined ? undefined : cells.get(pk);
-    // SAFETY: table() refuses any primary key that is not text, uuid or integer, and checkRow above validated its value
+    if (pk === undefined)
+      return panic(`${name}: not built by table() — columnNames lacks the primary key`);
+    const pkValue = cells.get(pk);
+    // SAFETY: table() refuses a nullable, defaulted or non-keyable primary key, and checkRow above required its value
     const key = rowKey(String(pkValue as string | number));
     return Result.ok({
       key,

@@ -34,6 +34,15 @@ describe("table()", () => {
     expect(() => table("things", { id: t.integer().primaryKey() })).not.toThrow();
   });
 
+  test("a nullable or defaulted primary key is refused — 'null' and shared keys cannot exist", () => {
+    expect(() => table("things", { id: t.text().primaryKey().nullable() })).toThrow(
+      "cannot be nullable",
+    );
+    expect(() => table("things", { id: t.text().primaryKey().default("x") })).toThrow(
+      "cannot have a default",
+    );
+  });
+
   test("returns name, columns, the primary key and validated column names", () => {
     expect(String(books.name)).toBe("books");
     expect(books.primaryKey).toBe("id");

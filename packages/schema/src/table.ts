@@ -2,7 +2,7 @@ import type { CellValue, ColumnName, TableName } from "@syncmesh/kernel";
 
 import { Result, TaggedError, panic } from "@syncmesh/result";
 
-import type { AnyColumn, Value } from "./column.js";
+import type { AnyColumn, ColumnDef, Value } from "./column.js";
 
 import { checkValue, type ColumnError } from "./check.js";
 import { parseColumnName, parseTableName } from "./names.js";
@@ -61,6 +61,16 @@ export class InvalidTableDefinition extends Error {
   override readonly name = "InvalidTableDefinition";
 }
 
+/** The row key comes from this column: it must be keyable, present on every insert, and unique per row. */
+function checkPrimaryKey(table: string, key: string, def: ColumnDef | undefined): void {
+  if (def?.kind !== "text" && def?.kind !== "uuid" && def?.kind !== "integer") {
+    panic(`${table}.${key}: a primary key must be text, uuid or integer, not ${String(def?.kind)}`);
+  }
+  if (def.nullable) panic(`${table}.${key}: a primary key cannot be nullable`);
+  if (def.hasDefault)
+    panic(`${table}.${key}: a primary key cannot have a default — every row would share it`);
+}
+
 export function table<const C extends Columns>(name: string, columns: C): Table<C, PrimaryKey<C>> {
   const parsedName = parseTableName(name);
   if (parsedName.isErr()) panic(`${name}: ${parsedName.error.message}`);
@@ -88,12 +98,7 @@ export function table<const C extends Columns>(name: string, columns: C): Table<
   }
   // SAFETY: exactly one primary key was found above and it is a key of C
   const primaryKey = primaryKeys[0] as PrimaryKey<C>;
-  const pkKind = columns[primaryKey]?.def.kind;
-  if (pkKind !== "text" && pkKind !== "uuid" && pkKind !== "integer") {
-    panic(
-      `${name}.${String(primaryKey)}: a primary key must be text, uuid or integer, not ${String(pkKind)}`,
-    );
-  }
+  checkPrimaryKey(name, String(primaryKey), columns[primaryKey]?.def);
   // SAFETY: columnNames was built from Object.keys(columns), so its keys are exactly keyof C
   const names = columnNames as Table<C>["columnNames"];
   return { name: tableName, columns, primaryKey, columnNames: names };
