@@ -11,7 +11,7 @@ Companion to [grant-onboarding](grant-onboarding.md). Three roles a process can 
 
 Legend: ✅ exists today · 🟡 proposed, to okay · 🔴 gap found writing this doc.
 
-> **2026-08-25:** all four proposals below were okayed. #1 (`authority: PeerId`) is fixed and tested; the rest land next.
+> **2026-08-25:** all four proposals were okayed and are done where code exists: #1 `authority: PeerId` fixed and tested; #2 `issuerKey` + `mesh.grants.issue` built (S3 uses it); #3 Q1 defaults and #4 the frame shape are recorded in the D08 addendum, frame itself lands with E11.
 
 ---
 
@@ -77,11 +77,11 @@ const mesh = createMesh({
   schema,
   identity: ownerPhone,
   issuer: ownerPhone.peerId,     // this org's root of trust IS this phone
-  issuerKey: ownerPhone,         // 🟡 holding the private half unlocks minting
+  issuerKey: ownerPhone,         // ✅ holding the private half unlocks minting
 });
 
 // the approval screen's handler (flow B step ②):
-const wire = mesh.grants.issue({    // 🟡 exists only when issuerKey was given; else a definition-time panic
+const wire = mesh.grants.issue({    // ✅ panics without issuerKey; mismatched key panics at createMesh
   account: "acct_ada",
   device: requestedPeerId,          // from the grant-request frame — attacker-writable, binds only the KEY
   role: "member",

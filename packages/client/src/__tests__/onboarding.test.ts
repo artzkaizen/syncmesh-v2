@@ -92,15 +92,81 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
     const ownerPhone = createIdentity(seed(7)).unwrap(); // issuer AND a device
     const staff = createIdentity(seed(160)).unwrap();
 
-    const owner = open(ownerPhone, ownerPhone);
-    owner.grants.register(mintFor(ownerPhone, "acct_owner", ownerPhone, "owner")).unwrap();
-    const staffGrant = mintFor(ownerPhone, "acct_staff", staff, "member");
+    const owner = createMesh({
+      schema: schema(),
+      identity: ownerPhone,
+      issuer: ownerPhone.peerId,
+      issuerKey: ownerPhone,
+      now: () => T0,
+    });
+    owner.grants
+      .issue({
+        account: "acct_owner",
+        device: ownerPhone.peerId,
+        role: "owner",
+        partitions: ["org:acme"],
+        validFor: Temporal.Duration.from({ days: 30 }),
+      })
+      .unwrap();
+    // the approval tap (flow B step ②): mint for the staff phone's peerId, send the bytes back
+    const staffGrant = owner.grants
+      .issue({
+        account: "acct_staff",
+        device: staff.peerId,
+        role: "member",
+        partitions: ["org:acme"],
+        validFor: Temporal.Duration.from({ days: 30 }),
+      })
+      .unwrap();
 
     const s = open(staff, ownerPhone);
     s.grants.register(staffGrant).unwrap();
     s.activate("org:acme").unwrap();
     (await s.controls.insert({ id: "c1", title: "minted offline", by: "acct_staff" })).unwrap();
-    expect(s.can("controls.insert")).toBe(true);
+
+    // the owner already holds the staff grant (issue registers it) — staff events fold at once
+    const link = createLink(s.engine, owner.engine, { now: () => T0 });
+    (await link.catchUp()).unwrap();
+    owner.activate("org:acme").unwrap();
+    expect(owner.controls.byId("c1")?.title).toBe("minted offline");
+  });
+
+  test("S3 guards: no issuerKey panics, a mismatched issuerKey panics, a bad partition is a value", () => {
+    const issuer = createIdentity(seed(1)).unwrap();
+    const device = createIdentity(seed(40)).unwrap();
+    const plain = open(device, issuer);
+    expect(() =>
+      plain.grants.issue({
+        account: "a",
+        device: device.peerId,
+        partitions: ["org:acme"],
+        validFor: Temporal.Duration.from({ days: 1 }),
+      }),
+    ).toThrow("issuerKey");
+    expect(() =>
+      createMesh({
+        schema: schema(),
+        identity: device,
+        issuer: issuer.peerId,
+        issuerKey: device,
+        now: () => T0,
+      }),
+    ).toThrow("does not match");
+
+    const owner = createMesh({
+      schema: schema(),
+      identity: issuer,
+      issuer: issuer.peerId,
+      issuerKey: issuer,
+      now: () => T0,
+    });
+    const bad = owner.grants.issue({
+      account: "a",
+      device: device.peerId,
+      partitions: ["not a key"],
+      validFor: Temporal.Duration.from({ days: 1 }),
+    });
+    expect(bad.isErr() && bad.error._tag).toBe("InvalidPartitionKey");
   });
 
   test("S4 grants-first: an author's events quarantine on NoGrant until the grant frame lands, then a resync converges", async () => {

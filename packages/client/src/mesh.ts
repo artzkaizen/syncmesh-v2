@@ -2,7 +2,7 @@ import type { Engine, EngineOptions, Validator, ValidatorOptions } from "@syncme
 import type { EventId, PartitionKey, PeerId, Procedure, Row as WireCells } from "@syncmesh/kernel";
 import type { InvalidPartitionKey } from "@syncmesh/kernel";
 import type { ColumnsMap, PartitionTree, Roles, Schema, Table, TablesOf } from "@syncmesh/schema";
-import type { Grant, GrantRegistry, Identity } from "@syncmesh/wire";
+import type { Grant, Identity } from "@syncmesh/wire";
 
 import {
   can as canOn,
@@ -23,6 +23,7 @@ import type { TxCollections } from "./tx.js";
 import { createCollection } from "./collection.js";
 import { createContext } from "./context.js";
 import { CrossPartitionTx } from "./errors.js";
+import { createMeshGrants, type MeshGrants, type MeshGrantsOptions } from "./grants.js";
 import { createQueryRegistry } from "./registry.js";
 
 export interface MeshOptions<P extends PartitionTree, RS extends Roles<P>, C extends ColumnsMap> {
@@ -36,12 +37,14 @@ export interface MeshOptions<P extends PartitionTree, RS extends Roles<P>, C ext
   readonly isAuthority?: boolean;
   /** The peer whose events may write `global` tables — the relay's id, shipped in config like the issuer's. */
   readonly authority?: PeerId;
+  /** The issuer's private half. Only the org's root of trust holds this; it unlocks `grants.issue`. */
+  readonly issuerKey?: Identity;
   readonly now?: () => Temporal.Instant;
 }
 
 export interface MeshBase<C extends ColumnsMap> {
   readonly engine: Engine;
-  readonly grants: GrantRegistry;
+  readonly grants: MeshGrants;
   /** Sets the active instance of its kind; every collection of that kind re-points. */
   readonly activate: (instance: string) => Result<void, InvalidPartitionKey | UnknownPartitionKind>;
   readonly active: (kind: string) => PartitionKey | undefined;
@@ -69,9 +72,24 @@ export function createMesh<
   const RS extends Roles<P>,
   C extends ColumnsMap,
 >(options: MeshOptions<P, RS, C>): Mesh<C> {
-  const { schema, identity, issuer, authority, undoDepth, isAuthority = false } = options;
+  const {
+    schema,
+    identity,
+    issuer,
+    authority,
+    issuerKey,
+    undoDepth,
+    isAuthority = false,
+  } = options;
+  if (issuerKey !== undefined && issuerKey.peerId !== issuer)
+    panic(
+      "issuerKey does not match issuer: the private half must belong to the configured root of trust",
+    );
   const now = options.now ?? (() => Temporal.Now.instant());
-  const grants = createGrantRegistry({ issuer: issuer ?? identity.peerId, now });
+  const registry = createGrantRegistry({ issuer: issuer ?? identity.peerId, now });
+  const grantsOptions: MeshGrantsOptions = { now };
+  if (issuerKey !== undefined) Object.assign(grantsOptions, { issuerKey });
+  const grants = createMeshGrants(registry, grantsOptions);
   const grantFor = (peer: PeerId): Grant | undefined => grants.grantFor(peer);
   const validatorOptions: ValidatorOptions = {
     schema,
