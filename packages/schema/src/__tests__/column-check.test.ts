@@ -1,6 +1,5 @@
 import type { CellValue } from "@syncmesh/kernel";
 
-import { Temporal } from "@syncmesh/temporal";
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 
@@ -122,25 +121,17 @@ describe("check schemas (Standard Schema, structurally)", () => {
 describe("modifiers are data", () => {
   test("each modifier returns a new column; the original is untouched", () => {
     const a = t.integer();
-    const b = a.nullable().unique().default(3).onConflict("max");
+    const b = a.nullable().unique().onConflict("max");
     expect(a.def).toEqual({
       kind: "integer",
       nullable: false,
       primaryKey: false,
       unique: false,
-      hasDefault: false,
     });
     expect(b.def).toMatchObject({
       nullable: true,
       unique: true,
-      hasDefault: true,
-      defaultValue: 3,
       onConflict: "max",
     });
-  });
-
-  test("a timestamp default is stored in wire form (epoch ms)", () => {
-    const c = t.timestamp().default(Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000));
-    expect(c.def.defaultValue).toBe(1_700_000_000_000);
   });
 });

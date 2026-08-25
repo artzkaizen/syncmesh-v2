@@ -17,7 +17,7 @@ const schema = () =>
         columns: {
           id: t.text().primaryKey(),
           title: t.text(),
-          pinned: t.boolean().default(false),
+          pinned: t.boolean().nullable(),
           addedAt: t.timestamp().nullable(),
           createdBy: t.text(),
         },
@@ -83,13 +83,13 @@ describe("the namespace", () => {
 });
 
 describe("verbs", () => {
-  test("insert fills defaults, converts timestamps both ways, and reads back the stored row", async () => {
+  test("insert writes omitted nullable columns as null, converts timestamps both ways, and reads back the stored row", async () => {
     const mesh = granted();
     mesh.activate("org:acme").unwrap();
     const stored = (
       await mesh.books.insert({ id: "b1", title: "Dune", addedAt: T0, createdBy: "acct_a" })
     ).unwrap();
-    expect(stored.pinned).toBe(false);
+    expect(stored.pinned).toBeNull();
     expect(stored.addedAt?.epochMilliseconds).toBe(T0.epochMilliseconds);
     expect(mesh.books.byId("b1")?.title).toBe("Dune");
     expect(mesh.books.all()).toHaveLength(1);
@@ -110,11 +110,11 @@ describe("verbs", () => {
     const events: SyncEvent[] = [];
     mesh.engine.onOutbound((e) => void events.push(e));
     (await mesh.books.insert({ id: "b1", title: "Dune", createdBy: "acct_a" })).unwrap();
-    const updated = (await mesh.books.update("b1", { title: "Dune II", pinned: false })).unwrap();
+    const updated = (await mesh.books.update("b1", { title: "Dune II", pinned: null })).unwrap();
     expect(updated.title).toBe("Dune II");
     const patch = events.at(-1)?.changes[0];
     expect(patch?.kind === "update" && [...patch.patch.keys()].map(String)).toEqual(["title"]);
-    expect(tag(await mesh.books.update("b1", { pinned: false }))).toBe("EmptyMutation");
+    expect(tag(await mesh.books.update("b1", { pinned: null }))).toBe("EmptyMutation");
     expect(tag(await mesh.books.update("nope", { title: "x" }))).toBe("NoSuchRow");
   });
 

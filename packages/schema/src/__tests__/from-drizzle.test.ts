@@ -52,10 +52,7 @@ describe("fromDrizzle — the pinned mapping", () => {
     const columns = fromDrizzle(books, { onWarn: (w) => warnings.push(w) });
     expect(table("books", columns).primaryKey).toBe("id");
     const kinds = Object.fromEntries(
-      Object.entries(columns).map(([k, c]) => [
-        k,
-        `${c.def.kind}${c.def.nullable ? "?" : ""}${c.def.hasDefault ? "=" : ""}`,
-      ]),
+      Object.entries(columns).map(([k, c]) => [k, `${c.def.kind}${c.def.nullable ? "?" : ""}`]),
     );
     expect(kinds).toEqual({
       id: "uuid",
@@ -64,18 +61,17 @@ describe("fromDrizzle — the pinned mapping", () => {
       big: "integer",
       rating: "float?",
       score: "float?",
-      starred: "boolean=",
+      starred: "boolean",
       meta: "json?",
       code: "text?",
       addedAt: "timestamp?",
     });
-    expect(columns.starred.def.defaultValue).toBe(false);
-    expect(columns.addedAt.def.hasDefault).toBe(false);
     expect(table("books", columns).primaryKey).toBe("id");
     expect(warnings.map((w) => `${w.column}: ${w.message.split(";")[0]}`)).toEqual([
+      "starred: defaults do not sync: every peer must see the inserted value, so the column is required",
       "code: unique() cannot be enforced across offline devices",
       "addedAt: Drizzle hands back a Date",
-      "addedAt: the default is computed by the database",
+      "addedAt: defaults do not sync: an omitted column reads as null, never the default",
     ]);
   });
 
@@ -132,7 +128,7 @@ describe("fromDrizzle — refusals at module load", () => {
     expect(() => fromDrizzle(notATable)).toThrow("not a Drizzle table");
   });
 
-  test("a SQL default is a database default: warned, and the column stays required", () => {
+  test("any default — SQL or literal — is warned and never carried; the column stays required", () => {
     const warnings: DrizzleWarning[] = [];
     const t = pgTable("f", {
       id: uuid("id").primaryKey(),
@@ -140,9 +136,9 @@ describe("fromDrizzle — refusals at module load", () => {
         .notNull()
         .default(sql`1`),
     });
-    const columns = fromDrizzle(t, { onWarn: (w) => warnings.push(w) });
-    expect(columns.n.def.hasDefault).toBe(false);
+    fromDrizzle(t, { onWarn: (w) => warnings.push(w) });
     expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.message).toContain("defaults do not sync");
   });
 });
 
@@ -164,7 +160,9 @@ describe("fromDrizzle — end to end", () => {
       },
     });
     const id = "123e4567-e89b-42d3-a456-426614174000";
-    expect(checkRow(schema.tables.books, { id, title: "t", big: 1 }, "insert").isOk()).toBe(true);
+    expect(
+      checkRow(schema.tables.books, { id, title: "t", big: 1, starred: false }, "insert").isOk(),
+    ).toBe(true);
     expect(checkRow(schema.tables.books, { id, title: "t", big: 1.5 }, "insert").isErr()).toBe(
       true,
     );

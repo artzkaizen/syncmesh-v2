@@ -39,27 +39,22 @@ describe("compile-time guarantees", () => {
     expect(true).toBe(true);
   });
 
-  test("default takes the app-facing type", () => {
-    t.boolean().default(false);
-    // SAFETY: type-level test only; the value is never used at runtime
-    t.timestamp().default({} as Temporal.Instant);
-    // @ts-expect-error a number is not a boolean
-    t.boolean().default(0);
+  test("columns have no default: absence is null or an error, never a filled value", () => {
+    void (() => {
+      // @ts-expect-error defaults do not sync; there is no .default()
+      t.boolean().default(false);
+    });
     expect(true).toBe(true);
   });
 });
 
 describe("a key column cannot be weakened, at the type level", () => {
-  test("nullable and default are gone after primaryKey; primaryKey is gone after either", () => {
+  test("nullable is gone after primaryKey; primaryKey is gone after nullable", () => {
     void (() => {
       // @ts-expect-error a key column is required on every row
       t.text().primaryKey().nullable();
-      // @ts-expect-error a shared default would collide every row
-      t.text().primaryKey().default("x");
       // @ts-expect-error a nullable column cannot become the key
       t.text().nullable().primaryKey();
-      // @ts-expect-error a defaulted column cannot become the key
-      t.text().default("x").primaryKey();
     });
   });
 });

@@ -25,15 +25,10 @@ type IsPrimaryKey<Col> = Col extends { readonly __primaryKey?: infer P }
     ? boolean
     : P
   : never;
-type IsOptionalOnInsert<Col> = Col extends {
-  readonly __nullable?: infer N;
-  readonly __hasDefault?: infer D;
-}
+type IsOptionalOnInsert<Col> = Col extends { readonly __nullable?: infer N }
   ? N extends true
     ? true
-    : D extends true
-      ? true
-      : false
+    : false
   : never;
 
 export type PrimaryKey<C extends Columns> = {
@@ -45,7 +40,7 @@ export type Row<T extends Table> = {
   readonly [K in keyof T["columns"]]: Value<T["columns"][K]>;
 };
 
-/** What `insert` requires: nullable and defaulted columns may be omitted. */
+/** What `insert` requires: nullable columns may be omitted and read as `null`. */
 export type InsertRow<T extends Table> = {
   readonly [
     K in keyof T["columns"] as IsOptionalOnInsert<T["columns"][K]> extends true ? never : K
@@ -67,8 +62,6 @@ function checkPrimaryKey(table: string, key: string, def: ColumnDef | undefined)
     panic(`${table}.${key}: a primary key must be text, uuid or integer, not ${String(def?.kind)}`);
   }
   if (def.nullable) panic(`${table}.${key}: a primary key cannot be nullable`);
-  if (def.hasDefault)
-    panic(`${table}.${key}: a primary key cannot have a default — every row would share it`);
 }
 
 export function table<const C extends Columns>(name: string, columns: C): Table<C, PrimaryKey<C>> {
@@ -159,7 +152,7 @@ export function rowKeyText(t: Table, row: WireRow): Result<string, RowError> {
 
 /**
  * Validates wire-form values against the table. `insert` checks every column (an omitted
- * defaulted or nullable column is fine); `update` checks only the columns present.
+ * nullable column is fine); `update` checks only the columns present.
  */
 export function checkRow(
   t: Table,
@@ -177,8 +170,7 @@ export function checkRow(
     const column = t.columns[key];
     if (column === undefined) continue;
     const value = row[key];
-    if (mode === "insert" && value === undefined && (column.def.hasDefault || column.def.nullable))
-      continue;
+    if (mode === "insert" && value === undefined && column.def.nullable) continue;
     const r = checkValue(column, value);
     if (r.isErr())
       return Result.err(

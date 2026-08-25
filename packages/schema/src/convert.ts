@@ -31,30 +31,27 @@ export function toWireRow<T extends Table>(table: T, row: Partial<Row<T>>): Wire
 }
 
 /**
- * Wire cells → the app's row. A column the cells lack reads as its default, or `null` when nullable,
- * so an insert that omitted it and a row that never had it look the same.
+ * Wire cells → the app's row. A column the cells lack reads as `null`: absence always means the
+ * same thing, so an insert that omitted a nullable column and a row that never had it look the same.
  */
 export function fromWireRow<T extends Table>(table: T, cells: WireCells): Row<T> {
   const row: Record<string, AppValue> = {};
   for (const [name, column] of Object.entries(table.columns)) {
     const key = table.columnNames[name];
     const cell = key === undefined ? undefined : cells.get(key);
-    const value = cell ?? column.def.defaultValue ?? null;
-    row[name] = fromWireValue(column.def.kind, value);
+    row[name] = fromWireValue(column.def.kind, cell ?? null);
   }
-  // SAFETY: every column of the table was set from its own cell, default or null — the shape Row<T> declares
+  // SAFETY: every column of the table was set from its own cell or null — the shape Row<T> declares
   return row as Row<T>;
 }
 
-/** The wire row an insert writes: the given cells plus the defaults of the columns it omitted. */
-export function withDefaults<T extends Table>(table: T, cells: WireCells): WireCells {
+/** The wire row an insert writes: the given cells plus explicit `null`s for omitted nullable columns. */
+export function withNulls<T extends Table>(table: T, cells: WireCells): WireCells {
   const full = new Map(cells);
   for (const [name, column] of Object.entries(table.columns)) {
     const key = table.columnNames[name];
     if (key === undefined || full.has(key)) continue;
-    if (column.def.hasDefault && column.def.defaultValue !== undefined)
-      full.set(key, column.def.defaultValue);
-    else if (column.def.nullable) full.set(key, null);
+    if (column.def.nullable) full.set(key, null);
   }
   return full;
 }

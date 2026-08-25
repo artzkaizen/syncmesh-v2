@@ -12,7 +12,7 @@ const books = table("books", {
   title: t.text(),
   addedAt: t.timestamp(),
   note: t.text().nullable(),
-  starred: t.boolean().default(false),
+  starred: t.boolean(),
   pages: t.integer().onConflict("max"),
   meta: t.json(z.object({ tags: z.array(z.string()) })).nullable(),
 });
@@ -34,14 +34,11 @@ describe("table()", () => {
     expect(() => table("things", { id: t.integer().primaryKey() })).not.toThrow();
   });
 
-  test("a nullable or defaulted primary key def is refused even past the builder's types", () => {
-    // the builder makes these unwritable; a def can still arrive from outside it (fromDrizzle)
+  test("a nullable primary key def is refused even past the builder's types", () => {
+    // the builder makes this unwritable; a def can still arrive from outside it (fromDrizzle)
     const forge = (patch: Partial<AnyColumn["def"]>): AnyColumn =>
       columnFromDef({ ...t.text().primaryKey().def, ...patch });
     expect(() => table("things", { id: forge({ nullable: true }) })).toThrow("cannot be nullable");
-    expect(() => table("things", { id: forge({ hasDefault: true, defaultValue: "x" }) })).toThrow(
-      "cannot have a default",
-    );
   });
 
   test("returns name, columns, the primary key and validated column names", () => {
@@ -89,7 +86,7 @@ describe("table()", () => {
 });
 
 describe("Row / InsertRow", () => {
-  test("row type is inferred; nullable and defaulted columns are optional on insert", () => {
+  test("row type is inferred; only nullable columns are optional on insert", () => {
     assertType<
       Equal<
         Row<typeof books>,
@@ -106,25 +103,30 @@ describe("Row / InsertRow", () => {
     >();
     // SAFETY: type-level test; the Instant is never used at runtime
     const instant = {} as never;
-    const minimal: InsertRow<typeof books> = { id: ID, title: "t", addedAt: instant, pages: 1 };
-    const full: InsertRow<typeof books> = {
-      ...minimal,
-      note: null,
-      starred: true,
-      meta: { tags: [] },
+    const minimal: InsertRow<typeof books> = {
+      id: ID,
+      title: "t",
+      addedAt: instant,
+      starred: false,
+      pages: 1,
     };
+    const full: InsertRow<typeof books> = { ...minimal, note: null, meta: { tags: [] } };
     // @ts-expect-error title is required
-    const missing: InsertRow<typeof books> = { id: ID, addedAt: instant, pages: 1 };
+    const missing: InsertRow<typeof books> = { id: ID, addedAt: instant, starred: false, pages: 1 };
     expect([minimal, full, missing]).toHaveLength(3);
   });
 });
 
 describe("checkRow", () => {
-  test("insert: every column checked; omitted nullable/defaulted columns pass; omitted required fails", () => {
-    expect(checkRow(books, { id: ID, title: "t", addedAt: 1, pages: 3 }, "insert").isOk()).toBe(
-      true,
-    );
-    const r = checkRow(books, { id: ID, addedAt: 1, pages: 3 }, "insert");
+  test("insert: every column checked; omitted nullable columns pass; omitted required fails", () => {
+    expect(
+      checkRow(
+        books,
+        { id: ID, title: "t", addedAt: 1, starred: false, pages: 3 },
+        "insert",
+      ).isOk(),
+    ).toBe(true);
+    const r = checkRow(books, { id: ID, addedAt: 1, starred: false, pages: 3 }, "insert");
     expect(r.isErr() && r.error._tag === "ColumnCheckFailed" && r.error.column).toBe("title");
   });
 

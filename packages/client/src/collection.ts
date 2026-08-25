@@ -6,7 +6,7 @@ import type { InsertRow, Row, Table } from "@syncmesh/schema";
 import { EmptyMutation } from "@syncmesh/engine";
 import { readRows, readRowsIn } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
-import { checkRow, fromWireRow, rowKeyText, toWireRow, withDefaults } from "@syncmesh/schema";
+import { checkRow, fromWireRow, rowKeyText, toWireRow, withNulls } from "@syncmesh/schema";
 import { bytesEqual } from "@syncmesh/wire";
 
 import type { Placement } from "./context.js";
@@ -20,7 +20,7 @@ import { NoSuchRow } from "./errors.js";
 export type KeyOf<T extends Table> = Row<T>[T["primaryKey"]];
 
 export interface Collection<T extends Table> {
-  /** One event in the table's instance; defaults and `null`s fill what the row omits. */
+  /** One event in the table's instance; omitted nullable columns are written as `null`. */
   readonly insert: (row: InsertRow<T>) => Promise<Result<Row<T>, WriteError>>;
   /** Writes only the columns whose value differs from the row held; nothing changed is `EmptyMutation`. */
   readonly update: (key: KeyOf<T>, patch: Partial<Row<T>>) => Promise<Result<Row<T>, WriteError>>;
@@ -98,7 +98,7 @@ export function createCollection<T extends Table>(
 
   const insertWrite = (row: InsertRow<T>): Result<Write & { key: RowKey }, WriteError> => {
     // SAFETY: InsertRow<T> is Row<T> with optional columns; toWireRow reads only the columns present
-    const cells = withDefaults(table, toWireRow(table, row as Partial<Row<T>>));
+    const cells = withNulls(table, toWireRow(table, row as Partial<Row<T>>));
     const wireRow = Object.fromEntries(cells);
     const checked = checkRow(table, wireRow, "insert");
     if (checked.isErr()) return checked;

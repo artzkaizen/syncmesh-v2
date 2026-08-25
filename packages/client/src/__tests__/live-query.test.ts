@@ -12,7 +12,7 @@ const schema = () =>
         columns: {
           id: t.text().primaryKey(),
           text: t.text(),
-          done: t.boolean().default(false),
+          done: t.boolean(),
           rank: t.integer(),
         },
         partition: "local",
@@ -32,8 +32,8 @@ describe("live queries", () => {
     openTodos.subscribe(() => void (notified += 1));
     expect(openTodos.rows()).toEqual([]);
 
-    (await mesh.todos.insert({ id: "a", text: "one", rank: 2 })).unwrap();
-    (await mesh.todos.insert({ id: "b", text: "two", rank: 1 })).unwrap();
+    (await mesh.todos.insert({ id: "a", text: "one", rank: 2, done: false })).unwrap();
+    (await mesh.todos.insert({ id: "b", text: "two", rank: 1, done: false })).unwrap();
     expect(openTodos.rows().map((r) => r.id)).toEqual(["b", "a"]);
     expect(notified).toBe(2);
 
@@ -57,7 +57,7 @@ describe("live queries", () => {
     const done = mesh.todos.where({ done: true });
     let notified = 0;
     done.subscribe(() => void (notified += 1));
-    (await mesh.todos.insert({ id: "a", text: "x", rank: 1 })).unwrap();
+    (await mesh.todos.insert({ id: "a", text: "x", rank: 1, done: false })).unwrap();
     expect(notified).toBe(0);
     (
       await mesh.tx((c) =>

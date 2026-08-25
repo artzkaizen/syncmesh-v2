@@ -1,4 +1,4 @@
-import type { CellValue, StrategyName } from "@syncmesh/kernel";
+import type { StrategyName } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
 import { panic } from "@syncmesh/result";
@@ -20,7 +20,6 @@ export interface DrizzleColumnLike {
   readonly _: {
     readonly data: unknown;
     readonly notNull: boolean;
-    readonly hasDefault: boolean;
     readonly isPrimaryKey: boolean;
   };
 }
@@ -40,14 +39,8 @@ interface DrizzleColumnInfo {
   readonly primary: boolean;
   readonly hasDefault: boolean;
   readonly isUnique: boolean;
-  readonly default?: CellValue | SqlChunk;
-  readonly defaultFn?: () => CellValue;
   readonly generated?: object;
   readonly generatedIdentity?: object;
-}
-
-interface SqlChunk {
-  readonly queryChunks: readonly unknown[];
 }
 
 /** Drizzle keeps a table's runtime metadata under these symbols; reading them keeps drizzle-orm out of our runtime. */
@@ -73,7 +66,6 @@ export type ColumnsFromDrizzle<D extends DrizzleTableLike> = {
       : D["_"]["columns"][K]["_"]["notNull"] extends true
         ? false
         : true,
-    D["_"]["columns"][K]["_"]["hasDefault"],
     D["_"]["columns"][K]["_"]["isPrimaryKey"]
   >;
 };
@@ -149,15 +141,6 @@ function kindFor(info: DrizzleColumnInfo): ColumnKind {
   }
 }
 
-/* oxlint-disable anti-slop/no-runtime-typeof -- a Drizzle default is either a JSON value or an SQL chunk object; its runtime type is the fact being checked */
-const isSql = (value: CellValue | SqlChunk | undefined): value is SqlChunk =>
-  typeof value === "object" &&
-  value !== null &&
-  !(value instanceof Uint8Array) &&
-  !Array.isArray(value) &&
-  "queryChunks" in value;
-/* oxlint-enable anti-slop/no-runtime-typeof */
-
 function defFor(
   info: DrizzleColumnInfo,
   strategy: string | undefined,
@@ -169,32 +152,19 @@ function defFor(
     nullable: !info.primary && !info.notNull,
     primaryKey: info.primary,
     unique: info.isUnique,
-    hasDefault: false,
   };
   if (info.isUnique)
     warn("unique() cannot be enforced across offline devices; two of them can both insert it");
   if (kind === "timestamp")
     warn("Drizzle hands back a Date; syncmesh carries epoch ms and hands back a Temporal.Instant");
-  const withDefault = defaultFor(info, def, warn);
+  if (info.hasDefault)
+    warn(
+      def.nullable
+        ? "defaults do not sync: an omitted column reads as null, never the default"
+        : "defaults do not sync: every peer must see the inserted value, so the column is required",
+    );
   // SAFETY: strategy came from FromDrizzleOptions.onConflict, typed per column as StrategyFor<Value>
-  return strategy === undefined
-    ? withDefault
-    : { ...withDefault, onConflict: strategy as StrategyName };
-}
-
-function defaultFor(
-  info: DrizzleColumnInfo,
-  def: ColumnDef,
-  warn: (message: string) => void,
-): ColumnDef {
-  if (!info.hasDefault) return def;
-  if (info.defaultFn !== undefined || isSql(info.default)) {
-    warn("the default is computed by the database; nothing to carry, so the column stays required");
-    return def;
-  }
-  return info.default === undefined
-    ? def
-    : { ...def, hasDefault: true, defaultValue: info.default };
+  return strategy === undefined ? def : { ...def, onConflict: strategy as StrategyName };
 }
 
 // SAFETY: a unique symbol type can only be declared, so the registry symbol is asserted onto it
@@ -213,7 +183,7 @@ export function fromDrizzle<const D extends DrizzleTableLike>(
 ): ColumnsFromDrizzle<D> {
   const runtime = readRuntime(drizzle);
   const rules: Readonly<Record<string, string | undefined>> = options.onConflict ?? {};
-  const mapped: Record<string, Column<AppValue, boolean, boolean, boolean>> = {};
+  const mapped: Record<string, Column<AppValue, boolean, boolean>> = {};
   for (const [key, info] of Object.entries(runtime[COLUMNS])) {
     const def = defFor(info, rules[key], (message) => options.onWarn?.({ column: key, message }));
     mapped[key] = columnFromDef(def);
