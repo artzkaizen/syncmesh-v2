@@ -103,7 +103,7 @@ export const schema = defineSchema({
         update: anyOf(owner("dentistId"), role("admin")),
       }),
     },
-    treatmentPlan: { columns: fromDrizzle(drizzle.treatmentPlan), partition: "practice" },   // allow omitted → the partition's default: any member
+    treatmentPlan: { columns: fromDrizzle(drizzle.treatmentPlan), partition: "practice", allow: ({ role }) => ({ $default: role("member") }) },
 
     preference: { columns: { id: t.text().primaryKey(), locale: t.text() }, partition: "user" },
   },
@@ -143,9 +143,9 @@ app.post("/mesh/grant", async (req) => {
 const mesh = createMesh({ schema, identity, issuer, transports: [relay(url)] });
 mesh.grants.register(grant);                    // opens practice:<id>; global and user are always open
 
-const practice = mesh.in(`practice:${activePracticeId}`);   // typed: only practice-kind tables exist on it
-await practice.appointment.insert({ id, patId, dentistId: me.memberId, start, end });
-const today = practice.appointment.where({ day: today });
+mesh.activate(`practice:${activePracticeId}`);   // the org switcher calls this; once. With one practice in the grant it is implied.
+await mesh.appointment.insert({ id, patId, dentistId: me.memberId, start, end });
+const today = mesh.appointment.where({ day: today });
 
 mesh.procedure.all();                            // global: read on devices, written by the server
 ```
@@ -155,10 +155,12 @@ mesh.procedure.all();                            // global: read on devices, wri
 - The org id is never typed on a write. next-oral's client hand-writes `orgId` into each
   insert and its server-side scoping helper is commented out; here the store *is* the
   practice, so a row cannot land in the wrong tenant.
-- Switching practice is `mesh.in(other)` — no page reload, and both can be open at once.
+- Switching practice is `mesh.activate(other)`: every practice-kind collection re-points
+  and its live queries re-emit — what kaitosec does today with a full page reload. An
+  org-kind collection with nothing active is `Err(NoActivePartition)`, never a guess.
 - A member's device with a forged "admin" event: the signature verifies, `role("admin")`
   fails against the grant, every honest receiver quarantines it. The disabled button in the
-  UI (`practice.appointment.can("delete", row)`) is courtesy; the receiver check is the
+  UI (`mesh.appointment.can("delete", row)`) is courtesy; the receiver check is the
   security.
 - Conflicts: two receptionists move the same appointment offline → later stamp wins for
   `start`; different fields → both kept. `rating: t.float().onConflict("max")`-style rules
@@ -191,14 +193,14 @@ export const schema = defineSchema({
     control: {
       columns: fromDrizzle(drizzle.control, { onConflict: { score: "max" } }),
       partition: "org",
-      allow: ({ can, owner, entityOf, anyOf }) => ({
-        read:   entityOf("entityId"),                                   // row.entityId ∈ grant.claims.entities
+      allow: ({ can, owner, claim, anyOf }) => ({
+        read:   claim("entities").has("entityId"),                                   // row.entityId ∈ grant.claims.entities
         insert: can("controls", "create"),
         update: anyOf(can("controls", "update"), owner("ownerMemberId")), // owner = the org-scoped member id, kaitosec's own rule
         delete: can("controls", "delete"),
       }),
     },
-    policy: { columns: fromDrizzle(drizzle.policy), partition: "org", allow: ({ can, entityOf }) => ({ read: entityOf("entityId"), $default: can("policies", "update") }) },
+    policy: { columns: fromDrizzle(drizzle.policy), partition: "org", allow: ({ can, claim }) => ({ read: claim("entities").has("entityId"), $default: can("policies", "update") }) },
 
     notificationPreference: { columns: fromDrizzle(drizzle.notificationPreference), partition: "user" },
   },
@@ -231,9 +233,9 @@ app.post("/mesh/grant", async (req) => {
 
 ```ts
 // client
-const org = mesh.in(`org:${organizationId}`);
-await org.control.insert({ id, title, entityId, ownerMemberId: me.memberId });   // Err(PermissionDenied) if claims lack controls:create
-org.control.where({ status: "open" });     // only rows whose entityId is in claims.entities were ever admitted to this device
+mesh.activate(`org:${organizationId}`);
+await mesh.control.insert({ id, title, entityId, ownerMemberId: me.memberId });   // Err(PermissionDenied) if claims lack controls:create
+mesh.control.where({ status: "open" });     // only rows whose entityId is in claims.entities were ever admitted to this device
 mesh.catalog.all();                        // global
 ```
 
@@ -246,7 +248,19 @@ mesh.catalog.all();                        // global
   org overlay — the split its own schema already half-makes with `org_catalog_selection`.
 - The 121 child tables without an org column need none.
 - The permission matrix and entity access are evaluated on every device from the signed
-  grant alone: no lookup, no network, same answer everywhere.
+  grant alone: no lookup, no network, same answer everywhere. `can("controls", "create")` is
+  sugar for `claim("permissions.controls").has("create")`; `claim(name).has(column)` is the
+  one primitive — the row's column value must be in the list the grant carries.
+
+**Two things decided here**
+
+- `allow` is required on every partitioned table; the manifest throws at load without it.
+  `user` and `local` tables need none (only the account or device can reach them) and
+  global tables are device-read-only.
+- Writes are local-first, not optimistic. `insert` appends to the local log and folds
+  before any network; the UI updates from that fold; there is no pending state to roll
+  back. The only thing that undoes a write is a signed correction from the authority
+  (E16), arriving as one more event.
 
 **What the design does not do, said plainly**
 
@@ -263,16 +277,76 @@ mesh.catalog.all();                        // global
 
 ---
 
+## 4 · A sleep clinic platform — rows shared across tenants (Somnara's shape)
+
+Clinics are organizations; a patient is one person who attends several clinics. The
+clinical record — `patient`, `artifact`, `insurance`, `sleep_diary_entry` — belongs to the
+patient, carries no org column, and every clinic they attend may read and write it. A report
+becomes visible to the patient only once `status = "signed"`; a video-consult token exists
+only in a time window and only after the pre-consult questionnaire row exists.
+
+This is the case a partition cannot carry. A partition is the unit of replication: a row is
+in exactly one, and a device holds whole partitions. The patient record is not "in the
+clinic" (three clinics share it) and not "in the user" (clinic staff need it); and
+"visible once signed" is a predicate over the row's own state that changes with time.
+
+The model has a third tier for exactly this, and the manifest names it per table:
+
+```ts
+export const schema = defineSchema({
+  partitions: { clinic: {} },
+  roles: { clinic: ["owner", "admin", "doctor", "staff"] },
+
+  tables: {
+    icdCode:      { columns: fromDrizzle(drizzle.icdCode) },                                           // global
+    booking:      { columns: fromDrizzle(drizzle.booking), partition: "clinic", allow: ({ role, owner, anyOf }) => ({ $default: role("staff"), update: anyOf(owner("userId"), role("admin")) }) },
+    schedule:     { columns: fromDrizzle(drizzle.schedule), partition: "clinic", allow: ({ role }) => ({ $default: role("staff") }) },
+
+    patient:      { columns: fromDrizzle(drizzle.patient),   visibility: "authority" },   // the relay decides who receives which rows
+    artifact:     { columns: fromDrizzle(drizzle.artifact),  visibility: "authority" },
+    sleepDiary:   { columns: fromDrizzle(drizzle.sleepDiaryEntry), visibility: "authority" },
+  },
+});
+```
+
+`visibility: "authority"` (RFC-0020, E16): the relay evaluates, against the app's own
+database, which rows reach which device — clinic membership, `status = "signed"`, the
+consult window — and validates writes there. Devices receive a *subset*, then hold it
+offline like any other rows.
+
+The three tiers, side by side:
+
+| Tier | Decided by | May read | Offline | Carries |
+|---|---|---|---|---|
+| Partition | structure: the table's kind, the row's instance, the grant | nothing | fully | tenant data — kaitosec's 174 tables, the practice's tables |
+| Row rule (`allow`) | every device, from row + patch + grant claims | the grant | fully | roles, ownership, entity access as claims |
+| Authority visibility | the relay | the app's database | after the authority has spoken once | shared-across-tenants rows, state- and time-dependent visibility |
+
+**What the design does not do, said plainly**
+
+- An authority-visibility row cannot be obtained peer-to-peer (over BLE, say) from a
+  device that has it unless the authority admitted the receiver first. That is correct: a
+  clinic phone must not be able to pull a patient's record from another clinic's phone
+  because the two happened to meet.
+- Somnara's `key_org_id` — which org's AES key sealed a row — is application encryption, a
+  column like any other. Somnara also has no offline layer today; it tests the model, it is
+  not a customer of it.
+
+---
+
 ## The choices, and which case defends each
 
 | Choice | Defended by |
 |---|---|
 | `partition` is per table, never per write; instances come from the grant | 2, 3 — the per-call org id is the bug both codebases have |
-| `mesh.in("org:x")` handle, typed by kind | 2 — replaces the full-page reload on org switch |
+| `mesh.activate("org:x")` once; collections use the active instance | 2 — the switcher *is* the context; replaces the full-page reload |
 | No `partitions` key needed; `user` and `local` built in | 1 |
 | No `partition` → `global`, device-read-only | 2, 3 — catalogs; the read-only rule makes the default safe |
 | `partitions` is a tree of kinds, no `isolation`, no `parent` strings | 2, 3 — top-level means own store; nesting is structural |
-| `roles` ladder is optional; grants carry claims; `can` / `entityOf` combinators | 3 — roles are data there, a ladder cannot express a matrix |
+| `roles` ladder is optional; grants carry claims; `claim(name).has(column)` with `can` as sugar | 3 — roles are data there, a ladder cannot express a matrix |
 | Conflict rules on the column, `fromDrizzle(t, { onConflict })` typed | all — one home, no untyped map |
 | One entry shape `{ columns, partition?, allow? }` | all — `fromDrizzle` returns columns |
 | `Err(...)` at the call site, quarantine at every receiver | all — the UI check is courtesy, the receiver check is security |
+| `visibility: "authority"` as a third tier, not a partition | 4 — rows shared across tenants, state- and time-dependent visibility |
+| `allow` required on every partitioned table | 2, 3 — no silent "any member" |
+| Writes local-first, never optimistic | 1 — the local log is the truth on the device |
