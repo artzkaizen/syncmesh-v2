@@ -1,14 +1,12 @@
-import type { HlcClock, MergeSpec, PeerId, RowKey, State, TableName } from "@syncmesh/kernel";
+import type { HlcClock, MergeSpec, PeerId, Row, RowKey, State, TableName } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
-import { applyChange, emptyState, readRow } from "@syncmesh/kernel";
+import { applyChange, emptyState, getRecord, readRow, readRowsIn } from "@syncmesh/kernel";
 import {
-  eventId,
   stampOf,
   type EventId,
   type PartitionKey,
   type Procedure,
-  type SeqNum,
   type SyncEvent,
 } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
@@ -18,9 +16,10 @@ import type { Ack, CompactError, CompactOptions, Compaction } from "./compaction
 import type { StateStore } from "./state-store.js";
 import type { EventStore, StoreFailure } from "./store.js";
 import type { Coverage, Cursors } from "./sync.js";
-import type { ProbeEvent, RowLookup, Validator } from "./validate.js";
+import type { ProbeEvent, StateLookup, Validator } from "./validate.js";
 
 import { admit } from "./admit.js";
+import { buildEvent, nextSeq } from "./build-event.js";
 import { compactLog } from "./compaction.js";
 import { trackCoverage } from "./coverage.js";
 import {
@@ -80,6 +79,8 @@ export interface Engine {
   ) => Promise<Result<ReceiveReport, StoreFailure>>;
   readonly receive: (event: SyncEvent) => Promise<Result<ReceiveReport, StoreFailure>>;
   readonly state: () => State;
+  /** The visible rows of `table` that belong to `partition`. */
+  readonly rowsIn: (table: TableName, partition: PartitionKey) => ReadonlyMap<RowKey, Row>;
   /** Writes the compensating event for one of this engine's last `undoDepth` writes, in that event's partition. */
   readonly revert: (id: EventId) => Promise<Result<SyncEvent, RevertError>>;
   readonly canRevert: (id: EventId) => boolean;
@@ -129,7 +130,10 @@ export function createEngine(options: EngineOptions): Engine {
   const outbound = createHub<SyncEvent>(report("onOutbound"));
   const telemetry = createHub<TelemetryEvent>();
   const quarantine = createHub<Quarantined>();
-  const before: RowLookup = (table, key) => readRow(state, table, key);
+  const before: StateLookup = {
+    row: (table, key) => readRow(state, table, key),
+    partition: (table, key) => getRecord(state, table, key)?.partition,
+  };
   const acks = new Map<PeerId, Ack>();
 
   const fold = (events: readonly SyncEvent[], source: FoldSource): FoldBatch => {
@@ -138,7 +142,8 @@ export function createEngine(options: EngineOptions): Engine {
       for (const event of events) {
         coverage.note(event);
         const stamp = stampOf(event);
-        for (const change of event.changes) state = applyChange(state, change, stamp, merge);
+        for (const change of event.changes)
+          state = applyChange(state, change, stamp, merge, event.partition);
       }
       return {
         source,
@@ -239,6 +244,7 @@ export function createEngine(options: EngineOptions): Engine {
     receiveBatch,
     receive: (event) => receiveBatch([event]),
     state: () => state,
+    rowsIn: (table, partition) => readRowsIn(state, table, partition),
     revert,
     canRevert: (id) => undo.some((u) => u.event.id === id),
     cursors: () => Promise.resolve(Result.ok(coverage.current().synced)),
@@ -252,32 +258,4 @@ export function createEngine(options: EngineOptions): Engine {
     onQuarantine: quarantine.subscribe,
     onTelemetry: telemetry.subscribe,
   };
-}
-
-const nextSeq = (last: SeqNum | undefined): SeqNum => {
-  // SAFETY: last is a SeqNum (positive safe integer) or absent; +1 from 0 or from it stays one
-  return ((last ?? 0) + 1) as SeqNum;
-};
-
-function buildEvent(
-  peerId: PeerId,
-  procedure: Procedure,
-  hlc: SyncEvent["hlc"],
-  seqNum: SeqNum,
-  changes: SyncEvent["changes"],
-  { partition, local }: MutateOptions,
-): SyncEvent {
-  const base = {
-    v: 1 as const,
-    id: eventId(peerId, seqNum, local === true),
-    peerId,
-    seqNum,
-    hlc,
-    procedure,
-    changes,
-  };
-  if (partition !== undefined && local === true) return { ...base, partition, local };
-  if (partition !== undefined) return { ...base, partition };
-  if (local === true) return { ...base, local };
-  return base;
 }

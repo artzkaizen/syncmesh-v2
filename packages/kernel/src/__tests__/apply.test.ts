@@ -3,13 +3,15 @@ import * as fc from "fast-check";
 
 import type { MergeSpec } from "../strategy.js";
 
-import { mergeRecord } from "../apply.js";
-import { getRecord, readRow } from "../state.js";
+import { applyChange, mergeRecord } from "../apply.js";
+import { parsePartitionKey } from "../partition.js";
+import { getRecord, readRow, readRowsIn } from "../state.js";
 import { emptyState } from "../state.js";
 import {
   applyAll,
   column,
   insert,
+  key,
   N1,
   NOTES,
   PEER_A,
@@ -201,5 +203,44 @@ describe("applyChange — properties", () => {
         expect(readRow(s, NOTES, N1)?.get(column("bid"))).toBe(Math.max(...bids));
       }),
     );
+  });
+});
+
+describe("partition on the record", () => {
+  test("the first write fixes it; later writes and deletes keep it; unpartitioned writes leave none", () => {
+    const acme = parsePartitionKey("org:acme").unwrap();
+    const globex = parsePartitionKey("org:globex").unwrap();
+    let state = applyChange(emptyState(), insert({ title: "a" }, a1).change, a1, undefined, acme);
+    expect(getRecord(state, NOTES, N1)?.partition).toBe(acme);
+    state = applyChange(state, update({ title: "b" }, a2).change, a2, undefined, globex);
+    expect(getRecord(state, NOTES, N1)?.partition).toBe(acme);
+    state = applyChange(state, remove(a3).change, a3);
+    expect(getRecord(state, NOTES, N1)?.partition).toBe(acme);
+    expect(readRowsIn(state, NOTES, acme).size).toBe(0);
+
+    const plain = applyChange(emptyState(), insert({ title: "a" }, a1).change, a1);
+    expect(getRecord(plain, NOTES, N1)).not.toHaveProperty("partition");
+  });
+
+  test("readRowsIn lists only the visible rows of one instance", () => {
+    const acme = parsePartitionKey("org:acme").unwrap();
+    const globex = parsePartitionKey("org:globex").unwrap();
+    let state = applyChange(emptyState(), insert({ title: "a" }, a1).change, a1, undefined, acme);
+    state = applyChange(
+      state,
+      { kind: "insert", table: NOTES, key: key("n2"), row: row({ title: "g" }) },
+      b1,
+      undefined,
+      globex,
+    );
+    state = applyChange(
+      state,
+      { kind: "insert", table: NOTES, key: key("n3"), row: row({ title: "c" }) },
+      b2,
+      undefined,
+      acme,
+    );
+    expect([...readRowsIn(state, NOTES, acme).keys()]).toEqual([N1, key("n3")]);
+    expect([...readRowsIn(state, NOTES, globex).keys()]).toEqual([key("n2")]);
   });
 });

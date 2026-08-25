@@ -66,13 +66,14 @@ const grantFor = (role: string, dev = device.peerId): Grant =>
 const grants = new Map<PeerId, Grant>([[device.peerId, grantFor("member")]]);
 const validator = createValidator({ schema, grantFor: (peer) => grants.get(peer) });
 const none = () => undefined;
+const NONE = { row: none, partition: none };
 const tag = (r: { isErr(): boolean; error?: { _tag: string } }) =>
   r.isErr() ? r.error?._tag : "ok";
 
 const insert = (values: Parameters<typeof row>[0], partition = ACME, peerId = device.peerId) =>
   validator.validate(
     { peerId, partition, changes: [{ kind: "insert", table: BOOKS, key: B1, row: row(values) }] },
-    none,
+    NONE,
   );
 
 describe("createValidator — the ladder", () => {
@@ -97,8 +98,8 @@ describe("createValidator — the ladder", () => {
     ];
     const notes = (partition: PartitionKey | undefined) =>
       partition === undefined
-        ? validator.validate({ peerId: device.peerId, changes: notesChanges }, none)
-        : validator.validate({ peerId: device.peerId, partition, changes: notesChanges }, none);
+        ? validator.validate({ peerId: device.peerId, changes: notesChanges }, NONE)
+        : validator.validate({ peerId: device.peerId, partition, changes: notesChanges }, NONE);
     expect(tag(notes(USER))).toBe("ok");
     expect(tag(notes(parsePartitionKey("user:acct_b").unwrap()))).toBe("WrongPartition");
     expect(tag(notes(undefined))).toBe("WrongPartition");
@@ -109,7 +110,7 @@ describe("createValidator — the ladder", () => {
           { kind: "insert", table: table("drafts"), key: B1, row: row({ id: "d", body: "b" }) },
         ],
       },
-      none,
+      NONE,
     );
     expect(tag(drafts)).toBe("LocalOnly");
     const catalog = validator.validate(
@@ -119,7 +120,7 @@ describe("createValidator — the ladder", () => {
           { kind: "insert", table: table("catalog"), key: B1, row: row({ id: "c", code: "x" }) },
         ],
       },
-      none,
+      NONE,
     );
     expect(tag(catalog)).toBe("ReadOnlyPartition");
     const authority = createValidator({
@@ -141,7 +142,7 @@ describe("createValidator — the ladder", () => {
               },
             ],
           },
-          none,
+          NONE,
         ),
       ),
     ).toBe("ok");
@@ -153,7 +154,7 @@ describe("createValidator — the ladder", () => {
             partition: ACME,
             changes: [{ kind: "insert", table: table("nope"), key: B1, row: row({}) }],
           },
-          none,
+          NONE,
         ),
       ),
     ).toBe("UnknownTable");
@@ -177,7 +178,7 @@ describe("createValidator — the ladder", () => {
           },
         ],
       },
-      none,
+      NONE,
     );
     expect(tag(bad)).toBe("SchemaViolation");
     const ok = ungranted.validate(
@@ -186,7 +187,7 @@ describe("createValidator — the ladder", () => {
         partition: ACME,
         changes: [{ kind: "delete", table: BOOKS, key: B1 }],
       },
-      none,
+      NONE,
     );
     expect(tag(ok)).toBe("ok");
   });
@@ -201,7 +202,7 @@ describe("createValidator — the ladder", () => {
           partition: ACME,
           changes: [{ kind: "update", table: BOOKS, key: B1, patch: row({ title: "x" }) }],
         },
-        before,
+        { row: before, partition: none },
       );
     expect(tag(update(mine))).toBe("ok");
     expect(tag(update(theirs))).toBe("PolicyDenied");
@@ -211,7 +212,7 @@ describe("createValidator — the ladder", () => {
         partition: ACME,
         changes: [{ kind: "delete", table: BOOKS, key: B1 }],
       },
-      mine,
+      { row: mine, partition: none },
     );
     expect(tag(del)).toBe("PolicyDenied");
     grants.set(device.peerId, grantFor("admin"));
@@ -287,5 +288,24 @@ describe("can", () => {
     expect(can(schema, grant, "notes.insert")).toBe(true);
     expect(can(schema, undefined, "books.read")).toBe(false);
     expect(can(schema, grant, "nope.read")).toBe(false);
+  });
+});
+
+describe("a row keeps the partition it was born in", () => {
+  test("a write to a row held in another instance is WrongPartition, whoever the author is", () => {
+    grants.set(device.peerId, grantFor("admin"));
+    const validator = createValidator({ schema, grantFor: (peer) => grants.get(peer) });
+    const other = parsePartitionKey("org:globex").unwrap();
+    const held = { row: none, partition: () => other };
+    const verdict = validator.validate(
+      {
+        peerId: device.peerId,
+        partition: ACME,
+        changes: [{ kind: "update", table: BOOKS, key: B1, patch: row({ title: "x" }) }],
+      },
+      held,
+    );
+    expect(tag(verdict)).toBe("WrongPartition");
+    expect(verdict.isErr() && verdict.error.message).toContain("org:globex");
   });
 });

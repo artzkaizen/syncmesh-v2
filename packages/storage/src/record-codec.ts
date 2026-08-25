@@ -1,7 +1,7 @@
 import type { Cell, ColumnName, RowRecord, Stamp } from "@syncmesh/kernel";
 import type { CborValue } from "@syncmesh/wire";
 
-import { parsePeerId } from "@syncmesh/kernel";
+import { parsePartitionKey, parsePeerId } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
 import {
   bytesToHex,
@@ -29,14 +29,19 @@ const stampToCbor = (stamp: Stamp): CborValue => [
 const optional = (stamp: Stamp | undefined): CborValue =>
   stamp === undefined ? null : stampToCbor(stamp);
 
-/** `[cells[[column, value, stamp]], writeStamp | null, deleteStamp | null]`, stamps as `[ms, logical, peer]`. */
+/** `[cells[[column, value, stamp]], writeStamp | null, deleteStamp | null, partition | null]`, stamps as `[ms, logical, peer]`. */
 export function encodeRecord(record: RowRecord): Uint8Array {
   const cells = [...record.cells].map(([column, cell]): CborValue => [
     column,
     cellToCbor(cell.value),
     stampToCbor(cell.stamp),
   ]);
-  return encodeCbor([cells, optional(record.writeStamp), optional(record.deleteStamp)]);
+  return encodeCbor([
+    cells,
+    optional(record.writeStamp),
+    optional(record.deleteStamp),
+    record.partition ?? null,
+  ]);
 }
 
 export function decodeRecord(bytes: Uint8Array): Result<RowRecord, MalformedRecord> {
@@ -44,8 +49,8 @@ export function decodeRecord(bytes: Uint8Array): Result<RowRecord, MalformedReco
     const value = yield* decodeCbor(bytes).mapError(
       (e) => new MalformedRecord({ message: e.message }),
     );
-    if (!Array.isArray(value) || value.length !== 3) return malformed("record is not a triple");
-    const [cellsValue, writeValue, deleteValue] = value;
+    if (!Array.isArray(value) || value.length !== 4) return malformed("record is not a quadruple");
+    const [cellsValue, writeValue, deleteValue, partitionValue] = value;
     if (!Array.isArray(cellsValue)) return malformed("cells are not an array");
     const cells = new Map<ColumnName, Cell>();
     for (const entry of cellsValue) {
@@ -54,7 +59,13 @@ export function decodeRecord(bytes: Uint8Array): Result<RowRecord, MalformedReco
     }
     const writeStamp = yield* optionalStamp(writeValue);
     const deleteStamp = yield* optionalStamp(deleteValue);
-    return Result.ok(withStamps(cells, writeStamp, deleteStamp));
+    const stamped = withStamps(cells, writeStamp, deleteStamp);
+    if (partitionValue === null) return Result.ok(stamped);
+    if (!isString(partitionValue)) return malformed("partition is not text");
+    const partition = yield* parsePartitionKey(partitionValue).mapError(
+      (e) => new MalformedRecord({ message: e.message }),
+    );
+    return Result.ok({ ...stamped, partition });
   });
 }
 

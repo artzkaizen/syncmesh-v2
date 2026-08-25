@@ -1,6 +1,6 @@
 import type { ColumnName, Logical, RowRecord, Stamp } from "@syncmesh/kernel";
 
-import { compareStamp, parsePeerId } from "@syncmesh/kernel";
+import { compareStamp, parsePartitionKey, parsePeerId } from "@syncmesh/kernel";
 import { Temporal } from "@syncmesh/temporal";
 import { describe, expect, test } from "bun:test";
 
@@ -52,5 +52,14 @@ describe("record codec", () => {
     expect(tag(Uint8Array.of(0x83, 0x00, 0xf6, 0xf6))).toBe("MalformedRecord");
     expect(tag(Uint8Array.of(0xff, 0x01))).toBe("MalformedRecord");
     expect(tag(encodeRecord(record).subarray(0, 10))).toBe("MalformedRecord");
+  });
+});
+
+describe("partition on the record", () => {
+  test("round-trips, and absent stays absent", () => {
+    const acme = parsePartitionKey("org:acme").unwrap();
+    const decoded = decodeRecord(encodeRecord({ ...record, partition: acme })).unwrap();
+    expect(decoded.partition).toBe(acme);
+    expect(decodeRecord(encodeRecord(record)).unwrap()).not.toHaveProperty("partition");
   });
 });

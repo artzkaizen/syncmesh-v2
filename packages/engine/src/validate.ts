@@ -1,3 +1,4 @@
+import type { PartitionKey } from "@syncmesh/kernel";
 import type { Change, PeerId, Row, RowKey, SyncEvent, TableName } from "@syncmesh/kernel";
 import type { Grant } from "@syncmesh/wire";
 
@@ -42,6 +43,13 @@ export type ProbeEvent = Pick<SyncEvent, "peerId" | "partition" | "changes" | "l
 /** The row a change applies to, as the device holds it; `undefined` when absent. */
 export type RowLookup = (table: TableName, key: RowKey) => Row | undefined;
 
+/** What the device holds about the rows an event touches. */
+export interface StateLookup {
+  readonly row: RowLookup;
+  /** The partition the row was first written in; `undefined` when absent or unpartitioned. */
+  readonly partition: (table: TableName, key: RowKey) => PartitionKey | undefined;
+}
+
 export interface ValidatorOptions {
   readonly schema: ValidatorSchema;
   /** `null` is ungranted mode: grant and policy steps are skipped; schema never is. */
@@ -52,7 +60,7 @@ export interface ValidatorOptions {
 
 export interface Validator {
   /** Ladder: grant → device → partition → schema → policy. The first failure is the verdict. */
-  readonly validate: (event: ProbeEvent, before: RowLookup) => Result<void, ValidationError>;
+  readonly validate: (event: ProbeEvent, before: StateLookup) => Result<void, ValidationError>;
 }
 
 const RESERVED = new Set(["global", "user", "local"]);
@@ -85,9 +93,15 @@ export function createValidator(options: ValidatorOptions): Validator {
         return Result.err(new UnknownTable({ table, message: "not in the schema" }));
       const partition = checkPartition(table, entry, event, grant, isAuthority);
       if (partition.isErr()) return partition;
+      const held = before.partition(change.table, change.key);
+      if (held !== undefined && held !== event.partition) {
+        return Result.err(
+          new WrongPartition({ table, expected: held, message: `the row belongs to ${held}` }),
+        );
+      }
       const columns = checkColumns(entry.table, change);
       if (columns.isErr()) return columns;
-      const policy = checkPolicy(entry, change, grant, before, isAuthority, schema);
+      const policy = checkPolicy(entry, change, grant, before.row, isAuthority, schema);
       if (policy.isErr()) return policy;
     }
     return Result.ok(undefined);

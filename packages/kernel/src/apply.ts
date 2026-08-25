@@ -1,4 +1,5 @@
 import type { Change, Row, RowKey, TableName } from "./change.js";
+import type { PartitionKey } from "./partition.js";
 import type { Cell, ColumnName, RowRecord } from "./record.js";
 import type { State, TableState } from "./state.js";
 
@@ -21,16 +22,23 @@ const EMPTY_RECORD: RowRecord = { cells: new Map() };
  * Every step is a max-based join — cells by their column's strategy, `writeStamp` and
  * `deleteStamp` by stamp — so any order and any replay of the same changes converge.
  * `insert` and `update` both merge column by column (RFC-0014 §1); `merge` names the
- * strategy per column, defaulting to `lww`.
+ * strategy per column, defaulting to `lww`. `partition` is the event's; a row keeps the first it saw.
  */
-export function applyChange(state: State, change: Change, stamp: Stamp, merge?: MergeSpec): State {
-  const incoming: RowRecord =
+export function applyChange(
+  state: State,
+  change: Change,
+  stamp: Stamp,
+  merge?: MergeSpec,
+  partition?: PartitionKey,
+): State {
+  const base: RowRecord =
     change.kind === "delete"
       ? { cells: new Map(), deleteStamp: stamp }
       : {
           cells: stampAll(change.kind === "insert" ? change.row : change.patch, stamp),
           writeStamp: stamp,
         };
+  const incoming = partition === undefined ? base : { ...base, partition };
   return mergeRecord(state, change.table, change.key, incoming, merge);
 }
 
@@ -44,6 +52,7 @@ export function mergeRecord(
 ): State {
   const tableState = state.get(table) ?? new Map<RowKey, RowRecord>();
   const current = tableState.get(key) ?? EMPTY_RECORD;
+  const partition = current.partition ?? record.partition;
   const joined = {
     cells: mergeCells(current.cells, record.cells, merge?.get(table)),
     ...stampFields(
@@ -51,7 +60,13 @@ export function mergeRecord(
       later(current.deleteStamp, record.deleteStamp),
     ),
   };
-  return withRecord(state, table, tableState, key, joined);
+  return withRecord(
+    state,
+    table,
+    tableState,
+    key,
+    partition === undefined ? joined : { ...joined, partition },
+  );
 }
 
 const stampAll = (row: Row, stamp: Stamp): ReadonlyMap<ColumnName, Cell> =>

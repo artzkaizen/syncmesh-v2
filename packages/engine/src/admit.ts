@@ -4,13 +4,13 @@ import { Result } from "@syncmesh/result";
 
 import type { Quarantined } from "./engine.js";
 import type { EventStore } from "./store.js";
-import type { RowLookup, Validator } from "./validate.js";
+import type { StateLookup, Validator } from "./validate.js";
 
 interface AdmitDeps {
   readonly peerId: PeerId;
   readonly store: EventStore;
   readonly validate: Validator | undefined;
-  readonly before: RowLookup;
+  readonly before: StateLookup;
   readonly quarantine: { readonly emit: (q: Quarantined) => void };
 }
 

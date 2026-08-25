@@ -16,7 +16,6 @@ export { applyChange, mergeRecord } from "./apply.js";
 export type {
   EventId,
   ParsedEventId,
-  PartitionKey,
   Procedure,
   ProtocolVersion,
   SeqNum,
@@ -24,12 +23,12 @@ export type {
 } from "./event.js";
 export {
   InvalidEventId,
-  InvalidPartitionKey,
   InvalidSeqNum,
-  PARTITION_KEY,
   eventId,
   parseEventId,
-  parsePartitionKey,
   parseSeqNum,
   stampOf,
 } from "./event.js";
+export type { PartitionKey } from "./partition.js";
+export { InvalidPartitionKey, PARTITION_KEY, parsePartitionKey } from "./partition.js";
+export { readRowsIn } from "./state.js";

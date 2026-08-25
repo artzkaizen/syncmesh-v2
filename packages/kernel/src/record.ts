@@ -1,3 +1,4 @@
+import type { PartitionKey } from "./partition.js";
 import type { Brand } from "./primitives.js";
 
 import { compareStamp, type Stamp } from "./stamp.js";
@@ -24,6 +25,8 @@ export interface RowRecord {
   readonly cells: ReadonlyMap<ColumnName, Cell>;
   readonly writeStamp?: Stamp;
   readonly deleteStamp?: Stamp;
+  /** The instance the row belongs to, fixed by the first write that reached it; absent for global, user and local tables. */
+  readonly partition?: PartitionKey;
 }
 
 /** Whether the row is live: written, and never deleted or written after its latest delete. See RFC-0014 §1. */

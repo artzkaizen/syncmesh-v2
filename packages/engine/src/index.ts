@@ -55,6 +55,7 @@ export { timed } from "./telemetry.js";
 export type {
   ProbeEvent,
   RowLookup,
+  StateLookup,
   Validator,
   ValidatorOptions,
   ValidatorSchema,

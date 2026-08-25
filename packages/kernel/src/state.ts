@@ -1,4 +1,5 @@
 import type { Row, RowKey, TableName } from "./change.js";
+import type { PartitionKey } from "./partition.js";
 
 import { isVisible, type RowRecord } from "./record.js";
 
@@ -16,5 +17,21 @@ export function getRecord(state: State, table: TableName, key: RowKey): RowRecor
 export function readRow(state: State, table: TableName, key: RowKey): Row | undefined {
   const record = getRecord(state, table, key);
   if (record === undefined || !isVisible(record)) return undefined;
-  return new Map([...record.cells].map(([column, cell]) => [column, cell.value]));
+  return values(record);
 }
+
+/** Every visible row of the table that belongs to `partition`. */
+export function readRowsIn(
+  state: State,
+  table: TableName,
+  partition: PartitionKey,
+): ReadonlyMap<RowKey, Row> {
+  const rows = new Map<RowKey, Row>();
+  for (const [key, record] of state.get(table) ?? []) {
+    if (record.partition === partition && isVisible(record)) rows.set(key, values(record));
+  }
+  return rows;
+}
+
+const values = (record: RowRecord): Row =>
+  new Map([...record.cells].map(([column, cell]) => [column, cell.value]));
