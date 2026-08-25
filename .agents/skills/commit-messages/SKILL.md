@@ -15,14 +15,26 @@ One sentence, under ~72 characters, that says **what changed and why it matters*
 plain language. Imperative or declarative, either is fine; no trailing period.
 
 ```
-Warn instead of silently dropping an unparsable compose port
-Stop swarm crash loops by scaling the service to zero
-Make the notification bell honest about its own state
-Generate NetBird's store key in the format it decodes
+fix(compose): Warn instead of silently dropping an unparsable port
+fix(swarm): Stop crash loops by scaling the service to zero
+fix(web): Make the notification bell honest about its own state
+fix(netbird): Generate the store key in the format it decodes
 ```
 
-An optional `type(scope):` prefix is fine when the type is the point — `fix(auth):`,
-`feat(web):`, `refactor(web):`, `test(web):`. After the prefix, the same one sentence.
+Every subject starts with a `type(scope):` prefix — it is not optional. The type is
+one of `feat`, `fix`, `refactor`, `test`, `docs`, `style`, `build`, `chore`; the scope is
+the package or area the diff lives in (`kernel`, `engine`, `wire`, `schema`, `temporal`,
+`config`, `gen`, `plan`, `skills`, …). Drop the scope only when the change is genuinely
+cross-cutting (`build:`, `docs:`). After the prefix, the same one sentence, and keep the
+whole line short enough that a narrow log panel still shows the point — under ~60 is
+the target, ~72 the ceiling:
+
+```
+feat(engine): Add undoDepth and revert, keeping the original partition
+refactor(kernel): Route applyChange through mergeRecord: one join
+test(wire): Garbage and mutated frames neither throw nor reach state
+docs(plan): Write down three apps the API has to carry, and why
+```
 
 Not a subject:
 
@@ -56,6 +68,7 @@ adds X, Y and Z".
 
 ## Before committing
 
-1. Does the subject say why, not just what? Could a reader pick this commit out of fifty?
+1. Does the subject carry a `type(scope):` prefix, and say why, not just what? Could a
+   reader pick this commit out of fifty?
 2. Is every claim in the body true of this diff — and verified, not hoped?
 3. Would the paragraphs still make sense to someone who never saw this conversation?
