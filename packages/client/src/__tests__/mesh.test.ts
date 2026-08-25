@@ -61,6 +61,19 @@ const tag = <E extends { _tag: string }>(r: { isErr: () => boolean; error?: E })
   r.isErr() ? (r as { error: E }).error._tag : "ok";
 
 describe("the namespace", () => {
+  test("a table named like a mesh method is a definition-time panic, not a silent shadow", () => {
+    // grants, tx, ready are real domain names — without the panic, {...base, ...collections}
+    // would shadow the method and fail far away as "mesh.grants.register is not a function"
+    for (const name of ["grants", "tx", "ready"]) {
+      const colliding = defineSchema({
+        tables: { [name]: { columns: { id: t.text().primaryKey() } } },
+      });
+      expect(() => createMesh({ schema: colliding, identity: device, now: () => T0 })).toThrow(
+        "collides with a mesh method",
+      );
+    }
+  });
+
   test("reserved tables never surface as collections; declared tables do", () => {
     const mesh = granted();
     expect("_policy" in mesh).toBe(false);
