@@ -1,4 +1,4 @@
-import type { Engine, EngineOptions, Validator, ValidatorOptions } from "@syncmesh/engine";
+import type { Engine, EngineOptions, ValidatorOptions } from "@syncmesh/engine";
 import type { EventId, PartitionKey, PeerId, Procedure, Row as WireCells } from "@syncmesh/kernel";
 import type { InvalidPartitionKey } from "@syncmesh/kernel";
 import type { ColumnsMap, PartitionTree, Roles, Schema, Table, TablesOf } from "@syncmesh/schema";
@@ -87,24 +87,24 @@ export function createMesh<
     );
   const now = options.now ?? (() => Temporal.Now.instant());
   const registry = createGrantRegistry({ issuer: issuer ?? identity.peerId, now });
-  const grantsOptions: MeshGrantsOptions = { now };
+  const grantsOptions = { now } satisfies MeshGrantsOptions;
   if (issuerKey !== undefined) Object.assign(grantsOptions, { issuerKey });
   const grants = createMeshGrants(registry, grantsOptions);
   const grantFor = (peer: PeerId): Grant | undefined => grants.grantFor(peer);
-  const validatorOptions: ValidatorOptions = {
+  const validatorOptions = {
     schema,
     grantFor: issuer === undefined ? null : grantFor,
     isAuthority,
-  };
+  } satisfies ValidatorOptions;
   if (authority !== undefined) Object.assign(validatorOptions, { authority });
-  const validate: Validator = createValidator(validatorOptions);
-  const engineOptions: EngineOptions = {
+  const validate = createValidator(validatorOptions);
+  const engineOptions = {
     peerId: identity.peerId,
     clock: createHlcClock({ now }),
     store: options.store ?? createMemoryEventStore(),
     merge: schema.merge,
     validate,
-  };
+  } satisfies EngineOptions;
   if (options.stateStore !== undefined)
     Object.assign(engineOptions, { stateStore: options.stateStore });
   if (undoDepth !== undefined) Object.assign(engineOptions, { undoDepth });

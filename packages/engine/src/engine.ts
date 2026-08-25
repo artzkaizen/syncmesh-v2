@@ -130,10 +130,10 @@ export function createEngine(options: EngineOptions): Engine {
   const outbound = createHub<SyncEvent>(report("onOutbound"));
   const telemetry = createHub<TelemetryEvent>();
   const quarantine = createHub<Quarantined>();
-  const before: StateLookup = {
+  const before = {
     row: (table, key) => readRow(state, table, key),
     partition: (table, key) => getRecord(state, table, key)?.partition,
-  };
+  } satisfies StateLookup;
   const acks = new Map<PeerId, Ack>();
 
   const fold = (events: readonly SyncEvent[], source: FoldSource): FoldBatch => {
