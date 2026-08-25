@@ -1,7 +1,7 @@
 import type { CellValue, ColumnName, Row, RowKey, TableName } from "@syncmesh/kernel";
 import type { Procedure } from "@syncmesh/kernel";
 
-import { createHlcClock, parsePeerId } from "@syncmesh/kernel";
+import { createHlcClock, parsePeerId, parseSeqNum } from "@syncmesh/kernel";
 import { Temporal } from "@syncmesh/temporal";
 
 import { createEngine } from "../engine.js";
@@ -9,6 +9,8 @@ import { createMemoryEventStore } from "../store.js";
 
 export const PEER_A = parsePeerId("a".repeat(64)).unwrap();
 export const PEER_B = parsePeerId("b".repeat(64)).unwrap();
+
+export const seq = (n: number) => parseSeqNum(n).unwrap();
 
 export const procedure = (label: string): Procedure => {
   // SAFETY: test fixture; procedure naming rules arrive with the client (E09)

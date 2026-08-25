@@ -36,7 +36,7 @@ export interface MutateOptions {
   readonly local?: boolean;
 }
 
-export type FoldSource = "local" | "remote";
+export type FoldSource = "local" | "remote" | "boot";
 
 /** One notification per fold, however many events it covered. `writeKeys` is exact: live queries (E10) trust it. */
 export interface FoldBatch {
@@ -98,10 +98,22 @@ export interface EngineOptions {
   readonly undoDepth?: number;
   /** Runs on a probe before a local write gets a sequence number, and on every received event before it is stored. */
   readonly validate?: Validator;
+  /** Events the store already holds, folded before any listener can attach; `openEngine` supplies them. */
+  readonly replay?: readonly SyncEvent[];
+}
+
+/** Boots an engine over what `store` holds: folds every stored event and moves the clock past the highest stored stamp before any write is numbered. */
+export function openEngine(options: EngineOptions): Promise<Result<Engine, StoreFailure>> {
+  return Result.gen(async function* () {
+    const replay = yield* Result.await(options.store.all());
+    const max = yield* Result.await(options.store.maxHlc());
+    if (max !== undefined) options.clock.receive(max);
+    return Result.ok(createEngine({ ...options, replay }));
+  });
 }
 
 export function createEngine(options: EngineOptions): Engine {
-  const { peerId, clock, store, merge, undoDepth = 0, validate } = options;
+  const { peerId, clock, store, merge, undoDepth = 0, validate, replay: stored = [] } = options;
   let state = emptyState();
   const undo: Undo[] = [];
   const errors = createHub<EngineError>();
@@ -137,6 +149,7 @@ export function createEngine(options: EngineOptions): Engine {
     telemetry.emit({ type: "engine.fold", sizes: { events: events.length, keys }, duration });
     folds.emit(batch);
   };
+  fold(stored, "boot");
 
   const mutate: Engine["mutate"] = (procedure, fn, mutateOptions = {}) =>
     Result.gen(async function* () {
@@ -178,10 +191,8 @@ export function createEngine(options: EngineOptions): Engine {
       const { fresh, quarantined } = yield* Result.await(
         admit(events, { peerId, store, validate, before, quarantine }),
       );
-      for (const event of fresh) {
-        clock.receive(event.hlc);
-        yield* Result.await(store.append(event));
-      }
+      for (const event of fresh) clock.receive(event.hlc);
+      yield* Result.await(store.appendBatch(fresh));
       fold(fresh, "remote");
       return Result.ok({
         folded: fresh.length,

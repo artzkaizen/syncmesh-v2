@@ -34,7 +34,7 @@ describe("onError", () => {
       clock: fakeClock(100),
       store: {
         ...failing,
-        append: () => Promise.resolve(Result.err(new StoreFailure({ message: "disk full" }))),
+        appendBatch: () => Promise.resolve(Result.err(new StoreFailure({ message: "disk full" }))),
       },
     });
     const link = createLink(a.engine, b);

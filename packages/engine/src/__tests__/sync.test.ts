@@ -9,9 +9,7 @@ import {
   type Cursors,
   type SyncDoc,
 } from "../sync.js";
-import { CREATE, N1, NOTES, PEER_A, PEER_B, row, setup } from "./fixtures.js";
-
-const seq = (n: number) => parseSeqNum(n).unwrap();
+import { CREATE, N1, NOTES, PEER_A, PEER_B, row, seq, setup } from "./fixtures.js";
 
 const docWith = async (n: number): Promise<{ doc: SyncDoc; events: SyncEvent[] }> => {
   const { engine } = setup(PEER_A);

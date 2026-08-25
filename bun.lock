@@ -13,6 +13,24 @@
         "vite-plus": "catalog:",
       },
     },
+    "adapters/sqlite-bun": {
+      "name": "@syncmesh/sqlite-bun",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/storage": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncmesh/config": "workspace:*",
+        "@syncmesh/engine": "workspace:*",
+        "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/result": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
+        "@syncmesh/wire": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+    },
     "conformance": {
       "name": "@syncmesh/conformance",
       "version": "0.0.0",
@@ -116,6 +134,22 @@
       "optionalPeers": [
         "drizzle-orm",
       ],
+    },
+    "packages/storage": {
+      "name": "@syncmesh/storage",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/engine": "workspace:*",
+        "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/result": "workspace:*",
+        "@syncmesh/wire": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncmesh/config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
     },
     "packages/temporal": {
       "name": "@syncmesh/temporal",
@@ -365,6 +399,10 @@
     "@syncmesh/result": ["@syncmesh/result@workspace:packages/result"],
 
     "@syncmesh/schema": ["@syncmesh/schema@workspace:packages/schema"],
+
+    "@syncmesh/sqlite-bun": ["@syncmesh/sqlite-bun@workspace:adapters/sqlite-bun"],
+
+    "@syncmesh/storage": ["@syncmesh/storage@workspace:packages/storage"],
 
     "@syncmesh/temporal": ["@syncmesh/temporal@workspace:packages/temporal"],
 

@@ -17,6 +17,8 @@ export type SeqScope = "synced" | "local";
 export interface EventStore {
   /** Idempotent by event id. */
   readonly append: (event: SyncEvent) => Promise<Result<void, StoreFailure>>;
+  /** All or nothing where the backend can promise it; idempotent by event id. */
+  readonly appendBatch: (events: readonly SyncEvent[]) => Promise<Result<void, StoreFailure>>;
   readonly has: (id: EventId) => Promise<Result<boolean, StoreFailure>>;
   readonly all: () => Promise<Result<readonly SyncEvent[], StoreFailure>>;
   /** Synced events above the given per-author cursors, ordered by author then sequence. */
@@ -36,6 +38,10 @@ export function createMemoryEventStore(): EventStore {
   return {
     append: (event) => {
       if (!events.has(event.id)) events.set(event.id, event);
+      return ok(undefined);
+    },
+    appendBatch: (batch) => {
+      for (const event of batch) if (!events.has(event.id)) events.set(event.id, event);
       return ok(undefined);
     },
     has: (id) => ok(events.has(id)),

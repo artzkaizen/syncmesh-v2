@@ -10,9 +10,7 @@ import {
 import { describe, expect, test } from "bun:test";
 import * as fc from "fast-check";
 
-import { hlcAt, PEER_A, procedure } from "./fixtures.js";
-
-const seq = (n: number) => parseSeqNum(n).unwrap();
+import { hlcAt, PEER_A, procedure, seq } from "./fixtures.js";
 
 describe("parseSeqNum", () => {
   test("accepts positive safe integers", () => {

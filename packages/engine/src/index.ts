@@ -9,7 +9,7 @@ export type {
   MutateOptions,
   ReceiveReport,
 } from "./engine.js";
-export { createEngine } from "./engine.js";
+export { createEngine, openEngine } from "./engine.js";
 export {
   CannotRevert,
   EmptyMutation,

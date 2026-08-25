@@ -20,7 +20,14 @@ const tasks = {
 
 const preset = (platform: Platform) =>
   defineConfig({
-    pack: { entry: ["src/index.ts"], format: ["esm"], platform, dts: true, clean: true },
+    pack: {
+      entry: ["src/index.ts"],
+      format: ["esm"],
+      platform,
+      dts: true,
+      clean: true,
+      external: [/^(bun|node|cloudflare):/],
+    },
     run: { tasks },
   });
 
