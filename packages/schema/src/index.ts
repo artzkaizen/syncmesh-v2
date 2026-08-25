@@ -25,3 +25,16 @@ export {
   checkRow,
   table,
 } from "./table.js";
+export type {
+  Manifest,
+  PartitionDef,
+  PartitionKind,
+  Partitions,
+  Roles,
+  Schema,
+  SchemaEntry,
+  TableEntry,
+  TablesOf,
+} from "./manifest.js";
+export { defineSchema } from "./manifest.js";
+export { correctionsTable, policyTable, reservedTable, reservedTables } from "./reserved.js";
