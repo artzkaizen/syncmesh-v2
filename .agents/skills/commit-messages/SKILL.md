@@ -1,6 +1,6 @@
 ---
 name: commit-messages
-description: How syncmesh commits are written — one plain-sentence subject that says what changed and why it matters, then prose paragraphs with the problem, the cause, the decision, what was left out and how it was verified. Use before every `git commit`.
+description: How syncmesh commits are written — a compulsory `type(scope):` prefix, then one plain-sentence subject under ~60 characters that says what changed and why it matters, then prose paragraphs with the problem, the cause, the decision, what was left out and how it was verified. Use before every `git commit`, including amend and reword.
 ---
 
 # Commit messages
