@@ -1,5 +1,12 @@
 import { PEER_ID_HEX, parsePeerId } from "@syncmesh/kernel";
-import { eventId, parseEventId, parseSeqNum, stampOf, type SyncEvent } from "@syncmesh/kernel";
+import {
+  eventId,
+  parseEventId,
+  parsePartitionKey,
+  parseSeqNum,
+  stampOf,
+  type SyncEvent,
+} from "@syncmesh/kernel";
 import { describe, expect, test } from "bun:test";
 import * as fc from "fast-check";
 
@@ -82,5 +89,14 @@ describe("stampOf", () => {
       changes: [],
     };
     expect(stampOf(event)).toEqual({ hlc: event.hlc, peer: PEER_A });
+  });
+});
+
+describe("parsePartitionKey", () => {
+  test("kind:id only", () => {
+    expect(parsePartitionKey("org:acme").isOk()).toBe(true);
+    expect(parsePartitionKey("shelf:s-1_x").isOk()).toBe(true);
+    for (const bad of ["acme", "org:", ":acme", "Org:acme", "org:a b", "org:a:b"])
+      expect(parsePartitionKey(bad).isErr()).toBe(true);
   });
 });

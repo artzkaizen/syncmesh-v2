@@ -13,6 +13,22 @@ export type Procedure = Brand<string, "Procedure">;
 
 export type PartitionKey = Brand<string, "PartitionKey">;
 
+export class InvalidPartitionKey extends TaggedError("InvalidPartitionKey")<{
+  input: string;
+  message: string;
+}> {}
+
+/** `kind:id` — the one form a partition instance takes, on events and in grants alike (D07). */
+export const PARTITION_KEY = /^[a-z][a-z0-9_]{0,63}:[^\s:]{1,255}$/;
+
+export function parsePartitionKey(input: string): Result<PartitionKey, InvalidPartitionKey> {
+  if (!PARTITION_KEY.test(input)) {
+    return Result.err(new InvalidPartitionKey({ input, message: "expected kind:id" }));
+  }
+  // SAFETY: matched PARTITION_KEY
+  return Result.ok(input as PartitionKey);
+}
+
 /** One local write as every peer will see it. Unsigned: the wire envelope (E03) carries the signature. See RFC-0002. */
 export interface SyncEvent {
   readonly v: ProtocolVersion;

@@ -23,9 +23,12 @@ export type {
 } from "./event.js";
 export {
   InvalidEventId,
+  InvalidPartitionKey,
   InvalidSeqNum,
+  PARTITION_KEY,
   eventId,
   parseEventId,
+  parsePartitionKey,
   parseSeqNum,
   stampOf,
 } from "./event.js";
