@@ -3,6 +3,8 @@ import type { Temporal } from "@syncmesh/temporal";
 
 import type { Output, StandardSchemaV1 } from "./standard-schema.js";
 
+import { toWireValue, type AppValue } from "./convert.js";
+
 export type ColumnKind =
   | "text"
   | "integer"
@@ -73,7 +75,8 @@ export function columnFromDef<T, N extends boolean, D extends boolean, P extends
     primaryKey: () => next<T, N, D, true>({ primaryKey: true }),
     unique: () => next<T, N, D, P>({ unique: true }),
     default: (value) =>
-      next<T, N, true, P>({ hasDefault: true, defaultValue: toWire(def.kind, value) }),
+      // SAFETY: T is the column's declared app-facing value type, which is always an AppValue
+      next<T, N, true, P>({ hasDefault: true, defaultValue: toWireValue(value as AppValue) }),
     check: (schema) => next<Output<typeof schema> & T, N, D, P>({ check: schema }),
     onConflict: (strategy) => next<T, N, D, P>({ onConflict: strategy }),
   };
@@ -86,13 +89,6 @@ const base = (kind: ColumnKind): ColumnDef => ({
   unique: false,
   hasDefault: false,
 });
-
-const toWire = <T>(kind: ColumnKind, value: T): CellValue => {
-  // SAFETY: T is the column's declared value type; only timestamp's wire form (epoch ms) differs from it
-  return kind === "timestamp"
-    ? (value as Temporal.Instant).epochMilliseconds
-    : (value as CellValue);
-};
 
 interface JsonColumn {
   <T extends JsonValue = JsonValue>(): Column<T, false, false, false>;

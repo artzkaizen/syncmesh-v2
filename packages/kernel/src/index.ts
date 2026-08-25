@@ -31,4 +31,4 @@ export {
 } from "./event.js";
 export type { PartitionKey } from "./partition.js";
 export { InvalidPartitionKey, PARTITION_KEY, parsePartitionKey } from "./partition.js";
-export { readRowsIn } from "./state.js";
+export { readRows, readRowsIn } from "./state.js";

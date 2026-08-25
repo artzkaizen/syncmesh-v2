@@ -1,0 +1,181 @@
+import type { Engine, EngineOptions, Validator } from "@syncmesh/engine";
+import type { EventId, PartitionKey, PeerId, Procedure, Row as WireCells } from "@syncmesh/kernel";
+import type { InvalidPartitionKey } from "@syncmesh/kernel";
+import type { ColumnsMap, PartitionTree, Roles, Schema, Table, TablesOf } from "@syncmesh/schema";
+import type { Grant, GrantRegistry, Identity } from "@syncmesh/wire";
+
+import {
+  can as canOn,
+  createEngine,
+  createMemoryEventStore,
+  createValidator,
+} from "@syncmesh/engine";
+import { createHlcClock, parsePartitionKey } from "@syncmesh/kernel";
+import { Result, panic } from "@syncmesh/result";
+import { Temporal } from "@syncmesh/temporal";
+import { createGrantRegistry } from "@syncmesh/wire";
+
+import type { Collection, Write, Writes } from "./collection.js";
+import type { Placement, PlacementEntry } from "./context.js";
+import type { MeshRevertError, TxError, UnknownPartitionKind, WriteError } from "./errors.js";
+import type { TxCollections } from "./tx.js";
+
+import { createCollection } from "./collection.js";
+import { createContext } from "./context.js";
+import { CrossPartitionTx } from "./errors.js";
+
+export interface MeshOptions<P extends PartitionTree, RS extends Roles<P>, C extends ColumnsMap> {
+  readonly schema: Schema<P, RS, C>;
+  readonly identity: Identity;
+  /** The peer whose signature grants must carry; absent, the mesh runs ungranted — schema checks only, no user tables. */
+  readonly issuer?: PeerId;
+  readonly store?: EngineOptions["store"];
+  readonly stateStore?: EngineOptions["stateStore"];
+  readonly undoDepth?: number;
+  readonly isAuthority?: boolean;
+  readonly now?: () => Temporal.Instant;
+}
+
+export interface MeshBase<C extends ColumnsMap> {
+  readonly engine: Engine;
+  readonly grants: GrantRegistry;
+  /** Sets the active instance of its kind; every collection of that kind re-points. */
+  readonly activate: (instance: string) => Result<void, InvalidPartitionKey | UnknownPartitionKind>;
+  readonly active: (kind: string) => PartitionKey | undefined;
+  /** One event, one partition; refused before anything is written when the tables disagree. */
+  readonly tx: (
+    fn: (collections: TxCollections<C>) => Result<void, WriteError>,
+  ) => Promise<Result<void, TxError>>;
+  /** `"table.op"` against the same rules every receiver enforces. */
+  readonly can: (what: `${string}.${string}`, row?: WireCells) => boolean;
+  readonly revert: (id: EventId) => Promise<Result<unknown, MeshRevertError>>;
+  readonly canRevert: (id: EventId) => boolean;
+}
+
+export type Mesh<C extends ColumnsMap> = MeshBase<C> & {
+  readonly [K in keyof C]: Collection<TablesOf<C>[K]>;
+};
+
+type AnyCollection = Collection<Table> & { readonly writes: Writes<Table> };
+
+/** One constructor: engine, validator, grants and a collection per table, partitions ambient via `activate` (D07). */
+export function createMesh<
+  P extends PartitionTree,
+  const RS extends Roles<P>,
+  C extends ColumnsMap,
+>(options: MeshOptions<P, RS, C>): Mesh<C> {
+  const { schema, identity, issuer, undoDepth, isAuthority = false } = options;
+  const now = options.now ?? (() => Temporal.Now.instant());
+  const grants = createGrantRegistry({ issuer: issuer ?? identity.peerId, now });
+  const grantFor = (peer: PeerId): Grant | undefined => grants.grantFor(peer);
+  const validate: Validator = createValidator({
+    schema,
+    grantFor: issuer === undefined ? null : grantFor,
+    isAuthority,
+  });
+  const engineOptions: EngineOptions = {
+    peerId: identity.peerId,
+    clock: createHlcClock({ now }),
+    store: options.store ?? createMemoryEventStore(),
+    merge: schema.merge,
+    validate,
+  };
+  if (options.stateStore !== undefined)
+    Object.assign(engineOptions, { stateStore: options.stateStore });
+  if (undoDepth !== undefined) Object.assign(engineOptions, { undoDepth });
+  const engine = createEngine(engineOptions);
+  const context = createContext({
+    kinds: schema.kinds.map(String),
+    peerId: identity.peerId,
+    grantFor,
+  });
+
+  const can: MeshBase<C>["can"] = (what, row) =>
+    canOn(schema, grantFor(identity.peerId), what, row);
+
+  const entryOf = new Map<string, PlacementEntry>(
+    schema.entries.map((e) => [String(e.table.name), e]),
+  );
+  const placementOf = (name: string): Result<Placement, WriteError> => {
+    const entry = entryOf.get(name);
+    if (entry === undefined) return panic(`no schema entry for ${name}`);
+    return context.placementFor(entry);
+  };
+
+  const collections: Record<string, AnyCollection> = {};
+  for (const [name, table] of Object.entries(schema.tables)) {
+    collections[name] = createCollection(table, {
+      engine,
+      placement: () => placementOf(name),
+      can,
+    });
+  }
+
+  const tx: MeshBase<C>["tx"] = (fn) =>
+    Result.gen(async function* () {
+      const writes: (Write & { readonly table: string })[] = [];
+      const recording: Record<string, Writes<Table>> = {};
+      for (const [name, c] of Object.entries(collections))
+        recording[name] = tapWrites(c.writes, (write) => writes.push({ ...write, table: name }));
+      // SAFETY: one recorder per table of C, built over the same keys as the collections
+      yield* fn(recording as TxCollections<C>);
+      const placements: Placement[] = [];
+      for (const write of writes) placements.push(yield* placementOf(write.table));
+      const distinct = [
+        ...new Set(placements.map((p) => `${String(p.partition ?? "")}|${p.local === true}`)),
+      ];
+      if (distinct.length > 1) {
+        return Result.err(
+          new CrossPartitionTx({
+            partitions: distinct,
+            message: "a tx writes one partition; split it",
+          }),
+        );
+      }
+      const label = [...new Set(writes.map((w) => w.label))].join("+");
+      const where = placements[0] ?? {};
+      yield* Result.await(
+        engine.mutate(
+          // SAFETY: `table.op` labels joined with `+`; procedure naming is the client's to define (E09)
+          label as Procedure,
+          (t) => {
+            for (const write of writes) write.apply(t);
+          },
+          where,
+        ),
+      );
+      return Result.ok(undefined);
+    });
+
+  const base: MeshBase<C> = {
+    engine,
+    grants,
+    activate: (instance) =>
+      Result.gen(function* () {
+        const key = yield* parsePartitionKey(instance);
+        return context.activate(key);
+      }),
+    active: context.active,
+    tx,
+    can,
+    revert: (id) => engine.revert(id),
+    canRevert: (id) => engine.canRevert(id),
+  };
+  for (const name of Object.keys(collections))
+    if (name in base) panic(`table "${name}" collides with a mesh method; rename the table`);
+  // SAFETY: one Collection per key of C, and no key collides with MeshBase (checked above)
+  return { ...base, ...collections } as Mesh<C>;
+}
+
+const tapWrites = (writes: Writes<Table>, record: (write: Write) => void): Writes<Table> => ({
+  insert: (row) => writes.insert(row).map(tap(record)),
+  update: (key, patch) => writes.update(key, patch).map(tap(record)),
+  delete: (key) => writes.delete(key).map(tap(record)),
+});
+
+const tap =
+  (record: (write: Write) => void) =>
+  (write: Write): Write => {
+    record(write);
+    return write;
+  };

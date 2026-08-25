@@ -20,6 +20,14 @@ export function readRow(state: State, table: TableName, key: RowKey): Row | unde
   return values(record);
 }
 
+/** Every visible row of the table. */
+export function readRows(state: State, table: TableName): ReadonlyMap<RowKey, Row> {
+  const rows = new Map<RowKey, Row>();
+  for (const [key, record] of state.get(table) ?? [])
+    if (isVisible(record)) rows.set(key, values(record));
+  return rows;
+}
+
 /** Every visible row of the table that belongs to `partition`. */
 export function readRowsIn(
   state: State,
