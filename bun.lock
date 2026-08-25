@@ -142,6 +142,7 @@
         "@syncmesh/engine": "workspace:*",
         "@syncmesh/kernel": "workspace:*",
         "@syncmesh/result": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
         "@syncmesh/wire": "workspace:*",
       },
       "devDependencies": {

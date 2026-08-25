@@ -23,7 +23,9 @@ describe("onError", () => {
     const r = await engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ x: 1 })));
     expect(r.isOk()).toBe(true);
     expect(reached).toBe(1);
-    expect(errors.map((e) => `${e._tag}:${e.hook}`)).toEqual(["ListenerFailure:onFoldBatch"]);
+    expect(errors.map((e) => `${e._tag}:${e._tag === "ListenerFailure" ? e.hook : "-"}`)).toEqual([
+      "ListenerFailure:onFoldBatch",
+    ]);
   });
 
   test("a link reports a receive that the far store refused", async () => {

@@ -9,7 +9,18 @@ export type {
   MutateOptions,
   ReceiveReport,
 } from "./engine.js";
-export { createEngine, openEngine } from "./engine.js";
+export { createEngine } from "./engine.js";
+export type { Boot } from "./boot.js";
+export { openEngine } from "./boot.js";
+export type { Coverage, RowWrite, StateStore, WriteKeys } from "./state-store.js";
+export {
+  EMPTY_COVERAGE,
+  StateCorrupt,
+  allRows,
+  createMemoryStateStore,
+  rowsFor,
+  writeKeysOf,
+} from "./state-store.js";
 export {
   CannotRevert,
   EmptyMutation,

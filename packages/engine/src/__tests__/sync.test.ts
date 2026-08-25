@@ -1,4 +1,5 @@
-import { parseSeqNum, type SyncEvent } from "@syncmesh/kernel";
+import type { SyncEvent } from "@syncmesh/kernel";
+
 import { describe, expect, test } from "bun:test";
 
 import {

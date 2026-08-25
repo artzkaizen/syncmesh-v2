@@ -25,7 +25,8 @@ export type MutateError = EmptyMutation | ValidationError | StoreFailure;
 
 export type RevertError = CannotRevert | MutateError;
 
-export type EngineError = ListenerFailure;
+/** Reported through `onError`: a listener threw, or the state cache refused a commit. */
+export type EngineError = ListenerFailure | StoreFailure;
 
 export class NoGrant extends TaggedError("NoGrant")<{ peer: PeerId; message: string }> {}
 export class GrantDeviceMismatch extends TaggedError("GrantDeviceMismatch")<{

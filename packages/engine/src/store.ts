@@ -21,8 +21,11 @@ export interface EventStore {
   readonly appendBatch: (events: readonly SyncEvent[]) => Promise<Result<void, StoreFailure>>;
   readonly has: (id: EventId) => Promise<Result<boolean, StoreFailure>>;
   readonly all: () => Promise<Result<readonly SyncEvent[], StoreFailure>>;
-  /** Synced events above the given per-author cursors, ordered by author then sequence. */
-  readonly allSince: (cursors: Cursors) => Promise<Result<readonly SyncEvent[], StoreFailure>>;
+  /** Events in the scope above the given per-author cursors, ordered by author then sequence. Synced by default. */
+  readonly allSince: (
+    cursors: Cursors,
+    scope?: SeqScope,
+  ) => Promise<Result<readonly SyncEvent[], StoreFailure>>;
   /** Highest sequence number this peer has appended in the scope, if any. */
   readonly lastSeq: (
     peer: PeerId,
@@ -30,6 +33,9 @@ export interface EventStore {
   ) => Promise<Result<SeqNum | undefined, StoreFailure>>;
   readonly maxHlc: () => Promise<Result<Hlc | undefined, StoreFailure>>;
 }
+
+const inScope = (event: SyncEvent, scope: SeqScope) =>
+  (event.local === true) === (scope === "local");
 
 export function createMemoryEventStore(): EventStore {
   const events = new Map<EventId, SyncEvent>();
@@ -46,10 +52,10 @@ export function createMemoryEventStore(): EventStore {
     },
     has: (id) => ok(events.has(id)),
     all: () => ok([...events.values()]),
-    allSince: (cursors) =>
+    allSince: (cursors, scope = "synced") =>
       ok(
         [...events.values()]
-          .filter((e) => e.local !== true && (cursors.get(e.peerId) ?? 0) < e.seqNum)
+          .filter((e) => inScope(e, scope) && (cursors.get(e.peerId) ?? 0) < e.seqNum)
           .sort((x, y) =>
             x.peerId < y.peerId ? -1 : x.peerId > y.peerId ? 1 : x.seqNum - y.seqNum,
           ),
@@ -57,8 +63,11 @@ export function createMemoryEventStore(): EventStore {
     lastSeq: (peer, scope) => {
       let last: SeqNum | undefined;
       for (const event of events.values()) {
-        const inScope = (event.local === true) === (scope === "local");
-        if (event.peerId === peer && inScope && (last === undefined || event.seqNum > last))
+        if (
+          event.peerId === peer &&
+          inScope(event, scope) &&
+          (last === undefined || event.seqNum > last)
+        )
           last = event.seqNum;
       }
       return ok(last);

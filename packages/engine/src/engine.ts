@@ -12,11 +12,14 @@ import {
 } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
+import type { Boot } from "./boot.js";
+import type { Coverage, StateStore } from "./state-store.js";
 import type { EventStore, StoreFailure } from "./store.js";
 import type { Cursors } from "./sync.js";
 import type { ProbeEvent, RowLookup, Validator } from "./validate.js";
 
 import { admit } from "./admit.js";
+import { trackCoverage } from "./coverage.js";
 import {
   CannotRevert,
   EmptyMutation,
@@ -27,6 +30,7 @@ import {
   type RevertError,
 } from "./errors.js";
 import { createHub, type Unsubscribe } from "./listeners.js";
+import { rowsFor, writeKeysOf } from "./state-store.js";
 import { timed, type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
 import { record, type Tx } from "./tx.js";
 import { invert, replay, REVERT, type Undo } from "./undo.js";
@@ -78,6 +82,8 @@ export interface Engine {
   readonly canRevert: (id: EventId) => boolean;
   /** Highest synced sequence number held per author. */
   readonly cursors: () => Promise<Result<Cursors, StoreFailure>>;
+  /** What this engine has folded, per author and scope. */
+  readonly coverage: () => Coverage;
   /** Synced events the holder of `theirs` lacks. */
   readonly eventsSince: (theirs: Cursors) => Promise<Result<readonly SyncEvent[], StoreFailure>>;
   readonly onFoldBatch: (listener: (batch: FoldBatch) => void) => Unsubscribe;
@@ -98,23 +104,16 @@ export interface EngineOptions {
   readonly undoDepth?: number;
   /** Runs on a probe before a local write gets a sequence number, and on every received event before it is stored. */
   readonly validate?: Validator;
-  /** Events the store already holds, folded before any listener can attach; `openEngine` supplies them. */
-  readonly replay?: readonly SyncEvent[];
-}
-
-/** Boots an engine over what `store` holds: folds every stored event and moves the clock past the highest stored stamp before any write is numbered. */
-export function openEngine(options: EngineOptions): Promise<Result<Engine, StoreFailure>> {
-  return Result.gen(async function* () {
-    const replay = yield* Result.await(options.store.all());
-    const max = yield* Result.await(options.store.maxHlc());
-    if (max !== undefined) options.clock.receive(max);
-    return Result.ok(createEngine({ ...options, replay }));
-  });
+  /** Where folded rows are kept between runs; absent, every boot refolds the log. */
+  readonly stateStore?: StateStore;
+  /** What to start from; `openEngine` builds it. Absent, the engine starts empty. */
+  readonly boot?: Boot;
 }
 
 export function createEngine(options: EngineOptions): Engine {
-  const { peerId, clock, store, merge, undoDepth = 0, validate, replay: stored = [] } = options;
-  let state = emptyState();
+  const { peerId, clock, store, merge, undoDepth = 0, validate, stateStore, boot } = options;
+  let state = boot?.state ?? emptyState();
+  const coverage = trackCoverage(boot?.coverage);
   const undo: Undo[] = [];
   const errors = createHub<EngineError>();
   const report = (hook: ListenerFailure["hook"]) => (cause: unknown) =>
@@ -125,18 +124,13 @@ export function createEngine(options: EngineOptions): Engine {
   const quarantine = createHub<Quarantined>();
   const before: RowLookup = (table, key) => readRow(state, table, key);
 
-  const fold = (events: readonly SyncEvent[], source: FoldSource): void => {
-    if (events.length === 0) return;
+  const fold = (events: readonly SyncEvent[], source: FoldSource): FoldBatch => {
     const [batch, duration] = timed((): FoldBatch => {
-      const writeKeys = new Map<TableName, Set<RowKey>>();
+      const writeKeys = writeKeysOf(events);
       for (const event of events) {
+        coverage.note(event);
         const stamp = stampOf(event);
-        for (const change of event.changes) {
-          state = applyChange(state, change, stamp, merge);
-          const keys = writeKeys.get(change.table) ?? new Set<RowKey>();
-          keys.add(change.key);
-          writeKeys.set(change.table, keys);
-        }
+        for (const change of event.changes) state = applyChange(state, change, stamp, merge);
       }
       return {
         source,
@@ -145,11 +139,20 @@ export function createEngine(options: EngineOptions): Engine {
         writeKeys,
       };
     });
+    if (events.length === 0) return batch;
     const keys = [...batch.writeKeys.values()].reduce((n, set) => n + set.size, 0);
     telemetry.emit({ type: "engine.fold", sizes: { events: events.length, keys }, duration });
     folds.emit(batch);
+    return batch;
   };
-  fold(stored, "boot");
+  fold(boot?.replay ?? [], "boot");
+
+  /** Writes the rows a fold touched to the state store; a failure is reported, not returned — the log already holds the truth. */
+  const persist = async (batch: FoldBatch): Promise<void> => {
+    if (stateStore === undefined || batch.eventCount === 0) return;
+    const written = await stateStore.commit(rowsFor(state, batch.writeKeys), coverage.current());
+    if (written.isErr()) errors.emit(written.error);
+  };
 
   const mutate: Engine["mutate"] = (procedure, fn, mutateOptions = {}) =>
     Result.gen(async function* () {
@@ -177,7 +180,7 @@ export function createEngine(options: EngineOptions): Engine {
       const event = buildEvent(peerId, procedure, hlc, nextSeq(last), changes, mutateOptions);
       yield* Result.await(store.append(event));
       telemetry.emit({ type: "engine.mutate", sizes: { changes: changes.length }, duration });
-      fold([event], "local");
+      await persist(fold([event], "local"));
       if (undoDepth > 0) {
         undo.push({ event, inverse });
         if (undo.length > undoDepth) undo.shift();
@@ -193,7 +196,7 @@ export function createEngine(options: EngineOptions): Engine {
       );
       for (const event of fresh) clock.receive(event.hlc);
       yield* Result.await(store.appendBatch(fresh));
-      fold(fresh, "remote");
+      await persist(fold(fresh, "remote"));
       return Result.ok({
         folded: fresh.length,
         skipped: events.length - fresh.length - quarantined,
@@ -222,14 +225,6 @@ export function createEngine(options: EngineOptions): Engine {
     return mutate(REVERT, (tx) => replay(tx, entry.inverse), options);
   };
 
-  const cursors: Engine["cursors"] = () =>
-    Result.gen(async function* () {
-      const all = yield* Result.await(store.allSince(new Map()));
-      const max = new Map<PeerId, SeqNum>();
-      for (const e of all) if ((max.get(e.peerId) ?? 0) < e.seqNum) max.set(e.peerId, e.seqNum);
-      return Result.ok(max);
-    });
-
   return {
     peerId,
     mutate,
@@ -238,7 +233,8 @@ export function createEngine(options: EngineOptions): Engine {
     state: () => state,
     revert,
     canRevert: (id) => undo.some((u) => u.event.id === id),
-    cursors,
+    cursors: () => Promise.resolve(Result.ok(coverage.current().synced)),
+    coverage: coverage.current,
     eventsSince: (theirs) => store.allSince(theirs),
     onFoldBatch: folds.subscribe,
     onOutbound: outbound.subscribe,
