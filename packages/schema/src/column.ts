@@ -60,12 +60,13 @@ export interface AnyColumn {
 export type Value<C> =
   C extends Column<infer T, infer N, boolean, boolean> ? (N extends true ? T | null : T) : never;
 
-function column<T, N extends boolean, D extends boolean, P extends boolean>(
+/** Wraps a definition as a column; how `fromDrizzle` builds columns from data. */
+export function columnFromDef<T, N extends boolean, D extends boolean, P extends boolean>(
   def: ColumnDef,
 ): Column<T, N, D, P> {
   const next = <T2, N2 extends boolean, D2 extends boolean, P2 extends boolean>(
     patch: Partial<ColumnDef>,
-  ) => column<T2, N2, D2, P2>({ ...def, ...patch });
+  ) => columnFromDef<T2, N2, D2, P2>({ ...def, ...patch });
   return {
     def,
     nullable: () => next<T, true, D, P>({ nullable: true }),
@@ -100,21 +101,21 @@ interface JsonColumn {
 
 const json: JsonColumn = (schema?: StandardSchemaV1) => {
   // SAFETY: the two call signatures fix the value type; the runtime column is identical either way
-  return column<JsonValue, false, false, false>(
+  return columnFromDef<JsonValue, false, false, false>(
     schema === undefined ? base("json") : { ...base("json"), check: schema },
   ) as never;
 };
 
 export const t = {
-  text: () => column<string, false, false, false>(base("text")),
-  integer: () => column<number, false, false, false>(base("integer")),
-  float: () => column<number, false, false, false>(base("float")),
-  boolean: () => column<boolean, false, false, false>(base("boolean")),
+  text: () => columnFromDef<string, false, false, false>(base("text")),
+  integer: () => columnFromDef<number, false, false, false>(base("integer")),
+  float: () => columnFromDef<number, false, false, false>(base("float")),
+  boolean: () => columnFromDef<boolean, false, false, false>(base("boolean")),
   /** Epoch milliseconds on the wire; a `Temporal.Instant` to the app. */
-  timestamp: () => column<Temporal.Instant, false, false, false>(base("timestamp")),
-  blob: () => column<Uint8Array, false, false, false>(base("blob")),
+  timestamp: () => columnFromDef<Temporal.Instant, false, false, false>(base("timestamp")),
+  blob: () => columnFromDef<Uint8Array, false, false, false>(base("blob")),
   /** Canonical lowercase 8-4-4-4-12 only; never normalised, because rows are keyed by the string. */
-  uuid: () => column<string, false, false, false>(base("uuid")),
+  uuid: () => columnFromDef<string, false, false, false>(base("uuid")),
   /** With a schema the type is inferred and the value checked; without one anything JSON is accepted and `T` is a phantom. */
   json,
 };

@@ -2,6 +2,12 @@ import type { ColumnName, MergeSpec, StrategyName, TableName } from "@syncmesh/k
 
 import { panic } from "@syncmesh/result";
 
+import {
+  fromDrizzle,
+  isDrizzleTable,
+  type ColumnsFromDrizzle,
+  type DrizzleTableLike,
+} from "./from-drizzle.js";
 import { reservedTables } from "./reserved.js";
 import { table, type Columns, type PrimaryKey, type Table } from "./table.js";
 
@@ -15,16 +21,9 @@ export type PartitionKind<P extends Partitions> = (keyof P & string) | "user" | 
 export type Roles<P extends Partitions> = { readonly [K in keyof P]?: readonly string[] };
 
 export type TableEntry<P extends Partitions> =
+  | { readonly columns: Columns; readonly partition: PartitionKind<P>; readonly table?: undefined }
   | {
-      readonly columns: Columns;
-      readonly partition: PartitionKind<P>;
-      readonly table?: undefined;
-      readonly merge?: undefined;
-    }
-  | {
-      readonly table: Table;
-      /** Table-level conflict rules, for tables whose columns were not written here (`fromDrizzle`). */
-      readonly merge?: Readonly<Record<string, StrategyName>>;
+      readonly table: Table | DrizzleTableLike;
       readonly partition: PartitionKind<P>;
       readonly columns?: undefined;
     };
@@ -45,8 +44,12 @@ export interface SchemaEntry<P extends Partitions = Partitions> {
 }
 
 export type TablesOf<T extends Readonly<Record<string, TableEntry<Partitions>>>> = {
-  readonly [K in keyof T]: T[K] extends { readonly table: infer Imported extends Table }
-    ? Imported
+  readonly [K in keyof T]: T[K] extends { readonly table: infer Given }
+    ? Given extends Table
+      ? Given
+      : Given extends DrizzleTableLike
+        ? Table<ColumnsFromDrizzle<Given>, PrimaryKey<ColumnsFromDrizzle<Given>>>
+        : never
     : T[K] extends { readonly columns: infer C extends Columns }
       ? Table<C, PrimaryKey<C>>
       : never;
@@ -68,7 +71,7 @@ export interface Schema<
   readonly rolesFor: (partition: PartitionKind<P>) => readonly string[];
 }
 
-/** One manifest for the data model: partitions, roles, tables with their partition and conflict rules (D06-A). Definition mistakes throw. */
+/** One manifest for the data model: partitions, roles, and tables with their partition (D06-A). Conflict rules live on columns. Definition mistakes throw. */
 export function defineSchema<
   const P extends Partitions,
   const R extends Roles<P>,
@@ -89,11 +92,11 @@ export function defineSchema<
     ) {
       panic(`${name}: unknown partition "${entry.partition}"`);
     }
-    const tbl = entry.table === undefined ? table(name, entry.columns) : entry.table;
+    const tbl = resolve(name, entry);
     if (String(tbl.name) !== name) panic(`${name}: imported table is named "${String(tbl.name)}"`);
     built[name] = tbl;
     entries.push({ table: tbl, partition: entry.partition });
-    const rules = mergeRulesFor(name, tbl, entry.merge);
+    const rules = mergeRulesFor(name, tbl);
     if (rules.size > 0) merge.set(tbl.name, rules);
   }
   return {
@@ -108,6 +111,11 @@ export function defineSchema<
   };
 }
 
+const resolve = (name: string, entry: TableEntry<Partitions>): Table => {
+  if (entry.table === undefined) return table(name, entry.columns);
+  return isDrizzleTable(entry.table) ? fromDrizzle(entry.table) : entry.table;
+};
+
 function checkPartitions(partitions: Partitions, roles: Roles<Partitions>): void {
   for (const [name, def] of Object.entries(partitions)) {
     if (name === "user" || name === "local") panic(`partition "${name}" is reserved`);
@@ -118,25 +126,11 @@ function checkPartitions(partitions: Partitions, roles: Roles<Partitions>): void
     if (!(name in partitions)) panic(`roles: unknown partition "${name}"`);
 }
 
-function mergeRulesFor(
-  name: string,
-  tbl: Table,
-  tableLevel: Readonly<Record<string, StrategyName>> | undefined,
-): Map<ColumnName, StrategyName> {
+function mergeRulesFor(name: string, tbl: Table): Map<ColumnName, StrategyName> {
   const rules = new Map<ColumnName, StrategyName>();
   for (const [key, column] of Object.entries(tbl.columns)) {
     const strategy = column.def.onConflict;
     if (strategy !== undefined && strategy !== "lww")
-      rules.set(tbl.columnNames[key] ?? panic(`${name}.${key}: unnamed column`), strategy);
-  }
-  for (const [key, strategy] of Object.entries(tableLevel ?? {})) {
-    const column = tbl.columns[key];
-    if (column === undefined) panic(`${name}.${key}: merge names a column the table does not have`);
-    if (column.def.onConflict !== undefined)
-      panic(`${name}.${key}: conflict rule declared on both the column and the table`);
-    if (column.def.kind !== "integer" && column.def.kind !== "float" && strategy !== "lww")
-      panic(`${name}.${key}: "${strategy}" needs a numeric column`);
-    if (strategy !== "lww")
       rules.set(tbl.columnNames[key] ?? panic(`${name}.${key}: unnamed column`), strategy);
   }
   return rules;

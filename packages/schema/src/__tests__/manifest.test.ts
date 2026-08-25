@@ -4,7 +4,11 @@ import { t } from "../column.js";
 import { defineSchema } from "../manifest.js";
 import { table } from "../table.js";
 
-const imported = table("views", { id: t.uuid().primaryKey(), count: t.integer(), label: t.text() });
+const imported = table("views", {
+  id: t.uuid().primaryKey(),
+  count: t.integer().onConflict("max"),
+  label: t.text(),
+});
 
 const schema = defineSchema({
   partitions: {
@@ -19,7 +23,7 @@ const schema = defineSchema({
     },
     notes: { columns: { id: t.uuid().primaryKey(), body: t.text() }, partition: "user" },
     drafts: { columns: { id: t.uuid().primaryKey(), body: t.text() }, partition: "local" },
-    views: { table: imported, merge: { count: "max" }, partition: "org" },
+    views: { table: imported, partition: "org" },
   },
 });
 
@@ -37,7 +41,7 @@ describe("defineSchema", () => {
     ]);
   });
 
-  test("merge spec: column onConflict and table-level merge, lww omitted", () => {
+  test("merge spec: column onConflict rules, lww omitted", () => {
     const books = schema.merge.get(schema.tables.books.name);
     expect(books && [...books]).toEqual([[schema.tables.books.columnNames.rating, "max"]]);
     const views = schema.merge.get(imported.name);
@@ -76,24 +80,5 @@ describe("defineSchema", () => {
     expect(() =>
       defineSchema({ partitions: {}, tables: { other: { table: imported, partition: "user" } } }),
     ).toThrow("is named");
-    expect(() =>
-      defineSchema({
-        partitions: {},
-        tables: { views: { table: imported, merge: { nope: "max" }, partition: "user" } },
-      }),
-    ).toThrow("does not have");
-    expect(() =>
-      defineSchema({
-        partitions: {},
-        tables: { views: { table: imported, merge: { label: "max" }, partition: "user" } },
-      }),
-    ).toThrow("numeric");
-    const both = table("both", { id, n: t.integer().onConflict("max") });
-    expect(() =>
-      defineSchema({
-        partitions: {},
-        tables: { both: { table: both, merge: { n: "min" }, partition: "user" } },
-      }),
-    ).toThrow("both the column and the table");
   });
 });

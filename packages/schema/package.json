@@ -23,9 +23,18 @@
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
     "@types/bun": "catalog:",
+    "drizzle-orm": "0.45.2",
     "fast-check": "catalog:",
     "typescript": "catalog:",
     "vite-plus": "catalog:",
     "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "drizzle-orm": ">=0.45.0"
+  },
+  "peerDependenciesMeta": {
+    "drizzle-orm": {
+      "optional": true
+    }
   }
 }
