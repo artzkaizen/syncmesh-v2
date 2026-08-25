@@ -72,10 +72,13 @@ export type Value<C> =
   C extends Column<infer T, infer N, boolean, boolean> ? (N extends true ? T | null : T) : never;
 
 /** Wraps a definition as a column; how `fromDrizzle` builds columns from data. */
-export function columnFromDef<T, N extends boolean, D extends boolean, P extends boolean>(
-  def: ColumnDef,
-): Column<T, N, D, P> {
-  const next = <T2, N2 extends boolean, D2 extends boolean, P2 extends boolean>(
+export function columnFromDef<
+  T extends AppValue,
+  N extends boolean,
+  D extends boolean,
+  P extends boolean,
+>(def: ColumnDef): Column<T, N, D, P> {
+  const next = <T2 extends AppValue, N2 extends boolean, D2 extends boolean, P2 extends boolean>(
     patch: Partial<ColumnDef>,
   ) => columnFromDef<T2, N2, D2, P2>({ ...def, ...patch });
   const column = {
@@ -84,8 +87,7 @@ export function columnFromDef<T, N extends boolean, D extends boolean, P extends
     primaryKey: () => next<T, false, false, true>({ primaryKey: true }),
     unique: () => next<T, N, D, P>({ unique: true }),
     default: (value: T) =>
-      // SAFETY: T is the column's declared app-facing value type, which is always an AppValue
-      next<T, N, true, false>({ hasDefault: true, defaultValue: toWireValue(value as AppValue) }),
+      next<T, N, true, false>({ hasDefault: true, defaultValue: toWireValue(value) }),
     check: <S extends StandardSchemaV1>(schema: S) =>
       next<Output<S> & T, N, D, P>({ check: schema }),
     onConflict: (strategy: StrategyFor<T>) => next<T, N, D, P>({ onConflict: strategy }),

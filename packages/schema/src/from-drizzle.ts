@@ -3,6 +3,7 @@ import type { Temporal } from "@syncmesh/temporal";
 
 import { panic } from "@syncmesh/result";
 
+import type { AppValue } from "./convert.js";
 import type { Columns } from "./table.js";
 
 import {
@@ -212,7 +213,7 @@ export function fromDrizzle<const D extends DrizzleTableLike>(
 ): ColumnsFromDrizzle<D> {
   const runtime = readRuntime(drizzle);
   const rules: Readonly<Record<string, string | undefined>> = options.onConflict ?? {};
-  const mapped: Record<string, Column<unknown, boolean, boolean, boolean>> = {};
+  const mapped: Record<string, Column<AppValue, boolean, boolean, boolean>> = {};
   for (const [key, info] of Object.entries(runtime[COLUMNS])) {
     const def = defFor(info, rules[key], (message) => options.onWarn?.({ column: key, message }));
     mapped[key] = columnFromDef(def);

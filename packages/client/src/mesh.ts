@@ -81,20 +81,39 @@ export type Mesh<C extends ColumnsMap> = MeshBase<C> & {
 type AnyCollection = Collection<Table> & { readonly writes: Writes<Table> };
 
 /** One constructor: engine, validator, grants and a collection per table, partitions ambient via `activate` (D07). */
+/** The engine as the manifest and options describe it, validator included. */
+function buildEngine<P extends PartitionTree, RS extends Roles<P>, C extends ColumnsMap>(
+  options: MeshOptions<P, RS, C>,
+  grantFor: (peer: PeerId) => Grant | undefined,
+  now: () => Temporal.Instant,
+): Engine {
+  const { schema, identity, issuer, authority, isAuthority = false } = options;
+  const validatorOptions = {
+    schema,
+    grantFor: issuer === undefined ? null : grantFor,
+    isAuthority,
+  } satisfies ValidatorOptions;
+  if (authority !== undefined) Object.assign(validatorOptions, { authority });
+  const engineOptions = {
+    peerId: identity.peerId,
+    clock: createHlcClock({ now }),
+    store: options.store ?? createMemoryEventStore(),
+    merge: schema.merge,
+    validate: createValidator(validatorOptions),
+  } satisfies EngineOptions;
+  if (options.stateStore !== undefined)
+    Object.assign(engineOptions, { stateStore: options.stateStore });
+  if (options.undoDepth !== undefined)
+    Object.assign(engineOptions, { undoDepth: options.undoDepth });
+  return createEngine(engineOptions);
+}
+
 export function createMesh<
   P extends PartitionTree,
   const RS extends Roles<P>,
   C extends ColumnsMap,
 >(options: MeshOptions<P, RS, C>): Mesh<C> {
-  const {
-    schema,
-    identity,
-    issuer,
-    authority,
-    issuerKey,
-    undoDepth,
-    isAuthority = false,
-  } = options;
+  const { schema, identity, issuer, issuerKey } = options;
   if (issuerKey !== undefined && issuerKey.peerId !== issuer)
     panic(
       "issuerKey does not match issuer: the private half must belong to the configured root of trust",
@@ -105,24 +124,7 @@ export function createMesh<
   if (issuerKey !== undefined) Object.assign(grantsOptions, { issuerKey });
   const grants = createMeshGrants(registry, grantsOptions);
   const grantFor = (peer: PeerId): Grant | undefined => grants.grantFor(peer);
-  const validatorOptions = {
-    schema,
-    grantFor: issuer === undefined ? null : grantFor,
-    isAuthority,
-  } satisfies ValidatorOptions;
-  if (authority !== undefined) Object.assign(validatorOptions, { authority });
-  const validate = createValidator(validatorOptions);
-  const engineOptions = {
-    peerId: identity.peerId,
-    clock: createHlcClock({ now }),
-    store: options.store ?? createMemoryEventStore(),
-    merge: schema.merge,
-    validate,
-  } satisfies EngineOptions;
-  if (options.stateStore !== undefined)
-    Object.assign(engineOptions, { stateStore: options.stateStore });
-  if (undoDepth !== undefined) Object.assign(engineOptions, { undoDepth });
-  const engine = createEngine(engineOptions);
+  const engine = buildEngine(options, grantFor, now);
   const queries = createQueryRegistry(engine);
   const context = createContext({
     kinds: schema.kinds.map(String),
