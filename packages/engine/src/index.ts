@@ -7,6 +7,7 @@ export type {
   FoldBatch,
   FoldSource,
   MutateOptions,
+  Quarantined,
   ReceiveReport,
 } from "./engine.js";
 export { createEngine } from "./engine.js";

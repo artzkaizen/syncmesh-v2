@@ -350,3 +350,33 @@ The three tiers, side by side:
 | `visibility: "authority"` as a third tier, not a partition | 4 — rows shared across tenants, state- and time-dependent visibility |
 | `allow` required on every partitioned table | 2, 3 — no silent "any member" |
 | Writes local-first, never optimistic | 1 — the local log is the truth on the device |
+
+---
+
+## 5 · Onboarding through the mesh — a grant is bytes, any peer can carry them
+
+The scenario with teeth: a new staff member's phone has **no internet**, but a colleague's
+device in BLE range does. The new device still ends up with a verified grant, because nothing
+about a grant requires the receiving device to talk to the issuer:
+
+1. N mints its identity locally (`createIdentity` — offline, the key never leaves the device).
+2. N hands its `peerId` to M over the local link. That is the whole request.
+3. M has internet and calls the grant route **with N's peerId** — the §1 route already takes
+   `devicePeerId` in the body, so this is not a new endpoint.
+4. The signed grant rides back M → N. N verifies it offline against the issuer's public key
+   from its config, and registers it. Writes and `can` light up.
+
+The carrier is a pipe, provably: flip one byte and registration fails on the signature; register
+someone else's grant and it answers for *their* device key, not yours (`grantFor` is by device).
+The same shape covers the serverless org — the issuer keypair on the owner's phone instead of a
+server, grants minted in the room — and device linking, where an already-granted phone requests
+a grant *for* the laptop's peerId under the same account.
+
+Ordering is the part the transport must own (E11): events from an author you hold no grant for
+quarantine on `NoGrant` and are never stored; when the grant frame arrives — sessions send
+grants before any event — a resync converges. All four scenarios are pinned by
+`packages/client/src/__tests__/onboarding.test.ts` today, with function calls standing in for
+the radio; E11 replaces the function calls with frames and changes nothing above them.
+
+What stays impossible by design: instant revocation without ever reaching the issuer. Expiry is
+the staleness bound (D08) — renewal is one more grant frame, relayed exactly like onboarding.
