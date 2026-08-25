@@ -1,8 +1,11 @@
+import type { SuiteCase } from "@syncmesh/engine";
+
+import { equal } from "@syncmesh/engine";
+
 import type { SqliteDriver } from "../driver.js";
-import type { DriverCase, OpenDriver } from "./index.js";
+import type { OpenDriver } from "./index.js";
 
 import { sqliteEventStore } from "../sqlite-event-store.js";
-import { equal } from "./assert.js";
 import { A, B, at, entry, event, ids2 as ids, seq } from "./fixtures.js";
 
 const filled = async (driver: SqliteDriver) => {
@@ -23,7 +26,7 @@ const floors = async (store: Awaited<ReturnType<typeof filled>>) => {
   return [f.synced.get(A), f.synced.get(B), f.local.get(A)];
 };
 
-export const compactionCases = (openDriver: OpenDriver): readonly DriverCase[] => [
+export const compactionCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   {
     name: "compaction: compactBelow removes per author, in scope, older than the cut; records the highest removed",
     run: async () => {

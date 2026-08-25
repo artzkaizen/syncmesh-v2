@@ -11,3 +11,5 @@ export {
 } from "./frame.js";
 export type { Bridge, BridgeError, BridgeOptions } from "./bridge.js";
 export { SendFailed, Unsendable, bridgeFramedLink } from "./bridge.js";
+export type { FrameTransportOptions, Transport, TransportContext } from "./transport.js";
+export { createFrameTransport, linkTransport } from "./transport.js";

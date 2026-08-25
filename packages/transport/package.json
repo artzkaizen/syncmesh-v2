@@ -13,18 +13,23 @@
       "@syncmesh/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./transport-tests": {
+      "@syncmesh/source": "./src/transport-tests/index.ts",
+      "types": "./dist/transport-tests/index.d.ts",
+      "default": "./dist/transport-tests/index.js"
     }
   },
   "dependencies": {
     "@syncmesh/engine": "workspace:*",
     "@syncmesh/kernel": "workspace:*",
     "@syncmesh/result": "workspace:*",
+    "@syncmesh/schema": "workspace:*",
     "@syncmesh/temporal": "workspace:*",
     "@syncmesh/wire": "workspace:*"
   },
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
-    "@syncmesh/schema": "workspace:*",
     "@types/bun": "catalog:",
     "typescript": "catalog:",
     "vite-plus": "catalog:"

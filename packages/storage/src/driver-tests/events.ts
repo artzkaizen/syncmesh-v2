@@ -1,20 +1,21 @@
 import type { StoredEvent } from "@syncmesh/engine";
+import type { SuiteCase } from "@syncmesh/engine";
 
+import { check, equal } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { encodeEventCore } from "@syncmesh/wire";
 
 import type { SqliteDriver } from "../driver.js";
-import type { DriverCase, OpenDriver } from "./index.js";
+import type { OpenDriver } from "./index.js";
 
 import { sqliteEventStore } from "../sqlite-event-store.js";
-import { check, equal } from "./assert.js";
 import { A, B, at, entry, event, hlc, ids2 as ids, seq } from "./fixtures.js";
 
 const ACME = parsePartitionKey("org:acme").unwrap();
 const cores = (entries: readonly StoredEvent[]) => entries.map((x) => encodeEventCore(x.event));
 const open = async (driver: SqliteDriver) => (await sqliteEventStore(driver)).unwrap();
 
-export const eventCases = (openDriver: OpenDriver): readonly DriverCase[] => [
+export const eventCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   {
     name: "events: core bytes survive, an absent partition stays absent, local survives",
     run: async () => {

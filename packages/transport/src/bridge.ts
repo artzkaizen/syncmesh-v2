@@ -49,12 +49,48 @@ export interface Bridge {
   readonly close: () => void;
 }
 
+/** Out-of-order holdback, per author: the gap rule. Max-based cursors would jump a lost frame. */
+function createHoldback(engine: Engine, self: PeerId, gapLimit: number) {
+  const held = new Map<PeerId, Map<number, StoredEvent>>();
+  const contiguous = (author: PeerId): number => Number(engine.coverage().synced.get(author) ?? 0);
+
+  return {
+    /** Buffers the entry; `true` when the buffer overflowed and a resync must take over. */
+    put: ({ event, sig }: StoredEvent): boolean => {
+      const seq = Number(event.seqNum);
+      if (event.peerId === self || seq <= contiguous(event.peerId)) return false;
+      const buffer = held.get(event.peerId) ?? new Map<number, StoredEvent>();
+      buffer.set(seq, sig === undefined ? { event } : { event, sig });
+      held.set(event.peerId, buffer);
+      if (buffer.size > gapLimit) {
+        buffer.clear();
+        return true;
+      }
+      return false;
+    },
+    /** The contiguous run above what the engine holds, in order. */
+    drain: (author: PeerId): readonly StoredEvent[] => {
+      const buffer = held.get(author);
+      if (buffer === undefined) return [];
+      const ready: StoredEvent[] = [];
+      let next = contiguous(author) + 1;
+      for (;;) {
+        const entry = buffer.get(next);
+        if (entry === undefined) break;
+        buffer.delete(next);
+        ready.push(entry);
+        next += 1;
+      }
+      if (buffer.size === 0) held.delete(author);
+      return ready;
+    },
+  };
+}
+
 export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridge {
   const { engine, identity, grants, onGrantRequest, gapLimit = 512 } = options;
   const now = options.now ?? (() => Temporal.Now.instant());
   const errors = createHub<BridgeError>();
-  /** Out-of-order holdback, per author: the gap rule. Max-based cursors would jump a lost frame. */
-  const held = new Map<PeerId, Map<number, StoredEvent>>();
   let queue: Promise<unknown> = Promise.resolve();
   let closed = false;
   let sentCursors = false;
@@ -70,7 +106,9 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
   const envelopeOf = (entry: StoredEvent): Uint8Array | undefined => {
     if (entry.event.peerId === identity.peerId) return signEvent(entry.event, identity).wire;
     if (entry.sig !== undefined) return encodeCbor([encodeEventCore(entry.event), entry.sig]);
-    errors.emit(new Unsendable({ id: entry.event.id, message: "no stored signature to relay" }));
+    errors.emit(
+      new Unsendable({ id: String(entry.event.id), message: "no stored signature to relay" }),
+    );
     return undefined;
   };
 
@@ -82,47 +120,33 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     });
   };
 
-  const contiguous = (author: PeerId): number => Number(engine.coverage().synced.get(author) ?? 0);
-
-  const drain = (author: PeerId): readonly StoredEvent[] => {
-    const buffer = held.get(author);
-    if (buffer === undefined) return [];
-    const ready: StoredEvent[] = [];
-    let next = contiguous(author) + 1;
-    for (;;) {
-      const entry = buffer.get(next);
-      if (entry === undefined) break;
-      buffer.delete(next);
-      ready.push(entry);
-      next += 1;
-    }
-    if (buffer.size === 0) held.delete(author);
-    return ready;
-  };
-
+  const holdback = createHoldback(engine, identity.peerId, gapLimit);
   const receiveEvent = (wire: Uint8Array): void => {
     const verified = decodeAndVerify(wire);
     if (verified.isErr()) {
       errors.emit(verified.error);
       return;
     }
-    const { event, sig } = verified.value;
-    const seq = Number(event.seqNum);
-    if (event.peerId === identity.peerId || seq <= contiguous(event.peerId)) return;
-    const buffer = held.get(event.peerId) ?? new Map<number, StoredEvent>();
-    buffer.set(seq, { event, sig });
-    held.set(event.peerId, buffer);
-    if (buffer.size > gapLimit) {
-      buffer.clear();
+    const overflow = holdback.put(verified.value);
+    if (overflow) {
       resync();
       return;
     }
     queue = queue.then(async () => {
-      const ready = drain(event.peerId);
+      const ready = holdback.drain(verified.value.event.peerId);
       if (ready.length === 0) return;
       const r = await engine.receiveBatch(ready);
       if (r.isErr()) errors.emit(r.error);
     });
+  };
+
+  /** They hold an author ahead of us: answering with our cursors is the request for the diff. */
+  const behind = (theirs: ReadonlyMap<PeerId, SeqNum>): boolean => {
+    const ours = engine.coverage().synced;
+    for (const [author, seq] of theirs) {
+      if (author !== identity.peerId && (ours.get(author) ?? 0) < seq) return true;
+    }
+    return false;
   };
 
   const onCursors = (from: PeerId, theirs: ReadonlyMap<PeerId, SeqNum>): void => {
@@ -137,7 +161,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
         const wire = envelopeOf(entry);
         if (wire !== undefined) guard("event", () => link.send(eventFrame(wire)));
       }
-      if (!sentCursors) {
+      if (!sentCursors || behind(theirs)) {
         sentCursors = true;
         sendCursors();
       }
@@ -182,6 +206,10 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
   const offOutbound = engine.onOutbound((event: SyncEvent) =>
     guard("event", () => link.send(eventFrame(signEvent(event, identity).wire))),
   );
+  /** A remote fold means this engine now holds more than its other neighbors may: announce, so they request. */
+  const offFolds = engine.onFoldBatch((batch) => {
+    if (batch.source === "remote") sendCursors();
+  });
 
   const resync = (): void => {
     sentCursors = true;
@@ -204,6 +232,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
       offFrame();
       offRegistered();
       offOutbound();
+      offFolds();
       link.close?.();
     },
   };

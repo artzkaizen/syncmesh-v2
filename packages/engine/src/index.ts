@@ -63,3 +63,5 @@ export type {
 } from "./validate.js";
 export { createValidator, policyContext } from "./validate.js";
 export { can } from "./can.js";
+export type { SuiteCase } from "./suite.js";
+export { SuiteFailure, check, equal } from "./suite.js";

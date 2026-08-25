@@ -1,12 +1,14 @@
 import type { Coverage, StateStore } from "@syncmesh/engine";
+import type { SuiteCase } from "@syncmesh/engine";
+
+import { equal } from "@syncmesh/engine";
 
 import type { SqliteDriver } from "../driver.js";
-import type { DriverCase, OpenDriver } from "./index.js";
+import type { OpenDriver } from "./index.js";
 
 import { encodeRecord } from "../record-codec.js";
 import { sqliteEventStore } from "../sqlite-event-store.js";
 import { sqliteStateStore } from "../sqlite-state-store.js";
-import { equal } from "./assert.js";
 import { A, B, BODY, N1, NOTES, record, seq } from "./fixtures.js";
 
 const coverage: Coverage = {
@@ -28,7 +30,7 @@ const cursorsOf = async (store: StateStore) => {
   return [c.synced.get(A), c.synced.get(B), c.local.get(A)];
 };
 
-export const stateCases = (openDriver: OpenDriver): readonly DriverCase[] => [
+export const stateCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   {
     name: "state: commit lands rows and coverage together; loadAll and loadCursors read them back",
     run: async () => {

@@ -1,10 +1,16 @@
 import { bytesEqual } from "@syncmesh/wire";
 
-/** A driver-suite expectation that did not hold; the message names the case and the value. */
-export class DriverTestFailure extends Error {}
+/** An expectation of a shipped conformance suite (driver tests, transport tests) that did not hold. */
+export class SuiteFailure extends Error {}
+
+/** One named case of a shipped suite, runnable by any test runner: `for (const c of cases) test(c.name, c.run)`. */
+export interface SuiteCase {
+  readonly name: string;
+  readonly run: () => Promise<void>;
+}
 
 export function check(condition: boolean, message: string): asserts condition {
-  if (!condition) throw new DriverTestFailure(message);
+  if (!condition) throw new SuiteFailure(message);
 }
 
 type Leaf = string | number | boolean | null | undefined;

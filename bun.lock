@@ -223,12 +223,12 @@
         "@syncmesh/engine": "workspace:*",
         "@syncmesh/kernel": "workspace:*",
         "@syncmesh/result": "workspace:*",
+        "@syncmesh/schema": "workspace:*",
         "@syncmesh/temporal": "workspace:*",
         "@syncmesh/wire": "workspace:*",
       },
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
-        "@syncmesh/schema": "workspace:*",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
