@@ -309,3 +309,36 @@ describe("a row keeps the partition it was born in", () => {
     expect(verdict.isErr() && verdict.error.message).toContain("org:globex");
   });
 });
+
+describe("global is authored by the authority, verified by authorship", () => {
+  const relay = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 170 + i)).unwrap();
+  const catalogChanges: readonly Change[] = [
+    { kind: "insert", table: table("catalog"), key: key("c1"), row: row({ id: "c1", code: "x" }) },
+  ];
+
+  test("a device with the authority configured accepts its global events and nobody else's", () => {
+    const validator = createValidator({
+      schema,
+      grantFor: null,
+      authority: relay.peerId,
+    });
+    expect(tag(validator.validate({ peerId: relay.peerId, changes: catalogChanges }, NONE))).toBe(
+      "ok",
+    );
+    expect(tag(validator.validate({ peerId: device.peerId, changes: catalogChanges }, NONE))).toBe(
+      "ReadOnlyPartition",
+    );
+  });
+
+  test("with an authority configured, even the local isAuthority flag defers to authorship", () => {
+    const validator = createValidator({
+      schema,
+      grantFor: null,
+      isAuthority: true,
+      authority: relay.peerId,
+    });
+    expect(tag(validator.validate({ peerId: device.peerId, changes: catalogChanges }, NONE))).toBe(
+      "ReadOnlyPartition",
+    );
+  });
+});

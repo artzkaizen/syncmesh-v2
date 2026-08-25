@@ -1,4 +1,4 @@
-import type { Engine, EngineOptions, Validator } from "@syncmesh/engine";
+import type { Engine, EngineOptions, Validator, ValidatorOptions } from "@syncmesh/engine";
 import type { EventId, PartitionKey, PeerId, Procedure, Row as WireCells } from "@syncmesh/kernel";
 import type { InvalidPartitionKey } from "@syncmesh/kernel";
 import type { ColumnsMap, PartitionTree, Roles, Schema, Table, TablesOf } from "@syncmesh/schema";
@@ -34,6 +34,8 @@ export interface MeshOptions<P extends PartitionTree, RS extends Roles<P>, C ext
   readonly stateStore?: EngineOptions["stateStore"];
   readonly undoDepth?: number;
   readonly isAuthority?: boolean;
+  /** The peer whose events may write `global` tables — the relay's id, shipped in config like the issuer's. */
+  readonly authority?: PeerId;
   readonly now?: () => Temporal.Instant;
 }
 
@@ -67,15 +69,17 @@ export function createMesh<
   const RS extends Roles<P>,
   C extends ColumnsMap,
 >(options: MeshOptions<P, RS, C>): Mesh<C> {
-  const { schema, identity, issuer, undoDepth, isAuthority = false } = options;
+  const { schema, identity, issuer, authority, undoDepth, isAuthority = false } = options;
   const now = options.now ?? (() => Temporal.Now.instant());
   const grants = createGrantRegistry({ issuer: issuer ?? identity.peerId, now });
   const grantFor = (peer: PeerId): Grant | undefined => grants.grantFor(peer);
-  const validate: Validator = createValidator({
+  const validatorOptions: ValidatorOptions = {
     schema,
     grantFor: issuer === undefined ? null : grantFor,
     isAuthority,
-  });
+  };
+  if (authority !== undefined) Object.assign(validatorOptions, { authority });
+  const validate: Validator = createValidator(validatorOptions);
   const engineOptions: EngineOptions = {
     peerId: identity.peerId,
     clock: createHlcClock({ now }),

@@ -11,6 +11,8 @@ Companion to [grant-onboarding](grant-onboarding.md). Three roles a process can 
 
 Legend: ✅ exists today · 🟡 proposed, to okay · 🔴 gap found writing this doc.
 
+> **2026-08-25:** all four proposals below were okayed. #1 (`authority: PeerId`) is fixed and tested; the rest land next.
+
 ---
 
 ## 1 · The client device ✅

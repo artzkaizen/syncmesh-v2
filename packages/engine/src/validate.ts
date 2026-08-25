@@ -56,6 +56,8 @@ export interface ValidatorOptions {
   readonly grantFor: ((peer: PeerId) => Grant | undefined) | null;
   /** The relay: may write global tables, and is where authority-visibility rules run. */
   readonly isAuthority?: boolean;
+  /** The one peer whose events may write `global` tables; named like the issuer is, checked against the event's author. Absent, only `isAuthority` may. */
+  readonly authority?: PeerId;
 }
 
 export interface Validator {
@@ -66,7 +68,7 @@ export interface Validator {
 const RESERVED = new Set(["global", "user", "local"]);
 
 export function createValidator(options: ValidatorOptions): Validator {
-  const { schema, grantFor, isAuthority = false } = options;
+  const { schema, grantFor, isAuthority = false, authority } = options;
   const entries = new Map(schema.entries.map((e) => [String(e.table.name), e]));
 
   const validate: Validator["validate"] = (event, before) => {
@@ -91,7 +93,7 @@ export function createValidator(options: ValidatorOptions): Validator {
       const entry = entries.get(table);
       if (entry === undefined)
         return Result.err(new UnknownTable({ table, message: "not in the schema" }));
-      const partition = checkPartition(table, entry, event, grant, isAuthority);
+      const partition = checkPartition(table, entry, event, grant, isAuthority, authority);
       if (partition.isErr()) return partition;
       const held = before.partition(change.table, change.key);
       if (held !== undefined && held !== event.partition) {
@@ -118,6 +120,7 @@ function checkPartition(
   event: ProbeEvent,
   grant: Grant | undefined,
   isAuthority: boolean,
+  authority: PeerId | undefined,
 ): Result<void, ValidationError> {
   const kind = entry.partition;
   if (entry.visibility === "authority") return Result.ok(undefined);
@@ -127,7 +130,8 @@ function checkPartition(
       : Result.err(new LocalOnly({ table, message: "a local table never travels" }));
   }
   if (kind === "global") {
-    return isAuthority
+    const allowed = authority === undefined ? isAuthority : event.peerId === authority;
+    return allowed
       ? Result.ok(undefined)
       : Result.err(
           new ReadOnlyPartition({ table, message: "global tables are written by the authority" }),
