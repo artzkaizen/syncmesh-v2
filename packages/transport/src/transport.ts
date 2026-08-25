@@ -31,6 +31,8 @@ export interface Transport {
   readonly stop: () => Promise<void>;
   /** Re-requests from the last contiguous position on every open session; the recovery after loss or reconnect. */
   readonly resync?: () => void;
+  /** Asks every connected peer for a grant for this device (flow A step ②). */
+  readonly requestGrant?: (invite?: string) => void;
   readonly onStatus?: (cb: (online: boolean) => void) => Unsubscribe;
 }
 
@@ -79,6 +81,9 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
     whenReady: () => ready,
     resync: () => {
       for (const bridge of bridges) bridge.resync();
+    },
+    requestGrant: (invite) => {
+      for (const bridge of bridges) bridge.requestGrant(invite);
     },
     stop: async () => {
       for (const bridge of bridges) bridge.close();

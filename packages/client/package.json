@@ -22,6 +22,7 @@
     "@syncmesh/result": "workspace:*",
     "@syncmesh/schema": "workspace:*",
     "@syncmesh/temporal": "workspace:*",
+    "@syncmesh/transport": "workspace:*",
     "@syncmesh/wire": "workspace:*"
   },
   "devDependencies": {

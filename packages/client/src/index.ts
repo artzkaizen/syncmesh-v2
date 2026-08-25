@@ -14,3 +14,5 @@ export type { QueryHandle, QueryRegistry } from "./registry.js";
 export { createQueryRegistry } from "./registry.js";
 export type { IssueRequest, MeshGrants } from "./grants.js";
 export { createMeshGrants } from "./grants.js";
+export type { RunningTransports } from "./transports.js";
+export { runTransports } from "./transports.js";

@@ -2,6 +2,7 @@ import type { Engine, EngineOptions, ValidatorOptions } from "@syncmesh/engine";
 import type { EventId, PartitionKey, PeerId, Procedure, Row as WireCells } from "@syncmesh/kernel";
 import type { InvalidPartitionKey } from "@syncmesh/kernel";
 import type { ColumnsMap, PartitionTree, Roles, Schema, Table, TablesOf } from "@syncmesh/schema";
+import type { Transport, TransportContext } from "@syncmesh/transport";
 import type { Grant, Identity } from "@syncmesh/wire";
 
 import {
@@ -25,6 +26,7 @@ import { createContext } from "./context.js";
 import { CrossPartitionTx } from "./errors.js";
 import { createMeshGrants, type MeshGrants, type MeshGrantsOptions } from "./grants.js";
 import { createQueryRegistry } from "./registry.js";
+import { runTransports } from "./transports.js";
 
 export interface MeshOptions<P extends PartitionTree, RS extends Roles<P>, C extends ColumnsMap> {
   readonly schema: Schema<P, RS, C>;
@@ -35,6 +37,10 @@ export interface MeshOptions<P extends PartitionTree, RS extends Roles<P>, C ext
   readonly stateStore?: EngineOptions["stateStore"];
   readonly undoDepth?: number;
   readonly isAuthority?: boolean;
+  /** Started at construction (D12); `add`/`remove` later is deliberately absent. */
+  readonly transports?: readonly Transport[];
+  /** An ungranted peer asked to exist on some link — forward it to your issuer, or answer with `grants.issue`. Untrusted. */
+  readonly onGrantRequest?: TransportContext["onGrantRequest"];
   /** The peer whose events may write `global` tables — the relay's id, shipped in config like the issuer's. */
   readonly authority?: PeerId;
   /** The issuer's private half. Only the org's root of trust holds this; it unlocks `grants.issue`. */
@@ -58,6 +64,14 @@ export interface MeshBase<C extends ColumnsMap> {
   readonly canRevert: (id: EventId) => boolean;
   /** Open maintained query results; identical descriptors count once. */
   readonly openQueries: () => number;
+  /** Every transport ready (or force-ready); rejects if one failed to start. */
+  readonly ready: () => Promise<void>;
+  /** Whether transports are running: true from construction until `stop`. */
+  readonly running: () => boolean;
+  /** Asks every connected peer for a grant for this device (flow A). */
+  readonly requestGrant: (invite?: string) => void;
+  /** Stops every transport; the engine and its stores stay readable. */
+  readonly stop: () => Promise<void>;
 }
 
 export type Mesh<C extends ColumnsMap> = MeshBase<C> & {
@@ -174,6 +188,11 @@ export function createMesh<
       return Result.ok(undefined);
     });
 
+  const transportContext: TransportContext = { engine, identity, grants, now };
+  if (options.onGrantRequest !== undefined)
+    Object.assign(transportContext, { onGrantRequest: options.onGrantRequest });
+  const links = runTransports(options.transports ?? [], transportContext);
+
   const base: MeshBase<C> = {
     engine,
     grants,
@@ -190,6 +209,10 @@ export function createMesh<
     revert: (id) => engine.revert(id),
     canRevert: (id) => engine.canRevert(id),
     openQueries: queries.size,
+    ready: links.ready,
+    running: links.running,
+    requestGrant: links.requestGrant,
+    stop: links.stop,
   };
   for (const name of Object.keys(collections))
     if (name in base) panic(`table "${name}" collides with a mesh method; rename the table`);
