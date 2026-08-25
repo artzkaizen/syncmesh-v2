@@ -24,9 +24,10 @@
   "type": "module",
   "scripts": {
     "bench": "bun run --cwd bench storage",
-    "ci": "vp check && vp run -r build && vp run -r typecheck && vp run -r test",
+    "ci": "vp check && vp run -r build && vp run -r typecheck && vp run -r test && node tooling/verify-node-consumer/bin/index.ts",
     "gen": "node tooling/create-package/bin/index.ts",
-    "plan": "bun plan/tool/serve.ts"
+    "plan": "bun plan/tool/serve.ts",
+    "verify": "node tooling/verify-node-consumer/bin/index.ts"
   },
   "devDependencies": {
     "@oxlint/plugins": "1.80.0",

@@ -1,0 +1,15 @@
+{
+  "name": "verify-node-consumer",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Packs every publishable package, installs the tarballs into an empty Node project, and imports each one with real node",
+  "bin": "./bin/index.ts",
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  }
+}

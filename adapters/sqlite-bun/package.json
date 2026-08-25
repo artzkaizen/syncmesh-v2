@@ -28,5 +28,8 @@
     "@types/bun": "catalog:",
     "typescript": "catalog:",
     "vite-plus": "catalog:"
+  },
+  "engines": {
+    "bun": ">=1.2"
   }
 }
