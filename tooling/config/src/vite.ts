@@ -32,7 +32,7 @@ const preset = (platform: Platform, options: PresetOptions = {}) =>
       dts: true,
       clean: true,
       fixedExtension: false,
-      external: [/^(bun|node|cloudflare):/],
+      deps: { neverBundle: [/^(bun|node|cloudflare):/] },
     },
     run: { tasks },
   });
