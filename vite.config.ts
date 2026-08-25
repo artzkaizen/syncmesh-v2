@@ -20,6 +20,7 @@ export default defineConfig({
       "**/dist/**",
       "research/**",
       "plan/**",
+      "conformance/wire-vectors.json",
       ".agent/**",
       ".agents/**",
       ".claude/**",

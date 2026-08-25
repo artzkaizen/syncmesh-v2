@@ -13,6 +13,18 @@
         "vite-plus": "catalog:",
       },
     },
+    "conformance": {
+      "name": "@syncmesh/conformance",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@syncmesh/config": "workspace:*",
+        "@syncmesh/result": "workspace:*",
+        "@syncmesh/wire": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+    },
     "packages/engine": {
       "name": "@syncmesh/engine",
       "version": "0.0.0",
@@ -67,6 +79,20 @@
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
         "@types/bun": "catalog:",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+    },
+    "packages/wire": {
+      "name": "@syncmesh/wire",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/result": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncmesh/config": "workspace:*",
+        "@types/bun": "catalog:",
+        "fast-check": "catalog:",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
       },
@@ -273,6 +299,8 @@
 
     "@syncmesh/config": ["@syncmesh/config@workspace:tooling/config"],
 
+    "@syncmesh/conformance": ["@syncmesh/conformance@workspace:conformance"],
+
     "@syncmesh/engine": ["@syncmesh/engine@workspace:packages/engine"],
 
     "@syncmesh/kernel": ["@syncmesh/kernel@workspace:packages/kernel"],
@@ -280,6 +308,8 @@
     "@syncmesh/result": ["@syncmesh/result@workspace:packages/result"],
 
     "@syncmesh/temporal": ["@syncmesh/temporal@workspace:packages/temporal"],
+
+    "@syncmesh/wire": ["@syncmesh/wire@workspace:packages/wire"],
 
     "@testing-library/dom": ["@testing-library/dom@10.4.1", "", { "dependencies": { "@babel/code-frame": "^7.10.4", "@babel/runtime": "^7.12.5", "@types/aria-query": "^5.0.1", "aria-query": "5.3.0", "dom-accessibility-api": "^0.5.9", "lz-string": "^1.5.0", "picocolors": "1.1.1", "pretty-format": "^27.0.2" } }, "sha512-o4PXJQidqJl82ckFaXUeoAW+XysPLauYI43Abki5hABd853iMhitooc6znOnczgbTYmEP6U6/y1ZyKAIsvMKGg=="],
 

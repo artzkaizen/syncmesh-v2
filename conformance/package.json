@@ -1,0 +1,15 @@
+{
+  "name": "@syncmesh/conformance",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The frozen wire vectors and the harness that runs a codec against them",
+  "type": "module",
+  "devDependencies": {
+    "@syncmesh/config": "workspace:*",
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/wire": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

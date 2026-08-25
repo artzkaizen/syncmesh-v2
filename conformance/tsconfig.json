@@ -1,0 +1,5 @@
+{
+  "extends": "@syncmesh/config/tsconfig.base.json",
+  "compilerOptions": { "types": ["bun"], "noEmit": true, "customConditions": ["@syncmesh/source"] },
+  "include": ["src", "vite.config.ts"]
+}

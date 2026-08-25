@@ -1,0 +1,28 @@
+{
+  "name": "@syncmesh/wire",
+  "version": "0.0.0",
+  "description": "Canonical CBOR, Ed25519, the signed envelope — the bytes every port must reproduce",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@syncmesh/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@syncmesh/result": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncmesh/config": "workspace:*",
+    "@types/bun": "catalog:",
+    "fast-check": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}
