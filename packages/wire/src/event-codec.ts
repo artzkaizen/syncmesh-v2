@@ -3,6 +3,7 @@ import type {
   Change,
   ColumnName,
   Hlc,
+  JsonValue,
   Logical,
   Row,
   RowKey,
@@ -53,9 +54,21 @@ const encodeChange = (change: Change): CborValue =>
       CHANGE.data,
       change.kind === "delete"
         ? null
-        : new Map<CborKey, CborValue>(change.kind === "insert" ? change.row : change.patch),
+        : rowToCbor(change.kind === "insert" ? change.row : change.patch),
     ],
   ]);
+
+const rowToCbor = (row: Row): CborValue =>
+  new Map<CborKey, CborValue>([...row].map(([c, v]) => [c, cellToCbor(v)]));
+
+/* oxlint-disable anti-slop/no-runtime-typeof -- a serializer dispatches on the runtime type of what it encodes */
+const cellToCbor = (v: CellValue): CborValue => {
+  if (v === null || typeof v !== "object") return v;
+  if (v instanceof Uint8Array) return v;
+  if (Array.isArray(v)) return v.map(cellToCbor);
+  return new Map<CborKey, CborValue>(Object.entries(v).map(([k, x]) => [k, cellToCbor(x)]));
+};
+/* oxlint-enable anti-slop/no-runtime-typeof */
 
 const malformed = (message: string) => Result.err(new MalformedEvent({ message }));
 
@@ -132,18 +145,49 @@ function decodeRow(value: CborValue | undefined): Result<Row, MalformedEvent> {
   const row = new Map<ColumnName, CellValue>();
   for (const [column, cell] of value) {
     if (!isString(column)) return malformed("column name is not text");
-    if (!isCellValue(cell)) return malformed(`column ${column} holds a non-scalar`);
-    row.set(asColumn(column), cell);
+    const decoded = cellFromCbor(cell);
+    if (decoded.isErr()) return decoded;
+    row.set(asColumn(column), decoded.value);
   }
   return Result.ok(row);
+}
+
+function cellFromCbor(value: CborValue): Result<CellValue, MalformedEvent> {
+  if (value === null || isString(value) || isBoolean(value) || isNumber(value))
+    return Result.ok(value);
+  if (value instanceof Uint8Array) return Result.ok(value);
+  if (Array.isArray(value)) {
+    const items: JsonValue[] = [];
+    for (const item of value) {
+      const decoded = jsonFromCbor(item);
+      if (decoded.isErr()) return decoded;
+      items.push(decoded.value);
+    }
+    return Result.ok(items);
+  }
+  if (!(value instanceof Map)) return malformed("unsupported cell shape");
+  const object: Record<string, JsonValue> = {};
+  for (const [k, v] of value) {
+    if (!isString(k)) return malformed("json object keys must be text");
+    const decoded = jsonFromCbor(v);
+    if (decoded.isErr()) return decoded;
+    object[k] = decoded.value;
+  }
+  return Result.ok(object);
+}
+
+function jsonFromCbor(value: CborValue): Result<JsonValue, MalformedEvent> {
+  if (value instanceof Uint8Array) return malformed("bytes are only allowed at the top of a cell");
+  // SAFETY: bytes were excluded above and nested bytes are refused recursively, so what remains is JSON
+  return cellFromCbor(value).map((v) => v as JsonValue);
 }
 
 /* oxlint-disable anti-slop/no-runtime-typeof -- decoding is the I/O boundary; these are the parsers */
 const isString = (v: CborValue | undefined): v is string => typeof v === "string";
 const isSafeNonNegative = (v: CborValue | undefined): v is number =>
   typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
-const isCellValue = (v: CborValue | undefined): v is CellValue =>
-  v === null || typeof v === "string" || typeof v === "number" || typeof v === "boolean";
+const isBoolean = (v: CborValue | undefined): v is boolean => typeof v === "boolean";
+const isNumber = (v: CborValue | undefined): v is number => typeof v === "number";
 /* oxlint-enable anti-slop/no-runtime-typeof */
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- each brand below is applied right after the check that establishes it; naming rules for these identifiers are owned by later epics (E05, E08, E09) */

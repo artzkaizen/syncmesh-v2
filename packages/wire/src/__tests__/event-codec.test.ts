@@ -42,6 +42,32 @@ describe("encodeEventCore / decodeEventCore", () => {
     expect(bytesEqual(encodeEventCore(decoded), core)).toBe(true);
   });
 
+  test("json and blob cells round-trip: nested objects, arrays, bytes", () => {
+    const e = event([
+      {
+        kind: "insert",
+        table: NOTES,
+        key: K,
+        row: row({
+          meta: { tags: ["a", "b"], pinned: true, n: { deep: null } },
+          list: [1, "x", [false]],
+          cover: Uint8Array.of(1, 2, 3),
+        }),
+      },
+    ]);
+    const core = encodeEventCore(e);
+    const decoded = decodeEventCore(core).unwrap();
+    expect(plain(decoded)).toEqual(plain(e));
+    expect(bytesEqual(encodeEventCore(decoded), core)).toBe(true);
+    const nestedBytes = hexToBytes(
+      bytesToHex(core).replace(
+        "636f766572" + "430102 03".replace(" ", ""),
+        "636f766572" + "8143010203",
+      ),
+    ).unwrap();
+    expect(decodeEventCore(nestedBytes).isErr()).toBe(true);
+  });
+
   test("partition is key 6 when present and absent bytes otherwise", () => {
     const without = encodeEventCore(event([]));
     const withP = encodeEventCore(event([], { partition: "org:acme" }));

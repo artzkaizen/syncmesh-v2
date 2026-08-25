@@ -4,7 +4,16 @@ import { compareStamp, type Stamp } from "./stamp.js";
 
 export type ColumnName = Brand<string, "ColumnName">;
 
-export type CellValue = string | number | boolean | null;
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly JsonValue[]
+  | { readonly [key: string]: JsonValue };
+
+/** What a cell can hold: JSON, or raw bytes for `blob` columns. */
+export type CellValue = JsonValue | Uint8Array;
 
 export interface Cell {
   readonly value: CellValue;

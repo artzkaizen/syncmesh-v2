@@ -1,3 +1,5 @@
+import { panic } from "@syncmesh/result";
+
 import type { TableName } from "./change.js";
 import type { Ordering } from "./primitives.js";
 import type { Cell, CellValue, ColumnName } from "./record.js";
@@ -10,12 +12,20 @@ export type StrategyName = "lww" | "max" | "min";
 
 export type MergeSpec = ReadonlyMap<TableName, ReadonlyMap<ColumnName, StrategyName>>;
 
-/* oxlint-disable anti-slop/no-runtime-typeof -- CellValue is a closed primitive union; typeof is its only discriminant */
+/* oxlint-disable anti-slop/no-runtime-typeof -- CellValue is a closed union; typeof is its discriminant */
 const rank = (v: CellValue) =>
-  v === null ? 0 : typeof v === "boolean" ? 1 : typeof v === "number" ? 2 : 3;
+  v === null
+    ? 0
+    : typeof v === "boolean"
+      ? 1
+      : typeof v === "number"
+        ? 2
+        : typeof v === "string"
+          ? 3
+          : panic("max/min compare scalars only; the schema refuses them on json and blob columns");
 /* oxlint-enable anti-slop/no-runtime-typeof */
 
-/** Total order on cell values: null < booleans < numbers < strings, each by its natural order. */
+/** Total order on scalar cell values: null < booleans < numbers < strings, each by its natural order. Panics on json/blob — a definition defect. */
 export function compareValue(a: CellValue, b: CellValue): Ordering {
   const byKind = rank(a) - rank(b);
   if (byKind !== 0) return byKind < 0 ? -1 : 1;
