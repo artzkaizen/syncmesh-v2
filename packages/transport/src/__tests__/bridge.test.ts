@@ -55,8 +55,10 @@ const connect = (x: Peer, y: Peer) => {
     grants: y.grants,
     now: () => T0,
   });
+  // one round per hop a frame can cause: cursors → events → cursors-back → events. Anything
+  // needing more rounds than that is a bridge bug, not a test-timing problem.
   const settle = async () => {
-    for (let i = 0; i < 6; i += 1) {
+    for (let i = 0; i < 4; i += 1) {
       await control.flush();
       await bx.flush();
       await by.flush();

@@ -70,18 +70,17 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
   const envelopeOf = (entry: StoredEvent): Uint8Array | undefined => {
     if (entry.event.peerId === identity.peerId) return signEvent(entry.event, identity).wire;
     if (entry.sig !== undefined) return encodeCbor([encodeEventCore(entry.event), entry.sig]);
-    errors.emit(
-      new Unsendable({ id: String(entry.event.id), message: "no stored signature to relay" }),
-    );
+    errors.emit(new Unsendable({ id: entry.event.id, message: "no stored signature to relay" }));
     return undefined;
   };
 
-  const sendCursors = (): void =>
-    void queue.then(async () => {
+  const sendCursors = (): void => {
+    queue = queue.then(async () => {
       const cursors = await engine.cursors();
       if (cursors.isOk())
         guard("cursors", () => link.send(cursorsFrame(identity.peerId, cursors.value)));
     });
+  };
 
   const contiguous = (author: PeerId): number => Number(engine.coverage().synced.get(author) ?? 0);
 
@@ -89,7 +88,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     const buffer = held.get(author);
     if (buffer === undefined) return [];
     const ready: StoredEvent[] = [];
-    let next = contiguous(author) + ready.length + 1;
+    let next = contiguous(author) + 1;
     for (;;) {
       const entry = buffer.get(next);
       if (entry === undefined) break;
