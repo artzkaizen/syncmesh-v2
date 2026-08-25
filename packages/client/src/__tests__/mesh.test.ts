@@ -1,5 +1,6 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
+import { createMemoryEventStore } from "@syncmesh/engine";
 import { defineSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -33,13 +34,16 @@ const issuer = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 50 + i))
 const device = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 90 + i)).unwrap();
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 
-const granted = (role = "member", partitions = ["org:acme"]) => {
-  const mesh = createMesh({
-    schema: schema(),
-    identity: device,
-    issuer: issuer.peerId,
-    now: () => T0,
-  });
+const granted = async (role = "member", partitions = ["org:acme"]) => {
+  const mesh = (
+    await createMesh({
+      store: createMemoryEventStore(),
+      schema: schema(),
+      identity: device,
+      issuer: issuer.peerId,
+      now: () => T0,
+    })
+  ).unwrap();
   mesh.grants
     .register(
       issueGrant(issuer, {
@@ -61,21 +65,26 @@ const tag = <E extends { _tag: string }>(r: { isErr: () => boolean; error?: E })
   r.isErr() ? (r as { error: E }).error._tag : "ok";
 
 describe("the namespace", () => {
-  test("a table named like a mesh method is a definition-time panic, not a silent shadow", () => {
+  test("a table named like a mesh method is a definition-time panic, not a silent shadow", async () => {
     // grants, tx, ready are real domain names — without the panic, {...base, ...collections}
     // would shadow the method and fail far away as "mesh.grants.register is not a function"
     for (const name of ["grants", "tx", "ready"]) {
       const colliding = defineSchema({
         tables: { [name]: { columns: { id: t.text().primaryKey() } } },
       });
-      expect(() => createMesh({ schema: colliding, identity: device, now: () => T0 })).toThrow(
-        "collides with a mesh method",
-      );
+      const collided = await createMesh({
+        store: createMemoryEventStore(),
+        schema: colliding,
+        identity: device,
+        now: () => T0,
+      }).catch((cause: unknown) => cause);
+      expect(collided).toBeInstanceOf(Error);
+      expect(String(collided)).toContain("collides with a mesh method");
     }
   });
 
-  test("reserved tables never surface as collections; declared tables do", () => {
-    const mesh = granted();
+  test("reserved tables never surface as collections; declared tables do", async () => {
+    const mesh = await granted();
     expect("_policy" in mesh).toBe(false);
     expect("_corrections" in mesh).toBe(false);
     for (const name of ["catalog", "books", "notes", "drafts"]) expect(name in mesh).toBe(true);
@@ -84,7 +93,7 @@ describe("the namespace", () => {
 
 describe("verbs", () => {
   test("insert writes omitted nullable columns as null, converts timestamps both ways, and reads back the stored row", async () => {
-    const mesh = granted();
+    const mesh = await granted();
     mesh.activate("org:acme").unwrap();
     const stored = (
       await mesh.books.create({ id: "b1", title: "Dune", addedAt: T0, createdBy: "acct_a" })
@@ -96,7 +105,7 @@ describe("verbs", () => {
   });
 
   test("a wrong value is refused at the call site before any event exists", async () => {
-    const mesh = granted();
+    const mesh = await granted();
     mesh.activate("org:acme").unwrap();
     // SAFETY: deliberately wrong value under test
     const r = await mesh.books.create({ id: "b1", title: 3 as never, createdBy: "acct_a" });
@@ -105,7 +114,7 @@ describe("verbs", () => {
   });
 
   test("update writes only the columns that changed; an unchanged patch is EmptyMutation", async () => {
-    const mesh = granted();
+    const mesh = await granted();
     mesh.activate("org:acme").unwrap();
     const events: SyncEvent[] = [];
     mesh.engine.onOutbound((e) => void events.push(e));
@@ -119,7 +128,7 @@ describe("verbs", () => {
   });
 
   test("update(draft): the updater mutates a copy, diffed to a patch", async () => {
-    const mesh = granted();
+    const mesh = await granted();
     mesh.activate("org:acme").unwrap();
     const events: SyncEvent[] = [];
     mesh.engine.onOutbound((e) => void events.push(e));
@@ -141,7 +150,7 @@ describe("verbs", () => {
   });
 
   test("delete removes the row from every read", async () => {
-    const mesh = granted("admin");
+    const mesh = await granted("admin");
     mesh.activate("org:acme").unwrap();
     (await mesh.books.create({ id: "b1", title: "Dune", createdBy: "acct_a" })).unwrap();
     (await mesh.books.delete("b1")).unwrap();
@@ -152,7 +161,7 @@ describe("verbs", () => {
 
 describe("placement", () => {
   test("an org table with nothing active names the setter; activate re-points; unknown kinds are refused", async () => {
-    const mesh = granted("member", ["org:acme", "org:globex"]);
+    const mesh = await granted("member", ["org:acme", "org:globex"]);
     const before = await mesh.books.create({ id: "b1", title: "x", createdBy: "acct_a" });
     expect(tag(before)).toBe("NoActivePartition");
     expect(before.isErr() && before.error.message).toContain('activate("org:<id>")');
@@ -168,13 +177,13 @@ describe("placement", () => {
   });
 
   test("one instance in the grant is implied — no activate call needed", async () => {
-    const mesh = granted();
+    const mesh = await granted();
     (await mesh.books.create({ id: "b1", title: "x", createdBy: "acct_a" })).unwrap();
     expect(String(mesh.active("org"))).toBe("org:acme");
   });
 
   test("user rows go to the account's partition; local rows never reach outbound", async () => {
-    const mesh = granted();
+    const mesh = await granted();
     const events: SyncEvent[] = [];
     mesh.engine.onOutbound((e) => void events.push(e));
     (await mesh.notes.create({ id: "n1", body: "milk" })).unwrap();
@@ -185,7 +194,14 @@ describe("placement", () => {
   });
 
   test("ungranted: schema still checks, global is read-only, user tables need a grant", async () => {
-    const mesh = createMesh({ schema: schema(), identity: device, now: () => T0 });
+    const mesh = (
+      await createMesh({
+        store: createMemoryEventStore(),
+        schema: schema(),
+        identity: device,
+        now: () => T0,
+      })
+    ).unwrap();
     // SAFETY: deliberately wrong value under test
     expect(tag(await mesh.catalog.create({ id: "c1", code: 3 as never }))).toBe(
       "ColumnCheckFailed",
@@ -198,7 +214,7 @@ describe("placement", () => {
 
 describe("tx", () => {
   test("tables of different partitions are refused before anything is written", async () => {
-    const mesh = granted();
+    const mesh = await granted();
     mesh.activate("org:acme").unwrap();
     const r = await mesh.tx((c) =>
       c.books
@@ -212,7 +228,7 @@ describe("tx", () => {
   });
 
   test("one partition lands as one event with a derived label", async () => {
-    const mesh = granted();
+    const mesh = await granted();
     mesh.activate("org:acme").unwrap();
     (await mesh.books.create({ id: "b1", title: "old", createdBy: "acct_a" })).unwrap();
     const events: SyncEvent[] = [];
@@ -233,18 +249,18 @@ describe("tx", () => {
 });
 
 describe("can", () => {
-  test("answers from the same rules the receivers enforce", () => {
-    const member = granted();
+  test("answers from the same rules the receivers enforce", async () => {
+    const member = await granted();
     expect(member.can("books.insert")).toBe(true);
     expect(member.can("books.delete")).toBe(false);
     expect(member.books.can("delete")).toBe(false);
-    expect(granted("admin").can("books.delete")).toBe(true);
+    expect((await granted("admin")).can("books.delete")).toBe(true);
   });
 });
 
 describe("live handles across activate", () => {
   test("activate re-points every open handle and notifies the ones that changed", async () => {
-    const mesh = granted("member", ["org:acme", "org:globex"]);
+    const mesh = await granted("member", ["org:acme", "org:globex"]);
     mesh.activate("org:acme").unwrap();
     (await mesh.books.create({ id: "b1", title: "acme", createdBy: "acct_a" })).unwrap();
     mesh.activate("org:globex").unwrap();

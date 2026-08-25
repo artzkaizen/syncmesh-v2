@@ -1,3 +1,4 @@
+import { createMemoryEventStore } from "@syncmesh/engine";
 import { defineSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { linkTransport, loopbackPair, type LoopbackControl } from "@syncmesh/transport";
@@ -30,31 +31,34 @@ const settle = async (control: LoopbackControl) => {
 };
 
 /** Two meshes joined by one loopback radio; the owner holds the issuer key. */
-const room = (options?: { readonly grantStaff?: boolean }) => {
+const room = async (options?: { readonly grantStaff?: boolean }) => {
   const ownerId = createIdentity(seed(7)).unwrap();
   const staffId = createIdentity(seed(160)).unwrap();
   const { a, b, control } = loopbackPair();
 
-  const owner = createMesh({
-    schema: schema(),
-    identity: ownerId,
-    issuer: ownerId.peerId,
-    issuerKey: ownerId,
-    now: () => T0,
-    transports: [linkTransport("loopback:owner", () => a)],
-    onGrantRequest: ({ peerId, invite }) => {
-      if (invite !== "inv-42") return; // Q1: the invite token is the account proof
-      owner.grants
-        .issue({
-          account: "acct_staff",
-          device: peerId,
-          role: "member",
-          partitions: ["org:acme"],
-          validFor: Temporal.Duration.from({ days: 1 }),
-        })
-        .unwrap();
-    },
-  });
+  const owner = (
+    await createMesh({
+      store: createMemoryEventStore(),
+      schema: schema(),
+      identity: ownerId,
+      issuer: ownerId.peerId,
+      issuerKey: ownerId,
+      now: () => T0,
+      transports: [linkTransport("loopback:owner", () => a)],
+      onGrantRequest: ({ peerId, invite }) => {
+        if (invite !== "inv-42") return; // Q1: the invite token is the account proof
+        owner.grants
+          .issue({
+            account: "acct_staff",
+            device: peerId,
+            role: "member",
+            partitions: ["org:acme"],
+            validFor: Temporal.Duration.from({ days: 1 }),
+          })
+          .unwrap();
+      },
+    })
+  ).unwrap();
   owner.grants
     .issue({
       account: "acct_owner",
@@ -65,13 +69,16 @@ const room = (options?: { readonly grantStaff?: boolean }) => {
     })
     .unwrap();
 
-  const staff = createMesh({
-    schema: schema(),
-    identity: staffId,
-    issuer: ownerId.peerId,
-    now: () => T0,
-    transports: [linkTransport("loopback:staff", () => b)],
-  });
+  const staff = (
+    await createMesh({
+      store: createMemoryEventStore(),
+      schema: schema(),
+      identity: staffId,
+      issuer: ownerId.peerId,
+      now: () => T0,
+      transports: [linkTransport("loopback:staff", () => b)],
+    })
+  ).unwrap();
   if (options?.grantStaff !== false) {
     staff.grants
       .register(
@@ -92,7 +99,7 @@ const room = (options?: { readonly grantStaff?: boolean }) => {
 
 describe("createMesh over transports", () => {
   test("two meshes converge; a live handle on one notifies for the other's write", async () => {
-    const { owner, staff, control } = room();
+    const { owner, staff, control } = await room();
     await owner.ready();
     await staff.ready();
     owner.activate("org:acme").unwrap();
@@ -113,7 +120,7 @@ describe("createMesh over transports", () => {
   });
 
   test("flow A at the API: requestGrant with the invite lights the newcomer up", async () => {
-    const { owner, staff, control } = room({ grantStaff: false });
+    const { owner, staff, control } = await room({ grantStaff: false });
     await Promise.all([owner.ready(), staff.ready()]);
     await settle(control);
     expect(staff.can("notes.insert")).toBe(false);
@@ -135,7 +142,7 @@ describe("createMesh over transports", () => {
   });
 
   test("stop() closes the sessions: later writes stay local and running() flips", async () => {
-    const { owner, staff, control } = room();
+    const { owner, staff, control } = await room();
     await Promise.all([owner.ready(), staff.ready()]);
     owner.activate("org:acme").unwrap();
     staff.activate("org:acme").unwrap();

@@ -6,7 +6,14 @@ export type { DeliveredOptions } from "./delivered.js";
 export type { Mesh, MeshBase, MeshOptions, TxReceipt } from "./mesh.js";
 export type { TxCollections } from "./tx.js";
 export { createMesh } from "./mesh.js";
-export { CrossPartitionTx, NoActivePartition, NoSuchRow, UnknownPartitionKind } from "./errors.js";
+export type { MeshOpenError } from "./boot.js";
+export {
+  CrossPartitionTx,
+  NoActivePartition,
+  NoDefaultStore,
+  NoSuchRow,
+  UnknownPartitionKind,
+} from "./errors.js";
 export type { HistoryError, MeshRevertError, TxError, WriteError } from "./errors.js";
 export type {
   Direction,

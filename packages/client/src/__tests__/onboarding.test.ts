@@ -1,4 +1,4 @@
-import { createLink, type Quarantined } from "@syncmesh/engine";
+import { createLink, createMemoryEventStore, type Quarantined } from "@syncmesh/engine";
 import { defineSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, type Identity } from "@syncmesh/wire";
@@ -34,8 +34,16 @@ const mintFor = (issuer: Identity, account: string, device: Identity, role: stri
     now: T0,
   });
 
-const open = (identity: Identity, issuer: Identity) =>
-  createMesh({ schema: schema(), identity, issuer: issuer.peerId, now: () => T0 });
+const open = async (identity: Identity, issuer: Identity) =>
+  (
+    await createMesh({
+      store: createMemoryEventStore(),
+      schema: schema(),
+      identity,
+      issuer: issuer.peerId,
+      now: () => T0,
+    })
+  ).unwrap();
 
 describe("onboarding through the mesh — a grant is bytes, any peer can carry them", () => {
   test("S2: no internet on the new device; a peer relays the request and the signed grant back", async () => {
@@ -43,11 +51,11 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
     const member = createIdentity(seed(40)).unwrap(); // M: online, already granted
     const newcomer = createIdentity(seed(80)).unwrap(); // N: offline, new account
 
-    const m = open(member, issuer);
+    const m = await open(member, issuer);
     m.grants.register(mintFor(issuer, "acct_m", member, "member")).unwrap();
 
     // N is fully offline: identity minted locally, nothing writable in the org yet
-    const n = open(newcomer, issuer);
+    const n = await open(newcomer, issuer);
     expect((await n.controls.create({ id: "c1", title: "x", by: "acct_n" })).isErr()).toBe(true);
     expect(n.can("controls.insert")).toBe(false);
 
@@ -69,7 +77,7 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
     expect(m.controls.get("c1")?.title).toBe("x");
   });
 
-  test("S2 hostile relay: the carrier can neither tamper with a grant nor use one not its own", () => {
+  test("S2 hostile relay: the carrier can neither tamper with a grant nor use one not its own", async () => {
     const issuer = createIdentity(seed(1)).unwrap();
     const newcomer = createIdentity(seed(80)).unwrap();
     const carrier = createIdentity(seed(120)).unwrap();
@@ -79,11 +87,11 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
     // SAFETY: flipping one payload byte to prove the signature covers it
     tampered[tampered.length - 20] = (tampered[tampered.length - 20]! + 1) % 256;
 
-    const n = open(newcomer, issuer);
+    const n = await open(newcomer, issuer);
     expect(n.grants.register(tampered).isErr()).toBe(true);
 
     // the carrier registering N's grant gains nothing: the grant names N's device key
-    const c = open(carrier, issuer);
+    const c = await open(carrier, issuer);
     c.grants.register(wire).unwrap();
     expect(c.can("controls.insert")).toBe(false);
   });
@@ -92,13 +100,16 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
     const ownerPhone = createIdentity(seed(7)).unwrap(); // issuer AND a device
     const staff = createIdentity(seed(160)).unwrap();
 
-    const owner = createMesh({
-      schema: schema(),
-      identity: ownerPhone,
-      issuer: ownerPhone.peerId,
-      issuerKey: ownerPhone,
-      now: () => T0,
-    });
+    const owner = (
+      await createMesh({
+        store: createMemoryEventStore(),
+        schema: schema(),
+        identity: ownerPhone,
+        issuer: ownerPhone.peerId,
+        issuerKey: ownerPhone,
+        now: () => T0,
+      })
+    ).unwrap();
     owner.grants
       .issue({
         account: "acct_owner",
@@ -119,7 +130,7 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
       })
       .unwrap();
 
-    const s = open(staff, ownerPhone);
+    const s = await open(staff, ownerPhone);
     s.grants.register(staffGrant).unwrap();
     s.activate("org:acme").unwrap();
     (await s.controls.create({ id: "c1", title: "minted offline", by: "acct_staff" })).unwrap();
@@ -131,10 +142,10 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
     expect(owner.controls.get("c1")?.title).toBe("minted offline");
   });
 
-  test("S3 guards: no issuerKey panics, a mismatched issuerKey panics, a bad partition is a value", () => {
+  test("S3 guards: no issuerKey panics, a mismatched issuerKey panics, a bad partition is a value", async () => {
     const issuer = createIdentity(seed(1)).unwrap();
     const device = createIdentity(seed(40)).unwrap();
-    const plain = open(device, issuer);
+    const plain = await open(device, issuer);
     expect(() =>
       plain.grants.issue({
         account: "a",
@@ -143,23 +154,27 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
         validFor: Temporal.Duration.from({ days: 1 }),
       }),
     ).toThrow("issuerKey");
-    expect(() =>
-      createMesh({
-        schema: schema(),
-        identity: device,
-        issuer: issuer.peerId,
-        issuerKey: device,
-        now: () => T0,
-      }),
-    ).toThrow("does not match");
-
-    const owner = createMesh({
+    const mismatched = await createMesh({
+      store: createMemoryEventStore(),
       schema: schema(),
-      identity: issuer,
+      identity: device,
       issuer: issuer.peerId,
-      issuerKey: issuer,
+      issuerKey: device,
       now: () => T0,
-    });
+    }).catch((cause: unknown) => cause);
+    expect(mismatched).toBeInstanceOf(Error);
+    expect(String(mismatched)).toContain("does not match");
+
+    const owner = (
+      await createMesh({
+        store: createMemoryEventStore(),
+        schema: schema(),
+        identity: issuer,
+        issuer: issuer.peerId,
+        issuerKey: issuer,
+        now: () => T0,
+      })
+    ).unwrap();
     const bad = owner.grants.issue({
       account: "a",
       device: device.peerId,
@@ -174,8 +189,8 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
     const a = createIdentity(seed(40)).unwrap();
     const b = createIdentity(seed(80)).unwrap();
 
-    const meshA = open(a, issuer);
-    const meshB = open(b, issuer);
+    const meshA = await open(a, issuer);
+    const meshB = await open(b, issuer);
     const grantA = mintFor(issuer, "acct_a", a, "member");
     meshA.grants.register(grantA).unwrap();
     meshA.activate("org:acme").unwrap();

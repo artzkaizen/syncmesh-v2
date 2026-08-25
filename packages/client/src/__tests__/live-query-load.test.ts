@@ -1,5 +1,6 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
+import { createMemoryEventStore } from "@syncmesh/engine";
 import {
   createHlcClock,
   eventId,
@@ -58,12 +59,15 @@ const catchUp = (count: number): SyncEvent[] => {
 
 describe("one fold batch is one notification, whatever it carries", () => {
   test("200 open queries, a 5,000-event catch-up, at most one notification each", async () => {
-    const mesh = createMesh({
-      schema: schema(),
-      identity: device,
-      authority: AUTHOR,
-      now: () => T0,
-    });
+    const mesh = (
+      await createMesh({
+        store: createMemoryEventStore(),
+        schema: schema(),
+        identity: device,
+        authority: AUTHOR,
+        now: () => T0,
+      })
+    ).unwrap();
     const notified = new Map<number, number>();
     const handles = Array.from({ length: 200 }, (_, i) => {
       const handle = mesh.liveQuery(mesh.notes.query({ where: (row) => row.n % 200 === i }));

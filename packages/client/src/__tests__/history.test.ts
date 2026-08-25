@@ -1,5 +1,6 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
+import { createMemoryEventStore } from "@syncmesh/engine";
 import { defineSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -30,8 +31,16 @@ const deviceA = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 90 + i)
 const deviceB = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 140 + i)).unwrap();
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 
-const granted = (device: typeof deviceA, at: () => Temporal.Instant) => {
-  const mesh = createMesh({ schema: schema(), identity: device, issuer: issuer.peerId, now: at });
+const granted = async (device: typeof deviceA, at: () => Temporal.Instant) => {
+  const mesh = (
+    await createMesh({
+      store: createMemoryEventStore(),
+      schema: schema(),
+      identity: device,
+      issuer: issuer.peerId,
+      now: at,
+    })
+  ).unwrap();
   for (const [d, acct] of [
     [deviceA, "acct_a"],
     [deviceB, "acct_b"],
@@ -56,7 +65,14 @@ const granted = (device: typeof deviceA, at: () => Temporal.Instant) => {
 
 describe("history — a row's timeline", () => {
   test("insert, update, delete: oldest first, per-write patches, snapshots, null once deleted", async () => {
-    const mesh = createMesh({ schema: schema(), identity: deviceA, now: () => T0 });
+    const mesh = (
+      await createMesh({
+        store: createMemoryEventStore(),
+        schema: schema(),
+        identity: deviceA,
+        now: () => T0,
+      })
+    ).unwrap();
     (await mesh.drafts.create({ id: "d1", body: "one" })).unwrap();
     (await mesh.drafts.update("d1", { body: "two" })).unwrap();
     (await mesh.drafts.delete("d1")).unwrap();
@@ -80,15 +96,15 @@ describe("history — a row's timeline", () => {
   });
 
   test("by is the account resolved through grants", async () => {
-    const mesh = granted(deviceA, () => T0);
+    const mesh = await granted(deviceA, () => T0);
     (await mesh.todos.create({ id: "t1", title: "x", score: 1 })).unwrap();
     const revisions = (await mesh.todos.history("t1")).unwrap();
     expect(revisions.map((r) => r.by)).toEqual(["acct_a"]);
   });
 
   test("two peers that merged offline edits compute the identical sequence, ordered by stamp not arrival", async () => {
-    const a = granted(deviceA, () => T0);
-    const b = granted(deviceB, () =>
+    const a = await granted(deviceA, () => T0);
+    const b = await granted(deviceB, () =>
       Temporal.Instant.fromEpochMilliseconds(T0.epochMilliseconds + 5_000),
     );
     const outA: SyncEvent[] = [];

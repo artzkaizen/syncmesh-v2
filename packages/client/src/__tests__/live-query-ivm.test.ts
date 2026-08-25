@@ -1,3 +1,4 @@
+import { createMemoryEventStore } from "@syncmesh/engine";
 import { defineSchema, t, type Row } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
@@ -75,7 +76,14 @@ describe("the maintained result equals a full re-run, always", () => {
   test("randomised inserts, updates and deletes against the oracle", async () => {
     await fc.assert(
       fc.asyncProperty(fc.array(opArb, { minLength: 1, maxLength: 40 }), async (ops) => {
-        const mesh = createMesh({ schema: schema(), identity: device, now: () => T0 });
+        const mesh = (
+          await createMesh({
+            store: createMemoryEventStore(),
+            schema: schema(),
+            identity: device,
+            now: () => T0,
+          })
+        ).unwrap();
         const live = mesh.liveQuery(mesh.items.query({ where: WHERE, orderBy: ORDER_BY }));
         for (const op of ops) {
           if (op.kind === "insert" && mesh.items.get(op.id) === undefined) {

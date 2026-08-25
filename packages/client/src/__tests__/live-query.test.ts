@@ -1,3 +1,4 @@
+import { createMemoryEventStore } from "@syncmesh/engine";
 import { defineSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
@@ -22,11 +23,19 @@ const schema = () =>
 
 const device = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 90 + i)).unwrap();
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
-const open = () => createMesh({ schema: schema(), identity: device, now: () => T0 });
+const open = async () =>
+  (
+    await createMesh({
+      store: createMemoryEventStore(),
+      schema: schema(),
+      identity: device,
+      now: () => T0,
+    })
+  ).unwrap();
 
 describe("live queries", () => {
   test("a result enters, moves, updates in place and leaves as rows change", async () => {
-    const mesh = open();
+    const mesh = await open();
     const openTodos = mesh.liveQuery(mesh.todos.query({ where: { done: false }, orderBy: "rank" }));
     let notified = 0;
     openTodos.subscribe(() => void (notified += 1));
@@ -53,7 +62,7 @@ describe("live queries", () => {
   });
 
   test("a batch that misses the filter and table does not notify; one batch is one notification", async () => {
-    const mesh = open();
+    const mesh = await open();
     const done = mesh.liveQuery(mesh.todos.query({ where: { done: true } }));
     let notified = 0;
     done.subscribe(() => void (notified += 1));
@@ -72,8 +81,8 @@ describe("live queries", () => {
     mesh.releaseQuery(done);
   });
 
-  test("identical descriptors share one maintained result; a predicate never shares; release drops", () => {
-    const mesh = open();
+  test("identical descriptors share one maintained result; a predicate never shares; release drops", async () => {
+    const mesh = await open();
     const a = mesh.liveQuery(mesh.todos.query({ where: { done: false }, orderBy: "rank" }));
     const b = mesh.liveQuery(mesh.todos.query({ where: { done: false }, orderBy: "rank" }));
     const c = mesh.liveQuery(mesh.todos.query({ where: (row) => !row.done }));
@@ -88,7 +97,7 @@ describe("live queries", () => {
   });
 
   test("limit is a window on the handle: two windows share one maintained result", async () => {
-    const mesh = open();
+    const mesh = await open();
     for (const [id, rank] of [
       ["a", 3],
       ["b", 1],
@@ -109,7 +118,7 @@ describe("live queries", () => {
   });
 
   test("list(options) is the one-shot form of the same question, no handle to release", async () => {
-    const mesh = open();
+    const mesh = await open();
     for (const [id, rank, done] of [
       ["a", 3, false],
       ["b", 1, true],

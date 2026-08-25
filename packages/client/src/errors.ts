@@ -21,6 +21,9 @@ export class NoSuchRow extends TaggedError("NoSuchRow")<{
   message: string;
 }> {}
 
+/** `createMesh` was given no `store` on a platform that has no durable default yet. */
+export class NoDefaultStore extends TaggedError("NoDefaultStore")<{ message: string }> {}
+
 /** A `tx` touched tables that resolve to different instances; refused before anything is written. */
 export class CrossPartitionTx extends TaggedError("CrossPartitionTx")<{
   partitions: readonly string[];

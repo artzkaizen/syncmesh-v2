@@ -1,4 +1,4 @@
-import { createLink } from "@syncmesh/engine";
+import { createLink, createMemoryEventStore } from "@syncmesh/engine";
 import { defineSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -25,13 +25,16 @@ const deviceA = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 90 + i)
 const deviceB = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 140 + i)).unwrap();
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 
-const granted = (device: typeof deviceA) => {
-  const mesh = createMesh({
-    schema: schema(),
-    identity: device,
-    issuer: issuer.peerId,
-    now: () => T0,
-  });
+const granted = async (device: typeof deviceA) => {
+  const mesh = (
+    await createMesh({
+      store: createMemoryEventStore(),
+      schema: schema(),
+      identity: device,
+      issuer: issuer.peerId,
+      now: () => T0,
+    })
+  ).unwrap();
   for (const [d, account] of [
     [deviceA, "acct_a"],
     [deviceB, "acct_b"],
@@ -56,8 +59,8 @@ const granted = (device: typeof deviceA) => {
 
 describe("delivered — a peer is known to hold the write", () => {
   test("resolves after a cursor exchange covers the write; nothing written resolves at once", async () => {
-    const a = granted(deviceA);
-    const b = granted(deviceB);
+    const a = await granted(deviceA);
+    const b = await granted(deviceB);
     await a.delivered(); // nothing synced yet — nothing to wait for
 
     (await a.todos.create({ id: "t1", title: "x" })).unwrap();
@@ -78,8 +81,8 @@ describe("delivered — a peer is known to hold the write", () => {
   });
 
   test("a tx receipt names its event; delivered({ event }) waits for exactly that write", async () => {
-    const a = granted(deviceA);
-    const b = granted(deviceB);
+    const a = await granted(deviceA);
+    const b = await granted(deviceB);
     const receipt = (
       await a.tx((c) => c.todos.create({ id: "t1", title: "from tx" }).map(() => undefined))
     ).unwrap();
@@ -92,7 +95,7 @@ describe("delivered — a peer is known to hold the write", () => {
   });
 
   test("a local event never leaves this device: delivered({ event }) refuses it", async () => {
-    const a = granted(deviceA);
+    const a = await granted(deviceA);
     const receipt = (
       await a.tx((c) => c.drafts.create({ id: "d1", body: "wip" }).map(() => undefined))
     ).unwrap();

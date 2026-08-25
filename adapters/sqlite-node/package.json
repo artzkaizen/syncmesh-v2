@@ -16,6 +16,8 @@
     }
   },
   "dependencies": {
+    "@syncmesh/engine": "workspace:*",
+    "@syncmesh/result": "workspace:*",
     "@syncmesh/storage": "workspace:*"
   },
   "devDependencies": {

@@ -35,6 +35,8 @@
       "name": "@syncmesh/sqlite-node",
       "version": "0.0.0",
       "dependencies": {
+        "@syncmesh/engine": "workspace:*",
+        "@syncmesh/result": "workspace:*",
         "@syncmesh/storage": "workspace:*",
       },
       "devDependencies": {
@@ -86,6 +88,9 @@
         "@syncmesh/policy": "workspace:*",
         "@syncmesh/result": "workspace:*",
         "@syncmesh/schema": "workspace:*",
+        "@syncmesh/sqlite-bun": "workspace:*",
+        "@syncmesh/sqlite-node": "workspace:*",
+        "@syncmesh/storage": "workspace:*",
         "@syncmesh/temporal": "workspace:*",
         "@syncmesh/transport": "workspace:*",
         "@syncmesh/wire": "workspace:*",

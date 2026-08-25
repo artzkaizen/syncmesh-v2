@@ -1,21 +1,17 @@
-import type { Engine, EngineOptions, EventStore, ValidatorOptions } from "@syncmesh/engine";
+import type { Engine, EventStore, StateStore } from "@syncmesh/engine";
 import type { EventId, PartitionKey, PeerId, Procedure, Row as WireCells } from "@syncmesh/kernel";
 import type { InvalidPartitionKey } from "@syncmesh/kernel";
 import type { ColumnsMap, PartitionTree, Roles, Schema, Table, TablesOf } from "@syncmesh/schema";
 import type { Transport, TransportContext } from "@syncmesh/transport";
 import type { Grant, Identity } from "@syncmesh/wire";
 
-import {
-  can as canOn,
-  createEngine,
-  createMemoryEventStore,
-  createValidator,
-} from "@syncmesh/engine";
-import { createHlcClock, parsePartitionKey } from "@syncmesh/kernel";
+import { can as canOn } from "@syncmesh/engine";
+import { parsePartitionKey } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { createGrantRegistry } from "@syncmesh/wire";
 
+import type { Booted, MeshOpenError } from "./boot.js";
 import type { Collection, Write, Writes } from "./collection.js";
 import type { Placement, PlacementEntry } from "./context.js";
 import type { DeliveredOptions } from "./delivered.js";
@@ -25,6 +21,7 @@ import type { QueryDescriptor } from "./query.js";
 import type { LiveHandle } from "./registry.js";
 import type { TxCollections } from "./tx.js";
 
+import { openMeshEngine } from "./boot.js";
 import { createCollection } from "./collection.js";
 import { createContext } from "./context.js";
 import { createDelivered } from "./delivered.js";
@@ -39,8 +36,16 @@ export interface MeshOptions<P extends PartitionTree, RS extends Roles<P>, C ext
   readonly identity: Identity;
   /** The peer whose signature grants must carry; absent, the mesh runs ungranted — schema checks only, no user tables. */
   readonly issuer?: PeerId;
-  readonly store?: EngineOptions["store"];
-  readonly stateStore?: EngineOptions["stateStore"];
+  /**
+   * The event log. Omitted, the platform's durable default is opened — one SQLite file per
+   * identity under `dataDir` — and closed by `stop`. Memory is never a default: ask for it with
+   * `createMemoryEventStore()`.
+   */
+  readonly store?: EventStore;
+  /** Materialised rows, so boot is an open rather than a replay; needs `store`. The default store brings its own. */
+  readonly stateStore?: StateStore;
+  /** Where the default store's file goes. Default `.syncmesh`. */
+  readonly dataDir?: string;
   readonly undoDepth?: number;
   /** Started at construction (D12); `add`/`remove` later is deliberately absent. */
   readonly transports?: readonly Transport[];
@@ -90,7 +95,7 @@ export interface MeshBase<C extends ColumnsMap> {
   readonly running: () => boolean;
   /** Asks every connected peer for a grant for this device (flow A). */
   readonly requestGrant: (invite?: string) => void;
-  /** Stops every transport; the engine and its stores stay readable. */
+  /** Stops every transport, then closes the stores the mesh opened; a store you passed in stays yours. */
   readonly stop: () => Promise<void>;
 }
 
@@ -103,42 +108,17 @@ type AnyCollection = Collection<Table> & {
   readonly visible: Visible;
 };
 
-/** One constructor: engine, validator, grants and a collection per table, partitions ambient via `activate` (D07). */
-/** The engine as the manifest and options describe it, validator included. */
-function buildEngine<P extends PartitionTree, RS extends Roles<P>, C extends ColumnsMap>(
-  options: MeshOptions<P, RS, C>,
-  grantFor: (peer: PeerId) => Grant | undefined,
-  now: () => Temporal.Instant,
-  store: EventStore,
-): Engine {
-  const { schema, identity, issuer, authority } = options;
-  const validatorOptions = {
-    schema,
-    grantFor: issuer === undefined ? null : grantFor,
-    // being the authority is authorship, not a flag: this process is it when the named peer is us
-    isAuthority: authority !== undefined && authority === identity.peerId,
-  } satisfies ValidatorOptions;
-  if (authority !== undefined) Object.assign(validatorOptions, { authority });
-  const engineOptions = {
-    peerId: identity.peerId,
-    clock: createHlcClock({ now }),
-    store,
-    merge: schema.merge,
-    validate: createValidator(validatorOptions),
-  } satisfies EngineOptions;
-  if (options.stateStore !== undefined)
-    Object.assign(engineOptions, { stateStore: options.stateStore });
-  if (options.undoDepth !== undefined)
-    Object.assign(engineOptions, { undoDepth: options.undoDepth });
-  return createEngine(engineOptions);
-}
-
-export function createMesh<
+/**
+ * One constructor: opens (or is given) the stores, boots the engine over them, and builds the
+ * validator, grants and a collection per table, partitions ambient via `activate` (D07). Async
+ * because boot is (D05): the clock must pass every stored stamp before a write is numbered.
+ */
+export async function createMesh<
   P extends PartitionTree,
   const RS extends Roles<P>,
   C extends ColumnsMap,
->(options: MeshOptions<P, RS, C>): Mesh<C> {
-  const { schema, identity, issuer, issuerKey } = options;
+>(options: MeshOptions<P, RS, C>): Promise<Result<Mesh<C>, MeshOpenError>> {
+  const { identity, issuer, issuerKey } = options;
   if (issuerKey !== undefined && issuerKey.peerId !== issuer)
     panic(
       "issuerKey does not match issuer: the private half must belong to the configured root of trust",
@@ -149,8 +129,32 @@ export function createMesh<
   if (issuerKey !== undefined) Object.assign(grantsOptions, { issuerKey });
   const grants = createMeshGrants(registry, grantsOptions);
   const grantFor = (peer: PeerId): Grant | undefined => grants.grantFor(peer);
-  const store = options.store ?? createMemoryEventStore();
-  const engine = buildEngine(options, grantFor, now, store);
+  // plain await, not Result.gen: a definition-time panic in `assemble` must reach the caller as itself
+  const booted = await openMeshEngine({
+    ...options,
+    dataDir: options.dataDir ?? ".syncmesh",
+    now,
+    grantFor,
+  });
+  if (booted.isErr()) return booted;
+  return Result.ok(assemble(options, { grants, grantFor, now, booted: booted.value }));
+}
+
+interface Assembled {
+  readonly grants: MeshGrants;
+  readonly grantFor: (peer: PeerId) => Grant | undefined;
+  readonly now: () => Temporal.Instant;
+  readonly booted: Booted;
+}
+
+/** Everything above the engine: collections, queries, tx, transports, the namespace check. */
+function assemble<P extends PartitionTree, RS extends Roles<P>, C extends ColumnsMap>(
+  options: MeshOptions<P, RS, C>,
+  deps: Assembled,
+): Mesh<C> {
+  const { schema, identity } = options;
+  const { grants, grantFor, now, booted } = deps;
+  const engine = booted.engine;
   const queries = createQueryRegistry(engine);
   const context = createContext({
     kinds: schema.kinds.map(String),
@@ -176,7 +180,7 @@ export function createMesh<
       engine,
       placement: () => placementOf(name),
       can,
-      log: store.all,
+      log: booted.store.all,
       merge: schema.merge,
       accountOf: (peer) => grantFor(peer)?.account,
     });
@@ -262,7 +266,10 @@ export function createMesh<
     ready: links.ready,
     running: links.running,
     requestGrant: links.requestGrant,
-    stop: links.stop,
+    stop: async () => {
+      await links.stop();
+      await booted.close();
+    },
   };
   for (const name of Object.keys(collections))
     if (name in base) panic(`table "${name}" collides with a mesh method; rename the table`);
