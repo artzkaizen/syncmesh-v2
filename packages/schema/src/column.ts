@@ -1,7 +1,7 @@
 import type { CellValue, JsonValue, StrategyName } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
-import type { OutputOf, StandardSchemaV1 } from "./standard-schema.js";
+import type { Output, StandardSchemaV1 } from "./standard-schema.js";
 
 export type ColumnKind =
   | "text"
@@ -42,12 +42,13 @@ export interface Column<
   readonly default: (value: T) => Column<T, Nullable, true, PrimaryKey>;
   readonly check: <S extends StandardSchemaV1>(
     schema: S,
-  ) => Column<OutputOf<S> & T, Nullable, HasDefault, PrimaryKey>;
+  ) => Column<Output<S> & T, Nullable, HasDefault, PrimaryKey>;
   readonly onConflict: (strategy: StrategyFor<T>) => Column<T, Nullable, HasDefault, PrimaryKey>;
   /** Phantom: carries `T` for inference; never set. */
   readonly __value?: T;
   readonly __nullable?: Nullable;
   readonly __hasDefault?: HasDefault;
+  readonly __primaryKey?: PrimaryKey;
 }
 
 /** What validation needs from a column: its data, whatever its value type. */
@@ -56,7 +57,7 @@ export interface AnyColumn {
 }
 
 /** The app-facing value type of a column, `null` included when nullable. */
-export type ValueOf<C> =
+export type Value<C> =
   C extends Column<infer T, infer N, boolean, boolean> ? (N extends true ? T | null : T) : never;
 
 function column<T, N extends boolean, D extends boolean, P extends boolean>(
@@ -72,7 +73,7 @@ function column<T, N extends boolean, D extends boolean, P extends boolean>(
     unique: () => next<T, N, D, P>({ unique: true }),
     default: (value) =>
       next<T, N, true, P>({ hasDefault: true, defaultValue: toWire(def.kind, value) }),
-    check: (schema) => next<OutputOf<typeof schema> & T, N, D, P>({ check: schema }),
+    check: (schema) => next<Output<typeof schema> & T, N, D, P>({ check: schema }),
     onConflict: (strategy) => next<T, N, D, P>({ onConflict: strategy }),
   };
 }
@@ -92,6 +93,18 @@ const toWire = <T>(kind: ColumnKind, value: T): CellValue => {
     : (value as CellValue);
 };
 
+interface JsonColumn {
+  <T extends JsonValue = JsonValue>(): Column<T, false, false, false>;
+  <S extends StandardSchemaV1>(schema: S): Column<Output<S>, false, false, false>;
+}
+
+const json: JsonColumn = (schema?: StandardSchemaV1) => {
+  // SAFETY: the two call signatures fix the value type; the runtime column is identical either way
+  return column<JsonValue, false, false, false>(
+    schema === undefined ? base("json") : { ...base("json"), check: schema },
+  ) as never;
+};
+
 export const t = {
   text: () => column<string, false, false, false>(base("text")),
   integer: () => column<number, false, false, false>(base("integer")),
@@ -103,7 +116,5 @@ export const t = {
   /** Canonical lowercase 8-4-4-4-12 only; never normalised, because rows are keyed by the string. */
   uuid: () => column<string, false, false, false>(base("uuid")),
   /** With a schema the type is inferred and the value checked; without one anything JSON is accepted and `T` is a phantom. */
-  json: <T extends JsonValue = JsonValue>() => column<T, false, false, false>(base("json")),
-  jsonOf: <S extends StandardSchemaV1>(schema: S) =>
-    column<OutputOf<S>, false, false, false>({ ...base("json"), check: schema }),
+  json,
 };

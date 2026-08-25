@@ -19,5 +19,5 @@ export interface StandardIssue {
   readonly path?: readonly (PropertyKey | { readonly key: PropertyKey })[] | undefined;
 }
 
-export type OutputOf<S> = S extends StandardSchemaV1<unknown, infer O> ? O : never;
+export type Output<S> = S extends StandardSchemaV1<unknown, infer O> ? O : never;
 /* oxlint-enable anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns */

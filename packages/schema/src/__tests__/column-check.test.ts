@@ -99,7 +99,7 @@ describe("check schemas (Standard Schema, structurally)", () => {
   });
 
   test("jsonOf(schema) checks the contents; nullable still wins for null", () => {
-    const meta = t.jsonOf(z.object({ tags: z.array(z.string()), pinned: z.boolean() })).nullable();
+    const meta = t.json(z.object({ tags: z.array(z.string()), pinned: z.boolean() })).nullable();
     expect(tag(meta, { tags: ["a"], pinned: false })).toBe("ok");
     expect(tag(meta, { tags: "a" })).toBe("CheckFailed");
     expect(tag(meta, null)).toBe("ok");
