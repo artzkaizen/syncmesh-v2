@@ -206,3 +206,25 @@ describe("can", () => {
     expect(granted("admin").can("books.delete")).toBe(true);
   });
 });
+
+describe("live handles across activate", () => {
+  test("activate re-points every open handle and notifies the ones that changed", async () => {
+    const mesh = granted("member", ["org:acme", "org:globex"]);
+    mesh.activate("org:acme").unwrap();
+    (await mesh.books.insert({ id: "b1", title: "acme", createdBy: "acct_a" })).unwrap();
+    mesh.activate("org:globex").unwrap();
+    (await mesh.books.insert({ id: "b2", title: "globex", createdBy: "acct_a" })).unwrap();
+
+    const titles = mesh.books.list({ orderBy: [["title", "asc"]] });
+    let notified = 0;
+    titles.subscribe(() => void (notified += 1));
+    expect(titles.rows().map((r) => r.title)).toEqual(["globex"]);
+
+    mesh.activate("org:acme").unwrap();
+    expect(titles.rows().map((r) => r.title)).toEqual(["acme"]);
+    expect(notified).toBe(1);
+    mesh.activate("org:acme").unwrap();
+    expect(notified).toBe(1);
+    titles.release();
+  });
+});

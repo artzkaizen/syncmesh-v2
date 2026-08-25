@@ -23,6 +23,7 @@ import type { TxCollections } from "./tx.js";
 import { createCollection } from "./collection.js";
 import { createContext } from "./context.js";
 import { CrossPartitionTx } from "./errors.js";
+import { createQueryRegistry } from "./registry.js";
 
 export interface MeshOptions<P extends PartitionTree, RS extends Roles<P>, C extends ColumnsMap> {
   readonly schema: Schema<P, RS, C>;
@@ -50,6 +51,8 @@ export interface MeshBase<C extends ColumnsMap> {
   readonly can: (what: `${string}.${string}`, row?: WireCells) => boolean;
   readonly revert: (id: EventId) => Promise<Result<unknown, MeshRevertError>>;
   readonly canRevert: (id: EventId) => boolean;
+  /** Open maintained query results; identical descriptors count once. */
+  readonly openQueries: () => number;
 }
 
 export type Mesh<C extends ColumnsMap> = MeshBase<C> & {
@@ -84,6 +87,7 @@ export function createMesh<
     Object.assign(engineOptions, { stateStore: options.stateStore });
   if (undoDepth !== undefined) Object.assign(engineOptions, { undoDepth });
   const engine = createEngine(engineOptions);
+  const queries = createQueryRegistry(engine);
   const context = createContext({
     kinds: schema.kinds.map(String),
     peerId: identity.peerId,
@@ -108,6 +112,7 @@ export function createMesh<
       engine,
       placement: () => placementOf(name),
       can,
+      queries,
     });
   }
 
@@ -153,13 +158,16 @@ export function createMesh<
     activate: (instance) =>
       Result.gen(function* () {
         const key = yield* parsePartitionKey(instance);
-        return context.activate(key);
+        yield* context.activate(key);
+        queries.rescanAll();
+        return Result.ok(undefined);
       }),
     active: context.active,
     tx,
     can,
     revert: (id) => engine.revert(id),
     canRevert: (id) => engine.canRevert(id),
+    openQueries: queries.size,
   };
   for (const name of Object.keys(collections))
     if (name in base) panic(`table "${name}" collides with a mesh method; rename the table`);

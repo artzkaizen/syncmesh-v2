@@ -1,0 +1,89 @@
+import { defineSchema, t } from "@syncmesh/schema";
+import { Temporal } from "@syncmesh/temporal";
+import { createIdentity } from "@syncmesh/wire";
+import { describe, expect, test } from "bun:test";
+
+import { createMesh } from "../mesh.js";
+
+const schema = () =>
+  defineSchema({
+    tables: {
+      todos: {
+        columns: {
+          id: t.text().primaryKey(),
+          text: t.text(),
+          done: t.boolean().default(false),
+          rank: t.integer(),
+        },
+        partition: "local",
+      },
+    },
+  });
+
+const device = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 90 + i)).unwrap();
+const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
+const open = () => createMesh({ schema: schema(), identity: device, now: () => T0 });
+
+describe("live queries", () => {
+  test("a result enters, moves, updates in place and leaves as rows change", async () => {
+    const mesh = open();
+    const openTodos = mesh.todos.where({ done: false }, { orderBy: [["rank", "asc"]] });
+    let notified = 0;
+    openTodos.subscribe(() => void (notified += 1));
+    expect(openTodos.rows()).toEqual([]);
+
+    (await mesh.todos.insert({ id: "a", text: "one", rank: 2 })).unwrap();
+    (await mesh.todos.insert({ id: "b", text: "two", rank: 1 })).unwrap();
+    expect(openTodos.rows().map((r) => r.id)).toEqual(["b", "a"]);
+    expect(notified).toBe(2);
+
+    (await mesh.todos.update("b", { rank: 3 })).unwrap();
+    expect(openTodos.rows().map((r) => r.id)).toEqual(["a", "b"]);
+
+    (await mesh.todos.update("a", { text: "one!" })).unwrap();
+    expect(openTodos.rows().map((r) => r.text)).toEqual(["one!", "two"]);
+
+    (await mesh.todos.update("a", { done: true })).unwrap();
+    expect(openTodos.rows().map((r) => r.id)).toEqual(["b"]);
+
+    (await mesh.todos.delete("b")).unwrap();
+    expect(openTodos.rows()).toEqual([]);
+    expect(notified).toBe(6);
+    openTodos.release();
+  });
+
+  test("a batch that misses the filter and table does not notify; one batch is one notification", async () => {
+    const mesh = open();
+    const done = mesh.todos.where({ done: true });
+    let notified = 0;
+    done.subscribe(() => void (notified += 1));
+    (await mesh.todos.insert({ id: "a", text: "x", rank: 1 })).unwrap();
+    expect(notified).toBe(0);
+    (
+      await mesh.tx((c) =>
+        c.todos
+          .insert({ id: "b", text: "y", rank: 2, done: true })
+          .andThen(() => c.todos.insert({ id: "c", text: "z", rank: 3, done: true }))
+          .map(() => undefined),
+      )
+    ).unwrap();
+    expect(done.rows()).toHaveLength(2);
+    expect(notified).toBe(1);
+    done.release();
+  });
+
+  test("identical descriptors share one maintained result; a predicate never shares; release drops", () => {
+    const mesh = open();
+    const a = mesh.todos.where({ done: false }, { orderBy: [["rank", "asc"]] });
+    const b = mesh.todos.where({ done: false }, { orderBy: [["rank", "asc"]] });
+    const c = mesh.todos.where((row) => !row.done);
+    expect(mesh.openQueries()).toBe(2);
+    a.release();
+    expect(mesh.openQueries()).toBe(2);
+    b.release();
+    b.release();
+    expect(mesh.openQueries()).toBe(1);
+    c.release();
+    expect(mesh.openQueries()).toBe(0);
+  });
+});
