@@ -266,7 +266,7 @@ describe("the engine with a validator", () => {
     ).unwrap();
     const seen: string[] = [];
     engine.onQuarantine((q) => void seen.push(q.reason._tag));
-    expect((await engine.receive(event)).unwrap()).toEqual({
+    expect((await engine.receive({ event })).unwrap()).toEqual({
       folded: 0,
       skipped: 0,
       quarantined: 1,

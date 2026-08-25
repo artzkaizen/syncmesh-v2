@@ -41,7 +41,7 @@ export function openEngine(
     const coverage = cached?.coverage ?? EMPTY_COVERAGE;
     const synced = yield* Result.await(store.allSince(coverage.synced, "synced"));
     const local = yield* Result.await(store.allSince(coverage.local, "local"));
-    const replay = [...synced, ...local];
+    const replay = [...synced, ...local].map((entry) => entry.event);
     const max = yield* Result.await(store.maxHlc());
     if (max !== undefined) clock.receive(max);
 

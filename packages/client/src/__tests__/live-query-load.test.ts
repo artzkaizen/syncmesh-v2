@@ -72,7 +72,9 @@ describe("one fold batch is one notification, whatever it carries", () => {
     });
     expect(mesh.openQueries()).toBe(200);
 
-    const report = (await mesh.engine.receiveBatch(catchUp(5_000))).unwrap();
+    const report = (
+      await mesh.engine.receiveBatch(catchUp(5_000).map((event) => ({ event })))
+    ).unwrap();
     expect(report.folded).toBe(5_000);
     expect(notified.size).toBe(200);
     for (const count of notified.values()) expect(count).toBe(1);

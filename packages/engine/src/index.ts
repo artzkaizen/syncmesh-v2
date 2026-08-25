@@ -1,4 +1,4 @@
-export type { EventStore, SeqScope } from "./store.js";
+export type { EventStore, SeqScope, StoredEvent } from "./store.js";
 export { StoreFailure, createMemoryEventStore } from "./store.js";
 export type { Tx } from "./tx.js";
 export type {

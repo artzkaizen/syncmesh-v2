@@ -129,7 +129,7 @@ describe("compaction — RFC-0015 §2", () => {
     const done = (await engine.compact({ now: T0 })).unwrap();
     expect(done.removed).toBe(2);
     expect(done.floor.local.get(PEER_A)).toBe(seq(2));
-    expect((await store.all()).unwrap().map((e) => e.local ?? false)).toEqual([false]);
+    expect((await store.all()).unwrap().map(({ event: e }) => e.local ?? false)).toEqual([false]);
   });
 
   test("the floor never passes what the state store has persisted", async () => {

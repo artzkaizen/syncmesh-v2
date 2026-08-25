@@ -14,7 +14,7 @@ import { Result } from "@syncmesh/result";
 import type { Boot } from "./boot.js";
 import type { Ack, CompactError, CompactOptions, Compaction } from "./compaction.js";
 import type { StateStore } from "./state-store.js";
-import type { EventStore, StoreFailure } from "./store.js";
+import type { EventStore, StoreFailure, StoredEvent } from "./store.js";
 import type { Coverage, Cursors } from "./sync.js";
 import type { ProbeEvent, StateLookup, Validator } from "./validate.js";
 
@@ -73,11 +73,11 @@ export interface Engine {
     fn: (tx: Tx) => void,
     options?: MutateOptions,
   ) => Promise<Result<SyncEvent, MutateError>>;
-  /** Folds events from another peer once each; own and already-stored events are skipped. */
+  /** Folds entries from another peer once each; own and already-stored events are skipped. A relayed event keeps its author's signature — pass it. */
   readonly receiveBatch: (
-    events: readonly SyncEvent[],
+    entries: readonly StoredEvent[],
   ) => Promise<Result<ReceiveReport, StoreFailure>>;
-  readonly receive: (event: SyncEvent) => Promise<Result<ReceiveReport, StoreFailure>>;
+  readonly receive: (entry: StoredEvent) => Promise<Result<ReceiveReport, StoreFailure>>;
   readonly state: () => State;
   /** The visible rows of `table` that belong to `partition`. */
   readonly rowsIn: (table: TableName, partition: PartitionKey) => ReadonlyMap<RowKey, Row>;
@@ -93,7 +93,7 @@ export interface Engine {
   /** Removes events every counted peer has acked and the state store has persisted; unobservable to peers. See RFC-0015 §2. */
   readonly compact: (options: CompactOptions) => Promise<Result<Compaction, CompactError>>;
   /** Synced events the holder of `theirs` lacks. */
-  readonly eventsSince: (theirs: Cursors) => Promise<Result<readonly SyncEvent[], StoreFailure>>;
+  readonly eventsSince: (theirs: Cursors) => Promise<Result<readonly StoredEvent[], StoreFailure>>;
   readonly onFoldBatch: (listener: (batch: FoldBatch) => void) => Unsubscribe;
   /** Fires for every synced event this engine authors, never for `local` ones. */
   readonly onOutbound: (listener: (event: SyncEvent) => void) => Unsubscribe;
@@ -191,7 +191,7 @@ export function createEngine(options: EngineOptions): Engine {
       const scope = mutateOptions.local === true ? "local" : "synced";
       const last = yield* Result.await(store.lastSeq(peerId, scope));
       const event = buildEvent(peerId, procedure, hlc, nextSeq(last), changes, mutateOptions);
-      yield* Result.await(store.append(event));
+      yield* Result.await(store.append({ event }));
       telemetry.emit({ type: "engine.mutate", sizes: { changes: changes.length }, duration });
       await persist(fold([event], "local"));
       if (undoDepth > 0) {
@@ -202,17 +202,22 @@ export function createEngine(options: EngineOptions): Engine {
       return Result.ok(event);
     });
 
-  const receiveBatch: Engine["receiveBatch"] = (events) =>
+  const receiveBatch: Engine["receiveBatch"] = (entries) =>
     Result.gen(async function* () {
       const { fresh, quarantined } = yield* Result.await(
-        admit(events, { peerId, store, validate, before, quarantine }),
+        admit(entries, { peerId, store, validate, before, quarantine }),
       );
-      for (const event of fresh) clock.receive(event.hlc);
+      for (const { event } of fresh) clock.receive(event.hlc);
       yield* Result.await(store.appendBatch(fresh));
-      await persist(fold(fresh, "remote"));
+      await persist(
+        fold(
+          fresh.map((f) => f.event),
+          "remote",
+        ),
+      );
       return Result.ok({
         folded: fresh.length,
-        skipped: events.length - fresh.length - quarantined,
+        skipped: entries.length - fresh.length - quarantined,
         quarantined,
       });
     });
@@ -242,7 +247,7 @@ export function createEngine(options: EngineOptions): Engine {
     peerId,
     mutate,
     receiveBatch,
-    receive: (event) => receiveBatch([event]),
+    receive: (entry) => receiveBatch([entry]),
     state: () => state,
     rowsIn: (table, partition) => readRowsIn(state, table, partition),
     revert,

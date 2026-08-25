@@ -61,7 +61,7 @@ describe("receive / receiveBatch", () => {
     const batches = collect<FoldBatch>();
     engine.onFoldBatch(batches.push);
     const events = await authored(3);
-    const report = (await engine.receiveBatch(events)).unwrap();
+    const report = (await engine.receiveBatch(events.map((event) => ({ event })))).unwrap();
     expect(report).toEqual({ folded: 3, skipped: 0, quarantined: 0 });
     expect(batches.seen).toHaveLength(1);
     expect(batches.seen[0]?.source).toBe("remote");
@@ -76,12 +76,16 @@ describe("receive / receiveBatch", () => {
     engine.onFoldBatch(batches.push);
     const [e] = await authored(1);
     if (e === undefined) throw new Error("fixture");
-    expect((await engine.receiveBatch([e, e])).unwrap()).toEqual({
+    expect((await engine.receiveBatch([{ event: e }, { event: e }])).unwrap()).toEqual({
       folded: 1,
       skipped: 1,
       quarantined: 0,
     });
-    expect((await engine.receive(e)).unwrap()).toEqual({ folded: 0, skipped: 1, quarantined: 0 });
+    expect((await engine.receive({ event: e })).unwrap()).toEqual({
+      folded: 0,
+      skipped: 1,
+      quarantined: 0,
+    });
     expect(batches.seen).toHaveLength(1);
   });
 
@@ -92,7 +96,7 @@ describe("receive / receiveBatch", () => {
     const mine = (
       await engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ title: "a" })))
     ).unwrap();
-    expect((await engine.receive(mine)).unwrap()).toEqual({
+    expect((await engine.receive({ event: mine })).unwrap()).toEqual({
       folded: 0,
       skipped: 1,
       quarantined: 0,
@@ -110,7 +114,7 @@ describe("receive / receiveBatch", () => {
     const { engine } = setup(undefined, 100);
     const [remote] = await authored(1);
     if (remote === undefined) throw new Error("fixture");
-    await engine.receive(remote);
+    await engine.receive({ event: remote });
     const mine = (
       await engine.mutate(CREATE, (tx) => tx.update(NOTES, N1, row({ title: "x" })))
     ).unwrap();
@@ -137,7 +141,7 @@ describe("convergence — two engines, offline edits to different fields", () =>
     const seed = (
       await a.engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ title: "t", body: "b" })))
     ).unwrap();
-    await b.engine.receive(seed);
+    await b.engine.receive({ event: seed });
 
     const fromA = (
       await a.engine.mutate(CREATE, (tx) => tx.update(NOTES, N1, row({ title: "A's title" })))
@@ -146,8 +150,8 @@ describe("convergence — two engines, offline edits to different fields", () =>
       await b.engine.mutate(CREATE, (tx) => tx.update(NOTES, N1, row({ body: "B's body" })))
     ).unwrap();
 
-    await a.engine.receive(fromB);
-    await b.engine.receive(fromA);
+    await a.engine.receive({ event: fromB });
+    await b.engine.receive({ event: fromA });
 
     const merged = row({ title: "A's title", body: "B's body" });
     expect(readRow(a.engine.state(), NOTES, N1)).toEqual(merged);

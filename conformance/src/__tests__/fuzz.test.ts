@@ -73,7 +73,7 @@ const feed = async (
     const r = decodeAndVerify(frame);
     if (r.isOk()) {
       accepted++;
-      (await engine.receive(r.value.event)).unwrap();
+      (await engine.receive({ event: r.value.event, sig: r.value.sig })).unwrap();
     }
   }
   return accepted;
@@ -126,7 +126,7 @@ describe("fuzz — the wire cannot throw, poison dedup, or touch state", () => {
     expect((await store.all()).unwrap()).toHaveLength(0);
 
     const ok = decodeAndVerify(pristine.wire).unwrap();
-    expect((await engine.receive(ok.event)).unwrap()).toEqual({
+    expect((await engine.receive({ event: ok.event, sig: ok.sig })).unwrap()).toEqual({
       folded: 1,
       skipped: 0,
       quarantined: 0,
@@ -144,7 +144,8 @@ describe("fuzz — the wire cannot throw, poison dedup, or touch state", () => {
     spliced.set(pristine.core.subarray(0, 8), 2);
     expect(decodeAndVerify(spliced).isErr()).toBe(true);
     expect(
-      (await engine.receive(decodeAndVerify(pristine.wire).unwrap().event)).unwrap().folded,
+      (await engine.receive({ event: decodeAndVerify(pristine.wire).unwrap().event })).unwrap()
+        .folded,
     ).toBe(1);
   });
 });

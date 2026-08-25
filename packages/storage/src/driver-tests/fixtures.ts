@@ -1,3 +1,4 @@
+import type { StoredEvent } from "@syncmesh/engine";
 import type {
   CellValue,
   ColumnName,
@@ -67,3 +68,16 @@ export const record = (body: string, ms: number): RowRecord => ({
 });
 
 export const ids = (events: readonly SyncEvent[]) => events.map((e) => e.id);
+
+/** The stored form; `sig` deterministic from the id so round-trips are checkable. */
+export const entry = (
+  peerId: PeerId,
+  n: number,
+  ms: number,
+  options: EventOptions = {},
+): StoredEvent => {
+  const e = event(peerId, n, ms, options);
+  return { event: e, sig: Uint8Array.from({ length: 8 }, (_, i) => (n + i) % 256) };
+};
+
+export const ids2 = (entries: readonly StoredEvent[]) => entries.map((x) => x.event.id);

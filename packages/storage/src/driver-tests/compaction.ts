@@ -3,17 +3,17 @@ import type { DriverCase, OpenDriver } from "./index.js";
 
 import { sqliteEventStore } from "../sqlite-event-store.js";
 import { equal } from "./assert.js";
-import { A, B, at, event, ids, seq } from "./fixtures.js";
+import { A, B, at, entry, event, ids2 as ids, seq } from "./fixtures.js";
 
 const filled = async (driver: SqliteDriver) => {
   const store = (await sqliteEventStore(driver)).unwrap();
   (
     await store.appendBatch([
-      event(A, 1, 10),
-      event(A, 2, 20),
-      event(A, 3, 30),
-      event(B, 1, 10),
-      event(A, 1, 10, { local: true }),
+      entry(A, 1, 10),
+      entry(A, 2, 20),
+      entry(A, 3, 30),
+      entry(B, 1, 10),
+      entry(A, 1, 10, { local: true }),
     ])
   ).unwrap();
   return store;
@@ -36,7 +36,7 @@ export const compactionCases = (openDriver: OpenDriver): readonly DriverCase[] =
       );
       equal(
         ids((await store.all()).unwrap()),
-        ids([event(A, 1, 10, { local: true }), event(B, 1, 10), event(A, 3, 30)]),
+        [event(A, 1, 10, { local: true }).id, event(B, 1, 10).id, event(A, 3, 30).id],
         "left",
       );
       equal(await floors(store), [seq(2), undefined, undefined], "floors after first cut");
@@ -93,16 +93,23 @@ export const compactionCases = (openDriver: OpenDriver): readonly DriverCase[] =
     },
   },
   {
-    name: "compaction: a database at schema version 1 migrates to 2 with its events intact",
+    name: "compaction: a database at schema version 1 migrates to current with its events intact",
     run: async () => {
       const driver = await openDriver("compaction-migrate");
       const store = await filled(driver);
       await driver.run("DROP TABLE compaction");
+      await driver.run("ALTER TABLE events DROP COLUMN sig");
       await driver.run("PRAGMA user_version = 1");
       const migrated = (await sqliteEventStore(driver)).unwrap();
-      equal(Number((await driver.all("PRAGMA user_version"))[0]?.[0]), 2, "user_version");
+      equal(Number((await driver.all("PRAGMA user_version"))[0]?.[0]), 3, "user_version");
       equal((await migrated.compactedBelow()).unwrap().synced.size, 0, "empty floors");
-      equal((await store.all()).unwrap().length, 5, "events intact");
+      const all = (await store.all()).unwrap();
+      equal(all.length, 5, "events intact");
+      equal(
+        all.every((x) => x.sig === undefined),
+        true,
+        "pre-signature events read back without one",
+      );
     },
   },
 ];

@@ -1,5 +1,7 @@
 import type { PeerId } from "@syncmesh/kernel";
-import type { SeqNum, SyncEvent } from "@syncmesh/kernel";
+import type { SeqNum } from "@syncmesh/kernel";
+
+import type { StoredEvent } from "./store.js";
 
 /** Per author, the highest sequence number a peer holds. */
 export type Cursors = ReadonlyMap<PeerId, SeqNum>;
@@ -23,12 +25,12 @@ export interface SyncState {
 
 export type SyncMessage =
   | { readonly kind: "cursors"; readonly cursors: Cursors }
-  | { readonly kind: "events"; readonly events: readonly SyncEvent[]; readonly cursors: Cursors };
+  | { readonly kind: "events"; readonly events: readonly StoredEvent[]; readonly cursors: Cursors };
 
 /** A snapshot of the local log the pure steps read from: no I/O, no clock. */
 export interface SyncDoc {
   readonly cursors: Cursors;
-  readonly eventsSince: (theirs: Cursors) => readonly SyncEvent[];
+  readonly eventsSince: (theirs: Cursors) => readonly StoredEvent[];
 }
 
 export const initialSyncState: SyncState = { inFlight: false, sentCursors: false };
@@ -58,7 +60,7 @@ export function generateSyncMessage(
 export function receiveSyncMessage(
   state: SyncState,
   message: SyncMessage,
-): readonly [SyncState, readonly SyncEvent[]] {
+): readonly [SyncState, readonly StoredEvent[]] {
   const next: SyncState = {
     theirCursors: message.cursors,
     inFlight: false,
@@ -73,8 +75,9 @@ export function coversCursors(have: Cursors, want: Cursors): boolean {
   return true;
 }
 
-const advance = (cursors: Cursors, events: readonly SyncEvent[]): Cursors => {
+const advance = (cursors: Cursors, entries: readonly StoredEvent[]): Cursors => {
   const next = new Map(cursors);
-  for (const e of events) if ((next.get(e.peerId) ?? 0) < e.seqNum) next.set(e.peerId, e.seqNum);
+  for (const { event: e } of entries)
+    if ((next.get(e.peerId) ?? 0) < e.seqNum) next.set(e.peerId, e.seqNum);
   return next;
 };

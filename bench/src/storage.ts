@@ -1,4 +1,4 @@
-import type { EventStore, StateStore } from "@syncmesh/engine";
+import type { EventStore, StateStore, StoredEvent } from "@syncmesh/engine";
 import type {
   CellValue,
   ColumnName,
@@ -67,14 +67,14 @@ group("append 1,000 events — bun:sqlite on disk", () => {
     const perCall = await openLog();
     let nextA = 1;
     bench("append(), one call per event", async () => {
-      for (let i = 0; i < BATCH; i += 1) await perCall.append(event(nextA++, BATCH));
+      for (let i = 0; i < BATCH; i += 1) await perCall.append({ event: event(nextA++, BATCH) });
     });
 
     const batched = await openLog();
     let nextB = 1;
     bench("appendBatch(), one transaction", async () => {
-      const events: SyncEvent[] = [];
-      for (let i = 0; i < BATCH; i += 1) events.push(event(nextB++, BATCH));
+      const events: StoredEvent[] = [];
+      for (let i = 0; i < BATCH; i += 1) events.push({ event: event(nextB++, BATCH) });
       await batched.appendBatch(events);
     });
   });
@@ -87,8 +87,8 @@ const prepare = async (): Promise<{ store: EventStore; stateStore: StateStore }>
   const driver = bunSqliteDriver(dbPath());
   const store = (await sqliteEventStore(driver)).unwrap();
   for (let from = 1; from <= EVENTS; from += BATCH) {
-    const events: SyncEvent[] = [];
-    for (let seq = from; seq < from + BATCH; seq += 1) events.push(event(seq, ROWS));
+    const events: StoredEvent[] = [];
+    for (let seq = from; seq < from + BATCH; seq += 1) events.push({ event: event(seq, ROWS) });
     (await store.appendBatch(events)).unwrap();
   }
   const stateStore = (await sqliteStateStore(driver)).unwrap();

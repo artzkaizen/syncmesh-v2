@@ -44,7 +44,7 @@ export function createLink(a: Engine, b: Engine, options: LinkOptions = {}): Lin
   const forward = (to: Engine) => (event: SyncEvent) => {
     if (!online) return;
     queue = queue.then(async () => {
-      const r = await to.receive(event);
+      const r = await to.receive({ event });
       if (r.isErr()) errors.emit(r.error);
     });
   };
@@ -56,7 +56,8 @@ export function createLink(a: Engine, b: Engine, options: LinkOptions = {}): Lin
       const all = yield* Result.await(engine.eventsSince(new Map()));
       const doc: SyncDoc = {
         cursors,
-        eventsSince: (theirs) => all.filter((e) => (theirs.get(e.peerId) ?? 0) < e.seqNum),
+        eventsSince: (theirs) =>
+          all.filter(({ event: e }) => (theirs.get(e.peerId) ?? 0) < e.seqNum),
       };
       return Result.ok(doc);
     });

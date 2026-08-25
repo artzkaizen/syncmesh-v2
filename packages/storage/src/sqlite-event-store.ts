@@ -1,5 +1,4 @@
-import type { EventStore } from "@syncmesh/engine";
-import type { SyncEvent } from "@syncmesh/kernel";
+import type { EventStore, StoredEvent } from "@syncmesh/engine";
 
 import { StoreFailure } from "@syncmesh/engine";
 import { eventId, parseEventId } from "@syncmesh/kernel";
@@ -12,9 +11,10 @@ import { migrate } from "./schema.js";
 import { attempt, coverageOf, failure, hlcRow, inTransaction, seqOf } from "./sql.js";
 
 const INSERT = `INSERT OR IGNORE INTO events
-  (peer, seq, local, hlc_ms, hlc_logical, partition, core) VALUES (?, ?, ?, ?, ?, ?, ?)`;
-const SELECT_ALL = `SELECT core, local FROM events ORDER BY hlc_ms, hlc_logical, peer, seq`;
-const SELECT_SINCE = `SELECT core, local FROM events
+  (peer, seq, local, hlc_ms, hlc_logical, partition, core, sig)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+const SELECT_ALL = `SELECT core, local, sig FROM events ORDER BY hlc_ms, hlc_logical, peer, seq`;
+const SELECT_SINCE = `SELECT core, local, sig FROM events
   WHERE local = ?
     AND seq > COALESCE((SELECT value FROM json_each(?) WHERE key = events.peer), 0)
   ORDER BY peer, seq`;
@@ -43,7 +43,7 @@ const SELECT_MAX_HLC = `SELECT hlc_ms, hlc_logical FROM (
   SELECT hlc_ms, hlc_logical FROM events UNION ALL SELECT hlc_ms, hlc_logical FROM compaction)
   ORDER BY hlc_ms DESC, hlc_logical DESC LIMIT 1`;
 
-const params = (event: SyncEvent): readonly SqlValue[] => [
+const params = ({ event, sig }: StoredEvent): readonly SqlValue[] => [
   event.peerId,
   event.seqNum,
   event.local === true ? 1 : 0,
@@ -51,20 +51,23 @@ const params = (event: SyncEvent): readonly SqlValue[] => [
   event.hlc[1],
   event.partition ?? null,
   encodeEventCore(event),
+  sig ?? null,
 ];
 
-function decodeRow(row: SqlRow): Result<SyncEvent, StoreFailure> {
-  const [core, local] = row;
+function decodeRow(row: SqlRow): Result<StoredEvent, StoreFailure> {
+  const [core, local, sig] = row;
   if (!(core instanceof Uint8Array)) {
     return Result.err(new StoreFailure({ message: "event core is not a blob" }));
   }
   return decodeEventCore(core)
     .mapError(failure("stored event does not decode"))
-    .map((event) =>
-      local === 1
-        ? { ...event, id: eventId(event.peerId, event.seqNum, true), local: true }
-        : event,
-    );
+    .map((decoded) => {
+      const event =
+        local === 1
+          ? { ...decoded, id: eventId(decoded.peerId, decoded.seqNum, true), local: true as const }
+          : decoded;
+      return sig instanceof Uint8Array ? { event, sig } : { event };
+    });
 }
 
 const decodeRows = (rows: readonly SqlRow[]) => Result.all(rows.map(decodeRow));
@@ -80,11 +83,11 @@ export function sqliteEventStore(driver: SqliteDriver): Promise<Result<EventStor
     attempt(message, () => driver.all(sql, values));
 
   const store: EventStore = {
-    append: (event) => attempt("append failed", () => driver.run(INSERT, params(event))),
-    appendBatch: (events) =>
+    append: (entry) => attempt("append failed", () => driver.run(INSERT, params(entry))),
+    appendBatch: (entries) =>
       attempt("appendBatch failed", () =>
         inTransaction(driver, async () => {
-          for (const event of events) await driver.run(INSERT, params(event));
+          for (const entry of entries) await driver.run(INSERT, params(entry));
         }),
       ),
     has: (id) =>

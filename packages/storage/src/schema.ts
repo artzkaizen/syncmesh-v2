@@ -37,6 +37,7 @@ const MIGRATIONS: readonly (readonly string[])[] = [
       PRIMARY KEY (peer, local)
     ) WITHOUT ROWID`,
   ],
+  [`ALTER TABLE events ADD COLUMN sig BLOB`],
 ];
 
 /** Brings the database up to the current schema; a no-op when it already is. */

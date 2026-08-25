@@ -22,7 +22,7 @@ const docWith = async (n: number): Promise<{ doc: SyncDoc; events: SyncEvent[] }
   return {
     doc: {
       cursors,
-      eventsSince: (theirs) => all.filter((e) => (theirs.get(e.peerId) ?? 0) < e.seqNum),
+      eventsSince: (theirs) => all.filter(({ event: e }) => (theirs.get(e.peerId) ?? 0) < e.seqNum),
     },
     events,
   };
@@ -40,7 +40,7 @@ describe("generateSyncMessage / receiveSyncMessage", () => {
     expect(s2.inFlight).toBe(false);
 
     const [s3, m3] = generateSyncMessage(s2, doc);
-    expect(m3?.kind === "events" && m3.events.map((e) => Number(e.seqNum))).toEqual([2, 3]);
+    expect(m3?.kind === "events" && m3.events.map((e) => Number(e.event.seqNum))).toEqual([2, 3]);
     expect(s3.inFlight).toBe(true);
     expect(s3.theirCursors?.get(PEER_A)).toBe(events[2]?.seqNum);
 
@@ -59,12 +59,13 @@ describe("generateSyncMessage / receiveSyncMessage", () => {
 
   test("receiving events returns them to fold and records the sender's cursors", async () => {
     const { doc, events } = await docWith(2);
+    const entries = events.map((event) => ({ event }));
     const [state, toFold] = receiveSyncMessage(initialSyncState, {
       kind: "events",
-      events,
+      events: entries,
       cursors: doc.cursors,
     });
-    expect(toFold).toBe(events);
+    expect(toFold).toBe(entries);
     expect(state.theirCursors).toBe(doc.cursors);
   });
 });

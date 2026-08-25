@@ -14,19 +14,25 @@ export class StoreFailure extends TaggedError("StoreFailure")<{
 
 export type SeqScope = "synced" | "local";
 
+/** An event with the author's signature over its core, when one was ever seen. Own writes have none until they leave through a bridge; relayed events must keep the original — no other peer can re-sign them. */
+export interface StoredEvent {
+  readonly event: SyncEvent;
+  readonly sig?: Uint8Array;
+}
+
 /** Durable, append-only home of events; the outbox is the log itself. Async per D05. See RFC-0004. */
 export interface EventStore {
   /** Idempotent by event id. */
-  readonly append: (event: SyncEvent) => Promise<Result<void, StoreFailure>>;
+  readonly append: (entry: StoredEvent) => Promise<Result<void, StoreFailure>>;
   /** All or nothing where the backend can promise it; idempotent by event id. */
-  readonly appendBatch: (events: readonly SyncEvent[]) => Promise<Result<void, StoreFailure>>;
+  readonly appendBatch: (entries: readonly StoredEvent[]) => Promise<Result<void, StoreFailure>>;
   readonly has: (id: EventId) => Promise<Result<boolean, StoreFailure>>;
-  readonly all: () => Promise<Result<readonly SyncEvent[], StoreFailure>>;
+  readonly all: () => Promise<Result<readonly StoredEvent[], StoreFailure>>;
   /** Events in the scope above the given per-author cursors, ordered by author then sequence. Synced by default. */
   readonly allSince: (
     cursors: Cursors,
     scope?: SeqScope,
-  ) => Promise<Result<readonly SyncEvent[], StoreFailure>>;
+  ) => Promise<Result<readonly StoredEvent[], StoreFailure>>;
   /** Highest sequence number this peer has appended in the scope, if any. */
   readonly lastSeq: (
     peer: PeerId,
@@ -53,17 +59,17 @@ const inScope = (event: SyncEvent, scope: SeqScope) =>
   (event.local === true) === (scope === "local");
 
 export function createMemoryEventStore(): EventStore {
-  const events = new Map<EventId, SyncEvent>();
+  const events = new Map<EventId, StoredEvent>();
   const floors = { synced: new Map<PeerId, Floor>(), local: new Map<PeerId, Floor>() };
   const ok = <T>(value: T) => Promise.resolve(Result.ok(value));
 
   return {
-    append: (event) => {
-      if (!events.has(event.id)) events.set(event.id, event);
+    append: (entry) => {
+      if (!events.has(entry.event.id)) events.set(entry.event.id, entry);
       return ok(undefined);
     },
     appendBatch: (batch) => {
-      for (const event of batch) if (!events.has(event.id)) events.set(event.id, event);
+      for (const entry of batch) if (!events.has(entry.event.id)) events.set(entry.event.id, entry);
       return ok(undefined);
     },
     has: (id) => ok(events.has(id)),
@@ -71,14 +77,14 @@ export function createMemoryEventStore(): EventStore {
     allSince: (cursors, scope = "synced") =>
       ok(
         [...events.values()]
-          .filter((e) => inScope(e, scope) && (cursors.get(e.peerId) ?? 0) < e.seqNum)
-          .sort((x, y) =>
+          .filter(({ event: e }) => inScope(e, scope) && (cursors.get(e.peerId) ?? 0) < e.seqNum)
+          .sort(({ event: x }, { event: y }) =>
             x.peerId < y.peerId ? -1 : x.peerId > y.peerId ? 1 : x.seqNum - y.seqNum,
           ),
       ),
     lastSeq: (peer, scope) => {
       let last = floors[scope].get(peer)?.seq;
-      for (const event of events.values()) {
+      for (const { event } of events.values()) {
         if (
           event.peerId === peer &&
           inScope(event, scope) &&
@@ -91,7 +97,7 @@ export function createMemoryEventStore(): EventStore {
     compactBelow: (floor, scope, olderThan) => {
       let removed = 0;
       const recorded = floors[scope];
-      for (const [id, event] of events) {
+      for (const [id, { event }] of events) {
         const below = event.seqNum <= (floor.get(event.peerId) ?? 0);
         const old = Temporal.Instant.compare(event.hlc[0], olderThan) < 0;
         if (!inScope(event, scope) || !below || !old) continue;
@@ -115,7 +121,7 @@ export function createMemoryEventStore(): EventStore {
       const consider = (hlc: Hlc) => {
         if (max === undefined || compareHlc(hlc, max) > 0) max = hlc;
       };
-      for (const event of events.values()) consider(event.hlc);
+      for (const { event } of events.values()) consider(event.hlc);
       for (const f of floors.synced.values()) consider(f.hlc);
       for (const f of floors.local.values()) consider(f.hlc);
       return ok(max);
