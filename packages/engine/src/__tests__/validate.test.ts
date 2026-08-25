@@ -123,6 +123,8 @@ describe("createValidator — the ladder", () => {
       NONE,
     );
     expect(tag(catalog)).toBe("ReadOnlyPartition");
+    // isAuthority alone never opens global tables: it would accept here what every
+    // device rejects — the same event must get the same verdict on every peer
     const authority = createValidator({
       schema,
       grantFor: (peer) => grants.get(peer),
@@ -145,7 +147,7 @@ describe("createValidator — the ladder", () => {
           NONE,
         ),
       ),
-    ).toBe("ok");
+    ).toBe("ReadOnlyPartition");
     expect(
       tag(
         validator.validate(

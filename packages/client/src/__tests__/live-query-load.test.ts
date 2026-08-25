@@ -61,7 +61,7 @@ describe("one fold batch is one notification, whatever it carries", () => {
     const mesh = createMesh({
       schema: schema(),
       identity: device,
-      isAuthority: true,
+      authority: AUTHOR,
       now: () => T0,
     });
     const notified = new Map<number, number>();

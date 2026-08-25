@@ -54,9 +54,9 @@ export interface ValidatorOptions {
   readonly schema: ValidatorSchema;
   /** `null` is ungranted mode: grant and policy steps are skipped; schema never is. */
   readonly grantFor: ((peer: PeerId) => Grant | undefined) | null;
-  /** The relay: may write global tables, and is where authority-visibility rules run. */
+  /** This process evaluates `visibility: "authority"` rules (the server peer); devices skip them. Never gates global writes — `authority` does. */
   readonly isAuthority?: boolean;
-  /** The one peer whose events may write `global` tables; named like the issuer is, checked against the event's author. Absent, only `isAuthority` may. */
+  /** The one peer whose events may write `global` tables; named like the issuer is, checked against the event's author. Absent, global tables are read-only everywhere. */
   readonly authority?: PeerId;
 }
 
@@ -93,7 +93,7 @@ export function createValidator(options: ValidatorOptions): Validator {
       const entry = entries.get(table);
       if (entry === undefined)
         return Result.err(new UnknownTable({ table, message: "not in the schema" }));
-      const partition = checkPartition(table, entry, event, grant, isAuthority, authority);
+      const partition = checkPartition(table, entry, event, grant, authority);
       if (partition.isErr()) return partition;
       const held = before.partition(change.table, change.key);
       if (held !== undefined && held !== event.partition) {
@@ -119,7 +119,6 @@ function checkPartition(
   entry: Entry,
   event: ProbeEvent,
   grant: Grant | undefined,
-  isAuthority: boolean,
   authority: PeerId | undefined,
 ): Result<void, ValidationError> {
   const kind = entry.partition;
@@ -130,7 +129,8 @@ function checkPartition(
       : Result.err(new LocalOnly({ table, message: "a local table never travels" }));
   }
   if (kind === "global") {
-    const allowed = authority === undefined ? isAuthority : event.peerId === authority;
+    // authorship, never a local flag: the same event must get the same verdict on every peer
+    const allowed = authority !== undefined && event.peerId === authority;
     return allowed
       ? Result.ok(undefined)
       : Result.err(

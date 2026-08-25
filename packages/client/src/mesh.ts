@@ -42,7 +42,6 @@ export interface MeshOptions<P extends PartitionTree, RS extends Roles<P>, C ext
   readonly store?: EngineOptions["store"];
   readonly stateStore?: EngineOptions["stateStore"];
   readonly undoDepth?: number;
-  readonly isAuthority?: boolean;
   /** Started at construction (D12); `add`/`remove` later is deliberately absent. */
   readonly transports?: readonly Transport[];
   /** An ungranted peer asked to exist on some link — forward it to your issuer, or answer with `grants.issue`. Untrusted. */
@@ -112,11 +111,12 @@ function buildEngine<P extends PartitionTree, RS extends Roles<P>, C extends Col
   now: () => Temporal.Instant,
   store: EventStore,
 ): Engine {
-  const { schema, identity, issuer, authority, isAuthority = false } = options;
+  const { schema, identity, issuer, authority } = options;
   const validatorOptions = {
     schema,
     grantFor: issuer === undefined ? null : grantFor,
-    isAuthority,
+    // being the authority is authorship, not a flag: this process is it when the named peer is us
+    isAuthority: authority !== undefined && authority === identity.peerId,
   } satisfies ValidatorOptions;
   if (authority !== undefined) Object.assign(validatorOptions, { authority });
   const engineOptions = {
