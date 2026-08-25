@@ -28,11 +28,17 @@ import { rowHistory } from "./history.js";
 /** The value of the table's primary key column. */
 export type KeyOf<T extends Table> = Row<T>[T["primaryKey"]];
 
+/** A mutable copy of the row, handed to `update`'s updater; what it changes becomes the patch. */
+export type Draft<T extends Table> = { -readonly [K in keyof Row<T>]: Row<T>[K] };
+
+/** What `update` accepts: the columns to set, or an updater over a draft of the current row. */
+export type Update<T extends Table> = Partial<Row<T>> | ((draft: Draft<T>) => void);
+
 export interface Collection<T extends Table> {
   /** One event in the table's instance; omitted nullable columns are written as `null`. */
   readonly insert: (row: InsertRow<T>) => Promise<Result<Row<T>, WriteError>>;
   /** Writes only the columns whose value differs from the row held; nothing changed is `EmptyMutation`. */
-  readonly update: (key: KeyOf<T>, patch: Partial<Row<T>>) => Promise<Result<Row<T>, WriteError>>;
+  readonly update: (key: KeyOf<T>, change: Update<T>) => Promise<Result<Row<T>, WriteError>>;
   readonly delete: (key: KeyOf<T>) => Promise<Result<void, WriteError>>;
   readonly byId: (key: KeyOf<T>) => Row<T> | undefined;
   /** Every visible row in the active instance (or the whole table for global, user and local). */
@@ -115,10 +121,20 @@ export function createCollection<T extends Table>(
     });
   };
 
-  const updateWrite = (key: KeyOf<T>, patch: Partial<Row<T>>): Result<Write, WriteError> => {
+  /** The updater's edits as a whole row: it runs on a deep copy, so state is never mutated through it. */
+  const edited = (current: WireCells, fn: (draft: Draft<T>) => void): Partial<Row<T>> => {
+    const cloned = new Map([...current].map(([column, value]) => [column, structuredClone(value)]));
+    // SAFETY: Draft<T> is Row<T> with its readonly lifted; the copy is the updater's to mutate
+    const draft = fromWireRow(table, cloned) as Draft<T>;
+    fn(draft);
+    return draft;
+  };
+
+  const updateWrite = (key: KeyOf<T>, change: Update<T>): Result<Write, WriteError> => {
     const k = keyOf(key);
     const current = held(k);
     if (current === undefined) return Result.err(missing(name, k));
+    const patch = change instanceof Function ? edited(current, change) : change;
     const cells = changed(current, toWireRow(table, patch));
     const checked = checkRow(table, Object.fromEntries(cells), "update");
     if (checked.isErr()) return checked;
@@ -183,7 +199,7 @@ export function createCollection<T extends Table>(
 /** The recording half of a collection, used by `tx`. Method syntax on purpose: `tx` relates these across tables. */
 export interface Writes<T extends Table> {
   insert(row: InsertRow<T>): Result<Write, WriteError>;
-  update(key: KeyOf<T>, patch: Partial<Row<T>>): Result<Write, WriteError>;
+  update(key: KeyOf<T>, change: Update<T>): Result<Write, WriteError>;
   delete(key: KeyOf<T>): Result<Write, WriteError>;
 }
 

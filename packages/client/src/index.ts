@@ -1,4 +1,4 @@
-export type { Collection, KeyOf, Write, Writes } from "./collection.js";
+export type { Collection, Draft, KeyOf, Update, Write, Writes } from "./collection.js";
 export type { Revision } from "./history.js";
 export type { Context, Placement, PlacementEntry } from "./context.js";
 export { createContext } from "./context.js";

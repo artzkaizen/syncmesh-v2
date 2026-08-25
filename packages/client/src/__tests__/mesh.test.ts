@@ -118,6 +118,28 @@ describe("verbs", () => {
     expect(tag(await mesh.books.update("nope", { title: "x" }))).toBe("NoSuchRow");
   });
 
+  test("update(draft): the updater mutates a copy, diffed to a patch", async () => {
+    const mesh = granted();
+    mesh.activate("org:acme").unwrap();
+    const events: SyncEvent[] = [];
+    mesh.engine.onOutbound((e) => void events.push(e));
+    (await mesh.books.insert({ id: "b1", title: "Dune", createdBy: "acct_a" })).unwrap();
+    const updated = (
+      await mesh.books.update("b1", (draft) => {
+        draft.title = "Dune (rev)";
+      })
+    ).unwrap();
+    expect(updated.title).toBe("Dune (rev)");
+    const patch = events.at(-1)?.changes[0];
+    expect(patch?.kind === "update" && [...patch.patch.keys()].map(String)).toEqual(["title"]);
+    expect(tag(await mesh.books.update("b1", () => undefined))).toBe("EmptyMutation");
+    expect(tag(await mesh.books.update("b1", (draft) => void (draft.title = "Dune (rev)")))).toBe(
+      "EmptyMutation",
+    );
+    expect(tag(await mesh.books.update("nope", () => undefined))).toBe("NoSuchRow");
+    expect(mesh.books.byId("b1")?.title).toBe("Dune (rev)");
+  });
+
   test("delete removes the row from every read", async () => {
     const mesh = granted("admin");
     mesh.activate("org:acme").unwrap();
