@@ -48,7 +48,7 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
 
     // N is fully offline: identity minted locally, nothing writable in the org yet
     const n = open(newcomer, issuer);
-    expect((await n.controls.insert({ id: "c1", title: "x", by: "acct_n" })).isErr()).toBe(true);
+    expect((await n.controls.create({ id: "c1", title: "x", by: "acct_n" })).isErr()).toBe(true);
     expect(n.can("controls.insert")).toBe(false);
 
     // BLE hop 1: N -> M carries only N's peerId. M has internet and calls the grant
@@ -61,12 +61,12 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
 
     // N can now write, and M accepts N's events once the same bytes reach M (grants-first).
     m.grants.register(wire).unwrap();
-    const written = (await n.controls.insert({ id: "c1", title: "x", by: "acct_n" })).unwrap();
+    const written = (await n.controls.create({ id: "c1", title: "x", by: "acct_n" })).unwrap();
     expect(written.title).toBe("x");
     const link = createLink(n.engine, m.engine, { now: () => T0 });
     (await link.catchUp()).unwrap();
     m.activate("org:acme").unwrap();
-    expect(m.controls.byId("c1")?.title).toBe("x");
+    expect(m.controls.get("c1")?.title).toBe("x");
   });
 
   test("S2 hostile relay: the carrier can neither tamper with a grant nor use one not its own", () => {
@@ -122,13 +122,13 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
     const s = open(staff, ownerPhone);
     s.grants.register(staffGrant).unwrap();
     s.activate("org:acme").unwrap();
-    (await s.controls.insert({ id: "c1", title: "minted offline", by: "acct_staff" })).unwrap();
+    (await s.controls.create({ id: "c1", title: "minted offline", by: "acct_staff" })).unwrap();
 
     // the owner already holds the staff grant (issue registers it) — staff events fold at once
     const link = createLink(s.engine, owner.engine, { now: () => T0 });
     (await link.catchUp()).unwrap();
     owner.activate("org:acme").unwrap();
-    expect(owner.controls.byId("c1")?.title).toBe("minted offline");
+    expect(owner.controls.get("c1")?.title).toBe("minted offline");
   });
 
   test("S3 guards: no issuerKey panics, a mismatched issuerKey panics, a bad partition is a value", () => {
@@ -179,7 +179,7 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
     const grantA = mintFor(issuer, "acct_a", a, "member");
     meshA.grants.register(grantA).unwrap();
     meshA.activate("org:acme").unwrap();
-    (await meshA.controls.insert({ id: "c1", title: "early", by: "acct_a" })).unwrap();
+    (await meshA.controls.create({ id: "c1", title: "early", by: "acct_a" })).unwrap();
 
     const quarantined: Quarantined[] = [];
     meshB.engine.onQuarantine((q) => void quarantined.push(q));
@@ -194,6 +194,6 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
     const second = createLink(meshA.engine, meshB.engine, { now: () => T0 });
     (await second.catchUp()).unwrap();
     meshB.activate("org:acme").unwrap();
-    expect(meshB.controls.byId("c1")?.title).toBe("early");
+    expect(meshB.controls.get("c1")?.title).toBe("early");
   });
 });

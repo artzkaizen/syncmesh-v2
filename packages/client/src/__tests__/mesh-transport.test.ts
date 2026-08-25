@@ -99,13 +99,13 @@ describe("createMesh over transports", () => {
     staff.activate("org:acme").unwrap();
     await settle(control);
 
-    const list = owner.liveQuery(owner.notes.list());
+    const list = owner.liveQuery(owner.notes.query());
     let notified = 0;
     list.subscribe(() => void (notified += 1));
 
-    (await staff.notes.insert({ id: "n1", body: "from-staff" })).unwrap();
+    (await staff.notes.create({ id: "n1", body: "from-staff" })).unwrap();
     await settle(control);
-    expect(owner.notes.byId("n1")?.body).toBe("from-staff");
+    expect(owner.notes.get("n1")?.body).toBe("from-staff");
     expect(notified).toBe(1);
     owner.releaseQuery(list);
     await owner.stop();
@@ -126,10 +126,10 @@ describe("createMesh over transports", () => {
     await settle(control);
     expect(staff.can("notes.insert")).toBe(true);
     staff.activate("org:acme").unwrap();
-    (await staff.notes.insert({ id: "n1", body: "onboarded" })).unwrap();
+    (await staff.notes.create({ id: "n1", body: "onboarded" })).unwrap();
     await settle(control);
     owner.activate("org:acme").unwrap();
-    expect(owner.notes.byId("n1")?.body).toBe("onboarded");
+    expect(owner.notes.get("n1")?.body).toBe("onboarded");
     await owner.stop();
     await staff.stop();
   });
@@ -144,9 +144,9 @@ describe("createMesh over transports", () => {
     await staff.stop();
     expect(staff.running()).toBe(false);
 
-    (await staff.notes.insert({ id: "n2", body: "offline" })).unwrap();
+    (await staff.notes.create({ id: "n2", body: "offline" })).unwrap();
     await settle(control);
-    expect(owner.notes.byId("n2")).toBeUndefined();
+    expect(owner.notes.get("n2")).toBeUndefined();
     await owner.stop();
   });
 });

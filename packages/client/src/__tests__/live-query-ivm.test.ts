@@ -76,25 +76,25 @@ describe("the maintained result equals a full re-run, always", () => {
     await fc.assert(
       fc.asyncProperty(fc.array(opArb, { minLength: 1, maxLength: 40 }), async (ops) => {
         const mesh = createMesh({ schema: schema(), identity: device, now: () => T0 });
-        const live = mesh.liveQuery(mesh.items.list({ where: WHERE, orderBy: ORDER_BY }));
+        const live = mesh.liveQuery(mesh.items.query({ where: WHERE, orderBy: ORDER_BY }));
         for (const op of ops) {
-          if (op.kind === "insert" && mesh.items.byId(op.id) === undefined) {
+          if (op.kind === "insert" && mesh.items.get(op.id) === undefined) {
             (
-              await mesh.items.insert({
+              await mesh.items.create({
                 id: op.id,
                 group: op.group,
                 score: op.score,
                 label: op.label,
               })
             ).unwrap();
-          } else if (op.kind === "update" && mesh.items.byId(op.id) !== undefined) {
+          } else if (op.kind === "update" && mesh.items.get(op.id) !== undefined) {
             const r = await mesh.items.update(op.id, { group: op.group, score: op.score });
             if (r.isErr() && r.error._tag !== "EmptyMutation") r.unwrap();
-          } else if (op.kind === "delete" && mesh.items.byId(op.id) !== undefined) {
+          } else if (op.kind === "delete" && mesh.items.get(op.id) !== undefined) {
             (await mesh.items.delete(op.id)).unwrap();
           }
           const maintained = live.data().map((row) => row.id);
-          expect(maintained).toEqual([...oracle(mesh.items.rows())]);
+          expect(maintained).toEqual([...oracle(mesh.items.list())]);
         }
         mesh.releaseQuery(live);
       }),

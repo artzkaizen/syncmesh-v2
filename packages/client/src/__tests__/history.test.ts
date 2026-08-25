@@ -57,7 +57,7 @@ const granted = (device: typeof deviceA, at: () => Temporal.Instant) => {
 describe("history — a row's timeline", () => {
   test("insert, update, delete: oldest first, per-write patches, snapshots, null once deleted", async () => {
     const mesh = createMesh({ schema: schema(), identity: deviceA, now: () => T0 });
-    (await mesh.drafts.insert({ id: "d1", body: "one" })).unwrap();
+    (await mesh.drafts.create({ id: "d1", body: "one" })).unwrap();
     (await mesh.drafts.update("d1", { body: "two" })).unwrap();
     (await mesh.drafts.delete("d1")).unwrap();
 
@@ -81,7 +81,7 @@ describe("history — a row's timeline", () => {
 
   test("by is the account resolved through grants", async () => {
     const mesh = granted(deviceA, () => T0);
-    (await mesh.todos.insert({ id: "t1", title: "x", score: 1 })).unwrap();
+    (await mesh.todos.create({ id: "t1", title: "x", score: 1 })).unwrap();
     const revisions = (await mesh.todos.history("t1")).unwrap();
     expect(revisions.map((r) => r.by)).toEqual(["acct_a"]);
   });
@@ -100,7 +100,7 @@ describe("history — a row's timeline", () => {
       (await a.engine.receiveBatch(outB.map((event) => ({ event })))).unwrap();
     };
 
-    (await a.todos.insert({ id: "t1", title: "first", score: 1 })).unwrap();
+    (await a.todos.create({ id: "t1", title: "first", score: 1 })).unwrap();
     await exchange();
     // B writes the high score at its later clock; A then writes a LOWER score at a
     // later stamp still (its HLC ratcheted past B's on receive). max keeps 9.

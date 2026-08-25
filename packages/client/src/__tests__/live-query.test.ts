@@ -27,13 +27,13 @@ const open = () => createMesh({ schema: schema(), identity: device, now: () => T
 describe("live queries", () => {
   test("a result enters, moves, updates in place and leaves as rows change", async () => {
     const mesh = open();
-    const openTodos = mesh.liveQuery(mesh.todos.list({ where: { done: false }, orderBy: "rank" }));
+    const openTodos = mesh.liveQuery(mesh.todos.query({ where: { done: false }, orderBy: "rank" }));
     let notified = 0;
     openTodos.subscribe(() => void (notified += 1));
     expect(openTodos.data()).toEqual([]);
 
-    (await mesh.todos.insert({ id: "a", text: "one", rank: 2, done: false })).unwrap();
-    (await mesh.todos.insert({ id: "b", text: "two", rank: 1, done: false })).unwrap();
+    (await mesh.todos.create({ id: "a", text: "one", rank: 2, done: false })).unwrap();
+    (await mesh.todos.create({ id: "b", text: "two", rank: 1, done: false })).unwrap();
     expect(openTodos.data().map((r) => r.id)).toEqual(["b", "a"]);
     expect(notified).toBe(2);
 
@@ -54,16 +54,16 @@ describe("live queries", () => {
 
   test("a batch that misses the filter and table does not notify; one batch is one notification", async () => {
     const mesh = open();
-    const done = mesh.liveQuery(mesh.todos.list({ where: { done: true } }));
+    const done = mesh.liveQuery(mesh.todos.query({ where: { done: true } }));
     let notified = 0;
     done.subscribe(() => void (notified += 1));
-    (await mesh.todos.insert({ id: "a", text: "x", rank: 1, done: false })).unwrap();
+    (await mesh.todos.create({ id: "a", text: "x", rank: 1, done: false })).unwrap();
     expect(notified).toBe(0);
     (
       await mesh.tx((c) =>
         c.todos
-          .insert({ id: "b", text: "y", rank: 2, done: true })
-          .andThen(() => c.todos.insert({ id: "c", text: "z", rank: 3, done: true }))
+          .create({ id: "b", text: "y", rank: 2, done: true })
+          .andThen(() => c.todos.create({ id: "c", text: "z", rank: 3, done: true }))
           .map(() => undefined),
       )
     ).unwrap();
@@ -74,9 +74,9 @@ describe("live queries", () => {
 
   test("identical descriptors share one maintained result; a predicate never shares; release drops", () => {
     const mesh = open();
-    const a = mesh.liveQuery(mesh.todos.list({ where: { done: false }, orderBy: "rank" }));
-    const b = mesh.liveQuery(mesh.todos.list({ where: { done: false }, orderBy: "rank" }));
-    const c = mesh.liveQuery(mesh.todos.list({ where: (row) => !row.done }));
+    const a = mesh.liveQuery(mesh.todos.query({ where: { done: false }, orderBy: "rank" }));
+    const b = mesh.liveQuery(mesh.todos.query({ where: { done: false }, orderBy: "rank" }));
+    const c = mesh.liveQuery(mesh.todos.query({ where: (row) => !row.done }));
     expect(mesh.openQueries()).toBe(2);
     mesh.releaseQuery(a);
     expect(mesh.openQueries()).toBe(2);
@@ -94,10 +94,10 @@ describe("live queries", () => {
       ["b", 1],
       ["c", 2],
     ] as const) {
-      (await mesh.todos.insert({ id, text: id, rank, done: false })).unwrap();
+      (await mesh.todos.create({ id, text: id, rank, done: false })).unwrap();
     }
-    const top = mesh.liveQuery(mesh.todos.list({ orderBy: "rank", limit: 2 }));
-    const whole = mesh.liveQuery(mesh.todos.list({ orderBy: "rank" }));
+    const top = mesh.liveQuery(mesh.todos.query({ orderBy: "rank", limit: 2 }));
+    const whole = mesh.liveQuery(mesh.todos.query({ orderBy: "rank" }));
     expect(mesh.openQueries()).toBe(1);
     expect(top.data().map((r) => r.id)).toEqual(["b", "c"]);
     expect(whole.data().map((r) => r.id)).toEqual(["b", "c", "a"]);
@@ -105,6 +105,23 @@ describe("live queries", () => {
     expect(top.data().map((r) => r.id)).toEqual(["a", "b"]);
     mesh.releaseQuery(top);
     mesh.releaseQuery(whole);
+    expect(mesh.openQueries()).toBe(0);
+  });
+
+  test("list(options) is the one-shot form of the same question, no handle to release", async () => {
+    const mesh = open();
+    for (const [id, rank, done] of [
+      ["a", 3, false],
+      ["b", 1, true],
+      ["c", 2, false],
+    ] as const) {
+      (await mesh.todos.create({ id, text: id, rank, done })).unwrap();
+    }
+    expect(mesh.todos.list().map((r) => r.id)).toEqual(["a", "b", "c"]);
+    expect(
+      mesh.todos.list({ where: { done: false }, orderBy: "rank", dir: "desc" }).map((r) => r.id),
+    ).toEqual(["a", "c"]);
+    expect(mesh.todos.list({ orderBy: "rank", limit: 1 }).map((r) => r.id)).toEqual(["b"]);
     expect(mesh.openQueries()).toBe(0);
   });
 });

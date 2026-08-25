@@ -87,21 +87,21 @@ describe("verbs", () => {
     const mesh = granted();
     mesh.activate("org:acme").unwrap();
     const stored = (
-      await mesh.books.insert({ id: "b1", title: "Dune", addedAt: T0, createdBy: "acct_a" })
+      await mesh.books.create({ id: "b1", title: "Dune", addedAt: T0, createdBy: "acct_a" })
     ).unwrap();
     expect(stored.pinned).toBeNull();
     expect(stored.addedAt?.epochMilliseconds).toBe(T0.epochMilliseconds);
-    expect(mesh.books.byId("b1")?.title).toBe("Dune");
-    expect(mesh.books.rows()).toHaveLength(1);
+    expect(mesh.books.get("b1")?.title).toBe("Dune");
+    expect(mesh.books.list()).toHaveLength(1);
   });
 
   test("a wrong value is refused at the call site before any event exists", async () => {
     const mesh = granted();
     mesh.activate("org:acme").unwrap();
     // SAFETY: deliberately wrong value under test
-    const r = await mesh.books.insert({ id: "b1", title: 3 as never, createdBy: "acct_a" });
+    const r = await mesh.books.create({ id: "b1", title: 3 as never, createdBy: "acct_a" });
     expect(tag(r)).toBe("ColumnCheckFailed");
-    expect(mesh.books.rows()).toHaveLength(0);
+    expect(mesh.books.list()).toHaveLength(0);
   });
 
   test("update writes only the columns that changed; an unchanged patch is EmptyMutation", async () => {
@@ -109,7 +109,7 @@ describe("verbs", () => {
     mesh.activate("org:acme").unwrap();
     const events: SyncEvent[] = [];
     mesh.engine.onOutbound((e) => void events.push(e));
-    (await mesh.books.insert({ id: "b1", title: "Dune", createdBy: "acct_a" })).unwrap();
+    (await mesh.books.create({ id: "b1", title: "Dune", createdBy: "acct_a" })).unwrap();
     const updated = (await mesh.books.update("b1", { title: "Dune II", pinned: null })).unwrap();
     expect(updated.title).toBe("Dune II");
     const patch = events.at(-1)?.changes[0];
@@ -123,7 +123,7 @@ describe("verbs", () => {
     mesh.activate("org:acme").unwrap();
     const events: SyncEvent[] = [];
     mesh.engine.onOutbound((e) => void events.push(e));
-    (await mesh.books.insert({ id: "b1", title: "Dune", createdBy: "acct_a" })).unwrap();
+    (await mesh.books.create({ id: "b1", title: "Dune", createdBy: "acct_a" })).unwrap();
     const updated = (
       await mesh.books.update("b1", (draft) => {
         draft.title = "Dune (rev)";
@@ -137,31 +137,31 @@ describe("verbs", () => {
       "EmptyMutation",
     );
     expect(tag(await mesh.books.update("nope", () => undefined))).toBe("NoSuchRow");
-    expect(mesh.books.byId("b1")?.title).toBe("Dune (rev)");
+    expect(mesh.books.get("b1")?.title).toBe("Dune (rev)");
   });
 
   test("delete removes the row from every read", async () => {
     const mesh = granted("admin");
     mesh.activate("org:acme").unwrap();
-    (await mesh.books.insert({ id: "b1", title: "Dune", createdBy: "acct_a" })).unwrap();
+    (await mesh.books.create({ id: "b1", title: "Dune", createdBy: "acct_a" })).unwrap();
     (await mesh.books.delete("b1")).unwrap();
-    expect(mesh.books.byId("b1")).toBeUndefined();
-    expect(mesh.books.rows()).toHaveLength(0);
+    expect(mesh.books.get("b1")).toBeUndefined();
+    expect(mesh.books.list()).toHaveLength(0);
   });
 });
 
 describe("placement", () => {
   test("an org table with nothing active names the setter; activate re-points; unknown kinds are refused", async () => {
     const mesh = granted("member", ["org:acme", "org:globex"]);
-    const before = await mesh.books.insert({ id: "b1", title: "x", createdBy: "acct_a" });
+    const before = await mesh.books.create({ id: "b1", title: "x", createdBy: "acct_a" });
     expect(tag(before)).toBe("NoActivePartition");
     expect(before.isErr() && before.error.message).toContain('activate("org:<id>")');
 
     mesh.activate("org:acme").unwrap();
-    (await mesh.books.insert({ id: "b1", title: "acme", createdBy: "acct_a" })).unwrap();
+    (await mesh.books.create({ id: "b1", title: "acme", createdBy: "acct_a" })).unwrap();
     mesh.activate("org:globex").unwrap();
-    (await mesh.books.insert({ id: "b2", title: "globex", createdBy: "acct_a" })).unwrap();
-    expect(mesh.books.rows().map((r) => r.title)).toEqual(["globex"]);
+    (await mesh.books.create({ id: "b2", title: "globex", createdBy: "acct_a" })).unwrap();
+    expect(mesh.books.list().map((r) => r.title)).toEqual(["globex"]);
 
     expect(tag(mesh.activate("site:acme"))).toBe("UnknownPartitionKind");
     expect(tag(mesh.activate("not a key"))).toBe("InvalidPartitionKey");
@@ -169,7 +169,7 @@ describe("placement", () => {
 
   test("one instance in the grant is implied — no activate call needed", async () => {
     const mesh = granted();
-    (await mesh.books.insert({ id: "b1", title: "x", createdBy: "acct_a" })).unwrap();
+    (await mesh.books.create({ id: "b1", title: "x", createdBy: "acct_a" })).unwrap();
     expect(String(mesh.active("org"))).toBe("org:acme");
   });
 
@@ -177,22 +177,22 @@ describe("placement", () => {
     const mesh = granted();
     const events: SyncEvent[] = [];
     mesh.engine.onOutbound((e) => void events.push(e));
-    (await mesh.notes.insert({ id: "n1", body: "milk" })).unwrap();
+    (await mesh.notes.create({ id: "n1", body: "milk" })).unwrap();
     expect(String(events.at(-1)?.partition)).toBe("user:acct_a");
-    (await mesh.drafts.insert({ id: "d1", body: "wip" })).unwrap();
+    (await mesh.drafts.create({ id: "d1", body: "wip" })).unwrap();
     expect(events).toHaveLength(1);
-    expect(mesh.drafts.rows()).toHaveLength(1);
+    expect(mesh.drafts.list()).toHaveLength(1);
   });
 
   test("ungranted: schema still checks, global is read-only, user tables need a grant", async () => {
     const mesh = createMesh({ schema: schema(), identity: device, now: () => T0 });
     // SAFETY: deliberately wrong value under test
-    expect(tag(await mesh.catalog.insert({ id: "c1", code: 3 as never }))).toBe(
+    expect(tag(await mesh.catalog.create({ id: "c1", code: 3 as never }))).toBe(
       "ColumnCheckFailed",
     );
-    expect(tag(await mesh.catalog.insert({ id: "c1", code: "x" }))).toBe("ReadOnlyPartition");
-    expect(tag(await mesh.notes.insert({ id: "n1", body: "b" }))).toBe("NoGrant");
-    (await mesh.drafts.insert({ id: "d1", body: "wip" })).unwrap();
+    expect(tag(await mesh.catalog.create({ id: "c1", code: "x" }))).toBe("ReadOnlyPartition");
+    expect(tag(await mesh.notes.create({ id: "n1", body: "b" }))).toBe("NoGrant");
+    (await mesh.drafts.create({ id: "d1", body: "wip" })).unwrap();
   });
 });
 
@@ -202,25 +202,25 @@ describe("tx", () => {
     mesh.activate("org:acme").unwrap();
     const r = await mesh.tx((c) =>
       c.books
-        .insert({ id: "b1", title: "x", createdBy: "acct_a" })
-        .andThen(() => c.notes.insert({ id: "n1", body: "b" }))
+        .create({ id: "b1", title: "x", createdBy: "acct_a" })
+        .andThen(() => c.notes.create({ id: "n1", body: "b" }))
         .map(() => undefined),
     );
     expect(tag(r)).toBe("CrossPartitionTx");
-    expect(mesh.books.rows()).toHaveLength(0);
-    expect(mesh.notes.rows()).toHaveLength(0);
+    expect(mesh.books.list()).toHaveLength(0);
+    expect(mesh.notes.list()).toHaveLength(0);
   });
 
   test("one partition lands as one event with a derived label", async () => {
     const mesh = granted();
     mesh.activate("org:acme").unwrap();
-    (await mesh.books.insert({ id: "b1", title: "old", createdBy: "acct_a" })).unwrap();
+    (await mesh.books.create({ id: "b1", title: "old", createdBy: "acct_a" })).unwrap();
     const events: SyncEvent[] = [];
     mesh.engine.onOutbound((e) => void events.push(e));
     (
       await mesh.tx((c) =>
         c.books
-          .insert({ id: "b2", title: "new", createdBy: "acct_a" })
+          .create({ id: "b2", title: "new", createdBy: "acct_a" })
           .andThen(() => c.books.update("b1", { title: "renamed" }))
           .map(() => undefined),
       )
@@ -228,7 +228,7 @@ describe("tx", () => {
     expect(events).toHaveLength(1);
     expect(String(events[0]?.procedure)).toBe("books.insert+books.update");
     expect(events[0]?.changes).toHaveLength(2);
-    expect(mesh.books.byId("b1")?.title).toBe("renamed");
+    expect(mesh.books.get("b1")?.title).toBe("renamed");
   });
 });
 
@@ -246,11 +246,11 @@ describe("live handles across activate", () => {
   test("activate re-points every open handle and notifies the ones that changed", async () => {
     const mesh = granted("member", ["org:acme", "org:globex"]);
     mesh.activate("org:acme").unwrap();
-    (await mesh.books.insert({ id: "b1", title: "acme", createdBy: "acct_a" })).unwrap();
+    (await mesh.books.create({ id: "b1", title: "acme", createdBy: "acct_a" })).unwrap();
     mesh.activate("org:globex").unwrap();
-    (await mesh.books.insert({ id: "b2", title: "globex", createdBy: "acct_a" })).unwrap();
+    (await mesh.books.create({ id: "b2", title: "globex", createdBy: "acct_a" })).unwrap();
 
-    const titles = mesh.liveQuery(mesh.books.list({ orderBy: "title" }));
+    const titles = mesh.liveQuery(mesh.books.query({ orderBy: "title" }));
     let notified = 0;
     titles.subscribe(() => void (notified += 1));
     expect(titles.data().map((r) => r.title)).toEqual(["globex"]);

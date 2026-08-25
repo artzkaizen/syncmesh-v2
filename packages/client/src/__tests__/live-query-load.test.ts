@@ -66,7 +66,7 @@ describe("one fold batch is one notification, whatever it carries", () => {
     });
     const notified = new Map<number, number>();
     const handles = Array.from({ length: 200 }, (_, i) => {
-      const handle = mesh.liveQuery(mesh.notes.list({ where: (row) => row.n % 200 === i }));
+      const handle = mesh.liveQuery(mesh.notes.query({ where: (row) => row.n % 200 === i }));
       handle.subscribe(() => void notified.set(i, (notified.get(i) ?? 0) + 1));
       return handle;
     });

@@ -255,7 +255,7 @@ export function createMesh<
 }
 
 const tapWrites = (writes: Writes<Table>, record: (write: Write) => void): Writes<Table> => ({
-  insert: (row) => writes.insert(row).map(tap(record)),
+  create: (row) => writes.create(row).map(tap(record)),
   update: (key, patch) => writes.update(key, patch).map(tap(record)),
   delete: (key) => writes.delete(key).map(tap(record)),
 });

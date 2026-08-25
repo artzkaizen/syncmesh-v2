@@ -24,6 +24,7 @@ import type { ListOptions, QueryDescriptor } from "./query.js";
 
 import { NoSuchRow } from "./errors.js";
 import { rowHistory } from "./history.js";
+import { compareRows, matches, specOf } from "./query.js";
 
 /** The value of the table's primary key column. */
 export type KeyOf<T extends Table> = Row<T>[T["primaryKey"]];
@@ -34,18 +35,19 @@ export type Draft<T extends Table> = { -readonly [K in keyof Row<T>]: Row<T>[K] 
 /** What `update` accepts: the columns to set, or an updater over a draft of the current row. */
 export type Update<T extends Table> = Partial<Row<T>> | ((draft: Draft<T>) => void);
 
+/** A collection speaks REST: `list` / `get` / `create` / `update` / `delete`, plus `query` for live results. */
 export interface Collection<T extends Table> {
-  /** One event in the table's instance; omitted nullable columns are written as `null`. */
-  readonly insert: (row: InsertRow<T>) => Promise<Result<Row<T>, WriteError>>;
+  /** One event in the table's instance; omitted nullable columns are written as `null`. Recorded as `<table>.insert` — the wire's word for a POST. */
+  readonly create: (row: InsertRow<T>) => Promise<Result<Row<T>, WriteError>>;
   /** Writes only the columns whose value differs from the row held; nothing changed is `EmptyMutation`. */
   readonly update: (key: KeyOf<T>, change: Update<T>) => Promise<Result<Row<T>, WriteError>>;
   readonly delete: (key: KeyOf<T>) => Promise<Result<void, WriteError>>;
-  readonly byId: (key: KeyOf<T>) => Row<T> | undefined;
-  /** Every visible row in the active instance (or the whole table for global, user and local). */
-  readonly rows: () => readonly Row<T>[];
+  readonly get: (key: KeyOf<T>) => Row<T> | undefined;
+  /** The visible rows now — filtered, ordered, windowed. One-shot; `query` is the live form. */
+  readonly list: (options?: ListOptions<T>) => readonly Row<T>[];
   readonly can: (op: Operation, row?: Row<T>) => boolean;
-  /** The query as data — hand it to `mesh.liveQuery` (or E10's `useLiveQuery`); nothing runs here. */
-  readonly list: (options?: ListOptions<T>) => QueryDescriptor<T>;
+  /** The same question as data — hand it to `mesh.liveQuery` (or E10's `useLiveQuery`); nothing runs here. */
+  readonly query: (options?: ListOptions<T>) => QueryDescriptor<T>;
   /** The row's writes oldest-first by stamp. A detail-view read: it scans the log. */
   readonly history: (key: KeyOf<T>) => Promise<Result<readonly Revision<T>[], HistoryError>>;
 }
@@ -153,7 +155,7 @@ export function createCollection<T extends Table>(
   };
 
   const collection: Collection<T> & { readonly writes: Writes<T>; readonly visible: Visible } = {
-    insert: (row) =>
+    create: (row) =>
       Result.gen(async function* () {
         const write = yield* insertWrite(row);
         const stored = yield* Result.await(commit(write.label, write.apply, write.key));
@@ -171,13 +173,21 @@ export function createCollection<T extends Table>(
         yield* Result.await(commit(write.label, write.apply, keyOf(key)));
         return Result.ok(undefined);
       }),
-    byId: (key) => {
+    get: (key) => {
       const cells = held(keyOf(key));
       return cells === undefined ? undefined : fromWireRow(table, cells);
     },
-    rows: () => [...visible().values()].map((cells) => fromWireRow(table, cells)),
+    list: (options) => {
+      const spec = specOf(options ?? {});
+      const rows = [...visible()]
+        .map(([key, cells]) => ({ key: String(key), row: fromWireRow(table, cells) }))
+        .filter((entry) => matches(spec.where, entry.row))
+        .sort((a, b) => compareRows(spec.orderBy, a, b))
+        .map((entry) => entry.row);
+      return options?.limit === undefined ? rows : rows.slice(0, options.limit);
+    },
     can: (op, row) => can(`${name}.${op}`, row === undefined ? undefined : toWireRow(table, row)),
-    list: (options) => ({ table, options: options ?? {} }),
+    query: (options) => ({ table, options: options ?? {} }),
     history: (key) =>
       Result.gen(async function* () {
         const where = yield* placement();
@@ -190,7 +200,7 @@ export function createCollection<T extends Table>(
           }),
         );
       }),
-    writes: { insert: insertWrite, update: updateWrite, delete: deleteWrite },
+    writes: { create: insertWrite, update: updateWrite, delete: deleteWrite },
     visible,
   };
   return collection;
@@ -198,7 +208,7 @@ export function createCollection<T extends Table>(
 
 /** The recording half of a collection, used by `tx`. Method syntax on purpose: `tx` relates these across tables. */
 export interface Writes<T extends Table> {
-  insert(row: InsertRow<T>): Result<Write, WriteError>;
+  create(row: InsertRow<T>): Result<Write, WriteError>;
   update(key: KeyOf<T>, change: Update<T>): Result<Write, WriteError>;
   delete(key: KeyOf<T>): Result<Write, WriteError>;
 }
