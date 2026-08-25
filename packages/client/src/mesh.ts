@@ -1,4 +1,4 @@
-import type { Engine, EngineOptions, ValidatorOptions } from "@syncmesh/engine";
+import type { Engine, EngineOptions, EventStore, ValidatorOptions } from "@syncmesh/engine";
 import type { EventId, PartitionKey, PeerId, Procedure, Row as WireCells } from "@syncmesh/kernel";
 import type { InvalidPartitionKey } from "@syncmesh/kernel";
 import type { ColumnsMap, PartitionTree, Roles, Schema, Table, TablesOf } from "@syncmesh/schema";
@@ -19,12 +19,16 @@ import { createGrantRegistry } from "@syncmesh/wire";
 import type { Collection, Write, Writes } from "./collection.js";
 import type { Placement, PlacementEntry } from "./context.js";
 import type { MeshRevertError, TxError, UnknownPartitionKind, WriteError } from "./errors.js";
+import type { Visible } from "./live-query.js";
+import type { QueryDescriptor } from "./query.js";
+import type { LiveHandle } from "./registry.js";
 import type { TxCollections } from "./tx.js";
 
 import { createCollection } from "./collection.js";
 import { createContext } from "./context.js";
 import { CrossPartitionTx } from "./errors.js";
 import { createMeshGrants, type MeshGrants, type MeshGrantsOptions } from "./grants.js";
+import { specOf } from "./query.js";
 import { createQueryRegistry } from "./registry.js";
 import { runTransports } from "./transports.js";
 
@@ -60,6 +64,10 @@ export interface MeshBase<C extends ColumnsMap> {
   ) => Promise<Result<void, TxError>>;
   /** `"table.op"` against the same rules every receiver enforces. */
   readonly can: (what: `${string}.${string}`, row?: WireCells) => boolean;
+  /** A maintained result for a `list` descriptor; identical descriptors share one. */
+  readonly liveQuery: <T extends Table>(descriptor: QueryDescriptor<T>) => LiveHandle<T>;
+  /** Drops the handle's hold on its maintained result; a handle not from `liveQuery` is a no-op. */
+  readonly releaseQuery: <T extends Table>(handle: LiveHandle<T>) => void;
   readonly revert: (id: EventId) => Promise<Result<unknown, MeshRevertError>>;
   readonly canRevert: (id: EventId) => boolean;
   /** Open maintained query results; identical descriptors count once. */
@@ -78,7 +86,10 @@ export type Mesh<C extends ColumnsMap> = MeshBase<C> & {
   readonly [K in keyof C]: Collection<TablesOf<C>[K]>;
 };
 
-type AnyCollection = Collection<Table> & { readonly writes: Writes<Table> };
+type AnyCollection = Collection<Table> & {
+  readonly writes: Writes<Table>;
+  readonly visible: Visible;
+};
 
 /** One constructor: engine, validator, grants and a collection per table, partitions ambient via `activate` (D07). */
 /** The engine as the manifest and options describe it, validator included. */
@@ -86,6 +97,7 @@ function buildEngine<P extends PartitionTree, RS extends Roles<P>, C extends Col
   options: MeshOptions<P, RS, C>,
   grantFor: (peer: PeerId) => Grant | undefined,
   now: () => Temporal.Instant,
+  store: EventStore,
 ): Engine {
   const { schema, identity, issuer, authority, isAuthority = false } = options;
   const validatorOptions = {
@@ -97,7 +109,7 @@ function buildEngine<P extends PartitionTree, RS extends Roles<P>, C extends Col
   const engineOptions = {
     peerId: identity.peerId,
     clock: createHlcClock({ now }),
-    store: options.store ?? createMemoryEventStore(),
+    store,
     merge: schema.merge,
     validate: createValidator(validatorOptions),
   } satisfies EngineOptions;
@@ -124,7 +136,8 @@ export function createMesh<
   if (issuerKey !== undefined) Object.assign(grantsOptions, { issuerKey });
   const grants = createMeshGrants(registry, grantsOptions);
   const grantFor = (peer: PeerId): Grant | undefined => grants.grantFor(peer);
-  const engine = buildEngine(options, grantFor, now);
+  const store = options.store ?? createMemoryEventStore();
+  const engine = buildEngine(options, grantFor, now, store);
   const queries = createQueryRegistry(engine);
   const context = createContext({
     kinds: schema.kinds.map(String),
@@ -150,9 +163,26 @@ export function createMesh<
       engine,
       placement: () => placementOf(name),
       can,
-      queries,
+      log: store.all,
+      merge: schema.merge,
+      accountOf: (peer) => grantFor(peer)?.account,
     });
   }
+
+  const releases = new WeakMap<object, () => void>();
+  const liveQuery = <T extends Table>({ table, options }: QueryDescriptor<T>): LiveHandle<T> => {
+    const held =
+      collections[String(table.name)] ??
+      panic(`no collection for ${String(table.name)}; the descriptor came from another schema`);
+    const handle = queries.acquire(table, specOf(options), held.visible);
+    const limit = options.limit;
+    const live: LiveHandle<T> = {
+      data: () => (limit === undefined ? handle.rows() : handle.rows().slice(0, limit)),
+      subscribe: handle.subscribe,
+    };
+    releases.set(live, handle.release);
+    return live;
+  };
 
   const tx: MeshBase<C>["tx"] = (fn) =>
     Result.gen(async function* () {
@@ -208,6 +238,8 @@ export function createMesh<
     active: context.active,
     tx,
     can,
+    liveQuery,
+    releaseQuery: (handle) => releases.get(handle)?.(),
     revert: (id) => engine.revert(id),
     canRevert: (id) => engine.canRevert(id),
     openQueries: queries.size,

@@ -10,6 +10,13 @@ import type { QuerySpec } from "./query.js";
 import { createLiveQuery } from "./live-query.js";
 import { specKey } from "./query.js";
 
+/** A maintained result from `mesh.liveQuery`; give it back through `mesh.releaseQuery` when done. */
+export interface LiveHandle<T extends Table> {
+  readonly data: () => readonly Row<T>[];
+  /** Fires at most once per fold batch, and only when this result changed. */
+  readonly subscribe: (listener: () => void) => Unsubscribe;
+}
+
 /** A held live result. `release` when done; identical descriptors share one maintained result. */
 export interface QueryHandle<T extends Table> {
   readonly rows: () => readonly Row<T>[];

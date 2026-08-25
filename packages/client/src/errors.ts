@@ -1,4 +1,4 @@
-import type { MutateError, RevertError } from "@syncmesh/engine";
+import type { MutateError, RevertError, StoreFailure } from "@syncmesh/engine";
 import type { RowError } from "@syncmesh/schema";
 
 import { TaggedError } from "@syncmesh/result";
@@ -28,6 +28,9 @@ export class CrossPartitionTx extends TaggedError("CrossPartitionTx")<{
 }> {}
 
 export type WriteError = RowError | NoActivePartition | NoSuchRow | MutateError;
+
+/** `history` needs a placement and a log read; either can fail. */
+export type HistoryError = WriteError | StoreFailure;
 
 export type TxError = WriteError | CrossPartitionTx;
 

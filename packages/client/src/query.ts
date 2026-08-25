@@ -19,6 +19,40 @@ export interface QuerySpec<T extends Table> {
   readonly orderBy?: OrderBy<T>;
 }
 
+/** What `list` accepts. `dir` pairs with the single-column `orderBy`; the pair form carries its own. */
+export interface ListOptions<T extends Table> {
+  readonly where?: Where<T>;
+  readonly orderBy?: (keyof T["columns"] & string) | OrderBy<T>;
+  readonly dir?: Direction;
+  /** A window over the maintained result; windows over the same query share it. */
+  readonly limit?: number;
+}
+
+/** A query as data (D11): comparable and shareable, consumed by `mesh.liveQuery` and E10's hooks. */
+export interface QueryDescriptor<T extends Table> {
+  readonly table: T;
+  readonly options: ListOptions<T>;
+}
+
+interface SpecDraft<T extends Table> {
+  where?: Where<T>;
+  orderBy?: OrderBy<T>;
+}
+
+/** The maintained spec behind a descriptor; `limit` stays on the handle so windows share one result. */
+export function specOf<T extends Table>(options: ListOptions<T>): QuerySpec<T> {
+  const spec: SpecDraft<T> = {};
+  if (options.where !== undefined) spec.where = options.where;
+  const by = options.orderBy;
+  if (by !== undefined) {
+    spec.orderBy = Array.isArray(by)
+      ? by
+      : // SAFETY: not an array, so the union's other arm — a single column name
+        [[by as keyof T["columns"] & string, options.dir ?? "asc"]];
+  }
+  return spec;
+}
+
 const valueOf = <T extends Table>(row: Row<T>, column: string): AppValue | undefined => {
   // SAFETY: Row<T> is an object whose values are the columns' app values
   return (row as Readonly<Record<string, AppValue | undefined>>)[column];

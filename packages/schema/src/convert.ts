@@ -45,6 +45,18 @@ export function fromWireRow<T extends Table>(table: T, cells: WireCells): Row<T>
   return row as Row<T>;
 }
 
+/** Wire cells → a partial app row: only the columns present, nothing filled in. */
+export function fromWirePatch<T extends Table>(table: T, cells: WireCells): Partial<Row<T>> {
+  const row: Record<string, AppValue> = {};
+  for (const [name, column] of Object.entries(table.columns)) {
+    const key = table.columnNames[name];
+    if (key === undefined || !cells.has(key)) continue;
+    row[name] = fromWireValue(column.def.kind, cells.get(key) ?? null);
+  }
+  // SAFETY: every entry was set from its own column's cell — a subset of the shape Row<T> declares
+  return row as Partial<Row<T>>;
+}
+
 /** The wire row an insert writes: the given cells plus explicit `null`s for omitted nullable columns. */
 export function withNulls<T extends Table>(table: T, cells: WireCells): WireCells {
   const full = new Map(cells);

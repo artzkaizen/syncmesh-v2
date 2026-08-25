@@ -92,7 +92,7 @@ describe("verbs", () => {
     expect(stored.pinned).toBeNull();
     expect(stored.addedAt?.epochMilliseconds).toBe(T0.epochMilliseconds);
     expect(mesh.books.byId("b1")?.title).toBe("Dune");
-    expect(mesh.books.all()).toHaveLength(1);
+    expect(mesh.books.rows()).toHaveLength(1);
   });
 
   test("a wrong value is refused at the call site before any event exists", async () => {
@@ -101,7 +101,7 @@ describe("verbs", () => {
     // SAFETY: deliberately wrong value under test
     const r = await mesh.books.insert({ id: "b1", title: 3 as never, createdBy: "acct_a" });
     expect(tag(r)).toBe("ColumnCheckFailed");
-    expect(mesh.books.all()).toHaveLength(0);
+    expect(mesh.books.rows()).toHaveLength(0);
   });
 
   test("update writes only the columns that changed; an unchanged patch is EmptyMutation", async () => {
@@ -124,7 +124,7 @@ describe("verbs", () => {
     (await mesh.books.insert({ id: "b1", title: "Dune", createdBy: "acct_a" })).unwrap();
     (await mesh.books.delete("b1")).unwrap();
     expect(mesh.books.byId("b1")).toBeUndefined();
-    expect(mesh.books.all()).toHaveLength(0);
+    expect(mesh.books.rows()).toHaveLength(0);
   });
 });
 
@@ -139,7 +139,7 @@ describe("placement", () => {
     (await mesh.books.insert({ id: "b1", title: "acme", createdBy: "acct_a" })).unwrap();
     mesh.activate("org:globex").unwrap();
     (await mesh.books.insert({ id: "b2", title: "globex", createdBy: "acct_a" })).unwrap();
-    expect(mesh.books.all().map((r) => r.title)).toEqual(["globex"]);
+    expect(mesh.books.rows().map((r) => r.title)).toEqual(["globex"]);
 
     expect(tag(mesh.activate("site:acme"))).toBe("UnknownPartitionKind");
     expect(tag(mesh.activate("not a key"))).toBe("InvalidPartitionKey");
@@ -159,7 +159,7 @@ describe("placement", () => {
     expect(String(events.at(-1)?.partition)).toBe("user:acct_a");
     (await mesh.drafts.insert({ id: "d1", body: "wip" })).unwrap();
     expect(events).toHaveLength(1);
-    expect(mesh.drafts.all()).toHaveLength(1);
+    expect(mesh.drafts.rows()).toHaveLength(1);
   });
 
   test("ungranted: schema still checks, global is read-only, user tables need a grant", async () => {
@@ -185,8 +185,8 @@ describe("tx", () => {
         .map(() => undefined),
     );
     expect(tag(r)).toBe("CrossPartitionTx");
-    expect(mesh.books.all()).toHaveLength(0);
-    expect(mesh.notes.all()).toHaveLength(0);
+    expect(mesh.books.rows()).toHaveLength(0);
+    expect(mesh.notes.rows()).toHaveLength(0);
   });
 
   test("one partition lands as one event with a derived label", async () => {
@@ -228,16 +228,16 @@ describe("live handles across activate", () => {
     mesh.activate("org:globex").unwrap();
     (await mesh.books.insert({ id: "b2", title: "globex", createdBy: "acct_a" })).unwrap();
 
-    const titles = mesh.books.list({ orderBy: [["title", "asc"]] });
+    const titles = mesh.liveQuery(mesh.books.list({ orderBy: "title" }));
     let notified = 0;
     titles.subscribe(() => void (notified += 1));
-    expect(titles.rows().map((r) => r.title)).toEqual(["globex"]);
+    expect(titles.data().map((r) => r.title)).toEqual(["globex"]);
 
     mesh.activate("org:acme").unwrap();
-    expect(titles.rows().map((r) => r.title)).toEqual(["acme"]);
+    expect(titles.data().map((r) => r.title)).toEqual(["acme"]);
     expect(notified).toBe(1);
     mesh.activate("org:acme").unwrap();
     expect(notified).toBe(1);
-    titles.release();
+    mesh.releaseQuery(titles);
   });
 });

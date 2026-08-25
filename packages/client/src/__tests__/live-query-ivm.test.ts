@@ -76,7 +76,7 @@ describe("the maintained result equals a full re-run, always", () => {
     await fc.assert(
       fc.asyncProperty(fc.array(opArb, { minLength: 1, maxLength: 40 }), async (ops) => {
         const mesh = createMesh({ schema: schema(), identity: device, now: () => T0 });
-        const live = mesh.items.where(WHERE, { orderBy: ORDER_BY });
+        const live = mesh.liveQuery(mesh.items.list({ where: WHERE, orderBy: ORDER_BY }));
         for (const op of ops) {
           if (op.kind === "insert" && mesh.items.byId(op.id) === undefined) {
             (
@@ -93,10 +93,10 @@ describe("the maintained result equals a full re-run, always", () => {
           } else if (op.kind === "delete" && mesh.items.byId(op.id) !== undefined) {
             (await mesh.items.delete(op.id)).unwrap();
           }
-          const maintained = live.rows().map((row) => row.id);
-          expect(maintained).toEqual([...oracle(mesh.items.all())]);
+          const maintained = live.data().map((row) => row.id);
+          expect(maintained).toEqual([...oracle(mesh.items.rows())]);
         }
-        live.release();
+        mesh.releaseQuery(live);
       }),
       { numRuns: 60 },
     );

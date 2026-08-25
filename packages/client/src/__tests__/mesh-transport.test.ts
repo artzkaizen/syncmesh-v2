@@ -99,7 +99,7 @@ describe("createMesh over transports", () => {
     staff.activate("org:acme").unwrap();
     await settle(control);
 
-    const list = owner.notes.list();
+    const list = owner.liveQuery(owner.notes.list());
     let notified = 0;
     list.subscribe(() => void (notified += 1));
 
@@ -107,7 +107,7 @@ describe("createMesh over transports", () => {
     await settle(control);
     expect(owner.notes.byId("n1")?.body).toBe("from-staff");
     expect(notified).toBe(1);
-    list.release();
+    owner.releaseQuery(list);
     await owner.stop();
     await staff.stop();
   });

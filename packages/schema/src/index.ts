@@ -53,4 +53,11 @@ export type {
 } from "./from-drizzle.js";
 export { fromDrizzle, sourceName } from "./from-drizzle.js";
 export type { AppValue } from "./convert.js";
-export { fromWireRow, fromWireValue, toWireRow, toWireValue, withNulls } from "./convert.js";
+export {
+  fromWirePatch,
+  fromWireRow,
+  fromWireValue,
+  toWireRow,
+  toWireValue,
+  withNulls,
+} from "./convert.js";

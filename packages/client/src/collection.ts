@@ -1,5 +1,12 @@
-import type { Engine, Tx } from "@syncmesh/engine";
-import type { CellValue, Procedure, Row as WireCells, RowKey } from "@syncmesh/kernel";
+import type { Engine, StoreFailure, StoredEvent, Tx } from "@syncmesh/engine";
+import type {
+  CellValue,
+  MergeSpec,
+  PeerId,
+  Procedure,
+  Row as WireCells,
+  RowKey,
+} from "@syncmesh/kernel";
 import type { Operation } from "@syncmesh/policy";
 import type { InsertRow, Row, Table } from "@syncmesh/schema";
 
@@ -10,11 +17,13 @@ import { checkRow, fromWireRow, rowKeyText, toWireRow, withNulls } from "@syncme
 import { bytesEqual } from "@syncmesh/wire";
 
 import type { Placement } from "./context.js";
-import type { WriteError } from "./errors.js";
-import type { OrderBy, Where } from "./query.js";
-import type { QueryHandle, QueryRegistry } from "./registry.js";
+import type { HistoryError, WriteError } from "./errors.js";
+import type { Revision } from "./history.js";
+import type { Visible } from "./live-query.js";
+import type { ListOptions, QueryDescriptor } from "./query.js";
 
 import { NoSuchRow } from "./errors.js";
+import { rowHistory } from "./history.js";
 
 /** The value of the table's primary key column. */
 export type KeyOf<T extends Table> = Row<T>[T["primaryKey"]];
@@ -27,21 +36,12 @@ export interface Collection<T extends Table> {
   readonly delete: (key: KeyOf<T>) => Promise<Result<void, WriteError>>;
   readonly byId: (key: KeyOf<T>) => Row<T> | undefined;
   /** Every visible row in the active instance (or the whole table for global, user and local). */
-  readonly all: () => readonly Row<T>[];
+  readonly rows: () => readonly Row<T>[];
   readonly can: (op: Operation, row?: Row<T>) => boolean;
-  /** A live filtered result; re-emits at most once per fold batch. Release it when done. */
-  readonly where: (filter?: Where<T>, options?: ListOptions<T>) => QueryHandle<T>;
-  /** The live table in order; `where` without a filter. */
-  readonly list: (options?: ListOptions<T>) => QueryHandle<T>;
-}
-
-export interface ListOptions<T extends Table> {
-  readonly orderBy?: OrderBy<T>;
-}
-
-interface SpecDraft<T extends Table> {
-  where?: Where<T>;
-  orderBy?: OrderBy<T>;
+  /** The query as data — hand it to `mesh.liveQuery` (or E10's `useLiveQuery`); nothing runs here. */
+  readonly list: (options?: ListOptions<T>) => QueryDescriptor<T>;
+  /** The row's writes oldest-first by stamp. A detail-view read: it scans the log. */
+  readonly history: (key: KeyOf<T>) => Promise<Result<readonly Revision<T>[], HistoryError>>;
 }
 
 /** One recorded write of a `tx`: the change and the procedure label it contributes. */
@@ -54,7 +54,10 @@ export interface CollectionDeps {
   readonly engine: Engine;
   readonly placement: () => Result<Placement, WriteError>;
   readonly can: (what: `${string}.${string}`, row?: WireCells) => boolean;
-  readonly queries: QueryRegistry;
+  /** The whole log, both scopes; `history` folds the slice that touches its row. */
+  readonly log: () => Promise<Result<readonly StoredEvent[], StoreFailure>>;
+  readonly merge: MergeSpec;
+  readonly accountOf: (peer: PeerId) => string | undefined;
 }
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- keys are opaque strings in the kernel; procedures are `table.op` labels (E09) */
@@ -74,8 +77,8 @@ const changed = (current: WireCells, patch: WireCells): WireCells =>
 export function createCollection<T extends Table>(
   table: T,
   deps: CollectionDeps,
-): Collection<T> & { readonly writes: Writes<T> } {
-  const { engine, placement, can, queries } = deps;
+): Collection<T> & { readonly writes: Writes<T>; readonly visible: Visible } {
+  const { engine, placement, can, log, merge, accountOf } = deps;
   const name = table.name;
   const keyOf = (key: KeyOf<T>) => rowKey(String(key));
 
@@ -133,7 +136,7 @@ export function createCollection<T extends Table>(
     return Result.ok({ label: `${name}.delete`, apply: (tx) => tx.delete(table.name, k) });
   };
 
-  const collection: Collection<T> & { readonly writes: Writes<T> } = {
+  const collection: Collection<T> & { readonly writes: Writes<T>; readonly visible: Visible } = {
     insert: (row) =>
       Result.gen(async function* () {
         const write = yield* insertWrite(row);
@@ -156,16 +159,23 @@ export function createCollection<T extends Table>(
       const cells = held(keyOf(key));
       return cells === undefined ? undefined : fromWireRow(table, cells);
     },
-    all: () => [...visible().values()].map((cells) => fromWireRow(table, cells)),
+    rows: () => [...visible().values()].map((cells) => fromWireRow(table, cells)),
     can: (op, row) => can(`${name}.${op}`, row === undefined ? undefined : toWireRow(table, row)),
-    where: (filter, options) => {
-      const spec: SpecDraft<T> = {};
-      if (filter !== undefined) spec.where = filter;
-      if (options?.orderBy !== undefined) spec.orderBy = options.orderBy;
-      return queries.acquire(table, spec, visible);
-    },
-    list: (options) => collection.where(undefined, options),
+    list: (options) => ({ table, options: options ?? {} }),
+    history: (key) =>
+      Result.gen(async function* () {
+        const where = yield* placement();
+        const entries = yield* Result.await(log());
+        return Result.ok(
+          rowHistory(table, keyOf(key), entries, {
+            merge,
+            partition: where.partition,
+            accountOf,
+          }),
+        );
+      }),
     writes: { insert: insertWrite, update: updateWrite, delete: deleteWrite },
+    visible,
   };
   return collection;
 }
