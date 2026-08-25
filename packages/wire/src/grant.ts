@@ -10,7 +10,7 @@ import { bytesToHex, hexToBytes } from "./hex.js";
 import { verify, type Identity } from "./identity.js";
 
 /** What a grant says: this device belongs to this account, with these rights, until then. See D08. */
-export interface GrantCore {
+export interface Grant {
   readonly v: 1;
   readonly account: string;
   readonly device: PeerId;
@@ -53,7 +53,7 @@ export interface GrantRequest {
   readonly now: Temporal.Instant;
 }
 
-export function encodeGrantCore(grant: GrantCore): Uint8Array {
+export function encodeGrant(grant: Grant): Uint8Array {
   const core = new Map<CborKey, CborValue>([
     [KEY.v, grant.v],
     [KEY.account, grant.account],
@@ -85,7 +85,7 @@ export function issueGrant(issuer: Identity, request: GrantRequest): Uint8Array 
     expiresAt: after(request.now, request.validFor),
     claims: request.claims ?? {},
   };
-  const core = encodeGrantCore(request.role === undefined ? base : { ...base, role: request.role });
+  const core = encodeGrant(request.role === undefined ? base : { ...base, role: request.role });
   return encodeCbor([core, issuer.sign(core)]);
 }
 
@@ -94,7 +94,7 @@ export function verifyGrant(
   wire: Uint8Array,
   issuer: PeerId,
   now: Temporal.Instant,
-): Result<GrantCore, GrantError> {
+): Result<Grant, GrantError> {
   return Result.gen(function* () {
     const outer = yield* decodeCbor(wire);
     if (!Array.isArray(outer) || outer.length !== 2)
@@ -125,7 +125,7 @@ export function verifyGrant(
 
 const malformed = (message: string) => Result.err(new MalformedGrant({ message }));
 
-function decodeGrantValue(value: CborValue): Result<GrantCore, MalformedGrant> {
+function decodeGrantValue(value: CborValue): Result<Grant, MalformedGrant> {
   if (!(value instanceof Map)) return malformed("core is not a map");
   if (value.get(KEY.v) !== 1) return malformed("unsupported version");
   const account = value.get(KEY.account);

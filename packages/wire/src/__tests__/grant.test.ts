@@ -2,7 +2,7 @@ import { parsePartitionKey } from "@syncmesh/kernel";
 import { Temporal } from "@syncmesh/temporal";
 import { describe, expect, test } from "bun:test";
 
-import { encodeGrantCore, issueGrant, verifyGrant, type GrantRequest } from "../grant.js";
+import { encodeGrant, issueGrant, verifyGrant, type GrantRequest } from "../grant.js";
 import { bytesEqual, bytesToHex, hexToBytes } from "../hex.js";
 import { decodeCbor, encodeCbor, type CborKey, type CborValue } from "../index.js";
 import { IDENTITY_A, IDENTITY_B } from "./fixtures.js";
@@ -38,7 +38,7 @@ describe("issueGrant / verifyGrant", () => {
     });
     expect(grant.issuedAt.epochMilliseconds).toBe(NOW.epochMilliseconds);
     expect(grant.expiresAt.epochMilliseconds).toBe(NOW.add(HOUR).epochMilliseconds);
-    expect(bytesEqual(encodeGrantCore(grant), decodeCore(wire))).toBe(true);
+    expect(bytesEqual(encodeGrant(grant), decodeCore(wire))).toBe(true);
   });
 
   test("role is absent bytes when omitted; claims default to an empty map", () => {

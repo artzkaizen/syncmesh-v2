@@ -1,6 +1,6 @@
 import { parsePeerId } from "@syncmesh/kernel";
 import { Temporal } from "@syncmesh/temporal";
-import { bytesToHex, decodeCbor, encodeGrantCore, hexToBytes, verifyGrant } from "@syncmesh/wire";
+import { bytesToHex, decodeCbor, encodeGrant, hexToBytes, verifyGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import raw from "../../grant-vectors.json" with { type: "json" };
@@ -20,7 +20,7 @@ describe("grant vectors — frozen", () => {
       expect(String(grant.device)).toBe(raw.deviceId);
       const outer = decodeCbor(wire).unwrap();
       if (!Array.isArray(outer) || !(outer[0] instanceof Uint8Array)) throw new Error("fixture");
-      expect(bytesToHex(encodeGrantCore(grant))).toBe(bytesToHex(outer[0]));
+      expect(bytesToHex(encodeGrant(grant))).toBe(bytesToHex(outer[0]));
     });
   }
 });

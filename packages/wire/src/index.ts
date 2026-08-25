@@ -7,12 +7,12 @@ export { InvalidSeed, SEED_LENGTH, createIdentity, verify } from "./identity.js"
 export { MalformedEvent, decodeEventCore, encodeEventCore } from "./event-codec.js";
 export type { VerifiedEvent, WireError } from "./envelope.js";
 export { BadSignature, MalformedEnvelope, decodeAndVerify, signEvent } from "./envelope.js";
-export type { GrantCore, GrantError, GrantRequest } from "./grant.js";
+export type { Grant, GrantError, GrantRequest } from "./grant.js";
 export {
   BadGrantSignature,
   GrantExpired,
   MalformedGrant,
-  encodeGrantCore,
+  encodeGrant,
   issueGrant,
   verifyGrant,
 } from "./grant.js";
