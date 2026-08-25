@@ -33,7 +33,6 @@
     "@types/bun": "catalog:",
     "oxlint": "1.80.0",
     "typescript": "catalog:",
-    "typescript-tsserver": "npm:typescript@6.0.3",
     "vite": "catalog:",
     "vite-plus": "catalog:"
   },
