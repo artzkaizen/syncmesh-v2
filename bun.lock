@@ -18,10 +18,13 @@
       "version": "0.0.0",
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
+        "@syncmesh/engine": "workspace:*",
         "@syncmesh/kernel": "workspace:*",
         "@syncmesh/result": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
         "@syncmesh/wire": "workspace:*",
         "@types/bun": "catalog:",
+        "fast-check": "catalog:",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
       },
