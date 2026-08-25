@@ -215,6 +215,24 @@
         "vite-plus": "catalog:",
       },
     },
+    "packages/transport": {
+      "name": "@syncmesh/transport",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/engine": "workspace:*",
+        "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/result": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
+        "@syncmesh/wire": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncmesh/config": "workspace:*",
+        "@syncmesh/schema": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+    },
     "packages/wire": {
       "name": "@syncmesh/wire",
       "version": "0.0.0",
@@ -462,6 +480,8 @@
     "@syncmesh/storage": ["@syncmesh/storage@workspace:packages/storage"],
 
     "@syncmesh/temporal": ["@syncmesh/temporal@workspace:packages/temporal"],
+
+    "@syncmesh/transport": ["@syncmesh/transport@workspace:packages/transport"],
 
     "@syncmesh/wire": ["@syncmesh/wire@workspace:packages/wire"],
 
