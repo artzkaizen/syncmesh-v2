@@ -3,6 +3,8 @@ import type { Temporal } from "@syncmesh/temporal";
 
 import { panic } from "@syncmesh/result";
 
+import type { Columns } from "./table.js";
+
 import {
   columnFromDef,
   type Column,
@@ -11,7 +13,6 @@ import {
   type StrategyFor,
   type Value,
 } from "./column.js";
-import { table, type Columns, type PrimaryKey, type Table } from "./table.js";
 
 /** The parts of a Drizzle column syncmesh reads, declared structurally so drizzle-orm is not a dependency. */
 export interface DrizzleColumnLike {
@@ -195,11 +196,20 @@ function defaultFor(
     : { ...def, hasDefault: true, defaultValue: info.default };
 }
 
-/** One definition: a Drizzle table becomes a syncmesh table with the frozen type mapping. Refusals throw; the rest warns. */
+// SAFETY: a unique symbol type can only be declared, so the registry symbol is asserted onto it
+const SOURCE: unique symbol = Symbol.for("syncmesh:drizzleSource") as never;
+
+/** The Drizzle table a set of columns was imported from, if any; the manifest refuses a mismatched key. */
+export function sourceName(columns: Columns): string | undefined {
+  // SAFETY: SOURCE is set only by fromDrizzle, always to the table's name
+  return (columns as Columns & { readonly [SOURCE]?: string })[SOURCE];
+}
+
+/** One definition: a Drizzle table's columns with the frozen type mapping. Refusals throw; the rest warns. */
 export function fromDrizzle<const D extends DrizzleTableLike>(
   drizzle: D,
   options: FromDrizzleOptions<D> = {},
-): Table<ColumnsFromDrizzle<D>, PrimaryKey<ColumnsFromDrizzle<D>>> {
+): ColumnsFromDrizzle<D> {
   const runtime = readRuntime(drizzle);
   const rules: Readonly<Record<string, string | undefined>> = options.onConflict ?? {};
   const mapped: Record<string, Column<unknown, boolean, boolean, boolean>> = {};
@@ -215,14 +225,14 @@ export function fromDrizzle<const D extends DrizzleTableLike>(
     panic(
       `${runtime[NAME]}: syncmesh needs exactly one primary-key column; found ${primary.length} (composite keys are not supported)`,
     );
+  Object.defineProperty(mapped, SOURCE, { value: runtime[NAME], enumerable: false });
   // SAFETY: mapped has one entry per Drizzle column, built by the frozen mapping that ColumnsFromDrizzle mirrors
   // oxlint-disable-next-line anti-slop/no-chained-type-assertions, anti-slop/no-known-value-widening -- the runtime record is shaped by the same mapping the type describes; TypeScript cannot relate them
-  return table(runtime[NAME], mapped as Columns as ColumnsFromDrizzle<D>);
+  return mapped as Columns as ColumnsFromDrizzle<D>;
 }
 
-export function isDrizzleTable(value: Table | DrizzleTableLike): value is DrizzleTableLike {
-  return Object.getOwnPropertySymbols(value).includes(NAME);
-}
+const isDrizzleTable = (value: DrizzleTableLike): boolean =>
+  Object.getOwnPropertySymbols(value).includes(NAME);
 
 function readRuntime(drizzle: DrizzleTableLike): DrizzleRuntime {
   if (!isDrizzleTable(drizzle)) panic("fromDrizzle: not a Drizzle table");

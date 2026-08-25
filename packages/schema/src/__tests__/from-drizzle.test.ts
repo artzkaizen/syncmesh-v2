@@ -27,7 +27,7 @@ import {
 
 import { fromDrizzle, type DrizzleWarning } from "../from-drizzle.js";
 import { defineSchema } from "../manifest.js";
-import { checkRow, type Row } from "../table.js";
+import { checkRow, table, type Row } from "../table.js";
 
 type Equal<A, B> =
   (<X>() => X extends A ? 1 : 2) extends <X>() => X extends B ? 1 : 2 ? true : false;
@@ -49,11 +49,10 @@ const books = pgTable("books", {
 describe("fromDrizzle — the pinned mapping", () => {
   test("maps every supported Postgres column to its frozen kind and modifiers", () => {
     const warnings: DrizzleWarning[] = [];
-    const table = fromDrizzle(books, { onWarn: (w) => warnings.push(w) });
-    expect(String(table.name)).toBe("books");
-    expect(table.primaryKey).toBe("id");
+    const columns = fromDrizzle(books, { onWarn: (w) => warnings.push(w) });
+    expect(table("books", columns).primaryKey).toBe("id");
     const kinds = Object.fromEntries(
-      Object.entries(table.columns).map(([k, c]) => [
+      Object.entries(columns).map(([k, c]) => [
         k,
         `${c.def.kind}${c.def.nullable ? "?" : ""}${c.def.hasDefault ? "=" : ""}`,
       ]),
@@ -70,8 +69,9 @@ describe("fromDrizzle — the pinned mapping", () => {
       code: "text?",
       addedAt: "timestamp?",
     });
-    expect(table.columns.starred.def.defaultValue).toBe(false);
-    expect(table.columns.addedAt.def.hasDefault).toBe(false);
+    expect(columns.starred.def.defaultValue).toBe(false);
+    expect(columns.addedAt.def.hasDefault).toBe(false);
+    expect(table("books", columns).primaryKey).toBe("id");
     expect(warnings.map((w) => `${w.column}: ${w.message.split(";")[0]}`)).toEqual([
       "code: unique() cannot be enforced across offline devices",
       "addedAt: Drizzle hands back a Date",
@@ -87,18 +87,22 @@ describe("fromDrizzle — the pinned mapping", () => {
       raw: blob("raw", { mode: "buffer" }),
       j: sqliteText("j", { mode: "json" }),
     });
-    const table = fromDrizzle(t);
-    expect(
-      Object.fromEntries(Object.entries(table.columns).map(([k, c]) => [k, c.def.kind])),
-    ).toEqual({ id: "text", n: "integer", b: "boolean", raw: "blob", j: "json" });
+    const columns = fromDrizzle(t);
+    expect(Object.fromEntries(Object.entries(columns).map(([k, c]) => [k, c.def.kind]))).toEqual({
+      id: "text",
+      n: "integer",
+      b: "boolean",
+      raw: "blob",
+      j: "json",
+    });
   });
 
   test("row types come from Drizzle's inference, with Date overridden to Temporal.Instant", () => {
-    const table = fromDrizzle(books);
-    assertType<Equal<Row<typeof table>["id"], string>>();
-    assertType<Equal<Row<typeof table>["pages"], number | null>>();
-    assertType<Equal<Row<typeof table>["big"], number>>();
-    assertType<Equal<Row<typeof table>["addedAt"], Temporal.Instant | null>>();
+    const imported = table("books", fromDrizzle(books));
+    assertType<Equal<Row<typeof imported>["id"], string>>();
+    assertType<Equal<Row<typeof imported>["pages"], number | null>>();
+    assertType<Equal<Row<typeof imported>["big"], number>>();
+    assertType<Equal<Row<typeof imported>["addedAt"], Temporal.Instant | null>>();
     expect(true).toBe(true);
   });
 });
@@ -136,8 +140,8 @@ describe("fromDrizzle — refusals at module load", () => {
         .notNull()
         .default(sql`1`),
     });
-    const table = fromDrizzle(t, { onWarn: (w) => warnings.push(w) });
-    expect(table.columns.n.def.hasDefault).toBe(false);
+    const columns = fromDrizzle(t, { onWarn: (w) => warnings.push(w) });
+    expect(columns.n.def.hasDefault).toBe(false);
     expect(warnings).toHaveLength(1);
   });
 });
@@ -145,12 +149,17 @@ describe("fromDrizzle — refusals at module load", () => {
 describe("fromDrizzle — end to end", () => {
   test("an imported table goes into a manifest and admits a row the mesh would accept", () => {
     const schema = defineSchema({
-      partitions: { org: { isolation: "database" } },
+      partitions: { org: {} },
       tables: {
-        books: { table: fromDrizzle(books, { onConflict: { rating: "max" } }), partition: "org" },
-        plain: {
-          table: pgTable("plain", { id: uuid("id").primaryKey(), n: integer("n") }),
+        books: {
+          columns: fromDrizzle(books, { onConflict: { rating: "max" } }),
           partition: "org",
+          allow: () => ({}),
+        },
+        plain: {
+          columns: fromDrizzle(pgTable("plain", { id: uuid("id").primaryKey(), n: integer("n") })),
+          partition: "org",
+          allow: () => ({}),
         },
       },
     });
@@ -161,6 +170,9 @@ describe("fromDrizzle — end to end", () => {
     );
     expect(schema.merge.get(schema.tables.books.name)?.size).toBe(1);
     expect(String(schema.tables.plain.name)).toBe("plain");
+    expect(() => defineSchema({ tables: { other: { columns: fromDrizzle(books) } } })).toThrow(
+      'come from the Drizzle table "books"',
+    );
     assertType<Equal<Row<typeof schema.tables.plain>["n"], number | null>>();
   });
 
@@ -169,7 +181,7 @@ describe("fromDrizzle — end to end", () => {
     // @ts-expect-error rating exists but max on text does not
     fromDrizzle(books, { onConflict: { title: "max" } });
     // @ts-expect-error not a column
-    fromDrizzle(books, { onConflict: { norma: "min" } });
+    expect(() => fromDrizzle(books, { onConflict: { norma: "min" } })).toThrow("does not have");
     // SAFETY: deliberately an unknown column, to exercise the runtime guard behind the type
     const unknownColumn = { nope: "max" } as never;
     expect(() => fromDrizzle(books, { onConflict: unknownColumn })).toThrow("does not have");

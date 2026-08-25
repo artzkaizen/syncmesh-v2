@@ -26,10 +26,13 @@ export {
   table,
 } from "./table.js";
 export type {
+  AllowRules,
   Manifest,
-  PartitionDef,
   PartitionKind,
-  Partitions,
+  PartitionTree,
+  PolicyCombinators,
+  PolicyNode,
+  ReservedKind,
   Roles,
   Schema,
   SchemaEntry,
@@ -45,4 +48,4 @@ export type {
   DrizzleWarning,
   FromDrizzleOptions,
 } from "./from-drizzle.js";
-export { fromDrizzle, isDrizzleTable } from "./from-drizzle.js";
+export { fromDrizzle, sourceName } from "./from-drizzle.js";
