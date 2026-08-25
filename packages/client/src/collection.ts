@@ -5,8 +5,8 @@ import type { InsertRow, Row, Table } from "@syncmesh/schema";
 
 import { EmptyMutation } from "@syncmesh/engine";
 import { readRows, readRowsIn } from "@syncmesh/kernel";
-import { Result, panic } from "@syncmesh/result";
-import { checkRow, fromWireRow, toWireRow, withDefaults } from "@syncmesh/schema";
+import { Result } from "@syncmesh/result";
+import { checkRow, fromWireRow, rowKeyText, toWireRow, withDefaults } from "@syncmesh/schema";
 import { bytesEqual } from "@syncmesh/wire";
 
 import type { Placement } from "./context.js";
@@ -99,14 +99,12 @@ export function createCollection<T extends Table>(
   const insertWrite = (row: InsertRow<T>): Result<Write & { key: RowKey }, WriteError> => {
     // SAFETY: InsertRow<T> is Row<T> with optional columns; toWireRow reads only the columns present
     const cells = withDefaults(table, toWireRow(table, row as Partial<Row<T>>));
-    const checked = checkRow(table, Object.fromEntries(cells), "insert");
+    const wireRow = Object.fromEntries(cells);
+    const checked = checkRow(table, wireRow, "insert");
     if (checked.isErr()) return checked;
-    const pk = table.columnNames[table.primaryKey];
-    if (pk === undefined)
-      return panic(`${name}: not built by table() — columnNames lacks the primary key`);
-    const pkValue = cells.get(pk);
-    // SAFETY: table() refuses a nullable, defaulted or non-keyable primary key, and checkRow above required its value
-    const key = rowKey(String(pkValue as string | number));
+    const keyed = rowKeyText(table, wireRow);
+    if (keyed.isErr()) return keyed;
+    const key = rowKey(keyed.value);
     return Result.ok({
       key,
       label: `${name}.insert`,

@@ -34,6 +34,13 @@ const accepts = {
   blob: (v) => v instanceof Uint8Array,
   uuid: (v) => typeof v === "string" && UUID_CANONICAL.test(v),
 } satisfies Readonly<Record<ColumnKind, (v: CellValue) => boolean>>;
+/** The text of a scalar cell — a string itself, a finite number in decimal — or `undefined` for anything else. */
+export const scalarText = (value: CellValue | undefined): string | undefined => {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return undefined;
+};
+
 /* oxlint-enable anti-slop/no-runtime-typeof */
 
 /**

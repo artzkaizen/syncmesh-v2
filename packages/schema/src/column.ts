@@ -86,8 +86,8 @@ export function columnFromDef<T, N extends boolean, D extends boolean, P extends
     default: (value: T) =>
       // SAFETY: T is the column's declared app-facing value type, which is always an AppValue
       next<T, N, true, false>({ hasDefault: true, defaultValue: toWireValue(value as AppValue) }),
-    check: (schema: StandardSchemaV1) =>
-      next<Output<typeof schema> & T, N, D, P>({ check: schema }),
+    check: <S extends StandardSchemaV1>(schema: S) =>
+      next<Output<S> & T, N, D, P>({ check: schema }),
     onConflict: (strategy: StrategyFor<T>) => next<T, N, D, P>({ onConflict: strategy }),
   };
   // SAFETY: the runtime column always carries every method; the Column type erases the ones whose

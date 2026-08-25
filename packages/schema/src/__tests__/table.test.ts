@@ -5,7 +5,7 @@ import { z } from "zod";
 
 import { columnFromDef, t, type AnyColumn } from "../column.js";
 import { parseColumnName, parseTableName, reservedTableName } from "../names.js";
-import { checkRow, table, type InsertRow, type Row } from "../table.js";
+import { checkRow, rowKeyText, table, type InsertRow, type Row } from "../table.js";
 
 const books = table("books", {
   id: t.uuid().primaryKey(),
@@ -142,5 +142,23 @@ describe("checkRow", () => {
     expect(checkRow(books, { meta: { tags: ["a"] } }, "update").isOk()).toBe(true);
     expect(checkRow(books, { meta: { tags: [1] } }, "update").isErr()).toBe(true);
     expect(checkRow(books, { meta: null }, "update").isOk()).toBe(true);
+  });
+});
+
+describe("rowKeyText", () => {
+  const books = table("books", { id: t.text().primaryKey(), n: t.integer().nullable() });
+  const nums = table("nums", { id: t.integer().primaryKey() });
+
+  test("a string key is itself; an integer key is its decimal text", () => {
+    expect(rowKeyText(books, { id: "b1" }).unwrap()).toBe("b1");
+    expect(rowKeyText(nums, { id: 42 }).unwrap()).toBe("42");
+  });
+
+  test("absence, null, json and bytes are errors, never keys", () => {
+    for (const bad of [undefined, null, { a: 1 }, [1], Uint8Array.of(1), true]) {
+      // SAFETY: deliberately wrong key values under test
+      const r = rowKeyText(books, { id: bad as never });
+      expect(r.isErr() && r.error._tag).toBe("ColumnCheckFailed");
+    }
   });
 });

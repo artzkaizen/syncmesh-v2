@@ -8,6 +8,7 @@ export {
   NullConstraintViolation,
   UUID_CANONICAL,
   checkValue,
+  scalarText,
 } from "./check.js";
 export {
   COLUMN_IDENTIFIER,
@@ -23,6 +24,7 @@ export {
   InvalidTableDefinition,
   UnknownColumn,
   checkRow,
+  rowKeyText,
   table,
 } from "./table.js";
 export type {

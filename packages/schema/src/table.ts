@@ -4,7 +4,7 @@ import { Result, TaggedError, panic } from "@syncmesh/result";
 
 import type { AnyColumn, ColumnDef, Value } from "./column.js";
 
-import { checkValue, type ColumnError } from "./check.js";
+import { KindMismatch, checkValue, scalarText, type ColumnError } from "./check.js";
 import { parseColumnName, parseTableName } from "./names.js";
 
 export type Columns = Readonly<Record<string, AnyColumn>>;
@@ -118,6 +118,44 @@ export class ColumnCheckFailed extends TaggedError("ColumnCheckFailed")<{
 export type RowError = UnknownColumn | ColumnCheckFailed;
 
 export type WireRow = Readonly<Record<string, CellValue | undefined>>;
+
+/**
+ * The row key an insert writes under: the primary-key cell's text. `checkValue` proves the cell
+ * matches its keyable kind, so json, bytes, null and absence are all errors here, never keys.
+ */
+export function rowKeyText(t: Table, row: WireRow): Result<string, RowError> {
+  const column = t.columns[t.primaryKey];
+  if (column === undefined) {
+    return Result.err(
+      new UnknownColumn({
+        column: t.primaryKey,
+        message: `${String(t.name)} was not built by table()`,
+      }),
+    );
+  }
+  const value = row[t.primaryKey];
+  return checkValue(column, value)
+    .mapError(
+      (cause) =>
+        new ColumnCheckFailed({
+          column: t.primaryKey,
+          cause,
+          message: `${t.primaryKey}: ${cause.message}`,
+        }),
+    )
+    .andThen(() => {
+      const text = scalarText(value);
+      return text === undefined
+        ? Result.err(
+            new ColumnCheckFailed({
+              column: t.primaryKey,
+              cause: new KindMismatch({ expected: column.def.kind, message: "not a scalar key" }),
+              message: `${t.primaryKey}: a key must be scalar`,
+            }),
+          )
+        : Result.ok(text);
+    });
+}
 
 /**
  * Validates wire-form values against the table. `insert` checks every column (an omitted
