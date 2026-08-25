@@ -1,0 +1,291 @@
+import {
+  parsePartitionKey,
+  readRow,
+  type Change,
+  type PartitionKey,
+  type PeerId,
+} from "@syncmesh/kernel";
+import { defineSchema, t } from "@syncmesh/schema";
+import { Temporal } from "@syncmesh/temporal";
+import { createIdentity, issueGrant, verifyGrant, type Grant } from "@syncmesh/wire";
+import { describe, expect, test } from "bun:test";
+
+import { can } from "../can.js";
+import { createEngine } from "../engine.js";
+import { createMemoryEventStore } from "../store.js";
+import { createValidator } from "../validate.js";
+import { CREATE, fakeClock, key, row, table } from "./fixtures.js";
+
+const schema = defineSchema({
+  partitions: { org: {} },
+  roles: { org: ["admin", "member"] },
+  tables: {
+    catalog: { columns: { id: t.text().primaryKey(), code: t.text() } },
+    books: {
+      columns: {
+        id: t.text().primaryKey(),
+        title: t.text(),
+        pages: t.integer().nullable(),
+        createdBy: t.text(),
+      },
+      partition: "org",
+      allow: ({ role, owner, anyOf }) => ({
+        $default: role("member"),
+        update: anyOf(owner("createdBy"), role("admin")),
+        delete: role("admin"),
+      }),
+    },
+    notes: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "user" },
+    drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "local" },
+  },
+});
+
+const issuer = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 50 + i)).unwrap();
+const device = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 90 + i)).unwrap();
+const other = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 130 + i)).unwrap();
+const NOW = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
+const ACME = parsePartitionKey("org:acme").unwrap();
+const USER = parsePartitionKey("user:acct_a").unwrap();
+const BOOKS = table("books");
+const B1 = key("b1");
+
+const grantFor = (role: string, dev = device.peerId): Grant =>
+  verifyGrant(
+    issueGrant(issuer, {
+      account: "acct_a",
+      device: dev,
+      role,
+      partitions: [ACME],
+      validFor: Temporal.Duration.from({ hours: 1 }),
+      now: NOW,
+    }),
+    issuer.peerId,
+    NOW,
+  ).unwrap();
+
+const grants = new Map<PeerId, Grant>([[device.peerId, grantFor("member")]]);
+const validator = createValidator({ schema, grantFor: (peer) => grants.get(peer) });
+const none = () => undefined;
+const tag = (r: { isErr(): boolean; error?: { _tag: string } }) =>
+  r.isErr() ? r.error?._tag : "ok";
+
+const insert = (values: Parameters<typeof row>[0], partition = ACME, peerId = device.peerId) =>
+  validator.validate(
+    { peerId, partition, changes: [{ kind: "insert", table: BOOKS, key: B1, row: row(values) }] },
+    none,
+  );
+
+describe("createValidator — the ladder", () => {
+  test("a stranger is NoGrant; a grant naming another device is GrantDeviceMismatch", () => {
+    expect(tag(insert({ id: "b1", title: "t", createdBy: "acct_a" }, ACME, other.peerId))).toBe(
+      "NoGrant",
+    );
+    grants.set(other.peerId, grantFor("member", device.peerId));
+    expect(tag(insert({ id: "b1", title: "t", createdBy: "acct_a" }, ACME, other.peerId))).toBe(
+      "GrantDeviceMismatch",
+    );
+    grants.delete(other.peerId);
+  });
+
+  test("partition rules: kind must match, the grant must list it, user is the account's, local never travels, global is read-only", () => {
+    const good = { id: "b1", title: "t", createdBy: "acct_a" };
+    expect(tag(insert(good))).toBe("ok");
+    expect(tag(insert(good, USER))).toBe("WrongPartition");
+    expect(tag(insert(good, parsePartitionKey("org:globex").unwrap()))).toBe("PartitionNotGranted");
+    const notesChanges: readonly Change[] = [
+      { kind: "insert", table: table("notes"), key: B1, row: row({ id: "n", body: "b" }) },
+    ];
+    const notes = (partition: PartitionKey | undefined) =>
+      partition === undefined
+        ? validator.validate({ peerId: device.peerId, changes: notesChanges }, none)
+        : validator.validate({ peerId: device.peerId, partition, changes: notesChanges }, none);
+    expect(tag(notes(USER))).toBe("ok");
+    expect(tag(notes(parsePartitionKey("user:acct_b").unwrap()))).toBe("WrongPartition");
+    expect(tag(notes(undefined))).toBe("WrongPartition");
+    const drafts = validator.validate(
+      {
+        peerId: device.peerId,
+        changes: [
+          { kind: "insert", table: table("drafts"), key: B1, row: row({ id: "d", body: "b" }) },
+        ],
+      },
+      none,
+    );
+    expect(tag(drafts)).toBe("LocalOnly");
+    const catalog = validator.validate(
+      {
+        peerId: device.peerId,
+        changes: [
+          { kind: "insert", table: table("catalog"), key: B1, row: row({ id: "c", code: "x" }) },
+        ],
+      },
+      none,
+    );
+    expect(tag(catalog)).toBe("ReadOnlyPartition");
+    const authority = createValidator({
+      schema,
+      grantFor: (peer) => grants.get(peer),
+      isAuthority: true,
+    });
+    expect(
+      tag(
+        authority.validate(
+          {
+            peerId: device.peerId,
+            changes: [
+              {
+                kind: "insert",
+                table: table("catalog"),
+                key: B1,
+                row: row({ id: "c", code: "x" }),
+              },
+            ],
+          },
+          none,
+        ),
+      ),
+    ).toBe("ok");
+    expect(
+      tag(
+        validator.validate(
+          {
+            peerId: device.peerId,
+            partition: ACME,
+            changes: [{ kind: "insert", table: table("nope"), key: B1, row: row({}) }],
+          },
+          none,
+        ),
+      ),
+    ).toBe("UnknownTable");
+  });
+
+  test("schema runs before policy, and runs even in ungranted mode", () => {
+    expect(tag(insert({ id: "b1", title: "t", pages: 1.5, createdBy: "acct_a" }))).toBe(
+      "SchemaViolation",
+    );
+    const ungranted = createValidator({ schema, grantFor: null });
+    const bad = ungranted.validate(
+      {
+        peerId: other.peerId,
+        partition: ACME,
+        changes: [
+          {
+            kind: "insert",
+            table: BOOKS,
+            key: B1,
+            row: row({ id: "b1", title: "t", pages: 1.5, createdBy: "x" }),
+          },
+        ],
+      },
+      none,
+    );
+    expect(tag(bad)).toBe("SchemaViolation");
+    const ok = ungranted.validate(
+      {
+        peerId: other.peerId,
+        partition: ACME,
+        changes: [{ kind: "delete", table: BOOKS, key: B1 }],
+      },
+      none,
+    );
+    expect(tag(ok)).toBe("ok");
+  });
+
+  test("policy: the rule for the op, with the stored row and the patch", () => {
+    const mine = () => row({ id: "b1", title: "t", createdBy: "acct_a" });
+    const theirs = () => row({ id: "b1", title: "t", createdBy: "acct_b" });
+    const update = (before: () => ReturnType<typeof row>) =>
+      validator.validate(
+        {
+          peerId: device.peerId,
+          partition: ACME,
+          changes: [{ kind: "update", table: BOOKS, key: B1, patch: row({ title: "x" }) }],
+        },
+        before,
+      );
+    expect(tag(update(mine))).toBe("ok");
+    expect(tag(update(theirs))).toBe("PolicyDenied");
+    const del = validator.validate(
+      {
+        peerId: device.peerId,
+        partition: ACME,
+        changes: [{ kind: "delete", table: BOOKS, key: B1 }],
+      },
+      mine,
+    );
+    expect(tag(del)).toBe("PolicyDenied");
+    grants.set(device.peerId, grantFor("admin"));
+    expect(tag(update(theirs))).toBe("ok");
+    grants.set(device.peerId, grantFor("member"));
+  });
+});
+
+describe("the engine with a validator", () => {
+  const setup = () => {
+    const store = createMemoryEventStore();
+    const clock = fakeClock(100);
+    const engine = createEngine({ peerId: device.peerId, clock, store, validate: validator });
+    return { store, clock, engine };
+  };
+
+  test("a denied local write is a value: nothing ticks, no sequence number is burned", async () => {
+    const { engine, store, clock } = setup();
+    const before = clock.last();
+    const r = await engine.mutate(
+      CREATE,
+      (tx) => tx.insert(BOOKS, B1, row({ id: "b1", title: "t", pages: 1.5, createdBy: "acct_a" })),
+      { partition: ACME },
+    );
+    expect(tag(r)).toBe("SchemaViolation");
+    expect(clock.last()).toBe(before);
+    expect((await store.all()).unwrap()).toHaveLength(0);
+    const ok = (
+      await engine.mutate(
+        CREATE,
+        (tx) => tx.insert(BOOKS, B1, row({ id: "b1", title: "t", createdBy: "acct_a" })),
+        { partition: ACME },
+      )
+    ).unwrap();
+    expect(Number(ok.seqNum)).toBe(1);
+  });
+
+  test("a received event that fails validation is quarantined with its reason, never stored or folded", async () => {
+    const { engine, store } = setup();
+    const forged = createEngine({
+      peerId: other.peerId,
+      clock: fakeClock(100),
+      store: createMemoryEventStore(),
+    });
+    const event = (
+      await forged.mutate(
+        CREATE,
+        (tx) => tx.insert(BOOKS, B1, row({ id: "b1", title: "t", createdBy: "acct_b" })),
+        { partition: ACME },
+      )
+    ).unwrap();
+    const seen: string[] = [];
+    engine.onQuarantine((q) => void seen.push(q.reason._tag));
+    expect((await engine.receive(event)).unwrap()).toEqual({
+      folded: 0,
+      skipped: 0,
+      quarantined: 1,
+    });
+    expect(seen).toEqual(["NoGrant"]);
+    expect((await store.all()).unwrap()).toHaveLength(0);
+    expect(readRow(engine.state(), BOOKS, B1)).toBeUndefined();
+  });
+});
+
+describe("can", () => {
+  test("answers from the same rule the receivers enforce", () => {
+    const grant = grants.get(device.peerId);
+    const mine = row({ createdBy: "acct_a" });
+    expect(can(schema, grant, "books.update", mine)).toBe(true);
+    expect(can(schema, grant, "books.update", row({ createdBy: "acct_b" }))).toBe(false);
+    expect(can(schema, grant, "books.delete", mine)).toBe(false);
+    expect(can(schema, grantFor("admin"), "books.delete", mine)).toBe(true);
+    expect(can(schema, grant, "notes.insert")).toBe(true);
+    expect(can(schema, undefined, "books.read")).toBe(false);
+    expect(can(schema, grant, "nope.read")).toBe(false);
+  });
+});

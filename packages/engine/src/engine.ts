@@ -1,6 +1,6 @@
 import type { HlcClock, MergeSpec, PeerId, RowKey, State, TableName } from "@syncmesh/kernel";
 
-import { applyChange, emptyState } from "@syncmesh/kernel";
+import { applyChange, emptyState, readRow } from "@syncmesh/kernel";
 import {
   eventId,
   stampOf,
@@ -14,11 +14,14 @@ import { Result } from "@syncmesh/result";
 
 import type { EventStore, StoreFailure } from "./store.js";
 import type { Cursors } from "./sync.js";
+import type { ProbeEvent, RowLookup, Validator } from "./validate.js";
 
+import { admit } from "./admit.js";
 import {
   CannotRevert,
   EmptyMutation,
   ListenerFailure,
+  type ValidationError,
   type EngineError,
   type MutateError,
   type RevertError,
@@ -47,6 +50,13 @@ export interface ReceiveReport {
   readonly folded: number;
   /** Own events, duplicates within the batch, and events already stored. */
   readonly skipped: number;
+  /** Refused by validation; reported through `onQuarantine`, never stored or folded. */
+  readonly quarantined: number;
+}
+
+export interface Quarantined {
+  readonly event: SyncEvent;
+  readonly reason: ValidationError;
 }
 
 export interface Engine {
@@ -75,6 +85,7 @@ export interface Engine {
   readonly onOutbound: (listener: (event: SyncEvent) => void) => Unsubscribe;
   /** A listener threw; the fold itself is unaffected. */
   readonly onError: (listener: (error: EngineError) => void) => Unsubscribe;
+  readonly onQuarantine: (listener: (q: Quarantined) => void) => Unsubscribe;
   readonly onTelemetry: (listener: TelemetryListener) => Unsubscribe;
 }
 
@@ -85,10 +96,12 @@ export interface EngineOptions {
   readonly merge?: MergeSpec;
   /** How many of this engine's own writes stay revertable. Default 0. */
   readonly undoDepth?: number;
+  /** Runs on a probe before a local write gets a sequence number, and on every received event before it is stored. */
+  readonly validate?: Validator;
 }
 
 export function createEngine(options: EngineOptions): Engine {
-  const { peerId, clock, store, merge, undoDepth = 0 } = options;
+  const { peerId, clock, store, merge, undoDepth = 0, validate } = options;
   let state = emptyState();
   const undo: Undo[] = [];
   const errors = createHub<EngineError>();
@@ -97,6 +110,8 @@ export function createEngine(options: EngineOptions): Engine {
   const folds = createHub<FoldBatch>(report("onFoldBatch"));
   const outbound = createHub<SyncEvent>(report("onOutbound"));
   const telemetry = createHub<TelemetryEvent>();
+  const quarantine = createHub<Quarantined>();
+  const before: RowLookup = (table, key) => readRow(state, table, key);
 
   const fold = (events: readonly SyncEvent[], source: FoldSource): void => {
     if (events.length === 0) return;
@@ -131,11 +146,22 @@ export function createEngine(options: EngineOptions): Engine {
           new EmptyMutation({ procedure, message: `${procedure} changed nothing` }),
         );
       }
+      if (validate !== undefined) {
+        const probe: ProbeEvent =
+          mutateOptions.local === true ? { peerId, changes, local: true } : { peerId, changes };
+        const verdict = validate.validate(
+          mutateOptions.partition === undefined
+            ? probe
+            : { ...probe, partition: mutateOptions.partition },
+          before,
+        );
+        if (verdict.isErr()) return verdict;
+      }
       const inverse = undoDepth > 0 ? invert(state, changes) : [];
       const hlc = clock.tick();
       const scope = mutateOptions.local === true ? "local" : "synced";
       const last = yield* Result.await(store.lastSeq(peerId, scope));
-      const event = build(procedure, hlc, nextSeq(last), changes, mutateOptions);
+      const event = buildEvent(peerId, procedure, hlc, nextSeq(last), changes, mutateOptions);
       yield* Result.await(store.append(event));
       telemetry.emit({ type: "engine.mutate", sizes: { changes: changes.length }, duration });
       fold([event], "local");
@@ -149,43 +175,20 @@ export function createEngine(options: EngineOptions): Engine {
 
   const receiveBatch: Engine["receiveBatch"] = (events) =>
     Result.gen(async function* () {
-      const fresh: SyncEvent[] = [];
-      const seen = new Set<string>();
-      for (const event of events) {
-        if (event.peerId === peerId || seen.has(event.id)) continue;
-        seen.add(event.id);
-        if (yield* Result.await(store.has(event.id))) continue;
-        fresh.push(event);
-      }
+      const { fresh, quarantined } = yield* Result.await(
+        admit(events, { peerId, store, validate, before, quarantine }),
+      );
       for (const event of fresh) {
         clock.receive(event.hlc);
         yield* Result.await(store.append(event));
       }
       fold(fresh, "remote");
-      return Result.ok({ folded: fresh.length, skipped: events.length - fresh.length });
+      return Result.ok({
+        folded: fresh.length,
+        skipped: events.length - fresh.length - quarantined,
+        quarantined,
+      });
     });
-
-  const build = (
-    procedure: Procedure,
-    hlc: SyncEvent["hlc"],
-    seqNum: SeqNum,
-    changes: SyncEvent["changes"],
-    { partition, local }: MutateOptions,
-  ): SyncEvent => {
-    const base = {
-      v: 1 as const,
-      id: eventId(peerId, seqNum),
-      peerId,
-      seqNum,
-      hlc,
-      procedure,
-      changes,
-    };
-    if (partition !== undefined && local === true) return { ...base, partition, local };
-    if (partition !== undefined) return { ...base, partition };
-    if (local === true) return { ...base, local };
-    return base;
-  };
 
   const revert: Engine["revert"] = (id) => {
     const index = undo.findIndex((u) => u.event.id === id);
@@ -229,6 +232,7 @@ export function createEngine(options: EngineOptions): Engine {
     onFoldBatch: folds.subscribe,
     onOutbound: outbound.subscribe,
     onError: errors.subscribe,
+    onQuarantine: quarantine.subscribe,
     onTelemetry: telemetry.subscribe,
   };
 }
@@ -237,3 +241,26 @@ const nextSeq = (last: SeqNum | undefined): SeqNum => {
   // SAFETY: last is a SeqNum (positive safe integer) or absent; +1 from 0 or from it stays one
   return ((last ?? 0) + 1) as SeqNum;
 };
+
+function buildEvent(
+  peerId: PeerId,
+  procedure: Procedure,
+  hlc: SyncEvent["hlc"],
+  seqNum: SeqNum,
+  changes: SyncEvent["changes"],
+  { partition, local }: MutateOptions,
+): SyncEvent {
+  const base = {
+    v: 1 as const,
+    id: eventId(peerId, seqNum),
+    peerId,
+    seqNum,
+    hlc,
+    procedure,
+    changes,
+  };
+  if (partition !== undefined && local === true) return { ...base, partition, local };
+  if (partition !== undefined) return { ...base, partition };
+  if (local === true) return { ...base, local };
+  return base;
+}

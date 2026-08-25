@@ -62,7 +62,7 @@ describe("receive / receiveBatch", () => {
     engine.onFoldBatch(batches.push);
     const events = await authored(3);
     const report = (await engine.receiveBatch(events)).unwrap();
-    expect(report).toEqual({ folded: 3, skipped: 0 });
+    expect(report).toEqual({ folded: 3, skipped: 0, quarantined: 0 });
     expect(batches.seen).toHaveLength(1);
     expect(batches.seen[0]?.source).toBe("remote");
     expect(batches.seen[0]?.eventCount).toBe(3);
@@ -76,8 +76,12 @@ describe("receive / receiveBatch", () => {
     engine.onFoldBatch(batches.push);
     const [e] = await authored(1);
     if (e === undefined) throw new Error("fixture");
-    expect((await engine.receiveBatch([e, e])).unwrap()).toEqual({ folded: 1, skipped: 1 });
-    expect((await engine.receive(e)).unwrap()).toEqual({ folded: 0, skipped: 1 });
+    expect((await engine.receiveBatch([e, e])).unwrap()).toEqual({
+      folded: 1,
+      skipped: 1,
+      quarantined: 0,
+    });
+    expect((await engine.receive(e)).unwrap()).toEqual({ folded: 0, skipped: 1, quarantined: 0 });
     expect(batches.seen).toHaveLength(1);
   });
 
@@ -88,8 +92,16 @@ describe("receive / receiveBatch", () => {
     const mine = (
       await engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ title: "a" })))
     ).unwrap();
-    expect((await engine.receive(mine)).unwrap()).toEqual({ folded: 0, skipped: 1 });
-    expect((await engine.receiveBatch([])).unwrap()).toEqual({ folded: 0, skipped: 0 });
+    expect((await engine.receive(mine)).unwrap()).toEqual({
+      folded: 0,
+      skipped: 1,
+      quarantined: 0,
+    });
+    expect((await engine.receiveBatch([])).unwrap()).toEqual({
+      folded: 0,
+      skipped: 0,
+      quarantined: 0,
+    });
     expect(batches.seen).toHaveLength(1);
     expect((await store.all()).unwrap()).toHaveLength(1);
   });

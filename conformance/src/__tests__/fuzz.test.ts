@@ -126,7 +126,11 @@ describe("fuzz — the wire cannot throw, poison dedup, or touch state", () => {
     expect((await store.all()).unwrap()).toHaveLength(0);
 
     const ok = decodeAndVerify(pristine.wire).unwrap();
-    expect((await engine.receive(ok.event)).unwrap()).toEqual({ folded: 1, skipped: 0 });
+    expect((await engine.receive(ok.event)).unwrap()).toEqual({
+      folded: 1,
+      skipped: 0,
+      quarantined: 0,
+    });
     expect(readRow(engine.state(), NOTES, K1)).toEqual(row({ title: "t", n: 1 }));
   });
 
