@@ -16,13 +16,13 @@
     }
   },
   "dependencies": {
+    "@syncmesh/engine": "workspace:*",
+    "@syncmesh/result": "workspace:*",
     "@syncmesh/storage": "workspace:*"
   },
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
-    "@syncmesh/engine": "workspace:*",
     "@syncmesh/kernel": "workspace:*",
-    "@syncmesh/result": "workspace:*",
     "@syncmesh/temporal": "workspace:*",
     "@syncmesh/wire": "workspace:*",
     "@types/bun": "catalog:",

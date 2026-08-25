@@ -13,6 +13,11 @@
       "@syncmesh/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./driver-tests": {
+      "@syncmesh/source": "./src/driver-tests/index.ts",
+      "types": "./dist/driver-tests/index.d.ts",
+      "default": "./dist/driver-tests/index.js"
     }
   },
   "dependencies": {

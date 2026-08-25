@@ -2,7 +2,7 @@ import type { EventStore } from "@syncmesh/engine";
 import type { SyncEvent } from "@syncmesh/kernel";
 
 import { StoreFailure } from "@syncmesh/engine";
-import { parseEventId } from "@syncmesh/kernel";
+import { eventId, parseEventId } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { decodeEventCore, encodeEventCore } from "@syncmesh/wire";
 
@@ -60,7 +60,11 @@ function decodeRow(row: SqlRow): Result<SyncEvent, StoreFailure> {
   }
   return decodeEventCore(core)
     .mapError(failure("stored event does not decode"))
-    .map((event) => (local === 1 ? { ...event, local: true } : event));
+    .map((event) =>
+      local === 1
+        ? { ...event, id: eventId(event.peerId, event.seqNum, true), local: true }
+        : event,
+    );
 }
 
 const decodeRows = (rows: readonly SqlRow[]) => Result.all(rows.map(decodeRow));

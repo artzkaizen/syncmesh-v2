@@ -18,10 +18,15 @@ const tasks = {
   },
 };
 
-const preset = (platform: Platform) =>
+export interface PresetOptions {
+  /** Extra entries beside `src/index.ts`, one per subpath export (e.g. `src/driver-tests/index.ts`). */
+  readonly entries?: readonly string[];
+}
+
+const preset = (platform: Platform, options: PresetOptions = {}) =>
   defineConfig({
     pack: {
-      entry: ["src/index.ts"],
+      entry: ["src/index.ts", ...(options.entries ?? [])],
       format: ["esm"],
       platform,
       dts: true,
@@ -33,7 +38,8 @@ const preset = (platform: Platform) =>
   });
 
 /** Vite+ preset for a runtime-neutral library in `packages/*`. */
-export const library = () => preset("neutral");
+export const library = (options?: PresetOptions) => preset("neutral", options);
 
 /** Vite+ preset for a runtime adapter in `adapters/*`, built for one platform. */
-export const adapter = (platform: Exclude<Platform, "neutral">) => preset(platform);
+export const adapter = (platform: Exclude<Platform, "neutral">, options?: PresetOptions) =>
+  preset(platform, options);

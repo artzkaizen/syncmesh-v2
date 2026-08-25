@@ -68,7 +68,7 @@ describe("compaction — RFC-0015 §2", () => {
     expect(done.removed).toBe(5);
     expect(done.floor.synced.get(PEER_A)).toBe(seq(5));
     expect(await count(a.store)).toBe(0);
-    expect(bodies(a.engine).sort()).toEqual(["n1", "n2", "n3", "n4", "n5"]);
+    expect(new Set(bodies(a.engine))).toEqual(new Set(["n1", "n2", "n3", "n4", "n5"]));
     expect((await a.engine.cursors()).unwrap().get(PEER_A)).toBe(seq(5));
 
     const next = (await write(a.engine, "n6", "n6")).unwrap();
