@@ -17,7 +17,7 @@ import type { Grant, Identity } from "@syncmesh/wire";
 import { createValidator, openEngine } from "@syncmesh/engine";
 import { createHlcClock } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
-import { openStores } from "@syncmesh/storage";
+import { installRls, openStores } from "@syncmesh/storage";
 
 import { NoDefaultStore } from "./errors.js";
 
@@ -35,6 +35,8 @@ export interface BootOptions {
   /** Your own SQLite connection: tables and capture are installed on it and it becomes the log too. */
   readonly driver?: SqlDriver;
   readonly dataDir: string;
+  /** Install RLS from the read rules on boot; postgres drivers only. */
+  readonly rls?: boolean;
   readonly now: () => Temporal.Instant;
   readonly grantFor: (peer: PeerId) => Grant | undefined;
 }
@@ -88,6 +90,17 @@ function validatorFor(options: BootOptions): ValidatorOptions {
   return validatorOptions;
 }
 
+/** `rls: true` compiles the read rules into the database's own policies — Postgres only. */
+function policiesFor(
+  options: BootOptions,
+  driver: SqlDriver | undefined,
+): Promise<Result<void, StoreFailure>> {
+  if (options.rls !== true) return Promise.resolve(Result.ok(undefined));
+  if (driver?.dialect !== "postgres")
+    panic("rls compiles the read rules into Postgres policies: it needs a postgres driver");
+  return installRls(driver, options.schema);
+}
+
 /** Opens the stores the options name (or the platform default) and boots the engine over them (D05). */
 export function openMeshEngine(options: BootOptions): Promise<Result<Booted, MeshOpenError>> {
   const { schema, identity, now } = options;
@@ -126,6 +139,7 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
     const engine = yield* Result.await(openEngine(engineOptions));
     const booted = { engine, store, validate };
     const driver = options.driver ?? owned?.driver;
+    yield* Result.await(policiesFor(options, driver));
     if (driver !== undefined) Object.assign(booted, { driver });
     return Result.ok({
       ...booted,

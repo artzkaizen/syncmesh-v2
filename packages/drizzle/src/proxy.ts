@@ -2,6 +2,8 @@ import type { Change, PartitionKey } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
 import type { SqlDriver, SqlValue, SqlWriteError, TxReceipt, Write } from "@syncmesh/storage";
 
+import { inTransaction } from "@syncmesh/storage";
+
 /**
  * What a Drizzle proxy callback does over a mesh: `begin`/`commit`/`rollback` from Drizzle's own
  * `db.transaction()` open and settle one capture, a write statement on its own is its own
@@ -17,6 +19,12 @@ export interface ProxyDeps {
   readonly driver: SqlDriver;
   readonly writer: Write;
   readonly partition?: PartitionKey;
+  /**
+   * Runs inside every transaction before the app's statements — the Postgres face sets the
+   * caller's principal here (RLS reads it), so it dies with the transaction. A bare read gets a
+   * transaction of its own to hold it.
+   */
+  readonly prelude?: () => Promise<void>;
 }
 
 const isWrite = (statement: string): boolean => /^\s*(insert|update|delete)\b/i.test(statement);
@@ -44,7 +52,7 @@ const bind = (params: readonly unknown[], dialect: SqlDriver["dialect"]): readon
 export type ProxyMethod = "run" | "all" | "values" | "get" | "execute";
 
 export function createProxy(deps: ProxyDeps) {
-  const { driver, writer, partition } = deps;
+  const { driver, writer, partition, prelude } = deps;
   const writeOptions = partition === undefined ? {} : { partition };
 
   /** Drizzle's own `db.transaction()` drives this: `begin` opens a capture, `commit` settles it. */
@@ -82,6 +90,7 @@ export function createProxy(deps: ProxyDeps) {
     );
     openTx = { done, fail, settled };
     await started;
+    await prelude?.(); // the capture transaction is open: the settings land inside it
   };
 
   const commit = async (): Promise<void> => {
@@ -125,12 +134,21 @@ export function createProxy(deps: ProxyDeps) {
     if (control === "commit") return commit().then(() => ({ rows: [] }));
     if (control === "rollback") return rollback().then(() => ({ rows: [] }));
     const bound = bind(params, driver.dialect);
-    if (openTx !== undefined || !isWrite(statement)) return execute(statement, bound, method);
+    if (openTx !== undefined) return execute(statement, bound, method);
+    if (!isWrite(statement)) {
+      if (prelude === undefined) return execute(statement, bound, method);
+      // a bare read gets a transaction to hold the settings; the per-driver queue orders it
+      return inTransaction(driver, async () => {
+        await prelude();
+        return execute(statement, bound, method);
+      });
+    }
     // a statement on its own is its own transaction, hence its own event
     let result: ProxyResult = { rows: [] };
     const written = await writer(
       derivedLabel,
       async () => {
+        await prelude?.();
         result = await execute(statement, bound, method);
       },
       writeOptions,

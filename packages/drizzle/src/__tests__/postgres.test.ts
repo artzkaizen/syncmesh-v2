@@ -5,7 +5,7 @@ import { createValidator, openEngine } from "@syncmesh/engine";
 import { createHlcClock, parsePartitionKey } from "@syncmesh/kernel";
 import { pgliteDriver } from "@syncmesh/postgres";
 import { defineSchema, t } from "@syncmesh/schema";
-import { openStores } from "@syncmesh/storage";
+import { installRls, openStores } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -227,5 +227,49 @@ describe("Drizzle over a mesh — the Postgres face", () => {
     expect(openJobs.data()).toEqual([]);
     expect(notified).toBe(2);
     openJobs.release();
+  });
+});
+
+describe("RLS through the face — read() retired at the call site", () => {
+  test("with installRls, a plain db.select() is the caller's view: bare reads, transactions and writes alike", async () => {
+    const seeded = await open();
+    await seeded.db.insert(jobs).values([
+      { id: "j1", title: "one", status: "open", rank: 1, assignee: "tech7" },
+      { id: "j2", title: "two", status: "open", rank: 2, assignee: "tech8" },
+    ]);
+    (await installRls(seeded.driver, schema)).unwrap();
+    // superusers are outside RLS by Postgres's own rules: the app reads through a plain role
+    await seeded.driver.run(`CREATE ROLE syncmesh_app NOLOGIN`);
+    await seeded.driver.run(`GRANT USAGE ON SCHEMA public TO syncmesh_app`);
+    await seeded.driver.run(`GRANT ALL ON ALL TABLES IN SCHEMA public TO syncmesh_app`);
+    await seeded.driver.run(`GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO syncmesh_app`);
+    await seeded.driver.run(`SET ROLE syncmesh_app`);
+
+    const handleFor = (as: Principal) =>
+      meshDrizzle({
+        engine: seeded.engine,
+        validate: createValidator({ schema, grantFor: null }),
+        driver: seeded.driver,
+        schema,
+        partition: ACME,
+        as,
+      });
+    const ids = async (as: Principal) =>
+      (await handleFor(as).db.select({ id: jobs.id }).from(jobs).orderBy(jobs.id)).map((r) => r.id);
+
+    expect(await ids(dispatcher)).toEqual(["j1", "j2"]); // no read() anywhere in sight
+    expect(await ids(tech7)).toEqual(["j1"]);
+    expect(await ids(viewer)).toEqual([]);
+
+    // the same view inside the caller's transaction, and the write within it still lands
+    const asDispatcher = handleFor(dispatcher);
+    const seen = await asDispatcher.db.transaction(async (tx) => {
+      await tx.update(jobs).set({ status: "assigned" }).where(eq(jobs.id, "j1"));
+      return (await tx.select({ id: jobs.id }).from(jobs)).length;
+    });
+    expect(seen).toBe(2);
+    expect(await ids(tech7)).toEqual(["j1"]); // and tech7 still sees only their own
+
+    await seeded.driver.run(`RESET ROLE`);
   });
 });

@@ -55,6 +55,13 @@ export interface MeshOptions<
   readonly onGrantRequest?: TransportContext["onGrantRequest"];
   /** The peer whose events may write `global` tables — the relay's id, shipped in config like the issuer's. */
   readonly authority?: PeerId;
+  /**
+   * Postgres only: install row-level security compiled from the schema's `read` rules on boot,
+   * so a handle's plain `db.select()` is already the caller's view — no `read()` wrapper at the
+   * call site. The database role the app connects with must not be a superuser or BYPASSRLS,
+   * or Postgres itself waves it through.
+   */
+  readonly rls?: boolean;
   /** The issuer's private half. Only the org's root of trust holds this; it unlocks `grants.issue`. */
   readonly issuerKey?: Identity;
   readonly now?: () => Temporal.Instant;

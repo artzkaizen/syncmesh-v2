@@ -1,6 +1,7 @@
 import type { PgDialect, PgTable, SubqueryWithSelection } from "drizzle-orm/pg-core";
 import type { RemoteCallback } from "drizzle-orm/pg-proxy";
 
+import { principalSettings } from "@syncmesh/storage";
 import { getTableName } from "drizzle-orm";
 import { PgRemoteDatabase } from "drizzle-orm/pg-proxy";
 import { PgProxyTransaction, PgRemoteSession } from "drizzle-orm/pg-proxy/session";
@@ -46,9 +47,19 @@ class CapturingSession extends PgRemoteSession<Record<string, never>, Record<str
 
 /** The Postgres face: Drizzle's `pg-proxy` over the mesh's driver, so the app's statements run on the capturing connection. */
 export function postgresFace(deps: FaceDeps) {
-  const { engine, partition, driver, writer, pgDialect } = deps;
+  const { engine, partition, actor, driver, writer, pgDialect } = deps;
   const proxyDeps = { driver, writer };
   if (partition !== undefined) Object.assign(proxyDeps, { partition });
+  if (actor !== undefined || partition !== undefined) {
+    // the caller's principal and pin land as transaction-local settings: what RLS policies read.
+    // Without installRls they are inert; with it, a plain db.select() is already the caller's view.
+    const settings = principalSettings(actor, partition === undefined ? {} : { partition });
+    Object.assign(proxyDeps, {
+      prelude: async () => {
+        for (const { sql, params } of settings) await driver.run(sql, params);
+      },
+    });
+  }
   const { callback } = createProxy(proxyDeps);
   const remote: RemoteCallback = (statement, params, method) => callback(statement, params, method);
   const dialect = pgDialect();

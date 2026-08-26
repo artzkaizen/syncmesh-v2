@@ -218,17 +218,18 @@ export interface PrincipalStatement {
  * over. Run them first, inside the transaction the reads will use.
  */
 export function principalSettings(
-  principal: Principal,
+  principal: Principal | undefined,
   options: { readonly partition?: PartitionKey } = {},
 ): readonly PrincipalStatement[] {
   const set = (name: string, value: string): PrincipalStatement => ({
     sql: `SELECT set_config('${name}', $1, TRUE)`,
     params: [value],
   });
+  // an empty value reads back as NULL through the policies' NULLIF: no principal is nobody, not somebody blank
   return [
-    set(GUC.account, principal.account),
-    set(GUC.role, principal.role ?? ""),
-    set(GUC.claims, JSON.stringify(principal.claims)),
+    set(GUC.account, principal?.account ?? ""),
+    set(GUC.role, principal?.role ?? ""),
+    set(GUC.claims, principal === undefined ? "" : JSON.stringify(principal.claims)),
     set(GUC.partition, options.partition === undefined ? "" : String(options.partition)),
   ];
 }

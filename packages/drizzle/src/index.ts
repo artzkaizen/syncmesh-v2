@@ -21,6 +21,11 @@ export type { PostgresMeshDb } from "./postgres.js";
  * its proxy driver over the mesh's own connection — SQLite on a device, Postgres on an
  * authority — so the app's statements run inside the capturing transaction, and there is one
  * ordering of transactions on it.
+ *
+ * The rule this rests on: a table is defined once in your Drizzle schema, synced through the
+ * mesh, and materialised into that same table. Never write a synced table with raw SQL on the
+ * server — a write that does not pass through a handle is invisible to capture, becomes no
+ * event, and diverges from every peer.
  */
 
 export interface MeshDrizzleOptions<D extends SqlDialect = "sqlite"> {
