@@ -2,25 +2,12 @@ import type { SuiteCase } from "@syncmesh/engine";
 import type { Change } from "@syncmesh/kernel";
 
 import { equal } from "@syncmesh/engine";
-import { t, table } from "@syncmesh/schema";
 
 import type { SqliteDriver } from "../driver.js";
 import type { OpenDriver } from "./index.js";
 
 import { captureChanges, installCapture } from "../capture.js";
-
-/** Every column kind once, so each encoding is exercised. */
-const jobs = table("jobs", {
-  id: t.text().primaryKey(),
-  title: t.text(),
-  hours: t.float().nullable(),
-  rank: t.integer(),
-  done: t.boolean(),
-  dueAt: t.timestamp().nullable(),
-  meta: t.json().nullable(),
-  photo: t.blob().nullable(),
-});
-const counters = table("counters", { id: t.integer().primaryKey(), n: t.integer() });
+import { COUNTERS as counters, JOBS as jobs } from "./fixtures.js";
 
 const open = async (driver: SqliteDriver) => {
   (await installCapture(driver, [jobs, counters])).unwrap();

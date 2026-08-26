@@ -4,6 +4,7 @@ import type { RowKey, RowRecord, State, TableName } from "@syncmesh/kernel";
 import { StateCorrupt, type StoreFailure } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
 
+import type { Projection } from "./capture.js";
 import type { SqlRow, SqlValue, SqliteDriver } from "./driver.js";
 
 import { decodeRecord, encodeRecord } from "./record-codec.js";
@@ -29,14 +30,25 @@ function decodeRow(row: SqlRow): Result<readonly [TableName, RowKey, RowRecord],
     });
 }
 
+export interface SqliteStateStoreOptions {
+  /** Also writes each committed row into the app's own tables (D20); `tablesProjection` builds one. */
+  readonly projection?: Projection;
+}
+
 /**
  * Opens the persisted state in the database behind `driver`; shares the file with `sqliteEventStore`.
+ * Records with their stamps live in `state_rows`; with a projection, the values also land in the
+ * app's tables in the same transaction.
  *
  * @example
  * const driver = bunSqliteDriver("app.db");
  * const stateStore = (await sqliteStateStore(driver)).unwrap();
  */
-export function sqliteStateStore(driver: SqliteDriver): Promise<Result<StateStore, StoreFailure>> {
+export function sqliteStateStore(
+  driver: SqliteDriver,
+  options: SqliteStateStoreOptions = {},
+): Promise<Result<StateStore, StoreFailure>> {
+  const { projection } = options;
   const query = (message: string, sql: string, values: readonly SqlValue[] = []) =>
     attempt(message, () => driver.all(sql, values));
 
@@ -65,6 +77,7 @@ export function sqliteStateStore(driver: SqliteDriver): Promise<Result<StateStor
           for (const [peer, seq] of coverage.synced)
             await driver.run(UPSERT_CURSOR, [peer, 0, seq]);
           for (const [peer, seq] of coverage.local) await driver.run(UPSERT_CURSOR, [peer, 1, seq]);
+          await projection?.apply(rows);
         }),
       ),
     clear: () =>
@@ -72,6 +85,7 @@ export function sqliteStateStore(driver: SqliteDriver): Promise<Result<StateStor
         inTransaction(driver, async () => {
           await driver.run("DELETE FROM state_rows");
           await driver.run("DELETE FROM state_cursors");
+          await projection?.clear();
         }),
       ),
   };

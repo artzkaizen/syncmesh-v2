@@ -16,6 +16,7 @@ import type {
 } from "@syncmesh/kernel";
 
 import { eventId, parsePeerId, parseSeqNum } from "@syncmesh/kernel";
+import { t, table } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 
 export const A = parsePeerId("a".repeat(64)).unwrap();
@@ -81,3 +82,16 @@ export const entry = (
 };
 
 export const ids2 = (entries: readonly StoredEvent[]) => entries.map((x) => x.event.id);
+
+/** A synced table with every column kind once, so each SQL encoding is exercised (capture and projection suites). */
+export const JOBS = table("jobs", {
+  id: t.text().primaryKey(),
+  title: t.text(),
+  hours: t.float().nullable(),
+  rank: t.integer(),
+  done: t.boolean(),
+  dueAt: t.timestamp().nullable(),
+  meta: t.json().nullable(),
+  photo: t.blob().nullable(),
+});
+export const COUNTERS = table("counters", { id: t.integer().primaryKey(), n: t.integer() });

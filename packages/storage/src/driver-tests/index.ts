@@ -6,6 +6,7 @@ import { captureCases } from "./capture.js";
 import { compactionCases } from "./compaction.js";
 import { eventCases } from "./events.js";
 import { stateCases } from "./state.js";
+import { tablesCases } from "./tables.js";
 
 /** Opens the database called `name`; the same name must open the same database again after `close`. */
 export type OpenDriver = (name: string) => Promise<SqliteDriver>;
@@ -25,6 +26,7 @@ export function driverTests(openDriver: OpenDriver): readonly SuiteCase[] {
     ...stateCases(openDriver),
     ...compactionCases(openDriver),
     ...captureCases(openDriver),
+    ...tablesCases(openDriver),
   ];
 }
 

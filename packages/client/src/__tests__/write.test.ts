@@ -91,10 +91,10 @@ describe("write — the app's SQL transaction becomes one event", () => {
     ).unwrap();
     const events = (await store.all()).unwrap();
     expect(events).toHaveLength(1);
-    expect(String(events[0]?.event.id)).toBe(String(receipt.eventId));
+    expect(events[0]?.event.id).toBe(receipt.eventId);
     // one stamp per event, so the row's two statements are one change: the insert, as it ended up
     expect(events[0]?.event.changes.map((c) => c.kind)).toEqual(["insert"]);
-    expect(String(events[0]?.event.partition)).toBe("org:acme");
+    expect(events[0]?.event.partition).toBe(ACME);
     // SAFETY: test fixture — the key text the INSERT above used; keys are opaque strings in the kernel
     const row = readRow(engine.state(), schema.tables.jobs.name, "j1" as never);
     expect(row?.get(schema.tables.jobs.columnNames.title)).toBe("one!");
@@ -174,5 +174,55 @@ describe("write — the app's SQL transaction becomes one event", () => {
         ),
       ),
     ).toBe("EmptyMutation");
+  });
+});
+
+describe("the fold writes the same tables", () => {
+  test("a peer's event lands in this device's SQL table with the guard at rest; its own write is still captured", async () => {
+    const a = await setup();
+    (
+      await a.write(
+        "jobs.create",
+        () => a.driver.run(`INSERT INTO jobs (id, title, rank) VALUES ('j1', 'from a', 1)`),
+        { partition: ACME },
+      )
+    ).unwrap();
+
+    // b: the same tables, projected by the fold (openStores installs capture and the projection)
+    const bDriver = bunSqliteDriver(":memory:");
+    const { openStores } = await import("@syncmesh/storage");
+    const bStores = (await openStores(bDriver, { tables })).unwrap();
+    const bKey = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 140 + i)).unwrap();
+    const validate = createValidator({ schema, grantFor: null });
+    const b = (
+      await openEngine({
+        peerId: bKey.peerId,
+        clock: createHlcClock({ now: () => T0 }),
+        store: bStores.events,
+        stateStore: bStores.state,
+        validate,
+      })
+    ).unwrap();
+    (await b.receiveBatch((await a.store.all()).unwrap())).unwrap();
+    expect((await bDriver.all(`SELECT title, _partition FROM jobs`))[0]).toEqual([
+      "from a",
+      "org:acme",
+    ]);
+    expect(Number((await bDriver.all(`SELECT COUNT(*) FROM _syncmesh_changes`))[0]?.[0])).toBe(0);
+
+    const writeB = createWriter({ engine: b, validate, driver: bDriver, tables });
+    (
+      await writeB(
+        "jobs.rename",
+        () => bDriver.run(`UPDATE jobs SET title = 'from b' WHERE id = 'j1'`),
+        { partition: ACME },
+      )
+    ).unwrap();
+    const last = (await bStores.events.all()).unwrap().at(-1)?.event;
+    expect(String(last?.peerId)).toBe(String(bKey.peerId));
+    expect(last?.changes[0]?.kind).toBe("update");
+    // SAFETY: test fixture — the key text the INSERT used; keys are opaque strings in the kernel
+    const bRow = readRow(b.state(), schema.tables.jobs.name, "j1" as never);
+    expect(bRow?.get(schema.tables.jobs.columnNames.title)).toBe("from b");
   });
 });

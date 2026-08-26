@@ -15,9 +15,30 @@ export const failure = (message: string) => (cause: unknown) =>
 export const attempt = <T>(message: string, fn: () => Promise<T>) =>
   Result.tryPromise({ try: fn, catch: failure(message) });
 
-/** Runs `fn` in one transaction where the driver offers one. */
-export const inTransaction = <T>(driver: SqliteDriver, fn: () => Promise<T>) =>
-  driver.transaction === undefined ? fn() : driver.transaction(fn);
+const queues = new WeakMap<SqliteDriver, Promise<unknown>>();
+
+/**
+ * Runs `fn` in one transaction where the driver offers one, and one at a time per driver: the
+ * app's captured transaction and the fold's commit share a connection, and SQLite cannot open a
+ * transaction inside another. Later callers wait for earlier ones, in call order. A body must
+ * not open a second transaction on the same driver — it would wait for itself.
+ */
+export const inTransaction = <T>(driver: SqliteDriver, fn: () => Promise<T>): Promise<T> => {
+  if (driver.transaction === undefined) return fn();
+  const { transaction } = driver;
+  const turn = (queues.get(driver) ?? Promise.resolve()).then(
+    () => transaction(fn),
+    () => transaction(fn),
+  );
+  queues.set(
+    driver,
+    turn.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return turn;
+};
 
 /** A `MAX(seq)`-style cell: NULL is absent, anything else must be a sequence number. */
 export const seqOf = (value: SqlValue | undefined): Result<SeqNum | undefined, StoreFailure> =>

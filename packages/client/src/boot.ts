@@ -9,6 +9,7 @@ import type {
   ValidatorOptions,
 } from "@syncmesh/engine";
 import type { MergeSpec, PeerId } from "@syncmesh/kernel";
+import type { Table } from "@syncmesh/schema";
 import type { Stores } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { Grant, Identity } from "@syncmesh/wire";
@@ -48,14 +49,18 @@ export interface Booted {
  * The durable store this platform has — one SQLite file per identity under `dir` — or
  * `NoDefaultStore` where there is none yet: pass `store` there, memory included.
  */
-async function defaultStores(dir: string, name: string): Promise<Result<Stores, MeshOpenError>> {
+async function defaultStores(
+  dir: string,
+  name: string,
+  tables: readonly Table[],
+): Promise<Result<Stores, MeshOpenError>> {
   if ("Bun" in globalThis) {
     const { defaultStore } = await import("@syncmesh/sqlite-bun");
-    return defaultStore({ name, dir });
+    return defaultStore({ name, dir, tables });
   }
   if ("process" in globalThis) {
     const { defaultStore } = await import("@syncmesh/sqlite-node");
-    return defaultStore({ name, dir });
+    return defaultStore({ name, dir, tables });
   }
   return Result.err(
     new NoDefaultStore({
@@ -73,7 +78,13 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
   return Result.gen(async function* () {
     const owned =
       options.store === undefined
-        ? yield* Result.await(defaultStores(options.dataDir, String(identity.peerId)))
+        ? yield* Result.await(
+            defaultStores(
+              options.dataDir,
+              String(identity.peerId),
+              schema.entries.map((e) => e.table),
+            ),
+          )
         : undefined;
     const validatorOptions = {
       schema,

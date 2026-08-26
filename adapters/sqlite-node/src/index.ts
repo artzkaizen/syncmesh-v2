@@ -1,6 +1,6 @@
 import type { StoreFailure } from "@syncmesh/engine";
 import type { Result } from "@syncmesh/result";
-import type { SqlRow, SqliteDriver, Stores } from "@syncmesh/storage";
+import type { OpenStoresOptions, SqlRow, SqliteDriver, Stores } from "@syncmesh/storage";
 
 import { openStores } from "@syncmesh/storage";
 import { mkdirSync } from "node:fs";
@@ -48,7 +48,7 @@ export function nodeSqliteDriver(path: string): SqliteDriver {
   };
 }
 
-export interface DefaultStoreOptions {
+export interface DefaultStoreOptions extends OpenStoresOptions {
   /** Database name; `<dir>/<name>.db` on disk. */
   readonly name: string;
   readonly dir: string;
@@ -62,5 +62,5 @@ export interface DefaultStoreOptions {
  */
 export function defaultStore(options: DefaultStoreOptions): Promise<Result<Stores, StoreFailure>> {
   mkdirSync(options.dir, { recursive: true });
-  return openStores(nodeSqliteDriver(join(options.dir, `${options.name}.db`)));
+  return openStores(nodeSqliteDriver(join(options.dir, `${options.name}.db`)), options);
 }
