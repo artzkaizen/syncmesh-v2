@@ -95,3 +95,14 @@ export const JOBS = table("jobs", {
   photo: t.blob().nullable(),
 });
 export const COUNTERS = table("counters", { id: t.integer().primaryKey(), n: t.integer() });
+
+/** The mesh's own table names and a one-byte blob literal, in the driver's dialect — for cases that damage the store on purpose. */
+export const sqlOf = (driver: { readonly dialect?: "sqlite" | "postgres" }) =>
+  driver.dialect === "postgres"
+    ? {
+        events: "_syncmesh_events",
+        rows: "_syncmesh_state",
+        compaction: "_syncmesh_compaction",
+        junk: "'\\x00'::bytea",
+      }
+    : { events: "events", rows: "state_rows", compaction: "compaction", junk: "X'00'" };

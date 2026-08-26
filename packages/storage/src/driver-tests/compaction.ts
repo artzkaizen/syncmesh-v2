@@ -5,11 +5,11 @@ import { equal } from "@syncmesh/engine";
 import type { SqliteDriver } from "../driver.js";
 import type { OpenDriver } from "./index.js";
 
-import { sqliteEventStore } from "../sqlite-event-store.js";
+import { sqlEventStore } from "../event-store.js";
 import { A, B, at, entry, event, ids2 as ids, seq } from "./fixtures.js";
 
 const filled = async (driver: SqliteDriver) => {
-  const store = (await sqliteEventStore(driver)).unwrap();
+  const store = (await sqlEventStore(driver)).unwrap();
   (
     await store.appendBatch([
       entry(A, 1, 10),
@@ -85,7 +85,7 @@ export const compactionCases = (openDriver: OpenDriver): readonly SuiteCase[] =>
       const store = await filled(first);
       (await store.compactBelow(new Map([[A, seq(2)]]), "synced", at(100))).unwrap();
       await first.close?.();
-      const reopened = (await sqliteEventStore(await openDriver("compaction-durable"))).unwrap();
+      const reopened = (await sqlEventStore(await openDriver("compaction-durable"))).unwrap();
       equal((await reopened.compactedBelow()).unwrap().synced.get(A), seq(2), "floor after reopen");
       equal(
         (await reopened.compactBelow(new Map([[A, seq(1)]]), "synced", at(100))).unwrap(),
@@ -95,6 +95,10 @@ export const compactionCases = (openDriver: OpenDriver): readonly SuiteCase[] =>
       equal((await reopened.compactedBelow()).unwrap().synced.get(A), seq(2), "floor unchanged");
     },
   },
+];
+
+/** SQLite's own migration history — a device database written before the compaction table and the signature column existed. */
+export const sqliteMigrationCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   {
     name: "compaction: a database at schema version 1 migrates to current with its events intact",
     run: async () => {
@@ -103,7 +107,7 @@ export const compactionCases = (openDriver: OpenDriver): readonly SuiteCase[] =>
       await driver.run("DROP TABLE compaction");
       await driver.run("ALTER TABLE events DROP COLUMN sig");
       await driver.run("PRAGMA user_version = 1");
-      const migrated = (await sqliteEventStore(driver)).unwrap();
+      const migrated = (await sqlEventStore(driver)).unwrap();
       equal(Number((await driver.all("PRAGMA user_version"))[0]?.[0]), 3, "user_version");
       equal((await migrated.compactedBelow()).unwrap().synced.size, 0, "empty floors");
       const all = (await store.all()).unwrap();

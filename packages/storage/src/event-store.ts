@@ -5,43 +5,10 @@ import { eventId, parseEventId } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { decodeEventCore, encodeEventCore } from "@syncmesh/wire";
 
-import type { SqlRow, SqlValue, SqliteDriver } from "./driver.js";
+import type { SqlDriver, SqlRow, SqlValue } from "./driver.js";
 
-import { migrate } from "./schema.js";
+import { dialectOf } from "./dialect.js";
 import { attempt, coverageOf, failure, hlcRow, inTransaction, seqOf } from "./sql.js";
-
-const INSERT = `INSERT OR IGNORE INTO events
-  (peer, seq, local, hlc_ms, hlc_logical, partition, core, sig)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
-const SELECT_ALL = `SELECT core, local, sig FROM events ORDER BY hlc_ms, hlc_logical, peer, seq`;
-const SELECT_SINCE = `SELECT core, local, sig FROM events
-  WHERE local = ?
-    AND seq > COALESCE((SELECT value FROM json_each(?) WHERE key = events.peer), 0)
-  ORDER BY peer, seq`;
-const SELECT_HAS = `SELECT 1 FROM events WHERE peer = ? AND seq = ? AND local = ? LIMIT 1`;
-const SELECT_LAST_SEQ = `SELECT MAX(seq) FROM (
-  SELECT seq FROM events WHERE peer = ?1 AND local = ?2
-  UNION ALL SELECT seq FROM compaction WHERE peer = ?1 AND local = ?2)`;
-const COMPACTABLE = `FROM events
-  WHERE local = ? AND hlc_ms < ?
-    AND seq <= COALESCE((SELECT value FROM json_each(?) WHERE key = events.peer), 0)`;
-const SELECT_COMPACTABLE = `SELECT peer, MAX(seq), COUNT(*) ${COMPACTABLE} GROUP BY peer`;
-const SELECT_COMPACTABLE_STAMP = `SELECT hlc_ms, hlc_logical ${COMPACTABLE} AND peer = ?
-  ORDER BY hlc_ms DESC, hlc_logical DESC LIMIT 1`;
-const DELETE_COMPACTABLE = `DELETE ${COMPACTABLE}`;
-const UPSERT_FLOOR = `INSERT INTO compaction (peer, local, seq, hlc_ms, hlc_logical)
-  VALUES (?, ?, ?, ?, ?)
-  ON CONFLICT (peer, local) DO UPDATE SET
-    seq = MAX(seq, excluded.seq),
-    hlc_logical = CASE
-      WHEN excluded.hlc_ms > hlc_ms THEN excluded.hlc_logical
-      WHEN excluded.hlc_ms = hlc_ms THEN MAX(hlc_logical, excluded.hlc_logical)
-      ELSE hlc_logical END,
-    hlc_ms = MAX(hlc_ms, excluded.hlc_ms)`;
-const SELECT_FLOORS = `SELECT peer, local, seq FROM compaction`;
-const SELECT_MAX_HLC = `SELECT hlc_ms, hlc_logical FROM (
-  SELECT hlc_ms, hlc_logical FROM events UNION ALL SELECT hlc_ms, hlc_logical FROM compaction)
-  ORDER BY hlc_ms DESC, hlc_logical DESC LIMIT 1`;
 
 const params = ({ event, sig }: StoredEvent): readonly SqlValue[] => [
   event.peerId,
@@ -73,21 +40,23 @@ function decodeRow(row: SqlRow): Result<StoredEvent, StoreFailure> {
 const decodeRows = (rows: readonly SqlRow[]) => Result.all(rows.map(decodeRow));
 
 /**
- * Opens the event log in the database behind `driver`, creating or migrating its tables.
+ * Opens the event log in the database behind `driver`, creating or migrating its tables in the
+ * driver's dialect — `events` on a device's SQLite, `_syncmesh_events` in an app's Postgres.
  *
  * @example
- * const store = (await sqliteEventStore(bunSqliteDriver("app.db"))).unwrap();
+ * const store = (await sqlEventStore(bunSqliteDriver("app.db"))).unwrap();
  */
-export function sqliteEventStore(driver: SqliteDriver): Promise<Result<EventStore, StoreFailure>> {
+export function sqlEventStore(driver: SqlDriver): Promise<Result<EventStore, StoreFailure>> {
+  const { events: SQL, migrate } = dialectOf(driver);
   const query = (message: string, sql: string, values: readonly SqlValue[] = []) =>
     attempt(message, () => driver.all(sql, values));
 
   const store: EventStore = {
-    append: (entry) => attempt("append failed", () => driver.run(INSERT, params(entry))),
+    append: (entry) => attempt("append failed", () => driver.run(SQL.insert, params(entry))),
     appendBatch: (entries) =>
       attempt("appendBatch failed", () =>
         inTransaction(driver, async () => {
-          for (const entry of entries) await driver.run(INSERT, params(entry));
+          for (const entry of entries) await driver.run(SQL.insert, params(entry));
         }),
       ),
     has: (id) =>
@@ -96,26 +65,26 @@ export function sqliteEventStore(driver: SqliteDriver): Promise<Result<EventStor
           failure("malformed event id"),
         );
         const rows = yield* Result.await(
-          query("has failed", SELECT_HAS, [peerId, seqNum, local ? 1 : 0]),
+          query("has failed", SQL.selectHas, [peerId, seqNum, local ? 1 : 0]),
         );
         return Result.ok(rows.length > 0);
       }),
     all: () =>
       Result.gen(async function* () {
-        const rows = yield* Result.await(query("all failed", SELECT_ALL));
+        const rows = yield* Result.await(query("all failed", SQL.selectAll));
         return decodeRows(rows);
       }),
     allSince: (cursors, scope = "synced") =>
       Result.gen(async function* () {
         const floor = JSON.stringify(Object.fromEntries(cursors));
         const local = scope === "local" ? 1 : 0;
-        const rows = yield* Result.await(query("allSince failed", SELECT_SINCE, [local, floor]));
+        const rows = yield* Result.await(query("allSince failed", SQL.selectSince, [local, floor]));
         return decodeRows(rows);
       }),
     lastSeq: (peer, scope) =>
       Result.gen(async function* () {
         const local = scope === "local" ? 1 : 0;
-        const rows = yield* Result.await(query("lastSeq failed", SELECT_LAST_SEQ, [peer, local]));
+        const rows = yield* Result.await(query("lastSeq failed", SQL.selectLastSeq, [peer, local]));
         return seqOf(rows[0]?.[0]);
       }),
     compactBelow: (floor, scope, olderThan) =>
@@ -127,12 +96,12 @@ export function sqliteEventStore(driver: SqliteDriver): Promise<Result<EventStor
             olderThan.epochMilliseconds,
             JSON.stringify(Object.fromEntries(floor)),
           ];
-          const groups = await driver.all(SELECT_COMPACTABLE, bind);
+          const groups = await driver.all(SQL.selectCompactable, bind);
           let removed = 0;
           for (const [peer, max, count] of groups) {
-            const [stamp] = await driver.all(SELECT_COMPACTABLE_STAMP, [...bind, peer ?? null]);
+            const [stamp] = await driver.all(SQL.selectCompactableStamp, [...bind, peer ?? null]);
             const [ms, logical] = stamp ?? [null, null];
-            await driver.run(UPSERT_FLOOR, [
+            await driver.run(SQL.upsertFloor, [
               peer ?? null,
               local,
               max ?? null,
@@ -141,12 +110,12 @@ export function sqliteEventStore(driver: SqliteDriver): Promise<Result<EventStor
             ]);
             removed += Number(count);
           }
-          if (removed > 0) await driver.run(DELETE_COMPACTABLE, bind);
+          if (removed > 0) await driver.run(SQL.deleteCompactable, bind);
           return removed;
         }),
       ),
     compactedBelow: () =>
-      query("compactedBelow failed", SELECT_FLOORS).then((rows) =>
+      query("compactedBelow failed", SQL.selectFloors).then((rows) =>
         rows
           .andThen(coverageOf)
           .mapError((e) =>
@@ -154,8 +123,11 @@ export function sqliteEventStore(driver: SqliteDriver): Promise<Result<EventStor
           ),
       ),
     maxHlc: () =>
-      query("maxHlc failed", SELECT_MAX_HLC).then((rows) => rows.andThen((r) => hlcRow(r[0]))),
+      query("maxHlc failed", SQL.selectMaxHlc).then((rows) => rows.andThen((r) => hlcRow(r[0]))),
   };
 
   return attempt("open failed", () => migrate(driver)).then((opened) => opened.map(() => store));
 }
+
+/** `sqlEventStore` under its SQLite-era name; the store speaks whatever dialect the driver has. */
+export const sqliteEventStore = sqlEventStore;

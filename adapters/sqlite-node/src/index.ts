@@ -1,6 +1,6 @@
 import type { StoreFailure } from "@syncmesh/engine";
 import type { Result } from "@syncmesh/result";
-import type { OpenStoresOptions, SqlRow, SqliteDriver, Stores } from "@syncmesh/storage";
+import type { OpenStoresOptions, SqlRow, SqliteDriver, Stores, SqlValue } from "@syncmesh/storage";
 
 import { openStores } from "@syncmesh/storage";
 import { mkdirSync } from "node:fs";
@@ -12,6 +12,10 @@ import { DatabaseSync } from "node:sqlite";
  *
  * @param path A file path, or `":memory:"` for a database that lives as long as the driver.
  */
+/** SQLite has no boolean or date: they bind as the integers the SQLite dialect writes. */
+const bind = (params: readonly SqlValue[]) =>
+  params.map((p) => (p === true ? 1 : p === false ? 0 : p instanceof Date ? p.getTime() : p));
+
 export function nodeSqliteDriver(path: string): SqliteDriver {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL");
@@ -19,14 +23,14 @@ export function nodeSqliteDriver(path: string): SqliteDriver {
 
   return {
     run: (sql, params = []) => {
-      db.prepare(sql).run(...params);
+      db.prepare(sql).run(...bind(params));
       return Promise.resolve();
     },
     all: (sql, params = []) => {
       // SAFETY: node:sqlite returns one object per row keyed by column name in SELECT order; its values are text, integers, reals, blobs or NULL — SqlValue
       const rows = db
         .prepare(sql)
-        .all(...params)
+        .all(...bind(params))
         .map((row) => Object.values(row) as SqlRow);
       return Promise.resolve(rows);
     },

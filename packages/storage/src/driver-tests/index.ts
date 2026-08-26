@@ -3,7 +3,7 @@ import type { SuiteCase } from "@syncmesh/engine";
 import type { SqliteDriver } from "../driver.js";
 
 import { captureCases, captureRuleCases } from "./capture.js";
-import { compactionCases } from "./compaction.js";
+import { compactionCases, sqliteMigrationCases } from "./compaction.js";
 import { eventCases } from "./events.js";
 import { readFilterCases } from "./read-filter.js";
 import { stateCases } from "./state.js";
@@ -16,16 +16,27 @@ export type OpenDriver = (name: string) => Promise<SqliteDriver>;
 export type { SuiteCase as DriverCase } from "@syncmesh/engine";
 
 /**
- * The contract every `SqliteDriver` must satisfy, as named cases for any test runner.
+ * The log and the state: what any `SqlDriver` must carry, whatever its dialect — the half of the
+ * contract a Postgres adapter proves.
+ *
+ * @example
+ * for (const c of storeTests(openDriver)) test(c.name, c.run);
+ */
+export function storeTests(openDriver: OpenDriver): readonly SuiteCase[] {
+  return [...eventCases(openDriver), ...stateCases(openDriver), ...compactionCases(openDriver)];
+}
+
+/**
+ * The contract every `SqliteDriver` must satisfy, as named cases for any test runner: the stores,
+ * plus the device-side half — tables, capture and read filters — that lives in SQLite DDL.
  *
  * @example
  * for (const c of driverTests(openDriver)) test(c.name, c.run);
  */
 export function driverTests(openDriver: OpenDriver): readonly SuiteCase[] {
   return [
-    ...eventCases(openDriver),
-    ...stateCases(openDriver),
-    ...compactionCases(openDriver),
+    ...storeTests(openDriver),
+    ...sqliteMigrationCases(openDriver),
     ...captureCases(openDriver),
     ...captureRuleCases(openDriver),
     ...tablesCases(openDriver),

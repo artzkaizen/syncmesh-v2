@@ -6,10 +6,10 @@ import { equal } from "@syncmesh/engine";
 import type { SqliteDriver } from "../driver.js";
 import type { OpenDriver } from "./index.js";
 
+import { sqlEventStore } from "../event-store.js";
 import { encodeRecord } from "../record-codec.js";
-import { sqliteEventStore } from "../sqlite-event-store.js";
-import { sqliteStateStore } from "../sqlite-state-store.js";
-import { A, B, BODY, N1, NOTES, record, seq } from "./fixtures.js";
+import { sqlStateStore } from "../state-store.js";
+import { A, B, BODY, N1, NOTES, record, seq, sqlOf } from "./fixtures.js";
 
 const coverage: Coverage = {
   synced: new Map([
@@ -18,7 +18,7 @@ const coverage: Coverage = {
   ]),
   local: new Map([[A, seq(2)]]),
 };
-const open = async (driver: SqliteDriver) => (await sqliteStateStore(driver)).unwrap();
+const open = async (driver: SqliteDriver) => (await sqlStateStore(driver)).unwrap();
 const bodyOf = async (store: StateStore) => {
   const value = (await store.loadAll()).unwrap().get(NOTES)?.get(N1)?.cells.get(BODY)?.value;
   return value instanceof Uint8Array ? undefined : JSON.stringify(value);
@@ -69,7 +69,8 @@ export const stateCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       const driver = await openDriver("state-corrupt");
       const store = await open(driver);
       (await write(store, "a", 1)).unwrap();
-      await driver.run("UPDATE state_rows SET record = X'00'");
+      const names = sqlOf(driver);
+      await driver.run(`UPDATE ${names.rows} SET record = ${names.junk}`);
       const loaded = await store.loadAll();
       equal(loaded.isErr() ? loaded.error._tag : "ok", "StateCorrupt", "damaged row");
       (await store.clear()).unwrap();
@@ -83,7 +84,7 @@ export const stateCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       const failing: SqliteDriver = {
         ...inner,
         run: (sql, params) =>
-          sql.includes("state_cursors") && sql.startsWith("INSERT")
+          sql.includes("cursors") && sql.startsWith("INSERT")
             ? Promise.reject(new Error("disk full"))
             : inner.run(sql, params),
       };
@@ -98,7 +99,7 @@ export const stateCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
     name: "state: shares one database with the event store",
     run: async () => {
       const driver = await openDriver("state-shared");
-      const events = (await sqliteEventStore(driver)).unwrap();
+      const events = (await sqlEventStore(driver)).unwrap();
       const state = await open(driver);
       equal((await events.maxHlc()).unwrap()?.[0].epochMilliseconds, undefined, "events side");
       equal((await state.isEmpty()).unwrap(), true, "state side");

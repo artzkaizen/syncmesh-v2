@@ -13,6 +13,34 @@
         "vite-plus": "catalog:",
       },
     },
+    "adapters/postgres": {
+      "name": "@syncmesh/postgres",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/engine": "workspace:*",
+        "@syncmesh/result": "workspace:*",
+        "@syncmesh/storage": "workspace:*",
+      },
+      "devDependencies": {
+        "@electric-sql/pglite": "^0.5.7",
+        "@syncmesh/config": "workspace:*",
+        "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/schema": "workspace:*",
+        "@syncmesh/wire": "workspace:*",
+        "@types/bun": "catalog:",
+        "postgres": "^3.4.9",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+      "peerDependencies": {
+        "@electric-sql/pglite": ">=0.3",
+        "postgres": ">=3.4",
+      },
+      "optionalPeers": [
+        "@electric-sql/pglite",
+        "postgres",
+      ],
+    },
     "adapters/sqlite-bun": {
       "name": "@syncmesh/sqlite-bun",
       "version": "0.0.0",
@@ -395,6 +423,8 @@
 
     "@clack/prompts": ["@clack/prompts@0.11.0", "", { "dependencies": { "@clack/core": "0.5.0", "picocolors": "^1.0.0", "sisteransi": "^1.0.5" } }, "sha512-pMN5FcrEw9hUkZA4f+zLlzivQSeQf5dRGJjSUbvVYDLvpKCdQx5OaknvKzgbtXOizhP+SJJJjqEbOe55uKKfAw=="],
 
+    "@electric-sql/pglite": ["@electric-sql/pglite@0.5.7", "", {}, "sha512-6WBks0NFO6YUhGP03mCNkbJuVFWwrZPrzZ/vsnAPnsCD28pybdZ+yoTrlLlWFoZst3kdaju5pxIslV/jrr36nQ=="],
+
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 
     "@noble/ed25519": ["@noble/ed25519@3.1.0", "", {}, "sha512-pfcObRY3CtvwfaG9Mt5XqZdKmAQppl37tHUeuBhDUbiwJBCVY4/A4lbMvb1xKhMDx96AqAqZpMWuBX1HulhX4g=="],
@@ -592,6 +622,8 @@
     "@syncmesh/orpc": ["@syncmesh/orpc@workspace:packages/orpc"],
 
     "@syncmesh/policy": ["@syncmesh/policy@workspace:packages/policy"],
+
+    "@syncmesh/postgres": ["@syncmesh/postgres@workspace:adapters/postgres"],
 
     "@syncmesh/relay": ["@syncmesh/relay@workspace:packages/relay"],
 
@@ -932,6 +964,8 @@
     "pngjs": ["pngjs@7.0.0", "", {}, "sha512-LKWqWJRhstyYo9pGvgor/ivk2w94eSjE3RGVuzLGlr3NmD8bf7RcYGze1mNdEHRP6TRP6rMuDHk5t44hnTRyow=="],
 
     "postcss": ["postcss@8.5.26", "", { "dependencies": { "nanoid": "^3.3.17", "picocolors": "^1.1.1", "source-map-js": "^1.2.1" } }, "sha512-u82N74LFzG8ca+dD8puPnplTXoGH4fTPpVGuIbt36G3qvNlkvfD0lEAZSxaly3KX8TS/L1A1gsCEmvKmBcVbkQ=="],
+
+    "postgres": ["postgres@3.4.9", "", {}, "sha512-GD3qdB0x1z9xgFI6cdRD6xu2Sp2WCOEoe3mtnyB5Ee0XrrL5Pe+e4CCnJrRMnL1zYtRDZmQQVbvOttLnKDLnaw=="],
 
     "pretty-format": ["pretty-format@27.5.1", "", { "dependencies": { "ansi-regex": "^5.0.1", "ansi-styles": "^5.0.0", "react-is": "^17.0.1" } }, "sha512-Qb1gy5OrP5+zDf2Bvnzdl3jsTf1qXVMazbvCoKhtKqVs4/YK4ozX4gKQJJVyNe+cajNPn0KoC0MC3FUmaHWEmQ=="],
 

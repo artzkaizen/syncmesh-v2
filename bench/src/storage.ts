@@ -13,7 +13,7 @@ import type { Procedure } from "@syncmesh/kernel";
 import { openEngine } from "@syncmesh/engine";
 import { createHlcClock, eventId, parsePeerId, parseSeqNum } from "@syncmesh/kernel";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
-import { sqliteEventStore, sqliteStateStore } from "@syncmesh/storage";
+import { sqlEventStore, sqlStateStore } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { bench, group, run, summary } from "mitata";
 import { mkdtempSync } from "node:fs";
@@ -58,7 +58,7 @@ const event = (seq: number, rows: number): SyncEvent => {
   };
 };
 
-const openLog = async (path = dbPath()) => (await sqliteEventStore(bunSqliteDriver(path))).unwrap();
+const openLog = async (path = dbPath()) => (await sqlEventStore(bunSqliteDriver(path))).unwrap();
 
 const BATCH = 1_000;
 
@@ -85,13 +85,13 @@ const ROWS = 5_000;
 
 const prepare = async (): Promise<{ store: EventStore; stateStore: StateStore }> => {
   const driver = bunSqliteDriver(dbPath());
-  const store = (await sqliteEventStore(driver)).unwrap();
+  const store = (await sqlEventStore(driver)).unwrap();
   for (let from = 1; from <= EVENTS; from += BATCH) {
     const events: StoredEvent[] = [];
     for (let seq = from; seq < from + BATCH; seq += 1) events.push({ event: event(seq, ROWS) });
     (await store.appendBatch(events)).unwrap();
   }
-  const stateStore = (await sqliteStateStore(driver)).unwrap();
+  const stateStore = (await sqlStateStore(driver)).unwrap();
   (await openEngine({ peerId: PEER, clock: clock(), store, stateStore })).unwrap();
   return { store, stateStore };
 };

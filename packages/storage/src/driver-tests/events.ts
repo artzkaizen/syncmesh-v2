@@ -8,12 +8,12 @@ import { encodeEventCore } from "@syncmesh/wire";
 import type { SqliteDriver } from "../driver.js";
 import type { OpenDriver } from "./index.js";
 
-import { sqliteEventStore } from "../sqlite-event-store.js";
-import { A, B, at, entry, event, hlc, ids2 as ids, seq } from "./fixtures.js";
+import { sqlEventStore } from "../event-store.js";
+import { A, B, at, entry, event, hlc, ids2 as ids, seq, sqlOf } from "./fixtures.js";
 
 const ACME = parsePartitionKey("org:acme").unwrap();
 const cores = (entries: readonly StoredEvent[]) => entries.map((x) => encodeEventCore(x.event));
-const open = async (driver: SqliteDriver) => (await sqliteEventStore(driver)).unwrap();
+const open = async (driver: SqliteDriver) => (await sqlEventStore(driver)).unwrap();
 
 export const eventCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   {
@@ -102,7 +102,9 @@ export const eventCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
     name: "events: a driver without transactions is still correct",
     run: async () => {
       const full = await openDriver("events-no-tx");
-      const store = await open({ run: full.run, all: full.all });
+      const bare = { run: full.run, all: full.all };
+      if (full.dialect !== undefined) Object.assign(bare, { dialect: full.dialect });
+      const store = await open(bare);
       (await store.appendBatch([entry(A, 1, 1), entry(A, 2, 2)])).unwrap();
       equal((await store.lastSeq(A, "synced")).unwrap(), seq(2), "lastSeq");
     },
@@ -128,17 +130,18 @@ export const eventCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       const driver = await openDriver("events-corrupt");
       const store = await open(driver);
       (await store.append(entry(A, 1, 1))).unwrap();
-      await driver.run("UPDATE events SET core = X'00'");
+      const names = sqlOf(driver);
+      await driver.run(`UPDATE ${names.events} SET core = ${names.junk}`);
       const all = await store.all();
       equal(all.isErr() ? all.error._tag : "ok", "StoreFailure", "corrupt core");
-      await driver.run("DROP TABLE events");
+      await driver.run(`DROP TABLE ${names.events}`);
       const last = await store.lastSeq(A, "synced");
       equal(last.isErr() ? last.error._tag : "ok", "StoreFailure", "missing table");
       const refused = {
         run: () => Promise.reject(new Error("no disk")),
         all: () => Promise.reject(new Error("no disk")),
       };
-      equal((await sqliteEventStore(refused)).isErr(), true, "open over a refusing driver");
+      equal((await sqlEventStore(refused)).isErr(), true, "open over a refusing driver");
       check(at(0).epochMilliseconds === 0, "fixture sanity");
     },
   },

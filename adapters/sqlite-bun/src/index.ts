@@ -1,6 +1,6 @@
 import type { StoreFailure } from "@syncmesh/engine";
 import type { Result } from "@syncmesh/result";
-import type { OpenStoresOptions, SqlRow, SqliteDriver, Stores } from "@syncmesh/storage";
+import type { OpenStoresOptions, SqlRow, SqlValue, SqliteDriver, Stores } from "@syncmesh/storage";
 
 import { openStores } from "@syncmesh/storage";
 import { Database } from "bun:sqlite";
@@ -15,6 +15,10 @@ import { join } from "node:path";
  * @example
  * const store = (await sqliteEventStore(bunSqliteDriver("app.db"))).unwrap();
  */
+/** SQLite has no boolean or date: they bind as the integers the SQLite dialect writes. */
+const bind = (params: readonly SqlValue[]) =>
+  params.map((p) => (p === true ? 1 : p === false ? 0 : p instanceof Date ? p.getTime() : p));
+
 export function bunSqliteDriver(path: string): SqliteDriver {
   const db = new Database(path, { create: true, strict: true });
   db.run("PRAGMA journal_mode = WAL");
@@ -22,12 +26,12 @@ export function bunSqliteDriver(path: string): SqliteDriver {
 
   return {
     run: (sql, params = []) => {
-      db.run(sql, [...params]);
+      db.run(sql, bind(params));
       return Promise.resolve();
     },
     all: (sql, params = []) => {
       // SAFETY: SQLite hands back text, integers (number or bigint), reals, blobs and NULL — exactly SqlValue
-      const rows = db.query(sql).values(...params) as readonly SqlRow[];
+      const rows = db.query(sql).values(...bind(params)) as readonly SqlRow[];
       return Promise.resolve(rows);
     },
     transaction: async (fn) => {

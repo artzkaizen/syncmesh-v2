@@ -1,11 +1,19 @@
-/** A value SQLite can bind or return. */
-export type SqlValue = string | number | bigint | Uint8Array | null;
+/** A value a SQL binding can take or return; booleans and dates only where the dialect has them. */
+export type SqlValue = string | number | bigint | boolean | Uint8Array | Date | null;
 
 /** One result row as positional values, in `SELECT` order. */
 export type SqlRow = readonly SqlValue[];
 
-/** The calls a SQLite binding must expose; every statement lives above it, so a driver never sees SQL of its own. See RFC-0004. */
-export interface SqliteDriver {
+export type SqlDialect = "sqlite" | "postgres";
+
+/**
+ * The calls a database binding must expose; every statement lives above it, so a driver never
+ * sees SQL of its own. The dialect picks which statements — each store owns one set per dialect,
+ * never one string that pretends to be both. See RFC-0004.
+ */
+export interface SqlDriver {
+  /** Absent reads as `sqlite` — the on-device default. */
+  readonly dialect?: SqlDialect;
   /** Executes a statement for its effect. */
   readonly run: (sql: string, params?: readonly SqlValue[]) => Promise<void>;
   /** Executes a query and returns every row. */
@@ -14,3 +22,6 @@ export interface SqliteDriver {
   readonly transaction?: <T>(fn: () => Promise<T>) => Promise<T>;
   readonly close?: () => Promise<void>;
 }
+
+/** A driver over SQLite: the device's database, where capture and the app's tables also live. */
+export type SqliteDriver = SqlDriver;
