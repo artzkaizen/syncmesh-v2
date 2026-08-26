@@ -1,7 +1,15 @@
 import type { Engine, EventStore, Principal, StateStore } from "@syncmesh/engine";
 import type { EventId, PartitionKey, PeerId, Row as WireCells } from "@syncmesh/kernel";
 import type { InvalidPartitionKey } from "@syncmesh/kernel";
-import type { AppValue, ColumnsMap, PartitionTree, Roles, Schema, Table } from "@syncmesh/schema";
+import type {
+  AppValue,
+  ColumnsMap,
+  PartitionTree,
+  PresenceMap,
+  Roles,
+  Schema,
+  Table,
+} from "@syncmesh/schema";
 import type { SqlDialect, SqlDriver, TxReceipt } from "@syncmesh/storage";
 import type { Transport, TransportContext } from "@syncmesh/transport";
 import type { Grant, Identity } from "@syncmesh/wire";
@@ -11,16 +19,19 @@ import { can as canOn } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
+import { createPresenceStore } from "@syncmesh/transport";
 import { createGrantRegistry } from "@syncmesh/wire";
 
 import type { Booted, MeshOpenError } from "./boot.js";
 import type { DeliveredOptions, ReceivedOptions } from "./delivered.js";
 import type { Revision } from "./history.js";
+import type { Topics } from "./presence.js";
 
 import { openMeshEngine } from "./boot.js";
 import { createDelivered, createReceived } from "./delivered.js";
 import { createMeshGrants, type MeshGrants, type MeshGrantsOptions } from "./grants.js";
 import { rowHistory } from "./history.js";
+import { createPresence } from "./presence.js";
 import { runTransports } from "./transports.js";
 
 export interface MeshOptions<
@@ -28,8 +39,9 @@ export interface MeshOptions<
   RS extends Roles<P>,
   C extends ColumnsMap,
   D extends SqlDialect = "sqlite",
+  PC extends PresenceMap = Record<string, never>,
 > {
-  readonly schema: Schema<P, RS, C>;
+  readonly schema: Schema<P, RS, C, PC>;
   readonly identity: Identity;
   /** The peer whose signature grants must carry; absent, the mesh runs ungranted — schema checks only. */
   readonly issuer?: PeerId;
@@ -94,7 +106,10 @@ export type RevisionView = Omit<Revision<Table>, "changed" | "row"> & {
   readonly row: Readonly<Record<string, AppValue | undefined>> | null;
 };
 
-export interface Mesh<D extends SqlDialect = "sqlite"> {
+export interface Mesh<
+  D extends SqlDialect = "sqlite",
+  PC extends PresenceMap = Record<string, never>,
+> {
   readonly engine: Engine;
   readonly grants: MeshGrants;
   /**
@@ -108,6 +123,11 @@ export interface Mesh<D extends SqlDialect = "sqlite"> {
     key: string,
     options?: HistoryOptions,
   ) => Promise<Result<readonly RevisionView[], unknown>>;
+  /**
+   * The ephemeral tier pinned to an instance (D16) — `mesh.presence("board:b1").cursor.set(…)`.
+   * Values are signed, conflated at every hop, and never touch the log.
+   */
+  readonly presence: (instance: string) => Topics<PC>;
   /** `"table.op"` against the same rules every receiver enforces. */
   readonly can: (what: `${string}.${string}`, row?: WireCells) => boolean;
   /** Resolves once a peer is known — through a cursor exchange — to hold the event (delivery, not approval). */
@@ -137,7 +157,8 @@ export async function createMesh<
   const RS extends Roles<P>,
   C extends ColumnsMap,
   D extends SqlDialect = "sqlite",
->(options: MeshOptions<P, RS, C, D>): Promise<Result<Mesh<D>, MeshOpenError>> {
+  PC extends PresenceMap = Record<string, never>,
+>(options: MeshOptions<P, RS, C, D, PC>): Promise<Result<Mesh<D, PC>, MeshOpenError>> {
   const { identity, issuer, issuerKey } = options;
   if (issuerKey !== undefined && issuerKey.peerId !== issuer)
     panic(
@@ -172,14 +193,15 @@ function assemble<
   RS extends Roles<P>,
   C extends ColumnsMap,
   D extends SqlDialect,
->(options: MeshOptions<P, RS, C, D>, deps: Assembled): Mesh<D> {
+  PC extends PresenceMap,
+>(options: MeshOptions<P, RS, C, D, PC>, deps: Assembled): Mesh<D, PC> {
   const { schema, identity } = options;
   const { grants, grantFor, now, booted } = deps;
   const { engine, validate } = booted;
   const entryOf = new Map(schema.entries.map((e) => [String(e.table.name), e]));
 
   const handles = new Map<string, Handle<D>>();
-  const on: Mesh<D>["on"] = (instance, onOptions = {}) => {
+  const on: Mesh<D, PC>["on"] = (instance, onOptions = {}) => {
     // outside the generator: a missing connection is a setup mistake and must throw as itself
     const driver =
       booted.driver ??
@@ -203,7 +225,7 @@ function assemble<
     });
   };
 
-  const history: Mesh<D>["history"] = (table, key, historyOptions = {}) =>
+  const history: Mesh<D, PC>["history"] = (table, key, historyOptions = {}) =>
     Result.gen(async function* () {
       const entry = entryOf.get(table) ?? panic(`the manifest has no table "${table}"`);
       const entries = yield* Result.await(booted.store.all());
@@ -222,7 +244,22 @@ function assemble<
       return Result.ok(revisions as readonly RevisionView[]);
     });
 
-  const transportContext: TransportContext = { engine, identity, grants, now };
+  const presenceStore = createPresenceStore({ now, accountOf: (peer) => grantFor(peer)?.account });
+  const presence = createPresence({
+    identity,
+    topics: schema.presence,
+    store: presenceStore,
+    // every open session, and nowhere else: a value that cannot leave is dropped, not queued
+    send: (wire) => links.sendPresence(wire),
+    now,
+  });
+  const transportContext: TransportContext = {
+    engine,
+    identity,
+    grants,
+    now,
+    onPresence: (wire) => void presence.receive(wire),
+  };
   if (options.onGrantRequest !== undefined)
     Object.assign(transportContext, { onGrantRequest: options.onGrantRequest });
   const links = runTransports(options.transports ?? [], transportContext);
@@ -232,6 +269,11 @@ function assemble<
     grants,
     on,
     history,
+    presence: (instance) => {
+      const partition = parsePartitionKey(instance);
+      if (partition.isErr()) panic(`presence: ${partition.error.message}`);
+      return presence.at<PC>(partition.value);
+    },
     can: (what, row) => canOn(schema, grantFor(identity.peerId), what, row),
     delivered: createDelivered(engine, identity.peerId),
     received: createReceived(engine),
@@ -241,6 +283,7 @@ function assemble<
     running: links.running,
     requestGrant: links.requestGrant,
     stop: async () => {
+      presence.stop(); // an explicit departure, so peers see this device leave now
       await links.stop();
       await booted.close();
     },

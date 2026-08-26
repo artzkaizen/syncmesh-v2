@@ -10,6 +10,7 @@ import {
   eventFrame,
   grantFrame,
   grantRequestFrame,
+  presenceFrame,
 } from "@syncmesh/transport";
 import { decodeAndVerify, encodeCbor, encodeEventCore, signEvent } from "@syncmesh/wire";
 
@@ -112,7 +113,8 @@ function wireSession(
     hooks.sendSafe(cursorsFrame(identity.peerId, engine.coverage().synced));
 
   const onSession = (frame: Extract<RelayFrame, { kind: "session" }>["frame"]): void => {
-    if (frame.kind === "grant") void grants.register(frame.wire);
+    if (frame.kind === "presence") context.onPresence?.(frame.wire);
+    else if (frame.kind === "grant") void grants.register(frame.wire);
     else if (frame.kind === "cursors") engine.acknowledge(frame.from, frame.cursors, now());
     else if (frame.kind === "grant-request") {
       const request = { peerId: frame.peerId };
@@ -253,6 +255,7 @@ export function relayTransport(options: RelayTransportOptions): Transport {
 
   return {
     name,
+    sendPresence: (wire) => sendSafe(presenceFrame(wire)),
     start: (context) => {
       ctx = context;
       stopped = false;

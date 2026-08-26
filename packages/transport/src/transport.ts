@@ -17,6 +17,8 @@ export interface TransportContext {
   readonly grants: GrantRegistry;
   readonly now?: () => Temporal.Instant;
   readonly onGrantRequest?: BridgeOptions["onGrantRequest"];
+  /** Where arriving ephemeral values go (D16); absent, presence frames are ignored. */
+  readonly onPresence?: BridgeOptions["onPresence"];
 }
 
 /**
@@ -33,6 +35,8 @@ export interface Transport {
   readonly resync?: () => void;
   /** Asks every connected peer for a grant for this device (flow A step ②). */
   readonly requestGrant?: (invite?: string) => void;
+  /** Sends one ephemeral value to every open session; dropped, never queued, on a full link. */
+  readonly sendPresence?: (wire: Uint8Array) => void;
   readonly onStatus?: (cb: (online: boolean) => void) => Unsubscribe;
 }
 
@@ -67,6 +71,8 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
         if (ctx.now !== undefined) Object.assign(bridgeOptions, { now: ctx.now });
         if (ctx.onGrantRequest !== undefined)
           Object.assign(bridgeOptions, { onGrantRequest: ctx.onGrantRequest });
+        if (ctx.onPresence !== undefined)
+          Object.assign(bridgeOptions, { onPresence: ctx.onPresence });
         const bridge = bridgeFramedLink(link, bridgeOptions);
         bridges.add(bridge);
         return bridge;
@@ -84,6 +90,9 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
     },
     requestGrant: (invite) => {
       for (const bridge of bridges) bridge.requestGrant(invite);
+    },
+    sendPresence: (wire) => {
+      for (const bridge of bridges) bridge.sendPresence(wire);
     },
     stop: async () => {
       for (const bridge of bridges) bridge.close();

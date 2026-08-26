@@ -9,6 +9,14 @@ export { InvalidSeed, SEED_LENGTH, createIdentity, verify } from "./identity.js"
 export { MalformedEvent, decodeEventCore, encodeEventCore } from "./event-codec.js";
 export type { VerifiedEvent, WireError } from "./envelope.js";
 export { BadSignature, MalformedEnvelope, decodeAndVerify, signEvent } from "./envelope.js";
+export type { Presence, VerifiedPresence } from "./presence-codec.js";
+export {
+  MalformedPresence,
+  decodeAndVerifyPresence,
+  decodePresenceCore,
+  encodePresenceCore,
+  signPresence,
+} from "./presence-codec.js";
 export type { Grant, GrantError, GrantRequest } from "./grant.js";
 export {
   BadGrantSignature,

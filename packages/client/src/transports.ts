@@ -5,6 +5,8 @@ export interface RunningTransports {
   readonly ready: () => Promise<void>;
   readonly running: () => boolean;
   readonly requestGrant: (invite?: string) => void;
+  /** One ephemeral value to every transport; a transport without the capability ignores it. */
+  readonly sendPresence: (wire: Uint8Array) => void;
   readonly stop: () => Promise<void>;
 }
 
@@ -23,6 +25,9 @@ export function runTransports(
     running: () => running,
     requestGrant: (invite) => {
       for (const t of transports) t.requestGrant?.(invite);
+    },
+    sendPresence: (wire) => {
+      for (const t of transports) t.sendPresence?.(wire);
     },
     stop: async () => {
       running = false;

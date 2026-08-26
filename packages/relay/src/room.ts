@@ -2,8 +2,14 @@ import type { EventStore, StoreFailure, StoredEvent } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
 import { Result } from "@syncmesh/result";
-import { cursorsFrame } from "@syncmesh/transport";
-import { bytesToHex, decodeAndVerify, encodeCbor, encodeEventCore } from "@syncmesh/wire";
+import { createPresenceStore, cursorsFrame, presenceFrame } from "@syncmesh/transport";
+import {
+  bytesToHex,
+  decodeAndVerify,
+  decodeAndVerifyPresence,
+  encodeCbor,
+  encodeEventCore,
+} from "@syncmesh/wire";
 
 import type { Fanout } from "./fanout.js";
 import type { RelaySocket, Sender } from "./sender.js";
@@ -67,6 +73,29 @@ interface Client {
 const envelopeOf = (entry: StoredEvent): Uint8Array | undefined =>
   entry.sig === undefined ? undefined : encodeCbor([encodeEventCore(entry.event), entry.sig]);
 
+/**
+ * A joiner's history as frames: `pageSize` events each, grants on the first, and always at least
+ * one page — its `more: false` is what releases the client's push-outstanding, so a client that
+ * is already caught up still gets told so. One frame is not a transfer, it is a cliff (RFC-0010).
+ */
+function paged(
+  entries: readonly StoredEvent[],
+  grantWires: readonly Uint8Array[],
+  pageSize: number,
+  offset: number,
+): readonly Uint8Array[] {
+  const wires = entries.map(envelopeOf).filter((w): w is Uint8Array => w !== undefined);
+  const pages: Uint8Array[] = [];
+  let index = 0;
+  do {
+    const slice = wires.slice(index, index + pageSize);
+    index += pageSize;
+    const grantsForPage = index <= pageSize ? [...grantWires] : [];
+    pages.push(pageFrame(grantsForPage, slice, index < wires.length, offset));
+  } while (index < wires.length);
+  return pages;
+}
+
 export async function openRelayRoom(
   options: RelayRoomOptions,
 ): Promise<Result<RelayRoom, StoreFailure>> {
@@ -82,6 +111,11 @@ export async function openRelayRoom(
   let offset = boot.value.length;
 
   const grants = new Map<string, Uint8Array>();
+  /**
+   * The ephemeral tier at the middle hop (D16): last value per topic, instance and peer, so a
+   * joiner learns who is here without any history and a slow client is never sent a backlog.
+   */
+  const presence = createPresenceStore();
   const clients = new Map<PeerId, Client>();
   /** Room-serialized async work: offsets and acks stay ordered. */
   let queue: Promise<unknown> = Promise.resolve();
@@ -111,18 +145,8 @@ export async function openRelayRoom(
           refuse("store", entries.error.message);
           return;
         }
-        const wires = entries.value.map(envelopeOf).filter((w): w is Uint8Array => w !== undefined);
-        const grantWires = [...grants.values()];
-        // always at least one page: it carries the grants, and its `more: false` is what
-        // releases the client's push-outstanding
-        let index = 0;
-        do {
-          const slice = wires.slice(index, index + pageSize);
-          index += pageSize;
-          sender.send(
-            pageFrame(index <= pageSize ? grantWires : [], slice, index < wires.length, offset),
-          );
-        } while (index < wires.length);
+        for (const page of paged(entries.value, [...grants.values()], pageSize, offset))
+          sender.send(page);
       });
     };
 
@@ -143,6 +167,8 @@ export async function openRelayRoom(
       me = peer;
       clients.set(peer, { peer, sender, socket });
       sender.send(helloFrame(selected, keepaliveMs, epoch, new Map(cursors)));
+      // who is here now — never how they got here: presence has no history to page through
+      for (const entry of presence.all()) sender.send(presenceFrame(entry.wire));
       catchUp(theirs);
       // what the joiner holds, in its own words, for everyone else's `delivered`
       toClients(cursorsFrame(peer, theirs), peer);
@@ -180,6 +206,15 @@ export async function openRelayRoom(
       });
     };
 
+    /** A cursor moved: admit it, forward it byte-identical, and drop it if it is not news. */
+    const onPresence = (bytes: Uint8Array, wire: Uint8Array): void => {
+      const verified = decodeAndVerifyPresence(wire);
+      if (verified.isErr()) return; // junk from a client is dropped, never relayed
+      if (!presence.admit(verified.value)) return; // a stale value or a loop's echo stops here
+      toClients(bytes, me);
+      fan?.publish(bytes);
+    };
+
     const onGrant = (bytes: Uint8Array, wire: Uint8Array): void => {
       const key = bytesToHex(wire);
       if (grants.has(key)) return;
@@ -208,6 +243,7 @@ export async function openRelayRoom(
         if (frame.kind !== "session") return; // the relay ignores control frames it did not ask for
         if (frame.frame.kind === "event") onEvent(frame.frame.wire);
         else if (frame.frame.kind === "grant") onGrant(bytes, frame.frame.wire);
+        else if (frame.frame.kind === "presence") onPresence(bytes, frame.frame.wire);
         else if (frame.frame.kind === "grant-request" || frame.frame.kind === "cursors")
           toClients(bytes, me); // peer-to-peer facts pass through byte-identical
       },

@@ -1,7 +1,8 @@
 import type { PeerId } from "@syncmesh/kernel";
 
 import { createMemoryEventStore } from "@syncmesh/engine";
-import { cursorsFrame, eventFrame, grantFrame } from "@syncmesh/transport";
+import { cursorsFrame, eventFrame, grantFrame, presenceFrame } from "@syncmesh/transport";
+import { signPresence } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import type { RelayFrame } from "../frames.js";
@@ -10,7 +11,7 @@ import type { RelaySocket, SendOutcome } from "../sender.js";
 import { memoryFanout } from "../fanout.js";
 import { decodeRelayFrame, joinFrame } from "../frames.js";
 import { openRelayRoom } from "../room.js";
-import { entryOf, mintFor, peer, tick, write } from "./fixtures.js";
+import { ACME, entryOf, mintFor, peer, tick, write } from "./fixtures.js";
 
 /** A socket the test scripts: outcomes on demand, everything sent kept for inspection. */
 const fakeSocket = () => {
@@ -205,6 +206,61 @@ describe("peer-to-peer facts pass through", () => {
     cb.receive(later);
     expect(sa.sent[0]).toEqual(later); // byte-identical, and never echoed to b
     expect(sb.ofKind("session").filter((f) => f.frame.kind === "cursors")).toHaveLength(0);
+    room.close();
+  });
+});
+
+describe("presence at the middle hop (D16)", () => {
+  test("a value forwards byte-identical, a stale one stops here, and a joiner is told who is here", async () => {
+    const a = peer(40, "acct_a");
+    const b = peer(80, "acct_b");
+    const room = await open();
+    const sa = fakeSocket();
+    const ca = room.connect(sa.socket);
+    ca.receive(join(a.identity.peerId));
+    const sb = fakeSocket();
+    room.connect(sb.socket).receive(join(b.identity.peerId));
+    await tick();
+    sb.sent.length = 0;
+
+    const cursor = (n: number, count: number) =>
+      presenceFrame(
+        signPresence(
+          {
+            v: 1,
+            peerId: a.identity.peerId,
+            topic: "cursor",
+            partition: ACME,
+            session: "s1",
+            count,
+            // SAFETY: test fixture column name; names are brands over these strings
+            value: new Map([["x" as never, n]]),
+            // the room's presence store reads the wall clock, so an expiry must be a real one
+            expires: Date.now() + 60_000,
+          },
+          a.identity,
+        ).wire,
+      );
+
+    const presenceSeen = (socket: typeof sa) =>
+      socket.ofKind("session").filter((f) => f.frame.kind === "presence");
+
+    sa.sent.length = 0;
+    const first = cursor(1, 1);
+    ca.receive(first);
+    expect(sb.sent[0]).toEqual(first); // the received bytes, untouched
+    expect(presenceSeen(sa)).toHaveLength(0); // never echoed to its author
+
+    sb.sent.length = 0;
+    ca.receive(cursor(0, 1)); // the same count again: a loop's echo, not news
+    expect(sb.sent).toHaveLength(0);
+
+    // a third client joins and is told the current value — and no history, because there is none
+    const sc = fakeSocket();
+    room.connect(sc.socket).receive(join(peer(120, "acct_c").identity.peerId));
+    await tick();
+    const greeting = sc.frames().filter((f) => f.kind === "session" && f.frame.kind === "presence");
+    expect(greeting).toHaveLength(1);
     room.close();
   });
 });

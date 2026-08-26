@@ -8,7 +8,15 @@ export {
   eventFrame,
   grantFrame,
   grantRequestFrame,
+  presenceFrame,
 } from "./frame.js";
+export type {
+  PresenceEntry,
+  PresenceStore,
+  PresenceStoreOptions,
+  PresenceTouch,
+} from "./presence.js";
+export { createPresenceStore } from "./presence.js";
 export { createHoldback } from "./holdback.js";
 export type { Bridge, BridgeError, BridgeOptions } from "./bridge.js";
 export { SendFailed, Unsendable, bridgeFramedLink } from "./bridge.js";

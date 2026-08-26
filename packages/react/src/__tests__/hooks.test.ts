@@ -28,6 +28,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { useCan } from "../use-can.js";
 import { useLiveInfiniteQuery } from "../use-live-infinite-query.js";
 import { useLiveQuery } from "../use-live-query.js";
+import { usePresence } from "../use-presence.js";
 
 const jobs = sqliteTable("jobs", {
   id: text().primaryKey(),
@@ -252,4 +253,50 @@ describe("the done-when", () => {
     expect(Math.max(...extra)).toBe(1); // one fold batch, one render
     expect(Math.min(...extra)).toBe(1); // and every query's rows really changed
   }, 30_000);
+});
+
+describe("usePresence", () => {
+  test("renders who is here, once per change, and not when the set is unchanged", async () => {
+    const listeners = new Set<() => void>();
+    let people: readonly { readonly peerId: string; readonly value: { readonly x: number } }[] = [];
+    const topic = {
+      peers: () => people,
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => void listeners.delete(listener);
+      },
+    };
+    const notify = () => {
+      for (const listener of listeners) listener();
+    };
+    const renders: string[] = [];
+    const Cursors = () => {
+      const here = usePresence(topic);
+      renders.push(here.map((p) => `${p.peerId}@${p.value.x}`).join(","));
+      return null;
+    };
+    await mount(createElement(Cursors));
+    expect(renders.at(-1)).toBe("");
+
+    const alice = { peerId: "a", value: { x: 1 } };
+    await act(async () => {
+      people = [alice];
+      notify();
+    });
+    expect(renders.at(-1)).toBe("a@1");
+
+    // the same entries again: a store that conflated to no change costs no render
+    const before = renders.length;
+    await act(async () => {
+      people = [alice];
+      notify();
+    });
+    expect(renders.length).toBe(before);
+
+    await act(async () => {
+      people = [];
+      notify();
+    });
+    expect(renders.at(-1)).toBe("");
+  });
 });

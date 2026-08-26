@@ -9,7 +9,14 @@ import { decodeAndVerify, encodeCbor, encodeEventCore, signEvent } from "@syncme
 
 import type { FrameLink } from "./link.js";
 
-import { cursorsFrame, decodeFrame, eventFrame, grantFrame, grantRequestFrame } from "./frame.js";
+import {
+  cursorsFrame,
+  decodeFrame,
+  eventFrame,
+  grantFrame,
+  grantRequestFrame,
+  presenceFrame,
+} from "./frame.js";
 import { createHoldback } from "./holdback.js";
 
 /** A relayed event whose author's signature was never stored cannot leave — nobody else can sign it. */
@@ -34,6 +41,8 @@ export interface BridgeOptions {
   }) => void;
   /** Out-of-order events held per author before a resync is forced. Default 512. */
   readonly gapLimit?: number;
+  /** An ephemeral value arrived (D16): the store decides whether it is news. Never stored here. */
+  readonly onPresence?: (wire: Uint8Array) => void;
 }
 
 /** One session over one link: grants first, then cursors, then events — with the gap rule. */
@@ -44,6 +53,8 @@ export interface Bridge {
   readonly requestGrant: (invite?: string) => void;
   /** Sends one grant's wire bytes now (the answer to a request). */
   readonly sendGrant: (wire: Uint8Array) => void;
+  /** Sends one ephemeral value, byte-identical; a failure is dropped, never queued (D16). */
+  readonly sendPresence: (wire: Uint8Array) => void;
   readonly onError: (cb: (error: BridgeError) => void) => Unsubscribe;
   /** Everything received so far is folded. */
   readonly flush: () => Promise<void>;
@@ -51,7 +62,7 @@ export interface Bridge {
 }
 
 export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridge {
-  const { engine, identity, grants, onGrantRequest, gapLimit = 512 } = options;
+  const { engine, identity, grants, onGrantRequest, onPresence, gapLimit = 512 } = options;
   const now = options.now ?? (() => Temporal.Now.instant());
   const errors = createHub<BridgeError>();
   let queue: Promise<unknown> = Promise.resolve();
@@ -157,6 +168,9 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
       case "event":
         receiveEvent(frame.value.wire);
         return;
+      case "presence":
+        onPresence?.(frame.value.wire);
+        return;
       case "unknown":
         return;
     }
@@ -188,6 +202,14 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     requestGrant: (invite) =>
       guard("grant-request", () => link.send(grantRequestFrame(identity.peerId, invite))),
     sendGrant: (wire) => guard("grant", () => link.send(grantFrame(wire))),
+    sendPresence: (wire) => {
+      // never `guard`: a dropped cursor is the correct outcome on a full radio, not an error
+      try {
+        link.send(presenceFrame(wire));
+      } catch {
+        /* the next value replaces it */
+      }
+    },
     onError: errors.subscribe,
     flush: async () => void (await queue),
     close: () => {

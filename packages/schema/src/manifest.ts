@@ -7,6 +7,7 @@ import type { AllowFn } from "./bind.js";
 
 import { combinators } from "./bind.js";
 import { sourceName } from "./from-drizzle.js";
+import { parseColumnName, parseTableName } from "./names.js";
 import { reservedTables } from "./reserved.js";
 import { table, type Columns, type PrimaryKey, type Table } from "./table.js";
 
@@ -71,11 +72,51 @@ export type TableEntry<
 
 export type ColumnsMap = Readonly<Record<string, Columns>>;
 
+/**
+ * A presence topic: a cursor, a typing flag, who-is-here. Declared next to the tables because an
+ * ephemeral value from a peer needs a shape for the same reason a row does — unvalidated, it is
+ * an injection surface. Never stored, never in the log (D16).
+ */
+export interface PresenceEntry<P extends PartitionTree, C extends Columns = Columns> {
+  /** The instance kind a value belongs to; `board` means one cursor set per board. */
+  readonly partition: Kinds<P>;
+  /** The value's columns, checked on send and on receive exactly as a row's are. */
+  readonly of: C;
+  /** How long a value stays live without being re-sent. Default 10_000. */
+  readonly ttlMs?: number;
+}
+
+export type PresenceMap = Readonly<Record<string, Columns>>;
+
+/** What a manifest declares under `presence:` — one entry per topic. */
+export type PresenceBlock<P extends PartitionTree, PC extends PresenceMap> = {
+  readonly [K in keyof PC]: PresenceEntry<P, PC[K]>;
+};
+
+/**
+ * A presence topic as the schema holds it: its shape, where it lives, how long it lasts. The
+ * kind is a plain string here — it was checked against the tree at definition, and every reader
+ * downstream treats it as opaque.
+ */
+export interface PresenceTopic {
+  readonly name: string;
+  readonly partition: string;
+  readonly columns: Columns;
+  readonly ttlMs: number;
+}
+
 /** `C` — each table's columns — is inferred first, so every entry's `allow` is typed to its own table. */
-export interface Manifest<P extends PartitionTree, R extends Roles<P>, C extends ColumnsMap> {
+export interface Manifest<
+  P extends PartitionTree,
+  R extends Roles<P>,
+  C extends ColumnsMap,
+  PC extends PresenceMap = Record<string, never>,
+> {
   readonly partitions?: P;
   readonly roles?: R;
   readonly tables: { readonly [K in keyof C]: TableEntry<P, R, C[K]> };
+  /** The ephemeral tier (D16): topics that never touch the log, the snapshot or a cursor. */
+  readonly presence?: PresenceBlock<P, PC>;
 }
 
 export interface SchemaEntry<P extends PartitionTree = PartitionTree> {
@@ -90,10 +131,19 @@ export type TablesOf<C extends ColumnsMap> = {
   readonly [K in keyof C]: Table<C[K], PrimaryKey<C[K]>>;
 };
 
-export interface Schema<P extends PartitionTree, R extends Roles<P>, C extends ColumnsMap> {
+export interface Schema<
+  P extends PartitionTree,
+  R extends Roles<P>,
+  C extends ColumnsMap,
+  PC extends PresenceMap = Record<string, never>,
+> {
   readonly partitions: P;
   readonly roles: R;
   readonly tables: TablesOf<C>;
+  /** Declared presence topics, in declaration order; empty when the manifest declares none. */
+  readonly presence: readonly PresenceTopic[];
+  /** The value shape a topic declares, for the hooks that infer from it. */
+  readonly presenceOf: PC;
   readonly entries: readonly SchemaEntry<P>[];
   readonly reserved: readonly Table[];
   readonly merge: MergeSpec;
@@ -111,7 +161,8 @@ export function defineSchema<
   const P extends PartitionTree,
   const R extends Roles<P>,
   const C extends ColumnsMap,
->(manifest: Manifest<P, R, C>): Schema<P, R, C> {
+  const PC extends PresenceMap = Record<string, never>,
+>(manifest: Manifest<P, R, C, PC>): Schema<P, R, C, PC> {
   // SAFETY: an absent tree declares no kinds, which every P admits; an absent roles map declares none, which every R admits
   const partitions = manifest.partitions ?? ({} as P);
   // SAFETY: as above
@@ -141,11 +192,15 @@ export function defineSchema<
     if (rules.size > 0) merge.set(tbl.name, rules);
   }
   const kinds = [...parents.keys()];
+  const presence = presenceTopics<P, PC>(manifest.presence, parents);
   return {
     partitions,
     roles,
     // SAFETY: built has exactly the keys of T, each the table its entry describes
-    tables: built as Schema<P, R, C>["tables"],
+    tables: built as Schema<P, R, C, PC>["tables"],
+    presence,
+    // SAFETY: the shapes are exactly the `of` maps the manifest declared, keyed as it keyed them
+    presenceOf: Object.fromEntries(presence.map((t) => [t.name, t.columns])) as PC,
     entries,
     reserved: reservedTables,
     merge,
@@ -155,6 +210,26 @@ export function defineSchema<
     parentOf: (kind) => parents.get(kind) as Kinds<P> | undefined,
     rolesFor: (kind) => rolesFor(parents, roles, kind),
   };
+}
+
+/** Topic declarations, validated the way tables are: a real kind, a real name, a usable shape. */
+function presenceTopics<P extends PartitionTree, PC extends PresenceMap>(
+  block: PresenceBlock<P, PC> | undefined,
+  parents: ReadonlyMap<string, string | undefined>,
+): readonly PresenceTopic[] {
+  if (block === undefined) return [];
+  return Object.entries(block).map(([name, entry]) => {
+    if (parseTableName(name).isErr())
+      panic(`presence ${name}: a topic name follows the table grammar`);
+    if (!parents.has(entry.partition) && !RESERVED.has(entry.partition))
+      panic(`presence ${name}: unknown partition kind "${String(entry.partition)}"`);
+    const columns = Object.keys(entry.of);
+    if (columns.length === 0) panic(`presence ${name}: a topic needs at least one column`);
+    for (const column of columns)
+      if (parseColumnName(column).isErr())
+        panic(`presence ${name}: "${column}" is not a column name`);
+    return { name, partition: entry.partition, columns: entry.of, ttlMs: entry.ttlMs ?? 10_000 };
+  });
 }
 
 function partitionOf<P extends PartitionTree, R extends Roles<P>>(

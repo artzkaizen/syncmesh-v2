@@ -16,13 +16,15 @@ import {
 export class MalformedFrame extends TaggedError("MalformedFrame")<{ message: string }> {}
 
 /** Wire tags; the tag is also the traffic class (grants and cursors ahead of events). */
-const KIND = { grant: 0, grantRequest: 1, cursors: 2, event: 3 } as const;
+const KIND = { grant: 0, grantRequest: 1, cursors: 2, event: 3, presence: 4 } as const;
 
 export type Frame =
   | { readonly kind: "grant"; readonly wire: Uint8Array }
   | { readonly kind: "grant-request"; readonly peerId: PeerId; readonly invite?: string }
   | { readonly kind: "cursors"; readonly from: PeerId; readonly cursors: Cursors }
   | { readonly kind: "event"; readonly wire: Uint8Array }
+  /** The ephemeral tier (D16): signed, never stored, dropped rather than queued. */
+  | { readonly kind: "presence"; readonly wire: Uint8Array }
   /** A tag this build does not know; ignored, never an error. */
   | { readonly kind: "unknown" };
 
@@ -46,6 +48,8 @@ export const cursorsFrame = (from: PeerId, cursors: Cursors): Uint8Array =>
 
 export const eventFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.event, wire]);
 
+export const presenceFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.presence, wire]);
+
 const malformed = (message: string) => Result.err(new MalformedFrame({ message }));
 
 const asPeer = (value: CborValue | undefined): Result<PeerId, MalformedFrame> =>
@@ -60,13 +64,11 @@ export function decodeFrame(frame: Uint8Array): Result<Frame, MalformedFrame> {
     );
     if (!Array.isArray(outer) || outer.length < 2) return malformed("expected [kind, …]");
     const [kind, payload, extra] = outer;
-    if (kind === KIND.grant || kind === KIND.event) {
+    if (kind === KIND.grant || kind === KIND.event || kind === KIND.presence) {
       if (!(payload instanceof Uint8Array)) return malformed("payload is not bytes");
-      return Result.ok(
-        kind === KIND.grant
-          ? ({ kind: "grant", wire: payload } as const)
-          : ({ kind: "event", wire: payload } as const),
-      );
+      if (kind === KIND.grant) return Result.ok({ kind: "grant", wire: payload } as const);
+      if (kind === KIND.event) return Result.ok({ kind: "event", wire: payload } as const);
+      return Result.ok({ kind: "presence", wire: payload } as const);
     }
     if (kind === KIND.grantRequest) return decodeRequest(payload, extra);
     if (kind === KIND.cursors) return decodeCursors(payload, extra);
