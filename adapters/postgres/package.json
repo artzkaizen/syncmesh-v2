@@ -24,6 +24,7 @@
     "@electric-sql/pglite": "^0.5.7",
     "@syncmesh/config": "workspace:*",
     "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/policy": "workspace:*",
     "@syncmesh/schema": "workspace:*",
     "@syncmesh/wire": "workspace:*",
     "@types/bun": "catalog:",

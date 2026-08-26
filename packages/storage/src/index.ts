@@ -21,6 +21,9 @@ export { captureChanges, captureDdl, installCapture, tableDdl } from "./capture.
 export type { Projection, ProjectionOptions } from "./projection.js";
 export { tablesProjection } from "./projection.js";
 export type { Compiled, CompileOptions } from "./read-filter.js";
+export { columnScalarKind } from "./read-filter.js";
+export type { PrincipalStatement, RlsOptions } from "./rls.js";
+export { installRls, principalSettings, rlsDdl } from "./rls.js";
 export { compileRead } from "./read-filter.js";
 export type {
   TxReceipt,

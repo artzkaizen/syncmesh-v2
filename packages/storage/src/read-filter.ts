@@ -28,7 +28,7 @@ export interface CompileOptions {
 }
 
 /** The scalar kind a column's values have in a rule's eyes; a json or blob column is no identity, so nothing matches it. */
-const kindOf = (kind: ColumnKind): ScalarKind | undefined => {
+export const columnScalarKind = (kind: ColumnKind): ScalarKind | undefined => {
   switch (kind) {
     case "text":
     case "uuid":
@@ -47,7 +47,7 @@ const kindOf = (kind: ColumnKind): ScalarKind | undefined => {
 /** Whether `evaluate`'s strict `===` between the column's cell and `value` could ever hold — the same kind, or both null. */
 const comparable = (kind: ColumnKind, value: JsonValue | CellValue | undefined): boolean => {
   const scalar = scalarKindOf(value);
-  return scalar !== undefined && (scalar === "null" || scalar === kindOf(kind));
+  return scalar !== undefined && (scalar === "null" || scalar === columnScalarKind(kind));
 };
 
 /** One compiler per node, mirroring `evaluate`'s handler table, so the two cannot drift apart silently. */

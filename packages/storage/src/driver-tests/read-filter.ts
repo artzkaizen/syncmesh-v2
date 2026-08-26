@@ -27,18 +27,18 @@ import { installCapture } from "../capture.js";
 import { compileRead } from "../read-filter.js";
 import { JOBS } from "./fixtures.js";
 
-const LADDER = ["owner", "dispatcher", "tech", "viewer"];
+export const LADDER = ["owner", "dispatcher", "tech", "viewer"];
 const col = JOBS.columnNames;
 
 /** Rows as the app inserted them; `title` doubles as the owner column, `rank` as a site id. */
-const ROWS = [
+export const ROWS = [
   { id: "a", title: "acct_one", rank: 1, done: false },
   { id: "b", title: "acct_one", rank: 2, done: true },
   { id: "c", title: "acct_two", rank: 3, done: false },
   { id: "d", title: "nobody", rank: 2, done: false },
 ] as const;
 
-const asCells = (row: (typeof ROWS)[number]): ReadonlyMap<ColumnName, CellValue> =>
+export const asCells = (row: (typeof ROWS)[number]): ReadonlyMap<ColumnName, CellValue> =>
   new Map<ColumnName, CellValue>([
     [col.id, row.id],
     [col.title, row.title],
@@ -46,7 +46,7 @@ const asCells = (row: (typeof ROWS)[number]): ReadonlyMap<ColumnName, CellValue>
     [col.done, row.done],
   ]);
 
-const PRINCIPALS: readonly (readonly [string, Principal])[] = [
+export const PRINCIPALS: readonly (readonly [string, Principal])[] = [
   ["dispatcher", { account: "acct_d", role: "dispatcher", claims: {} }],
   ["one, a tech", { account: "acct_one", role: "tech", claims: { sites: [2, 3], tier: "gold" } }],
   [
@@ -56,7 +56,7 @@ const PRINCIPALS: readonly (readonly [string, Principal])[] = [
   ["no role", { account: "acct_x", claims: { tier: "acct_one" } }],
 ];
 
-const RULES: readonly (readonly [string, AllowBlock])[] = [
+export const RULES: readonly (readonly [string, AllowBlock])[] = [
   ["deny all", { $default: deny }],
   ["allow all", { $default: allow }],
   ["a role", { $default: deny, read: role("tech") }],

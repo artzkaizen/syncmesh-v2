@@ -6,6 +6,9 @@ import { captureCases, captureRuleCases } from "./capture.js";
 import { compactionCases, sqliteMigrationCases } from "./compaction.js";
 import { eventCases } from "./events.js";
 import { readFilterCases } from "./read-filter.js";
+
+export { LADDER, PRINCIPALS, ROWS, RULES, asCells } from "./read-filter.js";
+export { COUNTERS, JOBS } from "./fixtures.js";
 import { stateCases } from "./state.js";
 import { tablesCases } from "./tables.js";
 
