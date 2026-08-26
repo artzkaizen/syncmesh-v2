@@ -49,8 +49,11 @@ export interface WriterDeps {
   readonly schema?: ValidatorSchema;
 }
 
+/** The event's procedure label: given, or derived from what the transaction turned out to change. */
+export type WriteLabel = string | ((changes: readonly Change[]) => string);
+
 export type Write = (
-  label: string,
+  label: WriteLabel,
   fn: () => Promise<void>,
   options?: WriteOptions,
 ) => Promise<Result<TxReceipt, WriteError>>;
@@ -108,13 +111,14 @@ export function createWriter(deps: WriterDeps): Write {
       if (options.partition !== undefined)
         Object.assign(captureOptions, { partition: options.partition });
       const changes = yield* Result.await(captureChanges(driver, tables, fn, captureOptions));
+      const name = label instanceof Function ? label(changes) : label;
       if (changes.length === 0) {
         return Result.err(
-          new EmptyMutation({ procedure: procedure(label), message: `${label} changed nothing` }),
+          new EmptyMutation({ procedure: procedure(name), message: `${name} changed nothing` }),
         );
       }
       const event = yield* Result.await(
-        engine.mutate(procedure(label), (tx) => replay(tx, changes), mutateOptions),
+        engine.mutate(procedure(name), (tx) => replay(tx, changes), mutateOptions),
       );
       return Result.ok({ eventId: event.id });
     });

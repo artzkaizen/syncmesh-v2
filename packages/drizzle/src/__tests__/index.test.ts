@@ -49,9 +49,17 @@ const device = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 90 + i))
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const ACME = parsePartitionKey("org:acme").unwrap();
 
-const tag = <E extends { _tag: string }>(r: { isErr: () => boolean; error?: E }) =>
-  // SAFETY: test helper; error is present exactly when isErr()
-  r.isErr() ? (r as { error: E }).error._tag : "ok";
+/** Drizzle wraps a proxy failure as DrizzleQueryError; the mesh's tagged error rides on `cause`. */
+const causeTag = (thrown: Error | string): string => {
+  let current: unknown = thrown;
+  while (current instanceof Error) {
+    // SAFETY: reading an optional discriminant off an Error; absent on plain errors, the walk continues
+    const tagged = current as Error & { readonly _tag?: string };
+    if (tagged._tag !== undefined) return tagged._tag;
+    current = current.cause;
+  }
+  return String(thrown);
+};
 
 /** An authority-shaped process: ungranted validator (schema only), tables on one SQLite connection. */
 const open = async (as?: Principal) => {
@@ -98,29 +106,53 @@ describe("Drizzle over a mesh", () => {
     expect((await driver.all(`SELECT COUNT(*) FROM jobs`))[0]?.[0]).toBe(0);
   });
 
-  test("write(): several statements, one labelled event, the value returned", async () => {
-    const { write, stores } = await open();
-    const out = (
-      await write("jobs.seed", async (tx) => {
-        await tx.insert(jobs).values({ id: "j1", title: "one", status: "open", rank: 1 });
-        await tx.insert(jobs).values({ id: "j2", title: "two", status: "open", rank: 2 });
-        await tx.update(jobs).set({ rank: 3 }).where(eq(jobs.id, "j1"));
-        return (await tx.select().from(jobs)).length;
-      })
-    ).unwrap();
-    expect(out.value).toBe(2);
+  test("db.transaction(): several statements, one event, the value returned; read-only is no event", async () => {
+    const { db, stores } = await open();
+    const count = await db.transaction(async (tx) => {
+      await tx.insert(jobs).values({ id: "j1", title: "one", status: "open", rank: 1 });
+      await tx.insert(jobs).values({ id: "j2", title: "two", status: "open", rank: 2 });
+      await tx.update(jobs).set({ rank: 3 }).where(eq(jobs.id, "j1"));
+      return (await tx.select().from(jobs)).length;
+    });
+    expect(count).toBe(2);
     const events = (await stores.events.all()).unwrap().map((e) => e.event);
     expect(events).toHaveLength(1);
-    expect(String(events[0]?.procedure)).toBe("jobs.seed");
+    expect(String(events[0]?.procedure)).toBe("jobs.insert");
     expect(events[0]?.changes.map((c) => `${c.kind}:${String(c.key)}`)).toEqual([
       "insert:j1",
       "insert:j2",
     ]);
-    expect(String(events[0]?.id)).toBe(out.eventId);
-    // j1's insert carries the final rank, since the two statements are one change
     const j1 = events[0]?.changes[0];
     // SAFETY: test fixture — the column name the statement set; names are brands over these strings
     expect(j1?.kind === "insert" && j1.row.get("rank" as never)).toBe(3);
+
+    const titles = await db.transaction((tx) => tx.select({ id: jobs.id }).from(jobs));
+    expect(titles).toHaveLength(2);
+    expect((await stores.events.all()).unwrap()).toHaveLength(1); // read-only: no event
+
+    await db.transaction(async (tx) => {
+      await tx.update(jobs).set({ status: "done" }).where(eq(jobs.id, "j1"));
+      await tx.delete(jobs).where(eq(jobs.id, "j2"));
+    });
+    expect(String((await stores.events.all()).unwrap().at(-1)?.event.procedure)).toBe(
+      "jobs.update+jobs.delete",
+    );
+  });
+
+  test("db.transaction(): a thrown callback rolls everything back — no rows, no event", async () => {
+    const { db, stores, driver } = await open();
+    const failed = await db
+      .transaction(async (tx) => {
+        await tx.insert(jobs).values({ id: "j1", title: "one", status: "open", rank: 1 });
+        throw new Error("changed my mind");
+      })
+      .then(
+        () => "resolved",
+        (cause: unknown) => String(cause),
+      );
+    expect(failed).toContain("changed my mind");
+    expect((await driver.all(`SELECT COUNT(*) FROM jobs`))[0]?.[0]).toBe(0);
+    expect((await stores.events.all()).unwrap()).toHaveLength(0);
   });
 
   test("read(): the source a principal sees — dispatchers all, a tech their own, a viewer nothing", async () => {
@@ -151,9 +183,7 @@ describe("Drizzle over a mesh", () => {
     await seeded.db
       .insert(jobs)
       .values({ id: "j1", title: "one", status: "open", rank: 1, assignee: "tech7" });
-    const asTech = await open(tech7);
-    // same connection semantics on a fresh process is not the point; act as tech7 over the seeded tables
-    const { write } = meshDrizzle({
+    const asTech = meshDrizzle({
       engine: seeded.engine,
       validate: createValidator({ schema, grantFor: null }),
       driver: seeded.driver,
@@ -161,13 +191,15 @@ describe("Drizzle over a mesh", () => {
       partition: ACME,
       as: tech7,
     });
-    const denied = await write("jobs.rename", (tx) =>
-      tx.update(jobs).set({ title: "mine" }).where(eq(jobs.id, "j1")),
-    );
-    expect(tag(denied)).toBe("PolicyDenied");
+    const denied = await asTech.db
+      .transaction((tx) => tx.update(jobs).set({ title: "mine" }).where(eq(jobs.id, "j1")))
+      .then(
+        () => "resolved",
+        (cause: unknown) => causeTag(cause instanceof Error ? cause : String(cause)),
+      );
+    expect(denied).toBe("PolicyDenied");
     expect((await seeded.driver.all(`SELECT title FROM jobs`))[0]?.[0]).toBe("one");
     expect((await seeded.stores.events.all()).unwrap()).toHaveLength(1);
-    void asTech;
   });
 
   test("live(): re-runs after a fold touched its table, notifies once per batch, only on change", async () => {

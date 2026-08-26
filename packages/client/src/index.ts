@@ -35,6 +35,7 @@ export type { RunningTransports } from "./transports.js";
 export { runTransports } from "./transports.js";
 export type {
   Write as SqlWrite,
+  WriteLabel,
   WriteError as SqlWriteError,
   WriteOptions as SqlWriteOptions,
   WriterDeps,

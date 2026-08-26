@@ -1,12 +1,12 @@
 import type { Principal, Validator, ValidatorSchema } from "@syncmesh/engine";
 import type { Engine } from "@syncmesh/engine";
-import type { PartitionKey } from "@syncmesh/kernel";
+import type { Change, PartitionKey } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
 import type { SqlValue, SqliteDriver } from "@syncmesh/storage";
 import type { SQLChunk, SQLWrapper, Table as DrizzleTable } from "drizzle-orm";
 import type { SqliteRemoteDatabase } from "drizzle-orm/sqlite-proxy";
 
-import { createWriter, type SqlWriteError } from "@syncmesh/client";
+import { createWriter, type SqlWriteError, type TxReceipt } from "@syncmesh/client";
 import { compileRead, type Compiled } from "@syncmesh/storage";
 import { Column, SQL, Subquery, Table, getTableName, is, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/sqlite-proxy";
@@ -35,11 +35,6 @@ export interface MeshDrizzleOptions {
   readonly as?: Principal;
 }
 
-export interface Written<T> {
-  readonly eventId: string;
-  readonly value: T;
-}
-
 export interface Live<T> {
   /** The rows as of the last run; `undefined` until `ready` resolves. */
   readonly data: () => readonly T[] | undefined;
@@ -62,18 +57,16 @@ const bind = (params: readonly unknown[]): readonly SqlValue[] =>
     return p as SqlValue;
   });
 
-/** `INSERT INTO "jobs"` / `UPDATE "jobs"` / `DELETE FROM "jobs"` → `jobs.insert`; anything else is a plain `sql.write`. */
-const labelOf = (statement: string): string => {
-  const match =
-    /^\s*(insert|update|delete)\s+(?:into\s+|from\s+)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/i.exec(
-      statement,
-    );
-  return match === null
-    ? "sql.write"
-    : `${match[2] ?? "sql"}.${(match[1] ?? "write").toLowerCase()}`;
-};
-
 const isWrite = (statement: string): boolean => /^\s*(insert|update|delete)\b/i.test(statement);
+
+/** The label an event carries when nobody named it: what the transaction turned out to do. */
+const derivedLabel = (changes: readonly Change[]): string =>
+  changes.length === 0
+    ? "sql.write"
+    : [...new Set(changes.map((c) => `${String(c.table)}.${c.kind}`))].join("+");
+
+/** Carries Drizzle's `rollback` out through the capture without it becoming an app error. */
+class TxRollback extends Error {}
 
 /** A compiled predicate as a Drizzle fragment: raw text between the `?`s, each param bound. */
 const fragment = ({ sql: text, params }: Compiled): SQL => {
@@ -109,7 +102,61 @@ export function meshDrizzle(options: MeshDrizzleOptions) {
   if (actor !== undefined) Object.assign(writerDeps, { actor });
   const writer = createWriter(writerDeps);
   const writeOptions = partition === undefined ? {} : { partition };
-  let inWrite = false;
+
+  /** Drizzle's own `db.transaction()` drives this: `begin` opens a capture, `commit` settles it. */
+  interface OpenTx {
+    readonly done: () => void;
+    readonly fail: (cause: unknown) => void;
+    readonly settled: Promise<Result<TxReceipt, SqlWriteError>>;
+  }
+  let openTx: OpenTx | undefined;
+  let txTail: Promise<unknown> = Promise.resolve();
+
+  const begin = async (): Promise<void> => {
+    await txTail; // one app transaction at a time on this handle
+    let began!: () => void;
+    let done!: () => void;
+    let fail!: (cause: unknown) => void;
+    const started = new Promise<void>((resolve) => {
+      began = resolve;
+    });
+    const gate = new Promise<void>((resolve, reject) => {
+      done = resolve;
+      fail = reject;
+    });
+    const settled = writer(
+      derivedLabel,
+      () => {
+        began(); // the capture transaction is now open; statements may flow
+        return gate;
+      },
+      writeOptions,
+    );
+    txTail = settled.then(
+      () => undefined,
+      () => undefined,
+    );
+    openTx = { done, fail, settled };
+    await started;
+  };
+
+  const commit = async (): Promise<void> => {
+    const tx = openTx;
+    if (tx === undefined) return;
+    openTx = undefined;
+    tx.done();
+    const written = await tx.settled;
+    // a read-only transaction is fine — it just is not an event
+    if (written.isErr() && written.error._tag !== "EmptyMutation") throw written.error;
+  };
+
+  const rollback = async (): Promise<void> => {
+    const tx = openTx;
+    if (tx === undefined) return;
+    openTx = undefined;
+    tx.fail(new TxRollback());
+    await tx.settled; // the capture rolled back; Drizzle rethrows the app's own error
+  };
 
   const execute = async (statement: string, params: readonly SqlValue[], method: string) => {
     if (method === "run") {
@@ -121,18 +168,23 @@ export function meshDrizzle(options: MeshDrizzleOptions) {
   };
 
   const db: MeshDb = drizzle(async (statement, params, method) => {
+    const control = statement.trim().toLowerCase();
+    if (control.startsWith("begin")) return begin().then(() => ({ rows: [] }));
+    if (control === "commit") return commit().then(() => ({ rows: [] }));
+    if (control === "rollback") return rollback().then(() => ({ rows: [] }));
     const bound = bind(params);
-    if (inWrite || !isWrite(statement)) return execute(statement, bound, method);
+    if (openTx !== undefined || !isWrite(statement)) return execute(statement, bound, method);
     // a statement on its own is its own transaction, hence its own event
     let result: Awaited<ReturnType<typeof execute>> = { rows: [] };
     const written = await writer(
-      labelOf(statement),
+      derivedLabel,
       async () => {
         result = await execute(statement, bound, method);
       },
       writeOptions,
     );
-    if (written.isErr()) throw written.error;
+    // a statement that changed nothing is not an event, and not an error either
+    if (written.isErr() && written.error._tag !== "EmptyMutation") throw written.error;
     return result;
   });
 
@@ -155,27 +207,6 @@ export function meshDrizzle(options: MeshDrizzleOptions) {
             sql` AND `,
           );
     return db.select().from(table).where(where).as(name);
-  };
-
-  const write = async <T>(
-    label: string,
-    fn: (tx: MeshDb) => Promise<T>,
-  ): Promise<Result<Written<T>, SqlWriteError>> => {
-    let value: T | undefined;
-    const receipt = await writer(
-      label,
-      async () => {
-        inWrite = true;
-        try {
-          value = await fn(db);
-        } finally {
-          inWrite = false;
-        }
-      },
-      writeOptions,
-    );
-    // SAFETY: fn ran to completion inside the capture when the receipt is Ok, so value was assigned
-    return receipt.map((r) => ({ eventId: String(r.eventId), value: value as T }));
   };
 
   const live = <T>(query: Runnable<T>): Live<T> => {
@@ -212,5 +243,5 @@ export function meshDrizzle(options: MeshDrizzleOptions) {
     };
   };
 
-  return { db, read, write, live };
+  return { db, read, live };
 }

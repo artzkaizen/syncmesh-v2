@@ -207,8 +207,53 @@ Errors: `NoActivePartition, UnknownPartitionKind, NoSuchRow, NoDefaultStore, Cro
 
 **Gaps** (per D17 open, E24, RFC-0011): telemetry union has 2 variants and no consumer; mesh/relay don't re-emit; no inspector exists in this repo (the old repo's fed on a JSONL line format from the legacy engine); transport frames/sessions/holdback and validator "why" (policy verdict is a bare boolean) have no taps; storage has no telemetry (bench measures externally).
 
-## 12 · adapters, tooling, conformance, bench, plan
+## 12 · adapters
 
-_(filled in from the last reader — see sections A–I below)_
+Mirror images, both `adapter("node")` presets:
+- **sqlite-bun**: `bunSqliteDriver(path)` over `bun:sqlite` (`strict: true`, WAL + `synchronous = NORMAL`); `defaultStore({name, dir, tables?})` → `openStores` on `<dir>/<name>.db` (one file holds log + state). `engines.bun` only → verify-node-consumer installs but never imports it under Node.
+- **sqlite-node**: `nodeSqliteDriver(path)` over `node:sqlite` (`Object.values(row)` recovers positional rows); same `defaultStore`. `engines.node >= 22.13` → imported and smoke-tested under real Node.
+- Tests: both run the shipped `driverTests` suite; sqlite-bun additionally tests the durable default-store round trip (sqlite-node's durable path is covered by verify-node-consumer instead).
 
-<!-- PENDING: reader A–I output -->
+## 13 · storage details (state store, projection, read filter, driver suite)
+
+- **`sqlite-state-store.ts`**: sidecar `state_rows` (CBOR `RowRecord` per (tbl, key)) + `state_cursors` (peer, local 0/1, seq). `commit(rows, coverage)` upserts rows, both cursor scopes, **and** the projection in one transaction. `clear` wipes all three.
+- **`record-codec.ts`**: `RowRecord` as canonical CBOR quadruple `[cells, writeStamp|null, deleteStamp|null, partition|null]`; cell = `[name, value, stamp]`, stamp = `[ms, logical, peerBytes(32)]`. Decode validates every level → `MalformedRecord` values, absent optionals stay absent.
+- **`projection.ts`**: `sqlValueOf(kind, cell)` is the one encoder shared with `compileRead` (so compiled WHEREs compare against exactly what the fold wrote); `tablesProjection` upserts visible records into the app tables (`ON CONFLICT(pk) DO UPDATE`, `_partition` appended), deletes tombstones; **stamps never reach app tables**. Fold writes run with the capture guard at rest — never re-captured.
+- **`read-filter.ts`**: `compileRead(table, ladder, allow, principal)` → `{sql, params}`. Handler table is total over `PolicyNode["kind"]` mirroring `evaluate` so they can't drift: role→precomputed 1/0, owner/claimEquals→`"col" = ?` (or `IS NULL`), claimHas→`IN (…)`, rowIs→ANDed equals, patchOnly→1, unknown column / incomparable kind → `0`. Oracle-tested: compiled WHERE admits exactly the rows `evaluate()` admits (4 rows × 4 principals × 11 rules).
+- **`identifiers.ts`**: the injection boundary — identifiers only as parsed brands, `quote`/`literal`/`sqlType`; no caller value ever interpolated.
+- **`driver-tests/`** (subpath export `./driver-tests`): `driverTests(openDriver)` → 30 `SuiteCase`s across events (7), state (6), compaction (4), capture (3+4 incl. net-effect-per-row, partition stamping, rollback), tables/projection (4, incl. "two writers one order"), read-filter oracle (2). Fixture tables `JOBS` (every column kind once) and `COUNTERS`.
+
+## 14 · transport details (frames, shipped suite)
+
+- **`frame.ts`** — wire tags double as traffic class: `grant 0, grantRequest 1, cursors 2, event 3`. CBOR arrays; peer ids as 32 raw bytes; grant/event payloads opaque signed bytes forwarded verbatim. **Unknown tag decodes to `{kind:"unknown"}` as an Ok** — the forward-compat rule. `MalformedFrame` values, never throws.
+- **`transport-tests/`** (subpath `./transport-tests`): `transportTests(connect)` — `connect` wires peers **in a chain** (ends never meet, relaying forced). 4 cases: 3-peer convergence grants-first zero quarantines; live write reaches the far end; relayed events keep the author's sig end to end; gap rule + resync (skipped unless the network exposes `chaos`).
+
+## 15 · conformance, bench
+
+- **conformance/**: frozen `wire-vectors.json` + `grant-vectors.json` at the package root. `checkVector(codec, v)`: decode → re-encode must reproduce `coreHex` **byte-for-byte**, sig must verify against the vectors' peerId — that three-line check *is* the definition of a SyncMesh implementation. Grant vectors regenerable from fixed seeds (`generate-grant-vectors.ts`, run only on a deliberate wire change); a test pins generator output byte-identical to the frozen file. `fuzz.test.ts`: 500 garbage frames + 300 bit-flips — the wire cannot throw, poison dedup, or touch state.
+- **bench/**: one benchmark (`bun run bench` → mitata over `bunSqliteDriver` on disk): append 1k events per-call 35.0ms vs batched 12.9ms (2.7×); boot 20k events / 5k live rows: refold 469ms vs persisted-state open 79ms (5.9×). README corrects RFC-0004's 450–650× claim (that was default-journal fsync; WAL+NORMAL leaves statement overhead). "The boot gap is the one that matters: refold is O(events) for the life of the app, open is O(live rows)."
+
+## 16 · tooling, lint, CI, editor
+
+- **config/vite.ts**: `library()` (`platform: neutral`) and `adapter("node"|"browser")`; optional `entries` for subpath exports. Pack: esm, dts, `neverBundle [/^(bun|node|cloudflare):/]`. Three tasks per package — `build` (vp pack), `typecheck` (tsc), `test` (bun test) — each `dependsOn` dependencies' **builds**; editing resolves via the `@syncmesh/source` condition.
+- **verify-node-consumer**: packs every non-private package, npm-installs the tarballs into a scratch project, `import`s each in a fresh `node -e` process (bun-only packages installed, not imported), plus a `createMesh` durable smoke test under real Node (default store → sqlite-node).
+- **create-package**: bingo template — standard package.json/exports/tsconfig/`export default library()` + a `test.todo("first test — a task is done when its test exists and passes")`.
+- **tools/oxlint/anti-slop**: 15 local rules at error (incl. `require-safety-comment-for-type-assertion` — why every `as` carries `// SAFETY:`); an Effect variant exists but isn't enabled; mirrored under `.agents/skills/install-anti-slop/assets`.
+- **CI** (`.github/workflows/ci.yml`): one 10-min ubuntu job — bun from package.json + Node 24, `bun install --frozen-lockfile`, `bun run ci` (= vp check → build → typecheck → test → verify-node-consumer).
+- **.zed/settings.json**: TS LSP pinned to 7.0.2, `vp fmt` as external formatter, `typescript-ls` forced.
+- **Skills** (`.agents/skills`, symlinked from `.claude/skills`): commit-messages, declare-once, doc-comments, infer-dont-annotate, install-anti-slop.
+
+## 17 · plan status
+
+**Epics: 128/240 tasks across 27 epics.** Phases 0–2 essentially closed (E01 kernel 7/7, E02 engine 13/13, E03 wire 9/9, E05 schema 8/8, E07 grants 5/5). Live frontier: E04 storage 12/15 · E06 policy 8/10 · E08 partitions 5/8 · E09 client 11/13 · E10 react 3/8 · E11 transport 13/15 · E17 drizzle/rows 4/10. **E12 (relay) is the hinge: 0/14, and E13–E16, E18, E19, E24, E25 all sit at 0 behind it.** E24 (hardening + observability, 0/7) owns the inspector task.
+
+**Decisions: 14 decided, 6 open** — D09 relay topology, D13 schema evolution, D14 handshake versioning, D16 presence, **D17 observability (the devtools decision — leaning A: one discriminated-union `onEvent` seam on engine/mesh/relay)**, D18 blobs. Every open decision sits on an unstarted epic.
+
+**Flows**: `grant-onboarding.md` — offline onboarding, a grant is ~100 signed bytes any peer can carry; adversarial table (courier can only delay/drop); 5 open questions on account authentication/renewal. `roles-and-api.md` — client/issuer/authority roles; surfaced the global-writes-by-authorship bug (since fixed in `8a13693`). `use-cases.md` — 4 apps (notes → dental → compliance → sleep clinic) as the acceptance target for E05–E09; the thesis: the per-write tenant id is the bug, the store *being* the tenant removes it.
+
+## 18 · Where dev tools would plug in (observations, not a plan)
+
+1. **D17 is open and E24 owns the inspector task** — the plan's own path is: decide D17 (option A, one discriminated-union seam re-emitted by engine/mesh/relay), then an inspector that consumes it. RFC-0011 describes the old repo's inspector: standalone by construction, imports zero `@syncmesh/*` packages, contract = a JSONL telemetry line format.
+2. The seams that already exist (§11) cover most of "tables, transactions, events": `onOutbound`/`onFoldBatch`/`onQuarantine`/`onError`/`onAcknowledge`/`onTelemetry` + poll surfaces (`state()`, `coverage()`, `acks()`, `openQueries()`) + the SQLite tables themselves (`events`, `state_rows`, `state_cursors`, `compaction`, `_syncmesh_changes`, app tables).
+3. What has no tap today: transport session/frame level (bridge holdback, resync, frames sent/dropped), policy "why" (verdict is a bare boolean), storage timings, mesh-level re-emission (each subsystem's hubs are separate — nothing aggregates them), grants activity beyond `onRegistered`.
+4. House precedent for a dev tool: `plan/tool/serve.ts` — a single-file Bun server, zero deps, reads the source of truth and serves one HTML page. `plan/` and tooling dirs are exempt from the strict lint caps.
