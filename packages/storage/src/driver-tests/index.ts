@@ -5,6 +5,7 @@ import type { SqliteDriver } from "../driver.js";
 import { captureCases, captureRuleCases } from "./capture.js";
 import { compactionCases } from "./compaction.js";
 import { eventCases } from "./events.js";
+import { readFilterCases } from "./read-filter.js";
 import { stateCases } from "./state.js";
 import { tablesCases } from "./tables.js";
 
@@ -28,6 +29,7 @@ export function driverTests(openDriver: OpenDriver): readonly SuiteCase[] {
     ...captureCases(openDriver),
     ...captureRuleCases(openDriver),
     ...tablesCases(openDriver),
+    ...readFilterCases(openDriver),
   ];
 }
 

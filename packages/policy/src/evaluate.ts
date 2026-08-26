@@ -32,19 +32,19 @@ const handlers: Handlers = {
   role: (node, ctx) => roleAtLeast(ctx.roles, ctx.grant.role, node.role),
   owner: (node, ctx) => cell(ctx, node.column) === ctx.grant.account,
   claimHas: (node, ctx) => {
-    const list = claim(ctx.grant.claims, node.claim);
+    const list = claimAt(ctx.grant.claims, node.claim);
     const value = cell(ctx, node.column);
     return (
       Array.isArray(list) && value !== undefined && list.some((item) => sameScalar(item, value))
     );
   },
   claimIncludes: (node, ctx) => {
-    const list = claim(ctx.grant.claims, node.claim);
+    const list = claimAt(ctx.grant.claims, node.claim);
     return Array.isArray(list) && list.some((item) => sameScalar(item, node.value));
   },
   claimEquals: (node, ctx) => {
     const value = cell(ctx, node.column);
-    return value !== undefined && sameScalar(claim(ctx.grant.claims, node.claim), value);
+    return value !== undefined && sameScalar(claimAt(ctx.grant.claims, node.claim), value);
   },
   rowIs: (node, ctx) =>
     Object.entries(node.where).every(([column, expected]) =>
@@ -89,7 +89,11 @@ export function roleAtLeast(
   return mine !== -1 && needed !== -1 && mine <= needed;
 }
 
-function claim(claims: Readonly<Record<string, JsonValue>>, path: string): JsonValue | undefined {
+/** The value under a dotted path in a grant's claims; `undefined` when the path leaves the object. */
+export function claimAt(
+  claims: Readonly<Record<string, JsonValue>>,
+  path: string,
+): JsonValue | undefined {
   let current: JsonValue | undefined = claims;
   for (const key of path.split(".")) {
     if (current === null || current === undefined || Array.isArray(current) || !isObject(current))
@@ -103,8 +107,18 @@ function claim(claims: Readonly<Record<string, JsonValue>>, path: string): JsonV
 const isObject = (v: JsonValue): v is { readonly [key: string]: JsonValue } =>
   typeof v === "object" && v !== null;
 
+export type ScalarKind = "string" | "number" | "boolean" | "null";
+
+/** The kind of a scalar a rule can compare, or `undefined` for bytes, arrays and objects — never identities. */
+export const scalarKindOf = (v: JsonValue | CellValue | undefined): ScalarKind | undefined => {
+  if (v === null) return "null";
+  if (typeof v === "string") return "string";
+  if (typeof v === "number") return "number";
+  if (typeof v === "boolean") return "boolean";
+  return undefined;
+};
+
 /** Scalars compare by value; bytes, arrays and objects never match a rule (they are not identities). */
 const sameScalar = (a: JsonValue | CellValue | undefined, b: CellValue): boolean =>
-  (typeof a === "string" || typeof a === "number" || typeof a === "boolean" || a === null) &&
-  a === b;
+  scalarKindOf(a) !== undefined && a === b;
 /* oxlint-enable anti-slop/no-runtime-typeof */

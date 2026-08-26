@@ -9,7 +9,8 @@ import type { SqlValue, SqliteDriver } from "./driver.js";
 import { columnsOf, quote } from "./identifiers.js";
 
 /** A cell in the form the column's SQL type holds it. */
-const sqlValueOf = (kind: ColumnKind, cell: CellValue): SqlValue => {
+/** A cell in the form the column's SQL type holds it — what the fold writes and what a compiled rule compares against. */
+export const sqlValueOf = (kind: ColumnKind, cell: CellValue): SqlValue => {
   if (cell === null) return null;
   if (cell instanceof Uint8Array) return cell;
   switch (kind) {

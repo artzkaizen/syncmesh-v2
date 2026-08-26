@@ -15,6 +15,7 @@ export {
   rowIs,
 } from "./ast.js";
 export type { PolicyContext, PolicyGrant } from "./evaluate.js";
-export { evaluate, roleAtLeast } from "./evaluate.js";
+export type { ScalarKind } from "./evaluate.js";
+export { claimAt, evaluate, roleAtLeast, scalarKindOf } from "./evaluate.js";
 export type { PolicyDoc } from "./doc.js";
 export { MalformedPolicy, parsePolicyDoc } from "./doc.js";

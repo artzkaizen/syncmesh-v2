@@ -8,3 +8,5 @@ export type { CaptureOptions } from "./capture.js";
 export { captureChanges, captureDdl, installCapture, tableDdl } from "./capture.js";
 export type { Projection } from "./projection.js";
 export { tablesProjection } from "./projection.js";
+export type { Compiled } from "./read-filter.js";
+export { compileRead } from "./read-filter.js";
