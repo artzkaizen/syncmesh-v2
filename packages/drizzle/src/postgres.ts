@@ -65,7 +65,7 @@ export function postgresFace(deps: FaceDeps) {
     const source = table as PgTable;
     const aliased = db.select().from(source).where(readPredicate(name, scope)).as(name);
     // SAFETY: the alias wraps exactly the table's columns — what `.as()` would have typed had `from` taken T
-    return aliased as unknown as Source<T>;
+    return aliased as Source<T>;
   };
   return { db, read, live: createLive(engine) };
 }
