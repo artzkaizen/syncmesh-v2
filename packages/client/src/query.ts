@@ -32,6 +32,8 @@ export interface ListOptions<T extends Table> {
 export interface QueryDescriptor<T extends Table> {
   readonly table: T;
   readonly options: ListOptions<T>;
+  /** The pinned instances it was made under (`mesh.scoped`); absent for the ambient view. */
+  readonly scope?: string;
 }
 
 interface SpecDraft<T extends Table> {
@@ -108,10 +110,15 @@ export function matches<T extends Table>(where: Where<T> | undefined, row: Row<T
 }
 
 /** A structural key for sharing; `undefined` when the spec cannot be shared (a predicate filter). */
-export function specKey<T extends Table>(table: T, spec: QuerySpec<T>): string | undefined {
+export function specKey<T extends Table>(
+  table: T,
+  spec: QuerySpec<T>,
+  scope?: string,
+): string | undefined {
   if (spec.where instanceof Function) return undefined;
   return JSON.stringify([
     String(table.name),
+    scope ?? null,
     spec.where === undefined
       ? null
       : Object.entries(spec.where)

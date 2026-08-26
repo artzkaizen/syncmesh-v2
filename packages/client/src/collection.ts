@@ -66,6 +66,8 @@ export interface CollectionDeps {
   readonly log: () => Promise<Result<readonly StoredEvent[], StoreFailure>>;
   readonly merge: MergeSpec;
   readonly accountOf: (peer: PeerId) => string | undefined;
+  /** Set for a `mesh.scoped` view: rides on every descriptor `query` makes, so results never share across scopes. */
+  readonly scope?: string;
 }
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- keys are opaque strings in the kernel; procedures are `table.op` labels (E09) */
@@ -86,7 +88,7 @@ export function createCollection<T extends Table>(
   table: T,
   deps: CollectionDeps,
 ): Collection<T> & { readonly writes: Writes<T>; readonly visible: Visible } {
-  const { engine, placement, can, log, merge, accountOf } = deps;
+  const { engine, placement, can, log, merge, accountOf, scope } = deps;
   const name = table.name;
   const keyOf = (key: KeyOf<T>) => rowKey(String(key));
 
@@ -187,7 +189,10 @@ export function createCollection<T extends Table>(
       return options?.limit === undefined ? rows : rows.slice(0, options.limit);
     },
     can: (op, row) => can(`${name}.${op}`, row === undefined ? undefined : toWireRow(table, row)),
-    query: (options) => ({ table, options: options ?? {} }),
+    query: (options) =>
+      scope === undefined
+        ? { table, options: options ?? {} }
+        : { table, options: options ?? {}, scope },
     history: (key) =>
       Result.gen(async function* () {
         const where = yield* placement();

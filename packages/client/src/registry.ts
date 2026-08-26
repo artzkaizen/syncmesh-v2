@@ -37,6 +37,7 @@ export interface QueryRegistry {
     table: T,
     spec: QuerySpec<T>,
     visible: Visible,
+    scope?: string,
   ) => QueryHandle<T>;
   /** Re-points every query (an `activate` changed what is visible) and notifies the ones that moved. */
   readonly rescanAll: () => void;
@@ -65,8 +66,8 @@ export function createQueryRegistry(engine: Engine): QueryRegistry {
   };
 
   return {
-    acquire: <T extends Table>(table: T, spec: QuerySpec<T>, visible: Visible) => {
-      const key = specKey(table, spec);
+    acquire: <T extends Table>(table: T, spec: QuerySpec<T>, visible: Visible, scope?: string) => {
+      const key = specKey(table, spec, scope);
       const existing = key === undefined ? undefined : shared.get(key);
       const held: Held = existing ?? {
         table: table.name,

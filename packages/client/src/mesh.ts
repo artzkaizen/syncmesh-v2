@@ -1,5 +1,5 @@
 import type { Engine, EventStore, StateStore } from "@syncmesh/engine";
-import type { EventId, PartitionKey, PeerId, Procedure, Row as WireCells } from "@syncmesh/kernel";
+import type { EventId, PartitionKey, PeerId, Row as WireCells } from "@syncmesh/kernel";
 import type { InvalidPartitionKey } from "@syncmesh/kernel";
 import type { ColumnsMap, PartitionTree, Roles, Schema, Table, TablesOf } from "@syncmesh/schema";
 import type { Transport, TransportContext } from "@syncmesh/transport";
@@ -12,24 +12,24 @@ import { Temporal } from "@syncmesh/temporal";
 import { createGrantRegistry } from "@syncmesh/wire";
 
 import type { Booted, MeshOpenError } from "./boot.js";
-import type { Collection, Write, Writes } from "./collection.js";
-import type { Placement, PlacementEntry } from "./context.js";
+import type { Collection } from "./collection.js";
+import type { PlacementEntry } from "./context.js";
 import type { DeliveredOptions } from "./delivered.js";
 import type { MeshRevertError, TxError, UnknownPartitionKind, WriteError } from "./errors.js";
-import type { Visible } from "./live-query.js";
 import type { QueryDescriptor } from "./query.js";
 import type { LiveHandle } from "./registry.js";
 import type { TxCollections } from "./tx.js";
+import type { TxOptions, TxReceipt, View } from "./views.js";
 
 import { openMeshEngine } from "./boot.js";
-import { createCollection } from "./collection.js";
 import { createContext } from "./context.js";
 import { createDelivered } from "./delivered.js";
-import { CrossPartitionTx } from "./errors.js";
+import { UnknownPartitionKind as UnknownKind } from "./errors.js";
 import { createMeshGrants, type MeshGrants, type MeshGrantsOptions } from "./grants.js";
 import { specOf } from "./query.js";
 import { createQueryRegistry } from "./registry.js";
 import { runTransports } from "./transports.js";
+import { createView } from "./views.js";
 
 export interface MeshOptions<P extends PartitionTree, RS extends Roles<P>, C extends ColumnsMap> {
   readonly schema: Schema<P, RS, C>;
@@ -58,10 +58,16 @@ export interface MeshOptions<P extends PartitionTree, RS extends Roles<P>, C ext
   readonly now?: () => Temporal.Instant;
 }
 
-/** One committed `tx`: the event it appended, for `delivered` and `revert`. */
-export interface TxReceipt {
-  readonly eventId: EventId;
-}
+/** Instances by kind — `{ org: "acme", shelf: "s1" }` — that a scoped view writes and reads under. */
+export type Pins = Readonly<Record<string, string>>;
+
+/**
+ * The collections and `tx` bound to pinned instances instead of the ambient ones: what a server
+ * handling many tenants at once uses, one per call, with `activate` never involved.
+ */
+export type Scoped<C extends ColumnsMap> = {
+  readonly [K in keyof C]: Collection<TablesOf<C>[K]>;
+} & { readonly tx: MeshBase<C>["tx"] };
 
 export interface MeshBase<C extends ColumnsMap> {
   readonly engine: Engine;
@@ -69,9 +75,12 @@ export interface MeshBase<C extends ColumnsMap> {
   /** Sets the active instance of its kind; every collection of that kind re-points. */
   readonly activate: (instance: string) => Result<void, InvalidPartitionKey | UnknownPartitionKind>;
   readonly active: (kind: string) => PartitionKey | undefined;
+  /** A view pinned to these instances; the same pins give the same view, so its live results share. */
+  readonly scoped: (pins: Pins) => Result<Scoped<C>, InvalidPartitionKey | UnknownPartitionKind>;
   /** One event, one partition; refused before anything is written when the tables disagree. */
   readonly tx: (
     fn: (collections: TxCollections<C>) => Result<void, WriteError>,
+    options?: TxOptions,
   ) => Promise<Result<TxReceipt, TxError>>;
   /**
    * Resolves once a peer is known — through a cursor exchange — to hold the event (or, with no
@@ -81,7 +90,7 @@ export interface MeshBase<C extends ColumnsMap> {
   readonly delivered: (options?: DeliveredOptions) => Promise<void>;
   /** `"table.op"` against the same rules every receiver enforces. */
   readonly can: (what: `${string}.${string}`, row?: WireCells) => boolean;
-  /** A maintained result for a `list` descriptor; identical descriptors share one. */
+  /** A maintained result for a `query` descriptor; identical descriptors share one. */
   readonly liveQuery: <T extends Table>(descriptor: QueryDescriptor<T>) => LiveHandle<T>;
   /** Drops the handle's hold on its maintained result; a handle not from `liveQuery` is a no-op. */
   readonly releaseQuery: <T extends Table>(handle: LiveHandle<T>) => void;
@@ -101,11 +110,6 @@ export interface MeshBase<C extends ColumnsMap> {
 
 export type Mesh<C extends ColumnsMap> = MeshBase<C> & {
   readonly [K in keyof C]: Collection<TablesOf<C>[K]>;
-};
-
-type AnyCollection = Collection<Table> & {
-  readonly writes: Writes<Table>;
-  readonly visible: Visible;
 };
 
 /**
@@ -147,7 +151,7 @@ interface Assembled {
   readonly booted: Booted;
 }
 
-/** Everything above the engine: collections, queries, tx, transports, the namespace check. */
+/** Everything above the engine: the ambient view, scoped views, queries, transports, the namespace check. */
 function assemble<P extends PartitionTree, RS extends Roles<P>, C extends ColumnsMap>(
   options: MeshOptions<P, RS, C>,
   deps: Assembled,
@@ -156,11 +160,8 @@ function assemble<P extends PartitionTree, RS extends Roles<P>, C extends Column
   const { grants, grantFor, now, booted } = deps;
   const engine = booted.engine;
   const queries = createQueryRegistry(engine);
-  const context = createContext({
-    kinds: schema.kinds.map(String),
-    peerId: identity.peerId,
-    grantFor,
-  });
+  const kinds = new Set(schema.kinds.map(String));
+  const context = createContext({ kinds: [...kinds], peerId: identity.peerId, grantFor });
 
   const can: MeshBase<C>["can"] = (what, row) =>
     canOn(schema, grantFor(identity.peerId), what, row);
@@ -168,31 +169,55 @@ function assemble<P extends PartitionTree, RS extends Roles<P>, C extends Column
   const entryOf = new Map<string, PlacementEntry>(
     schema.entries.map((e) => [String(e.table.name), e]),
   );
-  const placementOf = (name: string): Result<Placement, WriteError> => {
-    const entry = entryOf.get(name);
-    if (entry === undefined) return panic(`no schema entry for ${name}`);
-    return context.placementFor(entry);
+  const entry = (name: string): PlacementEntry =>
+    entryOf.get(name) ?? panic(`no schema entry for ${name}`);
+  const viewDeps = {
+    engine,
+    tables: schema.tables,
+    merge: schema.merge,
+    can,
+    log: booted.store.all,
+    accountOf: (peer: PeerId) => grantFor(peer)?.account,
   };
+  const ambient = createView({
+    ...viewDeps,
+    placementOf: (name) => context.placementFor(entry(name)),
+  });
 
-  const collections: Record<string, AnyCollection> = {};
-  for (const [name, table] of Object.entries(schema.tables)) {
-    collections[name] = createCollection(table, {
-      engine,
-      placement: () => placementOf(name),
-      can,
-      log: booted.store.all,
-      merge: schema.merge,
-      accountOf: (peer) => grantFor(peer)?.account,
+  const scopes = new Map<string, View>();
+  const scoped: MeshBase<C>["scoped"] = (pins) =>
+    Result.gen(function* () {
+      const pinned = Object.entries(pins).sort(([a], [b]) => (a < b ? -1 : 1));
+      const instances = new Map<string, PartitionKey>();
+      for (const [kind, id] of pinned) {
+        if (!kinds.has(kind))
+          return Result.err(
+            new UnknownKind({ kind, message: `the manifest declares no kind "${kind}"` }),
+          );
+        instances.set(kind, yield* parsePartitionKey(`${kind}:${id}`));
+      }
+      const scope = JSON.stringify(pinned);
+      const view =
+        scopes.get(scope) ??
+        createView({
+          ...viewDeps,
+          scope,
+          placementOf: (name) => context.placementIn(entry(name), instances),
+        });
+      scopes.set(scope, view);
+      // SAFETY: one Collection per key of C plus `tx`, the same keys the ambient view was checked against
+      return Result.ok({ ...view.collections, tx: view.tx } as Scoped<C>);
     });
-  }
 
   const releases = new WeakMap<object, () => void>();
-  const liveQuery = <T extends Table>({ table, options }: QueryDescriptor<T>): LiveHandle<T> => {
+  const liveQuery = <T extends Table>(descriptor: QueryDescriptor<T>): LiveHandle<T> => {
+    const { table, options: listOptions, scope } = descriptor;
+    const source = scope === undefined ? ambient : scopes.get(scope);
     const held =
-      collections[String(table.name)] ??
-      panic(`no collection for ${String(table.name)}; the descriptor came from another schema`);
-    const handle = queries.acquire(table, specOf(options), held.visible);
-    const limit = options.limit;
+      source?.collections[String(table.name)] ??
+      panic(`no collection for ${String(table.name)}; the descriptor came from another mesh`);
+    const handle = queries.acquire(table, specOf(listOptions), held.visible, scope);
+    const limit = listOptions.limit;
     const live: LiveHandle<T> = {
       data: () => (limit === undefined ? handle.rows() : handle.rows().slice(0, limit)),
       subscribe: handle.subscribe,
@@ -200,44 +225,6 @@ function assemble<P extends PartitionTree, RS extends Roles<P>, C extends Column
     releases.set(live, handle.release);
     return live;
   };
-
-  const tx: MeshBase<C>["tx"] = (fn) =>
-    Result.gen(async function* () {
-      const writes: (Write & { readonly table: string })[] = [];
-      const recording: Record<string, Writes<Table>> = {};
-      for (const [name, c] of Object.entries(collections))
-        recording[name] = tapWrites(c.writes, (write) => writes.push({ ...write, table: name }));
-      // SAFETY: one recorder per table of C, built over the same keys as the collections
-      yield* fn(recording as TxCollections<C>);
-      const placements: Placement[] = [];
-      for (const write of writes) placements.push(yield* placementOf(write.table));
-      const distinct = [
-        ...new Set(placements.map((p) => `${String(p.partition ?? "")}|${p.local === true}`)),
-      ];
-      if (distinct.length > 1) {
-        return Result.err(
-          new CrossPartitionTx({
-            partitions: distinct,
-            message: "a tx writes one partition; split it",
-          }),
-        );
-      }
-      const label = [...new Set(writes.map((w) => w.label))].join("+");
-      const where = placements[0] ?? {};
-      const event = yield* Result.await(
-        engine.mutate(
-          // SAFETY: `table.op` labels joined with `+`; procedure naming is the client's to define (E09)
-          label as Procedure,
-          (t) => {
-            for (const write of writes) write.apply(t);
-          },
-          where,
-        ),
-      );
-      return Result.ok({ eventId: event.id });
-    });
-
-  const delivered = createDelivered(engine, identity.peerId);
 
   const transportContext: TransportContext = { engine, identity, grants, now };
   if (options.onGrantRequest !== undefined)
@@ -255,9 +242,11 @@ function assemble<P extends PartitionTree, RS extends Roles<P>, C extends Column
         return Result.ok(undefined);
       }),
     active: context.active,
-    tx,
+    scoped,
+    // SAFETY: the recorder is one Writes per table of C, the same keys the collections were built over
+    tx: (fn, txOptions) => ambient.tx((recording) => fn(recording as TxCollections<C>), txOptions),
     can,
-    delivered,
+    delivered: createDelivered(engine, identity.peerId),
     liveQuery,
     releaseQuery: (handle) => releases.get(handle)?.(),
     revert: (id) => engine.revert(id),
@@ -271,21 +260,8 @@ function assemble<P extends PartitionTree, RS extends Roles<P>, C extends Column
       await booted.close();
     },
   };
-  for (const name of Object.keys(collections))
+  for (const name of Object.keys(ambient.collections))
     if (name in base) panic(`table "${name}" collides with a mesh method; rename the table`);
   // SAFETY: one Collection per key of C, and no key collides with MeshBase (checked above)
-  return { ...base, ...collections } as Mesh<C>;
+  return { ...base, ...ambient.collections } as Mesh<C>;
 }
-
-const tapWrites = (writes: Writes<Table>, record: (write: Write) => void): Writes<Table> => ({
-  create: (row) => writes.create(row).map(tap(record)),
-  update: (key, patch) => writes.update(key, patch).map(tap(record)),
-  delete: (key) => writes.delete(key).map(tap(record)),
-});
-
-const tap =
-  (record: (write: Write) => void) =>
-  (write: Write): Write => {
-    record(write);
-    return write;
-  };

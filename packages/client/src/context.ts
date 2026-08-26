@@ -18,10 +18,18 @@ export interface Placement {
   readonly local?: true;
 }
 
+export type PlacementError = NoActivePartition | NoGrant;
+
 export interface Context {
   readonly activate: (instance: PartitionKey) => Result<void, UnknownPartitionKind>;
   readonly active: (kind: string) => PartitionKey | undefined;
-  readonly placementFor: (entry: PlacementEntry) => Result<Placement, NoActivePartition | NoGrant>;
+  /** Placement under the ambient instances — what `activate` chose or the grant implies. */
+  readonly placementFor: (entry: PlacementEntry) => Result<Placement, PlacementError>;
+  /** Placement under pinned instances only: a kind the pins leave out is `NoActivePartition`, never the ambient one. */
+  readonly placementIn: (
+    entry: PlacementEntry,
+    pins: ReadonlyMap<string, PartitionKey>,
+  ) => Result<Placement, PlacementError>;
 }
 
 export interface ContextOptions {
@@ -44,7 +52,11 @@ export function createContext(options: ContextOptions): Context {
   };
   const active = (kind: string) => chosen.get(kind) ?? implied(kind);
 
-  const placementFor: Context["placementFor"] = (entry) => {
+  const placementWith = (
+    entry: PlacementEntry,
+    instanceOf: (kind: string) => PartitionKey | undefined,
+    missing: (kind: string) => string,
+  ): Result<Placement, PlacementError> => {
     const kind = String(entry.partition);
     if (entry.visibility === "authority" || kind === "global") return Result.ok({});
     if (kind === "local") return Result.ok({ local: true });
@@ -54,17 +66,25 @@ export function createContext(options: ContextOptions): Context {
         return Result.err(new NoGrant({ peer: peerId, message: "no grant held for this device" }));
       return Result.ok({ partition: parsePartitionKey(`user:${grant.account}`).unwrap() });
     }
-    const instance = active(kind);
-    if (instance === undefined) {
-      return Result.err(
-        new NoActivePartition({
-          kind,
-          message: `nothing active for ${kind}: call activate("${kind}:<id>")`,
-        }),
-      );
-    }
+    const instance = instanceOf(kind);
+    if (instance === undefined)
+      return Result.err(new NoActivePartition({ kind, message: missing(kind) }));
     return Result.ok({ partition: instance });
   };
+
+  const placementFor: Context["placementFor"] = (entry) =>
+    placementWith(
+      entry,
+      active,
+      (kind) => `nothing active for ${kind}: call activate("${kind}:<id>")`,
+    );
+
+  const placementIn: Context["placementIn"] = (entry, pins) =>
+    placementWith(
+      entry,
+      (kind) => pins.get(kind),
+      (kind) => `${kind} is not pinned in this scope: scoped({ ${kind}: "<id>" })`,
+    );
 
   return {
     activate: (instance) => {
@@ -78,5 +98,6 @@ export function createContext(options: ContextOptions): Context {
     },
     active,
     placementFor,
+    placementIn,
   };
 }
