@@ -9,14 +9,26 @@ import type { ProjectionOptions } from "./projection.js";
 import { installCapture } from "./capture.js";
 import { sqlEventStore } from "./event-store.js";
 import { tablesProjection } from "./projection.js";
+import { inTransaction } from "./sql.js";
 import { sqlStateStore } from "./state-store.js";
 
-/** The event log and the persisted state over one database, closed together. */
-export interface Stores {
+/** The log and the state as one transaction sees them: what `Stores.atomic` hands its callback. */
+export interface ScopedStores {
   readonly events: EventStore;
   readonly state: StateStore;
+}
+
+/** The event log and the persisted state over one database, closed together. */
+export interface Stores extends ScopedStores {
   /** The connection everything shares — what a query layer runs over. */
   readonly driver: SqlDriver;
+  /**
+   * Runs `fn` in one transaction on the connection, with stores that write into it rather than
+   * opening their own: an event appended and its rows materialised land together or not at all —
+   * the crash window the cursor sidecar would otherwise have to recover. What the engine's
+   * `atomic` option takes.
+   */
+  readonly atomic: <T>(fn: (scoped: ScopedStores) => Promise<T>) => Promise<T>;
   readonly close: () => Promise<void>;
 }
 
@@ -46,6 +58,17 @@ export function openStores(
       });
     }
     const state = yield* Result.await(sqlStateStore(driver, stateOptions));
-    return Result.ok({ events, state, driver, close: () => driver.close?.() ?? Promise.resolve() });
+    const scoped: ScopedStores = {
+      events: yield* Result.await(sqlEventStore(driver, { nested: true })),
+      state: yield* Result.await(sqlStateStore(driver, { ...stateOptions, nested: true })),
+    };
+    const atomic: Stores["atomic"] = (fn) => inTransaction(driver, () => fn(scoped));
+    return Result.ok({
+      events,
+      state,
+      driver,
+      atomic,
+      close: () => driver.close?.() ?? Promise.resolve(),
+    });
   });
 }

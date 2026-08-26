@@ -46,8 +46,21 @@ const decodeRows = (rows: readonly SqlRow[]) => Result.all(rows.map(decodeRow));
  * @example
  * const store = (await sqlEventStore(bunSqlDriver("app.db"))).unwrap();
  */
-export function sqlEventStore(driver: SqlDriver): Promise<Result<EventStore, StoreFailure>> {
+export interface SqlEventStoreOptions {
+  /**
+   * The caller holds the transaction: the store runs its statements as they come and never opens
+   * one of its own. What `openStores(...).atomic` builds, so the log and the state commit together.
+   */
+  readonly nested?: boolean;
+}
+
+export function sqlEventStore(
+  driver: SqlDriver,
+  options: SqlEventStoreOptions = {},
+): Promise<Result<EventStore, StoreFailure>> {
   const { events: SQL, migrate } = dialectOf(driver);
+  const transaction = <T>(fn: () => Promise<T>): Promise<T> =>
+    options.nested === true ? fn() : inTransaction(driver, fn);
   const query = (message: string, sql: string, values: readonly SqlValue[] = []) =>
     attempt(message, () => driver.all(sql, values));
 
@@ -55,7 +68,7 @@ export function sqlEventStore(driver: SqlDriver): Promise<Result<EventStore, Sto
     append: (entry) => attempt("append failed", () => driver.run(SQL.insert, params(entry))),
     appendBatch: (entries) =>
       attempt("appendBatch failed", () =>
-        inTransaction(driver, async () => {
+        transaction(async () => {
           for (const entry of entries) await driver.run(SQL.insert, params(entry));
         }),
       ),
@@ -89,7 +102,7 @@ export function sqlEventStore(driver: SqlDriver): Promise<Result<EventStore, Sto
       }),
     compactBelow: (floor, scope, olderThan) =>
       attempt("compactBelow failed", () =>
-        inTransaction(driver, async () => {
+        transaction(async () => {
           const local = scope === "local" ? 1 : 0;
           const bind = [
             local,
@@ -126,6 +139,7 @@ export function sqlEventStore(driver: SqlDriver): Promise<Result<EventStore, Sto
       query("maxHlc failed", SQL.selectMaxHlc).then((rows) => rows.andThen((r) => hlcRow(r[0]))),
   };
 
+  if (options.nested === true) return Promise.resolve(Result.ok(store)); // the owner migrated
   return attempt("open failed", () => migrate(driver)).then((opened) => opened.map(() => store));
 }
 

@@ -3,6 +3,7 @@ export { StoreFailure, createMemoryEventStore } from "./store.js";
 export type { Tx } from "./tx.js";
 export type {
   Engine,
+  AtomicStores,
   EngineOptions,
   FoldBatch,
   FoldSource,

@@ -9,7 +9,7 @@ import type { OpenDriver } from "./index.js";
 
 import { captureChanges } from "../capture.js";
 import { openStores } from "../open-stores.js";
-import { JOBS, stamp, sqlText } from "./fixtures.js";
+import { A, JOBS, event, sqlText, stamp } from "./fixtures.js";
 
 const NONE: Coverage = { synced: new Map(), local: new Map() };
 const ACME = parsePartitionKey("org:acme").unwrap();
@@ -89,6 +89,33 @@ export const tablesCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       (await state.clear()).unwrap();
       equal(await count(driver, `SELECT COUNT(*) FROM jobs`), 0, "table cleared");
       equal((await state.isEmpty()).unwrap(), true, "sidecar cleared");
+    },
+  },
+  {
+    name: "tables: atomic — the event and its rows land together, or a failing body leaves neither",
+    run: async () => {
+      const driver = await openDriver("tables-atomic");
+      const stores = (await openStores(driver, { tables: [JOBS] })).unwrap();
+      await stores.atomic(async ({ events, state }) => {
+        (await events.append({ event: event(A, 1, 100) })).unwrap();
+        (await state.commit([write(J1, job("both", 1))], NONE)).unwrap();
+      });
+      equal((await stores.events.all()).unwrap().length, 1, "event committed");
+      equal(String((await driver.all(`SELECT title FROM jobs`))[0]?.[0]), "both", "row committed");
+
+      const failed = await stores
+        .atomic(async ({ events, state }) => {
+          (await events.append({ event: event(A, 2, 101) })).unwrap();
+          (await state.commit([write(J1, job("half", 2))], NONE)).unwrap();
+          throw new Error("policy said no");
+        })
+        .then(
+          () => "resolved",
+          () => "rolled back",
+        );
+      equal(failed, "rolled back", "the body's throw aborts");
+      equal((await stores.events.all()).unwrap().length, 1, "no second event");
+      equal(String((await driver.all(`SELECT title FROM jobs`))[0]?.[0]), "both", "row unchanged");
     },
   },
   {

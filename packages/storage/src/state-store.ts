@@ -27,6 +27,8 @@ function decodeRow(row: SqlRow): Result<readonly [TableName, RowKey, RowRecord],
 export interface SqlStateStoreOptions {
   /** Also writes each committed row into the app's own tables (D20); `tablesProjection` builds one. */
   readonly projection?: Projection;
+  /** The caller holds the transaction; see `SqlEventStoreOptions.nested`. */
+  readonly nested?: boolean;
 }
 
 /**
@@ -44,6 +46,8 @@ export function sqlStateStore(
 ): Promise<Result<StateStore, StoreFailure>> {
   const { projection } = options;
   const { state: SQL, migrate } = dialectOf(driver);
+  const transaction = <T>(fn: () => Promise<T>): Promise<T> =>
+    options.nested === true ? fn() : inTransaction(driver, fn);
   const query = (message: string, sql: string, values: readonly SqlValue[] = []) =>
     attempt(message, () => driver.all(sql, values));
 
@@ -66,7 +70,7 @@ export function sqlStateStore(
       query("loadCursors failed", SQL.selectCursors).then((rows) => rows.andThen(coverageOf)),
     commit: (rows, coverage) =>
       attempt("commit failed", () =>
-        inTransaction(driver, async () => {
+        transaction(async () => {
           for (const { table, key, record } of rows)
             await driver.run(SQL.upsertRow, [table, key, encodeRecord(record)]);
           for (const [peer, seq] of coverage.synced)
@@ -78,7 +82,7 @@ export function sqlStateStore(
       ),
     clear: () =>
       attempt("clear failed", () =>
-        inTransaction(driver, async () => {
+        transaction(async () => {
           await driver.run(SQL.clearRows);
           await driver.run(SQL.clearCursors);
           await projection?.clear();
@@ -86,6 +90,7 @@ export function sqlStateStore(
       ),
   };
 
+  if (options.nested === true) return Promise.resolve(Result.ok(store)); // the owner migrated
   return attempt("open failed", () => migrate(driver)).then((opened) => opened.map(() => store));
 }
 

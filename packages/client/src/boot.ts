@@ -75,9 +75,22 @@ async function defaultStores(
   );
 }
 
+/** The validator an identity runs: grants when an issuer is configured, authorship when this process is the authority. */
+function validatorFor(options: BootOptions): ValidatorOptions {
+  const { schema, identity, issuer, authority, grantFor } = options;
+  const validatorOptions = {
+    schema,
+    grantFor: issuer === undefined ? null : grantFor,
+    // being the authority is authorship, not a flag: this process is it when the named peer is us
+    isAuthority: authority !== undefined && authority === identity.peerId,
+  } satisfies ValidatorOptions;
+  if (authority !== undefined) Object.assign(validatorOptions, { authority });
+  return validatorOptions;
+}
+
 /** Opens the stores the options name (or the platform default) and boots the engine over them (D05). */
 export function openMeshEngine(options: BootOptions): Promise<Result<Booted, MeshOpenError>> {
-  const { schema, identity, issuer, authority, grantFor, now } = options;
+  const { schema, identity, now } = options;
   if (options.store === undefined && options.stateStore !== undefined)
     panic("stateStore caches a log it was not given: pass `store` alongside it");
   if (options.store !== undefined && options.driver !== undefined)
@@ -90,16 +103,9 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
         : options.driver !== undefined
           ? yield* Result.await(openStores(options.driver, { tables }))
           : yield* Result.await(defaultStores(options.dataDir, String(identity.peerId), tables));
-    const validatorOptions = {
-      schema,
-      grantFor: issuer === undefined ? null : grantFor,
-      // being the authority is authorship, not a flag: this process is it when the named peer is us
-      isAuthority: authority !== undefined && authority === identity.peerId,
-    } satisfies ValidatorOptions;
-    if (authority !== undefined) Object.assign(validatorOptions, { authority });
     // SAFETY: one of the two is defined — `owned` is opened exactly when `store` is absent
     const store = (options.store ?? owned?.events) as EventStore;
-    const validate = createValidator(validatorOptions);
+    const validate = createValidator(validatorFor(options));
     const engineOptions = {
       peerId: identity.peerId,
       clock: createHlcClock({ now }),
@@ -109,6 +115,12 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
     } satisfies EngineOptions;
     const stateStore = options.stateStore ?? owned?.state;
     if (stateStore !== undefined) Object.assign(engineOptions, { stateStore });
+    // log and state share a connection exactly when the stores are one `openStores` pair
+    if (options.store === undefined && owned !== undefined)
+      Object.assign(engineOptions, {
+        atomic: <T>(fn: (scoped: { events: EventStore; state?: StateStore }) => Promise<T>) =>
+          owned.atomic(fn),
+      });
     if (options.undoDepth !== undefined)
       Object.assign(engineOptions, { undoDepth: options.undoDepth });
     const engine = yield* Result.await(openEngine(engineOptions));

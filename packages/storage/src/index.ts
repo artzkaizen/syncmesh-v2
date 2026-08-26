@@ -6,7 +6,7 @@ export type {
   SqlValue,
   SqliteDriver,
 } from "./driver.js";
-export { sqlEventStore, sqliteEventStore } from "./event-store.js";
+export { sqlEventStore, sqliteEventStore, type SqlEventStoreOptions } from "./event-store.js";
 export {
   sqlStateStore,
   sqliteStateStore,
@@ -14,7 +14,7 @@ export {
   type SqliteStateStoreOptions,
 } from "./state-store.js";
 export { MalformedRecord, decodeRecord, encodeRecord } from "./record-codec.js";
-export type { OpenStoresOptions, Stores } from "./open-stores.js";
+export type { OpenStoresOptions, ScopedStores, Stores } from "./open-stores.js";
 export { openStores } from "./open-stores.js";
 export type { CaptureOptions } from "./capture.js";
 export { captureChanges, captureDdl, installCapture, tableDdl } from "./capture.js";

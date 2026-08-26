@@ -14,17 +14,17 @@ import { Result } from "@syncmesh/result";
 import type { Boot } from "./boot.js";
 import type { Ack, CompactError, CompactOptions, Compaction } from "./compaction.js";
 import type { StateStore } from "./state-store.js";
-import type { EventStore, StoreFailure, StoredEvent } from "./store.js";
+import type { EventStore, StoredEvent } from "./store.js";
+import type { StoreFailure } from "./store.js";
 import type { Coverage, Cursors } from "./sync.js";
-import type { ProbeEvent, StateLookup, Validator } from "./validate.js";
+import type { Tx } from "./tx.js";
+import type { StateLookup, Validator } from "./validate.js";
 
 import { admit } from "./admit.js";
-import { buildEvent, nextSeq } from "./build-event.js";
 import { compactLog } from "./compaction.js";
 import { trackCoverage } from "./coverage.js";
 import {
   CannotRevert,
-  EmptyMutation,
   ListenerFailure,
   type ValidationError,
   type EngineError,
@@ -34,8 +34,8 @@ import {
 import { createHub, type Unsubscribe } from "./listeners.js";
 import { rowsFor, writeKeysOf } from "./state-store.js";
 import { timed, type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
-import { record, type Tx } from "./tx.js";
-import { invert, replay, REVERT, type Undo } from "./undo.js";
+import { replay, REVERT, type Undo } from "./undo.js";
+import { createWritePath } from "./writes.js";
 
 export interface MutateOptions {
   readonly partition?: PartitionKey;
@@ -120,10 +120,36 @@ export interface EngineOptions {
   readonly stateStore?: StateStore;
   /** What to start from; `openEngine` builds it. Absent, the engine starts empty. */
   readonly boot?: Boot;
+  /**
+   * Runs a write's store calls in one transaction: the event appended to the log and its rows
+   * committed to the state store land together or not at all. The callback gets the stores to
+   * use inside; absent, each store commits on its own and the cursor sidecar recovers the gap.
+   */
+  readonly atomic?: <T>(fn: (scoped: AtomicStores) => Promise<T>) => Promise<T>;
+}
+
+/** What a write touches inside `atomic`: the log, and the state store when there is one. */
+export interface AtomicStores {
+  readonly events: EventStore;
+  readonly state?: StateStore;
 }
 
 export function createEngine(options: EngineOptions): Engine {
-  const { peerId, clock, store, merge, undoDepth = 0, validate, stateStore, boot } = options;
+  const {
+    peerId,
+    clock,
+    store,
+    merge,
+    undoDepth = 0,
+    validate,
+    stateStore,
+    boot,
+    atomic,
+  } = options;
+  const plain: AtomicStores =
+    stateStore === undefined ? { events: store } : { events: store, state: stateStore };
+  const atomically = <T>(fn: (scoped: AtomicStores) => Promise<T>): Promise<T> =>
+    atomic === undefined ? fn(plain) : atomic((scoped) => fn(scoped));
   let state = boot?.state ?? emptyState();
   const coverage = trackCoverage(boot?.coverage);
   const undo: Undo[] = [];
@@ -167,73 +193,39 @@ export function createEngine(options: EngineOptions): Engine {
   fold(boot?.replay ?? [], "boot");
 
   /**
-   * Writes the rows a fold touched to the state store, then notifies — after, so a listener that
-   * re-reads the tables (D20's live queries) sees the rows. A failure is reported, not returned:
-   * the log already holds the truth.
+   * Writes the rows a fold touched to the state store. A failure is reported, not returned: the
+   * log already holds the truth — unless the write runs inside `atomic`, where it fails the
+   * transaction and takes the append down with it.
    */
-  const persist = async (batch: FoldBatch): Promise<void> => {
-    if (batch.eventCount === 0) return;
-    if (stateStore !== undefined) {
-      const written = await stateStore.commit(rowsFor(state, batch.writeKeys), coverage.current());
-      if (written.isErr()) errors.emit(written.error);
+  const persist = async (batch: FoldBatch, into: StateStore | undefined): Promise<void> => {
+    if (batch.eventCount === 0 || into === undefined) return;
+    const written = await into.commit(rowsFor(state, batch.writeKeys), coverage.current());
+    if (written.isErr()) {
+      if (atomic !== undefined) throw written.error;
+      errors.emit(written.error);
     }
-    folds.emit(batch);
+  };
+  /** After the transaction, so a listener that re-reads the tables (D20's live queries) sees committed rows. */
+  const notify = (batch: FoldBatch): void => {
+    if (batch.eventCount > 0) folds.emit(batch);
   };
 
-  const mutate: Engine["mutate"] = (procedure, fn, mutateOptions = {}) =>
-    Result.gen(async function* () {
-      const [changes, duration] = timed(() => record(fn));
-      if (changes.length === 0) {
-        return Result.err(
-          new EmptyMutation({ procedure, message: `${procedure} changed nothing` }),
-        );
-      }
-      if (validate !== undefined) {
-        const probe: ProbeEvent =
-          mutateOptions.local === true ? { peerId, changes, local: true } : { peerId, changes };
-        const verdict = validate.validate(
-          mutateOptions.partition === undefined
-            ? probe
-            : { ...probe, partition: mutateOptions.partition },
-          before,
-        );
-        if (verdict.isErr()) return verdict;
-      }
-      const inverse = undoDepth > 0 ? invert(state, changes) : [];
-      const hlc = clock.tick();
-      const scope = mutateOptions.local === true ? "local" : "synced";
-      const last = yield* Result.await(store.lastSeq(peerId, scope));
-      const event = buildEvent(peerId, procedure, hlc, nextSeq(last), changes, mutateOptions);
-      yield* Result.await(store.append({ event }));
-      telemetry.emit({ type: "engine.mutate", sizes: { changes: changes.length }, duration });
-      await persist(fold([event], "local"));
-      if (undoDepth > 0) {
-        undo.push({ event, inverse });
-        if (undo.length > undoDepth) undo.shift();
-      }
-      if (event.local !== true) outbound.emit(event);
-      return Result.ok(event);
-    });
-
-  const receiveBatch: Engine["receiveBatch"] = (entries) =>
-    Result.gen(async function* () {
-      const { fresh, quarantined } = yield* Result.await(
-        admit(entries, { peerId, store, validate, before, quarantine }),
-      );
-      for (const { event } of fresh) clock.receive(event.hlc);
-      yield* Result.await(store.appendBatch(fresh));
-      await persist(
-        fold(
-          fresh.map((f) => f.event),
-          "remote",
-        ),
-      );
-      return Result.ok({
-        folded: fresh.length,
-        skipped: entries.length - fresh.length - quarantined,
-        quarantined,
-      });
-    });
+  const { mutate, receiveBatch } = createWritePath({
+    peerId,
+    clock,
+    validate,
+    before,
+    undoDepth,
+    undo,
+    atomically,
+    stateOf: () => state,
+    fold,
+    persist,
+    notify,
+    outbound,
+    telemetry,
+    admitEntries: (entries) => admit(entries, { peerId, store, validate, before, quarantine }),
+  });
 
   const revert: Engine["revert"] = (id) => {
     const index = undo.findIndex((u) => u.event.id === id);
