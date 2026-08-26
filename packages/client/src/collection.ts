@@ -10,7 +10,7 @@ import type {
 import type { Operation } from "@syncmesh/policy";
 import type { InsertRow, Row, Table } from "@syncmesh/schema";
 
-import { EmptyMutation } from "@syncmesh/engine";
+import { EmptyMutation, PolicyDenied } from "@syncmesh/engine";
 import { readRows, readRowsIn } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { checkRow, fromWireRow, rowKeyText, toWireRow, withNulls } from "@syncmesh/schema";
@@ -61,7 +61,15 @@ export interface Write {
 export interface CollectionDeps {
   readonly engine: Engine;
   readonly placement: () => Result<Placement, WriteError>;
-  readonly can: (what: `${string}.${string}`, row?: WireCells) => boolean;
+  /** The schema's rule for the principal this collection speaks for. */
+  readonly can: (what: `${string}.${string}`, row?: WireCells, patch?: WireCells) => boolean;
+  /**
+   * Enforce `can` here, not only at the validator: rows its `read` denies are invisible, and a
+   * write it denies is `PolicyDenied` before any event. On for a view acting as someone other
+   * than the device — the event is still the device's, so the validator alone would ask the
+   * wrong principal.
+   */
+  readonly gated: boolean;
   /** The whole log, both scopes; `history` folds the slice that touches its row. */
   readonly log: () => Promise<Result<readonly StoredEvent[], StoreFailure>>;
   readonly merge: MergeSpec;
@@ -88,18 +96,34 @@ export function createCollection<T extends Table>(
   table: T,
   deps: CollectionDeps,
 ): Collection<T> & { readonly writes: Writes<T>; readonly visible: Visible } {
-  const { engine, placement, can, log, merge, accountOf, scope } = deps;
+  const { engine, placement, can, gated, log, merge, accountOf, scope } = deps;
   const name = table.name;
   const keyOf = (key: KeyOf<T>) => rowKey(String(key));
 
   const held = (key: RowKey): WireCells | undefined => visible().get(key);
   const visible = (): ReadonlyMap<RowKey, WireCells> => {
     const where = placement();
-    if (where.isErr() || where.value.partition === undefined) {
-      return where.isOk() ? readRows(engine.state(), table.name) : new Map();
-    }
-    return readRowsIn(engine.state(), table.name, where.value.partition);
+    if (where.isErr()) return new Map();
+    const rows =
+      where.value.partition === undefined
+        ? readRows(engine.state(), table.name)
+        : readRowsIn(engine.state(), table.name, where.value.partition);
+    if (!gated) return rows;
+    return new Map([...rows].filter(([, cells]) => can(`${name}.read`, cells)));
   };
+
+  /** The gate's verdict as the validator would phrase it, so a denial reads the same either way. */
+  const denied = (op: Operation, key: RowKey, row?: WireCells, patch?: WireCells) =>
+    gated && !can(`${name}.${op}`, row, patch)
+      ? Result.err(
+          new PolicyDenied({
+            table: String(name),
+            key: String(key),
+            op,
+            message: `${op} on ${String(name)} denied`,
+          }),
+        )
+      : Result.ok(undefined);
 
   const commit = (label: string, apply: (tx: Tx) => void, key: RowKey) =>
     Result.gen(async function* () {
@@ -118,6 +142,8 @@ export function createCollection<T extends Table>(
     const keyed = rowKeyText(table, wireRow);
     if (keyed.isErr()) return keyed;
     const key = rowKey(keyed.value);
+    const verdict = denied("insert", key, undefined, cells);
+    if (verdict.isErr()) return verdict;
     return Result.ok({
       key,
       label: `${name}.insert`,
@@ -147,12 +173,17 @@ export function createCollection<T extends Table>(
         new EmptyMutation({ procedure: procedure(`${name}.update`), message: "no column changed" }),
       );
     }
+    const verdict = denied("update", k, current, cells);
+    if (verdict.isErr()) return verdict;
     return Result.ok({ label: `${name}.update`, apply: (tx) => tx.update(table.name, k, cells) });
   };
 
   const deleteWrite = (key: KeyOf<T>): Result<Write, WriteError> => {
     const k = keyOf(key);
-    if (held(k) === undefined) return Result.err(missing(name, k));
+    const current = held(k);
+    if (current === undefined) return Result.err(missing(name, k));
+    const verdict = denied("delete", k, current);
+    if (verdict.isErr()) return verdict;
     return Result.ok({ label: `${name}.delete`, apply: (tx) => tx.delete(table.name, k) });
   };
 

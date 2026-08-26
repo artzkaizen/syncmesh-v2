@@ -3,7 +3,7 @@ export type { Revision } from "./history.js";
 export type { Context, Placement, PlacementEntry } from "./context.js";
 export { createContext } from "./context.js";
 export type { DeliveredOptions, ReceivedOptions } from "./delivered.js";
-export type { Mesh, MeshBase, MeshOptions, Pins, Scoped } from "./mesh.js";
+export type { Actor, Mesh, MeshBase, MeshOptions, Pins, Scoped, ScopedOptions } from "./mesh.js";
 export type { TxOptions, TxReceipt } from "./views.js";
 export type { TxCollections } from "./tx.js";
 export { createMesh } from "./mesh.js";

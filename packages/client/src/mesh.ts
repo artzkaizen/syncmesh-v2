@@ -1,5 +1,5 @@
-import type { Engine, EventStore, StateStore } from "@syncmesh/engine";
-import type { EventId, PartitionKey, PeerId, Row as WireCells } from "@syncmesh/kernel";
+import type { Engine, EventStore, Principal, StateStore } from "@syncmesh/engine";
+import type { EventId, JsonValue, PartitionKey, PeerId, Row as WireCells } from "@syncmesh/kernel";
 import type { InvalidPartitionKey } from "@syncmesh/kernel";
 import type { ColumnsMap, PartitionTree, Roles, Schema, Table, TablesOf } from "@syncmesh/schema";
 import type { Transport, TransportContext } from "@syncmesh/transport";
@@ -19,7 +19,7 @@ import type { MeshRevertError, TxError, UnknownPartitionKind, WriteError } from 
 import type { QueryDescriptor } from "./query.js";
 import type { LiveHandle } from "./registry.js";
 import type { TxCollections } from "./tx.js";
-import type { TxOptions, TxReceipt, View } from "./views.js";
+import type { TxOptions, TxReceipt, View, ViewDeps } from "./views.js";
 
 import { openMeshEngine } from "./boot.js";
 import { createContext } from "./context.js";
@@ -61,6 +61,22 @@ export interface MeshOptions<P extends PartitionTree, RS extends Roles<P>, C ext
 /** Instances by kind — `{ org: "acme", shelf: "s1" }` — that a scoped view writes and reads under. */
 export type Pins = Readonly<Record<string, string>>;
 
+/** Who a scoped view acts as: the schema's rules read this account, role and claims instead of the device's grant. */
+export interface Actor {
+  readonly account: string;
+  readonly role?: string;
+  readonly claims?: Readonly<Record<string, JsonValue>>;
+}
+
+export interface ScopedOptions {
+  /**
+   * Act as this principal. Rows its `read` rule denies are invisible to the view; a write its
+   * rule denies is `PolicyDenied` before any event exists. The event itself is still this
+   * device's — what a server does on a caller's behalf, judged by the caller's rights.
+   */
+  readonly as?: Actor;
+}
+
 /**
  * The collections and `tx` bound to pinned instances instead of the ambient ones: what a server
  * handling many tenants at once uses, one per call, with `activate` never involved.
@@ -75,8 +91,11 @@ export interface MeshBase<C extends ColumnsMap> {
   /** Sets the active instance of its kind; every collection of that kind re-points. */
   readonly activate: (instance: string) => Result<void, InvalidPartitionKey | UnknownPartitionKind>;
   readonly active: (kind: string) => PartitionKey | undefined;
-  /** A view pinned to these instances; the same pins give the same view, so its live results share. */
-  readonly scoped: (pins: Pins) => Result<Scoped<C>, InvalidPartitionKey | UnknownPartitionKind>;
+  /** A view pinned to these instances, optionally acting as someone; the same pins and actor give the same view, so its live results share. */
+  readonly scoped: (
+    pins: Pins,
+    options?: ScopedOptions,
+  ) => Result<Scoped<C>, InvalidPartitionKey | UnknownPartitionKind>;
   /** One event, one partition; refused before anything is written when the tables disagree. */
   readonly tx: (
     fn: (collections: TxCollections<C>) => Result<void, WriteError>,
@@ -165,8 +184,16 @@ function assemble<P extends PartitionTree, RS extends Roles<P>, C extends Column
   const kinds = new Set(schema.kinds.map(String));
   const context = createContext({ kinds: [...kinds], peerId: identity.peerId, grantFor });
 
-  const can: MeshBase<C>["can"] = (what, row) =>
-    canOn(schema, grantFor(identity.peerId), what, row);
+  const can: ViewDeps["can"] = (what, row, patch) =>
+    canOn(schema, grantFor(identity.peerId), what, row, patch);
+  const canAs = (actor: Actor): ViewDeps["can"] => {
+    const claims = actor.claims ?? {};
+    const principal: Principal =
+      actor.role === undefined
+        ? { account: actor.account, claims }
+        : { account: actor.account, claims, role: actor.role };
+    return (what, row, patch) => canOn(schema, principal, what, row, patch);
+  };
 
   const entryOf = new Map<string, PlacementEntry>(
     schema.entries.map((e) => [String(e.table.name), e]),
@@ -178,6 +205,7 @@ function assemble<P extends PartitionTree, RS extends Roles<P>, C extends Column
     tables: schema.tables,
     merge: schema.merge,
     can,
+    gated: false,
     log: booted.store.all,
     accountOf: (peer: PeerId) => grantFor(peer)?.account,
   };
@@ -187,7 +215,7 @@ function assemble<P extends PartitionTree, RS extends Roles<P>, C extends Column
   });
 
   const scopes = new Map<string, View>();
-  const scoped: MeshBase<C>["scoped"] = (pins) =>
+  const scoped: MeshBase<C>["scoped"] = (pins, scopedOptions = {}) =>
     Result.gen(function* () {
       const pinned = Object.entries(pins).sort(([a], [b]) => (a < b ? -1 : 1));
       const instances = new Map<string, PartitionKey>();
@@ -198,12 +226,15 @@ function assemble<P extends PartitionTree, RS extends Roles<P>, C extends Column
           );
         instances.set(kind, yield* parsePartitionKey(`${kind}:${id}`));
       }
-      const scope = JSON.stringify(pinned);
+      const actor = scopedOptions.as;
+      const scope = JSON.stringify([pinned, actor ?? null]);
       const view =
         scopes.get(scope) ??
         createView({
           ...viewDeps,
           scope,
+          can: actor === undefined ? can : canAs(actor),
+          gated: actor !== undefined,
           placementOf: (name) => context.placementIn(entry(name), instances),
         });
       scopes.set(scope, view);

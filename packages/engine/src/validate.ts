@@ -212,16 +212,19 @@ function checkPolicy(
 }
 
 /** Builds the evaluator's context with absent (not undefined) optionals. */
+/** Who a rule is evaluated for: what a grant says about its holder, or an actor a server vouches for. */
+export type Principal = Pick<Grant, "account" | "role" | "claims">;
+
 export function policyContext(
-  grant: Grant,
+  principal: Principal,
   roles: readonly string[],
   row: Row | undefined,
   patch: Row | undefined,
 ): PolicyContext {
   const policyGrant: PolicyGrant =
-    grant.role === undefined
-      ? { account: grant.account, claims: grant.claims }
-      : { account: grant.account, claims: grant.claims, role: grant.role };
+    principal.role === undefined
+      ? { account: principal.account, claims: principal.claims }
+      : { account: principal.account, claims: principal.claims, role: principal.role };
   const base = { grant: policyGrant, roles };
   if (row !== undefined && patch !== undefined) return { ...base, row, patch };
   if (row !== undefined) return { ...base, row };

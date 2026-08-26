@@ -142,7 +142,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@syncmesh/client": "workspace:*",
-        "@syncmesh/policy": "workspace:*",
+        "@syncmesh/kernel": "workspace:*",
         "@syncmesh/result": "workspace:*",
         "@syncmesh/schema": "workspace:*",
       },
@@ -150,7 +150,6 @@
         "@orpc/server": "2.0.0-beta.31",
         "@syncmesh/config": "workspace:*",
         "@syncmesh/engine": "workspace:*",
-        "@syncmesh/kernel": "workspace:*",
         "@syncmesh/temporal": "workspace:*",
         "@syncmesh/wire": "workspace:*",
         "@types/bun": "catalog:",

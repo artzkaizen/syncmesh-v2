@@ -40,7 +40,9 @@ export interface ViewDeps {
   readonly engine: Engine;
   readonly tables: Readonly<Record<string, Table>>;
   readonly merge: MergeSpec;
-  readonly can: (what: `${string}.${string}`, row?: WireCells) => boolean;
+  readonly can: (what: `${string}.${string}`, row?: WireCells, patch?: WireCells) => boolean;
+  /** Enforce `can` in the collections themselves — a view acting as someone other than the device. */
+  readonly gated: boolean;
   readonly log: () => Promise<Result<readonly StoredEvent[], StoreFailure>>;
   readonly accountOf: (peer: PeerId) => string | undefined;
   readonly placementOf: (table: string) => Result<Placement, WriteError>;
@@ -52,13 +54,14 @@ const procedure = (label: string): Procedure => label as Procedure;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 
 export function createView(deps: ViewDeps): View {
-  const { engine, tables, merge, can, log, accountOf, placementOf, scope } = deps;
+  const { engine, tables, merge, can, gated, log, accountOf, placementOf, scope } = deps;
   const collections: Record<string, AnyCollection> = {};
   for (const [name, table] of Object.entries(tables)) {
     const collectionDeps = {
       engine,
       placement: () => placementOf(name),
       can,
+      gated,
       log,
       merge,
       accountOf,

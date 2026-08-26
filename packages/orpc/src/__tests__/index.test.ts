@@ -7,8 +7,9 @@ import { createIdentity, issueGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 
-import { requireRole, withMesh, type Caller } from "../index.js";
+import { withMesh, type Caller } from "../index.js";
 
+/** The only permission model: viewers read, techs read and own their rows, dispatchers assign. */
 const schema = defineSchema({
   partitions: { org: {} },
   roles: { org: ["owner", "dispatcher", "tech", "viewer"] },
@@ -22,7 +23,11 @@ const schema = defineSchema({
         assignedBy: t.text().nullable(),
       },
       partition: "org",
-      allow: ({ role }) => ({ $default: role("tech"), update: role("dispatcher") }),
+      allow: ({ role }) => ({
+        $default: role("tech"),
+        read: role("viewer"),
+        update: role("dispatcher"),
+      }),
     },
   },
 });
@@ -53,39 +58,35 @@ const authority = async () => {
   return { mesh, store };
 };
 
-const caller = (role: string, org = "acme"): Caller => ({
-  account: `acct_${role}`,
-  role,
-  pins: { org },
-});
+const caller = (role: string | undefined, org = "acme"): Caller =>
+  role === undefined
+    ? { account: "acct_nobody", pins: { org } }
+    : { account: `acct_${role}`, role, pins: { org } };
 
-/** The procedure D10 sketches, verbatim in shape: reject before tx, or one labelled event. */
+/** D10's procedure: reject before tx, or one labelled event — no role check of its own. */
 const api = async () => {
   const { mesh, store } = await authority();
-  const base = withMesh(mesh);
-  const assign = base
-    .use(requireRole(schema, "org", "dispatcher"))
+  const assign = withMesh(mesh)
     .input(z.object({ id: z.string(), tech: z.string() }))
     .errors({ NOT_FOUND: {}, CONFLICT: {} })
-    .handler(async ({ input, context: { db, caller: who }, errors }) => {
-      if (db.jobs.get(input.id) === undefined) throw errors.NOT_FOUND();
-      if (db.jobs.list({ where: { assignee: input.tech, status: "assigned" } }).length > 0)
+    .handler(async ({ input, context: { mesh: view, caller: who }, errors }) => {
+      if (view.jobs.get(input.id) === undefined) throw errors.NOT_FOUND();
+      if (view.jobs.list({ where: { assignee: input.tech, status: "assigned" } }).length > 0)
         throw errors.CONFLICT();
-      const receipt = (
-        await db.tx(
-          (c) =>
-            c.jobs
-              .update(input.id, {
-                assignee: input.tech,
-                status: "assigned",
-                assignedBy: who.account,
-              })
-              .map(() => undefined),
-          { label: "jobs.assign" },
-        )
-      ).unwrap();
-      return { eventId: String(receipt.eventId) };
+      const written = await view.tx(
+        (c) =>
+          c.jobs
+            .update(input.id, { assignee: input.tech, status: "assigned", assignedBy: who.account })
+            .map(() => undefined),
+        { label: "jobs.assign" },
+      );
+      if (written.isErr())
+        throw written.error._tag === "PolicyDenied" ? errors.FORBIDDEN() : written.error;
+      return { eventId: String(written.value.eventId) };
     });
+  const seeded = mesh.scoped({ org: "acme" }).unwrap();
+  (await seeded.jobs.create({ id: "j1", title: "panel B", status: "open" })).unwrap();
+  (await seeded.jobs.create({ id: "j2", title: "panel C", status: "open" })).unwrap();
   return { mesh, store, assign };
 };
 
@@ -99,127 +100,67 @@ const code = async <T>(run: () => Promise<T>): Promise<string> => {
   }
 };
 
-describe("a procedure over the authority's mesh", () => {
-  test("writes one labelled event under the caller's instance, attributed to the caller in data", async () => {
-    const { mesh, store, assign } = await api();
-    const acme = mesh.scoped({ org: "acme" }).unwrap();
-    (await acme.jobs.create({ id: "j1", title: "panel B", status: "open" })).unwrap();
-    const before = (await store.all()).unwrap().length;
+const assignAs = (assign: Awaited<ReturnType<typeof api>>["assign"], who: Caller, id = "j1") =>
+  call(assign, { id, tech: "acct_tech" }, { context: { caller: who } });
 
-    const out = await call(
-      assign,
-      { id: "j1", tech: "acct_tech" },
-      { context: { caller: caller("dispatcher") } },
-    );
+describe("a procedure acting as the caller", () => {
+  test("a dispatcher's call writes one labelled event, the server's event, attributed to the dispatcher in data", async () => {
+    const { mesh, store, assign } = await api();
+    const before = (await store.all()).unwrap().length;
+    const out = await assignAs(assign, caller("dispatcher"));
+    const acme = mesh.scoped({ org: "acme" }).unwrap();
     expect(acme.jobs.get("j1")).toMatchObject({
       status: "assigned",
       assignee: "acct_tech",
       assignedBy: "acct_dispatcher",
     });
-    const revisions = (await acme.jobs.history("j1")).unwrap();
-    expect(revisions.at(-1)?.procedure).toBe("jobs.assign");
-    expect(String(revisions.at(-1)?.eventId)).toBe(out.eventId);
+    const last = (await acme.jobs.history("j1")).unwrap().at(-1);
+    expect(last?.procedure).toBe("jobs.assign");
+    expect(String(last?.eventId)).toBe(out.eventId);
+    expect(String(last?.peerId)).toBe(String(serverKey.peerId));
     expect((await store.all()).unwrap().length).toBe(before + 1);
   });
 
-  test("a rejection is a typed error thrown before tx: nothing is written", async () => {
+  test("the schema decides: a viewer reads but may not update, a tech neither, nobody sees nothing", async () => {
     const { mesh, store, assign } = await api();
-    const acme = mesh.scoped({ org: "acme" }).unwrap();
-    (await acme.jobs.create({ id: "j1", title: "one", status: "open" })).unwrap();
-    (await acme.jobs.create({ id: "j2", title: "two", status: "open" })).unwrap();
-    await call(
-      assign,
-      { id: "j1", tech: "acct_tech" },
-      { context: { caller: caller("dispatcher") } },
-    );
     const before = (await store.all()).unwrap().length;
-
+    expect(await code(() => assignAs(assign, caller("viewer")))).toBe("FORBIDDEN");
+    expect(await code(() => assignAs(assign, caller("tech")))).toBe("FORBIDDEN");
+    expect(await code(() => assignAs(assign, caller(undefined)))).toBe("NOT_FOUND");
     expect(
-      await code(() =>
-        call(assign, { id: "nope", tech: "x" }, { context: { caller: caller("dispatcher") } }),
-      ),
-    ).toBe("NOT_FOUND");
+      mesh
+        .scoped({ org: "acme" }, { as: caller(undefined) })
+        .unwrap()
+        .jobs.list(),
+    ).toEqual([]);
     expect(
-      await code(() =>
-        call(
-          assign,
-          { id: "j2", tech: "acct_tech" },
-          { context: { caller: caller("dispatcher") } },
-        ),
-      ),
-    ).toBe("CONFLICT");
+      mesh
+        .scoped({ org: "acme" }, { as: caller("viewer") })
+        .unwrap()
+        .jobs.list(),
+    ).toHaveLength(2);
     expect((await store.all()).unwrap().length).toBe(before);
-    expect(acme.jobs.get("j2")?.status).toBe("open");
+    expect(await code(() => assignAs(assign, caller("owner")))).toBe("ok");
   });
 
-  test("requireRole is the schema's ladder: viewer and tech are FORBIDDEN, owner passes", async () => {
-    const { mesh, assign } = await api();
-    (
-      await mesh
-        .scoped({ org: "acme" })
-        .unwrap()
-        .jobs.create({ id: "j1", title: "one", status: "open" })
-    ).unwrap();
-    expect(
-      await code(() =>
-        call(assign, { id: "j1", tech: "t" }, { context: { caller: caller("viewer") } }),
-      ),
-    ).toBe("FORBIDDEN");
-    expect(
-      await code(() =>
-        call(assign, { id: "j1", tech: "t" }, { context: { caller: caller("tech") } }),
-      ),
-    ).toBe("FORBIDDEN");
-    expect(
-      await code(() =>
-        call(
-          assign,
-          { id: "j1", tech: "t" },
-          { context: { caller: { account: "a", pins: { org: "acme" } } } },
-        ),
-      ),
-    ).toBe("FORBIDDEN");
-    expect(
-      await code(() =>
-        call(assign, { id: "j1", tech: "t" }, { context: { caller: caller("owner") } }),
-      ),
-    ).toBe("ok");
+  test("a rejection the handler decides is thrown before tx: nothing is written", async () => {
+    const { mesh, store, assign } = await api();
+    await assignAs(assign, caller("dispatcher"), "j1");
+    const before = (await store.all()).unwrap().length;
+    expect(await code(() => assignAs(assign, caller("dispatcher"), "nope"))).toBe("NOT_FOUND");
+    expect(await code(() => assignAs(assign, caller("dispatcher"), "j2"))).toBe("CONFLICT");
+    expect((await store.all()).unwrap().length).toBe(before);
+    expect(mesh.scoped({ org: "acme" }).unwrap().jobs.get("j2")?.status).toBe("open");
   });
 
   test("the caller's pins scope every read and write; a pin the manifest cannot resolve is BAD_REQUEST", async () => {
-    const { mesh, assign } = await api();
-    (
-      await mesh
-        .scoped({ org: "acme" })
-        .unwrap()
-        .jobs.create({ id: "j1", title: "one", status: "open" })
-    ).unwrap();
+    const { assign } = await api();
+    expect(await code(() => assignAs(assign, caller("dispatcher", "globex")))).toBe("NOT_FOUND");
+    expect(await code(() => assignAs(assign, caller("dispatcher", "not a key")))).toBe(
+      "BAD_REQUEST",
+    );
     expect(
-      await code(() =>
-        call(
-          assign,
-          { id: "j1", tech: "t" },
-          { context: { caller: caller("dispatcher", "globex") } },
-        ),
-      ),
-    ).toBe("NOT_FOUND");
-    expect(
-      await code(() =>
-        call(
-          assign,
-          { id: "j1", tech: "t" },
-          { context: { caller: caller("dispatcher", "not a key") } },
-        ),
-      ),
-    ).toBe("BAD_REQUEST");
-    expect(
-      await code(() =>
-        call(
-          assign,
-          { id: "j1", tech: "t" },
-          { context: { caller: { account: "a", role: "owner", pins: { site: "s1" } } } },
-        ),
-      ),
+      await code(() => assignAs(assign, { account: "a", role: "owner", pins: { site: "s1" } })),
     ).toBe("BAD_REQUEST");
   });
 });
