@@ -16,7 +16,7 @@ const jobs = table("jobs", {
   hours: t.float().nullable(),
   rank: t.integer(),
   done: t.boolean(),
-  due: t.timestamp().nullable(),
+  dueAt: t.timestamp().nullable(),
   meta: t.json().nullable(),
   photo: t.blob().nullable(),
 });
@@ -53,7 +53,7 @@ export const captureCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       const changes = (
         await captured(driver, () =>
           driver.run(
-            `INSERT INTO jobs (id, title, hours, rank, done, due, meta, photo) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO jobs (id, title, hours, rank, done, "dueAt", meta, photo) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
             ["j1", "panel B", 1.5, 2, 1, 1_700_000_000_000, JSON.stringify({ tags: ["a"] }), photo],
           ),
         )
@@ -67,7 +67,11 @@ export const captureCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       equal(row["hours"], "1.5", "float");
       equal(row["rank"], "2", "integer");
       equal(row["done"], "true", "boolean from 1");
-      equal(row["due"], "1700000000000", "timestamp as epoch ms");
+      equal(
+        row["dueAt"],
+        "1700000000000",
+        "timestamp as epoch ms; a mixed-case column survives quoting",
+      );
       equal(row["meta"], '{"tags":["a"]}', "json parsed");
       equal(row["photo"], photo, "blob via hex");
     },

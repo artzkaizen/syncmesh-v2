@@ -1,5 +1,5 @@
 import type { StoreFailure } from "@syncmesh/engine";
-import type { CellValue, Change, ColumnName, Row, RowKey } from "@syncmesh/kernel";
+import type { CellValue, Change, ColumnName, Row, RowKey, TableName } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
 import type { ColumnKind, Table } from "@syncmesh/schema";
 
@@ -19,7 +19,21 @@ import { attempt, inTransaction } from "./sql.js";
 const CHANGES = "_syncmesh_changes";
 const GUARD = "_syncmesh_capture";
 
-const quote = (name: string) => `"${name.replaceAll('"', '""')}"`;
+/*
+ * Every identifier below reaches the SQL as a parsed brand — TableName / ColumnName, grammar
+ * `^[a-z][a-zA-Z0-9_]{0,63}$`, refused by the schema before a table exists — never as a raw
+ * string, and no row or caller value is ever interpolated: DDL cannot take bind parameters, so
+ * validated, quoted identifiers are the whole defence, the same one `sql.identifier` gives.
+ */
+const quote = (name: TableName | ColumnName) => `"${String(name).replaceAll('"', '""')}"`;
+const literal = (name: TableName) => `'${String(name).replaceAll("'", "''")}'`;
+
+/** The table's columns as `[key, brand, column]`; a key `table()` did not validate has no brand and is skipped. */
+const columnsOf = (table: Table) =>
+  Object.entries(table.columns).flatMap(([key, column]) => {
+    const name = table.columnNames[key];
+    return name === undefined ? [] : [[key, name, column] as const];
+  });
 
 const sqlType = (kind: ColumnKind): string => {
   switch (kind) {
@@ -38,12 +52,12 @@ const sqlType = (kind: ColumnKind): string => {
 
 /** `CREATE TABLE` for a synced table: one column per schema column, plus `_partition`. */
 export function tableDdl(table: Table): string {
-  const columns = Object.entries(table.columns).map(([name, column]) => {
+  const columns = columnsOf(table).map(([key, name, column]) => {
     const constraint =
-      name === table.primaryKey ? " PRIMARY KEY" : column.def.nullable ? "" : " NOT NULL";
+      key === table.primaryKey ? " PRIMARY KEY" : column.def.nullable ? "" : " NOT NULL";
     return `${quote(name)} ${sqlType(column.def.kind)}${constraint}`;
   });
-  return `CREATE TABLE IF NOT EXISTS ${quote(String(table.name))} (${[...columns, '"_partition" TEXT'].join(", ")})`;
+  return `CREATE TABLE IF NOT EXISTS ${quote(table.name)} (${[...columns, '"_partition" TEXT'].join(", ")})`;
 }
 
 /**
@@ -51,15 +65,15 @@ export function tableDdl(table: Table): string {
  * BLOB; a NULL stays NULL rather than becoming `hex(NULL)`, the empty string.
  */
 const image = (table: Table, alias: "NEW" | "OLD"): string =>
-  `json_object(${Object.entries(table.columns)
-    .map(([name, column]) => {
+  `json_object(${columnsOf(table)
+    .map(([, name, column]) => {
       const cell = `${alias}.${quote(name)}`;
       // lower(): SQLite's hex() is uppercase and the wire's hex codec is lowercase-only
       const logged =
         column.def.kind === "blob"
           ? `CASE WHEN ${cell} IS NULL THEN NULL ELSE lower(hex(${cell})) END`
           : cell;
-      return `'${name}', ${logged}`;
+      return `'${String(name)}', ${logged}`;
     })
     .join(", ")})`;
 
@@ -75,17 +89,19 @@ export function captureDdl(tables: readonly Table[]): readonly string[] {
     `INSERT OR IGNORE INTO ${GUARD} (id, armed) VALUES (1, 0)`,
   ];
   for (const table of tables) {
-    const name = String(table.name);
-    const key = (alias: "NEW" | "OLD") => `CAST(${alias}.${quote(table.primaryKey)} AS TEXT)`;
+    const name = literal(table.name);
+    const pk = table.columnNames[table.primaryKey];
+    if (pk === undefined) continue;
+    const key = (alias: "NEW" | "OLD") => `CAST(${alias}.${quote(pk)} AS TEXT)`;
     const trigger = (op: "insert" | "update" | "delete", body: string) =>
-      `CREATE TRIGGER IF NOT EXISTS ${quote(`_syncmesh_${name}_${op}`)} AFTER ${op.toUpperCase()} ON ${quote(name)} WHEN ${armed} BEGIN INSERT INTO ${CHANGES} (tbl, key, op, old, new) VALUES (${body}); END`;
+      `CREATE TRIGGER IF NOT EXISTS "_syncmesh_${String(table.name)}_${op}" AFTER ${op.toUpperCase()} ON ${quote(table.name)} WHEN ${armed} BEGIN INSERT INTO ${CHANGES} (tbl, key, op, old, new) VALUES (${body}); END`;
     statements.push(
-      trigger("insert", `'${name}', ${key("NEW")}, 'insert', NULL, ${image(table, "NEW")}`),
+      trigger("insert", `${name}, ${key("NEW")}, 'insert', NULL, ${image(table, "NEW")}`),
       trigger(
         "update",
-        `'${name}', ${key("NEW")}, 'update', ${image(table, "OLD")}, ${image(table, "NEW")}`,
+        `${name}, ${key("NEW")}, 'update', ${image(table, "OLD")}, ${image(table, "NEW")}`,
       ),
-      trigger("delete", `'${name}', ${key("OLD")}, 'delete', ${image(table, "OLD")}, NULL`),
+      trigger("delete", `${name}, ${key("OLD")}, 'delete', ${image(table, "OLD")}, NULL`),
     );
   }
   return statements;
@@ -136,10 +152,9 @@ const same = (a: Logged | undefined, b: Logged | undefined) => a === b;
 
 function cells(table: Table, imageOf: Image, only?: Image): Row {
   const row = new Map<ColumnName, CellValue>();
-  for (const [name, column] of Object.entries(table.columns)) {
-    if (only !== undefined && same(imageOf[name], only[name])) continue;
-    const key = table.columnNames[name];
-    if (key !== undefined) row.set(key, cellOf(column.def.kind, imageOf[name]));
+  for (const [key, name, column] of columnsOf(table)) {
+    if (only !== undefined && same(imageOf[key], only[key])) continue;
+    row.set(name, cellOf(column.def.kind, imageOf[key]));
   }
   return row;
 }
