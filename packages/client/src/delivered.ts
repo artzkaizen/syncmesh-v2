@@ -11,8 +11,41 @@ export interface DeliveredOptions {
   readonly to?: PeerId;
 }
 
+export interface ReceivedOptions {
+  /** The event this engine must have folded — a peer's, typically the authority's reply to a procedure. */
+  readonly event: EventId;
+}
+
 const covered = (cursors: Cursors | undefined, peer: PeerId, seq: SeqNum): boolean =>
   (cursors?.get(peer) ?? 0) >= seq;
+
+/** A synced event id as the (author, seq) a cursor map covers; a local id is refused — it never travels. */
+const targetOf = (event: EventId) => {
+  const parsed = parseEventId(String(event));
+  if (parsed.isErr()) return panic(`${String(event)}: ${parsed.error.message}`);
+  if (parsed.value.local) return panic(`${String(event)}: a local event never leaves this device`);
+  return { peer: parsed.value.peerId, seq: parsed.value.seqNum };
+};
+
+/**
+ * `mesh.received`: a promise that settles once this engine has folded the event — the inbound
+ * mirror of `delivered`. What a device awaits after a procedure hands back the event id the
+ * authority wrote, so the UI settles on the authority's row rather than a guess.
+ */
+export function createReceived(engine: Engine): (options: ReceivedOptions) => Promise<void> {
+  return ({ event }) => {
+    const target = targetOf(event);
+    const folded = () => covered(engine.coverage().synced, target.peer, target.seq);
+    if (folded()) return Promise.resolve();
+    return new Promise((resolve) => {
+      const off = engine.onFoldBatch(() => {
+        if (!folded()) return;
+        off();
+        resolve();
+      });
+    });
+  };
+}
 
 /**
  * `mesh.delivered`: a promise that settles once a peer's acknowledged cursors cover the target.
@@ -23,20 +56,14 @@ export function createDelivered(
   engine: Engine,
   self: PeerId,
 ): (options?: DeliveredOptions) => Promise<void> {
-  const targetOf = (event: EventId | undefined) => {
-    if (event === undefined) {
-      const seq = engine.coverage().synced.get(self);
-      return seq === undefined ? undefined : { peer: self, seq };
-    }
-    const parsed = parseEventId(String(event));
-    if (parsed.isErr()) return panic(`${String(event)}: ${parsed.error.message}`);
-    if (parsed.value.local)
-      return panic(`${String(event)}: a local event never leaves this device`);
-    return { peer: parsed.value.peerId, seq: parsed.value.seqNum };
+  const deliveryTarget = (event: EventId | undefined) => {
+    if (event !== undefined) return targetOf(event);
+    const seq = engine.coverage().synced.get(self);
+    return seq === undefined ? undefined : { peer: self, seq };
   };
 
   return (options = {}) => {
-    const target = targetOf(options.event);
+    const target = deliveryTarget(options.event);
     if (target === undefined) return Promise.resolve();
     const satisfied = (): boolean => {
       const acks = engine.acks();

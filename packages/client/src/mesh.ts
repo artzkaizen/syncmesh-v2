@@ -14,7 +14,7 @@ import { createGrantRegistry } from "@syncmesh/wire";
 import type { Booted, MeshOpenError } from "./boot.js";
 import type { Collection } from "./collection.js";
 import type { PlacementEntry } from "./context.js";
-import type { DeliveredOptions } from "./delivered.js";
+import type { DeliveredOptions, ReceivedOptions } from "./delivered.js";
 import type { MeshRevertError, TxError, UnknownPartitionKind, WriteError } from "./errors.js";
 import type { QueryDescriptor } from "./query.js";
 import type { LiveHandle } from "./registry.js";
@@ -23,7 +23,7 @@ import type { TxOptions, TxReceipt, View } from "./views.js";
 
 import { openMeshEngine } from "./boot.js";
 import { createContext } from "./context.js";
-import { createDelivered } from "./delivered.js";
+import { createDelivered, createReceived } from "./delivered.js";
 import { UnknownPartitionKind as UnknownKind } from "./errors.js";
 import { createMeshGrants, type MeshGrants, type MeshGrantsOptions } from "./grants.js";
 import { specOf } from "./query.js";
@@ -88,6 +88,8 @@ export interface MeshBase<C extends ColumnsMap> {
    * runs the same policy itself, and an authority's verdict is E12/E16's to add.
    */
   readonly delivered: (options?: DeliveredOptions) => Promise<void>;
+  /** Resolves once this device has folded the event — the inbound mirror of `delivered`. */
+  readonly received: (options: ReceivedOptions) => Promise<void>;
   /** `"table.op"` against the same rules every receiver enforces. */
   readonly can: (what: `${string}.${string}`, row?: WireCells) => boolean;
   /** A maintained result for a `query` descriptor; identical descriptors share one. */
@@ -247,6 +249,7 @@ function assemble<P extends PartitionTree, RS extends Roles<P>, C extends Column
     tx: (fn, txOptions) => ambient.tx((recording) => fn(recording as TxCollections<C>), txOptions),
     can,
     delivered: createDelivered(engine, identity.peerId),
+    received: createReceived(engine),
     liveQuery,
     releaseQuery: (handle) => releases.get(handle)?.(),
     revert: (id) => engine.revert(id),

@@ -102,3 +102,31 @@ describe("delivered — a peer is known to hold the write", () => {
     expect(() => a.delivered({ event: receipt.eventId })).toThrow("never leaves this device");
   });
 });
+
+describe("received — this device has folded a peer's event", () => {
+  test("pending until the exchange folds it, resolved after, immediate once held; a local id is refused", async () => {
+    const a = await granted(deviceA);
+    const b = await granted(deviceB);
+    const receipt = (
+      await a.tx((c) => c.todos.create({ id: "t1", title: "from a" }).map(() => undefined))
+    ).unwrap();
+
+    const pending = b.received({ event: receipt.eventId });
+    let settled = false;
+    void pending.then(() => (settled = true));
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    const link = createLink(a.engine, b.engine, { now: () => T0 });
+    (await link.catchUp()).unwrap();
+    await pending;
+    expect(b.todos.get("t1")?.title).toBe("from a");
+    await b.received({ event: receipt.eventId }); // already folded: resolves at once
+    link.close();
+
+    const local = (
+      await a.tx((c) => c.drafts.create({ id: "d1", body: "wip" }).map(() => undefined))
+    ).unwrap();
+    expect(() => b.received({ event: local.eventId })).toThrow("never leaves this device");
+  });
+});
