@@ -21,6 +21,7 @@ const books = sqliteTable("books", {
   title: text().notNull(),
   createdBy: text().notNull(),
 });
+const drafts = sqliteTable("drafts", { id: text().primaryKey(), body: text().notNull() });
 
 const schema = () =>
   defineSchema({
@@ -35,6 +36,7 @@ const schema = () =>
         partition: "org",
         allow: ({ role }) => ({ $default: role("member"), delete: role("admin") }),
       },
+      drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "local" },
     },
   });
 
@@ -184,5 +186,34 @@ describe("statements become events", () => {
       "renamed",
       "new",
     ]);
+  });
+});
+
+describe("local tables", () => {
+  test("rows stay on this device: no outbound event, and history still sees the write", async () => {
+    const mesh = await granted();
+    const events: SyncEvent[] = [];
+    mesh.engine.onOutbound((e) => void events.push(e));
+    const { db } = mesh.on().unwrap();
+    await db.insert(drafts).values({ id: "d1", body: "wip" });
+    expect(events).toHaveLength(0);
+    expect((await db.select().from(drafts)).map((r) => r.body)).toEqual(["wip"]);
+    const revisions = (await mesh.history("drafts", "d1")).unwrap();
+    expect(revisions.map((r) => r.procedure)).toEqual(["drafts.insert"]);
+  });
+
+  test("one transaction cannot both travel and stay: mixing tables is LocalOnly, rolled back", async () => {
+    const mesh = await granted();
+    const { db } = mesh.on("org:acme").unwrap();
+    expect(
+      await outcome(
+        db.transaction(async (tx) => {
+          await tx.insert(books).values({ id: "b1", title: "x", createdBy: "acct_a" });
+          await tx.insert(drafts).values({ id: "d1", body: "wip" });
+        }),
+      ),
+    ).toBe("LocalOnly");
+    expect(await db.select().from(books)).toHaveLength(0);
+    expect(await db.select().from(drafts)).toHaveLength(0);
   });
 });

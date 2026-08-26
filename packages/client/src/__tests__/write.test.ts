@@ -1,3 +1,4 @@
+import type { SyncEvent } from "@syncmesh/kernel";
 import type { Grant } from "@syncmesh/wire";
 
 import { createMemoryEventStore, createValidator, openEngine } from "@syncmesh/engine";
@@ -24,9 +25,10 @@ const schema = defineSchema({
       partition: "org",
       allow: ({ role }) => ({ $default: role("viewer"), update: role("dispatcher") }),
     },
+    drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "local" },
   },
 });
-const tables = [schema.tables.jobs];
+const tables = [schema.tables.jobs, schema.tables.drafts];
 
 const issuer = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 50 + i)).unwrap();
 const device = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 90 + i)).unwrap();
@@ -70,7 +72,7 @@ const setup = async (role?: string) => {
       validate,
     })
   ).unwrap();
-  const write = createWriter({ engine, validate, driver, tables });
+  const write = createWriter({ engine, validate, driver, tables, schema });
   const count = async () => Number((await driver.all(`SELECT COUNT(*) FROM jobs`))[0]?.[0]);
   return { driver, engine, store, write, count };
 };
@@ -225,5 +227,40 @@ describe("the fold writes the same tables", () => {
     // SAFETY: test fixture — the key text the INSERT used; keys are opaque strings in the kernel
     const bRow = readRow(b.state(), schema.tables.jobs.name, "j1" as never);
     expect(bRow?.get(schema.tables.jobs.columnNames.title)).toBe("from b");
+  });
+});
+
+describe("locality is the schema's", () => {
+  test("a transaction wholly on a local table is a local event: stored, folded, never outbound", async () => {
+    const { driver, engine, store, write } = await setup();
+    const outbound: SyncEvent[] = [];
+    engine.onOutbound((e) => void outbound.push(e));
+    const receipt = (
+      await write("drafts.insert", () =>
+        driver.run(`INSERT INTO drafts (id, body) VALUES ('d1', 'wip')`),
+      )
+    ).unwrap();
+    const events = (await store.all()).unwrap();
+    expect(events).toHaveLength(1);
+    expect(events[0]?.event.local).toBe(true);
+    expect(events[0]?.event.id).toBe(receipt.eventId);
+    expect(outbound).toHaveLength(0);
+    expect((await driver.all(`SELECT body FROM drafts`))[0]?.[0]).toBe("wip");
+  });
+
+  test("mixing a local and a synced table in one transaction is LocalOnly: everything rolls back", async () => {
+    const { driver, store, write, count } = await setup();
+    const r = await write(
+      "mixed",
+      async () => {
+        await driver.run(`INSERT INTO jobs (id, title, rank) VALUES ('j1', 'one', 1)`);
+        await driver.run(`INSERT INTO drafts (id, body) VALUES ('d1', 'wip')`);
+      },
+      { partition: ACME },
+    );
+    expect(tag(r)).toBe("LocalOnly");
+    expect(await count()).toBe(0);
+    expect(Number((await driver.all(`SELECT COUNT(*) FROM drafts`))[0]?.[0])).toBe(0);
+    expect((await store.all()).unwrap()).toHaveLength(0);
   });
 });

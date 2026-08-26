@@ -33,8 +33,6 @@ export interface TxReceipt {
 export interface WriteOptions {
   /** The instance the transaction's rows belong to; every change of one event shares it. */
   readonly partition?: PartitionKey;
-  /** Never leaves this device. */
-  readonly local?: boolean;
 }
 
 export type WriteError = MutateError | StoreFailure;
@@ -78,6 +76,11 @@ const replay = (tx: Tx, changes: readonly Change[]): void => {
 
 export function createWriter(deps: WriterDeps): Write {
   const { engine, validate, driver, tables, actor, schema } = deps;
+  const localTables = new Set(
+    (schema?.entries ?? [])
+      .filter((entry) => entry.partition === "local")
+      .map((entry) => String(entry.table.name)),
+  );
   const before: StateLookup = {
     row: (table, key) => readRow(engine.state(), table, key),
     partition: (table, key) => getRecord(engine.state(), table, key)?.partition,
@@ -96,19 +99,29 @@ export function createWriter(deps: WriterDeps): Write {
       message: `${change.kind} on ${String(change.table)} denied`,
     });
   };
+  /**
+   * Locality is the schema's, decided from what the transaction turned out to touch: wholly on
+   * `local` tables, the event never leaves this device. A transaction that mixes local and
+   * synced tables gets no flag, so its local change fails validation (`LocalOnly`) and the
+   * whole transaction rolls back — one event cannot both travel and stay.
+   */
+  const mutateOptionsFor = (options: WriteOptions, captured: readonly Change[]) => {
+    const mutateOptions = {};
+    if (options.partition !== undefined)
+      Object.assign(mutateOptions, { partition: options.partition });
+    if (captured.length > 0 && captured.every((c) => localTables.has(String(c.table))))
+      Object.assign(mutateOptions, { local: true });
+    return mutateOptions;
+  };
   return (label, fn, options = {}) =>
     Result.gen(async function* () {
-      const mutateOptions = {};
-      if (options.partition !== undefined)
-        Object.assign(mutateOptions, { partition: options.partition });
-      if (options.local === true) Object.assign(mutateOptions, { local: true });
       const captureOptions = {
         check: (captured: readonly Change[]) => {
           if (captured.length === 0) return Result.ok(undefined);
           const denied = captured.map(actorDenies).find((d) => d !== undefined);
           if (denied !== undefined) return Result.err(denied);
           return validate.validate(
-            { peerId: engine.peerId, changes: captured, ...mutateOptions },
+            { peerId: engine.peerId, changes: captured, ...mutateOptionsFor(options, captured) },
             before,
           );
         },
@@ -123,7 +136,11 @@ export function createWriter(deps: WriterDeps): Write {
         );
       }
       const event = yield* Result.await(
-        engine.mutate(procedure(name), (tx) => replay(tx, changes), mutateOptions),
+        engine.mutate(
+          procedure(name),
+          (tx) => replay(tx, changes),
+          mutateOptionsFor(options, changes),
+        ),
       );
       return Result.ok({ eventId: event.id });
     });
