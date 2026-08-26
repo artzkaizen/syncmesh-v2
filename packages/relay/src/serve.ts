@@ -1,5 +1,5 @@
 import type { EventStore } from "@syncmesh/engine";
-import type { SqliteDriver } from "@syncmesh/storage";
+import type { SqlDriver } from "@syncmesh/storage";
 
 import { panic } from "@syncmesh/result";
 
@@ -29,7 +29,7 @@ export interface RunningRelay {
 }
 
 /** The epoch rides in the log's own file: a new file is honestly a new lineage. */
-async function epochOf(driver: SqliteDriver): Promise<string> {
+async function epochOf(driver: SqlDriver): Promise<string> {
   await driver.run(
     `CREATE TABLE IF NOT EXISTS "_relay_meta" ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL)`,
   );

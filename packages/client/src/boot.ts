@@ -10,7 +10,7 @@ import type {
 } from "@syncmesh/engine";
 import type { MergeSpec, PeerId } from "@syncmesh/kernel";
 import type { Table } from "@syncmesh/schema";
-import type { SqliteDriver, Stores } from "@syncmesh/storage";
+import type { SqlDriver, Stores } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { Grant, Identity } from "@syncmesh/wire";
 
@@ -33,7 +33,7 @@ export interface BootOptions {
   readonly store?: EventStore;
   readonly stateStore?: StateStore;
   /** Your own SQLite connection: tables and capture are installed on it and it becomes the log too. */
-  readonly driver?: SqliteDriver;
+  readonly driver?: SqlDriver;
   readonly dataDir: string;
   readonly now: () => Temporal.Instant;
   readonly grantFor: (peer: PeerId) => Grant | undefined;
@@ -44,7 +44,7 @@ export interface Booted {
   readonly engine: Engine;
   readonly store: EventStore;
   /** The SQL connection the tables live on; absent for a mesh over a bare event store. */
-  readonly driver?: SqliteDriver;
+  readonly driver?: SqlDriver;
   /** The same ladder the engine runs on every write — for judging a captured transaction before it commits (D20). */
   readonly validate: Validator;
   readonly close: () => Promise<void>;

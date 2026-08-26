@@ -4,7 +4,7 @@ import type { RowRecord, RowKey } from "@syncmesh/kernel";
 import { equal } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 
-import type { SqliteDriver } from "../driver.js";
+import type { SqlDriver } from "../driver.js";
 import type { OpenDriver } from "./index.js";
 
 import { captureChanges } from "../capture.js";
@@ -37,9 +37,8 @@ const job = (title: string, ms: number): RowRecord => ({
 const gone = (ms: number): RowRecord => ({ ...job("x", ms - 1), deleteStamp: stamp(ms) });
 const write = (key: RowKey, record: RowRecord): RowWrite => ({ table: JOBS.name, key, record });
 
-const open = async (driver: SqliteDriver) =>
-  (await openStores(driver, { tables: [JOBS] })).unwrap();
-const count = async (driver: SqliteDriver, sql: string) =>
+const open = async (driver: SqlDriver) => (await openStores(driver, { tables: [JOBS] })).unwrap();
+const count = async (driver: SqlDriver, sql: string) =>
   Number((await driver.all(sql))[0]?.[0] ?? -1);
 
 export const tablesCases = (openDriver: OpenDriver): readonly SuiteCase[] => [

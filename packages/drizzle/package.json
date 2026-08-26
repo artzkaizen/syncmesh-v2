@@ -23,7 +23,9 @@
     "@syncmesh/storage": "workspace:*"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.7",
     "@syncmesh/config": "workspace:*",
+    "@syncmesh/postgres": "workspace:*",
     "@syncmesh/sqlite-bun": "workspace:*",
     "@syncmesh/temporal": "workspace:*",
     "@syncmesh/wire": "workspace:*",

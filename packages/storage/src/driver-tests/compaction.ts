@@ -2,13 +2,13 @@ import type { SuiteCase } from "@syncmesh/engine";
 
 import { equal } from "@syncmesh/engine";
 
-import type { SqliteDriver } from "../driver.js";
+import type { SqlDriver } from "../driver.js";
 import type { OpenDriver } from "./index.js";
 
 import { sqlEventStore } from "../event-store.js";
 import { A, B, at, entry, event, ids2 as ids, seq } from "./fixtures.js";
 
-const filled = async (driver: SqliteDriver) => {
+const filled = async (driver: SqlDriver) => {
   const store = (await sqlEventStore(driver)).unwrap();
   (
     await store.appendBatch([

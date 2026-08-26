@@ -24,4 +24,7 @@ export interface SqlDriver {
 }
 
 /** A driver over SQLite: the device's database, where capture and the app's tables also live. */
-export type SqliteDriver = SqlDriver;
+export type SqliteDriver = SqlDriver & { readonly dialect?: "sqlite" };
+
+/** A driver over Postgres: the app's own database on the server, log and state alongside its tables. */
+export type PostgresDriver = SqlDriver & { readonly dialect: "postgres" };

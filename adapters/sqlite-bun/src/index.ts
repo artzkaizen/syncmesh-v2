@@ -25,6 +25,7 @@ export function bunSqliteDriver(path: string): SqliteDriver {
   db.run("PRAGMA synchronous = NORMAL");
 
   return {
+    dialect: "sqlite",
     run: (sql, params = []) => {
       db.run(sql, bind(params));
       return Promise.resolve();

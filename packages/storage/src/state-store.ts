@@ -35,7 +35,7 @@ export interface SqlStateStoreOptions {
  * app's tables in the same transaction.
  *
  * @example
- * const driver = bunSqliteDriver("app.db");
+ * const driver = bunSqlDriver("app.db");
  * const stateStore = (await sqlStateStore(driver)).unwrap();
  */
 export function sqlStateStore(

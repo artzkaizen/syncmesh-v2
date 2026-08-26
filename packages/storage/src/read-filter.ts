@@ -5,10 +5,10 @@ import type { ColumnKind, Table } from "@syncmesh/schema";
 
 import { claimAt, resolveAllow, roleAtLeast, scalarKindOf } from "@syncmesh/policy";
 
-import type { SqlValue } from "./driver.js";
+import type { SqlDialect, SqlValue } from "./driver.js";
 
+import { POSTGRES, SQLITE } from "./dialect.js";
 import { columnsOf, quote } from "./identifiers.js";
-import { sqlValueOf } from "./projection.js";
 
 /**
  * A `read` rule compiled to a SQL predicate over the table's own columns (D20 §2): what
@@ -17,12 +17,15 @@ import { sqlValueOf } from "./projection.js";
  * pinned by the driver suite against `can()` — for every node the rule language has.
  */
 export interface Compiled {
+  /** The predicate with one `?` per param, in order — a portable form any dialect's binder places. */
   readonly sql: string;
   readonly params: readonly SqlValue[];
 }
 
-const ALWAYS: Compiled = { sql: "1", params: [] };
-const NEVER: Compiled = { sql: "0", params: [] };
+export interface CompileOptions {
+  /** Whose constants and cell forms the predicate uses. Default `sqlite`. */
+  readonly dialect?: SqlDialect;
+}
 
 /** The scalar kind a column's values have in a rule's eyes; a json or blob column is no identity, so nothing matches it. */
 const kindOf = (kind: ColumnKind): ScalarKind | undefined => {
@@ -62,7 +65,11 @@ export function compileRead(
   ladder: readonly string[],
   allow: AllowBlock | undefined,
   principal: Principal,
+  options: CompileOptions = {},
 ): Compiled {
+  const dialect = options.dialect === "postgres" ? POSTGRES : SQLITE;
+  const ALWAYS: Compiled = { sql: dialect.name === "postgres" ? "TRUE" : "1", params: [] };
+  const NEVER: Compiled = { sql: dialect.name === "postgres" ? "FALSE" : "0", params: [] };
   // a table with no rules is readable by anyone who holds it — what can() says for "read"
   if (allow === undefined) return ALWAYS;
   const columns = new Map(columnsOf(table).map(([key, name, column]) => [key, { name, column }]));
@@ -75,7 +82,7 @@ export function compileRead(
     // SAFETY: comparable() proved value a scalar of the column's own kind, which is a CellValue
     return {
       sql: `${quote(found.name)} = ?`,
-      params: [sqlValueOf(found.column.def.kind, value as CellValue)],
+      params: [dialect.cell(found.column.def.kind, value as CellValue)],
     };
   };
 
@@ -97,7 +104,7 @@ export function compileRead(
       return {
         sql: `${quote(found.name)} IN (${items.map(() => "?").join(", ")})`,
         // SAFETY: each item passed comparable() for this column's kind, so it is a CellValue of that kind
-        params: items.map((item) => sqlValueOf(found.column.def.kind, item as CellValue)),
+        params: items.map((item) => dialect.cell(found.column.def.kind, item as CellValue)),
       };
     },
     claimEquals: (node) => equals(node.column, claimAt(principal.claims, node.claim)),

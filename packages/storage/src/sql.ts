@@ -6,7 +6,7 @@ import { parsePeerId, parseSeqNum } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 
-import type { SqlRow, SqlValue, SqliteDriver } from "./driver.js";
+import type { SqlRow, SqlValue, SqlDriver } from "./driver.js";
 
 export const failure = (message: string) => (cause: unknown) =>
   new StoreFailure({ message, cause });
@@ -15,7 +15,7 @@ export const failure = (message: string) => (cause: unknown) =>
 export const attempt = <T>(message: string, fn: () => Promise<T>) =>
   Result.tryPromise({ try: fn, catch: failure(message) });
 
-const queues = new WeakMap<SqliteDriver, Promise<unknown>>();
+const queues = new WeakMap<SqlDriver, Promise<unknown>>();
 
 /**
  * Runs `fn` in one transaction where the driver offers one, and one at a time per driver: the
@@ -23,7 +23,7 @@ const queues = new WeakMap<SqliteDriver, Promise<unknown>>();
  * transaction inside another. Later callers wait for earlier ones, in call order. A body must
  * not open a second transaction on the same driver — it would wait for itself.
  */
-export const inTransaction = <T>(driver: SqliteDriver, fn: () => Promise<T>): Promise<T> => {
+export const inTransaction = <T>(driver: SqlDriver, fn: () => Promise<T>): Promise<T> => {
   if (driver.transaction === undefined) return fn();
   const { transaction } = driver;
   const turn = (queues.get(driver) ?? Promise.resolve()).then(

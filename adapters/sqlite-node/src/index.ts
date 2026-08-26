@@ -22,6 +22,7 @@ export function nodeSqliteDriver(path: string): SqliteDriver {
   db.exec("PRAGMA synchronous = NORMAL");
 
   return {
+    dialect: "sqlite",
     run: (sql, params = []) => {
       db.prepare(sql).run(...bind(params));
       return Promise.resolve();

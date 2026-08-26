@@ -44,7 +44,7 @@ const decodeRows = (rows: readonly SqlRow[]) => Result.all(rows.map(decodeRow));
  * driver's dialect — `events` on a device's SQLite, `_syncmesh_events` in an app's Postgres.
  *
  * @example
- * const store = (await sqlEventStore(bunSqliteDriver("app.db"))).unwrap();
+ * const store = (await sqlEventStore(bunSqlDriver("app.db"))).unwrap();
  */
 export function sqlEventStore(driver: SqlDriver): Promise<Result<EventStore, StoreFailure>> {
   const { events: SQL, migrate } = dialectOf(driver);

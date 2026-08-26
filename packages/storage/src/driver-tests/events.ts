@@ -5,7 +5,7 @@ import { check, equal } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { encodeEventCore } from "@syncmesh/wire";
 
-import type { SqliteDriver } from "../driver.js";
+import type { SqlDriver } from "../driver.js";
 import type { OpenDriver } from "./index.js";
 
 import { sqlEventStore } from "../event-store.js";
@@ -13,7 +13,7 @@ import { A, B, at, entry, event, hlc, ids2 as ids, seq, sqlOf } from "./fixtures
 
 const ACME = parsePartitionKey("org:acme").unwrap();
 const cores = (entries: readonly StoredEvent[]) => entries.map((x) => encodeEventCore(x.event));
-const open = async (driver: SqliteDriver) => (await sqlEventStore(driver)).unwrap();
+const open = async (driver: SqlDriver) => (await sqlEventStore(driver)).unwrap();
 
 export const eventCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   {

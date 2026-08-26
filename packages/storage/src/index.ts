@@ -1,4 +1,11 @@
-export type { SqlDialect, SqlDriver, SqlRow, SqlValue, SqliteDriver } from "./driver.js";
+export type {
+  PostgresDriver,
+  SqlDialect,
+  SqlDriver,
+  SqlRow,
+  SqlValue,
+  SqliteDriver,
+} from "./driver.js";
 export { sqlEventStore, sqliteEventStore } from "./event-store.js";
 export {
   sqlStateStore,
@@ -13,7 +20,7 @@ export type { CaptureOptions } from "./capture.js";
 export { captureChanges, captureDdl, installCapture, tableDdl } from "./capture.js";
 export type { Projection, ProjectionOptions } from "./projection.js";
 export { tablesProjection } from "./projection.js";
-export type { Compiled } from "./read-filter.js";
+export type { Compiled, CompileOptions } from "./read-filter.js";
 export { compileRead } from "./read-filter.js";
 export type {
   TxReceipt,

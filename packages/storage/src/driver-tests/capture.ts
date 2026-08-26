@@ -4,18 +4,18 @@ import type { Change } from "@syncmesh/kernel";
 import { equal } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 
-import type { SqliteDriver } from "../driver.js";
+import type { SqlDriver } from "../driver.js";
 import type { OpenDriver } from "./index.js";
 
 import { captureChanges, installCapture } from "../capture.js";
 import { COUNTERS as counters, JOBS as jobs, sqlText } from "./fixtures.js";
 
-const open = async (driver: SqliteDriver) => {
+const open = async (driver: SqlDriver) => {
   (await installCapture(driver, [jobs, counters])).unwrap();
   return driver;
 };
 
-const captured = (driver: SqliteDriver, fn: () => Promise<void>) =>
+const captured = (driver: SqlDriver, fn: () => Promise<void>) =>
   captureChanges(driver, [jobs, counters], fn);
 
 /** The change's cells as JSON text per column, so `equal` compares leaves — bytes stay bytes. */
@@ -29,7 +29,7 @@ const cellsOf = (change: Change): Readonly<Record<string, string | Uint8Array>> 
     ),
   );
 
-const count = async (driver: SqliteDriver, sql: string) =>
+const count = async (driver: SqlDriver, sql: string) =>
   Number((await driver.all(sql))[0]?.[0] ?? -1);
 
 export const captureCases = (openDriver: OpenDriver): readonly SuiteCase[] => [

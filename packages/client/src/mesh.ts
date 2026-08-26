@@ -2,11 +2,11 @@ import type { Engine, EventStore, Principal, StateStore } from "@syncmesh/engine
 import type { EventId, PartitionKey, PeerId, Row as WireCells } from "@syncmesh/kernel";
 import type { InvalidPartitionKey } from "@syncmesh/kernel";
 import type { AppValue, ColumnsMap, PartitionTree, Roles, Schema, Table } from "@syncmesh/schema";
-import type { SqliteDriver, TxReceipt } from "@syncmesh/storage";
+import type { SqlDialect, SqlDriver, TxReceipt } from "@syncmesh/storage";
 import type { Transport, TransportContext } from "@syncmesh/transport";
 import type { Grant, Identity } from "@syncmesh/wire";
 
-import { meshDrizzle } from "@syncmesh/drizzle";
+import { meshDrizzle, type MeshHandle } from "@syncmesh/drizzle";
 import { can as canOn } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
@@ -23,7 +23,12 @@ import { createMeshGrants, type MeshGrants, type MeshGrantsOptions } from "./gra
 import { rowHistory } from "./history.js";
 import { runTransports } from "./transports.js";
 
-export interface MeshOptions<P extends PartitionTree, RS extends Roles<P>, C extends ColumnsMap> {
+export interface MeshOptions<
+  P extends PartitionTree,
+  RS extends Roles<P>,
+  C extends ColumnsMap,
+  D extends SqlDialect = "sqlite",
+> {
   readonly schema: Schema<P, RS, C>;
   readonly identity: Identity;
   /** The peer whose signature grants must carry; absent, the mesh runs ungranted — schema checks only. */
@@ -35,8 +40,12 @@ export interface MeshOptions<P extends PartitionTree, RS extends Roles<P>, C ext
    */
   readonly store?: EventStore;
   readonly stateStore?: StateStore;
-  /** Your own SQLite connection: tables and capture are installed on it, the log lives in it, and it stays yours to close. */
-  readonly driver?: SqliteDriver;
+  /**
+   * Your own connection — SQLite on a device, Postgres on an authority: tables and capture are
+   * installed on it, the log lives in it, and it stays yours to close. Its dialect decides
+   * which Drizzle every handle speaks.
+   */
+  readonly driver?: SqlDriver & { readonly dialect?: D };
   /** Where the default store's file goes. Default `.syncmesh`. */
   readonly dataDir?: string;
   readonly undoDepth?: number;
@@ -51,8 +60,8 @@ export interface MeshOptions<P extends PartitionTree, RS extends Roles<P>, C ext
   readonly now?: () => Temporal.Instant;
 }
 
-/** The data surface of one handle: Drizzle in, events out (D20). */
-export type Handle = ReturnType<typeof meshDrizzle>;
+/** The data surface of one handle: Drizzle in, events out (D20), in the connection's dialect. */
+export type Handle<D extends SqlDialect = "sqlite"> = MeshHandle<D>;
 
 export interface OnOptions {
   /**
@@ -78,14 +87,14 @@ export type RevisionView = Omit<Revision<Table>, "changed" | "row"> & {
   readonly row: Readonly<Record<string, AppValue | undefined>> | null;
 };
 
-export interface Mesh {
+export interface Mesh<D extends SqlDialect = "sqlite"> {
   readonly engine: Engine;
   readonly grants: MeshGrants;
   /**
    * The Drizzle surface pinned to an instance — `on("org:acme")` — or unpinned for global
    * tables; `{ as }` makes it act for a caller. The same pin and principal share one handle.
    */
-  readonly on: (instance?: string, options?: OnOptions) => Result<Handle, InvalidPartitionKey>;
+  readonly on: (instance?: string, options?: OnOptions) => Result<Handle<D>, InvalidPartitionKey>;
   /** The row's writes oldest-first by stamp. A detail-view read: it scans the log. */
   readonly history: (
     table: string,
@@ -120,7 +129,8 @@ export async function createMesh<
   P extends PartitionTree,
   const RS extends Roles<P>,
   C extends ColumnsMap,
->(options: MeshOptions<P, RS, C>): Promise<Result<Mesh, MeshOpenError>> {
+  D extends SqlDialect = "sqlite",
+>(options: MeshOptions<P, RS, C, D>): Promise<Result<Mesh<D>, MeshOpenError>> {
   const { identity, issuer, issuerKey } = options;
   if (issuerKey !== undefined && issuerKey.peerId !== issuer)
     panic(
@@ -150,17 +160,19 @@ interface Assembled {
   readonly booted: Booted;
 }
 
-function assemble<P extends PartitionTree, RS extends Roles<P>, C extends ColumnsMap>(
-  options: MeshOptions<P, RS, C>,
-  deps: Assembled,
-): Mesh {
+function assemble<
+  P extends PartitionTree,
+  RS extends Roles<P>,
+  C extends ColumnsMap,
+  D extends SqlDialect,
+>(options: MeshOptions<P, RS, C, D>, deps: Assembled): Mesh<D> {
   const { schema, identity } = options;
   const { grants, grantFor, now, booted } = deps;
   const { engine, validate } = booted;
   const entryOf = new Map(schema.entries.map((e) => [String(e.table.name), e]));
 
-  const handles = new Map<string, Handle>();
-  const on: Mesh["on"] = (instance, onOptions = {}) => {
+  const handles = new Map<string, Handle<D>>();
+  const on: Mesh<D>["on"] = (instance, onOptions = {}) => {
     // outside the generator: a missing connection is a setup mistake and must throw as itself
     const driver =
       booted.driver ??
@@ -173,16 +185,18 @@ function assemble<P extends PartitionTree, RS extends Roles<P>, C extends Column
       const key = JSON.stringify([instance ?? null, onOptions.as ?? null]);
       const held = handles.get(key);
       if (held !== undefined) return Result.ok(held);
-      const drizzleOptions = { engine, validate, driver, schema };
+      // SAFETY: the booted driver is the one `options.driver` carried, whose dialect is D — or the SQLite default when none was given
+      const typed = driver as SqlDriver & { readonly dialect?: D };
+      const drizzleOptions = { engine, validate, driver: typed, schema };
       if (partition !== undefined) Object.assign(drizzleOptions, { partition });
       if (onOptions.as !== undefined) Object.assign(drizzleOptions, { as: onOptions.as });
-      const handle = meshDrizzle(drizzleOptions);
+      const handle = meshDrizzle<D>(drizzleOptions);
       handles.set(key, handle);
       return Result.ok(handle);
     });
   };
 
-  const history: Mesh["history"] = (table, key, historyOptions = {}) =>
+  const history: Mesh<D>["history"] = (table, key, historyOptions = {}) =>
     Result.gen(async function* () {
       const entry = entryOf.get(table) ?? panic(`the manifest has no table "${table}"`);
       const entries = yield* Result.await(booted.store.all());

@@ -20,7 +20,7 @@ import {
   rowIs,
 } from "@syncmesh/policy";
 
-import type { SqliteDriver } from "../driver.js";
+import type { SqlDriver } from "../driver.js";
 import type { OpenDriver } from "./index.js";
 
 import { installCapture } from "../capture.js";
@@ -79,7 +79,7 @@ const RULES: readonly (readonly [string, AllowBlock])[] = [
   ["a column the table lacks", { $default: allow, read: owner("nope") }],
 ];
 
-const seed = async (driver: SqliteDriver) => {
+const seed = async (driver: SqlDriver) => {
   (await installCapture(driver, [JOBS])).unwrap();
   for (const row of ROWS)
     await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES (?, ?, ?, ?)`, [

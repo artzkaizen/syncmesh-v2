@@ -1,5 +1,6 @@
 import type { Handle, Mesh } from "@syncmesh/client";
 import type { JsonValue } from "@syncmesh/kernel";
+import type { SqlDialect } from "@syncmesh/storage";
 
 import { os } from "@orpc/server";
 import { taggedCause } from "@syncmesh/drizzle";
@@ -23,8 +24,8 @@ export interface CallerContext {
 }
 
 /** What `withMesh` adds: the Drizzle surface, pinned to the caller's instance and acting as the caller. */
-export interface MeshContext {
-  readonly mesh: Handle;
+export interface MeshContext<D extends SqlDialect = "sqlite"> {
+  readonly mesh: Handle<D>;
 }
 
 /**
@@ -48,7 +49,7 @@ export interface MeshContext {
  * }
  * ```
  */
-export function withMesh(mesh: Mesh) {
+export function withMesh<D extends SqlDialect = "sqlite">(mesh: Mesh<D>) {
   return os
     .$context<CallerContext>()
     .errors({
@@ -62,7 +63,7 @@ export function withMesh(mesh: Mesh) {
       const handle = mesh.on(caller.partition, { as });
       if (handle.isErr()) throw errors.BAD_REQUEST({ message: handle.error.message });
       try {
-        return await next({ context: { mesh: handle.value } satisfies MeshContext });
+        return await next({ context: { mesh: handle.value } satisfies MeshContext<D> });
       } catch (cause) {
         // a write the caller's rules refused surfaces as the transaction rejecting
         const denied = cause instanceof Error && taggedCause(cause)?._tag === "PolicyDenied";

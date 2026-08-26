@@ -3,7 +3,7 @@ import type { SuiteCase } from "@syncmesh/engine";
 
 import { equal } from "@syncmesh/engine";
 
-import type { SqliteDriver } from "../driver.js";
+import type { SqlDriver } from "../driver.js";
 import type { OpenDriver } from "./index.js";
 
 import { sqlEventStore } from "../event-store.js";
@@ -18,7 +18,7 @@ const coverage: Coverage = {
   ]),
   local: new Map([[A, seq(2)]]),
 };
-const open = async (driver: SqliteDriver) => (await sqlStateStore(driver)).unwrap();
+const open = async (driver: SqlDriver) => (await sqlStateStore(driver)).unwrap();
 const bodyOf = async (store: StateStore) => {
   const value = (await store.loadAll()).unwrap().get(NOTES)?.get(N1)?.cells.get(BODY)?.value;
   return value instanceof Uint8Array ? undefined : JSON.stringify(value);
@@ -81,7 +81,7 @@ export const stateCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
     name: "state: a commit that fails halfway leaves nothing behind",
     run: async () => {
       const inner = await openDriver("state-atomic");
-      const failing: SqliteDriver = {
+      const failing: SqlDriver = {
         ...inner,
         run: (sql, params) =>
           sql.includes("cursors") && sql.startsWith("INSERT")

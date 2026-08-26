@@ -1,6 +1,6 @@
 import type { SuiteCase } from "@syncmesh/engine";
 
-import type { SqliteDriver } from "../driver.js";
+import type { SqlDriver } from "../driver.js";
 
 import { captureCases, captureRuleCases } from "./capture.js";
 import { compactionCases, sqliteMigrationCases } from "./compaction.js";
@@ -10,7 +10,7 @@ import { stateCases } from "./state.js";
 import { tablesCases } from "./tables.js";
 
 /** Opens the database called `name`; the same name must open the same database again after `close`. */
-export type OpenDriver = (name: string) => Promise<SqliteDriver>;
+export type OpenDriver = (name: string) => Promise<SqlDriver>;
 
 /** @deprecated the shared name is `SuiteCase`. */
 export type { SuiteCase as DriverCase } from "@syncmesh/engine";
@@ -35,7 +35,7 @@ export function captureTests(openDriver: OpenDriver): readonly SuiteCase[] {
 }
 
 /**
- * The contract every `SqliteDriver` must satisfy, as named cases for any test runner: the stores,
+ * The contract every `SqlDriver` must satisfy, as named cases for any test runner: the stores,
  * plus the device-side half — tables, capture and read filters — that lives in SQLite DDL.
  *
  * @example

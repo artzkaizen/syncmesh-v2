@@ -15,7 +15,7 @@ import { EmptyMutation, PolicyDenied, can } from "@syncmesh/engine";
 import { getRecord, readRow } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
-import type { SqliteDriver } from "./driver.js";
+import type { SqlDriver } from "./driver.js";
 
 import { captureChanges } from "./capture.js";
 
@@ -41,7 +41,7 @@ export interface WriterDeps {
   readonly engine: Engine;
   readonly validate: Validator;
   /** The connection the app's tables live on; capture is installed on it. */
-  readonly driver: SqliteDriver;
+  readonly driver: SqlDriver;
   readonly tables: readonly Table[];
   /**
    * Act as this principal: each captured change is also judged by the schema's rules for them,

@@ -1,4 +1,4 @@
-import type { SqlDriver, SqlRow, SqlValue } from "@syncmesh/storage";
+import type { PostgresDriver, SqlRow, SqlValue } from "@syncmesh/storage";
 
 /**
  * What this adapter needs from a postgres.js client — the `sql` an app already hands to
@@ -52,7 +52,7 @@ const asRows = (rows: readonly (readonly unknown[])[]): readonly SqlRow[] =>
  * const sql = postgres(process.env.DATABASE_URL!);
  * const stores = (await openStores(postgresDriver(sql), { tables })).unwrap();
  */
-export function postgresDriver(sql: PostgresClient): SqlDriver {
+export function postgresDriver(sql: PostgresClient): PostgresDriver {
   let current: PostgresQuerier = sql;
   return {
     dialect: "postgres",
@@ -80,7 +80,7 @@ export function postgresDriver(sql: PostgresClient): SqlDriver {
  * @example
  * const stores = (await openStores(pgliteDriver(new PGlite()))).unwrap();
  */
-export function pgliteDriver(db: PgliteClient): SqlDriver {
+export function pgliteDriver(db: PgliteClient): PostgresDriver {
   let current: { readonly query: PgliteClient["query"] } = db;
   const rows = async (query: string, params: readonly SqlValue[]) => {
     const result = await current.query(query, [...params], { rowMode: "array" });
