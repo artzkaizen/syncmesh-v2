@@ -5,6 +5,7 @@ import type {
   StateCorrupt,
   StateStore,
   StoreFailure,
+  Validator,
   ValidatorOptions,
 } from "@syncmesh/engine";
 import type { MergeSpec, PeerId } from "@syncmesh/kernel";
@@ -34,10 +35,12 @@ export interface BootOptions {
   readonly grantFor: (peer: PeerId) => Grant | undefined;
 }
 
-/** A booted engine, the log it runs on, and how to let go of what was opened for it; a store you passed in stays yours. */
+/** A booted engine, the log it runs on, its validator, and how to let go of what was opened for it; a store you passed in stays yours. */
 export interface Booted {
   readonly engine: Engine;
   readonly store: EventStore;
+  /** The same ladder the engine runs on every write — for judging a captured transaction before it commits (D20). */
+  readonly validate: Validator;
   readonly close: () => Promise<void>;
 }
 
@@ -81,18 +84,19 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
     if (authority !== undefined) Object.assign(validatorOptions, { authority });
     // SAFETY: one of the two is defined — `owned` is opened exactly when `store` is absent
     const store = (options.store ?? owned?.events) as EventStore;
+    const validate = createValidator(validatorOptions);
     const engineOptions = {
       peerId: identity.peerId,
       clock: createHlcClock({ now }),
       store,
       merge: schema.merge,
-      validate: createValidator(validatorOptions),
+      validate,
     } satisfies EngineOptions;
     const stateStore = options.stateStore ?? owned?.state;
     if (stateStore !== undefined) Object.assign(engineOptions, { stateStore });
     if (options.undoDepth !== undefined)
       Object.assign(engineOptions, { undoDepth: options.undoDepth });
     const engine = yield* Result.await(openEngine(engineOptions));
-    return Result.ok({ engine, store, close: () => owned?.close() ?? Promise.resolve() });
+    return Result.ok({ engine, store, validate, close: () => owned?.close() ?? Promise.resolve() });
   });
 }

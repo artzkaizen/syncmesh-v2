@@ -33,3 +33,10 @@ export type { IssueRequest, MeshGrants } from "./grants.js";
 export { createMeshGrants } from "./grants.js";
 export type { RunningTransports } from "./transports.js";
 export { runTransports } from "./transports.js";
+export type {
+  Write as SqlWrite,
+  WriteError as SqlWriteError,
+  WriteOptions as SqlWriteOptions,
+  WriterDeps,
+} from "./write.js";
+export { createWriter } from "./write.js";

@@ -108,9 +108,44 @@ export const captureCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       ).unwrap();
       equal(
         changes.map((c) => `${c.kind}:${String(c.table)}:${String(c.key)}`),
-        ["insert:counters:42", "delete:jobs:j1", "update:counters:42"],
-        "order and keys",
+        ["insert:counters:42", "delete:jobs:j1"],
+        "first-touch order, one change per row; the counter's insert carries its final value",
       );
+      equal(changes[0] === undefined ? undefined : cellsOf(changes[0])["n"], "7", "net insert");
+    },
+  },
+  {
+    name: "capture: a row touched twice is one change — its net effect, since one event has one stamp",
+    run: async () => {
+      const driver = await open(await openDriver("capture-net"));
+      await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('kept', 'k', 1, 0)`);
+      await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('gone', 'g', 1, 0)`);
+      await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('reborn', 'r', 1, 0)`);
+      const changes = (
+        await captured(driver, async () => {
+          await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('new', 'a', 1, 0)`);
+          await driver.run(`UPDATE jobs SET title = 'b' WHERE id = 'new'`); // insert + update → insert with the final image
+          await driver.run(`UPDATE jobs SET title = 'k2' WHERE id = 'kept'`);
+          await driver.run(`UPDATE jobs SET rank = 2 WHERE id = 'kept'`); // update + update → one patch, both columns
+          await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('blink', 'x', 1, 0)`);
+          await driver.run(`DELETE FROM jobs WHERE id = 'blink'`); // insert + delete → nothing
+          await driver.run(`UPDATE jobs SET title = 'g2' WHERE id = 'gone'`);
+          await driver.run(`DELETE FROM jobs WHERE id = 'gone'`); // update + delete → delete
+          await driver.run(`DELETE FROM jobs WHERE id = 'reborn'`);
+          await driver.run(
+            `INSERT INTO jobs (id, title, rank, done) VALUES ('reborn', 'r2', 1, 0)`,
+          ); // delete + insert → update
+        })
+      ).unwrap();
+      equal(
+        changes.map((c) => `${c.kind}:${String(c.key)}`),
+        ["insert:new", "update:kept", "delete:gone", "update:reborn"],
+        "one net change per row, in first-touch order",
+      );
+      const by = Object.fromEntries(changes.map((c) => [String(c.key), cellsOf(c)]));
+      equal(by["new"]?.["title"], '"b"', "insert carries the final value");
+      equal(Object.keys(by["kept"] ?? {}), ["title", "rank"], "both updated columns, once");
+      equal(by["reborn"]?.["title"], '"r2"', "delete then insert is the columns that differ");
     },
   },
   {
