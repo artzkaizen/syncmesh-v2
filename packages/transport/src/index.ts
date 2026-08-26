@@ -9,6 +9,7 @@ export {
   grantFrame,
   grantRequestFrame,
 } from "./frame.js";
+export { createHoldback } from "./holdback.js";
 export type { Bridge, BridgeError, BridgeOptions } from "./bridge.js";
 export { SendFailed, Unsendable, bridgeFramedLink } from "./bridge.js";
 export type { FrameTransportOptions, Transport, TransportContext } from "./transport.js";

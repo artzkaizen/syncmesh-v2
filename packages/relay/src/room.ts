@@ -1,0 +1,229 @@
+import type { EventStore, StoreFailure, StoredEvent } from "@syncmesh/engine";
+import type { PeerId, SeqNum } from "@syncmesh/kernel";
+
+import { Result } from "@syncmesh/result";
+import { bytesToHex, decodeAndVerify, encodeCbor, encodeEventCore } from "@syncmesh/wire";
+
+import type { Fanout } from "./fanout.js";
+import type { RelaySocket, Sender } from "./sender.js";
+
+import {
+  RELAY_PROTOCOL_VERSIONS,
+  ackFrame,
+  decodeRelayFrame,
+  errorFrame,
+  helloFrame,
+  kaFrame,
+  pageFrame,
+  relayedFrame,
+} from "./frames.js";
+import { createSender } from "./sender.js";
+
+export interface RelayRoomOptions {
+  readonly name: string;
+  /** The durable room log — the same port the engine persists through (RFC-0004). */
+  readonly store: EventStore;
+  /** The log's lineage id: persisted with it, sent in every `hello`. A new log is a new epoch. */
+  readonly epoch: string;
+  /** Cadence of `ka` frames; the client's liveness deadline is 2.5× this. Default 15000. */
+  readonly keepaliveMs?: number;
+  /** Events per catch-up frame. One frame is not a transfer, it is a cliff (RFC-0010). Default 2000. */
+  readonly pageSize?: number;
+  /** Queued frames per socket before the relay hangs up. Default 1000. */
+  readonly maxBacklog?: number;
+  readonly fanout?: Fanout;
+}
+
+/** What the host wires each accepted socket to. */
+export interface RelayConnection {
+  readonly receive: (bytes: Uint8Array) => void;
+  /** The host's socket buffer drained: flush this connection's backlog in order. */
+  readonly drain: () => void;
+  /** The socket is gone; the host must call this exactly once. */
+  readonly closed: () => void;
+}
+
+/**
+ * One room: store-and-forward of signed bytes by a process that holds no keys. It verifies
+ * shapes and signatures, appends, acks and forwards — it interprets nothing, so a compromised
+ * relay can drop traffic but cannot forge it.
+ */
+export interface RelayRoom {
+  readonly connect: (socket: RelaySocket) => RelayConnection;
+  /** Appends to this room's log since it was opened, continued across restarts. */
+  readonly offset: () => number;
+  readonly clients: () => number;
+  readonly close: () => void;
+}
+
+interface Client {
+  readonly peer: PeerId;
+  readonly sender: Sender;
+  readonly socket: RelaySocket;
+}
+
+/** A stored event back to wire form; `undefined` for an entry whose signature was never stored. */
+const envelopeOf = (entry: StoredEvent): Uint8Array | undefined =>
+  entry.sig === undefined ? undefined : encodeCbor([encodeEventCore(entry.event), entry.sig]);
+
+export async function openRelayRoom(
+  options: RelayRoomOptions,
+): Promise<Result<RelayRoom, StoreFailure>> {
+  const { name, store, epoch, keepaliveMs = 15_000, pageSize = 2000, maxBacklog = 1000 } = options;
+  const boot = await store.all();
+  if (boot.isErr()) return boot;
+
+  const cursors = new Map<PeerId, SeqNum>();
+  const advance = (peer: PeerId, seq: SeqNum): void => {
+    if (Number(cursors.get(peer) ?? 0) < Number(seq)) cursors.set(peer, seq);
+  };
+  for (const { event } of boot.value) advance(event.peerId, event.seqNum);
+  let offset = boot.value.length;
+
+  const grants = new Map<string, Uint8Array>();
+  const clients = new Map<PeerId, Client>();
+  /** Room-serialized async work: offsets and acks stay ordered. */
+  let queue: Promise<unknown> = Promise.resolve();
+
+  const toClients = (frame: Uint8Array, except?: PeerId): void => {
+    for (const client of clients.values()) {
+      if (client.peer !== except) client.sender.send(frame);
+    }
+  };
+  const fan = options.fanout?.connect(name);
+  const offFan = fan?.onFrame((frame) => toClients(frame));
+  const keepalive = setInterval(() => toClients(kaFrame()), keepaliveMs);
+
+  const connect = (socket: RelaySocket): RelayConnection => {
+    const sender = createSender(socket, maxBacklog);
+    let me: PeerId | undefined;
+
+    const refuse = (code: string, message: string, fatal = false): void => {
+      sender.send(errorFrame(code, message));
+      if (fatal) socket.close(code);
+    };
+
+    const catchUp = (theirs: ReadonlyMap<PeerId, SeqNum>): void => {
+      queue = queue.then(async () => {
+        const entries = await store.allSince(theirs);
+        if (entries.isErr()) {
+          refuse("store", entries.error.message);
+          return;
+        }
+        const wires = entries.value.map(envelopeOf).filter((w): w is Uint8Array => w !== undefined);
+        const grantWires = [...grants.values()];
+        // always at least one page: it carries the grants, and its `more: false` is what
+        // releases the client's push-outstanding
+        let index = 0;
+        do {
+          const slice = wires.slice(index, index + pageSize);
+          index += pageSize;
+          sender.send(
+            pageFrame(index <= pageSize ? grantWires : [], slice, index < wires.length, offset),
+          );
+        } while (index < wires.length);
+      });
+    };
+
+    const onJoin = (
+      versions: readonly number[],
+      peer: PeerId,
+      theirs: ReadonlyMap<PeerId, SeqNum>,
+    ): void => {
+      const shared = versions.filter((v) => RELAY_PROTOCOL_VERSIONS.includes(v));
+      const selected = shared.length > 0 ? Math.max(...shared) : undefined;
+      if (selected === undefined) {
+        refuse("version", `this relay speaks ${RELAY_PROTOCOL_VERSIONS.join(", ")}`, true);
+        return;
+      }
+      // one socket per peer, never a silent room switch: the old socket goes first
+      clients.get(peer)?.socket.close("superseded by a newer join");
+      clients.delete(peer);
+      me = peer;
+      clients.set(peer, { peer, sender, socket });
+      sender.send(helloFrame(selected, keepaliveMs, epoch, new Map(cursors)));
+      catchUp(theirs);
+    };
+
+    const onEvent = (wire: Uint8Array): void => {
+      queue = queue.then(async () => {
+        const verified = decodeAndVerify(wire);
+        if (verified.isErr()) {
+          refuse("bad-event", verified.error.message);
+          return;
+        }
+        // locality never reaches the wire: the envelope has no field for it, so a local
+        // event cannot arrive here — the device-side writer and codec enforce that (D20)
+        const { event } = verified.value;
+        const held = await store.has(event.id);
+        if (held.isErr()) {
+          refuse("store", held.error.message);
+          return;
+        }
+        if (!held.value) {
+          const appended = await store.append(verified.value);
+          if (appended.isErr()) {
+            refuse("store", appended.error.message);
+            return;
+          }
+          offset += 1;
+          advance(event.peerId, event.seqNum);
+          const relayed = relayedFrame(wire, offset);
+          toClients(relayed, event.peerId);
+          fan?.publish(relayed);
+        }
+        // the durability ack, idempotent: what a write handle's synced() counts
+        sender.send(ackFrame(String(event.id), offset));
+      });
+    };
+
+    const onGrant = (bytes: Uint8Array, wire: Uint8Array): void => {
+      const key = bytesToHex(wire);
+      if (grants.has(key)) return;
+      grants.set(key, wire);
+      // the received frame bytes, untouched: grants forward byte-identical, never re-encoded
+      toClients(bytes, me);
+      fan?.publish(bytes);
+    };
+
+    return {
+      receive: (bytes) => {
+        const decoded = decodeRelayFrame(bytes);
+        if (decoded.isErr()) {
+          refuse("malformed", decoded.error.message);
+          return;
+        }
+        const frame = decoded.value;
+        if (frame.kind === "join") {
+          onJoin(frame.versions, frame.peerId, frame.cursors);
+          return;
+        }
+        if (me === undefined) {
+          refuse("join-first", "the first frame on a relay socket is join", true);
+          return;
+        }
+        if (frame.kind !== "session") return; // the relay ignores control frames it did not ask for
+        if (frame.frame.kind === "event") onEvent(frame.frame.wire);
+        else if (frame.frame.kind === "grant") onGrant(bytes, frame.frame.wire);
+        else if (frame.frame.kind === "grant-request") toClients(bytes, me);
+      },
+      drain: () => sender.drain(),
+      closed: () => {
+        if (me !== undefined && clients.get(me)?.sender === sender) clients.delete(me);
+      },
+    };
+  };
+
+  return Result.ok({
+    connect,
+    offset: () => offset,
+    clients: () => clients.size,
+    close: () => {
+      clearInterval(keepalive);
+      offFan?.();
+      fan?.close();
+      for (const client of clients.values()) client.socket.close("room closed");
+      clients.clear();
+    },
+  });
+}

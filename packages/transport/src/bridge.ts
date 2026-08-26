@@ -10,6 +10,7 @@ import { decodeAndVerify, encodeCbor, encodeEventCore, signEvent } from "@syncme
 import type { FrameLink } from "./link.js";
 
 import { cursorsFrame, decodeFrame, eventFrame, grantFrame, grantRequestFrame } from "./frame.js";
+import { createHoldback } from "./holdback.js";
 
 /** A relayed event whose author's signature was never stored cannot leave — nobody else can sign it. */
 export class Unsendable extends TaggedError("Unsendable")<{ id: string; message: string }> {}
@@ -47,44 +48,6 @@ export interface Bridge {
   /** Everything received so far is folded. */
   readonly flush: () => Promise<void>;
   readonly close: () => void;
-}
-
-/** Out-of-order holdback, per author: the gap rule. Max-based cursors would jump a lost frame. */
-function createHoldback(engine: Engine, self: PeerId, gapLimit: number) {
-  const held = new Map<PeerId, Map<number, StoredEvent>>();
-  const contiguous = (author: PeerId): number => Number(engine.coverage().synced.get(author) ?? 0);
-
-  return {
-    /** Buffers the entry; `true` when the buffer overflowed and a resync must take over. */
-    put: ({ event, sig }: StoredEvent): boolean => {
-      const seq = Number(event.seqNum);
-      if (event.peerId === self || seq <= contiguous(event.peerId)) return false;
-      const buffer = held.get(event.peerId) ?? new Map<number, StoredEvent>();
-      buffer.set(seq, sig === undefined ? { event } : { event, sig });
-      held.set(event.peerId, buffer);
-      if (buffer.size > gapLimit) {
-        buffer.clear();
-        return true;
-      }
-      return false;
-    },
-    /** The contiguous run above what the engine holds, in order. */
-    drain: (author: PeerId): readonly StoredEvent[] => {
-      const buffer = held.get(author);
-      if (buffer === undefined) return [];
-      const ready: StoredEvent[] = [];
-      let next = contiguous(author) + 1;
-      for (;;) {
-        const entry = buffer.get(next);
-        if (entry === undefined) break;
-        buffer.delete(next);
-        ready.push(entry);
-        next += 1;
-      }
-      if (buffer.size === 0) held.delete(author);
-      return ready;
-    },
-  };
 }
 
 export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridge {

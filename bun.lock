@@ -211,6 +211,27 @@
         "vite-plus": "catalog:",
       },
     },
+    "packages/relay": {
+      "name": "@syncmesh/relay",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/engine": "workspace:*",
+        "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/result": "workspace:*",
+        "@syncmesh/sqlite-bun": "workspace:*",
+        "@syncmesh/storage": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
+        "@syncmesh/transport": "workspace:*",
+        "@syncmesh/wire": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncmesh/config": "workspace:*",
+        "@syncmesh/schema": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+    },
     "packages/result": {
       "name": "@syncmesh/result",
       "version": "0.0.0",
@@ -570,6 +591,8 @@
     "@syncmesh/orpc": ["@syncmesh/orpc@workspace:packages/orpc"],
 
     "@syncmesh/policy": ["@syncmesh/policy@workspace:packages/policy"],
+
+    "@syncmesh/relay": ["@syncmesh/relay@workspace:packages/relay"],
 
     "@syncmesh/result": ["@syncmesh/result@workspace:packages/result"],
 
