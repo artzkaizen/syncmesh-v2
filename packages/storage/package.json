@@ -24,6 +24,7 @@
     "@syncmesh/engine": "workspace:*",
     "@syncmesh/kernel": "workspace:*",
     "@syncmesh/result": "workspace:*",
+    "@syncmesh/schema": "workspace:*",
     "@syncmesh/temporal": "workspace:*",
     "@syncmesh/wire": "workspace:*"
   },
