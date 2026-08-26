@@ -2,6 +2,7 @@ import type { EventStore, StoreFailure, StoredEvent } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
 import { Result } from "@syncmesh/result";
+import { cursorsFrame } from "@syncmesh/transport";
 import { bytesToHex, decodeAndVerify, encodeCbor, encodeEventCore } from "@syncmesh/wire";
 
 import type { Fanout } from "./fanout.js";
@@ -143,6 +144,8 @@ export async function openRelayRoom(
       clients.set(peer, { peer, sender, socket });
       sender.send(helloFrame(selected, keepaliveMs, epoch, new Map(cursors)));
       catchUp(theirs);
+      // what the joiner holds, in its own words, for everyone else's `delivered`
+      toClients(cursorsFrame(peer, theirs), peer);
     };
 
     const onEvent = (wire: Uint8Array): void => {
@@ -205,7 +208,8 @@ export async function openRelayRoom(
         if (frame.kind !== "session") return; // the relay ignores control frames it did not ask for
         if (frame.frame.kind === "event") onEvent(frame.frame.wire);
         else if (frame.frame.kind === "grant") onGrant(bytes, frame.frame.wire);
-        else if (frame.frame.kind === "grant-request") toClients(bytes, me);
+        else if (frame.frame.kind === "grant-request" || frame.frame.kind === "cursors")
+          toClients(bytes, me); // peer-to-peer facts pass through byte-identical
       },
       drain: () => sender.drain(),
       closed: () => {

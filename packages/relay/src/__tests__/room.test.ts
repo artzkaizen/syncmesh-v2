@@ -1,7 +1,7 @@
 import type { PeerId } from "@syncmesh/kernel";
 
 import { createMemoryEventStore } from "@syncmesh/engine";
-import { eventFrame, grantFrame } from "@syncmesh/transport";
+import { cursorsFrame, eventFrame, grantFrame } from "@syncmesh/transport";
 import { describe, expect, test } from "bun:test";
 
 import type { RelayFrame } from "../frames.js";
@@ -171,6 +171,40 @@ describe("ingest", () => {
     room.connect(late.socket).receive(join(peer(120, "acct_c").identity.peerId));
     await tick();
     expect(late.ofKind("page")[0]?.grants).toHaveLength(1);
+    room.close();
+  });
+});
+
+describe("peer-to-peer facts pass through", () => {
+  test("a joiner's cursors reach the others at join, and a cursors frame it sends later too", async () => {
+    const a = peer(40, "acct_a");
+    const b = peer(80, "acct_b");
+    const room = await open();
+    const sa = fakeSocket();
+    room.connect(sa.socket).receive(join(a.identity.peerId));
+    await tick();
+    sa.sent.length = 0;
+
+    const sb = fakeSocket();
+    const cb = room.connect(sb.socket);
+    // SAFETY: test fixture seq
+    const theirs = new Map([[a.identity.peerId, 2 as never]]);
+    cb.receive(joinFrame([1], b.identity.peerId, theirs));
+    await tick();
+    const [atJoin] = sa.ofKind("session");
+    expect(atJoin?.frame.kind === "cursors" && String(atJoin.frame.from)).toBe(
+      String(b.identity.peerId),
+    );
+    expect(
+      atJoin?.frame.kind === "cursors" && Number(atJoin.frame.cursors.get(a.identity.peerId)),
+    ).toBe(2);
+
+    sa.sent.length = 0;
+    // SAFETY: test fixture seq
+    const later = cursorsFrame(b.identity.peerId, new Map([[a.identity.peerId, 3 as never]]));
+    cb.receive(later);
+    expect(sa.sent[0]).toEqual(later); // byte-identical, and never echoed to b
+    expect(sb.ofKind("session").filter((f) => f.frame.kind === "cursors")).toHaveLength(0);
     room.close();
   });
 });

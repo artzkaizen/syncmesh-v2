@@ -3,7 +3,14 @@ import type { StoredEvent } from "@syncmesh/engine";
 import type { Transport, TransportContext } from "@syncmesh/transport";
 
 import { createHub } from "@syncmesh/engine";
-import { createHoldback, eventFrame, grantFrame, grantRequestFrame } from "@syncmesh/transport";
+import { Temporal } from "@syncmesh/temporal";
+import {
+  createHoldback,
+  cursorsFrame,
+  eventFrame,
+  grantFrame,
+  grantRequestFrame,
+} from "@syncmesh/transport";
 import { decodeAndVerify, encodeCbor, encodeEventCore, signEvent } from "@syncmesh/wire";
 
 import type { RelayFrame } from "./frames.js";
@@ -64,6 +71,7 @@ function wireSession(
   hooks: SessionHooks,
 ): readonly Unsubscribe[] {
   const { engine, identity, grants } = context;
+  const now = context.now ?? (() => Temporal.Now.instant());
   const holdback = createHoldback(engine, identity.peerId, 512);
   let chain: Promise<unknown> = Promise.resolve();
   let caughtUp = false;
@@ -99,8 +107,13 @@ function wireSession(
     });
   };
 
+  /** Our contiguous position, for every other peer's `delivered`; the relay passes it on. */
+  const sendCursors = (): void =>
+    hooks.sendSafe(cursorsFrame(identity.peerId, engine.coverage().synced));
+
   const onSession = (frame: Extract<RelayFrame, { kind: "session" }>["frame"]): void => {
     if (frame.kind === "grant") void grants.register(frame.wire);
+    else if (frame.kind === "cursors") engine.acknowledge(frame.from, frame.cursors, now());
     else if (frame.kind === "grant-request") {
       const request = { peerId: frame.peerId };
       if (frame.invite !== undefined) Object.assign(request, { invite: frame.invite });
@@ -136,7 +149,11 @@ function wireSession(
     if (caughtUp) hooks.sendSafe(eventFrame(signEvent(event, identity).wire));
   });
   const offRegistered = grants.onRegistered((_grant, wire) => hooks.sendSafe(grantFrame(wire)));
-  return [offFrame, offOutbound, offRegistered];
+  // a fold of peers' events moved our position: say so once caught up, so their `delivered` settles
+  const offFolds = engine.onFoldBatch((batch) => {
+    if (caughtUp && batch.source === "remote") sendCursors();
+  });
+  return [offFrame, offOutbound, offRegistered, offFolds];
 }
 
 export function relayTransport(options: RelayTransportOptions): Transport {

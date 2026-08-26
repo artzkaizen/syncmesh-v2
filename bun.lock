@@ -98,6 +98,7 @@
       },
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
+        "@syncmesh/relay": "workspace:*",
         "@types/bun": "catalog:",
         "drizzle-orm": "latest",
         "fast-check": "catalog:",

@@ -98,6 +98,9 @@ describe("relayTransport", () => {
     await tick(20);
     expect(bodyOf(a, "n4")).toBe("four");
     expect(room.offset()).toBe(4);
+    // each side has heard, in the other's own words, what it holds — what `delivered` settles on
+    expect(Number(a.engine.acks().get(b.identity.peerId)?.get(a.identity.peerId))).toBe(3);
+    expect(Number(b.engine.acks().get(a.identity.peerId)?.get(b.identity.peerId))).toBe(1);
 
     await ta.stop();
     await tb.stop();
