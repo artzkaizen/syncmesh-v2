@@ -83,6 +83,7 @@
       "name": "@syncmesh/client",
       "version": "0.0.0",
       "dependencies": {
+        "@syncmesh/drizzle": "workspace:*",
         "@syncmesh/engine": "workspace:*",
         "@syncmesh/kernel": "workspace:*",
         "@syncmesh/policy": "workspace:*",
@@ -98,19 +99,21 @@
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
         "@types/bun": "catalog:",
+        "drizzle-orm": "latest",
         "fast-check": "catalog:",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
+      },
+      "peerDependencies": {
+        "drizzle-orm": ">=0.44",
       },
     },
     "packages/drizzle": {
       "name": "@syncmesh/drizzle",
       "version": "0.0.0",
       "dependencies": {
-        "@syncmesh/client": "workspace:*",
         "@syncmesh/engine": "workspace:*",
         "@syncmesh/kernel": "workspace:*",
-        "@syncmesh/policy": "workspace:*",
         "@syncmesh/result": "workspace:*",
         "@syncmesh/schema": "workspace:*",
         "@syncmesh/storage": "workspace:*",
@@ -169,6 +172,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@syncmesh/client": "workspace:*",
+        "@syncmesh/drizzle": "workspace:*",
         "@syncmesh/kernel": "workspace:*",
         "@syncmesh/result": "workspace:*",
         "@syncmesh/schema": "workspace:*",
@@ -177,15 +181,19 @@
         "@orpc/server": "2.0.0-beta.31",
         "@syncmesh/config": "workspace:*",
         "@syncmesh/engine": "workspace:*",
+        "@syncmesh/sqlite-bun": "workspace:*",
+        "@syncmesh/storage": "workspace:*",
         "@syncmesh/temporal": "workspace:*",
         "@syncmesh/wire": "workspace:*",
         "@types/bun": "catalog:",
+        "drizzle-orm": "latest",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
         "zod": "^3.25.76",
       },
       "peerDependencies": {
         "@orpc/server": "^2.0.0-beta.31",
+        "drizzle-orm": ">=0.44",
       },
     },
     "packages/policy": {

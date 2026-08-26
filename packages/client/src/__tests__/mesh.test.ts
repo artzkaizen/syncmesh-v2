@@ -1,32 +1,40 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
-import { createMemoryEventStore } from "@syncmesh/engine";
+import { taggedCause } from "@syncmesh/drizzle";
 import { defineSchema, t } from "@syncmesh/schema";
+import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
+import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import { createMesh } from "../mesh.js";
+
+const catalog = sqliteTable("catalog", {
+  id: text().primaryKey(),
+  code: text().notNull(),
+  stock: integer().notNull(),
+});
+const books = sqliteTable("books", {
+  id: text().primaryKey(),
+  title: text().notNull(),
+  createdBy: text().notNull(),
+});
 
 const schema = () =>
   defineSchema({
     partitions: { org: {} },
     roles: { org: ["admin", "member"] },
     tables: {
-      catalog: { columns: { id: t.text().primaryKey(), code: t.text() } },
+      catalog: {
+        columns: { id: t.text().primaryKey(), code: t.text(), stock: t.integer() },
+      },
       books: {
-        columns: {
-          id: t.text().primaryKey(),
-          title: t.text(),
-          pinned: t.boolean().nullable(),
-          addedAt: t.timestamp().nullable(),
-          createdBy: t.text(),
-        },
+        columns: { id: t.text().primaryKey(), title: t.text(), createdBy: t.text() },
         partition: "org",
         allow: ({ role }) => ({ $default: role("member"), delete: role("admin") }),
       },
-      notes: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "user" },
-      drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "local" },
     },
   });
 
@@ -34,16 +42,19 @@ const issuer = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 50 + i))
 const device = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 90 + i)).unwrap();
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 
-const granted = async (role = "member", partitions = ["org:acme"]) => {
-  const mesh = (
+const open = async () =>
+  (
     await createMesh({
-      store: createMemoryEventStore(),
+      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: device,
       issuer: issuer.peerId,
       now: () => T0,
     })
   ).unwrap();
+
+const granted = async (role = "member") => {
+  const mesh = await open();
   mesh.grants
     .register(
       issueGrant(issuer, {
@@ -51,7 +62,7 @@ const granted = async (role = "member", partitions = ["org:acme"]) => {
         device: device.peerId,
         role,
         // SAFETY: test fixture instances in the documented kind:id form
-        partitions: partitions as never,
+        partitions: ["org:acme"] as never,
         validFor: Temporal.Duration.from({ hours: 1 }),
         now: T0,
       }),
@@ -60,222 +71,118 @@ const granted = async (role = "member", partitions = ["org:acme"]) => {
   return mesh;
 };
 
-const tag = <E extends { _tag: string }>(r: { isErr: () => boolean; error?: E }) =>
-  // SAFETY: test helper; error is present exactly when isErr()
-  r.isErr() ? (r as { error: E }).error._tag : "ok";
+/** The mesh's tag inside a rejected Drizzle write, or how the write actually ended. */
+const outcome = (write: Promise<unknown>) =>
+  write.then(
+    () => "ok",
+    (cause: unknown) =>
+      cause instanceof Error ? (taggedCause(cause)?._tag ?? String(cause)) : String(cause),
+  );
 
-describe("the namespace", () => {
-  test("a table named like a mesh method is a definition-time panic, not a silent shadow", async () => {
-    // grants, tx, ready are real domain names — without the panic, {...base, ...collections}
-    // would shadow the method and fail far away as "mesh.grants.register is not a function"
-    for (const name of ["grants", "tx", "ready"]) {
-      const colliding = defineSchema({
-        tables: { [name]: { columns: { id: t.text().primaryKey() } } },
-      });
-      const collided = await createMesh({
-        store: createMemoryEventStore(),
-        schema: colliding,
-        identity: device,
-        now: () => T0,
-      }).catch((cause: unknown) => cause);
-      expect(collided).toBeInstanceOf(Error);
-      expect(String(collided)).toContain("collides with a mesh method");
-    }
-  });
-
-  test("reserved tables never surface as collections; declared tables do", async () => {
+describe("on — one handle per pin and principal", () => {
+  test("a malformed pin is refused; the same pin returns the same handle", async () => {
     const mesh = await granted();
-    expect("_policy" in mesh).toBe(false);
-    expect("_corrections" in mesh).toBe(false);
-    for (const name of ["catalog", "books", "notes", "drafts"]) expect(name in mesh).toBe(true);
+    const bad = mesh.on("not a key");
+    expect(bad.isErr() && bad.error._tag).toBe("InvalidPartitionKey");
+    const first = mesh.on("org:acme").unwrap();
+    expect(mesh.on("org:acme").unwrap()).toBe(first);
+    expect(mesh.on()).not.toBe(first);
   });
 });
 
-describe("verbs", () => {
-  test("insert writes omitted nullable columns as null, converts timestamps both ways, and reads back the stored row", async () => {
-    const mesh = await granted();
-    mesh.activate("org:acme").unwrap();
-    const stored = (
-      await mesh.books.create({ id: "b1", title: "Dune", addedAt: T0, createdBy: "acct_a" })
-    ).unwrap();
-    expect(stored.pinned).toBeNull();
-    expect(stored.addedAt?.epochMilliseconds).toBe(T0.epochMilliseconds);
-    expect(mesh.books.get("b1")?.title).toBe("Dune");
-    expect(mesh.books.list()).toHaveLength(1);
-  });
-
-  test("a wrong value is refused at the call site before any event exists", async () => {
-    const mesh = await granted();
-    mesh.activate("org:acme").unwrap();
-    // SAFETY: deliberately wrong value under test
-    const r = await mesh.books.create({ id: "b1", title: 3 as never, createdBy: "acct_a" });
-    expect(tag(r)).toBe("ColumnCheckFailed");
-    expect(mesh.books.list()).toHaveLength(0);
-  });
-
-  test("update writes only the columns that changed; an unchanged patch is EmptyMutation", async () => {
-    const mesh = await granted();
-    mesh.activate("org:acme").unwrap();
-    const events: SyncEvent[] = [];
-    mesh.engine.onOutbound((e) => void events.push(e));
-    (await mesh.books.create({ id: "b1", title: "Dune", createdBy: "acct_a" })).unwrap();
-    const updated = (await mesh.books.update("b1", { title: "Dune II", pinned: null })).unwrap();
-    expect(updated.title).toBe("Dune II");
-    const patch = events.at(-1)?.changes[0];
-    expect(patch?.kind === "update" && [...patch.patch.keys()].map(String)).toEqual(["title"]);
-    expect(tag(await mesh.books.update("b1", { pinned: null }))).toBe("EmptyMutation");
-    expect(tag(await mesh.books.update("nope", { title: "x" }))).toBe("NoSuchRow");
-  });
-
-  test("update(draft): the updater mutates a copy, diffed to a patch", async () => {
-    const mesh = await granted();
-    mesh.activate("org:acme").unwrap();
-    const events: SyncEvent[] = [];
-    mesh.engine.onOutbound((e) => void events.push(e));
-    (await mesh.books.create({ id: "b1", title: "Dune", createdBy: "acct_a" })).unwrap();
-    const updated = (
-      await mesh.books.update("b1", (draft) => {
-        draft.title = "Dune (rev)";
-      })
-    ).unwrap();
-    expect(updated.title).toBe("Dune (rev)");
-    const patch = events.at(-1)?.changes[0];
-    expect(patch?.kind === "update" && [...patch.patch.keys()].map(String)).toEqual(["title"]);
-    expect(tag(await mesh.books.update("b1", () => undefined))).toBe("EmptyMutation");
-    expect(tag(await mesh.books.update("b1", (draft) => void (draft.title = "Dune (rev)")))).toBe(
-      "EmptyMutation",
-    );
-    expect(tag(await mesh.books.update("nope", () => undefined))).toBe("NoSuchRow");
-    expect(mesh.books.get("b1")?.title).toBe("Dune (rev)");
-  });
-
-  test("delete removes the row from every read", async () => {
-    const mesh = await granted("admin");
-    mesh.activate("org:acme").unwrap();
-    (await mesh.books.create({ id: "b1", title: "Dune", createdBy: "acct_a" })).unwrap();
-    (await mesh.books.delete("b1")).unwrap();
-    expect(mesh.books.get("b1")).toBeUndefined();
-    expect(mesh.books.list()).toHaveLength(0);
-  });
-});
-
-describe("placement", () => {
-  test("an org table with nothing active names the setter; activate re-points; unknown kinds are refused", async () => {
-    const mesh = await granted("member", ["org:acme", "org:globex"]);
-    const before = await mesh.books.create({ id: "b1", title: "x", createdBy: "acct_a" });
-    expect(tag(before)).toBe("NoActivePartition");
-    expect(before.isErr() && before.error.message).toContain('activate("org:<id>")');
-
-    mesh.activate("org:acme").unwrap();
-    (await mesh.books.create({ id: "b1", title: "acme", createdBy: "acct_a" })).unwrap();
-    mesh.activate("org:globex").unwrap();
-    (await mesh.books.create({ id: "b2", title: "globex", createdBy: "acct_a" })).unwrap();
-    expect(mesh.books.list().map((r) => r.title)).toEqual(["globex"]);
-
-    expect(tag(mesh.activate("site:acme"))).toBe("UnknownPartitionKind");
-    expect(tag(mesh.activate("not a key"))).toBe("InvalidPartitionKey");
-  });
-
-  test("one instance in the grant is implied — no activate call needed", async () => {
-    const mesh = await granted();
-    (await mesh.books.create({ id: "b1", title: "x", createdBy: "acct_a" })).unwrap();
-    expect(String(mesh.active("org"))).toBe("org:acme");
-  });
-
-  test("user rows go to the account's partition; local rows never reach outbound", async () => {
-    const mesh = await granted();
-    const events: SyncEvent[] = [];
-    mesh.engine.onOutbound((e) => void events.push(e));
-    (await mesh.notes.create({ id: "n1", body: "milk" })).unwrap();
-    expect(String(events.at(-1)?.partition)).toBe("user:acct_a");
-    (await mesh.drafts.create({ id: "d1", body: "wip" })).unwrap();
-    expect(events).toHaveLength(1);
-    expect(mesh.drafts.list()).toHaveLength(1);
-  });
-
-  test("ungranted: schema still checks, global is read-only, user tables need a grant", async () => {
+describe("the schema judges every write, wherever it entered", () => {
+  test("the ladder answers in order: global is read-only, org tables need a grant, then columns", async () => {
+    // no issuer: the mesh trusts no root yet, so nothing is granted
     const mesh = (
       await createMesh({
-        store: createMemoryEventStore(),
+        driver: bunSqliteDriver(":memory:"),
         schema: schema(),
         identity: device,
         now: () => T0,
       })
     ).unwrap();
-    // SAFETY: deliberately wrong value under test
-    expect(tag(await mesh.catalog.create({ id: "c1", code: 3 as never }))).toBe(
-      "ColumnCheckFailed",
+    const global = mesh.on().unwrap().db;
+    expect(await outcome(global.insert(catalog).values({ id: "c1", code: "x", stock: 1 }))).toBe(
+      "ReadOnlyPartition",
     );
-    expect(tag(await mesh.catalog.create({ id: "c1", code: "x" }))).toBe("ReadOnlyPartition");
-    expect(tag(await mesh.notes.create({ id: "n1", body: "b" }))).toBe("NoGrant");
-    (await mesh.drafts.create({ id: "d1", body: "wip" })).unwrap();
-  });
-});
-
-describe("tx", () => {
-  test("tables of different partitions are refused before anything is written", async () => {
-    const mesh = await granted();
-    mesh.activate("org:acme").unwrap();
-    const r = await mesh.tx((c) =>
-      c.books
-        .create({ id: "b1", title: "x", createdBy: "acct_a" })
-        .andThen(() => c.notes.create({ id: "n1", body: "b" }))
-        .map(() => undefined),
+    // with an issuer configured but no grant held, the grant rung refuses first
+    const gated = await open();
+    const { db } = gated.on("org:acme").unwrap();
+    expect(await outcome(db.insert(books).values({ id: "b1", title: "x", createdBy: "a" }))).toBe(
+      "NoGrant",
     );
-    expect(tag(r)).toBe("CrossPartitionTx");
-    expect(mesh.books.list()).toHaveLength(0);
-    expect(mesh.notes.list()).toHaveLength(0);
-  });
+    // the app table holds nothing: the refused statements were rolled back with their events
+    expect(await global.select().from(catalog)).toHaveLength(0);
 
-  test("one partition lands as one event with a derived label", async () => {
-    const mesh = await granted();
-    mesh.activate("org:acme").unwrap();
-    (await mesh.books.create({ id: "b1", title: "old", createdBy: "acct_a" })).unwrap();
-    const events: SyncEvent[] = [];
-    mesh.engine.onOutbound((e) => void events.push(e));
-    (
-      await mesh.tx((c) =>
-        c.books
-          .create({ id: "b2", title: "new", createdBy: "acct_a" })
-          .andThen(() => c.books.update("b1", { title: "renamed" }))
-          .map(() => undefined),
-      )
+    // as the authority the partition rung passes, and the column check gets its turn
+    const authority = (
+      await createMesh({
+        driver: bunSqliteDriver(":memory:"),
+        schema: schema(),
+        identity: device,
+        authority: device.peerId,
+        now: () => T0,
+      })
     ).unwrap();
-    expect(events).toHaveLength(1);
-    expect(String(events[0]?.procedure)).toBe("books.insert+books.update");
-    expect(events[0]?.changes).toHaveLength(2);
-    expect(mesh.books.get("b1")?.title).toBe("renamed");
+    const adb = authority.on().unwrap().db;
+    // a fractional stock survives SQLite's affinity and the integer column refuses it
+    expect(await outcome(adb.insert(catalog).values({ id: "c1", code: "x", stock: 1.5 }))).toBe(
+      "SchemaViolation",
+    );
+    await adb.insert(catalog).values({ id: "c1", code: "x", stock: 3 });
+    expect(await adb.select().from(catalog)).toHaveLength(1);
   });
-});
 
-describe("can", () => {
-  test("answers from the same rules the receivers enforce", async () => {
+  test("a member writes but cannot delete; an admin can — the same rules can() answers from", async () => {
     const member = await granted();
+    const { db } = member.on("org:acme").unwrap();
+    await db.insert(books).values({ id: "b1", title: "Dune", createdBy: "acct_a" });
+    expect(await outcome(db.delete(books).where(eq(books.id, "b1")))).toBe("PolicyDenied");
+    expect((await db.select().from(books)).map((r) => r.title)).toEqual(["Dune"]);
     expect(member.can("books.insert")).toBe(true);
     expect(member.can("books.delete")).toBe(false);
-    expect(member.books.can("delete")).toBe(false);
-    expect((await granted("admin")).can("books.delete")).toBe(true);
+
+    const admin = await granted("admin");
+    const ha = admin.on("org:acme").unwrap();
+    await ha.db.insert(books).values({ id: "b1", title: "Dune", createdBy: "acct_a" });
+    await ha.db.delete(books).where(eq(books.id, "b1"));
+    expect(await ha.db.select().from(books)).toHaveLength(0);
+    expect(admin.can("books.delete")).toBe(true);
   });
 });
 
-describe("live handles across activate", () => {
-  test("activate re-points every open handle and notifies the ones that changed", async () => {
-    const mesh = await granted("member", ["org:acme", "org:globex"]);
-    mesh.activate("org:acme").unwrap();
-    (await mesh.books.create({ id: "b1", title: "acme", createdBy: "acct_a" })).unwrap();
-    mesh.activate("org:globex").unwrap();
-    (await mesh.books.create({ id: "b2", title: "globex", createdBy: "acct_a" })).unwrap();
+describe("statements become events", () => {
+  test("the pin stamps the partition; a no-op update makes no event", async () => {
+    const mesh = await granted();
+    const events: SyncEvent[] = [];
+    mesh.engine.onOutbound((e) => void events.push(e));
+    const { db } = mesh.on("org:acme").unwrap();
+    await db.insert(books).values({ id: "b1", title: "Dune", createdBy: "acct_a" });
+    expect(String(events.at(-1)?.partition)).toBe("org:acme");
+    expect(String(events.at(-1)?.procedure)).toBe("books.insert");
 
-    const titles = mesh.liveQuery(mesh.books.query({ orderBy: "title" }));
-    let notified = 0;
-    titles.subscribe(() => void (notified += 1));
-    expect(titles.data().map((r) => r.title)).toEqual(["globex"]);
+    await db.update(books).set({ title: "Dune" }).where(eq(books.id, "b1"));
+    expect(events).toHaveLength(1); // nothing changed — nothing to say
+  });
 
-    mesh.activate("org:acme").unwrap();
-    expect(titles.data().map((r) => r.title)).toEqual(["acme"]);
-    expect(notified).toBe(1);
-    mesh.activate("org:acme").unwrap();
-    expect(notified).toBe(1);
-    mesh.releaseQuery(titles);
+  test("a transaction lands as one event with a derived label and only the changed cells", async () => {
+    const mesh = await granted();
+    const events: SyncEvent[] = [];
+    mesh.engine.onOutbound((e) => void events.push(e));
+    const { db } = mesh.on("org:acme").unwrap();
+    await db.insert(books).values({ id: "b1", title: "old", createdBy: "acct_a" });
+    await db.transaction(async (tx) => {
+      await tx.insert(books).values({ id: "b2", title: "new", createdBy: "acct_a" });
+      await tx.update(books).set({ title: "renamed" }).where(eq(books.id, "b1"));
+    });
+    expect(events).toHaveLength(2);
+    expect(String(events.at(-1)?.procedure)).toBe("books.insert+books.update");
+    expect(events.at(-1)?.changes).toHaveLength(2);
+    const patch = events.at(-1)?.changes.find((c) => c.kind === "update");
+    expect(patch?.kind === "update" && [...patch.patch.keys()].map(String)).toEqual(["title"]);
+    expect((await db.select().from(books).orderBy(books.id)).map((r) => r.title)).toEqual([
+      "renamed",
+      "new",
+    ]);
   });
 });

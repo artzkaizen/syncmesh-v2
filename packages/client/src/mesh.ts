@@ -1,10 +1,12 @@
 import type { Engine, EventStore, Principal, StateStore } from "@syncmesh/engine";
-import type { EventId, JsonValue, PartitionKey, PeerId, Row as WireCells } from "@syncmesh/kernel";
+import type { EventId, PartitionKey, PeerId, Row as WireCells } from "@syncmesh/kernel";
 import type { InvalidPartitionKey } from "@syncmesh/kernel";
-import type { ColumnsMap, PartitionTree, Roles, Schema, Table, TablesOf } from "@syncmesh/schema";
+import type { AppValue, ColumnsMap, PartitionTree, Roles, Schema, Table } from "@syncmesh/schema";
+import type { SqliteDriver, TxReceipt } from "@syncmesh/storage";
 import type { Transport, TransportContext } from "@syncmesh/transport";
 import type { Grant, Identity } from "@syncmesh/wire";
 
+import { meshDrizzle } from "@syncmesh/drizzle";
 import { can as canOn } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
@@ -12,38 +14,29 @@ import { Temporal } from "@syncmesh/temporal";
 import { createGrantRegistry } from "@syncmesh/wire";
 
 import type { Booted, MeshOpenError } from "./boot.js";
-import type { Collection } from "./collection.js";
-import type { PlacementEntry } from "./context.js";
 import type { DeliveredOptions, ReceivedOptions } from "./delivered.js";
-import type { MeshRevertError, TxError, UnknownPartitionKind, WriteError } from "./errors.js";
-import type { QueryDescriptor } from "./query.js";
-import type { LiveHandle } from "./registry.js";
-import type { TxCollections } from "./tx.js";
-import type { TxOptions, TxReceipt, View, ViewDeps } from "./views.js";
+import type { Revision } from "./history.js";
 
 import { openMeshEngine } from "./boot.js";
-import { createContext } from "./context.js";
 import { createDelivered, createReceived } from "./delivered.js";
-import { UnknownPartitionKind as UnknownKind } from "./errors.js";
 import { createMeshGrants, type MeshGrants, type MeshGrantsOptions } from "./grants.js";
-import { specOf } from "./query.js";
-import { createQueryRegistry } from "./registry.js";
+import { rowHistory } from "./history.js";
 import { runTransports } from "./transports.js";
-import { createView } from "./views.js";
 
 export interface MeshOptions<P extends PartitionTree, RS extends Roles<P>, C extends ColumnsMap> {
   readonly schema: Schema<P, RS, C>;
   readonly identity: Identity;
-  /** The peer whose signature grants must carry; absent, the mesh runs ungranted — schema checks only, no user tables. */
+  /** The peer whose signature grants must carry; absent, the mesh runs ungranted — schema checks only. */
   readonly issuer?: PeerId;
   /**
-   * The event log. Omitted, the platform's durable default is opened — one SQLite file per
-   * identity under `dataDir` — and closed by `stop`. Memory is never a default: ask for it with
-   * `createMemoryEventStore()`.
+   * The event log alone — a mesh with no SQL tables and no `on()`. Omit both this and `driver`
+   * and the platform's durable default is opened (one SQLite file per identity under `dataDir`)
+   * and closed by `stop`. Memory is never a default: ask with `createMemoryEventStore()`.
    */
   readonly store?: EventStore;
-  /** Materialised rows, so boot is an open rather than a replay; needs `store`. The default store brings its own. */
   readonly stateStore?: StateStore;
+  /** Your own SQLite connection: tables and capture are installed on it, the log lives in it, and it stays yours to close. */
+  readonly driver?: SqliteDriver;
   /** Where the default store's file goes. Default `.syncmesh`. */
   readonly dataDir?: string;
   readonly undoDepth?: number;
@@ -58,91 +51,76 @@ export interface MeshOptions<P extends PartitionTree, RS extends Roles<P>, C ext
   readonly now?: () => Temporal.Instant;
 }
 
-/** Instances by kind — `{ org: "acme", shelf: "s1" }` — that a scoped view writes and reads under. */
-export type Pins = Readonly<Record<string, string>>;
+/** The data surface of one handle: Drizzle in, events out (D20). */
+export type Handle = ReturnType<typeof meshDrizzle>;
 
-/** Who a scoped view acts as: the schema's rules read this account, role and claims instead of the device's grant. */
-export interface Actor {
-  readonly account: string;
-  readonly role?: string;
-  readonly claims?: Readonly<Record<string, JsonValue>>;
+export interface OnOptions {
+  /**
+   * Act as this principal: `read()` sources admit only rows their `read` rule admits, and a
+   * write their rules deny rejects the transaction before COMMIT. The events stay this device's.
+   */
+  readonly as?: Principal;
 }
 
-export interface ScopedOptions {
-  /**
-   * Act as this principal. Rows its `read` rule denies are invisible to the view; a write its
-   * rule denies is `PolicyDenied` before any event exists. The event itself is still this
-   * device's — what a server does on a caller's behalf, judged by the caller's rights.
-   */
-  readonly as?: Actor;
+export interface HistoryOptions {
+  /** Only this instance's writes count; omitted, the whole table. */
+  readonly partition?: string;
 }
 
 /**
- * The collections and `tx` bound to pinned instances instead of the ambient ones: what a server
- * handling many tenants at once uses, one per call, with `activate` never involved.
+ * A revision at the string-named door: the table arrived as a name, so the columns are the
+ * schema's, not the type system's.
  */
-export type Scoped<C extends ColumnsMap> = {
-  readonly [K in keyof C]: Collection<TablesOf<C>[K]>;
-} & { readonly tx: MeshBase<C>["tx"] };
+export type RevisionView = Omit<Revision<Table>, "changed" | "row"> & {
+  /** What this write set; empty for a delete. */
+  readonly changed: Readonly<Record<string, AppValue | undefined>>;
+  /** The row as of this revision — the fold of every write up to it; `null` once deleted. */
+  readonly row: Readonly<Record<string, AppValue | undefined>> | null;
+};
 
-export interface MeshBase<C extends ColumnsMap> {
+export interface Mesh {
   readonly engine: Engine;
   readonly grants: MeshGrants;
-  /** Sets the active instance of its kind; every collection of that kind re-points. */
-  readonly activate: (instance: string) => Result<void, InvalidPartitionKey | UnknownPartitionKind>;
-  readonly active: (kind: string) => PartitionKey | undefined;
-  /** A view pinned to these instances, optionally acting as someone; the same pins and actor give the same view, so its live results share. */
-  readonly scoped: (
-    pins: Pins,
-    options?: ScopedOptions,
-  ) => Result<Scoped<C>, InvalidPartitionKey | UnknownPartitionKind>;
-  /** One event, one partition; refused before anything is written when the tables disagree. */
-  readonly tx: (
-    fn: (collections: TxCollections<C>) => Result<void, WriteError>,
-    options?: TxOptions,
-  ) => Promise<Result<TxReceipt, TxError>>;
   /**
-   * Resolves once a peer is known — through a cursor exchange — to hold the event (or, with no
-   * event, everything this device has synced so far). Delivery, not approval: every receiver
-   * runs the same policy itself, and an authority's verdict is E12/E16's to add.
+   * The Drizzle surface pinned to an instance — `on("org:acme")` — or unpinned for global
+   * tables; `{ as }` makes it act for a caller. The same pin and principal share one handle.
    */
+  readonly on: (instance?: string, options?: OnOptions) => Result<Handle, InvalidPartitionKey>;
+  /** The row's writes oldest-first by stamp. A detail-view read: it scans the log. */
+  readonly history: (
+    table: string,
+    key: string,
+    options?: HistoryOptions,
+  ) => Promise<Result<readonly RevisionView[], unknown>>;
+  /** `"table.op"` against the same rules every receiver enforces. */
+  readonly can: (what: `${string}.${string}`, row?: WireCells) => boolean;
+  /** Resolves once a peer is known — through a cursor exchange — to hold the event (delivery, not approval). */
   readonly delivered: (options?: DeliveredOptions) => Promise<void>;
   /** Resolves once this device has folded the event — the inbound mirror of `delivered`. */
   readonly received: (options: ReceivedOptions) => Promise<void>;
-  /** `"table.op"` against the same rules every receiver enforces. */
-  readonly can: (what: `${string}.${string}`, row?: WireCells) => boolean;
-  /** A maintained result for a `query` descriptor; identical descriptors share one. */
-  readonly liveQuery: <T extends Table>(descriptor: QueryDescriptor<T>) => LiveHandle<T>;
-  /** Drops the handle's hold on its maintained result; a handle not from `liveQuery` is a no-op. */
-  readonly releaseQuery: <T extends Table>(handle: LiveHandle<T>) => void;
-  readonly revert: (id: EventId) => Promise<Result<unknown, MeshRevertError>>;
+  readonly revert: (id: EventId) => Promise<Result<unknown, unknown>>;
   readonly canRevert: (id: EventId) => boolean;
-  /** Open maintained query results; identical descriptors count once. */
-  readonly openQueries: () => number;
   /** Every transport ready (or force-ready); rejects if one failed to start. */
   readonly ready: () => Promise<void>;
-  /** Whether transports are running: true from construction until `stop`. */
   readonly running: () => boolean;
   /** Asks every connected peer for a grant for this device (flow A). */
   readonly requestGrant: (invite?: string) => void;
-  /** Stops every transport, then closes the stores the mesh opened; a store you passed in stays yours. */
+  /** Stops every transport, then closes what the mesh opened; a store or driver you passed stays yours. */
   readonly stop: () => Promise<void>;
 }
 
-export type Mesh<C extends ColumnsMap> = MeshBase<C> & {
-  readonly [K in keyof C]: Collection<TablesOf<C>[K]>;
-};
+export type { TxReceipt };
 
 /**
- * One constructor: opens (or is given) the stores, boots the engine over them, and builds the
- * validator, grants and a collection per table, partitions ambient via `activate` (D07). Async
- * because boot is (D05): the clock must pass every stored stamp before a write is numbered.
+ * One constructor: opens (or is given) the stores, boots the engine over them, installs the
+ * tables and capture, and hands out Drizzle handles per instance and principal. Async because
+ * boot is (D05): the clock must pass every stored stamp before a write is numbered.
  */
 export async function createMesh<
   P extends PartitionTree,
   const RS extends Roles<P>,
   C extends ColumnsMap,
->(options: MeshOptions<P, RS, C>): Promise<Result<Mesh<C>, MeshOpenError>> {
+>(options: MeshOptions<P, RS, C>): Promise<Result<Mesh, MeshOpenError>> {
   const { identity, issuer, issuerKey } = options;
   if (issuerKey !== undefined && issuerKey.peerId !== issuer)
     panic(
@@ -172,120 +150,72 @@ interface Assembled {
   readonly booted: Booted;
 }
 
-/** Everything above the engine: the ambient view, scoped views, queries, transports, the namespace check. */
 function assemble<P extends PartitionTree, RS extends Roles<P>, C extends ColumnsMap>(
   options: MeshOptions<P, RS, C>,
   deps: Assembled,
-): Mesh<C> {
+): Mesh {
   const { schema, identity } = options;
   const { grants, grantFor, now, booted } = deps;
-  const engine = booted.engine;
-  const queries = createQueryRegistry(engine);
-  const kinds = new Set(schema.kinds.map(String));
-  const context = createContext({ kinds: [...kinds], peerId: identity.peerId, grantFor });
+  const { engine, validate } = booted;
+  const entryOf = new Map(schema.entries.map((e) => [String(e.table.name), e]));
 
-  const can: ViewDeps["can"] = (what, row, patch) =>
-    canOn(schema, grantFor(identity.peerId), what, row, patch);
-  const canAs = (actor: Actor): ViewDeps["can"] => {
-    const claims = actor.claims ?? {};
-    const principal: Principal =
-      actor.role === undefined
-        ? { account: actor.account, claims }
-        : { account: actor.account, claims, role: actor.role };
-    return (what, row, patch) => canOn(schema, principal, what, row, patch);
-  };
-
-  const entryOf = new Map<string, PlacementEntry>(
-    schema.entries.map((e) => [String(e.table.name), e]),
-  );
-  const entry = (name: string): PlacementEntry =>
-    entryOf.get(name) ?? panic(`no schema entry for ${name}`);
-  const viewDeps = {
-    engine,
-    tables: schema.tables,
-    merge: schema.merge,
-    can,
-    gated: false,
-    log: booted.store.all,
-    accountOf: (peer: PeerId) => grantFor(peer)?.account,
-  };
-  const ambient = createView({
-    ...viewDeps,
-    placementOf: (name) => context.placementFor(entry(name)),
-  });
-
-  const scopes = new Map<string, View>();
-  const scoped: MeshBase<C>["scoped"] = (pins, scopedOptions = {}) =>
-    Result.gen(function* () {
-      const pinned = Object.entries(pins).sort(([a], [b]) => (a < b ? -1 : 1));
-      const instances = new Map<string, PartitionKey>();
-      for (const [kind, id] of pinned) {
-        if (!kinds.has(kind))
-          return Result.err(
-            new UnknownKind({ kind, message: `the manifest declares no kind "${kind}"` }),
-          );
-        instances.set(kind, yield* parsePartitionKey(`${kind}:${id}`));
-      }
-      const actor = scopedOptions.as;
-      const scope = JSON.stringify([pinned, actor ?? null]);
-      const view =
-        scopes.get(scope) ??
-        createView({
-          ...viewDeps,
-          scope,
-          can: actor === undefined ? can : canAs(actor),
-          gated: actor !== undefined,
-          placementOf: (name) => context.placementIn(entry(name), instances),
-        });
-      scopes.set(scope, view);
-      // SAFETY: one Collection per key of C plus `tx`, the same keys the ambient view was checked against
-      return Result.ok({ ...view.collections, tx: view.tx } as Scoped<C>);
+  const handles = new Map<string, Handle>();
+  const on: Mesh["on"] = (instance, onOptions = {}) => {
+    // outside the generator: a missing connection is a setup mistake and must throw as itself
+    const driver =
+      booted.driver ??
+      panic(
+        "this mesh has no SQL connection: omit `store` for the durable default, or pass `driver`",
+      );
+    return Result.gen(function* () {
+      const partition: PartitionKey | undefined =
+        instance === undefined ? undefined : yield* parsePartitionKey(instance);
+      const key = JSON.stringify([instance ?? null, onOptions.as ?? null]);
+      const held = handles.get(key);
+      if (held !== undefined) return Result.ok(held);
+      const drizzleOptions = { engine, validate, driver, schema };
+      if (partition !== undefined) Object.assign(drizzleOptions, { partition });
+      if (onOptions.as !== undefined) Object.assign(drizzleOptions, { as: onOptions.as });
+      const handle = meshDrizzle(drizzleOptions);
+      handles.set(key, handle);
+      return Result.ok(handle);
     });
-
-  const releases = new WeakMap<object, () => void>();
-  const liveQuery = <T extends Table>(descriptor: QueryDescriptor<T>): LiveHandle<T> => {
-    const { table, options: listOptions, scope } = descriptor;
-    const source = scope === undefined ? ambient : scopes.get(scope);
-    const held =
-      source?.collections[String(table.name)] ??
-      panic(`no collection for ${String(table.name)}; the descriptor came from another mesh`);
-    const handle = queries.acquire(table, specOf(listOptions), held.visible, scope);
-    const limit = listOptions.limit;
-    const live: LiveHandle<T> = {
-      data: () => (limit === undefined ? handle.rows() : handle.rows().slice(0, limit)),
-      subscribe: handle.subscribe,
-    };
-    releases.set(live, handle.release);
-    return live;
   };
+
+  const history: Mesh["history"] = (table, key, historyOptions = {}) =>
+    Result.gen(async function* () {
+      const entry = entryOf.get(table) ?? panic(`the manifest has no table "${table}"`);
+      const entries = yield* Result.await(booted.store.all());
+      const partition =
+        historyOptions.partition === undefined
+          ? undefined
+          : yield* parsePartitionKey(historyOptions.partition);
+      // SAFETY: keys are opaque strings in the kernel
+      const rowKey = key as never;
+      const revisions = rowHistory(entry.table, rowKey, entries, {
+        merge: schema.merge,
+        partition,
+        accountOf: (peer) => grantFor(peer)?.account,
+      });
+      // SAFETY: the erased Table generic degenerates the cell types; every cell is an AppValue by construction
+      return Result.ok(revisions as readonly RevisionView[]);
+    });
 
   const transportContext: TransportContext = { engine, identity, grants, now };
   if (options.onGrantRequest !== undefined)
     Object.assign(transportContext, { onGrantRequest: options.onGrantRequest });
   const links = runTransports(options.transports ?? [], transportContext);
 
-  const base: MeshBase<C> = {
+  return {
     engine,
     grants,
-    activate: (instance) =>
-      Result.gen(function* () {
-        const key = yield* parsePartitionKey(instance);
-        yield* context.activate(key);
-        queries.rescanAll();
-        return Result.ok(undefined);
-      }),
-    active: context.active,
-    scoped,
-    // SAFETY: the recorder is one Writes per table of C, the same keys the collections were built over
-    tx: (fn, txOptions) => ambient.tx((recording) => fn(recording as TxCollections<C>), txOptions),
-    can,
+    on,
+    history,
+    can: (what, row) => canOn(schema, grantFor(identity.peerId), what, row),
     delivered: createDelivered(engine, identity.peerId),
     received: createReceived(engine),
-    liveQuery,
-    releaseQuery: (handle) => releases.get(handle)?.(),
     revert: (id) => engine.revert(id),
     canRevert: (id) => engine.canRevert(id),
-    openQueries: queries.size,
     ready: links.ready,
     running: links.running,
     requestGrant: links.requestGrant,
@@ -294,8 +224,4 @@ function assemble<P extends PartitionTree, RS extends Roles<P>, C extends Column
       await booted.close();
     },
   };
-  for (const name of Object.keys(ambient.collections))
-    if (name in base) panic(`table "${name}" collides with a mesh method; rename the table`);
-  // SAFETY: one Collection per key of C, and no key collides with MeshBase (checked above)
-  return { ...base, ...ambient.collections } as Mesh<C>;
 }

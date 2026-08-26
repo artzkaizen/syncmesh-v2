@@ -65,11 +65,14 @@ const clientSmoke = `
   const { createMesh } = await import("@syncmesh/client");
   const { defineSchema, t } = await import("@syncmesh/schema");
   const { createIdentity } = await import("@syncmesh/wire");
-  const schema = defineSchema({ tables: { notes: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "local" } } });
+  const { sqliteTable, text } = await import("drizzle-orm/sqlite-core");
+  const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
+  const schema = defineSchema({ tables: { notes: { columns: { id: t.text().primaryKey(), body: t.text() } } } });
   const identity = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 7 + i)).unwrap();
-  const mesh = (await createMesh({ schema, identity, dataDir: "./data" })).unwrap();
-  (await mesh.notes.create({ id: "n1", body: "from node" })).unwrap();
-  if (mesh.notes.list().length !== 1) throw new Error("the row did not come back");
+  const mesh = (await createMesh({ schema, identity, authority: identity.peerId, dataDir: "./data" })).unwrap();
+  const { db } = mesh.on().unwrap();
+  await db.insert(notes).values({ id: "n1", body: "from node" });
+  if ((await db.select().from(notes)).length !== 1) throw new Error("the row did not come back");
   await mesh.stop();
 `;
 
@@ -97,7 +100,14 @@ function main(): number {
     writeFileSync(
       join(project, "package.json"),
       JSON.stringify(
-        { name: "consumer", private: true, type: "module", dependencies: specs, overrides: specs },
+        {
+          name: "consumer",
+          private: true,
+          type: "module",
+          // drizzle-orm is the client's peer: the consumer supplies it, as an app would
+          dependencies: { ...specs, "drizzle-orm": "latest" },
+          overrides: specs,
+        },
         null,
         2,
       ),

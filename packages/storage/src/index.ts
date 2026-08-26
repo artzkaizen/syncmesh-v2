@@ -10,3 +10,12 @@ export type { Projection } from "./projection.js";
 export { tablesProjection } from "./projection.js";
 export type { Compiled } from "./read-filter.js";
 export { compileRead } from "./read-filter.js";
+export type {
+  TxReceipt,
+  Write,
+  WriteError as SqlWriteError,
+  WriteLabel,
+  WriteOptions as SqlWriteOptions,
+  WriterDeps,
+} from "./writer.js";
+export { createWriter } from "./writer.js";

@@ -1,11 +1,18 @@
-import { createLink, createMemoryEventStore, type Quarantined } from "@syncmesh/engine";
+import { createLink, type Quarantined } from "@syncmesh/engine";
 import { defineSchema, t } from "@syncmesh/schema";
+import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, type Identity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
+import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import { createMesh } from "../mesh.js";
 
+const controls = sqliteTable("controls", {
+  id: text().primaryKey(),
+  title: text().notNull(),
+  by: text().notNull(),
+});
 const schema = () =>
   defineSchema({
     partitions: { org: {} },
@@ -37,13 +44,19 @@ const mintFor = (issuer: Identity, account: string, device: Identity, role: stri
 const open = async (identity: Identity, issuer: Identity) =>
   (
     await createMesh({
-      store: createMemoryEventStore(),
+      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity,
       issuer: issuer.peerId,
       now: () => T0,
     })
   ).unwrap();
+
+const titleOf = async (mesh: Awaited<ReturnType<typeof open>>, id: string) => {
+  const { db } = mesh.on("org:acme").unwrap();
+  const rows = await db.select().from(controls);
+  return rows.find((r) => r.id === id)?.title;
+};
 
 describe("onboarding through the mesh — a grant is bytes, any peer can carry them", () => {
   test("S2: no internet on the new device; a peer relays the request and the signed grant back", async () => {
@@ -56,7 +69,13 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
 
     // N is fully offline: identity minted locally, nothing writable in the org yet
     const n = await open(newcomer, issuer);
-    expect((await n.controls.create({ id: "c1", title: "x", by: "acct_n" })).isErr()).toBe(true);
+    const hn = n.on("org:acme").unwrap();
+    const refused = await hn.db
+      .insert(controls)
+      .values({ id: "c1", title: "x", by: "acct_n" })
+      .then(() => "ok")
+      .catch(() => "refused");
+    expect(refused).toBe("refused");
     expect(n.can("controls.insert")).toBe(false);
 
     // BLE hop 1: N -> M carries only N's peerId. M has internet and calls the grant
@@ -65,16 +84,14 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
     // BLE hop 2: M -> N carries the signed grant; N verifies it offline.
     const grant = n.grants.register(wire).unwrap();
     expect(grant.account).toBe("acct_n");
-    n.activate("org:acme").unwrap();
 
     // N can now write, and M accepts N's events once the same bytes reach M (grants-first).
     m.grants.register(wire).unwrap();
-    const written = (await n.controls.create({ id: "c1", title: "x", by: "acct_n" })).unwrap();
-    expect(written.title).toBe("x");
+    await hn.db.insert(controls).values({ id: "c1", title: "x", by: "acct_n" });
+    expect(await titleOf(n, "c1")).toBe("x");
     const link = createLink(n.engine, m.engine, { now: () => T0 });
     (await link.catchUp()).unwrap();
-    m.activate("org:acme").unwrap();
-    expect(m.controls.get("c1")?.title).toBe("x");
+    expect(await titleOf(m, "c1")).toBe("x");
   });
 
   test("S2 hostile relay: the carrier can neither tamper with a grant nor use one not its own", async () => {
@@ -102,7 +119,7 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
 
     const owner = (
       await createMesh({
-        store: createMemoryEventStore(),
+        driver: bunSqliteDriver(":memory:"),
         schema: schema(),
         identity: ownerPhone,
         issuer: ownerPhone.peerId,
@@ -132,14 +149,13 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
 
     const s = await open(staff, ownerPhone);
     s.grants.register(staffGrant).unwrap();
-    s.activate("org:acme").unwrap();
-    (await s.controls.create({ id: "c1", title: "minted offline", by: "acct_staff" })).unwrap();
+    const hs = s.on("org:acme").unwrap();
+    await hs.db.insert(controls).values({ id: "c1", title: "minted offline", by: "acct_staff" });
 
     // the owner already holds the staff grant (issue registers it) — staff events fold at once
     const link = createLink(s.engine, owner.engine, { now: () => T0 });
     (await link.catchUp()).unwrap();
-    owner.activate("org:acme").unwrap();
-    expect(owner.controls.get("c1")?.title).toBe("minted offline");
+    expect(await titleOf(owner, "c1")).toBe("minted offline");
   });
 
   test("S3 guards: no issuerKey panics, a mismatched issuerKey panics, a bad partition is a value", async () => {
@@ -155,7 +171,7 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
       }),
     ).toThrow("issuerKey");
     const mismatched = await createMesh({
-      store: createMemoryEventStore(),
+      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: device,
       issuer: issuer.peerId,
@@ -167,7 +183,7 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
 
     const owner = (
       await createMesh({
-        store: createMemoryEventStore(),
+        driver: bunSqliteDriver(":memory:"),
         schema: schema(),
         identity: issuer,
         issuer: issuer.peerId,
@@ -193,8 +209,8 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
     const meshB = await open(b, issuer);
     const grantA = mintFor(issuer, "acct_a", a, "member");
     meshA.grants.register(grantA).unwrap();
-    meshA.activate("org:acme").unwrap();
-    (await meshA.controls.create({ id: "c1", title: "early", by: "acct_a" })).unwrap();
+    const ha = meshA.on("org:acme").unwrap();
+    await ha.db.insert(controls).values({ id: "c1", title: "early", by: "acct_a" });
 
     const quarantined: Quarantined[] = [];
     meshB.engine.onQuarantine((q) => void quarantined.push(q));
@@ -208,7 +224,6 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
     meshB.grants.register(grantA).unwrap();
     const second = createLink(meshA.engine, meshB.engine, { now: () => T0 });
     (await second.catchUp()).unwrap();
-    meshB.activate("org:acme").unwrap();
-    expect(meshB.controls.get("c1")?.title).toBe("early");
+    expect(await titleOf(meshB, "c1")).toBe("early");
   });
 });

@@ -8,16 +8,21 @@ import type {
   Validator,
   ValidatorSchema,
 } from "@syncmesh/engine";
-import type { Change, PartitionKey, Procedure } from "@syncmesh/kernel";
+import type { Change, EventId, PartitionKey, Procedure } from "@syncmesh/kernel";
 import type { Table } from "@syncmesh/schema";
-import type { SqliteDriver } from "@syncmesh/storage";
 
 import { EmptyMutation, PolicyDenied, can } from "@syncmesh/engine";
 import { getRecord, readRow } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
-import { captureChanges } from "@syncmesh/storage";
 
-import type { TxReceipt } from "./views.js";
+import type { SqliteDriver } from "./driver.js";
+
+import { captureChanges } from "./capture.js";
+
+/** One committed transaction: the event it appended, for `delivered` and `revert`. */
+export interface TxReceipt {
+  readonly eventId: EventId;
+}
 
 /**
  * D20's write path: the app writes its tables with its own SQL; this turns that transaction into

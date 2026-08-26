@@ -1,11 +1,15 @@
-import { createLink, createMemoryEventStore } from "@syncmesh/engine";
+import { createLink } from "@syncmesh/engine";
+import { eventId } from "@syncmesh/kernel";
 import { defineSchema, t } from "@syncmesh/schema";
+import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
+import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import { createMesh } from "../mesh.js";
 
+const todos = sqliteTable("todos", { id: text().primaryKey(), title: text().notNull() });
 const schema = () =>
   defineSchema({
     partitions: { org: {} },
@@ -16,7 +20,6 @@ const schema = () =>
         partition: "org",
         allow: ({ role }) => ({ $default: role("member") }),
       },
-      drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "local" },
     },
   });
 
@@ -28,7 +31,7 @@ const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const granted = async (device: typeof deviceA) => {
   const mesh = (
     await createMesh({
-      store: createMemoryEventStore(),
+      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: device,
       issuer: issuer.peerId,
@@ -53,17 +56,25 @@ const granted = async (device: typeof deviceA) => {
       )
       .unwrap();
   }
-  mesh.activate("org:acme").unwrap();
   return mesh;
 };
 
+const lastEvent = async (mesh: Awaited<ReturnType<typeof granted>>) => {
+  const stored = (await mesh.engine.eventsSince(new Map())).unwrap();
+  return stored.at(-1)?.event.id ?? panicMissing();
+};
+const panicMissing = () => {
+  throw new Error("the mesh has no stored event");
+};
+
 describe("delivered — a peer is known to hold the write", () => {
-  test("resolves after a cursor exchange covers the write; nothing written resolves at once", async () => {
+  test("pending before the cursor exchange covers the write, resolved after, immediate once covered", async () => {
     const a = await granted(deviceA);
     const b = await granted(deviceB);
     await a.delivered(); // nothing synced yet — nothing to wait for
 
-    (await a.todos.create({ id: "t1", title: "x" })).unwrap();
+    const ha = a.on("org:acme").unwrap();
+    await ha.db.insert(todos).values({ id: "t1", title: "x" });
     const pending = a.delivered({ to: deviceB.peerId });
     let settled = false;
     void pending.then(() => (settled = true));
@@ -73,33 +84,28 @@ describe("delivered — a peer is known to hold the write", () => {
     const link = createLink(a.engine, b.engine, { now: () => T0 });
     (await link.catchUp()).unwrap();
     await pending;
-    expect(b.todos.get("t1")?.title).toBe("x");
+    const hb = b.on("org:acme").unwrap();
+    expect(await hb.db.select().from(todos)).toHaveLength(1);
     // already covered: a fresh call resolves immediately, with or without a named peer
     await a.delivered();
     await a.delivered({ to: deviceB.peerId });
     link.close();
   });
 
-  test("a tx receipt names its event; delivered({ event }) waits for exactly that write", async () => {
+  test("delivered({ event }) waits for exactly the transaction's event", async () => {
     const a = await granted(deviceA);
     const b = await granted(deviceB);
-    const receipt = (
-      await a.tx((c) => c.todos.create({ id: "t1", title: "from tx" }).map(() => undefined))
-    ).unwrap();
-    const pending = a.delivered({ event: receipt.eventId, to: deviceB.peerId });
+    const ha = a.on("org:acme").unwrap();
+    await ha.db.transaction(async (tx) => {
+      await tx.insert(todos).values({ id: "t1", title: "from tx" });
+    });
+    const pending = a.delivered({ event: await lastEvent(a), to: deviceB.peerId });
     const link = createLink(a.engine, b.engine, { now: () => T0 });
     (await link.catchUp()).unwrap();
     await pending;
-    expect(b.todos.get("t1")?.title).toBe("from tx");
+    const hb = b.on("org:acme").unwrap();
+    expect((await hb.db.select().from(todos)).map((r) => r.title)).toEqual(["from tx"]);
     link.close();
-  });
-
-  test("a local event never leaves this device: delivered({ event }) refuses it", async () => {
-    const a = await granted(deviceA);
-    const receipt = (
-      await a.tx((c) => c.drafts.create({ id: "d1", body: "wip" }).map(() => undefined))
-    ).unwrap();
-    expect(() => a.delivered({ event: receipt.eventId })).toThrow("never leaves this device");
   });
 });
 
@@ -107,11 +113,11 @@ describe("received — this device has folded a peer's event", () => {
   test("pending until the exchange folds it, resolved after, immediate once held; a local id is refused", async () => {
     const a = await granted(deviceA);
     const b = await granted(deviceB);
-    const receipt = (
-      await a.tx((c) => c.todos.create({ id: "t1", title: "from a" }).map(() => undefined))
-    ).unwrap();
+    const ha = a.on("org:acme").unwrap();
+    await ha.db.insert(todos).values({ id: "t1", title: "from a" });
+    const event = await lastEvent(a);
 
-    const pending = b.received({ event: receipt.eventId });
+    const pending = b.received({ event });
     let settled = false;
     void pending.then(() => (settled = true));
     await Promise.resolve();
@@ -120,13 +126,11 @@ describe("received — this device has folded a peer's event", () => {
     const link = createLink(a.engine, b.engine, { now: () => T0 });
     (await link.catchUp()).unwrap();
     await pending;
-    expect(b.todos.get("t1")?.title).toBe("from a");
-    await b.received({ event: receipt.eventId }); // already folded: resolves at once
+    await b.received({ event }); // already folded: resolves at once
     link.close();
 
-    const local = (
-      await a.tx((c) => c.drafts.create({ id: "d1", body: "wip" }).map(() => undefined))
-    ).unwrap();
-    expect(() => b.received({ event: local.eventId })).toThrow("never leaves this device");
+    // SAFETY: forging a seqNum for a synthetic local id — the refusal is what's under test
+    const local = eventId(deviceA.peerId, 1 as never, true);
+    expect(() => b.received({ event: local })).toThrow("never leaves this device");
   });
 });

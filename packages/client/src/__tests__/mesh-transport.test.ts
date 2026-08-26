@@ -1,12 +1,14 @@
-import { createMemoryEventStore } from "@syncmesh/engine";
 import { defineSchema, t } from "@syncmesh/schema";
+import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { linkTransport, loopbackPair, type LoopbackControl } from "@syncmesh/transport";
 import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
+import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import { createMesh } from "../mesh.js";
 
+const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
 const schema = () =>
   defineSchema({
     partitions: { org: {} },
@@ -38,7 +40,7 @@ const room = async (options?: { readonly grantStaff?: boolean }) => {
 
   const owner = (
     await createMesh({
-      store: createMemoryEventStore(),
+      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: ownerId,
       issuer: ownerId.peerId,
@@ -71,7 +73,7 @@ const room = async (options?: { readonly grantStaff?: boolean }) => {
 
   const staff = (
     await createMesh({
-      store: createMemoryEventStore(),
+      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: staffId,
       issuer: ownerId.peerId,
@@ -98,23 +100,24 @@ const room = async (options?: { readonly grantStaff?: boolean }) => {
 };
 
 describe("createMesh over transports", () => {
-  test("two meshes converge; a live handle on one notifies for the other's write", async () => {
+  test("two meshes converge; a live query on one notifies for the other's write", async () => {
     const { owner, staff, control } = await room();
     await owner.ready();
     await staff.ready();
-    owner.activate("org:acme").unwrap();
-    staff.activate("org:acme").unwrap();
     await settle(control);
 
-    const list = owner.liveQuery(owner.notes.query());
+    const ho = owner.on("org:acme").unwrap();
+    const hs = staff.on("org:acme").unwrap();
+    const list = ho.live(ho.db.select().from(notes));
+    expect(await list.ready).toEqual([]);
     let notified = 0;
     list.subscribe(() => void (notified += 1));
 
-    (await staff.notes.create({ id: "n1", body: "from-staff" })).unwrap();
+    await hs.db.insert(notes).values({ id: "n1", body: "from-staff" });
     await settle(control);
-    expect(owner.notes.get("n1")?.body).toBe("from-staff");
+    expect((await ho.db.select().from(notes)).map((r) => r.body)).toEqual(["from-staff"]);
     expect(notified).toBe(1);
-    owner.releaseQuery(list);
+    list.release();
     await owner.stop();
     await staff.stop();
   });
@@ -132,11 +135,11 @@ describe("createMesh over transports", () => {
     staff.requestGrant("inv-42");
     await settle(control);
     expect(staff.can("notes.insert")).toBe(true);
-    staff.activate("org:acme").unwrap();
-    (await staff.notes.create({ id: "n1", body: "onboarded" })).unwrap();
+    const hs = staff.on("org:acme").unwrap();
+    await hs.db.insert(notes).values({ id: "n1", body: "onboarded" });
     await settle(control);
-    owner.activate("org:acme").unwrap();
-    expect(owner.notes.get("n1")?.body).toBe("onboarded");
+    const ho = owner.on("org:acme").unwrap();
+    expect((await ho.db.select().from(notes)).map((r) => r.body)).toEqual(["onboarded"]);
     await owner.stop();
     await staff.stop();
   });
@@ -144,16 +147,17 @@ describe("createMesh over transports", () => {
   test("stop() closes the sessions: later writes stay local and running() flips", async () => {
     const { owner, staff, control } = await room();
     await Promise.all([owner.ready(), staff.ready()]);
-    owner.activate("org:acme").unwrap();
-    staff.activate("org:acme").unwrap();
     await settle(control);
     expect(staff.running()).toBe(true);
     await staff.stop();
     expect(staff.running()).toBe(false);
 
-    (await staff.notes.create({ id: "n2", body: "offline" })).unwrap();
+    // the driver is ours, so the local surface outlives stop(); only the radio is gone
+    const hs = staff.on("org:acme").unwrap();
+    await hs.db.insert(notes).values({ id: "n2", body: "offline" });
     await settle(control);
-    expect(owner.notes.get("n2")).toBeUndefined();
+    const ho = owner.on("org:acme").unwrap();
+    expect(await ho.db.select().from(notes)).toHaveLength(0);
     await owner.stop();
   });
 });

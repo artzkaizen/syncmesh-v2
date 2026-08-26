@@ -1,13 +1,20 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
-import { createMemoryEventStore } from "@syncmesh/engine";
 import { defineSchema, t } from "@syncmesh/schema";
+import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
+import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import { createMesh } from "../mesh.js";
 
+const todos = sqliteTable("todos", {
+  id: text().primaryKey(),
+  title: text().notNull(),
+  score: integer().notNull(),
+});
 const schema = () =>
   defineSchema({
     partitions: { org: {} },
@@ -22,7 +29,6 @@ const schema = () =>
         partition: "org",
         allow: ({ role }) => ({ $default: role("member") }),
       },
-      drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "local" },
     },
   });
 
@@ -34,7 +40,7 @@ const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const granted = async (device: typeof deviceA, at: () => Temporal.Instant) => {
   const mesh = (
     await createMesh({
-      store: createMemoryEventStore(),
+      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: device,
       issuer: issuer.peerId,
@@ -59,30 +65,35 @@ const granted = async (device: typeof deviceA, at: () => Temporal.Instant) => {
       )
       .unwrap();
   }
-  mesh.activate("org:acme").unwrap();
   return mesh;
 };
 
 describe("history — a row's timeline", () => {
   test("insert, update, delete: oldest first, per-write patches, snapshots, null once deleted", async () => {
+    const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
+    const device = deviceA;
     const mesh = (
       await createMesh({
-        store: createMemoryEventStore(),
-        schema: schema(),
-        identity: deviceA,
+        driver: bunSqliteDriver(":memory:"),
+        schema: defineSchema({
+          tables: { notes: { columns: { id: t.text().primaryKey(), body: t.text() } } }, // global
+        }),
+        identity: device,
+        authority: device.peerId,
         now: () => T0,
       })
     ).unwrap();
-    (await mesh.drafts.create({ id: "d1", body: "one" })).unwrap();
-    (await mesh.drafts.update("d1", { body: "two" })).unwrap();
-    (await mesh.drafts.delete("d1")).unwrap();
+    const { db } = mesh.on().unwrap();
+    await db.insert(notes).values({ id: "d1", body: "one" });
+    await db.update(notes).set({ body: "two" }).where(eq(notes.id, "d1"));
+    await db.delete(notes).where(eq(notes.id, "d1"));
 
-    const revisions = (await mesh.drafts.history("d1")).unwrap();
+    const revisions = (await mesh.history("notes", "d1")).unwrap();
     expect(revisions.map((r) => r.kind)).toEqual(["insert", "update", "delete"]);
     expect(revisions.map((r) => r.procedure)).toEqual([
-      "drafts.insert",
-      "drafts.update",
-      "drafts.delete",
+      "notes.insert",
+      "notes.update",
+      "notes.delete",
     ]);
     expect(revisions[0]?.changed).toEqual({ id: "d1", body: "one" });
     expect(revisions[1]?.changed).toEqual({ body: "two" });
@@ -91,14 +102,15 @@ describe("history — a row's timeline", () => {
     expect(revisions[0]?.at.epochMilliseconds).toBe(T0.epochMilliseconds);
     // an ungranted local write has a device but no account
     expect(revisions[0]?.by).toBeUndefined();
-    expect(String(revisions[0]?.peerId)).toBe(String(deviceA.peerId));
-    expect((await mesh.drafts.history("nope")).unwrap()).toEqual([]);
+    expect(String(revisions[0]?.peerId)).toBe(String(device.peerId));
+    expect((await mesh.history("notes", "nope")).unwrap()).toEqual([]);
   });
 
   test("by is the account resolved through grants", async () => {
     const mesh = await granted(deviceA, () => T0);
-    (await mesh.todos.create({ id: "t1", title: "x", score: 1 })).unwrap();
-    const revisions = (await mesh.todos.history("t1")).unwrap();
+    const { db } = mesh.on("org:acme").unwrap();
+    await db.insert(todos).values({ id: "t1", title: "x", score: 1 });
+    const revisions = (await mesh.history("todos", "t1")).unwrap();
     expect(revisions.map((r) => r.by)).toEqual(["acct_a"]);
   });
 
@@ -115,18 +127,20 @@ describe("history — a row's timeline", () => {
       (await b.engine.receiveBatch(outA.map((event) => ({ event })))).unwrap();
       (await a.engine.receiveBatch(outB.map((event) => ({ event })))).unwrap();
     };
+    const dbA = a.on("org:acme").unwrap().db;
+    const dbB = b.on("org:acme").unwrap().db;
 
-    (await a.todos.create({ id: "t1", title: "first", score: 1 })).unwrap();
+    await dbA.insert(todos).values({ id: "t1", title: "first", score: 1 });
     await exchange();
     // B writes the high score at its later clock; A then writes a LOWER score at a
     // later stamp still (its HLC ratcheted past B's on receive). max keeps 9.
-    (await b.todos.update("t1", { score: 9 })).unwrap();
+    await dbB.update(todos).set({ score: 9 }).where(eq(todos.id, "t1"));
     await exchange();
-    (await a.todos.update("t1", { title: "second", score: 3 })).unwrap();
+    await dbA.update(todos).set({ title: "second", score: 3 }).where(eq(todos.id, "t1"));
     await exchange();
 
-    const historyA = (await a.todos.history("t1")).unwrap();
-    const historyB = (await b.todos.history("t1")).unwrap();
+    const historyA = (await a.history("todos", "t1")).unwrap();
+    const historyB = (await b.history("todos", "t1")).unwrap();
     expect(historyA.map((r) => String(r.eventId))).toEqual(historyB.map((r) => String(r.eventId)));
     expect(historyA.map((r) => r.by)).toEqual(["acct_a", "acct_b", "acct_a"]);
 

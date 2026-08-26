@@ -14,6 +14,8 @@ import { sqliteStateStore } from "./sqlite-state-store.js";
 export interface Stores {
   readonly events: EventStore;
   readonly state: StateStore;
+  /** The connection everything shares — what a query layer runs over. */
+  readonly driver: SqliteDriver;
   readonly close: () => Promise<void>;
 }
 
@@ -37,6 +39,6 @@ export function openStores(
       Object.assign(stateOptions, { projection: tablesProjection(driver, options.tables) });
     }
     const state = yield* Result.await(sqliteStateStore(driver, stateOptions));
-    return Result.ok({ events, state, close: () => driver.close?.() ?? Promise.resolve() });
+    return Result.ok({ events, state, driver, close: () => driver.close?.() ?? Promise.resolve() });
   });
 }

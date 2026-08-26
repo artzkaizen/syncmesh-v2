@@ -10,13 +10,14 @@ import type {
 } from "@syncmesh/engine";
 import type { MergeSpec, PeerId } from "@syncmesh/kernel";
 import type { Table } from "@syncmesh/schema";
-import type { Stores } from "@syncmesh/storage";
+import type { SqliteDriver, Stores } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { Grant, Identity } from "@syncmesh/wire";
 
 import { createValidator, openEngine } from "@syncmesh/engine";
 import { createHlcClock } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
+import { openStores } from "@syncmesh/storage";
 
 import { NoDefaultStore } from "./errors.js";
 
@@ -31,6 +32,8 @@ export interface BootOptions {
   readonly undoDepth?: number;
   readonly store?: EventStore;
   readonly stateStore?: StateStore;
+  /** Your own SQLite connection: tables and capture are installed on it and it becomes the log too. */
+  readonly driver?: SqliteDriver;
   readonly dataDir: string;
   readonly now: () => Temporal.Instant;
   readonly grantFor: (peer: PeerId) => Grant | undefined;
@@ -40,6 +43,8 @@ export interface BootOptions {
 export interface Booted {
   readonly engine: Engine;
   readonly store: EventStore;
+  /** The SQL connection the tables live on; absent for a mesh over a bare event store. */
+  readonly driver?: SqliteDriver;
   /** The same ladder the engine runs on every write — for judging a captured transaction before it commits (D20). */
   readonly validate: Validator;
   readonly close: () => Promise<void>;
@@ -75,17 +80,16 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
   const { schema, identity, issuer, authority, grantFor, now } = options;
   if (options.store === undefined && options.stateStore !== undefined)
     panic("stateStore caches a log it was not given: pass `store` alongside it");
+  if (options.store !== undefined && options.driver !== undefined)
+    panic("`store` and `driver` name two homes for one log: pass one");
   return Result.gen(async function* () {
+    const tables = schema.entries.map((e) => e.table);
     const owned =
-      options.store === undefined
-        ? yield* Result.await(
-            defaultStores(
-              options.dataDir,
-              String(identity.peerId),
-              schema.entries.map((e) => e.table),
-            ),
-          )
-        : undefined;
+      options.store !== undefined
+        ? undefined
+        : options.driver !== undefined
+          ? yield* Result.await(openStores(options.driver, { tables }))
+          : yield* Result.await(defaultStores(options.dataDir, String(identity.peerId), tables));
     const validatorOptions = {
       schema,
       grantFor: issuer === undefined ? null : grantFor,
@@ -108,6 +112,14 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
     if (options.undoDepth !== undefined)
       Object.assign(engineOptions, { undoDepth: options.undoDepth });
     const engine = yield* Result.await(openEngine(engineOptions));
-    return Result.ok({ engine, store, validate, close: () => owned?.close() ?? Promise.resolve() });
+    const booted = { engine, store, validate };
+    const driver = options.driver ?? owned?.driver;
+    if (driver !== undefined) Object.assign(booted, { driver });
+    return Result.ok({
+      ...booted,
+      // a driver you passed stays yours to close; the default store is ours
+      close: () =>
+        options.driver !== undefined ? Promise.resolve() : (owned?.close() ?? Promise.resolve()),
+    });
   });
 }

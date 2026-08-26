@@ -1,8 +1,8 @@
-import type { Mesh, Pins, Scoped } from "@syncmesh/client";
+import type { Handle, Mesh } from "@syncmesh/client";
 import type { JsonValue } from "@syncmesh/kernel";
-import type { ColumnsMap } from "@syncmesh/schema";
 
 import { os } from "@orpc/server";
+import { taggedCause } from "@syncmesh/drizzle";
 
 /**
  * Who is calling, as your auth established it. The caller reached the server over HTTP with a
@@ -14,59 +14,59 @@ export interface Caller {
   readonly role?: string;
   /** Facts your auth vouches for, read by `claimHas`-style rules. */
   readonly claims?: Readonly<Record<string, JsonValue>>;
-  /** The instances this call runs under — `{ org: "acme" }` — resolved by `mesh.scoped`. */
-  readonly pins: Pins;
+  /** The instance this call runs under — `"org:acme"`. */
+  readonly partition: string;
 }
 
 export interface CallerContext {
   readonly caller: Caller;
 }
 
-/**
- * What `withMesh` adds: the mesh, pinned to the caller's instances and acting as the caller.
- * Not an ORM — the same collection verbs a device has (`get` / `list` / `create` / `update` /
- * `delete` / `tx` / `history`), under the schema's rules. Queries that need SQL — joins,
- * aggregates — run against the tables the server's state store materialises (E17), which is
- * your Drizzle instance, not this.
- */
-export interface MeshContext<C extends ColumnsMap> {
-  readonly mesh: Scoped<C>;
+/** What `withMesh` adds: the Drizzle surface, pinned to the caller's instance and acting as the caller. */
+export interface MeshContext {
+  readonly mesh: Handle;
 }
 
 /**
- * The base every procedure on an authority extends: the caller in, `mesh` out — the mesh scoped
- * to the caller's instances and **acting as the caller**, so the schema is the only permission
- * model. `mesh.jobs.list()` holds only rows the caller's `read` rule admits; a write the caller's
- * rule denies is `Err(PolicyDenied)` before any event. A pin the manifest cannot resolve is
- * `BAD_REQUEST` before any handler; `FORBIDDEN` is there for handlers to answer a denial with.
+ * The base every procedure on an authority extends: the caller in, `mesh` out — `db`, `read` and
+ * `live`, pinned to the caller's instance and **acting as the caller**, so the schema is the only
+ * permission model. A row the caller may not read is absent from `read()` sources; a write their
+ * rules deny rejects the transaction, which `.use(denials)` turns into `FORBIDDEN`.
  *
  * ```ts
  * const base = withMesh(server)
  * export const jobs = {
  *   assign: base
  *     .input(z.object({ id: z.string().uuid(), tech: z.string() }))
- *     .errors({ NOT_FOUND: {}, CONFLICT: {} })
+ *     .errors({ NOT_FOUND: {} })
  *     .handler(async ({ input, context: { mesh }, errors }) => {
- *       if (mesh.jobs.get(input.id) === undefined) throw errors.NOT_FOUND()   // unreadable reads as absent
- *       const written = await mesh.tx((c) => …, { label: "jobs.assign" })
- *       if (written.isErr())
- *         throw written.error._tag === "PolicyDenied" ? errors.FORBIDDEN() : written.error
- *       return { eventId: written.value.eventId }
+ *       const j = mesh.read(jobs)
+ *       const [job] = await mesh.db.select().from(j).where(eq(j.id, input.id))
+ *       if (job === undefined) throw errors.NOT_FOUND()
+ *       await mesh.db.update(jobs).set({ assignee: input.tech }).where(eq(jobs.id, input.id))
  *     }),
  * }
  * ```
  */
-export function withMesh<C extends ColumnsMap>(mesh: Mesh<C>) {
+export function withMesh(mesh: Mesh) {
   return os
     .$context<CallerContext>()
     .errors({
       BAD_REQUEST: { message: "the call names an instance the manifest cannot resolve" },
       FORBIDDEN: { message: "the schema's rules deny this to the caller" },
     })
-    .use(({ context, next, errors }) => {
+    .use(async ({ context, next, errors }) => {
       const { caller } = context;
-      const scoped = mesh.scoped(caller.pins, { as: caller });
-      if (scoped.isErr()) throw errors.BAD_REQUEST({ message: scoped.error.message });
-      return next({ context: { mesh: scoped.value } satisfies MeshContext<C> });
+      const as = { account: caller.account, claims: caller.claims ?? {} };
+      if (caller.role !== undefined) Object.assign(as, { role: caller.role });
+      const handle = mesh.on(caller.partition, { as });
+      if (handle.isErr()) throw errors.BAD_REQUEST({ message: handle.error.message });
+      try {
+        return await next({ context: { mesh: handle.value } satisfies MeshContext });
+      } catch (cause) {
+        // a write the caller's rules refused surfaces as the transaction rejecting
+        const denied = cause instanceof Error && taggedCause(cause)?._tag === "PolicyDenied";
+        throw denied ? errors.FORBIDDEN() : cause;
+      }
     });
 }

@@ -6,7 +6,7 @@ import type { SqlValue, SqliteDriver } from "@syncmesh/storage";
 import type { SQLChunk, SQLWrapper, Table as DrizzleTable } from "drizzle-orm";
 import type { SqliteRemoteDatabase } from "drizzle-orm/sqlite-proxy";
 
-import { createWriter, type SqlWriteError, type TxReceipt } from "@syncmesh/client";
+import { createWriter, type SqlWriteError, type TxReceipt } from "@syncmesh/storage";
 import { compileRead, type Compiled } from "@syncmesh/storage";
 import { Column, SQL, Subquery, Table, getTableName, is, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/sqlite-proxy";
@@ -67,6 +67,24 @@ const derivedLabel = (changes: readonly Change[]): string =>
 
 /** Carries Drizzle's `rollback` out through the capture without it becoming an app error. */
 class TxRollback extends Error {}
+
+/**
+ * The mesh's tagged error inside a rejected statement or transaction — Drizzle wraps proxy
+ * failures, so `PolicyDenied` and friends ride the `cause` chain. `undefined` for anything else.
+ */
+export const taggedCause = (thrown: Error): (Error & { readonly _tag: string }) | undefined => {
+  let current: unknown = thrown;
+  while (current instanceof Error) {
+    // SAFETY: reading an optional discriminant off an Error; absent on plain errors, the walk continues
+    const tagged = current as Error & { readonly _tag?: string };
+    if (tagged._tag !== undefined) {
+      // SAFETY: _tag was just checked present — restated as required for the caller
+      return tagged as Error & { readonly _tag: string };
+    }
+    current = current.cause;
+  }
+  return undefined;
+};
 
 /** A compiled predicate as a Drizzle fragment: raw text between the `?`s, each param bound. */
 const fragment = ({ sql: text, params }: Compiled): SQL => {
