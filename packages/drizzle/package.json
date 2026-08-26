@@ -1,0 +1,41 @@
+{
+  "name": "@syncmesh/drizzle",
+  "version": "0.0.0",
+  "description": "Drizzle over a mesh: reads through sources the caller may see, writes captured into events, live queries by re-run",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@syncmesh/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@syncmesh/client": "workspace:*",
+    "@syncmesh/engine": "workspace:*",
+    "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/policy": "workspace:*",
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/schema": "workspace:*",
+    "@syncmesh/storage": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncmesh/config": "workspace:*",
+    "@syncmesh/sqlite-bun": "workspace:*",
+    "@syncmesh/temporal": "workspace:*",
+    "@syncmesh/wire": "workspace:*",
+    "@types/bun": "catalog:",
+    "drizzle-orm": "latest",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:",
+    "zod": "^3.25.76"
+  },
+  "peerDependencies": {
+    "drizzle-orm": ">=0.44"
+  }
+}

@@ -160,16 +160,24 @@ export function createEngine(options: EngineOptions): Engine {
     if (events.length === 0) return batch;
     const keys = [...batch.writeKeys.values()].reduce((n, set) => n + set.size, 0);
     telemetry.emit({ type: "engine.fold", sizes: { events: events.length, keys }, duration });
-    folds.emit(batch);
+    // a boot fold has no persist step of its own; every other fold notifies after it (persist)
+    if (source === "boot") folds.emit(batch);
     return batch;
   };
   fold(boot?.replay ?? [], "boot");
 
-  /** Writes the rows a fold touched to the state store; a failure is reported, not returned — the log already holds the truth. */
+  /**
+   * Writes the rows a fold touched to the state store, then notifies — after, so a listener that
+   * re-reads the tables (D20's live queries) sees the rows. A failure is reported, not returned:
+   * the log already holds the truth.
+   */
   const persist = async (batch: FoldBatch): Promise<void> => {
-    if (stateStore === undefined || batch.eventCount === 0) return;
-    const written = await stateStore.commit(rowsFor(state, batch.writeKeys), coverage.current());
-    if (written.isErr()) errors.emit(written.error);
+    if (batch.eventCount === 0) return;
+    if (stateStore !== undefined) {
+      const written = await stateStore.commit(rowsFor(state, batch.writeKeys), coverage.current());
+      if (written.isErr()) errors.emit(written.error);
+    }
+    folds.emit(batch);
   };
 
   const mutate: Engine["mutate"] = (procedure, fn, mutateOptions = {}) =>

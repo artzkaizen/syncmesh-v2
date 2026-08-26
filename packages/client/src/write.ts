@@ -1,16 +1,18 @@
 import type {
   Engine,
   MutateError,
+  Principal,
   StateLookup,
   StoreFailure,
   Tx,
   Validator,
+  ValidatorSchema,
 } from "@syncmesh/engine";
 import type { Change, PartitionKey, Procedure } from "@syncmesh/kernel";
 import type { Table } from "@syncmesh/schema";
 import type { SqliteDriver } from "@syncmesh/storage";
 
-import { EmptyMutation } from "@syncmesh/engine";
+import { EmptyMutation, PolicyDenied, can } from "@syncmesh/engine";
 import { getRecord, readRow } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { captureChanges } from "@syncmesh/storage";
@@ -38,6 +40,13 @@ export interface WriterDeps {
   /** The connection the app's tables live on; capture is installed on it. */
   readonly driver: SqliteDriver;
   readonly tables: readonly Table[];
+  /**
+   * Act as this principal: each captured change is also judged by the schema's rules for them,
+   * before COMMIT — what a server does on a caller's behalf, refused as `PolicyDenied` when the
+   * caller may not. Needs `schema`. The event stays the device's.
+   */
+  readonly actor?: Principal;
+  readonly schema?: ValidatorSchema;
 }
 
 export type Write = (
@@ -60,10 +69,24 @@ const replay = (tx: Tx, changes: readonly Change[]): void => {
 };
 
 export function createWriter(deps: WriterDeps): Write {
-  const { engine, validate, driver, tables } = deps;
+  const { engine, validate, driver, tables, actor, schema } = deps;
   const before: StateLookup = {
     row: (table, key) => readRow(engine.state(), table, key),
     partition: (table, key) => getRecord(engine.state(), table, key)?.partition,
+  };
+  /** The actor's verdict on one change — the same AST the device's own validator runs, for another principal. */
+  const actorDenies = (change: Change): PolicyDenied | undefined => {
+    if (actor === undefined || schema === undefined) return undefined;
+    const row = before.row(change.table, change.key);
+    const patch =
+      change.kind === "insert" ? change.row : change.kind === "update" ? change.patch : undefined;
+    if (can(schema, actor, `${String(change.table)}.${change.kind}`, row, patch)) return undefined;
+    return new PolicyDenied({
+      table: String(change.table),
+      key: String(change.key),
+      op: change.kind,
+      message: `${change.kind} on ${String(change.table)} denied`,
+    });
   };
   return (label, fn, options = {}) =>
     Result.gen(async function* () {
@@ -72,13 +95,15 @@ export function createWriter(deps: WriterDeps): Write {
         Object.assign(mutateOptions, { partition: options.partition });
       if (options.local === true) Object.assign(mutateOptions, { local: true });
       const captureOptions = {
-        check: (captured: readonly Change[]) =>
-          captured.length === 0
-            ? Result.ok(undefined)
-            : validate.validate(
-                { peerId: engine.peerId, changes: captured, ...mutateOptions },
-                before,
-              ),
+        check: (captured: readonly Change[]) => {
+          if (captured.length === 0) return Result.ok(undefined);
+          const denied = captured.map(actorDenies).find((d) => d !== undefined);
+          if (denied !== undefined) return Result.err(denied);
+          return validate.validate(
+            { peerId: engine.peerId, changes: captured, ...mutateOptions },
+            before,
+          );
+        },
       };
       if (options.partition !== undefined)
         Object.assign(captureOptions, { partition: options.partition });

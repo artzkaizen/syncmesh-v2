@@ -103,6 +103,33 @@
         "vite-plus": "catalog:",
       },
     },
+    "packages/drizzle": {
+      "name": "@syncmesh/drizzle",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/client": "workspace:*",
+        "@syncmesh/engine": "workspace:*",
+        "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/policy": "workspace:*",
+        "@syncmesh/result": "workspace:*",
+        "@syncmesh/schema": "workspace:*",
+        "@syncmesh/storage": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncmesh/config": "workspace:*",
+        "@syncmesh/sqlite-bun": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
+        "@syncmesh/wire": "workspace:*",
+        "@types/bun": "catalog:",
+        "drizzle-orm": "latest",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+        "zod": "^3.25.76",
+      },
+      "peerDependencies": {
+        "drizzle-orm": ">=0.44",
+      },
+    },
     "packages/engine": {
       "name": "@syncmesh/engine",
       "version": "0.0.0",
@@ -525,6 +552,8 @@
     "@syncmesh/config": ["@syncmesh/config@workspace:tooling/config"],
 
     "@syncmesh/conformance": ["@syncmesh/conformance@workspace:conformance"],
+
+    "@syncmesh/drizzle": ["@syncmesh/drizzle@workspace:packages/drizzle"],
 
     "@syncmesh/engine": ["@syncmesh/engine@workspace:packages/engine"],
 
