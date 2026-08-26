@@ -1,0 +1,44 @@
+{
+  "name": "@syncmesh/react",
+  "version": "0.0.0",
+  "description": "React hooks over a mesh: live queries, keyset windows and permissions on useSyncExternalStore",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@syncmesh/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@syncmesh/drizzle": "workspace:*",
+    "@syncmesh/result": "workspace:*"
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "^18.0.1",
+    "@syncmesh/config": "workspace:*",
+    "@syncmesh/engine": "workspace:*",
+    "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/schema": "workspace:*",
+    "@syncmesh/sqlite-bun": "workspace:*",
+    "@syncmesh/storage": "workspace:*",
+    "@syncmesh/temporal": "workspace:*",
+    "@syncmesh/wire": "workspace:*",
+    "@types/bun": "catalog:",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "drizzle-orm": "latest",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  }
+}

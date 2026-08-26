@@ -104,8 +104,8 @@ function main(): number {
           name: "consumer",
           private: true,
           type: "module",
-          // drizzle-orm is the client's peer: the consumer supplies it, as an app would
-          dependencies: { ...specs, "drizzle-orm": "latest" },
+          // the peers an app supplies: drizzle-orm for the client, react for the hooks
+          dependencies: { ...specs, "drizzle-orm": "latest", react: "^19", "react-dom": "^19" },
           overrides: specs,
         },
         null,
