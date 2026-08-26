@@ -1,5 +1,5 @@
 import { PGlite } from "@electric-sql/pglite";
-import { storeTests } from "@syncmesh/storage/driver-tests";
+import { captureTests, storeTests } from "@syncmesh/storage/driver-tests";
 import { describe, test } from "bun:test";
 
 import { pgliteDriver, postgresDriver } from "../index.js";
@@ -14,7 +14,7 @@ describe("@syncmesh/postgres over PGlite passes the store contract", () => {
     const driver = pgliteDriver(db);
     return Promise.resolve({ ...driver, close: () => Promise.resolve() });
   };
-  for (const c of storeTests(openDriver)) test(c.name, c.run);
+  for (const c of [...storeTests(openDriver), ...captureTests(openDriver)]) test(c.name, c.run);
 });
 
 const url = process.env.SYNCMESH_PG_URL ?? "";
@@ -30,5 +30,5 @@ describe.if(url !== "")("@syncmesh/postgres over a real server passes the store 
     const sql = postgres(url, { max: 1, connection: { search_path: schema } });
     return postgresDriver(sql);
   };
-  for (const c of storeTests(openDriver)) test(c.name, c.run);
+  for (const c of [...storeTests(openDriver), ...captureTests(openDriver)]) test(c.name, c.run);
 });

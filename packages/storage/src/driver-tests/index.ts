@@ -27,6 +27,14 @@ export function storeTests(openDriver: OpenDriver): readonly SuiteCase[] {
 }
 
 /**
+ * Change capture and the app's tables: what a driver of any dialect must carry for D20's write
+ * path — the fold into real tables, and the app's own statements back out as changes.
+ */
+export function captureTests(openDriver: OpenDriver): readonly SuiteCase[] {
+  return [...captureCases(openDriver), ...captureRuleCases(openDriver), ...tablesCases(openDriver)];
+}
+
+/**
  * The contract every `SqliteDriver` must satisfy, as named cases for any test runner: the stores,
  * plus the device-side half — tables, capture and read filters — that lives in SQLite DDL.
  *
@@ -37,9 +45,7 @@ export function driverTests(openDriver: OpenDriver): readonly SuiteCase[] {
   return [
     ...storeTests(openDriver),
     ...sqliteMigrationCases(openDriver),
-    ...captureCases(openDriver),
-    ...captureRuleCases(openDriver),
-    ...tablesCases(openDriver),
+    ...captureTests(openDriver),
     ...readFilterCases(openDriver),
   ];
 }

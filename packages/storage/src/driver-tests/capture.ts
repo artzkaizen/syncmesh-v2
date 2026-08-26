@@ -8,7 +8,7 @@ import type { SqliteDriver } from "../driver.js";
 import type { OpenDriver } from "./index.js";
 
 import { captureChanges, installCapture } from "../capture.js";
-import { COUNTERS as counters, JOBS as jobs } from "./fixtures.js";
+import { COUNTERS as counters, JOBS as jobs, sqlText } from "./fixtures.js";
 
 const open = async (driver: SqliteDriver) => {
   (await installCapture(driver, [jobs, counters])).unwrap();
@@ -37,12 +37,22 @@ export const captureCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
     name: "capture: an insert is the whole row, decoded by column kind — bytes, booleans, json, timestamps",
     run: async () => {
       const driver = await open(await openDriver("capture-insert"));
+      const L = sqlText(driver);
       const photo = Uint8Array.of(1, 2, 255);
       const changes = (
         await captured(driver, () =>
           driver.run(
-            `INSERT INTO jobs (id, title, hours, rank, done, "dueAt", meta, photo) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            ["j1", "panel B", 1.5, 2, 1, 1_700_000_000_000, JSON.stringify({ tags: ["a"] }), photo],
+            `INSERT INTO jobs (id, title, hours, rank, done, "dueAt", meta, photo) VALUES (${[1, 2, 3, 4, 5, 6, 7, 8].map(L.p).join(", ")})`,
+            [
+              "j1",
+              "panel B",
+              1.5,
+              2,
+              L.bool(true),
+              L.ts(1_700_000_000_000),
+              JSON.stringify({ tags: ["a"] }),
+              photo,
+            ],
           ),
         )
       ).unwrap();
@@ -68,10 +78,13 @@ export const captureCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
     name: "capture: an update carries only the columns whose value changed; a no-op update is nothing",
     run: async () => {
       const driver = await open(await openDriver("capture-update"));
-      await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('j1', 'one', 1, 0)`);
+      const L = sqlText(driver);
+      await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('j1', 'one', 1, ${L.F})`);
       const changes = (
         await captured(driver, async () => {
-          await driver.run(`UPDATE jobs SET title = 'one!', rank = 1, done = 1 WHERE id = 'j1'`);
+          await driver.run(
+            `UPDATE jobs SET title = 'one!', rank = 1, done = ${L.T} WHERE id = 'j1'`,
+          );
           await driver.run(`UPDATE jobs SET title = 'one!' WHERE id = 'j1'`);
         })
       ).unwrap();
@@ -86,7 +99,8 @@ export const captureCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
     name: "capture: delete, integer keys as decimal text, and statement order across tables",
     run: async () => {
       const driver = await open(await openDriver("capture-order"));
-      await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('j1', 'one', 1, 0)`);
+      const L = sqlText(driver);
+      await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('j1', 'one', 1, ${L.F})`);
       const changes = (
         await captured(driver, async () => {
           await driver.run(`INSERT INTO counters (id, n) VALUES (42, 0)`);
@@ -110,22 +124,29 @@ export const captureRuleCases = (openDriver: OpenDriver): readonly SuiteCase[] =
     name: "capture: a row touched twice is one change — its net effect, since one event has one stamp",
     run: async () => {
       const driver = await open(await openDriver("capture-net"));
-      await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('kept', 'k', 1, 0)`);
-      await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('gone', 'g', 1, 0)`);
-      await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('reborn', 'r', 1, 0)`);
+      const L = sqlText(driver);
+      await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('kept', 'k', 1, ${L.F})`);
+      await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('gone', 'g', 1, ${L.F})`);
+      await driver.run(
+        `INSERT INTO jobs (id, title, rank, done) VALUES ('reborn', 'r', 1, ${L.F})`,
+      );
       const changes = (
         await captured(driver, async () => {
-          await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('new', 'a', 1, 0)`);
+          await driver.run(
+            `INSERT INTO jobs (id, title, rank, done) VALUES ('new', 'a', 1, ${L.F})`,
+          );
           await driver.run(`UPDATE jobs SET title = 'b' WHERE id = 'new'`); // insert + update → insert with the final image
           await driver.run(`UPDATE jobs SET title = 'k2' WHERE id = 'kept'`);
           await driver.run(`UPDATE jobs SET rank = 2 WHERE id = 'kept'`); // update + update → one patch, both columns
-          await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('blink', 'x', 1, 0)`);
+          await driver.run(
+            `INSERT INTO jobs (id, title, rank, done) VALUES ('blink', 'x', 1, ${L.F})`,
+          );
           await driver.run(`DELETE FROM jobs WHERE id = 'blink'`); // insert + delete → nothing
           await driver.run(`UPDATE jobs SET title = 'g2' WHERE id = 'gone'`);
           await driver.run(`DELETE FROM jobs WHERE id = 'gone'`); // update + delete → delete
           await driver.run(`DELETE FROM jobs WHERE id = 'reborn'`);
           await driver.run(
-            `INSERT INTO jobs (id, title, rank, done) VALUES ('reborn', 'r2', 1, 0)`,
+            `INSERT INTO jobs (id, title, rank, done) VALUES ('reborn', 'r2', 1, ${L.F})`,
           ); // delete + insert → update
         })
       ).unwrap();
@@ -144,13 +165,15 @@ export const captureRuleCases = (openDriver: OpenDriver): readonly SuiteCase[] =
     name: "capture: the write's partition is stamped onto inserted rows, uncaptured; updated rows keep theirs",
     run: async () => {
       const driver = await open(await openDriver("capture-partition"));
+      const L = sqlText(driver);
       const acme = parsePartitionKey("org:acme").unwrap();
       const globex = parsePartitionKey("org:globex").unwrap();
       const inserted = (
         await captureChanges(
           driver,
           [jobs],
-          () => driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('j1', 'one', 1, 0)`),
+          () =>
+            driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('j1', 'one', 1, ${L.F})`),
           { partition: acme },
         )
       ).unwrap();
@@ -189,22 +212,26 @@ export const captureRuleCases = (openDriver: OpenDriver): readonly SuiteCase[] =
     name: "capture: a throw rolls everything back — no rows, no changes, nothing left in the log",
     run: async () => {
       const driver = await open(await openDriver("capture-rollback"));
+      const L = sqlText(driver);
       const r = await captured(driver, async () => {
-        await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('j1', 'one', 1, 0)`);
+        await driver.run(
+          `INSERT INTO jobs (id, title, rank, done) VALUES ('j1', 'one', 1, ${L.F})`,
+        );
         throw new Error("policy said no");
       });
       equal(r.isErr(), true, "the capture fails");
       equal(await count(driver, `SELECT COUNT(*) FROM jobs`), 0, "row rolled back");
       equal(await count(driver, `SELECT COUNT(*) FROM _syncmesh_changes`), 0, "log empty");
-      equal(await count(driver, `SELECT armed FROM _syncmesh_capture`), 0, "guard disarmed");
+      equal(await count(driver, L.guard), 0, "guard disarmed");
     },
   },
   {
     name: "capture: writes outside a capture — the fold's own — are never logged",
     run: async () => {
       const driver = await open(await openDriver("capture-guard"));
+      const L = sqlText(driver);
       await driver.run(
-        `INSERT INTO jobs (id, title, rank, done) VALUES ('j1', 'from a peer', 1, 0)`,
+        `INSERT INTO jobs (id, title, rank, done) VALUES ('j1', 'from a peer', 1, ${L.F})`,
       );
       await driver.run(`UPDATE jobs SET title = 'merged' WHERE id = 'j1'`);
       equal(await count(driver, `SELECT COUNT(*) FROM _syncmesh_changes`), 0, "nothing logged");

@@ -9,7 +9,7 @@ import type { OpenDriver } from "./index.js";
 
 import { captureChanges } from "../capture.js";
 import { openStores } from "../open-stores.js";
-import { JOBS, stamp } from "./fixtures.js";
+import { JOBS, stamp, sqlText } from "./fixtures.js";
 
 const NONE: Coverage = { synced: new Map(), local: new Map() };
 const ACME = parsePartitionKey("org:acme").unwrap();
@@ -47,14 +47,15 @@ export const tablesCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
     name: "tables: a fold's visible record lands in its SQL table, values in the column's form, and is never captured",
     run: async () => {
       const driver = await openDriver("tables-upsert");
+      const L = sqlText(driver);
       const { state } = await open(driver);
       (await state.commit([write(J1, job("one", 1))], NONE)).unwrap();
       const [row] = await driver.all(
         `SELECT id, title, hours, rank, done, "dueAt", meta, photo, _partition FROM jobs`,
       );
       equal(
-        row?.slice(0, 7).map(String),
-        ["j1", "one", "1.5", "2", "1", "1700000000000", '{"tags":["a"]}'],
+        [...(row?.slice(0, 6).map(String) ?? []), L.jsonText(row?.[6] ?? null)],
+        ["j1", "one", "1.5", "2", L.boolText(true), L.tsText(1_700_000_000_000), '{"tags":["a"]}'],
         "values",
       );
       equal(row?.[7] instanceof Uint8Array ? row[7] : undefined, Uint8Array.of(1, 2, 255), "bytes");
@@ -95,13 +96,16 @@ export const tablesCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
     name: "tables: two writers, one order — a capture in flight and a fold commit take turns on the connection",
     run: async () => {
       const driver = await openDriver("tables-two-writers");
+      const L = sqlText(driver);
       const { state } = await open(driver);
       let release: () => void = () => undefined;
       const held = new Promise<void>((resolve) => {
         release = () => resolve();
       });
       const capture = captureChanges(driver, [JOBS], async () => {
-        await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('j1', 'app', 1, 0)`);
+        await driver.run(
+          `INSERT INTO jobs (id, title, rank, done) VALUES ('j1', 'app', 1, ${L.F})`,
+        );
         await held; // the app's transaction stays open while a fold arrives
       });
       const fold = state.commit(

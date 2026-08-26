@@ -1,5 +1,5 @@
-import type { CellValue } from "@syncmesh/kernel";
-import type { ColumnKind } from "@syncmesh/schema";
+import type { CellValue, ColumnName, TableName } from "@syncmesh/kernel";
+import type { ColumnKind, Table } from "@syncmesh/schema";
 
 import type { SqlDialect, SqlDriver, SqlValue } from "./driver.js";
 
@@ -37,10 +37,32 @@ export interface StateSql {
   readonly clearCursors: string;
 }
 
+/**
+ * Change capture in one dialect (D20 §3): the table DDL, the log and its triggers, and the four
+ * statements a capture runs around the app's own. The logged image is the same shape in every
+ * dialect — bytes as lowercase hex, timestamps as epoch milliseconds, JSON as its text — so one
+ * decoder reads it back.
+ */
+export interface CaptureSql {
+  /** `CREATE TABLE IF NOT EXISTS` for a synced table: its columns plus `_partition`, only the key constrained. */
+  readonly tableDdl: (table: Table) => string;
+  /** The log and one trigger set per table; idempotent, so installing twice is installing once. */
+  readonly captureDdl: (tables: readonly Table[]) => readonly string[];
+  /** Triggers log only between these two, inside the transaction. */
+  readonly arm: string;
+  readonly disarm: string;
+  /** `tbl, key, op, old, new` in log order. */
+  readonly selectLog: string;
+  readonly clearLog: string;
+  /** Stamps the partition (bind 1) onto the row with this key (bind 2), guard at rest. */
+  readonly stampPartition: (table: TableName, pk: ColumnName, partitionColumn: string) => string;
+}
+
 export interface Dialect {
   readonly name: SqlDialect;
   readonly events: EventSql;
   readonly state: StateSql;
+  readonly capture: CaptureSql;
   /** The bind marker for the 1-based position — `?` or `$n`. */
   readonly placeholder: (position: number) => string;
   /** A cell in the form the column's SQL type holds it in this dialect. */

@@ -1,8 +1,87 @@
 import type { CellValue } from "@syncmesh/kernel";
-import type { ColumnKind } from "@syncmesh/schema";
+import type { ColumnKind, Table } from "@syncmesh/schema";
 
-import type { Dialect } from "./dialect.js";
+import type { CaptureSql, Dialect } from "./dialect.js";
 import type { SqlValue } from "./driver.js";
+
+import { columnsOf, literal, quote } from "./identifiers.js";
+
+const CHANGES = "_syncmesh_changes";
+const GUARD = "_syncmesh_capture";
+
+const sqlType = (kind: ColumnKind): string => {
+  switch (kind) {
+    case "integer":
+    case "timestamp":
+    case "boolean":
+      return "INTEGER";
+    case "float":
+      return "REAL";
+    case "blob":
+      return "BLOB";
+    default:
+      return "TEXT";
+  }
+};
+
+/**
+ * The logged image of a row as one JSON object. Bytes travel as hex, since JSON cannot hold a
+ * BLOB; a NULL stays NULL rather than becoming `hex(NULL)`, the empty string.
+ */
+const image = (table: Table, alias: "NEW" | "OLD"): string =>
+  `json_object(${columnsOf(table)
+    .map(([, name, column]) => {
+      const cell = `${alias}.${quote(name)}`;
+      // lower(): SQLite's hex() is uppercase and the wire's hex codec is lowercase-only
+      const logged =
+        column.def.kind === "blob"
+          ? `CASE WHEN ${cell} IS NULL THEN NULL ELSE lower(hex(${cell})) END`
+          : cell;
+      return `'${String(name)}', ${logged}`;
+    })
+    .join(", ")})`;
+
+/** Triggers fire only while a guard row is armed, so the fold's own UPSERTs are never re-captured. */
+const capture: CaptureSql = {
+  tableDdl: (table) => {
+    const columns = columnsOf(table).map(([key, name, column]) => {
+      const constraint = key === table.primaryKey ? " PRIMARY KEY" : "";
+      return `${quote(name)} ${sqlType(column.def.kind)}${constraint}`;
+    });
+    return `CREATE TABLE IF NOT EXISTS ${quote(table.name)} (${[...columns, '"_partition" TEXT'].join(", ")})`;
+  },
+  captureDdl: (tables) => {
+    const armed = `(SELECT armed FROM ${GUARD} WHERE id = 1) = 1`;
+    const statements = [
+      `CREATE TABLE IF NOT EXISTS ${CHANGES} (seq INTEGER PRIMARY KEY AUTOINCREMENT, tbl TEXT NOT NULL, key TEXT NOT NULL, op TEXT NOT NULL, old TEXT, new TEXT)`,
+      `CREATE TABLE IF NOT EXISTS ${GUARD} (id INTEGER PRIMARY KEY, armed INTEGER NOT NULL)`,
+      `INSERT OR IGNORE INTO ${GUARD} (id, armed) VALUES (1, 0)`,
+    ];
+    for (const table of tables) {
+      const name = literal(table.name);
+      const pk = table.columnNames[table.primaryKey];
+      if (pk === undefined) continue;
+      const key = (alias: "NEW" | "OLD") => `CAST(${alias}.${quote(pk)} AS TEXT)`;
+      const trigger = (op: "insert" | "update" | "delete", body: string) =>
+        `CREATE TRIGGER IF NOT EXISTS "_syncmesh_${String(table.name)}_${op}" AFTER ${op.toUpperCase()} ON ${quote(table.name)} WHEN ${armed} BEGIN INSERT INTO ${CHANGES} (tbl, key, op, old, new) VALUES (${body}); END`;
+      statements.push(
+        trigger("insert", `${name}, ${key("NEW")}, 'insert', NULL, ${image(table, "NEW")}`),
+        trigger(
+          "update",
+          `${name}, ${key("NEW")}, 'update', ${image(table, "OLD")}, ${image(table, "NEW")}`,
+        ),
+        trigger("delete", `${name}, ${key("OLD")}, 'delete', ${image(table, "OLD")}, NULL`),
+      );
+    }
+    return statements;
+  },
+  arm: `UPDATE ${GUARD} SET armed = 1 WHERE id = 1`,
+  disarm: `UPDATE ${GUARD} SET armed = 0 WHERE id = 1`,
+  selectLog: `SELECT tbl, key, op, old, new FROM ${CHANGES} ORDER BY seq`,
+  clearLog: `DELETE FROM ${CHANGES}`,
+  stampPartition: (table, pk, partitionColumn) =>
+    `UPDATE ${quote(table)} SET "${partitionColumn.replaceAll('"', '""')}" = ? WHERE ${quote(pk)} = ?`,
+};
 
 const SQLITE_COMPACTABLE = `FROM events
   WHERE local = ? AND hlc_ms < ?
@@ -107,6 +186,7 @@ export const SQLITE: Dialect = {
     clearRows: `DELETE FROM state_rows`,
     clearCursors: `DELETE FROM state_cursors`,
   },
+  capture,
   placeholder: () => "?",
   cell: sqliteCell,
   migrate: async (driver) => {

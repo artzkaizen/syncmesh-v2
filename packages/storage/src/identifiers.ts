@@ -1,5 +1,5 @@
 import type { ColumnName, TableName } from "@syncmesh/kernel";
-import type { ColumnKind, Table } from "@syncmesh/schema";
+import type { Table } from "@syncmesh/schema";
 
 /*
  * Every identifier below reaches the SQL as a parsed brand — TableName / ColumnName, grammar
@@ -16,18 +16,3 @@ export const columnsOf = (table: Table) =>
     const name = table.columnNames[key];
     return name === undefined ? [] : [[key, name, column] as const];
   });
-
-export const sqlType = (kind: ColumnKind): string => {
-  switch (kind) {
-    case "integer":
-    case "timestamp":
-    case "boolean":
-      return "INTEGER";
-    case "float":
-      return "REAL";
-    case "blob":
-      return "BLOB";
-    default:
-      return "TEXT";
-  }
-};

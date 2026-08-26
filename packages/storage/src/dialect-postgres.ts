@@ -1,8 +1,98 @@
 import type { CellValue } from "@syncmesh/kernel";
-import type { ColumnKind } from "@syncmesh/schema";
+import type { ColumnKind, Table } from "@syncmesh/schema";
 
-import type { Dialect } from "./dialect.js";
+import type { CaptureSql, Dialect } from "./dialect.js";
 import type { SqlValue } from "./driver.js";
+
+import { columnsOf, literal, quote } from "./identifiers.js";
+
+const CHANGES = "_syncmesh_changes";
+
+/** What a Drizzle `pg-core` column of the kind would be, so a mesh-created table reads like the app's own. */
+const sqlType = (kind: ColumnKind): string => {
+  switch (kind) {
+    case "integer":
+      return "BIGINT";
+    case "float":
+      return "DOUBLE PRECISION";
+    case "boolean":
+      return "BOOLEAN";
+    case "timestamp":
+      return "TIMESTAMPTZ";
+    case "json":
+      return "JSONB";
+    case "blob":
+      return "BYTEA";
+    default:
+      return "TEXT";
+  }
+};
+
+/** The logged image in the shared shape: hex bytes, epoch-millisecond timestamps, JSON as text. */
+const image = (table: Table, alias: "NEW" | "OLD"): string =>
+  `json_build_object(${columnsOf(table)
+    .map(([, name, column]) => {
+      const cell = `${alias}.${quote(name)}`;
+      const logged =
+        column.def.kind === "blob"
+          ? `encode(${cell}, 'hex')`
+          : column.def.kind === "timestamp"
+            ? `(EXTRACT(EPOCH FROM ${cell}) * 1000)::bigint`
+            : column.def.kind === "json"
+              ? `${cell}::text`
+              : cell;
+      return `'${String(name)}', ${logged}`;
+    })
+    .join(", ")})::text`;
+
+/** A transaction-local setting is the guard: `SET LOCAL` dies with the transaction and locks no row across the pool. */
+const ARMED = `COALESCE(NULLIF(current_setting('syncmesh.armed', true), ''), '0') = '1'`;
+
+const capture: CaptureSql = {
+  tableDdl: (table) => {
+    const columns = columnsOf(table).map(([key, name, column]) => {
+      const constraint = key === table.primaryKey ? " PRIMARY KEY" : "";
+      return `${quote(name)} ${sqlType(column.def.kind)}${constraint}`;
+    });
+    return `CREATE TABLE IF NOT EXISTS ${quote(table.name)} (${[...columns, '"_partition" TEXT'].join(", ")})`;
+  },
+  captureDdl: (tables) => {
+    const statements = [
+      `CREATE TABLE IF NOT EXISTS ${CHANGES} (seq BIGSERIAL PRIMARY KEY, tbl TEXT NOT NULL, key TEXT NOT NULL, op TEXT NOT NULL, old TEXT, new TEXT)`,
+    ];
+    for (const table of tables) {
+      const name = literal(table.name);
+      const pk = table.columnNames[table.primaryKey];
+      if (pk === undefined) continue;
+      const fn = `"_syncmesh_capture_${String(table.name)}"`;
+      const log = (values: string) =>
+        `INSERT INTO ${CHANGES} (tbl, key, op, old, new) VALUES (${name}, ${values});`;
+      statements.push(
+        `CREATE OR REPLACE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF ${ARMED} THEN
+            IF TG_OP = 'INSERT' THEN
+              ${log(`NEW.${quote(pk)}::text, 'insert', NULL, ${image(table, "NEW")}`)}
+            ELSIF TG_OP = 'UPDATE' THEN
+              ${log(`NEW.${quote(pk)}::text, 'update', ${image(table, "OLD")}, ${image(table, "NEW")}`)}
+            ELSE
+              ${log(`OLD.${quote(pk)}::text, 'delete', ${image(table, "OLD")}, NULL`)}
+            END IF;
+          END IF;
+          RETURN NULL;
+        END $$`,
+        `CREATE OR REPLACE TRIGGER "_syncmesh_${String(table.name)}" AFTER INSERT OR UPDATE OR DELETE ON ${quote(table.name)} FOR EACH ROW EXECUTE FUNCTION ${fn}()`,
+      );
+    }
+    return statements;
+  },
+  arm: `SET LOCAL syncmesh.armed = '1'`,
+  disarm: `SET LOCAL syncmesh.armed = '0'`,
+  selectLog: `SELECT tbl, key, op, old, new FROM ${CHANGES} ORDER BY seq`,
+  clearLog: `DELETE FROM ${CHANGES}`,
+  stampPartition: (table, pk, partitionColumn) =>
+    `UPDATE ${quote(table)} SET "${partitionColumn.replaceAll('"', '""')}" = $1 WHERE ${quote(pk)} = $2`,
+};
 
 /** The floor a cursor map sets for this author, from the JSON the caller binds. */
 const PG_FLOOR = `COALESCE((SELECT f.value::bigint FROM jsonb_each_text($3::jsonb) AS f WHERE f.key = e.peer), 0)`;
@@ -112,6 +202,7 @@ export const POSTGRES: Dialect = {
     clearRows: `DELETE FROM _syncmesh_state`,
     clearCursors: `DELETE FROM _syncmesh_cursors`,
   },
+  capture,
   placeholder: (position) => `$${position}`,
   cell: postgresCell,
   migrate: async (driver) => {

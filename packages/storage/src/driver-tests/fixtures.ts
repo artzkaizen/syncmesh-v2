@@ -19,6 +19,8 @@ import { eventId, parsePeerId, parseSeqNum } from "@syncmesh/kernel";
 import { t, table } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 
+import type { SqlValue } from "../driver.js";
+
 export const A = parsePeerId("a".repeat(64)).unwrap();
 export const B = parsePeerId("b".repeat(64)).unwrap();
 
@@ -106,3 +108,34 @@ export const sqlOf = (driver: { readonly dialect?: "sqlite" | "postgres" }) =>
         junk: "'\\x00'::bytea",
       }
     : { events: "events", rows: "state_rows", compaction: "compaction", junk: "X'00'" };
+
+/**
+ * The SQL an app would write in the driver's dialect: boolean and timestamp literals and binds,
+ * bind markers, and how a read-back cell prints — so one suite says the same thing to both.
+ */
+export const sqlText = (driver: { readonly dialect?: "sqlite" | "postgres" }) =>
+  driver.dialect === "postgres"
+    ? {
+        T: "true",
+        F: "false",
+        bool: (b: boolean): SqlValue => b,
+        ts: (ms: number): SqlValue => new Date(ms),
+        tsLiteral: (ms: number) => `to_timestamp(${ms} / 1000.0)`,
+        p: (i: number) => `$${i}`,
+        boolText: (b: boolean) => (b ? "true" : "false"),
+        tsText: (ms: number) => String(new Date(ms)),
+        jsonText: (v: SqlValue) => JSON.stringify(v),
+        guard: `SELECT COALESCE(NULLIF(current_setting('syncmesh.armed', true), ''), '0')::int`,
+      }
+    : {
+        T: "1",
+        F: "0",
+        bool: (b: boolean): SqlValue => (b ? 1 : 0),
+        ts: (ms: number): SqlValue => ms,
+        tsLiteral: (ms: number) => String(ms),
+        p: () => "?",
+        boolText: (b: boolean) => (b ? "1" : "0"),
+        tsText: (ms: number) => String(ms),
+        jsonText: (v: SqlValue) => String(v),
+        guard: `SELECT armed FROM _syncmesh_capture`,
+      };

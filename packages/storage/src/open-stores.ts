@@ -23,9 +23,9 @@ export interface Stores {
 export interface OpenStoresOptions extends ProjectionOptions {
   /**
    * The synced tables to hold as real SQL tables in the same database (D20), written by every
-   * fold. On SQLite they are created on open with change capture installed; on Postgres they are
-   * yours — defined once in your ORM, migrated by you — and only the projection is added.
-   * Absent, state lives only in the sidecar.
+   * fold, with change capture installed. Created on open where they do not exist; on Postgres
+   * they are usually yours already — defined once in your ORM, migrated by you — and only the
+   * triggers are added. Absent, state lives only in the sidecar.
    */
   readonly tables?: readonly Table[];
 }
@@ -38,8 +38,7 @@ export function openStores(
     const events = yield* Result.await(sqlEventStore(driver));
     const stateOptions = {};
     if (options.tables !== undefined) {
-      if (driver.dialect !== "postgres")
-        yield* Result.await(installCapture(driver, options.tables));
+      yield* Result.await(installCapture(driver, options.tables));
       const projectionOptions =
         options.partitionColumn === undefined ? {} : { partitionColumn: options.partitionColumn };
       Object.assign(stateOptions, {
