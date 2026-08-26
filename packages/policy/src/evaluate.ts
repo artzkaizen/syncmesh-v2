@@ -29,7 +29,7 @@ type Handlers = {
 const handlers: Handlers = {
   allow: () => true,
   deny: () => false,
-  role: (node, ctx) => atLeast(ctx.roles, ctx.grant.role, node.role),
+  role: (node, ctx) => roleAtLeast(ctx.roles, ctx.grant.role, node.role),
   owner: (node, ctx) => cell(ctx, node.column) === ctx.grant.account,
   claimHas: (node, ctx) => {
     const list = claim(ctx.grant.claims, node.claim);
@@ -74,8 +74,15 @@ function cell(ctx: PolicyContext, column: string): CellValue | undefined {
   return undefined;
 }
 
-/** `have` is `wanted` or more senior; an unknown role on either side is never enough. */
-function atLeast(ladder: readonly string[], have: string | undefined, wanted: string): boolean {
+/**
+ * `have` is `wanted` or more senior on the ladder (senior first); an unknown role on either side is
+ * never enough. What `role("admin")` means in a rule — and what a server check must mean too.
+ */
+export function roleAtLeast(
+  ladder: readonly string[],
+  have: string | undefined,
+  wanted: string,
+): boolean {
   if (have === undefined) return false;
   const mine = ladder.indexOf(have);
   const needed = ladder.indexOf(wanted);
