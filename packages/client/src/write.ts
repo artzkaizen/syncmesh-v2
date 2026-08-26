@@ -71,17 +71,18 @@ export function createWriter(deps: WriterDeps): Write {
       if (options.partition !== undefined)
         Object.assign(mutateOptions, { partition: options.partition });
       if (options.local === true) Object.assign(mutateOptions, { local: true });
-      const changes = yield* Result.await(
-        captureChanges(driver, tables, fn, {
-          check: (captured) =>
-            captured.length === 0
-              ? Result.ok(undefined)
-              : validate.validate(
-                  { peerId: engine.peerId, changes: captured, ...mutateOptions },
-                  before,
-                ),
-        }),
-      );
+      const captureOptions = {
+        check: (captured: readonly Change[]) =>
+          captured.length === 0
+            ? Result.ok(undefined)
+            : validate.validate(
+                { peerId: engine.peerId, changes: captured, ...mutateOptions },
+                before,
+              ),
+      };
+      if (options.partition !== undefined)
+        Object.assign(captureOptions, { partition: options.partition });
+      const changes = yield* Result.await(captureChanges(driver, tables, fn, captureOptions));
       if (changes.length === 0) {
         return Result.err(
           new EmptyMutation({ procedure: procedure(label), message: `${label} changed nothing` }),

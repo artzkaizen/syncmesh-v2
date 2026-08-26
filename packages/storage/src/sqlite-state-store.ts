@@ -4,8 +4,8 @@ import type { RowKey, RowRecord, State, TableName } from "@syncmesh/kernel";
 import { StateCorrupt, type StoreFailure } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
 
-import type { Projection } from "./capture.js";
 import type { SqlRow, SqlValue, SqliteDriver } from "./driver.js";
+import type { Projection } from "./projection.js";
 
 import { decodeRecord, encodeRecord } from "./record-codec.js";
 import { migrate } from "./schema.js";

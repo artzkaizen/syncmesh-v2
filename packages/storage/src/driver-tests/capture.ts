@@ -2,6 +2,7 @@ import type { SuiteCase } from "@syncmesh/engine";
 import type { Change } from "@syncmesh/kernel";
 
 import { equal } from "@syncmesh/engine";
+import { parsePartitionKey } from "@syncmesh/kernel";
 
 import type { SqliteDriver } from "../driver.js";
 import type { OpenDriver } from "./index.js";
@@ -101,6 +102,10 @@ export const captureCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       equal(changes[0] === undefined ? undefined : cellsOf(changes[0])["n"], "7", "net insert");
     },
   },
+];
+
+/** The rules a transaction's changes obey beyond the per-statement ones: net effect per row, the partition stamp, rollback, the guard. */
+export const captureRuleCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   {
     name: "capture: a row touched twice is one change — its net effect, since one event has one stamp",
     run: async () => {
@@ -133,6 +138,51 @@ export const captureCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       equal(by["new"]?.["title"], '"b"', "insert carries the final value");
       equal(Object.keys(by["kept"] ?? {}), ["title", "rank"], "both updated columns, once");
       equal(by["reborn"]?.["title"], '"r2"', "delete then insert is the columns that differ");
+    },
+  },
+  {
+    name: "capture: the write's partition is stamped onto inserted rows, uncaptured; updated rows keep theirs",
+    run: async () => {
+      const driver = await open(await openDriver("capture-partition"));
+      const acme = parsePartitionKey("org:acme").unwrap();
+      const globex = parsePartitionKey("org:globex").unwrap();
+      const inserted = (
+        await captureChanges(
+          driver,
+          [jobs],
+          () => driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ('j1', 'one', 1, 0)`),
+          { partition: acme },
+        )
+      ).unwrap();
+      equal(
+        inserted.map((c) => c.kind),
+        ["insert"],
+        "the stamping is not a second change",
+      );
+      equal(
+        String((await driver.all(`SELECT _partition FROM jobs`))[0]?.[0]),
+        "org:acme",
+        "stamped",
+      );
+      const updated = (
+        await captureChanges(
+          driver,
+          [jobs],
+          () => driver.run(`UPDATE jobs SET title = 'two' WHERE id = 'j1'`),
+          { partition: globex },
+        )
+      ).unwrap();
+      equal(
+        updated.map((c) => c.kind),
+        ["update"],
+        "an update is captured as itself",
+      );
+      equal(
+        String((await driver.all(`SELECT _partition FROM jobs`))[0]?.[0]),
+        "org:acme",
+        "an update never re-homes a row",
+      );
+      equal(await count(driver, `SELECT COUNT(*) FROM _syncmesh_changes`), 0, "log empty");
     },
   },
   {

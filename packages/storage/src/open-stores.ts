@@ -5,7 +5,8 @@ import { Result } from "@syncmesh/result";
 
 import type { SqliteDriver } from "./driver.js";
 
-import { installCapture, tablesProjection } from "./capture.js";
+import { installCapture } from "./capture.js";
+import { tablesProjection } from "./projection.js";
 import { sqliteEventStore } from "./sqlite-event-store.js";
 import { sqliteStateStore } from "./sqlite-state-store.js";
 

@@ -4,11 +4,7 @@ export { sqliteStateStore, type SqliteStateStoreOptions } from "./sqlite-state-s
 export { MalformedRecord, decodeRecord, encodeRecord } from "./record-codec.js";
 export type { OpenStoresOptions, Stores } from "./open-stores.js";
 export { openStores } from "./open-stores.js";
-export type { CaptureOptions, Projection } from "./capture.js";
-export {
-  captureChanges,
-  captureDdl,
-  installCapture,
-  tableDdl,
-  tablesProjection,
-} from "./capture.js";
+export type { CaptureOptions } from "./capture.js";
+export { captureChanges, captureDdl, installCapture, tableDdl } from "./capture.js";
+export type { Projection } from "./projection.js";
+export { tablesProjection } from "./projection.js";

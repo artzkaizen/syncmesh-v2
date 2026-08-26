@@ -2,7 +2,7 @@ import type { SuiteCase } from "@syncmesh/engine";
 
 import type { SqliteDriver } from "../driver.js";
 
-import { captureCases } from "./capture.js";
+import { captureCases, captureRuleCases } from "./capture.js";
 import { compactionCases } from "./compaction.js";
 import { eventCases } from "./events.js";
 import { stateCases } from "./state.js";
@@ -26,6 +26,7 @@ export function driverTests(openDriver: OpenDriver): readonly SuiteCase[] {
     ...stateCases(openDriver),
     ...compactionCases(openDriver),
     ...captureCases(openDriver),
+    ...captureRuleCases(openDriver),
     ...tablesCases(openDriver),
   ];
 }

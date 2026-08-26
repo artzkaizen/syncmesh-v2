@@ -99,6 +99,8 @@ describe("write — the app's SQL transaction becomes one event", () => {
     const row = readRow(engine.state(), schema.tables.jobs.name, "j1" as never);
     expect(row?.get(schema.tables.jobs.columnNames.title)).toBe("one!");
     expect(await count()).toBe(1);
+    // the app's INSERT named no partition; the write's stamped it on the row it inserted
+    expect((await driver.all(`SELECT _partition FROM jobs`))[0]?.[0]).toBe("org:acme");
   });
 
   test("a schema violation rolls the SQL back: no row, no event", async () => {
