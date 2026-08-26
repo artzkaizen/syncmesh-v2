@@ -1,6 +1,21 @@
 # syncmesh — codebase map
 
 _As of 2026-08-26, commit `29dac35` (+ uncommitted: `packages/drizzle/` untracked; edits in `engine.ts`, `client/write.ts`)._
+
+> **Stale as of later on 2026-08-26** (commits `f35d6be`…`88dee85`) — since this map was drawn:
+> the client pivoted to Drizzle-first (D20): `createMesh({ driver })` → `mesh.on(instance?, { as? })`
+> → `{ db, read, live }`, collections/tx/scoped deleted, the writer in `packages/storage/src/writer.ts`
+> inferring `local` from the schema; **`@syncmesh/relay`** landed (E12: versioned handshake per D14,
+> paged catch-up, backpressure, durable rooms, `relayTransport` + `webSocketDial`, peer cursors passed
+> through so `delivered({to})` works, `memoryFanout`/`redisFanout` per D09); **Postgres became a first
+> home** (E17 complete: dialect-split stores `_syncmesh_*`, plpgsql capture guarded by `SET LOCAL`,
+> `@syncmesh/postgres` with postgres.js + PGlite drivers, the drizzle pg face over a capturing
+> `pg-proxy` session, log+state in one transaction via `openStores(...).atomic` and the engine's
+> `atomic` option, and RLS compiled from the read rules — `createMesh({ rls: true })` makes a plain
+> `db.select()` the caller's view); **`@syncmesh/react`** landed (E10: `useLiveQuery` keyed by
+> `toSQL()`, keyset `useLiveInfiniteQuery`, `useCan`; 200 queries × 5,000-event catch-up = one render
+> each). §9 and parts of §10/§11 describe the pre-pivot client. The explorer (`bun run explore`)
+> reflects the new shape.
 _All tests green: `vp run -r test` passes across every package (1 todo in `@syncmesh/drizzle`)._
 
 ## 0 · The one-paragraph picture

@@ -1,5 +1,13 @@
 # SyncMesh — the API
 
+> **SUPERSEDED (2026-08-26, D20).** This document describes the collection-era surface —
+> `mesh.<table>.create/update/list`, `tx()`, `scoped()`, query descriptors — which was retired
+> when SQL became the data API. The current surface is: `createMesh({ driver })` →
+> `mesh.on(instance?, { as? })` → a Drizzle handle (`db`, `read`, `live`), with `db.transaction()`
+> as the capture boundary, `@syncmesh/orpc`'s `withMesh` for procedures, `@syncmesh/react` for
+> hooks, and `rls: true` for Postgres-enforced reads. Read `plan/decisions/D20.md` and the
+> epics E09/E10/E12/E17 for what is true now; read on only for the historical rationale.
+
 > Read off the source; every untagged example runs and is covered by tests.
 > Anything not built yet is in one list at the end (§25), not sprinkled through.
 
