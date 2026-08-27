@@ -10,7 +10,13 @@ export type { Identity } from "./identity.js";
 export { InvalidSeed, SEED_LENGTH, createIdentity, verify } from "./identity.js";
 export { MalformedEvent, decodeEventCore, encodeEventCore } from "./event-codec.js";
 export type { VerifiedEvent, WireError } from "./envelope.js";
-export { BadSignature, MalformedEnvelope, decodeAndVerify, signEvent } from "./envelope.js";
+export {
+  BadSignature,
+  MalformedEnvelope,
+  decodeAndVerify,
+  signEvent,
+  splitEnvelope,
+} from "./envelope.js";
 export type { Presence, VerifiedPresence } from "./presence-codec.js";
 export {
   MalformedPresence,
@@ -40,5 +46,13 @@ export {
   readGrantOrigin,
   verifyGrant,
 } from "./grant.js";
+export type { AccountCore, LinkError } from "./account.js";
+export {
+  BadLinkSignature,
+  MalformedLink,
+  encodeAccountCore,
+  signLink,
+  verifyLink,
+} from "./account.js";
 export type { GrantRegistry, GrantRegistryOptions } from "./grant-registry.js";
 export { createGrantRegistry } from "./grant-registry.js";

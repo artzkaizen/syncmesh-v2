@@ -1,3 +1,5 @@
+export type { AccountWriteError, AccountsConfig, AccountsDeps, MeshAccounts } from "./accounts.js";
+export { openAccounts } from "./accounts.js";
 export type { Booted, MeshOpenError } from "./boot.js";
 export { openMeshEngine } from "./boot.js";
 export { NoDefaultStore } from "./errors.js";

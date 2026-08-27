@@ -6,6 +6,7 @@ import { Temporal, addToInstant } from "@syncmesh/temporal";
 
 import { decodeCbor, type MalformedCbor } from "./cbor-decode.js";
 import { encodeCbor, type CborKey, type CborValue } from "./cbor.js";
+import { MalformedEnvelope, splitEnvelope } from "./envelope.js";
 import { bytesToHex, hexToBytes } from "./hex.js";
 import { verify, type Identity } from "./identity.js";
 
@@ -112,21 +113,11 @@ export function verifyGrant(
 
 const malformed = (message: string) => Result.err(new MalformedGrant({ message }));
 
-/** The `[core, sig]` envelope, split but unjudged — the one shape both readers below start from. */
-const splitGrant = (
-  wire: Uint8Array,
-): Result<
-  { readonly core: Uint8Array; readonly sig: Uint8Array },
-  MalformedCbor | MalformedGrant
-> =>
-  Result.gen(function* () {
-    const outer = yield* decodeCbor(wire);
-    if (!Array.isArray(outer) || outer.length !== 2) return malformed("expected [core, sig]");
-    const [core, sig] = outer;
-    if (!(core instanceof Uint8Array) || !(sig instanceof Uint8Array))
-      return malformed("core and sig must be byte strings");
-    return Result.ok({ core, sig });
-  });
+/** The shared envelope split, reported in this module's vocabulary so `GrantError` stays closed. */
+const splitGrant = (wire: Uint8Array) =>
+  splitEnvelope(wire).mapError((error) =>
+    error instanceof MalformedEnvelope ? new MalformedGrant({ message: error.message }) : error,
+  );
 
 /** Which device a grant is for and when it was minted — enough to order two of them. */
 export interface GrantOrigin {

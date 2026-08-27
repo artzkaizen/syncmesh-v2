@@ -1,11 +1,12 @@
-import type { ColumnName, PeerId, TableName } from "@syncmesh/kernel";
+import type { ColumnName, TableName } from "@syncmesh/kernel";
 import type { Grant } from "@syncmesh/wire";
 
 import { Result } from "@syncmesh/result";
 
 import type { ValidationError } from "./errors.js";
-import type { ProbeEvent, RowLookup, ValidatorOptions } from "./validate.js";
+import type { Author, ProbeEvent, RowLookup, StateLookup, ValidatorOptions } from "./validate.js";
 
+import { linkedAuthor } from "./accounts.js";
 import { moment, revocationKey } from "./authority.js";
 import { GrantDeviceMismatch, GrantRevoked, GrantStale, NoGrant } from "./errors.js";
 import { graceMillis } from "./rules.js";
@@ -15,20 +16,28 @@ const REVOCATIONS_TABLE = "_revocations" as TableName;
 const AT_COLUMN = "at" as ColumnName;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 
+/** What deciding an author needs from the validator's options; a `ValidatorOptions` is one. */
+export type AuthorOptions = Pick<ValidatorOptions, "grantFor" | "now" | "authority" | "accounts">;
+
 /**
  * Who is writing, and whether they may still write at all: a grant held, naming this device, not
  * withdrawn since it was issued, and recent enough for the instance being written to. The first
- * four rungs of the ladder, together because they are one question — `null` is ungranted mode,
- * where nobody is asked.
+ * four rungs of the ladder, together because they are one question.
+ *
+ * `grantFor: null` is ungranted mode, where none of those four is asked. It is the **only** arm
+ * that reads a link, and only where `accounts` is on: a mesh with an issuer already answers
+ * `owner()` across a person's devices, because the issuer mints each of their grants with the
+ * same `account`. Reading a link there would let a key nobody vetted contradict a configured
+ * trust anchor — so it is not out-ranked, it is never read (D21).
  */
 export function checkAuthor(
   event: ProbeEvent,
-  grantFor: ValidatorOptions["grantFor"],
-  row: RowLookup,
-  now: ValidatorOptions["now"],
-  authority: PeerId | undefined,
-): Result<Grant | undefined, ValidationError> {
-  if (grantFor === null) return Result.ok(undefined);
+  state: StateLookup,
+  options: AuthorOptions,
+): Result<Author | undefined, ValidationError> {
+  const { grantFor, now, authority } = options;
+  if (grantFor === null)
+    return Result.ok(options.accounts === true ? linkedAuthor(event, state) : undefined);
   const grant = grantFor(event.peerId);
   if (grant === undefined)
     return Result.err(
@@ -43,7 +52,7 @@ export function checkAuthor(
       }),
     );
   }
-  const revoked = checkRevoked(event, grant, row);
+  const revoked = checkRevoked(event, grant, state.row);
   if (revoked.isErr()) return revoked;
   // the authority is exempt from the window it publishes. It is the peer that writes
   // `_revocations` and `_policy`, so a grace wider than its own remaining validity would lock it
@@ -51,7 +60,7 @@ export function checkAuthor(
   // window that is stopping it. Revocation still binds it: that one is a fact about a device,
   // and an authority is not exempt from facts
   if (event.peerId === authority) return Result.ok(grant);
-  const stale = checkStale(event, grant, row, now);
+  const stale = checkStale(event, grant, state.row, now);
   return stale.isErr() ? stale : Result.ok(grant);
 }
 

@@ -67,4 +67,31 @@ export const revocationsTable = reservedTable("_revocations", {
   reason: t.text(),
 });
 
-export const reservedTables = [policyTable, correctionsTable, revocationsTable] as const;
+/**
+ * An account's claim on one of its devices, as one signed row in the instance it holds in
+ * (D21). Keyed `instance:device` for the reason `_revocations` is: a device that is Alice's in
+ * one org may mean nothing in another, and the claim must travel to exactly the peers it binds.
+ *
+ * The only reserved table whose rows carry their **own subject's** signature rather than the
+ * authority's. `wire` is the row's one source of truth; `account`, `kind` and `at` are columns
+ * as well as core fields because resolving a device to its account is a hot path that must
+ * never decode a blob to answer.
+ */
+export const linksTable = reservedTable("_links", {
+  id: t.text().primaryKey(),
+  /** The account's Ed25519 public key as hex — the id **is** the key `wire` is checked against. */
+  account: t.text(),
+  /** `0` links, `1` unlinks. A link ends with an unlink row, never with a delete. */
+  kind: t.integer(),
+  /** Epoch milliseconds, as the signed core states them; a link only ever moves forward. */
+  at: t.integer(),
+  /** The `[core, sig]` bytes the account signed. Every column above must say what these say. */
+  wire: t.blob(),
+});
+
+export const reservedTables = [
+  policyTable,
+  correctionsTable,
+  revocationsTable,
+  linksTable,
+] as const;

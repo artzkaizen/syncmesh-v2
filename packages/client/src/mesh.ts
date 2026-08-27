@@ -12,7 +12,6 @@ import type {
 } from "@syncmesh/schema";
 import type { BlobStore, SqlDialect, SqlDriver, TxReceipt } from "@syncmesh/storage";
 import type { Transport, TransportContext } from "@syncmesh/transport";
-import type { Grant, Identity } from "@syncmesh/wire";
 
 import { meshDrizzle, type MeshHandle } from "@syncmesh/drizzle";
 import { corrections as correctionsOf } from "@syncmesh/engine";
@@ -21,7 +20,7 @@ import { Result, panic } from "@syncmesh/result";
 import { memoryBlobStore } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { createPresenceStore } from "@syncmesh/transport";
-import { createGrantRegistry } from "@syncmesh/wire";
+import { createGrantRegistry, type Identity } from "@syncmesh/wire";
 
 import type { Blobs } from "./blobs.js";
 import type { Booted, MeshOpenError } from "./boot.js";
@@ -29,6 +28,7 @@ import type { DeliveredOptions, ReceivedOptions } from "./delivered.js";
 import type { Revision } from "./history.js";
 import type { Topics } from "./presence.js";
 
+import { openAccounts, type MeshAccounts } from "./accounts.js";
 import { createBlobs } from "./blobs.js";
 import { openMeshEngine } from "./boot.js";
 import { createCan } from "./can.js";
@@ -85,6 +85,16 @@ export interface MeshOptions<
   readonly rls?: boolean;
   /** The issuer's private half. Only the org's root of trust holds this; it unlocks `grants.issue`. */
   readonly issuerKey?: Identity;
+  /**
+   * Read `_links` rows where no grant is held, so `owner()` answers across a person's devices in
+   * the two rungs that have no issuer (D21). Shipped config, set identically on every peer like
+   * `issuer` and `authority` — never gated on holding {@link MeshOptions.accountKey}, or a
+   * peer's verdict would depend on which keys it happens to carry and two peers would disagree
+   * forever. Rollout is one-way: a peer with this off admits strictly more, never less.
+   */
+  readonly accounts?: boolean;
+  /** The account's private half. Only a device vouching for itself holds this; it unlocks `accounts.link`. */
+  readonly accountKey?: Identity;
   readonly now?: () => Temporal.Instant;
 }
 
@@ -151,6 +161,12 @@ export interface Mesh<
   /** Bytes that never enter the log: content-addressed, verified at both ends (D18). */
   readonly blobs: Blobs;
   /**
+   * Which devices an account has vouched for (D21), and where a link and a grant name different
+   * accounts for one device. A link is an ordinary row, so there is nothing here to synchronise
+   * or to persist — writing one and folding one are the same act every other row does.
+   */
+  readonly accounts: MeshAccounts;
+  /**
    * `"table.op"` against the same rules every receiver enforces — the instance's synced `_policy`
    * doc when one has arrived, the bundled manifest when none has.
    *
@@ -200,18 +216,21 @@ export async function createMesh<
     panic(
       "issuerKey does not match issuer: the private half must belong to the configured root of trust",
     );
+  // the same shape one table over: a key whose feature is off signs rows this peer will never
+  // read, and a mesh half-configured that way looks like one where links simply do not work
+  if (options.accountKey !== undefined && options.accounts !== true)
+    panic("accountKey does not match accounts: links are only read where `accounts: true` is set");
   const now = options.now ?? (() => Temporal.Now.instant());
   const registry = createGrantRegistry({ issuer: issuer ?? identity.peerId, now });
   const grantsOptions = { now } satisfies MeshGrantsOptions;
   if (issuerKey !== undefined) Object.assign(grantsOptions, { issuerKey });
   const { grants, bind } = openGrants(registry, grantsOptions);
-  const grantFor = (peer: PeerId): Grant | undefined => grants.grantFor(peer);
   // plain await, not Result.gen: a definition-time panic in `assemble` must reach the caller as itself
   const booted = await openMeshEngine({
     ...options,
     dataDir: options.dataDir ?? ".syncmesh",
     now,
-    grantFor,
+    grantFor: grants.grantFor,
   });
   if (booted.isErr()) return booted;
   bind(booted.value.engine);
@@ -219,12 +238,11 @@ export async function createMesh<
   // a peer that reconnects first would meet a device that had forgotten who everyone is
   const remembered = await restoreGrants(registry, booted.value.driver);
   if (remembered.isErr()) return remembered;
-  return Result.ok(assemble(options, { grants, grantFor, now, booted: booted.value }));
+  return Result.ok(assemble(options, { grants, now, booted: booted.value }));
 }
 
 interface Assembled {
   readonly grants: MeshGrants;
-  readonly grantFor: (peer: PeerId) => Grant | undefined;
   readonly now: () => Temporal.Instant;
   readonly booted: Booted;
 }
@@ -237,7 +255,7 @@ function assemble<
   PC extends PresenceMap,
 >(options: MeshOptions<P, RS, C, D, PC>, deps: Assembled): Mesh<D, PC> {
   const { schema, identity } = options;
-  const { grants, grantFor, now, booted } = deps;
+  const { grants, now, booted } = deps;
   const { engine, validate } = booted;
   const entryOf = new Map(schema.entries.map((e) => [String(e.table.name), e]));
 
@@ -266,6 +284,8 @@ function assemble<
     });
   };
 
+  const { accounts, accountOf, author } = openAccounts(options, { engine, grants, now });
+
   const history: Mesh<D, PC>["history"] = (table, key, historyOptions = {}) =>
     Result.gen(async function* () {
       const entry = entryOf.get(table) ?? panic(`the manifest has no table "${table}"`);
@@ -279,17 +299,16 @@ function assemble<
       const revisions = rowHistory(entry.table, rowKey, entries, {
         merge: schema.merge,
         partition,
-        accountOf: (peer) => grantFor(peer)?.account,
+        accountOf,
       });
       // SAFETY: the erased Table generic degenerates the cell types; every cell is an AppValue by construction
       return Result.ok(revisions as readonly RevisionView[]);
     });
 
-  const presenceStore = createPresenceStore({ now, accountOf: (peer) => grantFor(peer)?.account });
   const presence = createPresence({
     identity,
     topics: schema.presence,
-    store: presenceStore,
+    store: createPresenceStore({ now, accountOf }),
     // every open session, and nowhere else: a value that cannot leave is dropped, not queued
     send: (wire) => links.sendPresence(wire),
     now,
@@ -320,6 +339,7 @@ function assemble<
       return presence.at<PC>(partition.value);
     },
     blobs,
+    accounts,
     corrections: {
       all: () => correctionsOf(engine),
       // an event id begins with its author's peer id, so "mine" needs no extra bookkeeping
@@ -330,7 +350,7 @@ function assemble<
     can: createCan({
       schema,
       engine,
-      grant: () => grantFor(identity.peerId),
+      author,
       kindOf: (table) => entryOf.get(table)?.partition,
     }),
     delivered: createDelivered(engine, identity.peerId),

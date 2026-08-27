@@ -30,6 +30,7 @@ export {
   EmptyMutation,
   GrantDeviceMismatch,
   GrantStale,
+  LinkRefused,
   ListenerFailure,
   LocalOnly,
   NoGrant,
@@ -40,7 +41,7 @@ export {
   UnknownTable,
   WrongPartition,
 } from "./errors.js";
-export type { EngineError, MutateError, RevertError, ValidationError } from "./errors.js";
+export type { EngineError, LinkRung, MutateError, RevertError, ValidationError } from "./errors.js";
 export type { Hub, Unsubscribe } from "./listeners.js";
 export { createHub } from "./listeners.js";
 export type { Coverage, Cursors, SyncDoc, SyncMessage, SyncState } from "./sync.js";
@@ -64,6 +65,7 @@ export type {
   ValidatorSchema,
 } from "./validate.js";
 export { createValidator, policyContext } from "./validate.js";
+export type { Author } from "./validate.js";
 export type { PolicySource } from "./can.js";
 export { can } from "./can.js";
 export type { Installed, Snapshot, SnapshotOptions, SnapshotRow } from "./snapshot.js";
@@ -80,8 +82,17 @@ export {
   predicateColumns,
   rowsIn,
 } from "./interest.js";
-export type { Correction, CorrectionRow, Revocation, RevocationRow } from "./authority.js";
+export type { AccountLink, Dispute, LinkRow } from "./accounts.js";
+export { disputes, linkDevice, linkKey, linkedAuthor, links, unlinkDevice } from "./accounts.js";
+export type {
+  Correction,
+  CorrectionRow,
+  ReservedAuthorClass,
+  Revocation,
+  RevocationRow,
+} from "./authority.js";
 export {
+  RESERVED_AUTHOR_CLASS,
   RESERVED_TABLE_NAMES,
   correct,
   corrections,

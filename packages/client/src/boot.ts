@@ -39,6 +39,8 @@ export interface BootOptions {
   readonly rls?: boolean;
   readonly now: () => Temporal.Instant;
   readonly grantFor: (peer: PeerId) => Grant | undefined;
+  /** Shipped config, threaded straight through: whether the ladder reads `_links` (D21). */
+  readonly accounts?: boolean;
 }
 
 /** A booted engine, the log it runs on, its validator, and how to let go of what was opened for it; a store you passed in stays yours. */
@@ -90,6 +92,7 @@ function validatorFor(options: BootOptions): ValidatorOptions {
     now,
   } satisfies ValidatorOptions;
   if (authority !== undefined) Object.assign(validatorOptions, { authority });
+  if (options.accounts === true) Object.assign(validatorOptions, { accounts: true });
   return validatorOptions;
 }
 

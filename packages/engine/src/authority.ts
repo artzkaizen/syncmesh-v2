@@ -28,19 +28,34 @@ import type { Tx } from "./tx.js";
 const POLICY = "_policy" as TableName;
 const CORRECTIONS = "_corrections" as TableName;
 const REVOCATIONS = "_revocations" as TableName;
+const LINKS = "_links" as TableName;
 const SET_POLICY = "_policy.set" as Procedure;
 const CORRECT = "_corrections.write" as Procedure;
 const REVOKE = "_revocations.write" as Procedure;
-const column = (name: string) => name as never;
-const rowKey = (key: string) => key as RowKey;
+/** A reserved table's own column, whose kind the schema check proved when the row was written. */
+export const column = (name: string) => name as never;
+export const rowKey = (key: string) => key as RowKey;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 
-/** Names the reserved tables so a validator can hold them to the authority-only rule. */
-export const RESERVED_TABLE_NAMES: ReadonlySet<string> = new Set([
-  POLICY,
-  CORRECTIONS,
-  REVOCATIONS,
-]);
+/**
+ * Whose signature a reserved row carries: the authority's, or the row's own subject's (D21).
+ *
+ * A lookup and never a name check, so a fifth reserved table has to *choose* rather than inherit
+ * whichever rule happened to be written at the dispatch. Exactly one table takes `subject`
+ * today — `_links`, where the account signs the row's core and the device signs the event
+ * carrying it, which is the only way one envelope can hold a mutual claim.
+ */
+export const RESERVED_AUTHOR_CLASS: ReadonlyMap<string, ReservedAuthorClass> = new Map([
+  [POLICY, "authority"],
+  [CORRECTIONS, "authority"],
+  [REVOCATIONS, "authority"],
+  [LINKS, "subject"],
+] satisfies readonly (readonly [string, ReservedAuthorClass])[]);
+
+export type ReservedAuthorClass = "authority" | "subject";
+
+/** Names the reserved tables so a validator can hold each to the rule its author class names. */
+export const RESERVED_TABLE_NAMES: ReadonlySet<string> = new Set(RESERVED_AUTHOR_CLASS.keys());
 
 /**
  * Publishes the rules for one instance as data, so a permission change deploys by sync rather
@@ -132,9 +147,23 @@ export function correct(
   );
 }
 
-/** The key a revocation is filed under: the instance it concerns, and the device it names. */
-export const revocationKey = (partition: PartitionKey, device: PeerId): RowKey =>
+/**
+ * How a reserved table files a fact about one device: the instance it concerns, then the device
+ * it names. `_revocations` and `_links` both key this way, and for the same reason — a device
+ * removed from one org keeps whatever it holds in another.
+ */
+export const deviceRowKey = (partition: PartitionKey, device: PeerId): RowKey =>
   rowKey(`${String(partition)}:${String(device)}`);
+
+/** The inverse: which instance and which device a key filed by {@link deviceRowKey} names. */
+export function splitDeviceKey(key: RowKey | string) {
+  const filed = String(key);
+  const split = filed.lastIndexOf(":");
+  return { partition: filed.slice(0, split), device: filed.slice(split + 1) };
+}
+
+/** The key a revocation is filed under. */
+export const revocationKey = deviceRowKey;
 
 /** What one revocation records: whose powers were withdrawn, from where, when, and why. */
 export interface Revocation {
@@ -208,17 +237,11 @@ export function revocations(engine: Engine): readonly RevocationRow[] {
   if (rows === undefined) return [];
   return [...rows]
     .filter(([, record]) => record.deleteStamp === undefined)
-    .map(([key, record]) => {
-      const at = record.cells.get(column("at"))?.value;
-      const filed = String(key);
-      const split = filed.lastIndexOf(":");
-      return {
-        partition: filed.slice(0, split),
-        device: filed.slice(split + 1),
-        at: Temporal.Instant.fromEpochMilliseconds(moment(at)),
-        reason: text(record.cells.get(column("reason"))?.value),
-      };
-    })
+    .map(([key, record]) => ({
+      ...splitDeviceKey(key),
+      at: Temporal.Instant.fromEpochMilliseconds(moment(record.cells.get(column("at"))?.value)),
+      reason: text(record.cells.get(column("reason"))?.value),
+    }))
     .sort((a, b) => Temporal.Instant.compare(a.at, b.at));
 }
 
@@ -236,7 +259,7 @@ export interface CorrectionRow {
  * so anything else here is a record this device should not have folded — read as absent rather
  * than stringified into `[object Object]`.
  */
-const text = (value: CellValue | undefined): string => (isText(value) ? value : "");
+export const text = (value: CellValue | undefined): string => (isText(value) ? value : "");
 
 /** A reserved integer column's cell, on the same terms; an absent instant reads as the epoch. */
 export const moment = (value: CellValue | undefined): number => (isWhole(value) ? value : 0);

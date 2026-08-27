@@ -185,6 +185,7 @@ export function createEngine(options: EngineOptions): Engine {
   const ackHub = createHub<PeerId>(report("onAcknowledge"));
   const before = {
     row: (table, key) => readRow(state, table, key),
+    records: (table) => state.get(table),
     partition: (table, key) => getRecord(state, table, key)?.partition,
   } satisfies StateLookup;
   const acks = new Map<PeerId, Ack>();

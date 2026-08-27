@@ -10,8 +10,15 @@ export class InvalidPeerId extends TaggedError("InvalidPeerId")<{
   message: string;
 }> {}
 
-/** Wire form of a {@link PeerId}: 64 lowercase hex characters. */
+/**
+ * Wire form of a {@link PeerId}: 64 lowercase hex characters. `AccountId` is the same shape and
+ * reuses this rather than declaring a second copy of it — see D21, which also explains why the
+ * two sharing one namespace means nothing may render a device as its own account.
+ */
 export const PEER_ID_HEX = /^[0-9a-f]{64}$/;
+
+/** What both hex-id parsers say when the shape is wrong, so the two cannot drift apart. */
+export const HEX_ID_EXPECTED = "expected 64 lowercase hex characters";
 
 /**
  * Parses a peer id from its hex form.
@@ -24,9 +31,7 @@ export const PEER_ID_HEX = /^[0-9a-f]{64}$/;
  */
 export function parsePeerId(input: string): Result<PeerId, InvalidPeerId> {
   if (!PEER_ID_HEX.test(input)) {
-    return Result.err(
-      new InvalidPeerId({ input, message: "expected 64 lowercase hex characters" }),
-    );
+    return Result.err(new InvalidPeerId({ input, message: HEX_ID_EXPECTED }));
   }
   // SAFETY: matched PEER_ID_HEX, which is exactly the PeerId invariant
   return Result.ok(input as PeerId);

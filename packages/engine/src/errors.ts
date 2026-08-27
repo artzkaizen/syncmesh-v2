@@ -52,6 +52,20 @@ export class GrantStale extends TaggedError("GrantStale")<{
   expiresAt: string;
   message: string;
 }> {}
+/** Which of `checkLink`'s rungs a `_links` row failed; the cheap ones run before the signature. */
+export type LinkRung = "key" | "isolation" | "author" | "monotonic" | "columns" | "signature";
+
+/**
+ * A `_links` row nobody should fold, and the rung that says why (D21). One tag for all six,
+ * because every one of them has the same remedy — none. A link is a claim two keys make
+ * together, so a row that fails any rung is not a weaker claim, it is not that claim at all.
+ */
+export class LinkRefused extends TaggedError("LinkRefused")<{
+  /** The row it was filed under: `instance:device`. */
+  key: string;
+  rung: LinkRung;
+  message: string;
+}> {}
 export class UnknownTable extends TaggedError("UnknownTable")<{ table: string; message: string }> {}
 export class PartitionNotGranted extends TaggedError("PartitionNotGranted")<{
   table: string;
@@ -81,9 +95,10 @@ export class PolicyDenied extends TaggedError("PolicyDenied")<{
   message: string;
 }> {}
 
-/** Why an event is refused, in ladder order: grant → device → revocation → grace → partition → schema → policy. */
+/** Why an event is refused, in ladder order: grant → device → revocation → grace → partition → schema → policy; a reserved row also answers to its table's author class. */
 export type ValidationError =
   | NoGrant
+  | LinkRefused
   | GrantDeviceMismatch
   | GrantRevoked
   | GrantStale

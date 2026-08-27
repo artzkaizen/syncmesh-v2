@@ -46,6 +46,7 @@ export { defineSchema } from "./manifest.js";
 export type { PresenceBlock, PresenceEntry, PresenceMap, PresenceTopic } from "./manifest.js";
 export {
   correctionsTable,
+  linksTable,
   policyTable,
   reservedTable,
   reservedTables,
