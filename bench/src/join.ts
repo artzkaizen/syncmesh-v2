@@ -10,13 +10,24 @@ import type {
   TableName,
 } from "@syncmesh/kernel";
 import type { Procedure } from "@syncmesh/kernel";
+import type { FeedChunk } from "@syncmesh/wire";
 
 import { createEngine, createMemoryEventStore, snapshotOf } from "@syncmesh/engine";
 import { createHlcClock, eventId, parsePartitionKey, parseSeqNum } from "@syncmesh/kernel";
 import { panic } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { eventFrame, snapChunkFrame } from "@syncmesh/transport";
-import { createIdentity, decodeAndVerify, encodeSnapshotRows, signEvent } from "@syncmesh/wire";
+import {
+  GENESIS,
+  chunkFrom,
+  createIdentity,
+  decodeAndVerify,
+  encodeCbor,
+  encodeEventCore,
+  encodeSnapshotRows,
+  hexToBytes,
+  signEvent,
+} from "@syncmesh/wire";
 
 /**
  * What a join costs, four ways (RFC-0019). The bytes are wire bytes — the frames that actually
@@ -47,6 +58,7 @@ const TEAMS = 8;
 const MINE = 2;
 const WINDOW = 2_000;
 const PAGE = 500;
+const RUN = 5_000;
 
 const author = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 40 + i)).unwrap();
 const teams: readonly PartitionKey[] = Array.from({ length: TEAMS }, (_, i) =>
@@ -139,6 +151,42 @@ const replay = async (events: readonly SyncEvent[]): Promise<Measured> => {
   };
 };
 
+/**
+ * The same events, chained: one signature per run instead of one per event (RFC-0019). The
+ * signatures are what a replay pays for twice — 64 bytes each on the wire, and an Ed25519 check
+ * each on arrival — and a chain replaces both with one per run without relaxing anything else.
+ */
+const chained = async (events: readonly SyncEvent[]): Promise<Measured> => {
+  const frames: Uint8Array[] = [];
+  const runs: FeedChunk[] = [];
+  let head = GENESIS;
+  for (let from = 0; from < events.length; from += RUN) {
+    const cores = events.slice(from, from + RUN).map(encodeEventCore);
+    const run = chunkFrom(author, head, cores);
+    head = run.certificate.head;
+    runs.push(run);
+    frames.push(
+      encodeCbor([
+        hexToBytes(run.peerId).unwrap(),
+        Number(run.from),
+        cores,
+        [Number(run.certificate.head.seq), run.certificate.head.hash, run.certificate.sig],
+      ]),
+    );
+  }
+  const receiver = fresh();
+  const applyMs = await timed(async () => {
+    for (const run of runs) (await receiver.receiveChunk(run)).unwrap();
+  });
+  return {
+    strategy: `replay as chained runs (${RUN.toLocaleString()} each)`,
+    units: `${events.length.toLocaleString()} events, ${runs.length} signatures`,
+    raw: raw(frames),
+    gzip: gzipped(frames),
+    applyMs,
+  };
+};
+
 /** A snapshot's rows, paged and framed exactly as the join exchange would send them. */
 const ship = async (strategy: string, snapshot: Snapshot): Promise<Measured> => {
   const frames: Uint8Array[] = [];
@@ -176,6 +224,7 @@ const windowed: Snapshot = { ...scoped, rows: scoped.rows.slice(-WINDOW) };
 
 const results = [
   await replay(events),
+  await chained(events),
   await ship("full snapshot", full),
   await ship(`scoped (${MINE} of ${TEAMS} teams)`, scoped),
   await ship(`scoped + windowed (${WINDOW.toLocaleString()} newest)`, windowed),
