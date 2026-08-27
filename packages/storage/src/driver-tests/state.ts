@@ -2,12 +2,12 @@ import type { Coverage, StateStore } from "@syncmesh/engine";
 import type { SuiteCase } from "@syncmesh/engine";
 
 import { equal } from "@syncmesh/engine";
+import { encodeRecord } from "@syncmesh/wire";
 
 import type { SqlDriver } from "../driver.js";
 import type { OpenDriver } from "./index.js";
 
 import { sqlEventStore } from "../event-store.js";
-import { encodeRecord } from "../record-codec.js";
 import { sqlStateStore } from "../state-store.js";
 import { A, B, BODY, N1, NOTES, record, seq, sqlOf } from "./fixtures.js";
 

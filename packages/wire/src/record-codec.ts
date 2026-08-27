@@ -1,20 +1,15 @@
 import type { Cell, ColumnName, RowRecord, Stamp } from "@syncmesh/kernel";
-import type { CborValue } from "@syncmesh/wire";
 
-import { parsePartitionKey, parsePeerId } from "@syncmesh/kernel";
+import { hlcOf, parsePartitionKey, parsePeerId } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
-import {
-  bytesToHex,
-  cellFromCbor,
-  cellToCbor,
-  decodeCbor,
-  encodeCbor,
-  hexToBytes,
-  isSafeNonNegative,
-  isString,
-} from "@syncmesh/wire";
 
-import { hlcOf } from "./sql.js";
+import type { CborValue } from "./cbor.js";
+
+import { decodeCbor } from "./cbor-decode.js";
+import { isSafeNonNegative, isString } from "./cbor-guards.js";
+import { encodeCbor } from "./cbor.js";
+import { bytesToHex, hexToBytes } from "./hex.js";
+import { cellFromCbor, cellToCbor } from "./row-codec.js";
 
 export class MalformedRecord extends TaggedError("MalformedRecord")<{ message: string }> {}
 

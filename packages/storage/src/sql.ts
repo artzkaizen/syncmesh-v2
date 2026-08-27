@@ -1,10 +1,9 @@
 import type { Coverage } from "@syncmesh/engine";
-import type { Hlc, Logical, PeerId, SeqNum } from "@syncmesh/kernel";
+import type { Hlc, PeerId, SeqNum } from "@syncmesh/kernel";
 
 import { StateCorrupt, StoreFailure } from "@syncmesh/engine";
-import { parsePeerId, parseSeqNum } from "@syncmesh/kernel";
+import { hlcOf, parsePeerId, parseSeqNum } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
-import { Temporal } from "@syncmesh/temporal";
 
 import type { SqlRow, SqlValue, SqlDriver } from "./driver.js";
 
@@ -73,12 +72,6 @@ export function coverageOf(rows: readonly SqlRow[]): Result<Coverage, StateCorru
     }
     return Result.ok({ synced, local });
   });
-}
-
-/** A stamp from its two stored integers. */
-export function hlcOf(ms: number, logical: number): Hlc {
-  // SAFETY: both come from columns (or CBOR ints) that were written from an Hlc; Logical is a non-negative integer
-  return [Temporal.Instant.fromEpochMilliseconds(ms), logical as Logical];
 }
 
 /** A `(hlc_ms, hlc_logical)` row, or absent when the query matched nothing. */

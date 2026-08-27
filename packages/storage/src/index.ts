@@ -13,7 +13,8 @@ export {
   type SqlStateStoreOptions,
   type SqliteStateStoreOptions,
 } from "./state-store.js";
-export { MalformedRecord, decodeRecord, encodeRecord } from "./record-codec.js";
+/** The record codec moved to `@syncmesh/wire`, where the other codecs live; re-exported here for the stores that write it. */
+export { MalformedRecord, decodeRecord, encodeRecord } from "@syncmesh/wire";
 export type { OpenStoresOptions, ScopedStores, Stores } from "./open-stores.js";
 export { openStores } from "./open-stores.js";
 export type { CaptureOptions } from "./capture.js";

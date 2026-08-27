@@ -3,12 +3,12 @@ import type { RowKey, RowRecord, State, TableName } from "@syncmesh/kernel";
 
 import { StateCorrupt, type StoreFailure } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
+import { decodeRecord, encodeRecord } from "@syncmesh/wire";
 
 import type { SqlDriver, SqlRow, SqlValue } from "./driver.js";
 import type { Projection } from "./projection.js";
 
 import { dialectOf } from "./dialect.js";
-import { decodeRecord, encodeRecord } from "./record-codec.js";
 import { attempt, coverageOf, inTransaction } from "./sql.js";
 
 const corrupt = (message: string) => new StateCorrupt({ message });

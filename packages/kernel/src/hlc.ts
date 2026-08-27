@@ -62,6 +62,15 @@ const clamp = (stamp: Hlc, limit: Temporal.Instant): Hlc =>
   Temporal.Instant.compare(stamp[0], limit) > 0 ? [limit, stamp[1]] : stamp;
 
 /** Total order on stamps: instant first, then logical counter. */
+/**
+ * A stamp from the two integers every stored form keeps it as — CBOR ints, SQL columns, a wire
+ * frame. The pair is the whole value, so this is the one place that reassembles it.
+ */
+export function hlcOf(ms: number, logical: number): Hlc {
+  // SAFETY: both come from a form that was written from an Hlc; Logical is a non-negative integer
+  return [Temporal.Instant.fromEpochMilliseconds(ms), logical as Logical];
+}
+
 export function compareHlc(a: Hlc, b: Hlc): Ordering {
   const byInstant = Temporal.Instant.compare(a[0], b[0]);
   if (byInstant < 0) return -1;

@@ -64,6 +64,8 @@ export type {
 } from "./validate.js";
 export { createValidator, policyContext } from "./validate.js";
 export { can } from "./can.js";
+export type { RepairApi, RepairRow, TableDigests } from "./digest.js";
+export { divergentRows, divergentTables, rowDigest, rowDigests, tableDigests } from "./digest.js";
 export type { SuiteCase } from "./suite.js";
 export { SuiteFailure, check, equal } from "./suite.js";
 export type { Principal } from "./validate.js";

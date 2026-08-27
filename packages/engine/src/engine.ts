@@ -1,7 +1,14 @@
 import type { HlcClock, MergeSpec, PeerId, Row, RowKey, State, TableName } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
-import { applyChange, emptyState, getRecord, readRow, readRowsIn } from "@syncmesh/kernel";
+import {
+  applyChange,
+  emptyState,
+  getRecord,
+  mergeRecord,
+  readRow,
+  readRowsIn,
+} from "@syncmesh/kernel";
 import {
   stampOf,
   type EventId,
@@ -13,6 +20,7 @@ import { Result } from "@syncmesh/result";
 
 import type { Boot } from "./boot.js";
 import type { Ack, CompactError, CompactOptions, Compaction } from "./compaction.js";
+import type { RepairApi } from "./digest.js";
 import type { StateStore } from "./state-store.js";
 import type { EventStore, StoredEvent } from "./store.js";
 import type { StoreFailure } from "./store.js";
@@ -23,6 +31,7 @@ import type { StateLookup, Validator } from "./validate.js";
 import { admit } from "./admit.js";
 import { compactLog } from "./compaction.js";
 import { trackCoverage } from "./coverage.js";
+import { createRepairPath } from "./digest.js";
 import {
   CannotRevert,
   ListenerFailure,
@@ -42,7 +51,8 @@ export interface MutateOptions {
   readonly local?: boolean;
 }
 
-export type FoldSource = "local" | "remote" | "boot";
+/** Where a batch came from; `repair` is RFC-0014's merge of another peer's records, carrying no cursors. */
+export type FoldSource = "local" | "remote" | "boot" | "repair";
 
 /** One notification per fold, however many events it covered. `writeKeys` is exact: live queries (E10) trust it. */
 export interface FoldBatch {
@@ -65,7 +75,7 @@ export interface Quarantined {
   readonly reason: ValidationError;
 }
 
-export interface Engine {
+export interface Engine extends RepairApi {
   readonly peerId: PeerId;
   /** Records, stamps, numbers, appends, folds, then hands the event to `onOutbound` — a write is real once appended. */
   readonly mutate: (
@@ -210,6 +220,13 @@ export function createEngine(options: EngineOptions): Engine {
     if (batch.eventCount > 0) folds.emit(batch);
   };
 
+  const repair = createRepairPath({
+    stateOf: () => state,
+    mergeInto: (table, key, record) => void (state = mergeRecord(state, table, key, record, merge)),
+    persist: (batch) => persist(batch, stateStore),
+    notify,
+  });
+
   const { mutate, receiveBatch } = createWritePath({
     peerId,
     clock,
@@ -267,6 +284,7 @@ export function createEngine(options: EngineOptions): Engine {
     onAcknowledge: ackHub.subscribe,
     compact: (options) => compactLog({ store, stateStore, acks }, options),
     eventsSince: (theirs) => store.allSince(theirs),
+    ...repair,
     onFoldBatch: folds.subscribe,
     onOutbound: outbound.subscribe,
     onError: errors.subscribe,
