@@ -1,4 +1,4 @@
-import type { PartitionKey, RowKey, RowRecord, State, TableName } from "@syncmesh/kernel";
+import type { KeyedRecord, PartitionKey, RowKey, State, TableName } from "@syncmesh/kernel";
 
 import { mergeRecord } from "@syncmesh/kernel";
 
@@ -26,11 +26,8 @@ export interface Snapshot {
   readonly scope?: Interest;
 }
 
-export interface SnapshotRow {
-  readonly table: TableName;
-  readonly key: RowKey;
-  readonly record: RowRecord;
-}
+/** One addressed row of a snapshot — the kernel's {@link KeyedRecord}, under the name this uses. */
+export type SnapshotRow = KeyedRecord;
 
 /** What `installSnapshot` did, for a caller that wants to say so. */
 export interface Installed {

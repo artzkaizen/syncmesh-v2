@@ -7,6 +7,13 @@ export type TableState = ReadonlyMap<RowKey, RowRecord>;
 
 export type State = ReadonlyMap<TableName, TableState>;
 
+/** One entry of a {@link State}, addressed — what a snapshot ships and a repair carries. */
+export interface KeyedRecord {
+  readonly table: TableName;
+  readonly key: RowKey;
+  readonly record: RowRecord;
+}
+
 export const emptyState = (): State => new Map();
 
 export function getRecord(state: State, table: TableName, key: RowKey): RowRecord | undefined {

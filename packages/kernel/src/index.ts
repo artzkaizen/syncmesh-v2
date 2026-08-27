@@ -10,7 +10,7 @@ export { isVisible } from "./record.js";
 export type { Change, Row, RowKey, TableName } from "./change.js";
 export type { MergeSpec, Strategy, StrategyName } from "./strategy.js";
 export { compareValue, strategies } from "./strategy.js";
-export type { State, TableState } from "./state.js";
+export type { KeyedRecord, State, TableState } from "./state.js";
 export { emptyState, getRecord, readRow } from "./state.js";
 export { applyChange, mergeRecord } from "./apply.js";
 export type {
