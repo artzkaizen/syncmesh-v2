@@ -102,7 +102,7 @@ No listeners anywhere — kernel/temporal/result are pure. Injection seams: `now
 - `table.ts`: `table(name, columns)` → `Table {name, columns, primaryKey, columnNames}`; panics at module load on bad defs (≠1 pk, pk not text/uuid/integer…). `checkRow(table, row, "insert"|"update")`, `rowKeyText`. `Row<T>`, `InsertRow<T>` (nullable → optional).
 - `convert.ts`: app ↔ wire (`Temporal.Instant` ↔ epoch ms is the only real conversion); `fromWireRow` reads a missing column as `null` (D19); `withNulls`.
 - `manifest.ts`: **`defineSchema({partitions: tree, roles: {kind: ladder}, tables: {name: {columns, partition, allow} | {columns, partition?: reserved} | {columns, visibility:"authority"}}})`** → `Schema {tables, entries: SchemaEntry[] (table+partition+visibility+evaluated AllowBlock), reserved, merge: MergeSpec, kinds (parents-first), parentOf, rolesFor}`. Reserved kinds `global|user|local`. Declared-kind tables **require** `allow`. `visibility:"authority"` forces global.
-- `bind.ts`: typed combinators (`allow/deny/role/owner/claim().has/.equals/can/rowIs/patchOnly/anyOf/allOf/not`) — same runtime fns for every table, only types bind; reduced to a `PolicyNode` AST at define time.
+- `bind.ts`: typed combinators (`allow/deny/role/owner/claim().has/.equals/can/rowIs/patchOnly/any/all/not`) — same runtime fns for every table, only types bind; reduced to a `PolicyNode` AST at define time.
 - `reserved.ts`: `_policy {id, rules: json, version}`, `_corrections`.
 - `from-drizzle.ts`: imports Drizzle columns via runtime symbols (drizzle-orm never a runtime dep); pinned kind mapping; panics on serial/numeric/generated; warns (`onWarn`) on unique/Date/defaults.
 - `standard-schema.ts`: structural StandardSchemaV1 (zod etc. fit with no dep).

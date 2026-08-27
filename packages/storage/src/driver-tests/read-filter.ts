@@ -4,9 +4,9 @@ import type { AllowBlock } from "@syncmesh/policy";
 
 import { equal, policyContext } from "@syncmesh/engine";
 import {
-  allOf,
+  all,
   allow,
-  anyOf,
+  any,
   claimEquals,
   claimHas,
   claimIncludes,
@@ -60,22 +60,19 @@ export const RULES: readonly (readonly [string, AllowBlock])[] = [
   ["deny all", { $default: deny }],
   ["allow all", { $default: allow }],
   ["a role", { $default: deny, read: role("tech") }],
-  [
-    "owner of open rows",
-    { $default: deny, read: allOf(owner("title"), not(rowIs({ done: true }))) },
-  ],
+  ["owner of open rows", { $default: deny, read: all(owner("title"), not(rowIs({ done: true }))) }],
   [
     "dispatchers, or your own, or your sites",
     {
       $default: deny,
-      read: anyOf(role("dispatcher"), owner("title"), claimHas("sites", "rank")),
+      read: any(role("dispatcher"), owner("title"), claimHas("sites", "rank")),
     },
   ],
   ["a claim equal to a column", { $default: deny, read: claimEquals("tier", "title") }],
   ["a module claim", { $default: deny, read: claimIncludes("modules", "jobs") }],
   ["rowIs on a boolean and a number", { $default: deny, read: rowIs({ done: false, rank: 2 }) }],
   ["patchOnly reads as allowed", { $default: deny, read: patchOnly(["title"]) }],
-  ["empty any and all", { $default: deny, read: anyOf(allOf(), anyOf()) }],
+  ["empty any and all", { $default: deny, read: any(all(), any()) }],
   ["a column the table lacks", { $default: allow, read: owner("nope") }],
 ];
 

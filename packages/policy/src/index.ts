@@ -1,8 +1,8 @@
 export type { AllowBlock, CompareOp, Operation, PolicyNode } from "./ast.js";
 export {
-  allOf,
+  all,
   allow,
-  anyOf,
+  any,
   claimEquals,
   claimHas,
   claimIncludes,

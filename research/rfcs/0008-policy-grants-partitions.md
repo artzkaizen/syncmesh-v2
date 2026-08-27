@@ -19,7 +19,7 @@ users, members, roles, or invites — auth stays the app's.
 ## The three pieces
 
 **Policy — rules as DATA.** `defineSync` compiles `allow` rules into a
-serializable **policy AST** (`role / owner / anyOf / allOf / not / rowIs /
+serializable **policy AST** (`role / owner / any / all / not / rowIs /
 patchOnly`) — JSON round-trip tested, no closures. A pure `evaluate()`
 interpreter runs the same computation in three places: local write
 validation, every receiving peer, and `client.can()` for UI state. Since

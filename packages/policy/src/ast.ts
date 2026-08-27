@@ -95,6 +95,6 @@ export const isIn = (column: string, values: readonly CellValue[]): PolicyNode =
   values,
 });
 
-export const anyOf = (...of: readonly PolicyNode[]): PolicyNode => ({ kind: "any", of });
-export const allOf = (...of: readonly PolicyNode[]): PolicyNode => ({ kind: "all", of });
+export const any = (...of: readonly PolicyNode[]): PolicyNode => ({ kind: "any", of });
+export const all = (...of: readonly PolicyNode[]): PolicyNode => ({ kind: "all", of });
 export const not = (of: PolicyNode): PolicyNode => ({ kind: "not", of });

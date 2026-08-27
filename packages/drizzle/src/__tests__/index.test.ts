@@ -36,9 +36,9 @@ const schema = defineSchema({
         rank: t.integer(),
       },
       partition: "org",
-      allow: ({ role, owner, anyOf }) => ({
+      allow: ({ role, owner, any }) => ({
         $default: role("tech"),
-        read: anyOf(role("dispatcher"), owner("assignee")),
+        read: any(role("dispatcher"), owner("assignee")),
         update: role("dispatcher"),
       }),
     },

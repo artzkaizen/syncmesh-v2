@@ -254,14 +254,14 @@ export const schema = defineSchema({
       //         ^ typed against the partitions above, plus "user" and "local".
       //           a typo is a compile error, and autocomplete lists YOUR kinds.
 
-      allow: ({ role, owner, anyOf, allOf, not, rowIs, patchOnly }) => ({
+      allow: ({ role, owner, any, all, not, rowIs, patchOnly }) => ({
         $default: role("member"),
         //             ^ typed: "owner" | "admin" | "member" | "viewer", read off
         //               roles.org — `shelf` inherits from its parent
-        update: anyOf(owner("createdBy"), role("admin")),
+        update: any(owner("createdBy"), role("admin")),
         //                  ^ typed: a COLUMN OF THIS TABLE. `owner("createdby")`
         //                    is a compile error; today it silently never matches.
-        delete: allOf(role("admin"), not(rowIs({ rating: 5 }))),
+        delete: all(role("admin"), not(rowIs({ rating: 5 }))),
       }),
     },
 
@@ -352,12 +352,12 @@ device, which is why a verdict cannot differ across app versions.
 ```ts
 books: {
   partition: "shelf",
-  allow: ({ role, owner, anyOf, allOf, not, rowIs }) => ({
+  allow: ({ role, owner, any, all, not, rowIs }) => ({
     $default: role("member"),                        // mandatory deny-floor
     read:     role("viewer"),
     insert:   role("member"),
-    update:   anyOf(owner("addedBy"), role("admin")),
-    delete:   allOf(role("admin"), not(rowIs({ starred: true }))),
+    update:   any(owner("addedBy"), role("admin")),
+    delete:   all(role("admin"), not(rowIs({ starred: true }))),
   }),
 }
 ```
@@ -369,7 +369,7 @@ books: {
 | `owner("addedBy")` | `row.addedBy === actor.account` | row + grant |
 | `rowIs({ starred: true })` | every named field matches | the row |
 | `patchOnly("title","note")` | the update touches ONLY these | the patch |
-| `anyOf` / `allOf` / `not` | boolean composition | children |
+| `any` / `all` / `not` | boolean composition | children |
 
 Resolution:
 

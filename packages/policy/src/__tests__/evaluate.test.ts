@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
 import {
-  allOf,
+  all,
   allow,
-  anyOf,
+  any,
   claimEquals,
   claimHas,
   claimIncludes,
@@ -92,16 +92,16 @@ describe("evaluate — every node, both outcomes", () => {
 
   test("any / all / not compose", () => {
     const c = ctx({ row: row({ createdBy: "acct_a", status: "approved" }) });
-    expect(evaluate(anyOf(role("admin"), owner("createdBy")), c)).toBe(true);
-    expect(evaluate(allOf(role("admin"), owner("createdBy")), c)).toBe(false);
-    expect(evaluate(allOf(owner("createdBy"), not(rowIs({ status: "approved" }))), c)).toBe(false);
-    expect(evaluate(anyOf(), c)).toBe(false);
-    expect(evaluate(allOf(), c)).toBe(true);
+    expect(evaluate(any(role("admin"), owner("createdBy")), c)).toBe(true);
+    expect(evaluate(all(role("admin"), owner("createdBy")), c)).toBe(false);
+    expect(evaluate(all(owner("createdBy"), not(rowIs({ status: "approved" }))), c)).toBe(false);
+    expect(evaluate(any(), c)).toBe(false);
+    expect(evaluate(all(), c)).toBe(true);
   });
 
   test("the same document and context give the same verdict on every call", () => {
-    const rule = allOf(
-      anyOf(owner("createdBy"), role("admin")),
+    const rule = all(
+      any(owner("createdBy"), role("admin")),
       patchOnly(["title"]),
       not(rowIs({ locked: true })),
     );

@@ -98,9 +98,9 @@ export const schema = defineSchema({
     appointment: {
       columns: fromDrizzle(drizzle.appointment),
       partition: "practice",
-      allow: ({ role, owner, anyOf }) => ({
+      allow: ({ role, owner, any }) => ({
         $default: role("member"),
-        update: anyOf(owner("dentistId"), role("admin")),
+        update: any(owner("dentistId"), role("admin")),
       }),
     },
     treatmentPlan: { columns: fromDrizzle(drizzle.treatmentPlan), partition: "practice", allow: ({ role }) => ({ $default: role("member") }) },
@@ -193,10 +193,10 @@ export const schema = defineSchema({
     control: {
       columns: fromDrizzle(drizzle.control, { onConflict: { score: "max" } }),
       partition: "org",
-      allow: ({ can, owner, claim, anyOf }) => ({
+      allow: ({ can, owner, claim, any }) => ({
         read:   claim("entities").has("entityId"),                                   // row.entityId ∈ grant.claims.entities
         insert: can("controls", "create"),
-        update: anyOf(can("controls", "update"), owner("ownerMemberId")), // owner = the org-scoped member id, kaitosec's own rule
+        update: any(can("controls", "update"), owner("ownerMemberId")), // owner = the org-scoped member id, kaitosec's own rule
         delete: can("controls", "delete"),
       }),
     },
@@ -299,7 +299,7 @@ export const schema = defineSchema({
 
   tables: {
     icdCode:      { columns: fromDrizzle(drizzle.icdCode) },                                           // global
-    booking:      { columns: fromDrizzle(drizzle.booking), partition: "clinic", allow: ({ role, owner, anyOf }) => ({ $default: role("staff"), update: anyOf(owner("userId"), role("admin")) }) },
+    booking:      { columns: fromDrizzle(drizzle.booking), partition: "clinic", allow: ({ role, owner, any }) => ({ $default: role("staff"), update: any(owner("userId"), role("admin")) }) },
     schedule:     { columns: fromDrizzle(drizzle.schedule), partition: "clinic", allow: ({ role }) => ({ $default: role("staff") }) },
 
     patient:      { columns: fromDrizzle(drizzle.patient),   visibility: "authority" },   // the relay decides who receives which rows

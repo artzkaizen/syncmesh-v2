@@ -1,9 +1,9 @@
 import type { CellValue } from "@syncmesh/kernel";
 
 import {
-  allOf,
+  all,
   allow,
-  anyOf,
+  any,
   claimEquals,
   claimHas,
   claimIncludes,
@@ -35,8 +35,8 @@ export interface Combinators<C extends Columns, R extends string> {
     readonly [K in keyof C & string]?: CellValue;
   }) => PolicyNode;
   readonly patchOnly: (columns: readonly (keyof C & string)[]) => PolicyNode;
-  readonly anyOf: (...of: readonly PolicyNode[]) => PolicyNode;
-  readonly allOf: (...of: readonly PolicyNode[]) => PolicyNode;
+  readonly any: (...of: readonly PolicyNode[]) => PolicyNode;
+  readonly all: (...of: readonly PolicyNode[]) => PolicyNode;
   readonly not: (of: PolicyNode) => PolicyNode;
 }
 
@@ -63,8 +63,8 @@ export function combinators<C extends Columns, R extends string>(): Combinators<
       return rowIs(present);
     },
     patchOnly,
-    anyOf,
-    allOf,
+    any,
+    all,
     not,
   };
 }

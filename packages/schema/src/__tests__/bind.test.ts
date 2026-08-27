@@ -17,10 +17,10 @@ const schema = defineSchema({
         entityId: t.text(),
       },
       partition: "shelf",
-      allow: ({ role, owner, claim, can, rowIs, patchOnly, anyOf, allOf, not }) => ({
+      allow: ({ role, owner, claim, can, rowIs, patchOnly, any, all, not }) => ({
         $default: role("member"),
-        update: anyOf(owner("createdBy"), role("admin")),
-        delete: allOf(role("admin"), not(rowIs({ rating: 5 })), patchOnly([])),
+        update: any(owner("createdBy"), role("admin")),
+        delete: all(role("admin"), not(rowIs({ rating: 5 })), patchOnly([])),
         read: claim("entities").has("entityId"),
         approve: can("books", "approve"),
       }),

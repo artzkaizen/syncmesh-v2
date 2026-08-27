@@ -2,14 +2,14 @@ import type { JsonValue } from "@syncmesh/kernel";
 
 import { describe, expect, test } from "bun:test";
 
-import { allOf, anyOf, deny, not, owner, patchOnly, role, rowIs, claimHas } from "../ast.js";
+import { all, any, deny, not, owner, patchOnly, role, rowIs, claimHas } from "../ast.js";
 import { parsePolicyDoc, type PolicyDoc } from "../doc.js";
 
 const doc: PolicyDoc = {
   books: {
     $default: role("member"),
-    update: anyOf(owner("createdBy"), role("admin")),
-    delete: allOf(role("admin"), not(rowIs({ rating: 5 })), patchOnly([])),
+    update: any(owner("createdBy"), role("admin")),
+    delete: all(role("admin"), not(rowIs({ rating: 5 })), patchOnly([])),
   },
   controls: { $default: deny, read: claimHas("entities", "entityId") },
 };

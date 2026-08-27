@@ -1,7 +1,7 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
 import { parsePartitionKey } from "@syncmesh/kernel";
-import { allOf, anyOf, evaluate, gt, isIn, lt, ne, not, rowIs } from "@syncmesh/policy";
+import { all, any, evaluate, gt, isIn, lt, ne, not, rowIs } from "@syncmesh/policy";
 import { describe, expect, test } from "bun:test";
 
 import { EVERYTHING, interestKey, matchesInterest, predicateColumns } from "../interest.js";
@@ -55,7 +55,7 @@ describe("the predicate grammar", () => {
   });
 
   test("predicateColumns finds every column a rule reads, through the combinators", () => {
-    const rule = anyOf(allOf(gt("rank", 3), not(rowIs({ done: true }))), isIn("owner", ["a"]));
+    const rule = any(all(gt("rank", 3), not(rowIs({ done: true }))), isIn("owner", ["a"]));
     expect([...predicateColumns(rule)].sort()).toEqual(["done", "owner", "rank"]);
   });
 });

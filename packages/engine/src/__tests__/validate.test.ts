@@ -29,9 +29,9 @@ const schema = defineSchema({
         createdBy: t.text(),
       },
       partition: "org",
-      allow: ({ role, owner, anyOf }) => ({
+      allow: ({ role, owner, any }) => ({
         $default: role("member"),
-        update: anyOf(owner("createdBy"), role("admin")),
+        update: any(owner("createdBy"), role("admin")),
         delete: role("admin"),
       }),
     },
