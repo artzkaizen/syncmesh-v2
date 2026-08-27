@@ -68,14 +68,22 @@ syncmesh/
 bun install
 bun run ci                 # vp check (fmt · lint · types) then build · typecheck · test — what CI runs
 vp check --fix             # format + lint, fixing what it can
-vp run -r test             # every package's tests (bun test), dependencies built first
+bun run test               # every package's tests, two at a time — see below
+vp run -r test             # the same, at vp's default width of four
 bun run gen --name kernel --description "…"   # new package; --group adapters for a runtime binding
 ```
+
+`bun run test` caps the runner at two packages at a time. At vp's default of four, the heavy
+suites — PGlite's in-process Postgres, happy-dom for the React hooks, several `bun test` heaps —
+can land together and the OS kills one (exit 137), which reads as a failure and is not. Two costs
+about a second on the whole suite, because the wall time is a few slow tasks rather than the
+width, so the cap is nearly free and `ci` uses it too.
 
 ## Running the plan
 
 ```
 bun plan/tool/serve.ts        # http://localhost:4400
+bun run explore               # http://localhost:4500 — the codebase as a map: districts, blocks, flows
 ```
 
 The page reads the markdown; ticking a box rewrites the `- [ ]` in the file, so
