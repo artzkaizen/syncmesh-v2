@@ -5,7 +5,7 @@ import * as fc from "fast-check";
 
 import { decodeEventCore, encodeEventCore } from "../event-codec.js";
 import { bytesEqual, bytesToHex, hexToBytes } from "../hex.js";
-import { event, key, row, table } from "./fixtures.js";
+import { column, event, key, row, table } from "./fixtures.js";
 
 const NOTES = table("notes");
 const K = key("k1");
@@ -97,7 +97,8 @@ describe("encodeEventCore / decodeEventCore", () => {
   const arbCell = fc.oneof(
     fc.string({ maxLength: 12 }),
     fc.integer(),
-    fc.double({ noNaN: true, noDefaultInfinity: true }),
+    // `-0` is deliberately not round-tripped as itself — see the canonicalisation test below
+    fc.double({ noNaN: true, noDefaultInfinity: true }).map((n) => (Object.is(n, -0) ? 0 : n)),
     fc.boolean(),
     fc.constant(null),
   );
@@ -119,6 +120,22 @@ describe("encodeEventCore / decodeEventCore", () => {
     .map(([changes, seq, ms, partition]) =>
       event(changes, partition === undefined ? { seq, ms } : { seq, ms, partition }),
     );
+
+  test("negative zero canonicalises to zero, because a canonical encoding has one of them", () => {
+    // the two zeroes are the same number, so an encoding that kept them apart would give one
+    // value two byte sequences — the one thing canonical CBOR exists to rule out (E03)
+    const negative = event([{ kind: "insert", table: NOTES, key: K, row: row({ n: -0 }) }]);
+    const positive = event([{ kind: "insert", table: NOTES, key: K, row: row({ n: 0 }) }]);
+    expect(bytesEqual(encodeEventCore(negative), encodeEventCore(positive))).toBe(true);
+
+    // it comes back as `0`, and re-encodes to the same bytes: the value moves once, never again
+    const core = encodeEventCore(negative);
+    const decoded = decodeEventCore(core).unwrap();
+    expect(bytesEqual(encodeEventCore(decoded), core)).toBe(true);
+    const change = decoded.changes[0];
+    const back = change?.kind === "insert" ? change.row.get(column("n")) : undefined;
+    expect(Object.is(back, 0)).toBe(true); // `0`, not `-0`: the value moves once, never again
+  });
 
   test("property: decode ∘ encode ≡ id with byte-identical re-encode", () => {
     fc.assert(
