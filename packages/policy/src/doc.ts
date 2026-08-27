@@ -2,7 +2,7 @@ import type { JsonValue } from "@syncmesh/kernel";
 
 import { Result, TaggedError } from "@syncmesh/result";
 
-import type { AllowBlock, PolicyNode } from "./ast.js";
+import type { AllowBlock, CompareOp, PolicyNode } from "./ast.js";
 
 /** One partition instance's rules: table name → its allow block. This is what the `_policy` row carries. */
 export type PolicyDoc = Readonly<Record<string, AllowBlock>>;
@@ -11,6 +11,8 @@ export class MalformedPolicy extends TaggedError("MalformedPolicy")<{
   path: string;
   message: string;
 }> {}
+
+const COMPARE_OPS = new Set<string>(["ne", "lt", "lte", "gt", "gte"]);
 
 const malformed = (path: string, message: string) =>
   Result.err(new MalformedPolicy({ path, message }));
@@ -56,6 +58,15 @@ const parsers = {
     isString(j.column)
       ? Result.ok({ kind: "owner", column: j.column })
       : malformed(p, "owner needs a column"),
+  compare: (j: Json, p: string) =>
+    isString(j.column) && isString(j.op) && COMPARE_OPS.has(j.op) && isCellValue(j.value)
+      ? // SAFETY: COMPARE_OPS holds exactly the CompareOp members, and the guard just matched one
+        Result.ok({ kind: "compare", column: j.column, op: j.op as CompareOp, value: j.value })
+      : malformed(p, "compare needs a column, one of ne/lt/lte/gt/gte, and a scalar"),
+  isIn: (j: Json, p: string) =>
+    isString(j.column) && Array.isArray(j.values) && j.values.every(isCellValue)
+      ? Result.ok({ kind: "isIn", column: j.column, values: j.values })
+      : malformed(p, "isIn needs a column and a list of scalars"),
   claimHas: (j: Json, p: string) =>
     isString(j.claim) && isString(j.column)
       ? Result.ok({ kind: "claimHas", claim: j.claim, column: j.column })
@@ -113,4 +124,7 @@ const isRecord = (v: JsonValue | undefined): v is { readonly [key: string]: Json
 const isString = (v: JsonValue | undefined): v is string => typeof v === "string";
 const isScalar = (v: JsonValue): v is string | number | boolean | null =>
   v === null || typeof v !== "object";
+/** The same, for a position a malformed doc may simply have left out. */
+const isCellValue = (v: JsonValue | undefined): v is string | number | boolean | null =>
+  v !== undefined && isScalar(v);
 /* oxlint-enable anti-slop/no-runtime-typeof */

@@ -1,6 +1,6 @@
 import type { CellValue, JsonValue, Row } from "@syncmesh/kernel";
 
-import type { PolicyNode } from "./ast.js";
+import type { CompareOp, PolicyNode } from "./ast.js";
 
 /** What a rule may read about the caller: the signed grant's account, role and claims. Nothing else. */
 export interface PolicyGrant {
@@ -50,6 +50,11 @@ const handlers: Handlers = {
     Object.entries(node.where).every(([column, expected]) =>
       sameScalar(cell(ctx, column), expected),
     ),
+  compare: (node, ctx) => compareCells(cell(ctx, node.column), node.op, node.value),
+  isIn: (node, ctx) => {
+    const value = cell(ctx, node.column);
+    return value !== undefined && node.values.some((item) => sameScalar(item, value));
+  },
   patchOnly: (node, ctx) => {
     const allowed = new Set<string>(node.columns);
     for (const column of (ctx.patch ?? new Map()).keys()) if (!allowed.has(column)) return false;
@@ -116,6 +121,28 @@ export const scalarKindOf = (v: JsonValue | CellValue | undefined): ScalarKind |
   if (typeof v === "number") return "number";
   if (typeof v === "boolean") return "boolean";
   return undefined;
+};
+
+/**
+ * An ordered comparison, and the same strictness equality has: two scalars of one kind, or false.
+ * A null orders against nothing, and a boolean has no order — both read as "the rule is not
+ * satisfied", never as an accidental true.
+ */
+const compareCells = (
+  value: CellValue | undefined,
+  op: CompareOp,
+  expected: CellValue,
+): boolean => {
+  if (op === "ne") return value !== undefined && !sameScalar(expected, value);
+  const kind = scalarKindOf(value);
+  if (kind === undefined || kind === "null" || kind === "boolean") return false;
+  if (scalarKindOf(expected) !== kind) return false;
+  // SAFETY: both sides just proved the same orderable kind — two strings, or two numbers
+  const [a, b] = [value, expected] as [string, string] | [number, number];
+  if (op === "lt") return a < b;
+  if (op === "lte") return a <= b;
+  if (op === "gt") return a > b;
+  return a >= b;
 };
 
 /** Scalars compare by value; bytes, arrays and objects never match a rule (they are not identities). */

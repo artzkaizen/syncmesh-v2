@@ -1,5 +1,5 @@
 import type { EventStore, StoreFailure } from "@syncmesh/engine";
-import type { PeerId, SeqNum } from "@syncmesh/kernel";
+import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 import type { BlobStore } from "@syncmesh/storage";
 
 import { Result } from "@syncmesh/result";
@@ -77,6 +77,11 @@ export async function openRelayRoom(
       if (client.peer !== except) client.sender.send(frame);
     }
   };
+  const toInterested = (frame: Uint8Array, event: SyncEvent, except?: PeerId): void => {
+    for (const client of clients.values()) {
+      if (client.peer !== except && client.wants(event)) client.sender.send(frame);
+    }
+  };
   const fan = options.fanout?.connect(name);
   const offFan = fan?.onFrame((frame) => toClients(frame));
   const keepalive = setInterval(() => toClients(kaFrame()), keepaliveMs);
@@ -93,6 +98,7 @@ export async function openRelayRoom(
     clients,
     cursors,
     toClients,
+    toInterested,
     publish: (frame) => fan?.publish(frame),
     offset: () => offset,
     appended: (peer, seq) => {

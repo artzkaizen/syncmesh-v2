@@ -64,6 +64,8 @@ export type {
 } from "./validate.js";
 export { createValidator, policyContext } from "./validate.js";
 export { can } from "./can.js";
+export type { Interest } from "./interest.js";
+export { EVERYTHING, interestKey, matchesInterest, predicateColumns } from "./interest.js";
 export type { Correction, CorrectionRow } from "./authority.js";
 export { RESERVED_TABLE_NAMES, correct, corrections, setPolicy } from "./authority.js";
 export type { RepairApi, RepairRow, TableDigests } from "./digest.js";

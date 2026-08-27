@@ -37,6 +37,7 @@ export const schema = defineSchema({
 
 export const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 export const ACME = parsePartitionKey("org:acme").unwrap();
+export const GLOBEX = parsePartitionKey("org:globex").unwrap();
 export const seed = (n: number) => Uint8Array.from({ length: 32 }, (_, i) => n + i);
 export const ISSUER = createIdentity(seed(1)).unwrap();
 
@@ -53,7 +54,7 @@ export const mintFor = (device: Identity, account: string) =>
     account,
     device: device.peerId,
     role: "member",
-    partitions: [ACME],
+    partitions: [ACME, GLOBEX],
     validFor: Temporal.Duration.from({ days: 1 }),
     now: T0,
   });
@@ -79,7 +80,12 @@ export const peer = (n: number, account: string, startMs = 100) => {
 export type Peer = ReturnType<typeof peer>;
 
 /** One write on a peer, and the signed wire a relay would carry for it. */
-export const write = async (p: Peer, id: string, body: string): Promise<Uint8Array> => {
+export const write = async (
+  p: Peer,
+  id: string,
+  body: string,
+  partition = ACME,
+): Promise<Uint8Array> => {
   const event = (
     await p.engine.mutate(
       CREATE,
@@ -92,7 +98,7 @@ export const write = async (p: Peer, id: string, body: string): Promise<Uint8Arr
             [BODY, body],
           ]),
         ),
-      { partition: ACME },
+      { partition },
     )
   ).unwrap();
   return signEvent(event, p.identity).wire;

@@ -1,4 +1,4 @@
-import type { Cursors } from "@syncmesh/engine";
+import type { Cursors, Interest } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import type { Frame } from "@syncmesh/transport";
 import type { CborValue } from "@syncmesh/wire";
@@ -45,6 +45,8 @@ export type RelayFrame =
       readonly versions: readonly number[];
       readonly peerId: PeerId;
       readonly cursors: Cursors;
+      /** What this device wants (E13); absent asks for everything its policy already allows. */
+      readonly interest?: Interest;
     }
   | {
       readonly kind: "hello";
@@ -80,8 +82,17 @@ export const joinFrame = (
   versions: readonly number[],
   peerId: PeerId,
   cursors: Cursors,
+  interest?: Interest,
 ): Uint8Array =>
-  encodeCbor([KIND.join, [...versions], hexToBytes(peerId).unwrap(), pairs(cursors)]);
+  encodeCbor([
+    KIND.join,
+    [...versions],
+    hexToBytes(peerId).unwrap(),
+    pairs(cursors),
+    // as JSON text: an interest is the policy AST, which is already JSON, and an older relay
+    // that never reads this position simply serves everything — the additive rule (D14)
+    interest === undefined ? "" : JSON.stringify(interest),
+  ]);
 
 export const helloFrame = (
   version: number,
@@ -158,14 +169,35 @@ type ControlDecoder = (
   d: CborValue | undefined,
 ) => Result<RelayFrame, MalformedFrame>;
 
-const decodeJoin: ControlDecoder = (a, b, c) =>
+const decodeJoin: ControlDecoder = (a, b, c, d) =>
   Result.gen(function* () {
     if (!Array.isArray(a) || !a.every((v) => isSafeNonNegative(v)))
       return malformed("join versions are not integers");
     const peerId = yield* asPeer(b);
     const cursors = yield* asCursors(c);
-    return Result.ok({ kind: "join", versions: a, peerId, cursors } as const);
+    const interest = asInterest(d);
+    return Result.ok(
+      interest === undefined
+        ? ({ kind: "join", versions: a, peerId, cursors } as const)
+        : ({ kind: "join", versions: a, peerId, cursors, interest } as const),
+    );
   });
+
+/**
+ * The interest a join carried, or `undefined` for one that named none. Junk is `undefined` too,
+ * deliberately: an unreadable request must fall back to "everything the policy allows", never to
+ * "nothing", which would silently starve a device rather than showing it a bug.
+ */
+const asInterest = (value: CborValue | undefined): Interest | undefined => {
+  if (!isString(value) || value === "") return undefined;
+  try {
+    // SAFETY: parsed at the wire boundary and read only through Interest's own optional fields;
+    // a predicate that is not a PolicyNode simply matches nothing when evaluated
+    return JSON.parse(value) as Interest;
+  } catch {
+    return undefined;
+  }
+};
 
 const decodeHello: ControlDecoder = (a, b, c, d) =>
   Result.gen(function* () {

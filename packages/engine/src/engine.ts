@@ -21,6 +21,7 @@ import { Result } from "@syncmesh/result";
 import type { Boot } from "./boot.js";
 import type { Ack, CompactError, CompactOptions, Compaction } from "./compaction.js";
 import type { RepairApi } from "./digest.js";
+import type { Interest } from "./interest.js";
 import type { StateStore } from "./state-store.js";
 import type { EventStore, StoredEvent } from "./store.js";
 import type { StoreFailure } from "./store.js";
@@ -40,6 +41,7 @@ import {
   type MutateError,
   type RevertError,
 } from "./errors.js";
+import { eventsWanted } from "./interest.js";
 import { createHub, type Unsubscribe } from "./listeners.js";
 import { rowsFor, writeKeysOf } from "./state-store.js";
 import { timed, type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
@@ -106,8 +108,15 @@ export interface Engine extends RepairApi {
   readonly onAcknowledge: (listener: (peer: PeerId) => void) => Unsubscribe;
   /** Removes events every counted peer has acked and the state store has persisted; unobservable to peers. See RFC-0015 §2. */
   readonly compact: (options: CompactOptions) => Promise<Result<Compaction, CompactError>>;
-  /** Synced events the holder of `theirs` lacks. */
-  readonly eventsSince: (theirs: Cursors) => Promise<Result<readonly StoredEvent[], StoreFailure>>;
+  /**
+   * Synced events the holder of `theirs` lacks, narrowed to what they asked for (E13). The
+   * filter runs **here**, at the sender, so an uninterested event never becomes bytes — and it
+   * only ever narrows: what the reader may see at all is the read policy's to decide.
+   */
+  readonly eventsSince: (
+    theirs: Cursors,
+    interest?: Interest,
+  ) => Promise<Result<readonly StoredEvent[], StoreFailure>>;
   readonly onFoldBatch: (listener: (batch: FoldBatch) => void) => Unsubscribe;
   /** Fires for every synced event this engine authors, never for `local` ones. */
   readonly onOutbound: (listener: (event: SyncEvent) => void) => Unsubscribe;
@@ -283,7 +292,7 @@ export function createEngine(options: EngineOptions): Engine {
     acks: () => new Map([...acks].map(([peer, ack]) => [peer, ack.cursors])),
     onAcknowledge: ackHub.subscribe,
     compact: (options) => compactLog({ store, stateStore, acks }, options),
-    eventsSince: (theirs) => store.allSince(theirs),
+    eventsSince: (theirs, interest) => eventsWanted(store, theirs, interest),
     ...repair,
     onFoldBatch: folds.subscribe,
     onOutbound: outbound.subscribe,

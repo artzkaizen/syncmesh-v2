@@ -21,6 +21,18 @@ import { attempt } from "./sql.js";
  * this layer: capture judges them against the same rules before COMMIT.
  */
 
+const OPERATORS = { ne: "<>", lt: "<", lte: "<=", gt: ">", gte: ">=" } as const;
+
+/** A scalar as SQL text in the form its kind takes; the caller has already proved the kind. */
+const literalOf = (kind: ScalarKind, value: CellValue): string => {
+  if (kind === "string") {
+    // SAFETY: the caller matched scalarKindOf(value) against `kind`, so this one is a string
+    return str(value as string);
+  }
+  if (kind === "boolean") return value === true ? "TRUE" : "FALSE";
+  return String(Number(value));
+};
+
 const GUC = {
   account: "syncmesh.account",
   role: "syncmesh.role",
@@ -141,6 +153,26 @@ function policyPredicate(table: Table, ladder: readonly string[], allow: AllowBl
         equalsLiteral(key, expected),
       );
       return parts.length === 0 ? "TRUE" : `(${parts.join(" AND ")})`;
+    },
+    compare: (node) => {
+      const found = columns.get(node.column);
+      const kind = found === undefined ? undefined : columnScalarKind(found.column.def.kind);
+      if (found === undefined || kind === undefined) return "FALSE";
+      if (node.value === null || scalarKindOf(node.value) !== kind) return "FALSE";
+      if (node.op !== "ne" && kind === "boolean") return "FALSE"; // a boolean has no order
+      const value = literalOf(kind, node.value);
+      return leaf(
+        `${columnExpr(found.column.def.kind, found.name)} ${OPERATORS[node.op]} ${value}`,
+      );
+    },
+    isIn: (node) => {
+      const found = columns.get(node.column);
+      const kind = found === undefined ? undefined : columnScalarKind(found.column.def.kind);
+      if (found === undefined || kind === undefined) return "FALSE";
+      const items = node.values.filter((item) => scalarKindOf(item) === kind);
+      if (items.length === 0) return "FALSE";
+      const list = items.map((item) => literalOf(kind, item)).join(", ");
+      return leaf(`${columnExpr(found.column.def.kind, found.name)} IN (${list})`);
     },
     // a read carries no patch, so nothing it touches can fall outside the list
     patchOnly: () => "TRUE",

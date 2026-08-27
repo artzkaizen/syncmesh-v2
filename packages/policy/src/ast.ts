@@ -14,11 +14,23 @@ export type PolicyNode =
   /** A constant is in the list the grant carries under `claim` — `can(module, action)` is this. */
   | { readonly kind: "claimIncludes"; readonly claim: string; readonly value: string }
   | { readonly kind: "rowIs"; readonly where: Readonly<Record<string, CellValue>> }
+  /** The row's column stands in this relation to a constant. Equality is `rowIs`; this is the rest. */
+  | {
+      readonly kind: "compare";
+      readonly column: string;
+      readonly op: CompareOp;
+      readonly value: CellValue;
+    }
+  /** The row's column is one of these constants. */
+  | { readonly kind: "isIn"; readonly column: string; readonly values: readonly CellValue[] }
   /** Every column the write touches is one of these. */
   | { readonly kind: "patchOnly"; readonly columns: readonly string[] }
   | { readonly kind: "any"; readonly of: readonly PolicyNode[] }
   | { readonly kind: "all"; readonly of: readonly PolicyNode[] }
   | { readonly kind: "not"; readonly of: PolicyNode };
+
+/** How a column stands to a constant. Ordered comparisons hold only between two scalars of one kind. */
+export type CompareOp = "ne" | "lt" | "lte" | "gt" | "gte";
 
 export type Operation = "read" | "insert" | "update" | "delete" | (string & {});
 
@@ -67,6 +79,22 @@ export const patchOnly = (columns: readonly string[]): PolicyNode => ({
   kind: "patchOnly",
   columns,
 });
+const compare =
+  (op: CompareOp) =>
+  (column: string, value: CellValue): PolicyNode => ({ kind: "compare", column, op, value });
+
+/** Not equal — and, like every comparison here, false between values of different kinds. */
+export const ne = compare("ne");
+export const lt = compare("lt");
+export const lte = compare("lte");
+export const gt = compare("gt");
+export const gte = compare("gte");
+export const isIn = (column: string, values: readonly CellValue[]): PolicyNode => ({
+  kind: "isIn",
+  column,
+  values,
+});
+
 export const anyOf = (...of: readonly PolicyNode[]): PolicyNode => ({ kind: "any", of });
 export const allOf = (...of: readonly PolicyNode[]): PolicyNode => ({ kind: "all", of });
 export const not = (of: PolicyNode): PolicyNode => ({ kind: "not", of });

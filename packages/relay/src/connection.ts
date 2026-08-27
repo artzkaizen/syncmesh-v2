@@ -1,8 +1,9 @@
-import type { EventStore, StoredEvent } from "@syncmesh/engine";
-import type { PeerId, SeqNum } from "@syncmesh/kernel";
+import type { EventStore, Interest, StoredEvent } from "@syncmesh/engine";
+import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 import type { BlobHash, BlobStore } from "@syncmesh/storage";
 import type { PresenceStore } from "@syncmesh/transport";
 
+import { matchesInterest } from "@syncmesh/engine";
 import { cursorsFrame, presenceFrame } from "@syncmesh/transport";
 import {
   bytesToHex,
@@ -41,6 +42,8 @@ export interface Client {
   readonly peer: PeerId;
   readonly sender: Sender;
   readonly socket: RelaySocket;
+  /** Whether this client asked for that event (E13); a client with no interest wants them all. */
+  readonly wants: (event: SyncEvent) => boolean;
 }
 
 /** The room as one connection sees it: shared state, and the three ways to reach the others. */
@@ -58,6 +61,8 @@ export interface RoomState {
   readonly cursors: Map<PeerId, SeqNum>;
   /** Every client but one — the author, who already has what it sent. */
   readonly toClients: (frame: Uint8Array, except?: PeerId) => void;
+  /** The same, minus every client whose interest excludes this event (E13). */
+  readonly toInterested: (frame: Uint8Array, event: SyncEvent, except?: PeerId) => void;
   /** The same frame to the other instances serving this room; best-effort by design (D09-B). */
   readonly publish: (frame: Uint8Array) => void;
   readonly offset: () => number;
@@ -102,6 +107,8 @@ export function paged(
 export function createConnection(socket: RelaySocket, room: RoomState): RelayConnection {
   const sender = createSender(socket, room.maxBacklog);
   let me: PeerId | undefined;
+  /** What this socket asked for (E13); absent wants everything the policy already allows. */
+  let interest: Interest | undefined;
 
   const refuse = (code: string, message: string, fatal = false): void => {
     sender.send(errorFrame(code, message));
@@ -115,16 +122,26 @@ export function createConnection(socket: RelaySocket, room: RoomState): RelayCon
         refuse("store", entries.error.message);
         return;
       }
+      // narrowed at the sender: an event this device did not ask for never becomes a page
+      const asked = interest;
+      const wanted =
+        asked === undefined
+          ? entries.value
+          : entries.value.filter((entry) => matchesInterest(asked, entry.event));
       const grantWires = [...room.grants.values()];
-      for (const page of paged(entries.value, grantWires, room.pageSize, room.offset()))
-        sender.send(page);
+      for (const page of paged(wanted, grantWires, room.pageSize, room.offset())) sender.send(page);
     });
   };
+
+  /** Live fan-out obeys the same interest the catch-up did, so the two never disagree. */
+  const wants = (event: SyncEvent): boolean =>
+    interest === undefined || matchesInterest(interest, event);
 
   const onJoin = (
     versions: readonly number[],
     peer: PeerId,
     theirs: ReadonlyMap<PeerId, SeqNum>,
+    wanted: Interest | undefined,
   ): void => {
     const shared = versions.filter((v) => RELAY_PROTOCOL_VERSIONS.includes(v));
     const selected = shared.length > 0 ? Math.max(...shared) : undefined;
@@ -136,7 +153,8 @@ export function createConnection(socket: RelaySocket, room: RoomState): RelayCon
     room.clients.get(peer)?.socket.close("superseded by a newer join");
     room.clients.delete(peer);
     me = peer;
-    room.clients.set(peer, { peer, sender, socket });
+    interest = wanted;
+    room.clients.set(peer, { peer, sender, socket, wants });
     sender.send(helloFrame(selected, room.keepaliveMs, room.epoch, new Map(room.cursors)));
     // who is here now — never how they got here: presence has no history to page through
     for (const entry of room.presence.all()) sender.send(presenceFrame(entry.wire));
@@ -168,7 +186,7 @@ export function createConnection(socket: RelaySocket, room: RoomState): RelayCon
         }
         room.appended(event.peerId, event.seqNum);
         const relayed = relayedFrame(wire, room.offset());
-        room.toClients(relayed, event.peerId);
+        room.toInterested(relayed, event, event.peerId);
         room.publish(relayed);
       }
       // the durability ack, idempotent: what a write handle's synced() counts
@@ -231,7 +249,7 @@ export function createConnection(socket: RelaySocket, room: RoomState): RelayCon
       }
       const frame = decoded.value;
       if (frame.kind === "join") {
-        onJoin(frame.versions, frame.peerId, frame.cursors);
+        onJoin(frame.versions, frame.peerId, frame.cursors, frame.interest);
         return;
       }
       if (me === undefined) {

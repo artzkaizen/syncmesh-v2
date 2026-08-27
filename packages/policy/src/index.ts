@@ -1,4 +1,4 @@
-export type { AllowBlock, Operation, PolicyNode } from "./ast.js";
+export type { AllowBlock, CompareOp, Operation, PolicyNode } from "./ast.js";
 export {
   allOf,
   allow,
@@ -7,6 +7,12 @@ export {
   claimHas,
   claimIncludes,
   deny,
+  gt,
+  gte,
+  isIn,
+  lt,
+  lte,
+  ne,
   not,
   owner,
   patchOnly,

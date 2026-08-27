@@ -68,6 +68,8 @@ export function compileRead(
   options: CompileOptions = {},
 ): Compiled {
   const dialect = options.dialect === "postgres" ? POSTGRES : SQLITE;
+  const OPERATORS = { ne: "<>", lt: "<", lte: "<=", gt: ">", gte: ">=" } as const;
+
   const ALWAYS: Compiled = { sql: dialect.name === "postgres" ? "TRUE" : "1", params: [] };
   const NEVER: Compiled = { sql: dialect.name === "postgres" ? "FALSE" : "0", params: [] };
   // a table with no rules is readable by anyone who holds it — what can() says for "read"
@@ -115,6 +117,28 @@ export function compileRead(
     rowIs: (node) => {
       const parts = Object.entries(node.where).map(([key, expected]) => equals(key, expected));
       return parts.length === 0 ? ALWAYS : join(parts, "AND");
+    },
+    compare: (node) => {
+      const found = columns.get(node.column);
+      if (found === undefined || !comparable(found.column.def.kind, node.value)) return NEVER;
+      const kind = columnScalarKind(found.column.def.kind);
+      // an ordered comparison holds between two scalars of one orderable kind, and nowhere else
+      if (node.op !== "ne" && (kind === undefined || kind === "boolean")) return NEVER;
+      if (node.value === null) return NEVER; // null orders against nothing, and `ne null` is `IS NOT NULL`
+      const sql = `${quote(found.name)} ${OPERATORS[node.op]} ?`;
+      return { sql, params: [dialect.cell(found.column.def.kind, node.value)] };
+    },
+    isIn: (node) => {
+      const found = columns.get(node.column);
+      if (found === undefined) return NEVER;
+      const items = node.values.filter(
+        (item) => comparable(found.column.def.kind, item) && item !== null,
+      );
+      if (items.length === 0) return NEVER;
+      return {
+        sql: `${quote(found.name)} IN (${items.map(() => "?").join(", ")})`,
+        params: items.map((item) => dialect.cell(found.column.def.kind, item)),
+      };
     },
     // a read carries no patch, so nothing it touches can fall outside the list
     patchOnly: () => ALWAYS,
