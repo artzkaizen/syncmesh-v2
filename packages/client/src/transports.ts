@@ -3,6 +3,15 @@ import type { Transport, TransportContext } from "@syncmesh/transport";
 /** The running half of the mesh: every configured transport, started once, stopped together. */
 export interface RunningTransports {
   readonly ready: () => Promise<void>;
+  /**
+   * Every source that could still fill a scope has finished its first pass — the question an app
+   * must answer before it draws an empty state. Sources are awaited nearest first (RFC-0019), so
+   * a radio holding nothing never resolves ahead of the relay that holds everything.
+   *
+   * The device's own storage is not among them: boot replays the log before a mesh exists, so by
+   * the time this can be called it has already answered.
+   */
+  readonly settled: () => Promise<void>;
   readonly running: () => boolean;
   readonly requestGrant: (invite?: string) => void;
   /** One ephemeral value to every transport; a transport without the capability ignores it. */
@@ -25,6 +34,13 @@ export function runTransports(
       await Promise.all(transports.map((t) => t.whenReady()));
     },
     running: () => running,
+    settled: async () => {
+      await Promise.all(transports.map((t) => t.whenReady()));
+      const nearestFirst = [...transports].sort((x, y) => (x.priority ?? 1) - (y.priority ?? 1));
+      // sequentially, and in that order: waiting on them together would let the furthest source
+      // decide when the answer is ready, which is exactly the race this exists to lose
+      for (const transport of nearestFirst) await transport.caughtUp?.();
+    },
     requestGrant: (invite) => {
       for (const t of transports) t.requestGrant?.(invite);
     },

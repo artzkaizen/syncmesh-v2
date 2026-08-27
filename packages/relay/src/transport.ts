@@ -35,6 +35,8 @@ export interface RelayTransportOptions {
    * policy, so an interest can make a device see less and never more.
    */
   readonly interest?: Interest;
+  /** How near this source is (RFC-0019); a relay sits between local storage and a radio. Default 1. */
+  readonly priority?: number;
 }
 
 /**
@@ -64,6 +66,10 @@ export function relayTransport(options: RelayTransportOptions): Transport {
   let unsubscribe: Unsubscribe[] = [];
   let readyResolve = (): void => undefined;
   let ready = new Promise<void>((resolve) => (readyResolve = resolve));
+  let caughtUpResolve = (): void => undefined;
+  // re-armed on every reconnect: a session that dropped mid-catch-up has not finished its pass,
+  // and answering otherwise would let an app draw an empty state over a half-delivered room
+  let caughtUp = new Promise<void>((resolve) => (caughtUpResolve = resolve));
 
   const sendSafe = (frame: Uint8Array): void => {
     try {
@@ -107,6 +113,7 @@ export function relayTransport(options: RelayTransportOptions): Transport {
         fatal = true;
       },
       onBlobAnswer: blobs.answer,
+      onCaughtUp: caughtUpResolve,
     };
     const offs = wireSession(ctx, dialed, hooks);
     const offClose = dialed.onClose(() => {
@@ -119,6 +126,7 @@ export function relayTransport(options: RelayTransportOptions): Transport {
         status.emit(false);
       }
       if (stopped || fatal) return;
+      caughtUp = new Promise<void>((resolve) => (caughtUpResolve = resolve));
       reconnectTimer = setTimeout(connect, backoff);
       backoff = Math.min(backoff * 2, maxMs);
     });
@@ -145,6 +153,7 @@ export function relayTransport(options: RelayTransportOptions): Transport {
 
   return {
     name,
+    priority: options.priority ?? 1,
     sendPresence: (wire) => sendSafe(presenceFrame(wire)),
     putBlob: blobs.put,
     fetchBlob: blobs.fetch,
@@ -160,6 +169,9 @@ export function relayTransport(options: RelayTransportOptions): Transport {
       return Promise.resolve();
     },
     whenReady: () => ready,
+    // never longer than `whenReady` allows: a relay that never speaks force-resolves, and a
+    // source that cannot answer must not be the one that wedges the mesh
+    caughtUp: () => Promise.race([caughtUp, ready]),
     resync: () => join(),
     requestGrant: (invite) => {
       if (ctx !== undefined) sendSafe(grantRequestFrame(ctx.identity.peerId, invite));

@@ -29,6 +29,8 @@ export interface SessionHooks {
   readonly onVersionRefused: () => void;
   /** The relay answered a fetch: the bytes, or `undefined` when it holds none under that hash. */
   readonly onBlobAnswer: (hash: string, bytes: Uint8Array | undefined) => void;
+  /** The last catch-up page has landed: this source has nothing more to hand over right now. */
+  readonly onCaughtUp: () => void;
 }
 
 /** Everything one session subscribes to; the returned unsubscribes are the session's teardown. */
@@ -103,6 +105,7 @@ export function wireSession(
       if (!frame.more) {
         caughtUp = true;
         pushOutstanding();
+        hooks.onCaughtUp();
       }
     } else if (frame.kind === "blob") hooks.onBlobAnswer(frame.hash, frame.bytes);
     else if (frame.kind === "blob-missing") hooks.onBlobAnswer(frame.hash, undefined);

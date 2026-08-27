@@ -31,6 +31,18 @@ export interface Transport {
   /** Resolves when the medium is usable — or after the force-ready timeout, so a dead network never wedges the mesh. */
   readonly whenReady: () => Promise<void>;
   readonly stop: () => Promise<void>;
+  /**
+   * How near this source is (RFC-0019): `0` is the device's own storage, `1` a relay, `2` a
+   * radio. Lower answers first, and a scope is not empty until the lower numbers have finished —
+   * a fast radio that holds nothing must not be what tells the app there is nothing. Default 1.
+   */
+  readonly priority?: number;
+  /**
+   * Resolves when this source has finished its first pass and has nothing more to hand over
+   * right now. A transport that cannot tell is settled as soon as it is ready, which is the
+   * honest answer for a medium with no end-of-catch-up to report.
+   */
+  readonly caughtUp?: () => Promise<void>;
   /** Re-requests from the last contiguous position on every open session; the recovery after loss or reconnect. */
   readonly resync?: () => void;
   /** Asks every connected peer for a grant for this device (flow A step ②). */

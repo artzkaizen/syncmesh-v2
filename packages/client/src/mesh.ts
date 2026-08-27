@@ -159,6 +159,12 @@ export interface Mesh<
   readonly canRevert: (id: EventId) => boolean;
   /** Every transport ready (or force-ready); rejects if one failed to start. */
   readonly ready: () => Promise<void>;
+  /**
+   * Every source that could still fill a scope has finished its first pass — what to await
+   * before drawing an empty state (RFC-0019). Sources answer nearest first: this device's own
+   * storage has already spoken by the time a mesh exists, then a relay, then a radio.
+   */
+  readonly settled: () => Promise<void>;
   readonly running: () => boolean;
   /** Asks every connected peer for a grant for this device (flow A). */
   readonly requestGrant: (invite?: string) => void;
@@ -313,6 +319,7 @@ function assemble<
     revert: (id) => engine.revert(id),
     canRevert: (id) => engine.canRevert(id),
     ready: links.ready,
+    settled: links.settled,
     running: links.running,
     requestGrant: links.requestGrant,
     stop: async () => {
