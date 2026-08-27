@@ -1,30 +1,18 @@
-import type { EventStore, StoreFailure, StoredEvent } from "@syncmesh/engine";
+import type { EventStore, StoreFailure } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
+import type { BlobStore } from "@syncmesh/storage";
 
 import { Result } from "@syncmesh/result";
-import { createPresenceStore, cursorsFrame, presenceFrame } from "@syncmesh/transport";
-import {
-  bytesToHex,
-  decodeAndVerify,
-  decodeAndVerifyPresence,
-  encodeCbor,
-  encodeEventCore,
-} from "@syncmesh/wire";
+import { createPresenceStore } from "@syncmesh/transport";
 
+import type { Client, RelayConnection, RoomState } from "./connection.js";
 import type { Fanout } from "./fanout.js";
-import type { RelaySocket, Sender } from "./sender.js";
+import type { RelaySocket } from "./sender.js";
 
-import {
-  RELAY_PROTOCOL_VERSIONS,
-  ackFrame,
-  decodeRelayFrame,
-  errorFrame,
-  helloFrame,
-  kaFrame,
-  pageFrame,
-  relayedFrame,
-} from "./frames.js";
-import { createSender } from "./sender.js";
+import { createConnection } from "./connection.js";
+import { kaFrame } from "./frames.js";
+
+export type { RelayConnection } from "./connection.js";
 
 export interface RelayRoomOptions {
   readonly name: string;
@@ -39,15 +27,11 @@ export interface RelayRoomOptions {
   /** Queued frames per socket before the relay hangs up. Default 1000. */
   readonly maxBacklog?: number;
   readonly fanout?: Fanout;
-}
-
-/** What the host wires each accepted socket to. */
-export interface RelayConnection {
-  readonly receive: (bytes: Uint8Array) => void;
-  /** The host's socket buffer drained: flush this connection's backlog in order. */
-  readonly drain: () => void;
-  /** The socket is gone; the host must call this exactly once. */
-  readonly closed: () => void;
+  /**
+   * Where this room's blobs live (D18): the relay is their durable home, which is what lets a
+   * device treat what it fetched as a cache it may evict. Absent, the room serves no bytes.
+   */
+  readonly blobs?: BlobStore;
 }
 
 /**
@@ -63,43 +47,11 @@ export interface RelayRoom {
   readonly close: () => void;
 }
 
-interface Client {
-  readonly peer: PeerId;
-  readonly sender: Sender;
-  readonly socket: RelaySocket;
-}
-
-/** A stored event back to wire form; `undefined` for an entry whose signature was never stored. */
-const envelopeOf = (entry: StoredEvent): Uint8Array | undefined =>
-  entry.sig === undefined ? undefined : encodeCbor([encodeEventCore(entry.event), entry.sig]);
-
-/**
- * A joiner's history as frames: `pageSize` events each, grants on the first, and always at least
- * one page — its `more: false` is what releases the client's push-outstanding, so a client that
- * is already caught up still gets told so. One frame is not a transfer, it is a cliff (RFC-0010).
- */
-function paged(
-  entries: readonly StoredEvent[],
-  grantWires: readonly Uint8Array[],
-  pageSize: number,
-  offset: number,
-): readonly Uint8Array[] {
-  const wires = entries.map(envelopeOf).filter((w): w is Uint8Array => w !== undefined);
-  const pages: Uint8Array[] = [];
-  let index = 0;
-  do {
-    const slice = wires.slice(index, index + pageSize);
-    index += pageSize;
-    const grantsForPage = index <= pageSize ? [...grantWires] : [];
-    pages.push(pageFrame(grantsForPage, slice, index < wires.length, offset));
-  } while (index < wires.length);
-  return pages;
-}
-
 export async function openRelayRoom(
   options: RelayRoomOptions,
 ): Promise<Result<RelayRoom, StoreFailure>> {
-  const { name, store, epoch, keepaliveMs = 15_000, pageSize = 2000, maxBacklog = 1000 } = options;
+  const { name, store, epoch, blobs, keepaliveMs = 15_000, pageSize = 2000 } = options;
+  const maxBacklog = options.maxBacklog ?? 1000;
   const boot = await store.all();
   if (boot.isErr()) return boot;
 
@@ -129,133 +81,29 @@ export async function openRelayRoom(
   const offFan = fan?.onFrame((frame) => toClients(frame));
   const keepalive = setInterval(() => toClients(kaFrame()), keepaliveMs);
 
-  const connect = (socket: RelaySocket): RelayConnection => {
-    const sender = createSender(socket, maxBacklog);
-    let me: PeerId | undefined;
-
-    const refuse = (code: string, message: string, fatal = false): void => {
-      sender.send(errorFrame(code, message));
-      if (fatal) socket.close(code);
-    };
-
-    const catchUp = (theirs: ReadonlyMap<PeerId, SeqNum>): void => {
-      queue = queue.then(async () => {
-        const entries = await store.allSince(theirs);
-        if (entries.isErr()) {
-          refuse("store", entries.error.message);
-          return;
-        }
-        for (const page of paged(entries.value, [...grants.values()], pageSize, offset))
-          sender.send(page);
-      });
-    };
-
-    const onJoin = (
-      versions: readonly number[],
-      peer: PeerId,
-      theirs: ReadonlyMap<PeerId, SeqNum>,
-    ): void => {
-      const shared = versions.filter((v) => RELAY_PROTOCOL_VERSIONS.includes(v));
-      const selected = shared.length > 0 ? Math.max(...shared) : undefined;
-      if (selected === undefined) {
-        refuse("version", `this relay speaks ${RELAY_PROTOCOL_VERSIONS.join(", ")}`, true);
-        return;
-      }
-      // one socket per peer, never a silent room switch: the old socket goes first
-      clients.get(peer)?.socket.close("superseded by a newer join");
-      clients.delete(peer);
-      me = peer;
-      clients.set(peer, { peer, sender, socket });
-      sender.send(helloFrame(selected, keepaliveMs, epoch, new Map(cursors)));
-      // who is here now — never how they got here: presence has no history to page through
-      for (const entry of presence.all()) sender.send(presenceFrame(entry.wire));
-      catchUp(theirs);
-      // what the joiner holds, in its own words, for everyone else's `delivered`
-      toClients(cursorsFrame(peer, theirs), peer);
-    };
-
-    const onEvent = (wire: Uint8Array): void => {
-      queue = queue.then(async () => {
-        const verified = decodeAndVerify(wire);
-        if (verified.isErr()) {
-          refuse("bad-event", verified.error.message);
-          return;
-        }
-        // locality never reaches the wire: the envelope has no field for it, so a local
-        // event cannot arrive here — the device-side writer and codec enforce that (D20)
-        const { event } = verified.value;
-        const held = await store.has(event.id);
-        if (held.isErr()) {
-          refuse("store", held.error.message);
-          return;
-        }
-        if (!held.value) {
-          const appended = await store.append(verified.value);
-          if (appended.isErr()) {
-            refuse("store", appended.error.message);
-            return;
-          }
-          offset += 1;
-          advance(event.peerId, event.seqNum);
-          const relayed = relayedFrame(wire, offset);
-          toClients(relayed, event.peerId);
-          fan?.publish(relayed);
-        }
-        // the durability ack, idempotent: what a write handle's synced() counts
-        sender.send(ackFrame(String(event.id), offset));
-      });
-    };
-
-    /** A cursor moved: admit it, forward it byte-identical, and drop it if it is not news. */
-    const onPresence = (bytes: Uint8Array, wire: Uint8Array): void => {
-      const verified = decodeAndVerifyPresence(wire);
-      if (verified.isErr()) return; // junk from a client is dropped, never relayed
-      if (!presence.admit(verified.value)) return; // a stale value or a loop's echo stops here
-      toClients(bytes, me);
-      fan?.publish(bytes);
-    };
-
-    const onGrant = (bytes: Uint8Array, wire: Uint8Array): void => {
-      const key = bytesToHex(wire);
-      if (grants.has(key)) return;
-      grants.set(key, wire);
-      // the received frame bytes, untouched: grants forward byte-identical, never re-encoded
-      toClients(bytes, me);
-      fan?.publish(bytes);
-    };
-
-    return {
-      receive: (bytes) => {
-        const decoded = decodeRelayFrame(bytes);
-        if (decoded.isErr()) {
-          refuse("malformed", decoded.error.message);
-          return;
-        }
-        const frame = decoded.value;
-        if (frame.kind === "join") {
-          onJoin(frame.versions, frame.peerId, frame.cursors);
-          return;
-        }
-        if (me === undefined) {
-          refuse("join-first", "the first frame on a relay socket is join", true);
-          return;
-        }
-        if (frame.kind !== "session") return; // the relay ignores control frames it did not ask for
-        if (frame.frame.kind === "event") onEvent(frame.frame.wire);
-        else if (frame.frame.kind === "grant") onGrant(bytes, frame.frame.wire);
-        else if (frame.frame.kind === "presence") onPresence(bytes, frame.frame.wire);
-        else if (frame.frame.kind === "grant-request" || frame.frame.kind === "cursors")
-          toClients(bytes, me); // peer-to-peer facts pass through byte-identical
-      },
-      drain: () => sender.drain(),
-      closed: () => {
-        if (me !== undefined && clients.get(me)?.sender === sender) clients.delete(me);
-      },
-    };
+  const state: RoomState = {
+    store,
+    epoch,
+    keepaliveMs,
+    pageSize,
+    maxBacklog,
+    blobs,
+    grants,
+    presence,
+    clients,
+    cursors,
+    toClients,
+    publish: (frame) => fan?.publish(frame),
+    offset: () => offset,
+    appended: (peer, seq) => {
+      offset += 1;
+      advance(peer, seq);
+    },
+    enqueue: (work) => void (queue = queue.then(work)),
   };
 
   return Result.ok({
-    connect,
+    connect: (socket) => createConnection(socket, state),
     offset: () => offset,
     clients: () => clients.size,
     close: () => {

@@ -20,7 +20,19 @@ import {
  * so grants and events pass through the relay byte-identical under their existing tags and a
  * future version adds tags without renumbering these.
  */
-const KIND = { join: 8, hello: 9, error: 10, ka: 11, ack: 12, page: 13, relayed: 14 } as const;
+const KIND = {
+  join: 8,
+  hello: 9,
+  error: 10,
+  ka: 11,
+  ack: 12,
+  page: 13,
+  relayed: 14,
+  blobPut: 15,
+  blobGet: 16,
+  blob: 17,
+  blobMissing: 18,
+} as const;
 
 /** The protocol this build speaks; `join` offers, `hello` picks the highest in common. */
 export const RELAY_PROTOCOL_VERSIONS: readonly number[] = [1];
@@ -52,6 +64,12 @@ export type RelayFrame =
       readonly offset: number;
     }
   | { readonly kind: "relayed"; readonly wire: Uint8Array; readonly offset: number }
+  /** Bytes offered under their own hash; the relay verifies before it stores (D18). */
+  | { readonly kind: "blob-put"; readonly hash: string; readonly bytes: Uint8Array }
+  | { readonly kind: "blob-get"; readonly hash: string }
+  | { readonly kind: "blob"; readonly hash: string; readonly bytes: Uint8Array }
+  /** Nobody here holds them — a value, and recoverable: whoever has the bytes can put them back. */
+  | { readonly kind: "blob-missing"; readonly hash: string }
   /** A tag this build does not know; ignored, never an error (D14's additive vector). */
   | { readonly kind: "unknown" };
 
@@ -89,6 +107,16 @@ export const pageFrame = (
 
 export const relayedFrame = (wire: Uint8Array, offset: number): Uint8Array =>
   encodeCbor([KIND.relayed, wire, offset]);
+
+export const blobPutFrame = (hash: string, bytes: Uint8Array): Uint8Array =>
+  encodeCbor([KIND.blobPut, hash, bytes]);
+
+export const blobGetFrame = (hash: string): Uint8Array => encodeCbor([KIND.blobGet, hash]);
+
+export const blobFrame = (hash: string, bytes: Uint8Array): Uint8Array =>
+  encodeCbor([KIND.blob, hash, bytes]);
+
+export const blobMissingFrame = (hash: string): Uint8Array => encodeCbor([KIND.blobMissing, hash]);
 
 const malformed = (message: string) => Result.err(new MalformedFrame({ message }));
 
@@ -166,6 +194,20 @@ const decodePage: ControlDecoder = (a, b, c, d) =>
     return Result.ok({ kind: "page", grants, events, more: c === 1, offset: d } as const);
   });
 
+/** `[hash, bytes]` — the two blob frames that carry content. */
+const decodeBlobBytes =
+  (kind: "blob-put" | "blob"): ControlDecoder =>
+  (a, b) =>
+    isString(a) && b instanceof Uint8Array
+      ? Result.ok({ kind, hash: a, bytes: b } as const)
+      : malformed(`${kind} is not [hash, bytes]`);
+
+/** `[hash]` — the two that name one without carrying it. */
+const decodeBlobHash =
+  (kind: "blob-get" | "blob-missing"): ControlDecoder =>
+  (a) =>
+    isString(a) ? Result.ok({ kind, hash: a } as const) : malformed(`${kind} is not [hash]`);
+
 const decodeRelayed: ControlDecoder = (a, b) =>
   a instanceof Uint8Array && isSafeNonNegative(b)
     ? Result.ok({ kind: "relayed", wire: a, offset: b } as const)
@@ -180,6 +222,10 @@ const CONTROL = new Map<number, ControlDecoder>([
   [KIND.ack, decodeAck],
   [KIND.page, decodePage],
   [KIND.relayed, decodeRelayed],
+  [KIND.blobPut, decodeBlobBytes("blob-put")],
+  [KIND.blobGet, decodeBlobHash("blob-get")],
+  [KIND.blob, decodeBlobBytes("blob")],
+  [KIND.blobMissing, decodeBlobHash("blob-missing")],
 ]);
 
 const decodeControl = (parts: readonly CborValue[]): Result<RelayFrame, MalformedFrame> => {

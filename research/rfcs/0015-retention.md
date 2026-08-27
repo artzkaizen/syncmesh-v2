@@ -147,7 +147,17 @@ every phone's floor bootstrap from it — the peer with the deepest log.
 
 ## Open questions
 
-- Blob GC: when no synced row references a hash — refcount over live rows, TTL, or explicit delete? Deletes race with offline references.
-- Blob obligation: who MUST hold a blob — the author until relay ack, the relay forever, every partition member?
-- Blob quotas: per-partition byte budgets, and what a peer does when a partition exceeds them.
+- ~~Blob GC~~ **answered (D18)**: neither refcount-to-zero nor TTL alone. The relay sweeps a
+  blob only after no visible row has referenced it for a retention window; an offline device
+  that reconnects with a stale reference gets `BlobNotFound`, a value, and any peer still
+  holding the bytes can put them back under the same hash. Refcounting to zero the instant a
+  row dies would break the offline device this engine exists for. The sweep itself is still to
+  build.
+- ~~Blob obligation~~ **answered (D18)**: the author holds it until a relay acknowledges it —
+  the only window where the bytes exist in one place and only the author can reproduce them.
+  The relay holds it while any row it can see references the hash. Every other device treats
+  what it fetched as a cache it may evict at will.
+- ~~Blob quotas~~ **answered in shape (D18)**: per-partition byte budgets refused at the put as
+  a typed value, so an app can tell someone their upload did not fit. Deferred with the sweep;
+  neither should be sized before a real workload.
 - Checkpoint trust: is `stateHash` signed, and may a joiner treat a matching hash as verification of a received snapshot?

@@ -16,6 +16,7 @@ import { decodeAndVerify, encodeCbor, encodeEventCore, signEvent } from "@syncme
 
 import type { RelayFrame } from "./frames.js";
 
+import { createBlobChannel } from "./blob-channel.js";
 import { RELAY_PROTOCOL_VERSIONS, decodeRelayFrame, joinFrame } from "./frames.js";
 
 /**
@@ -63,6 +64,8 @@ interface SessionHooks {
   readonly onHello: (keepaliveMs: number) => void;
   /** The relay's typed version refusal is permanent — no reconnect loop against it. */
   readonly onVersionRefused: () => void;
+  /** The relay answered a fetch: the bytes, or `undefined` when it holds none under that hash. */
+  readonly onBlobAnswer: (hash: string, bytes: Uint8Array | undefined) => void;
 }
 
 /** Everything one session subscribes to; the returned unsubscribes are the session's teardown. */
@@ -138,7 +141,9 @@ function wireSession(
         caughtUp = true;
         pushOutstanding();
       }
-    } else if (frame.kind === "relayed") fold([frame.wire]);
+    } else if (frame.kind === "blob") hooks.onBlobAnswer(frame.hash, frame.bytes);
+    else if (frame.kind === "blob-missing") hooks.onBlobAnswer(frame.hash, undefined);
+    else if (frame.kind === "relayed") fold([frame.wire]);
     else if (frame.kind === "error") {
       if (frame.code === "version") hooks.onVersionRefused();
       dialed.close();
@@ -164,6 +169,7 @@ export function relayTransport(options: RelayTransportOptions): Transport {
   const baseMs = options.reconnectMs ?? 500;
   const maxMs = options.maxReconnectMs ?? 30_000;
   const status = createHub<boolean>();
+  const blobs = createBlobChannel((frame) => sendSafe(frame));
 
   let ctx: TransportContext | undefined;
   let live: RelayDial | undefined;
@@ -217,6 +223,7 @@ export function relayTransport(options: RelayTransportOptions): Transport {
       onVersionRefused: () => {
         fatal = true;
       },
+      onBlobAnswer: blobs.answer,
     };
     const offs = wireSession(ctx, dialed, hooks);
     const offClose = dialed.onClose(() => {
@@ -256,6 +263,8 @@ export function relayTransport(options: RelayTransportOptions): Transport {
   return {
     name,
     sendPresence: (wire) => sendSafe(presenceFrame(wire)),
+    putBlob: blobs.put,
+    fetchBlob: blobs.fetch,
     start: (context) => {
       ctx = context;
       stopped = false;

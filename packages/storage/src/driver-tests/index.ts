@@ -2,6 +2,7 @@ import type { SuiteCase } from "@syncmesh/engine";
 
 import type { SqlDriver } from "../driver.js";
 
+import { blobCases } from "./blobs.js";
 import { captureCases, captureRuleCases } from "./capture.js";
 import { compactionCases, sqliteMigrationCases } from "./compaction.js";
 import { eventCases } from "./events.js";
@@ -26,7 +27,12 @@ export type { SuiteCase as DriverCase } from "@syncmesh/engine";
  * for (const c of storeTests(openDriver)) test(c.name, c.run);
  */
 export function storeTests(openDriver: OpenDriver): readonly SuiteCase[] {
-  return [...eventCases(openDriver), ...stateCases(openDriver), ...compactionCases(openDriver)];
+  return [
+    ...eventCases(openDriver),
+    ...stateCases(openDriver),
+    ...compactionCases(openDriver),
+    ...blobCases(openDriver),
+  ];
 }
 
 /**

@@ -4,10 +4,15 @@ import type { SqlDriver } from "@syncmesh/storage";
 import { panic } from "@syncmesh/result";
 
 import type { Fanout } from "./fanout.js";
-import type { RelayConnection, RelayRoom } from "./room.js";
+import type { RelayConnection, RelayRoom, RelayRoomOptions } from "./room.js";
 import type { RelaySocket, SendOutcome } from "./sender.js";
 
 import { openRelayRoom } from "./room.js";
+
+/** What a host passes through to each room it opens; the room's own name and store are its business. */
+type RoomTuning = Partial<
+  Pick<RelayRoomOptions, "keepaliveMs" | "pageSize" | "maxBacklog" | "fanout" | "blobs">
+>;
 
 export interface StartRelayOptions {
   /** Where the durable room logs live, one SQLite file per room. Default `.syncmesh/relay`. */
@@ -20,6 +25,8 @@ export interface StartRelayOptions {
   readonly pageSize?: number;
   readonly maxBacklog?: number;
   readonly fanout?: Fanout;
+  /** Serve blobs from the room's own database (D18). Default true; `false` for a log-only relay. */
+  readonly blobs?: boolean;
 }
 
 export interface RunningRelay {
@@ -62,7 +69,7 @@ export async function startRelay(
       "startRelay hosts the room over Bun.serve: run under Bun, or mount openRelayRoom on your own socket server",
     );
   const dataDir = options.dataDir ?? ".syncmesh/relay";
-  const roomOptions = {
+  const roomOptions: RoomTuning = {
     ...(options.keepaliveMs !== undefined && { keepaliveMs: options.keepaliveMs }),
     ...(options.pageSize !== undefined && { pageSize: options.pageSize }),
     ...(options.maxBacklog !== undefined && { maxBacklog: options.maxBacklog }),
@@ -92,6 +99,11 @@ export async function startRelay(
     });
     closers.push(stores.close);
     const driver = stores.driver ?? panic("defaultStore always carries its driver");
+    if (options.blobs !== false) {
+      const { sqlBlobStore } = await import("@syncmesh/storage");
+      const opened = await sqlBlobStore(driver);
+      if (opened.isOk()) Object.assign(roomOptions, { blobs: opened.value });
+    }
     const room = await openRelayRoom({
       ...roomOptions,
       name,

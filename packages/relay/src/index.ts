@@ -2,6 +2,10 @@ export type { RelayFrame } from "./frames.js";
 export {
   RELAY_PROTOCOL_VERSIONS,
   ackFrame,
+  blobFrame,
+  blobGetFrame,
+  blobMissingFrame,
+  blobPutFrame,
   decodeRelayFrame,
   errorFrame,
   helloFrame,
@@ -17,6 +21,8 @@ export { memoryFanout } from "./fanout.js";
 export type { RedisFanoutOptions, RedisPublisher, RedisSubscriber } from "./redis-fanout.js";
 export { redisFanout } from "./redis-fanout.js";
 export type { RelayConnection, RelayRoom, RelayRoomOptions } from "./room.js";
+export type { Client, RoomState } from "./connection.js";
+export { createConnection } from "./connection.js";
 export { openRelayRoom } from "./room.js";
 export type { RelayDial, RelayTransportOptions } from "./transport.js";
 export { relayTransport } from "./transport.js";

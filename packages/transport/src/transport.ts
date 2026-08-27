@@ -37,6 +37,13 @@ export interface Transport {
   readonly requestGrant?: (invite?: string) => void;
   /** Sends one ephemeral value to every open session; dropped, never queued, on a full link. */
   readonly sendPresence?: (wire: Uint8Array) => void;
+  /**
+   * Offers bytes under their own hash (D18). Absent is a fact about the medium, not a bug: a
+   * raw radio says so rather than pretending, and `mesh.blobs` answers `NoSuchCapability`.
+   */
+  readonly putBlob?: (hash: string, bytes: Uint8Array) => Promise<void>;
+  /** Asks for bytes by hash; `undefined` when nobody there holds them, or the deadline passed. */
+  readonly fetchBlob?: (hash: string, timeoutMs: number) => Promise<Uint8Array | undefined>;
   readonly onStatus?: (cb: (online: boolean) => void) => Unsubscribe;
 }
 

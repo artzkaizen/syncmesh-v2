@@ -21,6 +21,16 @@ export type { CaptureOptions } from "./capture.js";
 export { captureChanges, captureDdl, installCapture, tableDdl } from "./capture.js";
 export type { Projection, ProjectionOptions } from "./projection.js";
 export { tablesProjection } from "./projection.js";
+export type { BlobError, BlobHash, BlobStore } from "./blob.js";
+export {
+  BlobCorrupt,
+  BlobNotFound,
+  BlobTimeout,
+  hashOf,
+  memoryBlobStore,
+  sqlBlobStore,
+  verifyBlob,
+} from "./blob.js";
 export type { Compiled, CompileOptions } from "./read-filter.js";
 export { columnScalarKind } from "./read-filter.js";
 export type { PrincipalStatement, RlsOptions } from "./rls.js";

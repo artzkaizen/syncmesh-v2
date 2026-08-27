@@ -10,7 +10,7 @@ import type {
   Schema,
   Table,
 } from "@syncmesh/schema";
-import type { SqlDialect, SqlDriver, TxReceipt } from "@syncmesh/storage";
+import type { BlobStore, SqlDialect, SqlDriver, TxReceipt } from "@syncmesh/storage";
 import type { Transport, TransportContext } from "@syncmesh/transport";
 import type { Grant, Identity } from "@syncmesh/wire";
 
@@ -18,15 +18,18 @@ import { meshDrizzle, type MeshHandle } from "@syncmesh/drizzle";
 import { can as canOn, corrections as correctionsOf } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
+import { memoryBlobStore } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { createPresenceStore } from "@syncmesh/transport";
 import { createGrantRegistry } from "@syncmesh/wire";
 
+import type { Blobs } from "./blobs.js";
 import type { Booted, MeshOpenError } from "./boot.js";
 import type { DeliveredOptions, ReceivedOptions } from "./delivered.js";
 import type { Revision } from "./history.js";
 import type { Topics } from "./presence.js";
 
+import { createBlobs } from "./blobs.js";
 import { openMeshEngine } from "./boot.js";
 import { createDelivered, createReceived } from "./delivered.js";
 import { createMeshGrants, type MeshGrants, type MeshGrantsOptions } from "./grants.js";
@@ -67,6 +70,11 @@ export interface MeshOptions<
   readonly onGrantRequest?: TransportContext["onGrantRequest"];
   /** The peer whose events may write `global` tables — the relay's id, shipped in config like the issuer's. */
   readonly authority?: PeerId;
+  /**
+   * Where fetched bytes are cached (D18). Absent, an in-memory cache for the process; a
+   * `sqlBlobStore` over your driver keeps them across restarts.
+   */
+  readonly blobStore?: BlobStore;
   /**
    * Postgres only: install row-level security compiled from the schema's `read` rules on boot,
    * so a handle's plain `db.select()` is already the caller's view — no `read()` wrapper at the
@@ -139,6 +147,8 @@ export interface Mesh<
     readonly mine: () => readonly CorrectionRow[];
     readonly forEvent: (event: EventId) => readonly CorrectionRow[];
   };
+  /** Bytes that never enter the log: content-addressed, verified at both ends (D18). */
+  readonly blobs: Blobs;
   /** `"table.op"` against the same rules every receiver enforces. */
   readonly can: (what: `${string}.${string}`, row?: WireCells) => boolean;
   /** Resolves once a peer is known — through a cursor exchange — to hold the event (delivery, not approval). */
@@ -264,6 +274,10 @@ function assemble<
     send: (wire) => links.sendPresence(wire),
     now,
   });
+  const blobs = createBlobs({
+    store: options.blobStore ?? memoryBlobStore(),
+    transports: () => links.withBlobs(),
+  });
   const transportContext: TransportContext = {
     engine,
     identity,
@@ -285,6 +299,7 @@ function assemble<
       if (partition.isErr()) panic(`presence: ${partition.error.message}`);
       return presence.at<PC>(partition.value);
     },
+    blobs,
     corrections: {
       all: () => correctionsOf(engine),
       // an event id begins with its author's peer id, so "mine" needs no extra bookkeeping

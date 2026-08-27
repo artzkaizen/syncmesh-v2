@@ -7,6 +7,8 @@ export interface RunningTransports {
   readonly requestGrant: (invite?: string) => void;
   /** One ephemeral value to every transport; a transport without the capability ignores it. */
   readonly sendPresence: (wire: Uint8Array) => void;
+  /** The transports that can carry bytes out of band (D18); empty when no medium here can. */
+  readonly withBlobs: () => readonly Transport[];
   readonly stop: () => Promise<void>;
 }
 
@@ -29,6 +31,7 @@ export function runTransports(
     sendPresence: (wire) => {
       for (const t of transports) t.sendPresence?.(wire);
     },
+    withBlobs: () => transports.filter((t) => t.putBlob !== undefined),
     stop: async () => {
       running = false;
       await started.catch(() => undefined);
