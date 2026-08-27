@@ -1,9 +1,11 @@
 import type { RowKey, RowRecord, State, TableName } from "@syncmesh/kernel";
 
 import { sha256 } from "@noble/hashes/sha2.js";
+import { evaluate } from "@syncmesh/policy";
 import { encodeRecord } from "@syncmesh/wire";
 
 import type { FoldBatch } from "./engine.js";
+import type { Interest } from "./interest.js";
 
 /**
  * Divergence, detected cheaply and healed by the ordinary merge (RFC-0014). A digest is a **sum**
@@ -16,9 +18,20 @@ import type { FoldBatch } from "./engine.js";
 
 const MOD = 1n << 64n;
 
+/**
+ * The record with its cells in column order. `encodeRecord` preserves insertion order, which is
+ * right for a store — it round-trips what it was given — and wrong for a fingerprint: two peers
+ * holding the identical row build its cells in whatever order their events arrived, so an
+ * insertion-ordered hash would report them divergent forever. The digest sorts first.
+ */
+const canonical = (record: RowRecord): RowRecord => ({
+  ...record,
+  cells: new Map([...record.cells].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
+});
+
 /** A row's contribution: the first 8 bytes of the hash of its canonical record encoding. */
 export function rowDigest(record: RowRecord): bigint {
-  const hash = sha256(encodeRecord(record));
+  const hash = sha256(encodeRecord(canonical(record)));
   let value = 0n;
   for (let i = 0; i < 8; i += 1) value = (value << 8n) | BigInt(hash[i] ?? 0);
   return value;
@@ -33,21 +46,51 @@ const sum = (values: Iterable<bigint>): bigint => {
 /** One table's digest, and the digest of every table, as the fingerprints a peer compares. */
 export type TableDigests = ReadonlyMap<TableName, bigint>;
 
-/** Per table, the sum of its rows' digests. A table with no rows is absent, not zero-valued. */
-export function tableDigests(state: State): TableDigests {
+/**
+ * Per table, the sum of its rows' digests — over the slice an interest names, when one is given.
+ * A table with no rows in that slice is absent, not zero-valued, because an absent table and an
+ * empty one are the same fact.
+ *
+ * The scoping is what makes a comparison mean anything: two peers holding different partitions
+ * would differ on every table, and the difference would say nothing about divergence.
+ */
+export function tableDigests(state: State, interest?: Interest): TableDigests {
   const digests = new Map<TableName, bigint>();
   for (const [table, rows] of state) {
-    if (rows.size === 0) continue; // an empty table and an absent one are the same fact
-    digests.set(table, sum([...rows.values()].map(rowDigest)));
+    if (interest?.tables !== undefined && !interest.tables.includes(table)) continue;
+    const within = [...rows.values()].filter((record) => inScope(record, interest));
+    if (within.length === 0) continue;
+    digests.set(table, sum(within.map(rowDigest)));
   }
   return digests;
 }
 
+/** Whether one record falls inside an interest — the same three narrowings the wire filter uses. */
+const inScope = (record: RowRecord, interest: Interest | undefined): boolean => {
+  if (interest === undefined) return true;
+  const { partitions, where } = interest;
+  if (partitions !== undefined) {
+    const held = record.partition;
+    if (held === undefined || !partitions.includes(held)) return false;
+  }
+  if (where === undefined) return true;
+  const row = new Map([...record.cells].map(([column, cell]) => [column, cell.value]));
+  return evaluate(where, { grant: { account: "", claims: {} }, roles: [], row });
+};
+
 /** Every row's digest in one table, keyed — what narrows a divergent table to divergent rows. */
-export function rowDigests(state: State, table: TableName): ReadonlyMap<RowKey, bigint> {
+export function rowDigests(
+  state: State,
+  table: TableName,
+  interest?: Interest,
+): ReadonlyMap<RowKey, bigint> {
   const rows = state.get(table);
   if (rows === undefined) return new Map();
-  return new Map([...rows].map(([key, record]) => [key, rowDigest(record)]));
+  return new Map(
+    [...rows]
+      .filter(([, record]) => inScope(record, interest))
+      .map(([key, record]) => [key, rowDigest(record)]),
+  );
 }
 
 /** The tables whose digests differ — including one present on only one side. */
@@ -77,10 +120,13 @@ export interface RepairRow {
  * has shows as a difference, and an empty table is the same fact as an absent one.
  */
 export interface RepairApi {
-  /** A fingerprint per table — the sum of its rows' digests. */
-  readonly digest: () => TableDigests;
+  /**
+   * A fingerprint per table — the sum of its rows' digests, over the slice an interest names.
+   * Two peers must digest the same slice for a comparison to mean anything (E13, E16).
+   */
+  readonly digest: (interest?: Interest) => TableDigests;
   /** Every row's digest in one table: what narrows a divergent table to the rows that differ. */
-  readonly rowDigests: (table: TableName) => ReadonlyMap<RowKey, bigint>;
+  readonly rowDigests: (table: TableName, interest?: Interest) => ReadonlyMap<RowKey, bigint>;
   /** The records behind those keys, to hand the other side. */
   readonly rowRecords: (table: TableName, keys: readonly RowKey[]) => readonly RepairRow[];
   /**
@@ -107,8 +153,8 @@ export interface RepairDeps {
 export function createRepairPath(deps: RepairDeps): RepairApi {
   const { stateOf, mergeInto, persist, notify } = deps;
   return {
-    digest: (): TableDigests => tableDigests(stateOf()),
-    rowDigests: (table: TableName): ReadonlyMap<RowKey, bigint> => rowDigests(stateOf(), table),
+    digest: (interest) => tableDigests(stateOf(), interest),
+    rowDigests: (table, interest) => rowDigests(stateOf(), table, interest),
     rowRecords: (table: TableName, keys: readonly RowKey[]): readonly RepairRow[] => {
       const rows = stateOf().get(table);
       return keys.flatMap((key) => {

@@ -16,7 +16,7 @@ import {
 export class MalformedFrame extends TaggedError("MalformedFrame")<{ message: string }> {}
 
 /** Wire tags; the tag is also the traffic class (grants and cursors ahead of events). */
-const KIND = { grant: 0, grantRequest: 1, cursors: 2, event: 3, presence: 4 } as const;
+const KIND = { grant: 0, grantRequest: 1, cursors: 2, event: 3, presence: 4, digest: 5 } as const;
 
 export type Frame =
   | { readonly kind: "grant"; readonly wire: Uint8Array }
@@ -25,6 +25,17 @@ export type Frame =
   | { readonly kind: "event"; readonly wire: Uint8Array }
   /** The ephemeral tier (D16): signed, never stored, dropped rather than queued. */
   | { readonly kind: "presence"; readonly wire: Uint8Array }
+  /**
+   * What the sender holds, as one fingerprint per table, together with the slice it counted
+   * (E16). A receiver that holds a different slice compares nothing rather than false-alarming.
+   */
+  | {
+      readonly kind: "digest";
+      readonly scope: string;
+      /** What the sender had folded when it counted; a receiver holding otherwise concludes nothing. */
+      readonly at: Cursors;
+      readonly digests: ReadonlyMap<string, bigint>;
+    }
   /** A tag this build does not know; ignored, never an error. */
   | { readonly kind: "unknown" };
 
@@ -50,6 +61,24 @@ export const eventFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.eve
 
 export const presenceFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.presence, wire]);
 
+/**
+ * What the sender holds, and the two facts that make it comparable: the slice it counted
+ * (`interestKey`) and the events it had folded when it counted them. A receiver differing on
+ * either concludes nothing — which is what keeps a peer that is merely behind from looking
+ * divergent (E13, E16).
+ */
+export const digestFrame = (
+  scope: string,
+  at: Cursors,
+  digests: ReadonlyMap<string, bigint>,
+): Uint8Array =>
+  encodeCbor([
+    KIND.digest,
+    scope,
+    [...at].map(([peer, seq]): CborValue => [peerBytes(peer), seq]),
+    [...digests].map(([table, digest]): CborValue => [table, digest.toString(16)]),
+  ]);
+
 const malformed = (message: string) => Result.err(new MalformedFrame({ message }));
 
 const asPeer = (value: CborValue | undefined): Result<PeerId, MalformedFrame> =>
@@ -72,6 +101,7 @@ export function decodeFrame(frame: Uint8Array): Result<Frame, MalformedFrame> {
     }
     if (kind === KIND.grantRequest) return decodeRequest(payload, extra);
     if (kind === KIND.cursors) return decodeCursors(payload, extra);
+    if (kind === KIND.digest) return decodeDigest(payload, extra, outer[3]);
     return Result.ok({ kind: "unknown" } as const);
   });
 }
@@ -88,15 +118,37 @@ function decodeRequest(
   });
 }
 
-function decodeCursors(
+function decodeDigest(
   payload: CborValue | undefined,
+  at: CborValue | undefined,
   extra: CborValue | undefined,
 ): Result<Frame, MalformedFrame> {
+  if (!isString(payload)) return malformed("digest scope is not text");
+  if (!Array.isArray(extra)) return malformed("digests are not an array");
+  const cursors = decodeCursorPairs(at);
+  if (cursors.isErr()) return Result.err(cursors.error);
+  const digests = new Map<string, bigint>();
+  for (const pair of extra) {
+    if (!Array.isArray(pair) || pair.length !== 2) return malformed("digest is not a pair");
+    const [table, hex] = pair;
+    if (!isString(table) || !isString(hex)) return malformed("digest is not [table, hex]");
+    // a fingerprint that does not parse is one this build cannot compare; refusing the whole
+    // frame is right, because a partial comparison would look like agreement it never checked
+    try {
+      digests.set(table, BigInt(`0x${hex}`));
+    } catch {
+      return malformed("digest is not hexadecimal");
+    }
+  }
+  return Result.ok({ kind: "digest", scope: payload, at: cursors.value, digests } as const);
+}
+
+/** `[[peer, seq], …]` — the shape both the cursors frame and a digest's `at` position carry. */
+function decodeCursorPairs(value: CborValue | undefined): Result<Cursors, MalformedFrame> {
   return Result.gen(function* () {
-    const from = yield* asPeer(payload);
-    if (!Array.isArray(extra)) return malformed("cursors are not an array");
+    if (!Array.isArray(value)) return malformed("cursors are not an array");
     const cursors = new Map<PeerId, SeqNum>();
-    for (const pair of extra) {
+    for (const pair of value) {
       if (!Array.isArray(pair) || pair.length !== 2) return malformed("cursor is not a pair");
       const peer = yield* asPeer(pair[0]);
       if (!isSafeNonNegative(pair[1])) return malformed("cursor seq is not an integer");
@@ -105,6 +157,17 @@ function decodeCursors(
       );
       cursors.set(peer, seq);
     }
+    return Result.ok(cursors);
+  });
+}
+
+function decodeCursors(
+  payload: CborValue | undefined,
+  extra: CborValue | undefined,
+): Result<Frame, MalformedFrame> {
+  return Result.gen(function* () {
+    const from = yield* asPeer(payload);
+    const cursors = yield* decodeCursorPairs(extra);
     return Result.ok({ kind: "cursors", from, cursors } as const);
   });
 }

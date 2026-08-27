@@ -1,17 +1,19 @@
-import type { Engine, StoredEvent, Unsubscribe } from "@syncmesh/engine";
-import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
+import type { Engine, Hub, Interest, StoredEvent, Unsubscribe } from "@syncmesh/engine";
+import type { PeerId, SeqNum, SyncEvent, TableName } from "@syncmesh/kernel";
 import type { GrantRegistry, Identity } from "@syncmesh/wire";
 
-import { createHub } from "@syncmesh/engine";
+import { createHub, interestKey } from "@syncmesh/engine";
 import { TaggedError } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { decodeAndVerify, encodeCbor, encodeEventCore, signEvent } from "@syncmesh/wire";
 
+import type { Frame } from "./frame.js";
 import type { FrameLink } from "./link.js";
 
 import {
   cursorsFrame,
   decodeFrame,
+  digestFrame,
   eventFrame,
   grantFrame,
   grantRequestFrame,
@@ -43,6 +45,23 @@ export interface BridgeOptions {
   readonly gapLimit?: number;
   /** An ephemeral value arrived (D16): the store decides whether it is news. Never stored here. */
   readonly onPresence?: (wire: Uint8Array) => void;
+  /**
+   * The slice this link syncs (E13). A digest exchange compares only when both sides name the
+   * same one, so two peers holding different partitions never mistake that for divergence.
+   */
+  readonly interest?: Interest;
+  /**
+   * The far side's fingerprints disagreed with ours for these tables, over a slice we both
+   * named (E16, RFC-0014). Repair is the caller's to run — `rowDigests` narrows it to rows.
+   */
+  readonly onDivergence?: (report: Divergence) => void;
+}
+
+/** What a digest exchange found: the tables that differ, and the slice both sides counted. */
+export interface Divergence {
+  readonly peer: PeerId;
+  readonly scope: string;
+  readonly tables: readonly TableName[];
 }
 
 /** One session over one link: grants first, then cursors, then events — with the gap rule. */
@@ -61,13 +80,55 @@ export interface Bridge {
   readonly close: () => void;
 }
 
-export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridge {
-  const { engine, identity, grants, onGrantRequest, onPresence, gapLimit = 512 } = options;
-  const now = options.now ?? (() => Temporal.Now.instant());
-  const errors = createHub<BridgeError>();
-  let queue: Promise<unknown> = Promise.resolve();
-  let closed = false;
-  let sentCursors = false;
+/**
+ * The tables whose fingerprints differ. Called only when both sides named the same slice: a
+ * different scope is not a disagreement but two peers holding different rows, which says nothing
+ * about either — and skipping that comparison is the whole reason a scope travels with a digest.
+ */
+const disagreements = (
+  ours: ReadonlyMap<string, bigint>,
+  theirs: ReadonlyMap<string, bigint>,
+): readonly TableName[] => {
+  const names = new Set([...ours.keys(), ...theirs.keys()]);
+  const differing = [...names].filter((name) => ours.get(name) !== theirs.get(name)).sort();
+  // SAFETY: these are the table names both sides just exchanged, brands over those same strings
+  return differing as TableName[];
+};
+
+/** Whether two peers have folded exactly the same events — the only state in which rows may be compared. */
+const sameCoverage = (
+  ours: ReadonlyMap<PeerId, SeqNum>,
+  theirs: ReadonlyMap<PeerId, SeqNum>,
+): boolean => {
+  const authors = new Set([...ours.keys(), ...theirs.keys()]);
+  for (const author of authors) {
+    if (Number(ours.get(author) ?? 0) !== Number(theirs.get(author) ?? 0)) return false;
+  }
+  return true;
+};
+
+/** The digest map keyed by plain names, which is what the frame carries. */
+const tableNames = (digests: ReadonlyMap<TableName, bigint>): ReadonlyMap<string, bigint> =>
+  new Map([...digests].map(([table, digest]) => [String(table), digest]));
+
+/** What one link sends, and the one place a send that failed becomes a reported error. */
+interface OutboundDeps {
+  readonly link: FrameLink;
+  readonly engine: Engine;
+  readonly identity: Identity;
+  readonly interest: Interest | undefined;
+  readonly scope: string;
+  readonly errors: Hub<BridgeError>;
+}
+
+/**
+ * The sending half of a session. Kept apart from the receiving half because the two have almost
+ * nothing to say to each other: everything here turns state we already hold into bytes, and a
+ * failure to send is reported rather than thrown — a loud failure is recoverable by resync, a
+ * silent one is divergence (RFC-0005).
+ */
+function createOutbound(deps: OutboundDeps) {
+  const { link, engine, identity, interest, scope, errors } = deps;
 
   const guard = (what: string, fn: () => void): void => {
     try {
@@ -77,6 +138,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     }
   };
 
+  /** This device signs its own events; another peer's is relayed with the signature it came with. */
   const envelopeOf = (entry: StoredEvent): Uint8Array | undefined => {
     if (entry.event.peerId === identity.peerId) return signEvent(entry.event, identity).wire;
     if (entry.sig !== undefined) return encodeCbor([encodeEventCore(entry.event), entry.sig]);
@@ -86,13 +148,41 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     return undefined;
   };
 
-  const sendCursors = (): void => {
-    queue = queue.then(async () => {
+  /**
+   * What we hold, counted after the events we owed them have gone out and stamped with what we
+   * had folded when we counted — the two facts that let the far side tell divergence from a peer
+   * that is merely behind (E16).
+   */
+  const sendDigest = (): void => {
+    guard("digest", () =>
+      link.send(digestFrame(scope, engine.coverage().synced, tableNames(engine.digest(interest)))),
+    );
+  };
+
+  /** Our contiguous position, sent once whatever the caller is already doing has finished. */
+  const cursorsAfter = (queue: Promise<unknown>): Promise<void> =>
+    queue.then(async () => {
       const cursors = await engine.cursors();
       if (cursors.isOk())
         guard("cursors", () => link.send(cursorsFrame(identity.peerId, cursors.value)));
     });
-  };
+
+  return { guard, envelopeOf, sendDigest, cursorsAfter };
+}
+
+export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridge {
+  const { engine, identity, grants, onGrantRequest, onPresence, gapLimit = 512 } = options;
+  const { interest, onDivergence } = options;
+  const scope = interestKey(interest ?? {});
+  const now = options.now ?? (() => Temporal.Now.instant());
+  const errors = createHub<BridgeError>();
+  let queue: Promise<unknown> = Promise.resolve();
+  let closed = false;
+  let sentCursors = false;
+
+  const out = createOutbound({ link, engine, identity, interest, scope, errors });
+  const { guard, envelopeOf, sendDigest, cursorsAfter } = out;
+  const sendCursors = (): void => void (queue = cursorsAfter(queue));
 
   const holdback = createHoldback(engine, identity.peerId, gapLimit);
   const receiveEvent = (wire: Uint8Array): void => {
@@ -135,6 +225,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
         const wire = envelopeOf(entry);
         if (wire !== undefined) guard("event", () => link.send(eventFrame(wire)));
       }
+      sendDigest();
       if (!sentCursors || behind(theirs)) {
         sentCursors = true;
         sendCursors();
@@ -142,38 +233,38 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     });
   };
 
-  const offFrame = link.onFrame((bytes) => {
-    if (closed) return;
-    const frame = decodeFrame(bytes);
-    if (frame.isErr()) {
-      errors.emit(frame.error);
-      return;
-    }
-    switch (frame.value.kind) {
+  /** One arriving frame to the handler that owns it; an unknown kind is ignored, never an error. */
+  const dispatch = (frame: Frame): void => {
+    switch (frame.kind) {
       case "grant": {
-        const registered = grants.register(frame.value.wire);
+        const registered = grants.register(frame.wire);
         if (registered.isErr()) errors.emit(registered.error);
         return;
       }
       case "grant-request": {
-        const request = { peerId: frame.value.peerId };
-        if (frame.value.invite !== undefined)
-          Object.assign(request, { invite: frame.value.invite });
+        const request = { peerId: frame.peerId };
+        if (frame.invite !== undefined) Object.assign(request, { invite: frame.invite });
         onGrantRequest?.(request);
         return;
       }
       case "cursors":
-        onCursors(frame.value.from, frame.value.cursors);
-        return;
+        return onCursors(frame.from, frame.cursors);
       case "event":
-        receiveEvent(frame.value.wire);
-        return;
+        return receiveEvent(frame.wire);
       case "presence":
-        onPresence?.(frame.value.wire);
-        return;
+        return onPresence?.(frame.wire);
+      case "digest":
+        return onDigest(frame.scope, frame.at, frame.digests);
       case "unknown":
         return;
     }
+  };
+
+  const offFrame = link.onFrame((bytes) => {
+    if (closed) return;
+    const frame = decodeFrame(bytes);
+    if (frame.isErr()) errors.emit(frame.error);
+    else dispatch(frame.value);
   });
 
   /** A newly learned grant propagates live — including the answer to a grant-request. */
@@ -187,6 +278,33 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
   const offFolds = engine.onFoldBatch((batch) => {
     if (batch.source === "remote") sendCursors();
   });
+
+  /**
+   * A digest travels behind the events it summarises, so the comparison must wait for them to
+   * fold — otherwise every catch-up reports divergence, having compared what we hold against
+   * what the sender holds *after* the events still sitting in our queue. Queueing it here is
+   * what makes it the last frame of the exchange rather than merely the last one sent.
+   */
+  /**
+   * Their fingerprints against ours, but only when the comparison can mean something. Two
+   * conditions, and both are the point of the feature: the same **slice**, or we are counting
+   * different rows on purpose; and the same **events folded**, or one of us is simply behind
+   * and every catch-up would look like divergence. Queued, so the events that arrived with the
+   * digest are folded before it is answered — which is what makes it the last frame of the
+   * exchange rather than merely the last one sent.
+   */
+  const onDigest = (
+    theirScope: string,
+    at: ReadonlyMap<PeerId, SeqNum>,
+    theirs: ReadonlyMap<string, bigint>,
+  ): void => {
+    if (onDivergence === undefined || theirScope !== scope) return;
+    queue = queue.then(() => {
+      if (!sameCoverage(engine.coverage().synced, at)) return;
+      const tables = disagreements(tableNames(engine.digest(interest)), theirs);
+      if (tables.length > 0) onDivergence({ peer: identity.peerId, scope, tables });
+    });
+  };
 
   const resync = (): void => {
     sentCursors = true;

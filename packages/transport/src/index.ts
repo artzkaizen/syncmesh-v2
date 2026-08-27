@@ -5,6 +5,7 @@ export {
   MalformedFrame,
   cursorsFrame,
   decodeFrame,
+  digestFrame,
   eventFrame,
   grantFrame,
   grantRequestFrame,
@@ -18,7 +19,7 @@ export type {
 } from "./presence.js";
 export { createPresenceStore } from "./presence.js";
 export { createHoldback } from "./holdback.js";
-export type { Bridge, BridgeError, BridgeOptions } from "./bridge.js";
+export type { Bridge, BridgeError, BridgeOptions, Divergence } from "./bridge.js";
 export { SendFailed, Unsendable, bridgeFramedLink } from "./bridge.js";
 export type { FrameTransportOptions, Transport, TransportContext } from "./transport.js";
 export { createFrameTransport, linkTransport } from "./transport.js";
