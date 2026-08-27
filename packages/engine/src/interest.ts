@@ -24,6 +24,30 @@ export interface Interest {
 /** An interest with nothing in it: the sender filters nothing, which is the old behaviour exactly. */
 export const EVERYTHING: Interest = {};
 
+/**
+ * An interest as wire text. It is already JSON — two lists and the policy AST — so it travels as
+ * JSON rather than earning a codec of its own, which also means a build that never reads the
+ * position simply serves everything (D14's additive rule).
+ */
+export const interestText = (interest: Interest | undefined): string =>
+  interest === undefined ? "" : JSON.stringify(interest);
+
+/**
+ * The interest some text carried, or `undefined` for text that named none. Junk is `undefined`
+ * too, deliberately: an unreadable request must fall back to "everything the policy allows",
+ * never to "nothing", which would silently starve a device rather than showing a bug.
+ */
+export const interestFrom = (text: string | undefined): Interest | undefined => {
+  if (text === undefined || text === "") return undefined;
+  try {
+    // SAFETY: parsed at the wire boundary and read only through Interest's own optional fields;
+    // a predicate that is not a PolicyNode simply matches nothing when evaluated
+    return JSON.parse(text) as Interest;
+  } catch {
+    return undefined;
+  }
+};
+
 /** No grant is consulted here: an interest asks about rows, never about who the caller is. */
 const ROWLESS = { grant: { account: "", claims: {} }, roles: [] } as const;
 

@@ -69,7 +69,15 @@ export { installSnapshot, partitionsIn, snapshotOf } from "./snapshot.js";
 export type { ChunkDeps, FeedApi, FeedState, FeedTracker } from "./feed.js";
 export { chunkSince, createFeedPath, receiveChunk, trackFeeds } from "./feed.js";
 export type { Interest } from "./interest.js";
-export { EVERYTHING, interestKey, matchesInterest, predicateColumns, rowsIn } from "./interest.js";
+export {
+  EVERYTHING,
+  interestFrom,
+  interestKey,
+  interestText,
+  matchesInterest,
+  predicateColumns,
+  rowsIn,
+} from "./interest.js";
 export type { Correction, CorrectionRow } from "./authority.js";
 export { RESERVED_TABLE_NAMES, correct, corrections, setPolicy } from "./authority.js";
 export type { RepairApi, RepairRow, TableDigests } from "./digest.js";

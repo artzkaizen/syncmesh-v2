@@ -5,7 +5,7 @@ import { divergentRows, interestKey } from "@syncmesh/engine";
 import { parsePartitionKey, readRow, type ColumnName, type Procedure } from "@syncmesh/kernel";
 import { describe, expect, test } from "bun:test";
 
-import type { Divergence } from "../bridge.js";
+import type { Divergence } from "../divergence.js";
 
 import { bridgeFramedLink } from "../bridge.js";
 import { loopbackPair } from "../link.js";
