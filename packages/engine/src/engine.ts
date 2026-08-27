@@ -21,6 +21,7 @@ import { Result } from "@syncmesh/result";
 import type { Boot } from "./boot.js";
 import type { Ack, CompactError, CompactOptions, Compaction } from "./compaction.js";
 import type { RepairApi } from "./digest.js";
+import type { FeedApi } from "./feed.js";
 import type { Interest } from "./interest.js";
 import type { SnapshotApi } from "./snapshot.js";
 import type { StateStore } from "./state-store.js";
@@ -41,6 +42,7 @@ import {
   type MutateError,
   type RevertError,
 } from "./errors.js";
+import { createFeedPath, trackFeeds } from "./feed.js";
 import { eventsWanted } from "./interest.js";
 import { createHub, type Unsubscribe } from "./listeners.js";
 import { createSnapshotPath } from "./snapshot.js";
@@ -78,7 +80,7 @@ export interface Quarantined {
   readonly reason: ValidationError;
 }
 
-export interface Engine extends RepairApi, SnapshotApi {
+export interface Engine extends FeedApi, RepairApi, SnapshotApi {
   readonly peerId: PeerId;
   /** Records, stamps, numbers, appends, folds, then hands the event to `onOutbound` — a write is real once appended. */
   readonly mutate: (
@@ -186,12 +188,15 @@ export function createEngine(options: EngineOptions): Engine {
     partition: (table, key) => getRecord(state, table, key)?.partition,
   } satisfies StateLookup;
   const acks = new Map<PeerId, Ack>();
+  // declared before `fold`, which advances an author's chain as its events land — boot replay included
+  const feeds = trackFeeds();
 
   const fold = (events: readonly SyncEvent[], source: FoldSource): FoldBatch => {
     const [batch, duration] = timed((): FoldBatch => {
       const writeKeys = writeKeysOf(events);
       for (const event of events) {
         coverage.note(event);
+        feeds.note(event);
         const stamp = stampOf(event);
         for (const change of event.changes)
           state = applyChange(state, change, stamp, merge, event.partition);
@@ -267,11 +272,14 @@ export function createEngine(options: EngineOptions): Engine {
 
   const revert = createRevert({ undo, undoDepth, mutate });
 
+  const chains = createFeedPath({ store, feeds, receiveBatch });
+
   return {
     peerId,
     mutate,
     receiveBatch,
     receive: (entry) => receiveBatch([entry]),
+    ...chains,
     state: () => state,
     rowsIn: (table, partition) => readRowsIn(state, table, partition),
     revert,
