@@ -18,6 +18,17 @@ export {
   encodePresenceCore,
   signPresence,
 } from "./presence-codec.js";
+export type { FeedCertificate, FeedChunk, FeedHead } from "./feed.js";
+export {
+  BrokenFeed,
+  GENESIS,
+  advanceFeed,
+  certificateHolds,
+  certifyFeed,
+  chunkFrom,
+  feedHeadOf,
+  verifyChunk,
+} from "./feed.js";
 export type { Grant, GrantError, GrantRequest } from "./grant.js";
 export {
   BadGrantSignature,
