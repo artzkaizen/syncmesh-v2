@@ -1,4 +1,4 @@
-import type { Engine, EventStore, Principal, StateStore } from "@syncmesh/engine";
+import type { CorrectionRow, Engine, EventStore, Principal, StateStore } from "@syncmesh/engine";
 import type { EventId, PartitionKey, PeerId, Row as WireCells } from "@syncmesh/kernel";
 import type { InvalidPartitionKey } from "@syncmesh/kernel";
 import type {
@@ -15,7 +15,7 @@ import type { Transport, TransportContext } from "@syncmesh/transport";
 import type { Grant, Identity } from "@syncmesh/wire";
 
 import { meshDrizzle, type MeshHandle } from "@syncmesh/drizzle";
-import { can as canOn } from "@syncmesh/engine";
+import { can as canOn, corrections as correctionsOf } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
@@ -128,6 +128,17 @@ export interface Mesh<
    * Values are signed, conflated at every hop, and never touch the log.
    */
   readonly presence: (instance: string) => Topics<PC>;
+  /**
+   * What an authority overruled, and why (RFC-0014). An authority cannot reject a write — a
+   * device that was offline would keep its value forever — so it overwrites with a reason, and
+   * this is where a UI reads that reason to show "changed by the office, because …".
+   */
+  readonly corrections: {
+    readonly all: () => readonly CorrectionRow[];
+    /** Only corrections to writes this device authored — what to surface to the person at it. */
+    readonly mine: () => readonly CorrectionRow[];
+    readonly forEvent: (event: EventId) => readonly CorrectionRow[];
+  };
   /** `"table.op"` against the same rules every receiver enforces. */
   readonly can: (what: `${string}.${string}`, row?: WireCells) => boolean;
   /** Resolves once a peer is known — through a cursor exchange — to hold the event (delivery, not approval). */
@@ -273,6 +284,13 @@ function assemble<
       const partition = parsePartitionKey(instance);
       if (partition.isErr()) panic(`presence: ${partition.error.message}`);
       return presence.at<PC>(partition.value);
+    },
+    corrections: {
+      all: () => correctionsOf(engine),
+      // an event id begins with its author's peer id, so "mine" needs no extra bookkeeping
+      mine: () =>
+        correctionsOf(engine).filter((c) => c.event.startsWith(`${String(identity.peerId)}-`)),
+      forEvent: (event) => correctionsOf(engine).filter((c) => c.event === String(event)),
     },
     can: (what, row) => canOn(schema, grantFor(identity.peerId), what, row),
     delivered: createDelivered(engine, identity.peerId),

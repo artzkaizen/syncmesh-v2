@@ -1,18 +1,21 @@
-import type { PartitionKey } from "@syncmesh/kernel";
+import type { ColumnName, PartitionKey } from "@syncmesh/kernel";
 import type { Change, PeerId, Row, RowKey, SyncEvent, TableName } from "@syncmesh/kernel";
 import type { Grant } from "@syncmesh/wire";
 
 import {
   evaluate,
+  parsePolicyDoc,
   resolveAllow,
   type AllowBlock,
   type Operation,
   type PolicyContext,
+  type PolicyDoc,
   type PolicyGrant,
 } from "@syncmesh/policy";
 import { Result } from "@syncmesh/result";
 import { checkRow, type Table } from "@syncmesh/schema";
 
+import { RESERVED_TABLE_NAMES } from "./authority.js";
 import {
   GrantDeviceMismatch,
   LocalOnly,
@@ -26,6 +29,11 @@ import {
   type ValidationError,
 } from "./errors.js";
 
+/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- the reserved policy table's own name and column */
+const POLICY_TABLE = "_policy" as TableName;
+const RULES_COLUMN = "rules" as ColumnName;
+/* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
+
 /** What validation needs from a schema, structurally, so any concrete `Schema<P, R, C>` fits. */
 export interface ValidatorSchema {
   readonly entries: readonly {
@@ -35,6 +43,8 @@ export interface ValidatorSchema {
     readonly allow?: AllowBlock;
   }[];
   rolesFor(kind: string): readonly string[];
+  /** The manifest's own tables (`_policy`, `_corrections`); absent, they cannot be written at all. */
+  readonly reserved?: readonly Table[];
 }
 
 /** The event before it has a sequence number: everything validation reads. */
@@ -70,6 +80,7 @@ const RESERVED = new Set(["global", "user", "local"]);
 export function createValidator(options: ValidatorOptions): Validator {
   const { schema, grantFor, isAuthority = false, authority } = options;
   const entries = new Map(schema.entries.map((e) => [String(e.table.name), e]));
+  const reserved = new Map((schema.reserved ?? []).map((t) => [String(t.name), t]));
 
   const validate: Validator["validate"] = (event, before) => {
     const grant = grantFor === null ? undefined : grantFor(event.peerId);
@@ -90,6 +101,11 @@ export function createValidator(options: ValidatorOptions): Validator {
     }
     for (const change of event.changes) {
       const table = String(change.table);
+      if (RESERVED_TABLE_NAMES.has(table)) {
+        const verdict = checkReserved(table, change, event, reserved, authority);
+        if (verdict.isErr()) return verdict;
+        continue;
+      }
       const entry = entries.get(table);
       if (entry === undefined)
         return Result.err(new UnknownTable({ table, message: "not in the schema" }));
@@ -103,7 +119,8 @@ export function createValidator(options: ValidatorOptions): Validator {
       }
       const columns = checkColumns(entry.table, change);
       if (columns.isErr()) return columns;
-      const policy = checkPolicy(entry, change, grant, before.row, isAuthority, schema);
+      const rules = syncedRules(entry, event, before.row) ?? entry.allow;
+      const policy = checkPolicy(entry, rules, change, grant, before.row, isAuthority, schema);
       if (policy.isErr()) return policy;
     }
     return Result.ok(undefined);
@@ -180,18 +197,68 @@ function checkColumns(table: Table, change: Change): Result<void, ValidationErro
     : Result.ok(undefined);
 }
 
+/**
+ * The manifest's own tables carry the rules and the corrections, so a device that could write
+ * them could grant itself anything or forge the authority's verdict. Only the configured
+ * authority peer may — checked by authorship, so a forged row is refused at its own author and
+ * again at every peer that receives it. Their columns are still checked; their partition is
+ * whatever instance they govern, which is the point of them.
+ */
+function checkReserved(
+  table: string,
+  change: Change,
+  event: ProbeEvent,
+  reserved: ReadonlyMap<string, Table>,
+  authority: PeerId | undefined,
+): Result<void, ValidationError> {
+  const definition = reserved.get(table);
+  if (definition === undefined)
+    return Result.err(new UnknownTable({ table, message: "not in the schema" }));
+  if (authority === undefined || event.peerId !== authority) {
+    return Result.err(
+      new ReadOnlyPartition({ table, message: `${table} is written by the authority` }),
+    );
+  }
+  return checkColumns(definition, change);
+}
+
+/** One parsed policy doc per `_policy` record, so a hot path re-parses nothing. */
+const parsedDocs = new WeakMap<object, PolicyDoc>();
+
+/**
+ * The rules for this table as the `_policy` row for its instance states them, when one has
+ * synced — permissions deploy by sync, so a change binds every device that holds the instance
+ * without an app release. Absent or unparsable, the bundled manifest stands.
+ */
+function syncedRules(entry: Entry, event: ProbeEvent, row: RowLookup): AllowBlock | undefined {
+  if (event.partition === undefined) return undefined;
+  // SAFETY: the `_policy` row for an instance is keyed by that instance's own key
+  const record = row(POLICY_TABLE, String(event.partition) as RowKey);
+  if (record === undefined) return undefined;
+  const rules = record.get(RULES_COLUMN);
+  // a json column's cell is the doc itself; anything not an object was never a doc
+  if (rules === null || rules === undefined || rules instanceof Uint8Array) return undefined;
+  if (Array.isArray(rules) || !(rules instanceof Object)) return undefined;
+  const held = parsedDocs.get(rules);
+  const doc = held ?? parsePolicyDoc(rules).unwrapOr(undefined);
+  if (doc === undefined) return undefined;
+  if (held === undefined) parsedDocs.set(rules, doc);
+  return doc[String(entry.table.name)];
+}
+
 function checkPolicy(
   entry: Entry,
+  rules: AllowBlock | undefined,
   change: Change,
   grant: Grant | undefined,
   before: RowLookup,
   isAuthority: boolean,
   schema: ValidatorSchema,
 ): Result<void, ValidationError> {
-  if (grant === undefined || entry.allow === undefined) return Result.ok(undefined);
+  if (grant === undefined || rules === undefined) return Result.ok(undefined);
   if (entry.visibility === "authority" && !isAuthority) return Result.ok(undefined);
   const op: Operation = change.kind;
-  const rule = resolveAllow(entry.allow, op);
+  const rule = resolveAllow(rules, op);
   const row = before(change.table, change.key);
   const patch =
     change.kind === "insert" ? change.row : change.kind === "update" ? change.patch : undefined;
