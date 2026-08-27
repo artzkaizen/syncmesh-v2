@@ -1,11 +1,12 @@
 import type { RowKey, RowRecord, State, TableName } from "@syncmesh/kernel";
 
 import { sha256 } from "@noble/hashes/sha2.js";
-import { evaluate } from "@syncmesh/policy";
 import { encodeRecord } from "@syncmesh/wire";
 
 import type { FoldBatch } from "./engine.js";
 import type { Interest } from "./interest.js";
+
+import { rowsIn } from "./interest.js";
 
 /**
  * Divergence, detected cheaply and healed by the ordinary merge (RFC-0014). A digest is a **sum**
@@ -58,25 +59,12 @@ export function tableDigests(state: State, interest?: Interest): TableDigests {
   const digests = new Map<TableName, bigint>();
   for (const [table, rows] of state) {
     if (interest?.tables !== undefined && !interest.tables.includes(table)) continue;
-    const within = [...rows.values()].filter((record) => inScope(record, interest));
+    const within = [...rows.values()].filter((record) => rowsIn(record, interest));
     if (within.length === 0) continue;
     digests.set(table, sum(within.map(rowDigest)));
   }
   return digests;
 }
-
-/** Whether one record falls inside an interest — the same three narrowings the wire filter uses. */
-const inScope = (record: RowRecord, interest: Interest | undefined): boolean => {
-  if (interest === undefined) return true;
-  const { partitions, where } = interest;
-  if (partitions !== undefined) {
-    const held = record.partition;
-    if (held === undefined || !partitions.includes(held)) return false;
-  }
-  if (where === undefined) return true;
-  const row = new Map([...record.cells].map(([column, cell]) => [column, cell.value]));
-  return evaluate(where, { grant: { account: "", claims: {} }, roles: [], row });
-};
 
 /** Every row's digest in one table, keyed — what narrows a divergent table to divergent rows. */
 export function rowDigests(
@@ -88,7 +76,7 @@ export function rowDigests(
   if (rows === undefined) return new Map();
   return new Map(
     [...rows]
-      .filter(([, record]) => inScope(record, interest))
+      .filter(([, record]) => rowsIn(record, interest))
       .map(([key, record]) => [key, rowDigest(record)]),
   );
 }

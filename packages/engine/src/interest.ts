@@ -1,4 +1,4 @@
-import type { Change, PartitionKey, Row, SyncEvent, TableName } from "@syncmesh/kernel";
+import type { Change, PartitionKey, Row, RowRecord, SyncEvent, TableName } from "@syncmesh/kernel";
 import type { PolicyNode } from "@syncmesh/policy";
 import type { Result } from "@syncmesh/result";
 
@@ -28,6 +28,23 @@ export const EVERYTHING: Interest = {};
 const ROWLESS = { grant: { account: "", claims: {} }, roles: [] } as const;
 
 const satisfies = (where: PolicyNode, row: Row): boolean => evaluate(where, { ...ROWLESS, row });
+
+/**
+ * Whether one stored row falls inside an interest — the same narrowings the wire filter applies
+ * to events, asked of state instead. Shared so a digest, a snapshot and the sender all agree on
+ * what "the same slice" means; three answers here would be three kinds of false alarm.
+ */
+export function rowsIn(record: RowRecord, interest: Interest | undefined): boolean {
+  if (interest === undefined) return true;
+  const { partitions, where } = interest;
+  if (partitions !== undefined) {
+    const held = record.partition;
+    if (held === undefined || !partitions.includes(held)) return false;
+  }
+  if (where === undefined) return true;
+  const row: Row = new Map([...record.cells].map(([column, cell]) => [column, cell.value]));
+  return evaluate(where, { ...ROWLESS, row });
+}
 
 /** Every column a predicate names, so a change that touches one can be recognised as relevant. */
 export function predicateColumns(node: PolicyNode, into = new Set<string>()): ReadonlySet<string> {

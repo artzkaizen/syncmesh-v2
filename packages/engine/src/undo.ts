@@ -2,8 +2,12 @@ import type { Change, ColumnName, State } from "@syncmesh/kernel";
 import type { Procedure, SyncEvent } from "@syncmesh/kernel";
 
 import { readRow } from "@syncmesh/kernel";
+import { Result } from "@syncmesh/result";
 
+import type { Engine, MutateOptions } from "./engine.js";
 import type { Tx } from "./tx.js";
+
+import { CannotRevert } from "./errors.js";
 
 export interface Undo {
   readonly event: SyncEvent;
@@ -53,3 +57,40 @@ export const replay = (tx: Tx, changes: readonly Change[]): void => {
     else tx.delete(c.table, c.key);
   }
 };
+
+/** What `revert` needs: the ring of revertable writes, its depth, and the way to write one. */
+export interface RevertDeps {
+  readonly undo: Undo[];
+  readonly undoDepth: number;
+  readonly mutate: Engine["mutate"];
+}
+
+/**
+ * Undo as an ordinary write (RFC-0014): the compensating event is authored, signed and folded
+ * like any other, in the partition and locality of the write it answers — a peer that receives
+ * it needs no idea that it was an undo. A write outside the last `undoDepth` is simply not
+ * revertable, which is a value rather than a throw.
+ */
+export function createRevert(deps: RevertDeps): Engine["revert"] {
+  const { undo, undoDepth, mutate } = deps;
+  return (id) => {
+    const index = undo.findIndex((u) => u.event.id === id);
+    const entry = undo[index];
+    if (entry === undefined) {
+      return Promise.resolve(
+        Result.err(
+          new CannotRevert({
+            eventId: id,
+            message: `not among the last ${undoDepth} writes of this engine`,
+          }),
+        ),
+      );
+    }
+    undo.splice(index, 1);
+    const { partition, local } = entry.event;
+    const options: MutateOptions = {};
+    if (partition !== undefined) Object.assign(options, { partition });
+    if (local === true) Object.assign(options, { local });
+    return mutate(REVERT, (tx) => replay(tx, entry.inverse), options);
+  };
+}

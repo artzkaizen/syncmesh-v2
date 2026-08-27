@@ -22,6 +22,7 @@ import type { Boot } from "./boot.js";
 import type { Ack, CompactError, CompactOptions, Compaction } from "./compaction.js";
 import type { RepairApi } from "./digest.js";
 import type { Interest } from "./interest.js";
+import type { SnapshotApi } from "./snapshot.js";
 import type { StateStore } from "./state-store.js";
 import type { EventStore, StoredEvent } from "./store.js";
 import type { StoreFailure } from "./store.js";
@@ -34,7 +35,6 @@ import { compactLog } from "./compaction.js";
 import { trackCoverage } from "./coverage.js";
 import { createRepairPath } from "./digest.js";
 import {
-  CannotRevert,
   ListenerFailure,
   type ValidationError,
   type EngineError,
@@ -43,9 +43,10 @@ import {
 } from "./errors.js";
 import { eventsWanted } from "./interest.js";
 import { createHub, type Unsubscribe } from "./listeners.js";
+import { createSnapshotPath } from "./snapshot.js";
 import { rowsFor, writeKeysOf } from "./state-store.js";
 import { timed, type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
-import { replay, REVERT, type Undo } from "./undo.js";
+import { createRevert, type Undo } from "./undo.js";
 import { createWritePath } from "./writes.js";
 
 export interface MutateOptions {
@@ -53,8 +54,8 @@ export interface MutateOptions {
   readonly local?: boolean;
 }
 
-/** Where a batch came from; `repair` is RFC-0014's merge of another peer's records, carrying no cursors. */
-export type FoldSource = "local" | "remote" | "boot" | "repair";
+/** Where a batch came from; `repair` carries no cursors (RFC-0014), `snapshot` adopts them last (RFC-0019). */
+export type FoldSource = "local" | "remote" | "boot" | "repair" | "snapshot";
 
 /** One notification per fold, however many events it covered. `writeKeys` is exact: live queries (E10) trust it. */
 export interface FoldBatch {
@@ -77,7 +78,7 @@ export interface Quarantined {
   readonly reason: ValidationError;
 }
 
-export interface Engine extends RepairApi {
+export interface Engine extends RepairApi, SnapshotApi {
   readonly peerId: PeerId;
   /** Records, stamps, numbers, appends, folds, then hands the event to `onOutbound` — a write is real once appended. */
   readonly mutate: (
@@ -229,6 +230,17 @@ export function createEngine(options: EngineOptions): Engine {
     if (batch.eventCount > 0) folds.emit(batch);
   };
 
+  const snapshotDeps = {
+    stateOf: () => state,
+    setState: (next: State) => void (state = next),
+    coverageOf: coverage.current,
+    adopt: coverage.adopt,
+    persist: (batch: FoldBatch) => persist(batch, stateStore),
+    notify,
+  };
+  if (merge !== undefined) Object.assign(snapshotDeps, { merge });
+  const snapshots = createSnapshotPath(snapshotDeps);
+
   const repair = createRepairPath({
     stateOf: () => state,
     mergeInto: (table, key, record) => void (state = mergeRecord(state, table, key, record, merge)),
@@ -253,26 +265,7 @@ export function createEngine(options: EngineOptions): Engine {
     admitEntries: (entries) => admit(entries, { peerId, store, validate, before, quarantine }),
   });
 
-  const revert: Engine["revert"] = (id) => {
-    const index = undo.findIndex((u) => u.event.id === id);
-    const entry = undo[index];
-    if (entry === undefined) {
-      return Promise.resolve(
-        Result.err(
-          new CannotRevert({
-            eventId: id,
-            message: `not among the last ${undoDepth} writes of this engine`,
-          }),
-        ),
-      );
-    }
-    undo.splice(index, 1);
-    const { partition, local } = entry.event;
-    const options: MutateOptions = {};
-    if (partition !== undefined) Object.assign(options, { partition });
-    if (local === true) Object.assign(options, { local });
-    return mutate(REVERT, (tx) => replay(tx, entry.inverse), options);
-  };
+  const revert = createRevert({ undo, undoDepth, mutate });
 
   return {
     peerId,
@@ -292,6 +285,7 @@ export function createEngine(options: EngineOptions): Engine {
     acks: () => new Map([...acks].map(([peer, ack]) => [peer, ack.cursors])),
     onAcknowledge: ackHub.subscribe,
     compact: (options) => compactLog({ store, stateStore, acks }, options),
+    ...snapshots,
     eventsSince: (theirs, interest) => eventsWanted(store, theirs, interest),
     ...repair,
     onFoldBatch: folds.subscribe,
