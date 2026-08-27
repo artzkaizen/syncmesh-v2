@@ -15,7 +15,7 @@ import type { Transport, TransportContext } from "@syncmesh/transport";
 import type { Grant, Identity } from "@syncmesh/wire";
 
 import { meshDrizzle, type MeshHandle } from "@syncmesh/drizzle";
-import { can as canOn, corrections as correctionsOf } from "@syncmesh/engine";
+import { corrections as correctionsOf } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
 import { memoryBlobStore } from "@syncmesh/storage";
@@ -31,6 +31,7 @@ import type { Topics } from "./presence.js";
 
 import { createBlobs } from "./blobs.js";
 import { openMeshEngine } from "./boot.js";
+import { createCan } from "./can.js";
 import { createDelivered, createReceived } from "./delivered.js";
 import { createMeshGrants, type MeshGrants, type MeshGrantsOptions } from "./grants.js";
 import { rowHistory } from "./history.js";
@@ -149,8 +150,16 @@ export interface Mesh<
   };
   /** Bytes that never enter the log: content-addressed, verified at both ends (D18). */
   readonly blobs: Blobs;
-  /** `"table.op"` against the same rules every receiver enforces. */
-  readonly can: (what: `${string}.${string}`, row?: WireCells) => boolean;
+  /**
+   * `"table.op"` against the same rules every receiver enforces — the instance's synced `_policy`
+   * doc when one has arrived, the bundled manifest when none has.
+   *
+   * Name the instance whenever the row has one. Rules deploy per instance (RFC-0008), so without
+   * one there is nothing to look a doc up by: `user` tables answer for the account's own instance,
+   * everything else falls back to the bundle, which is right until an authority publishes a doc
+   * and stale from the moment it does.
+   */
+  readonly can: (what: `${string}.${string}`, row?: WireCells, instance?: string) => boolean;
   /** Resolves once a peer is known — through a cursor exchange — to hold the event (delivery, not approval). */
   readonly delivered: (options?: DeliveredOptions) => Promise<void>;
   /** Resolves once this device has folded the event — the inbound mirror of `delivered`. */
@@ -313,7 +322,12 @@ function assemble<
         correctionsOf(engine).filter((c) => c.event.startsWith(`${String(identity.peerId)}-`)),
       forEvent: (event) => correctionsOf(engine).filter((c) => c.event === String(event)),
     },
-    can: (what, row) => canOn(schema, grantFor(identity.peerId), what, row),
+    can: createCan({
+      schema,
+      engine,
+      grant: () => grantFor(identity.peerId),
+      kindOf: (table) => entryOf.get(table)?.partition,
+    }),
     delivered: createDelivered(engine, identity.peerId),
     received: createReceived(engine),
     revert: (id) => engine.revert(id),

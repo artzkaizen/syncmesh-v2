@@ -85,13 +85,22 @@ export function createWriter(deps: WriterDeps): Write {
     row: (table, key) => readRow(engine.state(), table, key),
     partition: (table, key) => getRecord(engine.state(), table, key)?.partition,
   };
-  /** The actor's verdict on one change — the same AST the device's own validator runs, for another principal. */
-  const actorDenies = (change: Change): PolicyDenied | undefined => {
+  /**
+   * The actor's verdict on one change — the same AST the device's own validator runs, for another
+   * principal, read from the same place: the instance's synced `_policy` doc when the transaction
+   * names an instance, the bundled manifest when it does not.
+   */
+  const actorDenies = (
+    change: Change,
+    partition: PartitionKey | undefined,
+  ): PolicyDenied | undefined => {
     if (actor === undefined || schema === undefined) return undefined;
     const row = before.row(change.table, change.key);
     const patch =
       change.kind === "insert" ? change.row : change.kind === "update" ? change.patch : undefined;
-    if (can(schema, actor, `${String(change.table)}.${change.kind}`, row, patch)) return undefined;
+    const source = partition === undefined ? undefined : { partition, rows: before.row };
+    if (can(schema, actor, `${String(change.table)}.${change.kind}`, row, patch, source))
+      return undefined;
     return new PolicyDenied({
       table: String(change.table),
       key: String(change.key),
@@ -118,7 +127,9 @@ export function createWriter(deps: WriterDeps): Write {
       const captureOptions = {
         check: (captured: readonly Change[]) => {
           if (captured.length === 0) return Result.ok(undefined);
-          const denied = captured.map(actorDenies).find((d) => d !== undefined);
+          const denied = captured
+            .map((change) => actorDenies(change, options.partition))
+            .find((d) => d !== undefined);
           if (denied !== undefined) return Result.err(denied);
           return validate.validate(
             { peerId: engine.peerId, changes: captured, ...mutateOptionsFor(options, captured) },
