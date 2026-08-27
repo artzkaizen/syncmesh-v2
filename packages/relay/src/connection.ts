@@ -6,7 +6,6 @@ import type { PresenceStore } from "@syncmesh/transport";
 import { matchesInterest } from "@syncmesh/engine";
 import { cursorsFrame, presenceFrame } from "@syncmesh/transport";
 import {
-  bytesToHex,
   decodeAndVerify,
   decodeAndVerifyPresence,
   encodeCbor,
@@ -14,6 +13,7 @@ import {
 } from "@syncmesh/wire";
 
 import type { RelayFrame } from "./frames.js";
+import type { GrantCache } from "./grant-cache.js";
 import type { RelaySocket, Sender } from "./sender.js";
 
 import {
@@ -55,7 +55,8 @@ export interface RoomState {
   readonly maxBacklog: number;
   /** Where this room's bytes live (D18); absent, it serves none and says so. */
   readonly blobs: BlobStore | undefined;
-  readonly grants: Map<string, Uint8Array>;
+  /** One grant per device, the room's newest mint for each; a joiner gets these first. */
+  readonly grants: GrantCache;
   readonly presence: PresenceStore;
   readonly clients: Map<PeerId, Client>;
   readonly cursors: Map<PeerId, SeqNum>;
@@ -128,7 +129,7 @@ export function createConnection(socket: RelaySocket, room: RoomState): RelayCon
         asked === undefined
           ? entries.value
           : entries.value.filter((entry) => matchesInterest(asked, entry.event));
-      const grantWires = [...room.grants.values()];
+      const grantWires = room.grants.all();
       for (const page of paged(wanted, grantWires, room.pageSize, room.offset())) sender.send(page);
     });
   };
@@ -204,9 +205,7 @@ export function createConnection(socket: RelaySocket, room: RoomState): RelayCon
   };
 
   const onGrant = (bytes: Uint8Array, wire: Uint8Array): void => {
-    const key = bytesToHex(wire);
-    if (room.grants.has(key)) return;
-    room.grants.set(key, wire);
+    if (!room.grants.admit(wire)) return;
     // the received frame bytes, untouched: grants forward byte-identical, never re-encoded
     room.toClients(bytes, me);
     room.publish(bytes);

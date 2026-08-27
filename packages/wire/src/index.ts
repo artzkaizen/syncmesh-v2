@@ -30,13 +30,14 @@ export {
   feedHeadOf,
   verifyChunk,
 } from "./feed.js";
-export type { Grant, GrantError, GrantRequest } from "./grant.js";
+export type { Grant, GrantError, GrantOrigin, GrantRequest } from "./grant.js";
 export {
   BadGrantSignature,
   GrantExpired,
   MalformedGrant,
   encodeGrant,
   issueGrant,
+  readGrantOrigin,
   verifyGrant,
 } from "./grant.js";
 export type { GrantRegistry, GrantRegistryOptions } from "./grant-registry.js";

@@ -1,6 +1,7 @@
 import type { PeerId } from "@syncmesh/kernel";
 
 import { createMemoryEventStore } from "@syncmesh/engine";
+import { Temporal } from "@syncmesh/temporal";
 import { cursorsFrame, eventFrame, grantFrame, presenceFrame } from "@syncmesh/transport";
 import { signPresence } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -11,7 +12,7 @@ import type { RelaySocket, SendOutcome } from "../sender.js";
 import { memoryFanout } from "../fanout.js";
 import { decodeRelayFrame, joinFrame } from "../frames.js";
 import { openRelayRoom } from "../room.js";
-import { ACME, entryOf, mintFor, peer, tick, write } from "./fixtures.js";
+import { ACME, T0, entryOf, mintFor, peer, tick, write } from "./fixtures.js";
 
 /** A socket the test scripts: outcomes on demand, everything sent kept for inspection. */
 const fakeSocket = () => {
@@ -172,6 +173,90 @@ describe("ingest", () => {
     room.connect(late.socket).receive(join(peer(120, "acct_c").identity.peerId));
     await tick();
     expect(late.ofKind("page")[0]?.grants).toHaveLength(1);
+    room.close();
+  });
+});
+
+/**
+ * Keyed by device, newest mint wins (D08). Keyed by bytes the room kept every grant a device was
+ * ever given and replayed the lot to each joiner — receivers still resolved it, so what this
+ * costs is bandwidth that only grows, not correctness.
+ */
+describe("the room's grant cache", () => {
+  const later = Temporal.Instant.fromEpochMilliseconds(T0.epochMilliseconds + 60_000);
+
+  /** A room with one client already joined, and a socket to watch what it is told. */
+  const roomWithClient = async () => {
+    const a = peer(40, "acct_a");
+    const room = await open();
+    const sa = fakeSocket();
+    const ca = room.connect(sa.socket);
+    ca.receive(join(a.identity.peerId));
+    const watcher = fakeSocket();
+    room.connect(watcher.socket).receive(join(peer(80, "acct_b").identity.peerId));
+    await tick();
+    watcher.sent.length = 0;
+    return { a, room, ca, watcher };
+  };
+
+  /** What a fresh joiner is handed: the grants on its first catch-up page. */
+  const grantsForAJoiner = async (room: Awaited<ReturnType<typeof open>>, n: number) => {
+    const late = fakeSocket();
+    room.connect(late.socket).receive(join(peer(n, "acct_late").identity.peerId));
+    await tick();
+    return late.ofKind("page")[0]?.grants ?? [];
+  };
+
+  test("a re-issued grant supersedes the older one: one wire per device, the newest", async () => {
+    const { a, room, ca, watcher } = await roomWithClient();
+    const broad = mintFor(a.identity, "acct_a");
+    const narrow = mintFor(a.identity, "acct_a", { now: later, partitions: [ACME] });
+    ca.receive(grantFrame(broad));
+    ca.receive(grantFrame(narrow));
+    await tick();
+
+    expect(watcher.sent).toEqual([grantFrame(broad), grantFrame(narrow)]);
+    expect(await grantsForAJoiner(room, 120)).toEqual([narrow]);
+    room.close();
+  });
+
+  test("an older grant arriving late is not cached and stops at the relay", async () => {
+    const { a, room, ca, watcher } = await roomWithClient();
+    const broad = mintFor(a.identity, "acct_a");
+    const narrow = mintFor(a.identity, "acct_a", { now: later, partitions: [ACME] });
+    ca.receive(grantFrame(narrow));
+    ca.receive(grantFrame(broad)); // a replay, or a slower path's copy
+    ca.receive(grantFrame(narrow)); // and the echo of what it already holds
+    await tick();
+
+    expect(watcher.sent).toEqual([grantFrame(narrow)]);
+    expect(await grantsForAJoiner(room, 120)).toEqual([narrow]);
+    room.close();
+  });
+
+  test("grants for different devices both survive", async () => {
+    const { a, room, ca } = await roomWithClient();
+    const b = peer(160, "acct_b");
+    const mine = mintFor(a.identity, "acct_a");
+    const theirs = mintFor(b.identity, "acct_b");
+    ca.receive(grantFrame(mine));
+    ca.receive(grantFrame(theirs));
+    await tick();
+
+    const held = await grantsForAJoiner(room, 120);
+    expect(held).toHaveLength(2);
+    expect(held).toEqual(expect.arrayContaining([mine, theirs]));
+    room.close();
+  });
+
+  test("a grant whose core will not decode is still forwarded, and never cached", async () => {
+    const { room, ca, watcher } = await roomWithClient();
+    const junk = Uint8Array.of(1, 2, 3, 4);
+    ca.receive(grantFrame(junk));
+    await tick();
+
+    expect(watcher.sent).toEqual([grantFrame(junk)]); // the relay does not judge grants
+    expect(await grantsForAJoiner(room, 120)).toEqual([]);
     room.close();
   });
 });

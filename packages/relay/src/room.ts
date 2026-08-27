@@ -11,6 +11,7 @@ import type { RelaySocket } from "./sender.js";
 
 import { createConnection } from "./connection.js";
 import { kaFrame } from "./frames.js";
+import { createGrantCache } from "./grant-cache.js";
 
 export type { RelayConnection } from "./connection.js";
 
@@ -62,7 +63,8 @@ export async function openRelayRoom(
   for (const { event } of boot.value) advance(event.peerId, event.seqNum);
   let offset = boot.value.length;
 
-  const grants = new Map<string, Uint8Array>();
+  /** One grant per device, newest mint wins, so a revocation retires what it replaces. */
+  const grants = createGrantCache();
   /**
    * The ephemeral tier at the middle hop (D16): last value per topic, instance and peer, so a
    * joiner learns who is here without any history and a slow client is never sent a backlog.

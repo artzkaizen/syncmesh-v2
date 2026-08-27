@@ -8,6 +8,7 @@ import {
   readRow,
   type CellValue,
   type ColumnName,
+  type PartitionKey,
   type Procedure,
   type RowKey,
   type TableName,
@@ -49,14 +50,24 @@ const CREATE = "notes.create" as Procedure;
 const key = (k: string) => k as RowKey;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 
-export const mintFor = (device: Identity, account: string) =>
+/** Overrides for a re-mint: a later `now` is what makes one grant supersede another. */
+interface MintOptions {
+  readonly now?: Temporal.Instant;
+  readonly partitions?: readonly PartitionKey[];
+}
+
+export const mintFor = (
+  device: Identity,
+  account: string,
+  { now = T0, partitions = [ACME, GLOBEX] }: MintOptions = {},
+) =>
   issueGrant(ISSUER, {
     account,
     device: device.peerId,
     role: "member",
-    partitions: [ACME, GLOBEX],
+    partitions,
     validFor: Temporal.Duration.from({ days: 1 }),
-    now: T0,
+    now,
   });
 
 /** One granted peer: engine with a real validator, registry seeded with its own grant. */

@@ -23,6 +23,8 @@ export { redisFanout } from "./redis-fanout.js";
 export type { RelayConnection, RelayRoom, RelayRoomOptions } from "./room.js";
 export type { Client, RoomState } from "./connection.js";
 export { createConnection } from "./connection.js";
+export type { GrantCache } from "./grant-cache.js";
+export { createGrantCache } from "./grant-cache.js";
 export { openRelayRoom } from "./room.js";
 export type { RelayDial, RelayTransportOptions } from "./transport.js";
 export { relayTransport } from "./transport.js";

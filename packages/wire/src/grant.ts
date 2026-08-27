@@ -89,13 +89,7 @@ export function verifyGrant(
   now: Temporal.Instant,
 ): Result<Grant, GrantError> {
   return Result.gen(function* () {
-    const outer = yield* decodeCbor(wire);
-    if (!Array.isArray(outer) || outer.length !== 2)
-      return Result.err(new MalformedGrant({ message: "expected [core, sig]" }));
-    const [core, sig] = outer;
-    if (!(core instanceof Uint8Array) || !(sig instanceof Uint8Array)) {
-      return Result.err(new MalformedGrant({ message: "core and sig must be byte strings" }));
-    }
+    const { core, sig } = yield* splitGrant(wire);
     if (!verify(core, sig, hexToBytes(issuer).unwrap())) {
       return Result.err(
         new BadGrantSignature({
@@ -117,6 +111,58 @@ export function verifyGrant(
 }
 
 const malformed = (message: string) => Result.err(new MalformedGrant({ message }));
+
+/** The `[core, sig]` envelope, split but unjudged — the one shape both readers below start from. */
+const splitGrant = (
+  wire: Uint8Array,
+): Result<
+  { readonly core: Uint8Array; readonly sig: Uint8Array },
+  MalformedCbor | MalformedGrant
+> =>
+  Result.gen(function* () {
+    const outer = yield* decodeCbor(wire);
+    if (!Array.isArray(outer) || outer.length !== 2) return malformed("expected [core, sig]");
+    const [core, sig] = outer;
+    if (!(core instanceof Uint8Array) || !(sig instanceof Uint8Array))
+      return malformed("core and sig must be byte strings");
+    return Result.ok({ core, sig });
+  });
+
+/** Which device a grant is for and when it was minted — enough to order two of them. */
+export interface GrantOrigin {
+  readonly device: PeerId;
+  readonly issuedAt: Temporal.Instant;
+}
+
+/**
+ * Reads a grant's device and mint time *without* checking its signature, for a hop that routes
+ * grants but holds no issuer key — the relay (D09/D14), which keys its per-room cache by device
+ * so a re-issued, narrower grant supersedes the broad one it replaces instead of circulating
+ * beside it forever. Safe there precisely because no right follows from what it reads: every
+ * receiver puts the same bytes through `GrantRegistry.register`, which does verify, so a forged
+ * core buys a liar nothing but the eviction of its own cache entry. Anything that decides what a
+ * device may do must call `verifyGrant` instead.
+ */
+export function readGrantOrigin(
+  wire: Uint8Array,
+): Result<GrantOrigin, MalformedCbor | MalformedGrant> {
+  return Result.gen(function* () {
+    const core = yield* splitGrant(wire).map((split) => split.core);
+    const value = yield* decodeCbor(core);
+    if (!(value instanceof Map)) return malformed("core is not a map");
+    const device = value.get(KEY.device);
+    const issuedAt = value.get(KEY.issuedAt);
+    if (!(device instanceof Uint8Array)) return malformed("device is not bytes");
+    if (!isMs(issuedAt)) return malformed("issuedAt is not epoch ms");
+    const peer = yield* parsePeerId(bytesToHex(device)).mapError(
+      (e) => new MalformedGrant({ message: e.message }),
+    );
+    return Result.ok({
+      device: peer,
+      issuedAt: Temporal.Instant.fromEpochMilliseconds(issuedAt),
+    });
+  });
+}
 
 function decodeGrantValue(value: CborValue): Result<Grant, MalformedGrant> {
   if (!(value instanceof Map)) return malformed("core is not a map");
