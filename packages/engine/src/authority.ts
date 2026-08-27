@@ -7,8 +7,11 @@ import type {
   SyncEvent,
   TableName,
 } from "@syncmesh/kernel";
+import type { PeerId } from "@syncmesh/kernel";
 import type { PolicyDoc } from "@syncmesh/policy";
 import type { Result } from "@syncmesh/result";
+
+import { Temporal } from "@syncmesh/temporal";
 
 import type { Engine, MutateOptions } from "./engine.js";
 import type { MutateError } from "./errors.js";
@@ -24,14 +27,20 @@ import type { Tx } from "./tx.js";
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- the reserved tables' own names and keys, fixed by this module */
 const POLICY = "_policy" as TableName;
 const CORRECTIONS = "_corrections" as TableName;
+const REVOCATIONS = "_revocations" as TableName;
 const SET_POLICY = "_policy.set" as Procedure;
 const CORRECT = "_corrections.write" as Procedure;
+const REVOKE = "_revocations.write" as Procedure;
 const column = (name: string) => name as never;
 const rowKey = (key: string) => key as RowKey;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 
 /** Names the reserved tables so a validator can hold them to the authority-only rule. */
-export const RESERVED_TABLE_NAMES: ReadonlySet<string> = new Set([POLICY, CORRECTIONS]);
+export const RESERVED_TABLE_NAMES: ReadonlySet<string> = new Set([
+  POLICY,
+  CORRECTIONS,
+  REVOCATIONS,
+]);
 
 /**
  * Publishes the rules for one instance as data, so a permission change deploys by sync rather
@@ -114,6 +123,82 @@ export function correct(
   );
 }
 
+/** The key a revocation is filed under: the instance it concerns, and the device it names. */
+export const revocationKey = (partition: PartitionKey, device: PeerId): RowKey =>
+  rowKey(`${String(partition)}:${String(device)}`);
+
+/** What one revocation records: whose powers were withdrawn, from where, when, and why. */
+export interface Revocation {
+  readonly device: PeerId;
+  readonly partition: PartitionKey;
+  /** Why, in the authority's words. Shown to a person, so write it for one. */
+  readonly reason: string;
+  /** From when; defaults to now. A grant issued after this instant is unaffected. */
+  readonly at?: Temporal.Instant;
+}
+
+/**
+ * Withdraws a device's powers in one instance, as a signed row every peer folds.
+ *
+ * The registry's local `revoke` cannot do this. A peer that was offline when a device was
+ * removed would go on honouring the grant it holds, with nothing ever contradicting it — the
+ * same defect a rejection has, and the same fix: say it in the log, in the instance it concerns,
+ * so it travels by ordinary anti-entropy to exactly the devices that need to hear it.
+ *
+ * **A revocation is an instant, not a tombstone.** It withdraws the grants issued up to that
+ * moment and says nothing about later ones, so re-issuing readmits a device with no second verb
+ * to call and no state to unwind — the same newest-wins rule the registry already applies to
+ * grants, expressed once more in the log.
+ *
+ * ```ts
+ * await revokeDevice(engine, { device: lost, partition: ACME, reason: "reported stolen" })
+ * ```
+ */
+export function revokeDevice(
+  engine: Engine,
+  revocation: Revocation,
+): Promise<Result<SyncEvent, MutateError>> {
+  const { device, partition, reason } = revocation;
+  const at = revocation.at ?? Temporal.Now.instant();
+  const key = revocationKey(partition, device);
+  const cells = new Map<never, CellValue>([
+    [column("id"), String(key)],
+    [column("at"), at.epochMilliseconds],
+    [column("reason"), reason],
+  ]);
+  return engine.mutate(REVOKE, (tx: Tx) => tx.insert(REVOCATIONS, key, cells), {
+    partition,
+  } satisfies MutateOptions);
+}
+
+/** A revocation as a reader sees it. */
+export interface RevocationRow {
+  readonly device: string;
+  readonly partition: string;
+  readonly at: Temporal.Instant;
+  readonly reason: string;
+}
+
+/** Every revocation this device holds for the instances it syncs, oldest first. */
+export function revocations(engine: Engine): readonly RevocationRow[] {
+  const rows = engine.state().get(REVOCATIONS);
+  if (rows === undefined) return [];
+  return [...rows]
+    .filter(([, record]) => record.deleteStamp === undefined)
+    .map(([key, record]) => {
+      const at = record.cells.get(column("at"))?.value;
+      const filed = String(key);
+      const split = filed.lastIndexOf(":");
+      return {
+        partition: filed.slice(0, split),
+        device: filed.slice(split + 1),
+        at: Temporal.Instant.fromEpochMilliseconds(moment(at)),
+        reason: text(record.cells.get(column("reason"))?.value),
+      };
+    })
+    .sort((a, b) => Temporal.Instant.compare(a.at, b.at));
+}
+
 /** A correction as a reader sees it. */
 export interface CorrectionRow {
   readonly event: string;
@@ -130,8 +215,12 @@ export interface CorrectionRow {
  */
 const text = (value: CellValue | undefined): string => (isText(value) ? value : "");
 
+/** A reserved integer column's cell, on the same terms; an absent instant reads as the epoch. */
+export const moment = (value: CellValue | undefined): number => (isWhole(value) ? value : 0);
+
 /* oxlint-disable anti-slop/no-runtime-typeof -- the one narrowing of a stored cell back to its column's kind */
 const isText = (value: CellValue | undefined): value is string => typeof value === "string";
+const isWhole = (value: CellValue | undefined): value is number => typeof value === "number";
 /* oxlint-enable anti-slop/no-runtime-typeof */
 
 /** Every correction this device holds, oldest key first; `forEvent` narrows to one overruled write. */

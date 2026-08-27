@@ -63,6 +63,7 @@ export type {
   ValidatorSchema,
 } from "./validate.js";
 export { createValidator, policyContext } from "./validate.js";
+export type { PolicySource } from "./can.js";
 export { can } from "./can.js";
 export type { Installed, Snapshot, SnapshotOptions, SnapshotRow } from "./snapshot.js";
 export { installSnapshot, partitionsIn, snapshotOf } from "./snapshot.js";
@@ -78,8 +79,16 @@ export {
   predicateColumns,
   rowsIn,
 } from "./interest.js";
-export type { Correction, CorrectionRow } from "./authority.js";
-export { RESERVED_TABLE_NAMES, correct, corrections, setPolicy } from "./authority.js";
+export type { Correction, CorrectionRow, Revocation, RevocationRow } from "./authority.js";
+export {
+  RESERVED_TABLE_NAMES,
+  correct,
+  corrections,
+  revocationKey,
+  revocations,
+  revokeDevice,
+  setPolicy,
+} from "./authority.js";
 export type { RepairApi, RepairRow, TableDigests } from "./digest.js";
 export { divergentRows, divergentTables, rowDigest, rowDigests, tableDigests } from "./digest.js";
 export type { SuiteCase } from "./suite.js";

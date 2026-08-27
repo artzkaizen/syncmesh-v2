@@ -50,4 +50,15 @@ export const correctionsTable = reservedTable("_corrections", {
   detail: t.json().nullable(),
 });
 
-export const reservedTables = [policyTable, correctionsTable] as const;
+/**
+ * A device's powers withdrawn, as one signed row in the instance it concerns (RFC-0016). Keyed
+ * by `instance:device`, because a device removed from one org keeps whatever it holds elsewhere.
+ */
+export const revocationsTable = reservedTable("_revocations", {
+  id: t.text().primaryKey(),
+  /** Epoch milliseconds. A grant issued after this instant is unaffected — re-issuing readmits. */
+  at: t.integer(),
+  reason: t.text(),
+});
+
+export const reservedTables = [policyTable, correctionsTable, revocationsTable] as const;

@@ -37,6 +37,11 @@ export class GrantDeviceMismatch extends TaggedError("GrantDeviceMismatch")<{
   device: PeerId;
   message: string;
 }> {}
+export class GrantRevoked extends TaggedError("GrantRevoked")<{
+  peer: PeerId;
+  partition: string;
+  message: string;
+}> {}
 export class UnknownTable extends TaggedError("UnknownTable")<{ table: string; message: string }> {}
 export class PartitionNotGranted extends TaggedError("PartitionNotGranted")<{
   table: string;
@@ -66,10 +71,11 @@ export class PolicyDenied extends TaggedError("PolicyDenied")<{
   message: string;
 }> {}
 
-/** Why an event is refused, in ladder order: grant → device → partition → schema → policy. */
+/** Why an event is refused, in ladder order: grant → device → revocation → partition → schema → policy. */
 export type ValidationError =
   | NoGrant
   | GrantDeviceMismatch
+  | GrantRevoked
   | UnknownTable
   | PartitionNotGranted
   | WrongPartition

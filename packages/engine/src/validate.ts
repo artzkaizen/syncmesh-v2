@@ -1,25 +1,22 @@
-import type { ColumnName, PartitionKey } from "@syncmesh/kernel";
-import type { Change, PeerId, Row, RowKey, SyncEvent, TableName } from "@syncmesh/kernel";
+import type { PartitionKey } from "@syncmesh/kernel";
+import type { Change, Hlc, PeerId, Row, RowKey, SyncEvent, TableName } from "@syncmesh/kernel";
 import type { Grant } from "@syncmesh/wire";
 
 import {
   evaluate,
-  parsePolicyDoc,
   resolveAllow,
   type AllowBlock,
   type Operation,
   type PolicyContext,
-  type PolicyDoc,
   type PolicyGrant,
 } from "@syncmesh/policy";
 import { Result } from "@syncmesh/result";
 import { checkRow, type Table } from "@syncmesh/schema";
 
+import { checkAuthor } from "./author.js";
 import { RESERVED_TABLE_NAMES } from "./authority.js";
 import {
-  GrantDeviceMismatch,
   LocalOnly,
-  NoGrant,
   PartitionNotGranted,
   PolicyDenied,
   ReadOnlyPartition,
@@ -28,11 +25,7 @@ import {
   WrongPartition,
   type ValidationError,
 } from "./errors.js";
-
-/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- the reserved policy table's own name and column */
-const POLICY_TABLE = "_policy" as TableName;
-const RULES_COLUMN = "rules" as ColumnName;
-/* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
+import { syncedRules } from "./rules.js";
 
 /** What validation needs from a schema, structurally, so any concrete `Schema<P, R, C>` fits. */
 export interface ValidatorSchema {
@@ -47,8 +40,14 @@ export interface ValidatorSchema {
   readonly reserved?: readonly Table[];
 }
 
-/** The event before it has a sequence number: everything validation reads. */
-export type ProbeEvent = Pick<SyncEvent, "peerId" | "partition" | "changes" | "local">;
+/**
+ * The event before it has a sequence number: everything validation reads. A probe carries no
+ * `hlc` because it has not been stamped yet — which reads as "now", the only honest answer for
+ * a write that has not happened.
+ */
+export type ProbeEvent = Pick<SyncEvent, "peerId" | "partition" | "changes" | "local"> & {
+  readonly hlc?: Hlc;
+};
 
 /** The row a change applies to, as the device holds it; `undefined` when absent. */
 export type RowLookup = (table: TableName, key: RowKey) => Row | undefined;
@@ -83,22 +82,9 @@ export function createValidator(options: ValidatorOptions): Validator {
   const reserved = new Map((schema.reserved ?? []).map((t) => [String(t.name), t]));
 
   const validate: Validator["validate"] = (event, before) => {
-    const grant = grantFor === null ? undefined : grantFor(event.peerId);
-    if (grantFor !== null) {
-      if (grant === undefined)
-        return Result.err(
-          new NoGrant({ peer: event.peerId, message: "no grant held for this author" }),
-        );
-      if (grant.device !== event.peerId) {
-        return Result.err(
-          new GrantDeviceMismatch({
-            peer: event.peerId,
-            device: grant.device,
-            message: "the grant names another device",
-          }),
-        );
-      }
-    }
+    const author = checkAuthor(event, grantFor, before.row);
+    if (author.isErr()) return author;
+    const grant = author.value;
     for (const change of event.changes) {
       const table = String(change.table);
       if (RESERVED_TABLE_NAMES.has(table)) {
@@ -119,7 +105,7 @@ export function createValidator(options: ValidatorOptions): Validator {
       }
       const columns = checkColumns(entry.table, change);
       if (columns.isErr()) return columns;
-      const rules = syncedRules(entry, event, before.row) ?? entry.allow;
+      const rules = syncedRules(entry.table.name, event.partition, before.row) ?? entry.allow;
       const policy = checkPolicy(entry, rules, change, grant, before.row, isAuthority, schema);
       if (policy.isErr()) return policy;
     }
@@ -220,30 +206,6 @@ function checkReserved(
     );
   }
   return checkColumns(definition, change);
-}
-
-/** One parsed policy doc per `_policy` record, so a hot path re-parses nothing. */
-const parsedDocs = new WeakMap<object, PolicyDoc>();
-
-/**
- * The rules for this table as the `_policy` row for its instance states them, when one has
- * synced — permissions deploy by sync, so a change binds every device that holds the instance
- * without an app release. Absent or unparsable, the bundled manifest stands.
- */
-function syncedRules(entry: Entry, event: ProbeEvent, row: RowLookup): AllowBlock | undefined {
-  if (event.partition === undefined) return undefined;
-  // SAFETY: the `_policy` row for an instance is keyed by that instance's own key
-  const record = row(POLICY_TABLE, String(event.partition) as RowKey);
-  if (record === undefined) return undefined;
-  const rules = record.get(RULES_COLUMN);
-  // a json column's cell is the doc itself; anything not an object was never a doc
-  if (rules === null || rules === undefined || rules instanceof Uint8Array) return undefined;
-  if (Array.isArray(rules) || !(rules instanceof Object)) return undefined;
-  const held = parsedDocs.get(rules);
-  const doc = held ?? parsePolicyDoc(rules).unwrapOr(undefined);
-  if (doc === undefined) return undefined;
-  if (held === undefined) parsedDocs.set(rules, doc);
-  return doc[String(entry.table.name)];
 }
 
 function checkPolicy(

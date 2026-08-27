@@ -44,7 +44,13 @@ export type { AllowFn, Combinators } from "./bind.js";
 export { combinators } from "./bind.js";
 export { defineSchema } from "./manifest.js";
 export type { PresenceBlock, PresenceEntry, PresenceMap, PresenceTopic } from "./manifest.js";
-export { correctionsTable, policyTable, reservedTable, reservedTables } from "./reserved.js";
+export {
+  correctionsTable,
+  policyTable,
+  reservedTable,
+  reservedTables,
+  revocationsTable,
+} from "./reserved.js";
 export type {
   ColumnsFromDrizzle,
   DrizzleColumnLike,

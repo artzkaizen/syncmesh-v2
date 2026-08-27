@@ -65,7 +65,11 @@ describe("defineSchema", () => {
   });
 
   test("reserved tables are installed outside the app namespace; no partitions key is fine", () => {
-    expect(schema.reserved.map((r) => String(r.name))).toEqual(["_policy", "_corrections"]);
+    expect(schema.reserved.map((r) => String(r.name))).toEqual([
+      "_policy",
+      "_corrections",
+      "_revocations",
+    ]);
     const minimal = defineSchema({
       tables: { notes: { columns: { id: id() }, partition: "user" } },
     });
