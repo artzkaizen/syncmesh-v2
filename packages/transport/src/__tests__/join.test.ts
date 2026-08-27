@@ -179,6 +179,28 @@ describe("the join exchange", () => {
     link.close();
   });
 
+  test("two interests converge once they meet: widening asks again rather than assuming", async () => {
+    const holder = peer(40, "acct_x");
+    const joiner = peer(80, "acct_y");
+    (await write(holder, "n1", "acme")).unwrap();
+    (await write(holder, "g1", "globex", GLOBEX)).unwrap();
+
+    const link = connect(holder, joiner);
+    link.request({ partitions: [ACME] });
+    await link.settle();
+    expect(joiner.engine.state().get(NOTES)?.size).toBe(1);
+
+    // the coverage it adopted says it has both events, which is true of the *events* and not of
+    // the rows it kept — so widening is a fresh request, never an assumption that it is up to date
+    expect(Number(joiner.engine.coverage().synced.get(holder.identity.peerId))).toBe(2);
+    link.request();
+    await link.settle();
+
+    expect(joiner.engine.state().get(NOTES)?.size).toBe(2);
+    expect(joiner.engine.digest().get(NOTES)).toBe(holder.engine.digest().get(NOTES));
+    link.close();
+  });
+
   test("an empty snapshot is a completed join, not a stalled one", async () => {
     const holder = peer(40, "acct_x");
     const joiner = peer(80, "acct_y");
