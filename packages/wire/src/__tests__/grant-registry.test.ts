@@ -89,3 +89,25 @@ describe("GrantRegistry", () => {
     expect(grants.grantFor(IDENTITY_B.peerId)).toBeUndefined();
   });
 });
+
+describe("all", () => {
+  test("every grant held, expired ones included — what a renewal loop needs to see", () => {
+    const { grants, set } = registry();
+    grants.register(issued()).unwrap();
+    expect(grants.all()).toHaveLength(1);
+
+    // an hour on it has lapsed: `grantFor` reads it as absent, and `all` still shows it — a
+    // grant that expired while its device was dark is the one most worth renewing
+    set(T0.add({ hours: 2 }));
+    expect(grants.grantFor(IDENTITY_B.peerId)).toBeUndefined();
+    expect(grants.all().map((g) => g.device)).toEqual([IDENTITY_B.peerId]);
+  });
+
+  test("one entry per device, newest issue: it follows the map, not the wires seen", () => {
+    const { grants } = registry();
+    grants.register(issued()).unwrap();
+    grants.register(issued({ now: T0.add({ minutes: 5 }) })).unwrap();
+    expect(grants.all()).toHaveLength(1);
+    expect(grants.all()[0]?.issuedAt).toEqual(T0.add({ minutes: 5 }));
+  });
+});

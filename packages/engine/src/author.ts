@@ -1,4 +1,4 @@
-import type { ColumnName, TableName } from "@syncmesh/kernel";
+import type { ColumnName, PeerId, TableName } from "@syncmesh/kernel";
 import type { Grant } from "@syncmesh/wire";
 
 import { Result } from "@syncmesh/result";
@@ -7,7 +7,8 @@ import type { ValidationError } from "./errors.js";
 import type { ProbeEvent, RowLookup, ValidatorOptions } from "./validate.js";
 
 import { moment, revocationKey } from "./authority.js";
-import { GrantDeviceMismatch, GrantRevoked, NoGrant } from "./errors.js";
+import { GrantDeviceMismatch, GrantRevoked, GrantStale, NoGrant } from "./errors.js";
+import { graceMillis } from "./rules.js";
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- the reserved revocation table's own name and column */
 const REVOCATIONS_TABLE = "_revocations" as TableName;
@@ -15,14 +16,17 @@ const AT_COLUMN = "at" as ColumnName;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 
 /**
- * Who is writing, and whether they may still write at all: a grant held, naming this device, and
- * not withdrawn since it was issued. The first three rungs of the ladder, together because they
- * are one question — `null` is ungranted mode, where nobody is asked.
+ * Who is writing, and whether they may still write at all: a grant held, naming this device, not
+ * withdrawn since it was issued, and recent enough for the instance being written to. The first
+ * four rungs of the ladder, together because they are one question — `null` is ungranted mode,
+ * where nobody is asked.
  */
 export function checkAuthor(
   event: ProbeEvent,
   grantFor: ValidatorOptions["grantFor"],
   row: RowLookup,
+  now: ValidatorOptions["now"],
+  authority: PeerId | undefined,
 ): Result<Grant | undefined, ValidationError> {
   if (grantFor === null) return Result.ok(undefined);
   const grant = grantFor(event.peerId);
@@ -40,7 +44,51 @@ export function checkAuthor(
     );
   }
   const revoked = checkRevoked(event, grant, row);
-  return revoked.isErr() ? revoked : Result.ok(grant);
+  if (revoked.isErr()) return revoked;
+  // the authority is exempt from the window it publishes. It is the peer that writes
+  // `_revocations` and `_policy`, so a grace wider than its own remaining validity would lock it
+  // out of the instance it governs — unable to revoke a stolen device, and unable to relax the
+  // window that is stopping it. Revocation still binds it: that one is a fact about a device,
+  // and an authority is not exempt from facts
+  if (event.peerId === authority) return Result.ok(grant);
+  const stale = checkStale(event, grant, row, now);
+  return stale.isErr() ? stale : Result.ok(grant);
+}
+
+/**
+ * Whether the instance being written to still trusted a grant this old *when the event was
+ * written* (RFC-0016). The window itself is `graceMillis`, which owns the reasoning for it.
+ *
+ * **Against the event's own stamp**, for the reason `checkRevoked` gives below: read against the
+ * receiving peer's clock instead, the verdict would depend on when a peer happened to validate,
+ * so the author would keep a write that every peer receiving it after the boundary quarantined,
+ * and the two would never agree again. That is the one failure this feature exists to cause —
+ * a device goes dark and syncs its backlog late — so judging by arrival time would lose exactly
+ * the legitimate work it is supposed to bound. A stamp is the author's own word, which is the
+ * same residual honesty the revocation rung already accepts.
+ *
+ * Without a clock there is no check at all — the same shape as `grantFor: null` meaning ungranted
+ * mode. A validator that cannot say when now is must not start refusing what it admitted before.
+ */
+function checkStale(
+  event: ProbeEvent,
+  grant: Grant,
+  row: RowLookup,
+  now: ValidatorOptions["now"],
+): Result<void, ValidationError> {
+  if (now === undefined) return Result.ok(undefined);
+  const grace = graceMillis(event.partition, row);
+  if (grace === undefined) return Result.ok(undefined);
+  // a probe has no stamp, so it is happening now, which is the latest this event can have been written
+  const at = event.hlc?.[0].epochMilliseconds ?? now().epochMilliseconds;
+  if (at + grace < grant.expiresAt.epochMilliseconds) return Result.ok(undefined);
+  return Result.err(
+    new GrantStale({
+      peer: event.peerId,
+      expiresAt: grant.expiresAt.toString(),
+      message: `this grant is too old for ${String(event.partition)}: renew it`,
+    }),
+  );
 }
 
 /**

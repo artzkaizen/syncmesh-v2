@@ -17,7 +17,7 @@ export type {
   TxReceipt,
 } from "./mesh.js";
 export { createMesh } from "./mesh.js";
-export type { IssueRequest, MeshGrants } from "./grants.js";
-export { createMeshGrants } from "./grants.js";
+export type { GrantsRestored, IssueRequest, MeshGrants, StandingOf } from "./grants.js";
+export { DeviceRevoked, NoGrantHeld, createMeshGrants, rememberGrants } from "./grants.js";
 export type { RunningTransports } from "./transports.js";
 export { runTransports } from "./transports.js";

@@ -47,31 +47,40 @@ export const RESERVED_TABLE_NAMES: ReadonlySet<string> = new Set([
  * than by app release. The row lives in the instance it governs, which is what makes it travel
  * to exactly the devices it binds, and every validator prefers it over the bundled manifest.
  *
+ * `grace` narrows how long a cached grant is trusted **in this instance only**: a device must have
+ * renewed within `expiresAt - grace` rather than merely hold an unexpired grant, which is the
+ * containment for one that is offline with a long-lived grant. It only ever tightens, and absent
+ * it nothing changes.
+ *
  * ```ts
  * await setPolicy(engine, ACME, { jobs: { $default: deny, read: role("viewer") } })
+ * await setPolicy(engine, ACME, doc, { grace: Temporal.Duration.from({ hours: 12 }) })
  * ```
  */
 export function setPolicy(
   engine: Engine,
   partition: PartitionKey,
   doc: PolicyDoc,
-  options: { readonly version?: number } = {},
+  options: { readonly version?: number; readonly grace?: Temporal.Duration } = {},
 ): Promise<Result<SyncEvent, MutateError>> {
   const version = options.version ?? Date.now();
+  const cells = new Map<never, CellValue>([
+    [column("id"), String(partition)],
+    // SAFETY: a PolicyDoc is a plain-data AST — exactly what a json column holds
+    [column("rules"), doc as JsonValue],
+    [column("version"), version],
+  ]);
+  // the cell is written only when there is a grace to write: an older build has no such column,
+  // and its schema check refuses a row carrying one — which would cost it every policy update,
+  // not merely this field. An omitted nullable column reads as absent, which is what it means
+  if (options.grace !== undefined)
+    cells.set(column("grace"), options.grace.total({ unit: "milliseconds" }));
   return engine.mutate(
     SET_POLICY,
-    (tx: Tx) =>
-      tx.insert(
-        POLICY,
-        rowKey(String(partition)),
-        new Map([
-          [column("id"), String(partition)],
-          // SAFETY: a PolicyDoc is a plain-data AST — exactly what a json column holds
-          [column("rules"), doc as JsonValue],
-          [column("version"), version],
-        ]),
-      ),
-    { partition } satisfies MutateOptions,
+    (tx: Tx) => tx.insert(POLICY, rowKey(String(partition)), cells),
+    {
+      partition,
+    } satisfies MutateOptions,
   );
 }
 
@@ -177,6 +186,20 @@ export interface RevocationRow {
   readonly partition: string;
   readonly at: Temporal.Instant;
   readonly reason: string;
+}
+
+/**
+ * When this device's powers were withdrawn in one instance, if they were — the same row the
+ * validator's rung reads, for a caller deciding *about* a device rather than about an event.
+ */
+export function revokedAt(
+  engine: Engine,
+  partition: PartitionKey,
+  device: PeerId,
+): Temporal.Instant | undefined {
+  const record = engine.state().get(REVOCATIONS)?.get(revocationKey(partition, device));
+  if (record === undefined || record.deleteStamp !== undefined) return undefined;
+  return Temporal.Instant.fromEpochMilliseconds(moment(record.cells.get(column("at"))?.value));
 }
 
 /** Every revocation this device holds for the instances it syncs, oldest first. */

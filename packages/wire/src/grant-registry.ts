@@ -15,6 +15,14 @@ export interface GrantRegistry {
   readonly wireFor: (device: PeerId) => Uint8Array | undefined;
   /** Every wire held; these travel first in every sync session. */
   readonly allWires: () => readonly Uint8Array[];
+  /**
+   * Every grant held, expired ones included — the same population `allWires` reports, decoded.
+   * Expiry is a staleness bound rather than a tombstone (D08), so a lapsed grant still names the
+   * account, role and partitions a renewal re-issues on; filtering here would leave an authority
+   * unable to see the devices that most need renewing. Anything deciding what a device may do
+   * must ask `grantFor`, which does read expired as absent.
+   */
+  readonly all: () => readonly Grant[];
   readonly onRegistered: (listener: (grant: Grant, wire: Uint8Array) => void) => () => void;
   /**
    * A grant dropped from this registry. The mirror of `onRegistered`, and what keeps a store
@@ -64,6 +72,7 @@ export function createGrantRegistry(options: GrantRegistryOptions): GrantRegistr
     grantFor: (device) => live(device)?.grant,
     wireFor: (device) => live(device)?.wire,
     allWires: () => [...held.values()].map((e) => e.wire),
+    all: () => [...held.values()].map((e) => e.grant),
     onRegistered: (listener) => {
       listeners.add(listener);
       return () => void listeners.delete(listener);

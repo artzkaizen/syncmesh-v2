@@ -1,5 +1,6 @@
 import type { PartitionKey } from "@syncmesh/kernel";
 import type { Change, Hlc, PeerId, Row, RowKey, SyncEvent, TableName } from "@syncmesh/kernel";
+import type { Temporal } from "@syncmesh/temporal";
 import type { Grant } from "@syncmesh/wire";
 
 import {
@@ -67,22 +68,24 @@ export interface ValidatorOptions {
   readonly isAuthority?: boolean;
   /** The one peer whose events may write `global` tables; named like the issuer is, checked against the event's author. Absent, global tables are read-only everywhere. */
   readonly authority?: PeerId;
+  /** Reads the wall clock for the grace rung. Absent, a partition's grace window is not applied at all — a validator with no clock never starts refusing what it used to admit. */
+  readonly now?: () => Temporal.Instant;
 }
 
 export interface Validator {
-  /** Ladder: grant → device → partition → schema → policy. The first failure is the verdict. */
+  /** Ladder: grant → device → revocation → grace → partition → schema → policy. The first failure is the verdict. */
   readonly validate: (event: ProbeEvent, before: StateLookup) => Result<void, ValidationError>;
 }
 
 const RESERVED = new Set(["global", "user", "local"]);
 
 export function createValidator(options: ValidatorOptions): Validator {
-  const { schema, grantFor, isAuthority = false, authority } = options;
+  const { schema, grantFor, isAuthority = false, authority, now } = options;
   const entries = new Map(schema.entries.map((e) => [String(e.table.name), e]));
   const reserved = new Map((schema.reserved ?? []).map((t) => [String(t.name), t]));
 
   const validate: Validator["validate"] = (event, before) => {
-    const author = checkAuthor(event, grantFor, before.row);
+    const author = checkAuthor(event, grantFor, before.row, now, authority);
     if (author.isErr()) return author;
     const grant = author.value;
     for (const change of event.changes) {

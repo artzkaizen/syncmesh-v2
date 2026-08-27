@@ -33,12 +33,7 @@ import { createBlobs } from "./blobs.js";
 import { openMeshEngine } from "./boot.js";
 import { createCan } from "./can.js";
 import { createDelivered, createReceived } from "./delivered.js";
-import {
-  createMeshGrants,
-  restoreGrants,
-  type MeshGrants,
-  type MeshGrantsOptions,
-} from "./grants.js";
+import { openGrants, restoreGrants, type MeshGrants, type MeshGrantsOptions } from "./grants.js";
 import { rowHistory } from "./history.js";
 import { createPresence } from "./presence.js";
 import { runTransports } from "./transports.js";
@@ -209,7 +204,7 @@ export async function createMesh<
   const registry = createGrantRegistry({ issuer: issuer ?? identity.peerId, now });
   const grantsOptions = { now } satisfies MeshGrantsOptions;
   if (issuerKey !== undefined) Object.assign(grantsOptions, { issuerKey });
-  const grants = createMeshGrants(registry, grantsOptions);
+  const { grants, bind } = openGrants(registry, grantsOptions);
   const grantFor = (peer: PeerId): Grant | undefined => grants.grantFor(peer);
   // plain await, not Result.gen: a definition-time panic in `assemble` must reach the caller as itself
   const booted = await openMeshEngine({
@@ -219,6 +214,7 @@ export async function createMesh<
     grantFor,
   });
   if (booted.isErr()) return booted;
+  bind(booted.value.engine);
   // after boot, because the grants live in the database boot opens; before any session, because
   // a peer that reconnects first would meet a device that had forgotten who everyone is
   const remembered = await restoreGrants(registry, booted.value.driver);

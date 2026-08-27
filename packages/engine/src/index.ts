@@ -29,6 +29,7 @@ export {
   CompactionRefused,
   EmptyMutation,
   GrantDeviceMismatch,
+  GrantStale,
   ListenerFailure,
   LocalOnly,
   NoGrant,
@@ -86,6 +87,7 @@ export {
   corrections,
   revocationKey,
   revocations,
+  revokedAt,
   revokeDevice,
   setPolicy,
 } from "./authority.js";
@@ -93,4 +95,5 @@ export type { RepairApi, RepairRow, TableDigests } from "./digest.js";
 export { divergentRows, divergentTables, rowDigest, rowDigests, tableDigests } from "./digest.js";
 export type { SuiteCase } from "./suite.js";
 export { SuiteFailure, check, equal } from "./suite.js";
+export { graceMillis } from "./rules.js";
 export type { Principal } from "./validate.js";

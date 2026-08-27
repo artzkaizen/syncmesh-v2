@@ -1,14 +1,46 @@
-import type { ColumnName, PartitionKey, RowKey, TableName } from "@syncmesh/kernel";
+import type { ColumnName, PartitionKey, Row, RowKey, TableName } from "@syncmesh/kernel";
 import type { AllowBlock, PolicyDoc } from "@syncmesh/policy";
 
 import { parsePolicyDoc } from "@syncmesh/policy";
 
 import type { RowLookup } from "./validate.js";
 
-/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- the reserved policy table's own name and column */
+import { moment } from "./authority.js";
+
+/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- the reserved policy table's own name and columns */
 const POLICY_TABLE = "_policy" as TableName;
 const RULES_COLUMN = "rules" as ColumnName;
+const GRACE_COLUMN = "grace" as ColumnName;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
+
+/**
+ * The `_policy` record for one instance, as this device holds it. Both of what an instance owns —
+ * its rules and its grace window — live in the one row, so they are looked up once here rather
+ * than found twice from two places that could drift apart.
+ */
+function policyRow(partition: PartitionKey | undefined, rows: RowLookup): Row | undefined {
+  if (partition === undefined) return undefined;
+  // SAFETY: the `_policy` row for an instance is keyed by that instance's own key
+  return rows(POLICY_TABLE, String(partition) as RowKey);
+}
+
+/**
+ * How long before `expiresAt` this instance stops trusting a cached grant, in milliseconds;
+ * `undefined` where it has said nothing, which is every instance until one does (RFC-0016).
+ *
+ * A strict instance sets it to force a device to have *renewed* recently rather than merely to
+ * hold an unexpired grant — the containment for a device that went offline holding a long-lived
+ * one. It is per-instance because strictness is: the same device, same grant, may be too stale
+ * for the payroll org and current everywhere else.
+ */
+export function graceMillis(
+  partition: PartitionKey | undefined,
+  rows: RowLookup,
+): number | undefined {
+  const grace = policyRow(partition, rows)?.get(GRACE_COLUMN);
+  if (grace === null || grace === undefined) return undefined;
+  return moment(grace);
+}
 
 /** One parsed policy doc per `_policy` record, so a hot path re-parses nothing. */
 const parsedDocs = new WeakMap<object, PolicyDoc>();
@@ -27,9 +59,7 @@ export function syncedRules(
   partition: PartitionKey | undefined,
   rows: RowLookup,
 ): AllowBlock | undefined {
-  if (partition === undefined) return undefined;
-  // SAFETY: the `_policy` row for an instance is keyed by that instance's own key
-  const record = rows(POLICY_TABLE, String(partition) as RowKey);
+  const record = policyRow(partition, rows);
   if (record === undefined) return undefined;
   const rules = record.get(RULES_COLUMN);
   // a json column's cell is the doc itself; anything not an object was never a doc

@@ -79,12 +79,15 @@ async function defaultStores(
 
 /** The validator an identity runs: grants when an issuer is configured, authorship when this process is the authority. */
 function validatorFor(options: BootOptions): ValidatorOptions {
-  const { schema, identity, issuer, authority, grantFor } = options;
+  const { schema, identity, issuer, authority, grantFor, now } = options;
   const validatorOptions = {
     schema,
     grantFor: issuer === undefined ? null : grantFor,
     // being the authority is authorship, not a flag: this process is it when the named peer is us
     isAuthority: authority !== undefined && authority === identity.peerId,
+    // arms the grace rung, and answers for a local write that has no stamp yet; an event
+    // arriving from a peer carries its own, so both sides read it the same way
+    now,
   } satisfies ValidatorOptions;
   if (authority !== undefined) Object.assign(validatorOptions, { authority });
   return validatorOptions;

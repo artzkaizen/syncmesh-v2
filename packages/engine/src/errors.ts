@@ -42,6 +42,16 @@ export class GrantRevoked extends TaggedError("GrantRevoked")<{
   partition: string;
   message: string;
 }> {}
+/**
+ * The grant is unexpired but too old for the instance being written to, which set a grace window
+ * (RFC-0016). Its own tag and not `NoGrant`: "renew and try again" is a different thing to put in
+ * front of a person than "we do not know who you are", and only one of them is recoverable.
+ */
+export class GrantStale extends TaggedError("GrantStale")<{
+  peer: PeerId;
+  expiresAt: string;
+  message: string;
+}> {}
 export class UnknownTable extends TaggedError("UnknownTable")<{ table: string; message: string }> {}
 export class PartitionNotGranted extends TaggedError("PartitionNotGranted")<{
   table: string;
@@ -71,11 +81,12 @@ export class PolicyDenied extends TaggedError("PolicyDenied")<{
   message: string;
 }> {}
 
-/** Why an event is refused, in ladder order: grant → device → revocation → partition → schema → policy. */
+/** Why an event is refused, in ladder order: grant → device → revocation → grace → partition → schema → policy. */
 export type ValidationError =
   | NoGrant
   | GrantDeviceMismatch
   | GrantRevoked
+  | GrantStale
   | UnknownTable
   | PartitionNotGranted
   | WrongPartition

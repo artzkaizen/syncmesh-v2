@@ -38,6 +38,12 @@ export const policyTable = reservedTable("_policy", {
   id: t.text().primaryKey(),
   rules: t.json(),
   version: t.integer(),
+  /**
+   * Milliseconds a grant stops being trusted *before* it expires, in this instance only
+   * (RFC-0016). A column and not a key in `rules`, which is keyed by table name and would
+   * collide with a table called `grace`. Null is the ordinary rule: trusted until it expires.
+   */
+  grace: t.integer().nullable(),
 });
 
 /** An authority's overwrite together with its reason, as one signed row (RFC-0014 §4). */
