@@ -15,6 +15,8 @@ export {
 } from "./state-store.js";
 /** The record codec moved to `@syncmesh/wire`, where the other codecs live; re-exported here for the stores that write it. */
 export { MalformedRecord, decodeRecord, encodeRecord } from "@syncmesh/wire";
+export type { GrantStore } from "./grant-store.js";
+export { memoryGrantStore, sqlGrantStore } from "./grant-store.js";
 export type { OpenStoresOptions, ScopedStores, Stores } from "./open-stores.js";
 export { openStores } from "./open-stores.js";
 export type { CaptureOptions } from "./capture.js";

@@ -16,7 +16,12 @@ export interface GrantRegistry {
   /** Every wire held; these travel first in every sync session. */
   readonly allWires: () => readonly Uint8Array[];
   readonly onRegistered: (listener: (grant: Grant, wire: Uint8Array) => void) => () => void;
-  /** Local only until E21 propagates it. */
+  /**
+   * A grant dropped from this registry. The mirror of `onRegistered`, and what keeps a store
+   * that remembers grants from resurrecting one on the next restart.
+   */
+  readonly onForgotten: (listener: (device: PeerId) => void) => () => void;
+  /** Withdraws it here only; the propagating form is a `_revocations` row (E21). */
   readonly revoke: (device: PeerId) => void;
 }
 
@@ -28,6 +33,7 @@ export interface GrantRegistryOptions {
 export function createGrantRegistry(options: GrantRegistryOptions): GrantRegistry {
   const held = new Map<PeerId, { readonly grant: Grant; readonly wire: Uint8Array }>();
   const listeners = new Set<(grant: Grant, wire: Uint8Array) => void>();
+  const forgotten = new Set<(device: PeerId) => void>();
 
   const register: GrantRegistry["register"] = (wire) => {
     const verified = verifyGrant(wire, options.issuer, options.now());
@@ -62,6 +68,13 @@ export function createGrantRegistry(options: GrantRegistryOptions): GrantRegistr
       listeners.add(listener);
       return () => void listeners.delete(listener);
     },
-    revoke: (device) => void held.delete(device),
+    onForgotten: (listener) => {
+      forgotten.add(listener);
+      return () => void forgotten.delete(listener);
+    },
+    revoke: (device) => {
+      if (!held.delete(device)) return;
+      for (const listener of forgotten) listener(device);
+    },
   };
 }

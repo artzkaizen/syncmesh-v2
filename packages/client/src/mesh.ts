@@ -33,7 +33,12 @@ import { createBlobs } from "./blobs.js";
 import { openMeshEngine } from "./boot.js";
 import { createCan } from "./can.js";
 import { createDelivered, createReceived } from "./delivered.js";
-import { createMeshGrants, type MeshGrants, type MeshGrantsOptions } from "./grants.js";
+import {
+  createMeshGrants,
+  restoreGrants,
+  type MeshGrants,
+  type MeshGrantsOptions,
+} from "./grants.js";
 import { rowHistory } from "./history.js";
 import { createPresence } from "./presence.js";
 import { runTransports } from "./transports.js";
@@ -214,6 +219,10 @@ export async function createMesh<
     grantFor,
   });
   if (booted.isErr()) return booted;
+  // after boot, because the grants live in the database boot opens; before any session, because
+  // a peer that reconnects first would meet a device that had forgotten who everyone is
+  const remembered = await restoreGrants(registry, booted.value.driver);
+  if (remembered.isErr()) return remembered;
   return Result.ok(assemble(options, { grants, grantFor, now, booted: booted.value }));
 }
 
