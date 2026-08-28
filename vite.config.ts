@@ -252,6 +252,11 @@ export default defineConfig({
         rules: { "node/no-process-env": "off", "max-lines": "off" },
       },
       {
+        // runnable demonstrations: they print, and they read the environment a deployment sets
+        files: ["examples/**"],
+        rules: { "no-console": "off", "node/no-process-env": "off" },
+      },
+      {
         files: ["scripts/**", "tooling/**", "bench/**"],
         env: { node: true },
         rules: {

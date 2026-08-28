@@ -9,6 +9,7 @@
       "native/*",
       "tooling/*",
       "conformance",
+      "examples",
       "bench"
     ],
     "catalog": {
