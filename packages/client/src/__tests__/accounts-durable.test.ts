@@ -12,7 +12,7 @@ import { taggedCause } from "@syncmesh/drizzle";
 import { createEngine, createMemoryEventStore, linkDevice, links } from "@syncmesh/engine";
 import { createHlcClock, parseAccountId, parsePartitionKey } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { defineSchema, t } from "@syncmesh/schema";
+import { RESERVED, defineSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import {
   createIdentity,
@@ -61,7 +61,6 @@ const ALICE = createIdentity(seed(10)).unwrap();
 const BOB = createIdentity(seed(160)).unwrap();
 const ISSUER = createIdentity(seed(50)).unwrap();
 /* oxlint-disable-next-line anti-slop/require-safety-comment-for-type-assertion -- the reserved table's own name */
-const LINKS = "_links" as TableName;
 const ALICE_ID = parseAccountId(String(ALICE.peerId)).unwrap();
 const BOB_ID = parseAccountId(String(BOB.peerId)).unwrap();
 
@@ -200,7 +199,7 @@ describe("links at the client door", () => {
       // the row is in state — no validator ever saw it — and it still binds nothing
       // in state, and not a link: `links` resolves the same way the validator does, so a row
       // no validator judged is reported as nothing rather than as a binding
-      expect(mesh.engine.state().get(LINKS)?.size).toBe(1);
+      expect(mesh.engine.state().get(RESERVED.links)?.size).toBe(1);
       expect(links(mesh.engine)).toEqual([]);
       expect(mesh.can("notes.insert", cells(note("n1", ALICE_ID)), "org:acme")).toBe(false);
 

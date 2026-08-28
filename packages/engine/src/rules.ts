@@ -2,13 +2,13 @@ import type { ColumnName, PartitionKey, Row, RowKey, TableName } from "@syncmesh
 import type { AllowBlock, PolicyDoc } from "@syncmesh/policy";
 
 import { parsePolicyDoc } from "@syncmesh/policy";
+import { RESERVED } from "@syncmesh/schema";
 
 import type { RowLookup } from "./validate.js";
 
 import { moment } from "./authority.js";
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- the reserved policy table's own name and columns */
-const POLICY_TABLE = "_policy" as TableName;
 const RULES_COLUMN = "rules" as ColumnName;
 const GRACE_COLUMN = "grace" as ColumnName;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
@@ -21,7 +21,7 @@ const GRACE_COLUMN = "grace" as ColumnName;
 function policyRow(partition: PartitionKey | undefined, rows: RowLookup): Row | undefined {
   if (partition === undefined) return undefined;
   // SAFETY: the `_policy` row for an instance is keyed by that instance's own key
-  return rows(POLICY_TABLE, String(partition) as RowKey);
+  return rows(RESERVED.policy, String(partition) as RowKey);
 }
 
 /**

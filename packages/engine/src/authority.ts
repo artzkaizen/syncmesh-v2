@@ -11,6 +11,7 @@ import type { PeerId } from "@syncmesh/kernel";
 import type { PolicyDoc } from "@syncmesh/policy";
 import type { Result } from "@syncmesh/result";
 
+import { RESERVED } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 
 import type { Engine, MutateOptions } from "./engine.js";
@@ -25,11 +26,6 @@ import type { Tx } from "./tx.js";
  */
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- the reserved tables' own names and keys, fixed by this module */
-const POLICY = "_policy" as TableName;
-const CORRECTIONS = "_corrections" as TableName;
-const REVOCATIONS = "_revocations" as TableName;
-const LINKS = "_links" as TableName;
-const CDC = "_cdc" as TableName;
 const SET_POLICY = "_policy.set" as Procedure;
 const CORRECT = "_corrections.write" as Procedure;
 const REVOKE = "_revocations.write" as Procedure;
@@ -54,14 +50,14 @@ export const rowKey = (key: string) => key as RowKey;
  * row two peers can disagree about forever. A table here says the question does not apply, and
  * the rung refuses the write rather than letting the disagreement become possible.
  */
-export const UNPINNED_RESERVED: ReadonlySet<string> = new Set([CDC]);
+export const UNPINNED_RESERVED: ReadonlySet<string> = new Set([RESERVED.cdc]);
 
 export const RESERVED_AUTHOR_CLASS: ReadonlyMap<string, ReservedAuthorClass> = new Map([
-  [POLICY, "authority"],
-  [CORRECTIONS, "authority"],
-  [REVOCATIONS, "authority"],
-  [LINKS, "subject"],
-  [CDC, "authority"],
+  [RESERVED.policy, "authority"],
+  [RESERVED.corrections, "authority"],
+  [RESERVED.revocations, "authority"],
+  [RESERVED.links, "subject"],
+  [RESERVED.cdc, "authority"],
 ] satisfies readonly (readonly [string, ReservedAuthorClass])[]);
 
 export type ReservedAuthorClass = "authority" | "subject";
@@ -104,7 +100,7 @@ export function setPolicy(
     cells.set(column("grace"), options.grace.total({ unit: "milliseconds" }));
   return engine.mutate(
     SET_POLICY,
-    (tx: Tx) => tx.insert(POLICY, rowKey(String(partition)), cells),
+    (tx: Tx) => tx.insert(RESERVED.policy, rowKey(String(partition)), cells),
     {
       partition,
     } satisfies MutateOptions,
@@ -153,7 +149,7 @@ export function correct(
     CORRECT,
     (tx: Tx) => {
       fix(tx); // the overwrite and its reason are one event: a peer cannot fold one without the other
-      tx.insert(CORRECTIONS, rowKey(`${event}:${String(table)}:${String(key)}`), cells);
+      tx.insert(RESERVED.corrections, rowKey(`${event}:${String(table)}:${String(key)}`), cells);
     },
     { partition } satisfies MutateOptions,
   );
@@ -216,7 +212,7 @@ export function revokeDevice(
     [column("at"), at.epochMilliseconds],
     [column("reason"), reason],
   ]);
-  return engine.mutate(REVOKE, (tx: Tx) => tx.insert(REVOCATIONS, key, cells), {
+  return engine.mutate(REVOKE, (tx: Tx) => tx.insert(RESERVED.revocations, key, cells), {
     partition,
   } satisfies MutateOptions);
 }
@@ -238,14 +234,14 @@ export function revokedAt(
   partition: PartitionKey,
   device: PeerId,
 ): Temporal.Instant | undefined {
-  const record = engine.state().get(REVOCATIONS)?.get(revocationKey(partition, device));
+  const record = engine.state().get(RESERVED.revocations)?.get(revocationKey(partition, device));
   if (record === undefined || record.deleteStamp !== undefined) return undefined;
   return Temporal.Instant.fromEpochMilliseconds(moment(record.cells.get(column("at"))?.value));
 }
 
 /** Every revocation this device holds for the instances it syncs, oldest first. */
 export function revocations(engine: Engine): readonly RevocationRow[] {
-  const rows = engine.state().get(REVOCATIONS);
+  const rows = engine.state().get(RESERVED.revocations);
   if (rows === undefined) return [];
   return [...rows]
     .filter(([, record]) => record.deleteStamp === undefined)
@@ -283,7 +279,7 @@ const isWhole = (value: CellValue | undefined): value is number => typeof value 
 
 /** Every correction this device holds, oldest key first; `forEvent` narrows to one overruled write. */
 export function corrections(engine: Engine): readonly CorrectionRow[] {
-  const rows = engine.state().get(CORRECTIONS);
+  const rows = engine.state().get(RESERVED.corrections);
   if (rows === undefined) return [];
   return [...rows]
     .filter(([, record]) => record.deleteStamp === undefined)

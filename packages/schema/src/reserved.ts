@@ -115,3 +115,18 @@ export const reservedTables = [
   linksTable,
   cdcTable,
 ] as const;
+
+/**
+ * The reserved tables' branded names, taken from the tables themselves.
+ *
+ * `reservedTable` has already parsed each one, so this is the name a validator or a reader
+ * should use rather than casting the same string again — three copies of `"_policy" as
+ * TableName` were how the engine, its rules and the client each spelled the same fact.
+ */
+export const RESERVED = {
+  policy: policyTable.name,
+  corrections: correctionsTable.name,
+  revocations: revocationsTable.name,
+  links: linksTable.name,
+  cdc: cdcTable.name,
+} as const;

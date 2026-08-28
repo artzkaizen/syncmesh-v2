@@ -6,7 +6,6 @@ import type {
   Procedure,
   RowKey,
   SyncEvent,
-  TableName,
 } from "@syncmesh/kernel";
 import type { TableState } from "@syncmesh/kernel";
 import type { AccountCore, Grant, Identity, LinkError } from "@syncmesh/wire";
@@ -14,6 +13,7 @@ import type { AccountCore, Grant, Identity, LinkError } from "@syncmesh/wire";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { parseAccountId, parsePartitionKey, parsePeerId } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
+import { RESERVED } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import {
   bytesEqual,
@@ -44,7 +44,6 @@ import { LinkRefused } from "./errors.js";
  */
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- the reserved link table's own name and procedures */
-const LINKS = "_links" as TableName;
 const LINK = "_links.link" as Procedure;
 const UNLINK = "_links.unlink" as Procedure;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
@@ -136,9 +135,13 @@ function writeLink(
     [column("at"), at.epochMilliseconds],
     [column("wire"), wire],
   ]);
-  return engine.mutate(op === "link" ? LINK : UNLINK, (tx: Tx) => tx.insert(LINKS, key, cells), {
-    partition,
-  } satisfies MutateOptions);
+  return engine.mutate(
+    op === "link" ? LINK : UNLINK,
+    (tx: Tx) => tx.insert(RESERVED.links, key, cells),
+    {
+      partition,
+    } satisfies MutateOptions,
+  );
 }
 
 /**
@@ -189,7 +192,7 @@ export interface LinkRow {
 
 /** Every link this device holds for the instances it syncs, oldest first. */
 export function links(engine: Engine): readonly LinkRow[] {
-  const rows = engine.state().get(LINKS);
+  const rows = engine.state().get(RESERVED.links);
   if (rows === undefined) return [];
   return [...standing(rows).values()]
     .map((core) => ({
@@ -295,7 +298,7 @@ export function checkLink(change: Change, event: ProbeEvent): Result<void, Valid
  */
 export function linkedAuthor(event: ProbeEvent, state: StateLookup): Author | undefined {
   if (event.partition === undefined) return undefined;
-  const rows = state.records?.(LINKS);
+  const rows = state.records?.(RESERVED.links);
   if (rows === undefined) return undefined;
   const link = standing(rows).get(`${String(event.partition)}:${String(event.peerId)}`);
   if (link === undefined || link.op !== "link") return undefined;

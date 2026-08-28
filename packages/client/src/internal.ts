@@ -9,9 +9,9 @@ import {
 } from "@syncmesh/engine";
 import { readRows } from "@syncmesh/kernel";
 import { panic } from "@syncmesh/result";
+import { RESERVED } from "@syncmesh/schema";
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- the reserved policy table's own name, checked against RESERVED_TABLE_NAMES below */
-const POLICY = "_policy" as TableName;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 
 /** What an authority overruled and why (RFC-0014), in the three cuts a UI asks for. */
@@ -84,7 +84,7 @@ export function openInternal(deps: InternalDeps): MeshInternal {
     tables: RESERVED_TABLE_NAMES,
     rows,
     // SAFETY: the `_policy` row for an instance is keyed by that instance's own key
-    policy: (instance) => rows(POLICY).get(instance as RowKey),
+    policy: (instance) => rows(RESERVED.policy).get(instance as RowKey),
     corrections: {
       all: () => correctionsOf(engine),
       // an event id begins with its author's peer id, so "mine" needs no extra bookkeeping

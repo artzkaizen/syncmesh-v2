@@ -1,7 +1,8 @@
-import type { ColumnName, TableName } from "@syncmesh/kernel";
+import type { ColumnName } from "@syncmesh/kernel";
 import type { Grant } from "@syncmesh/wire";
 
 import { Result } from "@syncmesh/result";
+import { RESERVED } from "@syncmesh/schema";
 
 import type { ValidationError } from "./errors.js";
 import type { Author, ProbeEvent, RowLookup, StateLookup, ValidatorOptions } from "./validate.js";
@@ -12,7 +13,6 @@ import { GrantDeviceMismatch, GrantRevoked, GrantStale, NoGrant } from "./errors
 import { graceMillis } from "./rules.js";
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- the reserved revocation table's own name and column */
-const REVOCATIONS_TABLE = "_revocations" as TableName;
 const AT_COLUMN = "at" as ColumnName;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 
@@ -125,7 +125,7 @@ function checkRevoked(
   row: RowLookup,
 ): Result<void, ValidationError> {
   if (event.partition === undefined) return Result.ok(undefined);
-  const record = row(REVOCATIONS_TABLE, revocationKey(event.partition, event.peerId));
+  const record = row(RESERVED.revocations, revocationKey(event.partition, event.peerId));
   if (record === undefined) return Result.ok(undefined);
   const at = moment(record.get(AT_COLUMN));
   if (grant.issuedAt.epochMilliseconds > at) return Result.ok(undefined);
