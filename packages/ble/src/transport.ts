@@ -1,5 +1,5 @@
 import type { PeerId } from "@syncmesh/kernel";
-import type { Bridge, Transport } from "@syncmesh/transport";
+import type { Bridge, FrameLink, Transport } from "@syncmesh/transport";
 
 import { Result } from "@syncmesh/result";
 import { createFrameTransport } from "@syncmesh/transport";
@@ -11,6 +11,7 @@ import { advertisement, hintFrom, hintOf } from "./advert.js";
 import { discovery, shouldDial } from "./dial.js";
 import { bleLink } from "./link.js";
 import { payloadLimit } from "./radio.js";
+import { secureLink } from "./session.js";
 
 /**
  * BLE as a `FrameTransport`.
@@ -22,6 +23,9 @@ import { payloadLimit } from "./radio.js";
  *
  * Everything above a link is the bridge's: grants, cursors, the gap rule, resync. This file owns
  * only what is true of a radio — who is nearby, who dials, and where an arriving packet belongs.
+ *
+ * Every link is encrypted, with no setting that says otherwise: what the bridge is handed is
+ * always a {@link secureLink}, so a peer that will not do the handshake gets nothing across.
  */
 
 export interface BleOptions {
@@ -42,11 +46,12 @@ export const DEFAULT_MTU = 517;
 
 /** One peer's link and what the radio needs to find it again. */
 interface Held {
+  /** The radio end, which takes packets in; the bridge never sees it. */
   readonly link: ReturnType<typeof bleLink>;
+  /** The encrypted end, which is what was attached and what closing has to go through. */
+  readonly frames: FrameLink;
   readonly bridge: Bridge;
   readonly connectionId?: string | undefined;
-  /** The smallest a notification may be to this peer; only the dialled side ever uses it. */
-  notifyLimit: number;
 }
 
 export function bleTransport(options: BleOptions): Transport {
@@ -78,18 +83,23 @@ export function bleTransport(options: BleOptions): Transport {
         if (link.connectionId !== undefined) byConnection.delete(link.connectionId);
         seen.forget(hint);
         link.bridge.close();
-        link.link.close?.();
+        link.frames.close?.();
       };
 
       /** A link, attached, and remembered under the hint the radio knows it by. */
-      const hold = (hint: string, connectionId: string | undefined, peer?: PeerId): Held => {
+      const hold = (
+        hint: string,
+        connectionId: string | undefined,
+        mtu?: number,
+        peer?: PeerId,
+      ): Held => {
         const wiring: LinkOptions = {
           radio,
           serviceUuid,
           characteristicUuid,
           peer: hint,
-          limit: () =>
-            connectionId === undefined ? notifyLimit : (held.get(hint)?.notifyLimit ?? notifyLimit),
+          // read per send, not captured: a notification's size is renegotiated as subscribers change
+          limit: () => (connectionId === undefined ? notifyLimit : payloadLimit(mtu)),
           onDropped: drop,
           // a write that did not leave ends the link; the next advertisement rebuilds it, and
           // the bridge resyncs from its cursors, which is the recovery every loud failure uses
@@ -101,11 +111,20 @@ export function bleTransport(options: BleOptions): Transport {
         // its presence is the role: a link with a connection writes, one without notifies
         if (connectionId !== undefined) Object.assign(wiring, { connectionId });
         const link = bleLink(wiring);
+        const frames = secureLink(link, {
+          identity: ctx.identity,
+          onDropped: drop,
+          // a handshake that cannot finish is a link that will never carry anything
+          onFailed: (cause) => {
+            drop(`the session with ${hint} failed: ${String(cause)}`);
+            close(hint);
+          },
+        });
         const entry: Held = {
           link,
-          bridge: attach(link, peer),
+          frames,
+          bridge: attach(frames, peer),
           connectionId,
-          notifyLimit: payloadLimit(undefined),
         };
         held.set(hint, entry);
         if (connectionId !== undefined) byConnection.set(connectionId, hint);
@@ -131,8 +150,9 @@ export function bleTransport(options: BleOptions): Transport {
           seen.forget(hint);
           return;
         }
-        const entry = hold(hint, opened.value.connectionId);
-        entry.notifyLimit = payloadLimit(opened.value.mtu);
+        // the MTU is known before the link exists, and has to be: the session's hello is the
+        // first thing out, and a link built at the 20-byte floor would fragment it eleven ways
+        hold(hint, opened.value.connectionId, opened.value.mtu);
       };
 
       await radio.publishServices({
@@ -166,11 +186,10 @@ export function bleTransport(options: BleOptions): Transport {
         entry.link.accept(event.valueBase64);
       });
 
+      // one number for every notification this peripheral sends, which is how the platform
+      // reports it; a link reads it per send rather than holding a copy that could go stale
       radio.onSubscribersChanged((event) => {
         notifyLimit = payloadLimit(event.maximumUpdateValueLength);
-        // nobody subscribed means nothing can be notified; the links go when the peers do
-        for (const [hint, entry] of held)
-          if (entry.connectionId === undefined) held.set(hint, { ...entry, notifyLimit });
       });
 
       radio.onConnectionStateChanged((event) => {
@@ -188,11 +207,12 @@ export function bleTransport(options: BleOptions): Transport {
     close: async () => {
       for (const [, entry] of held) {
         entry.bridge.close();
-        entry.link.close?.();
+        entry.frames.close?.();
       }
       held.clear();
       byConnection.clear();
-      await Result.tryPromise({
+      // a radio that will not stop is already gone; there is nobody left to report it to
+      const stopped = await Result.tryPromise({
         try: async () => {
           await radio.stopScan();
           await radio.stopAdvertising();
@@ -200,6 +220,7 @@ export function bleTransport(options: BleOptions): Transport {
         },
         catch: (cause) => cause,
       });
+      if (stopped.isErr()) drop(`the radio did not shut down cleanly: ${String(stopped.error)}`);
     },
   });
 }
