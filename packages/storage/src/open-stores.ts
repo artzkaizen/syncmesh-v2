@@ -149,7 +149,7 @@ export function scopedStores(options: ScopedStoresOptions): ScopedStoreSet {
       const current = held.get(scope);
       held.delete(scope);
       const stores = await current;
-      if (stores?.isOk() === true) await stores.value.close();
+      if (stores?.isOk()) await stores.value.close();
     },
     close: async () => {
       const all = [...held.values()];

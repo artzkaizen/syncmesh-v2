@@ -1,16 +1,18 @@
-import type { PeerId } from "@syncmesh/kernel";
+import type { PeerId, TableName } from "@syncmesh/kernel";
 
 import { type Interest } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { gt } from "@syncmesh/policy";
 import { eventFrame } from "@syncmesh/transport";
-import { encodeCbor, hexToBytes } from "@syncmesh/wire";
+import { decodeAndVerify, encodeCbor, hexToBytes, signEvent } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import { joinFrame } from "../frames.js";
 import { fakeSocket, openRoom, peer, tick, write } from "./fixtures.js";
 
 const GLOBEX = parsePartitionKey("org:globex").unwrap();
+/* oxlint-disable-next-line anti-slop/require-safety-comment-for-type-assertion -- a table name this schema does not define, so an interest naming it wants nothing the room holds */
+const NOTES_ELSEWHERE = "somewhere_else" as TableName;
 
 const open = () => openRoom({ pageSize: 100 });
 
@@ -47,6 +49,40 @@ describe("interest at the relay", () => {
       .receive(join(peer(120, "acct_c").identity.peerId, { partitions: [GLOBEX] }));
     await tick();
     expect(narrow.events()).toBe(1); // one board out of two
+    room.close();
+  });
+
+  test("an event about no instance reaches a device that named instances (D24)", async () => {
+    const a = peer(40, "acct_a");
+    const room = await open();
+    const author = fakeSocket();
+    const ca = room.connect(author.socket);
+    ca.receive(join(a.identity.peerId));
+    await tick();
+
+    // a catalog write: authored by the authority, in no instance, and meant for every device.
+    // Excluding it from an interest that names instances made it reach every device except the
+    // ones careful enough to narrow — which is the whole population it exists for
+    const pinned = decodeAndVerify(await write(a, "c1", "catalog", GLOBEX)).unwrap().event;
+    const { partition: _dropped, ...unpinned } = pinned;
+    ca.receive(eventFrame(signEvent(unpinned, a.identity).wire));
+    await tick();
+    expect(room.offset()).toBe(1);
+
+    const narrow = fakeSocket();
+    room
+      .connect(narrow.socket)
+      .receive(join(peer(120, "acct_c").identity.peerId, { partitions: [GLOBEX] }));
+    await tick();
+    expect(narrow.events()).toBe(1);
+
+    // and a device that genuinely does not want it says so on the dimension that can say it
+    const byTable = fakeSocket();
+    room
+      .connect(byTable.socket)
+      .receive(join(peer(160, "acct_d").identity.peerId, { tables: [NOTES_ELSEWHERE] }));
+    await tick();
+    expect(byTable.events()).toBe(0);
     room.close();
   });
 

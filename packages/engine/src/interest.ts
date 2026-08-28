@@ -110,12 +110,20 @@ const changeMatches = (change: Change, where: PolicyNode, named: ReadonlySet<str
  * Whether this event is worth sending. An event is atomic — there is no half of one — so it
  * travels when **any** of its changes is wanted. Partition and table are map lookups and settle
  * the common case; only `where` costs a predicate evaluation.
+ *
+ * An **unpinned** event passes the partition test whatever instances are named (D24): it is about
+ * no instance, so naming instances says nothing about it. A device that does not want it says so
+ * with `tables`, which is the dimension that can express it.
  */
 export function matchesInterest(interest: Interest, event: SyncEvent): boolean {
   const { partitions, tables, where } = interest;
   if (partitions !== undefined) {
     const wanted = event.partition;
-    if (wanted === undefined || !partitions.includes(wanted)) return false;
+    // an unpinned event is about no instance, so naming instances does not exclude it (D24). The
+    // clause is "only rows in these instances", not "only rows that are in some instance and it
+    // is one of these" — and reading it the second way is what made a `global` catalog, whose
+    // whole promise is replication to every device, reach every device except the careful ones
+    if (wanted !== undefined && !partitions.includes(wanted)) return false;
   }
   const named = where === undefined ? new Set<string>() : predicateColumns(where);
   return event.changes.some((change) => {

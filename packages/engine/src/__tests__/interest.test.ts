@@ -79,10 +79,16 @@ describe("matchesInterest", () => {
     expect(matchesInterest({ tables: [NOTES] }, inserted(1))).toBe(false);
   });
 
-  test("an event with no partition is not in any named instance", () => {
+  test("an event about no instance is not excluded by naming instances (D24)", () => {
     const unpinned = unpinnedOf(inserted(1));
-    expect(matchesInterest({ partitions: [ACME] }, unpinned)).toBe(false);
+    // a `global` catalog is written unpinned, and its whole promise is that every device holds
+    // it — so reading "only rows in these instances" as excluding it made the catalog invisible
+    // to exactly the devices careful enough to narrow
+    expect(matchesInterest({ partitions: [ACME] }, unpinned)).toBe(true);
+    expect(matchesInterest({ partitions: [GLOBEX] }, unpinned)).toBe(true);
     expect(matchesInterest(EVERYTHING, unpinned)).toBe(true);
+    // and a device that genuinely does not want it says so on the dimension that can express it
+    expect(matchesInterest({ partitions: [ACME], tables: [NOTES] }, unpinned)).toBe(false);
   });
 
   test("where: an insert must satisfy it", () => {

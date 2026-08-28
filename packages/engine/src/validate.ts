@@ -76,8 +76,6 @@ export interface ValidatorOptions {
   readonly schema: ValidatorSchema;
   /** `null` is ungranted mode: grant and policy steps are skipped; schema never is. */
   readonly grantFor: ((peer: PeerId) => Grant | undefined) | null;
-  /** This process evaluates `visibility: "authority"` rules (the server peer); devices skip them. Never gates global writes — `authority` does. */
-  readonly isAuthority?: boolean;
   /** The one peer whose events may write `global` tables; named like the issuer is, checked against the event's author. Absent, global tables are read-only everywhere. */
   readonly authority?: PeerId;
   /** Reads the wall clock for the grace rung. Absent, a partition's grace window is not applied at all — a validator with no clock never starts refusing what it used to admit. */
@@ -100,7 +98,7 @@ export interface Validator {
 const RESERVED = new Set(["global", "user", "local"]);
 
 export function createValidator(options: ValidatorOptions): Validator {
-  const { schema, isAuthority = false, authority } = options;
+  const { schema, authority } = options;
   const entries = new Map(schema.entries.map((e) => [String(e.table.name), e]));
   const reserved = new Map((schema.reserved ?? []).map((t) => [String(t.name), t]));
 
@@ -129,7 +127,7 @@ export function createValidator(options: ValidatorOptions): Validator {
       const columns = checkColumns(entry.table, change);
       if (columns.isErr()) return columns;
       const rules = syncedRules(entry.table.name, event.partition, before.row) ?? entry.allow;
-      const policy = checkPolicy(entry, rules, change, author, before.row, isAuthority, schema);
+      const policy = checkPolicy(entry, rules, change, author, before.row, schema);
       if (policy.isErr()) return policy;
     }
     return Result.ok(undefined);
@@ -148,7 +146,19 @@ function checkPartition(
   authority: PeerId | undefined,
 ): Result<void, ValidationError> {
   const kind = entry.partition;
-  if (entry.visibility === "authority") return Result.ok(undefined);
+  if (entry.visibility === "authority") {
+    // D24-A: the authority is the only author. Checked on authorship, never on a local flag —
+    // the same event must reach the same verdict on every peer, and a device that authored one
+    // would hold a row the authority quarantined with nothing able to correct it
+    return authority !== undefined && event.peerId === authority
+      ? Result.ok(undefined)
+      : Result.err(
+          new ReadOnlyPartition({
+            table,
+            message: "an authority-visibility table is written by the authority",
+          }),
+        );
+  }
   if (kind === "local") {
     return event.local === true
       ? Result.ok(undefined)
@@ -255,11 +265,9 @@ function checkPolicy(
   change: Change,
   author: Author | undefined,
   before: RowLookup,
-  isAuthority: boolean,
   schema: ValidatorSchema,
 ): Result<void, ValidationError> {
   if (author === undefined || rules === undefined) return Result.ok(undefined);
-  if (entry.visibility === "authority" && !isAuthority) return Result.ok(undefined);
   const op: Operation = change.kind;
   const rule = resolveAllow(rules, op);
   const row = before(change.table, change.key);

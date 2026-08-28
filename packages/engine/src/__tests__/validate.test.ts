@@ -37,6 +37,9 @@ const schema = defineSchema({
     },
     notes: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "user" },
     drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "local" },
+    // the third tier: which rows reach which device is the relay's to decide, from data no
+    // device holds — so no device has a rule to run, and none of them authors one (D24-A)
+    patient: { columns: { id: t.text().primaryKey(), name: t.text() }, visibility: "authority" },
   },
 });
 
@@ -123,31 +126,6 @@ describe("createValidator — the ladder", () => {
       NONE,
     );
     expect(tag(catalog)).toBe("ReadOnlyPartition");
-    // isAuthority alone never opens global tables: it would accept here what every
-    // device rejects — the same event must get the same verdict on every peer
-    const authority = createValidator({
-      schema,
-      grantFor: (peer) => grants.get(peer),
-      isAuthority: true,
-    });
-    expect(
-      tag(
-        authority.validate(
-          {
-            peerId: device.peerId,
-            changes: [
-              {
-                kind: "insert",
-                table: table("catalog"),
-                key: B1,
-                row: row({ id: "c", code: "x" }),
-              },
-            ],
-          },
-          NONE,
-        ),
-      ),
-    ).toBe("ReadOnlyPartition");
     expect(
       tag(
         validator.validate(
@@ -332,15 +310,37 @@ describe("global is authored by the authority, verified by authorship", () => {
     );
   });
 
-  test("with an authority configured, even the local isAuthority flag defers to authorship", () => {
-    const validator = createValidator({
-      schema,
-      grantFor: null,
-      isAuthority: true,
-      authority: relay.peerId,
-    });
-    expect(tag(validator.validate({ peerId: device.peerId, changes: catalogChanges }, NONE))).toBe(
+  test("a gated table is the authority's to write and nobody else's (D24-A)", () => {
+    const patient = [
+      { kind: "insert", table: table("patient"), key: B1, row: row({ id: "p1", name: "ada" }) },
+    ] as const;
+    const validator = createValidator({ schema, grantFor: null, authority: relay.peerId });
+    expect(tag(validator.validate({ peerId: device.peerId, changes: patient }, NONE))).toBe(
       "ReadOnlyPartition",
     );
+    expect(tag(validator.validate({ peerId: relay.peerId, changes: patient }, NONE))).toBe("ok");
+
+    // and with no authority named, nobody may: read-only everywhere beats a tier one device
+    // could write and the rest would refuse
+    const unnamed = createValidator({ schema, grantFor: null });
+    expect(tag(unnamed.validate({ peerId: relay.peerId, changes: patient }, NONE))).toBe(
+      "ReadOnlyPartition",
+    );
+  });
+
+  test("there is no local flag that could open one: authorship is the whole of the verdict (D24)", () => {
+    // a validator built by the authority's own process reaches the same verdict as every device's
+    // about the same event. That is structural now rather than careful — `isAuthority` is gone,
+    // and with it the one way this verdict could have depended on where it was computed
+    const here = createValidator({ schema, grantFor: null, authority: relay.peerId });
+    const there = createValidator({ schema, grantFor: null, authority: relay.peerId });
+    for (const validator of [here, there]) {
+      expect(
+        tag(validator.validate({ peerId: device.peerId, changes: catalogChanges }, NONE)),
+      ).toBe("ReadOnlyPartition");
+      expect(tag(validator.validate({ peerId: relay.peerId, changes: catalogChanges }, NONE))).toBe(
+        "ok",
+      );
+    }
   });
 });
