@@ -1,8 +1,8 @@
-import type { Engine, Interest, Unsubscribe } from "@syncmesh/engine";
+import type { Ahead, Engine, Interest, Unsubscribe } from "@syncmesh/engine";
 import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 import type { GrantRegistry, Identity } from "@syncmesh/wire";
 
-import { createHub, interestKey } from "@syncmesh/engine";
+import { createHub, heldAhead, interestKey } from "@syncmesh/engine";
 import { Temporal } from "@syncmesh/temporal";
 import { decodeAndVerify, signEvent } from "@syncmesh/wire";
 
@@ -136,7 +136,11 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     return false;
   };
 
-  const onCursors = (from: PeerId, theirs: ReadonlyMap<PeerId, SeqNum>): void => {
+  const onCursors = (
+    from: PeerId,
+    theirs: ReadonlyMap<PeerId, SeqNum>,
+    theirAhead: Ahead | undefined,
+  ): void => {
     engine.acknowledge(from, theirs, now());
     queue = queue.then(async () => {
       const entries = await engine.eventsSince(theirs);
@@ -144,7 +148,10 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
         errors.emit(entries.error);
         return;
       }
-      for (const entry of entries.value) {
+      // an event they said they already hold above their cursor is not sent again: without that,
+      // a peer parking one event it cannot read (D13) is sent the whole tail above the hole on
+      // every exchange, and answers with the same cursor every time
+      for (const entry of entries.value.filter((e) => !heldAhead(theirAhead, e))) {
         const wire = envelopeOf(entry);
         if (wire !== undefined) send(KIND.event, "event", eventFrame(wire));
       }
@@ -177,13 +184,13 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
         return;
       }
       case "cursors":
-        return onCursors(frame.from, frame.cursors);
+        return onCursors(frame.from, frame.cursors, frame.ahead);
       case "event":
         return receiveEvent(frame.wire);
       case "presence":
         return onPresence?.(frame.wire);
       case "digest":
-        return onDigest(frame.scope, frame.at, frame.digests);
+        return onDigest(frame.scope, frame.at, frame.digests, frame.ahead);
       case "unknown":
         return;
     }
@@ -216,10 +223,12 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     scopeThere: string,
     at: ReadonlyMap<PeerId, SeqNum>,
     digests: ReadonlyMap<string, bigint>,
+    ahead: Ahead | undefined,
   ): void => {
     if (onDivergence === undefined) return;
     queue = queue.then(() => {
-      const tables = divergenceAgainst(engine, interest, scope, { scope: scopeThere, at, digests });
+      const theirs = { scope: scopeThere, at, digests, ...(ahead !== undefined && { ahead }) };
+      const tables = divergenceAgainst(engine, interest, scope, theirs);
       if (tables !== undefined && tables.length > 0)
         onDivergence({ peer: identity.peerId, scope, tables });
     });

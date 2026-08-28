@@ -41,6 +41,17 @@ describe("counterAdvance — the running total, never the step", () => {
   test("a fractional step throws: it would read back as zero and lose the peer's whole history", () => {
     expect(() => counterAdvance(undefined, PEER_A, 0.5)).toThrow("safe integer");
   });
+
+  test("a legal step whose running total leaves the safe range throws too — the total is what is read back", () => {
+    const brim = { [PEER_A]: entry(Number.MAX_SAFE_INTEGER, 0) };
+    expect(() => counterAdvance(brim, PEER_A, 1)).toThrow("safe integer range");
+    const sunk = { [PEER_A]: entry(0, Number.MAX_SAFE_INTEGER) };
+    expect(() => counterAdvance(sunk, PEER_A, -1)).toThrow("safe integer range");
+    // and the total that would have been stored reads back as nothing at all
+    expect(readCounter({ [PEER_A]: entry(Number.MAX_SAFE_INTEGER + 1, 0) })).toEqual({
+      [PEER_A]: entry(0, 0),
+    });
+  });
 });
 
 describe("joinCounters — per-peer, per-direction max", () => {

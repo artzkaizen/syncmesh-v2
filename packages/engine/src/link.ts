@@ -56,6 +56,7 @@ export function createLink(a: Engine, b: Engine, options: LinkOptions = {}): Lin
       const all = yield* Result.await(engine.eventsSince(new Map()));
       const doc: SyncDoc = {
         cursors,
+        ahead: engine.ahead(),
         eventsSince: (theirs) =>
           all.filter(({ event: e }) => (theirs.get(e.peerId) ?? 0) < e.seqNum),
       };

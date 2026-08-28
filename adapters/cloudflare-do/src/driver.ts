@@ -45,23 +45,6 @@ const fromDurable = (value: DurableSqlValue): SqlValue =>
   value instanceof ArrayBuffer ? new Uint8Array(value) : value;
 
 /**
- * `ctx.storage.sql` as the driver `@syncmesh/storage` runs its statements through, so a Durable
- * Object's room log is the same SQLite event store every other peer keeps (RFC-0004).
- *
- * No `transaction`: `sql.exec` refuses `BEGIN`, and the only transaction the platform offers —
- * `ctx.storage.transactionSync` — must finish before it returns, which an async port cannot
- * promise. What is left is the object's own turn: every write between two real awaits commits
- * together, and a turn that throws commits none of it. Because `exec` is synchronous here, a
- * batch the store awaits statement by statement still lands in one turn, which is the atomicity
- * `appendBatch` asks for. What it does **not** cover is a failure the store catches and returns
- * as an `Err`: the turn survives, so the statements before the failure survive with it.
- *
- * No `close` either: the storage outlives every object that opens it.
- *
- * @example
- * const store = (await sqliteEventStore(doSqliteDriver(ctx.storage.sql))).unwrap();
- */
-/**
  * Every row of one statement, read inside the turn that opened the cursor: a cursor's snapshot
  * is only guaranteed before the next await, and a statement whose cursor is never stepped is a
  * statement that may not have run.

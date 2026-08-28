@@ -1,4 +1,4 @@
-import type { StrategyName } from "@syncmesh/kernel";
+import type { DeclaredStrategyName } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
 import { panic } from "@syncmesh/result";
@@ -164,7 +164,7 @@ function defFor(
         : "defaults do not sync: every peer must see the inserted value, so the column is required",
     );
   // SAFETY: strategy came from FromDrizzleOptions.onConflict, typed per column as StrategyFor<Value>
-  return strategy === undefined ? def : { ...def, onConflict: strategy as StrategyName };
+  return strategy === undefined ? def : { ...def, onConflict: strategy as DeclaredStrategyName };
 }
 
 // SAFETY: a unique symbol type can only be declared, so the registry symbol is asserted onto it

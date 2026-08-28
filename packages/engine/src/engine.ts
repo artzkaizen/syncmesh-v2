@@ -61,7 +61,7 @@ export interface ReceiveReport {
   readonly folded: number;
   /** Own events, duplicates within the batch, and events already stored. */
   readonly skipped: number;
-  /** Refused by validation; reported through `onQuarantine`, never stored or folded. */
+  /** Refused by validation; parked in the quarantine with the verdict, and never folded. */
   readonly quarantined: number;
 }
 
@@ -95,11 +95,23 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi {
    */
   readonly cursors: () => Promise<Result<Cursors, StoreFailure>>;
   /**
-   * The other half: per author, what this device holds above that cursor — folded past a gap, or
-   * parked in the quarantine below one. Advisory, so a peer that ignores it re-sends a run this
-   * device then skips; a peer that reads it stops re-sending a hole that is not going to close.
+   * The other half: per author, what this device has **folded** above that cursor — the far side
+   * of a gap. Advisory, so a peer that ignores it re-sends a run this device then skips; a peer
+   * that reads it sends the hole alone instead of the whole tail above it.
+   *
+   * A parked event is deliberately not here. Saying we hold it would stop every peer offering it
+   * again, and re-offering is the only thing that heals a verdict something outside the event
+   * reversed — a grant that arrives a moment later, a device that is un-revoked. What a parked
+   * event must not do is stall the author's run, and that is {@link Engine.holding}'s job.
    */
   readonly ahead: () => Ahead;
+  /**
+   * Per author, every sequence above the cursor this device has the bytes for — folded past a
+   * gap, or parked below one. What a receiver walks an author's run with: waiting on a parked
+   * event instead would hold back everything after it for as long as the quarantine keeps it,
+   * which for a refusal no upgrade reverses is forever.
+   */
+  readonly holding: () => Ahead;
   /** What this engine has folded, per author and scope. */
   readonly coverage: () => Coverage;
   /** Records what `peer` holds, as of `at`; links call it on every cursor exchange. Feeds `compact`. */
@@ -202,7 +214,11 @@ export function createEngine(options: EngineOptions): Engine {
   const acks = new Map<PeerId, Ack>();
   // declared before the fold path, which advances an author's chain as its events land
   const feeds = trackFeeds();
-  const parked = createQuarantine({ limit: quarantineLimit, onEvict: errors.emit });
+  const parked = createQuarantine({
+    limit: quarantineLimit,
+    onEvict: errors.emit,
+    cursors: () => coverage.current().synced,
+  });
 
   const { stateOf, setState, fold, persist, notify } = createFoldPath({
     merge,
@@ -282,7 +298,8 @@ export function createEngine(options: EngineOptions): Engine {
     revert,
     canRevert: (id) => undo.some((u) => u.event.id === id),
     cursors: () => Promise.resolve(Result.ok(coverage.current().synced)),
-    ahead: () => mergeAhead(coverage.ahead(), parked.ahead()),
+    ahead: coverage.ahead,
+    holding: () => mergeAhead(coverage.ahead(), parked.ahead()),
     coverage: coverage.current,
     acknowledge: (peer, cursors, at) => {
       acks.set(peer, { cursors, at });

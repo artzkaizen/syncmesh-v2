@@ -75,6 +75,19 @@ describe("table()", () => {
     expect(() => table("a", { id: t.text().primaryKey().onConflict("max") })).toThrow("numeric");
   });
 
+  test("a cell-level strategy is refused whatever the column's kind: it destroys every value written", () => {
+    for (const strategy of ["counter", "set"] as const) {
+      expect(() =>
+        // @ts-expect-error the type forbids it too; this is the runtime guard a cast would slip past
+        table("a", { id: t.text().primaryKey(), likes: t.integer().onConflict(strategy) }),
+      ).toThrow("not a column's to declare");
+      expect(() =>
+        // @ts-expect-error same, on the other numeric kind
+        table("a", { id: t.text().primaryKey(), score: t.float().onConflict(strategy) }),
+      ).toThrow("not a column's to declare");
+    }
+  });
+
   test("names: parsers accept lowercase identifiers; reserved names start with `_`", () => {
     expect(parseTableName("notes").isOk()).toBe(true);
     expect(parseTableName("_policy").isErr()).toBe(true);

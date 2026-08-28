@@ -8,8 +8,9 @@ import type { Divergence } from "../divergence.js";
 import type { Peer } from "./fixtures.js";
 
 import { bridgeFramedLink } from "../bridge.js";
+import { divergenceAgainst, tableNames } from "../divergence.js";
 import { loopbackPair } from "../link.js";
-import { ACME, BODY, GLOBEX, NOTES, T0, key, peer, write } from "./fixtures.js";
+import { ACME, BODY, GLOBEX, NOTES, T0, key, mintFor, peer, write } from "./fixtures.js";
 
 /** Two bridged peers, each told what slice it syncs, both reporting what they find. */
 const connect = (x: Peer, y: Peer, interests: { x?: Interest; y?: Interest } = {}) => {
@@ -74,6 +75,32 @@ describe("digests on the wire", () => {
     await y.engine.repairRows(NOTES, x.engine.rowRecords(NOTES, keys));
     expect(x.engine.digest().get(NOTES)).toBe(y.engine.digest().get(NOTES));
     link.close();
+  });
+
+  test("a peer one fold ahead of us is not divergence — equal cursors are only half of it", async () => {
+    const author = peer(40, "acct_a");
+    const events = [];
+    for (const n of [1, 2, 3]) events.push((await write(author, `n${n}`, `b${n}`)).unwrap());
+
+    // ahead holds seq 1 and 3 with a hole at 2; behind holds only seq 1. Contiguous cursors put
+    // both at 1 — the state D13 introduced and the guard was never taught about.
+    const [ahead, behind] = [peer(81, "acct_b"), peer(82, "acct_c")];
+    for (const p of [ahead, behind]) p.grants.register(mintFor(author.identity, "acct_a")).unwrap();
+    // SAFETY: the loop above wrote three events
+    const [e1, , e3] = events as [(typeof events)[number], unknown, (typeof events)[number]];
+    (await ahead.engine.receiveBatch([{ event: e1 }, { event: e3 }])).unwrap();
+    (await behind.engine.receiveBatch([{ event: e1 }])).unwrap();
+
+    const at = ahead.engine.coverage().synced;
+    expect([...at]).toEqual([...behind.engine.coverage().synced]);
+    expect(ahead.engine.digest().get(NOTES)).not.toBe(behind.engine.digest().get(NOTES));
+
+    const theirs = { scope: "s", at, digests: tableNames(ahead.engine.digest()) };
+    expect(
+      divergenceAgainst(behind.engine, undefined, "s", { ...theirs, ahead: ahead.engine.ahead() }),
+    ).toBeUndefined();
+    // and a frame that says nothing about what it holds above its cursor is not comparable either
+    expect(divergenceAgainst(behind.engine, undefined, "s", theirs)).toBeUndefined();
   });
 
   test("two peers holding different slices compare nothing — a different scope is not a disagreement", async () => {

@@ -1,8 +1,14 @@
-import type { EventStore, StoreFailure, TelemetryEvent, TelemetryListener } from "@syncmesh/engine";
-import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
+import type {
+  EventStore,
+  StoreFailure,
+  StoredEvent,
+  TelemetryEvent,
+  TelemetryListener,
+} from "@syncmesh/engine";
+import type { PeerId, SyncEvent } from "@syncmesh/kernel";
 import type { BlobStore } from "@syncmesh/storage";
 
-import { createHub, type Unsubscribe } from "@syncmesh/engine";
+import { createHub, trackCoverage, type Unsubscribe } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { createPresenceStore } from "@syncmesh/transport";
@@ -88,11 +94,19 @@ export async function openRelayRoom(
   const boot = await store.all();
   if (boot.isErr()) return boot;
 
-  const cursors = new Map<PeerId, SeqNum>();
-  const advance = (peer: PeerId, seq: SeqNum): void => {
-    if (Number(cursors.get(peer) ?? 0) < Number(seq)) cursors.set(peer, seq);
-  };
-  for (const { event } of boot.value) advance(event.peerId, event.seqNum);
+  /**
+   * What catch-up can actually hand over: a synced entry whose author's signature was stored. An
+   * entry without one is dropped by `paged`, and a local one is out of `allSince`'s scope — so
+   * counting either into the room's position would advertise a place the room can never serve
+   * from. Any log the relay did not fill itself holds both (`StartRelayOptions.store`).
+   */
+  const servable = (entry: StoredEvent): boolean =>
+    entry.sig !== undefined && entry.event.local !== true;
+  // contiguous, and over the same entries: a MAX cursor over a hole is a claim the room cannot
+  // take back, because every client asks for what is *above* the number it was given
+  const coverage = trackCoverage();
+  for (const entry of boot.value) if (servable(entry)) coverage.note(entry.event);
+  const cursors = () => coverage.current().synced;
   let offset = boot.value.length;
 
   /** One grant per device, newest mint wins, so a revocation retires what it replaces. */
@@ -146,9 +160,9 @@ export async function openRelayRoom(
     toInterested,
     publish: (frame) => fan?.publish(frame),
     offset: () => offset,
-    appended: (peer, seq) => {
+    appended: (entry) => {
       offset += 1;
-      advance(peer, seq);
+      if (servable(entry)) coverage.note(entry.event);
     },
     enqueue: (work) => void (queue = queue.then(work)),
     now,

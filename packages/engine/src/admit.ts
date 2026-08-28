@@ -53,6 +53,10 @@ const unfoldable = (event: SyncEvent): ValidationError | undefined => {
  * build reached, and the author's cursor stops **below** it (D13). Advancing past a parked event
  * would be this device telling every peer it holds something it is still waiting to understand,
  * and no later exchange would ever offer it again.
+ *
+ * The cursor is what travels, not what gates delivery: a receiver walks the run using the cursor
+ * *and* what `ahead` says is held, or one refusal no upgrade reverses would stop that author's
+ * stream for the life of the device (`createHoldback`).
  */
 export const admit = (entries: readonly StoredEvent[], deps: AdmitDeps) =>
   Result.gen(async function* () {

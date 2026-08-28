@@ -66,8 +66,9 @@ export function counterValue(value: CellValue | undefined): number {
  * carries. It is the running total and not the step, because `max` cannot tell a re-delivered step
  * from a new one and would count it twice.
  *
- * A fractional or unsafe `by` throws: it would read back as zero on the next fold, silently losing
- * every increment this peer had ever made.
+ * A fractional or unsafe `by` throws, and so does one whose *running total* would leave the safe
+ * range: either reads back as zero on the next fold, silently losing every increment this peer had
+ * ever made.
  */
 export function counterAdvance(
   current: CellValue | undefined,
@@ -76,7 +77,11 @@ export function counterAdvance(
 ): CounterEntry {
   if (!Number.isSafeInteger(by)) panic(`increment by ${by}: expected a safe integer`);
   const entry = readCounter(current)[peer] ?? ZERO;
-  return by >= 0
-    ? { dec: entry.dec, inc: entry.inc + by }
-    : { dec: entry.dec - by, inc: entry.inc };
+  const next =
+    by >= 0 ? { dec: entry.dec, inc: entry.inc + by } : { dec: entry.dec - by, inc: entry.inc };
+  // the *total* is what the next fold reads back, and `readCounter` reads an unsafe one as zero:
+  // a legal step that pushes the running total over the edge would lose this peer's whole history
+  if (!Number.isSafeInteger(next.inc) || !Number.isSafeInteger(next.dec))
+    panic(`increment by ${by}: the running total would leave the safe integer range`);
+  return next;
 }

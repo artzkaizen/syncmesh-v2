@@ -20,6 +20,10 @@ describe("compile-time guarantees", () => {
     t.boolean().onConflict("min");
     // @ts-expect-error nor for json
     t.json().onConflict("max");
+    // @ts-expect-error `counter` is the column's kind, never something onConflict may name
+    t.integer().onConflict("counter");
+    // @ts-expect-error nor `set`
+    t.float().onConflict("set");
     expect(true).toBe(true);
   });
 

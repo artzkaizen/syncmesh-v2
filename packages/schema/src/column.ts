@@ -1,4 +1,4 @@
-import type { JsonValue, StrategyName } from "@syncmesh/kernel";
+import type { DeclaredStrategyName, JsonValue } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
 import type { AppValue } from "./convert.js";
@@ -14,8 +14,12 @@ export type ColumnKind =
   | "blob"
   | "uuid";
 
-/** Which conflict strategies a column of value type `T` may declare: only numbers have a meaningful max/min. */
-export type StrategyFor<T> = [T] extends [number] ? StrategyName : "lww";
+/**
+ * Which conflict strategies a column of value type `T` may declare: only numbers have a meaningful
+ * max/min. `counter` and `set` are absent on purpose — those merge inside the cell and replace the
+ * value with lattice state, so a column gets them from its kind (E26) and never from `onConflict`.
+ */
+export type StrategyFor<T> = [T] extends [number] ? DeclaredStrategyName : "lww";
 
 export interface ColumnDef {
   readonly kind: ColumnKind;
@@ -23,7 +27,7 @@ export interface ColumnDef {
   readonly primaryKey: boolean;
   readonly unique: boolean;
   readonly check?: StandardSchemaV1;
-  readonly onConflict?: StrategyName;
+  readonly onConflict?: DeclaredStrategyName;
 }
 
 /** A column: `def` is plain data, the methods return new columns. `T` is the app-facing value type. */

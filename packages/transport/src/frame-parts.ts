@@ -1,4 +1,4 @@
-import type { Cursors } from "@syncmesh/engine";
+import type { Ahead, Cursors } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import type { CborValue } from "@syncmesh/wire";
 
@@ -43,6 +43,36 @@ export const asPeer = (value: CborValue | undefined): Result<PeerId, MalformedFr
 /** `[[peer, seq], …]` — the shape cursors take wherever a position travels. */
 export const cursorPairs = (cursors: Cursors): CborValue =>
   [...cursors].map(([peer, seq]): CborValue => [peerBytes(peer), seq]);
+
+/**
+ * `[[peer, [seq, …]], …]` — the other half of D13's pair, wherever a position travels. Additive:
+ * an older build reads the element before it and stops, which is how it goes on meaning "I did
+ * not say" rather than "I hold nothing above my cursor".
+ */
+export const aheadPairs = (ahead: Ahead): CborValue =>
+  [...ahead].map(([peer, seqs]): CborValue => [peerBytes(peer), [...seqs]]);
+
+export function decodeAheadPairs(value: CborValue | undefined): Result<Ahead, MalformedFrame> {
+  return Result.gen(function* () {
+    if (!Array.isArray(value)) return malformedFrame("ahead is not an array");
+    const ahead = new Map<PeerId, readonly SeqNum[]>();
+    for (const pair of value) {
+      if (!Array.isArray(pair) || pair.length !== 2) return malformedFrame("ahead is not a pair");
+      const peer = yield* asPeer(pair[0]);
+      const seqs = pair[1];
+      if (!Array.isArray(seqs)) return malformedFrame("ahead sequences are not an array");
+      const held: SeqNum[] = [];
+      for (const seq of seqs) {
+        if (!isSafeNonNegative(seq)) return malformedFrame("ahead seq is not an integer");
+        held.push(
+          yield* parseSeqNum(seq).mapError((e) => new MalformedFrame({ message: e.message })),
+        );
+      }
+      ahead.set(peer, held);
+    }
+    return Result.ok(ahead);
+  });
+}
 
 export function decodeCursorPairs(value: CborValue | undefined): Result<Cursors, MalformedFrame> {
   return Result.gen(function* () {

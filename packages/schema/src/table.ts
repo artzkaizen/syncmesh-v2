@@ -1,5 +1,6 @@
 import type { CellValue, ColumnName, TableName } from "@syncmesh/kernel";
 
+import { isCellStrategy } from "@syncmesh/kernel";
 import { Result, TaggedError, panic } from "@syncmesh/result";
 
 import type { AnyColumn, ColumnDef, Value } from "./column.js";
@@ -80,12 +81,16 @@ export function table<const C extends Columns>(name: string, columns: C): Table<
   if (primaryKeys.length !== 1)
     panic(`${name}: expected exactly one primaryKey column, found ${primaryKeys.length}`);
   for (const [key, c] of Object.entries(columns)) {
-    if (
-      c.def.onConflict !== undefined &&
-      c.def.onConflict !== "lww" &&
-      c.def.kind !== "integer" &&
-      c.def.kind !== "float"
-    ) {
+    if (c.def.onConflict === undefined || c.def.onConflict === "lww") continue;
+    // checked at runtime as well as in the types, because `fromDrizzle` and any JavaScript caller
+    // reach `onConflict` through a cast: a cell-level strategy here would read every plain value
+    // the column ever held as the empty lattice and store `{}` in its place, on every peer
+    if (isCellStrategy(c.def.onConflict)) {
+      panic(
+        `${name}.${key}: onConflict("${c.def.onConflict}") is not a column's to declare — that strategy comes from the column's kind (E26)`,
+      );
+    }
+    if (c.def.kind !== "integer" && c.def.kind !== "float") {
       panic(`${name}.${key}: onConflict("${c.def.onConflict}") needs a numeric column`);
     }
   }

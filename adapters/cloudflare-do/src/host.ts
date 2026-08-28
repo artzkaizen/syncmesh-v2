@@ -1,4 +1,5 @@
-import type { RelayConnection, RelayRoom } from "@syncmesh/relay";
+import type { TelemetryListener } from "@syncmesh/engine";
+import type { RelayConnection, RelayLimits, RelayRoom } from "@syncmesh/relay";
 import type { BlobStore, SqliteDriver } from "@syncmesh/storage";
 
 import { decodeRelayFrame, openRelayRoom } from "@syncmesh/relay";
@@ -9,6 +10,7 @@ import type { DurableSqlStorage } from "./driver.js";
 import type { DurableWebSocket } from "./socket.js";
 
 import { doSqliteDriver } from "./driver.js";
+import { decodeResume, trackResume } from "./resume.js";
 import { durableRelaySocket } from "./socket.js";
 
 /**
@@ -34,6 +36,18 @@ export interface RelayDurableHostOptions {
   readonly maxBacklog?: number;
   /** Serve blobs from the object's own SQLite (D18). Default true; `false` for a log-only room. */
   readonly blobs?: boolean;
+  /**
+   * Per-socket ceilings — frame size and the two token buckets (E24). Forwarded whole, because a
+   * partly-overridden rate table is a table where the class nobody thought about is left open.
+   */
+  readonly limits?: Partial<RelayLimits>;
+  /** Protocol versions this room accepts (D14); narrowing it is how an operator raises the floor. */
+  readonly versions?: readonly number[];
+  /**
+   * A telemetry listener from the first frame on (D17). The room is opened lazily behind the
+   * first socket, so this is the only subscription point a host has that is early enough.
+   */
+  readonly onTelemetry?: TelemetryListener;
 }
 
 /** The three callbacks of a hibernating WebSocket object, already wired to a room. */
@@ -43,9 +57,6 @@ export interface RelayDurableHost {
   readonly message: (ws: DurableWebSocket, data: ArrayBuffer | string) => Promise<void>;
   readonly leave: (ws: DurableWebSocket) => void;
 }
-
-/** `serializeAttachment` refuses more than 16 KiB, and a throw here would reset the object. */
-const ATTACHMENT_LIMIT = 16_000;
 
 /**
  * The room's lineage id, kept in the object's own SQLite beside the log it describes. An object
@@ -81,11 +92,22 @@ const openBlobs = async (driver: SqliteDriver): Promise<BlobStore | undefined> =
  * appending to the log while hearing nothing back, and two devices holding the same events would
  * disagree until one of them reconnected.
  *
+ * All three callbacks are load-bearing: `join` is what accepts the socket for hibernation, and
+ * `leave` is what takes a closed one out of the room's client table.
+ *
  * @example
  * export class Relay extends DurableObject<Env> {
  *   #relay = relayDurableHost(this.ctx);
+ *   override fetch(request: Request) {
+ *     const { 0: client, 1: server } = new WebSocketPair();
+ *     this.#relay.join(server);
+ *     return new Response(null, { status: 101, webSocket: client });
+ *   }
  *   override async webSocketMessage(ws: WebSocket, data: ArrayBuffer | string) {
  *     await this.#relay.message(ws, data);
+ *   }
+ *   override webSocketClose(ws: WebSocket) {
+ *     this.#relay.leave(ws);
  *   }
  * }
  */
@@ -94,6 +116,7 @@ export function relayDurableHost(
   options: RelayDurableHostOptions = {},
 ): RelayDurableHost {
   const live = new Map<DurableWebSocket, RelayConnection>();
+  const resume = trackResume();
   let opening: Promise<RelayRoom> | undefined;
 
   const open = async (): Promise<RelayRoom> => {
@@ -111,6 +134,9 @@ export function relayDurableHost(
       ...(options.keepaliveMs !== undefined && { keepaliveMs: options.keepaliveMs }),
       ...(options.pageSize !== undefined && { pageSize: options.pageSize }),
       ...(options.maxBacklog !== undefined && { maxBacklog: options.maxBacklog }),
+      ...(options.limits !== undefined && { limits: options.limits }),
+      ...(options.versions !== undefined && { versions: options.versions }),
+      ...(options.onTelemetry !== undefined && { onTelemetry: options.onTelemetry }),
       ...(blobs !== undefined && { blobs }),
     });
     return room.match({
@@ -120,9 +146,10 @@ export function relayDurableHost(
   };
 
   /**
-   * Every socket the object holds, bound to the room. `waking` is the socket whose own frame is
-   * a fresh `join`: replaying its stored one as well would be a second join on one socket, which
-   * the room answers by closing the socket the newer join superseded — itself.
+   * Every socket the object holds, bound to the room and handed its script back. `waking` is the
+   * socket whose own frame is a fresh `join`: replaying its stored one as well would be a second
+   * join on one socket, which the room answers by closing the socket the newer join superseded —
+   * itself.
    */
   const restore = async (waking: DurableWebSocket | undefined): Promise<void> => {
     const room = await (opening ??= open());
@@ -130,10 +157,11 @@ export function relayDurableHost(
       if (live.has(ws)) continue;
       const conn = room.connect(durableRelaySocket(ws));
       live.set(ws, conn);
-      const rejoin = ws === waking ? null : ws.deserializeAttachment();
-      // a socket with nothing kept never joined, or joined with cursors too wide to keep; either
+      const script = decodeResume(ws.deserializeAttachment());
+      resume.restored(ws, script);
+      // a socket with nothing kept never joined, or joined with a script too wide to keep; either
       // way it is left bound and silent, and its next frame gets the room's `join-first` refusal
-      if (rejoin !== null) conn.receive(rejoin);
+      if (ws !== waking) for (const frame of script) conn.receive(frame);
     }
   };
 
@@ -143,17 +171,20 @@ export function relayDurableHost(
       // the protocol is binary; a text frame is noise
       if (!(data instanceof ArrayBuffer)) return;
       const bytes = new Uint8Array(data);
-      // decoded here only to notice a join — the connection decodes it again, which is the price
-      // of a resume point the object can rebuild itself from after an eviction
+      // decoded here only to notice what belongs in the resume script — the connection decodes it
+      // again, which is the price of a resume point the object can rebuild itself from
       const decoded = decodeRelayFrame(bytes);
-      const joining = decoded.isOk() && decoded.value.kind === "join";
+      const frame = decoded.isOk() ? decoded.value : undefined;
+      const joining = frame?.kind === "join";
       await restore(joining ? ws : undefined);
-      if (joining && bytes.length <= ATTACHMENT_LIMIT) ws.serializeAttachment(bytes);
+      if (joining) resume.joined(ws, bytes);
+      else if (frame?.kind === "session" && frame.frame.kind === "grant") resume.granted(ws, bytes);
       live.get(ws)?.receive(bytes);
     },
     leave: (ws) => {
       const conn = live.get(ws);
       live.delete(ws);
+      resume.forget(ws);
       conn?.closed();
     },
   };

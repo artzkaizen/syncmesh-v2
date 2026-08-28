@@ -9,6 +9,7 @@ import { createMemoryEventStore } from "../store.js";
 
 export const PEER_A = parsePeerId("a".repeat(64)).unwrap();
 export const PEER_B = parsePeerId("b".repeat(64)).unwrap();
+export const PEER_C = parsePeerId("c".repeat(64)).unwrap();
 
 export const seq = (n: number) => parseSeqNum(n).unwrap();
 

@@ -1,20 +1,33 @@
-import { panic } from "@syncmesh/result";
-
 import type { TableName } from "./change.js";
 import type { Ordering } from "./primitives.js";
-import type { Cell, CellValue, ColumnName } from "./record.js";
+import type { Cell, CellValue, ColumnName, JsonValue } from "./record.js";
 
 import { joinCounters } from "./counter.js";
-import { joinSets } from "./set.js";
+import { canonicalJson, joinSets } from "./set.js";
 import { compareStamp } from "./stamp.js";
 
 export type Strategy = (incoming: Cell, current: Cell) => Cell;
 
 /**
+ * The strategies that pick one of the two cells whole, and the only ones an app may name in
+ * `onConflict`. A cell's *value* survives all three: whichever of the two cells wins, it is a cell
+ * the author actually wrote.
+ */
+export type DeclaredStrategyName = "lww" | "max" | "min";
+
+/**
  * `lww`, `max` and `min` pick one of the two cells whole; `counter` and `set` merge *inside* it and
  * are the column's kind rather than anything an app declares (E26, D04-C).
  */
-export type StrategyName = "lww" | "max" | "min" | "counter" | "set";
+export type StrategyName = DeclaredStrategyName | "counter" | "set";
+
+/**
+ * Whether the strategy merges inside the cell. These two read the cell as lattice state, so naming
+ * one on a column whose writes are plain values replaces every one of them with the empty
+ * lattice — which is why {@link DeclaredStrategyName} is what `onConflict` accepts, and why the
+ * schema refuses these at runtime as well, where a cast could otherwise reach them.
+ */
+export const isCellStrategy = (name: StrategyName): boolean => name === "counter" || name === "set";
 
 export type MergeSpec = ReadonlyMap<TableName, ReadonlyMap<ColumnName, StrategyName>>;
 
@@ -28,14 +41,41 @@ const rank = (v: CellValue) =>
         ? 2
         : typeof v === "string"
           ? 3
-          : panic("max/min compare scalars only; the schema refuses them on json and blob columns");
+          : v instanceof Uint8Array
+            ? 4
+            : 5;
 /* oxlint-enable anti-slop/no-runtime-typeof */
 
-/** Total order on scalar cell values: null < booleans < numbers < strings, each by its natural order. Panics on json/blob — a definition defect. */
+/** Byte order, shortest-prefix-first — the same order two peers reach from the same bytes. */
+const compareBytes = (a: Uint8Array, b: Uint8Array): Ordering => {
+  for (let i = 0; i < Math.min(a.length, b.length); i += 1) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return a.length === b.length ? 0 : a.length < b.length ? -1 : 1;
+};
+
+/**
+ * Total order on cell values: `null` < booleans < numbers < strings < bytes < JSON containers, each
+ * by its natural order, containers by their canonical text.
+ *
+ * Total on **every** `CellValue` and never throwing, because the values it compares are not only
+ * the ones a local schema declared: a snapshot page and a repair record carry cells straight from
+ * another peer, and a `max` column whose value arrived as an object must still join to one answer
+ * rather than take the fold down. A schema still refuses `max`/`min` on json and blob columns —
+ * that check is what keeps an app from meaning this, not what keeps a peer from sending it.
+ */
 export function compareValue(a: CellValue, b: CellValue): Ordering {
   const byKind = rank(a) - rank(b);
   if (byKind !== 0) return byKind < 0 ? -1 : 1;
   if (a === b) return 0;
+  if (a instanceof Uint8Array && b instanceof Uint8Array) return compareBytes(a, b);
+  if (rank(a) === 5) {
+    // SAFETY: rank 5 is everything that is neither scalar nor bytes, which is JSON containers
+    const [x, y] = [canonicalJson(a as JsonValue), canonicalJson(b as JsonValue)];
+    return x === y ? 0 : x < y ? -1 : 1;
+  }
   // SAFETY: equal rank means equal runtime type, and null/boolean/number/string all support <
   return (a as number) < (b as number) ? -1 : 1;
 }

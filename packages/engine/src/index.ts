@@ -27,6 +27,8 @@ export {
   quarantineReason,
   retryQuarantined,
 } from "./quarantine.js";
+export type { CoverageTracker } from "./coverage.js";
+export { trackCoverage } from "./coverage.js";
 export type { FoldDeps, FoldPath } from "./fold.js";
 export { createFoldPath } from "./fold.js";
 export type { Boot } from "./boot.js";
@@ -68,9 +70,11 @@ export {
   EMPTY_COVERAGE,
   coversCursors,
   generateSyncMessage,
+  heldAhead,
   initialSyncState,
   mergeAhead,
   receiveSyncMessage,
+  sameAhead,
 } from "./sync.js";
 export type { Link } from "./link.js";
 export { createLink } from "./link.js";

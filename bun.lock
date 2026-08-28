@@ -20,6 +20,7 @@
         "@syncmesh/relay": "workspace:*",
         "@syncmesh/result": "workspace:*",
         "@syncmesh/storage": "workspace:*",
+        "@syncmesh/wire": "workspace:*",
       },
       "devDependencies": {
         "@cloudflare/workers-types": "^4.20250726.0",
@@ -32,7 +33,6 @@
         "@syncmesh/sqlite-bun": "workspace:*",
         "@syncmesh/temporal": "workspace:*",
         "@syncmesh/transport": "workspace:*",
-        "@syncmesh/wire": "workspace:*",
         "@types/bun": "catalog:",
         "drizzle-orm": "latest",
         "typescript": "catalog:",

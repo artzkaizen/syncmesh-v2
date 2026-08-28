@@ -25,10 +25,12 @@ const KEY = { v: 0, peerId: 1, seq: 2, hlc: 3, procedure: 5, partition: 6, chang
 export const CHANGE = { kind: 0, table: 1, key: 2, data: 3 } as const;
 
 /**
- * The row-level change kinds. 3, 4 and 5 belong to the cell-level kinds (`CELL_KIND`); a decoder
- * that does not know them must refuse the event whole, which is what the last guard in
- * {@link decodeChange} does — folding an unknown payload as an ordinary value would silently
- * mangle the column instead.
+ * The row-level change kinds, and the only ones an event carries today. 3, 4 and 5 are reserved
+ * for the cell-level kinds (`CELL_KIND`), which no encoder here emits; a decoder that does not
+ * know a kind refuses the event whole, which is what the last guard in {@link decodeChange} does
+ * — folding an unknown payload as an ordinary value would silently mangle the column instead.
+ * Refusing is not parking: the event becomes a wire error the transports drop, so the quarantine
+ * D13 asks for cannot see it (see `QuarantineReason`).
  */
 const KIND = { insert: 0, update: 1, delete: 2 } as const;
 

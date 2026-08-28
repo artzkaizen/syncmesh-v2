@@ -5,6 +5,7 @@ import { Result, TaggedError } from "@syncmesh/result";
 import type { ReceiveReport } from "./engine.js";
 import type { ValidationError } from "./errors.js";
 import type { StoreFailure, StoredEvent } from "./store.js";
+import type { Cursors } from "./sync.js";
 
 /**
  * Why a build could not take an event, in the three buckets a *later* build can act on (D13).
@@ -15,7 +16,13 @@ import type { StoreFailure, StoredEvent } from "./store.js";
 export type QuarantineReason =
   /** A table this build has no definition for — the shape a newer peer's new table arrives in. */
   | "unknown-table"
-  /** A change kind this build cannot apply; the kernel would not know what to fold. */
+  /**
+   * A change kind this build cannot apply; the kernel would not know what to fold. Reached today
+   * only by a change built in this process: `decodeChange` refuses an unknown kind and both
+   * transports drop the event as a wire error before `admit` ever sees it, so a newer build's
+   * kind does not yet arrive as something to park. Closing that needs the codec to carry a kind
+   * it cannot name, which is a wire decision D13 did not make.
+   */
   | "unknown-kind"
   /** The ladder refused it: grant, device, partition, schema or policy. An upgrade rarely helps. */
   | "refused";
@@ -50,11 +57,16 @@ export const isUnknown = (reason: QuarantineReason): boolean => reason !== "refu
 /**
  * One parked event: what arrived, and the verdict this build reached about it.
  *
- * `entry` is the {@link StoredEvent} exactly as it was handed in — the author's own signature
- * over the author's own bytes, never re-derived and never rebuilt from a partial parse. That is
- * the whole point of parking rather than dropping: the only thing that will ever understand this
- * event is a later build reading these same bytes, and a re-signed forgery of them is worth
- * nothing to it.
+ * `entry` is the {@link StoredEvent} as it was handed in, with the author's own signature beside
+ * it: never re-derived, and never a verdict written back into the event. The only thing that will
+ * ever understand a parked event is a later build reading it, and a re-signed forgery of it is
+ * worth nothing to that build.
+ *
+ * What it is not yet is the received **bytes**. Everything reaching `park` has been through
+ * `decodeEventCore`, which drops keys this build has no name for, and neither transport keeps the
+ * core it verified — so a newer build's added field is already gone, and the kept signature no
+ * longer covers a re-encode of what is left. D13 asks for the bytes; carrying them needs
+ * {@link StoredEvent} to keep the core it arrived as, which no store does.
  */
 export interface Parked {
   readonly entry: StoredEvent;
@@ -92,6 +104,8 @@ export interface QuarantineOptions {
   /** Parked events kept per reason. `undefined` takes the default of 128; the oldest goes first, and says so. */
   readonly limit: number | undefined;
   readonly onEvict: (evicted: QuarantineEvicted) => void;
+  /** This device's contiguous position per author; what `ahead` is reported relative to. */
+  readonly cursors: () => Cursors;
 }
 
 export interface QuarantineStore {
@@ -112,7 +126,7 @@ const DEFAULT_LIMIT = 128;
  * was about. Bounded per reason, oldest first, and never silently — see {@link QuarantineEvicted}.
  */
 export function createQuarantine(options: QuarantineOptions): QuarantineStore {
-  const { limit = DEFAULT_LIMIT, onEvict } = options;
+  const { limit = DEFAULT_LIMIT, onEvict, cursors } = options;
   // insertion-ordered per reason, which is what "oldest first" means without reading a clock:
   // an eviction order taken from wall time would differ between two devices holding the same
   // events, and this store is already the last place that should depend on one
@@ -149,12 +163,17 @@ export function createQuarantine(options: QuarantineOptions): QuarantineStore {
       return held;
     },
     ahead: () => {
+      const at = cursors();
       const seqs = new Map<PeerId, SeqNum[]>();
       for (const bucket of buckets.values()) {
         for (const { entry } of bucket.values()) {
-          const held = seqs.get(entry.event.peerId) ?? [];
-          held.push(entry.event.seqNum);
-          seqs.set(entry.event.peerId, held);
+          const { peerId, seqNum } = entry.event;
+          // a snapshot install can adopt a coverage past something still parked here; saying we
+          // hold it *above* our cursor would then be a claim about a position we are already past
+          if (Number(seqNum) <= Number(at.get(peerId) ?? 0)) continue;
+          const held = seqs.get(peerId) ?? [];
+          held.push(seqNum);
+          seqs.set(peerId, held);
         }
       }
       for (const held of seqs.values()) held.sort((a, b) => a - b);

@@ -1,5 +1,5 @@
 import type { EventStore, TelemetryListener } from "@syncmesh/engine";
-import type { SqlDriver } from "@syncmesh/storage";
+import type { BlobStore, SqlDriver } from "@syncmesh/storage";
 
 import { panic } from "@syncmesh/result";
 
@@ -124,13 +124,18 @@ export async function startRelay(
     });
     closers.push(stores.close);
     const driver = stores.driver ?? panic("defaultStore always carries its driver");
+    // this room's own blob store, never written back into the shared tuning: the rooms are opened
+    // one after another, and a room that inherited the previous one's store would serve and keep
+    // another room's bytes under D18
+    let blobs: BlobStore | undefined;
     if (options.blobs !== false) {
       const { sqlBlobStore } = await import("@syncmesh/storage");
       const opened = await sqlBlobStore(driver);
-      if (opened.isOk()) Object.assign(roomOptions, { blobs: opened.value });
+      if (opened.isOk()) blobs = opened.value;
     }
     const room = await openRelayRoom({
       ...roomOptions,
+      ...(blobs !== undefined && { blobs }),
       name,
       store: stores.events,
       epoch: await epochOf(driver),

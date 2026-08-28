@@ -42,12 +42,22 @@ const trafficOf = (kind: RelayFrame["kind"]): TrafficClass =>
 export function createConnection(socket: RelaySocket, room: RoomState): RelayConnection {
   const sender = createSender(socket, room.maxBacklog);
   let me: PeerId | undefined;
+  /**
+   * A fatal refusal ends the conversation here and not only on the socket. `close()` starts a
+   * handshake; frames the runtime had already buffered still arrive after it, and a token bucket
+   * refills while they do. One of those appended after a refusal leaves the room's log holding
+   * N+1 without N — a hole every later joiner is paged and no author ever re-sends.
+   */
+  let closed = false;
   /** What this socket asked for (E13); absent wants everything the policy already allows. */
   let interest: Interest | undefined;
 
   const refuse = (code: string, message: string, fatal = false): void => {
     sender.send(errorFrame(code, message));
-    if (fatal) socket.close(code);
+    if (fatal) {
+      closed = true;
+      socket.close(code);
+    }
   };
 
   const conversation: Conversation = {
@@ -79,7 +89,7 @@ export function createConnection(socket: RelaySocket, room: RoomState): RelayCon
       me = peer;
       interest = wanted;
       room.clients.set(peer, { peer, sender, socket, wants });
-      sender.send(helloFrame(selected, room.keepaliveMs, room.epoch, new Map(room.cursors)));
+      sender.send(helloFrame(selected, room.keepaliveMs, room.epoch, room.cursors()));
       // who is here now — never how they got here: presence has no history to page through
       const here = room.presence.all();
       for (const entry of here) sender.send(presenceFrame(entry.wire));
@@ -121,6 +131,7 @@ export function createConnection(socket: RelaySocket, room: RoomState): RelayCon
 
   return {
     receive: (bytes) => {
+      if (closed) return;
       // the cheapest refusal there is: a frame over the cap is never decoded, only measured
       if (bytes.byteLength > room.limits.maxFrameBytes) {
         refuse("frame-too-large", `frames are capped at ${room.limits.maxFrameBytes} bytes`, true);
@@ -152,6 +163,7 @@ export function createConnection(socket: RelaySocket, room: RoomState): RelayCon
     },
     drain: () => sender.drain(),
     closed: () => {
+      closed = true;
       if (me !== undefined && room.clients.get(me)?.sender === sender) room.clients.delete(me);
     },
   };

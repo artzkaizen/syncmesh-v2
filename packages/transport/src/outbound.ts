@@ -68,23 +68,32 @@ export function createOutbound(deps: OutboundDeps) {
   };
 
   /**
-   * What we hold, counted after the events we owed them have gone out and stamped with what we
-   * had folded when we counted — the two facts that let the far side tell divergence from a peer
-   * that is merely behind (E16).
+   * What we hold, counted after the events we owed them have gone out and stamped with both halves
+   * of where we stood when we counted — the cursors and what sits above them. Those are what let
+   * the far side tell divergence from a peer that is merely a fold ahead or behind (E16, D13).
    */
   const sendDigest = (): void =>
     send(
       KIND.digest,
       "digest",
-      digestFrame(scope, engine.coverage().synced, tableNames(engine.digest(interest))),
+      digestFrame(
+        scope,
+        engine.coverage().synced,
+        tableNames(engine.digest(interest)),
+        engine.ahead(),
+      ),
     );
 
-  /** Our contiguous position, sent once whatever the caller is already doing has finished. */
+  /**
+   * Our position — the contiguous cursors, and what we hold above them — sent once whatever the
+   * caller is already doing has finished. The second half only narrows what the far side bothers
+   * to send: a peer that ignores it re-sends a run we then skip.
+   */
   const cursorsAfter = (queue: Promise<unknown>): Promise<void> =>
     queue.then(async () => {
       const cursors = await engine.cursors();
       if (cursors.isOk())
-        send(KIND.cursors, "cursors", cursorsFrame(identity.peerId, cursors.value));
+        send(KIND.cursors, "cursors", cursorsFrame(identity.peerId, cursors.value, engine.ahead()));
     });
 
   return { send, drain, envelopeOf, sendDigest, cursorsAfter };

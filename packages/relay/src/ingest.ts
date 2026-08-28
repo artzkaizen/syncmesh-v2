@@ -18,7 +18,7 @@ const append = async (
 ): Promise<Result<number, StoreFailure>> => {
   const stored = await room.store.append(entry);
   if (stored.isErr()) return Result.err(stored.error);
-  room.appended(entry.event.peerId, entry.event.seqNum);
+  room.appended(entry);
   const relayed = relayedFrame(wire, room.offset());
   const receivers = room.toInterested(relayed, entry.event, entry.event.peerId);
   room.publish(relayed);

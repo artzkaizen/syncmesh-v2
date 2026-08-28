@@ -10,8 +10,8 @@ const REASON_LIMIT = 120;
  * The half of a hibernatable WebSocket a room touches. Structural for the reason the SQL handle
  * is: a package that imports the platform's types cannot be run anywhere the platform is not.
  *
- * The attachment is typed as the bytes this package actually stores in it — the socket's `join`
- * frame, which is what an evicted object needs to put the connection back (see {@link relayDurableHost}).
+ * The attachment is typed as the bytes this package actually stores in it — the socket's resume
+ * script, which is what an evicted object needs to put the connection back (see `trackResume`).
  */
 export interface DurableWebSocket {
   readonly readyState: number;

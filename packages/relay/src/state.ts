@@ -1,5 +1,5 @@
-import type { EventStore } from "@syncmesh/engine";
-import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
+import type { Cursors, EventStore, StoredEvent } from "@syncmesh/engine";
+import type { PeerId, SyncEvent } from "@syncmesh/kernel";
 import type { BlobStore } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { PresenceStore } from "@syncmesh/transport";
@@ -34,7 +34,13 @@ export interface RoomState {
   readonly grants: GrantCache;
   readonly presence: PresenceStore;
   readonly clients: Map<PeerId, Client>;
-  readonly cursors: Map<PeerId, SeqNum>;
+  /**
+   * Per author, the highest sequence below which the room holds **every** entry it could serve
+   * (D13). Contiguous rather than the highest seen, and counted over the entries catch-up can
+   * actually send: `hello` carries this, and every client decides what to push from it, so a
+   * number above a hole is one nobody will ever fill.
+   */
+  readonly cursors: () => Cursors;
   /** Every client but one — the author, who already has what it sent. */
   readonly toClients: (frame: Uint8Array, except?: PeerId) => void;
   /** The same, minus every client whose interest excludes this event (E13); counts who got it. */
@@ -42,8 +48,8 @@ export interface RoomState {
   /** The same frame to the other instances serving this room; best-effort by design (D09-B). */
   readonly publish: (frame: Uint8Array) => void;
   readonly offset: () => number;
-  /** One more event in the log: the offset moves and this author's cursor with it. */
-  readonly appended: (peer: PeerId, seq: SeqNum) => void;
+  /** One more entry in the log: the offset moves, and this author's cursor with it if it can be served. */
+  readonly appended: (entry: StoredEvent) => void;
   /** Room-serialized async work, so offsets and acks stay ordered. */
   readonly enqueue: (work: () => Promise<void>) => void;
   /** The room's clock, injectable so a rate limit can be tested without waiting for one. */

@@ -35,6 +35,21 @@ export const mergeAhead = (a: Ahead, b: Ahead): Ahead => {
   return merged;
 };
 
+/**
+ * Whether two peers hold the same events *above* their cursors. Equal cursors alone no longer
+ * mean equal folded sets: that is the whole point of `{ contiguous, ahead }` — a peer can hold
+ * events its cursor does not describe. Anything comparing two peers' rows has to check both
+ * halves or it will read "one of us is one event ahead" as divergence (E16).
+ */
+export const sameAhead = (a: Ahead, b: Ahead): boolean => {
+  for (const peer of new Set([...a.keys(), ...b.keys()])) {
+    const [ours, theirs] = [a.get(peer) ?? [], b.get(peer) ?? []];
+    if (ours.length !== theirs.length) return false;
+    if (ours.some((seq, i) => Number(seq) !== Number(theirs[i] ?? 0))) return false;
+  }
+  return true;
+};
+
 /** Cursors per scope: what a state has folded, or what a log has compacted below. */
 export interface Coverage {
   readonly synced: Cursors;
@@ -76,7 +91,7 @@ export interface SyncDoc {
 export const initialSyncState: SyncState = { inFlight: false, sentCursors: false };
 
 /** Whether they told us they already hold this event past a gap of their own. */
-const heldAhead = (ahead: Ahead | undefined, entry: StoredEvent): boolean =>
+export const heldAhead = (ahead: Ahead | undefined, entry: StoredEvent): boolean =>
   ahead?.get(entry.event.peerId)?.some((seq) => seq === entry.event.seqNum) === true;
 
 /** Adds `ahead` only when there is one: an absent field is "I did not say", not "I hold nothing". */

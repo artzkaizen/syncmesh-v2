@@ -62,6 +62,10 @@ const cursorOf = (engine: Engine, author = PEER_B) =>
 
 const aheadOf = (engine: Engine, author = PEER_B) => (engine.ahead().get(author) ?? []).map(Number);
 
+/** Folded past a gap *and* parked below one — what the receive path walks the run with. */
+const holdingOf = (engine: Engine, author = PEER_B) =>
+  (engine.holding().get(author) ?? []).map(Number);
+
 /** Three notes from one author, as an old build could have written them. */
 const threeNotes = async (author: Engine): Promise<readonly SyncEvent[]> => {
   const events: SyncEvent[] = [];
@@ -89,6 +93,37 @@ describe("contiguous cursors (D13)", () => {
     (await device.receiveBatch(entriesOf([e2!]))).unwrap();
     expect(cursorOf(device)).toBe(3);
     expect(aheadOf(device)).toEqual([]);
+  });
+
+  test("`ahead` never names a position the cursor is already past, parked or folded", async () => {
+    const author = peer(PEER_B, { validate: validatorFor(newSchema) });
+    const e1 = (
+      await author.mutate(
+        CREATE,
+        (tx) => tx.insert(NOTES, key("n1"), row({ id: "n1", body: "body-1" })),
+        { partition: USER },
+      )
+    ).unwrap();
+    const memo = (
+      await author.mutate(
+        CREATE,
+        (tx) => tx.insert(MEMOS, key("m1"), row({ id: "m1", body: "later" })),
+        { partition: USER },
+      )
+    ).unwrap();
+
+    const device = peer(PEER_A, { validate: validatorFor(oldSchema) });
+    (await device.receiveBatch(entriesOf([e1, memo]))).unwrap();
+    expect(device.quarantine()).toHaveLength(1);
+    expect(aheadOf(device)).toEqual([]); // nothing folded above the cursor
+    expect(holdingOf(device)).toEqual([2]); // the parked event, which the device does hold
+
+    // a snapshot carries the rows that event stood for, so its coverage moves the cursor past
+    // something still sitting in the quarantine — which is then not "above" anything any more
+    await device.installSnapshot(author.snapshot());
+    expect(cursorOf(device)).toBe(2);
+    expect(device.quarantine()).toHaveLength(1);
+    expect(holdingOf(device)).toEqual([]);
   });
 
   test("a snapshot's coverage raises the cursor and takes the strays with it", async () => {
@@ -165,7 +200,8 @@ describe("an event this build cannot read is parked, never dropped", () => {
     expect(parked).toEqual(["UnknownTable"]);
     // the parked event is the hole: the cursor stops below it, and says what it holds past it
     expect(cursorOf(device)).toBe(1);
-    expect(aheadOf(device)).toEqual([2, 3]);
+    expect(aheadOf(device)).toEqual([3]); // folded past the hole, and offered to peers as held
+    expect(holdingOf(device)).toEqual([2, 3]); // and the hole itself is bytes this device has
     expect(device.quarantine().map((p) => p.reason)).toEqual(["unknown-table"]);
 
     // an update that still cannot read it changes nothing but leaves it parked
@@ -187,8 +223,6 @@ describe("an event this build cannot read is parked, never dropped", () => {
     const [e1, e2, e3] = await threeNotes(author);
     // SAFETY: a kind outside the kernel's union is exactly what a newer build sends an older one;
     // the type system cannot express it here because this build is the older one
-    // SAFETY: a kind outside the kernel's union is exactly what a newer build sends an older
-    // one; this build is the older one, so its own types cannot name the kind
     const conjure: Change = Object.assign({ table: NOTES, key: N1 }, { kind: "conjure" }) as Change;
     const forged: SyncEvent = { ...e2!, changes: [conjure] };
 
@@ -247,30 +281,29 @@ describe("unknownHandling is per mesh, and moves only the telling", () => {
   });
 
   test("a refusal that no update reverses is reported whatever the setting says", async () => {
-    const { warned } = await (async () => {
-      const author = peer(PEER_B);
-      const [e1] = await threeNotes(author);
-      const device = peer(PEER_A, {
-        validate: validatorFor(oldSchema),
-        unknownHandling: "ignore",
-      });
-      const seen: string[] = [];
-      device.onQuarantine(({ reason }) => void seen.push(reason._tag));
-      // a column this build knows, holding a kind it does not allow: understood perfectly, and
-      // refused for a reason no later release reverses — unlike an unknown table, which is only
-      // unreadable until the update lands
-      const violating: SyncEvent = {
-        ...e1!,
-        changes: [
-          { kind: "insert", table: NOTES, key: key("n9"), row: row({ id: "n9", body: 7 }) },
-        ],
-      };
+    const author = peer(PEER_B);
+    const [e1] = await threeNotes(author);
+    // a column this build knows, holding a kind it does not allow: understood perfectly, and
+    // refused for a reason no later release reverses — unlike an unknown table, which is only
+    // unreadable until the update lands
+    const violating: SyncEvent = {
+      ...e1!,
+      changes: [{ kind: "insert", table: NOTES, key: key("n9"), row: row({ id: "n9", body: 7 }) }],
+    };
+
+    for (const unknownHandling of ["warn", "ignore", "fail"] as const) {
+      const device = peer(PEER_A, { validate: validatorFor(oldSchema), unknownHandling });
+      const warned: string[] = [];
+      const raised: string[] = [];
+      device.onQuarantine(({ reason }) => void warned.push(reason._tag));
+      device.onError((error) => void raised.push(error._tag));
       (await device.receive({ event: violating })).unwrap();
-      return { warned: seen };
-    })();
-    // "ignore" silences the unknown, never the refusal: one is a build that will catch up, the
-    // other is a write that will never be admissible however long the device waits
-    expect(warned).toEqual(["SchemaViolation"]);
+      // "ignore" silences the unknown, never the refusal: one is a build that will catch up, the
+      // other is a write that will never be admissible however long the device waits
+      expect(warned).toEqual(["SchemaViolation"]);
+      // and "fail" is the unknown's setting too: a refusal is not the test failure it names
+      expect(raised).toEqual([]);
+    }
   });
 });
 
@@ -298,7 +331,8 @@ describe("the quarantine is bounded, and says so when it drops something", () =>
     expect(raised.map((e) => e._tag)).toEqual(["QuarantineEvicted"]);
     // the dropped one is offered again, because the cursor never claimed it
     expect(cursorOf(device)).toBe(0);
-    expect(aheadOf(device)).toEqual([2, 3]);
+    expect(aheadOf(device)).toEqual([]);
+    expect(holdingOf(device)).toEqual([2, 3]);
   });
 });
 

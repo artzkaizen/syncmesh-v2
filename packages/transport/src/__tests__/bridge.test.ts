@@ -1,11 +1,15 @@
 import type { Quarantined } from "@syncmesh/engine";
+import type { SeqNum } from "@syncmesh/kernel";
 
 import { describe, expect, test } from "bun:test";
 
 import type { BridgeError } from "../bridge.js";
+import type { Frame } from "../frame.js";
+import type { FrameLink } from "../link.js";
 import type { Peer } from "./fixtures.js";
 
 import { bridgeFramedLink } from "../bridge.js";
+import { cursorsFrame, decodeFrame } from "../frame.js";
 import { loopbackPair } from "../link.js";
 import { ISSUER, T0, bodyOf, mintFor, peer, write } from "./fixtures.js";
 
@@ -36,6 +40,41 @@ const connect = (x: Peer, y: Peer) => {
 };
 
 describe("the bridge over a loopback", () => {
+  test("an event a peer says it already holds above its cursor is not sent again", async () => {
+    const author = peer(40, "acct_a");
+    const events = [];
+    for (const n of [1, 2, 3]) events.push((await write(author, `n${n}`, `b${n}`)).unwrap());
+
+    // one link end, driven by hand: we play a peer standing at cursor 1 that already holds seq 3
+    const sent: Frame[] = [];
+    const link: FrameLink = {
+      send: (bytes) => void sent.push(decodeFrame(bytes).unwrap()),
+      onFrame: (cb) => {
+        deliver = cb;
+        return () => undefined;
+      },
+    };
+    let deliver: ((frame: Uint8Array) => void) | undefined;
+    const bridge = bridgeFramedLink(link, {
+      engine: author.engine,
+      identity: author.identity,
+      grants: author.grants,
+      now: () => T0,
+    });
+
+    const seqs = events.map((event) => event.seqNum);
+    // SAFETY: the loop above wrote three events, so both indexes exist
+    const [first, , third] = seqs as [SeqNum, SeqNum, SeqNum];
+    const at = new Map([[author.identity.peerId, first]]);
+    const held = new Map([[author.identity.peerId, [third]]]);
+    deliver?.(cursorsFrame(peer(81, "acct_b").identity.peerId, at, held));
+    await bridge.flush();
+
+    const offered = sent.filter((f) => f.kind === "event").length;
+    expect(offered).toBe(1); // seq 2 only: seq 3 is one they told us they hold
+    bridge.close();
+  });
+
   test("grants travel first: two granted strangers converge with zero quarantines", async () => {
     const alice = peer(40, "acct_a");
     const bob = peer(80, "acct_b", 500);

@@ -1,4 +1,4 @@
-import type { Cursors } from "@syncmesh/engine";
+import type { Ahead, Cursors } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 import type { CborValue } from "@syncmesh/wire";
 
@@ -10,8 +10,10 @@ import type { SnapshotFrame } from "./snap-frame.js";
 import {
   KIND,
   MalformedFrame,
+  aheadPairs,
   asPeer,
   cursorPairs,
+  decodeAheadPairs,
   decodeCursorPairs,
   malformedFrame,
 } from "./frame-parts.js";
@@ -22,7 +24,13 @@ export { MalformedFrame } from "./frame-parts.js";
 export type Frame =
   | { readonly kind: "grant"; readonly wire: Uint8Array }
   | { readonly kind: "grant-request"; readonly peerId: PeerId; readonly invite?: string }
-  | { readonly kind: "cursors"; readonly from: PeerId; readonly cursors: Cursors }
+  | {
+      readonly kind: "cursors";
+      readonly from: PeerId;
+      readonly cursors: Cursors;
+      /** What they hold above those cursors; absent from an older build, which says nothing. */
+      readonly ahead?: Ahead;
+    }
   | { readonly kind: "event"; readonly wire: Uint8Array }
   /** The ephemeral tier (D16): signed, never stored, dropped rather than queued. */
   | { readonly kind: "presence"; readonly wire: Uint8Array }
@@ -36,6 +44,8 @@ export type Frame =
       /** What the sender had folded when it counted; a receiver holding otherwise concludes nothing. */
       readonly at: Cursors;
       readonly digests: ReadonlyMap<string, bigint>;
+      /** What the sender held above `at` when it counted; without it nothing may be compared. */
+      readonly ahead?: Ahead;
     }
   /** The join exchange (RFC-0019), one tag with a sub-kind of its own. */
   | SnapshotFrame
@@ -53,8 +63,12 @@ export const grantRequestFrame = (peerId: PeerId, invite?: string): Uint8Array =
       : [KIND.grantRequest, peerBytes(peerId), invite],
   );
 
-export const cursorsFrame = (from: PeerId, cursors: Cursors): Uint8Array =>
-  encodeCbor([KIND.cursors, peerBytes(from), cursorPairs(cursors)]);
+export const cursorsFrame = (from: PeerId, cursors: Cursors, ahead?: Ahead): Uint8Array =>
+  encodeCbor(
+    ahead === undefined
+      ? [KIND.cursors, peerBytes(from), cursorPairs(cursors)]
+      : [KIND.cursors, peerBytes(from), cursorPairs(cursors), aheadPairs(ahead)],
+  );
 
 export const eventFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.event, wire]);
 
@@ -70,13 +84,16 @@ export const digestFrame = (
   scope: string,
   at: Cursors,
   digests: ReadonlyMap<string, bigint>,
-): Uint8Array =>
-  encodeCbor([
+  ahead?: Ahead,
+): Uint8Array => {
+  const base: CborValue[] = [
     KIND.digest,
     scope,
     cursorPairs(at),
     [...digests].map(([table, digest]): CborValue => [table, digest.toString(16)]),
-  ]);
+  ];
+  return encodeCbor(ahead === undefined ? base : [...base, aheadPairs(ahead)]);
+};
 
 export function decodeFrame(frame: Uint8Array): Result<Frame, MalformedFrame> {
   return Result.gen(function* () {
@@ -92,8 +109,8 @@ export function decodeFrame(frame: Uint8Array): Result<Frame, MalformedFrame> {
       return Result.ok({ kind: "presence", wire: payload } as const);
     }
     if (kind === KIND.grantRequest) return decodeRequest(payload, extra);
-    if (kind === KIND.cursors) return decodeCursors(payload, extra);
-    if (kind === KIND.digest) return decodeDigest(payload, extra, outer[3]);
+    if (kind === KIND.cursors) return decodeCursors(payload, extra, outer[3]);
+    if (kind === KIND.digest) return decodeDigest(payload, extra, outer[3], outer[4]);
     if (kind === KIND.snapshot) return decodeSnapshotFrame(outer);
     return Result.ok({ kind: "unknown" } as const);
   });
@@ -115,6 +132,7 @@ function decodeDigest(
   payload: CborValue | undefined,
   at: CborValue | undefined,
   extra: CborValue | undefined,
+  above: CborValue | undefined,
 ): Result<Frame, MalformedFrame> {
   if (!isString(payload)) return malformedFrame("digest scope is not text");
   if (!Array.isArray(extra)) return malformedFrame("digests are not an array");
@@ -133,16 +151,23 @@ function decodeDigest(
       return malformedFrame("digest is not hexadecimal");
     }
   }
-  return Result.ok({ kind: "digest", scope: payload, at: cursors.value, digests } as const);
+  const base = { kind: "digest", scope: payload, at: cursors.value, digests } as const;
+  if (above === undefined) return Result.ok(base);
+  const ahead = decodeAheadPairs(above);
+  return ahead.isErr() ? Result.err(ahead.error) : Result.ok({ ...base, ahead: ahead.value });
 }
 
 function decodeCursors(
   payload: CborValue | undefined,
   extra: CborValue | undefined,
+  above: CborValue | undefined,
 ): Result<Frame, MalformedFrame> {
   return Result.gen(function* () {
     const from = yield* asPeer(payload);
     const cursors = yield* decodeCursorPairs(extra);
-    return Result.ok({ kind: "cursors", from, cursors } as const);
+    const base = { kind: "cursors", from, cursors } as const;
+    if (above === undefined) return Result.ok(base);
+    const ahead = yield* decodeAheadPairs(above);
+    return Result.ok({ ...base, ahead });
   });
 }
