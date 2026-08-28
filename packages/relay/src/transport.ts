@@ -1,7 +1,7 @@
-import type { Interest, Unsubscribe } from "@syncmesh/engine";
+import type { Cursors, Interest, Unsubscribe } from "@syncmesh/engine";
 import type { Transport, TransportContext } from "@syncmesh/transport";
 
-import { createHub } from "@syncmesh/engine";
+import { createHub, interestFrom, narrows } from "@syncmesh/engine";
 import { grantFrame, grantRequestFrame, presenceFrame } from "@syncmesh/transport";
 
 import type { SessionHooks } from "./session.js";
@@ -58,6 +58,8 @@ export function relayTransport(options: RelayTransportOptions): Transport {
   let live: RelayDial | undefined;
   let stopped = false;
   let fatal = false;
+  /** This join asked from nothing because the interest outgrew what our cursors describe (D23). */
+  let repaging = false;
   let online = false;
   let backoff = baseMs;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -85,11 +87,28 @@ export function relayTransport(options: RelayTransportOptions): Transport {
     deadline = setTimeout(() => live?.close(), keepaliveMs * 2.5);
   };
 
+  /**
+   * The position to ask from — ours, unless our cursors describe a slice this device has since
+   * widened past (D23).
+   *
+   * A scoped cursor means *"everything below N that I asked for"*. Widen the interest and the
+   * same number silently claims events the old filter dropped and the new one wants, so nothing
+   * would ever offer them again. Asking from nothing instead re-pages the run under the new
+   * interest, and the events that arrive are folded normally — the engine dedups on what it has
+   * stored, not on what its cursor claims, so the repair is complete.
+   *
+   * Narrowing keeps the cursor, because a cursor true for a wider slice is true for a smaller
+   * one. So does an unscoped cursor, whose plain meaning is already the stronger claim.
+   */
+  const askFrom = (context: TransportContext): Cursors => {
+    const coverage = context.engine.coverage();
+    repaging = !narrows(options.interest, interestFrom(coverage.scope));
+    return repaging ? new Map() : coverage.synced;
+  };
+
   const join = (): void => {
     if (ctx === undefined) return;
-    sendSafe(
-      joinFrame(versions, ctx.identity.peerId, ctx.engine.coverage().synced, options.interest),
-    );
+    sendSafe(joinFrame(versions, ctx.identity.peerId, askFrom(ctx), options.interest));
     for (const wire of ctx.grants.allWires()) sendSafe(grantFrame(wire));
   };
 
@@ -113,8 +132,14 @@ export function relayTransport(options: RelayTransportOptions): Transport {
         fatal = true;
       },
       onBlobAnswer: blobs.answer,
-      onCaughtUp: caughtUpResolve,
+      onCaughtUp: () => {
+        repaging = false;
+        caughtUpResolve();
+      },
     };
+    // what a scoped coverage on the last page has to match before this device adopts it
+    if (options.interest !== undefined) Object.assign(hooks, { interest: options.interest });
+    Object.assign(hooks, { repaging: () => repaging });
     const offs = wireSession(ctx, dialed, hooks);
     const offClose = dialed.onClose(() => {
       clearTimeout(deadline);

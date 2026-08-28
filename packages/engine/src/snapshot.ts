@@ -6,7 +6,7 @@ import type { FoldBatch } from "./engine.js";
 import type { Interest } from "./interest.js";
 import type { Coverage } from "./sync.js";
 
-import { rowsIn } from "./interest.js";
+import { interestText, rowsIn } from "./interest.js";
 
 /**
  * State instead of history (RFC-0019). A device joining a room with 300k events does not want
@@ -102,8 +102,14 @@ export async function installSnapshot(deps: InstallDeps, snapshot: Snapshot): Pr
   };
   await persist(batch);
   // the coverage is adopted last and only here: until the rows are durable, claiming to hold
-  // the events behind them would turn a failed install into permanent, silent loss
-  adopt(snapshot.coverage);
+  // the events behind them would turn a failed install into permanent, silent loss.
+  // A scoped snapshot's coverage is adopted *as scoped* (D23): the rows are complete for that
+  // slice and for no more, and a number that does not say so reads as the stronger claim
+  adopt(
+    snapshot.scope === undefined
+      ? snapshot.coverage
+      : { ...snapshot.coverage, scope: interestText(snapshot.scope) },
+  );
   if (snapshot.rows.length > 0) notify(batch);
   return { rows: snapshot.rows.length, batch };
 }

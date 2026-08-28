@@ -134,6 +134,14 @@ const POSTGRES_MIGRATIONS: readonly (readonly string[])[] = [
       PRIMARY KEY (peer, local)
     )`,
   ],
+  [
+    // one row, or none: the interest this device's cursors are true for (D23). A database that
+    // has never held one is unscoped, which is the plain, stronger meaning of a cursor
+    `CREATE TABLE IF NOT EXISTS _syncmesh_scope (
+      id INTEGER PRIMARY KEY CHECK (id = 0),
+      scope TEXT NOT NULL
+    )`,
+  ],
 ];
 
 const postgresCell = (kind: ColumnKind, cell: CellValue): SqlValue => {
@@ -201,6 +209,10 @@ export const POSTGRES: Dialect = {
     anyCursor: `SELECT 1 FROM _syncmesh_cursors LIMIT 1`,
     clearRows: `DELETE FROM _syncmesh_state`,
     clearCursors: `DELETE FROM _syncmesh_cursors`,
+    selectScope: `SELECT scope FROM _syncmesh_scope`,
+    upsertScope: `INSERT INTO _syncmesh_scope (id, scope) VALUES (0, $1)
+      ON CONFLICT (id) DO UPDATE SET scope = excluded.scope`,
+    clearScope: `DELETE FROM _syncmesh_scope`,
   },
   capture,
   placeholder: (position) => `$${position}`,

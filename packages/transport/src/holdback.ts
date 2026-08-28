@@ -37,6 +37,28 @@ export function createHoldback(engine: Engine, self: PeerId, gapLimit: number) {
       }
       return false;
     },
+    /**
+     * Everything buffered for `author` at or below `at`, in run order — what a coverage about to
+     * be adopted is going to claim this device holds (D23).
+     *
+     * A gap inside that range is not a reason to keep holding: the coverage is precisely the
+     * statement that nothing will ever fill it, so the events either side of it are all that is
+     * coming. They have to be folded *before* the cursor moves past them, or the claim outruns
+     * what this device actually has — the failure `installSnapshot` orders its rows to avoid.
+     */
+    upTo: (author: PeerId, at: number): readonly StoredEvent[] => {
+      const buffer = held.get(author);
+      if (buffer === undefined) return [];
+      const ready: StoredEvent[] = [];
+      for (const seq of [...buffer.keys()].filter((s) => s <= at).sort((x, y) => x - y)) {
+        const entry = buffer.get(seq);
+        if (entry === undefined) continue;
+        buffer.delete(seq);
+        ready.push(entry);
+      }
+      if (buffer.size === 0) held.delete(author);
+      return ready;
+    },
     /** The contiguous run above what the engine holds, in order. */
     drain: (author: PeerId): readonly StoredEvent[] => {
       const buffer = held.get(author);

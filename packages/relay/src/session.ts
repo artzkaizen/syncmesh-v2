@@ -1,6 +1,8 @@
-import type { Cursors, StoredEvent, Unsubscribe } from "@syncmesh/engine";
+import type { Coverage, Cursors, Interest, StoredEvent, Unsubscribe } from "@syncmesh/engine";
+import type { PeerId } from "@syncmesh/kernel";
 import type { TransportContext } from "@syncmesh/transport";
 
+import { interestText } from "@syncmesh/engine";
 import { Temporal } from "@syncmesh/temporal";
 import { createHoldback, cursorsFrame, eventFrame, grantFrame } from "@syncmesh/transport";
 import { decodeAndVerify, relayEnvelope, signEvent } from "@syncmesh/wire";
@@ -30,6 +32,13 @@ export interface SessionHooks {
   readonly onBlobAnswer: (hash: string, bytes: Uint8Array | undefined) => void;
   /** The last catch-up page has landed: this source has nothing more to hand over right now. */
   readonly onCaughtUp: () => void;
+  /** What this session joined with, so a coverage scoped to something else is not adopted. */
+  readonly interest?: Interest;
+  /**
+   * This join asked from nothing because the interest widened past what our cursors describe
+   * (D23). The pages coming back are a repair, not a tail.
+   */
+  readonly repaging?: () => boolean;
 }
 
 /** Everything one session subscribes to; the returned unsubscribes are the session's teardown. */
@@ -45,22 +54,82 @@ export function wireSession(
   let caughtUp = false;
   let relayCursors: Cursors = new Map();
 
-  const fold = (wires: readonly Uint8Array[]): void => {
+  /** Everything the holdback can let go of for these authors, in run order. */
+  const release = async (authors: Iterable<PeerId>): Promise<void> => {
+    for (const author of authors) {
+      const batch = holdback.drain(author);
+      if (batch.length > 0) await engine.receiveBatch(batch);
+    }
+  };
+
+  /**
+   * `direct` skips the holdback, and only a widening re-page sets it.
+   *
+   * That re-page is being handed a run this device's cursor already claims — the cursor is still
+   * the one the old, narrower interest earned — so the gap rule would read every event in it as
+   * one already held and drop the very events the re-page exists to deliver. `admit` dedups on
+   * what is *stored*, which is the question that actually matters here, and the ordering the
+   * holdback would have imposed is the order the relay's pages already arrive in.
+   */
+  const fold = (wires: readonly Uint8Array[], direct = false): void => {
     chain = chain.then(async () => {
-      const authors = new Set<StoredEvent["event"]["peerId"]>();
+      const authors = new Set<PeerId>();
+      const straight: StoredEvent[] = [];
       for (const wire of wires) {
         const verified = decodeAndVerify(wire);
         if (verified.isErr()) continue; // junk from a relay is dropped, never folded
+        if (direct) {
+          straight.push(verified.value);
+          continue;
+        }
         if (holdback.put(verified.value)) {
           hooks.rejoin();
           return;
         }
         authors.add(verified.value.event.peerId);
       }
-      for (const author of authors) {
-        const batch = holdback.drain(author);
-        if (batch.length > 0) await engine.receiveBatch(batch);
+      if (straight.length > 0) await engine.receiveBatch(straight);
+      await release(authors);
+    });
+  };
+
+  /**
+   * Takes on the coverage a filtered catch-up ended with (D23) — behind the fold chain, so the
+   * events it accounts for are folded before this device claims to hold them, exactly as
+   * `installSnapshot` adopts a snapshot's coverage only after its rows.
+   *
+   * A coverage scoped to something other than what we asked with is dropped rather than adopted.
+   * It would be a claim about a slice this device did not request, and adopting it is precisely
+   * how a cursor comes to describe events nobody will ever send again.
+   */
+  const adoptScoped = (scoped: Coverage): void => {
+    if (scoped.scope !== interestText(hooks.interest)) return;
+    chain = chain.then(async () => {
+      // fold what the coverage is about to claim *before* claiming it — the order
+      // `installSnapshot` keeps for its rows, and for the same reason. These are events the pages
+      // did deliver, which the holdback kept behind a hole the filter made and nothing will fill
+      for (const [author, seq] of scoped.synced) {
+        const held = holdback.upTo(author, Number(seq));
+        if (held.length > 0) await engine.receiveBatch(held);
       }
+      engine.adoptCoverage(scoped);
+      // and then whatever sat above it, which the moved cursor has just made contiguous
+      await release(scoped.synced.keys());
+    });
+  };
+
+  /**
+   * After a widening re-page that the relay did not filter: the cursors this device holds are
+   * now true for the wider interest, because the repair ran from nothing and delivered the whole
+   * run. Saying so is what stops the next join re-paging the same history again.
+   */
+  const rescope = (): void => {
+    chain = chain.then(() => {
+      const { synced, local } = engine.coverage();
+      const scope = interestText(hooks.interest);
+      // rebuilt rather than spread, so an interest that widened all the way back to everything
+      // drops the old scope instead of carrying it forward
+      engine.adoptCoverage(scope === "" ? { synced, local } : { synced, local, scope });
     });
   };
 
@@ -100,8 +169,11 @@ export function wireSession(
       hooks.onHello(frame.keepaliveMs);
     } else if (frame.kind === "page") {
       for (const wire of frame.grants) void grants.register(wire);
-      fold(frame.events);
+      const repaging = hooks.repaging?.() === true;
+      fold(frame.events, repaging);
       if (!frame.more) {
+        if (frame.scoped !== undefined) adoptScoped(frame.scoped);
+        else if (repaging) rescope();
         caughtUp = true;
         pushOutstanding();
         hooks.onCaughtUp();

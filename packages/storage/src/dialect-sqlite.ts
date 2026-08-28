@@ -124,6 +124,14 @@ const SQLITE_MIGRATIONS: readonly (readonly string[])[] = [
     ) WITHOUT ROWID`,
   ],
   [`ALTER TABLE events ADD COLUMN sig BLOB`],
+  [
+    // one row, or none: the interest this device's cursors are true for (D23). A database that
+    // has never held one is unscoped, which is the plain, stronger meaning of a cursor
+    `CREATE TABLE IF NOT EXISTS state_scope (
+      id INTEGER PRIMARY KEY CHECK (id = 0),
+      scope TEXT NOT NULL
+    ) WITHOUT ROWID`,
+  ],
 ];
 
 const sqliteCell = (kind: ColumnKind, cell: CellValue): SqlValue => {
@@ -185,6 +193,9 @@ export const SQLITE: Dialect = {
     anyCursor: `SELECT 1 FROM state_cursors LIMIT 1`,
     clearRows: `DELETE FROM state_rows`,
     clearCursors: `DELETE FROM state_cursors`,
+    selectScope: `SELECT scope FROM state_scope`,
+    upsertScope: `INSERT OR REPLACE INTO state_scope (id, scope) VALUES (0, ?)`,
+    clearScope: `DELETE FROM state_scope`,
   },
   capture,
   placeholder: () => "?",

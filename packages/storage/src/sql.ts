@@ -74,6 +74,15 @@ export function coverageOf(rows: readonly SqlRow[]): Result<Coverage, StateCorru
   });
 }
 
+/**
+ * The interest text the scope table holds, or `undefined` when it holds none (D23). Absent is a
+ * device that never adopted a filtered catch-up, and its cursors keep their plain meaning.
+ */
+export const scopeOf = (rows: readonly SqlRow[]): string | undefined => {
+  const value = rows[0]?.[0];
+  return !value ? undefined : String(value);
+};
+
 /** A `(hlc_ms, hlc_logical)` row, or absent when the query matched nothing. */
 export const hlcRow = (row: SqlRow | undefined): Result<Hlc | undefined, StoreFailure> => {
   if (row === undefined) return Result.ok(undefined);

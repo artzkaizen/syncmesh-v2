@@ -1,11 +1,17 @@
-import type { Cursors, Interest } from "@syncmesh/engine";
+import type { Coverage, Cursors, Interest } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import type { Frame, MalformedFrame } from "@syncmesh/transport";
 import type { CborValue } from "@syncmesh/wire";
 
 import { interestFrom, interestText } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
-import { asPeer, decodeCursorPairs, decodeFrame, malformedFrame } from "@syncmesh/transport";
+import {
+  asPeer,
+  cursorPairs,
+  decodeCursorPairs,
+  decodeFrame,
+  malformedFrame,
+} from "@syncmesh/transport";
 import { decodeCbor, encodeCbor, hexToBytes, isSafeNonNegative, isString } from "@syncmesh/wire";
 
 /**
@@ -77,6 +83,12 @@ export type RelayFrame =
       readonly events: readonly Uint8Array[];
       readonly more: boolean;
       readonly offset: number;
+      /**
+       * On the last page of a filtered catch-up: how far the relay's *unfiltered* run reached,
+       * and the interest it filtered by (D23). Absent from an unfiltered catch-up and from any
+       * page but the last, because it is only true once every page before it has landed.
+       */
+      readonly scoped?: Coverage;
     }
   | { readonly kind: "relayed"; readonly wire: Uint8Array; readonly offset: number }
   /** Bytes offered under their own hash; the relay verifies before it stores (D18). */
@@ -125,12 +137,30 @@ export const kaFrame = (): Uint8Array => encodeCbor([KIND.ka]);
 export const ackFrame = (id: string, offset: number): Uint8Array =>
   encodeCbor([KIND.ack, id, offset]);
 
+/**
+ * The `scoped` tail rides only the last page of a *filtered* catch-up (D23). It is one additive
+ * element, so a relay that never sends it and a client that never reads it both behave exactly
+ * as before — an older build reads the element before it and stops (D14).
+ */
 export const pageFrame = (
   grants: readonly Uint8Array[],
   events: readonly Uint8Array[],
   more: boolean,
   offset: number,
-): Uint8Array => encodeCbor([KIND.page, [...grants], [...events], more ? 1 : 0, offset]);
+  scoped?: Coverage,
+): Uint8Array =>
+  encodeCbor(
+    scoped === undefined || scoped.scope === undefined
+      ? [KIND.page, [...grants], [...events], more ? 1 : 0, offset]
+      : [
+          KIND.page,
+          [...grants],
+          [...events],
+          more ? 1 : 0,
+          offset,
+          [cursorPairs(scoped.synced), scoped.scope],
+        ],
+  );
 
 export const relayedFrame = (wire: Uint8Array, offset: number): Uint8Array =>
   encodeCbor([KIND.relayed, wire, offset]);
@@ -205,13 +235,20 @@ const decodeAck: ControlDecoder = (a, b) =>
     ? Result.ok({ kind: "ack", id: a, offset: b } as const)
     : malformedFrame("ack is not [id, offset]");
 
-const decodePage: ControlDecoder = (a, b, c, d) =>
+const decodePage: ControlDecoder = (a, b, c, d, e) =>
   Result.gen(function* () {
     const grants = yield* asWires(a);
     const events = yield* asWires(b);
     if (!isSafeNonNegative(c) || !isSafeNonNegative(d))
       return malformedFrame("page tail is not [more, offset]");
-    return Result.ok({ kind: "page", grants, events, more: c === 1, offset: d } as const);
+    const page = { kind: "page", grants, events, more: c === 1, offset: d } as const;
+    if (e === undefined) return Result.ok(page);
+    if (!Array.isArray(e) || e.length !== 2 || !isString(e[1]))
+      return malformedFrame("page scope is not [cursors, interest]");
+    const synced = yield* decodeCursorPairs(e[0]);
+    // `local` is never anyone else's to speak for: a relay describes the synced half and no more
+    const scoped: Coverage = { synced, local: NO_CURSORS, scope: e[1] };
+    return Result.ok({ ...page, scoped });
   });
 
 /** `[hash, bytes]` — the two blob frames that carry content. */

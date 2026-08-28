@@ -135,6 +135,50 @@ export function interestKey(interest: Interest): string {
 }
 
 /**
+ * Whether `next` provably admits nothing `previous` did not — the test that lets a device keep a
+ * scoped cursor through an interest change (D23).
+ *
+ * **Unsure answers `false`, and that asymmetry is the whole design.** A wrong `true` keeps a
+ * cursor that claims events the new interest wants and the old one dropped, so they are skipped
+ * for the life of the device and nothing ever says so. A wrong `false` costs one re-join. The
+ * predicates are compared as written rather than reasoned about, so two spellings of the same
+ * condition read as a change and pay that re-join — the cheap side of the trade.
+ */
+export function narrows(next: Interest | undefined, previous: Interest | undefined): boolean {
+  // an unscoped cursor is already the stronger claim; nothing can widen past everything
+  if (previous === undefined || isEverything(previous)) return true;
+  if (next === undefined) return false;
+  return (
+    within(next.partitions, previous.partitions) &&
+    within(next.tables, previous.tables) &&
+    narrowsWhere(next.where, previous.where)
+  );
+}
+
+const isEverything = (interest: Interest): boolean =>
+  interest.partitions === undefined &&
+  interest.tables === undefined &&
+  interest.where === undefined;
+
+/** `undefined` means "all of them", so it is the widest value a list can take, never the emptiest. */
+const within = (
+  next: readonly string[] | undefined,
+  previous: readonly string[] | undefined,
+): boolean => {
+  if (previous === undefined) return true;
+  if (next === undefined) return false;
+  const allowed = new Set(previous.map(String));
+  return next.every((value) => allowed.has(String(value)));
+};
+
+/** Adding a predicate narrows; dropping one widens; changing one is a question this does not answer. */
+const narrowsWhere = (next: PolicyNode | undefined, previous: PolicyNode | undefined): boolean => {
+  if (previous === undefined) return true;
+  if (next === undefined) return false;
+  return JSON.stringify(next) === JSON.stringify(previous);
+};
+
+/**
  * The events above `theirs` that the asker actually wants. The filter runs at the **sender**, so
  * an uninterested event never becomes bytes — the point of the whole feature.
  */

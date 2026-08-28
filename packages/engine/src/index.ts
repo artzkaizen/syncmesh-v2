@@ -103,6 +103,7 @@ export {
   interestKey,
   interestText,
   matchesInterest,
+  narrows,
   predicateColumns,
   rowsIn,
 } from "./interest.js";

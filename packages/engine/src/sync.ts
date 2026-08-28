@@ -54,6 +54,16 @@ export const sameAhead = (a: Ahead, b: Ahead): boolean => {
 export interface Coverage {
   readonly synced: Cursors;
   readonly local: Cursors;
+  /**
+   * The interest these cursors are true for, as `interestText` writes it (D23). Absent is the
+   * plain, stronger claim — "everything below N" — and is what every unscoped device carries.
+   *
+   * A filtered catch-up hands over a cursor that means *"everything below N that I asked for"*,
+   * and a number that says which is indistinguishable on the wire from one that does not. A
+   * device holding a scoped cursor that widens its interest would silently skip every event the
+   * old filter dropped, forever, so the scope travels with the number that needs it.
+   */
+  readonly scope?: string;
 }
 
 export const EMPTY_COVERAGE: Coverage = { synced: new Map(), local: new Map() };

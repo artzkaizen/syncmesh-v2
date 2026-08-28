@@ -39,6 +39,11 @@ export interface CoverageTracker {
   /**
    * Takes on what a snapshot stood for (RFC-0019), raising each author's cursor and never
    * lowering one — a snapshot older than what this device already holds must not un-hold it.
+   *
+   * A `scope` on what is adopted is taken on with it (D23): the numbers and the interest that
+   * makes them true are one claim, and holding the first without the second is what turns a
+   * scoped cursor into a lie with better manners. Adopting an unscoped coverage clears it, which
+   * is the honest direction — everything below N unqualified is the stronger claim.
    */
   readonly adopt: (coverage: Coverage) => void;
   readonly current: () => Coverage;
@@ -48,6 +53,8 @@ export interface CoverageTracker {
 
 export function trackCoverage(initial: Coverage = EMPTY_COVERAGE): CoverageTracker {
   const scopes = { synced: new Map<PeerId, Chain>(), local: new Map<PeerId, Chain>() };
+  // set only by `adopt`: folding an event is evidence of that event and of nothing about a slice
+  let scope = initial.scope;
   const seed = (chains: Map<PeerId, Chain>, cursors: Coverage["synced"]) => {
     for (const [peer, seq] of cursors) chains.set(peer, { contiguous: seq, ahead: new Map() });
   };
@@ -80,8 +87,12 @@ export function trackCoverage(initial: Coverage = EMPTY_COVERAGE): CoverageTrack
     adopt: (adopted) => {
       for (const [peer, seq] of adopted.synced) raise(scopes.synced, peer, seq);
       for (const [peer, seq] of adopted.local) raise(scopes.local, peer, seq);
+      scope = adopted.scope;
     },
-    current: () => ({ synced: cursorsOf(scopes.synced), local: cursorsOf(scopes.local) }),
+    current: () => {
+      const coverage = { synced: cursorsOf(scopes.synced), local: cursorsOf(scopes.local) };
+      return scope === undefined ? coverage : { ...coverage, scope };
+    },
     ahead: () => {
       const ahead = new Map<PeerId, readonly SeqNum[]>();
       for (const [peer, chain] of scopes.synced) {

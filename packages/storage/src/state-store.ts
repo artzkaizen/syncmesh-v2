@@ -1,4 +1,4 @@
-import type { StateStore } from "@syncmesh/engine";
+import type { Coverage, StateStore } from "@syncmesh/engine";
 import type { RowKey, RowRecord, State, TableName } from "@syncmesh/kernel";
 
 import { StateCorrupt, type StoreFailure } from "@syncmesh/engine";
@@ -9,7 +9,7 @@ import type { SqlDriver, SqlRow, SqlValue } from "./driver.js";
 import type { Projection } from "./projection.js";
 
 import { dialectOf } from "./dialect.js";
-import { attempt, coverageOf, inTransaction } from "./sql.js";
+import { attempt, coverageOf, inTransaction, scopeOf } from "./sql.js";
 
 const corrupt = (message: string) => new StateCorrupt({ message });
 
@@ -67,7 +67,14 @@ export function sqlStateStore(
         return Result.ok<State>(state);
       }),
     loadCursors: () =>
-      query("loadCursors failed", SQL.selectCursors).then((rows) => rows.andThen(coverageOf)),
+      Result.gen(async function* () {
+        const rows = yield* Result.await(query("loadCursors failed", SQL.selectCursors));
+        const coverage = yield* coverageOf(rows);
+        const scoped = yield* Result.await(query("loadScope failed", SQL.selectScope));
+        const scope = scopeOf(scoped);
+        // the numbers and the interest that makes them true load together or the cursor is a lie
+        return Result.ok<Coverage>(scope === undefined ? coverage : { ...coverage, scope });
+      }),
     commit: (rows, coverage) =>
       attempt("commit failed", () =>
         transaction(async () => {
@@ -77,6 +84,10 @@ export function sqlStateStore(
             await driver.run(SQL.upsertCursor, [peer, 0, seq]);
           for (const [peer, seq] of coverage.local)
             await driver.run(SQL.upsertCursor, [peer, 1, seq]);
+          // in the same transaction as the numbers: a scope that survived a commit the cursors
+          // did not, or the other way round, is exactly the mismatch D23 exists to prevent
+          if (coverage.scope === undefined) await driver.run(SQL.clearScope);
+          else await driver.run(SQL.upsertScope, [coverage.scope]);
           await projection?.apply(rows);
         }),
       ),
@@ -85,6 +96,7 @@ export function sqlStateStore(
         transaction(async () => {
           await driver.run(SQL.clearRows);
           await driver.run(SQL.clearCursors);
+          await driver.run(SQL.clearScope);
           await projection?.clear();
         }),
       ),

@@ -35,6 +35,10 @@ export interface StateSql {
   readonly anyCursor: string;
   readonly clearRows: string;
   readonly clearCursors: string;
+  /** The interest the cursors are true for, one row or none (D23); absent means unscoped. */
+  readonly selectScope: string;
+  readonly upsertScope: string;
+  readonly clearScope: string;
 }
 
 /**

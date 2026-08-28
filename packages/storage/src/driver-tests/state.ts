@@ -55,6 +55,32 @@ export const stateCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
     },
   },
   {
+    name: "state: the interest a cursor is true for is stored with it, and survives a reopen (D23)",
+    run: async () => {
+      const scope = '{"partitions":["org:acme"]}';
+      const first = await openDriver("state-scope");
+      const store = await open(first);
+      equal((await store.loadCursors()).unwrap().scope, undefined, "unscoped until told");
+
+      (await write(store, "a", 1, { ...coverage, scope })).unwrap();
+      equal((await store.loadCursors()).unwrap().scope, scope, "scope read back");
+
+      // it has to outlive the process, or a device that widens between runs cannot tell that its
+      // numbers describe a slice it no longer asks for
+      await first.close?.();
+      const reopened = await open(await openDriver("state-scope"));
+      equal((await reopened.loadCursors()).unwrap().scope, scope, "scope survives a reopen");
+
+      // and widening back to everything drops it, rather than leaving a stale claim behind
+      (await write(reopened, "b", 2)).unwrap();
+      equal((await reopened.loadCursors()).unwrap().scope, undefined, "cleared with the coverage");
+
+      (await write(reopened, "c", 3, { ...coverage, scope })).unwrap();
+      (await reopened.clear()).unwrap();
+      equal((await reopened.loadCursors()).unwrap().scope, undefined, "clear empties it too");
+    },
+  },
+  {
     name: "state: durable — write, close, reopen the same name, read",
     run: async () => {
       const first = await openDriver("state-durable");

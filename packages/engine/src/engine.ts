@@ -114,6 +114,16 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi {
   readonly holding: () => Ahead;
   /** What this engine has folded, per author and scope. */
   readonly coverage: () => Coverage;
+  /**
+   * Takes on a coverage that events already folded stand for (D23) — what a filtered catch-up
+   * hands over at its end. Raises each author's cursor, never lowers one, and takes on the
+   * `scope` that makes the numbers true.
+   *
+   * Separate from `installSnapshot` because there are no rows to install: the events themselves
+   * arrived and were folded, and what is being adopted is the claim about the ones that were
+   * filtered out — the only thing that can move a cursor past a hole nobody is going to fill.
+   */
+  readonly adoptCoverage: (coverage: Coverage) => void;
   /** Records what `peer` holds, as of `at`; links call it on every cursor exchange. Feeds `compact`. */
   readonly acknowledge: (peer: PeerId, cursors: Cursors, at: Temporal.Instant) => void;
   /** What each peer was last acknowledged as holding. */
@@ -301,6 +311,7 @@ export function createEngine(options: EngineOptions): Engine {
     ahead: coverage.ahead,
     holding: () => mergeAhead(coverage.ahead(), parked.ahead()),
     coverage: coverage.current,
+    adoptCoverage: coverage.adopt,
     acknowledge: (peer, cursors, at) => {
       acks.set(peer, { cursors, at });
       ackHub.emit(peer);

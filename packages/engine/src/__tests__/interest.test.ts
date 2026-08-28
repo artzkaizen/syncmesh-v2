@@ -4,7 +4,13 @@ import { parsePartitionKey } from "@syncmesh/kernel";
 import { all, any, evaluate, gt, isIn, lt, ne, not, rowIs } from "@syncmesh/policy";
 import { describe, expect, test } from "bun:test";
 
-import { EVERYTHING, interestKey, matchesInterest, predicateColumns } from "../interest.js";
+import {
+  EVERYTHING,
+  interestKey,
+  matchesInterest,
+  narrows,
+  predicateColumns,
+} from "../interest.js";
 import { CREATE, N1, PEER_A, hlcAt, key, procedure, row, seq, setup, table } from "./fixtures.js";
 
 const JOBS = table("jobs");
@@ -166,5 +172,49 @@ describe("eventsSince", () => {
     );
     // and an interest is optional: no argument is the behaviour that existed before it
     expect((await a.engine.eventsSince(new Map())).unwrap()).toHaveLength(3);
+  });
+});
+
+describe("whether an interest change can keep its cursor", () => {
+  test("an unscoped cursor survives anything, because it already claims more", () => {
+    expect(narrows({ partitions: [ACME] }, undefined)).toBe(true);
+    expect(narrows({ partitions: [ACME] }, EVERYTHING)).toBe(true);
+    expect(narrows(undefined, undefined)).toBe(true);
+  });
+
+  test("dropping to fewer partitions or tables narrows; adding one does not", () => {
+    const both = { partitions: [ACME, GLOBEX] };
+    expect(narrows({ partitions: [ACME] }, both)).toBe(true);
+    expect(narrows(both, { partitions: [ACME] })).toBe(false);
+    expect(narrows({ tables: [NOTES] }, { tables: [NOTES, JOBS] })).toBe(true);
+    expect(narrows({ tables: [NOTES, JOBS] }, { tables: [NOTES] })).toBe(false);
+  });
+
+  test("asking for everything again is the widest move there is", () => {
+    expect(narrows(undefined, { partitions: [ACME] })).toBe(false);
+    expect(narrows(EVERYTHING, { partitions: [ACME] })).toBe(false);
+  });
+
+  test("every dimension has to narrow, not just one", () => {
+    // fewer partitions but more tables is still a device asking to be told about more
+    expect(
+      narrows(
+        { partitions: [ACME], tables: [NOTES, JOBS] },
+        { partitions: [ACME, GLOBEX], tables: [NOTES] },
+      ),
+    ).toBe(false);
+  });
+
+  test("adding a predicate narrows; dropping one widens", () => {
+    const filtered = { where: rowIs({ done: false }) };
+    expect(narrows(filtered, {})).toBe(true);
+    expect(narrows({}, filtered)).toBe(false);
+    expect(narrows(filtered, filtered)).toBe(true);
+  });
+
+  test("a predicate this cannot compare answers no, and pays a re-join rather than a silent skip", () => {
+    // `rank > 6` really is narrower than `rank > 5`, and reasoning that out is not worth being
+    // wrong at: a wrong yes skips events for the life of the device, a wrong no costs a catch-up
+    expect(narrows({ where: gt("rank", 6) }, { where: gt("rank", 5) })).toBe(false);
   });
 });
