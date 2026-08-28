@@ -1,6 +1,7 @@
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
 import { Result, TaggedError } from "@syncmesh/result";
+import { decodeEventCore } from "@syncmesh/wire";
 
 import type { ReceiveReport } from "./engine.js";
 import type { ValidationError } from "./errors.js";
@@ -203,7 +204,28 @@ export async function retryQuarantined(
 ): Promise<Result<ReceiveReport, StoreFailure>> {
   const held = parked.take();
   if (held.length === 0) return Result.ok({ folded: 0, skipped: 0, quarantined: 0 });
-  const report = await receive(held.map(({ entry }) => entry));
+  const report = await receive(held.map(({ entry }) => reread(entry)));
   if (report.isErr()) for (const entry of held) parked.park(entry);
   return report;
 }
+
+/**
+ * The entry as *this* build reads it, rather than as the build that parked it did.
+ *
+ * `entry.event` is a decode, and a decode drops every key its build had no name for. Keeping the
+ * author's core is only worth anything if something reads it again, and this is the only place
+ * that does: a build that has since learned the key gets it back here or nowhere. The bytes are
+ * untouched and the signature beside them still covers them, so this re-reads rather than
+ * re-derives — a re-encode of what the old build could see is exactly what the core is kept to
+ * avoid.
+ *
+ * An entry with no core came from a local write, which never met a codec; there is nothing to
+ * re-read and the event as held is the whole of it. So is a core this build cannot decode at
+ * all, which would be a build that got worse rather than better.
+ */
+const reread = (entry: StoredEvent): StoredEvent =>
+  entry.core === undefined
+    ? entry
+    : decodeEventCore(entry.core)
+        .map((event): StoredEvent => ({ ...entry, event }))
+        .unwrapOr(entry);

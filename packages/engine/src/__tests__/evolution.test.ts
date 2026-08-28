@@ -1,6 +1,6 @@
 import type { Change, SyncEvent } from "@syncmesh/kernel";
 
-import { parsePartitionKey } from "@syncmesh/kernel";
+import { parsePartitionKey, readRow } from "@syncmesh/kernel";
 import { defineSchema, t } from "@syncmesh/schema";
 import { decodeEventCore, encodeEventCore } from "@syncmesh/wire";
 import { grownCore } from "@syncmesh/wire/wire-tests";
@@ -11,7 +11,7 @@ import type { EngineError } from "../errors.js";
 import type { ProbeEvent, Validator } from "../validate.js";
 
 import { createValidator } from "../validate.js";
-import { CREATE, N1, PEER_A, PEER_B, key, row, setup } from "./fixtures.js";
+import { CREATE, N1, PEER_A, PEER_B, column, key, row, setup } from "./fixtures.js";
 
 const USER = parsePartitionKey("user:acct_a").unwrap();
 
@@ -435,6 +435,36 @@ describe("what the quarantine holds is the author's own bytes (D13)", () => {
     expect(parked?.entry.core).toBe(core);
     expect(parked?.entry.sig).toBe(sig);
     expect(encodeEventCore(parked?.entry.event ?? memo)).not.toEqual(core);
+  });
+
+  test("and the retry reads those bytes, not the decode the build that parked it made", async () => {
+    const author = peer(PEER_B, { validate: validatorFor(newSchema) });
+    const real = (
+      await author.mutate(
+        CREATE,
+        (tx) => tx.insert(MEMOS, key("m1"), row({ id: "m1", body: "what the author wrote" })),
+        { partition: USER },
+      )
+    ).unwrap();
+
+    // the two halves deliberately disagree, which is what a decode that dropped something looks
+    // like from the outside: `event` is the poorer reading, `core` is what the author signed
+    const poorer: SyncEvent = {
+      ...real,
+      changes: [{ kind: "insert", table: MEMOS, key: key("m1"), row: row({ id: "m1", body: "" }) }],
+    };
+    const core = encodeEventCore(real);
+
+    const build = upgradable(validatorFor(oldSchema));
+    const device = peer(PEER_A, { validate: build.validator });
+    (await device.receive({ event: poorer, core, sig: new Uint8Array(64) })).unwrap();
+    expect(device.quarantine().map((p) => p.reason)).toEqual(["unknown-table"]);
+
+    // upgraded, the retry folds what the core says rather than what this build could read then
+    build.upgrade(validatorFor(newSchema));
+    expect((await device.retryQuarantined()).unwrap().folded).toBe(1);
+    const body = readRow(device.state(), MEMOS, key("m1"))?.get(column("body"));
+    expect(body).toBe("what the author wrote");
   });
 });
 
