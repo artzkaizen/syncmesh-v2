@@ -13,6 +13,7 @@ import {
   type RowKey,
   type TableName,
 } from "@syncmesh/kernel";
+import { seed } from "@syncmesh/kernel/test-fixtures";
 import { defineSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import {
@@ -46,7 +47,6 @@ export const schema = defineSchema({
 export const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 export const ACME = parsePartitionKey("org:acme").unwrap();
 export const GLOBEX = parsePartitionKey("org:globex").unwrap();
-export const seed = (n: number) => Uint8Array.from({ length: 32 }, (_, i) => n + i);
 export const ISSUER = createIdentity(seed(1)).unwrap();
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- test fixtures */
@@ -183,3 +183,5 @@ export const openRoom = async (overrides: Partial<RelayRoomOptions> = {}) =>
       ...overrides,
     })
   ).unwrap();
+
+export { seed };

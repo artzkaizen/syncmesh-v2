@@ -3,6 +3,7 @@ import type { ColumnName, Procedure, RowKey, TableName } from "@syncmesh/kernel"
 
 import { createEngine, createMemoryEventStore, createValidator } from "@syncmesh/engine";
 import { createHlcClock, parsePartitionKey, readRow } from "@syncmesh/kernel";
+import { seed } from "@syncmesh/kernel/test-fixtures";
 import { defineSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createGrantRegistry, createIdentity, issueGrant, type Identity } from "@syncmesh/wire";
@@ -25,7 +26,6 @@ export const schema = defineSchema({
 export const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 export const ACME = parsePartitionKey("org:acme").unwrap();
 export const GLOBEX = parsePartitionKey("org:globex").unwrap();
-export const seed = (n: number) => Uint8Array.from({ length: 32 }, (_, i) => n + i);
 export const ISSUER = createIdentity(seed(1)).unwrap();
 
 export const mintFor = (device: Identity, account: string) =>
@@ -106,3 +106,5 @@ export const connect = (x: Peer, y: Peer) => {
   };
   return { bx, by, control, settle };
 };
+
+export { seed };

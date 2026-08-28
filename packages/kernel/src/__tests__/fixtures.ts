@@ -1,19 +1,22 @@
 import { Temporal } from "@syncmesh/temporal";
 
 import type { CellChange } from "../cell-change.js";
-import type { Change, Row, RowKey, TableName } from "../change.js";
+import type { Change } from "../change.js";
 import type { CounterEntry } from "../counter.js";
 import type { Hlc, Logical } from "../hlc.js";
-import type { Cell, CellValue, ColumnName, JsonValue, RowRecord } from "../record.js";
+import type { PeerId } from "../peer-id.js";
+import type { Cell, CellValue, JsonValue, RowRecord } from "../record.js";
 import type { SetAdd, SetTag } from "../set.js";
 import type { Stamp } from "../stamp.js";
 import type { MergeSpec } from "../strategy.js";
 
 import { applyChange } from "../apply.js";
 import { applyCellChange } from "../cell-change.js";
-import { parsePeerId, type PeerId } from "../peer-id.js";
 import { canonicalJson } from "../set.js";
 import { emptyState, type State } from "../state.js";
+import { PEER_A, PEER_B, PEER_C, column, key, row, table } from "../test-fixtures/index.js";
+
+export { PEER_A, PEER_B, PEER_C, column, key, row, table };
 
 export const at = (ms: number) => Temporal.Instant.fromEpochMilliseconds(ms);
 
@@ -29,10 +32,6 @@ export const plain = ([physical, logical]: Hlc): [number, number] => [
   logical,
 ];
 
-export const PEER_A = parsePeerId("a".repeat(64)).unwrap();
-export const PEER_B = parsePeerId("b".repeat(64)).unwrap();
-export const PEER_C = parsePeerId("c".repeat(64)).unwrap();
-
 export const fakeClock = (start: number) => {
   let ms = start;
   return {
@@ -41,11 +40,6 @@ export const fakeClock = (start: number) => {
       ms = next;
     },
   };
-};
-
-export const column = (name: string): ColumnName => {
-  // SAFETY: test fixture; column naming rules arrive with the schema
-  return name as ColumnName;
 };
 
 export const cell = (value: CellValue, at: Stamp): Cell => ({ value, stamp: at });
@@ -61,19 +55,6 @@ export const record = (
   };
   return deleteStamp === undefined ? base : { ...base, deleteStamp };
 };
-
-export const table = (name: string): TableName => {
-  // SAFETY: test fixture; table naming rules arrive with the schema
-  return name as TableName;
-};
-
-export const key = (value: string): RowKey => {
-  // SAFETY: test fixture; keys are opaque strings in the kernel
-  return value as RowKey;
-};
-
-export const row = (values: Readonly<Record<string, CellValue>>): Row =>
-  new Map(Object.entries(values).map(([name, value]) => [column(name), value]));
 
 export const NOTES = table("notes");
 export const N1 = key("n1");

@@ -13,6 +13,11 @@
       "@syncmesh/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./test-fixtures": {
+      "@syncmesh/source": "./src/test-fixtures/index.ts",
+      "types": "./dist/test-fixtures/index.d.ts",
+      "default": "./dist/test-fixtures/index.js"
     }
   },
   "dependencies": {

@@ -11,6 +11,7 @@ import type {
 import { taggedCause } from "@syncmesh/drizzle";
 import { createEngine, createMemoryEventStore, linkDevice, links } from "@syncmesh/engine";
 import { createHlcClock, parseAccountId, parsePartitionKey } from "@syncmesh/kernel";
+import { seed } from "@syncmesh/kernel/test-fixtures";
 import { defineSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import {
@@ -54,7 +55,6 @@ const schema = () =>
     },
   });
 
-const seed = (n: number) => Uint8Array.from({ length: 32 }, (_, i) => n + i);
 const DEVICE = createIdentity(seed(90)).unwrap();
 /** Alice, who holds the account key, and Bob, who is somebody else with one of his own. */
 const ALICE = createIdentity(seed(10)).unwrap();

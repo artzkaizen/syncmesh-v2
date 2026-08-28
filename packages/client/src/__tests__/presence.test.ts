@@ -1,5 +1,6 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
+import { seed } from "@syncmesh/kernel/test-fixtures";
 import { defineSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
@@ -35,7 +36,6 @@ const schema = () =>
     },
   });
 
-const seed = (n: number) => Uint8Array.from({ length: 32 }, (_, i) => n + i);
 const ISSUER = createIdentity(seed(1)).unwrap();
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const BOARD = "board:b1";

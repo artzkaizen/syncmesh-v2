@@ -1,3 +1,4 @@
+import { seed } from "@syncmesh/kernel/test-fixtures";
 import { relayTransport, startRelay, webSocketDial } from "@syncmesh/relay";
 import { defineSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
@@ -15,7 +16,6 @@ const schema = () =>
   defineSchema({
     tables: { notes: { columns: { id: t.text().primaryKey(), photo: t.text() } } },
   });
-const seed = (n: number) => Uint8Array.from({ length: 32 }, (_, i) => n + i);
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const photo = Uint8Array.from({ length: 4096 }, (_, i) => i % 251);
 

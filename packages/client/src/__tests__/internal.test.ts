@@ -6,6 +6,7 @@ import {
   type RowKey,
   type TableName,
 } from "@syncmesh/kernel";
+import { seed } from "@syncmesh/kernel/test-fixtures";
 import { allow, role } from "@syncmesh/policy";
 import { defineSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
@@ -34,7 +35,6 @@ const N1 = "n1" as RowKey;
 const column = (name: string) => name as ColumnName;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 
-const seed = (n: number) => Uint8Array.from({ length: 32 }, (_, i) => n + i);
 const ISSUER = createIdentity(seed(1)).unwrap();
 const PHONE = createIdentity(seed(90)).unwrap();
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);

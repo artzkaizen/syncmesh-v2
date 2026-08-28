@@ -2,6 +2,7 @@ import type { RelayDial, RelayFrame } from "@syncmesh/relay";
 
 import { createMesh } from "@syncmesh/client";
 import { tableDigests } from "@syncmesh/engine";
+import { seed } from "@syncmesh/kernel/test-fixtures";
 import {
   decodeRelayFrame,
   joinFrame,
@@ -37,7 +38,6 @@ const schema = () =>
   });
 
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
-const seed = (n: number) => Uint8Array.from({ length: 32 }, (_, i) => n + i);
 type Dial = () => Promise<RelayDial> | RelayDial;
 
 const until = async (check: () => Promise<boolean>, ms = 5000): Promise<boolean> => {

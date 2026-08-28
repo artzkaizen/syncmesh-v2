@@ -2,6 +2,7 @@ import type { TelemetryEvent } from "@syncmesh/engine";
 import type { RelayDial, RelayFrame, RelayTelemetry } from "@syncmesh/relay";
 
 import { parsePartitionKey } from "@syncmesh/kernel";
+import { seed } from "@syncmesh/kernel/test-fixtures";
 import { decodeRelayFrame, joinFrame } from "@syncmesh/relay";
 import { Temporal } from "@syncmesh/temporal";
 import { grantFrame } from "@syncmesh/transport";
@@ -12,7 +13,6 @@ import { describe, expect, test } from "bun:test";
 import { durableRelay } from "./hosts.js";
 
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
-const seed = (n: number) => Uint8Array.from({ length: 32 }, (_, i) => n + i);
 const ISSUER = createIdentity(seed(1)).unwrap();
 const ACME = parsePartitionKey("org:acme").unwrap();
 const tick = (ms = 40) => new Promise((resolve) => setTimeout(resolve, ms));

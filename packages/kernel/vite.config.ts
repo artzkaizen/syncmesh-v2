@@ -1,3 +1,3 @@
 import { library } from "@syncmesh/config/vite";
 
-export default library();
+export default library({ entries: ["src/test-fixtures/index.ts"] });

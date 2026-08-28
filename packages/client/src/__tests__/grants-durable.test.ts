@@ -1,4 +1,5 @@
 import { parsePartitionKey } from "@syncmesh/kernel";
+import { seed } from "@syncmesh/kernel/test-fixtures";
 import { defineSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -22,7 +23,6 @@ const schema = () =>
     },
   });
 
-const seed = (n: number) => Uint8Array.from({ length: 32 }, (_, i) => n + i);
 const ISSUER = createIdentity(seed(1)).unwrap();
 const DEVICE = createIdentity(seed(90)).unwrap();
 const PEER = createIdentity(seed(160)).unwrap();
