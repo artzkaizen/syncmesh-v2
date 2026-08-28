@@ -21,7 +21,8 @@ const params = ({ event, sig }: StoredEvent): readonly SqlValue[] => [
   sig ?? null,
 ];
 
-function decodeRow(row: SqlRow): Result<StoredEvent, StoreFailure> {
+/** One `(core, local, sig)` row back to the entry that was stored; the local flag rebuilds the id the core does not carry. Shared with the `localStorage` log, so the two stores can never disagree about what a stored event is. */
+export function decodeStoredEvent(row: SqlRow): Result<StoredEvent, StoreFailure> {
   const [core, local, sig] = row;
   if (!(core instanceof Uint8Array)) {
     return Result.err(new StoreFailure({ message: "event core is not a blob" }));
@@ -37,7 +38,7 @@ function decodeRow(row: SqlRow): Result<StoredEvent, StoreFailure> {
     });
 }
 
-const decodeRows = (rows: readonly SqlRow[]) => Result.all(rows.map(decodeRow));
+const decodeRows = (rows: readonly SqlRow[]) => Result.all(rows.map(decodeStoredEvent));
 
 /**
  * Opens the event log in the database behind `driver`, creating or migrating its tables in the

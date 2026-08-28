@@ -8,6 +8,7 @@ import type { EventStore, StoreFailure } from "./store.js";
 import type { Coverage, Cursors } from "./sync.js";
 
 import { CompactionRefused } from "./errors.js";
+import { EMPTY_COVERAGE } from "./sync.js";
 
 /** What a peer last told us it holds, and when. */
 export interface Ack {
@@ -21,11 +22,37 @@ export interface CompactOptions {
   readonly keepAtLeast?: Temporal.Duration;
   /** A peer silent for longer no longer pins the floor; if it returns below it, it rejoins from state (RFC-0015 §3). Absent, every peer ever heard from pins. */
   readonly forgetPeersAfter?: Temporal.Duration;
+  /** Measured now: given, compaction runs only when `dueForCompaction` says the log has earned it, and otherwise removes nothing. Absent, the caller has already decided and it always runs. */
+  readonly sizes?: LogSizes;
 }
+
+/** What the log costs a boot, against what the state it can be opened from costs instead. */
+export interface LogSizes {
+  /** Bytes of log above the persisted state — what a boot would have to refold. */
+  readonly incrementalBytes: number;
+  /** Bytes of persisted state — what a boot would open in its place. */
+  readonly snapshotBytes: number;
+}
+
+/** Under this a snapshot is small enough that rewriting it costs less than deciding not to. */
+const TINY_SNAPSHOT_BYTES = 1024;
+
+/**
+ * Whether the log has grown enough to be worth compacting — automerge-repo's rule, adopted in D05.
+ * A count of events says nothing about a boot: a thousand one-cell edits refold faster than ten
+ * events carrying a photo's worth of metadata. Bytes above the state are what a boot actually reads,
+ * so bytes are what triggers.
+ *
+ * The decision is local by construction. It says when a device reclaims its own disk, never what
+ * anyone concludes from the events, and compaction is unobservable (RFC-0015 §2) — so two peers
+ * holding the same events converge whether one of them has compacted, both have, or neither.
+ */
+export const dueForCompaction = ({ incrementalBytes, snapshotBytes }: LogSizes): boolean =>
+  incrementalBytes >= snapshotBytes || snapshotBytes < TINY_SNAPSHOT_BYTES;
 
 export interface Compaction {
   readonly removed: number;
-  /** The floor actually applied, after clamping to what the state store had persisted. */
+  /** The floor actually applied, after clamping to what the state store had persisted; empty when `sizes` said the log had not earned a compaction. */
   readonly floor: Coverage;
 }
 
@@ -86,6 +113,9 @@ export function compactLog(
         new CompactionRefused({ message: "no state store: the log is the only copy of state" }),
       ),
     );
+  }
+  if (options.sizes !== undefined && !dueForCompaction(options.sizes)) {
+    return Promise.resolve(Result.ok({ removed: 0, floor: EMPTY_COVERAGE }));
   }
   return Result.gen(async function* () {
     const persisted = yield* Result.await(stateStore.loadCursors());

@@ -1,9 +1,11 @@
 import type { Engine, Unsubscribe } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
+import type { Result } from "@syncmesh/result";
 import type { Temporal } from "@syncmesh/temporal";
 import type { GrantRegistry, Identity } from "@syncmesh/wire";
 
 import { createHub } from "@syncmesh/engine";
+import { TaggedError } from "@syncmesh/result";
 
 import type { Bridge, BridgeOptions } from "./bridge.js";
 import type { FrameLink } from "./link.js";
@@ -19,6 +21,64 @@ export interface TransportContext {
   readonly onGrantRequest?: BridgeOptions["onGrantRequest"];
   /** Where arriving ephemeral values go (D16); absent, presence frames are ignored. */
   readonly onPresence?: BridgeOptions["onPresence"];
+}
+
+/**
+ * Where a write sits in the log a store-and-forward hop keeps: which log, and how far into it.
+ *
+ * The lineage half matters as much as the position (RFC-0020 §3.2). An offset alone is a number
+ * that means something different in every log, so a hop restarted over a fresh one would confirm
+ * a write into a log that never held it. Carrying the lineage makes that case answerable —
+ * {@link VisibilityLost} — instead of falsely settled.
+ */
+export interface VisibilityToken {
+  /** The log's lineage id; a relay opened over a new log announces a new one. */
+  readonly epoch: string;
+  /** The position within *that* lineage. Monotone inside one, meaningless across two. */
+  readonly offset: number;
+}
+
+/**
+ * The log this token names is not the log this device is now reading — a relay restarted over a
+ * fresh store, or a token from another room. The write it stands for is untouched: it is in this
+ * device's own log, signed, and will be re-offered on the next join. Only the *question* is
+ * unanswerable, because the position it asked about no longer exists.
+ */
+export class VisibilityLost extends TaggedError("VisibilityLost")<{
+  /** The lineage the token was minted against. */
+  expected: string;
+  /** The lineage this device is reading instead — what makes the two logs nameable in a log line. */
+  actual: string;
+  message: string;
+}> {}
+
+/** The caller stopped waiting. The write is unaffected — ask again with a longer deadline. */
+export class VisibilityTimeout extends TaggedError("VisibilityTimeout")<{
+  offset: number;
+  message: string;
+}> {}
+
+/**
+ * Reading back what you just wrote (RFC-0020 §3.2, N1b). `synced()` answers *did the relay
+ * durably take it?*; this answers *can I read it back yet?* — the question a UI asks after a
+ * write it wants to draw as settled, and the one a server answers for a caller by handing the
+ * token over so the caller can wait for its own device to arrive there.
+ *
+ * A capability, not an obligation: a radio has no ordered log to name a position in, so it
+ * declares none and `mesh.visibility` answers a typed value rather than pretending.
+ */
+export interface TransportVisibility {
+  /** How far this device has been told the log runs, in the lineage it was told under; `undefined` until a session has said. */
+  readonly token: () => VisibilityToken | undefined;
+  /**
+   * Settles once this device has been told about a position at or past the token's, in the same
+   * lineage — `VisibilityLost` when the lineage changed (including while waiting), and
+   * `VisibilityTimeout` when the caller's deadline passed first. Default deadline 10s.
+   */
+  readonly visibleAt: (
+    token: VisibilityToken,
+    options?: { readonly timeoutMs?: number },
+  ) => Promise<Result<void, VisibilityLost | VisibilityTimeout>>;
 }
 
 /**
@@ -45,6 +105,12 @@ export interface Transport {
   readonly caughtUp?: () => Promise<void>;
   /** Re-requests from the last contiguous position on every open session; the recovery after loss or reconnect. */
   readonly resync?: () => void;
+  /**
+   * Everything this medium has already taken in is folded and saved. What `mesh.flush()` awaits
+   * before a close: a frame that arrived is folded on a queue, and the save at the end of that
+   * queue is the one a process exiting would lose. A medium with no queue declares none.
+   */
+  readonly flush?: () => Promise<void>;
   /** Asks every connected peer for a grant for this device (flow A step ②). */
   readonly requestGrant?: (invite?: string) => void;
   /** Sends one ephemeral value to every open session; dropped, never queued, on a full link. */
@@ -56,6 +122,11 @@ export interface Transport {
   readonly putBlob?: (hash: string, bytes: Uint8Array) => Promise<void>;
   /** Asks for bytes by hash; `undefined` when nobody there holds them, or the deadline passed. */
   readonly fetchBlob?: (hash: string, timeoutMs: number) => Promise<Uint8Array | undefined>;
+  /**
+   * Naming a position in an ordered log and waiting to reach it (RFC-0020 §3.2). Present only on
+   * a medium that has one — a relay room does, a peer-to-peer radio does not.
+   */
+  readonly visibility?: TransportVisibility;
   readonly onStatus?: (cb: (online: boolean) => void) => Unsubscribe;
 }
 
@@ -104,6 +175,9 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
       await opened;
     },
     whenReady: () => ready,
+    flush: async () => {
+      await Promise.all([...bridges].map((bridge) => bridge.flush()));
+    },
     resync: () => {
       for (const bridge of bridges) bridge.resync();
     },

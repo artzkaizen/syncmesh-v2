@@ -1,40 +1,27 @@
-import type { Engine, Hub, Interest, StoredEvent, Unsubscribe } from "@syncmesh/engine";
+import type { Engine, Interest, Unsubscribe } from "@syncmesh/engine";
 import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 import type { GrantRegistry, Identity } from "@syncmesh/wire";
 
 import { createHub, interestKey } from "@syncmesh/engine";
-import { TaggedError } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
-import { decodeAndVerify, encodeCbor, encodeEventCore, signEvent } from "@syncmesh/wire";
+import { decodeAndVerify, signEvent } from "@syncmesh/wire";
 
 import type { Divergence } from "./divergence.js";
 import type { Frame } from "./frame.js";
 import type { JoinDeps, JoinExchange, SnapshotInstalled } from "./join.js";
 import type { FrameLink } from "./link.js";
+import type { BridgeError } from "./outbound.js";
 import type { SnapshotFrame } from "./snap-frame.js";
 
-import { divergenceAgainst, tableNames } from "./divergence.js";
-import {
-  cursorsFrame,
-  decodeFrame,
-  digestFrame,
-  eventFrame,
-  grantFrame,
-  grantRequestFrame,
-  presenceFrame,
-} from "./frame.js";
+import { divergenceAgainst } from "./divergence.js";
+import { KIND } from "./frame-parts.js";
+import { decodeFrame, eventFrame, grantFrame, grantRequestFrame, presenceFrame } from "./frame.js";
 import { createHoldback } from "./holdback.js";
 import { createJoinExchange } from "./join.js";
+import { createOutbound } from "./outbound.js";
 
-/** A relayed event whose author's signature was never stored cannot leave — nobody else can sign it. */
-export class Unsendable extends TaggedError("Unsendable")<{ id: string; message: string }> {}
-
-export class SendFailed extends TaggedError("SendFailed")<{ message: string; cause: unknown }> {}
-
-export type BridgeError =
-  | Unsendable
-  | SendFailed
-  | { readonly _tag: string; readonly message: string };
+export type { BridgeError } from "./outbound.js";
+export { SendFailed, Unsendable } from "./outbound.js";
 
 export interface BridgeOptions {
   readonly engine: Engine;
@@ -102,65 +89,6 @@ const joinFor = (options: BridgeOptions, send: JoinDeps["send"]): JoinExchange =
   return createJoinExchange(onSnapshot === undefined ? paged : { ...paged, onSnapshot });
 };
 
-/** What one link sends, and the one place a send that failed becomes a reported error. */
-interface OutboundDeps {
-  readonly link: FrameLink;
-  readonly engine: Engine;
-  readonly identity: Identity;
-  readonly interest: Interest | undefined;
-  readonly scope: string;
-  readonly errors: Hub<BridgeError>;
-}
-
-/**
- * The sending half of a session. Kept apart from the receiving half because the two have almost
- * nothing to say to each other: everything here turns state we already hold into bytes, and a
- * failure to send is reported rather than thrown — a loud failure is recoverable by resync, a
- * silent one is divergence (RFC-0005).
- */
-function createOutbound(deps: OutboundDeps) {
-  const { link, engine, identity, interest, scope, errors } = deps;
-
-  const guard = (what: string, fn: () => void): void => {
-    try {
-      fn();
-    } catch (cause) {
-      errors.emit(new SendFailed({ message: `${what} did not leave`, cause }));
-    }
-  };
-
-  /** This device signs its own events; another peer's is relayed with the signature it came with. */
-  const envelopeOf = (entry: StoredEvent): Uint8Array | undefined => {
-    if (entry.event.peerId === identity.peerId) return signEvent(entry.event, identity).wire;
-    if (entry.sig !== undefined) return encodeCbor([encodeEventCore(entry.event), entry.sig]);
-    errors.emit(
-      new Unsendable({ id: String(entry.event.id), message: "no stored signature to relay" }),
-    );
-    return undefined;
-  };
-
-  /**
-   * What we hold, counted after the events we owed them have gone out and stamped with what we
-   * had folded when we counted — the two facts that let the far side tell divergence from a peer
-   * that is merely behind (E16).
-   */
-  const sendDigest = (): void => {
-    guard("digest", () =>
-      link.send(digestFrame(scope, engine.coverage().synced, tableNames(engine.digest(interest)))),
-    );
-  };
-
-  /** Our contiguous position, sent once whatever the caller is already doing has finished. */
-  const cursorsAfter = (queue: Promise<unknown>): Promise<void> =>
-    queue.then(async () => {
-      const cursors = await engine.cursors();
-      if (cursors.isOk())
-        guard("cursors", () => link.send(cursorsFrame(identity.peerId, cursors.value)));
-    });
-
-  return { guard, envelopeOf, sendDigest, cursorsAfter };
-}
-
 export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridge {
   const { engine, identity, grants, onGrantRequest, onPresence, gapLimit = 512 } = options;
   const { interest, onDivergence } = options;
@@ -172,10 +100,12 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
   let sentCursors = false;
 
   const out = createOutbound({ link, engine, identity, interest, scope, errors });
-  const { guard, envelopeOf, sendDigest, cursorsAfter } = out;
+  const { send, drain, envelopeOf, sendDigest, cursorsAfter } = out;
   const sendCursors = (): void => void (queue = cursorsAfter(queue));
 
-  const join = joinFor(options, (what, bytes) => guard(what, () => link.send(bytes)));
+  // every frame of the exchange travels under the one snapshot tag, so they stay in the order
+  // the exchange needs — a page ahead of the manifest that names it is a page thrown away
+  const join = joinFor(options, (what, bytes) => send(KIND.snapshot, what, bytes));
 
   const holdback = createHoldback(engine, identity.peerId, gapLimit);
   const receiveEvent = (wire: Uint8Array): void => {
@@ -216,7 +146,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
       }
       for (const entry of entries.value) {
         const wire = envelopeOf(entry);
-        if (wire !== undefined) guard("event", () => link.send(eventFrame(wire)));
+        if (wire !== undefined) send(KIND.event, "event", eventFrame(wire));
       }
       sendDigest();
       if (!sentCursors || behind(theirs)) {
@@ -268,10 +198,10 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
 
   /** A newly learned grant propagates live — including the answer to a grant-request. */
   const offRegistered = grants.onRegistered((_grant, wire) =>
-    guard("grant", () => link.send(grantFrame(wire))),
+    send(KIND.grant, "grant", grantFrame(wire)),
   );
   const offOutbound = engine.onOutbound((event: SyncEvent) =>
-    guard("event", () => link.send(eventFrame(signEvent(event, identity).wire))),
+    send(KIND.event, "event", eventFrame(signEvent(event, identity).wire)),
   );
   /** A remote fold means this engine now holds more than its other neighbors may: announce, so they request. */
   const offFolds = engine.onFoldBatch((batch) => {
@@ -301,26 +231,28 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
   };
 
   // session open: every grant we hold, then our cursors — grants first, always.
-  for (const wire of grants.allWires()) guard("grant", () => link.send(grantFrame(wire)));
+  for (const wire of grants.allWires()) send(KIND.grant, "grant", grantFrame(wire));
   resync();
 
   return {
     resync,
     requestSnapshot: join.request,
     requestGrant: (invite) =>
-      guard("grant-request", () => link.send(grantRequestFrame(identity.peerId, invite))),
-    sendGrant: (wire) => guard("grant", () => link.send(grantFrame(wire))),
-    sendPresence: (wire) => {
-      // never `guard`: a dropped cursor is the correct outcome on a full radio, not an error
-      try {
-        link.send(presenceFrame(wire));
-      } catch {
-        /* the next value replaces it */
-      }
-    },
+      send(KIND.grantRequest, "grant-request", grantRequestFrame(identity.peerId, invite)),
+    sendGrant: (wire) => send(KIND.grant, "grant", grantFrame(wire)),
+    // ordered after the events, and its failure swallowed rather than reported: on a full radio
+    // a dropped ephemeral is the correct outcome, not an error (D16)
+    sendPresence: (wire) => send(KIND.presence, "presence", presenceFrame(wire)),
     onError: errors.subscribe,
-    flush: async () => void (await queue),
+    flush: async () => {
+      drain();
+      await queue;
+      drain();
+    },
     close: () => {
+      // what was offered still leaves: a frame dropped here would be one no resync knows to ask
+      // for, and the link is the only thing entitled to refuse it
+      drain();
       closed = true;
       offFrame();
       offRegistered();

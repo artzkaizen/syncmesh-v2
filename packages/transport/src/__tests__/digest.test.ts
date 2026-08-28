@@ -1,41 +1,15 @@
 import type { Interest } from "@syncmesh/engine";
-import type { RowKey, TableName } from "@syncmesh/kernel";
 
 import { divergentRows, interestKey } from "@syncmesh/engine";
-import { parsePartitionKey, readRow, type ColumnName, type Procedure } from "@syncmesh/kernel";
+import { readRow } from "@syncmesh/kernel";
 import { describe, expect, test } from "bun:test";
 
 import type { Divergence } from "../divergence.js";
+import type { Peer } from "./fixtures.js";
 
 import { bridgeFramedLink } from "../bridge.js";
 import { loopbackPair } from "../link.js";
-import { ACME, T0, peer } from "./fixtures.js";
-
-/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- test fixtures */
-const NOTES = "notes" as TableName;
-const BODY = "body" as ColumnName;
-const ID = "id" as ColumnName;
-const CREATE = "notes.create" as Procedure;
-const key = (k: string) => k as RowKey;
-/* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
-
-const GLOBEX = parsePartitionKey("org:globex").unwrap();
-type Peer = ReturnType<typeof peer>;
-
-const write = (p: Peer, id: string, body: string, partition = ACME) =>
-  p.engine.mutate(
-    CREATE,
-    (tx) =>
-      tx.insert(
-        NOTES,
-        key(id),
-        new Map([
-          [ID, id],
-          [BODY, body],
-        ]),
-      ),
-    { partition },
-  );
+import { ACME, BODY, GLOBEX, NOTES, T0, key, peer, write } from "./fixtures.js";
 
 /** Two bridged peers, each told what slice it syncs, both reporting what they find. */
 const connect = (x: Peer, y: Peer, interests: { x?: Interest; y?: Interest } = {}) => {

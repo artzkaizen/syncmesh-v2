@@ -17,7 +17,7 @@ import { checkRow, type Table } from "@syncmesh/schema";
 
 import { checkLink } from "./accounts.js";
 import { checkAuthor } from "./author.js";
-import { RESERVED_AUTHOR_CLASS, RESERVED_TABLE_NAMES } from "./authority.js";
+import { RESERVED_AUTHOR_CLASS, UNPINNED_RESERVED, RESERVED_TABLE_NAMES } from "./authority.js";
 import {
   LocalOnly,
   PartitionNotGranted,
@@ -234,6 +234,11 @@ function checkReserved(
   const definition = reserved.get(table);
   if (definition === undefined)
     return Result.err(new UnknownTable({ table, message: "not in the schema" }));
+  if (UNPINNED_RESERVED.has(table) && event.partition !== undefined) {
+    return Result.err(
+      new WrongPartition({ table, expected: "", message: `${table} is about no instance` }),
+    );
+  }
   const authored =
     RESERVED_AUTHOR_CLASS.get(table) === "subject"
       ? checkLink(change, event)

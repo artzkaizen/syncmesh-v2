@@ -2,14 +2,10 @@ import type { Result } from "@syncmesh/result";
 import type { BlobError, BlobHash, BlobStore } from "@syncmesh/storage";
 import type { Transport } from "@syncmesh/transport";
 
-import { Result as R, TaggedError } from "@syncmesh/result";
+import { Result as R } from "@syncmesh/result";
 import { BlobNotFound, BlobTimeout, hashOf, verifyBlob } from "@syncmesh/storage";
 
-/** No transport here can carry bytes out of band — a fact about the medium, not a bug (D12). */
-export class NoSuchCapability extends TaggedError("NoSuchCapability")<{
-  capability: string;
-  message: string;
-}> {}
+import { NoSuchCapability } from "./errors.js";
 
 export interface Blobs {
   /**
@@ -82,4 +78,4 @@ export function createBlobs(deps: BlobsDeps): Blobs {
   };
 }
 
-export { BlobNotFound };
+export { BlobNotFound, NoSuchCapability };

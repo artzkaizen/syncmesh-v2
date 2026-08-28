@@ -89,9 +89,29 @@ export const linksTable = reservedTable("_links", {
   wire: t.blob(),
 });
 
+/**
+ * How far one change source has been read, as a single row per source (RFC-0021). The row is
+ * **our** state, not the database's: it is written in the same event as the last change it
+ * covers, so the watermark can never run ahead of a change that is not yet durable. A crash
+ * before it lands replays the transaction instead, and a replay of the same values converges —
+ * which is the failure we choose, because the other one loses a change with nothing left that
+ * could re-request it.
+ */
+export const cdcTable = reservedTable("_cdc", {
+  /** The source's own name. One row per source, because a replication slot has one reader. */
+  id: t.text().primaryKey(),
+  /**
+   * The source's position in its own terms — an LSN, an outbox id, a counter. Text and never a
+   * number, and never our clock: the only property we rely on is that lexicographic order is
+   * stream order, which is what lets a resume say "after this" without knowing what it means.
+   */
+  watermark: t.text(),
+});
+
 export const reservedTables = [
   policyTable,
   correctionsTable,
   revocationsTable,
   linksTable,
+  cdcTable,
 ] as const;

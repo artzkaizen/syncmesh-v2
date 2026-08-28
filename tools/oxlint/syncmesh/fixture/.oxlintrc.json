@@ -1,0 +1,7 @@
+{
+  "jsPlugins": ["../index.ts"],
+  "rules": {
+    "syncmesh/no-floating-result": ["error", { "callees": ["engine.mutate"] }],
+    "no-unused-expressions": "off"
+  }
+}

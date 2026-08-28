@@ -70,6 +70,7 @@ describe("defineSchema", () => {
       "_corrections",
       "_revocations",
       "_links",
+      "_cdc",
     ]);
     const minimal = defineSchema({
       tables: { notes: { columns: { id: id() }, partition: "user" } },

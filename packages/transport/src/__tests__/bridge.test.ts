@@ -1,45 +1,13 @@
 import type { Quarantined } from "@syncmesh/engine";
 
-import {
-  readRow,
-  type RowKey,
-  type TableName,
-  type ColumnName,
-  type Procedure,
-} from "@syncmesh/kernel";
 import { describe, expect, test } from "bun:test";
 
 import type { BridgeError } from "../bridge.js";
+import type { Peer } from "./fixtures.js";
 
 import { bridgeFramedLink } from "../bridge.js";
 import { loopbackPair } from "../link.js";
-import { ACME, ISSUER, T0, mintFor, peer } from "./fixtures.js";
-
-/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- test fixtures */
-const NOTES = "notes" as TableName;
-const ID = "id" as ColumnName;
-const BODY = "body" as ColumnName;
-const CREATE = "notes.create" as Procedure;
-const key = (k: string) => k as RowKey;
-/* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
-
-type Peer = ReturnType<typeof peer>;
-
-const write = (p: Peer, id: string, body: string) =>
-  p.engine.mutate(
-    CREATE,
-    (tx) =>
-      tx.insert(
-        NOTES,
-        key(id),
-        new Map([
-          [ID, id],
-          [BODY, body],
-        ]),
-      ),
-    { partition: ACME },
-  );
-const bodyOf = (p: Peer, id: string) => readRow(p.engine.state(), NOTES, key(id))?.get(BODY);
+import { ISSUER, T0, bodyOf, mintFor, peer, write } from "./fixtures.js";
 
 const connect = (x: Peer, y: Peer) => {
   const { a, b, control } = loopbackPair();
@@ -161,8 +129,9 @@ describe("the bridge over a loopback", () => {
     });
 
     bn.requestGrant("inv-42");
-    await control.flush();
-    await control.flush();
+    // one round per hop the answer takes: the request leaves the outbox, the far side registers
+    // the grant it was asked for, and the grant frame comes back
+    for (let round = 0; round < 3; round += 1) await control.flush();
     expect(requests).toEqual([{ peerId: String(newcomer.identity.peerId), invite: "inv-42" }]);
     expect(newcomer.grants.grantFor(newcomer.identity.peerId)?.account).toBe("acct_n");
   });

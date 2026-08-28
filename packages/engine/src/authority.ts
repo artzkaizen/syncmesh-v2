@@ -29,6 +29,7 @@ const POLICY = "_policy" as TableName;
 const CORRECTIONS = "_corrections" as TableName;
 const REVOCATIONS = "_revocations" as TableName;
 const LINKS = "_links" as TableName;
+const CDC = "_cdc" as TableName;
 const SET_POLICY = "_policy.set" as Procedure;
 const CORRECT = "_corrections.write" as Procedure;
 const REVOKE = "_revocations.write" as Procedure;
@@ -45,11 +46,22 @@ export const rowKey = (key: string) => key as RowKey;
  * today — `_links`, where the account signs the row's core and the device signs the event
  * carrying it, which is the only way one envelope can hold a mutual claim.
  */
+/**
+ * Reserved tables whose rows are about no instance, and so must be written with no partition.
+ *
+ * A reserved row's `partition` is set at fold from the event's, first-seen-wins, and is hashed
+ * into its digest — so a row written under whichever instance an event happened to carry is a
+ * row two peers can disagree about forever. A table here says the question does not apply, and
+ * the rung refuses the write rather than letting the disagreement become possible.
+ */
+export const UNPINNED_RESERVED: ReadonlySet<string> = new Set([CDC]);
+
 export const RESERVED_AUTHOR_CLASS: ReadonlyMap<string, ReservedAuthorClass> = new Map([
   [POLICY, "authority"],
   [CORRECTIONS, "authority"],
   [REVOCATIONS, "authority"],
   [LINKS, "subject"],
+  [CDC, "authority"],
 ] satisfies readonly (readonly [string, ReservedAuthorClass])[]);
 
 export type ReservedAuthorClass = "authority" | "subject";

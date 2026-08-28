@@ -27,6 +27,12 @@ export const KIND = {
   snapshot: 6,
 } as const;
 
+/**
+ * A wire tag, used as a class: lower goes first out of the outbox, and answers `pickRoutes`
+ * when it asks what kind of traffic this is. One tag space, so the two can never disagree.
+ */
+export type FrameClass = (typeof KIND)[keyof typeof KIND];
+
 export const peerBytes = (peer: PeerId): Uint8Array => hexToBytes(peer).unwrap();
 
 export const asPeer = (value: CborValue | undefined): Result<PeerId, MalformedFrame> =>

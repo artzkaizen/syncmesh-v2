@@ -1,6 +1,8 @@
 export type { FrameLink, LoopbackControl, LoopbackPair } from "./link.js";
 export { loopbackPair } from "./link.js";
+export type { FrameClass } from "./frame-parts.js";
 export {
+  KIND,
   MalformedFrame,
   asPeer,
   cursorPairs,
@@ -35,8 +37,23 @@ export {
   snapRequestFrame,
 } from "./snap-frame.js";
 export { createHoldback } from "./holdback.js";
+export type { Outbox } from "./outbox.js";
+export { createOutbox } from "./outbox.js";
+export type { RouteCandidate, RouteMessage } from "./route-scorer.js";
+export { pickRoutes, scoreRoute } from "./route-scorer.js";
 export type { Divergence } from "./divergence.js";
 export type { Bridge, BridgeError, BridgeOptions } from "./bridge.js";
 export { SendFailed, Unsendable, bridgeFramedLink } from "./bridge.js";
-export type { FrameTransportOptions, Transport, TransportContext } from "./transport.js";
-export { createFrameTransport, linkTransport } from "./transport.js";
+export type {
+  FrameTransportOptions,
+  Transport,
+  TransportContext,
+  TransportVisibility,
+  VisibilityToken,
+} from "./transport.js";
+export {
+  VisibilityLost,
+  VisibilityTimeout,
+  createFrameTransport,
+  linkTransport,
+} from "./transport.js";

@@ -7,6 +7,13 @@ export type {
   SqliteDriver,
 } from "./driver.js";
 export { sqlEventStore, sqliteEventStore, type SqlEventStoreOptions } from "./event-store.js";
+export { LogCorrupt } from "./local-log.js";
+export type {
+  LocalStorageEventStoreOptions,
+  LocalStorageLike,
+  OpenedLocalLog,
+} from "./local-storage.js";
+export { localStorageEventStore } from "./local-storage.js";
 export {
   sqlStateStore,
   sqliteStateStore,
@@ -17,8 +24,15 @@ export {
 export { MalformedRecord, decodeRecord, encodeRecord } from "@syncmesh/wire";
 export type { GrantStore } from "./grant-store.js";
 export { memoryGrantStore, sqlGrantStore } from "./grant-store.js";
-export type { OpenStoresOptions, ScopedStores, Stores } from "./open-stores.js";
-export { openStores } from "./open-stores.js";
+export type {
+  OpenStoresOptions,
+  ScopedStoreSet,
+  ScopedStores,
+  ScopedStoresOptions,
+  StoreScope,
+  Stores,
+} from "./open-stores.js";
+export { openStores, scopedStores, storeNameFor } from "./open-stores.js";
 export type { CaptureOptions } from "./capture.js";
 export { captureChanges, captureDdl, installCapture, tableDdl } from "./capture.js";
 export type { Projection, ProjectionOptions } from "./projection.js";

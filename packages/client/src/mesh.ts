@@ -1,5 +1,6 @@
-import type { CorrectionRow, Engine, EventStore, Principal, StateStore } from "@syncmesh/engine";
-import type { EventId, PartitionKey, PeerId, Row as WireCells } from "@syncmesh/kernel";
+import type { MeshHandle } from "@syncmesh/drizzle";
+import type { Engine, EventStore, Principal, StateStore } from "@syncmesh/engine";
+import type { EventId, PeerId, Row as WireCells } from "@syncmesh/kernel";
 import type { InvalidPartitionKey } from "@syncmesh/kernel";
 import type {
   AppValue,
@@ -13,8 +14,6 @@ import type {
 import type { BlobStore, SqlDialect, SqlDriver, TxReceipt } from "@syncmesh/storage";
 import type { Transport, TransportContext } from "@syncmesh/transport";
 
-import { meshDrizzle, type MeshHandle } from "@syncmesh/drizzle";
-import { corrections as correctionsOf } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
 import { memoryBlobStore } from "@syncmesh/storage";
@@ -33,9 +32,13 @@ import { createBlobs } from "./blobs.js";
 import { openMeshEngine } from "./boot.js";
 import { createCan } from "./can.js";
 import { createDelivered, createReceived } from "./delivered.js";
+import { createFlush } from "./flush.js";
 import { openGrants, restoreGrants, type MeshGrants, type MeshGrantsOptions } from "./grants.js";
+import { openHandles } from "./handles.js";
 import { rowHistory } from "./history.js";
+import { openInternal, type MeshInternal } from "./internal.js";
 import { createPresence } from "./presence.js";
+import { followTelemetry, type MeshTelemetrySeam } from "./telemetry.js";
 import { runTransports } from "./transports.js";
 
 export interface MeshOptions<
@@ -152,12 +155,8 @@ export interface Mesh<
    * device that was offline would keep its value forever — so it overwrites with a reason, and
    * this is where a UI reads that reason to show "changed by the office, because …".
    */
-  readonly corrections: {
-    readonly all: () => readonly CorrectionRow[];
-    /** Only corrections to writes this device authored — what to surface to the person at it. */
-    readonly mine: () => readonly CorrectionRow[];
-    readonly forEvent: (event: EventId) => readonly CorrectionRow[];
-  };
+  /** Corrections against this device's writes; the same object `internal.corrections` is. */
+  readonly corrections: MeshInternal["corrections"];
   /** Bytes that never enter the log: content-addressed, verified at both ends (D18). */
   readonly blobs: Blobs;
   /**
@@ -182,6 +181,12 @@ export interface Mesh<
   readonly received: (options: ReceivedOptions) => Promise<void>;
   readonly revert: (id: EventId) => Promise<Result<unknown, unknown>>;
   readonly canRevert: (id: EventId) => boolean;
+  /** The reserved tables, read through the engine's own folds rather than a second copy. */
+  readonly internal: MeshInternal;
+  /** Every transport's queue has run out; never rejects, never stops early (`createFlush`). */
+  readonly flush: () => Promise<void>;
+  /** One listener for `engine.*` and `mesh.*` alike (D17); a thrower never decides a write. */
+  readonly onTelemetry: MeshTelemetrySeam["onTelemetry"];
   /** Every transport ready (or force-ready); rejects if one failed to start. */
   readonly ready: () => Promise<void>;
   /**
@@ -256,33 +261,12 @@ function assemble<
 >(options: MeshOptions<P, RS, C, D, PC>, deps: Assembled): Mesh<D, PC> {
   const { schema, identity } = options;
   const { grants, now, booted } = deps;
-  const { engine, validate } = booted;
+  const { engine } = booted;
   const entryOf = new Map(schema.entries.map((e) => [String(e.table.name), e]));
 
-  const handles = new Map<string, Handle<D>>();
-  const on: Mesh<D, PC>["on"] = (instance, onOptions = {}) => {
-    // outside the generator: a missing connection is a setup mistake and must throw as itself
-    const driver =
-      booted.driver ??
-      panic(
-        "this mesh has no SQL connection: omit `store` for the durable default, or pass `driver`",
-      );
-    return Result.gen(function* () {
-      const partition: PartitionKey | undefined =
-        instance === undefined ? undefined : yield* parsePartitionKey(instance);
-      const key = JSON.stringify([instance ?? null, onOptions.as ?? null]);
-      const held = handles.get(key);
-      if (held !== undefined) return Result.ok(held);
-      // SAFETY: the booted driver is the one `options.driver` carried, whose dialect is D — or the SQLite default when none was given
-      const typed = driver as SqlDriver & { readonly dialect?: D };
-      const drizzleOptions = { engine, validate, driver: typed, schema };
-      if (partition !== undefined) Object.assign(drizzleOptions, { partition });
-      if (onOptions.as !== undefined) Object.assign(drizzleOptions, { as: onOptions.as });
-      const handle = meshDrizzle<D>(drizzleOptions);
-      handles.set(key, handle);
-      return Result.ok(handle);
-    });
-  };
+  const on = openHandles<P, RS, C, D, PC>(schema, booted);
+  const flush = createFlush({ transports: () => options.transports ?? [] });
+  const internal = openInternal({ engine, self: identity.peerId });
 
   const { accounts, accountOf, author } = openAccounts(options, { engine, grants, now });
 
@@ -340,13 +324,7 @@ function assemble<
     },
     blobs,
     accounts,
-    corrections: {
-      all: () => correctionsOf(engine),
-      // an event id begins with its author's peer id, so "mine" needs no extra bookkeeping
-      mine: () =>
-        correctionsOf(engine).filter((c) => c.event.startsWith(`${String(identity.peerId)}-`)),
-      forEvent: (event) => correctionsOf(engine).filter((c) => c.event === String(event)),
-    },
+    corrections: internal.corrections,
     can: createCan({
       schema,
       engine,
@@ -357,12 +335,18 @@ function assemble<
     received: createReceived(engine),
     revert: (id) => engine.revert(id),
     canRevert: (id) => engine.canRevert(id),
+    internal,
+    flush,
+    onTelemetry: followTelemetry(engine),
     ready: links.ready,
     settled: links.settled,
     running: links.running,
     requestGrant: links.requestGrant,
     stop: async () => {
       presence.stop(); // an explicit departure, so peers see this device leave now
+      // flush before the medium closes: the save at the end of a transport's queue is exactly
+      // what a process exiting loses, and closing first would lose it every time
+      await flush();
       await links.stop();
       await booted.close();
     },

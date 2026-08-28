@@ -1,0 +1,33 @@
+{
+  "name": "@syncmesh/cdc",
+  "version": "0.0.0",
+  "description": "The ChangeSource port and the bridge that turns one database transaction into one signed event per partition",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@syncmesh/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@syncmesh/engine": "workspace:*",
+    "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/policy": "workspace:*",
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/schema": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncmesh/config": "workspace:*",
+    "@syncmesh/temporal": "workspace:*",
+    "@syncmesh/wire": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

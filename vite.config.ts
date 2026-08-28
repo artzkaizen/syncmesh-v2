@@ -33,8 +33,12 @@ export default defineConfig({
       ".roo/**",
       ".windsurf/**",
       "tools/oxlint/anti-slop/**",
+      "tools/oxlint/syncmesh/**",
     ],
-    jsPlugins: [{ name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" }],
+    jsPlugins: [
+      { name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" },
+      { name: "syncmesh", specifier: "./tools/oxlint/syncmesh/index.ts" },
+    ],
     rules: {
       "anti-slop/no-chained-type-assertions": "error",
       "anti-slop/no-conditional-empty-object-spread": "error",
@@ -51,6 +55,25 @@ export default defineConfig({
       "anti-slop/no-unsafe-dictionary-type": "error",
       "anti-slop/no-widen-then-assert": "error",
       "anti-slop/require-safety-comment-for-type-assertion": "error",
+
+      // Oxlint JS plugins get no type information, so this rule proves a value is a `Result` from
+      // the file it is linting plus the `callees` list below. Each entry was checked against the
+      // whole repository with the TypeScript checker and reports no non-`Result` call today; see
+      // tools/oxlint/syncmesh/README.md before adding one. Still a warning: the calls it already
+      // finds are real and unfixed, and the gate should stay honest about that rather than red.
+      "syncmesh/no-floating-result": [
+        "warn",
+        {
+          callees: [
+            "engine.mutate",
+            "engine.receive",
+            "engine.receiveBatch",
+            "grants.register",
+            "store.put",
+            "store.putAt",
+          ],
+        },
+      ],
 
       "no-deprecated": "warn",
       "typescript/no-misused-spread": "off",
@@ -265,6 +288,7 @@ export default defineConfig({
       ".roo/**",
       ".windsurf/**",
       "tools/oxlint/anti-slop/**",
+      "tools/oxlint/syncmesh/**",
     ],
     sortPackageJson: { sortScripts: true },
     sortImports: {

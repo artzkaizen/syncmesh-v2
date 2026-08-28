@@ -9,6 +9,7 @@ import type { Engine } from "../engine.js";
 import type { EventStore } from "../store.js";
 
 import { openEngine } from "../boot.js";
+import { dueForCompaction } from "../compaction.js";
 import { createLink } from "../link.js";
 import { StateCorrupt, createMemoryStateStore, type StateStore } from "../state-store.js";
 import {
@@ -168,5 +169,41 @@ describe("compaction — RFC-0015 §2", () => {
     const booted = await openEngine({ peerId: PEER_A, clock: fakeClock(1), store, stateStore });
     expect(booted.isErr() && booted.error._tag).toBe("StateCorrupt");
     expect(booted.isErr() && booted.error.message).toContain("rejoin from a peer");
+  });
+});
+
+describe("the size trigger — D05, automerge's rule", () => {
+  test("bytes decide, not a count of events", () => {
+    expect(dueForCompaction({ incrementalBytes: 4096, snapshotBytes: 4096 })).toBe(true);
+    expect(dueForCompaction({ incrementalBytes: 4097, snapshotBytes: 4096 })).toBe(true);
+    expect(dueForCompaction({ incrementalBytes: 4095, snapshotBytes: 4096 })).toBe(false);
+    // a state this small is cheaper to rewrite than to reason about
+    expect(dueForCompaction({ incrementalBytes: 0, snapshotBytes: 1023 })).toBe(true);
+    expect(dueForCompaction({ incrementalBytes: 0, snapshotBytes: 1024 })).toBe(false);
+  });
+
+  test("a log that has not earned it is left alone; the same log over threshold is compacted", async () => {
+    const { engine, store } = setup(PEER_A, 100, { stateStore: createMemoryStateStore() });
+    for (const k of ["n1", "n2"]) (await write(engine, k, k)).unwrap();
+    engine.acknowledge(PEER_B, cursors([[PEER_A, seq(2)]]), T0);
+
+    const idle = (
+      await engine.compact({ now: T0, sizes: { incrementalBytes: 100, snapshotBytes: 8192 } })
+    ).unwrap();
+    expect(idle.removed).toBe(0);
+    expect(idle.floor.synced.size).toBe(0);
+    expect(await count(store)).toBe(2);
+
+    const due = (
+      await engine.compact({ now: T0, sizes: { incrementalBytes: 8192, snapshotBytes: 8192 } })
+    ).unwrap();
+    expect(due.removed).toBe(2);
+    expect(await count(store)).toBe(0);
+  });
+
+  test("no state store still refuses, whatever the sizes say", async () => {
+    const { engine } = setup(PEER_A);
+    const r = await engine.compact({ now: T0, sizes: { incrementalBytes: 0, snapshotBytes: 0 } });
+    expect(r.isErr() && r.error._tag).toBe("CompactionRefused");
   });
 });

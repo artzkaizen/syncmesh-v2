@@ -45,6 +45,7 @@ export { combinators } from "./bind.js";
 export { defineSchema } from "./manifest.js";
 export type { PresenceBlock, PresenceEntry, PresenceMap, PresenceTopic } from "./manifest.js";
 export {
+  cdcTable,
   correctionsTable,
   linksTable,
   policyTable,
