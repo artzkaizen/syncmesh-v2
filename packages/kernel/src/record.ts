@@ -58,3 +58,18 @@ export function isVisible(record: RowRecord): boolean {
     record.deleteStamp === undefined || compareStamp(record.writeStamp, record.deleteStamp) > 0
   );
 }
+
+/**
+ * A JSON value as text with every object's keys sorted. Elements are compared by this and not by
+ * `JSON.stringify`, whose output follows insertion order: the same element built by a local write
+ * on one device and decoded from CBOR on another would otherwise compare unequal.
+ */
+export function canonicalJson(value: JsonValue): string {
+  /* oxlint-disable-next-line anti-slop/no-runtime-typeof -- JSON's own shape is the contract: a value is a scalar or a container, and there is no earlier boundary to have parsed it at */
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (isJsonArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  const fields = Object.keys(value)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key] ?? null)}`);
+  return `{${fields.join(",")}}`;
+}

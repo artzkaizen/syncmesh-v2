@@ -9,12 +9,6 @@ export { MalformedSnapshot, decodeSnapshotRows, encodeSnapshotRows } from "./sna
 export type { Identity } from "./identity.js";
 export { InvalidSeed, SEED_LENGTH, createIdentity, verify } from "./identity.js";
 export { MalformedEvent, decodeEventCore, encodeEventCore } from "./event-codec.js";
-export {
-  CELL_KIND,
-  MalformedCellChange,
-  decodeCellChange,
-  encodeCellChange,
-} from "./crdt-codec.js";
 export type { SignedEvent, VerifiedEvent, WireError } from "./envelope.js";
 export {
   BadSignature,

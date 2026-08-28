@@ -2,32 +2,19 @@ import type { TableName } from "./change.js";
 import type { Ordering } from "./primitives.js";
 import type { Cell, CellValue, ColumnName, JsonValue } from "./record.js";
 
-import { joinCounters } from "./counter.js";
-import { canonicalJson, joinSets } from "./set.js";
+import { canonicalJson } from "./record.js";
 import { compareStamp } from "./stamp.js";
 
 export type Strategy = (incoming: Cell, current: Cell) => Cell;
 
 /**
- * The strategies that pick one of the two cells whole, and the only ones an app may name in
- * `onConflict`. A cell's *value* survives all three: whichever of the two cells wins, it is a cell
- * the author actually wrote.
+ * How a column merges when two devices wrote it while apart (D25). All three pick one of the two
+ * cells **whole**, so the value that survives is always a value some author actually wrote.
+ *
+ * Named for what happens rather than for the algorithm: a developer choosing here is answering
+ * "which write wins", not naming a CRDT.
  */
-export type DeclaredStrategyName = "lww" | "max" | "min";
-
-/**
- * `lww`, `max` and `min` pick one of the two cells whole; `counter` and `set` merge *inside* it and
- * are the column's kind rather than anything an app declares (D04-C).
- */
-export type StrategyName = DeclaredStrategyName | "counter" | "set";
-
-/**
- * Whether the strategy merges inside the cell. These two read the cell as lattice state, so naming
- * one on a column whose writes are plain values replaces every one of them with the empty
- * lattice — which is why {@link DeclaredStrategyName} is what `onConflict` accepts, and why the
- * schema refuses these at runtime as well, where a cast could otherwise reach them.
- */
-export const isCellStrategy = (name: StrategyName): boolean => name === "counter" || name === "set";
+export type StrategyName = "lastWrite" | "max" | "min";
 
 export type MergeSpec = ReadonlyMap<TableName, ReadonlyMap<ColumnName, StrategyName>>;
 
@@ -80,37 +67,23 @@ export function compareValue(a: CellValue, b: CellValue): Ordering {
   return (a as number) < (b as number) ? -1 : 1;
 }
 
-const lww: Strategy = (incoming, current) =>
+const lastWrite: Strategy = (incoming, current) =>
   compareStamp(incoming.stamp, current.stamp) > 0 ? incoming : current;
 
 const byValue =
   (sign: 1 | -1): Strategy =>
   (incoming, current) => {
     const order = compareValue(incoming.value, current.value) * sign;
-    return order > 0 ? incoming : order < 0 ? current : lww(incoming, current);
+    return order > 0 ? incoming : order < 0 ? current : lastWrite(incoming, current);
   };
 
 /**
- * A cell whose value is itself a lattice: the two states join, and the stamp joins with them, so
- * the cell records the latest write that touched it rather than the one that decided it. Nothing
- * is discarded, which is why `counter` and `set` cells never need a tie-break.
- */
-const joining =
-  (join: (incoming: CellValue, current: CellValue) => CellValue): Strategy =>
-  (incoming, current) => ({
-    value: join(incoming.value, current.value),
-    stamp: compareStamp(incoming.stamp, current.stamp) > 0 ? incoming.stamp : current.stamp,
-  });
-
-/**
- * `lww` picks the newer stamp; `max` / `min` pick by value and fall back to the stamp on an exact
- * tie; `counter` and `set` join the two values. All five are lattice joins — commutative,
- * associative and idempotent — which is the whole reason any delivery order lands on one state.
+ * `lastWrite` picks the newer stamp; `max` and `min` pick by value and fall back to the stamp on
+ * an exact tie. All three are lattice joins — commutative, associative and idempotent — which is
+ * the whole reason any delivery order lands on one state.
  */
 export const strategies = {
-  lww,
+  lastWrite,
   max: byValue(1),
   min: byValue(-1),
-  counter: joining(joinCounters),
-  set: joining(joinSets),
 } satisfies Readonly<Record<StrategyName, Strategy>>;

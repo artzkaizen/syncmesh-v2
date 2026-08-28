@@ -1,6 +1,5 @@
 import type { CellValue, ColumnName, Row as WireCells } from "@syncmesh/kernel";
 
-import { counterValue, setValue } from "@syncmesh/kernel";
 import { Temporal } from "@syncmesh/temporal";
 
 import type { ColumnKind } from "./column.js";
@@ -18,8 +17,6 @@ export const toWireValue = (value: AppValue): CellValue =>
  * also why neither is assignable: there is no way back from what it read to what the cell holds.
  */
 export const fromWireValue = (kind: ColumnKind, value: CellValue): AppValue => {
-  if (kind === "counter") return counterValue(value);
-  if (kind === "set") return setValue(value);
   return kind === "timestamp" && !(value instanceof Uint8Array) && value !== null
     ? Temporal.Instant.fromEpochMilliseconds(Number(value))
     : value;

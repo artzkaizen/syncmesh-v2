@@ -1,12 +1,10 @@
 import type { CellValue, ColumnName, TableName } from "@syncmesh/kernel";
 
-import { isCellStrategy } from "@syncmesh/kernel";
 import { Result, TaggedError, panic } from "@syncmesh/result";
 
-import type { AnyColumn, ColumnDef, IsLattice, Value } from "./column.js";
+import type { AnyColumn, ColumnDef, Value } from "./column.js";
 
 import { KindMismatch, checkValue, scalarText, type ColumnError } from "./check.js";
-import { isCellKind } from "./column.js";
 import { parseColumnName, parseTableName } from "./names.js";
 
 export type Columns = Readonly<Record<string, AnyColumn>>;
@@ -27,16 +25,11 @@ type IsPrimaryKey<Col> = Col extends { readonly __primaryKey?: infer P }
     ? boolean
     : P
   : never;
-/** A column whose value merges inside the cell: it has no assignable form, so it is never inserted. */
-type IsLatticeColumn<Col> = Col extends { readonly __value?: infer V }
-  ? IsLattice<NonNullable<V>>
-  : false;
-
-/** Omittable on an insert: a nullable column reads as `null`, a lattice column as its empty state. */
+/** Omittable on an insert: a nullable column reads as `null` when it was never written. */
 type IsOptionalOnInsert<Col> = Col extends { readonly __nullable?: infer N }
   ? N extends true
     ? true
-    : IsLatticeColumn<Col>
+    : false
   : never;
 
 export type PrimaryKey<C extends Columns> = {
@@ -73,35 +66,16 @@ function checkPrimaryKey(table: string, key: string, def: ColumnDef | undefined)
 }
 
 /**
- * Where a column's merge strategy may come from, checked at runtime as well as in the types:
- * `fromDrizzle` and any JavaScript caller reach `onConflict` through a cast.
+ * `merge` is only meaningful where the values order (D25).
  *
- * A lattice column's kind **is** its strategy, so `onConflict` on one is a second opinion about a
- * settled question and a definition error. Its cell holds merge state rather than a value, which
- * is also why it is never null and why an app schema over it would be checking the wrong thing.
- * Naming a cell strategy on an ordinary column is the mirror error: it would read every plain
- * value that column ever held as the empty lattice and store `{}` in its place, on every peer.
+ * `max` and `min` pick the larger or smaller of the two cells, which needs an order the app
+ * agrees with — a number has one, and "the larger of two booleans" is a question with no answer.
+ * The types already refuse it; this is the runtime backstop for a cast that got past them.
  */
 function checkStrategy(name: string, key: string, def: ColumnDef): void {
-  if (isCellKind(def.kind)) {
-    if (def.onConflict !== undefined)
-      panic(
-        `${name}.${key}: onConflict is not a ${def.kind} column's to declare — the kind is the strategy (E26)`,
-      );
-    if (def.nullable)
-      panic(`${name}.${key}: a ${def.kind} column is never null; its zero is empty`);
-    if (def.check !== undefined)
-      panic(`${name}.${key}: check() on a ${def.kind} column would run against its merge state`);
-    return;
-  }
-  if (def.onConflict === undefined || def.onConflict === "lww") return;
-  if (isCellStrategy(def.onConflict)) {
-    panic(
-      `${name}.${key}: onConflict("${def.onConflict}") is not a column's to declare — that strategy comes from the column's kind (E26)`,
-    );
-  }
+  if (def.merge === undefined || def.merge === "lastWrite") return;
   if (def.kind !== "integer" && def.kind !== "float") {
-    panic(`${name}.${key}: onConflict("${def.onConflict}") needs a numeric column`);
+    panic(`${name}.${key}: merge "${def.merge}" needs a numeric column`);
   }
 }
 
@@ -204,12 +178,7 @@ export function checkRow(
     const value = row[key];
     // omitted on an insert: a nullable column means `null`, a lattice column means its empty state,
     // and an absent lattice cell reads as that empty state on every peer alike
-    if (
-      mode === "insert" &&
-      value === undefined &&
-      (column.def.nullable || isCellKind(column.def.kind))
-    )
-      continue;
+    if (mode === "insert" && value === undefined && column.def.nullable) continue;
     const r = checkValue(column, value);
     if (r.isErr())
       return Result.err(

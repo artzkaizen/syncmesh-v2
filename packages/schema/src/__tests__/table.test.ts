@@ -14,7 +14,7 @@ const books = table("books", {
   addedAt: t.timestamp(),
   note: t.text().nullable(),
   starred: t.boolean(),
-  pages: t.integer().onConflict("max"),
+  pages: t.integer({ merge: "max" }),
   meta: t.json(z.object({ tags: z.array(z.string()) })).nullable(),
 });
 
@@ -67,22 +67,14 @@ describe("table()", () => {
     expect(parseColumnName("addedAt").isOk()).toBe(true);
   });
 
-  test("max/min on a non-numeric column is refused at definition time (the kernel would panic later)", () => {
-    // @ts-expect-error the type already forbids it; this checks the runtime guard for fromDrizzle-style input
-    expect(() => table("a", { id: t.text().primaryKey().onConflict("max") })).toThrow("numeric");
-  });
-
-  test("a cell-level strategy is refused whatever the column's kind: it destroys every value written", () => {
-    for (const strategy of ["counter", "set"] as const) {
-      expect(() =>
-        // @ts-expect-error the type forbids it too; this is the runtime guard a cast would slip past
-        table("a", { id: t.text().primaryKey(), likes: t.integer().onConflict(strategy) }),
-      ).toThrow("not a column's to declare");
-      expect(() =>
-        // @ts-expect-error same, on the other numeric kind
-        table("a", { id: t.text().primaryKey(), score: t.float().onConflict(strategy) }),
-      ).toThrow("not a column's to declare");
-    }
+  test("max/min on a non-numeric column is refused at definition time (D25)", () => {
+    // SAFETY: the type already forbids it — `MergeFor<string>` is "lastWrite" and nothing else.
+    // This is the runtime guard behind it, for a cast or a `fromDrizzle` map that got past the types
+    const notNumeric = { merge: "max" } as never;
+    expect(() => table("a", { id: t.text(notNumeric).primaryKey() })).toThrow("numeric");
+    expect(() => table("a", { id: t.text().primaryKey(), ok: t.boolean(notNumeric) })).toThrow(
+      "numeric",
+    );
   });
 
   test("names: parsers accept lowercase identifiers; reserved names start with `_`", () => {

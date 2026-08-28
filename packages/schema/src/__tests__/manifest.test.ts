@@ -14,7 +14,7 @@ const schema = defineSchema({
   tables: {
     catalog: { columns: { id: id(), code: t.text() } },
     books: {
-      columns: { id: id(), title: t.text(), rating: t.float().onConflict("max") },
+      columns: { id: id(), title: t.text(), rating: t.float({ merge: "max" }) },
       partition: "shelf",
       allow: none,
     },

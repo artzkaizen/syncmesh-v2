@@ -1,4 +1,4 @@
-import type { DeclaredStrategyName } from "@syncmesh/kernel";
+import type { StrategyName } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
 import { panic } from "@syncmesh/result";
@@ -11,7 +11,7 @@ import {
   type Column,
   type ColumnDef,
   type ColumnKind,
-  type StrategyFor,
+  type MergeFor,
   type Value,
 } from "./column.js";
 
@@ -75,9 +75,9 @@ type DrizzleValue<C extends DrizzleColumnLike> = C["_"]["data"] extends Date
   : C["_"]["data"];
 
 export interface FromDrizzleOptions<D extends DrizzleTableLike> {
-  /** Conflict rules for an imported table, typed against its columns like `.onConflict()` is. */
-  readonly onConflict?: {
-    readonly [K in keyof ColumnsFromDrizzle<D>]?: StrategyFor<
+  /** Merge rules for an imported table, typed against its columns like `t.integer({ merge })` is. */
+  readonly merge?: {
+    readonly [K in keyof ColumnsFromDrizzle<D>]?: MergeFor<
       NonNullable<Value<ColumnsFromDrizzle<D>[K]>>
     >;
   };
@@ -163,8 +163,8 @@ function defFor(
         ? "defaults do not sync: an omitted column reads as null, never the default"
         : "defaults do not sync: every peer must see the inserted value, so the column is required",
     );
-  // SAFETY: strategy came from FromDrizzleOptions.onConflict, typed per column as StrategyFor<Value>
-  return strategy === undefined ? def : { ...def, onConflict: strategy as DeclaredStrategyName };
+  // SAFETY: strategy came from FromDrizzleOptions.merge, typed per column as MergeFor<Value>
+  return strategy === undefined ? def : { ...def, merge: strategy as StrategyName };
 }
 
 // SAFETY: a unique symbol type can only be declared, so the registry symbol is asserted onto it
@@ -182,7 +182,7 @@ export function fromDrizzle<const D extends DrizzleTableLike>(
   options: FromDrizzleOptions<D> = {},
 ): ColumnsFromDrizzle<D> {
   const runtime = readRuntime(drizzle);
-  const rules: Readonly<Record<string, string | undefined>> = options.onConflict ?? {};
+  const rules: Readonly<Record<string, string | undefined>> = options.merge ?? {};
   const mapped: Record<string, Column<AppValue, boolean, boolean>> = {};
   for (const [key, info] of Object.entries(runtime[COLUMNS])) {
     const def = defFor(info, rules[key], (message) => options.onWarn?.({ column: key, message }));
@@ -190,7 +190,7 @@ export function fromDrizzle<const D extends DrizzleTableLike>(
   }
   for (const key of Object.keys(rules))
     if (!(key in mapped))
-      panic(`${runtime[NAME]}.${key}: onConflict names a column the table does not have`);
+      panic(`${runtime[NAME]}.${key}: merge names a column the table does not have`);
   const primary = Object.values(runtime[COLUMNS]).filter((c) => c.primary);
   if (primary.length !== 1)
     panic(

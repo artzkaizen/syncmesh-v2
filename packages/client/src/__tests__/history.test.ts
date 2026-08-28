@@ -24,7 +24,7 @@ const schema = () =>
         columns: {
           id: t.text().primaryKey(),
           title: t.text(),
-          score: t.integer().onConflict("max"),
+          score: t.integer({ merge: "max" }),
         },
         partition: "org",
         allow: ({ role }) => ({ $default: role("member") }),

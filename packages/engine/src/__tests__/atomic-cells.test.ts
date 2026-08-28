@@ -1,22 +1,8 @@
-import type { CellChange, MergeSpec, PeerId, Stamp } from "@syncmesh/kernel";
-
-import { applyCellChange, emptyState, readRow } from "@syncmesh/kernel";
+import { readRow } from "@syncmesh/kernel";
 import { describe, expect, test } from "bun:test";
 
 import { createLink } from "../link.js";
-import {
-  CREATE,
-  N1,
-  NOTES,
-  PEER_A,
-  PEER_B,
-  column,
-  hlcAt,
-  key,
-  row,
-  setup,
-  table,
-} from "./fixtures.js";
+import { CREATE, N1, NOTES, PEER_A, PEER_B, column, key, row, setup, table } from "./fixtures.js";
 
 /**
  * What a cell is, demonstrated rather than asserted.
@@ -95,7 +81,7 @@ describe("a cell is atomic, whatever type it declares", () => {
   });
 });
 
-describe("the two ways out", () => {
+describe("the way out", () => {
   const TAG = table("postTag");
 
   test("a row per tag: different keys, so there is nothing to merge and nothing is lost", async () => {
@@ -111,35 +97,5 @@ describe("the two ways out", () => {
       [...(engine.state().get(TAG)?.keys() ?? [])].map(String).sort();
     expect(tagsOn(a.engine)).toEqual(["p1:billing", "p1:design"]);
     expect(tagsOn(b.engine)).toEqual(tagsOn(a.engine));
-  });
-
-  test("a counter cell: it stops holding the number and holds each peer's totals instead", () => {
-    // at the kernel, because no `mutate` can author one yet — the missing producer is exactly
-    // the client surface, and this is what it would be producing
-    const merge: MergeSpec = new Map([[NOTES, new Map([[column("views"), "counter" as const]])]]);
-    // the change carries the author's running totals, and the stamp says whose they are — so no
-    // peer can write another's entry, which is what makes the two increments independent
-    const increment = (inc: number): CellChange => ({
-      kind: "increment",
-      table: NOTES,
-      key: N1,
-      counts: new Map([[column("views"), { inc, dec: 0 }]]),
-    });
-    const from = (peer: PeerId, ms: number): Stamp => ({ hlc: hlcAt(ms), peer });
-
-    // the same two concurrent +1s, folded in either order
-    let straight = emptyState();
-    straight = applyCellChange(straight, increment(1), from(PEER_A, 100), merge);
-    straight = applyCellChange(straight, increment(1), from(PEER_B, 200), merge);
-
-    let reversed = emptyState();
-    reversed = applyCellChange(reversed, increment(1), from(PEER_B, 200), merge);
-    reversed = applyCellChange(reversed, increment(1), from(PEER_A, 100), merge);
-
-    expect(readRow(straight, NOTES, N1)?.get(column("views"))).toEqual(
-      readRow(reversed, NOTES, N1)?.get(column("views")),
-    );
-    // and the cell no longer contains 12 — it contains what computes to 12
-    expect(readRow(straight, NOTES, N1)?.get(column("views"))).not.toBe(12);
   });
 });

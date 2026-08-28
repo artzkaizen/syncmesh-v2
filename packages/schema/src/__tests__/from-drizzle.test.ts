@@ -148,7 +148,7 @@ describe("fromDrizzle — end to end", () => {
       partitions: { org: {} },
       tables: {
         books: {
-          columns: fromDrizzle(books, { onConflict: { rating: "max" } }),
+          columns: fromDrizzle(books, { merge: { rating: "max" } }),
           partition: "org",
           allow: ({ deny }) => ({ $default: deny }),
         },
@@ -174,14 +174,14 @@ describe("fromDrizzle — end to end", () => {
     assertType<Equal<Row<typeof schema.tables.plain>["n"], number | null>>();
   });
 
-  test("onConflict is typed against the imported columns", () => {
-    fromDrizzle(books, { onConflict: { pages: "min" } });
+  test("merge is typed against the imported columns", () => {
+    fromDrizzle(books, { merge: { pages: "min" } });
     // @ts-expect-error rating exists but max on text does not
-    fromDrizzle(books, { onConflict: { title: "max" } });
+    fromDrizzle(books, { merge: { title: "max" } });
     // @ts-expect-error not a column
-    expect(() => fromDrizzle(books, { onConflict: { norma: "min" } })).toThrow("does not have");
+    expect(() => fromDrizzle(books, { merge: { norma: "min" } })).toThrow("does not have");
     // SAFETY: deliberately an unknown column, to exercise the runtime guard behind the type
     const unknownColumn = { nope: "max" } as never;
-    expect(() => fromDrizzle(books, { onConflict: unknownColumn })).toThrow("does not have");
+    expect(() => fromDrizzle(books, { merge: unknownColumn })).toThrow("does not have");
   });
 });

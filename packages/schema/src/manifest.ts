@@ -263,12 +263,12 @@ function flatten(
   return into;
 }
 
-/** The strategies the fold needs: `lww` is the default and is left out, so an empty map means no rules. */
+/** The strategies the fold needs: `lastWrite` is the default and is left out, so an empty map means no rules. */
 function mergeRulesFor(name: string, tbl: Table): Map<ColumnName, StrategyName> {
   const rules = new Map<ColumnName, StrategyName>();
   for (const [key, column] of Object.entries(tbl.columns)) {
     const strategy = strategyOf(column.def);
-    if (strategy !== undefined && strategy !== "lww")
+    if (strategy !== undefined && strategy !== "lastWrite")
       rules.set(tbl.columnNames[key] ?? panic(`${name}.${key}: unnamed column`), strategy);
   }
   return rules;

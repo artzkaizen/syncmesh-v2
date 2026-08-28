@@ -1,18 +1,14 @@
 import { Temporal } from "@syncmesh/temporal";
 
-import type { CellChange } from "../cell-change.js";
 import type { FoldableChange } from "../change.js";
-import type { CounterEntry } from "../counter.js";
 import type { Hlc, Logical } from "../hlc.js";
 import type { PeerId } from "../peer-id.js";
 import type { Cell, CellValue, JsonValue, RowRecord } from "../record.js";
-import type { SetAdd, SetTag } from "../set.js";
 import type { Stamp } from "../stamp.js";
 import type { MergeSpec } from "../strategy.js";
 
 import { applyChange } from "../apply.js";
-import { applyCellChange } from "../cell-change.js";
-import { canonicalJson } from "../set.js";
+import { canonicalJson } from "../record.js";
 import { emptyState, type State } from "../state.js";
 import { PEER_A, PEER_B, PEER_C, column, key, row, table } from "../test-fixtures/index.js";
 
@@ -62,13 +58,13 @@ export const N1 = key("n1");
 export const LIKES = column("likes");
 export const TAGS = column("tags");
 
-/** The kind *is* the strategy: a `counter` column joins, a `set` column joins, everything else is lww. */
+/** Two columns that pick by value rather than by stamp, for the strategies that do. */
 export const MERGE: MergeSpec = new Map([
   [
     NOTES,
     new Map([
-      [LIKES, "counter" as const],
-      [TAGS, "set" as const],
+      [LIKES, "max" as const],
+      [TAGS, "min" as const],
     ]),
   ],
 ]);
@@ -94,61 +90,6 @@ export interface Stamped {
 export const applyAll = (changes: readonly Stamped[], merge?: MergeSpec): State =>
   changes.reduce(
     (state, { change, stamp }) => applyChange(state, change, stamp, merge),
-    emptyState(),
-  );
-
-export interface CellStamped {
-  readonly cell: CellChange;
-  readonly stamp: Stamp;
-}
-
-/** One schedule entry, of either kind: the point of the rich columns is that a row may mix them. */
-export type Op = Stamped | CellStamped;
-
-export const bump = (counts: Readonly<Record<string, CounterEntry>>, at: Stamp): CellStamped => ({
-  cell: {
-    kind: "increment",
-    table: NOTES,
-    key: N1,
-    counts: new Map(Object.entries(counts).map(([name, e]) => [column(name), e])),
-  },
-  stamp: at,
-});
-
-export const addTo = (adds: Readonly<Record<string, SetAdd>>, at: Stamp): CellStamped => ({
-  cell: {
-    kind: "add",
-    table: NOTES,
-    key: N1,
-    adds: new Map(Object.entries(adds).map(([name, a]) => [column(name), a])),
-  },
-  stamp: at,
-});
-
-export const dropFrom = (
-  drops: Readonly<Record<string, readonly SetTag[]>>,
-  at: Stamp,
-): CellStamped => ({
-  cell: {
-    kind: "remove",
-    table: NOTES,
-    key: N1,
-    drops: new Map(Object.entries(drops).map(([name, tags]) => [column(name), tags])),
-  },
-  stamp: at,
-});
-
-export const tag = (text: string): SetTag => {
-  // SAFETY: test fixture; a tag is any globally unique string
-  return text as SetTag;
-};
-
-export const applyOps = (ops: readonly Op[], merge?: MergeSpec): State =>
-  ops.reduce(
-    (state, op) =>
-      "cell" in op
-        ? applyCellChange(state, op.cell, op.stamp, merge)
-        : applyChange(state, op.change, op.stamp, merge),
     emptyState(),
   );
 

@@ -121,7 +121,7 @@ describe("check schemas (Standard Schema, structurally)", () => {
 describe("modifiers are data", () => {
   test("each modifier returns a new column; the original is untouched", () => {
     const a = t.integer();
-    const b = a.nullable().unique().onConflict("max");
+    const b = a.nullable().unique();
     expect(a.def).toEqual({
       kind: "integer",
       nullable: false,
@@ -131,7 +131,6 @@ describe("modifiers are data", () => {
     expect(b.def).toMatchObject({
       nullable: true,
       unique: true,
-      onConflict: "max",
     });
   });
 });
