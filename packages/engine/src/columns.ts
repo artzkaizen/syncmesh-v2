@@ -1,4 +1,4 @@
-import type { Change, Row } from "@syncmesh/kernel";
+import type { Change, FoldableChange, Row } from "@syncmesh/kernel";
 
 import { Result } from "@syncmesh/result";
 import { checkRow, type Table, type WireRow } from "@syncmesh/schema";
@@ -9,12 +9,18 @@ import { SchemaViolation, UnknownChangeKind, type ValidationError } from "./erro
 const FOLDABLE = new Set(["insert", "update", "delete"]);
 
 /**
+ * Whether this build can fold the change — and, because it narrows, the only way to reach the
+ * fields a fold reads. A change that fails this is a newer peer's, kept whole and parked (D22-A).
+ */
+export const foldable = (change: Change): change is FoldableChange => FOLDABLE.has(change.kind);
+
+/**
  * The kind of a change this build has no fold for, or `undefined` when it can take it. A newer
- * peer's change kind reaches an older one as a value outside the union the types describe, which
- * is exactly the case D13 asks the older peer to park rather than crash on.
+ * peer's change kind reaches an older one as `unknown` carrying the tag it was written under,
+ * which is exactly the case D13 asks the older peer to park rather than crash on.
  */
 export const unfoldableKind = (change: Change): string | undefined =>
-  FOLDABLE.has(change.kind) ? undefined : String(change.kind);
+  foldable(change) ? undefined : `${change.kind}(${change.tag})`;
 
 /**
  * The cells a table declares, with every other key dropped.
@@ -33,8 +39,8 @@ const declared = (table: Table, cells: Row): WireRow =>
  * columns it knows about.
  */
 export function checkColumns(table: Table, change: Change): Result<void, ValidationError> {
-  const kind = unfoldableKind(change);
-  if (kind !== undefined) {
+  if (!foldable(change)) {
+    const kind = unfoldableKind(change) ?? change.kind;
     return Result.err(
       new UnknownChangeKind({
         table: String(table.name),

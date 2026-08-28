@@ -11,6 +11,7 @@ import type { StateStore } from "./state-store.js";
 import type { StoredEvent } from "./store.js";
 import type { TelemetryEvent } from "./telemetry.js";
 
+import { foldable } from "./columns.js";
 import { rowsFor, writeKeysOf } from "./state-store.js";
 import { timed } from "./telemetry.js";
 
@@ -67,8 +68,10 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
         coverage.note(event);
         feeds.note(entry);
         const stamp = stampOf(event);
+        // `admit` parked anything this build cannot fold before it reached here (D22-A); the
+        // guard is what narrows the type, and reaching it at all would be that ladder failing
         for (const change of event.changes)
-          state = applyChange(state, change, stamp, merge, event.partition);
+          if (foldable(change)) state = applyChange(state, change, stamp, merge, event.partition);
       }
       return {
         source,

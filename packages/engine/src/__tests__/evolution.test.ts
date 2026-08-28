@@ -2,13 +2,13 @@ import type { Change, SyncEvent } from "@syncmesh/kernel";
 
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { defineSchema, t } from "@syncmesh/schema";
-import { encodeEventCore } from "@syncmesh/wire";
+import { decodeEventCore, encodeEventCore } from "@syncmesh/wire";
 import { grownCore } from "@syncmesh/wire/wire-tests";
 import { describe, expect, test } from "bun:test";
 
 import type { Engine, EngineOptions } from "../engine.js";
 import type { EngineError } from "../errors.js";
-import type { Validator } from "../validate.js";
+import type { ProbeEvent, Validator } from "../validate.js";
 
 import { createValidator } from "../validate.js";
 import { CREATE, N1, PEER_A, PEER_B, key, row, setup } from "./fixtures.js";
@@ -218,6 +218,78 @@ describe("an event this build cannot read is parked, never dropped", () => {
     expect(cursorOf(device)).toBe(3);
     expect(aheadOf(device)).toEqual([]);
     expect(digestOf(device)).toEqual(digestOf(author));
+  });
+
+  test("a kind this build has never heard of survives the codec and reaches the ladder", async () => {
+    const author = peer(PEER_B);
+    const [e1, e2, e3] = await threeNotes(author);
+    // tag 3 is `increment`, reserved for a cell kind no encoder here emits — a newer build's
+    // change arriving at an older one, written the way it will really be written
+    const opaque: Change = {
+      kind: "unknown",
+      tag: 3,
+      table: NOTES,
+      key: N1,
+      data: new Map<string, number>([["count", 7]]),
+    };
+    const forged: SyncEvent = { ...e2!, changes: [opaque] };
+
+    // through the wire and back: refusing here is what used to make it a wire error that both
+    // transports dropped, so nothing downstream could park what it never received
+    const core = encodeEventCore(forged);
+    const read = decodeEventCore(core).unwrap();
+    expect(read.changes[0]).toEqual(opaque);
+    // and back out byte-for-byte, so a device that parked one can still serve the run it sits in
+    expect(encodeEventCore(read)).toEqual(core);
+
+    const device = peer(PEER_A);
+    const report = (await device.receiveBatch(entriesOf([e1!, read, e3!]))).unwrap();
+    expect(report.quarantined).toBe(1);
+    expect(device.quarantine().map((p) => p.reason)).toEqual(["unknown-kind"]);
+    // it gates the cursor and not delivery: the run stops at the hole, e3 still lands
+    expect(cursorOf(device)).toBe(1);
+    expect(aheadOf(device)).toEqual([3]);
+    expect(holdingOf(device)).toEqual([2, 3]);
+
+    // a build that still cannot read it changes nothing, and says nothing new
+    (await device.retryQuarantined()).unwrap();
+    expect(device.quarantine()).toHaveLength(1);
+    expect(cursorOf(device)).toBe(1);
+  });
+
+  test("two devices given the same events park the same set and hold the same rows", async () => {
+    const author = peer(PEER_B);
+    const [e1, e2, e3] = await threeNotes(author);
+    const opaque: Change = { kind: "unknown", tag: 4, table: NOTES, key: N1, data: null };
+    const read = decodeEventCore(encodeEventCore({ ...e2!, changes: [opaque] })).unwrap();
+
+    // one folds the run in order, the other back to front: nothing here may depend on which
+    const first = peer(PEER_A);
+    const second = peer(PEER_A);
+    (await first.receiveBatch(entriesOf([e1!, read, e3!]))).unwrap();
+    (await second.receiveBatch(entriesOf([e3!, read, e1!]))).unwrap();
+
+    expect(digestOf(second)).toEqual(digestOf(first));
+    expect(second.quarantine().map((p) => p.reason)).toEqual(
+      first.quarantine().map((p) => p.reason),
+    );
+    expect(cursorOf(second)).toBe(cursorOf(first));
+    expect(holdingOf(second)).toEqual(holdingOf(first));
+  });
+
+  test("nothing here can author one: the probe refuses it before a write is numbered", async () => {
+    // the transaction API cannot express one at all — `insert`, `update` and `delete` are the
+    // whole of it — so this is the rung below that, and it is defence in depth on purpose: a
+    // device that wrote one would be inventing an event no build can read, and the row it
+    // touched would differ from every peer's forever
+    const opaque: Change = { kind: "unknown", tag: 5, table: NOTES, key: N1, data: null };
+    const probe: ProbeEvent = { peerId: PEER_A, partition: USER, changes: [opaque] };
+    const verdict = validatorFor(oldSchema).validate(probe, {
+      row: () => undefined,
+      partition: () => undefined,
+    });
+    expect(verdict.isErr()).toBe(true);
+    expect(verdict.isErr() && verdict.error._tag).toBe("UnknownChangeKind");
   });
 
   test("a change kind with no fold here is parked rather than crashing the batch", async () => {

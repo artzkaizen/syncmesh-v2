@@ -25,12 +25,14 @@ const KEY = { v: 0, peerId: 1, seq: 2, hlc: 3, procedure: 5, partition: 6, chang
 export const CHANGE = { kind: 0, table: 1, key: 2, data: 3 } as const;
 
 /**
- * The row-level change kinds, and the only ones an event carries today. 3, 4 and 5 are reserved
- * for the cell-level kinds (`CELL_KIND`), which no encoder here emits; a decoder that does not
- * know a kind refuses the event whole, which is what the last guard in {@link decodeChange} does
- * — folding an unknown payload as an ordinary value would silently mangle the column instead.
- * Refusing is not parking: the event becomes a wire error the transports drop, so the quarantine
- * D13 asks for cannot see it (see `QuarantineReason`).
+ * The row-level change kinds, and the only ones an encoder here emits. 3, 4 and 5 are reserved
+ * for the cell-level kinds (`CELL_KIND`).
+ *
+ * A tag this build does not know is decoded as an `unknown` change carrying its payload untouched
+ * (D22-A), never folded as an ordinary value — which would silently mangle the column — and never
+ * refused, which used to make the event a wire error both transports dropped before `admit` could
+ * park it. Parked, it holds the author's cursor open at its own sequence, which is the only place
+ * a later build can pick the run back up from.
  */
 const KIND = { insert: 0, update: 1, delete: 2 } as const;
 
@@ -49,16 +51,24 @@ export function encodeEventCore(event: SyncEvent): Uint8Array {
 
 const encodeChange = (change: Change): CborValue =>
   new Map<CborKey, CborValue>([
-    [CHANGE.kind, KIND[change.kind]],
+    [CHANGE.kind, change.kind === "unknown" ? change.tag : KIND[change.kind]],
     [CHANGE.table, change.table],
     [CHANGE.key, change.key],
-    [
-      CHANGE.data,
-      change.kind === "delete"
-        ? null
-        : rowToCbor(change.kind === "insert" ? change.row : change.patch),
-    ],
+    [CHANGE.data, dataToCbor(change)],
   ]);
+
+/**
+ * An `unknown` change goes back out as the value it came in as (D22-A). It came from
+ * `decodeCbor`, and canonical encoding is a function of the value, so the round trip is
+ * byte-identical — which is what lets a device that parked one still serve the run it sits in.
+ */
+const dataToCbor = (change: Change): CborValue => {
+  if (change.kind === "delete") return null;
+  if (change.kind === "insert") return rowToCbor(change.row);
+  if (change.kind === "update") return rowToCbor(change.patch);
+  // SAFETY: an `unknown` change is only ever built by `decodeChange` below, from a value CBOR read
+  return change.data as CborValue;
+};
 
 const malformed = (message: string) => Result.err(new MalformedEvent({ message }));
 
@@ -122,7 +132,13 @@ function decodeChange(value: CborValue): Result<Change, MalformedEvent> {
   const t = asTable(table);
   const k = asKey(key);
   if (kind === KIND.delete) return Result.ok({ kind: "delete", table: t, key: k });
-  if (kind !== KIND.insert && kind !== KIND.update) return malformed("unknown change kind");
+  // a tag this build does not know is kept whole rather than refused (D22-A). Refusing made the
+  // event a wire error that both transports dropped before `admit` ran, so the quarantine D13
+  // asks for could never see it — and a newer peer's write vanished with no trace anywhere
+  if (kind !== KIND.insert && kind !== KIND.update) {
+    if (!isSafeNonNegative(kind)) return malformed("change kind is not a tag");
+    return Result.ok({ kind: "unknown", tag: kind, table: t, key: k, data });
+  }
   return rowFromCbor(data)
     .mapError((e) => new MalformedEvent({ message: e.message }))
     .map((row) =>

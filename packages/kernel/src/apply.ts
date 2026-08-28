@@ -1,4 +1,4 @@
-import type { Change, Row, RowKey, TableName } from "./change.js";
+import type { FoldableChange, Row, RowKey, TableName } from "./change.js";
 import type { PartitionKey } from "./partition.js";
 import type { Cell, ColumnName, RowRecord } from "./record.js";
 import type { State, TableState } from "./state.js";
@@ -26,7 +26,7 @@ const EMPTY_RECORD: RowRecord = { cells: new Map() };
  */
 export function applyChange(
   state: State,
-  change: Change,
+  change: FoldableChange,
   stamp: Stamp,
   merge?: MergeSpec,
   partition?: PartitionKey,

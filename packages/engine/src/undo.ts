@@ -28,7 +28,8 @@ export function invert(state: State, changes: readonly Change[]): readonly Chang
     const id = `${change.table}\u0000${change.key}`;
     const entry = touched.get(id) ?? { change, columns: new Set<ColumnName>(), deleted: false };
     if (change.kind === "delete") entry.deleted = true;
-    else
+    // an unknown change is never authored here, so there is nothing of ours to take back (D22-A)
+    else if (change.kind !== "unknown")
       for (const c of (change.kind === "insert" ? change.row : change.patch).keys())
         entry.columns.add(c);
     touched.set(id, entry);

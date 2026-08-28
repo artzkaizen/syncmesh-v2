@@ -11,6 +11,7 @@ import type {
 import type { Row, Table } from "@syncmesh/schema";
 import type { Temporal } from "@syncmesh/temporal";
 
+import { foldable } from "@syncmesh/engine";
 import { applyChange, compareStamp, emptyState, readRow, stampOf } from "@syncmesh/kernel";
 import { fromWirePatch, fromWireRow } from "@syncmesh/schema";
 
@@ -65,7 +66,10 @@ export function rowHistory<T extends Table>(
   const revisions: Revision<T>[] = [];
   for (const { event, changes } of touching) {
     for (const change of changes) {
-      state = applyChange(state, change, stampOf(event), options.merge, event.partition);
+      // a change this build cannot fold still belongs in the history — a write happened here, and
+      // saying so is more use to a person than a gap where one was (D22-A)
+      if (foldable(change))
+        state = applyChange(state, change, stampOf(event), options.merge, event.partition);
       const cells = readRow(state, table.name, key);
       revisions.push({
         at: event.hlc[0],
@@ -75,7 +79,7 @@ export function rowHistory<T extends Table>(
         procedure: String(event.procedure),
         kind: change.kind,
         changed:
-          change.kind === "delete"
+          change.kind === "delete" || change.kind === "unknown"
             ? {}
             : fromWirePatch(table, change.kind === "insert" ? change.row : change.patch),
         row: cells === undefined ? null : fromWireRow(table, cells),

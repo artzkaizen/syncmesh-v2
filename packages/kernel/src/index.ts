@@ -9,7 +9,7 @@ export type { Stamp } from "./stamp.js";
 export { compareStamp } from "./stamp.js";
 export type { Cell, CellValue, ColumnName, JsonObject, JsonValue, RowRecord } from "./record.js";
 export { isJsonArray, isVisible, jsonObject } from "./record.js";
-export type { Change, Row, RowKey, TableName } from "./change.js";
+export type { Change, FoldableChange, Row, RowKey, TableName } from "./change.js";
 export type { DeclaredStrategyName, MergeSpec, Strategy, StrategyName } from "./strategy.js";
 export { compareValue, isCellStrategy, strategies } from "./strategy.js";
 export type { KeyedRecord, State, TableState } from "./state.js";

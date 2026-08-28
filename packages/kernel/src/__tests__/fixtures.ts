@@ -1,7 +1,7 @@
 import { Temporal } from "@syncmesh/temporal";
 
 import type { CellChange } from "../cell-change.js";
-import type { Change } from "../change.js";
+import type { FoldableChange } from "../change.js";
 import type { CounterEntry } from "../counter.js";
 import type { Hlc, Logical } from "../hlc.js";
 import type { PeerId } from "../peer-id.js";
@@ -87,7 +87,7 @@ export const remove = (at: Stamp): Stamped => ({
 });
 
 export interface Stamped {
-  readonly change: Change;
+  readonly change: FoldableChange;
   readonly stamp: Stamp;
 }
 

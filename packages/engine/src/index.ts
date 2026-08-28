@@ -61,7 +61,7 @@ export {
   UnknownTable,
   WrongPartition,
 } from "./errors.js";
-export { checkColumns, unfoldableKind } from "./columns.js";
+export { checkColumns, foldable, unfoldableKind } from "./columns.js";
 export type { EngineError, LinkRung, MutateError, RevertError, ValidationError } from "./errors.js";
 export type { Hub, Unsubscribe } from "./listeners.js";
 export { createHub } from "./listeners.js";

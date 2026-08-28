@@ -260,6 +260,10 @@ export function checkLink(change: Change, event: ProbeEvent): Result<void, Valid
   const key = change.key;
   if (change.kind === "delete")
     return refuse(key, "columns", "a link ends with an unlink, never with a delete");
+  // the ladder rung above this one already parked it; refusing here as well is what makes the
+  // narrowing the type asks for the same fact the validator states (D22-A)
+  if (change.kind === "unknown")
+    return refuse(key, "columns", "a link this build cannot read is not a link it can admit");
   const filed = splitLinkKey(key);
   const device = parsePeerId(filed.device).unwrapOr(undefined);
   if (device === undefined || filed.partition !== String(event.partition ?? ""))
