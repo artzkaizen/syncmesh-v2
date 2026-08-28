@@ -44,7 +44,7 @@ export const fakeClock = (start: number) => {
 };
 
 export const column = (name: string): ColumnName => {
-  // SAFETY: test fixture; column naming rules arrive with the schema (E05)
+  // SAFETY: test fixture; column naming rules arrive with the schema
   return name as ColumnName;
 };
 
@@ -63,7 +63,7 @@ export const record = (
 };
 
 export const table = (name: string): TableName => {
-  // SAFETY: test fixture; table naming rules arrive with the schema (E05)
+  // SAFETY: test fixture; table naming rules arrive with the schema
   return name as TableName;
 };
 

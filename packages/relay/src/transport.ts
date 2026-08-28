@@ -31,7 +31,7 @@ export interface RelayTransportOptions {
   /** Milliseconds before `whenReady` force-resolves so a dead relay never wedges the mesh. Default 1000. */
   readonly forceReadyAfter?: number;
   /**
-   * What this device wants from the room (E13). It narrows: a relay applies it after the read
+   * What this device wants from the room. It narrows: a relay applies it after the read
    * policy, so an interest can make a device see less and never more.
    */
   readonly interest?: Interest;
@@ -40,7 +40,7 @@ export interface RelayTransportOptions {
 }
 
 /**
- * The client half of E12: join with our contiguous cursors, apply pages strictly in order,
+ * The client half of the relay protocol: join with our contiguous cursors, apply pages in order,
  * push what the relay lacks only after the last page, hold a liveness deadline of 2.5× the
  * relay's keepalive re-armed on every frame (a hello-less relay arms nothing), and reconnect
  * with backoff. A version refusal is permanent — no reconnect loop against a relay that

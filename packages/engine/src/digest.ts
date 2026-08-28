@@ -110,7 +110,7 @@ export interface RepairRow {
 export interface RepairApi {
   /**
    * A fingerprint per table — the sum of its rows' digests, over the slice an interest names.
-   * Two peers must digest the same slice for a comparison to mean anything (E13, E16).
+   * Two peers must digest the same slice for a comparison to mean anything.
    */
   readonly digest: (interest?: Interest) => TableDigests;
   /** Every row's digest in one table: what narrows a divergent table to the rows that differ. */

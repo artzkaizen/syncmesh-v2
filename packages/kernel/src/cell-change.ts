@@ -10,12 +10,12 @@ import type { MergeSpec } from "./strategy.js";
 import { mergeRecord } from "./apply.js";
 
 /**
- * A write that merges inside a cell rather than replacing it (E26, D04-C). Three kinds, one per
+ * A write that merges inside a cell rather than replacing it (D04-C). Three kinds, one per
  * operation the two rich column kinds have: `increment` for a `counter`, `add` and `remove` for a
  * `set`. Each is its own change kind on the wire so that a peer which does not know the kind
  * refuses the event instead of folding the payload as an ordinary value and mangling the column.
  * Nothing emits one yet: `SyncEvent.changes` carries row-level changes only, so the codec below
- * it is the contract for the build that adds them rather than a path this one takes (E26).
+ * it is the contract for the build that adds them rather than a path this one takes.
  *
  * Everything else stays as it was: these fold into the same {@link RowRecord}, under the same
  * stamps, past the same tombstones, and a row may mix them with ordinary columns freely.

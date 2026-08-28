@@ -18,7 +18,7 @@ export const ACME = parsePartitionKey("org:acme").unwrap();
 export const GLOBEX = parsePartitionKey("org:globex").unwrap();
 
 /**
- * One CDC-backed collection and one rule shape per failure the epic names: `tasks` is written
+ * One CDC-backed collection and one rule shape per failure worth pinning: `tasks` is written
  * the way a projection should be, `owned` reads the author through `owner()` and `flagged`
  * reads the column through `rowIs`.
  */

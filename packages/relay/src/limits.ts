@@ -15,7 +15,7 @@ export interface RateLimit {
    * a **livelock rather than a slowdown**: every reconnect spends the whole allowance on the same
    * preamble, is hung up on before its first event, and the room never accepts anything from that
    * device again. Above the preamble it is only a slowdown, because a client pushes everything the
-   * relay lacks the moment its last catch-up page lands (E12) and the next reconnect resumes from
+   * relay lacks the moment its last catch-up page lands and the next reconnect resumes from
    * its cursors.
    */
   readonly burst: number;

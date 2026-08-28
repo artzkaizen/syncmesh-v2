@@ -9,7 +9,7 @@ import { KIND } from "./frame-parts.js";
  *
  * **Nothing calls this, on purpose.** With one transport there is nothing to choose, and today
  * every device has one: the mesh sends on every link. The caller is the send path of the mesh
- * manager (RFC-0012 §2, task N1 — E22), and it arrives with the second radio, which is also the
+ * manager (RFC-0012 §2), and it arrives with the second radio, which is also the
  * first moment a test can prove a bulk payload left the narrow pipe. Wiring it earlier would put
  * the untested half of the change in the send path, where a mistake costs convergence.
  */

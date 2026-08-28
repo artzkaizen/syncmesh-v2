@@ -3,7 +3,7 @@ import type { FrameClass } from "./frame-parts.js";
 /**
  * The sending order of one session. Frames offered within the same turn leave in **tag order**
  * rather than in the order they were written: grants before cursors, cursors before events,
- * events before the snapshot pages of a catch-up (E11, RFC-0012 "interactive vs bulk").
+ * events before the snapshot pages of a catch-up (RFC-0012 "interactive vs bulk").
  *
  * The tag *is* the class. There is no second enum to keep in step with `KIND`, and no per-call
  * priority argument a call site could get wrong — a frame's class is the thing it already is.
@@ -21,7 +21,7 @@ import type { FrameClass } from "./frame-parts.js";
  * it, and conflation stays where the topic is known — `createPresenceStore`. What presence does
  * get is its place in the order: after the events, which is the class that yields under load.
  *
- * What it buys, once a link can be busy enough to have a queue at all (E12): a live event does
+ * What it buys, once a link can be busy enough to have a queue at all: a live event does
  * not wait behind a snapshot transfer, and a grant that would stop the far side quarantining
  * overtakes the events it authorises.
  */

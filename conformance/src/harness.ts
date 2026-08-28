@@ -2,7 +2,7 @@ import { bytesToHex, hexToBytes } from "@syncmesh/wire";
 
 import { wireVectors, type WireVector } from "./vectors.js";
 
-/** What a wire implementation exposes to be checked. E03 fills it in; a port reimplements it. */
+/** What a wire implementation exposes to be checked: this repo fills it in, a port reimplements it. */
 export interface WireCodec<Event> {
   readonly decodeCore: (core: Uint8Array) => Event;
   readonly encodeCore: (event: Event) => Uint8Array;

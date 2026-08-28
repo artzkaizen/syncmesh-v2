@@ -220,7 +220,7 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
     expect(meshB.engine.state().size).toBe(0);
     first.close();
 
-    // the grant frame arrives (E11 sends it before any event); a fresh session resyncs
+    // the grant frame arrives before any event; a fresh session resyncs
     meshB.grants.register(grantA).unwrap();
     const second = createLink(meshA.engine, meshB.engine, { now: () => T0 });
     (await second.catchUp()).unwrap();

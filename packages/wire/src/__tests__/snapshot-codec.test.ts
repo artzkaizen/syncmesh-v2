@@ -20,10 +20,10 @@ const PEER = parsePeerId("a".repeat(64)).unwrap();
 const OTHER = parsePeerId("b".repeat(64)).unwrap();
 const ACME = parsePartitionKey("org:acme").unwrap();
 
-// SAFETY: test fixture; table, column and key naming rules are owned by the schema (E05)
+// SAFETY: test fixture; table, column and key naming rules are owned by the schema
 const NOTES = "notes" as TableName;
 const column = (name: string) => {
-  // SAFETY: test fixture; column naming rules are owned by the schema (E05)
+  // SAFETY: test fixture; column naming rules are owned by the schema
   return name as ColumnName;
 };
 const key = (value: string) => {

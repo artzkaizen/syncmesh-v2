@@ -75,7 +75,7 @@ export function createOutbound(deps: OutboundDeps) {
   /**
    * What we hold, counted after the events we owed them have gone out and stamped with both halves
    * of where we stood when we counted — the cursors and what sits above them. Those are what let
-   * the far side tell divergence from a peer that is merely a fold ahead or behind (E16, D13).
+   * the far side tell divergence from a peer that is merely a fold ahead or behind (D13).
    */
   const sendDigest = (): void =>
     send(

@@ -15,7 +15,7 @@ export interface Undo {
 }
 
 const revertProcedure = (): Procedure => {
-  // SAFETY: the one procedure the engine itself authors; naming rules arrive with the client (E09)
+  // SAFETY: the one procedure the engine itself authors; naming rules arrive with the client
   return "revert" as Procedure;
 };
 

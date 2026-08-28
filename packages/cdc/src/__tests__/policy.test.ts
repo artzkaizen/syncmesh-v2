@@ -86,7 +86,7 @@ describe("a device write to a CDC-backed collection", () => {
 });
 
 /**
- * The consequence the epic calls out: the authority signs everything CDC produces, so a rule
+ * The authority signs everything CDC produces, so a rule
  * that reads the *author* is answering a question about the authority. `owner()` therefore
  * denies the real owner; a rule that reads the **column** does not.
  */

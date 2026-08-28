@@ -62,7 +62,7 @@ export interface RelayRoomOptions {
    */
   readonly blobs?: BlobStore;
   /**
-   * What this room stops keeping (E24). Absent, it keeps everything, which is what it did before
+   * What this room stops keeping. Absent, it keeps everything, which is what it did before
    * the option existed — a cap that trims history is one an operator has to ask for.
    */
   readonly retention?: RelayRetention;

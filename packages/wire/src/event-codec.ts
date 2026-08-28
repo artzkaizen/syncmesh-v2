@@ -132,7 +132,7 @@ function decodeChange(value: CborValue): Result<Change, MalformedEvent> {
     );
 }
 
-/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- each brand below is applied right after the check that establishes it; naming rules for these identifiers are owned by later epics (E05, E08, E09) */
+/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- each brand below is applied right after the check that establishes it; naming rules for these identifiers are owned by the schema */
 const asLogical = (n: number) => n as Logical;
 const asProcedure = (s: string) => s as Procedure;
 const asPartition = (s: string) => s as PartitionKey;

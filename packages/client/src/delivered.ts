@@ -49,8 +49,8 @@ export function createReceived(engine: Engine): (options: ReceivedOptions) => Pr
 
 /**
  * `mesh.delivered`: a promise that settles once a peer's acknowledged cursors cover the target.
- * Delivery, not approval — every receiver runs the same policy itself; an authority's verdict
- * is E12/E16's to add.
+ * Delivery, not approval — every receiver runs the same policy itself, so this says the bytes
+ * arrived and nothing about whether anyone accepted them.
  */
 export function createDelivered(
   engine: Engine,

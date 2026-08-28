@@ -37,7 +37,7 @@ export interface RelayDurableHostOptions {
   /** Serve blobs from the object's own SQLite (D18). Default true; `false` for a log-only room. */
   readonly blobs?: boolean;
   /**
-   * Per-socket ceilings — frame size and the two token buckets (E24). Forwarded whole, because a
+   * Per-socket ceilings — frame size and the two token buckets. Forwarded whole, because a
    * partly-overridden rate table is a table where the class nobody thought about is left open.
    */
   readonly limits?: Partial<RelayLimits>;

@@ -70,7 +70,7 @@ export interface MeshGrants extends GrantRegistry {
  * Automatic renewal must not be that path. A person calling `issue` still is.
  */
 export interface StandingOf {
-  /** When this device's powers were withdrawn in an instance, if they were (E21). */
+  /** When this device's powers were withdrawn in an instance, if they were. */
   readonly revokedAt?: (device: PeerId, partition: PartitionKey) => Temporal.Instant | undefined;
   /** How much sooner than `expiresAt` an instance stops trusting a grant, if it says (RFC-0016). */
   readonly graceMillis?: (partition: PartitionKey) => number | undefined;

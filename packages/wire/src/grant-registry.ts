@@ -29,7 +29,7 @@ export interface GrantRegistry {
    * that remembers grants from resurrecting one on the next restart.
    */
   readonly onForgotten: (listener: (device: PeerId) => void) => () => void;
-  /** Withdraws it here only; the propagating form is a `_revocations` row (E21). */
+  /** Withdraws it here only; the propagating form is a `_revocations` row. */
   readonly revoke: (device: PeerId) => void;
 }
 

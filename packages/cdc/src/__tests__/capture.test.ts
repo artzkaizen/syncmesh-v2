@@ -123,7 +123,7 @@ describe("a transaction is an event boundary", () => {
 });
 
 /**
- * The failure the epic names: an event is committed, the process dies before the ack. The
+ * The failure this guards: an event is committed, the process dies before the ack. The
  * watermark rides the *last* event, so a crash part way through a multi-partition transaction
  * leaves it behind the work, and the restart replays the whole transaction.
  */

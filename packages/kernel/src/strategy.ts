@@ -17,7 +17,7 @@ export type DeclaredStrategyName = "lww" | "max" | "min";
 
 /**
  * `lww`, `max` and `min` pick one of the two cells whole; `counter` and `set` merge *inside* it and
- * are the column's kind rather than anything an app declares (E26, D04-C).
+ * are the column's kind rather than anything an app declares (D04-C).
  */
 export type StrategyName = DeclaredStrategyName | "counter" | "set";
 

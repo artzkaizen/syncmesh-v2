@@ -30,7 +30,7 @@ export function rowFromCbor(value: CborValue | undefined): Result<Row, Malformed
     if (!isString(column)) return malformed("column name is not text");
     const decoded = cellFromCbor(cell);
     if (decoded.isErr()) return decoded;
-    // SAFETY: column naming rules are owned by the schema (E05); the codec only requires text
+    // SAFETY: column naming rules are owned by the schema; the codec only requires text
     row.set(column as ColumnName, decoded.value);
   }
   return Result.ok(row);

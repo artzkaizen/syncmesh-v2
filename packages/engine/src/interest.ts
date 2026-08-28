@@ -8,7 +8,7 @@ import type { EventStore, StoreFailure, StoredEvent } from "./store.js";
 import type { Cursors } from "./sync.js";
 
 /**
- * What a device wants, so a sender can drop the rest before it becomes bytes (E13). An interest
+ * What a device wants, so a sender can drop the rest before it becomes bytes. An interest
  * **narrows** and never widens: it is a request, not a permission, and it is applied after the
  * read policy has already decided what this device may see at all.
  */
@@ -92,7 +92,7 @@ export function predicateColumns(node: PolicyNode, into = new Set<string>()): Re
  *   so a row moving *out* of the interest is still visible as it leaves.
  *
  * Without that last clause a device would keep a row forever at the value it had when it stopped
- * matching — the stale-row hole that server-maintained views (E27) exist to close properly.
+ * matching — the stale-row hole that server-maintained views exist to close properly.
  */
 const changeMatches = (change: Change, where: PolicyNode, named: ReadonlySet<string>): boolean => {
   if (change.kind === "delete") return true;

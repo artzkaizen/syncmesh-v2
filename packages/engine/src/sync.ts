@@ -39,7 +39,7 @@ export const mergeAhead = (a: Ahead, b: Ahead): Ahead => {
  * Whether two peers hold the same events *above* their cursors. Equal cursors alone no longer
  * mean equal folded sets: that is the whole point of `{ contiguous, ahead }` — a peer can hold
  * events its cursor does not describe. Anything comparing two peers' rows has to check both
- * halves or it will read "one of us is one event ahead" as divergence (E16).
+ * halves or it will read "one of us is one event ahead" as divergence.
  */
 export const sameAhead = (a: Ahead, b: Ahead): boolean => {
   for (const peer of new Set([...a.keys(), ...b.keys()])) {

@@ -38,7 +38,7 @@ export interface BridgeOptions {
   /** An ephemeral value arrived (D16): the store decides whether it is news. Never stored here. */
   readonly onPresence?: (wire: Uint8Array) => void;
   /**
-   * The slice this link syncs (E13). A digest exchange compares only when both sides name the
+   * The slice this link syncs. A digest exchange compares only when both sides name the
    * same one, so two peers holding different partitions never mistake that for divergence.
    */
   readonly interest?: Interest;
@@ -51,7 +51,7 @@ export interface BridgeOptions {
   readonly rowsPerChunk?: number;
   /**
    * The far side's fingerprints disagreed with ours for these tables, over a slice we both
-   * named (E16, RFC-0014). Repair is the caller's to run — `rowDigests` narrows it to rows.
+   * named (RFC-0014). Repair is the caller's to run — `rowDigests` narrows it to rows.
    */
   readonly onDivergence?: (report: Divergence) => void;
 }

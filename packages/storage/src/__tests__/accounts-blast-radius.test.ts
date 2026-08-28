@@ -15,7 +15,7 @@ import {
 } from "@syncmesh/engine";
 import { createValidator } from "@syncmesh/engine";
 
-/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- test fixtures; naming rules belong to the schema (E05) */
+/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- test fixtures; naming rules belong to the schema */
 const NOTES = "notes" as TableName;
 const N1 = "n1" as RowKey;
 const PEER_A = parsePeerId("a".repeat(64)).unwrap();

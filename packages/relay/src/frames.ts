@@ -51,7 +51,7 @@ export type RelayFrame =
       readonly versions: readonly number[];
       readonly peerId: PeerId;
       readonly cursors: Cursors;
-      /** What this device wants (E13); absent asks for everything its policy already allows. */
+      /** What this device wants; absent asks for everything its policy already allows. */
       readonly interest?: Interest;
     }
   | {
@@ -61,7 +61,7 @@ export type RelayFrame =
       readonly epoch: string;
       readonly cursors: Cursors;
       /**
-       * Per author, the highest sequence this room has trimmed (E24). The pair with `cursors` is
+       * Per author, the highest sequence this room has trimmed. The pair with `cursors` is
        * what catch-up can serve — a room that keeps everything sends it empty, and a build older
        * than retention sends nothing here, which decodes to the same empty map and says the same
        * thing: nothing has been taken away.

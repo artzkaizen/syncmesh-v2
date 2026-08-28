@@ -22,7 +22,7 @@ export type ColumnKind =
 export type CellKind = "counter" | "set";
 
 /**
- * Whether the column's kind *is* its merge strategy (E26). A `counter` or `set` column carries the
+ * Whether the column's kind *is* its merge strategy. A `counter` or `set` column carries the
  * strategy by being one, so `onConflict` on it is a definition error rather than a second opinion.
  */
 export const isCellKind = (kind: ColumnKind): kind is CellKind =>
@@ -68,7 +68,7 @@ export type IsLattice<T> = [T] extends [LatticeValue] ? true : false;
 /**
  * Which conflict strategies a column of value type `T` may declare: only numbers have a meaningful
  * max/min, and a lattice column declares none at all — `counter` and `set` merge inside the cell
- * and replace the value with lattice state, so a column gets them from its kind (E26) and never
+ * and replace the value with lattice state, so a column gets them from its kind and never
  * from `onConflict`.
  */
 export type StrategyFor<T> =
@@ -175,12 +175,12 @@ export const t = {
   /** With a schema the type is inferred and the value checked; without one anything JSON is accepted and `T` is a phantom. */
   json,
   /**
-   * A PN-counter (E26): every peer's own totals in the cell, Σ inc − Σ dec to the app. Two devices
+   * A PN-counter: every peer's own totals in the cell, Σ inc − Σ dec to the app. Two devices
    * that increment while apart both keep their increment.
    */
   counter: () => columnFromDef<CounterValue, false, false>(base("counter")),
   /**
-   * An OR-Set (E26) of `element`'s values: an add that crossed a remove survives, because the
+   * An OR-Set of `element`'s values: an add that crossed a remove survives, because the
    * remove names the ids it had seen and never the value.
    */
   set: <T extends JsonValue>(element: Column<T, false, false>) => {

@@ -172,10 +172,10 @@ function readTable(
   const columns: ColumnName[] = [];
   for (const name of names) {
     if (!isString(name)) return malformed("column name is not text");
-    // SAFETY: column naming rules are owned by the schema (E05); the codec only requires text
+    // SAFETY: column naming rules are owned by the schema; the codec only requires text
     columns.push(name as ColumnName);
   }
-  // SAFETY: table naming rules are owned by the schema (E05); the codec only requires text
+  // SAFETY: table naming rules are owned by the schema; the codec only requires text
   return Result.ok([table as TableName, columns] as const);
 }
 
@@ -196,7 +196,7 @@ function readRow(row: CborValue, dicts: Dictionaries): Result<KeyedRecord, Malfo
       cells.set(column, decoded);
     }
     const partition = yield* readPartition(partitionIndex, dicts.partitions);
-    // SAFETY: keys are opaque text in the kernel; what may be a key is the schema's rule (E05)
+    // SAFETY: keys are opaque text in the kernel; what may be a key is the schema's rule
     const key = keyValue as RowKey;
     return Result.ok({
       table: entry[0],

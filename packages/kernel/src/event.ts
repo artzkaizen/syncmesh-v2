@@ -13,7 +13,7 @@ export type EventId = Brand<string, "EventId">;
 
 export type Procedure = Brand<string, "Procedure">;
 
-/** One local write as every peer will see it. Unsigned: the wire envelope (E03) carries the signature. See RFC-0002. */
+/** One local write as every peer will see it. Unsigned: the wire envelope carries the signature. See RFC-0002. */
 export interface SyncEvent {
   readonly v: ProtocolVersion;
   readonly id: EventId;

@@ -12,7 +12,7 @@ import type { FrameLink } from "./link.js";
 
 import { bridgeFramedLink } from "./bridge.js";
 
-/** Everything a transport needs to run sessions; `createMesh({ transports })` supplies it (E09). */
+/** Everything a transport needs to run sessions; `createMesh({ transports })` supplies it. */
 export interface TransportContext {
   readonly engine: Engine;
   readonly identity: Identity;

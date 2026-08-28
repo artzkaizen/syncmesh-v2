@@ -123,7 +123,7 @@ describe("encodeEventCore / decodeEventCore", () => {
 
   test("negative zero canonicalises to zero, because a canonical encoding has one of them", () => {
     // the two zeroes are the same number, so an encoding that kept them apart would give one
-    // value two byte sequences — the one thing canonical CBOR exists to rule out (E03)
+    // value two byte sequences — the one thing canonical CBOR exists to rule out
     const negative = event([{ kind: "insert", table: NOTES, key: K, row: row({ n: -0 }) }]);
     const positive = event([{ kind: "insert", table: NOTES, key: K, row: row({ n: 0 }) }]);
     expect(bytesEqual(encodeEventCore(negative), encodeEventCore(positive))).toBe(true);

@@ -23,7 +23,7 @@ import { KIND, cursorPairs, decodeCursorPairs, malformedFrame } from "./frame-pa
 export const SNAP = { req: 0, manifest: 1, chunk: 2, ack: 3 } as const;
 
 export type SnapshotFrame =
-  /** "Send me state, not history" — narrowed to what this device wants (E13). */
+  /** "Send me state, not history" — narrowed to what this device wants. */
   | { readonly kind: "snap-req"; readonly interest?: Interest }
   /** What is about to arrive, and the coverage it will stand for once all of it has. */
   | {

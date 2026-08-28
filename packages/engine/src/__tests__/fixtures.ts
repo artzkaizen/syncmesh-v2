@@ -14,7 +14,7 @@ export const PEER_C = parsePeerId("c".repeat(64)).unwrap();
 export const seq = (n: number) => parseSeqNum(n).unwrap();
 
 export const procedure = (label: string): Procedure => {
-  // SAFETY: test fixture; procedure naming rules arrive with the client (E09)
+  // SAFETY: test fixture; procedure naming rules arrive with the client
   return label as Procedure;
 };
 
@@ -28,7 +28,7 @@ export const fakeClock = (start: number) => {
 };
 
 export const table = (name: string): TableName => {
-  // SAFETY: test fixture; table naming rules arrive with the schema (E05)
+  // SAFETY: test fixture; table naming rules arrive with the schema
   return name as TableName;
 };
 export const key = (value: string): RowKey => {
@@ -36,7 +36,7 @@ export const key = (value: string): RowKey => {
   return value as RowKey;
 };
 export const column = (name: string): ColumnName => {
-  // SAFETY: test fixture; column naming rules arrive with the schema (E05)
+  // SAFETY: test fixture; column naming rules arrive with the schema
   return name as ColumnName;
 };
 export const row = (values: Readonly<Record<string, CellValue>>): Row =>

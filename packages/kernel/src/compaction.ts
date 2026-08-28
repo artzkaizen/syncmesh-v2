@@ -9,7 +9,7 @@ import { readSet } from "./set.js";
 
 /**
  * One OR-Set cell with its tombstones dropped, or the cell unchanged when it is not yet safe to
- * drop them — the bound this epic's `set` column is missing, since every removed id otherwise keeps
+ * drop them — the bound a `set` column otherwise lacks, since every removed id keeps
  * an empty entry for the life of the row.
  *
  * `stable` is a **causal stability frontier**: every event anywhere in the mesh whose HLC is at or

@@ -35,8 +35,8 @@ export type Frame =
   /** The ephemeral tier (D16): signed, never stored, dropped rather than queued. */
   | { readonly kind: "presence"; readonly wire: Uint8Array }
   /**
-   * What the sender holds, as one fingerprint per table, together with the slice it counted
-   * (E16). A receiver that holds a different slice compares nothing rather than false-alarming.
+   * What the sender holds, as one fingerprint per table, together with the slice it counted.
+   * A receiver that holds a different slice compares nothing rather than false-alarming.
    */
   | {
       readonly kind: "digest";
@@ -78,7 +78,7 @@ export const presenceFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.
  * What the sender holds, and the two facts that make it comparable: the slice it counted
  * (`interestKey`) and the events it had folded when it counted them. A receiver differing on
  * either concludes nothing — which is what keeps a peer that is merely behind from looking
- * divergent (E13, E16).
+ * divergent.
  */
 export const digestFrame = (
   scope: string,

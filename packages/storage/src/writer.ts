@@ -61,7 +61,7 @@ export type Write = (
   options?: WriteOptions,
 ) => Promise<Result<TxReceipt, WriteError>>;
 
-/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- procedures are `table.op` labels (E09) */
+/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- procedures are `table.op` labels */
 const procedure = (label: string): Procedure => label as Procedure;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 

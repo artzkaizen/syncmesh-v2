@@ -49,7 +49,7 @@ export interface MutateOptions {
 /** Where a batch came from; `repair` carries no cursors (RFC-0014), `snapshot` adopts them last (RFC-0019). */
 export type FoldSource = "local" | "remote" | "boot" | "repair" | "snapshot";
 
-/** One notification per fold, however many events it covered. `writeKeys` is exact: live queries (E10) trust it. */
+/** One notification per fold, however many events it covered. `writeKeys` is exact: live queries trust it. */
 export interface FoldBatch {
   readonly source: FoldSource;
   readonly eventCount: number;
@@ -123,7 +123,7 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi {
   /** Removes events every counted peer has acked and the state store has persisted; unobservable to peers. See RFC-0015 §2. */
   readonly compact: (options: CompactOptions) => Promise<Result<Compaction, CompactError>>;
   /**
-   * Synced events the holder of `theirs` lacks, narrowed to what they asked for (E13). The
+   * Synced events the holder of `theirs` lacks, narrowed to what they asked for. The
    * filter runs **here**, at the sender, so an uninterested event never becomes bytes — and it
    * only ever narrows: what the reader may see at all is the read policy's to decide.
    */

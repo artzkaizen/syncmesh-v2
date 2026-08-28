@@ -13,7 +13,7 @@ export interface Client {
   readonly peer: PeerId;
   readonly sender: Sender;
   readonly socket: RelaySocket;
-  /** Whether this client asked for that event (E13); a client with no interest wants them all. */
+  /** Whether this client asked for that event; a client with no interest wants them all. */
   readonly wants: (event: SyncEvent) => boolean;
 }
 
@@ -44,12 +44,12 @@ export interface RoomState {
   /**
    * The other end of the same claim: per author, the highest sequence retention has removed. The
    * pair `(floor, cursors)` is exactly what catch-up can serve, and a joiner whose own cursor for
-   * any author sits below this is refused rather than paged a run with the bottom missing (E24).
+   * any author sits below this is refused rather than paged a run with the bottom missing.
    */
   readonly floor: () => Cursors;
   /** Every client but one — the author, who already has what it sent. */
   readonly toClients: (frame: Uint8Array, except?: PeerId) => void;
-  /** The same, minus every client whose interest excludes this event (E13); counts who got it. */
+  /** The same, minus every client whose interest excludes this event; counts who got it. */
   readonly toInterested: (frame: Uint8Array, event: SyncEvent, except?: PeerId) => number;
   /** The same frame to the other instances serving this room; best-effort by design (D09-B). */
   readonly publish: (frame: Uint8Array) => void;

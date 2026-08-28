@@ -76,7 +76,7 @@ describe("engine.mutate", () => {
 
   test("partition is carried on the event", async () => {
     const { engine } = setup();
-    // SAFETY: test fixture; partition key rules arrive with E08
+    // SAFETY: test fixture; partition keys are `kind:id` text and the schema owns the rules
     const partition = "org:acme" as never;
     const event = (
       await engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ title: "a" })), { partition })

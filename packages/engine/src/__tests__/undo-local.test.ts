@@ -53,7 +53,7 @@ describe("revert", () => {
 
   test("the compensating event is written in the original event's partition", async () => {
     const { engine } = withUndo();
-    // SAFETY: test fixture; partition key rules arrive with E08
+    // SAFETY: test fixture; partition keys are `kind:id` text and the schema owns the rules
     const partition = "org:acme" as never;
     const e = (
       await engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ title: "t" })), { partition })

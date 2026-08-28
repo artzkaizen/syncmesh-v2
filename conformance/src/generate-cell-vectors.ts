@@ -22,7 +22,7 @@ const AUTHOR = createIdentity(DEVICE_SEED).unwrap().peerId;
 /** The one stamp every vector is written under, so a port folds them from exactly these bytes. */
 export const STAMP = { hlc: hlcOf(1_700_000_000_000, 3), peer: AUTHOR };
 
-/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- fixed vector names; the grammar for each is the schema's (E05), and a vector is not where it is enforced */
+/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- fixed vector names; the grammar for each is the schema's, and a vector is not where it is enforced */
 const table = (name: string) => name as TableName;
 const key = (name: string) => name as RowKey;
 const column = (name: string) => name as ColumnName;
@@ -42,7 +42,7 @@ export const COLUMNS = {
 
 /**
  * The strategies the vectors' columns carry. None is declared: `views` and `balance` merge by
- * `counter` and `tags` and `assignees` by `set` because that is what their column kinds are (E26),
+ * `counter` and `tags` and `assignees` by `set` because that is what their column kinds are,
  * which is the same rule `strategyOf` applies when a schema builds a `MergeSpec`.
  */
 export const CELL_MERGE: MergeSpec = new Map([

@@ -85,7 +85,7 @@ function decodeCell(value: CborValue): Result<readonly [ColumnName, Cell], Malfo
       (e) => new MalformedRecord({ message: e.message }),
     );
     const stamp = yield* stampFromCbor(stampValue);
-    // SAFETY: column naming rules are owned by the schema (E05); the cache only requires text
+    // SAFETY: column naming rules are owned by the schema; the cache only requires text
     return Result.ok([column as ColumnName, { value: decoded, stamp }] as const);
   });
 }

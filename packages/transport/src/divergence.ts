@@ -41,7 +41,7 @@ export const tableNames = (digests: ReadonlyMap<TableName, bigint>): ReadonlyMap
  * Their fingerprints against ours, or `undefined` when the comparison would mean nothing. Three
  * conditions, and each is the point of the feature: the same **slice**, or we are counting
  * different rows on purpose; the same **cursors**; and the same events held **above** them, or one
- * of us is simply one fold ahead and every catch-up would look like divergence (E13, E16, D13).
+ * of us is simply one fold ahead and every catch-up would look like divergence (D13).
  *
  * The third is not redundant with the second. Contiguous cursors made "same cursor" weaker than
  * "same events folded": a peer holding an event past a gap, or parking one below it, stands at the

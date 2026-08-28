@@ -22,7 +22,7 @@ export class MalformedCellChange extends TaggedError("MalformedCellChange")<{
 }> {}
 
 /**
- * The change kinds that merge inside a cell, continuing the row-level 0–2 (RFC-0002, E26). A peer
+ * The change kinds that merge inside a cell, continuing the row-level 0–2 (RFC-0002). A peer
  * that does not know a kind refuses the event carrying it; that is why each kind is its own number
  * rather than a flag inside an `update`, which an old peer would fold as a plain value.
  */
@@ -123,7 +123,7 @@ export function decodeCellChange(value: CborValue): Result<CellChange, Malformed
   return malformed("unknown cell change kind");
 }
 
-/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- each brand below is applied right after the check that establishes it; naming rules for these identifiers are owned by the schema (E05) */
+/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- each brand below is applied right after the check that establishes it; naming rules for these identifiers are owned by the schema */
 const asTable = (s: string) => s as TableName;
 const asKey = (s: string) => s as RowKey;
 const asColumn = (s: string) => s as ColumnName;

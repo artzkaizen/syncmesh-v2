@@ -50,7 +50,7 @@ export function createConnection(socket: RelaySocket, room: RoomState): RelayCon
    * N+1 without N — a hole every later joiner is paged and no author ever re-sends.
    */
   let closed = false;
-  /** What this socket asked for (E13); absent wants everything the policy already allows. */
+  /** What this socket asked for; absent wants everything the policy already allows. */
   let interest: Interest | undefined;
 
   const refuse = (code: string, message: string, fatal = false): void => {
@@ -84,7 +84,7 @@ export function createConnection(socket: RelaySocket, room: RoomState): RelayCon
       return;
     }
     /**
-     * Told, rather than paged a run with its bottom missing (E24). A hole would not corrupt this
+     * Told, rather than paged a run with its bottom missing. A hole would not corrupt this
      * client — its own coverage stops below a gap — but every event above the gap would sit in
      * its holdback until that overflowed into a re-join, which re-requests the same missing run
      * from the same room, forever.
