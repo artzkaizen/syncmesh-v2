@@ -11,7 +11,7 @@ import type {
   Schema,
   Table,
 } from "@syncmesh/schema";
-import type { BlobStore, SqlDialect, SqlDriver, TxReceipt } from "@syncmesh/storage";
+import type { BlobStore, SqlDialect, SqlDriver, Stores, TxReceipt } from "@syncmesh/storage";
 import type { Transport, TransportContext } from "@syncmesh/transport";
 
 import { parsePartitionKey } from "@syncmesh/kernel";
@@ -65,6 +65,18 @@ export interface MeshOptions<
    * which Drizzle every handle speaks.
    */
   readonly driver?: SqlDriver & { readonly dialect?: D };
+  /**
+   * Stores someone else opened — what `scopedStores().storeFor(scope)` hands back (D07).
+   *
+   * This is how a device runs **one mesh per top-level instance, over one database each**: an
+   * org's log, state and tables live in a file that holds nothing of any other org, so leaving
+   * one is closing a mesh, `forget(scope)`, and deleting a file. A single mesh filtering one
+   * shared log could only ever *approximate* that, and a filter bug there is a tenancy bug.
+   *
+   * They stay yours to close, like a `driver`. `stop()` leaves them open, because the set that
+   * opened them is what knows when they are finished with.
+   */
+  readonly stores?: Stores;
   /** Where the default store's file goes. Default `.syncmesh`. */
   readonly dataDir?: string;
   readonly undoDepth?: number;

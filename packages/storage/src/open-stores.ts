@@ -90,8 +90,8 @@ export type StoreScope = PartitionKey | "user";
  */
 export const storeNameFor = (scope: StoreScope): string => {
   if (scope === "user") return "user";
-  const at = String(scope).indexOf(":");
-  return `${String(scope).slice(0, at)}-${encodeURIComponent(String(scope).slice(at + 1))}`;
+  const at = scope.indexOf(":");
+  return `${scope.slice(0, at)}-${encodeURIComponent(scope.slice(at + 1))}`;
 };
 
 export interface ScopedStoresOptions extends OpenStoresOptions {

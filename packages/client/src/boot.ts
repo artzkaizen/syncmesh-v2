@@ -34,6 +34,15 @@ export interface BootOptions {
   readonly stateStore?: StateStore;
   /** Your own SQLite connection: tables and capture are installed on it and it becomes the log too. */
   readonly driver?: SqlDriver;
+  /**
+   * Stores already opened by someone else — what `scopedStores().storeFor(scope)` hands back, and
+   * how a device runs one engine per top-level instance over one database each (D07).
+   *
+   * They stay the caller's to close, which is the point: leaving an org is `forget(scope)` and
+   * deleting one file, and a mesh that closed them on `stop()` would take the set's bookkeeping
+   * with it.
+   */
+  readonly stores?: Stores;
   readonly dataDir: string;
   /** Install RLS from the read rules on boot; postgres drivers only. */
   readonly rls?: boolean;
@@ -114,14 +123,18 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
     panic("stateStore caches a log it was not given: pass `store` alongside it");
   if (options.store !== undefined && options.driver !== undefined)
     panic("`store` and `driver` name two homes for one log: pass one");
+  if (options.stores !== undefined && (options.store ?? options.driver) !== undefined)
+    panic("`stores` is already a log and a connection: pass it alone");
   return Result.gen(async function* () {
     const tables = schema.entries.map((e) => e.table);
     const owned =
       options.store !== undefined
         ? undefined
-        : options.driver !== undefined
-          ? yield* Result.await(openStores(options.driver, { tables }))
-          : yield* Result.await(defaultStores(options.dataDir, String(identity.peerId), tables));
+        : options.stores !== undefined
+          ? options.stores
+          : options.driver !== undefined
+            ? yield* Result.await(openStores(options.driver, { tables }))
+            : yield* Result.await(defaultStores(options.dataDir, String(identity.peerId), tables));
     // SAFETY: one of the two is defined — `owned` is opened exactly when `store` is absent
     const store = (options.store ?? owned?.events) as EventStore;
     const validate = createValidator(validatorFor(options));
@@ -149,9 +162,11 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
     if (driver !== undefined) Object.assign(booted, { driver });
     return Result.ok({
       ...booted,
-      // a driver you passed stays yours to close; the default store is ours
+      // a driver or a set of stores you passed stays yours to close; the default store is ours
       close: () =>
-        options.driver !== undefined ? Promise.resolve() : (owned?.close() ?? Promise.resolve()),
+        (options.driver ?? options.stores) !== undefined
+          ? Promise.resolve()
+          : (owned?.close() ?? Promise.resolve()),
     });
   });
 }
