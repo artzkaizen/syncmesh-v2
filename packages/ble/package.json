@@ -1,0 +1,29 @@
+{
+  "name": "@syncmesh/ble",
+  "version": "0.0.0",
+  "private": true,
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "@syncmesh/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/transport": "workspace:*",
+    "@syncmesh/wire": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncmesh/config": "workspace:*",
+    "@syncmesh/engine": "workspace:*",
+    "@syncmesh/kernel": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}
