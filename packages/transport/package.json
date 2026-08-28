@@ -18,6 +18,11 @@
       "@syncmesh/source": "./src/transport-tests/index.ts",
       "types": "./dist/transport-tests/index.d.ts",
       "default": "./dist/transport-tests/index.js"
+    },
+    "./test-fixtures": {
+      "@syncmesh/source": "./src/test-fixtures/index.ts",
+      "types": "./dist/test-fixtures/index.d.ts",
+      "default": "./dist/test-fixtures/index.js"
     }
   },
   "dependencies": {

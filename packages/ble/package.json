@@ -14,6 +14,7 @@
     }
   },
   "dependencies": {
+    "@syncmesh/kernel": "workspace:*",
     "@syncmesh/result": "workspace:*",
     "@syncmesh/transport": "workspace:*",
     "@syncmesh/wire": "workspace:*"
@@ -21,7 +22,7 @@
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
     "@syncmesh/engine": "workspace:*",
-    "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/transport": "workspace:*",
     "@types/bun": "catalog:",
     "typescript": "catalog:",
     "vite-plus": "catalog:"

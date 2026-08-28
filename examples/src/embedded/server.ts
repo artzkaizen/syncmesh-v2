@@ -44,6 +44,9 @@ const schema = notesSchema();
 const tables = schema.entries.map((entry) => entry.table);
 for (const table of tables) await driver.run(tableDdl(table));
 
+const store = await sqlEventStore(driver);
+const stateStore = await sqlStateStore(driver, { projection: tablesProjection(driver, tables) });
+
 const identity = serverIdentity();
 const server = (
   await createMesh({
@@ -52,17 +55,15 @@ const server = (
     // this process is the room's root of trust: it holds the issuer key and answers grant requests
     issuer: identity.peerId,
     issuerKey: identity,
-    store: (await sqlEventStore(driver)).unwrap(),
-    stateStore: (
-      await sqlStateStore(driver, { projection: tablesProjection(driver, tables) })
-    ).unwrap(),
+    store: store.unwrap(),
+    stateStore: stateStore.unwrap(),
     transports: [relayTransport({ dial: webSocketDial(dialing) })],
     // flow A: an ungranted device asked the room to exist. A real approval screen goes here —
     // the invite is the only thing binding this request to someone who was actually invited.
     onGrantRequest: ({ peerId, invite }) => {
       if (invite !== INVITE) return;
       const wire = server.grants.issue({
-        account: `acct_${String(peerId).slice(0, 8)}`,
+        account: `acct_${peerId.slice(0, 8)}`,
         device: peerId,
         role: "member",
         partitions: [INSTANCE],

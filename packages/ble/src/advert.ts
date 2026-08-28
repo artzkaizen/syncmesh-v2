@@ -2,6 +2,8 @@ import type { PeerId } from "@syncmesh/kernel";
 
 import { bytesToHex, hexToBytes } from "@syncmesh/wire";
 
+import type { BleAdvertisement } from "./radio.js";
+
 import { base64ToBytes, bytesToBase64 } from "./base64.js";
 
 /**
@@ -47,10 +49,7 @@ export const advertisement = (peer: PeerId, serviceUuid: string) => ({
 
 /** The hint a scan result carries, from whichever field arrived; `undefined` for anyone else's. */
 export const hintFrom = (
-  advert: {
-    readonly localName?: string;
-    readonly serviceDataBase64?: Readonly<Record<string, string>>;
-  },
+  advert: Pick<BleAdvertisement, "localName" | "serviceDataBase64">,
   serviceUuid: string,
 ): string | undefined => {
   const name = advert.localName;

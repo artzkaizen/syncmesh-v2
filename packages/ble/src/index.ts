@@ -24,3 +24,5 @@ export type {
   BleWriteRequested,
 } from "./radio.js";
 export { ATT_OVERHEAD, MINIMUM_PAYLOAD, payloadLimit } from "./radio.js";
+export type { BleOptions } from "./transport.js";
+export { DEFAULT_MTU, bleTransport } from "./transport.js";
