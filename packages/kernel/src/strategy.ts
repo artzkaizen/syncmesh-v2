@@ -4,11 +4,17 @@ import type { TableName } from "./change.js";
 import type { Ordering } from "./primitives.js";
 import type { Cell, CellValue, ColumnName } from "./record.js";
 
+import { joinCounters } from "./counter.js";
+import { joinSets } from "./set.js";
 import { compareStamp } from "./stamp.js";
 
 export type Strategy = (incoming: Cell, current: Cell) => Cell;
 
-export type StrategyName = "lww" | "max" | "min";
+/**
+ * `lww`, `max` and `min` pick one of the two cells whole; `counter` and `set` merge *inside* it and
+ * are the column's kind rather than anything an app declares (E26, D04-C).
+ */
+export type StrategyName = "lww" | "max" | "min" | "counter" | "set";
 
 export type MergeSpec = ReadonlyMap<TableName, ReadonlyMap<ColumnName, StrategyName>>;
 
@@ -44,9 +50,27 @@ const byValue =
     return order > 0 ? incoming : order < 0 ? current : lww(incoming, current);
   };
 
-/** `lww` picks the newer stamp; `max` / `min` pick by value and fall back to the stamp on an exact tie. All three are lattice joins. */
+/**
+ * A cell whose value is itself a lattice: the two states join, and the stamp joins with them, so
+ * the cell records the latest write that touched it rather than the one that decided it. Nothing
+ * is discarded, which is why `counter` and `set` cells never need a tie-break.
+ */
+const joining =
+  (join: (incoming: CellValue, current: CellValue) => CellValue): Strategy =>
+  (incoming, current) => ({
+    value: join(incoming.value, current.value),
+    stamp: compareStamp(incoming.stamp, current.stamp) > 0 ? incoming.stamp : current.stamp,
+  });
+
+/**
+ * `lww` picks the newer stamp; `max` / `min` pick by value and fall back to the stamp on an exact
+ * tie; `counter` and `set` join the two values. All five are lattice joins — commutative,
+ * associative and idempotent — which is the whole reason any delivery order lands on one state.
+ */
 export const strategies = {
   lww,
   max: byValue(1),
   min: byValue(-1),
+  counter: joining(joinCounters),
+  set: joining(joinSets),
 } satisfies Readonly<Record<StrategyName, Strategy>>;

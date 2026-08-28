@@ -1,17 +1,30 @@
-import type { EventStore } from "@syncmesh/engine";
+import type { EventStore, TelemetryListener } from "@syncmesh/engine";
 import type { SqlDriver } from "@syncmesh/storage";
 
 import { panic } from "@syncmesh/result";
 
 import type { Fanout } from "./fanout.js";
+import type { RelayLimits } from "./limits.js";
+import type { RelayPosture } from "./posture.js";
 import type { RelayConnection, RelayRoom, RelayRoomOptions } from "./room.js";
 import type { RelaySocket, SendOutcome } from "./sender.js";
 
+import { createRoomAccess } from "./posture.js";
 import { openRelayRoom } from "./room.js";
 
 /** What a host passes through to each room it opens; the room's own name and store are its business. */
 type RoomTuning = Partial<
-  Pick<RelayRoomOptions, "keepaliveMs" | "pageSize" | "maxBacklog" | "fanout" | "blobs">
+  Pick<
+    RelayRoomOptions,
+    | "keepaliveMs"
+    | "pageSize"
+    | "maxBacklog"
+    | "versions"
+    | "limits"
+    | "fanout"
+    | "blobs"
+    | "onTelemetry"
+  >
 >;
 
 export interface StartRelayOptions {
@@ -24,6 +37,14 @@ export interface StartRelayOptions {
   readonly keepaliveMs?: number;
   readonly pageSize?: number;
   readonly maxBacklog?: number;
+  /** Protocol versions every room here accepts (D14); narrowing it raises the relay's floor. */
+  readonly versions?: readonly number[];
+  /** Per-socket frame-size and rate ceilings; see `DEFAULT_LIMITS` for what each one costs. */
+  readonly limits?: Partial<RelayLimits>;
+  /** Who may open a socket, and onto which rooms: announce apart from access. */
+  readonly posture?: RelayPosture;
+  /** One listener for every room this host opens (D17); rooms open lazily, so it goes in here. */
+  readonly onTelemetry?: TelemetryListener;
   readonly fanout?: Fanout;
   /** Serve blobs from the room's own database (D18). Default true; `false` for a log-only relay. */
   readonly blobs?: boolean;
@@ -69,10 +90,14 @@ export async function startRelay(
       "startRelay hosts the room over Bun.serve: run under Bun, or mount openRelayRoom on your own socket server",
     );
   const dataDir = options.dataDir ?? ".syncmesh/relay";
+  const access = createRoomAccess(options.posture);
   const roomOptions: RoomTuning = {
     ...(options.keepaliveMs !== undefined && { keepaliveMs: options.keepaliveMs }),
     ...(options.pageSize !== undefined && { pageSize: options.pageSize }),
     ...(options.maxBacklog !== undefined && { maxBacklog: options.maxBacklog }),
+    ...(options.versions !== undefined && { versions: options.versions }),
+    ...(options.limits !== undefined && { limits: options.limits }),
+    ...(options.onTelemetry !== undefined && { onTelemetry: options.onTelemetry }),
     ...(options.fanout !== undefined && { fanout: options.fanout }),
   };
 
@@ -127,9 +152,17 @@ export async function startRelay(
   // D09-A on purpose: this file IS the Bun mount; the guard above already refused other runtimes
   const server = globalThis.Bun.serve<SocketData>({
     port,
-    fetch(request, self) {
+    async fetch(request, self) {
       const path = new URL(request.url).pathname.replace(/^\/+/, "");
-      const upgraded = self.upgrade(request, { data: { room: path === "" ? "main" : path } });
+      const room = path === "" ? "main" : path;
+      // refused before a socket exists: a client the posture turns away costs the room nothing
+      if (!access.admitsOrigin(request.headers.get("origin")))
+        return new Response("syncmesh relay: origin not allowed", { status: 403 });
+      if (!access.announces(room))
+        return new Response("syncmesh relay: no such room", { status: 404 });
+      if (!(await access.admitsJoin(request, room)))
+        return new Response("syncmesh relay: join refused", { status: 403 });
+      const upgraded = self.upgrade(request, { data: { room } });
       return upgraded ? undefined : new Response("syncmesh relay: WebSocket only", { status: 426 });
     },
     websocket: {

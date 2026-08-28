@@ -20,7 +20,16 @@ export class MalformedEvent extends TaggedError("MalformedEvent")<{ message: str
 
 /** Event core map keys, frozen by the vectors (RFC-0002). */
 const KEY = { v: 0, peerId: 1, seq: 2, hlc: 3, procedure: 5, partition: 6, changes: 7 } as const;
-const CHANGE = { kind: 0, table: 1, key: 2, data: 3 } as const;
+
+/** One change's map keys, shared with the cell-change codec so both write the same envelope. */
+export const CHANGE = { kind: 0, table: 1, key: 2, data: 3 } as const;
+
+/**
+ * The row-level change kinds. 3, 4 and 5 belong to the cell-level kinds (`CELL_KIND`); a decoder
+ * that does not know them must refuse the event whole, which is what the last guard in
+ * {@link decodeChange} does — folding an unknown payload as an ordinary value would silently
+ * mangle the column instead.
+ */
 const KIND = { insert: 0, update: 1, delete: 2 } as const;
 
 export function encodeEventCore(event: SyncEvent): Uint8Array {

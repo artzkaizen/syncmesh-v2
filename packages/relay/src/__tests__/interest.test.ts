@@ -1,54 +1,18 @@
 import type { PeerId } from "@syncmesh/kernel";
 
-import { createMemoryEventStore, type Interest } from "@syncmesh/engine";
+import { type Interest } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { gt } from "@syncmesh/policy";
 import { eventFrame } from "@syncmesh/transport";
 import { encodeCbor, hexToBytes } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
-import type { RelayFrame } from "../frames.js";
-import type { RelaySocket } from "../sender.js";
-
-import { decodeRelayFrame, joinFrame } from "../frames.js";
-import { openRelayRoom } from "../room.js";
-import { peer, tick, write } from "./fixtures.js";
+import { joinFrame } from "../frames.js";
+import { fakeSocket, openRoom, peer, tick, write } from "./fixtures.js";
 
 const GLOBEX = parsePartitionKey("org:globex").unwrap();
 
-const fakeSocket = () => {
-  const sent: Uint8Array[] = [];
-  const socket: RelaySocket = {
-    send: (frame) => {
-      sent.push(frame);
-      return "sent";
-    },
-    close: () => undefined,
-  };
-  const frames = () => sent.map((f) => decodeRelayFrame(f).unwrap());
-  return {
-    socket,
-    sent,
-    /** How many events reached this socket, however they were packaged. */
-    events: () =>
-      frames().reduce(
-        (n, f: RelayFrame) =>
-          n + (f.kind === "page" ? f.events.length : f.kind === "relayed" ? 1 : 0),
-        0,
-      ),
-  };
-};
-
-const open = async () =>
-  (
-    await openRelayRoom({
-      name: "main",
-      store: createMemoryEventStore(),
-      epoch: "epoch-1",
-      keepaliveMs: 60_000,
-      pageSize: 100,
-    })
-  ).unwrap();
+const open = () => openRoom({ pageSize: 100 });
 
 const join = (peerId: PeerId, interest?: Interest) => joinFrame([1], peerId, new Map(), interest);
 

@@ -12,6 +12,23 @@ export type {
   ReceiveReport,
 } from "./engine.js";
 export { createEngine } from "./engine.js";
+export type {
+  Parked,
+  QuarantineOptions,
+  QuarantineReason,
+  QuarantineStore,
+  UnknownHandling,
+} from "./quarantine.js";
+export {
+  QuarantineEvicted,
+  UnreadableEvent,
+  createQuarantine,
+  isUnknown,
+  quarantineReason,
+  retryQuarantined,
+} from "./quarantine.js";
+export type { FoldDeps, FoldPath } from "./fold.js";
+export { createFoldPath } from "./fold.js";
 export type { Boot } from "./boot.js";
 export { openEngine } from "./boot.js";
 export type { RowWrite, StateStore, WriteKeys } from "./state-store.js";
@@ -38,18 +55,21 @@ export {
   PolicyDenied,
   ReadOnlyPartition,
   SchemaViolation,
+  UnknownChangeKind,
   UnknownTable,
   WrongPartition,
 } from "./errors.js";
+export { checkColumns, unfoldableKind } from "./columns.js";
 export type { EngineError, LinkRung, MutateError, RevertError, ValidationError } from "./errors.js";
 export type { Hub, Unsubscribe } from "./listeners.js";
 export { createHub } from "./listeners.js";
-export type { Coverage, Cursors, SyncDoc, SyncMessage, SyncState } from "./sync.js";
+export type { Ahead, Coverage, Cursors, SyncDoc, SyncMessage, SyncState } from "./sync.js";
 export {
   EMPTY_COVERAGE,
   coversCursors,
   generateSyncMessage,
   initialSyncState,
+  mergeAhead,
   receiveSyncMessage,
 } from "./sync.js";
 export type { Link } from "./link.js";

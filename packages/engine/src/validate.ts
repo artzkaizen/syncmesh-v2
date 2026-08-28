@@ -13,17 +13,17 @@ import {
   type PolicyGrant,
 } from "@syncmesh/policy";
 import { Result } from "@syncmesh/result";
-import { checkRow, type Table } from "@syncmesh/schema";
+import { type Table } from "@syncmesh/schema";
 
 import { checkLink } from "./accounts.js";
 import { checkAuthor } from "./author.js";
 import { RESERVED_AUTHOR_CLASS, UNPINNED_RESERVED, RESERVED_TABLE_NAMES } from "./authority.js";
+import { checkColumns } from "./columns.js";
 import {
   LocalOnly,
   PartitionNotGranted,
   PolicyDenied,
   ReadOnlyPartition,
-  SchemaViolation,
   UnknownTable,
   WrongPartition,
   type ValidationError,
@@ -200,22 +200,6 @@ function checkConfined(
       message: "the author's grant does not list this partition",
     }),
   );
-}
-
-function checkColumns(table: Table, change: Change): Result<void, ValidationError> {
-  if (change.kind === "delete") return Result.ok(undefined);
-  const values = Object.fromEntries(change.kind === "insert" ? change.row : change.patch);
-  const r = checkRow(table, values, change.kind);
-  return r.isErr()
-    ? Result.err(
-        new SchemaViolation({
-          table: String(table.name),
-          key: String(change.key),
-          cause: r.error,
-          message: r.error.message,
-        }),
-      )
-    : Result.ok(undefined);
 }
 
 /**

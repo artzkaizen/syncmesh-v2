@@ -1,0 +1,40 @@
+{
+  "name": "@syncmesh/cloudflare-do",
+  "version": "0.0.0",
+  "description": "The relay room in a Durable Object: ctx.storage.sql as a driver, a hibernatable socket as a RelaySocket",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@syncmesh/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@syncmesh/relay": "workspace:*",
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/storage": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250726.0",
+    "@syncmesh/client": "workspace:*",
+    "@syncmesh/config": "workspace:*",
+    "@syncmesh/engine": "workspace:*",
+    "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/policy": "workspace:*",
+    "@syncmesh/schema": "workspace:*",
+    "@syncmesh/sqlite-bun": "workspace:*",
+    "@syncmesh/temporal": "workspace:*",
+    "@syncmesh/transport": "workspace:*",
+    "@syncmesh/wire": "workspace:*",
+    "@types/bun": "catalog:",
+    "drizzle-orm": "latest",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

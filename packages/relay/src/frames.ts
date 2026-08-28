@@ -1,17 +1,11 @@
 import type { Cursors, Interest } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
-import type { Frame } from "@syncmesh/transport";
+import type { Frame, MalformedFrame } from "@syncmesh/transport";
 import type { CborValue } from "@syncmesh/wire";
 
 import { interestFrom, interestText } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
-import {
-  MalformedFrame,
-  asPeer,
-  decodeCursorPairs,
-  decodeFrame,
-  malformedFrame,
-} from "@syncmesh/transport";
+import { asPeer, decodeCursorPairs, decodeFrame, malformedFrame } from "@syncmesh/transport";
 import { decodeCbor, encodeCbor, hexToBytes, isSafeNonNegative, isString } from "@syncmesh/wire";
 
 /**
@@ -35,6 +29,19 @@ const KIND = {
 
 /** The protocol this build speaks; `join` offers, `hello` picks the highest in common. */
 export const RELAY_PROTOCOL_VERSIONS: readonly number[] = [1];
+
+/**
+ * D14's whole negotiation: the highest version both sides speak, or `undefined` for no overlap —
+ * a refusal the relay can explain, never a guess it decodes into. A room may narrow `spoken` to
+ * raise its floor, which is how a `v: 2` client meets a relay that has stopped accepting 2.
+ */
+export const selectVersion = (
+  offered: readonly number[],
+  spoken: readonly number[] = RELAY_PROTOCOL_VERSIONS,
+): number | undefined => {
+  const shared = offered.filter((version) => spoken.includes(version));
+  return shared.length > 0 ? Math.max(...shared) : undefined;
+};
 
 export type RelayFrame =
   /** A session frame (grant, grant-request, cursors, event) carried unchanged. */
@@ -218,21 +225,29 @@ const CONTROL = new Map<number, ControlDecoder>([
   [KIND.blobMissing, decodeBlobHash("blob-missing")],
 ]);
 
-const decodeControl = (parts: readonly CborValue[]): Result<RelayFrame, MalformedFrame> => {
-  const [kind, a, b, c, d] = parts;
-  const decoder = isSafeNonNegative(kind) ? CONTROL.get(kind) : undefined;
-  return decoder === undefined ? Result.ok({ kind: "unknown" } as const) : decoder(a, b, c, d);
-};
-
-/** Session tags decode to `session`; the relay's own tags to their frames; anything else `unknown`. */
+/**
+ * Dispatched on the tag, and on the relay's own tags first. The two tag spaces cannot both claim
+ * one — D14 put the control tags above the session tags precisely so they never collide — so the
+ * order changes no outcome except this: `ka` is a bare tag with nothing after it, and the session
+ * decoder refuses a one-element frame as malformed rather than passing it on as `unknown`. Asking
+ * it first meant every keepalive decoded as an error; only the client's re-arm running before the
+ * decode kept that from being visible.
+ */
 export function decodeRelayFrame(bytes: Uint8Array): Result<RelayFrame, MalformedFrame> {
+  const outer = decodeCbor(bytes);
+  const parts: readonly CborValue[] = outer.isOk() && Array.isArray(outer.value) ? outer.value : [];
+  const [kind, a, b, c, d] = parts;
+  const control = isSafeNonNegative(kind) ? CONTROL.get(kind) : undefined;
+  if (control !== undefined) return control(a, b, c, d);
+  // a bare tag is nobody's session frame — those all carry a payload — so an unrecognised one is
+  // a tag some later version added and this build ignores (D14's additive vector), not junk
+  if (parts.length === 1 && isSafeNonNegative(kind)) return Result.ok({ kind: "unknown" } as const);
   return Result.gen(function* () {
     const session = yield* decodeFrame(bytes);
-    if (session.kind !== "unknown") return Result.ok({ kind: "session", frame: session } as const);
-    const outer = yield* decodeCbor(bytes).mapError(
-      (e) => new MalformedFrame({ message: e.message }),
+    return Result.ok(
+      session.kind === "unknown"
+        ? ({ kind: "unknown" } as const)
+        : ({ kind: "session", frame: session } as const),
     );
-    if (!Array.isArray(outer) || outer.length < 1) return malformedFrame("expected [kind, …]");
-    return decodeControl(outer);
   });
 }

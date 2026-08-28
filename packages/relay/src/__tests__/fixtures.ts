@@ -24,6 +24,13 @@ import {
   type Identity,
 } from "@syncmesh/wire";
 
+import type { RelayFrame } from "../frames.js";
+import type { RelayRoomOptions } from "../room.js";
+import type { RelaySocket, SendOutcome } from "../sender.js";
+
+import { decodeRelayFrame } from "../frames.js";
+import { openRelayRoom } from "../room.js";
+
 export const schema = defineSchema({
   partitions: { org: {} },
   roles: { org: ["member"] },
@@ -122,3 +129,57 @@ export const bodyOf = (p: Peer, id: string): CellValue | undefined =>
 export const entryOf = (wire: Uint8Array) => decodeAndVerify(wire).unwrap();
 
 export const tick = (ms = 10) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Polls until the condition holds or the deadline passes; answers whether it ever did. */
+export const until = async (check: () => boolean, ms = 5000): Promise<boolean> => {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (check()) return true;
+    await tick(15);
+  }
+  return check();
+};
+
+/** A socket the test scripts: outcomes on demand, everything sent kept for inspection. */
+export const fakeSocket = () => {
+  const sent: Uint8Array[] = [];
+  const closedWith: string[] = [];
+  let mode: SendOutcome = "sent";
+  const socket: RelaySocket = {
+    send: (frame) => {
+      if (mode === "sent") sent.push(frame);
+      return mode;
+    },
+    close: (reason) => void closedWith.push(reason ?? ""),
+  };
+  const frames = (): readonly RelayFrame[] => sent.map((f) => decodeRelayFrame(f).unwrap());
+  return {
+    socket,
+    sent,
+    closedWith,
+    setMode: (next: SendOutcome) => void (mode = next),
+    frames,
+    ofKind: <K extends RelayFrame["kind"]>(kind: K) =>
+      frames().filter((f): f is Extract<RelayFrame, { kind: K }> => f.kind === kind),
+    /** How many events reached this socket, however they were packaged. */
+    events: () =>
+      frames().reduce(
+        (n, f) => n + (f.kind === "page" ? f.events.length : f.kind === "relayed" ? 1 : 0),
+        0,
+      ),
+  };
+};
+
+/** A room on a fresh memory log; every option a test cares about is an override. */
+export const openRoom = async (overrides: Partial<RelayRoomOptions> = {}) =>
+  (
+    await openRelayRoom({
+      name: "main",
+      store: createMemoryEventStore(),
+      epoch: "epoch-1",
+      keepaliveMs: 60_000,
+      pageSize: 2,
+      maxBacklog: 8,
+      ...overrides,
+    })
+  ).unwrap();

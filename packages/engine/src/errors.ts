@@ -3,6 +3,7 @@ import type { RowError } from "@syncmesh/schema";
 
 import { TaggedError } from "@syncmesh/result";
 
+import type { QuarantineEvicted, UnreadableEvent } from "./quarantine.js";
 import type { StoreFailure } from "./store.js";
 
 export class EmptyMutation extends TaggedError("EmptyMutation")<{
@@ -28,8 +29,12 @@ export type MutateError = EmptyMutation | ValidationError | StoreFailure;
 
 export type RevertError = CannotRevert | MutateError;
 
-/** Reported through `onError`: a listener threw, or the state cache refused a commit. */
-export type EngineError = ListenerFailure | StoreFailure;
+/**
+ * Reported through `onError`: a listener threw, the state cache refused a commit, or the
+ * quarantine dropped an event it was holding — the three things that go wrong beside a call
+ * rather than inside one, so no caller is standing there to be handed a `Result`.
+ */
+export type EngineError = ListenerFailure | StoreFailure | QuarantineEvicted | UnreadableEvent;
 
 export class NoGrant extends TaggedError("NoGrant")<{ peer: PeerId; message: string }> {}
 export class GrantDeviceMismatch extends TaggedError("GrantDeviceMismatch")<{
@@ -67,6 +72,16 @@ export class LinkRefused extends TaggedError("LinkRefused")<{
   message: string;
 }> {}
 export class UnknownTable extends TaggedError("UnknownTable")<{ table: string; message: string }> {}
+/**
+ * A change kind the kernel here has no fold for — a newer build's change arriving at an older
+ * one (D13). Its own tag and not `SchemaViolation`: this is the refusal an upgrade is expected
+ * to reverse, so it has to be distinguishable from the refusals that no upgrade will.
+ */
+export class UnknownChangeKind extends TaggedError("UnknownChangeKind")<{
+  table: string;
+  kind: string;
+  message: string;
+}> {}
 export class PartitionNotGranted extends TaggedError("PartitionNotGranted")<{
   table: string;
   partition: string;
@@ -99,6 +114,7 @@ export class PolicyDenied extends TaggedError("PolicyDenied")<{
 export type ValidationError =
   | NoGrant
   | LinkRefused
+  | UnknownChangeKind
   | GrantDeviceMismatch
   | GrantRevoked
   | GrantStale

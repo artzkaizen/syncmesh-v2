@@ -5,16 +5,38 @@ import { compareStamp, type Stamp } from "./stamp.js";
 
 export type ColumnName = Brand<string, "ColumnName">;
 
-export type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | readonly JsonValue[]
-  | { readonly [key: string]: JsonValue };
+export interface JsonObject {
+  readonly [key: string]: JsonValue;
+}
+
+export type JsonValue = string | number | boolean | null | readonly JsonValue[] | JsonObject;
 
 /** What a cell can hold: JSON, or raw bytes for `blob` columns. */
 export type CellValue = JsonValue | Uint8Array;
+
+/**
+ * Narrows a JSON value to an array. `Array.isArray` alone cannot: its guard names the mutable
+ * `any[]`, so a `readonly JsonValue[]` survives it in the union and every reader below has to
+ * hand-wave the difference away with an assertion.
+ */
+export const isJsonArray = (value: CellValue | undefined): value is readonly JsonValue[] =>
+  Array.isArray(value);
+
+/* oxlint-disable anti-slop/no-runtime-typeof -- reading a foreign cell is an I/O boundary: its runtime shape is the fact being checked */
+/**
+ * The value as a JSON object, or `undefined` for anything else. The CRDT cells read every foreign
+ * value through this one door: a truncated write, a wrong column kind or an outright lie becomes
+ * the empty state on **every** peer alike, rather than throwing on one device and folding on another.
+ */
+export const jsonObject = (value: CellValue | undefined): JsonObject | undefined =>
+  value !== null &&
+  value !== undefined &&
+  typeof value === "object" &&
+  !isJsonArray(value) &&
+  !(value instanceof Uint8Array)
+    ? value
+    : undefined;
+/* oxlint-enable anti-slop/no-runtime-typeof */
 
 export interface Cell {
   readonly value: CellValue;

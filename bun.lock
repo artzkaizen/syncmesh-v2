@@ -13,6 +13,32 @@
         "vite-plus": "catalog:",
       },
     },
+    "adapters/cloudflare-do": {
+      "name": "@syncmesh/cloudflare-do",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/relay": "workspace:*",
+        "@syncmesh/result": "workspace:*",
+        "@syncmesh/storage": "workspace:*",
+      },
+      "devDependencies": {
+        "@cloudflare/workers-types": "^4.20250726.0",
+        "@syncmesh/client": "workspace:*",
+        "@syncmesh/config": "workspace:*",
+        "@syncmesh/engine": "workspace:*",
+        "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/policy": "workspace:*",
+        "@syncmesh/schema": "workspace:*",
+        "@syncmesh/sqlite-bun": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
+        "@syncmesh/transport": "workspace:*",
+        "@syncmesh/wire": "workspace:*",
+        "@types/bun": "catalog:",
+        "drizzle-orm": "latest",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+    },
     "adapters/postgres": {
       "name": "@syncmesh/postgres",
       "version": "0.0.0",
@@ -481,6 +507,8 @@
 
     "@clack/prompts": ["@clack/prompts@0.11.0", "", { "dependencies": { "@clack/core": "0.5.0", "picocolors": "^1.0.0", "sisteransi": "^1.0.5" } }, "sha512-pMN5FcrEw9hUkZA4f+zLlzivQSeQf5dRGJjSUbvVYDLvpKCdQx5OaknvKzgbtXOizhP+SJJJjqEbOe55uKKfAw=="],
 
+    "@cloudflare/workers-types": ["@cloudflare/workers-types@4.20260702.1", "", {}, "sha512-mOhf5TUEB1m2vPrxtqoIGfz0fUC9xyxRDx5gWHy5s+OCo6dcV+g7wI1R7gYCMFohhqF/2y2xeKVwMwCJjfn/WA=="],
+
     "@electric-sql/pglite": ["@electric-sql/pglite@0.5.7", "", {}, "sha512-6WBks0NFO6YUhGP03mCNkbJuVFWwrZPrzZ/vsnAPnsCD28pybdZ+yoTrlLlWFoZst3kdaju5pxIslV/jrr36nQ=="],
 
     "@happy-dom/global-registrator": ["@happy-dom/global-registrator@18.0.1", "", { "dependencies": { "@types/node": "^20.0.0", "happy-dom": "^18.0.1" } }, "sha512-xCy/cpEP8xyJ6u0eokYgaQxeUmcKqHx/+aC3R0DLa7/S38efhZAVDQqLJ5zzTguLFS0gvAzZHP40NGaLwRyapQ=="],
@@ -670,6 +698,8 @@
     "@syncmesh/cdc": ["@syncmesh/cdc@workspace:packages/cdc"],
 
     "@syncmesh/client": ["@syncmesh/client@workspace:packages/client"],
+
+    "@syncmesh/cloudflare-do": ["@syncmesh/cloudflare-do@workspace:adapters/cloudflare-do"],
 
     "@syncmesh/config": ["@syncmesh/config@workspace:tooling/config"],
 

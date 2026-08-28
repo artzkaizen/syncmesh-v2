@@ -1,21 +1,8 @@
 import type { HlcClock, MergeSpec, PeerId, Row, RowKey, State, TableName } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
-import {
-  applyChange,
-  emptyState,
-  getRecord,
-  mergeRecord,
-  readRow,
-  readRowsIn,
-} from "@syncmesh/kernel";
-import {
-  stampOf,
-  type EventId,
-  type PartitionKey,
-  type Procedure,
-  type SyncEvent,
-} from "@syncmesh/kernel";
+import { emptyState, getRecord, mergeRecord, readRow, readRowsIn } from "@syncmesh/kernel";
+import { type EventId, type PartitionKey, type Procedure, type SyncEvent } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
 import type { Boot } from "./boot.js";
@@ -23,11 +10,12 @@ import type { Ack, CompactError, CompactOptions, Compaction } from "./compaction
 import type { RepairApi } from "./digest.js";
 import type { FeedApi } from "./feed.js";
 import type { Interest } from "./interest.js";
+import type { Parked, UnknownHandling } from "./quarantine.js";
 import type { SnapshotApi } from "./snapshot.js";
 import type { StateStore } from "./state-store.js";
 import type { EventStore, StoredEvent } from "./store.js";
 import type { StoreFailure } from "./store.js";
-import type { Coverage, Cursors } from "./sync.js";
+import type { Ahead, Coverage, Cursors } from "./sync.js";
 import type { Tx } from "./tx.js";
 import type { StateLookup, Validator } from "./validate.js";
 
@@ -43,11 +31,13 @@ import {
   type RevertError,
 } from "./errors.js";
 import { createFeedPath, trackFeeds } from "./feed.js";
+import { createFoldPath } from "./fold.js";
 import { eventsWanted } from "./interest.js";
 import { createHub, type Unsubscribe } from "./listeners.js";
+import { createQuarantine, retryQuarantined } from "./quarantine.js";
 import { createSnapshotPath } from "./snapshot.js";
-import { rowsFor, writeKeysOf } from "./state-store.js";
-import { timed, type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
+import { mergeAhead } from "./sync.js";
+import { type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
 import { createRevert, type Undo } from "./undo.js";
 import { createWritePath } from "./writes.js";
 
@@ -99,8 +89,17 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi {
   /** Writes the compensating event for one of this engine's last `undoDepth` writes, in that event's partition. */
   readonly revert: (id: EventId) => Promise<Result<SyncEvent, RevertError>>;
   readonly canRevert: (id: EventId) => boolean;
-  /** Highest synced sequence number held per author. */
+  /**
+   * Per author, the highest sequence number below which this engine holds **every** event — the
+   * contiguous half of D13's pair, and the only half anti-entropy can ask a question with.
+   */
   readonly cursors: () => Promise<Result<Cursors, StoreFailure>>;
+  /**
+   * The other half: per author, what this device holds above that cursor — folded past a gap, or
+   * parked in the quarantine below one. Advisory, so a peer that ignores it re-sends a run this
+   * device then skips; a peer that reads it stops re-sending a hole that is not going to close.
+   */
+  readonly ahead: () => Ahead;
   /** What this engine has folded, per author and scope. */
   readonly coverage: () => Coverage;
   /** Records what `peer` holds, as of `at`; links call it on every cursor exchange. Feeds `compact`. */
@@ -125,6 +124,14 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi {
   readonly onOutbound: (listener: (event: SyncEvent) => void) => Unsubscribe;
   /** A listener threw; the fold itself is unaffected. */
   readonly onError: (listener: (error: EngineError) => void) => Unsubscribe;
+  /** The events this build could not take, with the bytes they arrived as (D13). */
+  readonly quarantine: () => readonly Parked[];
+  /**
+   * Re-offers every parked event to the ordinary receive path. What an app calls after an update:
+   * anything the new build understands folds and closes the gap below it, anything it still does
+   * not is parked again.
+   */
+  readonly retryQuarantined: () => Promise<Result<ReceiveReport, StoreFailure>>;
   readonly onQuarantine: (listener: (q: Quarantined) => void) => Unsubscribe;
   readonly onTelemetry: (listener: TelemetryListener) => Unsubscribe;
 }
@@ -138,6 +145,14 @@ export interface EngineOptions {
   readonly undoDepth?: number;
   /** Runs on a probe before a local write gets a sequence number, and on every received event before it is stored. */
   readonly validate?: Validator;
+  /**
+   * How loudly this mesh is told about an event no build here can read (D13). Per mesh, never
+   * per event: all three settings park it and none of them folds it, so a mesh whose devices were
+   * configured by two different people still converges. Default `"warn"`.
+   */
+  readonly unknownHandling?: UnknownHandling;
+  /** Parked events kept per reason before the oldest is dropped — loudly, on `onError`. */
+  readonly quarantineLimit?: number;
   /** Where folded rows are kept between runs; absent, every boot refolds the log. */
   readonly stateStore?: StateStore;
   /** What to start from; `openEngine` builds it. Absent, the engine starts empty. */
@@ -167,12 +182,13 @@ export function createEngine(options: EngineOptions): Engine {
     stateStore,
     boot,
     atomic,
+    unknownHandling = "warn",
+    quarantineLimit,
   } = options;
   const plain: AtomicStores =
     stateStore === undefined ? { events: store } : { events: store, state: stateStore };
   const atomically = <T>(fn: (scoped: AtomicStores) => Promise<T>): Promise<T> =>
     atomic === undefined ? fn(plain) : atomic((scoped) => fn(scoped));
-  let state = boot?.state ?? emptyState();
   const coverage = trackCoverage(boot?.coverage);
   const undo: Undo[] = [];
   const errors = createHub<EngineError>();
@@ -183,62 +199,32 @@ export function createEngine(options: EngineOptions): Engine {
   const telemetry = createHub<TelemetryEvent>();
   const quarantine = createHub<Quarantined>();
   const ackHub = createHub<PeerId>(report("onAcknowledge"));
-  const before = {
-    row: (table, key) => readRow(state, table, key),
-    records: (table) => state.get(table),
-    partition: (table, key) => getRecord(state, table, key)?.partition,
-  } satisfies StateLookup;
   const acks = new Map<PeerId, Ack>();
-  // declared before `fold`, which advances an author's chain as its events land — boot replay included
+  // declared before the fold path, which advances an author's chain as its events land
   const feeds = trackFeeds();
+  const parked = createQuarantine({ limit: quarantineLimit, onEvict: errors.emit });
 
-  const fold = (events: readonly SyncEvent[], source: FoldSource): FoldBatch => {
-    const [batch, duration] = timed((): FoldBatch => {
-      const writeKeys = writeKeysOf(events);
-      for (const event of events) {
-        coverage.note(event);
-        feeds.note(event);
-        const stamp = stampOf(event);
-        for (const change of event.changes)
-          state = applyChange(state, change, stamp, merge, event.partition);
-      }
-      return {
-        source,
-        eventCount: events.length,
-        writeTables: new Set(writeKeys.keys()),
-        writeKeys,
-      };
-    });
-    if (events.length === 0) return batch;
-    const keys = [...batch.writeKeys.values()].reduce((n, set) => n + set.size, 0);
-    telemetry.emit({ type: "engine.fold", sizes: { events: events.length, keys }, duration });
-    // a boot fold has no persist step of its own; every other fold notifies after it (persist)
-    if (source === "boot") folds.emit(batch);
-    return batch;
-  };
+  const { stateOf, setState, fold, persist, notify } = createFoldPath({
+    merge,
+    coverage,
+    feeds,
+    folds,
+    telemetry,
+    errors,
+    atomic: atomic !== undefined,
+    initial: boot?.state ?? emptyState(),
+  });
   fold(boot?.replay ?? [], "boot");
 
-  /**
-   * Writes the rows a fold touched to the state store. A failure is reported, not returned: the
-   * log already holds the truth — unless the write runs inside `atomic`, where it fails the
-   * transaction and takes the append down with it.
-   */
-  const persist = async (batch: FoldBatch, into: StateStore | undefined): Promise<void> => {
-    if (batch.eventCount === 0 || into === undefined) return;
-    const written = await into.commit(rowsFor(state, batch.writeKeys), coverage.current());
-    if (written.isErr()) {
-      if (atomic !== undefined) throw written.error;
-      errors.emit(written.error);
-    }
-  };
-  /** After the transaction, so a listener that re-reads the tables (D20's live queries) sees committed rows. */
-  const notify = (batch: FoldBatch): void => {
-    if (batch.eventCount > 0) folds.emit(batch);
-  };
+  const before = {
+    row: (table, key) => readRow(stateOf(), table, key),
+    records: (table) => stateOf().get(table),
+    partition: (table, key) => getRecord(stateOf(), table, key)?.partition,
+  } satisfies StateLookup;
 
   const snapshotDeps = {
-    stateOf: () => state,
-    setState: (next: State) => void (state = next),
+    stateOf,
+    setState,
     coverageOf: coverage.current,
     adopt: coverage.adopt,
     persist: (batch: FoldBatch) => persist(batch, stateStore),
@@ -248,8 +234,8 @@ export function createEngine(options: EngineOptions): Engine {
   const snapshots = createSnapshotPath(snapshotDeps);
 
   const repair = createRepairPath({
-    stateOf: () => state,
-    mergeInto: (table, key, record) => void (state = mergeRecord(state, table, key, record, merge)),
+    stateOf,
+    mergeInto: (table, key, record) => setState(mergeRecord(stateOf(), table, key, record, merge)),
     persist: (batch) => persist(batch, stateStore),
     notify,
   });
@@ -262,13 +248,23 @@ export function createEngine(options: EngineOptions): Engine {
     undoDepth,
     undo,
     atomically,
-    stateOf: () => state,
+    stateOf,
     fold,
     persist,
     notify,
     outbound,
     telemetry,
-    admitEntries: (entries) => admit(entries, { peerId, store, validate, before, quarantine }),
+    admitEntries: (entries) =>
+      admit(entries, {
+        peerId,
+        store,
+        validate,
+        before,
+        parked,
+        quarantine,
+        errors,
+        unknownHandling,
+      }),
   });
 
   const revert = createRevert({ undo, undoDepth, mutate });
@@ -281,11 +277,12 @@ export function createEngine(options: EngineOptions): Engine {
     receiveBatch,
     receive: (entry) => receiveBatch([entry]),
     ...chains,
-    state: () => state,
-    rowsIn: (table, partition) => readRowsIn(state, table, partition),
+    state: stateOf,
+    rowsIn: (table, partition) => readRowsIn(stateOf(), table, partition),
     revert,
     canRevert: (id) => undo.some((u) => u.event.id === id),
     cursors: () => Promise.resolve(Result.ok(coverage.current().synced)),
+    ahead: () => mergeAhead(coverage.ahead(), parked.ahead()),
     coverage: coverage.current,
     acknowledge: (peer, cursors, at) => {
       acks.set(peer, { cursors, at });
@@ -300,6 +297,8 @@ export function createEngine(options: EngineOptions): Engine {
     onFoldBatch: folds.subscribe,
     onOutbound: outbound.subscribe,
     onError: errors.subscribe,
+    quarantine: parked.list,
+    retryQuarantined: () => retryQuarantined(parked, receiveBatch),
     onQuarantine: quarantine.subscribe,
     onTelemetry: telemetry.subscribe,
   };

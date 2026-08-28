@@ -6,51 +6,19 @@ import { cursorsFrame, eventFrame, grantFrame, presenceFrame } from "@syncmesh/t
 import { signPresence } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
-import type { RelayFrame } from "../frames.js";
-import type { RelaySocket, SendOutcome } from "../sender.js";
-
 import { memoryFanout } from "../fanout.js";
-import { decodeRelayFrame, joinFrame } from "../frames.js";
-import { openRelayRoom } from "../room.js";
-import { ACME, T0, entryOf, mintFor, peer, tick, write } from "./fixtures.js";
-
-/** A socket the test scripts: outcomes on demand, everything sent kept for inspection. */
-const fakeSocket = () => {
-  const sent: Uint8Array[] = [];
-  const closedWith: string[] = [];
-  let mode: SendOutcome = "sent";
-  const socket: RelaySocket = {
-    send: (frame) => {
-      if (mode === "sent") sent.push(frame);
-      return mode;
-    },
-    close: (reason) => void closedWith.push(reason ?? ""),
-  };
-  return {
-    socket,
-    sent,
-    closedWith,
-    setMode: (next: SendOutcome) => void (mode = next),
-    frames: (): readonly RelayFrame[] => sent.map((f) => decodeRelayFrame(f).unwrap()),
-    ofKind: <K extends RelayFrame["kind"]>(kind: K) =>
-      sent
-        .map((f) => decodeRelayFrame(f).unwrap())
-        .filter((f): f is Extract<RelayFrame, { kind: K }> => f.kind === kind),
-  };
-};
-
-const open = async (overrides: Partial<Parameters<typeof openRelayRoom>[0]> = {}) =>
-  (
-    await openRelayRoom({
-      name: "main",
-      store: createMemoryEventStore(),
-      epoch: "epoch-1",
-      keepaliveMs: 60_000,
-      pageSize: 2,
-      maxBacklog: 8,
-      ...overrides,
-    })
-  ).unwrap();
+import { joinFrame } from "../frames.js";
+import {
+  ACME,
+  T0,
+  entryOf,
+  fakeSocket,
+  mintFor,
+  openRoom as open,
+  peer,
+  tick,
+  write,
+} from "./fixtures.js";
 
 const join = (peerId: PeerId, versions: readonly number[] = [1]) =>
   joinFrame(versions, peerId, new Map());
