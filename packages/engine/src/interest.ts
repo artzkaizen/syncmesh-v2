@@ -1,8 +1,8 @@
 import type { Change, PartitionKey, Row, RowRecord, SyncEvent, TableName } from "@syncmesh/kernel";
 import type { PolicyNode } from "@syncmesh/policy";
-import type { Result } from "@syncmesh/result";
 
 import { evaluate } from "@syncmesh/policy";
+import { Result } from "@syncmesh/result";
 
 import type { EventStore, StoreFailure, StoredEvent } from "./store.js";
 import type { Cursors } from "./sync.js";
@@ -39,13 +39,12 @@ export const interestText = (interest: Interest | undefined): string =>
  */
 export const interestFrom = (text: string | undefined): Interest | undefined => {
   if (text === undefined || text === "") return undefined;
-  try {
+  return Result.try({
     // SAFETY: parsed at the wire boundary and read only through Interest's own optional fields;
     // a predicate that is not a PolicyNode simply matches nothing when evaluated
-    return JSON.parse(text) as Interest;
-  } catch {
-    return undefined;
-  }
+    try: () => JSON.parse(text) as Interest,
+    catch: () => undefined,
+  }).unwrapOr(undefined);
 };
 
 /** No grant is consulted here: an interest asks about rows, never about who the caller is. */

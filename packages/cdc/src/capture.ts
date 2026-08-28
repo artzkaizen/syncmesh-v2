@@ -106,22 +106,19 @@ export async function startCapture(
   });
 }
 
-async function open(
+const open = (
   source: ChangeSource,
   after: Watermark | null,
-): Promise<Result<ChangeStream, CaptureError>> {
-  try {
-    return Result.ok(await source.start({ after }));
-  } catch (cause) {
-    return Result.err(
+): Promise<Result<ChangeStream, CaptureError>> =>
+  Result.tryPromise({
+    try: () => source.start({ after }),
+    catch: (cause) =>
       new SourceFailed({
         source: source.name,
         message: `${source.name}: the stream would not open`,
         cause,
       }),
-    );
-  }
-}
+  });
 
 interface LoopDeps {
   readonly apply: ApplyDeps;

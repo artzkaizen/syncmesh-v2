@@ -145,11 +145,9 @@ function decodeDigest(
     if (!isString(table) || !isString(hex)) return malformedFrame("digest is not [table, hex]");
     // a fingerprint that does not parse is one this build cannot compare; refusing the whole
     // frame is right, because a partial comparison would look like agreement it never checked
-    try {
-      digests.set(table, BigInt(`0x${hex}`));
-    } catch {
-      return malformedFrame("digest is not hexadecimal");
-    }
+    const digest = Result.try({ try: () => BigInt(`0x${hex}`), catch: () => undefined });
+    if (digest.isErr()) return malformedFrame("digest is not hexadecimal");
+    digests.set(table, digest.value);
   }
   const base = { kind: "digest", scope: payload, at: cursors.value, digests } as const;
   if (above === undefined) return Result.ok(base);

@@ -22,7 +22,7 @@ import { base64ToBytes, bytesToBase64 } from "./base64.js";
 /** Four bytes of the peer id, as hex. Enough to separate the devices in a room, and it fits. */
 export const HINT_CHARS = 8;
 
-export const hintOf = (peer: PeerId): string => String(peer).slice(0, HINT_CHARS);
+export const hintOf = (peer: PeerId): string => peer.slice(0, HINT_CHARS);
 
 /**
  * The advertisement, in both places it can travel.
@@ -48,8 +48,8 @@ export const advertisement = (peer: PeerId, serviceUuid: string) => ({
 /** The hint a scan result carries, from whichever field arrived; `undefined` for anyone else's. */
 export const hintFrom = (
   advert: {
-    readonly localName?: string | undefined;
-    readonly serviceDataBase64?: Readonly<Record<string, string>> | undefined;
+    readonly localName?: string;
+    readonly serviceDataBase64?: Readonly<Record<string, string>>;
   },
   serviceUuid: string,
 ): string | undefined => {

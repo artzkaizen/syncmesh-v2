@@ -57,9 +57,9 @@ export async function applyPlan(
       return Result.err(
         new EventRefused({
           source: deps.source,
-          partition: String(planned.partition),
+          partition: planned.partition,
           cause: written.error,
-          message: `${deps.source}: ${String(planned.partition)} refused the change: ${written.error.message}`,
+          message: `${deps.source}: ${planned.partition} refused the change: ${written.error.message}`,
         }),
       );
     }

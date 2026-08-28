@@ -34,11 +34,13 @@ export async function runBackfill(deps: BackfillDeps): Promise<Result<Watermark,
   const failed = (cause: unknown, message: string) =>
     Result.err<Watermark, CaptureError>(new SourceFailed({ source, message, cause }));
   let at: Watermark;
-  try {
-    at = await deps.read.watermark();
-  } catch (cause) {
-    return failed(cause, `${source}: the backfill could not capture a watermark`);
-  }
+  const captured = await Result.tryPromise({
+    try: () => deps.read.watermark(),
+    catch: (cause) => cause,
+  });
+  if (captured.isErr())
+    return failed(captured.error, `${source}: the backfill could not capture a watermark`);
+  at = captured.value;
 
   for (const table of Object.keys(deps.plan.mappings)) {
     let batch: ChangeMessage[] = [];
