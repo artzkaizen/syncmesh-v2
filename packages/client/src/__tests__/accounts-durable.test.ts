@@ -1,12 +1,4 @@
-import type {
-  CellValue,
-  ColumnName,
-  PeerId,
-  Procedure,
-  Row,
-  RowKey,
-  TableName,
-} from "@syncmesh/kernel";
+import type { CellValue, ColumnName, PeerId, Procedure, Row, RowKey } from "@syncmesh/kernel";
 
 import { taggedCause } from "@syncmesh/drizzle";
 import { createEngine, createMemoryEventStore, linkDevice, links } from "@syncmesh/engine";
@@ -126,8 +118,7 @@ const forgedSnapshot = async (at: Temporal.Instant) => {
     store: createMemoryEventStore(),
     merge: schema().merge,
   });
-  // SAFETY: test fixture; `_links` is the reserved table's own name and `_links.link` its verb
-  const table = "_links" as TableName;
+  const table = RESERVED.links;
   // SAFETY: test fixture; procedures are opaque strings in the kernel
   const procedure = "_links.link" as Procedure;
   // SAFETY: test fixture; keys are opaque strings in the kernel
