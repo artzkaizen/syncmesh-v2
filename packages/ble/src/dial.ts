@@ -1,5 +1,3 @@
-import type { PeerId } from "@syncmesh/kernel";
-
 /**
  * Which of two devices opens the connection.
  *
@@ -11,16 +9,20 @@ import type { PeerId } from "@syncmesh/kernel";
  * This is the one part of the previous implementation that was genuinely proven, and it is worth
  * saying why it is not merely tidy: without it both ends hold a half-open handshake, each waiting
  * for the other to answer on a connection the other never made.
+ *
+ * Takes whatever string both ends can compare. Before a connection exists that is the
+ * advertisement hint, which is all either device has; the order is the same either way.
  */
-export const shouldDial = (self: PeerId, other: PeerId): boolean => String(self) < String(other);
+export const shouldDial = (self: string, other: string): boolean => self < other;
 
 /**
  * A peer heard from, and when. Advertisements repeat several times a second on some platforms,
  * so a device is "found" once and only forgotten after it has genuinely gone quiet.
  */
 export interface Sighting {
-  readonly peer: PeerId;
-  /** What the radio calls the device, which is not its peer id and is not stable across platforms. */
+  /** The advertisement hint — not an identity, and not to be treated as one. */
+  readonly hint: string;
+  /** What the radio calls the device, which is neither the hint nor stable across platforms. */
   readonly peripheralId: string;
   seenAt: number;
 }
@@ -51,34 +53,34 @@ export function discovery(options: DiscoveryOptions = {}) {
 
   return {
     /** `true` when this is the first sighting, which is when a caller should attach. */
-    sighted: (peer: PeerId, peripheralId: string): boolean => {
-      const held = seen.get(String(peer));
+    sighted: (hint: string, peripheralId: string): boolean => {
+      const held = seen.get(hint);
       if (held !== undefined) {
         held.seenAt = clock();
         return false;
       }
-      seen.set(String(peer), { peer, peripheralId, seenAt: clock() });
+      seen.set(hint, { hint, peripheralId, seenAt: clock() });
       return true;
     },
-    /** The peripheral id last advertised for a peer — what `connect` takes, and it can change. */
-    peripheralFor: (peer: PeerId): string | undefined => seen.get(String(peer))?.peripheralId,
-    /** Peers not heard from inside the window, minus the ones `keep` says are live. */
-    lost: (keep: (peer: PeerId) => boolean): readonly PeerId[] => {
+    /** The peripheral id last advertised under a hint — what `connect` takes, and it can change. */
+    peripheralFor: (hint: string): string | undefined => seen.get(hint)?.peripheralId,
+    /** Hints not heard from inside the window, minus the ones `keep` says are live. */
+    lost: (keep: (hint: string) => boolean): readonly string[] => {
       const now = clock();
-      const gone: PeerId[] = [];
-      for (const [id, sighting] of seen) {
+      const gone: string[] = [];
+      for (const [hint, sighting] of seen) {
         if (now - sighting.seenAt <= ttl) continue;
-        if (keep(sighting.peer)) {
+        if (keep(hint)) {
           // connected and silent is the normal state of a paired iOS device, not a departure
           sighting.seenAt = now;
           continue;
         }
-        seen.delete(id);
-        gone.push(sighting.peer);
+        seen.delete(hint);
+        gone.push(hint);
       }
       return gone;
     },
-    forget: (peer: PeerId): void => void seen.delete(String(peer)),
+    forget: (hint: string): void => void seen.delete(hint),
     known: (): number => seen.size,
   };
 }

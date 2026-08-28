@@ -1,3 +1,4 @@
+export { HINT_CHARS, advertisement, hintFrom, hintOf } from "./advert.js";
 export { NotBase64, base64ToBytes, bytesToBase64 } from "./base64.js";
 export type { FragmentError, ReassemblyOptions } from "./fragment.js";
 export {
