@@ -6,6 +6,7 @@ import { z } from "zod";
 import { columnFromDef, t, type AnyColumn } from "../column.js";
 import { parseColumnName, parseTableName, reservedTableName } from "../names.js";
 import { checkRow, rowKeyText, table, type InsertRow, type Row } from "../table.js";
+import { assertType, type Equal } from "./fixtures.js";
 
 const books = table("books", {
   id: t.uuid().primaryKey(),
@@ -18,10 +19,6 @@ const books = table("books", {
 });
 
 const ID = "123e4567-e89b-42d3-a456-426614174000";
-
-type Equal<A, B> =
-  (<X>() => X extends A ? 1 : 2) extends <X>() => X extends B ? 1 : 2 ? true : false;
-const assertType = <_T extends true>() => undefined;
 
 describe("table()", () => {
   test("a primary key must be a keyable kind — blob, json, float, boolean and timestamp are refused", () => {

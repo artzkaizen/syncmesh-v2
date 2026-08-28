@@ -18,6 +18,8 @@ import type {
 import { eventId, parsePeerId, parseSeqNum } from "@syncmesh/kernel";
 import { t, table } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
+import { encodeEventCore } from "@syncmesh/wire";
+import { grownCore } from "@syncmesh/wire/wire-tests";
 
 import type { SqlValue } from "../driver.js";
 
@@ -84,6 +86,20 @@ export const entry = (
 };
 
 export const ids2 = (entries: readonly StoredEvent[]) => entries.map((x) => x.event.id);
+
+/**
+ * The stored form as a build newer than this one would have sent it: a core carrying a map key
+ * this decoder has no name for. What a store must hand back unchanged — re-encoding it drops the
+ * key, and the signature a real author put on those bytes would then cover nothing that leaves.
+ *
+ * The `sig` is `entry`'s filler, not a signature over this core: nothing here holds a key, and a
+ * store round-trip is what this fixture is for. A test that needs a signature that actually
+ * verifies wants `fromALaterBuild` from the same module.
+ */
+export const grownEntry = (peerId: PeerId, n: number, ms: number, options: EventOptions = {}) => {
+  const base = entry(peerId, n, ms, options);
+  return { ...base, core: grownCore(encodeEventCore(base.event)) };
+};
 
 /** A synced table with every column kind once, so each SQL encoding is exercised (capture and projection suites). */
 export const JOBS = table("jobs", {

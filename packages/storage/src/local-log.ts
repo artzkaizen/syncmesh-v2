@@ -124,8 +124,9 @@ export function decodeHead(text: string | null): Result<PersistedHead, LogCorrup
   });
 }
 
-const rowOf = ({ event, sig }: StoredEvent): CborValue => [
-  encodeEventCore(event),
+/** The same `(core, local, sig)` row the SQL log stores: the bytes the signature covers, never a re-encode of them. */
+const rowOf = ({ event, core, sig }: StoredEvent): CborValue => [
+  core ?? encodeEventCore(event),
   event.local === true ? 1 : 0,
   sig ?? null,
 ];

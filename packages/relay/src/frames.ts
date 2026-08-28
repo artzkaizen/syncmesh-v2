@@ -1,5 +1,5 @@
 import type { Cursors, Interest } from "@syncmesh/engine";
-import type { PeerId } from "@syncmesh/kernel";
+import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import type { Frame, MalformedFrame } from "@syncmesh/transport";
 import type { CborValue } from "@syncmesh/wire";
 
@@ -60,6 +60,13 @@ export type RelayFrame =
       readonly keepaliveMs: number;
       readonly epoch: string;
       readonly cursors: Cursors;
+      /**
+       * Per author, the highest sequence this room has trimmed (E24). The pair with `cursors` is
+       * what catch-up can serve — a room that keeps everything sends it empty, and a build older
+       * than retention sends nothing here, which decodes to the same empty map and says the same
+       * thing: nothing has been taken away.
+       */
+      readonly floor: Cursors;
     }
   | { readonly kind: "error"; readonly code: string; readonly message: string }
   | { readonly kind: "ka" }
@@ -80,6 +87,9 @@ export type RelayFrame =
   | { readonly kind: "blob-missing"; readonly hash: string }
   /** A tag this build does not know; ignored, never an error (D14's additive vector). */
   | { readonly kind: "unknown" };
+
+/** What a build older than the `hello` floor sent in its place: nothing has been taken away. */
+const NO_CURSORS = new Map<PeerId, SeqNum>();
 
 const pairs = (cursors: Cursors): CborValue =>
   [...cursors].map(([peer, seq]): CborValue => [hexToBytes(peer).unwrap(), seq]);
@@ -103,7 +113,9 @@ export const helloFrame = (
   keepaliveMs: number,
   epoch: string,
   cursors: Cursors,
-): Uint8Array => encodeCbor([KIND.hello, version, keepaliveMs, epoch, pairs(cursors)]);
+  floor: Cursors = NO_CURSORS,
+): Uint8Array =>
+  encodeCbor([KIND.hello, version, keepaliveMs, epoch, pairs(cursors), pairs(floor)]);
 
 export const errorFrame = (code: string, message: string): Uint8Array =>
   encodeCbor([KIND.error, code, message]);
@@ -148,6 +160,7 @@ type ControlDecoder = (
   b: CborValue | undefined,
   c: CborValue | undefined,
   d: CborValue | undefined,
+  e: CborValue | undefined,
 ) => Result<RelayFrame, MalformedFrame>;
 
 const decodeJoin: ControlDecoder = (a, b, c, d) =>
@@ -164,12 +177,22 @@ const decodeJoin: ControlDecoder = (a, b, c, d) =>
     );
   });
 
-const decodeHello: ControlDecoder = (a, b, c, d) =>
+const decodeHello: ControlDecoder = (a, b, c, d, e) =>
   Result.gen(function* () {
     if (!isSafeNonNegative(a) || !isSafeNonNegative(b) || !isString(c))
       return malformedFrame("hello is not [version, keepalive, epoch, cursors]");
     const cursors = yield* decodeCursorPairs(d);
-    return Result.ok({ kind: "hello", version: a, keepaliveMs: b, epoch: c, cursors } as const);
+    // absent from a relay built before retention, and empty from one that trims nothing: both
+    // mean the same thing, so an older relay is read rather than refused (D14's additive vector)
+    const floor = e === undefined ? NO_CURSORS : yield* decodeCursorPairs(e);
+    return Result.ok({
+      kind: "hello",
+      version: a,
+      keepaliveMs: b,
+      epoch: c,
+      cursors,
+      floor,
+    } as const);
   });
 
 const decodeError: ControlDecoder = (a, b) =>
@@ -236,9 +259,9 @@ const CONTROL = new Map<number, ControlDecoder>([
 export function decodeRelayFrame(bytes: Uint8Array): Result<RelayFrame, MalformedFrame> {
   const outer = decodeCbor(bytes);
   const parts: readonly CborValue[] = outer.isOk() && Array.isArray(outer.value) ? outer.value : [];
-  const [kind, a, b, c, d] = parts;
+  const [kind, a, b, c, d, e] = parts;
   const control = isSafeNonNegative(kind) ? CONTROL.get(kind) : undefined;
-  if (control !== undefined) return control(a, b, c, d);
+  if (control !== undefined) return control(a, b, c, d, e);
   // a bare tag is nobody's session frame — those all carry a payload — so an unrecognised one is
   // a tag some later version added and this build ignores (D14's additive vector), not junk
   if (parts.length === 1 && isSafeNonNegative(kind)) return Result.ok({ kind: "unknown" } as const);

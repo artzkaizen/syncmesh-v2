@@ -1,4 +1,4 @@
-import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
+import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
 import type { FeedCertificate, FeedChunk, FeedHead } from "@syncmesh/wire";
 
@@ -36,8 +36,16 @@ export interface FeedState {
 }
 
 export interface FeedTracker {
-  /** Advances the chain for an event this device has folded; out-of-order is refused, not guessed. */
-  readonly note: (event: SyncEvent) => void;
+  /**
+   * Advances the chain for an event this device has folded; out-of-order is refused, not guessed.
+   *
+   * The **entry**, not the event: the chain is a hash of the bytes the author signed, and this
+   * build re-encoding what it could read of a newer peer's event would compute a different chain
+   * from the author's own — every run that peer serves would then fail to reach its certified
+   * head. An own write carries no core yet, and re-encoding it is exactly what `signEvent` will
+   * do, so the two agree by construction.
+   */
+  readonly note: (entry: StoredEvent) => void;
   /** The chain this device has computed for an author; `GENESIS` for one it has never heard from. */
   readonly head: (peer: PeerId) => FeedHead;
   /** The best certificate held for an author — what lets this device serve a run for it. */
@@ -47,21 +55,24 @@ export interface FeedTracker {
 }
 
 /**
- * Heads live in memory and start at `GENESIS` after a restart. That is the honest place for them
- * for now, because the case chunks exist for is a **join** — a device with no events, whose head
- * genuinely is genesis for every author. A device resuming with history falls back to per-event
- * verification until its chain is re-established, which costs speed and never correctness.
+ * Heads live in memory. A boot refolds the log through `fold`, so a device with no state store
+ * rebuilds every chain it can walk contiguously from genesis; one that boots from persisted state
+ * replays only the tail above it, and `note` refuses a run that does not start where the chain is,
+ * so those heads stay at `GENESIS` until the author's next event lands. That is the honest place
+ * for them for now, because the case chunks exist for is a **join** — a device with no events,
+ * whose head genuinely is genesis for every author. A device that falls back to per-event
+ * verification pays in speed and never in correctness.
  */
 export function trackFeeds(): FeedTracker {
   const heads = new Map<PeerId, FeedHead>();
   const certificates = new Map<PeerId, FeedCertificate>();
   return {
-    note: (event) => {
+    note: ({ event, core }) => {
       const at = heads.get(event.peerId) ?? GENESIS;
       // a chain advances one event at a time; anything else leaves it where it was, and a later
       // chunk starting elsewhere is refused rather than silently accepted from the wrong place
       if (Number(event.seqNum) !== Number(at.seq) + 1) return;
-      heads.set(event.peerId, advanceFeed(at, encodeEventCore(event)));
+      heads.set(event.peerId, advanceFeed(at, core ?? encodeEventCore(event)));
     },
     head: (peer) => heads.get(peer) ?? GENESIS,
     certificate: (peer) => certificates.get(peer),
@@ -103,7 +114,9 @@ export async function chunkSince(
       ({ event }) => event.peerId === peer && Number(event.seqNum) <= Number(certificate.head.seq),
     )
     .sort((a, b) => Number(a.event.seqNum) - Number(b.event.seqNum))
-    .map(({ event }) => encodeEventCore(event));
+    // the bytes the author signed, never this build's reading of them: the certificate covers a
+    // chain over the originals, and a re-encode would not lead to the head it certifies
+    .map(({ event, core }) => core ?? encodeEventCore(event));
   return R.ok({ peerId: peer, from, cores, certificate });
 }
 
@@ -132,7 +145,9 @@ export async function receiveChunk(
           message: decoded.error.message,
         }),
       );
-    entries.push({ event: decoded.value });
+    // the arrival bytes are kept even though no per-event signature came with them: they are what
+    // the chain is over, so a run this device serves on carries the author's cores and not its own
+    entries.push({ event: decoded.value, core });
   }
   const received = await deps.receiveBatch(entries);
   if (received.isErr()) return received;

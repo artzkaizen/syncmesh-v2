@@ -6,6 +6,7 @@ import { panic } from "@syncmesh/result";
 import type { AllowFn } from "./bind.js";
 
 import { combinators } from "./bind.js";
+import { strategyOf } from "./column.js";
 import { sourceName } from "./from-drizzle.js";
 import { parseColumnName, parseTableName } from "./names.js";
 import { reservedTables } from "./reserved.js";
@@ -262,10 +263,11 @@ function flatten(
   return into;
 }
 
+/** The strategies the fold needs: `lww` is the default and is left out, so an empty map means no rules. */
 function mergeRulesFor(name: string, tbl: Table): Map<ColumnName, StrategyName> {
   const rules = new Map<ColumnName, StrategyName>();
   for (const [key, column] of Object.entries(tbl.columns)) {
-    const strategy = column.def.onConflict;
+    const strategy = strategyOf(column.def);
     if (strategy !== undefined && strategy !== "lww")
       rules.set(tbl.columnNames[key] ?? panic(`${name}.${key}: unnamed column`), strategy);
   }

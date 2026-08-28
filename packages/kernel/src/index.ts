@@ -38,5 +38,6 @@ export type { CounterEntry, CounterState } from "./counter.js";
 export { counterAdvance, counterValue, joinCounters, readCounter } from "./counter.js";
 export type { SetAdd, SetState, SetTag } from "./set.js";
 export { canonicalJson, joinSets, readSet, setTag, setTagsFor, setValue } from "./set.js";
+export { compactSetCell, compactSets } from "./compaction.js";
 export type { CellChange } from "./cell-change.js";
 export { applyCellChange, cellsFor } from "./cell-change.js";

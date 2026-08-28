@@ -57,16 +57,21 @@ export const isUnknown = (reason: QuarantineReason): boolean => reason !== "refu
 /**
  * One parked event: what arrived, and the verdict this build reached about it.
  *
- * `entry` is the {@link StoredEvent} as it was handed in, with the author's own signature beside
- * it: never re-derived, and never a verdict written back into the event. The only thing that will
- * ever understand a parked event is a later build reading it, and a re-signed forgery of it is
- * worth nothing to that build.
+ * `entry` is the {@link StoredEvent} as it was handed in — the author's own signature over the
+ * author's own core bytes, never re-derived and never rebuilt from a partial parse, and never a
+ * verdict written back into the event. The only thing that will ever understand a parked event is
+ * a later build reading it, and a re-signed forgery of it is worth nothing to that build.
  *
- * What it is not yet is the received **bytes**. Everything reaching `park` has been through
- * `decodeEventCore`, which drops keys this build has no name for, and neither transport keeps the
- * core it verified — so a newer build's added field is already gone, and the kept signature no
- * longer covers a re-encode of what is left. D13 asks for the bytes; carrying them needs
- * {@link StoredEvent} to keep the core it arrived as, which no store does.
+ * The bytes are the point of the pair. `decodeEventCore` drops keys this build has no name for,
+ * so `event` alone is what *this* build could read; `entry.core` is what the author signed, and a
+ * build that knows the dropped key gets it back from there rather than from a re-encode. Both
+ * transports keep the core they verified, so what reaches `park` from the wire has it. A row
+ * written before the log kept arrival bytes holds a re-encode under the same column and parks
+ * with that instead: what this build dropped was already gone when the row was written.
+ *
+ * D13's unknown *change kind* is still out of reach: `decodeChange` refuses a kind it cannot name,
+ * so such an event never decodes far enough to be parked at all. Keeping the bytes is what that
+ * path will need, not what makes it work.
  */
 export interface Parked {
   readonly entry: StoredEvent;

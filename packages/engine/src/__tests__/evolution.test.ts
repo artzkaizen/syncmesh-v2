@@ -2,6 +2,8 @@ import type { Change, SyncEvent } from "@syncmesh/kernel";
 
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { defineSchema, t } from "@syncmesh/schema";
+import { encodeEventCore } from "@syncmesh/wire";
+import { grownCore } from "@syncmesh/wire/wire-tests";
 import { describe, expect, test } from "bun:test";
 
 import type { Engine, EngineOptions } from "../engine.js";
@@ -333,6 +335,34 @@ describe("the quarantine is bounded, and says so when it drops something", () =>
     expect(cursorOf(device)).toBe(0);
     expect(aheadOf(device)).toEqual([]);
     expect(holdingOf(device)).toEqual([2, 3]);
+  });
+});
+
+describe("what the quarantine holds is the author's own bytes (D13)", () => {
+  test("a parked event keeps the core it arrived as, never a re-encode of what this build read", async () => {
+    const author = peer(PEER_B, { validate: validatorFor(newSchema) });
+    const memo = (
+      await author.mutate(
+        CREATE,
+        (tx) => tx.insert(MEMOS, key("m1"), row({ id: "m1", body: "later" })),
+        { partition: USER },
+      )
+    ).unwrap();
+
+    // what a newer build would have sent: a core with one key this decoder drops, and the
+    // author's signature over it. The wire verified both before `receive`; nothing re-checks here.
+    const core = grownCore(encodeEventCore(memo));
+    const sig = Uint8Array.from({ length: 64 }, (_, i) => i); // nothing re-checks it here
+
+    const device = peer(PEER_A, { validate: validatorFor(oldSchema) });
+    (await device.receive({ event: memo, core, sig })).unwrap();
+
+    const [parked] = device.quarantine();
+    expect(parked?.reason).toBe("unknown-table");
+    // identity, not equality: a re-derived core would compare equal to nothing the author signed
+    expect(parked?.entry.core).toBe(core);
+    expect(parked?.entry.sig).toBe(sig);
+    expect(encodeEventCore(parked?.entry.event ?? memo)).not.toEqual(core);
   });
 });
 

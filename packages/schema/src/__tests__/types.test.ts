@@ -3,11 +3,8 @@ import type { Temporal } from "@syncmesh/temporal";
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 
-import { t, type Value } from "../column.js";
-
-type Equal<A, B> =
-  (<X>() => X extends A ? 1 : 2) extends <X>() => X extends B ? 1 : 2 ? true : false;
-const assertType = <_T extends true>() => undefined;
+import { t, type CounterValue, type SetOf, type Value } from "../column.js";
+import { assertType, type Equal } from "./fixtures.js";
 
 describe("compile-time guarantees", () => {
   test("onConflict is typed by the column's value", () => {
@@ -27,6 +24,32 @@ describe("compile-time guarantees", () => {
     expect(true).toBe(true);
   });
 
+  test("a lattice column has no onConflict to call at all: its kind is the strategy", () => {
+    void (() => {
+      // @ts-expect-error a counter merges by being a counter
+      t.counter().onConflict("max");
+      // @ts-expect-error and lww is not a second opinion either
+      t.counter().onConflict("lww");
+      // @ts-expect-error nor has a set one
+      t.set(t.text()).onConflict("lww");
+    });
+    expect(true).toBe(true);
+  });
+
+  test("a lattice column is never null, never a key, and carries no schema of its own", () => {
+    void (() => {
+      // @ts-expect-error an empty counter is 0, not null
+      t.counter().nullable();
+      // @ts-expect-error an empty set is [], not null
+      t.set(t.text()).nullable();
+      // @ts-expect-error a row is not keyed by something that merges
+      t.counter().primaryKey();
+      // @ts-expect-error a schema here would run against the cell's merge state
+      t.counter().check(z.number());
+    });
+    expect(true).toBe(true);
+  });
+
   test("value types are inferred, nullable adds null, check narrows, json(schema) infers from the schema", () => {
     assertType<Equal<Value<ReturnType<typeof t.text>>, string>>();
     assertType<Equal<Value<ReturnType<typeof t.integer>>, number>>();
@@ -40,6 +63,19 @@ describe("compile-time guarantees", () => {
     assertType<Equal<Value<typeof meta>, { tags: string[] }>>();
     const tags = t.json<string[]>();
     assertType<Equal<Value<typeof tags>, string[]>>();
+    expect(true).toBe(true);
+  });
+
+  test("a counter reads as a number and a set as an array, and neither takes one back", () => {
+    assertType<Value<ReturnType<typeof t.counter>> extends number ? true : false>();
+    assertType<Value<ReturnType<typeof t.set<string>>> extends readonly string[] ? true : false>();
+    assertType<Equal<Value<ReturnType<typeof t.counter>>, CounterValue>>();
+    assertType<Equal<Value<ReturnType<typeof t.set<string>>>, SetOf<string>>>();
+    void (() => {
+      // @ts-expect-error a total is not assignable to a counter: it moves by increment
+      const back: Value<ReturnType<typeof t.counter>> = 7;
+      void back;
+    });
     expect(true).toBe(true);
   });
 

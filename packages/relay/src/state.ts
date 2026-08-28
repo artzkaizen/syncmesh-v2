@@ -41,6 +41,12 @@ export interface RoomState {
    * number above a hole is one nobody will ever fill.
    */
   readonly cursors: () => Cursors;
+  /**
+   * The other end of the same claim: per author, the highest sequence retention has removed. The
+   * pair `(floor, cursors)` is exactly what catch-up can serve, and a joiner whose own cursor for
+   * any author sits below this is refused rather than paged a run with the bottom missing (E24).
+   */
+  readonly floor: () => Cursors;
   /** Every client but one — the author, who already has what it sent. */
   readonly toClients: (frame: Uint8Array, except?: PeerId) => void;
   /** The same, minus every client whose interest excludes this event (E13); counts who got it. */

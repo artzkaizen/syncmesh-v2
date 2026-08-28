@@ -3,13 +3,17 @@ import type { PeerId } from "@syncmesh/kernel";
 import { createMemoryEventStore } from "@syncmesh/engine";
 import { Temporal } from "@syncmesh/temporal";
 import { cursorsFrame, eventFrame, grantFrame, presenceFrame } from "@syncmesh/transport";
-import { signPresence } from "@syncmesh/wire";
+import { decodeAndVerify, signPresence } from "@syncmesh/wire";
+import { fromALaterBuild } from "@syncmesh/wire/wire-tests";
 import { describe, expect, test } from "bun:test";
+
+import type { Peer } from "./fixtures.js";
 
 import { memoryFanout } from "../fanout.js";
 import { joinFrame } from "../frames.js";
 import {
   ACME,
+  GLOBEX,
   T0,
   entryOf,
   fakeSocket,
@@ -82,7 +86,35 @@ describe("handshake (D14)", () => {
   });
 });
 
+/** The same event as a newer build sends it, from the signed wire this build already has. */
+const grownFrom = (wire: Uint8Array, identity: Peer["identity"]) =>
+  fromALaterBuild(decodeAndVerify(wire).unwrap().event, identity).wire;
+
 describe("ingest", () => {
+  test("a newer build's event is served on as the bytes its author signed, not this build's reading", async () => {
+    const a = peer(40, "acct_a");
+    const b = peer(80, "acct_b");
+    const grown = grownFrom(await write(a, "n1", "one"), a.identity);
+    const room = await open();
+
+    const sa = fakeSocket();
+    const ca = room.connect(sa.socket);
+    ca.receive(join(a.identity.peerId));
+    await tick();
+    ca.receive(eventFrame(grown));
+    await tick();
+    expect(sa.ofKind("error")).toEqual([]); // it verified on the way in
+
+    // a joiner arriving after the fact gets it out of the log, through the catch-up path
+    const sb = fakeSocket();
+    room.connect(sb.socket).receive(join(b.identity.peerId));
+    await tick();
+    const served = sb.ofKind("page").flatMap((p) => p.events);
+    expect(served).toEqual([grown]);
+    expect(decodeAndVerify(served[0] ?? new Uint8Array()).isOk()).toBe(true);
+    room.close();
+  });
+
   test("append once: ack to the author, the relayed frame to everyone else, dedup acks idempotently", async () => {
     const a = peer(40, "acct_a");
     const b = peer(80, "acct_b");
@@ -375,6 +407,86 @@ describe("fanout (D09-B)", () => {
     await tick();
     expect(sb.ofKind("relayed")).toHaveLength(1); // crossed instances
     expect(sa.ofKind("relayed")).toHaveLength(0); // the author's own instance does not echo
+    one.close();
+    two.close();
+  });
+
+  /**
+   * The half a forward alone does not do (API.md §13.5). An instance that only passes the frame
+   * to its own sockets holds nothing afterwards, so the next phone to land there catches up to a
+   * shorter room — and pushes nothing back, because it has nothing the room did not claim.
+   */
+  test("the instance that received the fan-out holds the event too, and serves it to a later joiner", async () => {
+    const a = peer(40, "acct_a");
+    const b = peer(80, "acct_b");
+    const c = peer(120, "acct_c");
+    const fanout = memoryFanout();
+    const far = createMemoryEventStore();
+    const one = await open({ fanout });
+    const two = await open({ fanout, store: far });
+
+    const sa = fakeSocket();
+    const ca = one.connect(sa.socket);
+    ca.receive(join(a.identity.peerId));
+    two.connect(fakeSocket().socket).receive(join(b.identity.peerId));
+    await tick();
+    const wire = await write(a, "n1", "one");
+    ca.receive(eventFrame(wire));
+    await tick();
+
+    expect((await far.all()).unwrap()).toHaveLength(1);
+    // and a phone arriving on that instance afterwards is paged it, byte for byte
+    const sc = fakeSocket();
+    two.connect(sc.socket).receive(join(c.identity.peerId));
+    await tick();
+    expect(sc.ofKind("page").flatMap((p) => p.events)).toEqual([wire]);
+    one.close();
+    two.close();
+  });
+
+  test("a grant that crossed instances is in the cache the next joiner's first page is built from", async () => {
+    const a = peer(40, "acct_a");
+    const b = peer(80, "acct_b");
+    const fanout = memoryFanout();
+    const one = await open({ fanout });
+    const two = await open({ fanout, store: createMemoryEventStore() });
+
+    const ca = one.connect(fakeSocket().socket);
+    ca.receive(join(a.identity.peerId));
+    await tick();
+    const grant = mintFor(a.identity, "acct_a");
+    ca.receive(grantFrame(grant));
+    await tick();
+
+    const sb = fakeSocket();
+    two.connect(sb.socket).receive(join(b.identity.peerId));
+    await tick();
+    expect(sb.ofKind("page").flatMap((p) => p.grants)).toEqual([grant]);
+    one.close();
+    two.close();
+  });
+
+  test("a narrowed interest is honoured whichever instance the event came from", async () => {
+    const a = peer(40, "acct_a");
+    const b = peer(80, "acct_b");
+    const fanout = memoryFanout();
+    const one = await open({ fanout });
+    const two = await open({ fanout, store: createMemoryEventStore() });
+
+    const ca = one.connect(fakeSocket().socket);
+    ca.receive(join(a.identity.peerId));
+    const sb = fakeSocket();
+    two
+      .connect(sb.socket)
+      .receive(joinFrame([1], b.identity.peerId, new Map(), { partitions: [ACME] }));
+    await tick();
+
+    ca.receive(eventFrame(await write(a, "n1", "one", GLOBEX)));
+    await tick();
+    expect(sb.ofKind("relayed")).toEqual([]); // it asked for acme; this one is globex
+    ca.receive(eventFrame(await write(a, "n2", "two", ACME)));
+    await tick();
+    expect(sb.ofKind("relayed")).toHaveLength(1);
     one.close();
     two.close();
   });

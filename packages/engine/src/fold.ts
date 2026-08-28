@@ -1,4 +1,4 @@
-import type { MergeSpec, State, SyncEvent } from "@syncmesh/kernel";
+import type { MergeSpec, State } from "@syncmesh/kernel";
 
 import { applyChange, stampOf } from "@syncmesh/kernel";
 
@@ -8,6 +8,7 @@ import type { EngineError } from "./errors.js";
 import type { FeedTracker } from "./feed.js";
 import type { Hub } from "./listeners.js";
 import type { StateStore } from "./state-store.js";
+import type { StoredEvent } from "./store.js";
 import type { TelemetryEvent } from "./telemetry.js";
 
 import { rowsFor, writeKeysOf } from "./state-store.js";
@@ -37,8 +38,13 @@ export interface FoldDeps {
 export interface FoldPath {
   readonly stateOf: () => State;
   readonly setState: (next: State) => void;
-  /** Folds events into state, advancing each author's cursor and feed chain as they land. */
-  readonly fold: (events: readonly SyncEvent[], source: FoldSource) => FoldBatch;
+  /**
+   * Folds events into state, advancing each author's cursor and feed chain as they land.
+   *
+   * Entries rather than bare events, because the feed chain is a hash of the bytes the author
+   * signed and the entry is the only thing that still holds them.
+   */
+  readonly fold: (entries: readonly StoredEvent[], source: FoldSource) => FoldBatch;
   /**
    * Writes the rows a fold touched to the state store. A failure is reported, not returned: the
    * log already holds the truth — unless the write runs inside `atomic`, where it fails the
@@ -53,26 +59,27 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
   const { merge, coverage, feeds, folds, telemetry, errors, atomic, initial } = deps;
   let state = initial;
 
-  const fold = (events: readonly SyncEvent[], source: FoldSource): FoldBatch => {
+  const fold = (entries: readonly StoredEvent[], source: FoldSource): FoldBatch => {
     const [batch, duration] = timed((): FoldBatch => {
-      const writeKeys = writeKeysOf(events);
-      for (const event of events) {
+      const writeKeys = writeKeysOf(entries.map((entry) => entry.event));
+      for (const entry of entries) {
+        const { event } = entry;
         coverage.note(event);
-        feeds.note(event);
+        feeds.note(entry);
         const stamp = stampOf(event);
         for (const change of event.changes)
           state = applyChange(state, change, stamp, merge, event.partition);
       }
       return {
         source,
-        eventCount: events.length,
+        eventCount: entries.length,
         writeTables: new Set(writeKeys.keys()),
         writeKeys,
       };
     });
-    if (events.length === 0) return batch;
+    if (entries.length === 0) return batch;
     const keys = [...batch.writeKeys.values()].reduce((n, set) => n + set.size, 0);
-    telemetry.emit({ type: "engine.fold", sizes: { events: events.length, keys }, duration });
+    telemetry.emit({ type: "engine.fold", sizes: { events: entries.length, keys }, duration });
     // a boot fold has no persist step of its own; every other fold notifies after it (persist)
     if (source === "boot") folds.emit(batch);
     return batch;

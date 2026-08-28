@@ -14,6 +14,7 @@ import { sendCatchUp } from "./catchup.js";
 import { decodeRelayFrame, errorFrame, helloFrame, selectVersion } from "./frames.js";
 import { ingestEvent, serveBlob } from "./ingest.js";
 import { createBudget } from "./limits.js";
+import { BELOW_FLOOR, belowFloor } from "./retention.js";
 import { createSender } from "./sender.js";
 
 /** What the host wires each accepted socket to. */
@@ -82,6 +83,25 @@ export function createConnection(socket: RelaySocket, room: RoomState): RelayCon
       refuse("version", `this relay speaks ${room.versions.join(", ")}`, true);
       return;
     }
+    /**
+     * Told, rather than paged a run with its bottom missing (E24). A hole would not corrupt this
+     * client — its own coverage stops below a gap — but every event above the gap would sit in
+     * its holdback until that overflowed into a re-join, which re-requests the same missing run
+     * from the same room, forever.
+     *
+     * Not permanent the way a version refusal is: the socket closes, the client reconnects on its
+     * backoff, and the join after it succeeds the moment the gap has been filled from a peer that
+     * still holds it. This room simply is not where that history lives any more.
+     *
+     * This is the cheap half — before hello, before registration, before any page — and it reads
+     * the floor as it stands right now. A sweep already on the room's queue has not moved it yet,
+     * so `sendCatchUp` asks the same question again from inside that queue, where the answer is
+     * final.
+     */
+    if (belowFloor(theirs, room.floor())) {
+      refuse("retention", BELOW_FLOOR, true);
+      return;
+    }
     const [greeted, duration] = timed(() => {
       // one socket per peer, never a silent room switch: the old socket goes first
       room.clients.get(peer)?.socket.close("superseded by a newer join");
@@ -89,7 +109,7 @@ export function createConnection(socket: RelaySocket, room: RoomState): RelayCon
       me = peer;
       interest = wanted;
       room.clients.set(peer, { peer, sender, socket, wants });
-      sender.send(helloFrame(selected, room.keepaliveMs, room.epoch, room.cursors()));
+      sender.send(helloFrame(selected, room.keepaliveMs, room.epoch, room.cursors(), room.floor()));
       // who is here now — never how they got here: presence has no history to page through
       const here = room.presence.all();
       for (const entry of here) sender.send(presenceFrame(entry.wire));

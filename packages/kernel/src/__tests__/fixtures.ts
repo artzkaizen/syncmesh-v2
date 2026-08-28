@@ -78,6 +78,20 @@ export const row = (values: Readonly<Record<string, CellValue>>): Row =>
 export const NOTES = table("notes");
 export const N1 = key("n1");
 
+export const LIKES = column("likes");
+export const TAGS = column("tags");
+
+/** The kind *is* the strategy: a `counter` column joins, a `set` column joins, everything else is lww. */
+export const MERGE: MergeSpec = new Map([
+  [
+    NOTES,
+    new Map([
+      [LIKES, "counter" as const],
+      [TAGS, "set" as const],
+    ]),
+  ],
+]);
+
 export const insert = (values: Readonly<Record<string, CellValue>>, at: Stamp): Stamped => ({
   change: { kind: "insert", table: NOTES, key: N1, row: row(values) },
   stamp: at,

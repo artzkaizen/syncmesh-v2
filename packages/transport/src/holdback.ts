@@ -23,11 +23,13 @@ export function createHoldback(engine: Engine, self: PeerId, gapLimit: number) {
 
   return {
     /** Buffers the entry; `true` when the buffer overflowed and a resync must take over. */
-    put: ({ event, sig }: StoredEvent): boolean => {
+    put: ({ event, core, sig }: StoredEvent): boolean => {
       const seq = Number(event.seqNum);
       if (event.peerId === self || seq <= through(event.peerId)) return false;
       const buffer = held.get(event.peerId) ?? new Map<number, StoredEvent>();
-      buffer.set(seq, sig === undefined ? { event } : { event, sig });
+      // the three fields a store keeps, and not the envelope they arrived in: a `VerifiedEvent`
+      // carries `wire` as well, and holding that would keep every buffered event's bytes twice
+      buffer.set(seq, { event, core, sig });
       held.set(event.peerId, buffer);
       if (buffer.size > gapLimit) {
         buffer.clear();

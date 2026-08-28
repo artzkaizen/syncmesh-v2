@@ -20,3 +20,19 @@ export function addToInstant(
     instant.epochMilliseconds + duration.total({ unit: "milliseconds", relativeTo }),
   );
 }
+
+/** A day is exactly 86_400_000 milliseconds here, and no offset ever moves under a duration. */
+const EPOCH_UTC = Temporal.Instant.fromEpochMilliseconds(0).toZonedDateTimeISO("UTC");
+
+/**
+ * A duration in milliseconds, days and weeks included — `Duration.total` refuses those on its
+ * own, because a calendar unit is not a number of milliseconds until something says when it
+ * starts. Measured against the epoch in UTC, where a day is exactly 86_400_000 and no offset
+ * ever moves.
+ *
+ * @example
+ * durationMs(Temporal.Duration.from({ days: 7 })); // 604800000
+ */
+export function durationMs(duration: Temporal.Duration): number {
+  return duration.total({ unit: "milliseconds", relativeTo: EPOCH_UTC });
+}

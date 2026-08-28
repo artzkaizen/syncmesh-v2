@@ -3,19 +3,53 @@ import type { SuiteCase } from "@syncmesh/engine";
 
 import { check, equal } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
-import { encodeEventCore } from "@syncmesh/wire";
+import { bytesEqual as equalBytes, encodeEventCore } from "@syncmesh/wire";
 
 import type { SqlDriver } from "../driver.js";
 import type { OpenDriver } from "./index.js";
 
 import { sqlEventStore } from "../event-store.js";
-import { A, B, at, entry, event, hlc, ids2 as ids, seq, sqlOf } from "./fixtures.js";
+import { A, B, at, entry, event, grownEntry, hlc, ids2 as ids, seq, sqlOf } from "./fixtures.js";
 
 const ACME = parsePartitionKey("org:acme").unwrap();
 const cores = (entries: readonly StoredEvent[]) => entries.map((x) => encodeEventCore(x.event));
 const open = async (driver: SqlDriver) => (await sqlEventStore(driver)).unwrap();
 
+/**
+ * What the `core` column has to preserve, apart from what the store has to do with an event: the
+ * bytes an author signed come back as they arrived, and an own write's column is its own encoding.
+ * Its own seam because the two questions fail for different reasons and read as different suites.
+ */
+export const coreCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
+  {
+    name: "events: the core the author signed comes back verbatim, unknown keys and all",
+    run: async () => {
+      const store = await open(await openDriver("events-core-verbatim"));
+      const newer = grownEntry(A, 1, 100);
+      (await store.append(newer)).unwrap();
+      const [held] = (await store.all()).unwrap();
+      // the column is the bytes the signature covers, not a re-encode of what this build could read
+      equal(held?.core, newer.core, "stored core");
+      equal(held?.sig, newer.sig, "stored signature");
+      equal(held?.event.id, newer.event.id, "the decoded event is still this one");
+      check(
+        !equalBytes(newer.core, encodeEventCore(newer.event)),
+        "this case is only a test while the decoder really drops the added key",
+      );
+
+      // the other direction: an event this device authored has no arrival bytes to keep, so the
+      // NOT NULL column is filled from the event itself and comes back as exactly that encoding
+      const own = entry(A, 2, 200);
+      (await store.append(own)).unwrap();
+      const mine = (await store.all()).unwrap().find((x) => x.event.id === own.event.id);
+      equal(mine?.core, encodeEventCore(own.event), "an own write's column is its own encoding");
+      equal(mine?.event.id, own.event.id, "and it decodes back to the event it was written from");
+    },
+  },
+];
+
 export const eventCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
+  ...coreCases(openDriver),
   {
     name: "events: core bytes survive, an absent partition stays absent, local survives",
     run: async () => {

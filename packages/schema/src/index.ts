@@ -1,6 +1,18 @@
 export type { StandardIssue, StandardResult, StandardSchemaV1, Output } from "./standard-schema.js";
-export type { AnyColumn, Column, ColumnDef, ColumnKind, StrategyFor, Value } from "./column.js";
-export { columnFromDef, t } from "./column.js";
+export type {
+  AnyColumn,
+  CellKind,
+  Column,
+  ColumnDef,
+  ColumnKind,
+  CounterValue,
+  IsLattice,
+  LatticeValue,
+  SetOf,
+  StrategyFor,
+  Value,
+} from "./column.js";
+export { columnFromDef, isCellKind, strategyOf, t } from "./column.js";
 export type { ColumnError } from "./check.js";
 export {
   CheckFailed,

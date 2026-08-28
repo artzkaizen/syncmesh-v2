@@ -13,6 +13,11 @@
       "@syncmesh/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./wire-tests": {
+      "@syncmesh/source": "./src/wire-tests/index.ts",
+      "types": "./dist/wire-tests/index.d.ts",
+      "default": "./dist/wire-tests/index.js"
     }
   },
   "dependencies": {

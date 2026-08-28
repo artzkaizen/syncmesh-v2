@@ -10,18 +10,42 @@ import type { SqlDriver, SqlRow, SqlValue } from "./driver.js";
 import { dialectOf } from "./dialect.js";
 import { attempt, coverageOf, failure, hlcRow, inTransaction, seqOf } from "./sql.js";
 
-const params = ({ event, sig }: StoredEvent): readonly SqlValue[] => [
+/**
+ * The `core` column holds the bytes the author's signature covers, not a re-encode of what this
+ * build could read: `decodeEventCore` ignores map keys it has no name for, and re-encoding a
+ * newer peer's event on the way back out would send bytes its signature does not cover.
+ *
+ * An event this device authored arrives here with no core — nothing has signed it yet — and is
+ * encoded to fill the NOT NULL column. Those bytes are never forwarded: `envelopeOf` re-signs an
+ * own event through `signEvent`, which encodes and signs in the same step.
+ */
+const params = ({ event, core, sig }: StoredEvent): readonly SqlValue[] => [
   event.peerId,
   event.seqNum,
   event.local === true ? 1 : 0,
   event.hlc[0].epochMilliseconds,
   event.hlc[1],
   event.partition ?? null,
-  encodeEventCore(event),
+  core ?? encodeEventCore(event),
   sig ?? null,
 ];
 
-/** One `(core, local, sig)` row back to the entry that was stored; the local flag rebuilds the id the core does not carry. Shared with the `localStorage` log, so the two stores can never disagree about what a stored event is. */
+/**
+ * One `(core, local, sig)` row back to the entry that was stored; the local flag rebuilds the id
+ * the core does not carry. Shared with the `localStorage` log, so the two stores can never
+ * disagree about what a stored event is.
+ *
+ * The core comes back as the entry's `core`, which is what a relay forwards. Rows written before
+ * the log kept arrival bytes hold a re-encode under that column, so such a row relays exactly as
+ * it did before this change — including refusal at the far side for an event that arrived with a
+ * field this build's decoder dropped.
+ *
+ * Nothing repairs such a row in place, and it would be wrong to claim otherwise: the insert is
+ * idempotent by `(peer, seq, local)` and a re-arrival is dropped by `admit`'s `store.has` before
+ * the store ever sees it, so the column keeps what it has for the life of the database. The event
+ * itself stays reachable — a peer can still get it from its author — but not through this row and
+ * not through this device. Only compaction removes it.
+ */
 export function decodeStoredEvent(row: SqlRow): Result<StoredEvent, StoreFailure> {
   const [core, local, sig] = row;
   if (!(core instanceof Uint8Array)) {
@@ -34,7 +58,7 @@ export function decodeStoredEvent(row: SqlRow): Result<StoredEvent, StoreFailure
         local === 1
           ? { ...decoded, id: eventId(decoded.peerId, decoded.seqNum, true), local: true as const }
           : decoded;
-      return sig instanceof Uint8Array ? { event, sig } : { event };
+      return { event, core, sig: sig instanceof Uint8Array ? sig : undefined };
     });
 }
 

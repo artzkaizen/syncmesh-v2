@@ -1,20 +1,29 @@
 import type { CellValue, ColumnName, Row as WireCells } from "@syncmesh/kernel";
 
+import { counterValue, setValue } from "@syncmesh/kernel";
 import { Temporal } from "@syncmesh/temporal";
 
 import type { ColumnKind } from "./column.js";
 import type { Row, Table } from "./table.js";
 
-/** The app-facing value of one column; only `timestamp` differs from its wire form. */
+/** The app-facing value of one column: `timestamp`, `counter` and `set` differ from their wire form. */
 export type AppValue = CellValue | Temporal.Instant;
 
 export const toWireValue = (value: AppValue): CellValue =>
   value instanceof Temporal.Instant ? value.epochMilliseconds : value;
 
-export const fromWireValue = (kind: ColumnKind, value: CellValue): AppValue =>
-  kind === "timestamp" && !(value instanceof Uint8Array) && value !== null
+/**
+ * The stored cell as the app reads it. A `counter` and a `set` are the two whose stored form is
+ * merge state rather than a value — the app is shown the total and the live elements, which is
+ * also why neither is assignable: there is no way back from what it read to what the cell holds.
+ */
+export const fromWireValue = (kind: ColumnKind, value: CellValue): AppValue => {
+  if (kind === "counter") return counterValue(value);
+  if (kind === "set") return setValue(value);
+  return kind === "timestamp" && !(value instanceof Uint8Array) && value !== null
     ? Temporal.Instant.fromEpochMilliseconds(Number(value))
     : value;
+};
 
 /** App values → wire cells for the columns present; `undefined` values are left out. */
 export function toWireRow<T extends Table>(table: T, row: Partial<Row<T>>): WireCells {

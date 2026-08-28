@@ -7,6 +7,9 @@ import { defineSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createGrantRegistry, createIdentity, issueGrant, type Identity } from "@syncmesh/wire";
 
+import { bridgeFramedLink } from "../bridge.js";
+import { loopbackPair } from "../link.js";
+
 export const schema = defineSchema({
   partitions: { org: {} },
   roles: { org: ["member"] },
@@ -79,3 +82,27 @@ export const write = (p: Peer, id: string, body: string, partition = ACME) =>
 
 /** What a peer's state says that row's body is, or `undefined` where the row never arrived. */
 export const bodyOf = (p: Peer, id: string) => readRow(p.engine.state(), NOTES, key(id))?.get(BODY);
+
+/** Two peers bridged over one loopback, and the rounds that settle whatever they owe each other. */
+export const connect = (x: Peer, y: Peer) => {
+  const { a, b, control } = loopbackPair();
+  const bridgeFor = (p: Peer, link: Parameters<typeof bridgeFramedLink>[0]) =>
+    bridgeFramedLink(link, {
+      engine: p.engine,
+      identity: p.identity,
+      grants: p.grants,
+      now: () => T0,
+    });
+  const bx = bridgeFor(x, a);
+  const by = bridgeFor(y, b);
+  // one round per hop a frame can cause: cursors → events → cursors-back → events. Anything
+  // needing more rounds than that is a bridge bug, not a test-timing problem.
+  const settle = async () => {
+    for (let i = 0; i < 4; i += 1) {
+      await control.flush();
+      await bx.flush();
+      await by.flush();
+    }
+  };
+  return { bx, by, control, settle };
+};

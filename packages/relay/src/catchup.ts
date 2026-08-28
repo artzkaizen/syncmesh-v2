@@ -2,15 +2,12 @@ import type { Interest, StoredEvent } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
 import { matchesInterest, timed } from "@syncmesh/engine";
-import { encodeCbor, encodeEventCore } from "@syncmesh/wire";
+import { relayEnvelope } from "@syncmesh/wire";
 
 import type { Conversation } from "./state.js";
 
 import { pageFrame } from "./frames.js";
-
-/** A stored event back to wire form; `undefined` for an entry whose signature was never stored. */
-const envelopeOf = (entry: StoredEvent): Uint8Array | undefined =>
-  entry.sig === undefined ? undefined : encodeCbor([encodeEventCore(entry.event), entry.sig]);
+import { BELOW_FLOOR, belowFloor } from "./retention.js";
 
 /**
  * A joiner's history as frames: `pageSize` events each, grants on the first, and always at least
@@ -23,7 +20,7 @@ export function paged(
   pageSize: number,
   offset: number,
 ): readonly Uint8Array[] {
-  const wires = entries.map(envelopeOf).filter((w): w is Uint8Array => w !== undefined);
+  const wires = entries.map(relayEnvelope).filter((w): w is Uint8Array => w !== undefined);
   const pages: Uint8Array[] = [];
   let index = 0;
   do {
@@ -39,6 +36,12 @@ export function paged(
  * The catch-up half of a join, on the room's queue so its offset cannot move under it. The
  * interest arrives by value rather than read back from the socket: a second join landing while
  * this one is queued must not retarget the pages the first one asked for.
+ *
+ * The floor is checked here and not only at the join, because a retention sweep runs on this same
+ * queue and only moves the floor when it resolves. A join that lands while one is in flight reads
+ * the floor from before it, is greeted, and would then be paged the run the sweep had just taken
+ * the bottom out of. Asked again at the head of the queue, the sweep has either finished or has
+ * not started, and there is no third state.
  */
 export function sendCatchUp(
   conversation: Conversation,
@@ -47,6 +50,10 @@ export function sendCatchUp(
 ): void {
   const { room, sender, refuse } = conversation;
   room.enqueue(async () => {
+    if (belowFloor(theirs, room.floor())) {
+      refuse("retention", BELOW_FLOOR, true);
+      return;
+    }
     const [sizes, duration] = await timed(async () => {
       const entries = await room.store.allSince(theirs);
       if (entries.isErr()) {

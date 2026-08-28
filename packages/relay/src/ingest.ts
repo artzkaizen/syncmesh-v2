@@ -1,5 +1,7 @@
-import type { StoredEvent, StoreFailure } from "@syncmesh/engine";
+import type { StoreFailure } from "@syncmesh/engine";
+import type { EventId } from "@syncmesh/kernel";
 import type { BlobHash } from "@syncmesh/storage";
+import type { WireError } from "@syncmesh/wire";
 
 import { timed } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
@@ -10,19 +12,46 @@ import type { Conversation, RoomState } from "./state.js";
 
 import { ackFrame, blobFrame, blobMissingFrame, relayedFrame } from "./frames.js";
 
-/** The append and its fan-out as one step, answering how many sockets took the frame. */
-const append = async (
+/** What one event cost the room: nothing at all when it already held it. */
+export interface Absorbed {
+  /** The id it verified as, which is what an ack names — sent for a duplicate as much as a first. */
+  readonly id: EventId;
+  /** The frame this room sent its own clients, or absent when the event was a duplicate. */
+  readonly relayed?: Uint8Array;
+  readonly receivers: number;
+}
+
+/**
+ * One event into this room: verified, deduped by id, appended, and handed to every client whose
+ * interest wants it. Shared by the two ways an event arrives — a client's socket, which is owed
+ * an ack and a typed refusal, and another instance's fan-out, which is owed neither.
+ *
+ * Publishing is the caller's, deliberately. The frame that came in from a fan-out has already
+ * reached every other instance from the one that first sent it, and re-publishing it would
+ * multiply one write by the size of the fleet.
+ */
+export const absorbEvent = async (
   room: RoomState,
-  entry: StoredEvent,
   wire: Uint8Array,
-): Promise<Result<number, StoreFailure>> => {
+): Promise<Result<Absorbed, WireError | StoreFailure>> => {
+  const verified = decodeAndVerify(wire);
+  if (verified.isErr()) return Result.err(verified.error);
+  // locality never reaches the wire: the envelope has no field for it, so a local event
+  // cannot arrive here — the device-side writer and codec enforce that (D20)
+  const entry = verified.value;
+  const id = entry.event.id;
+  const held = await room.store.has(id);
+  if (held.isErr()) return Result.err(held.error);
+  if (held.value) return Result.ok({ id, receivers: 0 });
   const stored = await room.store.append(entry);
   if (stored.isErr()) return Result.err(stored.error);
   room.appended(entry);
   const relayed = relayedFrame(wire, room.offset());
-  const receivers = room.toInterested(relayed, entry.event, entry.event.peerId);
-  room.publish(relayed);
-  return Result.ok(receivers);
+  return Result.ok({
+    id,
+    relayed,
+    receivers: room.toInterested(relayed, entry.event, entry.event.peerId),
+  });
 };
 
 /**
@@ -35,34 +64,23 @@ const append = async (
  * traffic the room absorbed.
  */
 export function ingestEvent(conversation: Conversation, wire: Uint8Array): void {
-  const { room, sender, refuse } = conversation;
+  const { room, refuse } = conversation;
   room.enqueue(async () => {
-    const verified = decodeAndVerify(wire);
-    if (verified.isErr()) {
-      refuse("bad-event", verified.error.message);
+    const [outcome, duration] = await timed(() => absorbEvent(room, wire));
+    if (outcome.isErr()) {
+      refuse(outcome.error._tag === "StoreFailure" ? "store" : "bad-event", outcome.error.message);
       return;
     }
-    // locality never reaches the wire: the envelope has no field for it, so a local event
-    // cannot arrive here — the device-side writer and codec enforce that (D20)
-    const { event } = verified.value;
-    const held = await room.store.has(event.id);
-    if (held.isErr()) {
-      refuse("store", held.error.message);
-      return;
-    }
-    if (!held.value) {
-      const [outcome, duration] = await timed(() => append(room, verified.value, wire));
-      if (outcome.isErr()) {
-        refuse("store", outcome.error.message);
-        return;
-      }
+    const { id, relayed, receivers } = outcome.value;
+    if (relayed !== undefined) {
+      room.publish(relayed);
       room.report({
         type: "relay.event",
-        sizes: { bytes: wire.byteLength, receivers: outcome.value },
+        sizes: { bytes: wire.byteLength, receivers },
         duration,
       });
     }
-    sender.send(ackFrame(String(event.id), room.offset()));
+    conversation.sender.send(ackFrame(String(id), room.offset()));
   });
 }
 

@@ -1,0 +1,29 @@
+{
+  "name": "@syncmesh/examples",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The two hosting shapes you run yourself: a relay embedded in a backend process, and a Redis fleet behind a load balancer",
+  "type": "module",
+  "scripts": {
+    "device": "bun --conditions=@syncmesh/source src/embedded/device.ts",
+    "fleet": "docker compose -f src/fleet/compose.yaml up --build",
+    "server": "bun --conditions=@syncmesh/source src/embedded/server.ts"
+  },
+  "devDependencies": {
+    "@syncmesh/client": "workspace:*",
+    "@syncmesh/config": "workspace:*",
+    "@syncmesh/engine": "workspace:*",
+    "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/relay": "workspace:*",
+    "@syncmesh/schema": "workspace:*",
+    "@syncmesh/sqlite-bun": "workspace:*",
+    "@syncmesh/storage": "workspace:*",
+    "@syncmesh/temporal": "workspace:*",
+    "@syncmesh/wire": "workspace:*",
+    "@types/bun": "catalog:",
+    "drizzle-orm": "latest",
+    "redis": "^6.2.1",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

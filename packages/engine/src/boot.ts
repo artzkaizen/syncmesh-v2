@@ -1,11 +1,11 @@
-import type { State, SyncEvent } from "@syncmesh/kernel";
+import type { State } from "@syncmesh/kernel";
 
 import { emptyState } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
 import type { Engine, EngineOptions } from "./engine.js";
 import type { StateStore } from "./state-store.js";
-import type { EventStore, StoreFailure } from "./store.js";
+import type { EventStore, StoreFailure, StoredEvent } from "./store.js";
 import type { Coverage } from "./sync.js";
 
 import { createEngine } from "./engine.js";
@@ -16,7 +16,8 @@ import { EMPTY_COVERAGE } from "./sync.js";
 export interface Boot {
   readonly state: State;
   readonly coverage: Coverage;
-  readonly replay: readonly SyncEvent[];
+  /** Entries, not events: the feed chain a boot rebuilds is over the bytes each author signed. */
+  readonly replay: readonly StoredEvent[];
 }
 
 interface Cached {
@@ -41,7 +42,7 @@ export function openEngine(
     const coverage = cached?.coverage ?? EMPTY_COVERAGE;
     const synced = yield* Result.await(store.allSince(coverage.synced, "synced"));
     const local = yield* Result.await(store.allSince(coverage.local, "local"));
-    const replay = [...synced, ...local].map((entry) => entry.event);
+    const replay = [...synced, ...local];
     const max = yield* Result.await(store.maxHlc());
     if (max !== undefined) clock.receive(max);
 
@@ -50,7 +51,7 @@ export function openEngine(
       const rows =
         cached === undefined
           ? allRows(engine.state())
-          : rowsFor(engine.state(), writeKeysOf(replay));
+          : rowsFor(engine.state(), writeKeysOf(replay.map((entry) => entry.event)));
       if (cached === undefined || rows.length > 0)
         yield* Result.await(stateStore.commit(rows, engine.coverage()));
     }

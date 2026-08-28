@@ -6,7 +6,6 @@ import type { Op } from "./fixtures.js";
 import { counterAdvance, counterValue, type CounterEntry, type CounterState } from "../counter.js";
 import { setTag, setTagsFor, setValue, type SetTag } from "../set.js";
 import { getRecord, readRow } from "../state.js";
-import { type MergeSpec } from "../strategy.js";
 import {
   addTo,
   applyOps,
@@ -15,28 +14,17 @@ import {
   column,
   dropFrom,
   insert,
+  LIKES,
+  MERGE as merge,
   N1,
   NOTES,
   PEER_A,
   PEER_B,
   remove,
   stamp,
+  TAGS,
   update,
 } from "./fixtures.js";
-
-const LIKES = column("likes");
-const TAGS = column("tags");
-
-/** The kind *is* the strategy: a `counter` column joins, a `set` column joins, everything else is lww. */
-const merge: MergeSpec = new Map([
-  [
-    NOTES,
-    new Map([
-      [LIKES, "counter" as const],
-      [TAGS, "set" as const],
-    ]),
-  ],
-]);
 
 const a1 = stamp(1, 0, PEER_A);
 const a2 = stamp(2, 0, PEER_A);

@@ -57,7 +57,7 @@ export interface WriteDeps {
   readonly undo: Undo[];
   readonly atomically: <T>(fn: (scoped: AtomicStores) => Promise<T>) => Promise<T>;
   readonly stateOf: () => State;
-  readonly fold: (events: readonly SyncEvent[], source: FoldSource) => FoldBatch;
+  readonly fold: (entries: readonly StoredEvent[], source: FoldSource) => FoldBatch;
   readonly persist: (batch: FoldBatch, into: StateStore | undefined) => Promise<void>;
   readonly notify: (batch: FoldBatch) => void;
   readonly outbound: Hub<SyncEvent>;
@@ -117,7 +117,7 @@ export function createWritePath(deps: WriteDeps) {
                 mutateOptions,
               );
               (await scoped.events.append({ event })).unwrap();
-              const folded = fold([event], "local");
+              const folded = fold([{ event }], "local");
               await persist(folded, scoped.state);
               return { event, folded };
             }),
@@ -142,10 +142,7 @@ export function createWritePath(deps: WriteDeps) {
           try: () =>
             atomically(async (scoped) => {
               orThrow(await scoped.events.appendBatch(fresh));
-              const folded = fold(
-                fresh.map((f) => f.event),
-                "remote",
-              );
+              const folded = fold(fresh, "remote");
               await persist(folded, scoped.state);
               return folded;
             }),

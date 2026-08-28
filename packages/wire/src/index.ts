@@ -15,11 +15,12 @@ export {
   decodeCellChange,
   encodeCellChange,
 } from "./crdt-codec.js";
-export type { VerifiedEvent, WireError } from "./envelope.js";
+export type { SignedEvent, VerifiedEvent, WireError } from "./envelope.js";
 export {
   BadSignature,
   MalformedEnvelope,
   decodeAndVerify,
+  relayEnvelope,
   signEvent,
   splitEnvelope,
 } from "./envelope.js";

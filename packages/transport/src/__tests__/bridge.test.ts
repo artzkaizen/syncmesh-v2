@@ -6,38 +6,11 @@ import { describe, expect, test } from "bun:test";
 import type { BridgeError } from "../bridge.js";
 import type { Frame } from "../frame.js";
 import type { FrameLink } from "../link.js";
-import type { Peer } from "./fixtures.js";
 
 import { bridgeFramedLink } from "../bridge.js";
 import { cursorsFrame, decodeFrame } from "../frame.js";
 import { loopbackPair } from "../link.js";
-import { ISSUER, T0, bodyOf, mintFor, peer, write } from "./fixtures.js";
-
-const connect = (x: Peer, y: Peer) => {
-  const { a, b, control } = loopbackPair();
-  const bx = bridgeFramedLink(a, {
-    engine: x.engine,
-    identity: x.identity,
-    grants: x.grants,
-    now: () => T0,
-  });
-  const by = bridgeFramedLink(b, {
-    engine: y.engine,
-    identity: y.identity,
-    grants: y.grants,
-    now: () => T0,
-  });
-  // one round per hop a frame can cause: cursors → events → cursors-back → events. Anything
-  // needing more rounds than that is a bridge bug, not a test-timing problem.
-  const settle = async () => {
-    for (let i = 0; i < 4; i += 1) {
-      await control.flush();
-      await bx.flush();
-      await by.flush();
-    }
-  };
-  return { bx, by, control, settle };
-};
+import { ISSUER, T0, bodyOf, connect, mintFor, peer, write } from "./fixtures.js";
 
 describe("the bridge over a loopback", () => {
   test("an event a peer says it already holds above its cursor is not sent again", async () => {

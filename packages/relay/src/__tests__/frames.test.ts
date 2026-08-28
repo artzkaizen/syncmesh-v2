@@ -24,6 +24,7 @@ import {
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- test fixtures */
 const PEER = bytesToHex(Uint8Array.from({ length: 32 }, (_, i) => i)) as PeerId;
 const CURSORS = new Map([[PEER, 7 as SeqNum]]);
+const FLOOR = new Map([[PEER, 4 as SeqNum]]);
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 const ACME = parsePartitionKey("org:acme").unwrap();
 const GRANT = Uint8Array.of(0xa1, 0xb2, 0xc3);
@@ -57,11 +58,18 @@ const VECTORS = [
       "85088201025820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f81825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f07781b7b22706172746974696f6e73223a5b226f72673a61636d65225d7d",
   },
   {
-    description: "hello, the selected version",
+    description: "hello, the selected version and an empty retention floor",
     tag: 9,
     wire: () => helloFrame(1, 15_000, "epoch-1", CURSORS),
     wireHex:
-      "850901193a986765706f63682d3181825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f07",
+      "860901193a986765706f63682d3181825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0780",
+  },
+  {
+    description: "hello from a room that has trimmed its log",
+    tag: 9,
+    wire: () => helloFrame(1, 15_000, "epoch-1", CURSORS, FLOOR),
+    wireHex:
+      "860901193a986765706f63682d3181825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0781825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f04",
   },
   {
     description: "error, the typed version refusal",
@@ -144,6 +152,20 @@ describe("the relay's v1 control frames (D14)", () => {
 });
 
 describe("the vector is additive", () => {
+  /**
+   * The exact bytes a relay built before retention put on the wire: a five-element hello, with no
+   * floor after the cursors. It must still decode, and to the same thing the empty floor means —
+   * nothing has been taken away — because that relay is telling the truth about its own log.
+   */
+  test("a hello from before the floor existed decodes with an empty one", () => {
+    const before =
+      "850901193a986765706f63682d3181825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f07";
+    const decoded = decodeRelayFrame(hexToBytes(before).unwrap()).unwrap();
+    expect(decoded.kind).toBe("hello");
+    expect(decoded.kind === "hello" && [...decoded.floor]).toEqual([]);
+    expect(decoded.kind === "hello" && Number(decoded.cursors.get(PEER))).toBe(7);
+  });
+
   test("a tag this build does not know decodes as `unknown`, never as an error", () => {
     for (const tag of [19, 20, 99, 4096]) {
       const decoded = decodeRelayFrame(encodeCbor([tag, "whatever a v2 puts here", 7]));

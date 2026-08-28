@@ -3,7 +3,7 @@ import type { TransportContext } from "@syncmesh/transport";
 
 import { Temporal } from "@syncmesh/temporal";
 import { createHoldback, cursorsFrame, eventFrame, grantFrame } from "@syncmesh/transport";
-import { decodeAndVerify, encodeCbor, encodeEventCore, signEvent } from "@syncmesh/wire";
+import { decodeAndVerify, relayEnvelope, signEvent } from "@syncmesh/wire";
 
 import type { RelayFrame } from "./frames.js";
 import type { RelayDial } from "./transport.js";
@@ -11,11 +11,10 @@ import type { RelayDial } from "./transport.js";
 import { decodeRelayFrame } from "./frames.js";
 
 /** A stored event as bytes to send: this device signs its own, and relays another's verbatim. */
-const envelopeOf = (entry: StoredEvent, ctx: TransportContext): Uint8Array | undefined => {
-  if (entry.event.peerId === ctx.identity.peerId) return signEvent(entry.event, ctx.identity).wire;
-  if (entry.sig !== undefined) return encodeCbor([encodeEventCore(entry.event), entry.sig]);
-  return undefined;
-};
+const envelopeOf = (entry: StoredEvent, ctx: TransportContext): Uint8Array | undefined =>
+  entry.event.peerId === ctx.identity.peerId
+    ? signEvent(entry.event, ctx.identity).wire
+    : relayEnvelope(entry);
 
 /** What one wired session may ask of the transport shell around it. */
 export interface SessionHooks {

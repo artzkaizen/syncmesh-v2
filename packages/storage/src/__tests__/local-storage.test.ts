@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { LocalStorageLike } from "../local-storage.js";
 
-import { A, B, at, entry, event, seq } from "../driver-tests/fixtures.js";
+import { A, B, at, entry, event, grownEntry, seq } from "../driver-tests/fixtures.js";
 import { encodeLog } from "../local-log.js";
 import { localStorageEventStore } from "../local-storage.js";
 
@@ -23,6 +23,20 @@ const open = (storage: LocalStorageLike) => localStorageEventStore({ name: "note
 const FOREVER = at(9e12);
 
 describe("the localStorage event store", () => {
+  test("a newer build's core survives a reopen as the bytes its signature covers", async () => {
+    const storage = fakeStorage();
+    const newer = grownEntry(A, 1, 100);
+    {
+      const { store } = (await open(storage)).unwrap();
+      (await store.append(newer)).unwrap();
+    }
+    const { store, corrupt } = (await open(storage)).unwrap();
+    expect(corrupt).toBeUndefined();
+    const [held] = (await store.all()).unwrap();
+    expect(held?.core).toEqual(newer.core);
+    expect(held?.sig).toEqual(newer.sig);
+  });
+
   test("events survive a reopen, byte for byte, with their scope and cursors", async () => {
     const storage = fakeStorage();
     const [e1, e2, local] = [entry(A, 1, 100), entry(B, 1, 101), entry(A, 1, 102, { local: true })];

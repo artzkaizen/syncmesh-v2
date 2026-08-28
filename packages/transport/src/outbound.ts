@@ -2,7 +2,7 @@ import type { Engine, Hub, Interest, StoredEvent } from "@syncmesh/engine";
 import type { Identity } from "@syncmesh/wire";
 
 import { TaggedError } from "@syncmesh/result";
-import { encodeCbor, encodeEventCore, signEvent } from "@syncmesh/wire";
+import { relayEnvelope, signEvent } from "@syncmesh/wire";
 
 import type { FrameClass } from "./frame-parts.js";
 import type { FrameLink } from "./link.js";
@@ -57,14 +57,19 @@ export function createOutbound(deps: OutboundDeps) {
   };
   const { send, drain } = createOutbox(deliver);
 
-  /** This device signs its own events; another peer's is relayed with the signature it came with. */
+  /**
+   * This device signs its own events, encoding them once as it signs; another peer's is relayed
+   * as the bytes it arrived as, which `relayEnvelope` is the one place that decides.
+   */
   const envelopeOf = (entry: StoredEvent): Uint8Array | undefined => {
     if (entry.event.peerId === identity.peerId) return signEvent(entry.event, identity).wire;
-    if (entry.sig !== undefined) return encodeCbor([encodeEventCore(entry.event), entry.sig]);
-    errors.emit(
-      new Unsendable({ id: String(entry.event.id), message: "no stored signature to relay" }),
-    );
-    return undefined;
+    const wire = relayEnvelope(entry);
+    if (wire === undefined) {
+      errors.emit(
+        new Unsendable({ id: String(entry.event.id), message: "no stored signature to relay" }),
+      );
+    }
+    return wire;
   };
 
   /**

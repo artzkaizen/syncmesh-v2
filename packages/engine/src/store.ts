@@ -1,5 +1,6 @@
 import type { Hlc, PeerId } from "@syncmesh/kernel";
 import type { EventId, SeqNum, SyncEvent } from "@syncmesh/kernel";
+import type { SignedEvent } from "@syncmesh/wire";
 
 import { compareHlc } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
@@ -14,11 +15,19 @@ export class StoreFailure extends TaggedError("StoreFailure")<{
 
 export type SeqScope = "synced" | "local";
 
-/** An event with the author's signature over its core, when one was ever seen. Own writes have none until they leave through a bridge; relayed events must keep the original — no other peer can re-sign them. */
-export interface StoredEvent {
-  readonly event: SyncEvent;
-  readonly sig?: Uint8Array;
-}
+/**
+ * What the log keeps for one event: the event, and the exact core bytes the author signed
+ * together with that signature, where this device ever held them.
+ *
+ * The pair is {@link SignedEvent} because it belongs to the wire, not to any one store: what
+ * produces it is `decodeAndVerify` for an event that arrived under its own signature, `signEvent`
+ * for one this device signs, and `receiveChunk` for a run verified as a whole — which yields the
+ * core with no signature beside it, because a chunk carries one certificate instead of one
+ * signature each. A forwarder ships the held bytes with `relayEnvelope` rather than re-encoding
+ * the decoded event. Own writes carry neither until they leave through a bridge, which signs and
+ * encodes in one step; relayed events must keep the original — no other peer can re-sign them.
+ */
+export type StoredEvent = SignedEvent;
 
 /** Durable, append-only home of events; the outbox is the log itself. Async per D05. See RFC-0004. */
 export interface EventStore {

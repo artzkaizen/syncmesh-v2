@@ -2,15 +2,20 @@ import type { EventStore, TelemetryListener } from "@syncmesh/engine";
 import type { BlobStore, SqlDriver } from "@syncmesh/storage";
 
 import { panic } from "@syncmesh/result";
+import { Temporal } from "@syncmesh/temporal";
 
 import type { Fanout } from "./fanout.js";
+import type { GrantCache } from "./grant-cache.js";
 import type { RelayLimits } from "./limits.js";
 import type { RelayPosture } from "./posture.js";
-import type { RelayConnection, RelayRoom, RelayRoomOptions } from "./room.js";
+import type { RelayRetention } from "./retention.js";
+import type { RelayConnection, RelayRoomOptions } from "./room.js";
+import type { OpenedRoom } from "./rooms.js";
 import type { RelaySocket, SendOutcome } from "./sender.js";
 
 import { createRoomAccess } from "./posture.js";
 import { openRelayRoom } from "./room.js";
+import { createRoomTable } from "./rooms.js";
 
 /** What a host passes through to each room it opens; the room's own name and store are its business. */
 type RoomTuning = Partial<
@@ -21,6 +26,7 @@ type RoomTuning = Partial<
     | "maxBacklog"
     | "versions"
     | "limits"
+    | "retention"
     | "fanout"
     | "blobs"
     | "onTelemetry"
@@ -32,7 +38,7 @@ export interface StartRelayOptions {
   readonly dataDir?: string;
   /** Your own log instead of the durable default; the relay then serves a single room. */
   readonly store?: EventStore;
-  /** Only with `store`: its lineage id. A store without one gets a fresh epoch every boot. */
+  /** Only with `store`: its lineage id. A store without one gets one fresh epoch per process. */
   readonly epoch?: string;
   readonly keepaliveMs?: number;
   readonly pageSize?: number;
@@ -41,6 +47,14 @@ export interface StartRelayOptions {
   readonly versions?: readonly number[];
   /** Per-socket frame-size and rate ceilings; see `DEFAULT_LIMITS` for what each one costs. */
   readonly limits?: Partial<RelayLimits>;
+  /** What every room here stops keeping: log age and blob bytes. Absent, nothing is ever dropped. */
+  readonly retention?: RelayRetention;
+  /**
+   * How long a room with no socket on it is kept open before it is closed and its log handle
+   * released. Absent, a room opened once is held for the life of the process. Its grant cache
+   * outlives the eviction either way — see `createRoomTable` for why that one cannot be rebuilt.
+   */
+  readonly idleAfter?: Temporal.Duration;
   /** Who may open a socket, and onto which rooms: announce apart from access. */
   readonly posture?: RelayPosture;
   /** One listener for every room this host opens (D17); rooms open lazily, so it goes in here. */
@@ -74,6 +88,10 @@ interface SocketData {
   conn?: RelayConnection;
   /** Frames that raced the async room open; flushed the moment the connection exists. */
   pending?: Uint8Array[];
+  /** Lets the room be evicted again; called from `close`, and idempotent so a retry is free. */
+  done?: () => void;
+  /** Whether `close` has already run — which it can, while `open` is still awaiting its room. */
+  gone?: boolean;
 }
 
 /**
@@ -97,23 +115,30 @@ export async function startRelay(
     ...(options.maxBacklog !== undefined && { maxBacklog: options.maxBacklog }),
     ...(options.versions !== undefined && { versions: options.versions }),
     ...(options.limits !== undefined && { limits: options.limits }),
+    ...(options.retention !== undefined && { retention: options.retention }),
     ...(options.onTelemetry !== undefined && { onTelemetry: options.onTelemetry }),
     ...(options.fanout !== undefined && { fanout: options.fanout }),
   };
 
-  const rooms = new Map<string, Promise<RelayRoom>>();
-  const closers: (() => Promise<void> | void)[] = [];
+  /**
+   * A caller-supplied store has one lineage for as long as this process holds it. Minting inside
+   * `open` gave every idle-room eviction a fresh epoch over an unchanged log, which is the one
+   * thing an epoch is supposed to mean it is not.
+   */
+  const storeEpoch = options.epoch ?? crypto.randomUUID();
 
-  const open = async (name: string): Promise<RelayRoom> => {
+  const open = async (name: string, grants: GrantCache): Promise<OpenedRoom> => {
     if (options.store !== undefined) {
       const room = await openRelayRoom({
         ...roomOptions,
         name,
+        grants,
         store: options.store,
-        epoch: options.epoch ?? crypto.randomUUID(),
+        epoch: storeEpoch,
       });
+      // the caller opened that store and the caller closes it; an eviction here borrows nothing
       return room.match({
-        ok: (value) => value,
+        ok: (value) => ({ room: value, release: () => undefined }),
         err: (failure) => panic(`the relay's store failed to open: ${failure.message}`),
       });
     }
@@ -122,7 +147,6 @@ export async function startRelay(
       ok: (value) => value,
       err: (failure) => panic(`the relay's log failed to open: ${failure.message}`),
     });
-    closers.push(stores.close);
     const driver = stores.driver ?? panic("defaultStore always carries its driver");
     // this room's own blob store, never written back into the shared tuning: the rooms are opened
     // one after another, and a room that inherited the previous one's store would serve and keep
@@ -137,22 +161,23 @@ export async function startRelay(
       ...roomOptions,
       ...(blobs !== undefined && { blobs }),
       name,
+      grants,
       store: stores.events,
       epoch: await epochOf(driver),
     });
     return room.match({
-      ok: (value) => value,
+      ok: (value) => ({ room: value, release: stores.close }),
       err: (failure) => panic(`the relay's store failed to open: ${failure.message}`),
     });
   };
 
-  const roomFor = (name: string): Promise<RelayRoom> => {
-    // a caller-supplied store is one log: it serves one room whatever the path says
-    const key = options.store !== undefined ? "main" : name;
-    const held = rooms.get(key) ?? open(key);
-    rooms.set(key, held);
-    return held;
-  };
+  const table = createRoomTable({
+    open,
+    ...(options.idleAfter !== undefined && { idleAfter: options.idleAfter }),
+    now: () => Temporal.Now.instant(),
+  });
+  // a caller-supplied store is one log: it serves one room whatever the path says
+  const nameFor = (path: string): string => (options.store === undefined ? path : "main");
 
   // D09-A on purpose: this file IS the Bun mount; the guard above already refused other runtimes
   const server = globalThis.Bun.serve<SocketData>({
@@ -172,7 +197,14 @@ export async function startRelay(
     },
     websocket: {
       async open(ws) {
-        const room = await roomFor(ws.data.room);
+        const held = await table.acquire(nameFor(ws.data.room));
+        ws.data.done = held.release;
+        // a socket closed while this was awaiting its room has already had its `close`, so nothing
+        // else will ever hand the room back and it would be held open for the life of the process
+        if (ws.data.gone === true) {
+          held.release();
+          return;
+        }
         const socket: RelaySocket = {
           send: (frame): SendOutcome => {
             const sent = ws.send(frame);
@@ -180,7 +212,7 @@ export async function startRelay(
           },
           close: (reason) => ws.close(1000, reason),
         };
-        const conn = room.connect(socket);
+        const conn = held.room.connect(socket);
         ws.data.conn = conn;
         for (const frame of ws.data.pending ?? []) conn.receive(frame);
         delete ws.data.pending;
@@ -196,7 +228,9 @@ export async function startRelay(
         ws.data.conn?.drain();
       },
       close(ws) {
+        ws.data.gone = true;
         ws.data.conn?.closed();
+        ws.data.done?.();
       },
     },
   });
@@ -206,9 +240,8 @@ export async function startRelay(
     port: boundPort,
     url: `ws://localhost:${boundPort}`,
     stop: async () => {
-      for (const room of rooms.values()) (await room).close();
+      await table.close();
       await server.stop(true);
-      for (const close of closers) await close();
     },
   };
 }

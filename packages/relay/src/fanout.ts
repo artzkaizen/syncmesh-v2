@@ -1,9 +1,16 @@
 import type { Unsubscribe } from "@syncmesh/engine";
 
 /**
- * Best-effort pub/sub between relay instances serving the same room (D09-B). Never
- * load-bearing: a frame it loses is recovered by the next cursor catch-up. A link never
- * hears its own publishes — the publisher already delivered to its own sockets.
+ * Best-effort pub/sub between relay instances serving the same room (D09-B). A link never hears
+ * its own publishes — the publisher already delivered to its own sockets.
+ *
+ * **Best-effort is not free.** A receiving instance ingests what it hears (`fanIn`), so its log is
+ * the set of frames that reached it — and a frame this transport drops is not in that set and is
+ * not re-requested by anyone here. What puts it back is an ordinary cursor exchange: a device that
+ * holds the event joining this instance pushes everything above the cursors its `hello` advertised.
+ * Until some such device does, this instance cannot serve that event to anyone, and two phones
+ * pinned to two instances do not converge. A fleet whose sockets are sticky and whose devices are
+ * few should treat a dropped frame as a real outage, not as a rounding error.
  */
 export interface Fanout {
   readonly connect: (room: string) => FanoutLink;

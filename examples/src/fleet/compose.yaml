@@ -1,0 +1,80 @@
+# D09-B: several relays behind one load balancer, Redis as best-effort pub/sub between them.
+#
+#   docker compose -f examples/src/fleet/compose.yaml up --build
+#   RELAY_URL=ws://localhost:5198/acme bun run --cwd examples server
+#   RELAY_URL=ws://localhost:5198/acme bun run --cwd examples device alice
+#
+# Not for the actor shape (D09-C): a Durable Object or Rivet actor has every socket for a room
+# routed to one instance, so there is no second instance to gossip with and adding Redis there
+# buys nothing but a dependency.
+name: syncmesh-fleet
+
+x-relay: &relay
+  build:
+    context: ../../..
+    dockerfile: examples/src/fleet/Dockerfile
+  depends_on:
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+x-relay-env: &relay-env
+  REDIS_URL: redis://redis:6379
+  PORT: "5198"
+  DATA_DIR: /data
+
+services:
+  redis:
+    image: redis:8-alpine
+    # no persistence: a relay only publishes and subscribes, and never reads back. That is not
+    # the same as a frame being free to lose — nothing re-requests one, because neither instance
+    # knows it existed. A device that holds the event has to land on the starved instance for an
+    # ordinary cursor exchange to put it back. See ./README.md, "Best-effort, and what that costs".
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  # one volume per relay, never shared: each instance keeps its own room log, and Redis is a
+  # transport between them rather than the storage under them
+  relay-1:
+    <<: *relay
+    environment:
+      <<: *relay-env
+      INSTANCE_NAME: relay-1
+    volumes:
+      - relay-1-data:/data
+
+  relay-2:
+    <<: *relay
+    environment:
+      <<: *relay-env
+      INSTANCE_NAME: relay-2
+    volumes:
+      - relay-2-data:/data
+
+  relay-3:
+    <<: *relay
+    environment:
+      <<: *relay-env
+      INSTANCE_NAME: relay-3
+    volumes:
+      - relay-3-data:/data
+
+  lb:
+    image: nginx:1.29-alpine
+    ports:
+      - "5198:5198"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - relay-1
+      - relay-2
+      - relay-3
+
+volumes:
+  relay-1-data:
+  relay-2-data:
+  relay-3-data:

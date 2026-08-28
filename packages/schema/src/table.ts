@@ -3,9 +3,10 @@ import type { CellValue, ColumnName, TableName } from "@syncmesh/kernel";
 import { isCellStrategy } from "@syncmesh/kernel";
 import { Result, TaggedError, panic } from "@syncmesh/result";
 
-import type { AnyColumn, ColumnDef, Value } from "./column.js";
+import type { AnyColumn, ColumnDef, IsLattice, Value } from "./column.js";
 
 import { KindMismatch, checkValue, scalarText, type ColumnError } from "./check.js";
+import { isCellKind } from "./column.js";
 import { parseColumnName, parseTableName } from "./names.js";
 
 export type Columns = Readonly<Record<string, AnyColumn>>;
@@ -26,10 +27,16 @@ type IsPrimaryKey<Col> = Col extends { readonly __primaryKey?: infer P }
     ? boolean
     : P
   : never;
+/** A column whose value merges inside the cell: it has no assignable form, so it is never inserted. */
+type IsLatticeColumn<Col> = Col extends { readonly __value?: infer V }
+  ? IsLattice<NonNullable<V>>
+  : false;
+
+/** Omittable on an insert: a nullable column reads as `null`, a lattice column as its empty state. */
 type IsOptionalOnInsert<Col> = Col extends { readonly __nullable?: infer N }
   ? N extends true
     ? true
-    : false
+    : IsLatticeColumn<Col>
   : never;
 
 export type PrimaryKey<C extends Columns> = {
@@ -41,7 +48,7 @@ export type Row<T extends Table> = {
   readonly [K in keyof T["columns"]]: Value<T["columns"][K]>;
 };
 
-/** What `insert` requires: nullable columns may be omitted and read as `null`. */
+/** What `insert` requires: a nullable column may be omitted and reads as `null`, a lattice column as empty. */
 export type InsertRow<T extends Table> = {
   readonly [
     K in keyof T["columns"] as IsOptionalOnInsert<T["columns"][K]> extends true ? never : K
@@ -65,6 +72,39 @@ function checkPrimaryKey(table: string, key: string, def: ColumnDef | undefined)
   if (def.nullable) panic(`${table}.${key}: a primary key cannot be nullable`);
 }
 
+/**
+ * Where a column's merge strategy may come from, checked at runtime as well as in the types:
+ * `fromDrizzle` and any JavaScript caller reach `onConflict` through a cast.
+ *
+ * A lattice column's kind **is** its strategy, so `onConflict` on one is a second opinion about a
+ * settled question and a definition error. Its cell holds merge state rather than a value, which
+ * is also why it is never null and why an app schema over it would be checking the wrong thing.
+ * Naming a cell strategy on an ordinary column is the mirror error: it would read every plain
+ * value that column ever held as the empty lattice and store `{}` in its place, on every peer.
+ */
+function checkStrategy(name: string, key: string, def: ColumnDef): void {
+  if (isCellKind(def.kind)) {
+    if (def.onConflict !== undefined)
+      panic(
+        `${name}.${key}: onConflict is not a ${def.kind} column's to declare — the kind is the strategy (E26)`,
+      );
+    if (def.nullable)
+      panic(`${name}.${key}: a ${def.kind} column is never null; its zero is empty`);
+    if (def.check !== undefined)
+      panic(`${name}.${key}: check() on a ${def.kind} column would run against its merge state`);
+    return;
+  }
+  if (def.onConflict === undefined || def.onConflict === "lww") return;
+  if (isCellStrategy(def.onConflict)) {
+    panic(
+      `${name}.${key}: onConflict("${def.onConflict}") is not a column's to declare — that strategy comes from the column's kind (E26)`,
+    );
+  }
+  if (def.kind !== "integer" && def.kind !== "float") {
+    panic(`${name}.${key}: onConflict("${def.onConflict}") needs a numeric column`);
+  }
+}
+
 export function table<const C extends Columns>(name: string, columns: C): Table<C, PrimaryKey<C>> {
   const parsedName = parseTableName(name);
   if (parsedName.isErr()) panic(`${name}: ${parsedName.error.message}`);
@@ -80,20 +120,7 @@ export function table<const C extends Columns>(name: string, columns: C): Table<
     .map(([k]) => k);
   if (primaryKeys.length !== 1)
     panic(`${name}: expected exactly one primaryKey column, found ${primaryKeys.length}`);
-  for (const [key, c] of Object.entries(columns)) {
-    if (c.def.onConflict === undefined || c.def.onConflict === "lww") continue;
-    // checked at runtime as well as in the types, because `fromDrizzle` and any JavaScript caller
-    // reach `onConflict` through a cast: a cell-level strategy here would read every plain value
-    // the column ever held as the empty lattice and store `{}` in its place, on every peer
-    if (isCellStrategy(c.def.onConflict)) {
-      panic(
-        `${name}.${key}: onConflict("${c.def.onConflict}") is not a column's to declare — that strategy comes from the column's kind (E26)`,
-      );
-    }
-    if (c.def.kind !== "integer" && c.def.kind !== "float") {
-      panic(`${name}.${key}: onConflict("${c.def.onConflict}") needs a numeric column`);
-    }
-  }
+  for (const [key, c] of Object.entries(columns)) checkStrategy(name, key, c.def);
   // SAFETY: exactly one primary key was found above and it is a key of C
   const primaryKey = primaryKeys[0] as PrimaryKey<C>;
   checkPrimaryKey(name, String(primaryKey), columns[primaryKey]?.def);
@@ -157,7 +184,7 @@ export function rowKeyText(t: Table, row: WireRow): Result<string, RowError> {
 
 /**
  * Validates wire-form values against the table. `insert` checks every column (an omitted
- * nullable column is fine); `update` checks only the columns present.
+ * nullable or lattice column is fine); `update` checks only the columns present.
  */
 export function checkRow(
   t: Table,
@@ -175,7 +202,14 @@ export function checkRow(
     const column = t.columns[key];
     if (column === undefined) continue;
     const value = row[key];
-    if (mode === "insert" && value === undefined && column.def.nullable) continue;
+    // omitted on an insert: a nullable column means `null`, a lattice column means its empty state,
+    // and an absent lattice cell reads as that empty state on every peer alike
+    if (
+      mode === "insert" &&
+      value === undefined &&
+      (column.def.nullable || isCellKind(column.def.kind))
+    )
+      continue;
     const r = checkValue(column, value);
     if (r.isErr())
       return Result.err(

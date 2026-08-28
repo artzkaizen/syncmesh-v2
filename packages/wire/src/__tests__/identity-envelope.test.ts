@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-import { decodeAndVerify, signEvent } from "../envelope.js";
+import { decodeCbor } from "../cbor-decode.js";
+import { encodeCbor } from "../cbor.js";
+import { decodeAndVerify, relayEnvelope, signEvent } from "../envelope.js";
 import { bytesEqual, bytesToHex, hexToBytes } from "../hex.js";
 import { createIdentity, SEED_LENGTH, verify } from "../identity.js";
+import { fromALaterBuild } from "../wire-tests/index.js";
 import { event, IDENTITY_A, IDENTITY_B, key, row, SEED_A, table } from "./fixtures.js";
 
 describe("identity", () => {
@@ -53,5 +56,38 @@ describe("envelope", () => {
       const r = decodeAndVerify(hexToBytes(bad).unwrap());
       expect(r.isErr()).toBe(true);
     }
+  });
+});
+
+describe("relayEnvelope", () => {
+  const e = event([
+    { kind: "insert", table: table("notes"), key: key("k1"), row: row({ title: "t" }) },
+  ]);
+  /** A core carrying a key outside the frozen map — what a newer build signs and this one ignores. */
+  const grown = () => fromALaterBuild(e, IDENTITY_A);
+
+  test("the held core goes out verbatim, so the unknown field and the signature both survive", () => {
+    const { core, sig } = grown();
+    const forwarded = relayEnvelope({
+      event: decodeAndVerify(encodeCbor([core, sig])).unwrap().event,
+      core,
+      sig,
+    });
+    expect(forwarded).toBeDefined();
+    const back = decodeAndVerify(forwarded ?? new Uint8Array()).unwrap();
+    expect(bytesEqual(back.core, core)).toBe(true);
+    expect(decodeCbor(back.core).unwrap() instanceof Map).toBe(true);
+  });
+
+  test("an entry with no core is re-encoded — the loss this exists to prevent, stated not hidden", () => {
+    const { core, sig } = grown();
+    const decoded = decodeAndVerify(encodeCbor([core, sig])).unwrap().event;
+    const forwarded = relayEnvelope({ event: decoded, sig });
+    expect(forwarded).toBeDefined();
+    expect(decodeAndVerify(forwarded ?? new Uint8Array()).isErr()).toBe(true);
+  });
+
+  test("no signature was ever held, so there is nothing to forward", () => {
+    expect(relayEnvelope({ event: e })).toBeUndefined();
   });
 });

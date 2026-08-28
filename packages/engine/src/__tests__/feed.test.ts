@@ -10,6 +10,7 @@ import {
   encodeEventCore,
   type FeedChunk,
 } from "@syncmesh/wire";
+import { grownCore } from "@syncmesh/wire/wire-tests";
 import { describe, expect, test } from "bun:test";
 
 import type { Validator } from "../validate.js";
@@ -22,6 +23,7 @@ const ACME = parsePartitionKey("org:acme").unwrap();
 
 const author = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 40 + i)).unwrap();
 const impostor = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 90 + i)).unwrap();
+const bystander = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 140 + i)).unwrap();
 
 type Side = ReturnType<typeof setup>;
 
@@ -132,6 +134,33 @@ describe("chunks at the engine", () => {
     const ahead = chunkFrom(author, at, cores.slice(2));
     expect((await b.engine.receiveChunk(ahead)).isErr()).toBe(true);
     expect(b.engine.state().get(NOTES)).toBeUndefined();
+  });
+
+  /**
+   * The chain is a hash of the bytes each author signed, so a device that re-encoded what it could
+   * read of a newer build's event would compute a head the author's certificate never covers —
+   * every run that author serves would then be refused, on a device that had folded the events
+   * perfectly well. The whole feed path has to carry arrival bytes, not this build's reading.
+   */
+  test("a run of a newer build's events leaves this device on the author's own chain", async () => {
+    const a = setup(author.peerId, 100);
+    for (let i = 1; i <= 2; i += 1) (await write(a, `n${i}`, `t${i}`)).unwrap();
+    // one map key this decoder has no name for, in every core the author signed
+    const cores = (await eventsOf(a)).map((event) => grownCore(encodeEventCore(event)));
+    const chunk = chunkFrom(author, GENESIS, cores);
+
+    const b = setup(impostor.peerId, 200);
+    expect((await b.engine.receiveChunk(chunk)).unwrap().folded).toBe(2);
+    expect(b.engine.feedHead(author.peerId).hash).toEqual(chunk.certificate.head.hash);
+
+    // and the run b serves on is the author's bytes, so a third device verifies it against the
+    // author's own certificate — across two engines, not one engine against itself
+    b.engine.rememberCertificate(chunk.certificate);
+    const served = must((await b.engine.chunkSince(author.peerId, GENESIS.seq)).unwrap());
+    expect(served.cores).toEqual(cores);
+    const c = setup(bystander.peerId, 300);
+    expect((await c.engine.receiveChunk(served)).unwrap().folded).toBe(2);
+    expect(c.engine.feedHead(author.peerId).hash).toEqual(chunk.certificate.head.hash);
   });
 
   test("one signature is not permission: every event still climbs the ladder", async () => {

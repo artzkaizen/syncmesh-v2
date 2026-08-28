@@ -39,8 +39,32 @@ export function splitEnvelope(
   });
 }
 
-/** An event together with the exact bytes it was received as; forward `wire`, never re-encode. */
-export interface VerifiedEvent {
+/**
+ * An event beside the core bytes a signature covers, where this build ever held them — what a log
+ * keeps for one event and what a forwarder sends.
+ *
+ * `core` is not a re-encode. {@link decodeEventCore} ignores map keys this build has no name for,
+ * so `encodeEventCore` of a decoded event is shorter than the bytes a newer peer signed, and a
+ * signature beside it covers nothing that leaves. Keeping the arrival bytes is what lets D13's
+ * additive rule survive a relay hop.
+ *
+ * Both are absent together on an event this device authored and has not signed yet: `mutate`
+ * appends before any link exists to sign for it, and {@link signEvent} produces the pair when it
+ * does. A `sig` standing alone is what {@link relayEnvelope} has to fall back on.
+ *
+ * A `core` can also stand alone, for an event taken from a feed chunk: a run carries the cores it
+ * is chained over and one certificate instead of one signature each, so the engine keeps the bytes
+ * and has no per-event signature to keep beside them. Such an entry is never forwarded — there is
+ * nothing to forward — and `chunkSince` serves it on as part of a run instead.
+ */
+export interface SignedEvent {
+  readonly event: SyncEvent;
+  readonly core?: Uint8Array | undefined;
+  readonly sig?: Uint8Array | undefined;
+}
+
+/** A {@link SignedEvent} that has been verified: both halves present, and the envelope they came in. */
+export interface VerifiedEvent extends SignedEvent {
   readonly event: SyncEvent;
   readonly wire: Uint8Array;
   readonly core: Uint8Array;
@@ -65,4 +89,26 @@ export function decodeAndVerify(wire: Uint8Array): Result<VerifiedEvent, WireErr
       );
     return Result.ok({ event, wire, core, sig });
   });
+}
+
+/**
+ * A held event as `[core, sig]` bytes to forward, or `undefined` when no signature was ever held
+ * for it — nobody but the author can sign it, so there is nothing to send.
+ *
+ * The held `core` goes out verbatim: re-encoding the decoded event drops the map keys this build
+ * ignored on the way in, and the author's signature then covers bytes nobody sent.
+ *
+ * An entry with a signature and no core is re-encoded, which is exactly the loss above — stated
+ * rather than silent. Neither store here produces one, because both hand a core back for every
+ * row; what a row written *before* the log kept arrival bytes holds under that column is already
+ * a re-encode, so it relays as it always did and the far side refuses it whenever the decoder
+ * dropped something.
+ *
+ * Nothing rewrites such a row. The log's insert is idempotent by event id and a re-arrival never
+ * reaches the store, so what it holds is what it will hold; the event stays reachable from its
+ * author by a peer that asks for it, and does not become reachable through this hop.
+ */
+export function relayEnvelope(entry: SignedEvent): Uint8Array | undefined {
+  if (entry.sig === undefined) return undefined;
+  return encodeCbor([entry.core ?? encodeEventCore(entry.event), entry.sig]);
 }
