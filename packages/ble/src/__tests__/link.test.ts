@@ -4,7 +4,13 @@ import type { LinkOptions } from "../link.js";
 
 import { base64ToBytes, bytesToBase64 } from "../base64.js";
 import { bleLink } from "../link.js";
-import { MINIMUM_PAYLOAD, payloadLimit } from "../radio.js";
+import {
+  ATT_MAX_ATTRIBUTE_LENGTH,
+  MINIMUM_PAYLOAD,
+  notifyLimit,
+  subscriberLimit,
+  writeLimit,
+} from "../radio.js";
 
 const SERVICE = "19d74c40-95d0-4b3c-a4a3-d4a8c8bdfe01";
 const CHAR = "19d74c41-95d0-4b3c-a4a3-d4a8c8bdfe01";
@@ -152,7 +158,7 @@ describe("a BLE link", () => {
       characteristicUuid: CHAR,
       peer: "b",
       connectionId: "c",
-      limit: () => payloadLimit(mtu),
+      limit: () => writeLimit(mtu),
     });
     link.send(bytes(200));
     await settle();
@@ -167,12 +173,34 @@ describe("a BLE link", () => {
   });
 });
 
-describe("payloadLimit", () => {
+describe("what one packet may carry", () => {
   test("ATT's three bytes come off the top, and 20 is the floor nothing goes below", () => {
-    expect(payloadLimit(185)).toBe(182);
-    expect(payloadLimit(23)).toBe(MINIMUM_PAYLOAD);
-    expect(payloadLimit(undefined)).toBe(MINIMUM_PAYLOAD);
-    expect(payloadLimit(3)).toBe(MINIMUM_PAYLOAD); // a nonsense MTU cannot make it negative
+    expect(notifyLimit(185)).toBe(182);
+    expect(notifyLimit(23)).toBe(MINIMUM_PAYLOAD);
+    expect(notifyLimit(undefined)).toBe(MINIMUM_PAYLOAD);
+    expect(notifyLimit(3)).toBe(MINIMUM_PAYLOAD); // a nonsense MTU cannot make it negative
+  });
+
+  test("a write stops at the attribute maximum, which the MTU alone does not reach", () => {
+    // measured against a real stack through `rn-ble`'s netsim harness: at the default 517-byte
+    // MTU the PDU has room for 514 and the write is refused with INVALID_ATTRIBUTE_LENGTH.
+    // Sizing writes off the MTU alone makes every packet at that MTU one that never lands
+    expect(notifyLimit(517)).toBe(514);
+    expect(writeLimit(517)).toBe(ATT_MAX_ATTRIBUTE_LENGTH);
+    expect(writeLimit(517)).toBeLessThan(notifyLimit(517));
+
+    // below the crossover the two agree, which is why nothing caught this at a typical MTU
+    expect(writeLimit(185)).toBe(notifyLimit(185));
+    expect(writeLimit(515)).toBe(notifyLimit(515));
+    expect(writeLimit(516)).toBe(ATT_MAX_ATTRIBUTE_LENGTH);
+  });
+
+  test("a subscriber's stated limit is a payload already, not an MTU to take ATT off", () => {
+    // iOS reports what a notification may carry, with ATT's bytes already gone; taking them off
+    // again spends three bytes of every notification on nothing
+    expect(subscriberLimit(182)).toBe(182);
+    expect(subscriberLimit(undefined)).toBe(MINIMUM_PAYLOAD);
+    expect(subscriberLimit(5)).toBe(MINIMUM_PAYLOAD);
   });
 });
 

@@ -114,12 +114,33 @@ export const ATT_OVERHEAD = 3;
 /** What every BLE stack must support before anyone negotiates upward, minus ATT's own bytes. */
 export const MINIMUM_PAYLOAD = 23 - ATT_OVERHEAD;
 
+/** An attribute value is at most this, whatever the MTU (Core spec, Vol 3 Part F §3.2.9). */
+export const ATT_MAX_ATTRIBUTE_LENGTH = 512;
+
 /**
- * What one direction can actually put in a packet.
- *
- * Sized from the negotiated MTU rather than a constant, and separately per direction — a
- * notification is capped at the subscriber's own limit and cannot be split across packets the
- * way a long write can, so the two ends of one link routinely differ.
+ * What a notification may carry, from the negotiated MTU. Bounded by the PDU alone: a
+ * notification is not an attribute write, so the attribute maximum below does not apply to it.
  */
-export const payloadLimit = (mtu: number | undefined): number =>
+export const notifyLimit = (mtu: number | undefined): number =>
   mtu === undefined ? MINIMUM_PAYLOAD : Math.max(MINIMUM_PAYLOAD, mtu - ATT_OVERHEAD);
+
+/**
+ * What a characteristic write may carry — bounded by the **attribute**, which is smaller than the
+ * PDU at any MTU above 515.
+ *
+ * Measured rather than reasoned about (`rn-ble`'s netsim harness): at a 517-byte MTU the PDU has
+ * room for 514 and a real stack refuses that write with `INVALID_ATTRIBUTE_LENGTH`. Sizing both
+ * directions off the MTU alone makes every packet at the default MTU a write that never lands.
+ */
+export const writeLimit = (mtu: number | undefined): number =>
+  Math.min(notifyLimit(mtu), ATT_MAX_ATTRIBUTE_LENGTH);
+
+/**
+ * A subscriber's own stated limit, which is **already a payload length and not an MTU** — iOS
+ * reports what a notification may carry, with ATT's bytes taken off for you. Subtracting them
+ * again is three bytes of every notification spent on nothing.
+ */
+export const subscriberLimit = (maximumUpdateValueLength: number | undefined): number =>
+  maximumUpdateValueLength === undefined
+    ? MINIMUM_PAYLOAD
+    : Math.max(MINIMUM_PAYLOAD, maximumUpdateValueLength);

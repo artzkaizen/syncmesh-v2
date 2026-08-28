@@ -10,7 +10,7 @@ import type { BleRadio } from "./radio.js";
 import { advertisement, hintFrom, hintOf } from "./advert.js";
 import { discovery, shouldDial } from "./dial.js";
 import { bleLink } from "./link.js";
-import { payloadLimit } from "./radio.js";
+import { notifyLimit as notifyLimitOf, subscriberLimit, writeLimit } from "./radio.js";
 import { secureLink } from "./session.js";
 
 /**
@@ -67,7 +67,7 @@ export function bleTransport(options: BleOptions): Transport {
   const held = new Map<string, Held>();
   const byConnection = new Map<string, string>();
   const drop = (why: string) => options.onDropped?.(why);
-  let notifyLimit = payloadLimit(undefined);
+  let notifyLimit = notifyLimitOf(undefined);
 
   /**
    * Forgets a link, and the peer with it.
@@ -107,7 +107,7 @@ export function bleTransport(options: BleOptions): Transport {
           characteristicUuid,
           peer: hint,
           // read per send, not captured: a notification's size is renegotiated as subscribers change
-          limit: () => (connectionId === undefined ? notifyLimit : payloadLimit(mtu)),
+          limit: () => (connectionId === undefined ? notifyLimit : writeLimit(mtu)),
           onDropped: drop,
           // a write that did not leave ends the link; the next advertisement rebuilds it, and
           // the bridge resyncs from its cursors, which is the recovery every loud failure uses
@@ -197,7 +197,7 @@ export function bleTransport(options: BleOptions): Transport {
       // one number for every notification this peripheral sends, which is how the platform
       // reports it; a link reads it per send rather than holding a copy that could go stale
       radio.onSubscribersChanged((event) => {
-        notifyLimit = payloadLimit(event.maximumUpdateValueLength);
+        notifyLimit = subscriberLimit(event.maximumUpdateValueLength);
       });
 
       radio.onConnectionStateChanged((event) => {

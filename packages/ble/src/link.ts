@@ -6,7 +6,6 @@ import type { BleRadio } from "./radio.js";
 
 import { base64ToBytes, bytesToBase64 } from "./base64.js";
 import { fragment, reassembler, type ReassemblyOptions } from "./fragment.js";
-import { payloadLimit } from "./radio.js";
 
 /**
  * One peer's link, as whole frames.
@@ -126,5 +125,3 @@ export function bleLink(options: LinkOptions): FrameLink & {
     },
   };
 }
-
-export { payloadLimit };
