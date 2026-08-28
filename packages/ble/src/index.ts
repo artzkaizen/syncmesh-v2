@@ -9,6 +9,8 @@ export {
   fragment,
   reassembler,
 } from "./fragment.js";
+export type { DiscoveryOptions, Sighting } from "./dial.js";
+export { DEFAULT_TTL_MS, discovery, shouldDial } from "./dial.js";
 export type { LinkOptions } from "./link.js";
 export { SendFailed, bleLink } from "./link.js";
 export type {
