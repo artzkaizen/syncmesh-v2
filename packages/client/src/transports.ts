@@ -1,4 +1,11 @@
-import type { Transport, TransportContext } from "@syncmesh/transport";
+import type {
+  RouteCandidate,
+  RouteMessage,
+  Transport,
+  TransportContext,
+} from "@syncmesh/transport";
+
+import { KIND, ORDINARY_LINK, pickRoutes } from "@syncmesh/transport";
 
 /** The running half of the mesh: every configured transport, started once, stopped together. */
 export interface RunningTransports {
@@ -13,8 +20,14 @@ export interface RunningTransports {
    */
   readonly settled: () => Promise<void>;
   readonly running: () => boolean;
+  /**
+   * The transports that should carry this message, best first (RFC-0012 §2). Offline ones are
+   * gone, and a class a medium refuses outright — presence, to a dormant expensive radio — is
+   * gone with them.
+   */
+  readonly route: (message: RouteMessage, among?: readonly Transport[]) => readonly Transport[];
   readonly requestGrant: (invite?: string) => void;
-  /** One ephemeral value to every transport; a transport without the capability ignores it. */
+  /** One ephemeral value to every transport worth putting it on; the rest ignore or refuse it. */
   readonly sendPresence: (wire: Uint8Array) => void;
   /** The transports that can carry bytes out of band (D18); empty when no medium here can. */
   readonly withBlobs: () => readonly Transport[];
@@ -25,10 +38,56 @@ export function runTransports(
   transports: readonly Transport[],
   context: TransportContext,
 ): RunningTransports {
+  /**
+   * Whether each medium is up, from the one place that says so. A transport that has not spoken
+   * yet is assumed up: a send that turns out to be wrong fails loudly and resyncs, where
+   * assuming down would keep a working link idle until it happened to announce itself.
+   *
+   * Subscribed before anything is started, so a medium that fails while opening is heard.
+   */
+  const online = new Map<Transport, boolean>();
+  const watching = transports.map(
+    (t) => t.onStatus?.((up) => void online.set(t, up)) ?? (() => undefined),
+  );
+
   const started = Promise.all(transports.map((t) => t.start(context)));
   let running = true;
 
+  /**
+   * Score the candidates and hand back the transports behind the survivors.
+   *
+   * Candidates are matched to their transport by identity rather than by name, so two mediums
+   * configured under one name cannot collapse into each other — the name is the scorer's
+   * tie-break, and a tie-break is not an identifier.
+   */
+  const route = (message: RouteMessage, among = transports): readonly Transport[] => {
+    const owners = new Map<RouteCandidate, Transport>();
+    const candidates = among.map((t) => {
+      const candidate = {
+        id: t.name,
+        online: online.get(t) ?? true,
+        ...(t.route?.() ?? ORDINARY_LINK),
+      };
+      owners.set(candidate, t);
+      return candidate;
+    });
+    return pickRoutes(candidates, message).flatMap((c) => owners.get(c) ?? []);
+  };
+
+  /**
+   * Every transport worth putting this on, in order — not the single best one.
+   *
+   * The scorer as a filter, because a broadcast is what these two calls are. Which one link
+   * reaches a given peer is a question nothing here can answer, since no transport publishes a
+   * per-peer link list, so narrowing to the winner would silently stop talking to whoever was
+   * only reachable down the link that lost. Choosing arrives with link admission (RFC-0012 §1).
+   * What the scoring settles today is which links are worth trying at all.
+   */
+  const every = (message: Omit<RouteMessage, "redundancy">): readonly Transport[] =>
+    route({ ...message, redundancy: transports.length });
+
   return {
+    route,
     ready: async () => {
       await started;
       await Promise.all(transports.map((t) => t.whenReady()));
@@ -42,14 +101,17 @@ export function runTransports(
       for (const transport of nearestFirst) await transport.caughtUp?.();
     },
     requestGrant: (invite) => {
-      for (const t of transports) t.requestGrant?.(invite);
+      // every link that is up, not the best one: this is the ask that gets a device admitted at
+      // all, and whoever can answer it may be reachable on only one of them
+      for (const t of every({ cls: KIND.grantRequest, bytes: 0 })) t.requestGrant?.(invite);
     },
     sendPresence: (wire) => {
-      for (const t of transports) t.sendPresence?.(wire);
+      for (const t of every({ cls: KIND.presence, bytes: wire.length })) t.sendPresence?.(wire);
     },
     withBlobs: () => transports.filter((t) => t.putBlob !== undefined),
     stop: async () => {
       running = false;
+      for (const stopWatching of watching) stopWatching();
       await started.catch(() => undefined);
       await Promise.all(transports.map((t) => t.stop()));
     },

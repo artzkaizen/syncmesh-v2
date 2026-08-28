@@ -9,6 +9,7 @@ import { TaggedError } from "@syncmesh/result";
 
 import type { Bridge, BridgeOptions } from "./bridge.js";
 import type { FrameLink } from "./link.js";
+import type { RouteProfile } from "./route-scorer.js";
 
 import { bridgeFramedLink } from "./bridge.js";
 
@@ -97,6 +98,16 @@ export interface Transport {
    * a fast radio that holds nothing must not be what tells the app there is nothing. Default 1.
    */
   readonly priority?: number;
+  /**
+   * What kind of medium this is, for the route scorer (RFC-0012 §2): direct or relayed, how
+   * fast, whether it costs power out of proportion to the bytes it moves, whether its radio is
+   * currently down. Read per send rather than declared once, because a radio renegotiates its
+   * bandwidth and a dormant one wakes.
+   *
+   * Absent means {@link ORDINARY_LINK} — which is what a relay is, and why the relay says
+   * nothing here.
+   */
+  readonly route?: () => RouteProfile;
   /**
    * Resolves when this source has finished its first pass and has nothing more to hand over
    * right now. A transport that cannot tell is settled as soon as it is ready, which is the

@@ -44,6 +44,14 @@ export interface BleOptions {
 
 export const DEFAULT_MTU = 517;
 
+/**
+ * What a BLE link moves once the stack's overhead is paid, near enough (RFC-0012 §2). Nominal,
+ * and that is the point: the scorer needs the *ratio* to a wide link rather than a measurement,
+ * and being two orders of magnitude below one is the whole of what keeps a snapshot off the
+ * radio without anyone having to name BLE inside the scorer.
+ */
+export const BLE_BANDWIDTH_BPS = 24_000;
+
 /** One peer's link and what the radio needs to find it again. */
 interface Held {
   /** The radio end, which takes packets in; the bridge never sees it. */
@@ -70,7 +78,7 @@ export function bleTransport(options: BleOptions): Transport {
    */
   let close = (hint: string): void => void hint;
 
-  return createFrameTransport({
+  const transport = createFrameTransport({
     name: options.name ?? "ble",
     open: async (ctx, attach) => {
       const self = hintOf(ctx.identity.peerId);
@@ -223,4 +231,14 @@ export function bleTransport(options: BleOptions): Transport {
       if (stopped.isErr()) drop(`the radio did not shut down cleanly: ${String(stopped.error)}`);
     },
   });
+
+  return {
+    ...transport,
+    /**
+     * Direct — a phone two metres away with no server in the path — and narrow. Not `costly`:
+     * low energy is the whole of what BLE is, which is why presence may ride it where an
+     * expensive radio would refuse the same frame.
+     */
+    route: () => ({ direct: true, bandwidthBps: BLE_BANDWIDTH_BPS }),
+  };
 }

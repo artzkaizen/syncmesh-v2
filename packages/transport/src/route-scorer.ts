@@ -7,11 +7,13 @@ import { KIND } from "./frame-parts.js";
  * two devices holding the same candidates make the same choice and a routing decision can be
  * reproduced in a test rather than guessed at from a log.
  *
- * **Nothing calls this, on purpose.** With one transport there is nothing to choose, and today
- * every device has one: the mesh sends on every link. The caller is the send path of the mesh
- * manager (RFC-0012 §2), and it arrives with the second radio, which is also the
- * first moment a test can prove a bulk payload left the narrow pipe. Wiring it earlier would put
- * the untested half of the change in the send path, where a mistake costs convergence.
+ * **The mesh uses this as a filter and an order, not as a chooser** (`runTransports.route`).
+ * Which single link reaches a given peer is a different question, and the component that can
+ * answer it — link admission, RFC-0012 §1 — does not exist yet: a transport publishes no
+ * per-peer link list, so narrowing a broadcast to the winner here would silently stop talking
+ * to a peer whose only path was the link that lost. What the scoring does decide today is real
+ * enough: an offline link is never tried, and a dormant expensive radio is never woken by
+ * presence.
  */
 
 /** Bits in a byte — the one conversion between a payload size and a link's declared rate. */
@@ -68,6 +70,21 @@ export interface RouteCandidate {
   /** The radio is down. Small traffic must not be what wakes it. */
   readonly dormant?: boolean;
 }
+
+/**
+ * A medium describing itself. The mesh supplies the two facts a medium does not own: the `id`,
+ * which is the transport's name, and whether it is `online`, which comes from `onStatus` so that
+ * one fact has one owner.
+ */
+export type RouteProfile = Omit<RouteCandidate, "id" | "online">;
+
+/**
+ * A medium that says nothing about itself: a path through a server, of unremarkable bandwidth
+ * and no power cost worth pricing. This is the relay, which is why the relay declares nothing —
+ * it is the floor RFC-0012 §2 describes, always a candidate and never the reason a frame did
+ * not go.
+ */
+export const ORDINARY_LINK = { direct: false, bandwidthBps: 1_000_000 } satisfies RouteProfile;
 
 /** The frame to place: its class, its size, and how many links it is worth putting it on. */
 export interface RouteMessage {

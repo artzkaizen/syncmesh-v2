@@ -13,9 +13,9 @@ deps: ["0005", "0006", "0007", "0010"]
 ## Purpose
 
 Who decides which links exist, which transport carries which message, and how
-events reach peers you are not directly connected to. Today the route scorer
-is a pure function wired to nothing, and link lifecycle is implicit (every
-transport talks to everything it finds). This RFC names the missing component
+events reach peers you are not directly connected to. Today the route scorer decides
+which links are worth trying but not which one wins, and link lifecycle is
+implicit (every transport talks to everything it finds). This RFC names the missing component
 — the **mesh manager** — and specifies its policies. The `flow` view in this
 site animates every policy below.
 
@@ -24,7 +24,7 @@ site animates every policy below.
 | # | Problem | Owner | Status |
 |---|---|---|---|
 | 1 | **Link admission** — which physical links to open, keep, drop | mesh manager (this RFC) | proposed |
-| 2 | **Route selection** — which open link carries THIS message | `pickRoutes()` (route-scorer.ts) | built, unwired (N1) |
+| 2 | **Route selection** — which open link carries THIS message | `pickRoutes()` (route-scorer.ts) | built; wired as a filter, not yet a chooser |
 | 3 | **Dissemination** — reaching peers with no direct link | anti-entropy (link.ts catch-up) | built |
 
 Keeping them separate is what keeps each one simple. Conflating them is how
@@ -160,7 +160,7 @@ is ~4–6 hops across; degree-6 graphs have diameter ~3–4:
 
 | Piece | State | Task |
 |---|---|---|
-| `pickRoutes` scorer | built + tested, wired to nothing | **N1**: thread into the engine send path; tag messages with a traffic class |
+| `pickRoutes` scorer | built + tested; wired into the mesh send path (`runTransports.route`) as a filter and an order | choosing one link per message waits on admission below — nothing publishes a per-peer link list, so narrowing a broadcast would drop peers reachable only down the losing link |
 | sessions (grants-first, catch-up, resync) | built (`link.ts`, M19 framed-link) | — |
 | deterministic dialer, backoff | proven in donor BLE stack | **N2**: port with the channel (RFC-0006) |
 | budgets + admission scoring + hysteresis | **does not exist** | **N2**: manager v1 = budget + dialer + backoff; scoring v1 = partition overlap + cursor freshness |
