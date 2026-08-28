@@ -136,7 +136,14 @@ interface LoopDeps {
  * state by definition: every transaction between the two produced no change, and planning is a
  * pure function of the messages and the state, so it produces none on the replay either.
  */
-async function run(
+/**
+ * The stream, folded into events until it ends or something refuses.
+ *
+ * Every exit here is a value the caller decides about: schema drift, a transaction that will not
+ * plan, an event the engine will not take. What this cannot do is fail *by throwing* — the
+ * iterator itself doing that is the source breaking, which is {@link run}'s to convert.
+ */
+async function drain(
   deps: LoopDeps,
   from: Watermark | null,
 ): Promise<Result<CaptureReport, CaptureError>> {
@@ -144,47 +151,61 @@ async function run(
   let transactions = 0;
   let events = 0;
   let watermark = from;
-  try {
-    for await (const message of deps.stream.changes) {
-      if (deps.stopping.asked) break;
-      if (message.t === "schema") {
-        return Result.err(
-          new SchemaDrift({
-            source: deps.apply.source,
-            table: message.table,
-            detail: message.detail,
-            message: `${message.table} changed shape in the database: ${message.detail}`,
-          }),
-        );
-      }
-      if (message.t === "begin") {
-        buffered = [];
-        continue;
-      }
-      if (message.t !== "commit") {
-        buffered.push(message);
-        continue;
-      }
-      const planned = planTransaction(deps.plan, buffered);
-      if (planned.isErr()) return Result.err(planned.error);
-      const written = await applyPlan(deps.apply, planned.value, message.watermark);
-      if (written.isErr()) return Result.err(written.error);
-      buffered = [];
-      transactions += 1;
-      events += written.value;
-      if (written.value > 0) watermark = message.watermark;
-      deps.stream.ack(message.watermark);
+  for await (const message of deps.stream.changes) {
+    if (deps.stopping.asked) break;
+    if (message.t === "schema") {
+      return Result.err(
+        new SchemaDrift({
+          source: deps.apply.source,
+          table: message.table,
+          detail: message.detail,
+          message: `${message.table} changed shape in the database: ${message.detail}`,
+        }),
+      );
     }
-  } catch (cause) {
-    return Result.err(
+    if (message.t === "begin") {
+      buffered = [];
+      continue;
+    }
+    if (message.t !== "commit") {
+      buffered.push(message);
+      continue;
+    }
+    const planned = planTransaction(deps.plan, buffered);
+    if (planned.isErr()) return Result.err(planned.error);
+    const written = await applyPlan(deps.apply, planned.value, message.watermark);
+    if (written.isErr()) return Result.err(written.error);
+    buffered = [];
+    transactions += 1;
+    events += written.value;
+    if (written.value > 0) watermark = message.watermark;
+    deps.stream.ack(message.watermark);
+  }
+  return Result.ok({ transactions, events, watermark });
+}
+
+/**
+ * {@link drain}, with the source's own failures turned into values and the stream closed either
+ * way.
+ *
+ * These were one `try` doing two unrelated jobs: a `catch` converting a throw and a `finally`
+ * cleaning up. Separating them leaves the conversion as the one expression it is, and makes the
+ * stop unconditional rather than a clause of the error handling — a stream is closed because the
+ * loop is over, not because something went wrong.
+ */
+async function run(
+  deps: LoopDeps,
+  from: Watermark | null,
+): Promise<Result<CaptureReport, CaptureError>> {
+  const drained = await Result.tryPromise({
+    try: () => drain(deps, from),
+    catch: (cause) =>
       new SourceFailed({
         source: deps.apply.source,
         message: `${deps.apply.source}: the stream failed`,
         cause,
       }),
-    );
-  } finally {
-    deps.stream.stop();
-  }
-  return Result.ok({ transactions, events, watermark });
+  });
+  deps.stream.stop();
+  return drained.andThen((report) => report);
 }

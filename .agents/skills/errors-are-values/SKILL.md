@@ -65,9 +65,20 @@ try {
 **The catch turns one throw into a different throw**, because the caller's contract is throwing —
 an oRPC handler mapping a policy refusal to `FORBIDDEN`, for instance.
 
-**The try wraps a loop with its own control flow.** A `for await` whose body returns several
-different `Result`s cannot be one expression, and forcing it into one would cost more than it
-saves.
+**The catch is doing something other than producing a value.** That is the whole test. A `for
+await` whose body returns several different `Result`s *looks* like it needs a try block, and does
+not: give the loop its own function returning `Result`, and the caller becomes
+
+```ts
+const drained = await Result.tryPromise({ try: () => drain(deps), catch: (cause) => new Failed({ cause }) });
+stream.stop();
+return drained.andThen((report) => report); // the loop's own Result, flattened
+```
+
+That refactor is worth doing on its own account, because a `try` around a loop is usually two
+jobs in one construct: the `catch` converting a throw, and a `finally` cleaning up. Split, the
+cleanup becomes unconditional — a stream is closed because the loop is over, not because
+something went wrong — and the conversion is the one expression it always was.
 
 If you are writing one of these, the try block is the honest shape. If you are writing anything
 else, you are re-implementing `Result.try`.

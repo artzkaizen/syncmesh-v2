@@ -33,38 +33,45 @@ export async function runBackfill(deps: BackfillDeps): Promise<Result<Watermark,
   const source = deps.apply.source;
   const failed = (cause: unknown, message: string) =>
     Result.err<Watermark, CaptureError>(new SourceFailed({ source, message, cause }));
-  let at: Watermark;
   const captured = await Result.tryPromise({
     try: () => deps.read.watermark(),
-    catch: (cause) => cause,
+    catch: (cause) => failed(cause, `${source}: the backfill could not capture a watermark`).error,
   });
-  if (captured.isErr())
-    return failed(captured.error, `${source}: the backfill could not capture a watermark`);
-  at = captured.value;
+  if (captured.isErr()) return Result.err(captured.error);
+  const at = captured.value;
 
   for (const table of Object.keys(deps.plan.mappings)) {
-    let batch: ChangeMessage[] = [];
-    const flush = async () => {
-      const written = await writeBatch(deps, batch);
-      batch = [];
-      return written;
-    };
-    try {
-      for await (const row of deps.read.rows(table)) {
-        batch.push({ t: "insert", table, row });
-        if (batch.length < deps.batch) continue;
-        const written = await flush();
-        if (written.isErr()) return Result.err(written.error);
-      }
-    } catch (cause) {
-      return failed(cause, `${source}: the backfill of ${table} failed`);
-    }
-    const written = await flush();
+    const read = await Result.tryPromise({
+      try: () => readTable(deps, table),
+      catch: (cause) => failed(cause, `${source}: the backfill of ${table} failed`).error,
+    });
+    const written = read.andThen((rows) => rows);
     if (written.isErr()) return Result.err(written.error);
   }
 
   const stored = await writeWatermark(deps.apply, at);
   return stored.isErr() ? Result.err(stored.error) : Result.ok(at);
+}
+
+/**
+ * One table's rows, in batches. Every exit is a value; reading itself failing is the source
+ * breaking, which {@link runBackfill} converts rather than this.
+ */
+async function readTable(deps: BackfillDeps, table: string): Promise<Result<void, CaptureError>> {
+  let batch: ChangeMessage[] = [];
+  const flush = async () => {
+    const written = await writeBatch(deps, batch);
+    batch = [];
+    return written;
+  };
+  for await (const row of deps.read.rows(table)) {
+    batch.push({ t: "insert", table, row });
+    if (batch.length < deps.batch) continue;
+    const written = await flush();
+    if (written.isErr()) return Result.err(written.error);
+  }
+  const written = await flush();
+  return written.isErr() ? Result.err(written.error) : Result.ok(undefined);
 }
 
 /** One batch as events, carrying no watermark: the position is only true once every row is in. */
