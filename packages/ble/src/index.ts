@@ -48,5 +48,7 @@ export {
   subscriberLimit,
   writeLimit,
 } from "./radio.js";
+export type { RnBleManager } from "./rn-ble.js";
+export { bleRadioFrom } from "./rn-ble.js";
 export type { BleOptions } from "./transport.js";
 export { DEFAULT_MTU, bleTransport } from "./transport.js";
