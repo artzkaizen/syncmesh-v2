@@ -108,7 +108,7 @@ describe("applyChange — per-column strategies", () => {
     expect(readRow(s, NOTES, N1)).toEqual(row({ bid: 100, ask: 5 }));
   });
 
-  test("columns without a strategy stay lww", () => {
+  test("columns without a strategy take the last write", () => {
     const s = bothOrders(
       update({ bid: 100, note: "old" }, a1),
       update({ bid: 90, note: "new" }, b2),

@@ -58,7 +58,7 @@ describe("defineSchema", () => {
     expect(schema.rolesFor("user")).toEqual([]);
   });
 
-  test("merge spec is assembled from column rules; lww omitted", () => {
+  test("merge spec is assembled from column rules; lastWrite omitted", () => {
     const books = schema.merge.get(schema.tables.books.name);
     expect(books && [...books]).toEqual([[schema.tables.books.columnNames.rating, "max"]]);
     expect(schema.merge.has(schema.tables.notes.name)).toBe(false);

@@ -22,7 +22,7 @@ const EMPTY_RECORD: RowRecord = { cells: new Map() };
  * Every step is a max-based join — cells by their column's strategy, `writeStamp` and
  * `deleteStamp` by stamp — so any order and any replay of the same changes converge.
  * `insert` and `update` both merge column by column (RFC-0014 §1); `merge` names the
- * strategy per column, defaulting to `lww`. `partition` is the event's; a row keeps the first it saw.
+ * strategy per column, defaulting to `lastWrite`. `partition` is the event's; a row keeps the first it saw.
  */
 export function applyChange(
   state: State,
@@ -81,7 +81,7 @@ function mergeCells(
   for (const [column, candidate] of incoming) {
     const existing = cells.get(column);
     const strategy = strategies[columnStrategies?.get(column) ?? "lastWrite"];
-    // Joining a first arrival with itself is the identity for `lww`, `max` and `min`, and puts a
+    // Joining a first arrival with itself is the identity for `lastWrite`, `max` and `min`, and puts a
     // `counter` or `set` cell into its normal form. Storing it raw instead would leave the shape a
     // sender happened to send in the state, and two peers would digest the same set differently.
     cells.set(column, strategy(candidate, existing ?? candidate));

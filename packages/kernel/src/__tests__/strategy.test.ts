@@ -58,7 +58,7 @@ describe("strategies", () => {
   const older = stamp(1, 0, PEER_A);
   const newer = stamp(2, 0, PEER_A);
 
-  test("lww keeps the newer stamp regardless of value", () => {
+  test("lastWrite keeps the newer stamp regardless of value", () => {
     expect(strategies.lastWrite(cell(1, newer), cell(9, older))).toEqual(cell(1, newer));
     expect(strategies.lastWrite(cell(9, older), cell(1, newer))).toEqual(cell(1, newer));
   });
