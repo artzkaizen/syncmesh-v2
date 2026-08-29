@@ -7,6 +7,7 @@ import { Temporal } from "@syncmesh/temporal";
 import { decodeAndVerify, signEvent } from "@syncmesh/wire";
 
 import type { Divergence } from "./divergence.js";
+import type { FrameClass } from "./frame-parts.js";
 import type { Frame } from "./frame.js";
 import type { JoinDeps, JoinExchange, SnapshotInstalled } from "./join.js";
 import type { FrameLink } from "./link.js";
@@ -33,6 +34,15 @@ export interface BridgeOptions {
     readonly peerId: PeerId;
     readonly invite?: string;
   }) => void;
+  /**
+   * Whether this link is the one to carry a frame (E28). Absent, it carries everything — which
+   * is what every link did before link admission, and what a link whose peer is not yet known
+   * must keep doing.
+   *
+   * Only events are asked. Grants, cursors and the rest of the exchange are what makes a link a
+   * link, and a link that stopped exchanging them to save a send would stop being one.
+   */
+  readonly carries?: (message: { readonly cls: FrameClass; readonly bytes: number }) => boolean;
   /** Out-of-order events held per author before a resync is forced. Default 512. */
   readonly gapLimit?: number;
   /** An ephemeral value arrived (D16): the store decides whether it is news. Never stored here. */
@@ -89,9 +99,26 @@ const joinFor = (options: BridgeOptions, send: JoinDeps["send"]): JoinExchange =
   return createJoinExchange(onSnapshot === undefined ? paged : { ...paged, onSnapshot });
 };
 
+/**
+ * Signs the event and offers it to this link, unless routing put it on another one (E28).
+ *
+ * The size weighed is the **frame's**, not the event's: what occupies a medium is what goes on it.
+ * An absent `carries` emits — a link with no routing behind it carries everything, which is what
+ * every link did before link admission and what one whose peer is unknown must keep doing.
+ */
+const offerEvent = (
+  event: SyncEvent,
+  identity: Identity,
+  carries: BridgeOptions["carries"],
+  emit: (frame: Uint8Array) => void,
+): void => {
+  const frame = eventFrame(signEvent(event, identity).wire);
+  if (carries?.({ cls: KIND.event, bytes: frame.length }) !== false) emit(frame);
+};
+
 export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridge {
   const { engine, identity, grants, onGrantRequest, onPresence, gapLimit = 512 } = options;
-  const { interest, onDivergence } = options;
+  const { interest, onDivergence, carries } = options;
   const scope = interestKey(interest ?? {});
   const now = options.now ?? (() => Temporal.Now.instant());
   const errors = createHub<BridgeError>();
@@ -208,7 +235,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     send(KIND.grant, "grant", grantFrame(wire)),
   );
   const offOutbound = engine.onOutbound((event: SyncEvent) =>
-    send(KIND.event, "event", eventFrame(signEvent(event, identity).wire)),
+    offerEvent(event, identity, carries, (frame) => send(KIND.event, "event", frame)),
   );
   /** A remote fold means this engine now holds more than its other neighbors may: announce, so they request. */
   const offFolds = engine.onFoldBatch((batch) => {

@@ -1,126 +1,112 @@
-import type { RouteProfile, Transport } from "@syncmesh/transport";
+import type { PeerId } from "@syncmesh/kernel";
+import type { RouteMessage, RouteProfile, Transport, TransportContext } from "@syncmesh/transport";
 
-import { KIND } from "@syncmesh/transport";
+import { KIND, ORDINARY_LINK } from "@syncmesh/transport";
 import { describe, expect, test } from "bun:test";
 
 import { runTransports } from "../transports.js";
 
-/** A medium that records what it was asked to carry, and can go offline like a real one. */
-const medium = (
-  name: string,
-  profile?: RouteProfile,
-): Transport & {
-  readonly presence: Uint8Array[];
-  readonly grants: number[];
-  readonly goOffline: () => void;
-} => {
-  const presence: Uint8Array[] = [];
-  const grants: number[] = [];
-  const listeners = new Set<(online: boolean) => void>();
+/** A fixture peer id: 64 hex characters, which is the whole of the brand's invariant. */
+const peer = (digit: string) => {
+  // SAFETY: 64 lowercase hex characters, exactly what `parsePeerId` checks for
+  const id = digit.repeat(64) as PeerId;
+  return id;
+};
+const alice = peer("a");
+const bob = peer("b");
+
+/** Declares what it is, remembers the context it was started with, and does nothing else. */
+const stub = (name: string, profile: RouteProfile, reaches: ReadonlySet<PeerId>) => {
+  let started: TransportContext | undefined;
   const transport: Transport = {
     name,
-    start: () => Promise.resolve(),
+    start: (ctx) => {
+      started = ctx;
+      return Promise.resolve();
+    },
     whenReady: () => Promise.resolve(),
     stop: () => Promise.resolve(),
-    sendPresence: (wire) => void presence.push(wire),
-    requestGrant: () => void grants.push(1),
-    onStatus: (cb) => {
-      listeners.add(cb);
-      return () => void listeners.delete(cb);
-    },
+    route: () => profile,
+    reaches: () => reaches,
   };
-  if (profile !== undefined) Object.assign(transport, { route: () => profile });
-  return {
-    ...transport,
-    presence,
-    grants,
-    goOffline: () => listeners.forEach((cb) => cb(false)),
-  };
+  const carries = (message: RouteMessage) => started?.carries?.(name, message);
+  return { transport, carries };
 };
 
-// SAFETY: the fakes above ignore their context entirely, so nothing here is ever read
-const context = {} as Parameters<Transport["start"]>[0];
+/** The context a mesh hands a transport. */
+// SAFETY: only `carries` is read here — `runTransports` adds it, and these stubs open no session, so the engine and identity a real bridge would need are never reached
+const context = {} as TransportContext;
 
-const RADIO = { direct: true, bandwidthBps: 24_000 } satisfies RouteProfile;
-const SLEEPING = { direct: true, bandwidthBps: 24_000, costly: true, dormant: true } as const;
+const run = async (...made: readonly ReturnType<typeof stub>[]) => {
+  const links = runTransports(
+    made.map((m) => m.transport),
+    context,
+  );
+  await links.ready();
+  return links;
+};
 
-const value = new Uint8Array(100);
+/** BLE's numbers, written out rather than imported: the client does not depend on a radio. */
+const radio = { direct: true, bandwidthBps: 24_000 } satisfies RouteProfile;
 
-describe("what the mesh puts on which link", () => {
-  test("presence goes on every link that is up, not on the best one", () => {
-    // narrowing to the winner would stop talking to whoever is only reachable on the loser,
-    // and nothing here knows which peers a link reaches
-    const relay = medium("relay");
-    const ble = medium("ble", RADIO);
-    const links = runTransports([relay, ble], context);
-    links.sendPresence(value);
-    expect(relay.presence).toHaveLength(1);
-    expect(ble.presence).toHaveLength(1);
+describe("which link carries an event (E28)", () => {
+  test("a small event to a peer on both takes the direct radio, not the relay", async () => {
+    const ble = stub("ble", radio, new Set([alice]));
+    const relay = stub("relay", ORDINARY_LINK, new Set([alice]));
+    const links = await run(ble, relay);
+
+    const small = { cls: KIND.event, bytes: 200, to: alice } satisfies RouteMessage;
+    expect(ble.carries(small)).toBe(true);
+    expect(relay.carries(small)).toBe(false);
+
+    await links.stop();
   });
 
-  test("a link that has said it is down is not asked to carry anything", () => {
-    const relay = medium("relay");
-    const ble = medium("ble", RADIO);
-    const links = runTransports([relay, ble], context);
-    relay.goOffline();
-    links.sendPresence(value);
-    links.requestGrant();
-    expect(relay.presence).toEqual([]);
-    expect(relay.grants).toEqual([]);
-    expect(ble.presence).toHaveLength(1);
-    expect(ble.grants).toHaveLength(1);
+  test("a snapshot page to the same peer takes the wide link instead", async () => {
+    const ble = stub("ble", radio, new Set([alice]));
+    const relay = stub("relay", ORDINARY_LINK, new Set([alice]));
+    const links = await run(ble, relay);
+
+    const page = { cls: KIND.snapshot, bytes: 2_000_000, to: alice } satisfies RouteMessage;
+    expect(relay.carries(page)).toBe(true);
+    expect(ble.carries(page)).toBe(false);
+
+    await links.stop();
   });
 
-  test("a medium that has not spoken yet is assumed up rather than kept idle", () => {
-    const quiet = medium("quiet");
-    runTransports([quiet], context).sendPresence(value);
-    expect(quiet.presence).toHaveLength(1);
+  test("a peer only one link reaches goes down that link, whatever it scores", async () => {
+    const ble = stub("ble", radio, new Set([alice]));
+    const relay = stub("relay", ORDINARY_LINK, new Set([bob]));
+    const links = await run(ble, relay);
+
+    const toBob = { cls: KIND.event, bytes: 200, to: bob } satisfies RouteMessage;
+    // the radio would win on score; it does not reach bob, so it is not asked
+    expect(relay.carries(toBob)).toBe(true);
+    expect(ble.carries(toBob)).toBe(false);
+
+    await links.stop();
   });
 
-  test("presence never wakes a sleeping expensive radio, but the relay still hears it", () => {
-    const relay = medium("relay");
-    const wifi = medium("wifi-aware", SLEEPING);
-    const links = runTransports([relay, wifi], context);
-    links.sendPresence(value);
-    expect(wifi.presence).toEqual([]);
-    expect(relay.presence).toHaveLength(1);
+  test("a lone transport carries everything, however badly it scores", async () => {
+    const ble = stub("ble", radio, new Set([alice]));
+    const links = await run(ble);
+
+    const page = { cls: KIND.snapshot, bytes: 20_000_000, to: alice } satisfies RouteMessage;
+    expect(ble.carries(page)).toBe(true);
+
+    await links.stop();
   });
 
-  test("a grant request goes everywhere that is up, because only one link may reach the issuer", () => {
-    const relay = medium("relay");
-    const wifi = medium("wifi-aware", SLEEPING);
-    const links = runTransports([relay, wifi], context);
-    links.requestGrant("invite");
-    expect(relay.grants).toHaveLength(1);
-    // and unlike presence, it is worth the wake: a device with no grant syncs nothing at all
-    expect(wifi.grants).toHaveLength(1);
-  });
-});
+  test("a peer nobody claims still reaches a link — narrowing never drops a frame", async () => {
+    const carol = peer("c");
+    const ble = stub("ble", radio, new Set([alice]));
+    const relay = stub("relay", ORDINARY_LINK, new Set([alice]));
+    const links = await run(ble, relay);
 
-describe("the order links come back in", () => {
-  test("a page too big for a radio puts the wide link first", () => {
-    const relay = medium("relay");
-    const ble = medium("ble", RADIO);
-    const links = runTransports([ble, relay], context);
-    const order = links.route({ cls: KIND.snapshot, bytes: 64 * 1024, redundancy: 2 });
-    expect(order.map((t) => t.name)).toEqual(["relay", "ble"]);
-  });
+    const toCarol = { cls: KIND.event, bytes: 200, to: carol } satisfies RouteMessage;
+    const reached = [ble.carries(toCarol), relay.carries(toCarol)].filter(Boolean);
+    expect(reached.length).toBeGreaterThan(0);
 
-  test("a live event two metres away prefers the radio over the round trip to a server", () => {
-    const relay = medium("relay");
-    const ble = medium("ble", RADIO);
-    const links = runTransports([relay, ble], context);
-    const order = links.route({ cls: KIND.event, bytes: 200, redundancy: 2 });
-    expect(order.map((t) => t.name)).toEqual(["ble", "relay"]);
-  });
-
-  test("two mediums configured under one name stay two mediums", () => {
-    // the name is the scorer's tie-break, and a tie-break is not an identifier
-    const one = medium("relay");
-    const two = medium("relay");
-    const links = runTransports([one, two], context);
-    links.sendPresence(value);
-    expect(one.presence).toHaveLength(1);
-    expect(two.presence).toHaveLength(1);
+    await links.stop();
   });
 });

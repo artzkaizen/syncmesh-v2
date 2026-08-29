@@ -9,6 +9,7 @@ import { TaggedError } from "@syncmesh/result";
 
 import type { Bridge, BridgeOptions } from "./bridge.js";
 import type { FrameLink } from "./link.js";
+import type { RouteMessage } from "./route-scorer.js";
 import type { RouteProfile } from "./route-scorer.js";
 
 import { bridgeFramedLink } from "./bridge.js";
@@ -22,6 +23,12 @@ export interface TransportContext {
   readonly onGrantRequest?: BridgeOptions["onGrantRequest"];
   /** Where arriving ephemeral values go (D16); absent, presence frames are ignored. */
   readonly onPresence?: BridgeOptions["onPresence"];
+  /**
+   * Whether this transport is the one to carry a frame (E28). The mesh supplies it from
+   * `pickRoutes`; a transport running without one carries everything, which is what every
+   * transport did before link admission existed.
+   */
+  readonly carries?: (transport: string, message: RouteMessage) => boolean;
 }
 
 /**
@@ -173,12 +180,24 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
   return {
     name,
     start: async (ctx) => {
-      const attach = (link: FrameLink): Bridge => {
+      const attach = (link: FrameLink, peer?: PeerId): Bridge => {
         const bridgeOptions: BridgeOptions = {
           engine: ctx.engine,
           identity: ctx.identity,
           grants: ctx.grants,
         };
+        /**
+         * Only once both halves are known. A link whose peer has not been named yet carries
+         * everything, because narrowing on an unknown addressee would ask the scorer to choose
+         * among links it cannot tell apart — and the frame it declined to send is one nobody
+         * sends, which is divergence rather than routing.
+         */
+        if (ctx.carries !== undefined && peer !== undefined) {
+          const carries = ctx.carries;
+          Object.assign(bridgeOptions, {
+            carries: (message: RouteMessage) => carries(name, { ...message, to: peer }),
+          });
+        }
         if (ctx.now !== undefined) Object.assign(bridgeOptions, { now: ctx.now });
         if (ctx.onGrantRequest !== undefined)
           Object.assign(bridgeOptions, { onGrantRequest: ctx.onGrantRequest });

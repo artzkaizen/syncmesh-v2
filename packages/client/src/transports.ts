@@ -50,7 +50,14 @@ export function runTransports(
     (t) => t.onStatus?.((up) => void online.set(t, up)) ?? (() => undefined),
   );
 
-  const started = Promise.all(transports.map((t) => t.start(context)));
+  // the context each transport actually starts with: the caller's, plus the routing question
+  // only this set can answer — a transport started by a test gets the caller's own and carries
+  // everything, which is the behaviour every transport had before link admission
+  const routed: TransportContext = {
+    ...context,
+    carries: (name, message) => carries(name, message),
+  };
+  const started = Promise.all(transports.map((t) => t.start(routed)));
   let running = true;
 
   /**
@@ -60,6 +67,17 @@ export function runTransports(
    * configured under one name cannot collapse into each other — the name is the scorer's
    * tie-break, and a tie-break is not an identifier.
    */
+  /**
+   * Whether one transport is among the links this frame should go on (E28).
+   *
+   * Asked per link rather than decided centrally, because each bridge already owns its own send:
+   * the mesh says which links a frame belongs on and the links do the rest, which is a smaller
+   * change than moving every send into one dispatcher and leaves a transport able to run with no
+   * mesh at all — which is how every transport test drives one.
+   */
+  const carries = (transport: string, message: RouteMessage): boolean =>
+    route(message).some((picked) => picked.name === transport);
+
   const route = (message: RouteMessage, among = transports): readonly Transport[] => {
     const owners = new Map<RouteCandidate, Transport>();
     const candidates = among.map((t) => {
