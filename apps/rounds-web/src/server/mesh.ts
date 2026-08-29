@@ -30,7 +30,7 @@ const station = createIdentity(seed(200)).unwrap();
 
 mkdirSync(".syncmesh", { recursive: true }); // `bunSqliteDriver` opens a file, it does not make a directory
 
-const opened = await createApp({
+export const { api, mesh } = await createApp({
   schema: roundsSchema(),
   procedures,
   instance: PRACTICE,
@@ -39,9 +39,6 @@ const opened = await createApp({
   driver: bunSqliteDriver(".syncmesh/rounds-web.db"),
   transports: [relayTransport({ dial: webSocketDial(RELAY_URL) })],
 });
-
-if (opened.isErr()) throw opened.error;
-export const { api, mesh } = opened.value;
 
 mesh.grants
   .register(

@@ -51,18 +51,16 @@ const grants = Object.entries(staff).map(([name, who]) =>
 );
 
 const device = async (name: keyof typeof staff, transport: Transport) => {
-  const app = (
-    await createApp({
-      schema: roundsSchema(),
-      procedures,
-      instance: PRACTICE,
-      identity: staff[name],
-      issuer: issuer.peerId,
-      driver: bunSqliteDriver(":memory:"), // a demo starts on a fresh ward every run
-      transports: [transport],
-      now: () => T0,
-    })
-  ).unwrap();
+  const app = await createApp({
+    schema: roundsSchema(),
+    procedures,
+    instance: PRACTICE,
+    identity: staff[name],
+    issuer: issuer.peerId,
+    driver: bunSqliteDriver(":memory:"), // a demo starts on a fresh ward every run
+    transports: [transport],
+    now: () => T0,
+  });
   for (const grant of grants) app.mesh.grants.register(grant).unwrap();
   return app;
 };
