@@ -1,6 +1,6 @@
 import type { Mesh } from "@syncmesh/client";
 
-import { local, meshApi } from "@syncmesh/orpc";
+import { meshApi, mutation, query } from "@syncmesh/orpc";
 import { asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 
@@ -13,9 +13,9 @@ import { PRACTICE, observation, patient } from "./schema.js";
  */
 
 export const patients = {
-  list: local.query.handler(({ mesh }) => mesh.db.select().from(patient).orderBy(asc(patient.bed))),
+  list: query.handler(({ mesh }) => mesh.db.select().from(patient).orderBy(asc(patient.bed))),
 
-  admit: local.mutation
+  admit: mutation
     .input(z.object({ id: z.string(), name: z.string().min(1), bed: z.string().min(1) }))
     .handler(async ({ input, mesh }) => {
       await mesh.db.insert(patient).values(input);
@@ -25,7 +25,7 @@ export const patients = {
 
 export const observations = {
   /** One patient's readings, newest first. Live: another clinician's entry arrives as a re-render. */
-  forPatient: local.query
+  forPatient: query
     .input(z.object({ patientId: z.string() }))
     .handler(({ input, mesh }) =>
       mesh.db
@@ -35,7 +35,7 @@ export const observations = {
         .orderBy(desc(observation.takenAt)),
     ),
 
-  record: local.mutation
+  record: mutation
     .input(
       z.object({
         patientId: z.string(),
@@ -55,7 +55,7 @@ export const observations = {
    * A correction is a new row naming the one it replaces. Nothing is edited and nothing is
    * deleted, so a reading taken on a ward with no signal cannot be lost by a later one.
    */
-  amend: local.mutation
+  amend: mutation
     .input(z.object({ amends: z.string(), value: z.string().min(1), author: z.string().min(1) }))
     .handler(async ({ input, mesh }) => {
       const [previous] = await mesh.db

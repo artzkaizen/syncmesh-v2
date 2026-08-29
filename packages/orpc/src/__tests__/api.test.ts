@@ -1,4 +1,5 @@
 import { createMesh } from "@syncmesh/client";
+import { Result } from "@syncmesh/result";
 import { defineSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
@@ -8,7 +9,9 @@ import { eq } from "drizzle-orm";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { z } from "zod";
 
-import { local, meshApi } from "../api.js";
+import type { AuthorityLink } from "../api.js";
+
+import { authority, meshApi, mutation, query } from "../api.js";
 
 const book = sqliteTable("book", {
   id: text().primaryKey(),
@@ -35,7 +38,7 @@ const ACME = "org:acme";
 
 /** The one surface an app touches: a read that has not run, and a write that is one event. */
 const books = {
-  list: local.query
+  list: query
     .input(z.object({ shelf: z.string().optional() }))
     .handler(({ input, mesh }) =>
       input.shelf === undefined
@@ -43,12 +46,22 @@ const books = {
         : mesh.db.select().from(book).where(eq(book.shelf, input.shelf)),
     ),
 
-  create: local.mutation
+  create: mutation
     .input(z.object({ id: z.string(), title: z.string().min(1) }))
     .handler(async ({ input, mesh }) => {
       await mesh.db.insert(book).values({ id: input.id, title: input.title });
       return { id: input.id };
     }),
+};
+
+/**
+ * The server's half, as the app sees it: a path and two schemas. No handler, because a handler
+ * here would be a handler in the app's bundle.
+ */
+const billing = {
+  charge: authority
+    .input(z.object({ bookId: z.string(), cents: z.number().int().positive() }))
+    .returns<{ receiptId: string }>(),
 };
 
 const open = async (role: string | undefined) => {
@@ -77,6 +90,13 @@ const open = async (role: string | undefined) => {
       .unwrap();
   }
   return { mesh, api: meshApi(mesh, { books }, { instance: ACME }) };
+};
+
+/** A mesh whose authority calls go to `link` instead of over HTTP. */
+const withAuthority = async (link?: AuthorityLink) => {
+  const { mesh } = await open("member");
+  const options = link === undefined ? { instance: ACME } : { instance: ACME, link };
+  return { mesh, api: meshApi(mesh, { books, billing }, options) };
 };
 
 describe("api.books.* is the whole surface", () => {
@@ -124,6 +144,57 @@ describe("api.books.* is the whole surface", () => {
 
     expect(denied.isErr()).toBe(true);
     expect(await mesh.engine.eventsSince(new Map()).then((r) => r.unwrap().length)).toBe(0);
+    await mesh.stop();
+  });
+});
+
+describe("a call the device cannot run", () => {
+  test("goes to the link, named by its path, with its input already validated", async () => {
+    let calledPath = "";
+    let calledInput: unknown = undefined;
+    const { mesh, api } = await withAuthority(async (path, input) => {
+      calledPath = path;
+      calledInput = input;
+      return Result.ok({ receiptId: "r1" });
+    });
+
+    const charged = await api.billing.charge({ bookId: "b1", cents: 500 });
+    expect(charged.unwrap()).toEqual({ receiptId: "r1" });
+    expect(calledPath).toBe("billing.charge");
+    expect(calledInput).toEqual({ bookId: "b1", cents: 500 });
+    await mesh.stop();
+  });
+
+  test("input the schema refuses never reaches the link", async () => {
+    let called = false;
+    const { mesh, api } = await withAuthority(async () => {
+      called = true;
+      return Result.ok({ receiptId: "never" });
+    });
+
+    const refused = await api.billing.charge({ bookId: "b1", cents: -1 });
+    expect(refused.isErr()).toBe(true);
+    expect(called).toBe(false);
+    await mesh.stop();
+  });
+
+  test("with no link configured it fails as itself, rather than silently doing nothing", async () => {
+    const { mesh, api } = await withAuthority();
+    const nowhere = await api.billing.charge({ bookId: "b1", cents: 500 });
+
+    expect(nowhere.isErr()).toBe(true);
+    // the failure names the call, so "nothing happened" is never the diagnosis
+    expect(nowhere.isErr() && nowhere.error.message).toContain("billing.charge");
+    await mesh.stop();
+  });
+
+  test("the link's own failure is the caller's Err, not a throw", async () => {
+    const { mesh, api } = await withAuthority(async () =>
+      Result.err(new Error("the card was declined")),
+    );
+    const declined = await api.billing.charge({ bookId: "b1", cents: 500 });
+
+    expect(declined.isErr()).toBe(true);
     await mesh.stop();
   });
 });

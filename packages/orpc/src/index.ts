@@ -1,6 +1,8 @@
 export type {
   Api,
   CallError,
+  AuthorityDef,
+  AuthorityLink,
   MutationDef,
   Permissions,
   ProcedureDef,
@@ -9,7 +11,7 @@ export type {
   Router,
   WriteResult,
 } from "./api.js";
-export { local, meshApi } from "./api.js";
+export { authority, meshApi, mutation, query } from "./api.js";
 
 import type { Handle, Mesh } from "@syncmesh/client";
 import type { JsonValue } from "@syncmesh/kernel";

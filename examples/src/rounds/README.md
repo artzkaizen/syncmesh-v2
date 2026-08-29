@@ -26,7 +26,7 @@ Three files, and only one of them is the API.
 - `schema.ts` — the Drizzle tables, and the manifest saying what syncs, which instance it hangs
   under, and who may write it. `observation` denies `$default` and allows only `read` and
   `insert`, so an update or a delete is refused before the transaction commits, on every device.
-- `api.ts` — **the app's API.** Every read and write is a `local.query` or a `local.mutation`.
+- `api.ts` — **the app's API.** Every read and write is a a `query` or a `mutation`.
   Drizzle appears inside a handler and nowhere else.
 - `device.ts` — this script.
 

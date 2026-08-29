@@ -1,6 +1,6 @@
 import "./dom.js";
 import { createMesh } from "@syncmesh/client";
-import { local, meshApi } from "@syncmesh/orpc";
+import { meshApi, mutation, query } from "@syncmesh/orpc";
 import { defineSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
@@ -30,8 +30,8 @@ const schema = defineSchema({
 });
 
 const books = {
-  list: local.query.handler(({ mesh }) => mesh.db.select().from(book).orderBy(asc(book.id))),
-  create: local.mutation
+  list: query.handler(({ mesh }) => mesh.db.select().from(book).orderBy(asc(book.id))),
+  create: mutation
     .input(z.object({ id: z.string(), title: z.string().min(1) }))
     .handler(async ({ input, mesh }) => {
       await mesh.db.insert(book).values(input);

@@ -60,7 +60,59 @@ export interface MutationDef<I, T> {
   readonly run: (args: { readonly input: I; readonly mesh: Handle }) => Promise<T> | T;
 }
 
-export type ProcedureDef = QueryDef<never, unknown> | MutationDef<never, unknown>;
+/**
+ * A call that **cannot** run on this device: it needs other tenants' rows, the real clock, or the
+ * outside world (D10's test for when a procedure should exist at all). The handler lives on the
+ * server and never reaches the app's bundle — only this declaration does.
+ *
+ * That split is a module boundary, not a naming convention. Put the implementations in a package
+ * the app does not depend on, and importing one is a resolution error rather than something a
+ * reviewer has to catch.
+ */
+export interface AuthorityDef<I, T> {
+  readonly kind: "authority";
+  readonly schema?: StandardSchemaV1;
+  /** Phantom, both of them: the shapes exist for inference, and neither is ever called. */
+  readonly accepts?: (value: I) => void;
+  readonly yields?: (value: never) => T;
+}
+
+/**
+ * Sends one authority call and returns what came back — an HTTP client, a queue, a test double.
+ *
+ * The input arrives already validated against the procedure's schema; what it is beyond that is
+ * the contract's business and not this transport's, which is why it crosses as an opaque value.
+ */
+/* oxlint-disable anti-slop/no-unknown-parameters -- the serialisation boundary: the schema has already run, and a link that named the shape could carry only one procedure */
+export type AuthorityLink = (
+  path: string,
+  input: unknown,
+) => Promise<ResultType<unknown, CallError>>;
+/* oxlint-enable anti-slop/no-unknown-parameters */
+
+/**
+ * Declares a call the server implements. Takes a schema and a return type and nothing else — a
+ * body here would be a body in the app's bundle.
+ *
+ * ```ts
+ * export const billing = {
+ *   charge: authority
+ *     .input(z.object({ patientId: z.string(), cents: z.number().int() }))
+ *     .returns<{ receiptId: string }>(),
+ * };
+ * ```
+ */
+export const authority = {
+  input: <S extends StandardSchemaV1>(schema: S) => ({
+    returns: <T>(): AuthorityDef<Output<S>, T> => ({ kind: "authority", schema }),
+  }),
+  returns: <T>(): AuthorityDef<void, T> => ({ kind: "authority" }),
+};
+
+export type ProcedureDef =
+  | QueryDef<never, unknown>
+  | MutationDef<never, unknown>
+  | AuthorityDef<never, unknown>;
 export interface Router {
   readonly [key: string]: ProcedureDef | Router;
 }
@@ -85,35 +137,42 @@ const validate = <I>(
     return Result.err(new TypeError("an input schema must validate synchronously"));
   if (outcome.issues !== undefined)
     return Result.err(new TypeError(outcome.issues.map((i) => i.message).join("; ")));
-  // SAFETY: Standard Schema guarantees `value` is the schema's output once `issues` is absent, and `I` is that output — `local.query`/`local.mutation` tie the two together with `Output<S>`
+  // SAFETY: Standard Schema guarantees `value` is the schema's output once `issues` is absent, and `I` is that output — `query`/`mutation` tie the two together with `Output<S>`
   const parsed = outcome.value as I;
   return Result.ok(parsed);
 };
 
-export const local = {
-  query: {
-    input: <S extends StandardSchemaV1>(schema: S) => ({
-      handler: <T>(run: QueryDef<Output<S>, T>["run"]): QueryDef<Output<S>, T> => ({
-        kind: "query",
-        schema,
-        run,
-      }),
-    }),
-    handler: <T>(run: QueryDef<void, T>["run"]): QueryDef<void, T> => ({ kind: "query", run }),
-  },
-  mutation: {
-    input: <S extends StandardSchemaV1>(schema: S) => ({
-      handler: <T>(run: MutationDef<Output<S>, T>["run"]): MutationDef<Output<S>, T> => ({
-        kind: "mutation",
-        schema,
-        run,
-      }),
-    }),
-    handler: <T>(run: MutationDef<void, T>["run"]): MutationDef<void, T> => ({
-      kind: "mutation",
+/**
+ * A read that runs **on this device**, against local SQLite, with no network in it.
+ *
+ * Unmarked because it is the ordinary case (D26). What carries a qualifier is
+ * {@link authority} — the call that needs a server and therefore fails on a ward with no
+ * signal — because that is the one a reader has to notice.
+ */
+export const query = {
+  input: <S extends StandardSchemaV1>(schema: S) => ({
+    handler: <T>(run: QueryDef<Output<S>, T>["run"]): QueryDef<Output<S>, T> => ({
+      kind: "query",
+      schema,
       run,
     }),
-  },
+  }),
+  handler: <T>(run: QueryDef<void, T>["run"]): QueryDef<void, T> => ({ kind: "query", run }),
+};
+
+/** A write that runs on this device, inside one transaction, as one event. */
+export const mutation = {
+  input: <S extends StandardSchemaV1>(schema: S) => ({
+    handler: <T>(run: MutationDef<Output<S>, T>["run"]): MutationDef<Output<S>, T> => ({
+      kind: "mutation",
+      schema,
+      run,
+    }),
+  }),
+  handler: <T>(run: MutationDef<void, T>["run"]): MutationDef<void, T> => ({
+    kind: "mutation",
+    run,
+  }),
 };
 
 /**
@@ -131,7 +190,10 @@ export interface Permissions {
 /** What a built leaf hands back: an inert read, or a write already running. */
 type ApiLeaf = (
   given: never,
-) => QueryCall<unknown> | Promise<ResultType<WriteResult<unknown>, CallError>>;
+) =>
+  | QueryCall<unknown>
+  | Promise<ResultType<WriteResult<unknown>, CallError>>
+  | Promise<ResultType<unknown, CallError>>;
 
 /** One node of the built surface: a callable leaf, or a group of them. */
 type ApiNode = ApiLeaf | { readonly [key: string]: ApiNode };
@@ -145,13 +207,16 @@ export type Api<R extends Router> = {
     ? (input: I) => QueryCall<T>
     : R[K] extends MutationDef<infer I, infer T>
       ? (input: I) => Promise<ResultType<WriteResult<T>, CallError>>
-      : R[K] extends Router
-        ? Api<R[K]>
-        : never;
+      : R[K] extends AuthorityDef<infer I, infer T>
+        ? (input: I) => Promise<ResultType<T, CallError>>
+        : R[K] extends Router
+          ? Api<R[K]>
+          : never;
 };
 
 const isDef = (node: ProcedureDef | Router): node is ProcedureDef =>
-  "kind" in node && (node.kind === "query" || node.kind === "mutation");
+  "kind" in node &&
+  (node.kind === "query" || node.kind === "mutation" || node.kind === "authority");
 
 /**
  * Binds a router to one mesh and one instance: `api.books.list(…)`, `api.books.create(…)`.
@@ -167,7 +232,15 @@ const isDef = (node: ProcedureDef | Router): node is ProcedureDef =>
 export function meshApi<R extends Router>(
   mesh: Mesh,
   router: R,
-  options: { readonly instance?: string } = {},
+  options: {
+    readonly instance?: string;
+    /**
+     * Carries the calls this device cannot run. Absent, an `authority` call fails as itself
+     * rather than pretending — which is the honest answer on a device with no network
+     * configured, and a great deal better than a call that silently does nothing.
+     */
+    readonly link?: AuthorityLink;
+  } = {},
 ): Api<R> {
   const handle = (): Handle => mesh.on(options.instance).unwrap();
 
@@ -175,7 +248,7 @@ export function meshApi<R extends Router>(
   const runnable = (def: QueryDef<never, unknown>, input: unknown) =>
     def.run({ input: validate<never>(def.schema, input).unwrap(), mesh: handle() });
 
-  const query = (path: string, def: QueryDef<never, unknown>, input: unknown) => ({
+  const read = (path: string, def: QueryDef<never, unknown>, input: unknown) => ({
     kind: "query" as const,
     path,
     key: JSON.stringify([path, input ?? null]),
@@ -184,7 +257,7 @@ export function meshApi<R extends Router>(
     settled: () => mesh.settled(),
   });
 
-  const mutation = async (def: MutationDef<never, unknown>, input: unknown) => {
+  const write = async (def: MutationDef<never, unknown>, input: unknown) => {
     const parsed = validate<never>(def.schema, input);
     if (parsed.isErr()) return parsed;
     const open = handle();
@@ -205,6 +278,14 @@ export function meshApi<R extends Router>(
     return Result.ok({ eventId: receipt.eventId, data: ran.value });
   };
 
+  const remote = async (path: string, def: AuthorityDef<never, unknown>, input: unknown) => {
+    const parsed = validate<never>(def.schema, input);
+    if (parsed.isErr()) return parsed;
+    if (options.link === undefined)
+      return Result.err(new Error(`${path} runs on the authority, and no link was configured`));
+    return options.link(path, parsed.value);
+  };
+
   const build = (node: Router, prefix: string): ApiNode => {
     const out: { [key: string]: ApiNode } = {};
     for (const [name, child] of Object.entries(node)) {
@@ -212,9 +293,11 @@ export function meshApi<R extends Router>(
       if (!isDef(child)) {
         out[name] = build(child, path);
       } else if (child.kind === "query") {
-        out[name] = (given: never) => query(path, child, given);
+        out[name] = (given: never) => read(path, child, given);
+      } else if (child.kind === "mutation") {
+        out[name] = (given: never) => write(child, given);
       } else {
-        out[name] = (given: never) => mutation(child, given);
+        out[name] = (given: never) => remote(path, child, given);
       }
     }
     return out;
