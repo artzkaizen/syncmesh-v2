@@ -1,6 +1,6 @@
 import type { MeshHandle } from "@syncmesh/drizzle";
 import type { Engine, EventStore, Principal, StateStore } from "@syncmesh/engine";
-import type { EventId, PeerId, Row as WireCells } from "@syncmesh/kernel";
+import type { EventId, PeerId, RowKey, Row as WireCells, TableName } from "@syncmesh/kernel";
 import type { InvalidPartitionKey } from "@syncmesh/kernel";
 import type {
   AppValue,
@@ -26,6 +26,7 @@ import type { Booted, MeshOpenError } from "./boot.js";
 import type { DeliveredOptions, ReceivedOptions } from "./delivered.js";
 import type { Revision } from "./history.js";
 import type { Topics } from "./presence.js";
+import type { SyncState } from "./sync-state.js";
 
 import { openAccounts, type MeshAccounts } from "./accounts.js";
 import { createBlobs } from "./blobs.js";
@@ -38,6 +39,7 @@ import { openHandles } from "./handles.js";
 import { rowHistory } from "./history.js";
 import { openInternal, type MeshInternal } from "./internal.js";
 import { createPresence } from "./presence.js";
+import { createSyncStates } from "./sync-state.js";
 import { followTelemetry, type MeshTelemetrySeam } from "./telemetry.js";
 import { runTransports } from "./transports.js";
 
@@ -169,6 +171,12 @@ export interface Mesh<
    */
   /** Corrections against this device's writes; the same object `internal.corrections` is. */
   readonly corrections: MeshInternal["corrections"];
+  /**
+   * Where a row's write has reached: `"local"`, `"delivered"`, or `"remote"` when another peer
+   * wrote it (D26). What a UI renders per row instead of awaiting a promise from the call that
+   * made it — a write made offline on Tuesday syncs on Thursday, long after that promise is gone.
+   */
+  readonly syncOf: (table: TableName, key: RowKey) => SyncState | undefined;
   /** Bytes that never enter the log: content-addressed, verified at both ends (D18). */
   readonly blobs: Blobs;
   /**
@@ -279,6 +287,7 @@ function assemble<
   const on = openHandles<P, RS, C, D, PC>(schema, booted);
   const flush = createFlush({ transports: () => options.transports ?? [] });
   const internal = openInternal({ engine, self: identity.peerId });
+  const syncStates = createSyncStates(engine, identity.peerId);
 
   const { accounts, accountOf, author } = openAccounts(options, { engine, grants, now });
 
@@ -344,6 +353,7 @@ function assemble<
       kindOf: (table) => entryOf.get(table)?.partition,
     }),
     delivered: createDelivered(engine, identity.peerId),
+    syncOf: (table, key) => syncStates.at(table, key),
     received: createReceived(engine),
     revert: (id) => engine.revert(id),
     canRevert: (id) => engine.canRevert(id),
@@ -355,6 +365,7 @@ function assemble<
     running: links.running,
     requestGrant: links.requestGrant,
     stop: async () => {
+      syncStates.stop();
       presence.stop(); // an explicit departure, so peers see this device leave now
       // flush before the medium closes: the save at the end of a transport's queue is exactly
       // what a process exiting loses, and closing first would lose it every time

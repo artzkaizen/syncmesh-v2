@@ -18,6 +18,7 @@ export type {
   RevisionView,
   TxReceipt,
 } from "./mesh.js";
+export type { SyncState } from "./sync-state.js";
 export { createMesh } from "./mesh.js";
 export type { GrantsRestored, IssueRequest, MeshGrants, StandingOf } from "./grants.js";
 export { DeviceRevoked, NoGrantHeld, createMeshGrants, rememberGrants } from "./grants.js";
