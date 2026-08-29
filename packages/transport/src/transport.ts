@@ -109,6 +109,16 @@ export interface Transport {
    */
   readonly route?: () => RouteProfile;
   /**
+   * The peers this medium currently has a link to (RFC-0012 §1, E28) — the fact that lets
+   * `pickRoutes` choose one link rather than filter a broadcast.
+   *
+   * Optional, and absent is not "no peers": a medium that cannot enumerate its links says
+   * nothing, and every frame keeps reaching it exactly as it does today. A transport that
+   * answers must answer completely, because a peer it omits is a peer the mesh stops talking
+   * to down this link.
+   */
+  readonly reaches?: () => ReadonlySet<PeerId>;
+  /**
    * Resolves when this source has finished its first pass and has nothing more to hand over
    * right now. A transport that cannot tell is settled as soon as it is ready, which is the
    * honest answer for a medium with no end-of-catch-up to report.

@@ -1,3 +1,5 @@
+import type { PeerId } from "@syncmesh/kernel";
+
 import type { FrameClass } from "./frame-parts.js";
 
 import { KIND } from "./frame-parts.js";
@@ -84,6 +86,11 @@ export interface RouteCandidate {
   readonly costly?: boolean;
   /** The radio is down. Small traffic must not be what wakes it. */
   readonly dormant?: boolean;
+  /**
+   * The peers this link currently reaches (E28). Absent means the medium cannot say, which is
+   * not the same as reaching nobody — see {@link pickRoutes}.
+   */
+  readonly reaches?: ReadonlySet<PeerId>;
 }
 
 /**
@@ -111,6 +118,11 @@ export interface RouteMessage {
   readonly bytes: number;
   /** Send it down this many links, best first — a frame worth sending twice. Default 1. */
   readonly redundancy?: number;
+  /**
+   * The peer this frame is for, where there is one. Absent is a broadcast — presence and a grant
+   * request are addressed to nobody in particular, and go wherever they can.
+   */
+  readonly to?: PeerId;
 }
 
 /**
@@ -122,6 +134,23 @@ const isUrgent = (cls: FrameClass): boolean => cls <= KIND.event;
 
 /** What a costly link costs a frame that did not need it; less where someone is waiting on it. */
 const energyOf = (cls: FrameClass): number => (isUrgent(cls) ? COSTLY_SMALL_URGENT : COSTLY_SMALL);
+
+/**
+ * The candidates that claim this peer, or **all of them** when none does.
+ *
+ * Narrowing is an optimisation and never a refusal. A medium that cannot enumerate its links
+ * says nothing, and a peer no link claims may still be reachable down one that simply does not
+ * track it — so an empty claim set falls back to the broadcast this was before. A route narrowed
+ * to nothing is a frame nobody sends, and that is divergence rather than routing.
+ */
+const reaching = (
+  candidates: readonly RouteCandidate[],
+  to: PeerId | undefined,
+): readonly RouteCandidate[] => {
+  if (to === undefined) return candidates;
+  const claiming = candidates.filter((candidate) => candidate.reaches?.has(to) === true);
+  return claiming.length > 0 ? claiming : candidates;
+};
 
 /** Lexicographic on the id, so the order candidates were discovered in cannot decide a route. */
 const byId = (x: RouteCandidate, y: RouteCandidate): number =>
@@ -163,7 +192,7 @@ export function pickRoutes(
   candidates: readonly RouteCandidate[],
   message: RouteMessage,
 ): readonly RouteCandidate[] {
-  const scored = candidates
+  const scored = reaching(candidates, message.to)
     .map((candidate) => ({ candidate, score: scoreRoute(candidate, message) }))
     .filter((entry) => entry.score > UNROUTABLE)
     .sort((x, y) => y.score - x.score || byId(x.candidate, y.candidate));

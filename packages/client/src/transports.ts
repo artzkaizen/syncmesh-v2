@@ -68,6 +68,9 @@ export function runTransports(
         online: online.get(t) ?? true,
         ...(t.route?.() ?? ORDINARY_LINK),
       };
+      // a medium that cannot enumerate its links stays absent, which reads as "cannot say"
+      const reaches = t.reaches?.();
+      if (reaches !== undefined) Object.assign(candidate, { reaches });
       owners.set(candidate, t);
       return candidate;
     });

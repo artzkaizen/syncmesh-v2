@@ -1,3 +1,5 @@
+import type { PeerId } from "@syncmesh/kernel";
+
 import { describe, expect, test } from "bun:test";
 
 import type { RouteCandidate, RouteMessage } from "../route-scorer.js";
@@ -59,6 +61,63 @@ describe("a badly penalised link keeps its place in the order", () => {
     const sizes = [1_000, 100_000, 1_000_000, 10_000_000, 100_000_000];
     for (const [i, bytes] of sizes.entries())
       if (i > 0) expect(at(bytes)).toBeLessThan(at(sizes[i - 1] ?? 0));
+  });
+});
+
+/** A fixture peer id from one hex digit. */
+const peer = (digit: string) => {
+  // SAFETY: 64 lowercase hex characters, which is the whole of what `parsePeerId` checks
+  const id = digit.repeat(64) as PeerId;
+  return id;
+};
+const alice = peer("a");
+const bob = peer("b");
+
+describe("narrowing to the link that reaches the peer", () => {
+  const bleToAlice = { ...ble, reaches: new Set([alice]) } satisfies RouteCandidate;
+  const relayToBoth = { ...shippedRelay, reaches: new Set([alice, bob]) } satisfies RouteCandidate;
+
+  test("a frame with no addressee is the broadcast it always was", () => {
+    expect(ids(pickRoutes([bleToAlice, relayToBoth], liveEvent))).toEqual(["ble"]);
+    expect(ids(pickRoutes([bleToAlice, relayToBoth], { ...liveEvent, redundancy: 2 }))).toEqual([
+      "ble",
+      "relay",
+    ]);
+  });
+
+  test("addressed to a peer only one link claims, that link carries it", () => {
+    // bob is not on the radio, so the relay wins despite the direct bonus
+    expect(ids(pickRoutes([bleToAlice, relayToBoth], { ...liveEvent, to: bob }))).toEqual([
+      "relay",
+    ]);
+    // alice is on both, so the ordinary scoring decides — and a small event wants the radio
+    expect(ids(pickRoutes([bleToAlice, relayToBoth], { ...liveEvent, to: alice }))).toEqual([
+      "ble",
+    ]);
+  });
+
+  test("a peer nobody claims falls back to the broadcast, never to nothing", () => {
+    const carol = peer("c");
+    expect(ids(pickRoutes([bleToAlice, relayToBoth], { ...liveEvent, to: carol }))).toEqual([
+      "ble",
+    ]);
+    // a medium that cannot enumerate its links is never narrowed away by one that can
+    expect(ids(pickRoutes([ble, relayToBoth], { ...liveEvent, to: bob }))).toEqual(["relay"]);
+    expect(ids(pickRoutes([ble, shippedRelay], { ...liveEvent, to: bob }))).toEqual(["ble"]);
+  });
+
+  test("narrowing never empties the set while any link is online", () => {
+    const nobody = { ...bleToAlice, reaches: new Set<PeerId>() } satisfies RouteCandidate;
+    expect(pickRoutes([nobody], { ...liveEvent, to: bob })).not.toEqual([]);
+    expect(pickRoutes([nobody, shippedRelay], { ...liveEvent, to: bob })).not.toEqual([]);
+    // offline is still the one fact that removes a candidate outright
+    expect(pickRoutes([{ ...nobody, online: false }], { ...liveEvent, to: bob })).toEqual([]);
+  });
+
+  test("the order still decides among the links that do claim the peer", () => {
+    const page = { cls: KIND.snapshot, bytes: 2_000_000, to: alice } satisfies RouteMessage;
+    const relayToAlice = { ...shippedRelay, reaches: new Set([alice]) } satisfies RouteCandidate;
+    expect(ids(pickRoutes([bleToAlice, relayToAlice], page))).toEqual(["relay"]);
   });
 });
 
