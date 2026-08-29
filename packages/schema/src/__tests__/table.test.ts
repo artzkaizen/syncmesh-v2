@@ -68,7 +68,7 @@ describe("table()", () => {
   });
 
   test("max/min on a non-numeric column is refused at definition time (D25)", () => {
-    // SAFETY: the type already forbids it — `MergeFor<string>` is "lastWrite" and nothing else.
+    // SAFETY: the type already forbids it — `MergeFor<string>` is "lww" and nothing else.
     // This is the runtime guard behind it, for a cast or a `fromDrizzle` map that got past the types
     const notNumeric = { merge: "max" } as never;
     expect(() => table("a", { id: t.text(notNumeric).primaryKey() })).toThrow("numeric");

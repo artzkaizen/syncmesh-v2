@@ -22,7 +22,7 @@ export type ColumnKind =
  * Only numbers get `max` and `min`: those pick by value, and a meaningful larger-of-two needs an
  * order the app agrees with. Everything else takes the newest write.
  */
-export type MergeFor<T> = [T] extends [number] ? StrategyName : "lastWrite";
+export type MergeFor<T> = [T] extends [number] ? StrategyName : "lww";
 
 /** What the fold merges the column by; absent is {@link StrategyName}'s own default. */
 export const strategyOf = (def: ColumnDef): StrategyName | undefined => def.merge;

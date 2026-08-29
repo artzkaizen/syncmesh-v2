@@ -10,7 +10,7 @@ describe("compile-time guarantees", () => {
   test("merge is typed by the column's value: only numbers order", () => {
     t.integer({ merge: "max" });
     t.float({ merge: "min" });
-    t.text({ merge: "lastWrite" });
+    t.text({ merge: "lww" });
     // @ts-expect-error max makes no sense for text
     t.text({ merge: "max" });
     // @ts-expect-error nor for booleans

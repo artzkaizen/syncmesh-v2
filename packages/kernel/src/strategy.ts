@@ -11,10 +11,9 @@ export type Strategy = (incoming: Cell, current: Cell) => Cell;
  * How a column merges when two devices wrote it while apart (D25). All three pick one of the two
  * cells **whole**, so the value that survives is always a value some author actually wrote.
  *
- * Named for what happens rather than for the algorithm: a developer choosing here is answering
- * "which write wins", not naming a CRDT.
+ * `lww` is last-writer-wins, by HLC stamp.
  */
-export type StrategyName = "lastWrite" | "max" | "min";
+export type StrategyName = "lww" | "max" | "min";
 
 export type MergeSpec = ReadonlyMap<TableName, ReadonlyMap<ColumnName, StrategyName>>;
 
@@ -67,23 +66,23 @@ export function compareValue(a: CellValue, b: CellValue): Ordering {
   return (a as number) < (b as number) ? -1 : 1;
 }
 
-const lastWrite: Strategy = (incoming, current) =>
+const lww: Strategy = (incoming, current) =>
   compareStamp(incoming.stamp, current.stamp) > 0 ? incoming : current;
 
 const byValue =
   (sign: 1 | -1): Strategy =>
   (incoming, current) => {
     const order = compareValue(incoming.value, current.value) * sign;
-    return order > 0 ? incoming : order < 0 ? current : lastWrite(incoming, current);
+    return order > 0 ? incoming : order < 0 ? current : lww(incoming, current);
   };
 
 /**
- * `lastWrite` picks the newer stamp; `max` and `min` pick by value and fall back to the stamp on
+ * `lww` picks the newer stamp; `max` and `min` pick by value and fall back to the stamp on
  * an exact tie. All three are lattice joins — commutative, associative and idempotent — which is
  * the whole reason any delivery order lands on one state.
  */
 export const strategies = {
-  lastWrite,
+  lww,
   max: byValue(1),
   min: byValue(-1),
 } satisfies Readonly<Record<StrategyName, Strategy>>;

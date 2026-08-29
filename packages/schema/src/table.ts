@@ -73,7 +73,7 @@ function checkPrimaryKey(table: string, key: string, def: ColumnDef | undefined)
  * The types already refuse it; this is the runtime backstop for a cast that got past them.
  */
 function checkStrategy(name: string, key: string, def: ColumnDef): void {
-  if (def.merge === undefined || def.merge === "lastWrite") return;
+  if (def.merge === undefined || def.merge === "lww") return;
   if (def.kind !== "integer" && def.kind !== "float") {
     panic(`${name}.${key}: merge "${def.merge}" needs a numeric column`);
   }
