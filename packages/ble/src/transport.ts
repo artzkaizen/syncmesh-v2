@@ -2,7 +2,7 @@ import type { PeerId } from "@syncmesh/kernel";
 import type { Bridge, FrameLink, Transport } from "@syncmesh/transport";
 
 import { Result } from "@syncmesh/result";
-import { createFrameTransport } from "@syncmesh/transport";
+import { createBackoff, createFrameTransport } from "@syncmesh/transport";
 
 import type { LinkOptions } from "./link.js";
 import type { BleRadio } from "./radio.js";
@@ -98,6 +98,12 @@ export function bleTransport(options: BleOptions): Transport {
     name: options.name ?? "ble",
     open: async (ctx, attach) => {
       const self = hintOf(ctx.identity.peerId);
+      /**
+       * A peer that will not connect is re-advertised every second or so, and dialling each
+       * sighting spends the controller on a link that is not going to open. Keyed by hint,
+       * because a dial that fails has not proved a peer id to key by.
+       */
+      const backoff = createBackoff();
       const seen = discovery(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs });
 
       close = (hint) => {
@@ -174,9 +180,11 @@ export function bleTransport(options: BleOptions): Transport {
         });
         if (opened.isErr()) {
           drop(`could not dial ${hint}: ${String(opened.error)}`);
-          seen.forget(hint);
+          backoff.failed(hint);
+          seen.forget(hint); // the next advertisement is a fresh sighting; backoff decides if it dials
           return;
         }
+        backoff.succeeded(hint);
         // the MTU is known before the link exists, and has to be: the session's hello is the
         // first thing out, and a link built at the 20-byte floor would fragment it eleven ways
         hold(hint, opened.value.connectionId, opened.value.mtu);
@@ -194,6 +202,7 @@ export function bleTransport(options: BleOptions): Transport {
         if (hint === undefined || hint === self) return;
         if (!seen.sighted(hint, advert.peripheralId)) return;
         if (!shouldDial(self, hint)) return; // the other end dials; we answer when it writes
+        if (!backoff.ready(hint)) return; // still waiting out a failed dial to this peer
         void dial(hint, advert.peripheralId);
       });
 

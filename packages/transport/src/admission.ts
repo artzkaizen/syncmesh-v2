@@ -103,3 +103,55 @@ export function admit(
   const wildcard = greedy === budget ? undefined : (options.rotate ?? randomly)(cut);
   return [...kept, ...(wildcard === undefined ? [] : [wildcard])].map((n) => n.peer);
 }
+
+/** First wait after a failed dial. Short enough that a passing glitch costs nothing. */
+const FIRST_WAIT_MS = 400;
+/** The ceiling. Past this a peer is probably gone, and asking more often will not bring it back. */
+const MAX_WAIT_MS = 15_000;
+
+export interface BackoffOptions {
+  readonly now?: () => number;
+  readonly firstMs?: number;
+  readonly maxMs?: number;
+}
+
+/**
+ * How long to wait before dialling a peer again (RFC-0012 §1).
+ *
+ * Without it a radio that discovers a peer it cannot connect to re-dials on **every**
+ * advertisement — several times a second on BLE — and spends the controller on a link that is
+ * not going to open. The failure is loud each time and recoverable each time, which is exactly
+ * what makes it a loop rather than an error anyone notices.
+ *
+ * Keyed by whatever the medium calls a peer: a hint before a handshake, a peer id after one.
+ */
+export interface Backoff {
+  /** Whether enough time has passed to try this peer again. */
+  readonly ready: (peer: string) => boolean;
+  /** A dial failed; the next attempt waits twice as long, to the ceiling. */
+  readonly failed: (peer: string) => void;
+  /** A session opened: the peer starts fresh, so one bad night costs nothing tomorrow. */
+  readonly succeeded: (peer: string) => void;
+  readonly forget: (peer: string) => void;
+}
+
+export function createBackoff(options: BackoffOptions = {}): Backoff {
+  const now = options.now ?? (() => Date.now());
+  const first = options.firstMs ?? FIRST_WAIT_MS;
+  const ceiling = options.maxMs ?? MAX_WAIT_MS;
+  const waiting = new Map<string, { until: number; wait: number }>();
+
+  return {
+    ready: (peer) => {
+      const held = waiting.get(peer);
+      return held === undefined || now() >= held.until;
+    },
+    failed: (peer) => {
+      const held = waiting.get(peer);
+      const wait = held === undefined ? first : Math.min(held.wait * 2, ceiling);
+      waiting.set(peer, { until: now() + wait, wait });
+    },
+    succeeded: (peer) => void waiting.delete(peer),
+    forget: (peer) => void waiting.delete(peer),
+  };
+}
