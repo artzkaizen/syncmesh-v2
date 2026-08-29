@@ -1,6 +1,6 @@
 import { mutation, query } from "@syncmesh/orpc";
 import { asc, desc, eq } from "drizzle-orm";
-import { z } from "zod";
+import * as z from "zod";
 
 import { observation, patient } from "./schema.js";
 

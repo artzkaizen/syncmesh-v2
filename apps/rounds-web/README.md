@@ -4,8 +4,8 @@ The ward station: a TanStack Start app whose **server** holds the partition and 
 and whose **browser** calls the very procedures a phone runs in-process.
 
 ```sh
-bun run --cwd apps/rounds-web relay              # the relay the phones and this app both dial
-cd apps/rounds-web && bunx vite dev --port 5199  # http://localhost:5199
+bun run --cwd apps/rounds-web dev      # http://localhost:5199
+bun run --cwd apps/rounds-web relay    # optional: the relay the phones also dial
 ```
 
 ## Why the mesh is on the server
@@ -48,6 +48,14 @@ Its scripts are named `web:*` for the same reason: `vp run -r build` would other
 this app with a `vite` that is not the one it needs, and fail the whole repo's CI. So the app is
 in the workspace for dependency resolution and outside it for the build, which is exactly as
 awkward as it sounds and is written down here rather than hidden.
+
+**And it is why `dev` is a rebuild loop rather than HMR.** Start's dev middleware installs only
+when Vite's SSR environment passes an `isRunnableDevEnvironment` check, and that check is a brand
+comparison against the `vite` _the plugin resolves_ — which here is `vite-plus-core`, while the
+CLI is upstream Vite. Two copies, so the check fails and the middleware silently declines to
+install; `vite dev` answered a bare 404 with no error at all until the check was forced. So
+`dev.ts` watches `src`, reruns the build (~1s) and restarts the server. Save, wait a beat,
+refresh — you just do not keep component state.
 
 **`bunSqliteDriver(path)` opens a file; it does not create the directory.** Only `defaultStore`
 does the `mkdir`, so a driver given `.syncmesh/x.db` on a fresh checkout fails with

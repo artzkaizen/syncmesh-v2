@@ -30,7 +30,7 @@ interface Answer {
 }
 
 const call = createServerFn({ method: "POST" })
-  .inputValidator((body: { readonly path: string; readonly input?: unknown }) => body)
+  .validator((body: { readonly path: string; readonly input?: unknown }) => body)
   .handler(async ({ data }): Promise<Answer> => {
     const { handle } = await import("../server/mesh.js");
     const response = await handle(

@@ -4,10 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "bun dev.ts",
     "relay": "bun src/server/relay.ts",
-    "web:build": "vite build",
-    "web:dev": "vite dev --port 5199",
-    "web:typecheck": "tsc --noEmit"
+    "web:build": "bunx vite@7 build",
+    "web:serve": "bun --watch dist/server/server.js",
+    "web:typecheck": "tsc --noEmit",
+    "web:watch": "bunx vite@7 build --watch"
   },
   "dependencies": {
     "@syncmesh/client": "workspace:*",
