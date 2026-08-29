@@ -50,8 +50,23 @@ const WORTH_THE_POWER = 8_192;
 /** An offline candidate scores this and is filtered out; nothing else ever reaches it. */
 const UNROUTABLE = 0;
 
-/** The worst an online link scores. A penalised link is still a link — see `pickRoutes`. */
+/** Where the ordinary scale bottoms out. A penalised link is still a link — see `pickRoutes`. */
 const ROUTABLE_FLOOR = 1;
+
+/**
+ * Keeps every online link routable without flattening the order among the badly penalised ones.
+ *
+ * Clamping to a constant made every link past the floor score exactly the same. A 2 MB snapshot
+ * scored `1` on a 24 kbps radio and `1` on the relay, so the tie broke on the transport's *name*
+ * — and `"ble"` sorts before `"relay"`, which put eleven minutes of blocked radio ahead of a
+ * second and a half on the wide link, the exact trade this scorer exists to prevent.
+ *
+ * Below the floor the score compresses into `(0, ROUTABLE_FLOOR]` instead. Continuous at the
+ * floor, monotone all the way down, and never zero — so the ordering the penalties established
+ * survives, and `UNROUTABLE` still means offline and nothing else.
+ */
+const routable = (score: number): number =>
+  score >= ROUTABLE_FLOOR ? score : ROUTABLE_FLOOR / (1 + ROUTABLE_FLOOR - score);
 
 /**
  * What a medium says about itself: plain data on the adapter, never a channel type
@@ -134,7 +149,7 @@ export function scoreRoute(candidate: RouteCandidate, message: RouteMessage): nu
   const seconds = (message.bytes * BITS_PER_BYTE) / Math.max(candidate.bandwidthBps, 1);
   const energy = candidate.costly === true && !worth ? energyOf(message.cls) : 0;
   const score = BASE + (candidate.direct ? DIRECT : 0) - seconds * PER_SECOND - energy;
-  return Math.max(score - (waking ? DORMANT : 0), ROUTABLE_FLOOR);
+  return routable(score - (waking ? DORMANT : 0));
 }
 
 /**

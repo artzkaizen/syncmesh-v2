@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { RouteCandidate, RouteMessage } from "../route-scorer.js";
 
 import { KIND } from "../frame-parts.js";
-import { pickRoutes, scoreRoute } from "../route-scorer.js";
+import { ORDINARY_LINK, pickRoutes, scoreRoute } from "../route-scorer.js";
 
 /** The three media RFC-0012 names, as the numbers their adapters would declare. */
 const ble = {
@@ -29,6 +29,38 @@ const wifiAware = {
 const liveEvent = { cls: KIND.event, bytes: 200 } satisfies RouteMessage;
 const snapshotPage = { cls: KIND.snapshot, bytes: 2_000_000 } satisfies RouteMessage;
 const ids = (picked: readonly RouteCandidate[]) => picked.map((c) => c.id);
+
+/**
+ * The relay as it actually ships. The fixture above is a generous 8 Mbps; `ORDINARY_LINK` is
+ * what `runTransports` hands a transport that declares nothing, and the difference is the whole
+ * of why the saturation below went unnoticed.
+ */
+const shippedRelay = { id: "relay", online: true, ...ORDINARY_LINK } satisfies RouteCandidate;
+
+describe("a badly penalised link keeps its place in the order", () => {
+  test("a 2 MB snapshot ranks the shipped relay above the radio, not alphabetically", () => {
+    // both are far past the floor: BLE spends eleven minutes on this, the relay sixteen seconds
+    expect(scoreRoute(ble, snapshotPage)).toBeLessThan(scoreRoute(shippedRelay, snapshotPage));
+    expect(ids(pickRoutes([ble, shippedRelay], snapshotPage))).toEqual(["relay"]);
+    // clamping both to a constant used to break the tie on the name, and "ble" sorts first
+    expect(scoreRoute(ble, snapshotPage)).not.toBe(scoreRoute(shippedRelay, snapshotPage));
+  });
+
+  test("penalised is still routable: every online link stays above unroutable", () => {
+    for (const bytes of [2_000_000, 20_000_000, 200_000_000]) {
+      const huge = { cls: KIND.snapshot, bytes } satisfies RouteMessage;
+      expect(scoreRoute(ble, huge)).toBeGreaterThan(0);
+      expect(ids(pickRoutes([ble], huge))).toEqual(["ble"]);
+    }
+  });
+
+  test("a bigger payload never scores better on the same link", () => {
+    const at = (bytes: number) => scoreRoute(ble, { cls: KIND.snapshot, bytes });
+    const sizes = [1_000, 100_000, 1_000_000, 10_000_000, 100_000_000];
+    for (const [i, bytes] of sizes.entries())
+      if (i > 0) expect(at(bytes)).toBeLessThan(at(sizes[i - 1] ?? 0));
+  });
+});
 
 describe("scoring one link against one frame", () => {
   test("an offline candidate is never picked, however good it would otherwise be", () => {
