@@ -25,6 +25,15 @@ const hlcKey = (hlc: Hlc): string => `${String(hlc[0].epochMilliseconds)}:${Stri
 export interface SyncStates {
   /** `undefined` when the row is absent, or was never written through an event with a stamp. */
   readonly at: (table: TableName, key: RowKey) => SyncState | undefined;
+  /**
+   * Fires when an answer here may have changed — a write left, an acknowledgement landed, or a
+   * fold replaced a row's winning stamp.
+   *
+   * Without this `at` is a reading taken once, and a row written offline would render `"local"`
+   * until something unrelated re-rendered it. A receipt that never updates is worse than no
+   * receipt: it says the write is still waiting when it arrived an hour ago.
+   */
+  readonly subscribe: (listener: () => void) => () => void;
   readonly stop: () => void;
 }
 
@@ -46,6 +55,10 @@ export interface SyncStates {
  */
 export function createSyncStates(engine: Engine, self: PeerId): SyncStates {
   const unacknowledged = new Map<string, SeqNum>();
+  const listeners = new Set<() => void>();
+  const changed = (): void => {
+    for (const listener of listeners) listener();
+  };
 
   /** The highest sequence of this device's own events that any peer says it holds. */
   const ackedThrough = (): number => {
@@ -57,7 +70,15 @@ export function createSyncStates(engine: Engine, self: PeerId): SyncStates {
 
   const prune = (): void => {
     const floor = ackedThrough();
-    for (const [at, seq] of unacknowledged) if (Number(seq) <= floor) unacknowledged.delete(at);
+    let dropped = false;
+    for (const [at, seq] of unacknowledged)
+      if (Number(seq) <= floor) {
+        unacknowledged.delete(at);
+        dropped = true;
+      }
+    // only when something actually became delivered: an acknowledgement that covers nothing new
+    // is most of them, and each one would otherwise re-render every row on the screen
+    if (dropped) changed();
   };
 
   /**
@@ -76,13 +97,19 @@ export function createSyncStates(engine: Engine, self: PeerId): SyncStates {
     for (const { event } of events.value)
       if (event.peerId === self) unacknowledged.set(hlcKey(event.hlc), event.seqNum);
     prune();
+    changed(); // the tail is known now, and a row that rendered before it loaded was guessing
   };
 
   void recover();
-  const offOutbound = engine.onOutbound((event) =>
-    unacknowledged.set(hlcKey(event.hlc), event.seqNum),
-  );
+  const offOutbound = engine.onOutbound((event) => {
+    unacknowledged.set(hlcKey(event.hlc), event.seqNum);
+    changed();
+  });
   const offAck = engine.onAcknowledge(prune);
+  // a remote write can take a row's winning stamp, which turns "mine" into "remote"
+  const offFold = engine.onFoldBatch((batch) => {
+    if (batch.source !== "local") changed();
+  });
 
   return {
     at: (table, key) => {
@@ -94,9 +121,15 @@ export function createSyncStates(engine: Engine, self: PeerId): SyncStates {
       if (seq === undefined) return "delivered";
       return Number(seq) <= ackedThrough() ? "delivered" : "local";
     },
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => void listeners.delete(listener);
+    },
     stop: () => {
       offOutbound();
       offAck();
+      offFold();
+      listeners.clear();
     },
   };
 }

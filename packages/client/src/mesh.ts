@@ -177,6 +177,8 @@ export interface Mesh<
    * made it — a write made offline on Tuesday syncs on Thursday, long after that promise is gone.
    */
   readonly syncOf: (table: string, key: string) => SyncState | undefined;
+  /** Fires when a `syncOf` answer may have changed: a write left, an ack landed, a fold arrived. */
+  readonly onSyncChange: (listener: () => void) => () => void;
   /** Bytes that never enter the log: content-addressed, verified at both ends (D18). */
   readonly blobs: Blobs;
   /**
@@ -356,6 +358,7 @@ function assemble<
     syncOf: (table, key) =>
       // SAFETY: the brands name a table and a row key, which is exactly what a caller passes; they carry no invariant a string can fail
       syncStates.at(table as TableName, key as RowKey),
+    onSyncChange: (listener) => syncStates.subscribe(listener),
     received: createReceived(engine),
     revert: (id) => engine.revert(id),
     canRevert: (id) => engine.canRevert(id),

@@ -3,4 +3,6 @@ export { useLiveQuery } from "./use-live-query.js";
 export type { PresenceTopic } from "./use-presence.js";
 export { usePresence } from "./use-presence.js";
 export type { CanSource } from "./use-can.js";
+export type { SyncSource, SyncState } from "./use-sync-of.js";
+export { useSyncOf } from "./use-sync-of.js";
 export { useCan } from "./use-can.js";

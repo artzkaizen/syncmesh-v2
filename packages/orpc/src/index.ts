@@ -9,6 +9,7 @@ export type {
   QueryDef,
   QueryCall,
   Router,
+  SyncSource,
   WriteResult,
 } from "./api.js";
 export { authority, meshApi, mutation, query } from "./api.js";

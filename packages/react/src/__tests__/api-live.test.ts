@@ -1,5 +1,6 @@
 import "./dom.js";
 import { createMesh } from "@syncmesh/client";
+import { parsePeerId, type SeqNum } from "@syncmesh/kernel";
 import { meshApi, mutation, query } from "@syncmesh/orpc";
 import { defineSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
@@ -14,6 +15,7 @@ import { z } from "zod";
 
 import { useCan } from "../use-can.js";
 import { useLiveQuery } from "../use-live-query.js";
+import { useSyncOf } from "../use-sync-of.js";
 
 const book = sqliteTable("book", { id: text().primaryKey(), title: text().notNull() });
 
@@ -124,6 +126,32 @@ describe("useLiveQuery over api.*", () => {
     };
     await mount(createElement(Button));
     expect(allowed).toBe(true);
+    await mesh.stop();
+  });
+
+  test("a row's receipt updates itself when the acknowledgement lands", async () => {
+    const { mesh, api } = await open();
+    const seen: (string | undefined)[] = [];
+    const Row = ({ id }: { readonly id: string }) => {
+      seen.push(useSyncOf(api.$sync, "book", id));
+      return null;
+    };
+
+    (await api.books.create({ id: "b1", title: "Dune" })).unwrap();
+    const { settle } = await mount(createElement(Row, { id: "b1" }));
+    expect(seen.at(-1)).toBe("local");
+
+    // a peer says it holds everything this device has authored — no re-render is asked for
+    await act(async () => {
+      const peer = parsePeerId("a".repeat(64)).unwrap();
+      // SAFETY: the sequence this device has reached; zero is the floor before any write
+      const none = 0 as SeqNum;
+      const mine = mesh.engine.coverage().synced.get(device.peerId) ?? none;
+      mesh.engine.acknowledge(peer, new Map([[device.peerId, mine]]), T0);
+    });
+    await settle();
+
+    expect(seen.at(-1)).toBe("delivered");
     await mesh.stop();
   });
 

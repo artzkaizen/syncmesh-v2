@@ -187,6 +187,15 @@ export interface Permissions {
   };
 }
 
+/**
+ * Where each row's write has reached, bound to this api's mesh — `useSyncOf` reads it, and the
+ * subscription is what turns a receipt from a reading taken once into one that updates.
+ */
+export interface SyncSource {
+  readonly at: (table: string, key: string) => "local" | "delivered" | "remote" | undefined;
+  readonly subscribe: (listener: () => void) => () => void;
+}
+
 /** What a built leaf hands back: an inert read, or a write already running. */
 type ApiLeaf = (
   given: never,
@@ -200,8 +209,10 @@ type ApiNode = ApiLeaf | { readonly [key: string]: ApiNode };
 
 /** The shape `meshApi` builds: a query becomes a descriptor, a mutation a `Result`-returning call. */
 export type Api<R extends Router> = {
-  /** `useCan(api.$can, "book.insert")` — the `$` marks framework surface, as `$sync` does on a row. */
+  /** `useCan(api.$can, "book.insert")` — the `$` marks framework surface, not a procedure. */
   readonly $can: Permissions;
+  /** `useSyncOf(api.$sync, "observation", row.id)` — where that row's write got to. */
+  readonly $sync: SyncSource;
 } & {
   readonly [K in keyof R]: R[K] extends QueryDef<infer I, infer T>
     ? (input: I) => QueryCall<T>
@@ -307,8 +318,12 @@ export function meshApi<R extends Router>(
     can: (what, row) => mesh.can(what, row, options.instance),
     grants: { onRegistered: (listener) => mesh.grants.onRegistered(() => listener()) },
   };
+  const sync: SyncSource = {
+    at: (table, key) => mesh.syncOf(table, key),
+    subscribe: (listener) => mesh.onSyncChange(listener),
+  };
   // SAFETY: `build` walks the same router the `Api<R>` mapped type describes, leaf for leaf
-  const walked = { ...build(router, ""), $can: permissions } as Api<R>;
+  const walked = { ...build(router, ""), $can: permissions, $sync: sync } as Api<R>;
   return walked;
 }
 /* oxlint-enable anti-slop/no-unknown-parameters */
