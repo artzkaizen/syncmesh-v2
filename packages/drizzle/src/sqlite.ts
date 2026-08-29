@@ -6,6 +6,7 @@ import { drizzle } from "drizzle-orm/sqlite-proxy";
 
 import type { FaceDeps } from "./face.js";
 
+import { commitHub } from "./face.js";
 import { createLive } from "./live.js";
 import { createProxy } from "./proxy.js";
 import { readPredicate, readScope } from "./read.js";
@@ -15,7 +16,8 @@ export type SqliteMeshDb = SqliteRemoteDatabase<Record<string, never>>;
 /** The SQLite face: Drizzle's `sqlite-proxy` over the device's own connection. */
 export function sqliteFace(deps: FaceDeps) {
   const { engine, partition, driver, writer } = deps;
-  const proxyDeps = { driver, writer };
+  const hub = commitHub();
+  const proxyDeps = { driver, writer, onCommit: hub.emit };
   if (partition !== undefined) Object.assign(proxyDeps, { partition });
   const { callback } = createProxy(proxyDeps);
   const db: SqliteMeshDb = drizzle((statement, params, method) =>
@@ -27,5 +29,5 @@ export function sqliteFace(deps: FaceDeps) {
     const name = getTableName(table);
     return db.select().from(table).where(readPredicate(name, scope)).as(name);
   };
-  return { db, read, live: createLive(engine) };
+  return { db, read, live: createLive(engine), onCommit: hub.onCommit };
 }

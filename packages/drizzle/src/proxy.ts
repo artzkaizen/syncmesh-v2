@@ -25,6 +25,11 @@ export interface ProxyDeps {
    * transaction of its own to hold it.
    */
   readonly prelude?: () => Promise<void>;
+  /**
+   * The receipt of every event these statements produce, as each one commits. A write that
+   * changed nothing is not an event and is not reported; a write that failed raises instead.
+   */
+  readonly onCommit?: (receipt: TxReceipt) => void;
 }
 
 const isWrite = (statement: string): boolean => /^\s*(insert|update|delete)\b/i.test(statement);
@@ -52,7 +57,7 @@ const bind = (params: readonly unknown[], dialect: SqlDriver["dialect"]): readon
 export type ProxyMethod = "run" | "all" | "values" | "get" | "execute";
 
 export function createProxy(deps: ProxyDeps) {
-  const { driver, writer, partition, prelude } = deps;
+  const { driver, writer, partition, prelude, onCommit } = deps;
   const writeOptions = partition === undefined ? {} : { partition };
 
   /** Drizzle's own `db.transaction()` drives this: `begin` opens a capture, `commit` settles it. */
@@ -101,6 +106,7 @@ export function createProxy(deps: ProxyDeps) {
     const written = await tx.settled;
     // a read-only transaction is fine — it just is not an event
     if (written.isErr() && written.error._tag !== "EmptyMutation") throw written.error;
+    if (written.isOk()) onCommit?.(written.value);
   };
 
   const rollback = async (): Promise<void> => {
@@ -155,6 +161,7 @@ export function createProxy(deps: ProxyDeps) {
     );
     // a statement that changed nothing is not an event, and not an error either
     if (written.isErr() && written.error._tag !== "EmptyMutation") throw written.error;
+    if (written.isOk()) onCommit?.(written.value);
     return result;
   };
 

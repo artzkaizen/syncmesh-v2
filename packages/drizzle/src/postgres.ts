@@ -8,6 +8,7 @@ import { PgProxyTransaction, PgRemoteSession } from "drizzle-orm/pg-proxy/sessio
 
 import type { FaceDeps } from "./face.js";
 
+import { commitHub } from "./face.js";
 import { createLive } from "./live.js";
 import { createProxy } from "./proxy.js";
 import { readPredicate, readScope } from "./read.js";
@@ -48,7 +49,8 @@ class CapturingSession extends PgRemoteSession<Record<string, never>, Record<str
 /** The Postgres face: Drizzle's `pg-proxy` over the mesh's driver, so the app's statements run on the capturing connection. */
 export function postgresFace(deps: FaceDeps) {
   const { engine, partition, actor, driver, writer, pgDialect } = deps;
-  const proxyDeps = { driver, writer };
+  const hub = commitHub();
+  const proxyDeps = { driver, writer, onCommit: hub.emit };
   if (partition !== undefined) Object.assign(proxyDeps, { partition });
   if (actor !== undefined || partition !== undefined) {
     // the caller's principal and pin land as transaction-local settings: what RLS policies read.
@@ -78,5 +80,5 @@ export function postgresFace(deps: FaceDeps) {
     // SAFETY: the alias wraps exactly the table's columns — what `.as()` would have typed had `from` taken T
     return aliased as Source<T>;
   };
-  return { db, read, live: createLive(engine) };
+  return { db, read, live: createLive(engine), onCommit: hub.onCommit };
 }
