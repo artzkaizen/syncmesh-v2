@@ -33,7 +33,7 @@ describe("generateSyncMessage / receiveSyncMessage", () => {
     const { doc, events } = await docWith(3);
     const [s1, m1] = generateSyncMessage(initialSyncState, doc);
     expect(m1?.kind).toBe("cursors");
-    expect(s1.inFlight).toBe(true);
+    expect(s1.inFlight).toBe(false);
 
     const theirs: Cursors = new Map([[PEER_A, seq(1)]]);
     const [s2] = receiveSyncMessage(s1, { kind: "cursors", cursors: theirs });
@@ -48,13 +48,16 @@ describe("generateSyncMessage / receiveSyncMessage", () => {
     expect(generateSyncMessage(s4, doc)[1]).toBeUndefined();
   });
 
-  test("inFlight blocks a second message until a reply clears it", async () => {
+  test("the cursor handshake self-throttles; an event batch waits for its reply", async () => {
     const { doc } = await docWith(1);
     const [s1, m1] = generateSyncMessage(initialSyncState, doc);
     expect(m1).toBeDefined();
     expect(generateSyncMessage(s1, doc)[1]).toBeUndefined();
     const [s2] = receiveSyncMessage(s1, { kind: "cursors", cursors: new Map() });
-    expect(generateSyncMessage(s2, doc)[1]?.kind).toBe("events");
+    const [s3, events] = generateSyncMessage(s2, doc);
+    expect(events?.kind).toBe("events");
+    expect(s3.inFlight).toBe(true);
+    expect(generateSyncMessage(s3, doc)[1]).toBeUndefined();
   });
 
   test("receiving events returns them to fold and records the sender's cursors", async () => {

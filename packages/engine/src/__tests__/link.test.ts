@@ -2,7 +2,7 @@ import { readRow } from "@syncmesh/kernel";
 import { describe, expect, test } from "bun:test";
 
 import { createLink } from "../link.js";
-import { CREATE, key, N1, NOTES, PEER_B, PEER_C, row, setup } from "./fixtures.js";
+import { CREATE, column, key, N1, NOTES, PEER_B, PEER_C, row, setup } from "./fixtures.js";
 
 const N2 = key("n2");
 
@@ -29,6 +29,41 @@ describe("Link", () => {
     expect(readRow(b.engine.state(), NOTES, N1)).toEqual(merged);
   });
 
+  test("a third device keeps receiving across repeated reunions (silence is an acknowledgement)", async () => {
+    // three devices, each linked to the other two, going apart and back several times. The bug
+    // this pins: a `catchUp` that ends with one side's message unanswered left that side's
+    // `inFlight` set, and `generateSyncMessage` refuses to speak while one is outstanding — so
+    // that direction went quiet permanently and the device simply stopped receiving. Nothing
+    // errored, nothing diverged loudly, it just stopped, and only a third device showed it
+    const a = setup();
+    const b = setup(PEER_B);
+    const c = setup(PEER_C);
+    const links = [
+      createLink(a.engine, b.engine),
+      createLink(b.engine, c.engine),
+      createLink(a.engine, c.engine),
+    ];
+    const reunite = async () => {
+      for (const link of links) link.setOnline(true);
+      for (let round = 0; round < 3; round += 1)
+        for (const link of links) (await link.catchUp()).unwrap();
+    };
+    const bodyOn = (who: typeof a) => readRow(who.engine.state(), NOTES, N1)?.get(column("body"));
+
+    await a.engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ body: "first" })));
+    await reunite();
+
+    for (const round of [1, 2, 3]) {
+      for (const link of links) link.setOnline(false);
+      await b.engine.mutate(CREATE, (tx) => tx.update(NOTES, N1, row({ body: `round ${round}` })));
+      await reunite();
+      // `a` wrote nothing after the first round, so it has nothing to say — and having nothing to
+      // say must not be what stops it listening
+      expect(bodyOn(a)).toBe(`round ${round}`);
+      expect(bodyOn(c)).toBe(`round ${round}`);
+    }
+  });
+
   test("catchUp is symmetric and idempotent: a second run moves nothing", async () => {
     const a = setup();
     const b = setup(PEER_B);
@@ -45,6 +80,29 @@ describe("Link", () => {
       2, 2,
     ]);
     expect((await a.engine.cursors()).unwrap()).toEqual((await b.engine.cursors()).unwrap());
+  });
+
+  test("a settled link starts a fresh session when one side later writes offline", async () => {
+    const a = setup();
+    const b = setup(PEER_B);
+    const link = createLink(a.engine, b.engine);
+
+    (
+      await a.engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ title: "before" })))
+    ).unwrap();
+    await link.flush();
+    (await link.catchUp()).unwrap();
+
+    link.setOnline(false);
+    (
+      await b.engine.mutate(CREATE, (tx) => tx.update(NOTES, N1, row({ body: "written offline" })))
+    ).unwrap();
+    link.setOnline(true);
+    (await link.catchUp()).unwrap();
+
+    const merged = row({ title: "before", body: "written offline" });
+    expect(readRow(a.engine.state(), NOTES, N1)).toEqual(merged);
+    expect(readRow(b.engine.state(), NOTES, N1)).toEqual(merged);
   });
 
   test("catchUp while offline is a no-op; close stops live forwarding", async () => {

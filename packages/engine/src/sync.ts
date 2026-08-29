@@ -124,7 +124,11 @@ export function generateSyncMessage(
   if (state.inFlight) return [state, undefined];
   if (!state.sentCursors) {
     return [
-      { ...state, inFlight: true, sentCursors: true, lastSent: doc.cursors },
+      // This is the session handshake, not an event batch awaiting acknowledgement. Keeping it
+      // in flight deadlocks the peer that answers second: it can advertise newer cursors but is
+      // then forbidden from sending the events behind them. `sentCursors` prevents another
+      // handshake and absent `theirCursors` already blocks event generation until the reply.
+      { ...state, sentCursors: true, lastSent: doc.cursors },
       saying({ kind: "cursors", cursors: doc.cursors }, doc.ahead),
     ];
   }

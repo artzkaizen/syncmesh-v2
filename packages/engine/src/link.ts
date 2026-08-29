@@ -67,7 +67,13 @@ export function createLink(a: Engine, b: Engine, options: LinkOptions = {}): Lin
     Result.gen(async function* () {
       const doc = yield* Result.await(docOf(from));
       const [nextFrom, message] = generateSyncMessage(fromState, doc);
-      if (message === undefined) return Result.ok({ from: nextFrom, to: toState, sent: false });
+      // Silence is an acknowledgement. `to` is waiting on a reply to what it sent last round —
+      // which `from` has already received, since that is what gave it the cursors it just found
+      // nothing to say about. Leaving `to.inFlight` set here wedges that direction permanently:
+      // `generateSyncMessage` refuses to speak while a message is outstanding, so the peer never
+      // sends again and the device quietly stops receiving, with nothing anywhere reporting it.
+      if (message === undefined)
+        return Result.ok({ from: nextFrom, to: { ...toState, inFlight: false }, sent: false });
       const [nextTo, events] = receiveSyncMessage(toState, message);
       to.acknowledge(from.peerId, message.cursors, now());
       yield* Result.await(to.receiveBatch(events));
