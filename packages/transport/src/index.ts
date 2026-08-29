@@ -39,6 +39,8 @@ export {
 export { createHoldback } from "./holdback.js";
 export type { Outbox } from "./outbox.js";
 export { createOutbox } from "./outbox.js";
+export type { AdmissionOptions, Neighbour } from "./admission.js";
+export { admit, scoreNeighbour } from "./admission.js";
 export type { RouteCandidate, RouteMessage } from "./route-scorer.js";
 export type { RouteProfile } from "./route-scorer.js";
 export { ORDINARY_LINK, pickRoutes, scoreRoute } from "./route-scorer.js";

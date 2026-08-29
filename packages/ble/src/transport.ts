@@ -40,7 +40,16 @@ export interface BleOptions {
   readonly name?: string;
   /** A packet or a frame that went nowhere, for a log a person reads on a device. */
   readonly onDropped?: (why: string) => void;
+  /**
+   * Concurrent links this radio sustains. Raising it does not give the controller more capacity;
+   * it gives you more links that all work worse. Present because a controller is not one number
+   * across every phone, not because an app has a view.
+   */
+  readonly maxLinks?: number;
 }
+
+/** What a BLE controller sustains before throughput and latency degrade across every link. */
+export const DEFAULT_MAX_LINKS = 6;
 
 export const DEFAULT_MTU = 517;
 
@@ -259,5 +268,11 @@ export function bleTransport(options: BleOptions): Transport {
      * session is absent, which is correct: it cannot carry a frame yet either.
      */
     reaches: () => new Set(proven.values()),
+    /**
+     * What the controller sustains before every link degrades, not what any one link costs.
+     * RFC-0012 §1's figure, and the reason it is declared here rather than configured: an app
+     * that could raise it would be raising it on a radio that cannot honour the number.
+     */
+    maxLinks: () => options.maxLinks ?? DEFAULT_MAX_LINKS,
   };
 }

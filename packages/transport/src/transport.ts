@@ -126,6 +126,15 @@ export interface Transport {
    */
   readonly reaches?: () => ReadonlySet<PeerId>;
   /**
+   * How many links this medium sustains at once (RFC-0012 §1, E28) — what {@link admit} spends.
+   *
+   * Declared by the medium and never configured by the app. It is a property of the radio: a BLE
+   * controller degrades every link past roughly six, and an app handed a way to raise that has
+   * been handed a way to break the ones it already has. Absent means no limit worth enforcing,
+   * which is the honest answer for a relay socket that multiplexes rooms.
+   */
+  readonly maxLinks?: () => number;
+  /**
    * Resolves when this source has finished its first pass and has nothing more to hand over
    * right now. A transport that cannot tell is settled as soon as it is ready, which is the
    * honest answer for a medium with no end-of-catch-up to report.
