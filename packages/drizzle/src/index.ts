@@ -10,7 +10,9 @@ import type { FaceDeps } from "./face.js";
 import { postgresFace } from "./postgres.js";
 import { sqliteFace } from "./sqlite.js";
 
-export type { Live, Runnable } from "./live.js";
+export type { Live, LiveSnapshot, Runnable } from "./live.js";
+export { replaceEqualDeep } from "./equal.js";
+export type { CommitHub } from "./face.js";
 export type { SqliteMeshDb } from "./sqlite.js";
 export type { PostgresMeshDb } from "./postgres.js";
 
