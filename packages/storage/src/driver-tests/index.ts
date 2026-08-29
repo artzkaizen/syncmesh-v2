@@ -45,7 +45,8 @@ export function captureTests(openDriver: OpenDriver): readonly SuiteCase[] {
 
 /**
  * The contract every `SqlDriver` must satisfy, as named cases for any test runner: the stores,
- * plus the device-side half — tables, capture and read filters — that lives in SQLite DDL.
+ * plus the device-side half — tables, capture and read filters — that lives in SQLite DDL. A
+ * driver written in an app over its own binding runs the same suite the shipped adapters do.
  *
  * @example
  * for (const c of driverTests(openDriver)) test(c.name, c.run);

@@ -6,6 +6,8 @@ export type {
   SqlValue,
   SqliteDriver,
 } from "./driver.js";
+export type { BoundSqlValue, SqliteBinding } from "./sqlite-driver.js";
+export { bindSqlite, sqliteDriver } from "./sqlite-driver.js";
 export { sqlEventStore, sqliteEventStore, type SqlEventStoreOptions } from "./event-store.js";
 export { LogCorrupt } from "./local-log.js";
 export type {

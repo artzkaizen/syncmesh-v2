@@ -5,11 +5,12 @@ import { existsSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { SqlRow, SqlValue, SqliteDriver } from "../driver.js";
+import type { SqlRow, SqliteDriver } from "../driver.js";
 import type { StoreScope } from "../open-stores.js";
 
 import { A, B, event } from "../driver-tests/fixtures.js";
 import { scopedStores, storeNameFor } from "../open-stores.js";
+import { sqliteDriver } from "../sqlite-driver.js";
 
 const ACME = parsePartitionKey("org:acme").unwrap();
 const GLOBEX = parsePartitionKey("org:globex").unwrap();
@@ -17,35 +18,15 @@ const GLOBEX = parsePartitionKey("org:globex").unwrap();
 const dir = mkdtempSync(join(tmpdir(), "syncmesh-scopes-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-const bind = (params: readonly SqlValue[]) =>
-  params.map((p) => (p === true ? 1 : p === false ? 0 : p instanceof Date ? p.getTime() : p));
-
 const driver = (path: string): SqliteDriver => {
   const db = new Database(path, { create: true, strict: true });
-  return {
-    dialect: "sqlite",
-    run: (sql, params = []) => {
-      db.run(sql, bind(params));
-      return Promise.resolve();
-    },
+  return sqliteDriver({
+    exec: (sql) => db.run(sql),
+    run: (sql, params) => void db.run(sql, [...params]),
     // SAFETY: SQLite hands back text, integers, reals, blobs and NULL — exactly SqlValue
-    all: (sql, params = []) => Promise.resolve(db.query(sql).values(...bind(params)) as SqlRow[]),
-    transaction: async (fn) => {
-      db.run("BEGIN IMMEDIATE");
-      try {
-        const out = await fn();
-        db.run("COMMIT");
-        return out;
-      } catch (cause) {
-        db.run("ROLLBACK");
-        throw cause;
-      }
-    },
-    close: () => {
-      db.close();
-      return Promise.resolve();
-    },
-  };
+    all: (sql, params) => db.query(sql).values(...params) as readonly SqlRow[],
+    close: () => db.close(),
+  });
 };
 
 const pathFor = (scope: StoreScope) => join(dir, `${storeNameFor(scope)}.db`);

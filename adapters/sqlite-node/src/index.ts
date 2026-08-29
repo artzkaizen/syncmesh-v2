@@ -1,8 +1,8 @@
 import type { StoreFailure } from "@syncmesh/engine";
 import type { Result } from "@syncmesh/result";
-import type { OpenStoresOptions, SqlRow, SqliteDriver, Stores, SqlValue } from "@syncmesh/storage";
+import type { OpenStoresOptions, SqlRow, SqliteDriver, Stores } from "@syncmesh/storage";
 
-import { openStores } from "@syncmesh/storage";
+import { openStores, sqliteDriver } from "@syncmesh/storage";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -12,45 +12,24 @@ import { DatabaseSync } from "node:sqlite";
  *
  * @param path A file path, or `":memory:"` for a database that lives as long as the driver.
  */
-/** SQLite has no boolean or date: they bind as the integers the SQLite dialect writes. */
-const bind = (params: readonly SqlValue[]) =>
-  params.map((p) => (p === true ? 1 : p === false ? 0 : p instanceof Date ? p.getTime() : p));
-
 export function nodeSqliteDriver(path: string): SqliteDriver {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA synchronous = NORMAL");
 
-  return {
-    dialect: "sqlite",
-    run: (sql, params = []) => {
-      db.prepare(sql).run(...bind(params));
-      return Promise.resolve();
-    },
-    all: (sql, params = []) => {
-      // SAFETY: node:sqlite returns one object per row keyed by column name in SELECT order; its values are text, integers, reals, blobs or NULL — SqlValue
-      const rows = db
+  return sqliteDriver({
+    exec: (sql) => db.exec(sql),
+    run: (sql, params) => void db.prepare(sql).run(...params),
+    all: (sql, params) =>
+      db
         .prepare(sql)
-        .all(...bind(params))
-        .map((row) => Object.values(row) as SqlRow);
-      return Promise.resolve(rows);
-    },
-    transaction: async (fn) => {
-      db.exec("BEGIN IMMEDIATE");
-      try {
-        const result = await fn();
-        db.exec("COMMIT");
-        return result;
-      } catch (cause) {
-        db.exec("ROLLBACK");
-        throw cause;
-      }
-    },
-    close: () => {
-      db.close();
-      return Promise.resolve();
-    },
-  };
+        .all(...params)
+        .map((row) => {
+          // SAFETY: node:sqlite returns one object per row keyed by column name in SELECT order; its values are text, integers, reals, blobs or NULL — SqlValue
+          return Object.values(row) as SqlRow;
+        }),
+    close: () => db.close(),
+  });
 }
 
 export interface DefaultStoreOptions extends OpenStoresOptions {

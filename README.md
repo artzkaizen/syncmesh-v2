@@ -37,10 +37,10 @@ syncmesh/
 │   │                      E26   counter · set · text column kinds — CRDTs inside a cell, added to kernel/
 │   └── testing/           E04   runDriverTests · E11 runTransportTests — shipped acceptance suites
 ├── adapters/            one runtime binding each — the only place runtime imports are allowed
-│   ├── sqlite-bun/ sqlite-node/ sqlite-wasm/ sqlite-do/   E04
+│   ├── sqlite-bun/ sqlite-node/ cloudflare-do/            E04   bindings a runtime ships; closed at three
+│   │                      an installed binding — expo-sqlite, better-sqlite3 — is ~8 lines of your own over SqliteBinding
 │   ├── transport-ws/      E12
 │   ├── drizzle/           E17
-│   ├── expo/              E09
 │   └── ble-channel/ wifi-aware-channel/                    E22 · E23
 ├── native/              Swift / Kotlin modules; package.json scripts wrap xcodebuild / gradle   E22 · E23
 ├── apps/                relay-do · relay-rivet · relay-embedded · example-expo   E25 · E09
