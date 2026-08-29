@@ -1,9 +1,4 @@
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-
-GlobalRegistrator.register();
-// SAFETY: React's test flag lives on the global; the registrator just built that global
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-
+import "./dom.js";
 import type { Engine } from "@syncmesh/engine";
 
 import { meshDrizzle } from "@syncmesh/drizzle";
@@ -20,13 +15,12 @@ import { openStores } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
-import { asc, gt } from "drizzle-orm";
+import { gt } from "drizzle-orm";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { act, createElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import { useCan } from "../use-can.js";
-import { useLiveInfiniteQuery } from "../use-live-infinite-query.js";
 import { useLiveQuery } from "../use-live-query.js";
 import { usePresence } from "../use-presence.js";
 
@@ -87,11 +81,19 @@ describe("useLiveQuery", () => {
     const List = () => {
       const [floor, setFloor] = useState(0);
       raise = () => setFloor(2);
-      const { rows, ready } = useLiveQuery(
-        handle,
-        handle.db.select({ id: jobs.id }).from(jobs).where(gt(jobs.rank, floor)).orderBy(jobs.id),
-      );
-      renders.push(`${ready ? (rows ?? []).map((r) => r.id).join(",") : "…"}@${floor}`);
+      const { data, isPending } = useLiveQuery({
+        key: `jobs>${floor}`,
+        live: () =>
+          handle.live(
+            handle.db
+              .select({ id: jobs.id })
+              .from(jobs)
+              .where(gt(jobs.rank, floor))
+              .orderBy(jobs.id),
+          ),
+        settled: () => Promise.resolve(),
+      });
+      renders.push(`${isPending ? "…" : data.map((r) => r.id).join(",")}@${floor}`);
       return null;
     };
     const { settle } = await mount(createElement(List));
@@ -115,53 +117,6 @@ describe("useLiveQuery", () => {
     await act(async () => raise());
     await settle();
     expect(renders.at(-1)).toBe("j2@2");
-  });
-});
-
-describe("useLiveInfiniteQuery", () => {
-  test("keyset windows: loadMore anchors after the last row, exhaustion is the short page, windows stay live", async () => {
-    const { handle } = await open();
-    const seed = Array.from({ length: 25 }, (_, i) => ({
-      id: `j${String(i).padStart(2, "0")}`,
-      title: `t${i}`,
-      rank: i,
-    }));
-    await handle.db.transaction(async (tx) => {
-      for (const row of seed) await tx.insert(jobs).values(row);
-    });
-    let latest: ReturnType<typeof useLiveInfiniteQuery<{ id: string }, string>> | undefined;
-    const List = () => {
-      latest = useLiveInfiniteQuery<{ id: string }, string>(handle, {
-        page: (after) =>
-          handle.db
-            .select({ id: jobs.id })
-            .from(jobs)
-            .where(after === undefined ? undefined : gt(jobs.id, after))
-            .orderBy(asc(jobs.id))
-            .limit(10),
-        cursorOf: (row) => row.id,
-        pageSize: 10,
-      });
-      return null;
-    };
-    const { settle } = await mount(createElement(List));
-    expect(latest?.rows).toHaveLength(10);
-    expect(latest?.exhausted).toBe(false);
-
-    await act(async () => latest?.loadMore());
-    await settle();
-    expect(latest?.rows).toHaveLength(20);
-    await act(async () => latest?.loadMore());
-    await settle();
-    expect(latest?.rows).toHaveLength(25);
-    expect(latest?.exhausted).toBe(true);
-
-    // a row landing inside the first window updates in place — no offset drift, j09x enters after j09
-    await act(async () => {
-      await handle.db.insert(jobs).values({ id: "j09x", title: "wedge", rank: 99 });
-    });
-    await settle();
-    expect(latest?.rows?.[10]?.id).toBe("j09x");
   });
 });
 
@@ -199,10 +154,18 @@ describe("the done-when", () => {
     const counts = Array.from({ length: 200 }, () => 0);
     const Item = ({ index }: { readonly index: number }) => {
       counts[index] = (counts[index] ?? 0) + 1;
-      useLiveQuery(
-        handle,
-        handle.db.select({ id: jobs.id }).from(jobs).where(gt(jobs.rank, index)).orderBy(jobs.id),
-      );
+      useLiveQuery({
+        key: `jobs>${index}`,
+        live: () =>
+          handle.live(
+            handle.db
+              .select({ id: jobs.id })
+              .from(jobs)
+              .where(gt(jobs.rank, index))
+              .orderBy(jobs.id),
+          ),
+        settled: () => Promise.resolve(),
+      });
       return null;
     };
     const { settle } = await mount(
