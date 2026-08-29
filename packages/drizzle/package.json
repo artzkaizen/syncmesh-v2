@@ -20,7 +20,8 @@
     "@syncmesh/kernel": "workspace:*",
     "@syncmesh/result": "workspace:*",
     "@syncmesh/schema": "workspace:*",
-    "@syncmesh/storage": "workspace:*"
+    "@syncmesh/storage": "workspace:*",
+    "@syncmesh/wire": "workspace:*"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.7",
