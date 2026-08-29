@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { api } from "../lib/api.js";
 
@@ -21,125 +21,160 @@ interface Patient {
   readonly bed: string;
 }
 
+const said = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
+
+const at = (ms: number) =>
+  new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+
 /**
  * The ward, as the station sees it.
  *
- * Reads are one round trip and there is no subscription: a live query is a fold on the device
- * that holds the log, and this browser holds nothing. What it gets instead is that the phones on
- * the ward are on the same relay, so a reading taken with no signal appears on the next read
- * after it syncs — without this page polling anything but its own refresh.
+ * Every call is one round trip to the mesh on the server, and every one of them can fail — so
+ * each action reports what went wrong rather than leaving a button that looks like it did
+ * nothing. There is no subscription: a live query is a fold on the device holding the log, and
+ * this browser holds none of it.
  */
 function Ward() {
   const [patients, setPatients] = useState<readonly Patient[]>([]);
   const [selected, setSelected] = useState<string>();
   const [readings, setReadings] = useState<readonly Observation[]>([]);
-  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState<string>();
+  const [problem, setProblem] = useState<string>();
 
-  const refresh = async () => {
+  /** Runs one action, and makes its failure visible instead of an unhandled rejection. */
+  const act = useCallback(async (what: string, run: () => Promise<void>) => {
+    setBusy(what);
+    setProblem(undefined);
     try {
-      const list = await api.patients.list();
-      setPatients(list);
-      if (selected === undefined) setSelected(list[0]?.id);
+      await run();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setProblem(`${what} failed: ${said(cause)}`);
+    } finally {
+      setBusy(undefined);
     }
-  };
+  }, []);
 
-  useEffect(() => void refresh(), []);
+  const loadPatients = useCallback(async () => {
+    const list = await api.patients.list();
+    setPatients(list);
+    setSelected((held) => held ?? list[0]?.id);
+  }, []);
+
+  const loadReadings = useCallback(async (patientId: string) => {
+    setReadings(await api.observations.forPatient({ patientId }));
+  }, []);
+
+  useEffect(() => {
+    void act("loading the ward", loadPatients);
+  }, [act, loadPatients]);
+
   useEffect(() => {
     if (selected === undefined) return;
-    void (async () => {
-      const rows = await api.observations.forPatient({ patientId: selected });
-      setReadings(rows);
-    })();
-  }, [selected]);
+    void act("loading readings", () => loadReadings(selected));
+  }, [act, loadReadings, selected]);
 
-  const admit = async () => {
-    const id = crypto.randomUUID();
-    await api.patients.admit({
-      id,
-      name: `Patient ${id.slice(0, 4)}`,
-      bed: `${patients.length + 1}A`,
+  const admit = () =>
+    act("admitting", async () => {
+      const id = crypto.randomUUID();
+      await api.patients.admit({
+        id,
+        name: `Patient ${id.slice(0, 4)}`,
+        bed: `${String(patients.length + 1)}A`,
+      });
+      await loadPatients();
     });
-    await refresh();
-  };
 
-  const record = async () => {
-    if (selected === undefined) return;
-    await api.observations.record({
-      patientId: selected,
-      code: "BP",
-      value: `${110 + Math.floor(Math.random() * 30)}/${70 + Math.floor(Math.random() * 20)}`,
-      takenAt: Date.now(),
-      author: "station",
+  const record = () =>
+    act("recording", async () => {
+      if (selected === undefined) return;
+      await api.observations.record({
+        patientId: selected,
+        code: "BP",
+        value: `${String(110 + Math.floor(Math.random() * 30))}/${String(70 + Math.floor(Math.random() * 20))}`,
+        takenAt: Date.now(),
+        author: "station",
+      });
+      await loadReadings(selected);
     });
-    setSelected(selected); // re-reads through the effect
-    const rows = await api.observations.forPatient({ patientId: selected });
-    setReadings(rows);
-  };
-
-  if (error !== undefined)
-    return (
-      <main>
-        <h1>Rounds</h1>
-        <p role="alert">{error}</p>
-      </main>
-    );
 
   return (
-    <main style={{ fontFamily: "system-ui", padding: "2rem", display: "grid", gap: "1.5rem" }}>
+    <main className="page">
       <header>
-        <h1 style={{ margin: 0 }}>Rounds</h1>
-        <p style={{ margin: 0, opacity: 0.7 }}>
-          The ward station. The phones on this ward are on the same relay.
-        </p>
+        <h1>Rounds</h1>
+        <p>The ward station. The phones on this ward are on the same relay.</p>
       </header>
+
+      {problem === undefined ? null : (
+        <div className="problem" role="alert">
+          <strong>{problem}</strong>
+          <p>
+            Every read and write here is a call to the mesh on the server; this one did not land.
+          </p>
+        </div>
+      )}
 
       <section>
         <h2>Patients</h2>
-        <ul
-          style={{
-            display: "flex",
-            gap: "0.5rem",
-            listStyle: "none",
-            padding: 0,
-            flexWrap: "wrap",
-          }}
+        {patients.length === 0 ? (
+          <p className="empty">Nobody admitted yet.</p>
+        ) : (
+          <ul className="beds">
+            {patients.map((patient) => (
+              <li key={patient.id}>
+                <button
+                  type="button"
+                  className="bed"
+                  aria-pressed={patient.id === selected}
+                  onClick={() => setSelected(patient.id)}
+                >
+                  <strong>Bed {patient.bed}</strong>
+                  <span>{patient.name}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <button
+          type="button"
+          className="act"
+          onClick={() => void admit()}
+          disabled={busy !== undefined}
         >
-          {patients.map((patient) => (
-            <li key={patient.id}>
-              <button
-                type="button"
-                onClick={() => setSelected(patient.id)}
-                aria-pressed={patient.id === selected}
-                style={{ padding: "0.5rem 0.75rem" }}
-              >
-                {patient.bed} · {patient.name}
-              </button>
-            </li>
-          ))}
-        </ul>
-        <button type="button" onClick={() => void admit()}>
-          Admit a patient
+          {busy === "admitting" ? "Admitting…" : "Admit a patient"}
         </button>
       </section>
 
       <section>
         <h2>Readings</h2>
         {readings.length === 0 ? (
-          <p>Nothing recorded for this patient yet.</p>
+          <p className="empty">
+            {selected === undefined
+              ? "Admit someone first."
+              : "Nothing recorded for this patient yet."}
+          </p>
         ) : (
-          <ol>
+          <ul className="readings">
             {readings.map((o) => (
-              <li key={o.id}>
-                <strong>{o.code}</strong> {o.value} — {o.author}
-                {o.amends === null ? null : <em> (amends an earlier reading)</em>}
+              <li key={o.id} className="reading">
+                <span className="code">{o.code}</span>
+                <span className="value">{o.value}</span>
+                {o.amends === null ? null : (
+                  <span className="amends">amends an earlier reading</span>
+                )}
+                <span className="by">
+                  {o.author} · {at(o.takenAt)}
+                </span>
               </li>
             ))}
-          </ol>
+          </ul>
         )}
-        <button type="button" onClick={() => void record()} disabled={selected === undefined}>
-          Record a blood pressure
+        <button
+          type="button"
+          className="act"
+          onClick={() => void record()}
+          disabled={selected === undefined || busy !== undefined}
+        >
+          {busy === "recording" ? "Recording…" : "Record a blood pressure"}
         </button>
       </section>
     </main>
