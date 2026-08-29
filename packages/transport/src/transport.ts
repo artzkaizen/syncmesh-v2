@@ -135,6 +135,15 @@ export interface Transport {
    */
   readonly maxLinks?: () => number;
   /**
+   * Closes the link to one peer, because the mesh decided this radio is holding more than it
+   * sustains (E28). The peer stays discoverable — a drop is a slot reclaimed, not a refusal —
+   * and the next advertisement may re-dial it.
+   *
+   * Present only on a medium that can name its links, which is the same medium that can answer
+   * {@link Transport.reaches}. A budget nothing can act on is a number, not a budget.
+   */
+  readonly drop?: (peer: PeerId) => void;
+  /**
    * Resolves when this source has finished its first pass and has nothing more to hand over
    * right now. A transport that cannot tell is settled as soon as it is ready, which is the
    * honest answer for a medium with no end-of-catch-up to report.

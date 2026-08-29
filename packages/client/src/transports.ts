@@ -1,3 +1,4 @@
+import type { PeerId } from "@syncmesh/kernel";
 import type {
   RouteCandidate,
   RouteMessage,
@@ -6,6 +7,8 @@ import type {
 } from "@syncmesh/transport";
 
 import { KIND, ORDINARY_LINK, pickRoutes } from "@syncmesh/transport";
+
+import { boundable, enforceBudget } from "./admission.js";
 
 /** The running half of the mesh: every configured transport, started once, stopped together. */
 export interface RunningTransports {
@@ -59,6 +62,29 @@ export function runTransports(
   };
   const started = Promise.all(transports.map((t) => t.start(routed)));
   let running = true;
+
+  /**
+   * Holds each radio to the links it says it sustains (E28).
+   *
+   * Run when the facts it selects on change — an acknowledgement moves a peer's cursor, a grant
+   * changes which partitions are shared — rather than on a timer. There is no clock in this file,
+   * and adding one to ask a question whose inputs announce themselves would be a worse answer.
+   */
+  const sweep = (): void => {
+    if (!running) return;
+    const facts = {
+      acks: () => context.engine.acks(),
+      held: () => context.engine.coverage().synced,
+      partitionsOf: (device: PeerId) => context.grants.grantFor(device)?.partitions.map(String),
+      self: context.identity.peerId,
+    };
+    for (const transport of transports) enforceBudget(transport, facts);
+  };
+  // nothing to enforce, nothing to watch: a set of transports that cannot close a link is not
+  // one a budget applies to, and subscribing anyway would be work done for no possible outcome
+  const offAdmission = transports.some(boundable)
+    ? [context.engine.onAcknowledge(sweep), context.grants.onRegistered(sweep)]
+    : [];
 
   /**
    * Score the candidates and hand back the transports behind the survivors.
@@ -133,6 +159,7 @@ export function runTransports(
     stop: async () => {
       running = false;
       for (const stopWatching of watching) stopWatching();
+      for (const off of offAdmission) off();
       await started.catch(() => undefined);
       await Promise.all(transports.map((t) => t.stop()));
     },

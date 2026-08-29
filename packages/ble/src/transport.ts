@@ -71,6 +71,15 @@ interface Held {
   readonly connectionId?: string | undefined;
 }
 
+/** Closes whichever link is holding this peer, by the hint the radio knows it by. */
+const dropPeer = (
+  proven: ReadonlyMap<string, PeerId>,
+  peer: PeerId,
+  close: (hint: string) => void,
+): void => {
+  for (const [hint, id] of proven) if (id === peer) close(hint);
+};
+
 export function bleTransport(options: BleOptions): Transport {
   const { radio, serviceUuid, characteristicUuid } = options;
   const held = new Map<string, Held>();
@@ -92,7 +101,7 @@ export function bleTransport(options: BleOptions): Transport {
    * advertisement reads as one it has already seen and nothing re-dials — the device would be
    * gone until the process restarted. A link ending is exactly the moment to stop knowing it.
    */
-  let close = (hint: string): void => void hint;
+  let closeLink = (hint: string): void => void hint;
 
   const transport = createFrameTransport({
     name: options.name ?? "ble",
@@ -106,7 +115,7 @@ export function bleTransport(options: BleOptions): Transport {
       const backoff = createBackoff();
       const seen = discovery(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs });
 
-      close = (hint) => {
+      closeLink = (hint) => {
         const link = held.get(hint);
         if (link === undefined) return;
         held.delete(hint);
@@ -136,7 +145,7 @@ export function bleTransport(options: BleOptions): Transport {
           // the bridge resyncs from its cursors, which is the recovery every loud failure uses
           onFailed: (cause) => {
             drop(`the link to ${hint} failed: ${String(cause)}`);
-            close(hint);
+            closeLink(hint);
           },
         };
         // its presence is the role: a link with a connection writes, one without notifies
@@ -150,7 +159,7 @@ export function bleTransport(options: BleOptions): Transport {
           // a handshake that cannot finish is a link that will never carry anything
           onFailed: (cause) => {
             drop(`the session with ${hint} failed: ${String(cause)}`);
-            close(hint);
+            closeLink(hint);
           },
         });
         const entry: Held = {
@@ -231,7 +240,7 @@ export function bleTransport(options: BleOptions): Transport {
       radio.onConnectionStateChanged((event) => {
         if (event.state === "connected") return;
         const hint = byConnection.get(event.connectionId);
-        if (hint !== undefined) close(hint);
+        if (hint !== undefined) closeLink(hint);
       });
 
       /** The one link nobody dialled, when the platform will not say which central wrote. */
@@ -283,5 +292,11 @@ export function bleTransport(options: BleOptions): Transport {
      * that could raise it would be raising it on a radio that cannot honour the number.
      */
     maxLinks: () => options.maxLinks ?? DEFAULT_MAX_LINKS,
+    /**
+     * Closes one peer's link, by the hint the radio knows it by. `close` forgets the peer with
+     * it, so the next advertisement is a fresh sighting rather than one discovery has already
+     * seen — which is what makes a dropped peer re-dialable rather than banished.
+     */
+    drop: (peer) => dropPeer(proven, peer, closeLink),
   };
 }
