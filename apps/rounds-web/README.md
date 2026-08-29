@@ -57,6 +57,11 @@ install; `vite dev` answered a bare 404 with no error at all until the check was
 `dev.ts` watches `src`, reruns the build (~1s) and restarts the server. Save, wait a beat,
 refresh — you just do not keep component state.
 
-**`bunSqliteDriver(path)` opens a file; it does not create the directory.** Only `defaultStore`
+**`nodeSqliteDriver(path)` opens a file; it does not create the directory.** Only `defaultStore`
 does the `mkdir`, so a driver given `.syncmesh/x.db` on a fresh checkout fails with
 `SQLITE_CANTOPEN`. This app does its own `mkdirSync`.
+
+It uses the **Node** driver, not the Bun one. Vite runs the server modules under Node, so
+`bun:sqlite` cannot even be imported — and a web app should not be tied to one runtime anyway.
+Bun implements `node:sqlite` too, so the same driver serves both. For the same reason, config
+comes from `import.meta.env` rather than `Bun.env` or `process.env`.

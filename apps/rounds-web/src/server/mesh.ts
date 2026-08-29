@@ -1,6 +1,6 @@
 import { createApp, createHandler } from "@syncmesh/orpc";
 import { relayTransport, webSocketDial } from "@syncmesh/relay";
-import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
+import { nodeSqliteDriver } from "@syncmesh/sqlite-node";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
 import { mkdirSync } from "node:fs";
@@ -22,7 +22,9 @@ import { PRACTICE, procedures, roundsSchema } from "../rounds.js";
  */
 
 const seed = (n: number) => Uint8Array.from({ length: 32 }, (_, i) => n + i);
-const RELAY_URL = Bun.env.RELAY_URL ?? "ws://localhost:5198/rounds";
+// `import.meta.env`, not `Bun.env` or `process.env`: this module is bundled by Vite and runs
+// under Node in dev, so the runtime's own global is the one thing it cannot assume.
+const RELAY_URL = import.meta.env["VITE_RELAY_URL"] ?? "ws://localhost:5198/rounds";
 
 /** Demo keys. A real deployment mints the issuer in a secret manager and the device once, on boot. */
 const issuer = createIdentity(seed(1)).unwrap();
@@ -36,7 +38,10 @@ export const { api, mesh } = await createApp({
   instance: PRACTICE,
   identity: station,
   issuer: issuer.peerId,
-  driver: bunSqliteDriver(".syncmesh/rounds-web.db"),
+  // `node:sqlite`, not `bun:sqlite`: Vite's dev server runs this module under Node, and a web
+  // app should not be tied to one runtime anyway. Bun implements `node:sqlite` too, so the same
+  // driver serves both.
+  driver: nodeSqliteDriver(".syncmesh/rounds-web.db"),
   transports: [relayTransport({ dial: webSocketDial(RELAY_URL) })],
 });
 
