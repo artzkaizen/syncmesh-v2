@@ -176,7 +176,7 @@ export interface Mesh<
    * wrote it (D26). What a UI renders per row instead of awaiting a promise from the call that
    * made it — a write made offline on Tuesday syncs on Thursday, long after that promise is gone.
    */
-  readonly syncOf: (table: TableName, key: RowKey) => SyncState | undefined;
+  readonly syncOf: (table: string, key: string) => SyncState | undefined;
   /** Bytes that never enter the log: content-addressed, verified at both ends (D18). */
   readonly blobs: Blobs;
   /**
@@ -353,7 +353,9 @@ function assemble<
       kindOf: (table) => entryOf.get(table)?.partition,
     }),
     delivered: createDelivered(engine, identity.peerId),
-    syncOf: (table, key) => syncStates.at(table, key),
+    syncOf: (table, key) =>
+      // SAFETY: the brands name a table and a row key, which is exactly what a caller passes; they carry no invariant a string can fail
+      syncStates.at(table as TableName, key as RowKey),
     received: createReceived(engine),
     revert: (id) => engine.revert(id),
     canRevert: (id) => engine.canRevert(id),
