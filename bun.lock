@@ -237,6 +237,7 @@
         "@syncmesh/result": "workspace:*",
         "@syncmesh/schema": "workspace:*",
         "@syncmesh/storage": "workspace:*",
+        "@syncmesh/wire": "workspace:*",
       },
       "devDependencies": {
         "@electric-sql/pglite": "^0.5.7",
@@ -343,9 +344,11 @@
       },
       "devDependencies": {
         "@happy-dom/global-registrator": "^18.0.1",
+        "@syncmesh/client": "workspace:*",
         "@syncmesh/config": "workspace:*",
         "@syncmesh/engine": "workspace:*",
         "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/orpc": "workspace:*",
         "@syncmesh/schema": "workspace:*",
         "@syncmesh/sqlite-bun": "workspace:*",
         "@syncmesh/storage": "workspace:*",
@@ -359,6 +362,7 @@
         "react-dom": "^19.1.0",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
+        "zod": "^3.25.76",
       },
       "peerDependencies": {
         "react": ">=18",

@@ -163,7 +163,7 @@ mesh.procedure.all();                            // global: read on devices, wri
   UI (`mesh.appointment.can("delete", row)`) is courtesy; the receiver check is the
   security.
 - Conflicts: two receptionists move the same appointment offline → later stamp wins for
-  `start`; different fields → both kept. `rating: t.float().onConflict("max")`-style rules
+  `start`; different fields → both kept. `rating: t.float({ merge: "max" })`-style rules
   are declared on the column, once.
 
 **What a developer must not have to do:** add `orgId` columns to child tables, remember an
@@ -191,7 +191,7 @@ export const schema = defineSchema({
     catalogSelection: { columns: fromDrizzle(drizzle.orgCatalogSelection), partition: "org", allow: ({ can }) => ({ $default: can("catalogs", "update") }) },
 
     control: {
-      columns: fromDrizzle(drizzle.control, { onConflict: { score: "max" } }),
+      columns: fromDrizzle(drizzle.control, { merge: { score: "max" } }),
       partition: "org",
       allow: ({ can, owner, claim, any }) => ({
         read:   claim("entities").has("entityId"),                                   // row.entityId ∈ grant.claims.entities
@@ -344,7 +344,7 @@ The three tiers, side by side:
 | No `partition` → `global`, device-read-only | 2, 3 — catalogs; the read-only rule makes the default safe |
 | `partitions` is a tree of kinds, no `isolation`, no `parent` strings | 2, 3 — top-level means own store; nesting is structural |
 | `roles` ladder is optional; grants carry claims; `claim(name).has(column)` with `can` as sugar | 3 — roles are data there, a ladder cannot express a matrix |
-| Conflict rules on the column, `fromDrizzle(t, { onConflict })` typed | all — one home, no untyped map |
+| Merge rules on the column (`t.float({ merge: "max" })`), `fromDrizzle(t, { merge })` typed | all — one home, no untyped map |
 | One entry shape `{ columns, partition?, allow? }` | all — `fromDrizzle` returns columns |
 | `Err(...)` at the call site, quarantine at every receiver | all — the UI check is courtesy, the receiver check is security |
 | `visibility: "authority"` as a third tier, not a partition | 4 — rows shared across tenants, state- and time-dependent visibility |
