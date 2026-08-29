@@ -84,19 +84,43 @@ describe("the localStorage event store", () => {
     expect((await again.store.lastSeq(A, "synced")).unwrap()).toBe(seq(2));
   });
 
-  test("a corrupt head takes the entries with it: no floor, no partial log", async () => {
+  test("a corrupt head takes the entries with it, but never the mark they set", async () => {
+    const storage = fakeStorage();
+    {
+      const { store } = (await open(storage)).unwrap();
+      (await store.appendBatch([entry(A, 1, 100), entry(A, 2, 200)])).unwrap();
+    }
+    storage.items.set("notes.head", "00ff00ff");
+
+    const { store, corrupt, numberingLost } = (await open(storage)).unwrap();
+    expect(corrupt?._tag).toBe("LogCorrupt");
+    // the contents go: no floor survived, so a log compaction trimmed reads the same as a whole
+    // one, and nothing here can tell which this is
+    expect((await store.all()).unwrap()).toEqual([]);
+    expect(storage.items.get("notes.log")).toBe(encodeLog([]));
+
+    // the mark does not. Numbering from zero re-issues sequence numbers peers already hold under
+    // different ids, and `has()` then drops every new event on every peer, silently, forever
+    expect((await store.lastSeq(A, "synced")).unwrap()).toEqual(seq(2));
+    expect((await store.maxHlc()).unwrap()?.[0]).toEqual(at(200));
+    expect(numberingLost).toBeUndefined();
+  });
+
+  test("both keys damaged: nothing says where it had got to, and it says so", async () => {
     const storage = fakeStorage();
     {
       const { store } = (await open(storage)).unwrap();
       (await store.appendBatch([entry(A, 1, 100)])).unwrap();
     }
     storage.items.set("notes.head", "00ff00ff");
+    storage.items.set("notes.log", "not a log");
 
-    const { store, corrupt } = (await open(storage)).unwrap();
+    const { store, corrupt, numberingLost } = (await open(storage)).unwrap();
     expect(corrupt?._tag).toBe("LogCorrupt");
-    expect((await store.all()).unwrap()).toEqual([]);
+    // no mark survived anywhere, and only a peer holding this device's past can supply one. The
+    // store opens — it can still read and still receive — and refuses to pretend it knows
+    expect(numberingLost).toBe(true);
     expect((await store.lastSeq(A, "synced")).unwrap()).toBeUndefined();
-    expect(storage.items.get("notes.log")).toBe(encodeLog([]));
   });
 
   test("compaction survives the reopen: the floor stays, and lastSeq does not fall to what is left", async () => {

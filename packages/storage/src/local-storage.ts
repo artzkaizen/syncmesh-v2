@@ -32,6 +32,16 @@ export interface OpenedLocalLog {
    * is data loss nothing observes; refusing to open is a browser that will not boot.
    */
   readonly corrupt?: LogCorrupt;
+  /**
+   * Nothing survived that says how far this device had numbered, so it would resume at one and
+   * re-issue ids its peers already hold — and `has()` drops those events everywhere, silently.
+   *
+   * The device can still read and still receive; the way out is to sync, because a peer holding
+   * this device\'s own past is the only thing that can put a floor back under the numbering. An
+   * app that knows there is nothing to lose — a fresh install, storage it just cleared — can
+   * write anyway.
+   */
+  readonly numberingLost?: boolean;
 }
 
 /** This package cannot name the DOM's `Storage` (D01-B leaves the runtime out of the types); every call goes through `LocalStorageLike`. */
@@ -152,17 +162,38 @@ interface Recovered {
   readonly head: PersistedHead;
   readonly entries: readonly StoredEvent[];
   readonly corrupt?: LogCorrupt;
+  /** Both keys were damaged: no mark survived, so where this device had numbered to is unknown. */
+  readonly numberingLost?: boolean;
 }
 
 /**
- * Damage to the head takes the entries with it, because an unreadable head leaves no record of what
- * compaction removed — and a surviving log under no floor is a partial log nothing can tell is
- * partial. Damage to the entries leaves the head standing, so the clock does not go back with them.
+ * Damage to the head takes the entries with it **as contents**, because an unreadable head leaves
+ * no record of what compaction removed, and a surviving log under no floor is a partial log
+ * nothing can tell is partial. Damage to the entries leaves the head standing, so the clock does
+ * not go back with them.
+ *
+ * But the entries are still the only surviving evidence of *how far this device had numbered*,
+ * and that mark is the one thing that must never regress. Numbering from zero re-issues sequence
+ * numbers peers already hold under different ids, and `has()` then drops every new event on every
+ * peer, in silence, for the life of the device — the worst shape a bug can take here.
+ *
+ * So a damaged head keeps the log's marks and discards only its contents. That is sound rather
+ * than optimistic: `persist` runs before `outbound.emit` in the write path, so a sequence the log
+ * never recorded was never sent to anyone either, and resuming above the log cannot collide with
+ * an id a peer is holding.
+ *
+ * When both keys are damaged there is nothing left to resume from, and nothing on this device can
+ * know where it had got to — only a peer holding its past can say. {@link Recovered.numberingLost}
+ * carries that up rather than letting the device quietly start again at one.
  */
 function recover(rawHead: string | null, rawLog: string | null): Recovered {
   const head = decodeHead(rawHead);
-  if (head.isErr()) return { head: EMPTY_HEAD, entries: [], corrupt: head.error };
   const entries = decodeLog(rawLog);
+  if (head.isErr()) {
+    const survived = entries.isOk() ? entries.value : [];
+    const recovered = { head: advance(EMPTY_HEAD, survived), entries: [], corrupt: head.error };
+    return survived.length > 0 ? recovered : { ...recovered, numberingLost: true };
+  }
   if (entries.isErr()) return { head: head.value, entries: [], corrupt: entries.error };
   return { head: head.value, entries: entries.value };
 }
@@ -197,7 +228,7 @@ export function localStorageEventStore(
   return Result.gen(async function* () {
     const rawHead = yield* disk.read("head");
     const rawLog = yield* disk.read("log");
-    const { head, entries, corrupt } = recover(rawHead, rawLog);
+    const { head, entries, corrupt, numberingLost } = recover(rawHead, rawLog);
     const marks = advance(head, entries); // an entry outliving the mark it set raises it back
     disk.adopt(marks);
     if (corrupt !== undefined) {
@@ -207,6 +238,9 @@ export function localStorageEventStore(
     const memory = createMemoryEventStore();
     yield* Result.await(memory.appendBatch(entries));
     const store = storeOver(memory, disk);
-    return Result.ok(corrupt === undefined ? { store } : { store, corrupt });
+    if (corrupt === undefined) return Result.ok({ store });
+    return Result.ok(
+      numberingLost === true ? { store, corrupt, numberingLost } : { store, corrupt },
+    );
   });
 }
