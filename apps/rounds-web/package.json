@@ -4,12 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun dev.ts",
+    "build": "vite build",
+    "dev": "vite dev --port 5199",
     "relay": "bun src/server/relay.ts",
-    "web:build": "bunx vite@7 build",
-    "web:serve": "bun --watch dist/server/server.js",
-    "web:typecheck": "tsc --noEmit",
-    "web:watch": "bunx vite@7 build --watch"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@syncmesh/client": "workspace:*",
@@ -34,6 +32,7 @@
     "@types/bun": "catalog:",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vite": "^7.0.0"
   }
 }

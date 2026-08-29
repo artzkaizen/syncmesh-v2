@@ -41,9 +41,6 @@
     "vite": "catalog:",
     "vite-plus": "catalog:"
   },
-  "overrides": {
-    "vite": "catalog:"
-  },
   "engines": {
     "bun": ">=1.4.0",
     "node": ">=22"
