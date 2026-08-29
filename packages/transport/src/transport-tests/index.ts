@@ -147,6 +147,48 @@ export function transportTests(connect: Connect): readonly SuiteCase[] {
       },
     },
     {
+      name: "transport: concurrent writes from every peer while apart, none of them lost",
+      run: async () => {
+        // three peers, each writing a row only it knows about, none able to see the others. The
+        // keys differ, so nothing competes and the correct answer is that all three survive —
+        // which is only interesting because the middle peer must carry the outer two to each
+        // other, and a chain is where a hop that quietly stops forwarding hides
+        const { peers, network } = await openNetwork();
+        const [a, b, c] = peers;
+        (await write(a, "from-a", "a")).unwrap();
+        (await write(b, "from-b", "b")).unwrap();
+        (await write(c, "from-c", "c")).unwrap();
+        await network.settle();
+        for (const [peer, label] of [
+          [a, "a"],
+          [b, "b"],
+          [c, "c"],
+        ] as const)
+          for (const id of ["from-a", "from-b", "from-c"])
+            equal(bodyOf(peer, id), id.slice(-1), `${id} at ${label}`);
+        await network.stop();
+      },
+    },
+    {
+      name: "transport: a peer with nothing of its own to say keeps receiving, round after round",
+      run: async () => {
+        // the shape that hid a wedged link: `b` writes nothing at all, and must still be carrying
+        // `a`'s writes to `c` on the fourth round as faithfully as on the first
+        const { peers, network } = await openNetwork();
+        const [a, , c] = peers;
+        for (const round of [1, 2, 3, 4]) {
+          (await write(a, `r${round}`, `round-${round}`)).unwrap();
+          await network.settle();
+          for (const [peer, label] of [
+            [a, "a"],
+            [c, "c"],
+          ] as const)
+            equal(bodyOf(peer, `r${round}`), `round-${round}`, `r${round} at ${label}`);
+        }
+        await network.stop();
+      },
+    },
+    {
       name: "transport: a write after the sessions are up reaches the far end live",
       run: async () => {
         const { peers, network } = await openNetwork();
