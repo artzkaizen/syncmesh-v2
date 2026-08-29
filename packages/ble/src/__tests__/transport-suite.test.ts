@@ -1,7 +1,7 @@
-import type { Connect } from "@syncmesh/transport/transport-tests";
+import type { Connect, SuiteNetwork } from "@syncmesh/transport/transport-tests";
 
-import { transportTests } from "@syncmesh/transport/transport-tests";
-import { describe, test } from "bun:test";
+import { suitePeers, transportTests } from "@syncmesh/transport/transport-tests";
+import { describe, expect, test } from "bun:test";
 
 import { hintOf } from "../advert.js";
 import { bleTransport } from "../transport.js";
@@ -22,7 +22,7 @@ const CHAR = "19d74c41-95d0-4b3c-a4a3-d4a8c8bdfe01";
  * reach each other through the middle. That is the topology that catches a hop which quietly
  * stops forwarding — the failure a pair can never show.
  */
-const connectOverBle: Connect = async (peers) => {
+const openChain = async (peers: Parameters<Connect>[0]) => {
   const air = virtualAir();
   const names = peers.map((peer) => hintOf(peer.identity.peerId));
   const transports = peers.map((_peer, i) => {
@@ -36,7 +36,7 @@ const connectOverBle: Connect = async (peers) => {
   });
   await Promise.all(transports.map((transport, i) => transport.start(peers[i]!)));
 
-  return {
+  const network = {
     settle: async () => {
       // more rounds than a loopback needs: a BLE frame is fragments, and a session opens with a
       // handshake before the bridge has said anything at all
@@ -49,12 +49,44 @@ const connectOverBle: Connect = async (peers) => {
       await Promise.all(transports.map((transport) => transport.stop()));
     },
     chaos: {
-      drop: (count) => air.drop(count),
+      drop: (count: number) => air.drop(count),
       resyncAll: () => transports.forEach((transport) => transport.resync?.()),
     },
-  };
+  } satisfies SuiteNetwork;
+  return { transports, network };
 };
+
+const connectOverBle: Connect = async (peers) => (await openChain(peers)).network;
 
 describe("BLE runs the transport contract", () => {
   for (const suiteCase of transportTests(connectOverBle)) test(suiteCase.name, suiteCase.run);
+});
+
+describe("a radio says which peers it reaches (E28)", () => {
+  test("a peer appears once its handshake proves it, and only its own neighbours do", async () => {
+    const peers = suitePeers();
+    const [a, b, c] = peers;
+    const { transports, network } = await openChain(peers);
+    await network.settle();
+    const reached = (i: number) => transports[i]?.reaches?.();
+
+    // the chain's own topology, read back off the radios: the middle reaches both ends, and
+    // neither end reaches the other — which is the whole reason a chain catches a bad hop
+    expect(reached(1)).toEqual(new Set([a.identity.peerId, c.identity.peerId]));
+    expect(reached(0)).toEqual(new Set([b.identity.peerId]));
+    expect(reached(2)).toEqual(new Set([b.identity.peerId]));
+    // proven, not hinted: an end never claims the peer it only hears of through the middle
+    expect(reached(0)?.has(c.identity.peerId)).toBe(false);
+
+    await network.stop();
+  });
+
+  test("stopping the radio takes its peers with it", async () => {
+    const { transports, network } = await openChain(suitePeers());
+    await network.settle();
+    expect(transports[1]?.reaches?.().size).toBe(2);
+
+    await network.stop();
+    expect(transports[1]?.reaches?.().size).toBe(0);
+  });
 });

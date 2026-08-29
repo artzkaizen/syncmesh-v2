@@ -65,6 +65,20 @@ const schema = defineSchema({
 
 const issuer = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 1 + i)).unwrap();
 
+/**
+ * Three peers of the suite's own fixture — an engine, an identity and a grant each, over the
+ * suite's schema.
+ *
+ * Exported so a transport package can test its own bookkeeping (which peers a radio reaches,
+ * what a link does on close) against the same peers the contract runs on, instead of standing up
+ * a second engine fixture that drifts from this one.
+ */
+export const suitePeers = (): readonly [SuitePeer, SuitePeer, SuitePeer] => [
+  buildPeer(40, 100),
+  buildPeer(80, 500),
+  buildPeer(120, 900),
+];
+
 const buildPeer = (n: number, startMs: number): SuitePeer => {
   const identity = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => n + i)).unwrap();
   const grants = createGrantRegistry({ issuer: issuer.peerId, now: () => T0 });
@@ -118,7 +132,7 @@ const bodyOf = (peer: SuitePeer, id: string): string | undefined => {
  */
 export function transportTests(connect: Connect): readonly SuiteCase[] {
   const openNetwork = async () => {
-    const peers = [buildPeer(40, 100), buildPeer(80, 500), buildPeer(120, 900)] as const;
+    const peers = suitePeers();
     const network = await connect(peers);
     return { peers, network };
   };

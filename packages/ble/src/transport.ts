@@ -66,6 +66,13 @@ export function bleTransport(options: BleOptions): Transport {
   const { radio, serviceUuid, characteristicUuid } = options;
   const held = new Map<string, Held>();
   const byConnection = new Map<string, string>();
+  /**
+   * The peer on each link, by the hint the radio knows it by — and only once the handshake has
+   * proved it. An advertisement's hint is a lossy derivation of a peer id and anyone can put one
+   * in the air, so claiming to reach a peer on the strength of one would be routing a frame at a
+   * signature nobody checked (E28).
+   */
+  const proven = new Map<string, PeerId>();
   const drop = (why: string) => options.onDropped?.(why);
   let notifyLimit = notifyLimitOf(undefined);
 
@@ -88,6 +95,7 @@ export function bleTransport(options: BleOptions): Transport {
         const link = held.get(hint);
         if (link === undefined) return;
         held.delete(hint);
+        proven.delete(hint);
         if (link.connectionId !== undefined) byConnection.delete(link.connectionId);
         seen.forget(hint);
         link.bridge.close();
@@ -122,6 +130,8 @@ export function bleTransport(options: BleOptions): Transport {
         const frames = secureLink(link, {
           identity: ctx.identity,
           onDropped: drop,
+          // the session is open and the peer signed for its id: this link now reaches it
+          onEstablished: (id) => void proven.set(hint, id),
           // a handshake that cannot finish is a link that will never carry anything
           onFailed: (cause) => {
             drop(`the session with ${hint} failed: ${String(cause)}`);
@@ -219,6 +229,7 @@ export function bleTransport(options: BleOptions): Transport {
       }
       held.clear();
       byConnection.clear();
+      proven.clear(); // a stopped radio reaches nobody, whatever it proved while it was up
       // a radio that will not stop is already gone; there is nobody left to report it to
       const stopped = await Result.tryPromise({
         try: async () => {
@@ -240,5 +251,13 @@ export function bleTransport(options: BleOptions): Transport {
      * expensive radio would refuse the same frame.
      */
     route: () => ({ direct: true, bandwidthBps: BLE_BANDWIDTH_BPS }),
+    /**
+     * The peers with an open session on this radio (E28), so a frame addressed to one of them
+     * can be routed here instead of broadcast everywhere.
+     *
+     * Only peers the handshake proved. A link that has been dialled but has not finished its
+     * session is absent, which is correct: it cannot carry a frame yet either.
+     */
+    reaches: () => new Set(proven.values()),
   };
 }
