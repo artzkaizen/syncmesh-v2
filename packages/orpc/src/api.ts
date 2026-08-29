@@ -2,7 +2,7 @@ import type { Handle, Mesh } from "@syncmesh/client";
 import type { Live, Runnable } from "@syncmesh/drizzle";
 import type { EventId } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
-import type { Output, StandardSchemaV1 } from "@syncmesh/schema";
+import type { Output, PresenceMap, StandardSchemaV1 } from "@syncmesh/schema";
 import type { TxReceipt } from "@syncmesh/storage";
 
 import { Result } from "@syncmesh/result";
@@ -240,8 +240,8 @@ const isDef = (node: ProcedureDef | Router): node is ProcedureDef =>
  * const mesh = (await createMesh({ … })).unwrap();
  * export const api = meshApi(mesh, { books }, { instance: "org:acme" });
  */
-export function meshApi<R extends Router>(
-  mesh: Mesh,
+export function meshApi<R extends Router, PC extends PresenceMap = Record<string, never>>(
+  mesh: Mesh<"sqlite", PC>,
   router: R,
   options: {
     readonly instance?: string;

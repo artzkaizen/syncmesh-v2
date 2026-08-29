@@ -1,10 +1,8 @@
-import type { Mesh } from "@syncmesh/client";
-
-import { meshApi, mutation, query } from "@syncmesh/orpc";
+import { mutation, query } from "@syncmesh/orpc";
 import { asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 
-import { PRACTICE, observation, patient } from "./schema.js";
+import { observation, patient } from "./schema.js";
 
 /**
  * The app's API. Every read and every write an app performs is one of these, and Drizzle appears
@@ -77,6 +75,5 @@ export const observations = {
     }),
 };
 
-/** Bound to one mesh and one ward; import this and nothing else. */
-export const roundsApi = (mesh: Mesh) =>
-  meshApi(mesh, { patients, observations }, { instance: PRACTICE });
+/** What the app can do. `createApp` binds it to a mesh and a ward; nothing here knows either. */
+export const procedures = { patients, observations };

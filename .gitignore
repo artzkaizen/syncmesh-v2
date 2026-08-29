@@ -14,3 +14,7 @@ coverage
 .idea
 .fallow
 .syncmesh
+
+# the web example's build output and its local mesh
+apps/*/dist/
+apps/*/.syncmesh/

@@ -34,6 +34,7 @@ export default defineConfig({
       ".windsurf/**",
       "tools/oxlint/anti-slop/**",
       "tools/oxlint/syncmesh/**",
+      "apps/*/src/routeTree.gen.ts",
     ],
     jsPlugins: [
       { name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" },
@@ -294,6 +295,7 @@ export default defineConfig({
       ".windsurf/**",
       "tools/oxlint/anti-slop/**",
       "tools/oxlint/syncmesh/**",
+      "apps/*/src/routeTree.gen.ts",
     ],
     sortPackageJson: { sortScripts: true },
     sortImports: {

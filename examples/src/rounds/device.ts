@@ -1,12 +1,12 @@
 import type { Transport } from "@syncmesh/transport";
 
-import { createMesh } from "@syncmesh/client";
+import { createApp } from "@syncmesh/orpc";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createFrameTransport, loopbackPair } from "@syncmesh/transport";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
 
-import { roundsApi } from "./api.js";
+import { procedures } from "./api.js";
 import { PRACTICE, roundsSchema } from "./schema.js";
 
 /**
@@ -51,9 +51,11 @@ const grants = Object.entries(staff).map(([name, who]) =>
 );
 
 const device = async (name: keyof typeof staff, transport: Transport) => {
-  const mesh = (
-    await createMesh({
+  const app = (
+    await createApp({
       schema: roundsSchema(),
+      procedures,
+      instance: PRACTICE,
       identity: staff[name],
       issuer: issuer.peerId,
       driver: bunSqliteDriver(":memory:"), // a demo starts on a fresh ward every run
@@ -61,8 +63,8 @@ const device = async (name: keyof typeof staff, transport: Transport) => {
       now: () => T0,
     })
   ).unwrap();
-  for (const grant of grants) mesh.grants.register(grant).unwrap();
-  return { mesh, api: roundsApi(mesh) };
+  for (const grant of grants) app.mesh.grants.register(grant).unwrap();
+  return app;
 };
 
 const links = pair();
