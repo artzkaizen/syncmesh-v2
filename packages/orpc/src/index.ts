@@ -1,3 +1,16 @@
+export type {
+  Api,
+  CallError,
+  MutationDef,
+  Permissions,
+  ProcedureDef,
+  QueryDef,
+  QueryCall,
+  Router,
+  WriteResult,
+} from "./api.js";
+export { local, meshApi } from "./api.js";
+
 import type { Handle, Mesh } from "@syncmesh/client";
 import type { JsonValue } from "@syncmesh/kernel";
 import type { SqlDialect } from "@syncmesh/storage";
