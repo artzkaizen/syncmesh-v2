@@ -50,11 +50,18 @@ function Observations({ patientId }: { readonly patientId: string }) {
   if (isPending) return <Spinner />;
   if (data.length === 0) return isSettled ? <NoReadings /> : <StillSyncing />;
 
-  return data.map((o) => (
-    <Row key={o.id} dimmed={mesh.syncOf("observation", o.id) === "local"}>
-      {o.code} {o.value}
+  return data.map((o) => <Reading key={o.id} observation={o} />);
+}
+
+function Reading({ observation }: { readonly observation: Observation }) {
+  // subscribed, not read once: this flips on its own when a peer acknowledges the event
+  const sync = useSyncOf(api.$sync, "observation", observation.id);
+
+  return (
+    <Row dimmed={sync === "local"}>
+      {observation.code} {observation.value}
     </Row>
-  ));
+  );
 }
 ```
 
