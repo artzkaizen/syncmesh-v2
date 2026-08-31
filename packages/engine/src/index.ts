@@ -26,6 +26,8 @@ export {
   isUnknown,
   quarantineReason,
   retryQuarantined,
+  retryRefused,
+  withRetry,
 } from "./quarantine.js";
 export type { CoverageTracker } from "./coverage.js";
 export { trackCoverage } from "./coverage.js";

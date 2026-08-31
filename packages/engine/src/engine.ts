@@ -34,7 +34,7 @@ import { createFeedPath, trackFeeds } from "./feed.js";
 import { createFoldPath } from "./fold.js";
 import { eventsWanted } from "./interest.js";
 import { createHub, type Unsubscribe } from "./listeners.js";
-import { createQuarantine, retryQuarantined } from "./quarantine.js";
+import { createQuarantine, retryQuarantined, withRetry } from "./quarantine.js";
 import { createSnapshotPath } from "./snapshot.js";
 import { mergeAhead } from "./sync.js";
 import { type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
@@ -297,11 +297,13 @@ export function createEngine(options: EngineOptions): Engine {
 
   const chains = createFeedPath({ store, feeds, receiveBatch });
 
+  const receiveAndRetry = withRetry(receiveBatch, parked);
+
   return {
     peerId,
     mutate,
-    receiveBatch,
-    receive: (entry) => receiveBatch([entry]),
+    receiveBatch: receiveAndRetry,
+    receive: (entry) => receiveAndRetry([entry]),
     ...chains,
     state: stateOf,
     rowsIn: (table, partition) => readRowsIn(stateOf(), table, partition),
@@ -326,7 +328,7 @@ export function createEngine(options: EngineOptions): Engine {
     onOutbound: outbound.subscribe,
     onError: errors.subscribe,
     quarantine: parked.list,
-    retryQuarantined: () => retryQuarantined(parked, receiveBatch),
+    retryQuarantined: () => retryQuarantined(parked, receiveAndRetry),
     onQuarantine: quarantine.subscribe,
     onTelemetry: telemetry.subscribe,
   };
