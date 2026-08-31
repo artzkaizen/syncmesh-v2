@@ -133,14 +133,29 @@ export function wireSession(
     });
   };
 
+  /**
+   * Everything this device holds that the relay does not, whoever wrote it.
+   *
+   * Not only what this device authored: a peer with a radio and a network is the only way an
+   * event written where there is no network ever reaches one, and forwarding is the whole of
+   * carrying it. `relayCursors` moves with what is sent so a second call sends the difference
+   * rather than the run again — the relay says where it is on `hello`, and between two of those
+   * this is what we know it has.
+   */
   const pushOutstanding = (): void => {
     chain = chain.then(async () => {
       const entries = await engine.eventsSince(relayCursors);
       if (entries.isErr()) return;
+      const sent = new Map(relayCursors);
       for (const entry of entries.value) {
         const wire = envelopeOf(entry, context);
-        if (wire !== undefined) hooks.sendSafe(eventFrame(wire));
+        if (wire === undefined) continue;
+        hooks.sendSafe(eventFrame(wire));
+        const at = sent.get(entry.event.peerId);
+        if (at === undefined || entry.event.seqNum > at)
+          sent.set(entry.event.peerId, entry.event.seqNum);
       }
+      relayCursors = sent;
     });
   };
 
@@ -193,9 +208,18 @@ export function wireSession(
     if (caughtUp) hooks.sendSafe(eventFrame(signEvent(event, identity).wire));
   });
   const offRegistered = grants.onRegistered((_grant, wire) => hooks.sendSafe(grantFrame(wire)));
-  // a fold of peers' events moved our position: say so once caught up, so their `delivered` settles
+  /**
+   * A fold of peers' events moved our position: say so, and hand over what moved it.
+   *
+   * Saying so alone was the hole. A device that learns an event over Bluetooth and only reports
+   * its new cursor tells the relay that something happened and never what — so a peer reachable
+   * only over the network never receives it, from anyone, ever. `pushOutstanding` sends the
+   * difference, which is nothing at all when the relay already had it.
+   */
   const offFolds = engine.onFoldBatch((batch) => {
-    if (caughtUp && batch.source === "remote") sendCursors();
+    if (!caughtUp || batch.source !== "remote") return;
+    pushOutstanding();
+    sendCursors();
   });
   return [offFrame, offOutbound, offRegistered, offFolds];
 }
