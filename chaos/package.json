@@ -1,0 +1,28 @@
+{
+  "name": "@syncmesh/chaos",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A mesh under deliberate fault: transports that come and go, devices that go dark and keep writing, and a replay log of everything that happened",
+  "type": "module",
+  "scripts": {
+    "run": "bun run src/run.ts"
+  },
+  "devDependencies": {
+    "@syncmesh/ble": "workspace:*",
+    "@syncmesh/client": "workspace:*",
+    "@syncmesh/config": "workspace:*",
+    "@syncmesh/engine": "workspace:*",
+    "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/relay": "workspace:*",
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/schema": "workspace:*",
+    "@syncmesh/sqlite-bun": "workspace:*",
+    "@syncmesh/storage": "workspace:*",
+    "@syncmesh/temporal": "workspace:*",
+    "@syncmesh/transport": "workspace:*",
+    "@syncmesh/wire": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

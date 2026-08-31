@@ -53,15 +53,32 @@ export interface VirtualAir {
   readonly settle: () => Promise<void>;
   /** The next `count` packets vanish after a successful send — a radio, not a socket. */
   readonly drop: (count: number) => void;
+  /**
+   * Who this device can hear from now on, or `undefined` for everyone.
+   *
+   * Range is not fixed at power-on. A device carried into the next room stops hearing the one it
+   * was talking to, and the interesting question is what its transport does about that mid-session
+   * rather than what it does when it starts out of range.
+   */
+  readonly setReach: (id: string, reachable?: readonly string[]) => void;
+  /** The share of packets that vanish, 0 to 1 — interference, rather than a link going down. */
+  readonly setLoss: (rate: number) => void;
   readonly connections: () => number;
 }
 
-export function virtualAir(mtu = 185): VirtualAir {
+export interface AirOptions {
+  /** Seeded, so a run that loses a packet at an awkward moment loses it again on replay. */
+  readonly random?: () => number;
+}
+
+export function virtualAir(mtu = 185, options: AirOptions = {}): VirtualAir {
   const endpoints = new Map<string, Endpoint>();
   const reach = new Map<string, readonly string[] | undefined>();
   const wires: Wire[] = [];
   let inFlight: Promise<void> = Promise.resolve();
   let dropping = 0;
+  let loss = 0;
+  const random = options.random ?? Math.random;
 
   const endpoint = (id: string): Endpoint => {
     const held = endpoints.get(id);
@@ -93,6 +110,7 @@ export function virtualAir(mtu = 185): VirtualAir {
       dropping -= 1;
       return;
     }
+    if (loss > 0 && random() < loss) return;
     inFlight = inFlight.then(() => deliver());
   };
 
@@ -113,6 +131,8 @@ export function virtualAir(mtu = 185): VirtualAir {
   return {
     connections: () => wires.length,
     drop: (count) => void (dropping = count),
+    setReach: (id, reachable) => void reach.set(id, reachable),
+    setLoss: (rate) => void (loss = rate),
     settle: async () => {
       for (let round = 0; round < 12; round += 1) {
         await inFlight;

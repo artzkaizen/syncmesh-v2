@@ -4,8 +4,8 @@ import { suitePeers, transportTests } from "@syncmesh/transport/transport-tests"
 import { describe, expect, test } from "bun:test";
 
 import { hintOf } from "../advert.js";
+import { virtualAir } from "../testing/virtual-air.js";
 import { bleTransport } from "../transport.js";
-import { virtualAir } from "./virtual-air.js";
 
 const SERVICE = "19d74c40-95d0-4b3c-a4a3-d4a8c8bdfe01";
 const CHAR = "19d74c41-95d0-4b3c-a4a3-d4a8c8bdfe01";

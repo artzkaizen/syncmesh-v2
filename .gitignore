@@ -18,3 +18,6 @@ coverage
 # the web example's build output and its local mesh
 apps/*/dist/
 apps/*/.syncmesh/
+
+# chaos run output: databases and ledgers, regenerated from a seed
+.chaos/

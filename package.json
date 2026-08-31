@@ -10,6 +10,7 @@
       "tooling/*",
       "conformance",
       "examples",
+      "chaos",
       "bench"
     ],
     "catalog": {
