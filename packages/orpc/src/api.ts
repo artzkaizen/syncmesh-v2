@@ -51,27 +51,42 @@ export interface QueryCall<T> {
 export interface QueryDef<I, T> {
   readonly kind: "query";
   readonly schema?: StandardSchemaV1;
+  readonly route?: RouteMeta;
   readonly run: (args: { readonly input: I; readonly mesh: Handle }) => Runnable<T>;
 }
 
 export interface MutationDef<I, T> {
   readonly kind: "mutation";
   readonly schema?: StandardSchemaV1;
+  readonly route?: RouteMeta;
   readonly run: (args: { readonly input: I; readonly mesh: Handle }) => Promise<T> | T;
 }
+
+/** HTTP/OpenAPI metadata and nothing else (book ch. 7): the method describes HTTP, never transactions. */
+export interface RouteMeta {
+  readonly method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  readonly path?: string;
+  readonly tags?: readonly string[];
+}
+
+/** The failures a gate declares by name; each crosses the wire as its own tag and revives typed. */
+export type DeclaredErrors = Readonly<Record<string, { readonly message?: string }>>;
 
 /**
  * A call that **cannot** run on this device: it needs other tenants' rows, the real clock, or the
  * outside world (D10's test for when a procedure should exist at all). The handler lives on the
- * server and never reaches the app's bundle — only this declaration does.
- *
- * That split is a module boundary, not a naming convention. Put the implementations in a package
- * the app does not depend on, and importing one is a resolution error rather than something a
- * reviewer has to catch.
+ * server and never reaches the app's bundle — only this declaration does: the `.authority()`
+ * terminal stands where the body would be, and after it no `.handler` exists to call (book ch. 7).
  */
 export interface AuthorityDef<I, T> {
   readonly kind: "authority";
+  /** Which grammar declared it — a read-shaped gate or the write gate; OpenAPI reads this. */
+  readonly via: "query" | "mutation";
   readonly schema?: StandardSchemaV1;
+  /** The answer's shape, parsed at the trust boundary — the one payload a client consumes off the wire. */
+  readonly output?: StandardSchemaV1;
+  readonly errors?: DeclaredErrors;
+  readonly route?: RouteMeta;
   /** Phantom, both of them: the shapes exist for inference, and neither is ever called. */
   readonly accepts?: (value: I) => void;
   readonly yields?: (value: never) => T;
@@ -91,23 +106,27 @@ export type AuthorityLink = (
 /* oxlint-enable anti-slop/no-unknown-parameters */
 
 /**
- * Declares a call the server implements. Takes a schema and a return type and nothing else — a
- * body here would be a body in the app's bundle.
- *
- * ```ts
- * export const billing = {
- *   charge: authority
- *     .input(z.object({ patientId: z.string(), cents: z.number().int() }))
- *     .returns<{ receiptId: string }>(),
- * };
- * ```
+ * The bodiless half of the chain: after `.input()`, `.output(schema)` declares the answer and
+ * `.authority()` names who decides. Typestate makes a gate body in shared code unrepresentable —
+ * after `.output()` there is no `.handler` to call (book ch. 7).
  */
-export const authority = {
-  input: <S extends StandardSchemaV1>(schema: S) => ({
-    returns: <T>(): AuthorityDef<Output<S>, T> => ({ kind: "authority", schema }),
-  }),
-  returns: <T>(): AuthorityDef<void, T> => ({ kind: "authority" }),
-};
+const gateChain =
+  (via: "query" | "mutation", route: RouteMeta | undefined, schema: StandardSchemaV1 | undefined) =>
+  <I>() => ({
+    output: <O extends StandardSchemaV1>(output: O) => {
+      const settled = (errors?: DeclaredErrors): AuthorityDef<I, Output<O>> => {
+        const def = { kind: "authority" as const, via, output };
+        if (schema !== undefined) Object.assign(def, { schema });
+        if (route !== undefined) Object.assign(def, { route });
+        if (errors !== undefined) Object.assign(def, { errors });
+        return def;
+      };
+      return {
+        authority: () => settled(),
+        errors: (errors: DeclaredErrors) => ({ authority: () => settled(errors) }),
+      };
+    },
+  });
 
 export type ProcedureDef =
   | QueryDef<never, unknown>
@@ -117,13 +136,43 @@ export interface Router {
   readonly [key: string]: ProcedureDef | Router;
 }
 
+/** What a gate's body receives: the parsed input, the caller-shaped handle, its declared errors. */
+export interface AuthorityContext<I> {
+  readonly input: I;
+  /** The server's Drizzle surface, acting as the caller where the server binds one. */
+  readonly mesh: Handle;
+  /** One thrower per declared error name; the thrown tag crosses the wire and revives typed. */
+  readonly errors: Readonly<Record<string, (over?: { readonly message?: string }) => Error>>;
+}
+
+/**
+ * The router's shape filtered to its `.authority()` leaves — the server's typed mirror (book
+ * ch. 19): `satisfies AuthorityHandlers<typeof router>` makes a missing body, an extra body, or
+ * a drifted signature a compile error at the object literal, never a deploy surprise.
+ */
+export type AuthorityHandlers<R extends Router> = {
+  readonly [
+    K in keyof R as R[K] extends AuthorityDef<never, unknown>
+      ? K
+      : R[K] extends Router
+        ? [keyof AuthorityHandlers<R[K]>] extends [never]
+          ? never
+          : K
+        : never
+  ]: R[K] extends AuthorityDef<infer I, infer T>
+    ? (context: AuthorityContext<I>) => Promise<T> | T
+    : R[K] extends Router
+      ? AuthorityHandlers<R[K]>
+      : never;
+};
+
 /**
  * Validates through Standard Schema, so zod, valibot and arktype all work and none is a
  * dependency. This is the parse at the boundary every caller above it is typed against — the
  * runtime walk in {@link meshApi} erases what `Api<R>` states, and this restores it.
  */
 /* oxlint-disable anti-slop/no-unknown-parameters -- the I/O boundary itself: turning an unparsed input into `I` is what these three exist to do, and `Api<R>` types every call site above them */
-const validate = <I>(
+export const validate = <I>(
   schema: StandardSchemaV1 | undefined,
   input: unknown,
 ): ResultType<I, Error> => {
@@ -149,31 +198,33 @@ const validate = <I>(
  * {@link authority} — the call that needs a server and therefore fails on a ward with no
  * signal — because that is the one a reader has to notice.
  */
-export const query = {
+const withRoute = <D extends object>(def: D, route: RouteMeta | undefined): D =>
+  route === undefined ? def : Object.assign(def, { route });
+
+const queryHead = (route?: RouteMeta) => ({
   input: <S extends StandardSchemaV1>(schema: S) => ({
-    handler: <T>(run: QueryDef<Output<S>, T>["run"]): QueryDef<Output<S>, T> => ({
-      kind: "query",
-      schema,
-      run,
-    }),
+    handler: <T>(run: QueryDef<Output<S>, T>["run"]): QueryDef<Output<S>, T> =>
+      withRoute({ kind: "query", schema, run }, route),
+    ...gateChain("query", route, schema)<Output<S>>(),
   }),
-  handler: <T>(run: QueryDef<void, T>["run"]): QueryDef<void, T> => ({ kind: "query", run }),
-};
+  handler: <T>(run: QueryDef<void, T>["run"]): QueryDef<void, T> =>
+    withRoute({ kind: "query", run }, route),
+});
+
+const mutationHead = (route?: RouteMeta) => ({
+  input: <S extends StandardSchemaV1>(schema: S) => ({
+    handler: <T>(run: MutationDef<Output<S>, T>["run"]): MutationDef<Output<S>, T> =>
+      withRoute({ kind: "mutation", schema, run }, route),
+    ...gateChain("mutation", route, schema)<Output<S>>(),
+  }),
+  handler: <T>(run: MutationDef<void, T>["run"]): MutationDef<void, T> =>
+    withRoute({ kind: "mutation", run }, route),
+});
+
+export const query = { ...queryHead(), route: (route: RouteMeta) => queryHead(route) };
 
 /** A write that runs on this device, inside one transaction, as one event. */
-export const mutation = {
-  input: <S extends StandardSchemaV1>(schema: S) => ({
-    handler: <T>(run: MutationDef<Output<S>, T>["run"]): MutationDef<Output<S>, T> => ({
-      kind: "mutation",
-      schema,
-      run,
-    }),
-  }),
-  handler: <T>(run: MutationDef<void, T>["run"]): MutationDef<void, T> => ({
-    kind: "mutation",
-    run,
-  }),
-};
+export const mutation = { ...mutationHead(), route: (route: RouteMeta) => mutationHead(route) };
 
 /**
  * What `useCan` reads, bound to this api's instance so a component names no mesh and no instance.
@@ -225,7 +276,8 @@ export type Api<R extends Router> = {
           : never;
 };
 
-const isDef = (node: ProcedureDef | Router): node is ProcedureDef =>
+/** A leaf, as opposed to a group: the three kinds the grammar can end in. */
+export const isDef = (node: ProcedureDef | Router): node is ProcedureDef =>
   "kind" in node &&
   (node.kind === "query" || node.kind === "mutation" || node.kind === "authority");
 
@@ -294,7 +346,10 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     if (parsed.isErr()) return parsed;
     if (options.link === undefined)
       return Result.err(new Error(`${path} runs on the authority, and no link was configured`));
-    return options.link(path, parsed.value);
+    const answered = await options.link(path, parsed.value);
+    if (answered.isErr() || def.output === undefined) return answered;
+    // the trust boundary: the one payload a client consumes straight off the wire (book ch. 7)
+    return validate<unknown>(def.output, answered.value);
   };
 
   const build = (node: Router, prefix: string): ApiNode => {

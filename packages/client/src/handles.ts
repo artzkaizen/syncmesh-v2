@@ -2,7 +2,8 @@ import type { Principal } from "@syncmesh/engine";
 import type { InvalidPartitionKey, PartitionKey } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
 import type { ColumnsMap, PartitionTree, PresenceMap, Roles, Schema } from "@syncmesh/schema";
-import type { SqlDialect, SqlDriver } from "@syncmesh/storage";
+import type { OperationStore, SqlDialect, SqlDriver } from "@syncmesh/storage";
+import type { Temporal } from "@syncmesh/temporal";
 
 import { meshDrizzle, type MeshHandle } from "@syncmesh/drizzle";
 import { parsePartitionKey } from "@syncmesh/kernel";
@@ -35,13 +36,19 @@ export type OpenHandle<D extends SqlDialect> = (
  * the same pair is what lets a caller compare handles, and what keeps a server that takes a
  * request per tenant from building a Drizzle instance per request.
  */
+export interface HandleExtras {
+  /** Threads into every handle's writer: the durable operation record per synced commit. */
+  readonly operations?: OperationStore;
+  readonly now?: () => Temporal.Instant;
+}
+
 export function openHandles<
   P extends PartitionTree,
   RS extends Roles<P>,
   C extends ColumnsMap,
   D extends SqlDialect,
   PC extends PresenceMap,
->(schema: Schema<P, RS, C, PC>, booted: Booted): OpenHandle<D> {
+>(schema: Schema<P, RS, C, PC>, booted: Booted, extras: HandleExtras = {}): OpenHandle<D> {
   const handles = new Map<string, Handle<D>>();
   const { engine, validate } = booted;
 
@@ -63,6 +70,9 @@ export function openHandles<
       const drizzleOptions = { engine, validate, driver: typed, schema };
       if (partition !== undefined) Object.assign(drizzleOptions, { partition });
       if (options.as !== undefined) Object.assign(drizzleOptions, { as: options.as });
+      if (extras.operations !== undefined)
+        Object.assign(drizzleOptions, { operations: extras.operations });
+      if (extras.now !== undefined) Object.assign(drizzleOptions, { now: extras.now });
       const handle = meshDrizzle<D>(drizzleOptions);
       handles.set(key, handle);
       return Result.ok(handle);

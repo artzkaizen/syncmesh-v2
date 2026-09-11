@@ -161,3 +161,39 @@ describe("createMesh over transports", () => {
     await owner.stop();
   });
 });
+
+describe("runtime transports (book ch. 8)", () => {
+  test("a radio added mid-life carries the mesh; removing one removes a route, never rows", async () => {
+    const { owner, staff, control } = await room();
+    await owner.ready();
+    await staff.ready();
+    await settle(control);
+
+    const ho = owner.on("org:acme").unwrap();
+    const hs = staff.on("org:acme").unwrap();
+    await hs.db.insert(notes).values({ id: "first", body: "over the original radio" });
+    await settle(control);
+    expect((await ho.db.select().from(notes)).map((r) => r.id)).toEqual(["first"]);
+
+    // a second radio pair appears after construction — the settings-screen toggle
+    const late = loopbackPair();
+    (await owner.transports.add(linkTransport("late:owner", () => late.a))).unwrap();
+    (await staff.transports.add(linkTransport("late:staff", () => late.b))).unwrap();
+    expect(owner.transports.list().map((t) => t.name)).toEqual(["loopback:owner", "late:owner"]);
+
+    // the original goes away: whatever flows now can only be flowing over the late radio
+    expect(await owner.transports.remove("loopback:owner", { drain: true })).toBe(true);
+    expect(await staff.transports.remove("loopback:staff", { drain: true })).toBe(true);
+    expect(await owner.transports.remove("loopback:owner")).toBe(false); // already gone
+    expect(owner.transports.list().map((t) => t.name)).toEqual(["late:owner"]);
+    // a route left, not data
+    expect((await ho.db.select().from(notes)).map((r) => r.id)).toEqual(["first"]);
+
+    await hs.db.insert(notes).values({ id: "second", body: "only the late radio is left" });
+    for (let round = 0; round < 4; round += 1) await settle(late.control);
+    expect((await ho.db.select().from(notes)).map((r) => r.id).sort()).toEqual(["first", "second"]);
+
+    await owner.stop();
+    await staff.stop();
+  });
+});

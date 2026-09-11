@@ -11,7 +11,7 @@ export type { Cell, CellValue, ColumnName, JsonObject, JsonValue, RowRecord } fr
 export { canonicalJson, isJsonArray, isVisible, jsonObject } from "./record.js";
 export type { Change, FoldableChange, Row, RowKey, TableName } from "./change.js";
 export type { MergeSpec, Strategy, StrategyName } from "./strategy.js";
-export { compareValue, strategies } from "./strategy.js";
+export { compareValue, counterValue, strategies } from "./strategy.js";
 export type { KeyedRecord, State, TableState } from "./state.js";
 export { emptyState, getRecord, readRow } from "./state.js";
 export { applyChange, mergeRecord } from "./apply.js";

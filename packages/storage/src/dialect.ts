@@ -62,11 +62,35 @@ export interface CaptureSql {
   readonly stampPartition: (table: TableName, pk: ColumnName, partitionColumn: string) => string;
 }
 
+/**
+ * The write's durable record and its custody receipts (book ch. 10): what survives kill-9 so a
+ * caller can look an ambiguous outcome up instead of retrying into a duplicate.
+ */
+export interface OperationSql {
+  /** Both tables and their indexes; idempotent, run on open. */
+  readonly ddl: readonly string[];
+  /** `id, peer, seq, label, at_ms, status`. */
+  readonly insertOp: string;
+  /** The full row by op id. */
+  readonly selectOp: string;
+  /** The full row by the event it became — `peer, seq`. */
+  readonly selectOpByEvent: string;
+  /** Every op no peer has receipted yet, oldest first. */
+  readonly selectUnsettled: string;
+  /** `corrected_by, corrected_reason, peer, seq` — the displaced write learns why (ch. 20). */
+  readonly markCorrected: string;
+  /** `holder, at_ms, author, through_seq`: one receipt per op the holder's cursor now covers. */
+  readonly insertReceiptsThrough: string;
+  /** `holder, at_ms` per receipt of one event — `peer, seq`. */
+  readonly selectReceipts: string;
+}
+
 export interface Dialect {
   readonly name: SqlDialect;
   readonly events: EventSql;
   readonly state: StateSql;
   readonly capture: CaptureSql;
+  readonly operations: OperationSql;
   /** The bind marker for the 1-based position — `?` or `$n`. */
   readonly placeholder: (position: number) => string;
   /** A cell in the form the column's SQL type holds it in this dialect. */

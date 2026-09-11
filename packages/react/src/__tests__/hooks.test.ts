@@ -23,6 +23,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { useCan } from "../use-can.js";
 import { useLiveQuery } from "../use-live-query.js";
 import { usePresence } from "../use-presence.js";
+import { useQuery } from "../use-query.js";
 
 const jobs = sqliteTable("jobs", {
   id: text().primaryKey(),
@@ -261,5 +262,49 @@ describe("usePresence", () => {
       notify();
     });
     expect(renders.at(-1)).toBe("");
+  });
+});
+
+describe("useQuery — the book's dialect (ch. 9)", () => {
+  test("disabled without a call, ready with undefined data first, coverage settles apart from isReady", async () => {
+    const { handle } = await open();
+    await handle.db.insert(jobs).values({ id: "j1", title: "one", rank: 1 });
+
+    let releaseSettled: () => void = () => undefined;
+    const settledGate = new Promise<void>((resolve) => {
+      releaseSettled = resolve;
+    });
+    const seen: string[] = [];
+    let pick: (on: boolean) => void = () => undefined;
+    const Screen = () => {
+      const [on, setOn] = useState(false);
+      pick = setOn;
+      const call = on
+        ? {
+            key: "jobs-all",
+            live: () => handle.live(handle.db.select({ id: jobs.id }).from(jobs).orderBy(jobs.id)),
+            settled: () => settledGate,
+          }
+        : undefined;
+      const { data, status, isReady, isEnabled, coverage } = useQuery(call);
+      seen.push(
+        `${status}/${isEnabled ? "on" : "off"}/${isReady ? "ready" : "…"}/${coverage.kind}/${
+          data === undefined ? "∅" : data.map((r) => r.id).join(",")
+        }`,
+      );
+      return null;
+    };
+
+    const { settle } = await mount(createElement(Screen));
+    expect(seen.at(-1)).toBe("disabled/off/…/local-only/∅"); // no call: disabled, not crashed
+
+    await act(async () => pick(true));
+    await settle();
+    // local store answered (isReady, rows in) while the world has not (coverage local-only)
+    expect(seen.at(-1)).toBe("success/on/ready/local-only/j1");
+
+    await act(async () => releaseSettled());
+    await settle();
+    expect(seen.at(-1)).toBe("success/on/ready/caught-up/j1"); // the two facts settle apart
   });
 });

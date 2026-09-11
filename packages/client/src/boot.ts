@@ -10,14 +10,14 @@ import type {
 } from "@syncmesh/engine";
 import type { MergeSpec, PeerId } from "@syncmesh/kernel";
 import type { Table } from "@syncmesh/schema";
-import type { SqlDriver, StoreLocked, Stores } from "@syncmesh/storage";
+import type { OperationStore, SqlDriver, StoreLocked, Stores } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { Grant, Identity } from "@syncmesh/wire";
 
 import { createValidator, openEngine } from "@syncmesh/engine";
 import { createHlcClock } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
-import { installRls, openStores } from "@syncmesh/storage";
+import { installRls, openStores, operationStore } from "@syncmesh/storage";
 
 import { NoDefaultStore } from "./errors.js";
 
@@ -58,6 +58,8 @@ export interface Booted {
   readonly store: EventStore;
   /** The SQL connection the tables live on; absent for a mesh over a bare event store. */
   readonly driver?: SqlDriver;
+  /** The write ledger's store, on that same connection; present exactly when `driver` is. */
+  readonly operations?: OperationStore;
   /** The same ladder the engine runs on every write — for judging a captured transaction before it commits (D20). */
   readonly validate: Validator;
   readonly close: () => Promise<void>;
@@ -158,7 +160,11 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
     const booted = { engine, store, validate };
     const driver = options.driver ?? owned?.driver;
     yield* Result.await(policiesFor(options, driver));
-    if (driver !== undefined) Object.assign(booted, { driver });
+    if (driver !== undefined) {
+      Object.assign(booted, { driver });
+      const operations = yield* Result.await(operationStore(driver));
+      Object.assign(booted, { operations });
+    }
     return Result.ok({
       ...booted,
       // a driver or a set of stores you passed stays yours to close; the default store is ours

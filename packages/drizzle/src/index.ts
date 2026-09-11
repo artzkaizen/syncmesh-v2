@@ -1,6 +1,7 @@
 import type { Engine, Principal, Validator, ValidatorSchema } from "@syncmesh/engine";
 import type { PartitionKey } from "@syncmesh/kernel";
-import type { SqlDialect, SqlDriver } from "@syncmesh/storage";
+import type { OperationStore, SqlDialect, SqlDriver } from "@syncmesh/storage";
+import type { Temporal } from "@syncmesh/temporal";
 
 import { createWriter } from "@syncmesh/storage";
 import { PgDialect } from "drizzle-orm/pg-core";
@@ -44,6 +45,9 @@ export interface MeshDrizzleOptions<D extends SqlDialect = "sqlite"> {
    * write their rules deny is refused before COMMIT. The events stay the device's.
    */
   readonly as?: Principal;
+  /** Writes each synced commit's durable operation record inside the transaction (book ch. 10). */
+  readonly operations?: OperationStore;
+  readonly now?: () => Temporal.Instant;
 }
 
 /** The handle a dialect hands out: `db`, `read` and `live` over that dialect's Drizzle. */
@@ -61,6 +65,9 @@ export function meshDrizzle<D extends SqlDialect = "sqlite">(
   const tables = schema.entries.map((e) => e.table);
   const writerDeps = { engine, validate, driver, tables, schema };
   if (actor !== undefined) Object.assign(writerDeps, { actor });
+  if (options.operations !== undefined)
+    Object.assign(writerDeps, { operations: options.operations });
+  if (options.now !== undefined) Object.assign(writerDeps, { now: options.now });
   const deps: FaceDeps = {
     engine,
     schema,

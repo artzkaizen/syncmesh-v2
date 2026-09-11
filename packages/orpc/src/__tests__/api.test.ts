@@ -11,7 +11,7 @@ import { z } from "zod";
 
 import type { AuthorityLink } from "../api.js";
 
-import { authority, meshApi, mutation, query } from "../api.js";
+import { meshApi, mutation, query } from "../api.js";
 
 const book = sqliteTable("book", {
   id: text().primaryKey(),
@@ -59,9 +59,10 @@ const books = {
  * here would be a handler in the app's bundle.
  */
 const billing = {
-  charge: authority
+  charge: mutation
     .input(z.object({ bookId: z.string(), cents: z.number().int().positive() }))
-    .returns<{ receiptId: string }>(),
+    .output(z.object({ receiptId: z.string() }))
+    .authority(),
 };
 
 const open = async (role: string | undefined) => {

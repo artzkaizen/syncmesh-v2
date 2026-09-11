@@ -1,22 +1,29 @@
-export type { CallBody, HandlerOptions } from "./http.js";
+export type { CallBody, HandlerOptions, HttpLinkOptions } from "./http.js";
 export { createHandler, findProcedure, httpLink } from "./http.js";
 export type { App, AppOptions } from "./app.js";
 export { createApp } from "./app.js";
 export type {
   Api,
-  CallError,
+  AuthorityContext,
   AuthorityDef,
+  AuthorityHandlers,
   AuthorityLink,
+  CallError,
+  DeclaredErrors,
   MutationDef,
   Permissions,
   ProcedureDef,
-  QueryDef,
   QueryCall,
+  QueryDef,
+  RouteMeta,
   Router,
   SyncSource,
   WriteResult,
 } from "./api.js";
-export { authority, meshApi, mutation, query } from "./api.js";
+export { meshApi, mutation, query } from "./api.js";
+export { watch } from "./watch.js";
+export type { Server, ServerOptions } from "./server.js";
+export { createServer } from "./server.js";
 
 import type { Handle, Mesh } from "@syncmesh/client";
 import type { JsonValue } from "@syncmesh/kernel";

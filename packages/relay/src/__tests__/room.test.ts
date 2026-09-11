@@ -384,6 +384,28 @@ describe("backpressure", () => {
     expect(sa.closedWith.some((reason) => reason.includes("backlog"))).toBe(true);
     room.close();
   });
+
+  test("the ceiling is bytes too: a few near-cap frames close a stalled socket", async () => {
+    const a = peer(40, "acct_a");
+    const b = peer(80, "acct_b");
+    // frames alone would allow 1000 of these; the byte ceiling refuses long before that
+    const room = await open({ limits: { maxBacklogBytes: 512 } });
+    const sa = fakeSocket();
+    const ca = room.connect(sa.socket);
+    ca.receive(join(a.identity.peerId));
+    await tick();
+    sa.setMode("dropped");
+
+    const sb = fakeSocket();
+    const cb = room.connect(sb.socket);
+    cb.receive(join(b.identity.peerId));
+    await tick();
+    for (let n = 0; n < 8 && !sa.closedWith.some((r) => r.includes("backlog")); n += 1)
+      cb.receive(eventFrame(await write(b, `n${n}`, "x".repeat(200))));
+    await tick();
+    expect(sa.closedWith.some((reason) => reason.includes("backlog"))).toBe(true);
+    room.close();
+  });
 });
 
 describe("fanout (D09-B)", () => {

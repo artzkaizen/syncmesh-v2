@@ -4,6 +4,7 @@ import type { ColumnKind, Table } from "@syncmesh/schema";
 import type { CaptureSql, Dialect } from "./dialect.js";
 import type { SqlValue } from "./driver.js";
 
+import { POSTGRES_OPERATIONS } from "./dialect-operations.js";
 import { columnsOf, literal, quote } from "./identifiers.js";
 
 const CHANGES = "_syncmesh_changes";
@@ -215,6 +216,7 @@ export const POSTGRES: Dialect = {
     clearScope: `DELETE FROM _syncmesh_scope`,
   },
   capture,
+  operations: POSTGRES_OPERATIONS,
   placeholder: (position) => `$${position}`,
   cell: postgresCell,
   migrate: async (driver) => {

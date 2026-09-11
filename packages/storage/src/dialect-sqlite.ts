@@ -4,6 +4,7 @@ import type { ColumnKind, Table } from "@syncmesh/schema";
 import type { CaptureSql, Dialect } from "./dialect.js";
 import type { SqlValue } from "./driver.js";
 
+import { SQLITE_OPERATIONS } from "./dialect-operations.js";
 import { columnsOf, literal, quote } from "./identifiers.js";
 
 const CHANGES = "_syncmesh_changes";
@@ -198,6 +199,7 @@ export const SQLITE: Dialect = {
     clearScope: `DELETE FROM state_scope`,
   },
   capture,
+  operations: SQLITE_OPERATIONS,
   placeholder: () => "?",
   cell: sqliteCell,
   migrate: async (driver) => {

@@ -41,7 +41,7 @@ const trafficOf = (kind: RelayFrame["kind"]): TrafficClass =>
  * makes the re-push a no-op.
  */
 export function createConnection(socket: RelaySocket, room: RoomState): RelayConnection {
-  const sender = createSender(socket, room.maxBacklog);
+  const sender = createSender(socket, room.maxBacklog, room.limits.maxBacklogBytes);
   let me: PeerId | undefined;
   /**
    * A fatal refusal ends the conversation here and not only on the socket. `close()` starts a

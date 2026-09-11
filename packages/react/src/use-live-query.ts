@@ -54,22 +54,24 @@ const asError = (cause: unknown): Error =>
  * if (data.length === 0) return isSettled ? <NoBooks /> : <StillSyncing />;
  * ```
  */
-export function useLiveQuery<T>(call: LiveCall<T>): LiveResult<T> {
-  const { key } = call;
+export function useLiveQuery<T>(call: LiveCall<T> | undefined): LiveResult<T> {
+  const key = call?.key;
   const current = useRef(call);
   current.current = call;
 
-  // building the query runs the input schema: a refusal is this render's error, not a throw
-  const opened = useMemo((): Live<T> | Error => {
+  // building the query runs the input schema: a refusal is this render's error, not a throw;
+  // no call at all — the conditional-query case — opens nothing and subscribes to nothing
+  const opened = useMemo((): Live<T> | Error | undefined => {
+    if (key === undefined) return undefined;
     try {
-      return current.current.live();
+      return current.current?.live();
     } catch (cause) {
       return asError(cause);
     }
   }, [key]);
 
   useEffect(() => {
-    if (opened instanceof Error) return;
+    if (opened instanceof Error || opened === undefined) return;
     return () => opened.release();
   }, [opened]);
 
@@ -81,19 +83,22 @@ export function useLiveQuery<T>(call: LiveCall<T>): LiveResult<T> {
     [opened],
   );
   const subscribe = useCallback(
-    (notify: () => void) => (opened instanceof Error ? () => undefined : opened.subscribe(notify)),
+    (notify: () => void) =>
+      opened instanceof Error || opened === undefined ? () => undefined : opened.subscribe(notify),
     [opened],
   );
   const read = useCallback(
-    () => failed ?? (opened instanceof Error ? undefined : opened.snapshot()),
+    () =>
+      failed ?? (opened instanceof Error || opened === undefined ? undefined : opened.snapshot()),
     [opened, failed],
   );
   const snap = useSyncExternalStore(subscribe, read, read);
 
   const [settledFor, setSettledFor] = useState<string>();
   useEffect(() => {
+    if (key === undefined) return undefined;
     let open = true;
-    void current.current.settled().then(
+    void current.current?.settled().then(
       () => {
         if (open) setSettledFor(key);
       },
@@ -112,7 +117,7 @@ export function useLiveQuery<T>(call: LiveCall<T>): LiveResult<T> {
       isPending: status === "pending",
       isError: status === "error",
       isSuccess: status === "success",
-      isSettled: settledFor === key,
+      isSettled: key !== undefined && settledFor === key,
       error: snap?.error,
     };
   }, [snap, settledFor, key]);

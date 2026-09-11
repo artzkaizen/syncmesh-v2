@@ -84,3 +84,44 @@ describe("a blob through the relay", () => {
     await alone.stop();
   });
 });
+
+describe("the blob surface (book ch. 12)", () => {
+  test("stream yields the verified bytes; retain refcounts; progress ticks on arrival", async () => {
+    const { createBlobs } = await import("../blobs.js");
+    const { hashOf, memoryBlobStore } = await import("@syncmesh/storage");
+    const blobs = createBlobs({ store: memoryBlobStore(), transports: () => [] });
+    const bytes = Uint8Array.from({ length: 512 }, (_, i) => i % 251);
+
+    const hash = hashOf(bytes);
+    expect((await blobs.fetch(hash)).isErr()).toBe(true); // nothing local, nobody to ask
+
+    const ticks: (readonly [number, number | undefined])[] = [];
+    // the cache path is what this surface owns end to end: seed the store, then read through it
+    const seeded = memoryBlobStore();
+    (await seeded.putAt(hash, bytes)).unwrap();
+    const local = createBlobs({ store: seeded, transports: () => [] });
+
+    const fetched = await local.fetch(hash, {
+      onProgress: (got, total) => void ticks.push([got, total]),
+    });
+    expect(fetched.unwrap()).toEqual(bytes);
+    expect(ticks).toEqual([[512, 512]]); // cached: one honest tick, arrival == total
+
+    const chunks: Uint8Array[] = [];
+    const reader = local.stream(hash).getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toEqual(bytes);
+
+    local.retain(hash);
+    local.retain(hash);
+    local.release(hash);
+    expect(local.retained(hash)).toBe(1); // still held once: a sweep must leave it
+    local.release(hash);
+    expect(local.retained(hash)).toBe(0);
+  });
+});

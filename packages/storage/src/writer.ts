@@ -8,20 +8,24 @@ import type {
   Validator,
   ValidatorSchema,
 } from "@syncmesh/engine";
-import type { Change, EventId, PartitionKey, Procedure } from "@syncmesh/kernel";
+import type { Change, EventId, PartitionKey, Procedure, SyncEvent } from "@syncmesh/kernel";
 import type { Table } from "@syncmesh/schema";
 
 import { EmptyMutation, PolicyDenied, can } from "@syncmesh/engine";
 import { getRecord, readRow } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
+import { Temporal } from "@syncmesh/temporal";
 
 import type { SqlDriver } from "./driver.js";
+import type { OperationStore } from "./operation-store.js";
 
 import { captureChanges } from "./capture.js";
 
 /** One committed transaction: the event it appended, for `delivered` and `revert`. */
 export interface TxReceipt {
   readonly eventId: EventId;
+  /** The durable operation record's id — allocated before commit, absent for local-only writes or a writer with no store. */
+  readonly operationId?: string;
 }
 
 /**
@@ -50,6 +54,12 @@ export interface WriterDeps {
    */
   readonly actor?: Principal;
   readonly schema?: ValidatorSchema;
+  /**
+   * Writes each synced commit's durable operation record inside the same transaction (book
+   * ch. 10). Local-only writes never travel, so they get no record.
+   */
+  readonly operations?: OperationStore;
+  readonly now?: () => Temporal.Instant;
 }
 
 /** The event's procedure label: given, or derived from what the transaction turned out to change. */
@@ -146,13 +156,29 @@ export function createWriter(deps: WriterDeps): Write {
           new EmptyMutation({ procedure: procedure(name), message: `${name} changed nothing` }),
         );
       }
+      const mutateOptions = mutateOptionsFor(options, changes);
+      const recorded =
+        deps.operations !== undefined && !("local" in mutateOptions)
+          ? { store: deps.operations, id: crypto.randomUUID() }
+          : undefined;
+      if (recorded !== undefined)
+        Object.assign(mutateOptions, {
+          record: async (event: SyncEvent) => {
+            const row = {
+              id: recorded.id,
+              peer: event.peerId,
+              seq: event.seqNum,
+              label: name,
+              atMs: (deps.now?.() ?? Temporal.Now.instant()).epochMilliseconds,
+            };
+            (await recorded.store.record(row)).unwrap();
+          },
+        });
       const event = yield* Result.await(
-        engine.mutate(
-          procedure(name),
-          (tx) => replay(tx, changes),
-          mutateOptionsFor(options, changes),
-        ),
+        engine.mutate(procedure(name), (tx) => replay(tx, changes), mutateOptions),
       );
-      return Result.ok({ eventId: event.id });
+      const receipt = { eventId: event.id };
+      if (recorded !== undefined) Object.assign(receipt, { operationId: recorded.id });
+      return Result.ok(receipt);
     });
 }

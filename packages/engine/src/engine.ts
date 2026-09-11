@@ -44,6 +44,12 @@ import { createWritePath } from "./writes.js";
 export interface MutateOptions {
   readonly partition?: PartitionKey;
   readonly local?: boolean;
+  /**
+   * Runs inside the same transaction as the append, once the event is built — the operation
+   * record's seat (book ch. 10): record and event land together or neither does. A throw here
+   * rolls the whole write back.
+   */
+  readonly record?: (event: SyncEvent) => Promise<void>;
 }
 
 /** Where a batch came from; `repair` carries no cursors (RFC-0014), `snapshot` adopts them last (RFC-0019). */

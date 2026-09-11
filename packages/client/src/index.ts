@@ -18,9 +18,15 @@ export type {
   RevisionView,
   TxReceipt,
 } from "./mesh.js";
+export type { HandleCounts, Inspect, Teardown } from "./inspect.js";
+export type { OperationsView } from "./operations.js";
+export { openOperations, wireOperations } from "./operations.js";
+export type { RecoveryIssue, RecoveryView } from "./recovery.js";
+export { openRecovery } from "./recovery.js";
+export { createHandleTally } from "./inspect.js";
 export type { SyncState } from "./sync-state.js";
 export { createMesh } from "./mesh.js";
 export type { GrantsRestored, IssueRequest, MeshGrants, StandingOf } from "./grants.js";
 export { DeviceRevoked, NoGrantHeld, createMeshGrants, rememberGrants } from "./grants.js";
 export type { RunningTransports } from "./transports.js";
-export { runTransports } from "./transports.js";
+export { TransportAddFailed, runTransports } from "./transports.js";

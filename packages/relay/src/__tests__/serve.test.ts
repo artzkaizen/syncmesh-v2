@@ -90,6 +90,37 @@ describe("startRelay — D09-A, the embedded host", () => {
     }
   }, 20_000);
 
+  test("the connection cap refuses the socket past it with 503, and a close frees the seat", async () => {
+    const dataDir = mkdtempSync(joinPath(tmpdir(), "syncmesh-relay-"));
+    try {
+      const relay = await startRelay(0, {
+        dataDir,
+        keepaliveMs: 60_000,
+        limits: { maxConnections: 1 },
+      });
+      const first = new WebSocket(relay.url);
+      await new Promise((resolve) => first.addEventListener("open", resolve, { once: true }));
+
+      const refused = await fetch(relay.url.replace("ws", "http"), {
+        headers: { upgrade: "websocket", connection: "upgrade" },
+      });
+      expect(refused.status).toBe(503);
+
+      first.close();
+      await tick(80); // the seat frees on close, so the next client is not locked out
+      const admitted = new WebSocket(relay.url);
+      const opened = await new Promise((resolve) => {
+        admitted.addEventListener("open", () => resolve(true), { once: true });
+        admitted.addEventListener("error", () => resolve(false), { once: true });
+      });
+      expect(opened).toBe(true);
+      admitted.close();
+      await relay.stop();
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   test("paths name rooms: two rooms on one relay do not share a log", async () => {
     const dataDir = mkdtempSync(joinPath(tmpdir(), "syncmesh-relay-"));
     try {

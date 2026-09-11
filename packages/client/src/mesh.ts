@@ -1,16 +1,7 @@
-import type { MeshHandle } from "@syncmesh/drizzle";
-import type { Engine, EventStore, Principal, StateStore } from "@syncmesh/engine";
+import type { Engine, EventStore, StateStore } from "@syncmesh/engine";
 import type { EventId, PeerId, RowKey, Row as WireCells, TableName } from "@syncmesh/kernel";
 import type { InvalidPartitionKey } from "@syncmesh/kernel";
-import type {
-  AppValue,
-  ColumnsMap,
-  PartitionTree,
-  PresenceMap,
-  Roles,
-  Schema,
-  Table,
-} from "@syncmesh/schema";
+import type { ColumnsMap, PartitionTree, PresenceMap, Roles, Schema } from "@syncmesh/schema";
 import type { BlobStore, SqlDialect, SqlDriver, Stores, TxReceipt } from "@syncmesh/storage";
 import type { Transport, TransportContext } from "@syncmesh/transport";
 
@@ -24,7 +15,6 @@ import { createGrantRegistry, type Identity } from "@syncmesh/wire";
 import type { Blobs } from "./blobs.js";
 import type { Booted, MeshOpenError } from "./boot.js";
 import type { DeliveredOptions, ReceivedOptions } from "./delivered.js";
-import type { Revision } from "./history.js";
 import type { Topics } from "./presence.js";
 import type { SyncState } from "./sync-state.js";
 
@@ -35,13 +25,23 @@ import { createCan } from "./can.js";
 import { createDelivered, createReceived } from "./delivered.js";
 import { createFlush } from "./flush.js";
 import { openGrants, restoreGrants, type MeshGrants, type MeshGrantsOptions } from "./grants.js";
-import { openHandles } from "./handles.js";
-import { rowHistory } from "./history.js";
+import { openHandles, type Handle, type OnOptions } from "./handles.js";
+import { historyView, type HistoryViewOptions, type RevisionView } from "./history-view.js";
+import {
+  createHandleTally,
+  linksAcross,
+  meterBlobs,
+  meterHandles,
+  type Inspect,
+  type Teardown,
+} from "./inspect.js";
 import { openInternal, type MeshInternal } from "./internal.js";
+import { wireOperations, type OperationsView } from "./operations.js";
 import { createPresence } from "./presence.js";
+import { openRecovery, type RecoveryView } from "./recovery.js";
 import { createSyncStates } from "./sync-state.js";
 import { followTelemetry, type MeshTelemetrySeam } from "./telemetry.js";
-import { runTransports } from "./transports.js";
+import { runTransports, type RunningTransports } from "./transports.js";
 
 export interface MeshOptions<
   P extends PartitionTree,
@@ -82,7 +82,7 @@ export interface MeshOptions<
   /** Where the default store's file goes. Default `.syncmesh`. */
   readonly dataDir?: string;
   readonly undoDepth?: number;
-  /** Started at construction (D12); `add`/`remove` later is deliberately absent. */
+  /** Started at construction (D12); `mesh.transports.add/remove` reshape the set later (book ch. 8). */
   readonly transports?: readonly Transport[];
   /** An ungranted peer asked to exist on some link — forward it to your issuer, or answer with `grants.issue`. Untrusted. */
   readonly onGrantRequest?: TransportContext["onGrantRequest"];
@@ -115,32 +115,8 @@ export interface MeshOptions<
   readonly now?: () => Temporal.Instant;
 }
 
-/** The data surface of one handle: Drizzle in, events out (D20), in the connection's dialect. */
-export type Handle<D extends SqlDialect = "sqlite"> = MeshHandle<D>;
-
-export interface OnOptions {
-  /**
-   * Act as this principal: `read()` sources admit only rows their `read` rule admits, and a
-   * write their rules deny rejects the transaction before COMMIT. The events stay this device's.
-   */
-  readonly as?: Principal;
-}
-
-export interface HistoryOptions {
-  /** Only this instance's writes count; omitted, the whole table. */
-  readonly partition?: string;
-}
-
-/**
- * A revision at the string-named door: the table arrived as a name, so the columns are the
- * schema's, not the type system's.
- */
-export type RevisionView = Omit<Revision<Table>, "changed" | "row"> & {
-  /** What this write set; empty for a delete. */
-  readonly changed: Readonly<Record<string, AppValue | undefined>>;
-  /** The row as of this revision — the fold of every write up to it; `null` once deleted. */
-  readonly row: Readonly<Record<string, AppValue | undefined>> | null;
-};
+export type { Handle, OnOptions } from "./handles.js";
+export type { HistoryViewOptions as HistoryOptions, RevisionView } from "./history-view.js";
 
 export interface Mesh<
   D extends SqlDialect = "sqlite",
@@ -157,7 +133,7 @@ export interface Mesh<
   readonly history: (
     table: string,
     key: string,
-    options?: HistoryOptions,
+    options?: HistoryViewOptions,
   ) => Promise<Result<readonly RevisionView[], unknown>>;
   /**
    * The ephemeral tier pinned to an instance (D16) — `mesh.presence("board:b1").cursor.set(…)`.
@@ -178,7 +154,7 @@ export interface Mesh<
    */
   readonly syncOf: (table: string, key: string) => SyncState | undefined;
   /** Fires when a `syncOf` answer may have changed: a write left, an ack landed, a fold arrived. */
-  readonly onSyncChange: (listener: () => void) => () => void;
+  readonly onSyncChange: (listener: () => void) => Teardown;
   /** Bytes that never enter the log: content-addressed, verified at both ends (D18). */
   readonly blobs: Blobs;
   /**
@@ -205,10 +181,18 @@ export interface Mesh<
   readonly canRevert: (id: EventId) => boolean;
   /** The reserved tables, read through the engine's own folds rather than a second copy. */
   readonly internal: MeshInternal;
+  /** The write ledger: durable operation records and their receipts; absent for a mesh over a bare event store. */
+  readonly operations?: OperationsView;
+  /** What is stuck and why, as stable causes; `run` is the operator's idempotent nudge ({@link RecoveryView}). */
+  readonly recovery: RecoveryView;
+  /** Leak counters: what was handed out and never released shows here, loudly ({@link Inspect}). */
+  readonly inspect: Inspect;
+  /** The radios at runtime: a settings toggle adds one, removing one removes a route, never data. */
+  readonly transports: Pick<RunningTransports, "add" | "remove" | "list">;
   /** Every transport's queue has run out; never rejects, never stops early (`createFlush`). */
   readonly flush: () => Promise<void>;
   /** One listener for `engine.*` and `mesh.*` alike (D17); a thrower never decides a write. */
-  readonly onTelemetry: MeshTelemetrySeam["onTelemetry"];
+  readonly onTelemetry: (listener: Parameters<MeshTelemetrySeam["onTelemetry"]>[0]) => Teardown;
   /** Every transport ready (or force-ready); rejects if one failed to start. */
   readonly ready: () => Promise<void>;
   /**
@@ -286,31 +270,18 @@ function assemble<
   const { engine } = booted;
   const entryOf = new Map(schema.entries.map((e) => [String(e.table.name), e]));
 
-  const on = openHandles<P, RS, C, D, PC>(schema, booted);
-  const flush = createFlush({ transports: () => options.transports ?? [] });
+  const tally = createHandleTally();
+  const wiredDeps = { engine, self: identity.peerId, now };
+  if (booted.operations !== undefined) Object.assign(wiredDeps, { store: booted.operations });
+  const wired = wireOperations(wiredDeps);
+  const on = meterHandles<D>(tally, openHandles<P, RS, C, D, PC>(schema, booted, wired.extras));
+  const flush = createFlush({ transports: () => links.list() });
   const internal = openInternal({ engine, self: identity.peerId });
   const syncStates = createSyncStates(engine, identity.peerId);
 
   const { accounts, accountOf, author } = openAccounts(options, { engine, grants, now });
 
-  const history: Mesh<D, PC>["history"] = (table, key, historyOptions = {}) =>
-    Result.gen(async function* () {
-      const entry = entryOf.get(table) ?? panic(`the manifest has no table "${table}"`);
-      const entries = yield* Result.await(booted.store.all());
-      const partition =
-        historyOptions.partition === undefined
-          ? undefined
-          : yield* parsePartitionKey(historyOptions.partition);
-      // SAFETY: keys are opaque strings in the kernel
-      const rowKey = key as never;
-      const revisions = rowHistory(entry.table, rowKey, entries, {
-        merge: schema.merge,
-        partition,
-        accountOf,
-      });
-      // SAFETY: the erased Table generic degenerates the cell types; every cell is an AppValue by construction
-      return Result.ok(revisions as readonly RevisionView[]);
-    });
+  const history = historyView({ schema, store: booted.store, accountOf });
 
   const presence = createPresence({
     identity,
@@ -320,10 +291,14 @@ function assemble<
     send: (wire) => links.sendPresence(wire),
     now,
   });
-  const blobs = createBlobs({
-    store: options.blobStore ?? memoryBlobStore(),
-    transports: () => links.withBlobs(),
-  });
+  const blobs = meterBlobs(
+    tally,
+    createBlobs({
+      store: options.blobStore ?? memoryBlobStore(),
+      transports: () => links.withBlobs(),
+    }),
+  );
+  const telemetry = followTelemetry(engine);
   const transportContext: TransportContext = {
     engine,
     identity,
@@ -335,7 +310,7 @@ function assemble<
     Object.assign(transportContext, { onGrantRequest: options.onGrantRequest });
   const links = runTransports(options.transports ?? [], transportContext);
 
-  return {
+  const surface: Mesh<D, PC> = {
     engine,
     grants,
     on,
@@ -358,18 +333,24 @@ function assemble<
     syncOf: (table, key) =>
       // SAFETY: the brands name a table and a row key, which is exactly what a caller passes; they carry no invariant a string can fail
       syncStates.at(table as TableName, key as RowKey),
-    onSyncChange: (listener) => syncStates.subscribe(listener),
+    onSyncChange: (listener) => tally.wrap("subscriptions", syncStates.subscribe(listener)),
     received: createReceived(engine),
     revert: (id) => engine.revert(id),
     canRevert: (id) => engine.canRevert(id),
     internal,
+    recovery: openRecovery(engine),
+    inspect: {
+      handles: () => tally.counts(linksAcross(links.list())),
+    },
     flush,
-    onTelemetry: followTelemetry(engine),
+    onTelemetry: (listener) => tally.wrap("subscriptions", telemetry(listener)),
     ready: links.ready,
     settled: links.settled,
     running: links.running,
     requestGrant: links.requestGrant,
+    transports: { add: links.add, remove: links.remove, list: links.list },
     stop: async () => {
+      wired.stop();
       syncStates.stop();
       presence.stop(); // an explicit departure, so peers see this device leave now
       // flush before the medium closes: the save at the end of a transport's queue is exactly
@@ -379,4 +360,6 @@ function assemble<
       await booted.close();
     },
   };
+  if (wired.view !== undefined) Object.assign(surface, { operations: wired.view });
+  return surface;
 }

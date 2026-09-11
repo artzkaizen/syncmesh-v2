@@ -108,7 +108,10 @@ describe("per-socket token buckets", () => {
 
   test("a fractional refill is not lost: a steady drip at exactly the rate is admitted forever", () => {
     let at = T0;
-    const budget = createBudget({ maxFrameBytes: 1024, rates: tight(1, 1).rates }, () => at);
+    const budget = createBudget(
+      { ...DEFAULT_LIMITS, maxFrameBytes: 1024, rates: tight(1, 1).rates },
+      () => at,
+    );
     expect(budget.take("event")).toBe(true);
     for (let i = 0; i < 20; i += 1) {
       at = at.add({ milliseconds: 500 });

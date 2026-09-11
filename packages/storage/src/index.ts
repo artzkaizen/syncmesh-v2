@@ -10,6 +10,13 @@ export type { BoundSqlValue, SqliteBinding } from "./sqlite-driver.js";
 export { bindSqlite, sqliteDriver } from "./sqlite-driver.js";
 export { sqlEventStore, sqliteEventStore, type SqlEventStoreOptions } from "./event-store.js";
 export { LogCorrupt } from "./local-log.js";
+export type {
+  OperationOutcome,
+  OperationRow,
+  OperationStore,
+  ReceiptRow,
+} from "./operation-store.js";
+export { operationStore } from "./operation-store.js";
 export type { StoreLock } from "./lock.js";
 export { acquireStoreLock, StoreLocked } from "./lock.js";
 export type {
@@ -37,6 +44,9 @@ export type {
   Stores,
 } from "./open-stores.js";
 export { openStores, scopedStores, storeNameFor } from "./open-stores.js";
+export { DetachRefused, detachScope } from "./detach.js";
+export type { BudgetReport, StorageBudget } from "./budget.js";
+export { sweepBudget } from "./budget.js";
 export type { CaptureOptions } from "./capture.js";
 export { captureChanges, captureDdl, installCapture, tableDdl } from "./capture.js";
 export type { Projection, ProjectionOptions } from "./projection.js";

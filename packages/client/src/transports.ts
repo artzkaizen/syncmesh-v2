@@ -1,4 +1,5 @@
 import type { PeerId } from "@syncmesh/kernel";
+import type { Result as ResultType } from "@syncmesh/result";
 import type {
   RouteCandidate,
   RouteMessage,
@@ -6,9 +7,17 @@ import type {
   TransportContext,
 } from "@syncmesh/transport";
 
+import { Result, TaggedError } from "@syncmesh/result";
 import { KIND, ORDINARY_LINK, pickRoutes } from "@syncmesh/transport";
 
 import { boundable, enforceBudget } from "./admission.js";
+
+/** The medium refused to start, or the set had already stopped; the mesh runs on without it. */
+export class TransportAddFailed extends TaggedError("TransportAddFailed")<{
+  readonly transport: string;
+  message: string;
+  cause?: unknown;
+}> {}
 
 /** The running half of the mesh: every configured transport, started once, stopped together. */
 export interface RunningTransports {
@@ -34,6 +43,15 @@ export interface RunningTransports {
   readonly sendPresence: (wire: Uint8Array) => void;
   /** The transports that can carry bytes out of band (D18); empty when no medium here can. */
   readonly withBlobs: () => readonly Transport[];
+  /** The mediums currently running, in attach order. */
+  readonly list: () => readonly Transport[];
+  /** Starts one more medium mid-life — a settings toggle, a diagnostic pane (book ch. 8, 16). */
+  readonly add: (transport: Transport) => Promise<ResultType<void, TransportAddFailed>>;
+  /**
+   * Stops one medium by name and takes its route away; `drain` flushes its queue first.
+   * Removing a transport removes a route, never replica data. `false` when no such name runs.
+   */
+  readonly remove: (name: string, options?: { readonly drain?: boolean }) => Promise<boolean>;
   readonly stop: () => Promise<void>;
 }
 
@@ -49,9 +67,12 @@ export function runTransports(
    * Subscribed before anything is started, so a medium that fails while opening is heard.
    */
   const online = new Map<Transport, boolean>();
-  const watching = transports.map(
-    (t) => t.onStatus?.((up) => void online.set(t, up)) ?? (() => undefined),
-  );
+  /** The live set: construction seeds it, `add`/`remove` reshape it, everything reads it. */
+  const active: Transport[] = [...transports];
+  const watching = new Map<Transport, () => void>();
+  const watch = (t: Transport): void =>
+    void watching.set(t, t.onStatus?.((up) => void online.set(t, up)) ?? (() => undefined));
+  for (const t of active) watch(t);
 
   // the context each transport actually starts with: the caller's, plus the routing question
   // only this set can answer — a transport started by a test gets the caller's own and carries
@@ -60,7 +81,8 @@ export function runTransports(
     ...context,
     carries: (name, message) => carries(name, message),
   };
-  const started = Promise.all(transports.map((t) => t.start(routed)));
+  const starts = new Map<Transport, Promise<void>>(active.map((t) => [t, t.start(routed)]));
+  const started = Promise.all(starts.values());
   let running = true;
 
   /**
@@ -78,13 +100,20 @@ export function runTransports(
       partitionsOf: (device: PeerId) => context.grants.grantFor(device)?.partitions.map(String),
       self: context.identity.peerId,
     };
-    for (const transport of transports) enforceBudget(transport, facts);
+    for (const transport of active) enforceBudget(transport, facts);
   };
-  // nothing to enforce, nothing to watch: a set of transports that cannot close a link is not
-  // one a budget applies to, and subscribing anyway would be work done for no possible outcome
-  const offAdmission = transports.some(boundable)
-    ? [context.engine.onAcknowledge(sweep), context.grants.onRegistered(sweep)]
-    : [];
+  /**
+   * Nothing to enforce, nothing to watch: a set whose transports cannot close a link is not one a
+   * budget applies to, and subscribing anyway would be work done for no possible outcome — which
+   * is also why a transport driven with no mesh behind it never touches the engine at all. A
+   * transport added later can be the first boundable one, so this is asked again on `add`.
+   */
+  const offAdmission: (() => void)[] = [];
+  const watchAdmission = (): void => {
+    if (offAdmission.length > 0 || !active.some(boundable)) return;
+    offAdmission.push(context.engine.onAcknowledge(sweep), context.grants.onRegistered(sweep));
+  };
+  watchAdmission();
 
   /**
    * Score the candidates and hand back the transports behind the survivors.
@@ -104,7 +133,10 @@ export function runTransports(
   const carries = (transport: string, message: RouteMessage): boolean =>
     route(message).some((picked) => picked.name === transport);
 
-  const route = (message: RouteMessage, among = transports): readonly Transport[] => {
+  const route = (
+    message: RouteMessage,
+    among: readonly Transport[] = active,
+  ): readonly Transport[] => {
     const owners = new Map<RouteCandidate, Transport>();
     const candidates = among.map((t) => {
       const candidate = {
@@ -131,18 +163,19 @@ export function runTransports(
    * What the scoring settles today is which links are worth trying at all.
    */
   const every = (message: Omit<RouteMessage, "redundancy">): readonly Transport[] =>
-    route({ ...message, redundancy: transports.length });
+    route({ ...message, redundancy: active.length });
 
   return {
     route,
     ready: async () => {
       await started;
-      await Promise.all(transports.map((t) => t.whenReady()));
+      await Promise.all([...starts.values()].map((p) => p.catch(() => undefined)));
+      await Promise.all(active.map((t) => t.whenReady()));
     },
     running: () => running,
     settled: async () => {
-      await Promise.all(transports.map((t) => t.whenReady()));
-      const nearestFirst = [...transports].sort((x, y) => (x.priority ?? 1) - (y.priority ?? 1));
+      await Promise.all(active.map((t) => t.whenReady()));
+      const nearestFirst = [...active].sort((x, y) => (x.priority ?? 1) - (y.priority ?? 1));
       // sequentially, and in that order: waiting on them together would let the furthest source
       // decide when the answer is ready, which is exactly the race this exists to lose
       for (const transport of nearestFirst) await transport.caughtUp?.();
@@ -155,13 +188,58 @@ export function runTransports(
     sendPresence: (wire) => {
       for (const t of every({ cls: KIND.presence, bytes: wire.length })) t.sendPresence?.(wire);
     },
-    withBlobs: () => transports.filter((t) => t.putBlob !== undefined),
+    withBlobs: () => active.filter((t) => t.putBlob !== undefined),
+    list: () => [...active],
+    add: async (transport) => {
+      if (!running)
+        return Result.err(
+          new TransportAddFailed({ transport: transport.name, message: "the mesh has stopped" }),
+        );
+      watch(transport);
+      active.push(transport);
+      const opening = transport.start(routed);
+      starts.set(transport, opening);
+      const outcome = await Result.tryPromise({
+        try: () => opening,
+        catch: (cause) =>
+          new TransportAddFailed({
+            transport: transport.name,
+            message: `${transport.name} failed to start`,
+            cause,
+          }),
+      });
+      if (outcome.isErr()) {
+        const at = active.indexOf(transport);
+        if (at >= 0) active.splice(at, 1);
+        watching.get(transport)?.();
+        watching.delete(transport);
+        starts.delete(transport);
+        return Result.err(outcome.error);
+      }
+      watchAdmission(); // the newcomer may be the first medium a budget applies to
+      sweep();
+      return Result.ok(undefined);
+    },
+    remove: async (name, options = {}) => {
+      const held = active.find((t) => t.name === name);
+      if (held === undefined) return false;
+      // out of the set first, so no new frame routes onto a medium that is going away
+      active.splice(active.indexOf(held), 1);
+      watching.get(held)?.();
+      watching.delete(held);
+      online.delete(held);
+      starts.delete(held);
+      if (options.drain === true) await held.flush?.().catch(() => undefined);
+      await held.stop();
+      return true;
+    },
     stop: async () => {
       running = false;
-      for (const stopWatching of watching) stopWatching();
+      for (const stopWatching of watching.values()) stopWatching();
+      watching.clear();
       for (const off of offAdmission) off();
       await started.catch(() => undefined);
-      await Promise.all(transports.map((t) => t.stop()));
+      await Promise.all(active.map((t) => t.stop()));
     },
   };
 }

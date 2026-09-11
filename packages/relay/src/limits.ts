@@ -31,11 +31,25 @@ export interface RelayLimits {
    * log-only room should lower it to something an event never approaches.
    */
   readonly maxFrameBytes: number;
+  /**
+   * Live sockets across the whole process; the one past the cap is refused at upgrade with 503,
+   * before any handshake spend. A relay with no ceiling is an amplification vector waiting for
+   * its crowd (gap audit №5) — reconnects retry, so a refused client heals itself.
+   */
+  readonly maxConnections: number;
+  /**
+   * Bytes a stalled socket may hold queued before the relay hangs up on it. Counted in bytes,
+   * not frames: a thousand near-`maxFrameBytes` blob frames is gigabytes of retained buffers,
+   * which is the OOM the ceiling exists to prevent (gap audit №6).
+   */
+  readonly maxBacklogBytes: number;
   readonly rates: Readonly<Record<TrafficClass, RateLimit>>;
 }
 
 export const DEFAULT_LIMITS = {
   maxFrameBytes: 8 * 1024 * 1024,
+  maxConnections: 10_000,
+  maxBacklogBytes: 64 * 1024 * 1024,
   rates: {
     event: { burst: 4096, every: Temporal.Duration.from({ milliseconds: 1 }) },
     blob: { burst: 64, every: Temporal.Duration.from({ milliseconds: 100 }) },

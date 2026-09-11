@@ -119,6 +119,8 @@ export function createWritePath(deps: WriteDeps) {
               (await scoped.events.append({ event })).unwrap();
               const folded = fold([{ event }], "local");
               await persist(folded, scoped.state);
+              // the operation record's seat: same transaction, so record and event land together
+              await mutateOptions.record?.(event);
               return { event, folded };
             }),
           catch: (cause) => asStoreFailure(cause),

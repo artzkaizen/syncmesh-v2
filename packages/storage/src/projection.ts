@@ -2,7 +2,7 @@ import type { RowWrite } from "@syncmesh/engine";
 import type { CellValue } from "@syncmesh/kernel";
 import type { ColumnKind, Table } from "@syncmesh/schema";
 
-import { isVisible } from "@syncmesh/kernel";
+import { counterValue, isVisible } from "@syncmesh/kernel";
 
 import type { SqlDriver, SqlValue } from "./driver.js";
 
@@ -64,9 +64,12 @@ export function tablesProjection(
           await driver.run(plan.remove, [String(key)]);
           continue;
         }
-        const values = plan.columns.map(([, name, column]) =>
-          dialect.cell(column.def.kind, record.cells.get(name)?.value ?? null),
-        );
+        const values = plan.columns.map(([, name, column]) => {
+          const held = record.cells.get(name)?.value ?? null;
+          // a counter cell stores per-author totals; the app's table holds the read — their sum
+          const value = column.def.merge === "counter" && held !== null ? counterValue(held) : held;
+          return dialect.cell(column.def.kind, value);
+        });
         if (partitionColumn !== false) values.push(record.partition ?? null);
         await driver.run(plan.upsert, values);
       }
