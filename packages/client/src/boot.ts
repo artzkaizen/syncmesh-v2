@@ -10,7 +10,7 @@ import type {
 } from "@syncmesh/engine";
 import type { MergeSpec, PeerId } from "@syncmesh/kernel";
 import type { Table } from "@syncmesh/schema";
-import type { SqlDriver, Stores } from "@syncmesh/storage";
+import type { SqlDriver, StoreLocked, Stores } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { Grant, Identity } from "@syncmesh/wire";
 
@@ -21,7 +21,7 @@ import { installRls, openStores } from "@syncmesh/storage";
 
 import { NoDefaultStore } from "./errors.js";
 
-export type MeshOpenError = StoreFailure | StateCorrupt | NoDefaultStore;
+export type MeshOpenError = StoreFailure | StateCorrupt | NoDefaultStore | StoreLocked;
 
 export interface BootOptions {
   /** What boot reads off the manifest: the validator's structural view, plus the merge rules. */

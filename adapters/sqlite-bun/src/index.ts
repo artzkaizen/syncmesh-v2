@@ -1,8 +1,14 @@
 import type { StoreFailure } from "@syncmesh/engine";
 import type { Result } from "@syncmesh/result";
-import type { OpenStoresOptions, SqlRow, SqliteDriver, Stores } from "@syncmesh/storage";
+import type {
+  OpenStoresOptions,
+  SqlRow,
+  SqliteDriver,
+  StoreLocked,
+  Stores,
+} from "@syncmesh/storage";
 
-import { openStores, sqliteDriver } from "@syncmesh/storage";
+import { acquireStoreLock, openStores, sqliteDriver } from "@syncmesh/storage";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -36,12 +42,36 @@ export interface DefaultStoreOptions extends OpenStoresOptions {
 }
 
 /**
- * The durable default on Bun: event log and persisted state in one SQLite file, the directory created if missing.
+ * The durable default on Bun: event log and persisted state in one SQLite file, the directory
+ * created if missing, held under an exclusive lock — a second open fails now with `StoreLocked`,
+ * and `close` releases the hold.
  *
  * @example
  * const stores = (await defaultStore({ name: "notes", dir: ".syncmesh" })).unwrap();
  */
-export function defaultStore(options: DefaultStoreOptions): Promise<Result<Stores, StoreFailure>> {
+export async function defaultStore(
+  options: DefaultStoreOptions,
+): Promise<Result<Stores, StoreFailure | StoreLocked>> {
   mkdirSync(options.dir, { recursive: true });
-  return openStores(bunSqliteDriver(join(options.dir, `${options.name}.db`)), options);
+  const path = join(options.dir, `${options.name}.db`);
+  const lockDb = new Database(`${path}.lock`, { create: true, strict: true });
+  const lock = acquireStoreLock({
+    path,
+    run: (sql) => lockDb.run(sql),
+    close: () => lockDb.close(),
+  });
+  if (lock.isErr()) return lock;
+  const stores = await openStores(bunSqliteDriver(path), options);
+  if (stores.isErr()) {
+    lock.value.release();
+    return stores;
+  }
+  const opened = stores.value;
+  return stores.map(() => ({
+    ...opened,
+    close: async () => {
+      await opened.close();
+      lock.value.release();
+    },
+  }));
 }

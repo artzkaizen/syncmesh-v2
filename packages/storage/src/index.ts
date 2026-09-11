@@ -10,6 +10,8 @@ export type { BoundSqlValue, SqliteBinding } from "./sqlite-driver.js";
 export { bindSqlite, sqliteDriver } from "./sqlite-driver.js";
 export { sqlEventStore, sqliteEventStore, type SqlEventStoreOptions } from "./event-store.js";
 export { LogCorrupt } from "./local-log.js";
+export type { StoreLock } from "./lock.js";
+export { acquireStoreLock, StoreLocked } from "./lock.js";
 export type {
   LocalStorageEventStoreOptions,
   LocalStorageLike,
