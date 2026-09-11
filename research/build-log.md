@@ -126,9 +126,19 @@ medium, because a fleet runs two radios of one kind and `remove` takes that name
 `auth-required` and `storage-degraded` are in the book's vocabulary and deliberately left out:
 nothing reports either yet, and a health a UI cannot trust is worse than one word fewer.
 
+## One noun — `createClient` DONE
+
+`createClient` (orpc/client.ts, book ch. 8 and rule 1): the client **is** the api. Procedures
+sit at the top level and the machinery sits beside them as `$operations`, `$recovery`,
+`$status`, `$transports`, `$blobs`, `$grants`, `$presence`, `$inspect`, `$accounts`,
+`$flush()`, `$close()`, plus `$mesh` for the handful of facts that are neither a procedure nor
+a `$`-surface. Three tiers, three spellings, and the collision is impossible by construction
+rather than by a reserved-word list. `createApp` stays as the construction step both doors
+share — `createServer` is the other one.
+
 ## Still open (the honest remainder)
 
-Phase 3: `createClient` regroup, TanStack collection,
+Phase 3: TanStack collection,
 `syncOf`/`operationOf` selectable columns (needs a joinable row-sync table — design first).
 Phase 4: `lan()`/`awdl()`/`wifiAware()` adapters, PeerSession re-key, mesh shaping, `$status`
 vocabulary — `awdl`/`wifiAware` need native modules and hardware. Phase 5: presence graph,

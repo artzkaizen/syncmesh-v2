@@ -2,6 +2,8 @@ export type { CallBody, HandlerOptions, HttpLinkOptions } from "./http.js";
 export { createHandler, findProcedure, httpLink } from "./http.js";
 export type { App, AppOptions } from "./app.js";
 export { createApp } from "./app.js";
+export type { Client } from "./client.js";
+export { createClient } from "./client.js";
 export type {
   Api,
   AuthorityContext,
