@@ -22,6 +22,8 @@ export type { HandleCounts, Inspect, Teardown } from "./inspect.js";
 export type { OperationsView } from "./operations.js";
 export { openOperations, wireOperations } from "./operations.js";
 export type { RecoveryIssue, RecoveryView } from "./recovery.js";
+export type { MeshHealth, MeshStatus, SourceStatus, Status } from "./status.js";
+export { createStatus } from "./status.js";
 export { openRecovery } from "./recovery.js";
 export { createHandleTally } from "./inspect.js";
 export type { SyncState } from "./sync-state.js";

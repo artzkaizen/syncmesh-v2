@@ -178,6 +178,7 @@ export function relayTransport(options: RelayTransportOptions): Transport {
 
   return {
     name,
+    kind: "websocket",
     priority: options.priority ?? 1,
     sendPresence: (wire) => sendSafe(presenceFrame(wire)),
     putBlob: blobs.put,

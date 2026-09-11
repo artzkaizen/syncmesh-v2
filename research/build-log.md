@@ -113,6 +113,19 @@ This settles the E24/E09 contradiction the audit flagged (№23) in E24's and th
 Proven by removing the original radio and watching the mesh keep converging over the late one:
 a route left, the rows stayed.
 
+## Status diagnosis — DONE
+
+`mesh.status` (book ch. 18): per-source conditions plus one overall health, so a settings
+screen can say "Bluetooth is off — turn it on to sync with nearby devices" rather than draw a
+red dot. Two optional facts joined the transport port — `kind` (the medium, so AWDL and
+Wi-Fi Aware are never merged into a lying "p2p-wifi") and `condition` (what the platform says
+about its own radio); a medium that declares neither is still diagnosed from `onStatus` as
+`ok`/`temporarily-unavailable`. Sources are keyed by the transport's own name rather than by
+medium, because a fleet runs two radios of one kind and `remove` takes that name.
+
+`auth-required` and `storage-degraded` are in the book's vocabulary and deliberately left out:
+nothing reports either yet, and a health a UI cannot trust is worse than one word fewer.
+
 ## Still open (the honest remainder)
 
 Phase 3: `createClient` regroup, TanStack collection,

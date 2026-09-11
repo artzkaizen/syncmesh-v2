@@ -39,6 +39,7 @@ import { openInternal, type MeshInternal } from "./internal.js";
 import { wireOperations, type OperationsView } from "./operations.js";
 import { createPresence } from "./presence.js";
 import { openRecovery, type RecoveryView } from "./recovery.js";
+import { createStatus, type Status } from "./status.js";
 import { createSyncStates } from "./sync-state.js";
 import { followTelemetry, type MeshTelemetrySeam } from "./telemetry.js";
 import { runTransports, type RunningTransports } from "./transports.js";
@@ -189,6 +190,8 @@ export interface Mesh<
   readonly inspect: Inspect;
   /** The radios at runtime: a settings toggle adds one, removing one removes a route, never data. */
   readonly transports: Pick<RunningTransports, "add" | "remove" | "list">;
+  /** Per-source diagnosis and one overall health, for the screen that explains itself ({@link Status}). */
+  readonly status: Status;
   /** Every transport's queue has run out; never rejects, never stops early (`createFlush`). */
   readonly flush: () => Promise<void>;
   /** One listener for `engine.*` and `mesh.*` alike (D17); a thrower never decides a write. */
@@ -276,6 +279,7 @@ function assemble<
   const wired = wireOperations(wiredDeps);
   const on = meterHandles<D>(tally, openHandles<P, RS, C, D, PC>(schema, booted, wired.extras));
   const flush = createFlush({ transports: () => links.list() });
+  const recovery = openRecovery(engine);
   const internal = openInternal({ engine, self: identity.peerId });
   const syncStates = createSyncStates(engine, identity.peerId);
 
@@ -338,7 +342,13 @@ function assemble<
     revert: (id) => engine.revert(id),
     canRevert: (id) => engine.canRevert(id),
     internal,
-    recovery: openRecovery(engine),
+    recovery,
+    status: createStatus({
+      transports: links.list,
+      online: links.online,
+      recovery,
+      settled: links.settled,
+    }),
     inspect: {
       handles: () => tally.counts(linksAcross(links.list())),
     },

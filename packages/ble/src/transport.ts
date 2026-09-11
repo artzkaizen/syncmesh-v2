@@ -105,6 +105,7 @@ export function bleTransport(options: BleOptions): Transport {
 
   const transport = createFrameTransport({
     name: options.name ?? "ble",
+    kind: "ble",
     open: async (ctx, attach) => {
       const self = hintOf(ctx.identity.peerId);
       /**

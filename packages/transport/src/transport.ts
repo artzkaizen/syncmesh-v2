@@ -174,10 +174,55 @@ export interface Transport {
    */
   readonly visibility?: TransportVisibility;
   readonly onStatus?: (cb: (online: boolean) => void) => Unsubscribe;
+  /**
+   * Which medium this is, for diagnosis (book ch. 16, 18). Two adapters exist per protocol
+   * where two protocols exist — AWDL and Wi-Fi Aware never interoperate — so a merged
+   * "p2p-wifi" would hide exactly the fact a mixed fleet must know. Absent is `"unknown"`,
+   * which is the honest answer for a transport a test built out of two functions.
+   */
+  readonly kind?: TransportKind;
+  /**
+   * Why this medium is not carrying, in terms a person can act on (book ch. 18): a UI can say
+   * "Bluetooth is off" rather than drawing a red dot. Present only where the platform tells the
+   * truth about its radio; absent, {@link Transport.onStatus} is all anyone knows, and a source
+   * that is down reads as `temporarily-unavailable`.
+   */
+  readonly condition?: () => TransportCondition;
 }
+
+/**
+ * The medium behind a source. Central and peripheral BLE permissions are separate because the
+ * platforms separate them, and a person can hold one without the other.
+ */
+export type TransportKind =
+  | "ble"
+  | "lan"
+  | "awdl"
+  | "wifi-aware"
+  | "websocket"
+  | "http"
+  | "unknown";
+
+/** What a source is doing, or why it is not (book ch. 18). `ok` is the only one that carries. */
+export type TransportCondition =
+  | "ok"
+  | "connecting-failed"
+  | "listen-failed"
+  | "discovery-failed"
+  | "radio-off"
+  | "no-permission-central"
+  | "no-permission-peripheral"
+  | "no-hardware"
+  | "backgrounded"
+  | "temporarily-unavailable"
+  | "unknown";
 
 export interface FrameTransportOptions {
   readonly name: string;
+  /** The medium behind this source, for diagnosis; absent reads as `"unknown"` (book ch. 18). */
+  readonly kind?: TransportKind;
+  /** What this medium says about itself when it is not carrying; absent leaves `onStatus` the only word. */
+  readonly condition?: () => TransportCondition;
   /** Discover the medium and `attach` a link per peer found; resolve when discovery is up. */
   readonly open: (
     ctx: TransportContext,
@@ -197,6 +242,8 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
 
   return {
     name,
+    ...(options.kind !== undefined && { kind: options.kind }),
+    ...(options.condition !== undefined && { condition: options.condition }),
     start: async (ctx) => {
       const attach = (link: FrameLink, peer?: PeerId): Bridge => {
         const bridgeOptions: BridgeOptions = {

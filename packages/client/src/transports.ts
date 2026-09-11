@@ -45,6 +45,8 @@ export interface RunningTransports {
   readonly withBlobs: () => readonly Transport[];
   /** The mediums currently running, in attach order. */
   readonly list: () => readonly Transport[];
+  /** Whether one medium is up, as its own `onStatus` last said; `undefined` if it never has. */
+  readonly online: (transport: Transport) => boolean | undefined;
   /** Starts one more medium mid-life — a settings toggle, a diagnostic pane (book ch. 8, 16). */
   readonly add: (transport: Transport) => Promise<ResultType<void, TransportAddFailed>>;
   /**
@@ -190,6 +192,7 @@ export function runTransports(
     },
     withBlobs: () => active.filter((t) => t.putBlob !== undefined),
     list: () => [...active],
+    online: (transport) => online.get(transport),
     add: async (transport) => {
       if (!running)
         return Result.err(

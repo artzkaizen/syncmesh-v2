@@ -50,7 +50,9 @@ export { SendFailed, Unsendable, bridgeFramedLink } from "./bridge.js";
 export type {
   FrameTransportOptions,
   Transport,
+  TransportCondition,
   TransportContext,
+  TransportKind,
   TransportVisibility,
   VisibilityToken,
 } from "./transport.js";
