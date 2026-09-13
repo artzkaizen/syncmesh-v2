@@ -8,7 +8,7 @@ import { z } from "zod";
 
 import type { AuthorityHandlers } from "../api.js";
 
-import { createServer, httpLink, mutation, query } from "../index.js";
+import { createServer, httpLink, mutation, query, sqlite } from "../index.js";
 
 const rooms = sqliteTable("rooms", { id: text().primaryKey(), name: text().notNull() });
 
@@ -52,7 +52,7 @@ describe("createServer — a node with extra duties", () => {
       procedures,
       handlers,
       identity,
-      driver: bunSqliteDriver(":memory:"),
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     });
     const served = Bun.serve({ port: 0, fetch: (request) => server.fetch(request) });
     try {

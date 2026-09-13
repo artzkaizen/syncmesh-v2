@@ -46,6 +46,16 @@ const bytes = (n: number) => Uint8Array.from({ length: 32 }, (_, index) => (n + 
  */
 export const issuer = createIdentity(bytes(1)).unwrap();
 
+/**
+ * The peer whose writes this build accepts on `number`, shipped in config like the issuer.
+ *
+ * A device does not trust the authority because it *answered* — it trusts the events, and it
+ * checks them against this id before folding one. So the round trip and the trust are two
+ * separate things: the URL is how a device asks, and this is how it decides whether to believe
+ * what comes back. See `server/authority.ts`, which holds the private half.
+ */
+export const AUTHORITY_PEER = createIdentity(bytes(200)).unwrap().peerId;
+
 /** Ada, who is an admin — the seed attributes its comments to her, and only an admin may seed. */
 export const ACTOR = "acct_ada";
 

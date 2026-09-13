@@ -4,7 +4,7 @@ import type { Client } from "@syncmesh/orpc";
 
 import { MeshCallFailed, serveMesh } from "@syncmesh/browser";
 import { createInspectorHost } from "@syncmesh/devtools";
-import { createClient, sqlite } from "@syncmesh/orpc";
+import { createClient, httpLink, sqlite } from "@syncmesh/orpc";
 import { Result, serializeTagged } from "@syncmesh/result";
 import { wasmSqliteDriver } from "@syncmesh/sqlite-wasm";
 import { Temporal } from "@syncmesh/temporal";
@@ -17,7 +17,7 @@ import { WORKSPACE, WORKSPACE_ID } from "../domain.js";
 import { procedures } from "../procedures.js";
 import { issuesSchema } from "../schema.js";
 import { seedWorkspace } from "../seed.js";
-import { ACTOR, deviceIdentity, issuer } from "./identity.js";
+import { ACTOR, AUTHORITY_PEER, deviceIdentity, issuer } from "./identity.js";
 import { dialRelay } from "./relay.js";
 
 /**
@@ -123,6 +123,17 @@ const seedOnce = (app: Client<Procedures, IssuesPresence>) =>
 const openDriver = () => wasmSqliteDriver({ name: DATABASE, whenHeld: "wait" });
 
 /**
+ * Where `issues.claimNumber` goes, and the only call in this app that leaves the device.
+ *
+ * Configured rather than discovered, like the issuer and the authority's key: a device compares
+ * the authority's *events* against a peer id it already trusts, and the URL is only how it asks.
+ * Absent, the call fails naming itself — `runs on the authority, and no link was configured` —
+ * which is the honest answer on a laptop with the server switched off, and a great deal better
+ * than a number that never arrives.
+ */
+const AUTHORITY_URL = import.meta.env["VITE_AUTHORITY_URL"] ?? "http://localhost:5252";
+
+/**
  * What the engine reports, in the one thread that can hear it.
  *
  * This is a console line rather than a design, because a worker has no screen — the surface that
@@ -162,9 +173,10 @@ const buildHost = (): Promise<Result<MeshHost, MeshCallFailed>> =>
           procedures,
           identity: device,
           // grouped because they are one decision each, not seven fields that happen to be here
-          trust: { issuer: issuer.peerId },
+          trust: { issuer: issuer.peerId, authority: AUTHORITY_PEER },
           storage: sqlite({ driver }),
           transports: dialRelay(device.peerId),
+          link: httpLink(AUTHORITY_URL),
           onError: report,
         }),
       catch: refused("the mesh could not open over the database"),

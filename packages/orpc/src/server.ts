@@ -1,11 +1,13 @@
 import type { ColumnsMap, PartitionTree, PresenceMap, Roles } from "@syncmesh/schema";
 
 import type { Api, AuthorityHandlers, ProcedureDef, Router } from "./api.js";
-import type { App, AppOptions } from "./app.js";
+import type { App } from "./app.js";
+import type { ClientOptions } from "./options.js";
 
 import { isDef } from "./api.js";
 import { createApp } from "./app.js";
 import { createHandler } from "./http.js";
+import { flatten } from "./options.js";
 import { replicaFor } from "./scope.js";
 
 /**
@@ -19,7 +21,7 @@ export interface ServerOptions<
   RS extends Roles<P>,
   C extends ColumnsMap,
   PC extends PresenceMap,
-> extends Omit<AppOptions<R, P, RS, C, PC>, "link"> {
+> extends Omit<ClientOptions<R, P, RS, C, PC>, "link"> {
   /** The router's `.authority()` leaves, mirrored — completeness checked by the type. */
   readonly handlers?: AuthorityHandlers<R>;
   /** Started with the server, stopped with it; each takes the api and returns its teardown. */
@@ -59,8 +61,9 @@ export async function createServer<
   C extends ColumnsMap,
   PC extends PresenceMap = Record<string, never>,
 >(options: ServerOptions<R, P, RS, C, PC>): Promise<Server<R, PC>> {
-  const { handlers, watchdogs, ...appOptions } = options;
-  const app = await createApp(appOptions);
+  const { handlers, watchdogs, ...clientOptions } = options;
+  // the same construction a device makes: a server is a node with extra duties (ch. 19)
+  const app = await createApp(flatten(clientOptions));
 
   const handlerOptions = { procedures: options.procedures, api: app.api };
   if (handlers !== undefined)
