@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { ISSUE_STATUS, WORKSPACE } from "../domain.js";
+import { ISSUE_STATUS, WORKSPACE, WORKSPACE_ID } from "../domain.js";
 import { seedConversation, seedWorkspace } from "../seed.js";
 import { T0, accountOf, openDevice, settle } from "./fixtures.js";
 
@@ -23,7 +23,7 @@ describe("the seeded workspace", () => {
     expect(workspace.projectIds).toHaveLength(6);
     expect(Object.keys(workspace.teamIds)).toEqual(["ENG", "DES", "OPS"]);
 
-    const summary = (await ada.api.issues.summary().run())[0];
+    const summary = (await ada.api.issues.summary({ workspaceId: WORKSPACE_ID }).run())[0];
     expect(summary?.total).toBe(120);
     // every fourth issue is left unnumbered on purpose: what a tracker looks like mid-flight
     expect(summary?.unnumbered).toBe(30);
@@ -32,8 +32,14 @@ describe("the seeded workspace", () => {
     const again = await openDevice("ada");
     const twice = await seedWorkspace(again.mesh.on(WORKSPACE).unwrap(), { now: T0 });
     expect(twice.issueIds).toEqual(workspace.issueIds);
-    expect(await again.api.issues.list({ teamId: twice.teamIds.ENG ?? "" }).run()).toEqual(
-      await ada.api.issues.list({ teamId: workspace.teamIds.ENG ?? "" }).run(),
+    expect(
+      await again.api.issues
+        .list({ workspaceId: WORKSPACE_ID, teamId: twice.teamIds.ENG ?? "" })
+        .run(),
+    ).toEqual(
+      await ada.api.issues
+        .list({ workspaceId: WORKSPACE_ID, teamId: workspace.teamIds.ENG ?? "" })
+        .run(),
     );
 
     for (const device of [ada, again]) await device.mesh.stop();
@@ -43,28 +49,34 @@ describe("the seeded workspace", () => {
     const { ada, workspace } = await seeded();
     const teamId = workspace.teamIds.ENG ?? "";
 
-    const board = await ada.api.issues.board({ teamId }).run();
+    const board = await ada.api.issues.board({ workspaceId: WORKSPACE_ID, teamId }).run();
     expect(board.every((row) => row.teamId === teamId)).toBe(true);
     expect(board.every((row) => row.status !== "done" && row.status !== "canceled")).toBe(true);
 
-    const counts = await ada.api.issues.counts({ teamId }).run();
+    const counts = await ada.api.issues.counts({ workspaceId: WORKSPACE_ID, teamId }).run();
     expect(counts.reduce((held, row) => held + row.total, 0)).toBe(40);
     expect(counts.every((row) => ISSUE_STATUS.some((known) => known === row.status))).toBe(true);
 
-    const mine = await ada.api.issues.assigned({ assigneeId: workspace.memberIds[0] ?? "" }).run();
+    const mine = await ada.api.issues
+      .assigned({ workspaceId: WORKSPACE_ID, assigneeId: workspace.memberIds[0] ?? "" })
+      .run();
     expect(mine.every((row) => row.assigneeId === workspace.memberIds[0])).toBe(true);
 
-    const found = await ada.api.issues.search({ text: "relay" }).run();
+    const found = await ada.api.issues.search({ workspaceId: WORKSPACE_ID, text: "relay" }).run();
     expect(found.length).toBeGreaterThan(0);
     expect(found.every((row) => /relay/i.test(`${row.title} ${row.description}`))).toBe(true);
 
     // a search term with a LIKE wildcard in it is a term, not a pattern
-    expect(await ada.api.issues.search({ text: "%" }).run()).toHaveLength(0);
+    expect(
+      await ada.api.issues.search({ workspaceId: WORKSPACE_ID, text: "%" }).run(),
+    ).toHaveLength(0);
 
-    const byProject = await ada.api.issues.list({ projectId: workspace.projectIds[0] ?? "" }).run();
+    const byProject = await ada.api.issues
+      .list({ workspaceId: WORKSPACE_ID, projectId: workspace.projectIds[0] ?? "" })
+      .run();
     expect(byProject.length).toBeGreaterThan(0);
 
-    const totals = await ada.api.issues.labelTotals().run();
+    const totals = await ada.api.issues.labelTotals({ workspaceId: WORKSPACE_ID }).run();
     expect(totals.length).toBeGreaterThan(3);
 
     await ada.mesh.stop();
@@ -93,7 +105,9 @@ describe("the seeded workspace", () => {
 
     const voices = new Set<string>();
     for (const issueId of workspace.issueIds)
-      for (const row of await ada.api.comments.forIssue({ issueId }).run())
+      for (const row of await ada.api.comments
+        .forIssue({ workspaceId: WORKSPACE_ID, issueId })
+        .run())
         voices.add(row.authorId);
     expect(voices).toContain(accountOf("bo"));
     expect(voices).toContain(accountOf("chidi"));

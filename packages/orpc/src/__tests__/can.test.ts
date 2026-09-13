@@ -26,7 +26,7 @@ const procedures = {
   products: {
     list: query.handler(({ mesh }) => mesh.db.select().from(products)),
     create: mutation
-      .input(z.object({ id: z.string(), name: z.string().min(1) }))
+      .input(z.object({ shopId: z.string(), id: z.string(), name: z.string().min(1) }))
       .handler(async ({ input, mesh }) => {
         await mesh.db.insert(products).values(input);
         return input;
@@ -55,7 +55,6 @@ const open = async () =>
     procedures,
     identity: device,
     issuer: issuer.peerId,
-    instance: "shop:lagos",
     driver: bunSqliteDriver(":memory:"),
     now: () => T0,
   });
@@ -65,13 +64,16 @@ describe(".can — the real check, rehearsed (book ch. 15)", () => {
     const client = await open();
     client.$grants.register(grant("viewer")).unwrap();
 
-    const rehearsed = await client.products.create.can({ id: "p1", name: "Desk lamp" }).run();
+    const rehearsed = await client.products.create
+      .can({ shopId: "lagos", id: "p1", name: "Desk lamp" })
+      .run();
     expect(rehearsed.isErr()).toBe(true);
     const refusal = rehearsed.match({ ok: () => undefined, err: (e) => e });
     expect(refusal !== undefined && "_tag" in refusal && refusal._tag).toBe("PolicyDenied");
 
     // the real write agrees, because it is the same ladder — this is the no-drift claim
-    const written = await client.products.create({ id: "p1", name: "Desk lamp" }).committed;
+    const written = await client.products.create({ shopId: "lagos", id: "p1", name: "Desk lamp" })
+      .committed;
     expect(written.isErr()).toBe(true);
     expect(await client.products.list().run()).toEqual([]);
     await client.$close();
@@ -81,12 +83,16 @@ describe(".can — the real check, rehearsed (book ch. 15)", () => {
     const client = await open();
     client.$grants.register(grant("editor")).unwrap();
 
-    const rehearsed = await client.products.create.can({ id: "p1", name: "Desk lamp" }).run();
+    const rehearsed = await client.products.create
+      .can({ shopId: "lagos", id: "p1", name: "Desk lamp" })
+      .run();
     expect(rehearsed.isOk()).toBe(true);
     // the rehearsal ran the handler against the replica and rolled it back: nothing happened
     expect(await client.products.list().run()).toEqual([]);
 
-    (await client.products.create({ id: "p1", name: "Desk lamp" }).committed).unwrap();
+    (
+      await client.products.create({ shopId: "lagos", id: "p1", name: "Desk lamp" }).committed
+    ).unwrap();
     expect(await client.products.list().run()).toEqual([{ id: "p1", name: "Desk lamp" }]);
     await client.$close();
   });
@@ -94,9 +100,9 @@ describe(".can — the real check, rehearsed (book ch. 15)", () => {
   test("the descriptor is inert and identity-keyed: building one runs nothing", async () => {
     const client = await open();
     client.$grants.register(grant("editor")).unwrap();
-    const first = client.products.create.can({ id: "p1", name: "one" });
-    const same = client.products.create.can({ id: "p1", name: "one" });
-    const other = client.products.create.can({ id: "p2", name: "two" });
+    const first = client.products.create.can({ shopId: "lagos", id: "p1", name: "one" });
+    const same = client.products.create.can({ shopId: "lagos", id: "p1", name: "one" });
+    const other = client.products.create.can({ shopId: "lagos", id: "p2", name: "two" });
 
     expect(first.key).toBe(same.key);
     expect(first.key).not.toBe(other.key);

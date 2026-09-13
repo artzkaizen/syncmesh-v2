@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { WORKSPACE } from "../domain.js";
+import { WORKSPACE, WORKSPACE_ID } from "../domain.js";
 import { seedWorkspace } from "../seed.js";
 import { T0, accountOf, openDevice, settle, type Device } from "./fixtures.js";
 
@@ -18,7 +18,7 @@ const open = async () => {
 };
 
 const order = async (device: Device, teamId: string) =>
-  (await device.api.issues.list({ teamId }).run()).map((row) => row.id);
+  (await device.api.issues.list({ workspaceId: WORKSPACE_ID, teamId }).run()).map((row) => row.id);
 
 let running: readonly Device[] = [];
 afterEach(async () => {
@@ -38,6 +38,7 @@ describe("manual order across a partition (book ch. 2, D25)", () => {
     const last = before.at(-1) ?? "";
     (
       await ada.api.issues.move({
+        workspaceId: WORKSPACE_ID,
         id: last,
         actorId: accountOf("ada"),
         previousId: null,
@@ -49,6 +50,7 @@ describe("manual order across a partition (book ch. 2, D25)", () => {
     const second = before.at(-2) ?? "";
     (
       await bo.api.issues.move({
+        workspaceId: WORKSPACE_ID,
         id: second,
         actorId: accountOf("bo"),
         previousId: before[0] ?? null,
@@ -72,11 +74,12 @@ describe("manual order across a partition (book ch. 2, D25)", () => {
   test("a drag across board columns moves status and rank as one event, so no device sees it torn", async () => {
     const { ada, bo, teamId } = await open();
     running = [ada, bo];
-    const board = await ada.api.issues.board({ teamId }).run();
+    const board = await ada.api.issues.board({ workspaceId: WORKSPACE_ID, teamId }).run();
     const card = board[0] ?? { id: "", status: "triage" as const };
 
     (
       await ada.api.issues.move({
+        workspaceId: WORKSPACE_ID,
         id: card.id,
         actorId: accountOf("ada"),
         status: "started",
@@ -86,11 +89,15 @@ describe("manual order across a partition (book ch. 2, D25)", () => {
     ).unwrap();
     await settle(ada, bo);
 
-    const landed = (await bo.api.issues.board({ teamId }).run()).find((row) => row.id === card.id);
+    const landed = (await bo.api.issues.board({ workspaceId: WORKSPACE_ID, teamId }).run()).find(
+      (row) => row.id === card.id,
+    );
     expect(landed?.status).toBe("started");
     expect(landed?.startedAt).not.toBeNull();
     // one write, one event: the history row and the move arrived together or not at all
-    const feed = await bo.api.history.forIssue({ issueId: card.id }).run();
+    const feed = await bo.api.history
+      .forIssue({ workspaceId: WORKSPACE_ID, issueId: card.id })
+      .run();
     expect(feed.some((row) => row.kind === "status" && row.toValue === "started")).toBe(true);
   });
 

@@ -32,11 +32,13 @@ const schema = defineSchema({
 });
 
 const books = {
-  list: query.handler(({ mesh }) => mesh.db.select().from(book).orderBy(asc(book.id))),
+  list: query
+    .input(z.object({ orgId: z.string() }))
+    .handler(({ mesh }) => mesh.db.select().from(book).orderBy(asc(book.id))),
   create: mutation
-    .input(z.object({ id: z.string(), title: z.string().min(1) }))
+    .input(z.object({ orgId: z.string(), id: z.string(), title: z.string().min(1) }))
     .handler(async ({ input, mesh }) => {
-      await mesh.db.insert(book).values(input);
+      await mesh.db.insert(book).values({ id: input.id, title: input.title });
       return { id: input.id };
     }),
 };
@@ -44,7 +46,8 @@ const books = {
 const issuer = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 3 + i)).unwrap();
 const device = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 90 + i)).unwrap();
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
-const ACME = "org:acme";
+const ORG = "acme";
+const ACME = `org:${ORG}`;
 
 const open = async () => {
   const mesh = (
@@ -69,7 +72,7 @@ const open = async () => {
       }),
     )
     .unwrap();
-  return { mesh, api: meshApi(mesh, { books }, { instance: ACME }) };
+  return { mesh, api: meshApi(mesh, { books }) };
 };
 
 const mount = async (element: Parameters<Root["render"]>[0]) => {
@@ -87,7 +90,7 @@ describe("useLiveQuery over api.*", () => {
     const renders: string[] = [];
 
     const List = () => {
-      const { data, isPending, isSettled, error } = useLiveQuery(api.books.list());
+      const { data, isPending, isSettled, error } = useLiveQuery(api.books.list({ orgId: ORG }));
       renders.push(
         error !== undefined
           ? `err:${error.message}`
@@ -101,14 +104,14 @@ describe("useLiveQuery over api.*", () => {
     expect(renders.at(-1)).toBe("|settled=true");
 
     await act(async () => {
-      (await api.books.create({ id: "b1", title: "Dune" }).committed).unwrap();
+      (await api.books.create({ orgId: ORG, id: "b1", title: "Dune" }).committed).unwrap();
     });
     await settle();
     expect(renders.at(-1)).toBe("Dune|settled=true");
 
     const before = renders.length;
     await act(async () => {
-      (await api.books.create({ id: "b2", title: "Ubik" }).committed).unwrap();
+      (await api.books.create({ orgId: ORG, id: "b2", title: "Ubik" }).committed).unwrap();
     });
     await settle();
     expect(renders.at(-1)).toBe("Dune,Ubik|settled=true");
@@ -137,7 +140,7 @@ describe("useLiveQuery over api.*", () => {
       return null;
     };
 
-    (await api.books.create({ id: "b1", title: "Dune" }).committed).unwrap();
+    (await api.books.create({ orgId: ORG, id: "b1", title: "Dune" }).committed).unwrap();
     const { settle } = await mount(createElement(Row, { id: "b1" }));
     expect(seen.at(-1)).toBe("local");
 
@@ -157,10 +160,10 @@ describe("useLiveQuery over api.*", () => {
 
   test("input the schema refuses never reaches the table", async () => {
     const { mesh, api } = await open();
-    const refused = await api.books.create({ id: "b3", title: "" }).committed;
+    const refused = await api.books.create({ orgId: ORG, id: "b3", title: "" }).committed;
     expect(refused.isErr()).toBe(true);
 
-    const rows = await api.books.list().run();
+    const rows = await api.books.list({ orgId: ORG }).run();
     expect(rows).toEqual([]);
     await mesh.stop();
   });

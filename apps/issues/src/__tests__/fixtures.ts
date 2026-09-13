@@ -82,7 +82,6 @@ const register = (mesh: WorkspaceMesh): void => {
 const base = (who: Who) => ({
   schema: issuesSchema(),
   procedures,
-  instance: WORKSPACE,
   identity: identityOf(who),
   issuer: issuer.peerId,
   driver: bunSqliteDriver(":memory:"),

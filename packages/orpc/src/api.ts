@@ -1,4 +1,4 @@
-import type { Handle, Mesh } from "@syncmesh/client";
+import type { Handle, Mesh, MeshSchema } from "@syncmesh/client";
 import type { Live, Runnable } from "@syncmesh/drizzle";
 import type { EventId } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
@@ -11,6 +11,7 @@ import type { AuthorityDef, AuthorityLink, MutationDef, QueryDef, Router } from 
 import type { Write, WriteLedger } from "./write.js";
 
 import { isDef } from "./procedures.js";
+import { scopeKinds, scopeOf } from "./scope.js";
 import { createWrite } from "./write.js";
 
 export type {
@@ -167,6 +168,8 @@ export type Api<R extends Router> = {
  */
 export interface ApiMesh<PC extends PresenceMap = Record<string, never>> {
   readonly on: Mesh<"sqlite", PC>["on"];
+  /** The manifest, for the one thing this binding reads off it: which kinds a call can scope to. */
+  readonly schema: MeshSchema;
   readonly settled: () => Promise<void>;
   readonly can: Mesh<"sqlite", PC>["can"];
   readonly syncOf: Mesh<"sqlite", PC>["syncOf"];
@@ -179,21 +182,24 @@ export interface ApiMesh<PC extends PresenceMap = Record<string, never>> {
 }
 
 /**
- * Binds a router to one mesh and one instance: `api.books.list(…)`, `api.books.create(…)`.
+ * Binds a router to one mesh: `api.books.list(…)`, `api.books.create(…)`.
  *
- * Bound at construction rather than resolved from a module-level default, because a device that
- * holds two tenants runs two meshes (D07) and an implicit one would silently write to whichever
- * booted last.
+ * **It binds no scope, and that is the contract** (book ch. 3). A client knows no tenant,
+ * workspace or shop; every call says which replica it is about by carrying the scope in its own
+ * input, and {@link scopeOf} reads it back out. The shape this replaced — one api bound to one
+ * instance at construction — is rejected by name in the book, for the reason that outlives any
+ * particular app: a scope id is ordinary data, and data changes without reconstruction. An app
+ * that bound it had to rebuild the api to change shop, and two shops meant two of everything.
  *
  * @example
  * const mesh = (await createMesh({ … })).unwrap();
- * export const api = meshApi(mesh, { books }, { instance: "org:acme" });
+ * export const api = meshApi(mesh, { books });
+ * api.books.list({ shopId });   // the scope rides here, and nowhere else
  */
 export function meshApi<R extends Router, PC extends PresenceMap = Record<string, never>>(
   mesh: ApiMesh<PC>,
   router: R,
   options: {
-    readonly instance?: string;
     /**
      * Carries the calls this device cannot run. Absent, an `authority` call fails as itself
      * rather than pretending — which is the honest answer on a device with no network
@@ -202,18 +208,20 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     readonly link?: AuthorityLink;
   } = {},
 ): Api<R> {
-  const handle = (): Handle => mesh.on(options.instance).unwrap();
+  const kinds = scopeKinds(mesh.schema);
+  /** The replica this call is about — opened per call, because the scope arrives per call. */
+  const handle = (input: unknown): Handle => mesh.on(scopeOf(kinds, input)).unwrap();
 
   /* thrown, not returned: a descriptor has no error channel of its own, and the hook has an `error` */
   const runnable = (def: QueryDef<never, unknown>, input: unknown) =>
-    def.run({ input: validate<never>(def.schema, input).unwrap(), mesh: handle() });
+    def.run({ input: validate<never>(def.schema, input).unwrap(), mesh: handle(input) });
 
   const read = (path: string, def: QueryDef<never, unknown>, input: unknown) => ({
     kind: "query" as const,
     path,
     key: JSON.stringify([path, input ?? null]),
     run: () => runnable(def, input),
-    live: () => handle().live(runnable(def, input)),
+    live: () => handle(input).live(runnable(def, input)),
     settled: () => mesh.settled(),
   });
 
@@ -225,7 +233,7 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     run: async () => {
       const parsed = validate<never>(def.schema, input);
       if (parsed.isErr()) return parsed;
-      const open = handle();
+      const open = handle(input);
       return open.rehearse(async (span) => {
         // the handler's return value is nothing to a rehearsal: only what it staged is judged —
         // and it writes through the span, because the rehearsal's transaction is the span's alone
@@ -258,7 +266,7 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
   ) => {
     const parsed = validate<never>(def.schema, input);
     if (parsed.isErr()) return parsed;
-    const open = handle();
+    const open = handle(input);
     let receipt: TxReceipt | undefined;
     const off = open.onCommit((r) => {
       receipt = r;
@@ -319,7 +327,9 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
   };
 
   const permissions: Permissions = {
-    can: (what, row) => mesh.can(what, row, options.instance),
+    // the row is the input here, and a row carries its scope in the same column the table is
+    // partitioned by — "keyed by the scope already present in input and rows" (ch. 3)
+    can: (what, row) => mesh.can(what, row, scopeOf(kinds, row)),
     grants: { onRegistered: (listener) => mesh.grants.onRegistered(() => listener()) },
   };
   const sync: SyncSource = {

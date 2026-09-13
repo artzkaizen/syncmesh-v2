@@ -5,6 +5,7 @@ import { useMemo } from "react";
 
 import type { Replica } from "./replica.js";
 
+import { WORKSPACE_ID } from "../domain.js";
 import { CatalogHeld, ReplicaHeld } from "./context.js";
 import { ReachBadge } from "./reach-badge.js";
 import { byId } from "./view.js";
@@ -27,11 +28,11 @@ export function Workspace({
   readonly children: ReactNode;
 }) {
   const { api } = replica;
-  const teams = useLiveQuery(api.teams.list()).data;
-  const members = useLiveQuery(api.members.list()).data;
-  const labels = useLiveQuery(api.labels.list({})).data;
-  const projects = useLiveQuery(api.projects.list({})).data;
-  const tags = useLiveQuery(api.issueLabels.list()).data;
+  const teams = useLiveQuery(api.teams.list({ workspaceId: WORKSPACE_ID })).data;
+  const members = useLiveQuery(api.members.list({ workspaceId: WORKSPACE_ID })).data;
+  const labels = useLiveQuery(api.labels.list({ workspaceId: WORKSPACE_ID })).data;
+  const projects = useLiveQuery(api.projects.list({ workspaceId: WORKSPACE_ID })).data;
+  const tags = useLiveQuery(api.issueLabels.list({ workspaceId: WORKSPACE_ID })).data;
 
   // the snapshots keep their identity between folds that did not touch these tables, so this
   // memo rebuilds the four indexes when the data changes and on no other render

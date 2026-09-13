@@ -66,7 +66,8 @@ export interface HandlerOptions<R extends Router> {
    */
   readonly gate?: {
     readonly handlers: AuthorityHandlers<R>;
-    readonly handle: () => Handle;
+    /** The replica this call is about, from the call's own input — scope is input (ch. 3). */
+    readonly handle: (input: unknown) => Handle;
   };
 }
 
@@ -102,7 +103,7 @@ export function createHandler<R extends Router>(options: HandlerOptions<R>) {
       input: parsed.value,
       errors: throwersOf(def.errors),
       get mesh() {
-        return gate.handle();
+        return gate.handle(parsed.value);
       },
     };
     const answered = await Result.tryPromise({

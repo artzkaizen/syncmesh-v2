@@ -26,7 +26,7 @@ const procedures = {
   notes: {
     list: query.handler(({ mesh }) => mesh.db.select().from(notes)),
     add: mutation
-      .input(z.object({ id: z.string(), body: z.string().min(1) }))
+      .input(z.object({ orgId: z.string(), id: z.string(), body: z.string().min(1) }))
       .handler(async ({ input, mesh }) => {
         await mesh.db.insert(notes).values(input);
         return input;
@@ -48,7 +48,6 @@ const open = async () => {
     procedures,
     identity: device,
     issuer: issuer.peerId,
-    instance: "org:acme",
     driver: bunSqliteDriver(":memory:"),
     now: () => T0,
   });
@@ -71,7 +70,7 @@ const open = async () => {
 describe("a write is a statement (book ch. 10)", () => {
   test("the id is in hand before the commit, and it opens the record afterwards", async () => {
     const client = await open();
-    const write = client.notes.add({ id: "n1", body: "hello" });
+    const write = client.notes.add({ orgId: "acme", id: "n1", body: "hello" });
 
     // synchronously, before anything committed: what an interrupted caller looks up
     expect(write.id).toMatch(/^[0-9a-f-]{36}$/);
@@ -90,7 +89,7 @@ describe("a write is a statement (book ch. 10)", () => {
 
   test("the bare statement is the blessed form: it is not thenable", async () => {
     const client = await open();
-    const write = client.notes.add({ id: "n1", body: "hello" });
+    const write = client.notes.add({ orgId: "acme", id: "n1", body: "hello" });
     // awaiting the handle itself yields the handle — which is why `committed` has to be named
     expect(await write).toBe(write);
     expect("then" in write).toBe(false);
@@ -102,11 +101,11 @@ describe("a write is a statement (book ch. 10)", () => {
 
   test("waitFor(committed) settles once the record exists; a refused write cannot be waited on", async () => {
     const client = await open();
-    const good = client.notes.add({ id: "n1", body: "hello" });
+    const good = client.notes.add({ orgId: "acme", id: "n1", body: "hello" });
     const settled = await good.waitFor({ milestone: "committed" });
     expect(settled.unwrap().id).toBe(good.id);
 
-    const refused = client.notes.add({ id: "n2", body: "" }); // the input schema refuses
+    const refused = client.notes.add({ orgId: "acme", id: "n2", body: "" }); // the input schema refuses
     const waited = await refused.waitFor({ milestone: "committed" });
     const error = waited.match({ ok: () => undefined, err: (e) => e });
     expect(error?._tag).toBe("WaitUnreachable");
@@ -115,7 +114,7 @@ describe("a write is a statement (book ch. 10)", () => {
 
   test("waiting for copies nobody signed expires, and says so without touching the write", async () => {
     const client = await open();
-    const write = client.notes.add({ id: "n1", body: "hello" });
+    const write = client.notes.add({ orgId: "acme", id: "n1", body: "hello" });
     (await write.committed).unwrap();
 
     const waited = await write.waitFor({

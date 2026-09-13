@@ -33,7 +33,8 @@ export const schema = defineSchema({
   },
 });
 
-export const ACME = "org:acme";
+export const ORG = "acme";
+export const ACME = `org:${ORG}`;
 const issuer = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 7 + i)).unwrap();
 export const device = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 70 + i)).unwrap();
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);

@@ -5,6 +5,7 @@ import { useLiveQuery } from "@syncmesh/react";
 
 import type { Replica } from "./replica.js";
 
+import { WORKSPACE_ID } from "../domain.js";
 import { useReplica } from "./context.js";
 import {
   BUTTON,
@@ -164,7 +165,7 @@ function Count({
  */
 function Summary() {
   const { api } = useReplica();
-  const [totals] = useLiveQuery(api.issues.summary()).data;
+  const [totals] = useLiveQuery(api.issues.summary({ workspaceId: WORKSPACE_ID })).data;
   return (
     <div style={{ display: "flex", gap: SPACE.xl }}>
       <Count label="Issues" value={totals?.total ?? 0} />

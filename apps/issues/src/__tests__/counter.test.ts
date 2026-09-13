@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { WORKSPACE } from "../domain.js";
+import { WORKSPACE, WORKSPACE_ID } from "../domain.js";
 import { seedWorkspace } from "../seed.js";
 import { T0, accountOf, openDevice, settle, type Device } from "./fixtures.js";
 
@@ -9,7 +9,7 @@ import { T0, accountOf, openDevice, settle, type Device } from "./fixtures.js";
  */
 
 const viewsOf = async (device: Device, id: string) =>
-  (await device.api.issues.get({ id }).run())[0]?.views ?? -1;
+  (await device.api.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0]?.views ?? -1;
 
 describe("view counts across a partition (book ch. 2)", () => {
   test("two devices counting while apart sum, rather than one of them winning", async () => {
@@ -25,10 +25,10 @@ describe("view counts across a partition (book ch. 2)", () => {
 
     // the radios are down; three people read the same issue a different number of times
     for (let opened = 0; opened < 3; opened += 1)
-      (await ada.api.issues.view({ id }).committed).unwrap();
+      (await ada.api.issues.view({ workspaceId: WORKSPACE_ID, id }).committed).unwrap();
     for (let opened = 0; opened < 2; opened += 1)
-      (await bo.api.issues.view({ id }).committed).unwrap();
-    (await chidi.api.issues.view({ id }).committed).unwrap();
+      (await bo.api.issues.view({ workspaceId: WORKSPACE_ID, id }).committed).unwrap();
+    (await chidi.api.issues.view({ workspaceId: WORKSPACE_ID, id }).committed).unwrap();
 
     // apart, each device knows only its own reading
     expect(await viewsOf(ada, id)).toBe(start + 3);
@@ -46,10 +46,10 @@ describe("view counts across a partition (book ch. 2)", () => {
     const ada = await openDevice("ada");
     const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap(), { issues: 3, now: T0 });
     const id = seeded.issueIds[0] ?? "";
-    const before = (await ada.api.issues.get({ id }).run())[0];
+    const before = (await ada.api.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0];
 
-    (await ada.api.issues.view({ id }).committed).unwrap();
-    const after = (await ada.api.issues.get({ id }).run())[0];
+    (await ada.api.issues.view({ workspaceId: WORKSPACE_ID, id }).committed).unwrap();
+    const after = (await ada.api.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0];
 
     expect(after?.views).toBe((before?.views ?? 0) + 1);
     // otherwise every issue anyone glanced at would float to the top of "recently updated"
@@ -66,6 +66,7 @@ describe("view counts across a partition (book ch. 2)", () => {
 
     (
       await ada.api.reactions.add({
+        workspaceId: WORKSPACE_ID,
         subject: "issue",
         subjectId,
         emoji: "🚀",
@@ -74,6 +75,7 @@ describe("view counts across a partition (book ch. 2)", () => {
     ).unwrap();
     (
       await bo.api.reactions.add({
+        workspaceId: WORKSPACE_ID,
         subject: "issue",
         subjectId,
         emoji: "🚀",
@@ -82,22 +84,27 @@ describe("view counts across a partition (book ch. 2)", () => {
     ).unwrap();
     await settle(ada, bo);
 
-    const tally = await bo.api.reactions.tally({ subject: "issue", subjectId }).run();
+    const tally = await bo.api.reactions
+      .tally({ workspaceId: WORKSPACE_ID, subject: "issue", subjectId })
+      .run();
     expect(tally).toEqual([{ emoji: "🚀", total: 2 }]);
 
     // Tapping it again is the same row, because the key is (actor, subject, emoji). The write
     // therefore stages nothing, and a mutation that staged nothing reports that it has no event
     // to hand back — honest, and something an idempotent call has to be ready for.
     const again = await bo.api.reactions.add({
+      workspaceId: WORKSPACE_ID,
       subject: "issue",
       subjectId,
       emoji: "🚀",
       actorId: accountOf("bo"),
     }).committed;
     expect(again.isErr()).toBe(true);
-    expect(await bo.api.reactions.tally({ subject: "issue", subjectId }).run()).toEqual([
-      { emoji: "🚀", total: 2 },
-    ]);
+    expect(
+      await bo.api.reactions
+        .tally({ workspaceId: WORKSPACE_ID, subject: "issue", subjectId })
+        .run(),
+    ).toEqual([{ emoji: "🚀", total: 2 }]);
 
     for (const device of [ada, bo]) await device.mesh.stop();
   });

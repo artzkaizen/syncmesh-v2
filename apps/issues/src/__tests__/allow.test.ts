@@ -4,7 +4,7 @@ import { taggedCause } from "@syncmesh/drizzle";
 import { describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 
-import { WORKSPACE } from "../domain.js";
+import { WORKSPACE, WORKSPACE_ID } from "../domain.js";
 import { seedWorkspace } from "../seed.js";
 import { issue } from "../tables.js";
 import { T0, accountOf, openDevice, settle } from "./fixtures.js";
@@ -39,23 +39,40 @@ describe("who may do what (RFC-0008)", () => {
 
     const issueId = seeded.issueIds[0] ?? "";
     const posted = (
-      await bo.api.comments.post({ issueId, authorId: accountOf("bo"), body: "on it" }).committed
+      await bo.api.comments.post({
+        workspaceId: WORKSPACE_ID,
+        issueId,
+        authorId: accountOf("bo"),
+        body: "on it",
+      }).committed
     ).unwrap();
     await settle(bo, chidi, ada);
 
     expect(
       await refusal(
-        bo.api.comments.edit({ id: posted.data.id, body: "on it, tomorrow" }).committed,
+        bo.api.comments.edit({
+          workspaceId: WORKSPACE_ID,
+          id: posted.data.id,
+          body: "on it, tomorrow",
+        }).committed,
       ),
     ).toBe("allowed");
     expect(
-      await refusal(chidi.api.comments.edit({ id: posted.data.id, body: "bo is wrong" }).committed),
+      await refusal(
+        chidi.api.comments.edit({
+          workspaceId: WORKSPACE_ID,
+          id: posted.data.id,
+          body: "bo is wrong",
+        }).committed,
+      ),
     ).toBe("PolicyDenied");
 
     // an admin may remove it — moderation is a job — but the edit above is still refused to them
-    expect(await refusal(ada.api.comments.remove({ id: posted.data.id }).committed)).toBe(
-      "allowed",
-    );
+    expect(
+      await refusal(
+        ada.api.comments.remove({ workspaceId: WORKSPACE_ID, id: posted.data.id }).committed,
+      ),
+    ).toBe("allowed");
 
     for (const device of [ada, bo, chidi]) await device.mesh.stop();
   });
@@ -69,8 +86,12 @@ describe("who may do what (RFC-0008)", () => {
     const issueId = seeded.issueIds[0] ?? "";
     expect(
       await refusal(
-        bo.api.comments.post({ issueId, authorId: accountOf("ada"), body: "signed, Ada" })
-          .committed,
+        bo.api.comments.post({
+          workspaceId: WORKSPACE_ID,
+          issueId,
+          authorId: accountOf("ada"),
+          body: "signed, Ada",
+        }).committed,
       ),
     ).toBe("PolicyDenied");
 
@@ -85,18 +106,32 @@ describe("who may do what (RFC-0008)", () => {
 
     const id = seeded.projectIds[0] ?? "";
     // the rehearsal: the write runs against the replica, is judged, and is rolled back (ch. 15)
-    expect((await bo.api.projects.remove.can({ id }).run()).isErr()).toBe(true);
-    expect((await ada.api.projects.remove.can({ id }).run()).isErr()).toBe(false);
+    expect(
+      (await bo.api.projects.remove.can({ workspaceId: WORKSPACE_ID, id }).run()).isErr(),
+    ).toBe(true);
+    expect(
+      (await ada.api.projects.remove.can({ workspaceId: WORKSPACE_ID, id }).run()).isErr(),
+    ).toBe(false);
     // and nothing was actually removed by asking
-    expect(await ada.api.projects.list({}).run()).toHaveLength(seeded.projectIds.length);
+    expect(await ada.api.projects.list({ workspaceId: WORKSPACE_ID }).run()).toHaveLength(
+      seeded.projectIds.length,
+    );
 
-    expect(await refusal(bo.api.projects.remove({ id }).committed)).toBe("PolicyDenied");
-    expect(await refusal(ada.api.projects.remove({ id }).committed)).toBe("allowed");
+    expect(await refusal(bo.api.projects.remove({ workspaceId: WORKSPACE_ID, id }).committed)).toBe(
+      "PolicyDenied",
+    );
+    expect(
+      await refusal(ada.api.projects.remove({ workspaceId: WORKSPACE_ID, id }).committed),
+    ).toBe("allowed");
 
     // a member may still create and move one along; it is the delete that is narrowed
     expect(
       await refusal(
-        bo.api.projects.create({ teamId: seeded.teamIds.ENG ?? "", name: "Bo's idea" }).committed,
+        bo.api.projects.create({
+          workspaceId: WORKSPACE_ID,
+          teamId: seeded.teamIds.ENG ?? "",
+          name: "Bo's idea",
+        }).committed,
       ),
     ).toBe("allowed");
 
@@ -109,11 +144,12 @@ describe("who may do what (RFC-0008)", () => {
     const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap(), { issues: 6, now: T0 });
     await settle(ada, dalia);
 
-    expect(await dalia.api.issues.list({}).run()).toHaveLength(6);
-    expect(await dalia.api.teams.list().run()).toHaveLength(3);
+    expect(await dalia.api.issues.list({ workspaceId: WORKSPACE_ID }).run()).toHaveLength(6);
+    expect(await dalia.api.teams.list({ workspaceId: WORKSPACE_ID }).run()).toHaveLength(3);
     expect(
       await refusal(
         dalia.api.issues.create({
+          workspaceId: WORKSPACE_ID,
           actorId: accountOf("dalia"),
           teamId: seeded.teamIds.ENG ?? "",
           title: "a guest's idea",
@@ -160,7 +196,7 @@ describe("who may do what (RFC-0008)", () => {
     const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap(), { issues: 3, now: T0 });
     const issueId = seeded.issueIds[0] ?? "";
 
-    const feed = await ada.api.history.forIssue({ issueId }).run();
+    const feed = await ada.api.history.forIssue({ workspaceId: WORKSPACE_ID, issueId }).run();
     expect(feed.length).toBeGreaterThan(0);
     expect(ada.mesh.can("activity.insert", undefined, WORKSPACE)).toBe(true);
     expect(ada.mesh.can("activity.update", undefined, WORKSPACE)).toBe(false);

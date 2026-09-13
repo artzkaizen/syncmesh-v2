@@ -40,7 +40,6 @@ mkdirSync(".syncmesh", { recursive: true }); // `bunSqliteDriver` opens a file, 
 export const { api, mesh } = await createApp({
   schema: roundsSchema(),
   procedures,
-  instance: PRACTICE,
   identity: station,
   issuer: issuer.peerId,
   // `node:sqlite`, not `bun:sqlite`: Vite's dev server runs this module under Node, and a web

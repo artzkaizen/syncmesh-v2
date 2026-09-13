@@ -29,7 +29,6 @@ import { meshApi } from "./api.js";
  * export const { api } = await createApp({
  *   schema,
  *   procedures: { patients, observations },
- *   instance: "practice:st-mary",
  *   identity: await loadIdentity(),
  *   driver: sqlite("rounds.db"),
  *   transports: [relayTransport({ dial: webSocketDial(RELAY_URL) })],
@@ -44,8 +43,6 @@ export interface AppOptions<
 > extends MeshOptions<P, RS, C, "sqlite", PC> {
   /** The app's own API — every read and write it performs. */
   readonly procedures: R;
-  /** The tenant this app instance runs under; omitted for a schema with only built-in kinds. */
-  readonly instance?: string;
   /** Carries `authority` calls. Absent, one fails naming itself rather than pretending. */
   readonly link?: AuthorityLink;
 }
@@ -66,16 +63,15 @@ export async function createApp<
   C extends ColumnsMap,
   PC extends PresenceMap = Record<string, never>,
 >(options: AppOptions<R, P, RS, C, PC>): Promise<App<R, PC>> {
-  const { procedures, instance, link, ...meshOptions } = options;
+  const { procedures, link, ...meshOptions } = options;
   const opened = await createMesh(meshOptions);
   // the tagged error travels as the cause, so a caller who does want to branch — "storage
   // damaged, rejoin?" — still can, without every other caller unwrapping to reach it
   if (opened.isErr()) return panic(`the app could not open: ${opened.error.message}`, opened.error);
 
   // assigned rather than spread: `exactOptionalPropertyTypes` reads an explicit `undefined` as a
-  // value, and "no instance" is the absence of the key
+  // value, and "no link" is the absence of the key
   const bound = {};
-  if (instance !== undefined) Object.assign(bound, { instance });
   if (link !== undefined) Object.assign(bound, { link });
   const mesh = opened.value;
   return { api: meshApi(mesh, procedures, bound), mesh };

@@ -3,7 +3,7 @@ import { useEffect } from "react";
 
 import type { IssueRow, Panel } from "./view.js";
 
-import { ISSUE_STATUS, PRIORITY_NAME } from "../domain.js";
+import { ISSUE_STATUS, PRIORITY_NAME, WORKSPACE_ID } from "../domain.js";
 import { Avatar, Identifier, LabelChip, Section, StatusMark } from "./atoms.js";
 import { useCatalog, useReplica, useShownRows } from "./context.js";
 import { SyncBadge } from "./sync-badge.js";
@@ -39,7 +39,9 @@ function StatusPicker({ row }: { readonly row: IssueRow }) {
       {ISSUE_STATUS.map((status) => (
         <button
           key={status}
-          onClick={() => api.issues.setStatus({ id: row.id, actorId: actor, status })}
+          onClick={() =>
+            api.issues.setStatus({ workspaceId: WORKSPACE_ID, id: row.id, actorId: actor, status })
+          }
           style={{
             ...BUTTON,
             alignItems: "center",
@@ -80,6 +82,7 @@ function AssigneePicker({ row }: { readonly row: IssueRow }) {
       <select
         onChange={(event) => {
           api.issues.assign({
+            workspaceId: WORKSPACE_ID,
             id: row.id,
             actorId: actor,
             assigneeId: event.target.value === "" ? null : event.target.value,
@@ -107,7 +110,14 @@ function PriorityPicker({ row }: { readonly row: IssueRow }) {
       {PRIORITY_NAME.map((name, level) => (
         <button
           key={name}
-          onClick={() => api.issues.edit({ id: row.id, actorId: actor, priority: level })}
+          onClick={() =>
+            api.issues.edit({
+              workspaceId: WORKSPACE_ID,
+              id: row.id,
+              actorId: actor,
+              priority: level,
+            })
+          }
           style={{
             ...BUTTON,
             background: row.priority === level ? COLOR.raised : "transparent",
@@ -135,7 +145,12 @@ function LabelPicker({ row }: { readonly row: IssueRow }) {
         <button
           key={label.id}
           onClick={() => {
-            const input = { issueId: row.id, labelId: label.id, actorId: actor };
+            const input = {
+              workspaceId: WORKSPACE_ID,
+              issueId: row.id,
+              labelId: label.id,
+              actorId: actor,
+            };
             if (attached.has(label.id)) api.issueLabels.detach(input);
             else api.issueLabels.attach(input);
           }}
@@ -232,13 +247,17 @@ const counted = new Set<string>();
 export function Detail({ id, onClose }: { readonly id: string; readonly onClose: () => void }) {
   const { api } = useReplica();
   const catalog = useCatalog();
-  const panel = panelFor(id, useQuery(api.issues.get({ id })), useShownRows());
+  const panel = panelFor(
+    id,
+    useQuery(api.issues.get({ workspaceId: WORKSPACE_ID, id })),
+    useShownRows(),
+  );
 
   // opening an issue counts as a view, **once per issue per tab** — see `counted` above
   useEffect(() => {
     if (counted.has(id)) return;
     counted.add(id);
-    api.issues.view({ id });
+    api.issues.view({ workspaceId: WORKSPACE_ID, id });
   }, [api, id]);
 
   /**
@@ -261,7 +280,7 @@ export function Detail({ id, onClose }: { readonly id: string; readonly onClose:
    * device" about a row the list was drawing, on essentially every open. A statement is placed by
    * the sink it came through now, so the rehearsal's staged `DELETE` is invisible to this read.
    */
-  const mayDelete = useCan(api.issues.remove.can({ id }));
+  const mayDelete = useCan(api.issues.remove.can({ workspaceId: WORKSPACE_ID, id }));
   const mayEdit = useCan(api.$can, "issue.update");
 
   if (panel.kind !== "open") return <Blank panel={panel} />;
@@ -320,7 +339,7 @@ export function Detail({ id, onClose }: { readonly id: string; readonly onClose:
         <button
           disabled={!mayDelete}
           onClick={() => {
-            api.issues.remove({ id: row.id });
+            api.issues.remove({ workspaceId: WORKSPACE_ID, id: row.id });
             onClose();
           }}
           style={{

@@ -1,7 +1,7 @@
 import { mutation } from "@syncmesh/orpc";
 import * as z from "zod";
 
-import { Id } from "../domain.js";
+import { Id, scoped } from "../domain.js";
 
 /**
  * `ENG-42`: the one thing in this tracker a device cannot decide for itself.
@@ -24,7 +24,7 @@ import { Id } from "../domain.js";
  */
 export const claimNumber = mutation
   .route({ method: "POST", path: "/issues/{issueId}/number", tags: ["issues"] })
-  .input(z.object({ issueId: Id }))
+  .input(scoped({ issueId: Id }))
   .output(z.object({ number: z.int().min(1), identifier: z.string().min(3) }))
   .errors({
     NO_SUCH_ISSUE: { message: "the issue has not reached the authority yet" },

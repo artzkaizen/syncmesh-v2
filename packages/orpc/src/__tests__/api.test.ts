@@ -34,12 +34,15 @@ const schema = defineSchema({
 const issuer = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 7 + i)).unwrap();
 const device = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 70 + i)).unwrap();
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
-const ACME = "org:acme";
+const ORG = "acme";
+const ACME = `org:${ORG}`;
 
 /** The one surface an app touches: a read that has not run, and a write that is one event. */
 const books = {
   list: query
-    .input(z.object({ shelf: z.string().optional() }))
+    // `orgId` is not decoration: scope is input, never construction (ch. 3), and this is where
+    // the binding reads which replica the call is about
+    .input(z.object({ orgId: z.string(), shelf: z.string().optional() }))
     .handler(({ input, mesh }) =>
       input.shelf === undefined
         ? mesh.db.select().from(book)
@@ -47,7 +50,7 @@ const books = {
     ),
 
   create: mutation
-    .input(z.object({ id: z.string(), title: z.string().min(1) }))
+    .input(z.object({ orgId: z.string(), id: z.string(), title: z.string().min(1) }))
     .handler(async ({ input, mesh }) => {
       await mesh.db.insert(book).values({ id: input.id, title: input.title });
       return { id: input.id };
@@ -90,22 +93,22 @@ const open = async (role: string | undefined) => {
       )
       .unwrap();
   }
-  return { mesh, api: meshApi(mesh, { books }, { instance: ACME }) };
+  return { mesh, api: meshApi(mesh, { books }) };
 };
 
 /** A mesh whose authority calls go to `link` instead of over HTTP. */
 const withAuthority = async (link?: AuthorityLink) => {
   const { mesh } = await open("member");
-  const options = link === undefined ? { instance: ACME } : { instance: ACME, link };
+  const options = link === undefined ? {} : { link };
   return { mesh, api: meshApi(mesh, { books, billing }, options) };
 };
 
 describe("api.books.* is the whole surface", () => {
   test("a query is inert until something runs it, and two identical asks share one key", async () => {
     const { mesh, api } = await open("member");
-    const a = api.books.list({ shelf: "sci-fi" });
-    const b = api.books.list({ shelf: "sci-fi" });
-    const other = api.books.list({});
+    const a = api.books.list({ orgId: ORG, shelf: "sci-fi" });
+    const b = api.books.list({ orgId: ORG, shelf: "sci-fi" });
+    const other = api.books.list({ orgId: ORG });
 
     expect(a.kind).toBe("query");
     expect(a.path).toBe("books.list");
@@ -118,21 +121,21 @@ describe("api.books.* is the whole surface", () => {
 
   test("a mutation returns the event it became, and the query then sees the row", async () => {
     const { mesh, api } = await open("member");
-    const created = await api.books.create({ id: "b1", title: "Dune" }).committed;
+    const created = await api.books.create({ orgId: ORG, id: "b1", title: "Dune" }).committed;
 
     expect(created.isOk()).toBe(true);
     const { eventId, data } = created.unwrap();
     expect(String(eventId)).toMatch(/^[0-9a-f]{64}-\d+$/);
     expect(data).toEqual({ id: "b1" });
 
-    const rows = await api.books.list({}).run();
+    const rows = await api.books.list({ orgId: ORG }).run();
     expect(rows).toEqual([{ id: "b1", title: "Dune", shelf: null }]);
     await mesh.stop();
   });
 
   test("input the schema refuses is an Err, and writes nothing", async () => {
     const { mesh, api } = await open("member");
-    const refused = await api.books.create({ id: "b2", title: "" }).committed;
+    const refused = await api.books.create({ orgId: ORG, id: "b2", title: "" }).committed;
 
     expect(refused.isErr()).toBe(true);
     expect(await mesh.engine.eventsSince(new Map()).then((r) => r.unwrap().length)).toBe(0);
@@ -141,7 +144,7 @@ describe("api.books.* is the whole surface", () => {
 
   test("a write the caller's rules deny is an Err, not a throw", async () => {
     const { mesh, api } = await open("viewer");
-    const denied = await api.books.create({ id: "b3", title: "Dune" }).committed;
+    const denied = await api.books.create({ orgId: ORG, id: "b3", title: "Dune" }).committed;
 
     expect(denied.isErr()).toBe(true);
     expect(await mesh.engine.eventsSince(new Map()).then((r) => r.unwrap().length)).toBe(0);

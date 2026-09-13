@@ -4,6 +4,7 @@ import { useLiveQuery } from "@syncmesh/react";
 
 import type { Filters } from "./view.js";
 
+import { WORKSPACE_ID } from "../domain.js";
 import { Avatar, Section } from "./atoms.js";
 import { useCatalog, useReplica } from "./context.js";
 import { COLOR, HAIRLINE, RADIUS, SIDEBAR_WIDTH, SPACE, TEXT } from "./ui.js";
@@ -86,7 +87,7 @@ export function Sidebar({
 }) {
   const { api, actor } = useReplica();
   const catalog = useCatalog();
-  const totals = useLiveQuery(api.issues.labelTotals()).data;
+  const totals = useLiveQuery(api.issues.labelTotals({ workspaceId: WORKSPACE_ID })).data;
   const countOf = (labelId: string) => totals.find((row) => row.labelId === labelId)?.total;
 
   /** Clicking the selected thing clears it, so "all teams" is the absence of a choice, not a row. */

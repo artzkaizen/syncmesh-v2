@@ -3,7 +3,7 @@ import { Temporal } from "@syncmesh/temporal";
 import { asc, eq, isNull, or } from "drizzle-orm";
 import * as z from "zod";
 
-import { Id, ProjectStatus } from "../domain.js";
+import { Id, ProjectStatus, scoped } from "../domain.js";
 import { between } from "../rank.js";
 import { label, member, project, team } from "../tables.js";
 import { at, atOrNull, parseInstant } from "../time.js";
@@ -17,14 +17,16 @@ import { at, atOrNull, parseInstant } from "../time.js";
  */
 
 export const teams = {
-  list: query.handler(({ mesh }) =>
-    mesh.db.select().from(team).where(isNull(team.archivedAt)).orderBy(asc(team.key)),
-  ),
+  list: query
+    .input(scoped({}))
+    .handler(({ mesh }) =>
+      mesh.db.select().from(team).where(isNull(team.archivedAt)).orderBy(asc(team.key)),
+    ),
 
   /** Making a team is an admin's — the manifest's `$default: role("admin")` is the whole rule. */
   create: mutation
     .input(
-      z.object({
+      scoped({
         key: z.string().regex(/^[A-Z]{2,5}$/),
         name: z.string().min(1).max(80),
         color: z.string().min(1).max(16),
@@ -37,7 +39,7 @@ export const teams = {
     }),
 
   /** Archived, not deleted: the issues keep their prefix, and the prefix keeps its meaning. */
-  archive: mutation.input(z.object({ id: Id })).handler(async ({ input, mesh }) => {
+  archive: mutation.input(scoped({ id: Id })).handler(async ({ input, mesh }) => {
     await mesh.db
       .update(team)
       .set({ archivedAt: at(Temporal.Now.instant()) })
@@ -47,9 +49,11 @@ export const teams = {
 };
 
 export const members = {
-  list: query.handler(({ mesh }) =>
-    mesh.db.select().from(member).where(isNull(member.deactivatedAt)).orderBy(asc(member.name)),
-  ),
+  list: query
+    .input(scoped({}))
+    .handler(({ mesh }) =>
+      mesh.db.select().from(member).where(isNull(member.deactivatedAt)).orderBy(asc(member.name)),
+    ),
 
   /**
    * A person edits their own row. The rule is `any(owner("id"), role("admin"))`, so the `id` in
@@ -57,7 +61,7 @@ export const members = {
    * is the difference between a permission and a convention.
    */
   rename: mutation
-    .input(z.object({ id: Id, name: z.string().min(1).max(80) }))
+    .input(scoped({ id: Id, name: z.string().min(1).max(80) }))
     .handler(async ({ input, mesh }) => {
       await mesh.db.update(member).set({ name: input.name }).where(eq(member.id, input.id));
       return { id: input.id };
@@ -65,7 +69,7 @@ export const members = {
 
   invite: mutation
     .input(
-      z.object({
+      scoped({
         id: Id,
         name: z.string().min(1).max(80),
         handle: z.string().min(1).max(40),
@@ -80,7 +84,7 @@ export const members = {
 };
 
 export const projects = {
-  list: query.input(z.object({ teamId: Id.optional() })).handler(({ input, mesh }) => {
+  list: query.input(scoped({ teamId: Id.optional() })).handler(({ input, mesh }) => {
     const source = mesh.read(project);
     return mesh.db
       .select()
@@ -91,7 +95,7 @@ export const projects = {
 
   create: mutation
     .input(
-      z.object({
+      scoped({
         teamId: Id,
         name: z.string().min(1).max(120),
         summary: z.string().max(2000).optional(),
@@ -122,7 +126,7 @@ export const projects = {
 
   update: mutation
     .input(
-      z.object({
+      scoped({
         id: Id,
         name: z.string().min(1).max(120).optional(),
         summary: z.string().max(2000).optional(),
@@ -142,7 +146,7 @@ export const projects = {
    * with no way back. `api.projects.remove.can(input)` rehearses it against the same rules, so a
    * UI can grey the button out without keeping a second copy of the rule (book ch. 15).
    */
-  remove: mutation.input(z.object({ id: Id })).handler(async ({ input, mesh }) => {
+  remove: mutation.input(scoped({ id: Id })).handler(async ({ input, mesh }) => {
     await mesh.db.delete(project).where(eq(project.id, input.id));
     return { id: input.id };
   }),
@@ -150,7 +154,7 @@ export const projects = {
 
 export const labels = {
   /** A team's labels plus the workspace-wide ones, which is what a label picker shows. */
-  list: query.input(z.object({ teamId: Id.optional() })).handler(({ input, mesh }) =>
+  list: query.input(scoped({ teamId: Id.optional() })).handler(({ input, mesh }) =>
     mesh.db
       .select()
       .from(label)
@@ -164,7 +168,7 @@ export const labels = {
 
   create: mutation
     .input(
-      z.object({
+      scoped({
         name: z.string().min(1).max(40),
         color: z.string().min(1).max(16),
         teamId: Id.nullable().optional(),
@@ -176,7 +180,7 @@ export const labels = {
       return { id };
     }),
 
-  remove: mutation.input(z.object({ id: Id })).handler(async ({ input, mesh }) => {
+  remove: mutation.input(scoped({ id: Id })).handler(async ({ input, mesh }) => {
     await mesh.db.delete(label).where(eq(label.id, input.id));
     return { id: input.id };
   }),

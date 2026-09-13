@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import type { ActivityRow, CommentRow } from "./view.js";
 
+import { WORKSPACE_ID } from "../domain.js";
 import { Avatar } from "./atoms.js";
 import { useCatalog, useReplica } from "./context.js";
 import {
@@ -34,7 +35,9 @@ const EMOJI = ["👍", "🎉", "👀", "🚀", "😄", "❤️"] as const;
 
 function Reactions({ subjectId }: { readonly subjectId: string }) {
   const { api, actor } = useReplica();
-  const tally = useLiveQuery(api.reactions.tally({ subject: "comment", subjectId })).data;
+  const tally = useLiveQuery(
+    api.reactions.tally({ workspaceId: WORKSPACE_ID, subject: "comment", subjectId }),
+  ).data;
   const [open, setOpen] = useState(false);
   return (
     <div style={{ alignItems: "center", display: "flex", flexWrap: "wrap", gap: SPACE.xs }}>
@@ -43,6 +46,7 @@ function Reactions({ subjectId }: { readonly subjectId: string }) {
           key={row.emoji}
           onClick={() =>
             api.reactions.remove({
+              workspaceId: WORKSPACE_ID,
               subject: "comment",
               subjectId,
               emoji: row.emoji,
@@ -70,7 +74,13 @@ function Reactions({ subjectId }: { readonly subjectId: string }) {
               onClick={() => {
                 // the id is `(actor, subject, emoji)`, so tapping twice writes the same key and
                 // the fold has nothing new to do — idempotent without a check
-                api.reactions.add({ subject: "comment", subjectId, emoji, actorId: actor });
+                api.reactions.add({
+                  workspaceId: WORKSPACE_ID,
+                  subject: "comment",
+                  subjectId,
+                  emoji,
+                  actorId: actor,
+                });
                 setOpen(false);
               }}
               style={{ ...BUTTON, borderRadius: RADIUS.pill, padding: "1px 6px" }}
@@ -155,7 +165,7 @@ function sentence(
 function History({ issueId }: { readonly issueId: string }) {
   const { api } = useReplica();
   const catalog = useCatalog();
-  const rows = useLiveQuery(api.history.forIssue({ issueId })).data;
+  const rows = useLiveQuery(api.history.forIssue({ workspaceId: WORKSPACE_ID, issueId })).data;
   const name = (id: string) => catalog.member.get(id)?.name;
   const labelName = (id: string) => catalog.label.get(id)?.name;
   return (
@@ -179,7 +189,12 @@ function Composer({ issueId }: { readonly issueId: string }) {
       onSubmit={(event) => {
         event.preventDefault();
         if (body.trim() === "") return;
-        api.comments.post({ issueId, authorId: actor, body: body.trim() });
+        api.comments.post({
+          workspaceId: WORKSPACE_ID,
+          issueId,
+          authorId: actor,
+          body: body.trim(),
+        });
         setBody("");
       }}
       style={{ display: "grid", gap: SPACE.sm }}
@@ -200,7 +215,7 @@ function Composer({ issueId }: { readonly issueId: string }) {
 
 export function Thread({ issueId }: { readonly issueId: string }) {
   const { api } = useReplica();
-  const comments = useLiveQuery(api.comments.forIssue({ issueId })).data;
+  const comments = useLiveQuery(api.comments.forIssue({ workspaceId: WORKSPACE_ID, issueId })).data;
   return (
     <div style={{ borderTop: HAIRLINE, display: "grid", gap: SPACE.lg, padding: SPACE.lg }}>
       <span style={CAPTION}>{comments.length} comments</span>

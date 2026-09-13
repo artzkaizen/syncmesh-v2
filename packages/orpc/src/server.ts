@@ -6,6 +6,7 @@ import type { App, AppOptions } from "./app.js";
 import { isDef } from "./api.js";
 import { createApp } from "./app.js";
 import { createHandler } from "./http.js";
+import { replicaFor } from "./scope.js";
 
 /**
  * A server is a node with extra duties, not a different world (book ch. 19): it folds events and
@@ -64,7 +65,12 @@ export async function createServer<
   const handlerOptions = { procedures: options.procedures, api: app.api };
   if (handlers !== undefined)
     Object.assign(handlerOptions, {
-      gate: { handlers, handle: () => app.mesh.on(options.instance).unwrap() },
+      // the replica comes from the call's own input, because scope is input (ch. 3) — a server
+      // is a node with extra duties, not one that gets to be bound to a tenant
+      gate: {
+        handlers,
+        handle: replicaFor(app.mesh.schema, (scope) => app.mesh.on(scope).unwrap()),
+      },
     });
   const fetch = createHandler(handlerOptions);
 

@@ -3,7 +3,7 @@ import { Temporal } from "@syncmesh/temporal";
 import { asc, eq, sql } from "drizzle-orm";
 import * as z from "zod";
 
-import { Id, IssueStatus, Priority } from "../domain.js";
+import { Id, IssueStatus, Priority, scoped } from "../domain.js";
 import { record } from "../history.js";
 import { between } from "../rank.js";
 import { issue } from "../tables.js";
@@ -23,7 +23,7 @@ import { at, atOrNull, parseInstant } from "../time.js";
  * and the issue one event rather than two that can arrive apart.
  */
 
-const NewIssue = z.object({
+const NewIssue = scoped({
   actorId: Id,
   teamId: Id,
   title: z.string().min(1).max(256),
@@ -83,7 +83,7 @@ export const create = mutation.input(NewIssue).handler(async ({ input, mesh }) =
 /** The fields a person edits in the detail panel. Only what was named is written. */
 export const edit = mutation
   .input(
-    z.object({
+    scoped({
       id: Id,
       actorId: Id,
       title: z.string().min(1).max(256).optional(),
@@ -126,7 +126,7 @@ export const edit = mutation
  */
 export const move = mutation
   .input(
-    z.object({
+    scoped({
       id: Id,
       actorId: Id,
       status: IssueStatus.optional(),
@@ -166,7 +166,7 @@ const statusPatch = (status: IssueStatus, now: Temporal.Instant) => ({
 
 /** Status on its own — the keyboard shortcut, as against the drag. */
 export const setStatus = mutation
-  .input(z.object({ id: Id, actorId: Id, status: IssueStatus }))
+  .input(scoped({ id: Id, actorId: Id, status: IssueStatus }))
   .handler(async ({ input, mesh }) => {
     const now = Temporal.Now.instant();
     const [current] = await mesh.db
@@ -190,7 +190,7 @@ export const setStatus = mutation
 
 /** Assignment, including unassignment — `null` is a value here, not an omission. */
 export const assign = mutation
-  .input(z.object({ id: Id, actorId: Id, assigneeId: Id.nullable() }))
+  .input(scoped({ id: Id, actorId: Id, assigneeId: Id.nullable() }))
   .handler(async ({ input, mesh }) => {
     const now = Temporal.Now.instant();
     const [current] = await mesh.db
@@ -232,7 +232,7 @@ export const assign = mutation
  * what a counter is for. The screen coalesces to one view per issue per tab; `app/detail.tsx`'s
  * `counted` says why, and the number it replaced is why it says it at length.
  */
-export const view = mutation.input(z.object({ id: Id })).handler(async ({ input, mesh }) => {
+export const view = mutation.input(scoped({ id: Id })).handler(async ({ input, mesh }) => {
   await mesh.db
     .update(issue)
     .set({ views: sql`${issue.views} + 1` })
@@ -241,7 +241,7 @@ export const view = mutation.input(z.object({ id: Id })).handler(async ({ input,
 });
 
 /** Deleting an issue is an admin's; the manifest refuses it to anyone else. */
-export const remove = mutation.input(z.object({ id: Id })).handler(async ({ input, mesh }) => {
+export const remove = mutation.input(scoped({ id: Id })).handler(async ({ input, mesh }) => {
   await mesh.db.delete(issue).where(eq(issue.id, input.id));
   return { id: input.id };
 });

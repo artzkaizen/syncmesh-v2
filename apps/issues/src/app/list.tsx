@@ -6,6 +6,7 @@ import { useMemo, useRef, useState } from "react";
 import type { Landing } from "./section.js";
 import type { Filters, IssueRow, Sort } from "./view.js";
 
+import { WORKSPACE_ID } from "../domain.js";
 import { useCatalog, useReplica } from "./context.js";
 import { Section } from "./section.js";
 import { BUTTON, CAPTION, COLOR, HAIRLINE, SPACE, TEXT } from "./ui.js";
@@ -182,6 +183,7 @@ export function List(props: ListProps) {
       const section = groups.find((group) => group.status === where.status);
       const order = (section?.rows ?? []).map((row) => row.id);
       const input = {
+        workspaceId: WORKSPACE_ID,
         id: moved.id,
         actorId: actor,
         ...dropBetween(order, moved.id, where.beforeId),

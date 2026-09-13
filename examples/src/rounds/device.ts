@@ -54,7 +54,6 @@ const device = async (name: keyof typeof staff, transport: Transport) => {
   const app = await createApp({
     schema: roundsSchema(),
     procedures,
-    instance: PRACTICE,
     identity: staff[name],
     issuer: issuer.peerId,
     driver: bunSqliteDriver(":memory:"), // a demo starts on a fresh ward every run

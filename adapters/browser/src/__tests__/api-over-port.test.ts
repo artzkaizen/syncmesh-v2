@@ -2,7 +2,7 @@ import { meshApi, mutation, query } from "@syncmesh/orpc";
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 
-import { ACME, book, meshOrigin, settled } from "./origin-mesh.js";
+import { ORG, book, meshOrigin, settled } from "./origin-mesh.js";
 
 /**
  * The acceptance test for the whole arrangement: **the app's own api, unchanged, in a tab that
@@ -14,9 +14,11 @@ import { ACME, book, meshOrigin, settled } from "./origin-mesh.js";
  * whole of what "one engine per origin" has to buy to be worth building.
  */
 const books = {
-  list: query.input(z.object({})).handler(({ mesh }) => mesh.db.select().from(book)),
+  list: query
+    .input(z.object({ orgId: z.string() }))
+    .handler(({ mesh }) => mesh.db.select().from(book)),
   create: mutation
-    .input(z.object({ id: z.string(), title: z.string().min(1) }))
+    .input(z.object({ orgId: z.string(), id: z.string(), title: z.string().min(1) }))
     .handler(async ({ input, mesh }) => {
       await mesh.db.insert(book).values({ id: input.id, title: input.title });
       return { id: input.id };
@@ -25,7 +27,7 @@ const books = {
 
 const apiTab = (origin: Awaited<ReturnType<typeof meshOrigin>>) => {
   const { mesh } = origin.tab();
-  return { mesh, api: meshApi(mesh, { books }, { instance: ACME }) };
+  return { mesh, api: meshApi(mesh, { books }) };
 };
 
 describe("the app's api in a tab that holds no engine", () => {
@@ -35,12 +37,12 @@ describe("the app's api in a tab that holds no engine", () => {
     const a = apiTab(origin);
     const b = apiTab(origin);
 
-    const live = b.api.books.list({}).live();
+    const live = b.api.books.list({ orgId: ORG }).live();
     expect(await live.ready).toEqual([]);
     const rendered: number[] = [];
     live.subscribe((rows) => rendered.push(rows.length));
 
-    const written = await a.api.books.create({ id: "b1", title: "Dune" }).committed;
+    const written = await a.api.books.create({ orgId: ORG, id: "b1", title: "Dune" }).committed;
     expect(written.isOk()).toBe(true);
     expect(String(written.unwrap().eventId)).toMatch(/^[0-9a-f]{64}-\d+$/);
     expect(written.unwrap().data).toEqual({ id: "b1" });
@@ -56,10 +58,12 @@ describe("the app's api in a tab that holds no engine", () => {
     const origin = await meshOrigin();
     const { stop } = origin;
     const a = apiTab(origin);
-    const allowed = await a.api.books.create.can({ id: "r1", title: "Rehearsed" }).run();
+    const allowed = await a.api.books.create
+      .can({ orgId: ORG, id: "r1", title: "Rehearsed" })
+      .run();
 
     expect(allowed.isOk()).toBe(true);
-    expect(await a.api.books.list({}).run()).toEqual([]);
+    expect(await a.api.books.list({ orgId: ORG }).run()).toEqual([]);
     await stop();
   });
 
@@ -74,13 +78,15 @@ describe("the app's api in a tab that holds no engine", () => {
     const origin = await meshOrigin();
     const { stop } = origin;
     const a = apiTab(origin);
-    const rehearsal = a.api.books.create.can({ id: "r2", title: "Rehearsed" }).run();
-    const written = a.api.books.create({ id: "b3", title: "Persuasion" }).committed;
+    const rehearsal = a.api.books.create.can({ orgId: ORG, id: "r2", title: "Rehearsed" }).run();
+    const written = a.api.books.create({ orgId: ORG, id: "b3", title: "Persuasion" }).committed;
 
     expect((await rehearsal).isOk()).toBe(true);
     expect((await written).isOk()).toBe(true);
     // the handle is handed back rather than held by whoever got in first
-    expect(await a.api.books.list({}).run()).toEqual([{ id: "b3", title: "Persuasion" }]);
+    expect(await a.api.books.list({ orgId: ORG }).run()).toEqual([
+      { id: "b3", title: "Persuasion" },
+    ]);
     expect(origin.host.census().handles).toBe(0);
     await stop();
   });
@@ -89,11 +95,11 @@ describe("the app's api in a tab that holds no engine", () => {
     const origin = await meshOrigin();
     const { stop } = origin;
     const a = apiTab(origin);
-    const write = a.api.books.create({ id: "b2", title: "Emma" });
+    const write = a.api.books.create({ orgId: ORG, id: "b2", title: "Emma" });
 
     expect(write.id).toMatch(/^[0-9a-f-]{36}$/);
     expect((await write.committed).isOk()).toBe(true);
-    expect(await a.api.books.list({}).run()).toEqual([{ id: "b2", title: "Emma" }]);
+    expect(await a.api.books.list({ orgId: ORG }).run()).toEqual([{ id: "b2", title: "Emma" }]);
     await stop();
   });
 });

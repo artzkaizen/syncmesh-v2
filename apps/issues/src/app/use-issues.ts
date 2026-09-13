@@ -5,6 +5,7 @@ import { useQuery } from "@syncmesh/react";
 import type { Replica } from "./replica.js";
 import type { Filters, IssueRow } from "./view.js";
 
+import { WORKSPACE_ID } from "../domain.js";
 import { useReplica } from "./context.js";
 
 /**
@@ -39,12 +40,13 @@ export const issuesCall = (api: Replica["api"], filters: Filters) => {
   const text = filters.text.trim();
   return text === ""
     ? api.issues.list({
+        workspaceId: WORKSPACE_ID,
         teamId: filters.teamId ?? undefined,
         assigneeId: filters.assigneeId ?? undefined,
         openOnly: filters.openOnly,
         limit: LISTED,
       })
-    : api.issues.search({ text, limit: SEARCHED });
+    : api.issues.search({ workspaceId: WORKSPACE_ID, text, limit: SEARCHED });
 };
 
 /**

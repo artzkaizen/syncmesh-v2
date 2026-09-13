@@ -5,7 +5,6 @@ import { connectMesh, openMeshLink, rendezvousAvailable } from "@syncmesh/browse
 import { meshApi } from "@syncmesh/orpc";
 import { Result, TaggedError } from "@syncmesh/result";
 
-import { WORKSPACE } from "../domain.js";
 import { procedures } from "../procedures.js";
 import { issuesSchema } from "../schema.js";
 import { ACTOR } from "./identity.js";
@@ -140,7 +139,7 @@ const openOnce = (): Promise<Result<Replica, ReplicaUnavailable>> =>
     link.onLost(() => void reopen());
     const durable = yield* await durabilityOf(mesh);
     return Result.ok({
-      api: meshApi(mesh, procedures, { instance: WORKSPACE }),
+      api: meshApi(mesh, procedures),
       mesh,
       durable,
       role: link.role,

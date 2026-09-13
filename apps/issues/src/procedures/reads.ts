@@ -5,7 +5,7 @@ import { query } from "@syncmesh/orpc";
 import { and, asc, count, desc, eq, inArray, like, or, sql } from "drizzle-orm";
 import * as z from "zod";
 
-import { Id, ISSUE_STATUS, IssueStatus, OPEN_STATUS } from "../domain.js";
+import { Id, ISSUE_STATUS, IssueStatus, OPEN_STATUS, scoped } from "../domain.js";
 import { comment, issue, issueLabel } from "../tables.js";
 
 /**
@@ -35,7 +35,7 @@ const statusFilter = z.array(IssueStatus).min(1).optional();
  */
 export const list = query
   .input(
-    z.object({
+    scoped({
       teamId: Id.optional(),
       projectId: Id.optional(),
       assigneeId: Id.optional(),
@@ -68,7 +68,7 @@ export const list = query
  * a drag across columns changes `status` and `rank` in the same write, and two subscriptions
  * would show the card in neither column or both for the length of one fold.
  */
-export const board = query.input(z.object({ teamId: Id })).handler(({ input, mesh }) => {
+export const board = query.input(scoped({ teamId: Id })).handler(({ input, mesh }) => {
   const source = mesh.read(issue);
   return mesh.db
     .select()
@@ -82,7 +82,7 @@ export const board = query.input(z.object({ teamId: Id })).handler(({ input, mes
  * Selected here and not on the list, because these two columns make the query re-run when an
  * acknowledgement lands — which is what a detail view wants and what a hundred-row board does not.
  */
-export const get = query.input(z.object({ id: Id })).handler(({ input, mesh }) =>
+export const get = query.input(scoped({ id: Id })).handler(({ input, mesh }) =>
   mesh.db
     .select({ ...columns(issue), operation: operationOf(issue) })
     .from(issue)
@@ -98,7 +98,7 @@ export const get = query.input(z.object({ id: Id })).handler(({ input, mesh }) =
  * rows is the right answer and is a job for the app's own boot, not for the manifest.
  */
 export const search = query
-  .input(z.object({ text: z.string().min(1).max(200), limit: z.int().min(1).max(100).optional() }))
+  .input(scoped({ text: z.string().min(1).max(200), limit: z.int().min(1).max(100).optional() }))
   .handler(({ input, mesh }) => {
     const source = mesh.read(issue);
     const needle = `%${input.text.replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
@@ -111,7 +111,7 @@ export const search = query
   });
 
 /** The badge on each board column. A `GROUP BY`, so one subscription covers all six numbers. */
-export const counts = query.input(z.object({ teamId: Id })).handler(({ input, mesh }) => {
+export const counts = query.input(scoped({ teamId: Id })).handler(({ input, mesh }) => {
   const source = mesh.read(issue);
   return mesh.db
     .select({ status: source.status, total: count() })
@@ -127,7 +127,7 @@ export const counts = query.input(z.object({ teamId: Id })).handler(({ input, me
  * pinned to one instance, and "everything assigned to me" spans all of them.
  */
 export const assigned = query
-  .input(z.object({ assigneeId: Id, openOnly: z.boolean().optional() }))
+  .input(scoped({ assigneeId: Id, openOnly: z.boolean().optional() }))
   .handler(({ input, mesh }) => {
     const source = mesh.read(issue);
     return mesh.db
@@ -144,7 +144,7 @@ export const assigned = query
 
 /** The labels on one issue, as the chips a card renders. */
 export const labelsOf = query
-  .input(z.object({ issueId: Id }))
+  .input(scoped({ issueId: Id }))
   .handler(({ input, mesh }) =>
     mesh.db
       .select()
@@ -154,20 +154,22 @@ export const labelsOf = query
   );
 
 /** How many issues carry each label, for the sidebar. Counted live rather than kept on the label row. */
-export const labelTotals = query.handler(({ mesh }) =>
-  mesh.db
-    .select({ labelId: issueLabel.labelId, total: count() })
-    .from(issueLabel)
-    .groupBy(issueLabel.labelId)
-    .orderBy(desc(count()), asc(issueLabel.labelId)),
-);
+export const labelTotals = query
+  .input(scoped({}))
+  .handler(({ mesh }) =>
+    mesh.db
+      .select({ labelId: issueLabel.labelId, total: count() })
+      .from(issueLabel)
+      .groupBy(issueLabel.labelId)
+      .orderBy(desc(count()), asc(issueLabel.labelId)),
+  );
 
 /**
  * The workspace's own heartbeat: how much is open, how much landed, how much is unnumbered and
  * therefore still waiting on an authority. The last one is the number a devtool wants, because
  * it is the only one on this screen that a network outage can move.
  */
-export const summary = query.handler(({ mesh }) => {
+export const summary = query.input(scoped({})).handler(({ mesh }) => {
   const source = mesh.read(issue);
   return mesh.db
     .select({
@@ -180,7 +182,7 @@ export const summary = query.handler(({ mesh }) => {
 });
 
 /** One issue's thread, oldest first — the order a conversation is read in. */
-export const thread = query.input(z.object({ issueId: Id })).handler(({ input, mesh }) => {
+export const thread = query.input(scoped({ issueId: Id })).handler(({ input, mesh }) => {
   const source = mesh.read(comment);
   return mesh.db
     .select()

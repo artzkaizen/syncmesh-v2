@@ -3,7 +3,7 @@ import { Temporal } from "@syncmesh/temporal";
 import { and, asc, count, eq } from "drizzle-orm";
 import * as z from "zod";
 
-import { Id, ReactionSubject } from "../domain.js";
+import { Id, ReactionSubject, scoped } from "../domain.js";
 import { record } from "../history.js";
 import { activity, comment, issueLabel, reaction } from "../tables.js";
 import { at } from "../time.js";
@@ -21,7 +21,7 @@ import { at } from "../time.js";
 export const comments = {
   post: mutation
     .input(
-      z.object({
+      scoped({
         issueId: Id,
         authorId: Id,
         body: z.string().min(1).max(20_000),
@@ -47,7 +47,7 @@ export const comments = {
    * device, where the author is who they say they are. The rule runs on every receiver.
    */
   edit: mutation
-    .input(z.object({ id: Id, body: z.string().min(1).max(20_000) }))
+    .input(scoped({ id: Id, body: z.string().min(1).max(20_000) }))
     .handler(async ({ input, mesh }) => {
       await mesh.db
         .update(comment)
@@ -57,7 +57,7 @@ export const comments = {
     }),
 
   /** Widened where `update` is not: an admin moderates, which is a job, but never rewrites. */
-  remove: mutation.input(z.object({ id: Id })).handler(async ({ input, mesh }) => {
+  remove: mutation.input(scoped({ id: Id })).handler(async ({ input, mesh }) => {
     await mesh.db.delete(comment).where(eq(comment.id, input.id));
     return { id: input.id };
   }),
@@ -66,7 +66,7 @@ export const comments = {
 export const reactions = {
   /** Every reaction on a thing, so a UI can group them by emoji and name the people. */
   forSubject: query
-    .input(z.object({ subject: ReactionSubject, subjectId: Id }))
+    .input(scoped({ subject: ReactionSubject, subjectId: Id }))
     .handler(({ input, mesh }) =>
       mesh.db
         .select()
@@ -77,7 +77,7 @@ export const reactions = {
 
   /** The tally a card renders, without the names. Counted from the rows, never stored. */
   tally: query
-    .input(z.object({ subject: ReactionSubject, subjectId: Id }))
+    .input(scoped({ subject: ReactionSubject, subjectId: Id }))
     .handler(({ input, mesh }) =>
       mesh.db
         .select({ emoji: reaction.emoji, total: count() })
@@ -95,7 +95,7 @@ export const reactions = {
    */
   add: mutation
     .input(
-      z.object({
+      scoped({
         subject: ReactionSubject,
         subjectId: Id,
         emoji: z.string().min(1).max(16),
@@ -114,7 +114,7 @@ export const reactions = {
   /** Taking it back. `owner("actorId")` on `delete`, so nobody removes anyone else's. */
   remove: mutation
     .input(
-      z.object({
+      scoped({
         subject: ReactionSubject,
         subjectId: Id,
         emoji: z.string().min(1).max(16),
@@ -146,13 +146,13 @@ export const issueLabels = {
    * three short columns — smaller than the issues it decorates — so the cheap thing and the
    * correct thing are the same thing here.
    */
-  list: query.handler(({ mesh }) => {
+  list: query.input(scoped({})).handler(({ mesh }) => {
     const source = mesh.read(issueLabel);
     return mesh.db.select().from(source).orderBy(asc(source.issueId), asc(source.labelId));
   }),
 
   attach: mutation
-    .input(z.object({ issueId: Id, labelId: Id, actorId: Id }))
+    .input(scoped({ issueId: Id, labelId: Id, actorId: Id }))
     .handler(async ({ input, mesh }) => {
       const now = Temporal.Now.instant();
       const id = `${input.issueId}:${input.labelId}`;
@@ -177,7 +177,7 @@ export const issueLabels = {
     }),
 
   detach: mutation
-    .input(z.object({ issueId: Id, labelId: Id, actorId: Id }))
+    .input(scoped({ issueId: Id, labelId: Id, actorId: Id }))
     .handler(async ({ input, mesh }) => {
       const now = Temporal.Now.instant();
       await mesh.db
@@ -200,7 +200,7 @@ export const issueLabels = {
  */
 export const history = {
   forIssue: query
-    .input(z.object({ issueId: Id, limit: z.int().min(1).max(200).optional() }))
+    .input(scoped({ issueId: Id, limit: z.int().min(1).max(200).optional() }))
     .handler(({ input, mesh }) =>
       mesh.db
         .select()

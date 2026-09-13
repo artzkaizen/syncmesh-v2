@@ -13,7 +13,7 @@ import { issueGrant } from "@syncmesh/wire";
 import type { Procedures } from "../procedures.js";
 import type { IssuesPresence } from "../schema.js";
 
-import { WORKSPACE } from "../domain.js";
+import { WORKSPACE, WORKSPACE_ID } from "../domain.js";
 import { procedures } from "../procedures.js";
 import { issuesSchema } from "../schema.js";
 import { seedWorkspace } from "../seed.js";
@@ -86,11 +86,11 @@ const refused = (what: string) => (cause: unknown) =>
  */
 const seedOnce = (app: App<Procedures, IssuesPresence>) =>
   Result.gen(async function* () {
-    const [before] = await app.api.issues.summary().run();
+    const [before] = await app.api.issues.summary({ workspaceId: WORKSPACE_ID }).run();
     if (before !== undefined && before.total > 0) return Result.ok(undefined);
     await app.mesh.settled();
     // asked again, because that is what the wait was for: a relay that had the room has filled it
-    const [after] = await app.api.issues.summary().run();
+    const [after] = await app.api.issues.summary({ workspaceId: WORKSPACE_ID }).run();
     if (after !== undefined && after.total > 0) return Result.ok(undefined);
     const handle = yield* app.mesh
       .on(WORKSPACE)
@@ -160,7 +160,6 @@ const buildHost = (): Promise<Result<MeshHost, MeshCallFailed>> =>
         createApp({
           schema: issuesSchema(),
           procedures,
-          instance: WORKSPACE,
           identity: device,
           issuer: issuer.peerId,
           driver,

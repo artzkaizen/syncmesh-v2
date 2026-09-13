@@ -6,8 +6,28 @@ import * as z from "zod";
  * only the input schema knew about would be a status a peer could still write.
  */
 
-/** The workspace this build runs under, as `kind:id`. One workspace is one unit of custody. */
-export const WORKSPACE = "workspace:acme";
+/**
+ * The workspace this build's screens are about — **an input, never a construction argument.**
+ *
+ * The client is constructed knowing no workspace (book ch. 3): a scope id is ordinary data, and
+ * data changes without reconstruction. So this is a value a screen passes into a call, the same
+ * way it passes a team id, and the day this app grows a workspace switcher the only thing that
+ * changes is where the value comes from — not how anything is built.
+ */
+export const WORKSPACE_ID = "acme";
+
+/** The same workspace as the partition key a grant names: `kind:id`, one unit of custody. */
+export const WORKSPACE = `workspace:${WORKSPACE_ID}` as const;
+
+/**
+ * Every procedure's input carries the workspace it is about; this is that, said once.
+ *
+ * A helper rather than a line repeated thirty-seven times, because thirty-seven chances to forget
+ * it is thirty-seven calls that would quietly resolve to the global tables instead of failing.
+ */
+/* oxlint-disable-next-line anti-slop/no-shape-in-symbol-names -- `ZodRawShape` is zod's own exported name for a field map; renaming it here would mean aliasing a library type to hide it */
+export const scoped = <T extends z.ZodRawShape>(fields: T) =>
+  z.object({ workspaceId: z.string().min(1), ...fields });
 
 /**
  * An issue's state. Ordered as a board reads left to right, which is also the order a `CASE`
