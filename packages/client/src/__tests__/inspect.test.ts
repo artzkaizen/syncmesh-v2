@@ -60,11 +60,9 @@ describe("inspect.handles", () => {
   test("mesh-level listeners are counted, and `using` disposes them", async () => {
     const mesh = await device();
     {
-      using heldSync = mesh.onSyncChange(() => undefined);
       using heldTelemetry = mesh.onTelemetry(() => undefined);
-      expect(heldSync[Symbol.dispose]).toBeDefined();
       expect(heldTelemetry[Symbol.dispose]).toBeDefined();
-      expect(mesh.inspect.handles().subscriptions).toBe(2);
+      expect(mesh.inspect.handles().subscriptions).toBe(1);
     }
     expect(mesh.inspect.handles().subscriptions).toBe(0);
     await mesh.stop();

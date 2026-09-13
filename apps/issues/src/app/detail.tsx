@@ -273,7 +273,7 @@ export function Detail({ id, onClose }: { readonly id: string; readonly onClose:
       <div style={{ display: "grid", gap: SPACE.lg, padding: SPACE.lg }}>
         <div style={{ alignItems: "center", display: "flex", gap: SPACE.sm }}>
           <Identifier number={row.number} teamKey={team?.key ?? "???"} />
-          <SyncBadge id={row.id} operation={panel.operation} />
+          <SyncBadge operation={panel.operation} sync={panel.sync} />
           <span style={{ ...TEXT.xs, color: COLOR.textFaint, marginLeft: "auto" }}>
             {row.views} views · updated {ago(row.updatedAt)}
           </span>

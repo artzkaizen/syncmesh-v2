@@ -238,7 +238,6 @@ export function mockSource(
     stranded: () => Promise.resolve(Result.ok([])),
     grants: () => grants(now()),
     timings: () => [],
-    syncOf: () => "local",
     sql: undefined,
     onChange: () => () => undefined,
     close: () => undefined,

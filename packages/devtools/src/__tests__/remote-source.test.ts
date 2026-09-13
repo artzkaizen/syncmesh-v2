@@ -40,7 +40,7 @@ const wired = (inspector: MeshInspector): RemoteInspect => ({
 });
 
 const remote = async (inspector: MeshInspector) =>
-  createRemoteSource({ inspect: wired(inspector), syncOf: () => "local" });
+  createRemoteSource({ inspect: wired(inspector) });
 
 describe("the inspector over a port", () => {
   test("opens no source until a window watches, and closes it when the last one goes", async () => {
@@ -107,7 +107,7 @@ describe("the inspector over a port", () => {
         return door.read(name, args);
       },
     };
-    const source = await createRemoteSource({ inspect: watched, syncOf: () => undefined });
+    const source = await createRemoteSource({ inspect: watched });
     source.links(); // one panel drew links; nothing drew grants or timings
     const moved: string[][] = [];
     source.onChange((channels) => moved.push([...channels].sort()));

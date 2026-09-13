@@ -34,9 +34,9 @@ export const answer = async (
       absent<WireCells>(second),
       absent<string>(third),
     );
-  if (path === "syncOf") return mesh.syncOf(first, second);
   if (path === "query") return (await mesh.query?.(first, absent<SqlValue[]>(second))) ?? [];
   if (path === "principal") return mesh.auth.principal();
+  if (path === "self") return mesh.engine.peerId;
   if (path === "running") return mesh.running();
   if (path === "flush") await mesh.flush();
   if (path === "ready") await mesh.ready();

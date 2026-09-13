@@ -1,4 +1,4 @@
-import { useOperation, useSyncOf } from "@syncmesh/react";
+import { useOperation } from "@syncmesh/react";
 
 import { useReplica } from "./context.js";
 import { syncNote } from "./sync-note.js";
@@ -22,18 +22,23 @@ import { COLOR, SEVERITY_COLOR, TEXT } from "./ui.js";
  * keystroke away and holds the whole ledger, per write, which is where that answer belongs.
  */
 export function SyncBadge({
-  id,
+  sync,
   operation,
 }: {
-  readonly id: string;
+  /**
+   * Where this row's own write got to, **selected with the row** (`syncOf`).
+   *
+   * It used to be read through a second subscription keyed by table name and row id, which is why
+   * it flickered: the row and its reach were two answers arriving at two times, so a badge could
+   * draw the previous issue's reach beside this issue's title for a frame. A column cannot do
+   * that — it is in the row or it is not.
+   */
+  readonly sync: "local" | "delivered" | "remote" | null | undefined;
   /** `undefined` is *not read yet*, not "no operation"; see `view.ts`'s `Panel`. */
   readonly operation: string | null | undefined;
 }) {
-  const { api, mesh } = useReplica();
-  const note = syncNote(
-    useSyncOf(api.$sync, "issue", id),
-    useOperation(mesh.operations, operation ?? undefined),
-  );
+  const { mesh } = useReplica();
+  const note = syncNote(sync ?? undefined, useOperation(mesh.operations, operation ?? undefined));
   if (note === undefined) return null;
   return (
     <span

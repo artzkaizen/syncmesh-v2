@@ -1,4 +1,4 @@
-import type { HandleCounts, MeshHealth, SyncState } from "@syncmesh/client";
+import type { HandleCounts, MeshHealth } from "@syncmesh/client";
 import type {
   EventHeader,
   RecentEvents,
@@ -460,7 +460,6 @@ export interface DevtoolsSource {
    * a client — so a panel must say in words that the relay's absence is not the relay being idle.
    */
   readonly timings: () => readonly TelemetryStats[];
-  readonly syncOf: (table: string, key: string) => SyncState | undefined;
   readonly sql: DevtoolsSql | undefined;
   /** The one subscription a panel may hold. Coalesced on a microtask; see {@link DevtoolsChannel}. */
   readonly onChange: (listener: (moved: ReadonlySet<DevtoolsChannel>) => void) => Unsubscribe;

@@ -93,14 +93,14 @@ const open = async (role: string | undefined) => {
       )
       .unwrap();
   }
-  return { mesh, api: meshApi(mesh, { books }) };
+  return { mesh, api: meshApi({ ...mesh, self: device.peerId }, { books }) };
 };
 
 /** A mesh whose authority calls go to `link` instead of over HTTP. */
 const withAuthority = async (link?: AuthorityLink) => {
   const { mesh } = await open("member");
   const options = link === undefined ? {} : { link };
-  return { mesh, api: meshApi(mesh, { books, billing }, options) };
+  return { mesh, api: meshApi({ ...mesh, self: device.peerId }, { books, billing }, options) };
 };
 
 describe("api.books.* is the whole surface", () => {

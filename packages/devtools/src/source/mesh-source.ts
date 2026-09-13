@@ -113,7 +113,6 @@ export function createMeshSource(mesh: Mesh, options: MeshSourceOptions = {}): D
     stranded: async () => (await mesh.recovery.stranded()).map(strandedRows),
     grants: () => grantsOf(mesh, now),
     timings: inspector.stats,
-    syncOf: (table, key) => mesh.syncOf(table, key),
     sql: query === undefined ? undefined : createSqlDoor(query),
     onChange: channels.subscribe,
     close: () => {

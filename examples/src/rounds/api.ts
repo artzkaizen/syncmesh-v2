@@ -1,3 +1,4 @@
+import { syncOf } from "@syncmesh/drizzle";
 import { mutation, query } from "@syncmesh/orpc";
 import { asc, desc, eq } from "drizzle-orm";
 import * as z from "zod";
@@ -22,6 +23,14 @@ export const patients = {
 };
 
 export const observations = {
+  /** Where one reading's own write got to — a column, selected with the row it is about. */
+  reach: query.input(z.object({ id: z.string() })).handler(({ input, db, self }) =>
+    db
+      .select({ id: observation.id, sync: syncOf(self, observation) })
+      .from(observation)
+      .where(eq(observation.id, input.id)),
+  ),
+
   /** One patient's readings, newest first. Live: another clinician's entry arrives as a re-render. */
   forPatient: query
     .input(z.object({ patientId: z.string() }))

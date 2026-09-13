@@ -138,8 +138,11 @@ const openOnce = (): Promise<Result<Replica, ReplicaUnavailable>> =>
     // failure screen over a link nobody is watching any more
     link.onLost(() => void reopen());
     const durable = yield* await durabilityOf(mesh);
+    // awaited once: a window builds `syncOf` SQL correlated on this origin's author id, and the
+    // port cannot answer that synchronously
+    const self = await mesh.selfId();
     return Result.ok({
-      api: meshApi(mesh, procedures),
+      api: meshApi({ ...mesh, self }, procedures),
       mesh,
       durable,
       role: link.role,

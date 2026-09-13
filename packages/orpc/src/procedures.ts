@@ -1,6 +1,7 @@
 import type { Handle } from "@syncmesh/client";
 import type { Runnable } from "@syncmesh/drizzle";
 import type { Principal } from "@syncmesh/engine";
+import type { PeerId } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
 import type { Output, StandardSchemaV1 } from "@syncmesh/schema";
 
@@ -34,6 +35,11 @@ export interface HandlerContext<I> {
   readonly read: Handle["read"];
   /** Who this device is acting as; `undefined` before the first session (ch. 14). */
   readonly principal: Principal | undefined;
+  /**
+   * This device's own author id, for the columns that are correlated on it — `syncOf(self, table)`
+   * asks *where did my write get to*, and "my" is this.
+   */
+  readonly self: PeerId;
 }
 
 export interface QueryDef<I, T> {

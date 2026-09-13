@@ -1,7 +1,7 @@
 import type { Handle, Mesh, MeshSchema } from "@syncmesh/client";
 import type { Live, Runnable } from "@syncmesh/drizzle";
 import type { Principal } from "@syncmesh/engine";
-import type { EventId } from "@syncmesh/kernel";
+import type { EventId, PeerId } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
 import type { PresenceMap, StandardSchemaV1 } from "@syncmesh/schema";
 import type { TxReceipt } from "@syncmesh/storage";
@@ -173,13 +173,18 @@ export interface ApiMesh<PC extends PresenceMap = Record<string, never>> {
   readonly schema: MeshSchema;
   readonly settled: () => Promise<void>;
   readonly can: Mesh<"sqlite", PC>["can"];
-  readonly syncOf: Mesh<"sqlite", PC>["syncOf"];
-  /** Plain teardown, not `Teardown`: this binding calls it, and never `using`s it. */
-  readonly onSyncChange: (listener: () => void) => () => void;
   /** Only the subscription: a grant landing is what makes a gated affordance re-ask. */
   readonly grants: { readonly onRegistered: (listener: () => void) => () => void };
   /** Who this device acts as; a handler is handed it rather than asking, because it never picks. */
   readonly auth: { readonly principal: () => Principal | undefined };
+  /**
+   * This device's author id, for the columns correlated on it (`syncOf`).
+   *
+   * A value rather than a reader because it never changes while a process runs, and because a
+   * window has to *await* it — the port cannot answer synchronously and a query that selected
+   * `syncOf` before the answer landed would be correlated on nothing.
+   */
+  readonly self: PeerId;
   /** The write ledger, the engine's own or a window's reader of the origin's ({@link WriteLedger}). */
   readonly operations?: WriteLedger;
 }
@@ -227,6 +232,7 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     db: writing?.db ?? open.db,
     read: open.read,
     principal: mesh.auth.principal(),
+    self: mesh.self,
   });
 
   /* thrown, not returned: a descriptor has no error channel of its own, and the hook has an `error` */
@@ -346,12 +352,8 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     can: (what, row) => mesh.can(what, row, scopeOf(kinds, row)),
     grants: { onRegistered: (listener) => mesh.grants.onRegistered(() => listener()) },
   };
-  const sync: SyncSource = {
-    at: (table, key) => mesh.syncOf(table, key),
-    subscribe: (listener) => mesh.onSyncChange(listener),
-  };
   // SAFETY: `build` walks the same router the `Api<R>` mapped type describes, leaf for leaf
-  const walked = { ...build(router, ""), $can: permissions, $sync: sync } as Api<R>;
+  const walked = { ...build(router, ""), $can: permissions } as Api<R>;
   return walked;
 }
 /* oxlint-enable anti-slop/no-unknown-parameters */

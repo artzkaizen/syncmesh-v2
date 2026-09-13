@@ -32,8 +32,6 @@ export type HostMesh = Pick<
   | "on"
   | "engine"
   | "can"
-  | "syncOf"
-  | "onSyncChange"
   | "grants"
   | "flush"
   | "ready"
@@ -112,7 +110,6 @@ const feedFor = (deps: FeedDeps, topic: Topic): Unsubscribe => {
   const { mesh, inspector, emit } = deps;
   if (topic === "fold") return mesh.engine.onFoldBatch(emit);
   if (topic === "ack") return mesh.engine.onAcknowledge(emit);
-  if (topic === "sync") return mesh.onSyncChange(() => emit(null));
   if (topic === "grant") return mesh.grants.onRegistered(() => emit(null));
   if (topic === "writes") return mesh.operations?.onChange(() => emit(null)) ?? nothing;
   if (topic === "inspect") return inspector?.watch(emit) ?? nothing;

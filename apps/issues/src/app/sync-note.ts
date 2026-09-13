@@ -1,4 +1,5 @@
-import type { OperationRecord, SyncState } from "@syncmesh/react";
+import type { SyncState } from "@syncmesh/drizzle";
+import type { OperationRecord } from "@syncmesh/react";
 
 /**
  * **What the header says about a write, which is usually nothing.**

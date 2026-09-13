@@ -74,5 +74,5 @@ export async function createApp<
   const bound = {};
   if (link !== undefined) Object.assign(bound, { link });
   const mesh = opened.value;
-  return { api: meshApi(mesh, procedures, bound), mesh };
+  return { api: meshApi({ ...mesh, self: mesh.engine.peerId }, procedures, bound), mesh };
 }

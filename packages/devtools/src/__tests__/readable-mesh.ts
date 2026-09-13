@@ -60,7 +60,6 @@ export interface ReadableMesh {
   readonly schema: Mesh["schema"];
   readonly running: Mesh["running"];
   readonly settled: Mesh["settled"];
-  readonly syncOf: Mesh["syncOf"];
 }
 
 export const id = (hex: string): PeerId => parsePeerId(hex.repeat(64).slice(0, 64)).unwrap();
@@ -156,7 +155,6 @@ export const harness = () => {
     schema: { entries: [], partitions: {}, sealedKinds: new Set<string>(), presence: [] },
     running: () => true,
     settled: () => Promise.resolve(),
-    syncOf: () => undefined,
   };
 
   return {

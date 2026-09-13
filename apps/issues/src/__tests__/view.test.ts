@@ -189,7 +189,11 @@ describe("the detail panel's state", () => {
     error: undefined,
     ...patch,
   });
-  const detail = (index: number): IssueDetailRow => ({ ...rowAt(index), operation: "op-1" });
+  const detail = (index: number): IssueDetailRow => ({
+    ...rowAt(index),
+    operation: "op-1",
+    sync: "local",
+  });
   const NONE: readonly IssueRow[] = [];
 
   test("opens on the row it was named after, and on no other", () => {
@@ -198,6 +202,7 @@ describe("the detail panel's state", () => {
       kind: "open",
       row,
       operation: "op-1",
+      sync: "local",
     });
     // the read for issue-1 has not landed and the previous issue's row is all there is: the panel
     // has nothing to draw, rather than drawing issue-0's assignee under issue-1's name
@@ -230,12 +235,14 @@ describe("the detail panel's state", () => {
       kind: "open",
       row: listed,
       operation: undefined,
+      sync: undefined,
     });
     // and the same while the read has not answered at all, which is the ordinary click
     expect(panelFor("issue-0", read(undefined), [listed])).toEqual({
       kind: "open",
       row: listed,
       operation: undefined,
+      sync: undefined,
     });
     // the list's row is matched by id here, never taken as the first of them
     expect(panelFor("issue-1", read([]), [listed])).toEqual({ kind: "missing" });
@@ -247,6 +254,7 @@ describe("the detail panel's state", () => {
       kind: "open",
       row,
       operation: "op-1",
+      sync: "local",
     });
   });
 

@@ -111,10 +111,10 @@ describe("the inspector across the port", () => {
     a.mesh.operations.onChange(() => undefined);
     a.mesh.on(ACME).unwrap();
     await settled();
-    // six: the three this tab asked for, plus `sync`, `grant` and `auth`, which `connectMesh`
-    // holds for the life of the link — the first two invalidate a cached answer as well as
-    // notifying, and the third *is* the cache, because a handler reads the principal synchronously
-    expect(host.census().topics).toBe(6);
+    // five: the three this tab asked for, plus `grant` and `auth`, which `connectMesh` holds for
+    // the life of the link — the first invalidates a cached answer as well as notifying, and the
+    // second *is* a cache, because a handler reads the principal synchronously
+    expect(host.census().topics).toBe(5);
 
     a.close();
     await settled();

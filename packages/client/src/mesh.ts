@@ -1,4 +1,3 @@
-import type { RowKey, TableName } from "@syncmesh/kernel";
 import type { ColumnsMap, PartitionTree, PresenceMap, Roles } from "@syncmesh/schema";
 import type { SqlDialect, SqlValue, TxReceipt } from "@syncmesh/storage";
 import type { SnapshotInstalled } from "@syncmesh/transport";
@@ -123,6 +122,10 @@ function assemble<
     recoveryDeps(engine, identity.peerId, snapshots, () => links.list()),
   );
   const internal = openInternal({ engine, self: identity.peerId });
+
+  // the watermark behind the `syncOf` column: one update per acknowledgement, however many rows
+  // it settles. It answers nothing directly any more — the column is the read — but it is what
+  // makes the column's answer move when a peer says it holds this device's writes
   const syncStates = createSyncStates(engine, identity.peerId, booted.rowSync);
 
   const { accounts, accountOf, author } = openAccounts(options, { engine, grants, now });
@@ -174,10 +177,6 @@ function assemble<
       kindOf: (table) => entryOf.get(table)?.partition,
     }),
     delivered: createDelivered(engine, identity.peerId),
-    syncOf: (table, key) =>
-      // SAFETY: the brands name a table and a row key, which is exactly what a caller passes; they carry no invariant a string can fail
-      syncStates.at(table as TableName, key as RowKey),
-    onSyncChange: (listener) => tally.wrap("subscriptions", syncStates.subscribe(listener)),
     received: createReceived(engine),
     revert: (id) => engine.revert(id),
     canRevert: (id) => engine.canRevert(id),

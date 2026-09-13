@@ -23,17 +23,18 @@ const books = {
     }),
 };
 
-const apiTab = (origin: Awaited<ReturnType<typeof meshOrigin>>) => {
+const apiTab = async (origin: Awaited<ReturnType<typeof meshOrigin>>) => {
   const { mesh } = origin.tab();
-  return { mesh, api: meshApi(mesh, { books }) };
+  // awaited once, the way a window does it: the port cannot answer synchronously
+  return { mesh, api: meshApi({ ...mesh, self: await mesh.selfId() }, { books }) };
 };
 
 describe("the app's api in a tab that holds no engine", () => {
   test("a write through one tab's api re-renders a live query in another's", async () => {
     const origin = await meshOrigin();
     const { stop } = origin;
-    const a = apiTab(origin);
-    const b = apiTab(origin);
+    const a = await apiTab(origin);
+    const b = await apiTab(origin);
 
     const live = b.api.books.list({ orgId: ORG }).live();
     expect(await live.ready).toEqual([]);
@@ -55,7 +56,7 @@ describe("the app's api in a tab that holds no engine", () => {
   test("a rehearsal runs on the leader's replica and rolls back, leaving no row and no event", async () => {
     const origin = await meshOrigin();
     const { stop } = origin;
-    const a = apiTab(origin);
+    const a = await apiTab(origin);
     const allowed = await a.api.books.create
       .can({ orgId: ORG, id: "r1", title: "Rehearsed" })
       .run();
@@ -75,7 +76,7 @@ describe("the app's api in a tab that holds no engine", () => {
   test("a rehearsal and a write opened in one tick both settle, and the handle is free after", async () => {
     const origin = await meshOrigin();
     const { stop } = origin;
-    const a = apiTab(origin);
+    const a = await apiTab(origin);
     const rehearsal = a.api.books.create.can({ orgId: ORG, id: "r2", title: "Rehearsed" }).run();
     const written = a.api.books.create({ orgId: ORG, id: "b3", title: "Persuasion" }).committed;
 
@@ -92,7 +93,7 @@ describe("the app's api in a tab that holds no engine", () => {
   test("a write recorded under an id the caller already holds keeps that id", async () => {
     const origin = await meshOrigin();
     const { stop } = origin;
-    const a = apiTab(origin);
+    const a = await apiTab(origin);
     const write = a.api.books.create({ orgId: ORG, id: "b2", title: "Emma" });
 
     expect(write.id).toMatch(/^[0-9a-f-]{36}$/);

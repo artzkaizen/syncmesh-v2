@@ -1,7 +1,6 @@
 /* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns, anti-slop/no-unsafe-dictionary-type, anti-slop/no-runtime-typeof, anti-slop/no-known-value-widening, anti-slop/require-safety-comment-for-type-assertion, anti-slop/no-shape-in-symbol-names -- the window's end of the inspector port: every answer arrives as `unknown` and the read it was asked for is the parse */
 
 import type { RemoteInspect } from "@syncmesh/browser";
-import type { SyncState } from "@syncmesh/client";
 import type { RecentEvents, TelemetryStats, Unsubscribe } from "@syncmesh/engine";
 import type { Result as ResultType } from "@syncmesh/result";
 
@@ -56,10 +55,9 @@ import { channelsFor, plain, revive, uncarry } from "./inspect-wire.js";
  * list that would read as *nobody holds this write*.
  */
 
-/** What a window needs to build one: the inspector door, and the mesh's own cached `syncOf`. */
+/** What a window needs to build one: the inspector door onto the origin's own source. */
 export interface RemoteSourceMesh {
   readonly inspect: RemoteInspect;
-  readonly syncOf: (table: string, key: string) => SyncState | undefined;
 }
 
 const lost = (message: string) => (cause: unknown) => new StoreFailure({ message, cause });
@@ -210,7 +208,6 @@ export async function createRemoteSource(mesh: RemoteSourceMesh): Promise<Devtoo
     stranded: () =>
       asked<readonly DevtoolsStranded[], StoreFailure>("stranded", [], lost(HOST_GONE)),
     sql: served.sql ? sql : undefined,
-    syncOf: (table, key) => mesh.syncOf(table, key),
     onChange: (listener): Unsubscribe => {
       listeners.add(listener);
       return () => void listeners.delete(listener);

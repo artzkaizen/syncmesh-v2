@@ -42,15 +42,13 @@ import { openWire } from "./wire.js";
  */
 export interface FollowerMesh extends Pick<
   Mesh,
-  "can" | "syncOf" | "query" | "flush" | "ready" | "settled" | "schema"
+  "can" | "query" | "flush" | "ready" | "settled" | "schema"
 > {
   /** Whether this tab's own worker is the host. For the header, the way the storage badge is. */
   readonly role: MeshLink["role"];
   /** The fold feed a live query re-runs on — here, batches that arrived over the port. */
   readonly engine: LiveSource;
   readonly on: (instance?: string, options?: OnOptions) => ResultType<Handle, InvalidPartitionKey>;
-  /** Fires when a fold, a write or an ack may have changed what `syncOf` answers. */
-  readonly onSyncChange: (listener: () => void) => () => void;
   /** Only the subscription; issuing and revoking grants is the device's business, not a window's. */
   readonly grants: { readonly onRegistered: (listener: () => void) => () => void };
   /**
@@ -63,6 +61,8 @@ export interface FollowerMesh extends Pick<
   readonly operations: RemoteOperations;
   /** Who the origin acts as. A window has no session of its own to differ with (ch. 14). */
   readonly auth: { readonly principal: () => Principal | undefined };
+  /** This origin's peer id; the one fact a window must await before it can build a `syncOf`. */
+  readonly selfId: () => Promise<PeerId>;
   /**
    * What a tab may read about the **device**, where the host was given an inspector.
    *
@@ -109,25 +109,17 @@ export function connectMesh(options: ConnectOptions): FollowerMesh {
   const { link, schema } = options;
   const wire = openWire(link);
 
-  const syncListeners = new Set<() => void>();
   const grantListeners = new Set<() => void>();
   const fire = (listeners: ReadonlySet<() => void>) => (): void => {
     for (const listener of listeners) listener();
   };
-  const syncAnswers = createAsked<Mesh["syncOf"] extends (...args: never) => infer R ? R : never>(
-    fire(syncListeners),
-  );
   const canAnswers = createAsked<boolean>(fire(grantListeners));
 
   /**
-   * Both feeds are held for the life of the link rather than per listener, because both are what
-   * *invalidates a cached answer* as well as what notifies: a grant landing has to drop `can`'s
-   * answers whether or not anything is currently watching for it.
+   * Held for the life of the link rather than per listener, because it is what *invalidates a
+   * cached answer* as well as what notifies: a grant landing has to drop `can`'s answers whether
+   * or not anything is currently watching for it.
    */
-  wire.listen("sync", () => {
-    syncAnswers.clear();
-    fire(syncListeners)();
-  });
   wire.listen("grant", () => {
     canAnswers.clear();
     fire(grantListeners)();
@@ -193,6 +185,14 @@ export function connectMesh(options: ConnectOptions): FollowerMesh {
     on,
     operations: remoteLedger(wire),
     auth: { principal: () => acting },
+    /**
+     * This origin's peer id, awaited once.
+     *
+     * A window needs it before it can build a query that selects `syncOf`, because the column is
+     * SQL correlated on *this device's* author id and the SQL is built here. Asynchronous because
+     * a port is, and asked exactly once because a device's name does not change while it runs.
+     */
+    selfId: () => wire.ask<PeerId>({ kind: "call", path: "self", args: [] }),
     inspect: remoteInspect(wire),
     can: (what, row, instance) =>
       canAnswers.read(JSON.stringify([what, row ?? null, instance ?? null]), () =>
@@ -202,14 +202,6 @@ export function connectMesh(options: ConnectOptions): FollowerMesh {
           args: [what, row ?? null, instance ?? null],
         }),
       ) ?? false,
-    syncOf: (table, key) =>
-      syncAnswers.read(JSON.stringify([table, key]), () =>
-        wire.ask({ kind: "call", path: "syncOf", args: [table, key] }),
-      ),
-    onSyncChange: (listener) => {
-      syncListeners.add(listener);
-      return () => void syncListeners.delete(listener);
-    },
     grants: {
       onRegistered: (listener) => {
         grantListeners.add(listener);
@@ -225,7 +217,6 @@ export function connectMesh(options: ConnectOptions): FollowerMesh {
     stop: () => {
       alive = false;
       handles.clear();
-      syncListeners.clear();
       grantListeners.clear();
       wire.close();
       return Promise.resolve();

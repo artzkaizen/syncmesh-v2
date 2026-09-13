@@ -1,6 +1,6 @@
 import type { SQLWrapper } from "drizzle-orm";
 
-import { columns, operationOf } from "@syncmesh/drizzle";
+import { columns, operationOf, syncOf } from "@syncmesh/drizzle";
 import { query } from "@syncmesh/orpc";
 import { and, asc, count, desc, eq, inArray, like, or, sql } from "drizzle-orm";
 import * as z from "zod";
@@ -82,9 +82,11 @@ export const board = query.input(scoped({ teamId: Id })).handler(({ input, db, r
  * Selected here and not on the list, because these two columns make the query re-run when an
  * acknowledgement lands — which is what a detail view wants and what a hundred-row board does not.
  */
-export const get = query.input(scoped({ id: Id })).handler(({ input, db }) =>
+export const get = query.input(scoped({ id: Id })).handler(({ input, db, self }) =>
   db
-    .select({ ...columns(issue), operation: operationOf(issue) })
+    // `sync` is a column and not a subscription: it arrives with the row it is about, so a badge
+    // cannot render a reach that belongs to a different fetch of a different issue
+    .select({ ...columns(issue), operation: operationOf(issue), sync: syncOf(self, issue) })
     .from(issue)
     .where(eq(issue.id, input.id)),
 );

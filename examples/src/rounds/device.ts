@@ -109,7 +109,8 @@ const offline = (
     .committed
 ).unwrap();
 
-console.log("raj's reading while offline:", raj.mesh.syncOf("observation", offline.data.id));
+const reachOf = async (id: string) => (await raj.api.observations.reach({ id }).run())[0]?.sync;
+console.log("raj's reading while offline:", await reachOf(offline.data.id));
 
 // the radio is back. A link that dropped frames while it was down asks from its last
 // contiguous position — the same thing a phone does when it walks back into range.
@@ -129,7 +130,7 @@ for (const [who, side] of [
     rows.map((o) => `${o.code}=${o.value}${o.amends === null ? "" : " (amends)"}`).join(" | "),
   );
 }
-console.log("raj's reading after reconnect:", raj.mesh.syncOf("observation", offline.data.id));
+console.log("raj's reading after reconnect:", await reachOf(offline.data.id));
 
 await ann.mesh.stop();
 await raj.mesh.stop();

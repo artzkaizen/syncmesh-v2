@@ -21,7 +21,6 @@ import type { Peers } from "./peers.js";
 import type { Topics } from "./presence.js";
 import type { RecoveryView } from "./recovery.js";
 import type { Status } from "./status.js";
-import type { SyncState } from "./sync-state.js";
 import type { MeshTelemetrySeam } from "./telemetry.js";
 import type { RunningTransports } from "./transports.js";
 
@@ -92,14 +91,6 @@ export interface Mesh<
    */
   /** Corrections against this device's writes; the same object `internal.corrections` is. */
   readonly corrections: MeshInternal["corrections"];
-  /**
-   * Where a row's write has reached: `"local"`, `"delivered"`, or `"remote"` when another peer
-   * wrote it (D26). What a UI renders per row instead of awaiting a promise from the call that
-   * made it — a write made offline on Tuesday syncs on Thursday, long after that promise is gone.
-   */
-  readonly syncOf: (table: string, key: string) => SyncState | undefined;
-  /** Fires when a `syncOf` answer may have changed: a write left, an ack landed, a fold arrived. */
-  readonly onSyncChange: (listener: () => void) => Teardown;
   /** Bytes that never enter the log: content-addressed, verified at both ends (D18). */
   readonly blobs: Blobs;
   /**

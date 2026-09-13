@@ -7,6 +7,4 @@ export { usePresence } from "./use-presence.js";
 export type { CanCall, CanSource } from "./use-can.js";
 export type { OperationRecord, OperationSource } from "./use-operation.js";
 export { useOperation } from "./use-operation.js";
-export type { SyncSource, SyncState } from "./use-sync-of.js";
-export { useSyncOf } from "./use-sync-of.js";
 export { useCan } from "./use-can.js";

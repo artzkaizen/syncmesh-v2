@@ -179,7 +179,13 @@ export const byId = <T extends { readonly id: string }>(
  * difference between the two shapes and the reason the panel can open on a list row while it
  * waits for its own read — see {@link panelFor}.
  */
-export type IssueDetailRow = IssueRow & { readonly operation: string | null };
+export type SyncReach = "local" | "delivered" | "remote";
+
+export type IssueDetailRow = IssueRow & {
+  readonly operation: string | null;
+  /** Where this row's own write got to, selected with the row rather than watched beside it. */
+  readonly sync: SyncReach | null;
+};
 
 /**
  * What the detail panel has to draw, as the situations that are actually distinguishable.
@@ -205,6 +211,8 @@ export type Panel =
        * this is the one thing on the header that the list could not supply.
        */
       readonly operation: string | null | undefined;
+      /** Absent for the same reason `operation` is: the list's row carries neither. */
+      readonly sync: SyncReach | null | undefined;
     };
 
 /** What the panel needs of the read it asked for: `useQuery`'s shape, and nothing more. */
@@ -252,9 +260,10 @@ export interface PanelRead {
  */
 export const panelFor = (id: string, found: PanelRead, listed: readonly IssueRow[]): Panel => {
   const row = found.data?.find((candidate) => candidate.id === id);
-  if (row !== undefined) return { kind: "open", row, operation: row.operation };
+  if (row !== undefined) return { kind: "open", row, operation: row.operation, sync: row.sync };
   const known = listed.find((candidate) => candidate.id === id);
-  if (known !== undefined) return { kind: "open", row: known, operation: undefined };
+  if (known !== undefined)
+    return { kind: "open", row: known, operation: undefined, sync: undefined };
   if (!found.isReady)
     return found.error === undefined
       ? { kind: "waiting" }

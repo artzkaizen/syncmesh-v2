@@ -31,7 +31,6 @@ export type { WirePort };
 export type Topic =
   | "fold"
   | "ack"
-  | "sync"
   | "grant"
   | "writes"
   | "inspect"
@@ -49,13 +48,14 @@ export type Topic =
 /** The mesh methods a follower asks for by name; each answers with plain data or throws. */
 export type CallPath =
   | "can"
-  | "syncOf"
   | "query"
   | "flush"
   | "ready"
   | "settled"
   | "running"
-  | "principal";
+  | "principal"
+  /** This origin's peer id. Never changes, so a window asks once and keeps it. */
+  | "self";
 
 /** The four reads of the durable write ledger, by the names `OperationsView` already gives them. */
 export type LedgerPath = "get" | "byEvent" | "unsettled" | "receiptsOf";
