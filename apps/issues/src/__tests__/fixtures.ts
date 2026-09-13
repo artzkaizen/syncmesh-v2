@@ -1,9 +1,9 @@
 import type { Mesh } from "@syncmesh/client";
-import type { App } from "@syncmesh/orpc";
+import type { Client } from "@syncmesh/orpc";
 import type { Identity } from "@syncmesh/wire";
 
 import { createLink } from "@syncmesh/engine";
-import { createApp, createServer, httpLink } from "@syncmesh/orpc";
+import { createClient, createServer, httpLink, sqlite } from "@syncmesh/orpc";
 import { panic } from "@syncmesh/result";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
@@ -83,15 +83,15 @@ const base = (who: Who) => ({
   schema: issuesSchema(),
   procedures,
   identity: identityOf(who),
-  issuer: issuer.peerId,
-  driver: bunSqliteDriver(":memory:"),
+  trust: { issuer: issuer.peerId },
+  storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
   now: () => T0,
 });
 
 /** One person's device: their identity, their grant, their own SQLite file, the whole API. */
 export const openDevice = async (who: Who) => {
-  const app = await createApp(base(who));
-  register(app.mesh);
+  const app = await createClient(base(who));
+  register(app.$mesh);
   return app;
 };
 
@@ -116,8 +116,8 @@ export const openAuthority = async () => {
 
 /** A device that can reach an authority — the same app, plus the one link the gate needs. */
 export const openDeviceWithAuthority = async (who: Who, url: string) => {
-  const app = await createApp({ ...base(who), link: httpLink(url) });
-  register(app.mesh);
+  const app = await createClient({ ...base(who), link: httpLink(url) });
+  register(app.$mesh);
   return app;
 };
 
@@ -126,12 +126,12 @@ export const openDeviceWithAuthority = async (who: Who, url: string) => {
  * is the test's way of saying "and then they met".
  */
 export const settle = async (
-  ...meshes: readonly { readonly mesh: WorkspaceMesh }[]
+  ...meshes: readonly { readonly $mesh: WorkspaceMesh }[]
 ): Promise<void> => {
   for (const left of meshes) {
     for (const right of meshes) {
       if (left === right) continue;
-      const link = createLink(left.mesh.engine, right.mesh.engine, { now: () => T0 });
+      const link = createLink(left.$mesh.engine, right.$mesh.engine, { now: () => T0 });
       (await link.catchUp()).unwrap();
       link.close();
     }
@@ -139,4 +139,4 @@ export const settle = async (
 };
 
 /** What `openDevice` hands back, for a helper that takes one. */
-export type Device = App<typeof procedures, IssuesPresence>;
+export type Device = Client<typeof procedures, IssuesPresence>;

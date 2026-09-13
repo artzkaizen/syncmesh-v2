@@ -7,7 +7,8 @@ import { describe, expect, test } from "bun:test";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { z } from "zod";
 
-import { createApp, mutation, query } from "../index.js";
+import { createApp } from "../app.js";
+import { mutation, query } from "../index.js";
 
 const book = sqliteTable("book", { id: text().primaryKey(), title: text().notNull() });
 

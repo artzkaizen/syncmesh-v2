@@ -1,4 +1,4 @@
-import { createApp, createHandler } from "@syncmesh/orpc";
+import { createClient, createHandler, sqlite } from "@syncmesh/orpc";
 import { relayTransport, webSocketDial } from "@syncmesh/relay";
 import { nodeSqliteDriver } from "@syncmesh/sqlite-node";
 import { Temporal } from "@syncmesh/temporal";
@@ -37,19 +37,19 @@ const station = createIdentity(seed(200)).unwrap();
 
 mkdirSync(".syncmesh", { recursive: true }); // `bunSqliteDriver` opens a file, it does not make a directory
 
-export const { api, mesh } = await createApp({
+export const client = await createClient({
   schema: roundsSchema(),
   procedures,
   identity: station,
-  issuer: issuer.peerId,
+  trust: { issuer: issuer.peerId },
   // `node:sqlite`, not `bun:sqlite`: Vite's dev server runs this module under Node, and a web
   // app should not be tied to one runtime anyway. Bun implements `node:sqlite` too, so the same
   // driver serves both.
-  driver: nodeSqliteDriver(".syncmesh/rounds-web.db"),
+  storage: sqlite({ driver: nodeSqliteDriver(".syncmesh/rounds-web.db") }),
   transports: [relayTransport({ dial: webSocketDial(RELAY_URL) })],
 });
 
-mesh.grants
+client.$grants
   .register(
     issueGrant(issuer, {
       account: "acct_station",
@@ -64,7 +64,7 @@ mesh.grants
   )
   .unwrap();
 
-await mesh.settled();
+await client.$mesh.settled();
 
 /** One POST, carrying a path and an input. Every browser call arrives here. */
-export const handle = createHandler({ procedures, api });
+export const handle = createHandler({ procedures, api: client });

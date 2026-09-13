@@ -1,15 +1,14 @@
 import type { ColumnsMap, PartitionTree, PresenceMap, Roles } from "@syncmesh/schema";
 
 import type { Api, AuthorityHandlers, ProcedureDef, Router } from "./api.js";
-import type { App } from "./app.js";
+import type { Client } from "./client.js";
 import type { Custody, Serving } from "./custody.js";
 import type { ClientOptions } from "./options.js";
 
 import { isDef } from "./api.js";
-import { createApp } from "./app.js";
+import { createClient } from "./client.js";
 import { serveCustody } from "./custody.js";
 import { createHandler } from "./http.js";
-import { flatten, named } from "./options.js";
 import { replicaFor } from "./scope.js";
 
 /**
@@ -39,10 +38,14 @@ export interface ServerOptions<
   readonly watchdogs?: readonly ((api: Api<R>) => () => void)[];
 }
 
-export interface Server<
-  R extends Router,
-  PC extends PresenceMap = Record<string, never>,
-> extends App<R, PC> {
+export type Server<R extends Router, PC extends PresenceMap = Record<string, never>> = Client<
+  R,
+  PC
+> & {
+  /** The same surface as a callable: what a handler mounts and a watchdog is handed. */
+  readonly api: Client<R, PC>;
+  /** The mesh underneath, for the few facts that are neither a procedure nor `$`-surface. */
+  readonly mesh: Client<R, PC>["$mesh"];
   /** A standard fetch handler — mount it anywhere. */
   readonly fetch: (request: Request) => Promise<Response>;
   /** From `.route()` metadata: authority calls are plain request/response, so the spec is too. */
@@ -51,7 +54,7 @@ export interface Server<
   readonly serving?: Serving;
   /** Stops the watchdogs, the rooms it serves, then the mesh. */
   readonly stop: () => Promise<void>;
-}
+};
 
 /** Every `(path, def)` leaf of the router, walked once. */
 const leaves = (node: Router, prefix = ""): readonly (readonly [string, ProcedureDef])[] =>
@@ -76,24 +79,24 @@ export async function createServer<
 >(options: ServerOptions<R, P, RS, C, PC>): Promise<Server<R, PC>> {
   const { handlers, watchdogs, custody, ...clientOptions } = options;
   // the same construction a device makes: a server is a node with extra duties (ch. 19)
-  const app = await createApp(flatten(await named(clientOptions)));
+  const client = await createClient(clientOptions);
 
-  const handlerOptions = { procedures: options.procedures, api: app.api };
+  const handlerOptions = { procedures: options.procedures, api: client };
   if (handlers !== undefined)
     Object.assign(handlerOptions, {
       // the replica comes from the call's own input, because scope is input (ch. 3) — a server
       // is a node with extra duties, not one that gets to be bound to a tenant
       gate: {
         handlers,
-        handle: replicaFor(app.mesh.schema, (scope) => app.mesh.on(scope).unwrap()),
+        handle: replicaFor(client.$schema, (scope) => client.$mesh.on(scope).unwrap()),
       },
     });
   const fetch = createHandler(handlerOptions);
 
-  const stops = (watchdogs ?? []).map((start) => start(app.api));
+  const stops = (watchdogs ?? []).map((start) => start(client));
   const serving = custody === undefined ? undefined : await serveCustody(custody);
 
-  const openapi: Server<R, PC>["openapi"] = (info) => {
+  const openapi = (info: { readonly title: string; readonly version: string }) => {
     const paths: Record<string, Record<string, OpenApiOperation>> = {};
     for (const [name, def] of leaves(options.procedures)) {
       if (def.route?.path === undefined) continue;
@@ -112,14 +115,20 @@ export async function createServer<
     return { openapi: "3.1.0", info, paths };
   };
 
-  const served = { ...app, fetch, openapi };
-  if (serving !== undefined) Object.assign(served, { serving });
-  return {
-    ...served,
+  // assigned onto the client rather than spread: the client is a walked tree of callables, and
+  // spreading one would copy the leaves off their own group objects
+  const served = Object.assign(client, {
+    api: client,
+    mesh: client.$mesh,
+    fetch,
+    openapi,
     stop: async () => {
       for (const stop of stops) stop();
       await serving?.stop();
-      await app.mesh.stop();
+      await client.$close();
     },
-  };
+  });
+  if (serving !== undefined) Object.assign(served, { serving });
+  // SAFETY: every member `Server` names beyond `Client` is assigned right here
+  return served as Server<R, PC>;
 }

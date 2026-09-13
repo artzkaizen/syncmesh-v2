@@ -9,14 +9,14 @@ import { T0, accountOf, openDevice, settle, type Device } from "./fixtures.js";
  */
 
 const viewsOf = async (device: Device, id: string) =>
-  (await device.api.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0]?.views ?? -1;
+  (await device.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0]?.views ?? -1;
 
 describe("view counts across a partition (book ch. 2)", () => {
   test("two devices counting while apart sum, rather than one of them winning", async () => {
     const ada = await openDevice("ada");
     const bo = await openDevice("bo");
     const chidi = await openDevice("chidi");
-    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap().db, { issues: 6, now: T0 });
+    const seeded = await seedWorkspace(ada.$mesh.on(WORKSPACE).unwrap().db, { issues: 6, now: T0 });
     await settle(ada, bo, chidi);
 
     const id = seeded.issueIds[0] ?? "";
@@ -25,10 +25,10 @@ describe("view counts across a partition (book ch. 2)", () => {
 
     // the radios are down; three people read the same issue a different number of times
     for (let opened = 0; opened < 3; opened += 1)
-      (await ada.api.issues.view({ workspaceId: WORKSPACE_ID, id }).committed).unwrap();
+      (await ada.issues.view({ workspaceId: WORKSPACE_ID, id }).committed).unwrap();
     for (let opened = 0; opened < 2; opened += 1)
-      (await bo.api.issues.view({ workspaceId: WORKSPACE_ID, id }).committed).unwrap();
-    (await chidi.api.issues.view({ workspaceId: WORKSPACE_ID, id }).committed).unwrap();
+      (await bo.issues.view({ workspaceId: WORKSPACE_ID, id }).committed).unwrap();
+    (await chidi.issues.view({ workspaceId: WORKSPACE_ID, id }).committed).unwrap();
 
     // apart, each device knows only its own reading
     expect(await viewsOf(ada, id)).toBe(start + 3);
@@ -39,33 +39,33 @@ describe("view counts across a partition (book ch. 2)", () => {
     // last-writer-wins would have landed on +1, +2 or +3; the PN-counter lands on all six
     for (const device of [ada, bo, chidi]) expect(await viewsOf(device, id)).toBe(start + 6);
 
-    for (const device of [ada, bo, chidi]) await device.mesh.stop();
+    for (const device of [ada, bo, chidi]) await device.$mesh.stop();
   });
 
   test("a view is not an edit: the counter moves and `updatedAt` does not", async () => {
     const ada = await openDevice("ada");
-    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap().db, { issues: 3, now: T0 });
+    const seeded = await seedWorkspace(ada.$mesh.on(WORKSPACE).unwrap().db, { issues: 3, now: T0 });
     const id = seeded.issueIds[0] ?? "";
-    const before = (await ada.api.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0];
+    const before = (await ada.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0];
 
-    (await ada.api.issues.view({ workspaceId: WORKSPACE_ID, id }).committed).unwrap();
-    const after = (await ada.api.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0];
+    (await ada.issues.view({ workspaceId: WORKSPACE_ID, id }).committed).unwrap();
+    const after = (await ada.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0];
 
     expect(after?.views).toBe((before?.views ?? 0) + 1);
     // otherwise every issue anyone glanced at would float to the top of "recently updated"
     expect(after?.updatedAt).toEqual(before?.updatedAt ?? new Date(0));
-    await ada.mesh.stop();
+    await ada.$mesh.stop();
   });
 
   test("reactions are rows, so two people reacting while apart both keep their reaction", async () => {
     const ada = await openDevice("ada");
     const bo = await openDevice("bo");
-    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap().db, { issues: 3, now: T0 });
+    const seeded = await seedWorkspace(ada.$mesh.on(WORKSPACE).unwrap().db, { issues: 3, now: T0 });
     await settle(ada, bo);
     const subjectId = seeded.issueIds[1] ?? "";
 
     (
-      await ada.api.reactions.add({
+      await ada.reactions.add({
         workspaceId: WORKSPACE_ID,
         subject: "issue",
         subjectId,
@@ -74,7 +74,7 @@ describe("view counts across a partition (book ch. 2)", () => {
       }).committed
     ).unwrap();
     (
-      await bo.api.reactions.add({
+      await bo.reactions.add({
         workspaceId: WORKSPACE_ID,
         subject: "issue",
         subjectId,
@@ -84,7 +84,7 @@ describe("view counts across a partition (book ch. 2)", () => {
     ).unwrap();
     await settle(ada, bo);
 
-    const tally = await bo.api.reactions
+    const tally = await bo.reactions
       .tally({ workspaceId: WORKSPACE_ID, subject: "issue", subjectId })
       .run();
     expect(tally).toEqual([{ emoji: "🚀", total: 2 }]);
@@ -92,7 +92,7 @@ describe("view counts across a partition (book ch. 2)", () => {
     // Tapping it again is the same row, because the key is (actor, subject, emoji). The write
     // therefore stages nothing, and a mutation that staged nothing reports that it has no event
     // to hand back — honest, and something an idempotent call has to be ready for.
-    const again = await bo.api.reactions.add({
+    const again = await bo.reactions.add({
       workspaceId: WORKSPACE_ID,
       subject: "issue",
       subjectId,
@@ -101,11 +101,9 @@ describe("view counts across a partition (book ch. 2)", () => {
     }).committed;
     expect(again.isErr()).toBe(true);
     expect(
-      await bo.api.reactions
-        .tally({ workspaceId: WORKSPACE_ID, subject: "issue", subjectId })
-        .run(),
+      await bo.reactions.tally({ workspaceId: WORKSPACE_ID, subject: "issue", subjectId }).run(),
     ).toEqual([{ emoji: "🚀", total: 2 }]);
 
-    for (const device of [ada, bo]) await device.mesh.stop();
+    for (const device of [ada, bo]) await device.$mesh.stop();
   });
 });

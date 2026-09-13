@@ -9,11 +9,13 @@ import type { Api, AuthorityLink, Router } from "./api.js";
 import { meshApi } from "./api.js";
 
 /**
- * Everything an app constructs, in one call.
+ * The mesh and the api, made together — **internal**, and no longer an entry point.
  *
- * `createMesh` then `meshApi` is two steps for one idea, and an app that writes both ends up with
- * a `Mesh` in a variable it never uses again and a wrapper function whose only job is to pass it
- * along. There is one mesh and one api; they are made together.
+ * `createClient` is what an app constructs (book ch. 8, ch. 26): the client *is* the api, with
+ * the machinery beside it under `$`. This is the step underneath it, kept because the two-object
+ * shape is what `createServer` needs to bolt `fetch` onto, and cut from the public surface
+ * because an app that reached for it got a `Mesh` in a variable it never used again and a
+ * wrapper whose only job was to pass it along.
  *
  * **Throws rather than returning a `Result`,** which is the opposite of `createMesh` underneath
  * it and deliberate. A `Result` earns its place where the caller can do something else and carry

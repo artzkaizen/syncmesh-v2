@@ -18,7 +18,7 @@ import { T0, openDevice } from "./fixtures.js";
 
 const seeded = async () => {
   const ada = await openDevice("ada");
-  const workspace = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap().db, { now: T0 });
+  const workspace = await seedWorkspace(ada.$mesh.on(WORKSPACE).unwrap().db, { now: T0 });
   return { ada, workspace };
 };
 
@@ -26,39 +26,37 @@ describe("the screen's one read of the issues", () => {
   test("searching and then clearing gets back exactly the list that was there before", async () => {
     const { ada } = await seeded();
 
-    const first = issuesCall(ada.api, NO_FILTERS);
+    const first = issuesCall(ada, NO_FILTERS);
     const listed = await first.run();
     expect(listed.length).toBeGreaterThan(0);
 
     // somebody types: a different procedure, a different key, and genuinely different rows
-    const searching = issuesCall(ada.api, { ...NO_FILTERS, text: "relay" });
+    const searching = issuesCall(ada, { ...NO_FILTERS, text: "relay" });
     const found = await searching.run();
     expect(found.length).toBeGreaterThan(0);
     expect(searching.key).not.toBe(first.key);
     expect(found).not.toEqual(listed);
 
     // and clears it again — whitespace included, because that is what a half-deleted box holds
-    const cleared = issuesCall(ada.api, { ...NO_FILTERS, text: "  " });
+    const cleared = issuesCall(ada, { ...NO_FILTERS, text: "  " });
     expect(cleared.key).toBe(first.key);
     expect(await cleared.run()).toEqual(listed);
 
-    await ada.mesh.stop();
+    await ada.$mesh.stop();
   });
 
   test("the text chooses the procedure; the filters travel with the list it chose", async () => {
     const { ada, workspace } = await seeded();
     const teamId = workspace.teamIds.ENG ?? "";
 
-    const filtered = issuesCall(ada.api, { ...NO_FILTERS, teamId });
+    const filtered = issuesCall(ada, { ...NO_FILTERS, teamId });
     expect(filtered.path).toBe("issues.list");
     const rows = await filtered.run();
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((row) => row.teamId === teamId)).toBe(true);
 
-    expect(issuesCall(ada.api, { ...NO_FILTERS, teamId, text: "relay" }).path).toBe(
-      "issues.search",
-    );
+    expect(issuesCall(ada, { ...NO_FILTERS, teamId, text: "relay" }).path).toBe("issues.search");
 
-    await ada.mesh.stop();
+    await ada.$mesh.stop();
   });
 });

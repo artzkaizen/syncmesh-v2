@@ -6,7 +6,8 @@ import { eq } from "drizzle-orm";
 import { sqliteTable, integer, text } from "drizzle-orm/sqlite-core";
 import { z } from "zod";
 
-import { createApp, mutation, query, watch } from "../index.js";
+import { createApp } from "../app.js";
+import { mutation, query, watch } from "../index.js";
 
 const products = sqliteTable("products", {
   id: text().primaryKey(),

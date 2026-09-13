@@ -19,7 +19,7 @@ const workspace = async () => {
   const bo = await openDeviceWithAuthority("bo", authority.url);
   const ada = await openDevice("ada");
   const team = (
-    await ada.api.teams.create({
+    await ada.teams.create({
       workspaceId: WORKSPACE_ID,
       key: "ENG",
       name: "Engineering",
@@ -36,7 +36,7 @@ const file = async (
   title: string,
 ) =>
   (
-    await device.api.issues.create({
+    await device.issues.create({
       workspaceId: WORKSPACE_ID,
       actorId: accountOf("bo"),
       teamId,
@@ -50,27 +50,23 @@ describe("the one call a device cannot make for itself (D10, book ch. 7)", () =>
     const id = await file(bo, teamId, "the board tears on a slow fold");
 
     // filed and usable with no server in sight: the tracker does not wait to be given a name
-    expect(
-      (await bo.api.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0]?.number,
-    ).toBeNull();
-    expect((await bo.api.issues.summary({ workspaceId: WORKSPACE_ID }).run())[0]?.unnumbered).toBe(
-      1,
-    );
+    expect((await bo.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0]?.number).toBeNull();
+    expect((await bo.issues.summary({ workspaceId: WORKSPACE_ID }).run())[0]?.unnumbered).toBe(1);
 
     await settle(bo, authority.server);
     const claimed = (
-      await bo.api.issues.claimNumber({ workspaceId: WORKSPACE_ID, issueId: id })
+      await bo.issues.claimNumber({ workspaceId: WORKSPACE_ID, issueId: id })
     ).unwrap();
     expect(claimed).toEqual({ number: 1, identifier: "ENG-1" });
 
     // the authority's write is an ordinary event, so it folds on every device like any other
     await settle(authority.server, bo, ada);
-    expect((await ada.api.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0]?.number).toBe(1);
-    const feed = await ada.api.history.forIssue({ workspaceId: WORKSPACE_ID, issueId: id }).run();
+    expect((await ada.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0]?.number).toBe(1);
+    const feed = await ada.history.forIssue({ workspaceId: WORKSPACE_ID, issueId: id }).run();
     expect(feed.at(-1)).toMatchObject({ kind: "numbered", toValue: "1", actorId: "authority" });
 
     await authority.stop();
-    for (const device of [bo, ada]) await device.mesh.stop();
+    for (const device of [bo, ada]) await device.$mesh.stop();
   });
 
   test("the sequence is gapless per team, and asking twice does not burn a number", async () => {
@@ -80,45 +76,43 @@ describe("the one call a device cannot make for itself (D10, book ch. 7)", () =>
     await settle(bo, authority.server);
 
     expect(
-      (await bo.api.issues.claimNumber({ workspaceId: WORKSPACE_ID, issueId: first })).unwrap()
-        .number,
+      (await bo.issues.claimNumber({ workspaceId: WORKSPACE_ID, issueId: first })).unwrap().number,
     ).toBe(1);
     expect(
-      (await bo.api.issues.claimNumber({ workspaceId: WORKSPACE_ID, issueId: second })).unwrap()
-        .number,
+      (await bo.issues.claimNumber({ workspaceId: WORKSPACE_ID, issueId: second })).unwrap().number,
     ).toBe(2);
     // the retry after a timeout — the ordinary case on the train this was filed from
     expect(
-      (await bo.api.issues.claimNumber({ workspaceId: WORKSPACE_ID, issueId: first })).unwrap(),
+      (await bo.issues.claimNumber({ workspaceId: WORKSPACE_ID, issueId: first })).unwrap(),
     ).toEqual({
       number: 1,
       identifier: "ENG-1",
     });
 
     await authority.stop();
-    await bo.mesh.stop();
+    await bo.$mesh.stop();
   });
 
   test("an issue the authority has not received yet is refused by name, not by silence", async () => {
     const { authority, bo, teamId } = await workspace();
     const id = await file(bo, teamId, "still on the train");
     // deliberately no settle: the authority has never heard of this issue
-    const answered = await bo.api.issues.claimNumber({ workspaceId: WORKSPACE_ID, issueId: id });
+    const answered = await bo.issues.claimNumber({ workspaceId: WORKSPACE_ID, issueId: id });
     expect(answered.isErr()).toBe(true);
     expect(String(answered.isErr() ? answered.error.message : "")).toMatch(/has not reached/i);
 
     await authority.stop();
-    await bo.mesh.stop();
+    await bo.$mesh.stop();
   });
 
   test("a device with no link says so, rather than pretending the call did nothing", async () => {
     const alone = await openDevice("bo");
-    const answered = await alone.api.issues.claimNumber({
+    const answered = await alone.issues.claimNumber({
       workspaceId: WORKSPACE_ID,
       issueId: "whatever",
     });
     expect(answered.isErr()).toBe(true);
     expect(String(answered.isErr() ? answered.error.message : "")).toMatch(/runs on the authority/);
-    await alone.mesh.stop();
+    await alone.$mesh.stop();
   });
 });
