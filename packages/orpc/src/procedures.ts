@@ -1,5 +1,6 @@
 import type { Handle } from "@syncmesh/client";
 import type { Runnable } from "@syncmesh/drizzle";
+import type { Principal } from "@syncmesh/engine";
 import type { Result as ResultType } from "@syncmesh/result";
 import type { Output, StandardSchemaV1 } from "@syncmesh/schema";
 
@@ -13,18 +14,40 @@ import type { CallError } from "./api.js";
  * for the code, so a bodiless chain answers "where is the body?" in the same breath.
  */
 
+/**
+ * What a handler is handed: the parsed input, the tables, and who is calling.
+ *
+ * **Three things, not a mesh.** The shape this replaced passed the whole `Handle`, and a handler
+ * reaching for `mesh.under` or `mesh.rehearse` was reaching past the transaction the binding had
+ * already opened for it — a second write path inside the one that was running. What a body needs
+ * is what it reads and writes through and the identity it is acting as; everything else on a
+ * handle is the framework's business.
+ *
+ * `db` is the right one for the path it is on without the handler knowing which: the handle's own
+ * for a query, and the span's inside a write or a rehearsal, so one body serves all three.
+ */
+export interface HandlerContext<I> {
+  readonly input: I;
+  /** The app's tables, through the capture: an `insert` here becomes a signed event (ch. 10). */
+  readonly db: Handle["db"];
+  /** A table as this caller may read it — the `read` rule compiled into a subquery (ch. 15). */
+  readonly read: Handle["read"];
+  /** Who this device is acting as; `undefined` before the first session (ch. 14). */
+  readonly principal: Principal | undefined;
+}
+
 export interface QueryDef<I, T> {
   readonly kind: "query";
   readonly schema?: StandardSchemaV1;
   readonly route?: RouteMeta;
-  readonly run: (args: { readonly input: I; readonly mesh: Handle }) => Runnable<T>;
+  readonly run: (args: HandlerContext<I>) => Runnable<T>;
 }
 
 export interface MutationDef<I, T> {
   readonly kind: "mutation";
   readonly schema?: StandardSchemaV1;
   readonly route?: RouteMeta;
-  readonly run: (args: { readonly input: I; readonly mesh: Handle }) => Promise<T> | T;
+  readonly run: (args: HandlerContext<I>) => Promise<T> | T;
 }
 
 /** HTTP/OpenAPI metadata and nothing else (book ch. 7): the method describes HTTP, never transactions. */
@@ -104,8 +127,10 @@ export interface Router {
 /** What a gate's body receives: the parsed input, the caller-shaped handle, its declared errors. */
 export interface AuthorityContext<I> {
   readonly input: I;
-  /** The server's Drizzle surface, acting as the caller where the server binds one. */
-  readonly mesh: Handle;
+  /** The server's tables, acting as the caller where the server binds one. */
+  readonly db: Handle["db"];
+  /** A table as this caller may read it, on the server's own replica. */
+  readonly read: Handle["read"];
   /** One thrower per declared error name; the thrown tag crosses the wire and revives typed. */
   readonly errors: Readonly<Record<string, (over?: { readonly message?: string }) => Error>>;
 }

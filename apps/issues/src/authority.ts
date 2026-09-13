@@ -36,20 +36,20 @@ export const authorityHandlers = {
      * this column: the authority acts as an admin, and an admin is the one role the rule does
      * not narrow.
      */
-    claimNumber: async ({ input, mesh, errors }) => {
+    claimNumber: async ({ input, db, errors }) => {
       // `errors` is a bare record of throwers, so a name declared on the procedure is still
       // `| undefined` to the checker; the fallback keeps the tag in the message rather than
       // pretending the thrower was there
       const refuse = (name: "NO_SUCH_ISSUE" | "NO_SUCH_TEAM") =>
         errors[name]?.() ?? new Error(name);
-      const [row] = await mesh.db.select().from(issue).where(eq(issue.id, input.issueId));
+      const [row] = await db.select().from(issue).where(eq(issue.id, input.issueId));
       if (row === undefined) throw refuse("NO_SUCH_ISSUE");
-      const [owning] = await mesh.db.select().from(team).where(eq(team.id, row.teamId));
+      const [owning] = await db.select().from(team).where(eq(team.id, row.teamId));
       if (owning === undefined) throw refuse("NO_SUCH_TEAM");
       if (row.number !== null)
         return { number: row.number, identifier: identifierOf(owning.key, row.number) };
 
-      const [highest] = await mesh.db
+      const [highest] = await db
         .select({ number: issue.number })
         .from(issue)
         .where(eq(issue.teamId, row.teamId))
@@ -57,8 +57,8 @@ export const authorityHandlers = {
         .limit(1);
       const number = (highest?.number ?? 0) + 1;
       const now = Temporal.Now.instant();
-      await mesh.db.update(issue).set({ number }).where(eq(issue.id, input.issueId));
-      await record(mesh, {
+      await db.update(issue).set({ number }).where(eq(issue.id, input.issueId));
+      await record(db, {
         issueId: input.issueId,
         actorId: "authority",
         kind: "numbered",

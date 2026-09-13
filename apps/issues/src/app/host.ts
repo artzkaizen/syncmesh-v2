@@ -98,7 +98,7 @@ const seedOnce = (app: Client<Procedures, IssuesPresence>) =>
     yield* await Result.tryPromise({
       // no `now`: the seed's own default instant is what makes two installs byte-identical, which
       // is what an event list and a screenshot diff both need
-      try: () => seedWorkspace(handle, {}),
+      try: () => seedWorkspace(handle.db, {}),
       catch: refused("the workspace could not be seeded"),
     });
     return Result.ok(undefined);

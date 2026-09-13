@@ -41,6 +41,9 @@ export type HostMesh = Pick<
   | "running"
   | "query"
   | "operations"
+  // the device's session, pushed to every window: a handler is handed `principal` synchronously
+  // and a port cannot answer that way, so the origin tells rather than being asked
+  | "auth"
 >;
 
 export interface ServeOptions {
@@ -113,6 +116,9 @@ const feedFor = (deps: FeedDeps, topic: Topic): Unsubscribe => {
   if (topic === "grant") return mesh.grants.onRegistered(() => emit(null));
   if (topic === "writes") return mesh.operations?.onChange(() => emit(null)) ?? nothing;
   if (topic === "inspect") return inspector?.watch(emit) ?? nothing;
+  // pushed rather than asked: a handler reads `principal` synchronously, and a port cannot answer
+  // synchronously — so every window is told, and the device's session is the only one there is
+  if (topic === "auth") return mesh.auth.subscribe(() => emit(mesh.auth.principal() ?? null));
   return inspector?.onForced(emit) ?? nothing;
 };
 

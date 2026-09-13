@@ -1,6 +1,6 @@
 import type { Handle, Mesh, MeshSchema, OnOptions } from "@syncmesh/client";
 import type { LiveSource } from "@syncmesh/drizzle";
-import type { FoldBatch, ValidatorSchema } from "@syncmesh/engine";
+import type { FoldBatch, Principal, ValidatorSchema } from "@syncmesh/engine";
 import type { InvalidPartitionKey, PeerId } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
 import type { SqlRow, SqlValue } from "@syncmesh/storage";
@@ -61,6 +61,8 @@ export interface FollowerMesh extends Pick<
    * is a sentence rather than an empty table.
    */
   readonly operations: RemoteOperations;
+  /** Who the origin acts as. A window has no session of its own to differ with (ch. 14). */
+  readonly auth: { readonly principal: () => Principal | undefined };
   /**
    * What a tab may read about the **device**, where the host was given an inspector.
    *
@@ -131,6 +133,24 @@ export function connectMesh(options: ConnectOptions): FollowerMesh {
     fire(grantListeners)();
   });
 
+  /**
+   * Who the origin is acting as, cached here so a handler can be handed it synchronously.
+   *
+   * Asked once at connect and pushed on every change after, because the read has to answer *now*
+   * — a handler that had to await this would be a handler that could not read a table. `undefined`
+   * until the first answer lands is the honest gap and the same one the device itself has before
+   * its first session.
+   */
+  let acting: Principal | undefined;
+  wire.listen("auth", (payload) => {
+    // SAFETY: the host sends what its own `auth.principal()` returned, or null for nobody
+    acting = (payload ?? undefined) as Principal | undefined;
+  });
+  void wire
+    .ask<Principal | null>({ kind: "call", path: "principal", args: [] })
+    .then((answer) => (acting = answer ?? undefined))
+    .catch(() => undefined);
+
   const source: LiveSource = {
     // SAFETY: the host broadcasts the batch its own engine emitted; `Set` and `Map` cross a
     // structured clone whole, so `writeTables` and `writeKeys` arrive as themselves
@@ -172,6 +192,7 @@ export function connectMesh(options: ConnectOptions): FollowerMesh {
     schema,
     on,
     operations: remoteLedger(wire),
+    auth: { principal: () => acting },
     inspect: remoteInspect(wire),
     can: (what, row, instance) =>
       canAnswers.read(JSON.stringify([what, row ?? null, instance ?? null]), () =>

@@ -28,9 +28,9 @@ export const comments = {
         replyTo: Id.nullable().optional(),
       }),
     )
-    .handler(async ({ input, mesh }) => {
+    .handler(async ({ input, db }) => {
       const id = crypto.randomUUID();
-      await mesh.db.insert(comment).values({
+      await db.insert(comment).values({
         ...input,
         id,
         replyTo: input.replyTo ?? null,
@@ -48,8 +48,8 @@ export const comments = {
    */
   edit: mutation
     .input(scoped({ id: Id, body: z.string().min(1).max(20_000) }))
-    .handler(async ({ input, mesh }) => {
-      await mesh.db
+    .handler(async ({ input, db }) => {
+      await db
         .update(comment)
         .set({ body: input.body, editedAt: at(Temporal.Now.instant()) })
         .where(eq(comment.id, input.id));
@@ -57,8 +57,8 @@ export const comments = {
     }),
 
   /** Widened where `update` is not: an admin moderates, which is a job, but never rewrites. */
-  remove: mutation.input(scoped({ id: Id })).handler(async ({ input, mesh }) => {
-    await mesh.db.delete(comment).where(eq(comment.id, input.id));
+  remove: mutation.input(scoped({ id: Id })).handler(async ({ input, db }) => {
+    await db.delete(comment).where(eq(comment.id, input.id));
     return { id: input.id };
   }),
 };
@@ -67,8 +67,8 @@ export const reactions = {
   /** Every reaction on a thing, so a UI can group them by emoji and name the people. */
   forSubject: query
     .input(scoped({ subject: ReactionSubject, subjectId: Id }))
-    .handler(({ input, mesh }) =>
-      mesh.db
+    .handler(({ input, db }) =>
+      db
         .select()
         .from(reaction)
         .where(and(eq(reaction.subject, input.subject), eq(reaction.subjectId, input.subjectId)))
@@ -76,16 +76,14 @@ export const reactions = {
     ),
 
   /** The tally a card renders, without the names. Counted from the rows, never stored. */
-  tally: query
-    .input(scoped({ subject: ReactionSubject, subjectId: Id }))
-    .handler(({ input, mesh }) =>
-      mesh.db
-        .select({ emoji: reaction.emoji, total: count() })
-        .from(reaction)
-        .where(and(eq(reaction.subject, input.subject), eq(reaction.subjectId, input.subjectId)))
-        .groupBy(reaction.emoji)
-        .orderBy(asc(reaction.emoji)),
-    ),
+  tally: query.input(scoped({ subject: ReactionSubject, subjectId: Id })).handler(({ input, db }) =>
+    db
+      .select({ emoji: reaction.emoji, total: count() })
+      .from(reaction)
+      .where(and(eq(reaction.subject, input.subject), eq(reaction.subjectId, input.subjectId)))
+      .groupBy(reaction.emoji)
+      .orderBy(asc(reaction.emoji)),
+  ),
 
   /**
    * The id is derived from `(actor, subject, emoji)` rather than random, which makes reacting
@@ -102,9 +100,9 @@ export const reactions = {
         actorId: Id,
       }),
     )
-    .handler(async ({ input, mesh }) => {
+    .handler(async ({ input, db }) => {
       const id = reactionId(input);
-      await mesh.db
+      await db
         .insert(reaction)
         .values({ ...input, id, reactedAt: at(Temporal.Now.instant()) })
         .onConflictDoNothing();
@@ -121,9 +119,9 @@ export const reactions = {
         actorId: Id,
       }),
     )
-    .handler(async ({ input, mesh }) => {
+    .handler(async ({ input, db }) => {
       const id = reactionId(input);
-      await mesh.db.delete(reaction).where(eq(reaction.id, id));
+      await db.delete(reaction).where(eq(reaction.id, id));
       return { id };
     }),
 };
@@ -146,17 +144,17 @@ export const issueLabels = {
    * three short columns — smaller than the issues it decorates — so the cheap thing and the
    * correct thing are the same thing here.
    */
-  list: query.input(scoped({})).handler(({ mesh }) => {
-    const source = mesh.read(issueLabel);
-    return mesh.db.select().from(source).orderBy(asc(source.issueId), asc(source.labelId));
+  list: query.input(scoped({})).handler(({ db, read }) => {
+    const source = read(issueLabel);
+    return db.select().from(source).orderBy(asc(source.issueId), asc(source.labelId));
   }),
 
   attach: mutation
     .input(scoped({ issueId: Id, labelId: Id, actorId: Id }))
-    .handler(async ({ input, mesh }) => {
+    .handler(async ({ input, db }) => {
       const now = Temporal.Now.instant();
       const id = `${input.issueId}:${input.labelId}`;
-      await mesh.db
+      await db
         .insert(issueLabel)
         .values({
           id,
@@ -166,7 +164,7 @@ export const issueLabels = {
           addedAt: at(now),
         })
         .onConflictDoNothing();
-      await record(mesh, {
+      await record(db, {
         issueId: input.issueId,
         actorId: input.actorId,
         kind: "label",
@@ -178,12 +176,10 @@ export const issueLabels = {
 
   detach: mutation
     .input(scoped({ issueId: Id, labelId: Id, actorId: Id }))
-    .handler(async ({ input, mesh }) => {
+    .handler(async ({ input, db }) => {
       const now = Temporal.Now.instant();
-      await mesh.db
-        .delete(issueLabel)
-        .where(eq(issueLabel.id, `${input.issueId}:${input.labelId}`));
-      await record(mesh, {
+      await db.delete(issueLabel).where(eq(issueLabel.id, `${input.issueId}:${input.labelId}`));
+      await record(db, {
         issueId: input.issueId,
         actorId: input.actorId,
         kind: "label",
@@ -201,8 +197,8 @@ export const issueLabels = {
 export const history = {
   forIssue: query
     .input(scoped({ issueId: Id, limit: z.int().min(1).max(200).optional() }))
-    .handler(({ input, mesh }) =>
-      mesh.db
+    .handler(({ input, db }) =>
+      db
         .select()
         .from(activity)
         .where(eq(activity.issueId, input.issueId))

@@ -28,8 +28,8 @@ export interface Change {
   readonly when: Temporal.Instant;
 }
 
-export const record = async (mesh: Handle, change: Change): Promise<void> => {
-  await mesh.db.insert(activity).values({
+export const record = async (db: Handle["db"], change: Change): Promise<void> => {
+  await db.insert(activity).values({
     id: crypto.randomUUID(),
     issueId: change.issueId,
     actorId: change.actorId,

@@ -28,10 +28,34 @@ export type { WirePort };
  * The whole reason this protocol is not the request/reply one `adapters/sqlite-wasm` ships: a
  * live query is a standing interest, and a write in another tab is the host speaking first.
  */
-export type Topic = "fold" | "ack" | "sync" | "grant" | "writes" | "inspect" | "forced";
+export type Topic =
+  | "fold"
+  | "ack"
+  | "sync"
+  | "grant"
+  | "writes"
+  | "inspect"
+  | "forced"
+  /**
+   * Who the device is acting as, pushed rather than asked.
+   *
+   * A handler is handed `principal` synchronously and a port answers asynchronously, so a window
+   * cannot ask at the moment it needs to know. The origin tells every window instead, at connect
+   * and whenever the session changes — which is also the honest shape: the principal is the
+   * *device's*, and a window has no session of its own to differ with.
+   */
+  | "auth";
 
 /** The mesh methods a follower asks for by name; each answers with plain data or throws. */
-export type CallPath = "can" | "syncOf" | "query" | "flush" | "ready" | "settled" | "running";
+export type CallPath =
+  | "can"
+  | "syncOf"
+  | "query"
+  | "flush"
+  | "ready"
+  | "settled"
+  | "running"
+  | "principal";
 
 /** The four reads of the durable write ledger, by the names `OperationsView` already gives them. */
 export type LedgerPath = "get" | "byEvent" | "unsettled" | "receiptsOf";
@@ -147,7 +171,7 @@ export interface TopicBody {
  * Named rather than `unknown` because it is the whole list — the mesh methods a window is allowed
  * to ask for were chosen for this, and one that answered with a class instance would not cross.
  */
-export type CallAnswer = boolean | string | null | readonly SqlRow[] | undefined;
+export type CallAnswer = boolean | string | null | readonly SqlRow[] | Principal | undefined;
 
 /** What a {@link LedgerBody} answers with — the ledger's own rows, and `undefined` for a miss. */
 export type LedgerAnswer =

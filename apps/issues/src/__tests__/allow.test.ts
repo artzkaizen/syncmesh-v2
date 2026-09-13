@@ -34,7 +34,7 @@ describe("who may do what (RFC-0008)", () => {
     const ada = await openDevice("ada");
     const bo = await openDevice("bo");
     const chidi = await openDevice("chidi");
-    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap(), { issues: 3, now: T0 });
+    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap().db, { issues: 3, now: T0 });
     await settle(ada, bo, chidi);
 
     const issueId = seeded.issueIds[0] ?? "";
@@ -79,7 +79,7 @@ describe("who may do what (RFC-0008)", () => {
 
   test("nobody posts in somebody else's name, however they address the call", async () => {
     const ada = await openDevice("ada");
-    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap(), { issues: 3, now: T0 });
+    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap().db, { issues: 3, now: T0 });
     const bo = await openDevice("bo");
     await settle(ada, bo);
 
@@ -101,7 +101,7 @@ describe("who may do what (RFC-0008)", () => {
   test("only an admin deletes a project, and `can` says so before the button is drawn", async () => {
     const ada = await openDevice("ada");
     const bo = await openDevice("bo");
-    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap(), { issues: 3, now: T0 });
+    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap().db, { issues: 3, now: T0 });
     await settle(ada, bo);
 
     const id = seeded.projectIds[0] ?? "";
@@ -141,7 +141,7 @@ describe("who may do what (RFC-0008)", () => {
   test("a guest reads the workspace and writes nothing in it", async () => {
     const ada = await openDevice("ada");
     const dalia = await openDevice("dalia");
-    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap(), { issues: 6, now: T0 });
+    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap().db, { issues: 6, now: T0 });
     await settle(ada, dalia);
 
     expect(await dalia.api.issues.list({ workspaceId: WORKSPACE_ID }).run()).toHaveLength(6);
@@ -163,7 +163,7 @@ describe("who may do what (RFC-0008)", () => {
   test("`number` belongs to the authority: `patchOnly` refuses a member who reaches for it", async () => {
     const ada = await openDevice("ada");
     const bo = await openDevice("bo");
-    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap(), { issues: 3, now: T0 });
+    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap().db, { issues: 3, now: T0 });
     await settle(ada, bo);
     const id = seeded.issueIds[0] ?? "";
 
@@ -193,7 +193,7 @@ describe("who may do what (RFC-0008)", () => {
 
   test("history is appended and never revised: the manifest leaves no update to make", async () => {
     const ada = await openDevice("ada");
-    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap(), { issues: 3, now: T0 });
+    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap().db, { issues: 3, now: T0 });
     const issueId = seeded.issueIds[0] ?? "";
 
     const feed = await ada.api.history.forIssue({ workspaceId: WORKSPACE_ID, issueId }).run();

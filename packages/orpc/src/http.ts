@@ -102,8 +102,11 @@ export function createHandler<R extends Router>(options: HandlerOptions<R>) {
     const context = {
       input: parsed.value,
       errors: throwersOf(def.errors),
-      get mesh() {
-        return gate.handle(parsed.value);
+      get db() {
+        return gate.handle(parsed.value).db;
+      },
+      get read() {
+        return gate.handle(parsed.value).read;
       },
     };
     const answered = await Result.tryPromise({

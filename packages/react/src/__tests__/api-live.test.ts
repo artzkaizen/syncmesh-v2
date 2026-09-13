@@ -34,11 +34,11 @@ const schema = defineSchema({
 const books = {
   list: query
     .input(z.object({ orgId: z.string() }))
-    .handler(({ mesh }) => mesh.db.select().from(book).orderBy(asc(book.id))),
+    .handler(({ db }) => db.select().from(book).orderBy(asc(book.id))),
   create: mutation
     .input(z.object({ orgId: z.string(), id: z.string(), title: z.string().min(1) }))
-    .handler(async ({ input, mesh }) => {
-      await mesh.db.insert(book).values({ id: input.id, title: input.title });
+    .handler(async ({ input, db }) => {
+      await db.insert(book).values({ id: input.id, title: input.title });
       return { id: input.id };
     }),
 };

@@ -14,13 +14,11 @@ import { ORG, book, meshOrigin, settled } from "./origin-mesh.js";
  * whole of what "one engine per origin" has to buy to be worth building.
  */
 const books = {
-  list: query
-    .input(z.object({ orgId: z.string() }))
-    .handler(({ mesh }) => mesh.db.select().from(book)),
+  list: query.input(z.object({ orgId: z.string() })).handler(({ db }) => db.select().from(book)),
   create: mutation
     .input(z.object({ orgId: z.string(), id: z.string(), title: z.string().min(1) }))
-    .handler(async ({ input, mesh }) => {
-      await mesh.db.insert(book).values({ id: input.id, title: input.title });
+    .handler(async ({ input, db }) => {
+      await db.insert(book).values({ id: input.id, title: input.title });
       return { id: input.id };
     }),
 };

@@ -16,7 +16,7 @@ describe("view counts across a partition (book ch. 2)", () => {
     const ada = await openDevice("ada");
     const bo = await openDevice("bo");
     const chidi = await openDevice("chidi");
-    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap(), { issues: 6, now: T0 });
+    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap().db, { issues: 6, now: T0 });
     await settle(ada, bo, chidi);
 
     const id = seeded.issueIds[0] ?? "";
@@ -44,7 +44,7 @@ describe("view counts across a partition (book ch. 2)", () => {
 
   test("a view is not an edit: the counter moves and `updatedAt` does not", async () => {
     const ada = await openDevice("ada");
-    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap(), { issues: 3, now: T0 });
+    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap().db, { issues: 3, now: T0 });
     const id = seeded.issueIds[0] ?? "";
     const before = (await ada.api.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0];
 
@@ -60,7 +60,7 @@ describe("view counts across a partition (book ch. 2)", () => {
   test("reactions are rows, so two people reacting while apart both keep their reaction", async () => {
     const ada = await openDevice("ada");
     const bo = await openDevice("bo");
-    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap(), { issues: 3, now: T0 });
+    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap().db, { issues: 3, now: T0 });
     await settle(ada, bo);
     const subjectId = seeded.issueIds[1] ?? "";
 

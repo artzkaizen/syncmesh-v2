@@ -43,16 +43,16 @@ const books = {
     // `orgId` is not decoration: scope is input, never construction (ch. 3), and this is where
     // the binding reads which replica the call is about
     .input(z.object({ orgId: z.string(), shelf: z.string().optional() }))
-    .handler(({ input, mesh }) =>
+    .handler(({ input, db }) =>
       input.shelf === undefined
-        ? mesh.db.select().from(book)
-        : mesh.db.select().from(book).where(eq(book.shelf, input.shelf)),
+        ? db.select().from(book)
+        : db.select().from(book).where(eq(book.shelf, input.shelf)),
     ),
 
   create: mutation
     .input(z.object({ orgId: z.string(), id: z.string(), title: z.string().min(1) }))
-    .handler(async ({ input, mesh }) => {
-      await mesh.db.insert(book).values({ id: input.id, title: input.title });
+    .handler(async ({ input, db }) => {
+      await db.insert(book).values({ id: input.id, title: input.title });
       return { id: input.id };
     }),
 };

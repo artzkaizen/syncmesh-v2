@@ -24,11 +24,11 @@ const schema = defineSchema({
 
 const procedures = {
   products: {
-    list: query.handler(({ mesh }) => mesh.db.select().from(products)),
+    list: query.handler(({ db }) => db.select().from(products)),
     create: mutation
       .input(z.object({ shopId: z.string(), id: z.string(), name: z.string().min(1) }))
-      .handler(async ({ input, mesh }) => {
-        await mesh.db.insert(products).values(input);
+      .handler(async ({ input, db }) => {
+        await db.insert(products).values(input);
         return input;
       }),
   },

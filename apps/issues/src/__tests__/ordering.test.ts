@@ -12,7 +12,7 @@ import { T0, accountOf, openDevice, settle, type Device } from "./fixtures.js";
 const open = async () => {
   const ada = await openDevice("ada");
   const bo = await openDevice("bo");
-  const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap(), { issues: 18, now: T0 });
+  const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap().db, { issues: 18, now: T0 });
   await settle(ada, bo);
   return { ada, bo, teamId: seeded.teamIds.ENG ?? "" };
 };
@@ -105,7 +105,7 @@ describe("manual order across a partition (book ch. 2, D25)", () => {
     const ada = await openDevice("ada");
     const chidi = await openDevice("chidi");
     running = [ada, chidi];
-    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap(), { now: T0 });
+    const seeded = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap().db, { now: T0 });
     await settle(ada, chidi);
 
     expect(seeded.issueIds).toHaveLength(120);

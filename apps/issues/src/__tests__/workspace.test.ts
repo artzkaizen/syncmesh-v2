@@ -11,7 +11,7 @@ import { T0, accountOf, openDevice, settle } from "./fixtures.js";
 
 const seeded = async () => {
   const ada = await openDevice("ada");
-  const workspace = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap(), { now: T0 });
+  const workspace = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap().db, { now: T0 });
   return { ada, workspace };
 };
 
@@ -30,7 +30,7 @@ describe("the seeded workspace", () => {
 
     // the same seed on a fresh, unconnected device produces the same workspace, row for row
     const again = await openDevice("ada");
-    const twice = await seedWorkspace(again.mesh.on(WORKSPACE).unwrap(), { now: T0 });
+    const twice = await seedWorkspace(again.mesh.on(WORKSPACE).unwrap().db, { now: T0 });
     expect(twice.issueIds).toEqual(workspace.issueIds);
     expect(
       await again.api.issues
@@ -86,7 +86,7 @@ describe("the seeded workspace", () => {
     const ada = await openDevice("ada");
     const bo = await openDevice("bo");
     const chidi = await openDevice("chidi");
-    const workspace = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap(), {
+    const workspace = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap().db, {
       issues: 12,
       now: T0,
     });

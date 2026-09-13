@@ -36,6 +36,7 @@ export const answer = async (
     );
   if (path === "syncOf") return mesh.syncOf(first, second);
   if (path === "query") return (await mesh.query?.(first, absent<SqlValue[]>(second))) ?? [];
+  if (path === "principal") return mesh.auth.principal();
   if (path === "running") return mesh.running();
   if (path === "flush") await mesh.flush();
   if (path === "ready") await mesh.ready();

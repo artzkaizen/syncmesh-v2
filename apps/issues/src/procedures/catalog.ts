@@ -19,8 +19,8 @@ import { at, atOrNull, parseInstant } from "../time.js";
 export const teams = {
   list: query
     .input(scoped({}))
-    .handler(({ mesh }) =>
-      mesh.db.select().from(team).where(isNull(team.archivedAt)).orderBy(asc(team.key)),
+    .handler(({ db }) =>
+      db.select().from(team).where(isNull(team.archivedAt)).orderBy(asc(team.key)),
     ),
 
   /** Making a team is an admin's — the manifest's `$default: role("admin")` is the whole rule. */
@@ -32,15 +32,15 @@ export const teams = {
         color: z.string().min(1).max(16),
       }),
     )
-    .handler(async ({ input, mesh }) => {
+    .handler(async ({ input, db }) => {
       const id = crypto.randomUUID();
-      await mesh.db.insert(team).values({ ...input, id, archivedAt: null });
+      await db.insert(team).values({ ...input, id, archivedAt: null });
       return { id };
     }),
 
   /** Archived, not deleted: the issues keep their prefix, and the prefix keeps its meaning. */
-  archive: mutation.input(scoped({ id: Id })).handler(async ({ input, mesh }) => {
-    await mesh.db
+  archive: mutation.input(scoped({ id: Id })).handler(async ({ input, db }) => {
+    await db
       .update(team)
       .set({ archivedAt: at(Temporal.Now.instant()) })
       .where(eq(team.id, input.id));
@@ -51,8 +51,8 @@ export const teams = {
 export const members = {
   list: query
     .input(scoped({}))
-    .handler(({ mesh }) =>
-      mesh.db.select().from(member).where(isNull(member.deactivatedAt)).orderBy(asc(member.name)),
+    .handler(({ db }) =>
+      db.select().from(member).where(isNull(member.deactivatedAt)).orderBy(asc(member.name)),
     ),
 
   /**
@@ -62,8 +62,8 @@ export const members = {
    */
   rename: mutation
     .input(scoped({ id: Id, name: z.string().min(1).max(80) }))
-    .handler(async ({ input, mesh }) => {
-      await mesh.db.update(member).set({ name: input.name }).where(eq(member.id, input.id));
+    .handler(async ({ input, db }) => {
+      await db.update(member).set({ name: input.name }).where(eq(member.id, input.id));
       return { id: input.id };
     }),
 
@@ -77,16 +77,16 @@ export const members = {
         avatarColor: z.string().min(1).max(16),
       }),
     )
-    .handler(async ({ input, mesh }) => {
-      await mesh.db.insert(member).values({ ...input, deactivatedAt: null });
+    .handler(async ({ input, db }) => {
+      await db.insert(member).values({ ...input, deactivatedAt: null });
       return { id: input.id };
     }),
 };
 
 export const projects = {
-  list: query.input(scoped({ teamId: Id.optional() })).handler(({ input, mesh }) => {
-    const source = mesh.read(project);
-    return mesh.db
+  list: query.input(scoped({ teamId: Id.optional() })).handler(({ input, db, read }) => {
+    const source = read(project);
+    return db
       .select()
       .from(source)
       .where(input.teamId === undefined ? undefined : eq(source.teamId, input.teamId))
@@ -104,13 +104,13 @@ export const projects = {
         targetDate: z.iso.datetime().nullable().optional(),
       }),
     )
-    .handler(async ({ input, mesh }) => {
+    .handler(async ({ input, db }) => {
       const id = crypto.randomUUID();
-      const [last] = await mesh.db
+      const [last] = await db
         .select({ rank: project.rank })
         .from(project)
         .orderBy(asc(project.rank), asc(project.id));
-      await mesh.db.insert(project).values({
+      await db.insert(project).values({
         id,
         teamId: input.teamId,
         name: input.name,
@@ -134,9 +134,9 @@ export const projects = {
         leadId: Id.nullable().optional(),
       }),
     )
-    .handler(async ({ input, mesh }) => {
+    .handler(async ({ input, db }) => {
       const { id, ...patch } = input;
-      await mesh.db.update(project).set(patch).where(eq(project.id, id));
+      await db.update(project).set(patch).where(eq(project.id, id));
       return { id };
     }),
 
@@ -146,16 +146,16 @@ export const projects = {
    * with no way back. `api.projects.remove.can(input)` rehearses it against the same rules, so a
    * UI can grey the button out without keeping a second copy of the rule (book ch. 15).
    */
-  remove: mutation.input(scoped({ id: Id })).handler(async ({ input, mesh }) => {
-    await mesh.db.delete(project).where(eq(project.id, input.id));
+  remove: mutation.input(scoped({ id: Id })).handler(async ({ input, db }) => {
+    await db.delete(project).where(eq(project.id, input.id));
     return { id: input.id };
   }),
 };
 
 export const labels = {
   /** A team's labels plus the workspace-wide ones, which is what a label picker shows. */
-  list: query.input(scoped({ teamId: Id.optional() })).handler(({ input, mesh }) =>
-    mesh.db
+  list: query.input(scoped({ teamId: Id.optional() })).handler(({ input, db }) =>
+    db
       .select()
       .from(label)
       .where(
@@ -174,14 +174,14 @@ export const labels = {
         teamId: Id.nullable().optional(),
       }),
     )
-    .handler(async ({ input, mesh }) => {
+    .handler(async ({ input, db }) => {
       const id = crypto.randomUUID();
-      await mesh.db.insert(label).values({ ...input, id, teamId: input.teamId ?? null });
+      await db.insert(label).values({ ...input, id, teamId: input.teamId ?? null });
       return { id };
     }),
 
-  remove: mutation.input(scoped({ id: Id })).handler(async ({ input, mesh }) => {
-    await mesh.db.delete(label).where(eq(label.id, input.id));
+  remove: mutation.input(scoped({ id: Id })).handler(async ({ input, db }) => {
+    await db.delete(label).where(eq(label.id, input.id));
     return { id: input.id };
   }),
 };

@@ -20,7 +20,7 @@ const schema = defineSchema({
 
 const procedures = {
   rooms: {
-    list: query.handler(({ mesh }) => mesh.db.select().from(rooms)),
+    list: query.handler(({ db }) => db.select().from(rooms)),
     reserveName: mutation
       .route({ method: "POST", path: "/room-names", tags: ["Rooms"] })
       .input(z.object({ name: z.string().min(1) }))
@@ -33,11 +33,11 @@ const procedures = {
 /** The gate: uniqueness is a global invariant, so the write happens here or not at all. */
 const handlers = {
   rooms: {
-    reserveName: async ({ input, mesh, errors }) => {
-      const held = await mesh.db.select().from(rooms).where(eq(rooms.name, input.name));
+    reserveName: async ({ input, db, errors }) => {
+      const held = await db.select().from(rooms).where(eq(rooms.name, input.name));
       if (held.length > 0) throw (errors.NAME_TAKEN ?? (() => new Error("declared")))();
       const roomId = `room-${input.name}`;
-      await mesh.db.insert(rooms).values({ id: roomId, name: input.name });
+      await db.insert(rooms).values({ id: roomId, name: input.name });
       return { roomId };
     },
   },

@@ -76,10 +76,10 @@ export interface MeshContext<D extends SqlDialect = "sqlite"> {
  *     .input(z.object({ id: z.string().uuid(), tech: z.string() }))
  *     .errors({ NOT_FOUND: {} })
  *     .handler(async ({ input, context: { mesh }, errors }) => {
- *       const j = mesh.read(jobs)
- *       const [job] = await mesh.db.select().from(j).where(eq(j.id, input.id))
+ *       const j = read(jobs)
+ *       const [job] = await db.select().from(j).where(eq(j.id, input.id))
  *       if (job === undefined) throw errors.NOT_FOUND()
- *       await mesh.db.update(jobs).set({ assignee: input.tech }).where(eq(jobs.id, input.id))
+ *       await db.update(jobs).set({ assignee: input.tech }).where(eq(jobs.id, input.id))
  *     }),
  * }
  * ```

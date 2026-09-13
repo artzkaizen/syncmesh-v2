@@ -18,7 +18,7 @@ import { T0, openDevice } from "./fixtures.js";
 
 const seeded = async () => {
   const ada = await openDevice("ada");
-  const workspace = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap(), { now: T0 });
+  const workspace = await seedWorkspace(ada.mesh.on(WORKSPACE).unwrap().db, { now: T0 });
   return { ada, workspace };
 };
 

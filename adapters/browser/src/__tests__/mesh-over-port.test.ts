@@ -31,8 +31,8 @@ describe("the mesh over a port", () => {
 
     expect(live.data()).toEqual([{ id: "b1", title: "Dune" }]);
     expect(seen).toEqual([1]);
-    // the fold is one host subscription however many tabs asked for it
-    expect(host.census().feeds).toBe(3);
+    // the fold is one host subscription however many tabs asked for it, and so is `auth`
+    expect(host.census().feeds).toBe(4);
     live.release();
     await stop();
   });
@@ -107,10 +107,13 @@ describe("the mesh over a port", () => {
     const live = b.mesh.on(ACME).unwrap().live(titles(b.mesh));
     await live.ready;
     a.mesh.on(ACME).unwrap();
+    // one topic per window for `auth` on top of the four this test's two tabs already hold: the
+    // principal is pushed rather than asked, because a handler is handed it synchronously and a
+    // port cannot answer that way. The *feed* is one for the origin however many windows subscribe
     expect(host.census()).toEqual({
       clients: 2,
-      topics: 5,
-      feeds: 3,
+      topics: 7,
+      feeds: 4,
       handles: 0,
       inspecting: false,
     });
@@ -118,8 +121,9 @@ describe("the mesh over a port", () => {
     await b.mesh.stop();
     await settled();
     expect(host.census().clients).toBe(1);
-    expect(host.census().topics).toBe(2);
-    expect(host.census().feeds).toBe(2);
+    // `sync`, `grant` and `auth`: the three every window holds for the life of its link
+    expect(host.census().topics).toBe(3);
+    expect(host.census().feeds).toBe(3);
 
     // the tab that stayed is unaffected, and the host is still answering
     await a.mesh.on(ACME).unwrap().db.insert(book).values({ id: "b4", title: "Still here" });

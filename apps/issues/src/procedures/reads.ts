@@ -15,7 +15,7 @@ import { comment, issue, issueLabel } from "../tables.js";
  * load-bearing (see `../rank.ts`) and a component that forgot it would quietly show one device a
  * different order from another.
  *
- * Reads go through `mesh.read(table)` rather than the table directly. It compiles the caller's
+ * Reads go through `read(table)` rather than the table directly. It compiles the caller's
  * `read` rule into the source, so a guest's list is filtered by the same rules a receiving
  * device enforces, not by a second copy of them written in TypeScript.
  */
@@ -45,10 +45,10 @@ export const list = query
       limit: z.int().min(1).max(500).optional(),
     }),
   )
-  .handler(({ input, mesh }) => {
-    const source = mesh.read(issue);
+  .handler(({ input, db, read }) => {
+    const source = read(issue);
     const wanted = input.openOnly === true ? OPEN_STATUS : input.status;
-    return mesh.db
+    return db
       .select()
       .from(source)
       .where(
@@ -68,9 +68,9 @@ export const list = query
  * a drag across columns changes `status` and `rank` in the same write, and two subscriptions
  * would show the card in neither column or both for the length of one fold.
  */
-export const board = query.input(scoped({ teamId: Id })).handler(({ input, mesh }) => {
-  const source = mesh.read(issue);
-  return mesh.db
+export const board = query.input(scoped({ teamId: Id })).handler(({ input, db, read }) => {
+  const source = read(issue);
+  return db
     .select()
     .from(source)
     .where(and(eq(source.teamId, input.teamId), inArray(source.status, [...OPEN_STATUS])))
@@ -82,8 +82,8 @@ export const board = query.input(scoped({ teamId: Id })).handler(({ input, mesh 
  * Selected here and not on the list, because these two columns make the query re-run when an
  * acknowledgement lands — which is what a detail view wants and what a hundred-row board does not.
  */
-export const get = query.input(scoped({ id: Id })).handler(({ input, mesh }) =>
-  mesh.db
+export const get = query.input(scoped({ id: Id })).handler(({ input, db }) =>
+  db
     .select({ ...columns(issue), operation: operationOf(issue) })
     .from(issue)
     .where(eq(issue.id, input.id)),
@@ -99,10 +99,10 @@ export const get = query.input(scoped({ id: Id })).handler(({ input, mesh }) =>
  */
 export const search = query
   .input(scoped({ text: z.string().min(1).max(200), limit: z.int().min(1).max(100).optional() }))
-  .handler(({ input, mesh }) => {
-    const source = mesh.read(issue);
+  .handler(({ input, db, read }) => {
+    const source = read(issue);
     const needle = `%${input.text.replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
-    return mesh.db
+    return db
       .select()
       .from(source)
       .where(or(like(source.title, needle), like(source.description, needle)))
@@ -111,9 +111,9 @@ export const search = query
   });
 
 /** The badge on each board column. A `GROUP BY`, so one subscription covers all six numbers. */
-export const counts = query.input(scoped({ teamId: Id })).handler(({ input, mesh }) => {
-  const source = mesh.read(issue);
-  return mesh.db
+export const counts = query.input(scoped({ teamId: Id })).handler(({ input, db, read }) => {
+  const source = read(issue);
+  return db
     .select({ status: source.status, total: count() })
     .from(source)
     .where(eq(source.teamId, input.teamId))
@@ -128,9 +128,9 @@ export const counts = query.input(scoped({ teamId: Id })).handler(({ input, mesh
  */
 export const assigned = query
   .input(scoped({ assigneeId: Id, openOnly: z.boolean().optional() }))
-  .handler(({ input, mesh }) => {
-    const source = mesh.read(issue);
-    return mesh.db
+  .handler(({ input, db, read }) => {
+    const source = read(issue);
+    return db
       .select()
       .from(source)
       .where(
@@ -145,8 +145,8 @@ export const assigned = query
 /** The labels on one issue, as the chips a card renders. */
 export const labelsOf = query
   .input(scoped({ issueId: Id }))
-  .handler(({ input, mesh }) =>
-    mesh.db
+  .handler(({ input, db }) =>
+    db
       .select()
       .from(issueLabel)
       .where(eq(issueLabel.issueId, input.issueId))
@@ -156,8 +156,8 @@ export const labelsOf = query
 /** How many issues carry each label, for the sidebar. Counted live rather than kept on the label row. */
 export const labelTotals = query
   .input(scoped({}))
-  .handler(({ mesh }) =>
-    mesh.db
+  .handler(({ db }) =>
+    db
       .select({ labelId: issueLabel.labelId, total: count() })
       .from(issueLabel)
       .groupBy(issueLabel.labelId)
@@ -169,9 +169,9 @@ export const labelTotals = query
  * therefore still waiting on an authority. The last one is the number a devtool wants, because
  * it is the only one on this screen that a network outage can move.
  */
-export const summary = query.input(scoped({})).handler(({ mesh }) => {
-  const source = mesh.read(issue);
-  return mesh.db
+export const summary = query.input(scoped({})).handler(({ db, read }) => {
+  const source = read(issue);
+  return db
     .select({
       total: count(),
       open: count(sql`CASE WHEN ${inArray(source.status, [...OPEN_STATUS])} THEN 1 END`),
@@ -182,9 +182,9 @@ export const summary = query.input(scoped({})).handler(({ mesh }) => {
 });
 
 /** One issue's thread, oldest first — the order a conversation is read in. */
-export const thread = query.input(scoped({ issueId: Id })).handler(({ input, mesh }) => {
-  const source = mesh.read(comment);
-  return mesh.db
+export const thread = query.input(scoped({ issueId: Id })).handler(({ input, db, read }) => {
+  const source = read(comment);
+  return db
     .select()
     .from(source)
     .where(eq(source.issueId, input.issueId))

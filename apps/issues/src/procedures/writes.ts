@@ -46,16 +46,16 @@ const NewIssue = scoped({
  * typed — and computed from the current top rather than from a fixed constant, so two people
  * filing at once land next to each other instead of on top of each other.
  */
-export const create = mutation.input(NewIssue).handler(async ({ input, mesh }) => {
+export const create = mutation.input(NewIssue).handler(async ({ input, db }) => {
   const now = Temporal.Now.instant();
-  const [top] = await mesh.db
+  const [top] = await db
     .select({ rank: issue.rank })
     .from(issue)
     .where(eq(issue.teamId, input.teamId))
     .orderBy(asc(issue.rank), asc(issue.id))
     .limit(1);
   const id = crypto.randomUUID();
-  await mesh.db.insert(issue).values({
+  await db.insert(issue).values({
     id,
     number: null,
     teamId: input.teamId,
@@ -76,7 +76,7 @@ export const create = mutation.input(NewIssue).handler(async ({ input, mesh }) =
     startedAt: null,
     completedAt: null,
   });
-  await record(mesh, { issueId: id, actorId: input.actorId, kind: "created", when: now });
+  await record(db, { issueId: id, actorId: input.actorId, kind: "created", when: now });
   return { id };
 });
 
@@ -94,17 +94,17 @@ export const edit = mutation
       projectId: Id.nullable().optional(),
     }),
   )
-  .handler(async ({ input, mesh }) => {
+  .handler(async ({ input, db }) => {
     const now = Temporal.Now.instant();
     const { id, actorId, dueDate, ...rest } = input;
     const patch = { ...rest, updatedAt: at(now) };
     if (dueDate !== undefined)
       Object.assign(patch, { dueDate: atOrNull(dueDate === null ? null : parseInstant(dueDate)) });
-    await mesh.db.update(issue).set(patch).where(eq(issue.id, id));
+    await db.update(issue).set(patch).where(eq(issue.id, id));
     if (rest.title !== undefined)
-      await record(mesh, { issueId: id, actorId, kind: "title", to: rest.title, when: now });
+      await record(db, { issueId: id, actorId, kind: "title", to: rest.title, when: now });
     if (rest.priority !== undefined)
-      await record(mesh, {
+      await record(db, {
         issueId: id,
         actorId,
         kind: "priority",
@@ -134,20 +134,20 @@ export const move = mutation
       nextId: Id.nullable().optional(),
     }),
   )
-  .handler(async ({ input, mesh }) => {
+  .handler(async ({ input, db }) => {
     const now = Temporal.Now.instant();
     const rankOf = async (id: string | null) => {
       if (id === null) return null;
-      const [row] = await mesh.db.select({ rank: issue.rank }).from(issue).where(eq(issue.id, id));
+      const [row] = await db.select({ rank: issue.rank }).from(issue).where(eq(issue.id, id));
       return row?.rank ?? null;
     };
     const before = await rankOf(input.previousId ?? null);
     const after = await rankOf(input.nextId ?? null);
     const patch = { rank: between(before, after), updatedAt: at(now) };
     if (input.status !== undefined) Object.assign(patch, statusPatch(input.status, now));
-    await mesh.db.update(issue).set(patch).where(eq(issue.id, input.id));
+    await db.update(issue).set(patch).where(eq(issue.id, input.id));
     if (input.status !== undefined)
-      await record(mesh, {
+      await record(db, {
         issueId: input.id,
         actorId: input.actorId,
         kind: "status",
@@ -167,17 +167,17 @@ const statusPatch = (status: IssueStatus, now: Temporal.Instant) => ({
 /** Status on its own — the keyboard shortcut, as against the drag. */
 export const setStatus = mutation
   .input(scoped({ id: Id, actorId: Id, status: IssueStatus }))
-  .handler(async ({ input, mesh }) => {
+  .handler(async ({ input, db }) => {
     const now = Temporal.Now.instant();
-    const [current] = await mesh.db
+    const [current] = await db
       .select({ status: issue.status })
       .from(issue)
       .where(eq(issue.id, input.id));
-    await mesh.db
+    await db
       .update(issue)
       .set({ ...statusPatch(input.status, now), updatedAt: at(now) })
       .where(eq(issue.id, input.id));
-    await record(mesh, {
+    await record(db, {
       issueId: input.id,
       actorId: input.actorId,
       kind: "status",
@@ -191,17 +191,17 @@ export const setStatus = mutation
 /** Assignment, including unassignment — `null` is a value here, not an omission. */
 export const assign = mutation
   .input(scoped({ id: Id, actorId: Id, assigneeId: Id.nullable() }))
-  .handler(async ({ input, mesh }) => {
+  .handler(async ({ input, db }) => {
     const now = Temporal.Now.instant();
-    const [current] = await mesh.db
+    const [current] = await db
       .select({ assigneeId: issue.assigneeId })
       .from(issue)
       .where(eq(issue.id, input.id));
-    await mesh.db
+    await db
       .update(issue)
       .set({ assigneeId: input.assigneeId, updatedAt: at(now) })
       .where(eq(issue.id, input.id));
-    await record(mesh, {
+    await record(db, {
       issueId: input.id,
       actorId: input.actorId,
       kind: "assignee",
@@ -232,8 +232,8 @@ export const assign = mutation
  * what a counter is for. The screen coalesces to one view per issue per tab; `app/detail.tsx`'s
  * `counted` says why, and the number it replaced is why it says it at length.
  */
-export const view = mutation.input(scoped({ id: Id })).handler(async ({ input, mesh }) => {
-  await mesh.db
+export const view = mutation.input(scoped({ id: Id })).handler(async ({ input, db }) => {
+  await db
     .update(issue)
     .set({ views: sql`${issue.views} + 1` })
     .where(eq(issue.id, input.id));
@@ -241,7 +241,7 @@ export const view = mutation.input(scoped({ id: Id })).handler(async ({ input, m
 });
 
 /** Deleting an issue is an admin's; the manifest refuses it to anyone else. */
-export const remove = mutation.input(scoped({ id: Id })).handler(async ({ input, mesh }) => {
-  await mesh.db.delete(issue).where(eq(issue.id, input.id));
+export const remove = mutation.input(scoped({ id: Id })).handler(async ({ input, db }) => {
+  await db.delete(issue).where(eq(issue.id, input.id));
   return { id: input.id };
 });

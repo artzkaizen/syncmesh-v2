@@ -39,7 +39,7 @@ import { at } from "./time.js";
  * the board is, and a convergence test that seeds two devices from the same number can compare
  * them row for row. `crypto.randomUUID()` would have cost all three.
  *
- * **Writes through the handle, never around it.** Every statement here goes through `mesh.db`,
+ * **Writes through the handle, never around it.** Every statement here goes through `db`,
  * so every row becomes an event exactly as a person's would. A seed that reached for raw SQL
  * would fill the tables and leave the log empty — which looks fine until the second device joins
  * and receives nothing.
@@ -84,7 +84,7 @@ const insertAll = async <T>(
 };
 
 export async function seedWorkspace(
-  mesh: Handle,
+  db: Handle["db"],
   options: SeedOptions = {},
 ): Promise<SeededWorkspace> {
   const now = options.now ?? DEFAULT_NOW;
@@ -104,15 +104,15 @@ export async function seedWorkspace(
 
   // in dependency order, so a device receiving the events mid-stream never holds a row pointing
   // at one it has not folded yet for longer than a single batch
-  await mesh.db.insert(team).values(teams);
-  await mesh.db.insert(member).values(members);
-  await mesh.db.insert(label).values(labels);
-  await mesh.db.insert(project).values(projects);
-  await insertAll(async (rows) => void (await mesh.db.insert(issue).values(rows)), issues);
-  await insertAll(async (rows) => void (await mesh.db.insert(issueLabel).values(rows)), tags);
-  await insertAll(async (rows) => void (await mesh.db.insert(comment).values(rows)), comments);
-  await insertAll(async (rows) => void (await mesh.db.insert(reaction).values(rows)), reactions);
-  await insertAll(async (rows) => void (await mesh.db.insert(activity).values(rows)), feed);
+  await db.insert(team).values(teams);
+  await db.insert(member).values(members);
+  await db.insert(label).values(labels);
+  await db.insert(project).values(projects);
+  await insertAll(async (rows) => void (await db.insert(issue).values(rows)), issues);
+  await insertAll(async (rows) => void (await db.insert(issueLabel).values(rows)), tags);
+  await insertAll(async (rows) => void (await db.insert(comment).values(rows)), comments);
+  await insertAll(async (rows) => void (await db.insert(reaction).values(rows)), reactions);
+  await insertAll(async (rows) => void (await db.insert(activity).values(rows)), feed);
 
   return {
     teamIds,

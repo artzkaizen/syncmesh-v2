@@ -1,5 +1,6 @@
 import type { Handle, Mesh, MeshSchema } from "@syncmesh/client";
 import type { Live, Runnable } from "@syncmesh/drizzle";
+import type { Principal } from "@syncmesh/engine";
 import type { EventId } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
 import type { PresenceMap, StandardSchemaV1 } from "@syncmesh/schema";
@@ -177,6 +178,8 @@ export interface ApiMesh<PC extends PresenceMap = Record<string, never>> {
   readonly onSyncChange: (listener: () => void) => () => void;
   /** Only the subscription: a grant landing is what makes a gated affordance re-ask. */
   readonly grants: { readonly onRegistered: (listener: () => void) => () => void };
+  /** Who this device acts as; a handler is handed it rather than asking, because it never picks. */
+  readonly auth: { readonly principal: () => Principal | undefined };
   /** The write ledger, the engine's own or a window's reader of the origin's ({@link WriteLedger}). */
   readonly operations?: WriteLedger;
 }
@@ -212,9 +215,23 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
   /** The replica this call is about — opened per call, because the scope arrives per call. */
   const handle = (input: unknown): Handle => mesh.on(scopeOf(kinds, input)).unwrap();
 
+  /**
+   * What a body is handed: its input, the tables, and who is acting.
+   *
+   * `db` is taken from `writing` where there is one, so a handler inside a write or a rehearsal
+   * reads and writes through the span's own sink rather than the handle's — the difference
+   * between landing inside the open transaction and waiting for it. The handler never sees which.
+   */
+  const context = <I>(input: I, open: Handle, writing?: { readonly db: Handle["db"] }) => ({
+    input,
+    db: writing?.db ?? open.db,
+    read: open.read,
+    principal: mesh.auth.principal(),
+  });
+
   /* thrown, not returned: a descriptor has no error channel of its own, and the hook has an `error` */
   const runnable = (def: QueryDef<never, unknown>, input: unknown) =>
-    def.run({ input: validate<never>(def.schema, input).unwrap(), mesh: handle(input) });
+    ((open) => def.run(context(validate<never>(def.schema, input).unwrap(), open)))(handle(input));
 
   const read = (path: string, def: QueryDef<never, unknown>, input: unknown) => ({
     kind: "query" as const,
@@ -237,7 +254,7 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
       return open.rehearse(async (span) => {
         // the handler's return value is nothing to a rehearsal: only what it staged is judged —
         // and it writes through the span, because the rehearsal's transaction is the span's alone
-        await def.run({ input: parsed.value, mesh: { ...open, ...span } });
+        await def.run(context(parsed.value, open, span));
       });
     },
     subscribe: (listener) => mesh.grants.onRegistered(() => listener()),
@@ -276,10 +293,7 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     // joining it and answering out of rows nothing has committed
     const run = () => {
       const span = open.span();
-      const inside = { ...open, ...span };
-      return span.db.transaction(() =>
-        Promise.resolve(def.run({ input: parsed.value, mesh: inside })),
-      );
+      return span.db.transaction(() => Promise.resolve(def.run(context(parsed.value, open, span))));
     };
     const ran = await Result.tryPromise({
       // recorded under the id the caller already holds, so an interrupted write is findable — and

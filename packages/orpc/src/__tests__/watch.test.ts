@@ -27,17 +27,17 @@ const FLOOR = 120;
 
 const procedures = {
   products: {
-    list: query.handler(({ mesh }) => mesh.db.select().from(products)),
+    list: query.handler(({ db }) => db.select().from(products)),
     add: mutation
       .input(z.object({ id: z.string(), priceCents: z.number().int() }))
-      .handler(async ({ input, mesh }) => {
-        await mesh.db.insert(products).values(input);
+      .handler(async ({ input, db }) => {
+        await db.insert(products).values(input);
         return input;
       }),
     reprice: mutation
       .input(z.object({ id: z.string(), priceCents: z.number().int() }))
-      .handler(async ({ input, mesh }) => {
-        await mesh.db
+      .handler(async ({ input, db }) => {
+        await db
           .update(products)
           .set({ priceCents: input.priceCents })
           .where(eq(products.id, input.id));
