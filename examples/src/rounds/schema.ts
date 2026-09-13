@@ -1,4 +1,4 @@
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 /** The ward this demo runs under: one practice, as `kind:id`. */
@@ -31,7 +31,7 @@ export const observation = sqliteTable("observation", {
 
 /** The manifest: what syncs, which instance it hangs under, and who may write it. */
 export const roundsSchema = () =>
-  defineSchema({
+  syncSchema({
     partitions: { practice: {} },
     roles: { practice: ["owner", "clinician", "observer"] },
     tables: {

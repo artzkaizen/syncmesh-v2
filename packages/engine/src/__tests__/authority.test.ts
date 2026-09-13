@@ -3,7 +3,7 @@ import type { Grant } from "@syncmesh/wire";
 
 import { parsePartitionKey, readRow } from "@syncmesh/kernel";
 import { allow, deny, role } from "@syncmesh/policy";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, verifyGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -15,7 +15,7 @@ import { createValidator } from "../validate.js";
 import { CREATE, N1, NOTES, PEER_A, PEER_B, fakeClock, row } from "./fixtures.js";
 
 const ACME = parsePartitionKey("org:acme").unwrap();
-const schema = defineSchema({
+const schema = syncSchema({
   partitions: { org: {} },
   roles: { org: ["admin", "member"] },
   tables: {

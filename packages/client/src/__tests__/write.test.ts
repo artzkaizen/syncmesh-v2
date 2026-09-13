@@ -3,7 +3,7 @@ import type { Grant } from "@syncmesh/wire";
 
 import { createMemoryEventStore, createValidator, openEngine } from "@syncmesh/engine";
 import { createHlcClock, parsePartitionKey, readRow } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { installCapture } from "@syncmesh/storage";
 import { createWriter } from "@syncmesh/storage";
@@ -11,7 +11,7 @@ import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, verifyGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
-const schema = defineSchema({
+const schema = syncSchema({
   partitions: { org: {} },
   roles: { org: ["dispatcher", "viewer"] },
   tables: {

@@ -13,7 +13,7 @@ import {
   equal,
 } from "@syncmesh/engine";
 import { createHlcClock, parsePartitionKey, readRow } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createGrantRegistry, createIdentity, issueGrant } from "@syncmesh/wire";
 
@@ -54,7 +54,7 @@ const rowKey = (k: string) => k as RowKey;
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const ACME = parsePartitionKey("org:acme").unwrap();
 
-const schema = defineSchema({
+const schema = syncSchema({
   partitions: { org: {} },
   roles: { org: ["member"] },
   tables: {

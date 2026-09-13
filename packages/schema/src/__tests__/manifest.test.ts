@@ -3,12 +3,12 @@ import type { PolicyNode } from "@syncmesh/policy";
 import { describe, expect, test } from "bun:test";
 
 import { t } from "../column.js";
-import { defineSchema } from "../manifest.js";
+import { syncSchema } from "../manifest.js";
 
 const id = () => t.uuid().primaryKey();
 const none = ({ deny }: { readonly deny: PolicyNode }) => ({ $default: deny });
 
-const schema = defineSchema({
+const schema = syncSchema({
   partitions: { org: { shelf: {} } },
   roles: { org: ["owner", "admin", "member"] },
   tables: {
@@ -25,7 +25,7 @@ const schema = defineSchema({
   },
 });
 
-describe("defineSchema", () => {
+describe("syncSchema", () => {
   test("builds one table per entry, named by its key, in declaration order", () => {
     expect(Object.keys(schema.tables)).toEqual([
       "catalog",
@@ -72,28 +72,28 @@ describe("defineSchema", () => {
       "_links",
       "_cdc",
     ]);
-    const minimal = defineSchema({
+    const minimal = syncSchema({
       tables: { notes: { columns: { id: id() }, partition: "user" } },
     });
     expect(minimal.kinds).toEqual([]);
   });
 
   test("definition mistakes throw at module load", () => {
-    expect(() => defineSchema({ partitions: { user: {} }, tables: {} })).toThrow("reserved");
-    expect(() => defineSchema({ partitions: { org: { org: {} } }, tables: {} })).toThrow(
+    expect(() => syncSchema({ partitions: { user: {} }, tables: {} })).toThrow("reserved");
+    expect(() => syncSchema({ partitions: { org: { org: {} } }, tables: {} })).toThrow(
       "declared twice",
     );
-    expect(() => defineSchema({ partitions: {}, roles: { x: ["a"] }, tables: {} })).toThrow(
+    expect(() => syncSchema({ partitions: {}, roles: { x: ["a"] }, tables: {} })).toThrow(
       "unknown partition kind",
     );
     // SAFETY: deliberately a partition the type refuses, to exercise the runtime guard for generated manifests
     const stray = { columns: { id: id() }, partition: "nope", allow: none } as never;
-    expect(() => defineSchema({ partitions: {}, tables: { b: stray } })).toThrow(
+    expect(() => syncSchema({ partitions: {}, tables: { b: stray } })).toThrow(
       "unknown partition kind",
     );
     // SAFETY: deliberately missing allow, which the type requires, to exercise the runtime guard
     const noAllow = { columns: { id: id() }, partition: "org" } as never;
-    expect(() => defineSchema({ partitions: { org: {} }, tables: { b: noAllow } })).toThrow(
+    expect(() => syncSchema({ partitions: { org: {} }, tables: { b: noAllow } })).toThrow(
       "needs an allow rule",
     );
   });
@@ -102,7 +102,7 @@ describe("defineSchema", () => {
     const cols = { id: id() };
     // compile-time only: the runtime guards would panic on the first one, which is their own test above
     const rejected = () => {
-      defineSchema({
+      syncSchema({
         partitions: { org: {} },
         tables: {
           // @ts-expect-error allow is required for a declared kind
@@ -111,7 +111,7 @@ describe("defineSchema", () => {
           b: { columns: cols, partition: "orgs", allow: none },
         },
       });
-      defineSchema({
+      syncSchema({
         tables: {
           // @ts-expect-error a user table takes no allow
           a: { columns: cols, partition: "user", allow: none },

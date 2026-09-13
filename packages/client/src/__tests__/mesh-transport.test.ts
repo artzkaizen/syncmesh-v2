@@ -1,5 +1,5 @@
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { linkTransport, loopbackPair, type LoopbackControl } from "@syncmesh/transport";
@@ -11,7 +11,7 @@ import { createMesh } from "../mesh.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
 const schema = () =>
-  defineSchema({
+  syncSchema({
     partitions: { org: {} },
     roles: { org: ["owner", "member"] },
     tables: {

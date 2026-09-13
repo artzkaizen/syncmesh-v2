@@ -1,6 +1,6 @@
 import { createValidator, openEngine } from "@syncmesh/engine";
 import { createHlcClock, parsePartitionKey } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { openStores } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
@@ -12,7 +12,7 @@ import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { meshDrizzle } from "../index.js";
 
 const jobs = sqliteTable("jobs", { id: text().primaryKey(), title: text().notNull() });
-const schema = defineSchema({
+const schema = syncSchema({
   partitions: { org: {} },
   roles: { org: ["member"] },
   tables: {

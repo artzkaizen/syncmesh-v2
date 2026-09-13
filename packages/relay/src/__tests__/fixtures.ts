@@ -14,7 +14,7 @@ import {
   type TableName,
 } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import {
   createGrantRegistry,
@@ -33,7 +33,7 @@ import type { RelayDial } from "../transport.js";
 import { decodeRelayFrame } from "../frames.js";
 import { openRelayRoom } from "../room.js";
 
-export const schema = defineSchema({
+export const schema = syncSchema({
   partitions: { org: {} },
   roles: { org: ["member"] },
   tables: {

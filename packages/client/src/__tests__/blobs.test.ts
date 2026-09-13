@@ -1,6 +1,6 @@
 import { seed } from "@syncmesh/kernel/test-fixtures";
 import { relayTransport, startRelay, webSocketDial } from "@syncmesh/relay";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { hashOf } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { createMesh } from "../mesh.js";
 
 const schema = () =>
-  defineSchema({
+  syncSchema({
     tables: { notes: { columns: { id: t.text().primaryKey(), photo: t.text() } } },
   });
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);

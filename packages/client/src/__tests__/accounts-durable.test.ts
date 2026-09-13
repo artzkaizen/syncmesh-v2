@@ -4,7 +4,7 @@ import { taggedCause } from "@syncmesh/drizzle";
 import { createEngine, createMemoryEventStore, linkDevice, links } from "@syncmesh/engine";
 import { createHlcClock, parseAccountId, parsePartitionKey } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { RESERVED, defineSchema, t } from "@syncmesh/schema";
+import { RESERVED, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import {
   createIdentity,
@@ -36,7 +36,7 @@ const notes = sqliteTable("notes", {
 });
 
 const schema = () =>
-  defineSchema({
+  syncSchema({
     partitions: { org: {} },
     tables: {
       notes: {

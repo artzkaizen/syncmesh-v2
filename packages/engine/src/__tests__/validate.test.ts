@@ -5,7 +5,7 @@ import {
   type PartitionKey,
   type PeerId,
 } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, verifyGrant, type Grant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -16,7 +16,7 @@ import { createMemoryEventStore } from "../store.js";
 import { createValidator } from "../validate.js";
 import { CREATE, fakeClock, key, row, table } from "./fixtures.js";
 
-const schema = defineSchema({
+const schema = syncSchema({
   partitions: { org: {} },
   roles: { org: ["admin", "member"] },
   tables: {

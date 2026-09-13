@@ -1,7 +1,7 @@
 import type { Change, SyncEvent } from "@syncmesh/kernel";
 
 import { parsePartitionKey, readRow } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { decodeEventCore, encodeEventCore } from "@syncmesh/wire";
 import { grownCore } from "@syncmesh/wire/wire-tests";
 import { describe, expect, test } from "bun:test";
@@ -16,7 +16,7 @@ import { CREATE, N1, PEER_A, PEER_B, column, key, row, setup } from "./fixtures.
 const USER = parsePartitionKey("user:acct_a").unwrap();
 
 /** The build that shipped first: one table, two columns. */
-const oldSchema = defineSchema({
+const oldSchema = syncSchema({
   partitions: {},
   roles: {},
   tables: {
@@ -25,7 +25,7 @@ const oldSchema = defineSchema({
 });
 
 /** The build that shipped next: a nullable column added, and a table added beside it. */
-const newSchema = defineSchema({
+const newSchema = syncSchema({
   partitions: {},
   roles: {},
   tables: {

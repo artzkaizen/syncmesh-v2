@@ -8,7 +8,7 @@ import {
   type RowKey,
   type TableName,
 } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver, defaultStore } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -30,7 +30,7 @@ const N1 = "n1" as RowKey;
 const BODY = "body" as ColumnName;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 const schema = () =>
-  defineSchema({
+  syncSchema({
     partitions: { org: {} },
     roles: { org: ["member"] },
     tables: {

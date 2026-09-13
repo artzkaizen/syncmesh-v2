@@ -185,7 +185,7 @@ const sealedIn = (
 };
 
 /** One manifest for the data model (D06-A). Definition mistakes throw at module load. */
-export function defineSchema<
+export function syncSchema<
   const P extends PartitionTree,
   const R extends Roles<P>,
   const C extends ColumnsMap,
@@ -316,3 +316,13 @@ function rolesFor(
   }
   return [];
 }
+
+/**
+ * The role order for a partition kind, weakest first.
+ *
+ * A function rather than a bare array because the order **is** the rule: `role("editor")` admits
+ * an editor and everything above it, and a manifest that listed them in the other direction would
+ * compile and quietly invert every permission in the app. Naming the shape is what makes the
+ * direction reviewable at the call site.
+ */
+export const ladder = <const N extends readonly string[]>(...names: N): N => names;

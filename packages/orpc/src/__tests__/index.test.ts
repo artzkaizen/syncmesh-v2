@@ -1,6 +1,6 @@
 import { ORPCError, call } from "@orpc/server";
 import { createMesh } from "@syncmesh/client";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -20,7 +20,7 @@ const jobs = sqliteTable("jobs", {
 });
 
 /** The only permission model: viewers read, techs read and own their rows, dispatchers assign. */
-const schema = defineSchema({
+const schema = syncSchema({
   partitions: { org: {} },
   roles: { org: ["owner", "dispatcher", "tech", "viewer"] },
   tables: {

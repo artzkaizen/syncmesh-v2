@@ -1,7 +1,7 @@
 import type { Principal } from "@syncmesh/engine";
 
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
@@ -10,7 +10,7 @@ import { describe, expect, test } from "bun:test";
 import { createMesh } from "../mesh.js";
 
 const schema = () =>
-  defineSchema({
+  syncSchema({
     tables: { notes: { columns: { id: t.text().primaryKey(), body: t.text() } } },
   });
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);

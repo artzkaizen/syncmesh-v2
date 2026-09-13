@@ -1,6 +1,6 @@
 import { createLink } from "@syncmesh/engine";
 import { eventId } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -11,7 +11,7 @@ import { createMesh } from "../mesh.js";
 
 const todos = sqliteTable("todos", { id: text().primaryKey(), title: text().notNull() });
 const schema = () =>
-  defineSchema({
+  syncSchema({
     partitions: { org: {} },
     roles: { org: ["member"] },
     tables: {

@@ -1,4 +1,4 @@
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -10,7 +10,7 @@ import { createClient, mutation, query, sqlite } from "../index.js";
 
 const products = sqliteTable("products", { id: text().primaryKey(), name: text().notNull() });
 
-const schema = defineSchema({
+const schema = syncSchema({
   partitions: { shop: {} },
   roles: { shop: ["editor", "viewer"] },
   tables: {

@@ -2,7 +2,7 @@ import type { PeerId } from "@syncmesh/kernel";
 import type { Grant } from "@syncmesh/wire";
 
 import { parsePartitionKey, parsePeerId, readRow } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, verifyGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -33,7 +33,7 @@ const NOW = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const NOTE = table("note");
 
 /** A row belongs to the account that made it, and only that account may write it again. */
-const schema = defineSchema({
+const schema = syncSchema({
   partitions: { org: {} },
   roles: { org: ["admin", "member"] },
   tables: {

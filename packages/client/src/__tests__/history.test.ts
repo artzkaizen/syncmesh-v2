@@ -1,6 +1,6 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -16,7 +16,7 @@ const todos = sqliteTable("todos", {
   score: integer().notNull(),
 });
 const schema = () =>
-  defineSchema({
+  syncSchema({
     partitions: { org: {} },
     roles: { org: ["member"] },
     tables: {
@@ -75,7 +75,7 @@ describe("history — a row's timeline", () => {
     const mesh = (
       await createMesh({
         driver: bunSqliteDriver(":memory:"),
-        schema: defineSchema({
+        schema: syncSchema({
           tables: { notes: { columns: { id: t.text().primaryKey(), body: t.text() } } }, // global
         }),
         identity: device,

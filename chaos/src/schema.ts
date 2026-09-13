@@ -1,4 +1,4 @@
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 
 /**
  * One table, one partition, one rule.
@@ -12,7 +12,7 @@ export const WORKSPACE = "workspace:chaos";
 export const NOTE = "note";
 
 export const chaosSchema = () =>
-  defineSchema({
+  syncSchema({
     partitions: { workspace: {} },
     roles: { workspace: ["admin", "member"] },
     tables: {

@@ -1,6 +1,6 @@
 import { seed } from "@syncmesh/kernel/test-fixtures";
 import { relayTransport, startRelay, webSocketDial } from "@syncmesh/relay";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, type Identity } from "@syncmesh/wire";
@@ -14,7 +14,7 @@ import { createMesh } from "../mesh.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
 const schema = () =>
-  defineSchema({
+  syncSchema({
     partitions: { org: {} },
     roles: { org: ["owner", "member"] },
     tables: {

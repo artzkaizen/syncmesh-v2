@@ -1,5 +1,5 @@
 import { createLink } from "@syncmesh/engine";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -17,7 +17,7 @@ const products = sqliteTable("products", {
 });
 
 const schema = () =>
-  defineSchema({
+  syncSchema({
     partitions: { shop: {} },
     roles: { shop: ["member"] },
     tables: {

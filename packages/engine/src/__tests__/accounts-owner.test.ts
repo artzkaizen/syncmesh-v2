@@ -1,7 +1,7 @@
 import type { PeerId } from "@syncmesh/kernel";
 
 import { parseAccountId, parsePartitionKey, parsePeerId, readRow } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -31,7 +31,7 @@ const BOB_ID = String(parseAccountId(String(BOB.peerId)).unwrap());
 const NOW = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const LATER = NOW.add({ minutes: 1 });
 
-const schema = defineSchema({
+const schema = syncSchema({
   partitions: { org: {} },
   tables: {
     notes: {

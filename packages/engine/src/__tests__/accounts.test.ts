@@ -1,7 +1,7 @@
 import type { PeerId, RowKey, TableName } from "@syncmesh/kernel";
 
 import { parseAccountId, parsePartitionKey, parsePeerId, readRow } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import {
   splitEnvelope,
@@ -51,7 +51,7 @@ const ISSUER = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 50 + i))
 const NOW = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const LATER = NOW.add({ minutes: 1 });
 
-const schema = defineSchema({
+const schema = syncSchema({
   partitions: { org: {} },
   tables: {
     notes: {

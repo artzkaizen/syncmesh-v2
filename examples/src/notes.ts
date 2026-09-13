@@ -1,4 +1,4 @@
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 /** The room a relay serves these examples under; it is the path a device dials, `ws://host/acme`. */
@@ -26,7 +26,7 @@ export const notes = sqliteTable("notes", {
  * A fresh one per mesh, because a schema is bound to the engine that folds through it.
  */
 export const notesSchema = () =>
-  defineSchema({
+  syncSchema({
     partitions: { org: {} },
     roles: { org: ["owner", "member"] },
     tables: {

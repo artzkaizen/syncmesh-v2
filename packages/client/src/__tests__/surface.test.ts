@@ -1,7 +1,7 @@
 import type { LinkEvent, Transport } from "@syncmesh/transport";
 
 import { createHub, createMemoryEventStore } from "@syncmesh/engine";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
@@ -20,7 +20,7 @@ import { createMesh } from "../mesh.js";
  */
 
 const schema = () =>
-  defineSchema({
+  syncSchema({
     partitions: { org: { team: {} } },
     roles: { org: ["member"] },
     tables: {

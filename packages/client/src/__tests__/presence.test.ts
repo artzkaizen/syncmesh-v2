@@ -1,7 +1,7 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import {
@@ -16,7 +16,7 @@ import { describe, expect, test } from "bun:test";
 import { createMesh } from "../mesh.js";
 
 const schema = () =>
-  defineSchema({
+  syncSchema({
     partitions: { board: {} },
     roles: { board: ["member"] },
     tables: {

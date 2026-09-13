@@ -11,13 +11,13 @@ import type { EngineOptions } from "@syncmesh/engine";
 import { createEngine, createMemoryEventStore, createValidator } from "@syncmesh/engine";
 import { createHlcClock, parsePartitionKey } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createGrantRegistry, createIdentity, issueGrant, type Identity } from "@syncmesh/wire";
 
 import type { TransportContext } from "../transport.js";
 
-export const schema = defineSchema({
+export const schema = syncSchema({
   partitions: { org: {} },
   roles: { org: ["member"] },
   tables: {

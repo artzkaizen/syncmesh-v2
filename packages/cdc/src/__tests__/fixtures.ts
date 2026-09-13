@@ -5,7 +5,7 @@ import type { Grant, Identity } from "@syncmesh/wire";
 
 import { createEngine, createMemoryEventStore, createValidator } from "@syncmesh/engine";
 import { createHlcClock, parsePartitionKey } from "@syncmesh/kernel";
-import { defineSchema, scalarText, t } from "@syncmesh/schema";
+import { syncSchema, scalarText, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, verifyGrant } from "@syncmesh/wire";
 
@@ -22,7 +22,7 @@ export const GLOBEX = parsePartitionKey("org:globex").unwrap();
  * the way a projection should be, `owned` reads the author through `owner()` and `flagged`
  * reads the column through `rowIs`.
  */
-export const schema = defineSchema({
+export const schema = syncSchema({
   partitions: { org: {} },
   roles: { org: ["system", "admin", "viewer"] },
   tables: {

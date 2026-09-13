@@ -2,7 +2,7 @@ import type { PeerId } from "@syncmesh/kernel";
 import type { Grant } from "@syncmesh/wire";
 
 import { parsePartitionKey, parsePeerId, readRow } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, verifyGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -18,7 +18,7 @@ const PEER_C = parsePeerId("c".repeat(64)).unwrap();
 const ACME = parsePartitionKey("org:acme").unwrap();
 const GLOBEX = parsePartitionKey("org:globex").unwrap();
 
-const schema = defineSchema({
+const schema = syncSchema({
   partitions: { org: {} },
   roles: { org: ["member"] },
   tables: {

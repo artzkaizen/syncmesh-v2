@@ -1,5 +1,5 @@
 import { createMesh } from "@syncmesh/client";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -21,7 +21,7 @@ import { linkOver } from "../link.js";
  */
 export const book = sqliteTable("book", { id: text().primaryKey(), title: text().notNull() });
 
-export const schema = defineSchema({
+export const schema = syncSchema({
   partitions: { org: {} },
   roles: { org: ["owner", "member", "viewer"] },
   tables: {

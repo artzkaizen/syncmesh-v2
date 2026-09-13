@@ -4,7 +4,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { createValidator, openEngine } from "@syncmesh/engine";
 import { createHlcClock, parsePartitionKey } from "@syncmesh/kernel";
 import { pgliteDriver } from "@syncmesh/postgres";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { installRls, openStores } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
@@ -24,7 +24,7 @@ const jobs = pgTable("jobs", {
 });
 
 // … and what syncing it means
-const schema = defineSchema({
+const schema = syncSchema({
   partitions: { org: {} },
   roles: { org: ["owner", "dispatcher", "tech", "viewer"] },
   tables: {

@@ -1,4 +1,4 @@
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -12,7 +12,7 @@ import { createServer, httpLink, mutation, query } from "../index.js";
 
 const rooms = sqliteTable("rooms", { id: text().primaryKey(), name: text().notNull() });
 
-const schema = defineSchema({
+const schema = syncSchema({
   tables: {
     rooms: { columns: { id: t.text().primaryKey(), name: t.text() }, partition: "local" },
   },

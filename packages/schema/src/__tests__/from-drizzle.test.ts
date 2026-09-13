@@ -26,7 +26,7 @@ import {
 } from "drizzle-orm/sqlite-core";
 
 import { fromDrizzle, type DrizzleWarning } from "../from-drizzle.js";
-import { defineSchema } from "../manifest.js";
+import { syncSchema } from "../manifest.js";
 import { checkRow, table, type Row } from "../table.js";
 
 type Equal<A, B> =
@@ -144,7 +144,7 @@ describe("fromDrizzle — refusals at module load", () => {
 
 describe("fromDrizzle — end to end", () => {
   test("an imported table goes into a manifest and admits a row the mesh would accept", () => {
-    const schema = defineSchema({
+    const schema = syncSchema({
       partitions: { org: {} },
       tables: {
         books: {
@@ -168,7 +168,7 @@ describe("fromDrizzle — end to end", () => {
     );
     expect(schema.merge.get(schema.tables.books.name)?.size).toBe(1);
     expect(String(schema.tables.plain.name)).toBe("plain");
-    expect(() => defineSchema({ tables: { other: { columns: fromDrizzle(books) } } })).toThrow(
+    expect(() => syncSchema({ tables: { other: { columns: fromDrizzle(books) } } })).toThrow(
       'come from the Drizzle table "books"',
     );
     assertType<Equal<Row<typeof schema.tables.plain>["n"], number | null>>();

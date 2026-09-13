@@ -1,4 +1,4 @@
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -14,7 +14,7 @@ const products = sqliteTable("products", {
 });
 
 /** `local`: this device only, so the fixed point needs no grants and no second peer. */
-const schema = defineSchema({
+const schema = syncSchema({
   tables: {
     products: {
       columns: { id: t.text().primaryKey(), priceCents: t.integer() },

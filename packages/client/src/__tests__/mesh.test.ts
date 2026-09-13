@@ -1,7 +1,7 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
 import { taggedCause } from "@syncmesh/drizzle";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -24,7 +24,7 @@ const books = sqliteTable("books", {
 const drafts = sqliteTable("drafts", { id: text().primaryKey(), body: text().notNull() });
 
 const schema = () =>
-  defineSchema({
+  syncSchema({
     partitions: { org: {} },
     roles: { org: ["admin", "member"] },
     tables: {

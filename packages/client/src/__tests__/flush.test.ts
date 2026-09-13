@@ -1,6 +1,6 @@
 import type { Transport } from "@syncmesh/transport";
 
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
@@ -10,7 +10,7 @@ import { settleAll } from "../flush.js";
 import { createMesh } from "../mesh.js";
 
 const schema = () =>
-  defineSchema({
+  syncSchema({
     partitions: { org: {} },
     roles: { org: ["member"] },
     tables: {

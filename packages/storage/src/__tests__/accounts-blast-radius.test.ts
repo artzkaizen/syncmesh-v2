@@ -38,7 +38,7 @@ import {
   parsePeerId,
   readRow,
 } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import {
   bytesToHex,
@@ -93,7 +93,7 @@ const INTRUDER = seeded(200).unwrap();
 const ALICE_ID = String(parseAccountId(String(ALICE.peerId)).unwrap());
 const MALLORY_ID = String(parseAccountId(String(MALLORY.peerId)).unwrap());
 
-const schema = defineSchema({
+const schema = syncSchema({
   partitions: { org: {} },
   tables: {
     notes: {

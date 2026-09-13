@@ -42,7 +42,7 @@ export type {
 } from "./manifest.js";
 export type { AllowFn, Combinators } from "./bind.js";
 export { combinators } from "./bind.js";
-export { defineSchema } from "./manifest.js";
+export { ladder, syncSchema } from "./manifest.js";
 export type { PresenceBlock, PresenceEntry, PresenceMap, PresenceTopic } from "./manifest.js";
 export {
   RESERVED,
@@ -61,7 +61,7 @@ export type {
   DrizzleWarning,
   FromDrizzleOptions,
 } from "./from-drizzle.js";
-export { fromDrizzle, sourceName } from "./from-drizzle.js";
+export { drizzleTable, fromDrizzle, sourceName } from "./from-drizzle.js";
 export type { AppValue } from "./convert.js";
 export {
   fromWirePatch,

@@ -8,7 +8,7 @@ import {
 } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
 import { allow, role } from "@syncmesh/policy";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
@@ -17,7 +17,7 @@ import { describe, expect, test } from "bun:test";
 import { createMesh } from "../mesh.js";
 
 const schema = () =>
-  defineSchema({
+  syncSchema({
     partitions: { org: {} },
     roles: { org: ["member"] },
     tables: {
@@ -84,7 +84,7 @@ describe("mesh.internal — the machinery, kept out of your namespace", () => {
     for (const reserved of mesh.internal.tables) {
       expect(mine).not.toContain(reserved);
       expect(() =>
-        defineSchema({
+        syncSchema({
           partitions: { org: {} },
           roles: { org: ["member"] },
           tables: { [reserved]: { columns: { id: t.text().primaryKey() } } },

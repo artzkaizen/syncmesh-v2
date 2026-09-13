@@ -1,4 +1,4 @@
-import { defineSchema, fromDrizzle, t } from "@syncmesh/schema";
+import { fromDrizzle, ladder, syncSchema, t } from "@syncmesh/schema";
 
 import { ActivityKind, IssueStatus, Priority, ProjectStatus, ReactionSubject } from "./domain.js";
 import {
@@ -72,9 +72,9 @@ export const ISSUE_MEMBER_COLUMNS = [
  * The role ladder is senior-first: `role("member")` admits owners and admins too.
  */
 export const issuesSchema = () =>
-  defineSchema({
+  syncSchema({
     partitions: { workspace: { embargo: {} } },
-    roles: { workspace: ["owner", "admin", "member", "guest"] },
+    roles: { workspace: ladder("owner", "admin", "member", "guest") },
     /**
      * Exactly one kind is sealed, and it is not the tracker.
      *

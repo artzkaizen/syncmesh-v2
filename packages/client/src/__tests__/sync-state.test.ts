@@ -1,6 +1,6 @@
 import { createMesh } from "@syncmesh/client";
 import { parsePeerId, type RowKey, type SeqNum, type TableName } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -9,7 +9,7 @@ import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 const book = sqliteTable("book", { id: text().primaryKey(), title: text().notNull() });
 
-const schema = defineSchema({
+const schema = syncSchema({
   partitions: { org: {} },
   roles: { org: ["owner", "member"] },
   tables: {

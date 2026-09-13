@@ -1,6 +1,6 @@
 import { createMesh } from "@syncmesh/client";
 import { Result } from "@syncmesh/result";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -19,7 +19,7 @@ const book = sqliteTable("book", {
   shelf: text(),
 });
 
-const schema = defineSchema({
+const schema = syncSchema({
   partitions: { org: {} },
   roles: { org: ["owner", "member", "viewer"] },
   tables: {

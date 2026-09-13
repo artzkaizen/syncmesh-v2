@@ -1,6 +1,6 @@
 import type { SqlDriver } from "@syncmesh/storage";
 
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -12,7 +12,7 @@ import { createApp, mutation, query } from "../index.js";
 const book = sqliteTable("book", { id: text().primaryKey(), title: text().notNull() });
 
 /** `local`: this device only, so the round trip needs no grant and no authority to write it. */
-const schema = defineSchema({
+const schema = syncSchema({
   tables: {
     book: { columns: { id: t.text().primaryKey(), title: t.text() }, partition: "local" },
   },

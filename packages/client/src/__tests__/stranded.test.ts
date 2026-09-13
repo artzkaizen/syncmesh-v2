@@ -1,6 +1,6 @@
 import type { EngineError, StrandedWrites } from "@syncmesh/engine";
 
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
@@ -29,7 +29,7 @@ import { createMesh } from "../mesh.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
 const schema = () =>
-  defineSchema({
+  syncSchema({
     tables: { notes: { columns: { id: t.text().primaryKey(), body: t.text() } } }, // global
   });
 

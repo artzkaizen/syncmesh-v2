@@ -1,4 +1,4 @@
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -10,7 +10,7 @@ import { createClient, mutation, query, sqlite } from "../index.js";
 const book = sqliteTable("book", { id: text().primaryKey(), title: text().notNull() });
 
 /** `local`: this device only, so one noun is the whole story — no grants, no authority. */
-const schema = defineSchema({
+const schema = syncSchema({
   tables: {
     book: { columns: { id: t.text().primaryKey(), title: t.text() }, partition: "local" },
   },

@@ -2,9 +2,9 @@ import { evaluate } from "@syncmesh/policy";
 import { describe, expect, test } from "bun:test";
 
 import { t } from "../column.js";
-import { defineSchema } from "../manifest.js";
+import { syncSchema } from "../manifest.js";
 
-const schema = defineSchema({
+const schema = syncSchema({
   partitions: { org: { shelf: {} } },
   roles: { org: ["owner", "admin", "member"] },
   tables: {
@@ -65,7 +65,7 @@ describe("bound combinators", () => {
 
   test("a typo in a column or role is a compile error", () => {
     const rejected = () =>
-      defineSchema({
+      syncSchema({
         partitions: { org: {} },
         roles: { org: ["owner", "admin"] },
         tables: {

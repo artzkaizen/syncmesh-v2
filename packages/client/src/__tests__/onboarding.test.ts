@@ -1,6 +1,6 @@
 import { createLink, type Quarantined } from "@syncmesh/engine";
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, type Identity } from "@syncmesh/wire";
@@ -15,7 +15,7 @@ const controls = sqliteTable("controls", {
   by: text().notNull(),
 });
 const schema = () =>
-  defineSchema({
+  syncSchema({
     partitions: { org: {} },
     roles: { org: ["owner", "member"] },
     tables: {

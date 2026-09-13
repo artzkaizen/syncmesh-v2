@@ -2,7 +2,7 @@ import type { Principal } from "@syncmesh/engine";
 
 import { createValidator, openEngine } from "@syncmesh/engine";
 import { createHlcClock, parsePartitionKey } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { openStores } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
@@ -23,7 +23,7 @@ const jobs = sqliteTable("jobs", {
 });
 
 // … and what syncing it means
-const schema = defineSchema({
+const schema = syncSchema({
   partitions: { org: {} },
   roles: { org: ["owner", "dispatcher", "tech", "viewer"] },
   tables: {
