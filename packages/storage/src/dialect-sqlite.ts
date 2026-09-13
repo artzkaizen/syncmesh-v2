@@ -160,10 +160,15 @@ export const SQLITE: Dialect = {
       (peer, seq, local, hlc_ms, hlc_logical, partition, core, sig)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     selectAll: `SELECT core, local, sig FROM events ORDER BY hlc_ms, hlc_logical, peer, seq`,
+    selectRecent: `SELECT peer, seq, local, hlc_ms, hlc_logical, partition, length(core) FROM events
+      WHERE hlc_ms < ?1 OR (hlc_ms = ?1 AND hlc_logical < ?2)
+      ORDER BY hlc_ms DESC, hlc_logical DESC LIMIT ?3`,
     selectSince: `SELECT core, local, sig FROM events
       WHERE local = ?
         AND seq > COALESCE((SELECT value FROM json_each(?) WHERE key = events.peer), 0)
       ORDER BY peer, seq`,
+    selectStranded: `SELECT core, local, sig FROM events
+      WHERE sig IS NULL AND local = 0 AND peer <> ? ORDER BY peer, seq`,
     selectHas: `SELECT 1 FROM events WHERE peer = ? AND seq = ? AND local = ? LIMIT 1`,
     selectLastSeq: `SELECT MAX(seq) FROM (
       SELECT seq FROM events WHERE peer = ?1 AND local = ?2

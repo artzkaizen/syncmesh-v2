@@ -6,11 +6,13 @@ export type { Client } from "./client.js";
 export { createClient } from "./client.js";
 export type {
   Api,
+  ApiMesh,
   AuthorityContext,
   AuthorityDef,
   AuthorityHandlers,
   AuthorityLink,
   CallError,
+  CanCall,
   DeclaredErrors,
   MutationDef,
   Permissions,
@@ -24,6 +26,8 @@ export type {
 } from "./api.js";
 export { meshApi, mutation, query } from "./api.js";
 export { watch } from "./watch.js";
+export type { Milestone, WaitError, Write, WriteLedger } from "./write.js";
+export { WaitExpired, WaitUnreachable, createWrite } from "./write.js";
 export type { Server, ServerOptions } from "./server.js";
 export { createServer } from "./server.js";
 

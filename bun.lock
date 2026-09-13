@@ -13,6 +13,35 @@
         "vite-plus": "catalog:",
       },
     },
+    "adapters/browser": {
+      "name": "@syncmesh/browser",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/client": "workspace:*",
+        "@syncmesh/drizzle": "workspace:*",
+        "@syncmesh/engine": "workspace:*",
+        "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/result": "workspace:*",
+        "@syncmesh/schema": "workspace:*",
+        "@syncmesh/sqlite-wasm": "workspace:*",
+        "@syncmesh/storage": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncmesh/config": "workspace:*",
+        "@syncmesh/orpc": "workspace:*",
+        "@syncmesh/sqlite-bun": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
+        "@syncmesh/wire": "workspace:*",
+        "@types/bun": "catalog:",
+        "drizzle-orm": "latest",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+        "zod": "^3.25.76",
+      },
+      "peerDependencies": {
+        "drizzle-orm": ">=0.44",
+      },
+    },
     "adapters/cloudflare-do": {
       "name": "@syncmesh/cloudflare-do",
       "version": "0.0.0",
@@ -35,6 +64,22 @@
         "@syncmesh/transport": "workspace:*",
         "@types/bun": "catalog:",
         "drizzle-orm": "latest",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+    },
+    "adapters/lan-node": {
+      "name": "@syncmesh/lan-node",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/result": "workspace:*",
+        "@syncmesh/transport": "workspace:*",
+        "@syncmesh/transports": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncmesh/config": "workspace:*",
+        "@types/bun": "catalog:",
+        "@types/node": "catalog:",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
       },
@@ -102,6 +147,62 @@
         "vite-plus": "catalog:",
       },
     },
+    "adapters/sqlite-wasm": {
+      "name": "@syncmesh/sqlite-wasm",
+      "version": "0.0.0",
+      "dependencies": {
+        "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
+        "@syncmesh/result": "workspace:*",
+        "@syncmesh/storage": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncmesh/config": "workspace:*",
+        "@syncmesh/engine": "workspace:*",
+        "@syncmesh/kernel": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+    },
+    "apps/issues": {
+      "name": "@syncmesh/issues",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/browser": "workspace:*",
+        "@syncmesh/client": "workspace:*",
+        "@syncmesh/devtools": "workspace:*",
+        "@syncmesh/drizzle": "workspace:*",
+        "@syncmesh/orpc": "workspace:*",
+        "@syncmesh/react": "workspace:*",
+        "@syncmesh/result": "workspace:*",
+        "@syncmesh/schema": "workspace:*",
+        "@syncmesh/sqlite-wasm": "workspace:*",
+        "@syncmesh/storage": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
+        "@syncmesh/transports": "workspace:*",
+        "@syncmesh/wire": "workspace:*",
+        "@tanstack/react-router": "^1.170.32",
+        "drizzle-orm": "latest",
+        "react": "^19.1.0",
+        "react-dom": "^19.1.0",
+        "zod": "^4.1.13",
+      },
+      "devDependencies": {
+        "@syncmesh/config": "workspace:*",
+        "@syncmesh/engine": "workspace:*",
+        "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/relay": "workspace:*",
+        "@syncmesh/sqlite-bun": "workspace:*",
+        "@syncmesh/transport": "workspace:*",
+        "@tanstack/router-plugin": "^1.168.35",
+        "@types/bun": "catalog:",
+        "@types/react": "^19.1.0",
+        "@types/react-dom": "^19.1.0",
+        "@vitejs/plugin-react": "^5.0.0",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+    },
     "apps/rounds-web": {
       "name": "@syncmesh/rounds-web",
       "version": "0.0.0",
@@ -138,16 +239,21 @@
       "name": "@syncmesh/bench",
       "version": "0.0.0",
       "devDependencies": {
+        "@syncmesh/browser": "workspace:*",
+        "@syncmesh/client": "workspace:*",
         "@syncmesh/config": "workspace:*",
+        "@syncmesh/drizzle": "workspace:*",
         "@syncmesh/engine": "workspace:*",
         "@syncmesh/kernel": "workspace:*",
         "@syncmesh/result": "workspace:*",
+        "@syncmesh/schema": "workspace:*",
         "@syncmesh/sqlite-bun": "workspace:*",
         "@syncmesh/storage": "workspace:*",
         "@syncmesh/temporal": "workspace:*",
         "@syncmesh/transport": "workspace:*",
         "@syncmesh/wire": "workspace:*",
         "@types/bun": "catalog:",
+        "drizzle-orm": "latest",
         "mitata": "1.0.34",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
@@ -220,9 +326,6 @@
       "name": "@syncmesh/ble",
       "version": "0.0.0",
       "dependencies": {
-        "@noble/ciphers": "^2.4.0",
-        "@noble/curves": "^2.4.0",
-        "@noble/hashes": "^2.4.0",
         "@syncmesh/kernel": "workspace:*",
         "@syncmesh/result": "workspace:*",
         "@syncmesh/transport": "workspace:*",
@@ -284,6 +387,37 @@
       },
       "peerDependencies": {
         "drizzle-orm": ">=0.44",
+      },
+    },
+    "packages/devtools": {
+      "name": "@syncmesh/devtools",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/browser": "workspace:*",
+        "@syncmesh/client": "workspace:*",
+        "@syncmesh/engine": "workspace:*",
+        "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/result": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
+        "@syncmesh/transport": "workspace:*",
+      },
+      "devDependencies": {
+        "@happy-dom/global-registrator": "^18.0.1",
+        "@syncmesh/config": "workspace:*",
+        "@syncmesh/orpc": "workspace:*",
+        "@syncmesh/react": "workspace:*",
+        "@syncmesh/schema": "workspace:*",
+        "@types/bun": "catalog:",
+        "@types/react": "^19.1.0",
+        "@types/react-dom": "^19.1.0",
+        "react": "^19.1.0",
+        "react-dom": "^19.1.0",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+      "peerDependencies": {
+        "react": ">=18",
+        "react-dom": ">=18",
       },
     },
     "packages/drizzle": {
@@ -507,6 +641,23 @@
         "vite-plus": "catalog:",
       },
     },
+    "packages/tanstack-db": {
+      "name": "@syncmesh/tanstack-db",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/drizzle": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncmesh/config": "workspace:*",
+        "@tanstack/db": "^0.9.0",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+      "peerDependencies": {
+        "@tanstack/db": ">=0.9",
+      },
+    },
     "packages/temporal": {
       "name": "@syncmesh/temporal",
       "version": "0.0.0",
@@ -524,6 +675,9 @@
       "name": "@syncmesh/transport",
       "version": "0.0.0",
       "dependencies": {
+        "@noble/ciphers": "^2.4.0",
+        "@noble/curves": "^2.4.0",
+        "@noble/hashes": "^2.4.0",
         "@syncmesh/engine": "workspace:*",
         "@syncmesh/kernel": "workspace:*",
         "@syncmesh/result": "workspace:*",
@@ -538,10 +692,33 @@
         "vite-plus": "catalog:",
       },
     },
+    "packages/transports": {
+      "name": "@syncmesh/transports",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/ble": "workspace:*",
+        "@syncmesh/engine": "workspace:*",
+        "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/relay": "workspace:*",
+        "@syncmesh/result": "workspace:*",
+        "@syncmesh/transport": "workspace:*",
+        "@syncmesh/wire": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncmesh/config": "workspace:*",
+        "@syncmesh/schema": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+    },
     "packages/wire": {
       "name": "@syncmesh/wire",
       "version": "0.0.0",
       "dependencies": {
+        "@noble/ciphers": "^2.4.0",
+        "@noble/curves": "^2.4.0",
         "@noble/ed25519": "3.1.0",
         "@noble/hashes": "^2.3.0",
         "@syncmesh/kernel": "workspace:*",
@@ -978,6 +1155,8 @@
 
     "@sindresorhus/merge-streams": ["@sindresorhus/merge-streams@4.0.0", "", {}, "sha512-tlqY9xq5ukxTUZBmoOp+m61cqwQD5pHJtFY3Mn8CA8ps6yghLH/Hw8UPdqg4OLmFW3IFlcXnQNmo/dh8HzXYIQ=="],
 
+    "@sqlite.org/sqlite-wasm": ["@sqlite.org/sqlite-wasm@3.53.0-build1", "", {}, "sha512-PfWPWN2n+/37doa8oh2/oUXk4OOsRYZsxc1W1sDXIGb/Pu5Yrb+f2eyYpgQMGITVX7HVgxhs9P18Rc6I97ym/g=="],
+
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
 
     "@standardserver/aws-lambda": ["@standardserver/aws-lambda@0.8.1", "", { "dependencies": { "@standardserver/core": "0.8.1", "@standardserver/fetch": "0.8.1", "@standardserver/node": "0.8.1", "@standardserver/shared": "0.8.1" } }, "sha512-HoDkKgmKhktTFjRE3t8V7Psn4Rhhg/XFrODoMUucvEJ5sCJCtX9VBy5JQYOMZp14m3ZgIXLOdT77bqJ6zDeBGg=="],
@@ -998,6 +1177,8 @@
 
     "@syncmesh/ble": ["@syncmesh/ble@workspace:packages/ble"],
 
+    "@syncmesh/browser": ["@syncmesh/browser@workspace:adapters/browser"],
+
     "@syncmesh/cdc": ["@syncmesh/cdc@workspace:packages/cdc"],
 
     "@syncmesh/chaos": ["@syncmesh/chaos@workspace:chaos"],
@@ -1010,13 +1191,19 @@
 
     "@syncmesh/conformance": ["@syncmesh/conformance@workspace:conformance"],
 
+    "@syncmesh/devtools": ["@syncmesh/devtools@workspace:packages/devtools"],
+
     "@syncmesh/drizzle": ["@syncmesh/drizzle@workspace:packages/drizzle"],
 
     "@syncmesh/engine": ["@syncmesh/engine@workspace:packages/engine"],
 
     "@syncmesh/examples": ["@syncmesh/examples@workspace:examples"],
 
+    "@syncmesh/issues": ["@syncmesh/issues@workspace:apps/issues"],
+
     "@syncmesh/kernel": ["@syncmesh/kernel@workspace:packages/kernel"],
+
+    "@syncmesh/lan-node": ["@syncmesh/lan-node@workspace:adapters/lan-node"],
 
     "@syncmesh/orpc": ["@syncmesh/orpc@workspace:packages/orpc"],
 
@@ -1038,15 +1225,27 @@
 
     "@syncmesh/sqlite-node": ["@syncmesh/sqlite-node@workspace:adapters/sqlite-node"],
 
+    "@syncmesh/sqlite-wasm": ["@syncmesh/sqlite-wasm@workspace:adapters/sqlite-wasm"],
+
     "@syncmesh/storage": ["@syncmesh/storage@workspace:packages/storage"],
+
+    "@syncmesh/tanstack-db": ["@syncmesh/tanstack-db@workspace:packages/tanstack-db"],
 
     "@syncmesh/temporal": ["@syncmesh/temporal@workspace:packages/temporal"],
 
     "@syncmesh/transport": ["@syncmesh/transport@workspace:packages/transport"],
 
+    "@syncmesh/transports": ["@syncmesh/transports@workspace:packages/transports"],
+
     "@syncmesh/wire": ["@syncmesh/wire@workspace:packages/wire"],
 
+    "@tanstack/db": ["@tanstack/db@0.9.0", "", { "dependencies": { "@standard-schema/spec": "^1.1.0", "@tanstack/db-ivm": "0.1.20", "@tanstack/pacer-lite": "^0.2.1" }, "peerDependencies": { "typescript": ">=4.7" } }, "sha512-wV8ln5zqTSM0Cn9eu+ePHExvzCa3A3cS+kxgRGryeBjDbMuLHrcTU1uGE8/6Etp+60LSfJFbhlojOZgj/kH/eQ=="],
+
+    "@tanstack/db-ivm": ["@tanstack/db-ivm@0.1.20", "", { "dependencies": { "fractional-indexing": "^3.2.0", "sorted-btree": "^1.8.1" }, "peerDependencies": { "typescript": ">=4.7" } }, "sha512-Rpol77pI6JgVO4CtuKXZ/SQAzK4+BuiTSebRsIBo5qiiswtHKrvmiLNfbMXSHpXUF2xJkohFrJq9ndsMP1jAuA=="],
+
     "@tanstack/history": ["@tanstack/history@1.162.1", "", {}, "sha512-DR9t6lfLVdrjgCwpglrR9DR7Ok8/HlXjcOE+goWXF3zyuLUO/ug7vMbSFxTqrQTtbRghJfyhmIZ0S6LhPIy44w=="],
+
+    "@tanstack/pacer-lite": ["@tanstack/pacer-lite@0.2.2", "", {}, "sha512-eQ1MyLKCHyXiH7NbdmB80W77OhiMgGBUb+qDx/8WMGbwg5Lf/NlfD0TfNYAqY77i8V3AxoDoYdICrQE5ADw4Yw=="],
 
     "@tanstack/react-router": ["@tanstack/react-router@1.170.32", "", { "dependencies": { "@tanstack/history": "1.162.1", "@tanstack/react-store": "^0.9.3", "@tanstack/router-core": "1.171.27", "isbot": "^5.1.22" }, "peerDependencies": { "react": ">=18.0.0 || >=19.0.0", "react-dom": ">=18.0.0 || >=19.0.0" } }, "sha512-SIpxvaTKco100a5ZR3ePmArbhtm3XOx+w1dpGYY9gxHDta4iXSKDdQuhLonwJbIMkVJsU1rwXf0UDHMrF/1snw=="],
 
@@ -1346,6 +1545,8 @@
 
     "find-up-simple": ["find-up-simple@1.0.1", "", {}, "sha512-afd4O7zpqHeRyg4PfDQsXmlDe2PfdHtJt6Akt8jOWaApLOZk5JXs6VMR29lz03pRe9mpykrRCYIYxaJYcfpncQ=="],
 
+    "fractional-indexing": ["fractional-indexing@3.4.0", "", {}, "sha512-8J3glhz2rrpKG6KmI7wmJo3zH1VjeOpN+vTJSw1fOyO+Viqq3zX6/5NGh6oaZB2qIAYdOYuu5Dz9xp4faOO0Pg=="],
+
     "fsevents": ["fsevents@2.3.3", "", { "os": "darwin" }, "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw=="],
 
     "gensync": ["gensync@1.0.0-beta.2", "", {}, "sha512-3hN7NaskYvMDLQY55gnW3NQ+mesEAepTqlg+VEbj7zzqEMBVNhzcGYYeqFo/TlYz6eQiFcp1HcsCZO+nGgS8zg=="],
@@ -1538,6 +1739,8 @@
 
     "sort-keys": ["sort-keys@5.1.0", "", { "dependencies": { "is-plain-obj": "^4.0.0" } }, "sha512-aSbHV0DaBcr7u0PVHXzM6NbZNAtrr9sF6+Qfs9UUVG7Ll3jQ6hHi8F/xqIIcn2rvIVbr0v/2zyjSdwSV47AgLQ=="],
 
+    "sorted-btree": ["sorted-btree@1.8.1", "", {}, "sha512-395+XIP+wqNn3USkFSrNz7G3Ss/MXlZEqesxvzCRFwL14h6e8LukDHdLBePn5pwbm5OQ9vGu8mDyz2lLDIqamQ=="],
+
     "source-map": ["source-map@0.7.6", "", {}, "sha512-i5uvt8C3ikiWeNZSVZNWcfZPItFQOsYTUAOkcUPGd8DqDy1uOUikjt5dG+uRlwyvR108Fb9DOd4GvXfT0N2/uQ=="],
 
     "source-map-js": ["source-map-js@1.2.1", "", {}, "sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA=="],
@@ -1669,6 +1872,8 @@
     "@octokit/request/@octokit/types": ["@octokit/types@17.0.0", "", { "dependencies": { "@octokit/openapi-types": "^28.0.0" } }, "sha512-ByP1v7YL5SMveFPP7+sj0/ZuWCOOg/Chs4NafOMpq6WNIM/hdGY0S7C0TCGDBWu1aGmOxmUIhMx3cO+IdwYZ1Q=="],
 
     "@octokit/request-error/@octokit/types": ["@octokit/types@17.0.0", "", { "dependencies": { "@octokit/openapi-types": "^28.0.0" } }, "sha512-ByP1v7YL5SMveFPP7+sj0/ZuWCOOg/Chs4NafOMpq6WNIM/hdGY0S7C0TCGDBWu1aGmOxmUIhMx3cO+IdwYZ1Q=="],
+
+    "@syncmesh/issues/zod": ["zod@4.4.3", "", {}, "sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ=="],
 
     "@syncmesh/rounds-web/vite": ["vite@7.3.6", "", { "dependencies": { "esbuild": "^0.27.0 || ^0.28.0", "fdir": "^6.5.0", "picomatch": "^4.0.3", "postcss": "^8.5.6", "rollup": "^4.43.0", "tinyglobby": "^0.2.15" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "peerDependencies": { "@types/node": "^20.19.0 || >=22.12.0", "jiti": ">=1.21.0", "less": "^4.0.0", "lightningcss": "^1.21.0", "sass": "^1.70.0", "sass-embedded": "^1.70.0", "stylus": ">=0.54.8", "sugarss": "^5.0.0", "terser": "^5.16.0", "tsx": "^4.8.1", "yaml": "^2.4.2" }, "optionalPeers": ["@types/node", "jiti", "less", "lightningcss", "sass", "sass-embedded", "stylus", "sugarss", "terser", "tsx", "yaml"], "bin": { "vite": "bin/vite.js" } }, "sha512-4XP60spRGjSZFf1qYH+dJIkK2znL3zQfl9KkOV9MkkRR/3Dls0dxaBsQPTloEc5BLXWPL9vsOxopxyKoMmDueg=="],
 

@@ -1,16 +1,63 @@
 import type { PeerId } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
 import type {
+  AdmissionHandler,
+  LinkEvent,
   RouteCandidate,
   RouteMessage,
   Transport,
+  TransportCondition,
   TransportContext,
+  Unsubscribe,
 } from "@syncmesh/transport";
 
+import { createHub } from "@syncmesh/engine";
 import { Result, TaggedError } from "@syncmesh/result";
 import { KIND, ORDINARY_LINK, pickRoutes } from "@syncmesh/transport";
 
-import { boundable, enforceBudget } from "./admission.js";
+import type { AdmissionFacts } from "./admission.js";
+import type { ChurnOptions } from "./churn.js";
+import type { ForcedMedium, NoSuchTransport } from "./forced.js";
+
+import { boundable, enforceBudget, enforceCeiling } from "./admission.js";
+import { createChurn } from "./churn.js";
+import { createForcing } from "./forced.js";
+
+/**
+ * How this device shapes its part of the mesh (book ch. 17).
+ *
+ * `maxLinks` is deliberately absent: it is a property of the radio, declared by the medium, and
+ * an app handed a way to raise it has been handed a way to break the links it already has.
+ */
+export interface MeshShaping {
+  /** Periodic random re-peering; `false` turns it off for a fleet that would rather not. */
+  readonly churn?: ChurnOptions | false;
+  /**
+   * Segments fleets that share an app but should not auto-connect — a depot's vans and a
+   * warehouse's scanners running the same build.
+   *
+   * **An optimization, not a security control.** A dial-out bypasses it entirely, and anything
+   * that reaches a link still faces the grant and the `allow` rules.
+   */
+  readonly group?: string;
+  /**
+   * An override for what membership cannot express — policies about the **radio**: "no links
+   * inside this facility", "battery under 10%, keep the server link only", or quarantining a
+   * suspect device topologically now, while its revocation is still propagating as data.
+   *
+   * It may only ever tighten: it overrides an allow and never manufactures one.
+   */
+  readonly admit?: AdmissionHandler;
+  /**
+   * Links this device holds across every medium at once. Absent means no ceiling, which is the
+   * honest answer for a phone with two radios and no way to exhaust anything.
+   *
+   * This is not `maxLinks` — that is each medium's own, declared by the medium and never
+   * configured here, because an app handed a way to raise a radio's limit has been handed a way
+   * to break the links it already has. This one is about the *process*.
+   */
+  readonly maxConnections?: number;
+}
 
 /** The medium refused to start, or the set had already stopped; the mesh runs on without it. */
 export class TransportAddFailed extends TaggedError("TransportAddFailed")<{
@@ -47,19 +94,100 @@ export interface RunningTransports {
   readonly list: () => readonly Transport[];
   /** Whether one medium is up, as its own `onStatus` last said; `undefined` if it never has. */
   readonly online: (transport: Transport) => boolean | undefined;
+  /**
+   * Every medium's link-level endings in one feed, following the set as it changes (book ch. 18).
+   *
+   * One subscription rather than one per transport, because whoever reads these — a log, a
+   * diagnostic pane — does not know which radios exist and should not have to re-subscribe when
+   * a settings toggle adds one. That is the bug `$status.subscribe` still has: it captures the
+   * transports it was given, so a medium enabled afterwards is silent to it forever. This one
+   * subscribes on `add` and lets go on `remove`, which is the only place that knows.
+   *
+   * A medium that cannot say anything about its links is simply absent from the feed.
+   */
+  readonly onLinkEvent: (listener: (event: LinkEvent) => void) => Unsubscribe;
   /** Starts one more medium mid-life — a settings toggle, a diagnostic pane (book ch. 8, 16). */
   readonly add: (transport: Transport) => Promise<ResultType<void, TransportAddFailed>>;
   /**
    * Stops one medium by name and takes its route away; `drain` flushes its queue first.
    * Removing a transport removes a route, never replica data. `false` when no such name runs.
+   *
+   * A medium being held by {@link RunningTransports.force} is removed whole: the stand-in leaves
+   * the set and the instance behind it is let go, because a name that is gone has nothing to be
+   * released back to.
    */
   readonly remove: (name: string, options?: { readonly drain?: boolean }) => Promise<boolean>;
+  /**
+   * Holds one medium in a condition it cannot be put into from a laptop — `radio-off`,
+   * `discovery-failed`, `connecting-failed` — so the states a diagnostic screen draws can be
+   * reached on the machine the screen is being written on (book ch. 18).
+   *
+   * The real medium is **stopped and kept**, and a stand-in that reports `as` takes its seat at
+   * the same position. Everything downstream sees an ordinary medium that is carrying nothing:
+   * `$status` reports the condition, the route scorer skips it, presence and blobs go elsewhere,
+   * and a device with every medium held reads as `offline` health — which is the point, because
+   * a forced state that only the panel that set it can see is a bug report waiting to happen.
+   *
+   * Forcing an already-held medium changes what it says; it does not stack. Nothing here is
+   * remembered anywhere: a reload has no held mediums, because a toggle that survives a restart
+   * is a toggle somebody spends an afternoon looking for.
+   */
+  readonly force: (
+    name: string,
+    as: TransportCondition,
+  ) => Promise<ResultType<void, NoSuchTransport>>;
+  /**
+   * Gives a held medium back its seat and starts it again — the same `start` an `add` runs, so
+   * what comes back is a medium in a state this device could have reached on its own.
+   *
+   * It can fail for the ordinary reason a medium fails to open, and then the name is no longer
+   * held and no longer running, which is the honest outcome: the radio the developer switched
+   * back on did not come up.
+   */
+  readonly release: (
+    name: string,
+  ) => Promise<ResultType<void, NoSuchTransport | TransportAddFailed>>;
+  /** Which mediums are being held by hand, and in what — empty on every device nobody has touched. */
+  readonly forced: () => readonly ForcedMedium[];
   readonly stop: () => Promise<void>;
 }
+
+/**
+ * Score the candidates and hand back the transports behind the survivors (RFC-0012 §2).
+ *
+ * Candidates are matched to their transport by identity rather than by name, so two mediums
+ * configured under one name cannot collapse into each other — the name is the scorer's tie-break,
+ * and a tie-break is not an identifier.
+ *
+ * A medium nothing has said anything about is treated as up. A send that turns out to be wrong
+ * fails loudly and resyncs, where assuming down would keep a working link idle until it happened
+ * to announce itself.
+ */
+const scoreRoutes = (
+  among: readonly Transport[],
+  online: ReadonlyMap<Transport, boolean>,
+  message: RouteMessage,
+): readonly Transport[] => {
+  const owners = new Map<RouteCandidate, Transport>();
+  const candidates = among.map((t) => {
+    const candidate = {
+      id: t.name,
+      online: online.get(t) ?? true,
+      ...(t.route?.() ?? ORDINARY_LINK),
+    };
+    // a medium that cannot enumerate its links stays absent, which reads as "cannot say"
+    const reaches = t.reaches?.();
+    if (reaches !== undefined) Object.assign(candidate, { reaches });
+    owners.set(candidate, t);
+    return candidate;
+  });
+  return pickRoutes(candidates, message).flatMap((c) => owners.get(c) ?? []);
+};
 
 export function runTransports(
   transports: readonly Transport[],
   context: TransportContext,
+  shaping: MeshShaping = {},
 ): RunningTransports {
   /**
    * Whether each medium is up, from the one place that says so. A transport that has not spoken
@@ -72,8 +200,16 @@ export function runTransports(
   /** The live set: construction seeds it, `add`/`remove` reshape it, everything reads it. */
   const active: Transport[] = [...transports];
   const watching = new Map<Transport, () => void>();
-  const watch = (t: Transport): void =>
-    void watching.set(t, t.onStatus?.((up) => void online.set(t, up)) ?? (() => undefined));
+  /** One feed for every medium's links, so a reader holds one subscription and not one per radio. */
+  const linkEvents = createHub<LinkEvent>();
+  const watch = (t: Transport): void => {
+    const offStatus = t.onStatus?.((up) => void online.set(t, up)) ?? (() => undefined);
+    const offLinks = t.onLinkEvent?.((event) => linkEvents.emit(event)) ?? (() => undefined);
+    watching.set(t, () => {
+      offStatus();
+      offLinks();
+    });
+  };
   for (const t of active) watch(t);
 
   // the context each transport actually starts with: the caller's, plus the routing question
@@ -94,15 +230,24 @@ export function runTransports(
    * changes which partitions are shared — rather than on a timer. There is no clock in this file,
    * and adding one to ask a question whose inputs announce themselves would be a worse answer.
    */
+  /**
+   * The facts everything that ranks a peer reads: one view, so the budget and churn cannot
+   * disagree about which link is worth least. Read when a ranking runs rather than when the mesh
+   * opens — churn's first round is minutes away, and the acks it ranks on are not the boot's.
+   */
+  const facts = (): AdmissionFacts => ({
+    acks: () => context.engine.acks(),
+    held: () => context.engine.coverage().synced,
+    partitionsOf: (device: PeerId) => context.grants.grantFor(device)?.partitions.map(String),
+    self: context.identity.peerId,
+  });
   const sweep = (): void => {
     if (!running) return;
-    const facts = {
-      acks: () => context.engine.acks(),
-      held: () => context.engine.coverage().synced,
-      partitionsOf: (device: PeerId) => context.grants.grantFor(device)?.partitions.map(String),
-      self: context.identity.peerId,
-    };
-    for (const transport of active) enforceBudget(transport, facts);
+    const now = facts();
+    // each medium to what it sustains, then the device to what it sustains: a radio's limit is
+    // about the radio, and the ceiling is about the process holding all of them at once
+    for (const transport of active) enforceBudget(transport, now);
+    if (shaping.maxConnections !== undefined) enforceCeiling(active, now, shaping.maxConnections);
   };
   /**
    * Nothing to enforce, nothing to watch: a set whose transports cannot close a link is not one a
@@ -116,6 +261,73 @@ export function runTransports(
     offAdmission.push(context.engine.onAcknowledge(sweep), context.grants.onRegistered(sweep));
   };
   watchAdmission();
+
+  /** Every mention of one medium, forgotten. It does **not** stop it: the two callers differ. */
+  const drop = (transport: Transport): void => {
+    const at = active.indexOf(transport);
+    if (at >= 0) active.splice(at, 1);
+    watching.get(transport)?.();
+    watching.delete(transport);
+    online.delete(transport);
+    starts.delete(transport);
+  };
+
+  /**
+   * Starts a medium already in the set, and takes it back out if it will not open.
+   *
+   * Shared by `add` and `release` so that a medium switched back on goes through the same door a
+   * medium added at runtime does. Two copies of "start it, and undo the set if it rejects" is how
+   * one of them ends up leaving a half-attached transport behind.
+   */
+  const open = async (transport: Transport): Promise<ResultType<void, TransportAddFailed>> => {
+    const opening = transport.start(routed);
+    starts.set(transport, opening);
+    const outcome = await Result.tryPromise({
+      try: () => opening,
+      catch: (cause) =>
+        new TransportAddFailed({
+          transport: transport.name,
+          message: `${transport.name} failed to start`,
+          cause,
+        }),
+    });
+    if (outcome.isErr()) {
+      drop(transport);
+      return Result.err(outcome.error);
+    }
+    watchAdmission();
+    // the newcomer may be the first medium a budget applies to
+    sweep();
+    return Result.ok(undefined);
+  };
+
+  /**
+   * Holding a medium in a condition by hand (book ch. 18), over the two moves that set owns: find
+   * a name, and put one medium in another's seat. **At the same index** — attach order is the
+   * order `$peers` reports a peer's mediums in, and a radio that went off and came back at the end
+   * of the list would quietly re-order somebody's diagnosis.
+   */
+  const forcing = createForcing({
+    find: (name) => active.find((t) => t.name === name),
+    open: (transport) => open(transport),
+    swap: async (out, into) => {
+      const at = active.indexOf(out);
+      drop(out);
+      active.splice(at < 0 ? active.length : at, 0, into);
+      watch(into);
+      await out.stop();
+    },
+  });
+
+  /**
+   * The other half of island prevention (book ch. 17). The budget keeps the best links, which is
+   * correct per device and wrong for the room; churn is what stops a saturated room settling into
+   * a clique. It acts only on a medium at its budget, so a small room pays nothing for it.
+   */
+  const churn =
+    shaping.churn === false
+      ? undefined
+      : createChurn(() => active, facts, shaping.churn === undefined ? {} : shaping.churn);
 
   /**
    * Score the candidates and hand back the transports behind the survivors.
@@ -138,22 +350,7 @@ export function runTransports(
   const route = (
     message: RouteMessage,
     among: readonly Transport[] = active,
-  ): readonly Transport[] => {
-    const owners = new Map<RouteCandidate, Transport>();
-    const candidates = among.map((t) => {
-      const candidate = {
-        id: t.name,
-        online: online.get(t) ?? true,
-        ...(t.route?.() ?? ORDINARY_LINK),
-      };
-      // a medium that cannot enumerate its links stays absent, which reads as "cannot say"
-      const reaches = t.reaches?.();
-      if (reaches !== undefined) Object.assign(candidate, { reaches });
-      owners.set(candidate, t);
-      return candidate;
-    });
-    return pickRoutes(candidates, message).flatMap((c) => owners.get(c) ?? []);
-  };
+  ): readonly Transport[] => scoreRoutes(among, online, message);
 
   /**
    * Every transport worth putting this on, in order — not the single best one.
@@ -193,6 +390,7 @@ export function runTransports(
     withBlobs: () => active.filter((t) => t.putBlob !== undefined),
     list: () => [...active],
     online: (transport) => online.get(transport),
+    onLinkEvent: linkEvents.subscribe,
     add: async (transport) => {
       if (!running)
         return Result.err(
@@ -200,47 +398,29 @@ export function runTransports(
         );
       watch(transport);
       active.push(transport);
-      const opening = transport.start(routed);
-      starts.set(transport, opening);
-      const outcome = await Result.tryPromise({
-        try: () => opening,
-        catch: (cause) =>
-          new TransportAddFailed({
-            transport: transport.name,
-            message: `${transport.name} failed to start`,
-            cause,
-          }),
-      });
-      if (outcome.isErr()) {
-        const at = active.indexOf(transport);
-        if (at >= 0) active.splice(at, 1);
-        watching.get(transport)?.();
-        watching.delete(transport);
-        starts.delete(transport);
-        return Result.err(outcome.error);
-      }
-      watchAdmission(); // the newcomer may be the first medium a budget applies to
-      sweep();
-      return Result.ok(undefined);
+      return open(transport);
     },
     remove: async (name, options = {}) => {
       const held = active.find((t) => t.name === name);
       if (held === undefined) return false;
       // out of the set first, so no new frame routes onto a medium that is going away
-      active.splice(active.indexOf(held), 1);
-      watching.get(held)?.();
-      watching.delete(held);
-      online.delete(held);
-      starts.delete(held);
+      drop(held);
+      // the instance behind a held name goes with it — it was already stopped when it was held
+      forcing.forget(name);
       if (options.drain === true) await held.flush?.().catch(() => undefined);
       await held.stop();
       return true;
     },
+    force: forcing.force,
+    release: forcing.release,
+    forced: forcing.list,
     stop: async () => {
       running = false;
+      forcing.clear();
       for (const stopWatching of watching.values()) stopWatching();
       watching.clear();
       for (const off of offAdmission) off();
+      churn?.stop();
       await started.catch(() => undefined);
       await Promise.all(active.map((t) => t.stop()));
     },

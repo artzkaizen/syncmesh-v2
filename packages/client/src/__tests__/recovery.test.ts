@@ -68,9 +68,21 @@ describe("recovery — stuck is a stable cause, not a spinner", () => {
     expect(issues[0]?.verdict).toBe("NoGrant");
     expect(issues[0]?.author).toBe(deviceA.peerId);
 
+    // the plan names the one thing that would move it, and says a retry is worth trying
+    const stuck = issues[0];
+    const plan = stuck === undefined ? undefined : b.recovery.explain(stuck.event);
+    expect(plan?.retryWorthwhile).toBe(true);
+    expect(plan?.next).toContain("grant");
+    // and the author's own envelope comes back byte for byte, for the operator who must carry it
+    expect(stuck === undefined ? undefined : b.recovery.export(stuck.event)).toBeInstanceOf(
+      Uint8Array,
+    );
+
     b.grants.register(grantFor(deviceA)).unwrap();
     (await b.recovery.run()).unwrap();
     expect(b.recovery.list()).toHaveLength(0);
+    // nothing is stuck any more, so there is nothing to explain or hand over
+    expect(stuck === undefined ? "x" : b.recovery.explain(stuck.event)).toBeUndefined();
     const hb = b.on("org:acme").unwrap();
     expect(await hb.db.select().from(notes)).toHaveLength(1);
 

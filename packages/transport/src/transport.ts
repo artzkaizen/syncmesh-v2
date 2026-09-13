@@ -1,18 +1,25 @@
-import type { Engine, Unsubscribe } from "@syncmesh/engine";
+import type { Engine, Interest, Unsubscribe } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
-import type { Temporal } from "@syncmesh/temporal";
-import type { GrantRegistry, Identity } from "@syncmesh/wire";
+import type { EventCrypto, GrantRegistry, Identity } from "@syncmesh/wire";
 
 import { createHub } from "@syncmesh/engine";
 import { TaggedError } from "@syncmesh/result";
+import { Temporal } from "@syncmesh/temporal";
 
 import type { Bridge, BridgeOptions } from "./bridge.js";
+import type { AdmissionAsk } from "./gate.js";
+import type { LinkEvent, LinkFact } from "./link-events.js";
 import type { FrameLink } from "./link.js";
+import type { PeerSessions, SessionLink } from "./peer-session.js";
 import type { RouteMessage } from "./route-scorer.js";
 import type { RouteProfile } from "./route-scorer.js";
+import type { RouteTable } from "./routes.js";
+import type { Upgrader } from "./upgrade.js";
 
 import { bridgeFramedLink } from "./bridge.js";
+import { reportingUpgrader } from "./link-events.js";
+import { createUpgrader } from "./upgrade.js";
 
 /** Everything a transport needs to run sessions; `createMesh({ transports })` supplies it. */
 export interface TransportContext {
@@ -24,11 +31,47 @@ export interface TransportContext {
   /** Where arriving ephemeral values go (D16); absent, presence frames are ignored. */
   readonly onPresence?: BridgeOptions["onPresence"];
   /**
+   * A join completed on some link (RFC-0019): state arrived instead of history. What
+   * `$recovery.rebuild` listens to, and what tells it whether anything vouched for the rows.
+   */
+  readonly onSnapshot?: BridgeOptions["onSnapshot"];
+  /**
    * Whether this transport is the one to carry a frame (E28). The mesh supplies it from
    * `pickRoutes`; a transport running without one carries everything, which is what every
    * transport did before link admission existed.
    */
   readonly carries?: (transport: string, message: RouteMessage) => boolean;
+  /**
+   * This device's routing table (book ch. 17), shared by every link. A transport passes it to
+   * each bridge it builds; absent, nothing routes beyond one hop, which is what every medium
+   * did before routes existed.
+   */
+  readonly routes?: RouteTable;
+  /**
+   * This device's sessions, one per peer (book ch. 16). A transport that has proved which peer
+   * is on a link joins it here instead of building a bridge of its own, so three media reaching
+   * one laptop are one conversation rather than three.
+   *
+   * Absent, every link gets its own bridge, which is what every medium did before peer sessions
+   * existed and what a link whose peer is not yet known still does.
+   */
+  readonly sessions?: PeerSessions;
+  /**
+   * What this device can seal and open (book ch. 14), handed to every bridge it builds. Absent,
+   * every event travels in the clear — which is what a mesh with no sealed partition does, and
+   * what a relay does for a partition it holds no key for.
+   */
+  readonly crypto?: EventCrypto;
+  /**
+   * Whether a link to this peer may stand at all (book ch. 14) — the door, as against the budget,
+   * which decides which of the links that did form are worth keeping.
+   *
+   * Asked **once per peer**, when the first link to it opens a session, and not once per link: a
+   * device reachable over three media is one decision, and asking three times would let the
+   * answers disagree. Absent, every link that formed stands, which is what every medium did
+   * before there was a door.
+   */
+  readonly admits?: (ask: AdmissionAsk) => Promise<boolean>;
 }
 
 /**
@@ -152,6 +195,12 @@ export interface Transport {
   /** Re-requests from the last contiguous position on every open session; the recovery after loss or reconnect. */
   readonly resync?: () => void;
   /**
+   * Asks every open session for **state** rather than history (RFC-0019) — what a device with no
+   * usable log does on its first session, and what `$recovery.rebuild` does when one is beyond
+   * repair. Absent on a medium with no session to ask.
+   */
+  readonly requestSnapshot?: (interest?: Interest) => void;
+  /**
    * Everything this medium has already taken in is folded and saved. What `mesh.flush()` awaits
    * before a close: a frame that arrived is folded on a queue, and the save at the end of that
    * queue is the one a process exiting would lose. A medium with no queue declares none.
@@ -174,6 +223,17 @@ export interface Transport {
    */
   readonly visibility?: TransportVisibility;
   readonly onStatus?: (cb: (online: boolean) => void) => Unsubscribe;
+  /**
+   * Link-level endings as they happen (book ch. 18): proved, refused, closed, dropped, failed.
+   *
+   * `onStatus` answers whether the medium is up, which is a different question and the one that
+   * reads `ok` while every link to a peer is being refused. This answers the other: it is where
+   * *"why will this device not talk to that one"* has an answer at all.
+   *
+   * Optional, because a medium that has no notion of a link — a transport a test built out of
+   * two functions — has nothing to say here, and saying nothing is a fact about it.
+   */
+  readonly onLinkEvent?: (cb: (event: LinkEvent) => void) => Unsubscribe;
   /**
    * Which medium this is, for diagnosis (book ch. 16, 18). Two adapters exist per protocol
    * where two protocols exist — AWDL and Wi-Fi Aware never interoperate — so a merged
@@ -223,10 +283,34 @@ export interface FrameTransportOptions {
   readonly kind?: TransportKind;
   /** What this medium says about itself when it is not carrying; absent leaves `onStatus` the only word. */
   readonly condition?: () => TransportCondition;
-  /** Discover the medium and `attach` a link per peer found; resolve when discovery is up. */
+  /** A packet or a frame that went nowhere, threaded into the upgrader so it reports too. */
+  readonly onDropped?: (why: string) => void;
+  /**
+   * What this medium says about itself, as {@link Transport.route} — declared here rather than
+   * added to the returned object so that a link joining a peer session can be scored by the same
+   * profile the mesh scores the transport by. Two copies of that answer is one too many.
+   */
+  readonly route?: () => RouteProfile;
+  /**
+   * Discover the medium and `attach` a link per peer found; resolve when discovery is up.
+   *
+   * Attaching with a peer is what puts the link in that peer's session. Name it as soon as the
+   * handshake proves it and not before: a link attached under a peer nobody checked would hand
+   * one peer's conversation to another.
+   */
   readonly open: (
     ctx: TransportContext,
     attach: (link: FrameLink, peer?: PeerId) => Bridge,
+    upgrade: Upgrader,
+    /**
+     * The cheap rung of the door, asked before a dial is spent (book ch. 14).
+     *
+     * All it has is what the medium announced, so being wrong costs a link the next sighting
+     * re-offers — and being right saves a handshake, a radio slot and a socket against a peer
+     * this device was never going to keep. A medium with no door admits everything, which is
+     * what every medium did before there was one.
+     */
+    mayDial: (claimed: PeerId) => Promise<boolean>,
   ) => Promise<void> | void;
   readonly close?: () => Promise<void> | void;
   /** Milliseconds before `whenReady` force-resolves. Default 1000. */
@@ -236,15 +320,29 @@ export interface FrameTransportOptions {
 /** Builds a transport from `open`: the base every framed medium extends. Attached links get the full session bridge. */
 export function createFrameTransport(options: FrameTransportOptions): Transport {
   const { name, open, close, forceReadyAfter = 1000 } = options;
+  /** Bridges this transport owns: the links whose peer it could not name. */
   const bridges = new Set<Bridge>();
+  /** Sessions this transport has joined, and how to leave them. A session it shares, never owns. */
+  const joined = new Map<SessionLink, { readonly bridge: Bridge; readonly leave: () => void }>();
   const status = createHub<boolean>();
+  const links = createHub<LinkEvent>();
   let ready: Promise<void> = Promise.resolve();
+
+  /** Every bridge this transport speaks through, whether it owns it or shares it. */
+  const speaking = (): readonly Bridge[] => [
+    ...bridges,
+    ...new Set([...joined.values()].map((held) => held.bridge)),
+  ];
 
   return {
     name,
     ...(options.kind !== undefined && { kind: options.kind }),
     ...(options.condition !== undefined && { condition: options.condition }),
+    ...(options.route !== undefined && { route: options.route }),
     start: async (ctx) => {
+      // the mesh's clock where there is one, so a link event and the fold beside it agree
+      const at = ctx.now ?? (() => Temporal.Now.instant());
+      const note = (fact: LinkFact): void => links.emit({ ...fact, transport: name, at: at() });
       const attach = (link: FrameLink, peer?: PeerId): Bridge => {
         const bridgeOptions: BridgeOptions = {
           engine: ctx.engine,
@@ -268,11 +366,80 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
           Object.assign(bridgeOptions, { onGrantRequest: ctx.onGrantRequest });
         if (ctx.onPresence !== undefined)
           Object.assign(bridgeOptions, { onPresence: ctx.onPresence });
-        const bridge = bridgeFramedLink(link, bridgeOptions);
-        bridges.add(bridge);
-        return bridge;
+        if (ctx.onSnapshot !== undefined)
+          Object.assign(bridgeOptions, { onSnapshot: ctx.onSnapshot });
+        // one table, every link: a route learned here is one every other link may advertise
+        if (ctx.routes !== undefined) Object.assign(bridgeOptions, { routes: ctx.routes });
+        // the same key ring on every link: what a device can read does not depend on the medium
+        if (ctx.crypto !== undefined) Object.assign(bridgeOptions, { crypto: ctx.crypto });
+        // once per peer, because a session builds its bridge once: subscribing where the bridge
+        // is made is what keeps three media reaching one laptop from reporting its errors thrice
+        const build = (framed: FrameLink): Bridge => {
+          const bridge = bridgeFramedLink(framed, bridgeOptions);
+          bridge.onError((error) =>
+            note({ kind: "error", ...(peer !== undefined && { peer }), why: error.message }),
+          );
+          return bridge;
+        };
+        if (ctx.sessions === undefined || peer === undefined) {
+          const bridge = build(link);
+          bridges.add(bridge);
+          return bridge;
+        }
+        // named, so it joins the peer's one conversation; what this transport keeps is its seat
+        const member: SessionLink = {
+          id: name,
+          link,
+          ...(options.route !== undefined && { route: options.route }),
+        };
+        const leave = ctx.sessions.join(peer, member, build);
+        const session = ctx.sessions.get(peer);
+        if (session === undefined) {
+          // unreachable: `join` built it. Falling back to a bridge of our own is the answer that
+          // still syncs, rather than the one that throws inside a radio callback
+          const bridge = build(link);
+          bridges.add(bridge);
+          return bridge;
+        }
+        joined.set(member, { bridge: session.bridge, leave });
+        return session.bridge;
       };
-      const opened = Promise.resolve(open(ctx, attach)).then(() => status.emit(true));
+      /**
+       * Frame boundaries, the handshake, the door and the attach — in one place, so no adapter
+       * can hand the bridge a channel it forgot to secure. What a medium supplies is a channel;
+       * what makes a channel safe to carry a mesh over is not a fact about the medium.
+       */
+      const upgrade = reportingUpgrader(
+        createUpgrader({
+          identity: ctx.identity,
+          transport: name,
+          attach: (link, peer) => attach(link, peer),
+          // one decision per peer is the door's own property, not this transport's: see
+          // `oneSeatPerPeer`, which is what the mesh wraps its gate in
+          ...(ctx.admits !== undefined && { admits: ctx.admits }),
+          onDropped: (why) => {
+            note({ kind: "dropped", why });
+            options.onDropped?.(why);
+          },
+        }),
+        note,
+      );
+      /**
+       * The cheap rung's refusal is reported too, and it is the one a lobby actually produces:
+       * a stranger announcing every two seconds never reaches a handshake, so a `refused` feed
+       * without this would be empty in exactly the case somebody is trying to explain. What it
+       * names is a claim, which is what the rung has.
+       */
+      const mayDial = async (claimed: PeerId): Promise<boolean> => {
+        const allowed =
+          (await ctx.admits?.({ peer: claimed, transport: name, stage: "dial" })) ?? true;
+        if (!allowed)
+          note({ kind: "refused", peer: claimed, why: "the door refused before a dial was spent" });
+        return allowed;
+      };
+      const opened = Promise.resolve(open(ctx, attach, upgrade, mayDial)).then(() =>
+        status.emit(true),
+      );
       ready = Promise.race([
         opened,
         new Promise<void>((resolve) => void setTimeout(resolve, forceReadyAfter)),
@@ -281,24 +448,32 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
     },
     whenReady: () => ready,
     flush: async () => {
-      await Promise.all([...bridges].map((bridge) => bridge.flush()));
+      await Promise.all(speaking().map((bridge) => bridge.flush()));
     },
     resync: () => {
-      for (const bridge of bridges) bridge.resync();
+      for (const bridge of speaking()) bridge.resync();
+    },
+    requestSnapshot: (interest) => {
+      for (const bridge of speaking()) bridge.requestSnapshot(interest);
     },
     requestGrant: (invite) => {
-      for (const bridge of bridges) bridge.requestGrant(invite);
+      for (const bridge of speaking()) bridge.requestGrant(invite);
     },
     sendPresence: (wire) => {
-      for (const bridge of bridges) bridge.sendPresence(wire);
+      for (const bridge of speaking()) bridge.sendPresence(wire);
     },
     stop: async () => {
       for (const bridge of bridges) bridge.close();
       bridges.clear();
+      // a session is left, not closed: another medium may still be carrying this peer, and
+      // closing the conversation because one of its links stopped is the bug sessions prevent
+      for (const held of joined.values()) held.leave();
+      joined.clear();
       status.emit(false);
       await close?.();
     },
     onStatus: status.subscribe,
+    onLinkEvent: links.subscribe,
   };
 }
 

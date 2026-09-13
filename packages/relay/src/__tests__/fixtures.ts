@@ -26,8 +26,9 @@ import {
 } from "@syncmesh/wire";
 
 import type { RelayFrame } from "../frames.js";
-import type { RelayRoomOptions } from "../room.js";
+import type { RelayRoom, RelayRoomOptions } from "../room.js";
 import type { RelaySocket, SendOutcome } from "../sender.js";
+import type { RelayDial } from "../transport.js";
 
 import { decodeRelayFrame } from "../frames.js";
 import { openRelayRoom } from "../room.js";
@@ -183,5 +184,61 @@ export const openRoom = async (overrides: Partial<RelayRoomOptions> = {}) =>
       ...overrides,
     })
   ).unwrap();
+
+/**
+ * An in-process dial onto a live room: frames both ways, async delivery, a closable end.
+ *
+ * Declared here rather than in each test that wants one, because every property a
+ * `relayTransport` has is a property of it talking to a real room — three copies of this helper is
+ * three chances for one of them to deliver frames synchronously and prove something the wire does
+ * not do.
+ */
+export const dialTo = (room: RelayRoom) => {
+  let dials = 0;
+  const dial = (): RelayDial => {
+    dials += 1;
+    const frames = new Set<(frame: Uint8Array) => void>();
+    const closes = new Set<() => void>();
+    let open = true;
+    const hangUp = (): void => {
+      if (!open) return;
+      open = false;
+      conn.closed();
+      // the close event lands after any frames already in flight, as on a real socket
+      queueMicrotask(() => {
+        for (const cb of closes) cb();
+      });
+    };
+    const socket: RelaySocket = {
+      send: (frame) => {
+        if (!open) return "dropped";
+        // a frame accepted before close still delivers: TCP flushes what send() took
+        const bytes = Uint8Array.from(frame);
+        queueMicrotask(() => {
+          for (const cb of frames) cb(bytes);
+        });
+        return "sent";
+      },
+      close: () => hangUp(),
+    };
+    const conn = room.connect(socket);
+    return {
+      send: (frame) => {
+        if (!open) throw new Error("relay socket is not open");
+        conn.receive(Uint8Array.from(frame));
+      },
+      onFrame: (cb) => {
+        frames.add(cb);
+        return () => void frames.delete(cb);
+      },
+      onClose: (cb) => {
+        closes.add(cb);
+        return () => void closes.delete(cb);
+      },
+      close: () => hangUp(),
+    };
+  };
+  return { dial, dials: () => dials };
+};
 
 export { seed };

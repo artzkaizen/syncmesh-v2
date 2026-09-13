@@ -1,0 +1,48 @@
+{
+  "name": "@syncmesh/browser",
+  "version": "0.0.0",
+  "description": "One engine per origin: the mesh served from a worker, and the thin client every other tab holds",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@syncmesh/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./host-worker": {
+      "@syncmesh/source": "./src/host-worker.ts",
+      "types": "./dist/host-worker.d.ts",
+      "default": "./dist/host-worker.js"
+    }
+  },
+  "dependencies": {
+    "@syncmesh/client": "workspace:*",
+    "@syncmesh/drizzle": "workspace:*",
+    "@syncmesh/engine": "workspace:*",
+    "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/schema": "workspace:*",
+    "@syncmesh/sqlite-wasm": "workspace:*",
+    "@syncmesh/storage": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncmesh/config": "workspace:*",
+    "@syncmesh/orpc": "workspace:*",
+    "@syncmesh/sqlite-bun": "workspace:*",
+    "@syncmesh/temporal": "workspace:*",
+    "@syncmesh/wire": "workspace:*",
+    "@types/bun": "catalog:",
+    "drizzle-orm": "latest",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:",
+    "zod": "^3.25.76"
+  },
+  "peerDependencies": {
+    "drizzle-orm": ">=0.44"
+  }
+}

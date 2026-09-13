@@ -1,6 +1,6 @@
 import type { Ahead, Engine, Interest, Unsubscribe } from "@syncmesh/engine";
 import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
-import type { GrantRegistry, Identity } from "@syncmesh/wire";
+import type { CustodyReceipt, EventCrypto, GrantRegistry, Identity } from "@syncmesh/wire";
 
 import { createHub, heldAhead, interestKey } from "@syncmesh/engine";
 import { Temporal } from "@syncmesh/temporal";
@@ -8,18 +8,21 @@ import { decodeAndVerify, signEvent } from "@syncmesh/wire";
 
 import type { Divergence } from "./divergence.js";
 import type { FrameClass } from "./frame-parts.js";
-import type { Frame } from "./frame.js";
 import type { JoinDeps, JoinExchange, SnapshotInstalled } from "./join.js";
 import type { FrameLink } from "./link.js";
-import type { BridgeError } from "./outbound.js";
+import type { BridgeError, OutboundDeps } from "./outbound.js";
+import type { RouteTable } from "./routes.js";
 import type { SnapshotFrame } from "./snap-frame.js";
 
-import { divergenceAgainst } from "./divergence.js";
+import { controlFrames, custodyFor } from "./custody.js";
+import { createDispatch } from "./dispatch.js";
+import { answerDigest } from "./divergence.js";
 import { KIND } from "./frame-parts.js";
 import { decodeFrame, eventFrame, grantFrame, grantRequestFrame, presenceFrame } from "./frame.js";
 import { createHoldback } from "./holdback.js";
 import { createJoinExchange } from "./join.js";
 import { createOutbound } from "./outbound.js";
+import { createRouteExchange } from "./route-exchange.js";
 
 export type { BridgeError } from "./outbound.js";
 export { SendFailed, Unsendable } from "./outbound.js";
@@ -59,6 +62,34 @@ export interface BridgeOptions {
   readonly onSnapshot?: (installed: SnapshotInstalled) => void;
   /** Rows per page of a served snapshot; one page should be a reasonable write on a slow radio. */
   readonly rowsPerChunk?: number;
+  /** This device's checkpoint certificate, relayed with any state it sends (book ch. 4). */
+  readonly certificate?: () => Uint8Array | undefined;
+  /**
+   * This device's storage lineage, for the custody receipts it signs (book ch. 10). A device
+   * that lost its database and rebuilt announces a fresh one, so an author can tell "still
+   * holding" from "holding again, having lost what it had". Absent, no receipt is issued —
+   * signing custody without being able to say *which* store held it proves less than nothing.
+   */
+  readonly incarnation?: string;
+  /** A verified receipt arrived for one of this device's own writes. */
+  readonly onReceipt?: (receipt: CustodyReceipt) => void;
+  /**
+   * This device's routing table (book ch. 17). Given one, the bridge advertises what this
+   * device can reach when the session opens, learns what the far side can, and forgets every
+   * route through that peer when the link closes. Absent, nothing routes beyond one hop.
+   */
+  readonly routes?: RouteTable;
+  /**
+   * What this device can seal and open (book ch. 14). Given a key ring, an event in a sealed
+   * partition leaves as an opaque payload and an arriving one is opened where a key exists.
+   *
+   * Absent, everything travels and arrives in the clear — which is what a device with no sealed
+   * partition does, and what a relay does for one it holds no key for: it carries the envelope
+   * whole, folds nothing out of it, and cannot read a value in it.
+   */
+  readonly crypto?: EventCrypto;
+  /** Whose checkpoint this device will believe; absent, every snapshot install stays provisional. */
+  readonly trust?: PeerId;
   /**
    * The far side's fingerprints disagreed with ours for these tables, over a slice we both
    * named (RFC-0014). Repair is the caller's to run — `rowDigests` narrows it to rows.
@@ -89,14 +120,15 @@ export interface Bridge {
 }
 
 /** The four sub-kinds of the join exchange, which the bridge hands on whole rather than case by case. */
-const isSnapshotFrame = (frame: Frame): frame is SnapshotFrame => frame.kind.startsWith("snap-");
 
 /** The join exchange for one session, carrying only the options the caller actually set. */
 const joinFor = (options: BridgeOptions, send: JoinDeps["send"]): JoinExchange => {
-  const { engine, identity, rowsPerChunk, onSnapshot } = options;
+  const { engine, identity, rowsPerChunk, onSnapshot, certificate, trust } = options;
   const base = { engine, send, idPrefix: identity.peerId.slice(0, 8) };
   const paged = rowsPerChunk === undefined ? base : { ...base, rowsPerChunk };
-  return createJoinExchange(onSnapshot === undefined ? paged : { ...paged, onSnapshot });
+  const reported = onSnapshot === undefined ? paged : { ...paged, onSnapshot };
+  const vouching = certificate === undefined ? reported : { ...reported, certificate };
+  return createJoinExchange(trust === undefined ? vouching : { ...vouching, trust });
 };
 
 /**
@@ -111,22 +143,59 @@ const offerEvent = (
   identity: Identity,
   carries: BridgeOptions["carries"],
   emit: (frame: Uint8Array) => void,
+  crypto?: EventCrypto,
 ): void => {
-  const frame = eventFrame(signEvent(event, identity).wire);
+  const frame = eventFrame(signEvent(event, identity, crypto).wire);
   if (carries?.({ cls: KIND.event, bytes: frame.length }) !== false) emit(frame);
 };
 
+/** What the outbound half needs, assembled so an absent capability stays absent (D12-A). */
+const outboundFor = (
+  link: FrameLink,
+  options: BridgeOptions,
+  scope: string,
+  errors: OutboundDeps["errors"],
+): OutboundDeps => ({
+  link,
+  engine: options.engine,
+  identity: options.identity,
+  interest: options.interest,
+  scope,
+  errors,
+  ...(options.crypto !== undefined && { crypto: options.crypto }),
+});
+
+/**
+ * They hold an author ahead of us: answering with our cursors is the request for the diff.
+ *
+ * Our own events are skipped, because a peer ahead of us on *us* is holding something we
+ * authored and have since lost — a real case, and not one more cursors would fix.
+ */
+const isBehind = (engine: Engine, self: PeerId, theirs: ReadonlyMap<PeerId, SeqNum>): boolean => {
+  const ours = engine.coverage().synced;
+  for (const [author, seq] of theirs)
+    if (author !== self && (ours.get(author) ?? 0) < seq) return true;
+  return false;
+};
+
 export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridge {
-  const { engine, identity, grants, onGrantRequest, onPresence, gapLimit = 512 } = options;
+  const { engine, identity, grants, onPresence, gapLimit = 512, routes } = options;
   const { interest, onDivergence, carries } = options;
   const scope = interestKey(interest ?? {});
   const now = options.now ?? (() => Temporal.Now.instant());
   const errors = createHub<BridgeError>();
+  const reportError = (error: BridgeError): void => errors.emit(error);
+  const sendReceipt = (frame: Uint8Array): void => send(KIND.receipt, "receipt", frame);
+  const custody = custodyFor(options, { now, send: sendReceipt, errors: reportError });
+  const control = controlFrames(options, { custody, errors: reportError });
   let queue: Promise<unknown> = Promise.resolve();
   let closed = false;
+  /** Whose link this is, learned from the cursors they send; `undefined` until they speak. */
+  let farSide: PeerId | undefined;
   let sentCursors = false;
 
-  const out = createOutbound({ link, engine, identity, interest, scope, errors });
+  const routing = createRouteExchange({ farSide: () => farSide, routes });
+  const out = createOutbound(outboundFor(link, options, scope, errors));
   const { send, drain, envelopeOf, sendDigest, cursorsAfter } = out;
   const sendCursors = (): void => void (queue = cursorsAfter(queue));
 
@@ -136,7 +205,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
 
   const holdback = createHoldback(engine, identity.peerId, gapLimit);
   const receiveEvent = (wire: Uint8Array): void => {
-    const verified = decodeAndVerify(wire);
+    const verified = decodeAndVerify(wire, options.crypto);
     if (verified.isErr()) {
       errors.emit(verified.error);
       return;
@@ -147,20 +216,17 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
       return;
     }
     queue = queue.then(async () => {
-      const ready = holdback.drain(verified.value.event.peerId);
+      const author = verified.value.event.peerId;
+      const ready = holdback.drain(author);
       if (ready.length === 0) return;
       const r = await engine.receiveBatch(ready);
-      if (r.isErr()) errors.emit(r.error);
+      if (r.isErr()) {
+        errors.emit(r.error);
+        return;
+      }
+      // durable now, so the claim can be signed: a cursor says this and proves none of it
+      custody.vouch(author);
     });
-  };
-
-  /** They hold an author ahead of us: answering with our cursors is the request for the diff. */
-  const behind = (theirs: ReadonlyMap<PeerId, SeqNum>): boolean => {
-    const ours = engine.coverage().synced;
-    for (const [author, seq] of theirs) {
-      if (author !== identity.peerId && (ours.get(author) ?? 0) < seq) return true;
-    }
-    return false;
   };
 
   const onCursors = (
@@ -168,6 +234,8 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     theirs: ReadonlyMap<PeerId, SeqNum>,
     theirAhead: Ahead | undefined,
   ): void => {
+    // the far side names itself in its cursors; that is how this link learns whose it is
+    farSide = from;
     engine.acknowledge(from, theirs, now());
     queue = queue.then(async () => {
       const entries = await engine.eventsSince(theirs);
@@ -183,45 +251,34 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
         if (wire !== undefined) send(KIND.event, "event", eventFrame(wire));
       }
       sendDigest();
-      if (!sentCursors || behind(theirs)) {
+      if (!sentCursors || isBehind(engine, identity.peerId, theirs)) {
         sentCursors = true;
         sendCursors();
       }
     });
   };
 
-  /** One arriving frame to the handler that owns it; an unknown kind is ignored, never an error. */
-  const dispatch = (frame: Frame): void => {
-    // the join exchange is queued behind the events for the same reason a digest is: an install
-    // that raced the fold would adopt a coverage the state has not caught up with
-    if (isSnapshotFrame(frame)) {
-      queue = queue.then(() => join.dispatch(frame));
-      return;
-    }
-    switch (frame.kind) {
-      case "grant": {
-        const registered = grants.register(frame.wire);
-        if (registered.isErr()) errors.emit(registered.error);
-        return;
-      }
-      case "grant-request": {
-        const request = { peerId: frame.peerId };
-        if (frame.invite !== undefined) Object.assign(request, { invite: frame.invite });
-        onGrantRequest?.(request);
-        return;
-      }
-      case "cursors":
-        return onCursors(frame.from, frame.cursors, frame.ahead);
-      case "event":
-        return receiveEvent(frame.wire);
-      case "presence":
-        return onPresence?.(frame.wire);
-      case "digest":
-        return onDigest(frame.scope, frame.at, frame.digests, frame.ahead);
-      case "unknown":
-        return;
-    }
+  const digestDeps = {
+    engine,
+    identity,
+    interest,
+    scope,
+    queued: (run: () => void) => void (queue = queue.then(run)),
   };
+  if (onDivergence !== undefined) Object.assign(digestDeps, { onDivergence });
+  const onDigest = answerDigest(digestDeps);
+
+  const dispatchHandlers = {
+    queued: (run: () => Promise<void> | void) => void (queue = queue.then(run)),
+    onCursors,
+    onEvent: receiveEvent,
+    onDigest,
+    onSnapshot: (frame: SnapshotFrame) => join.dispatch(frame),
+    routing,
+    control,
+  };
+  if (onPresence !== undefined) Object.assign(dispatchHandlers, { onPresence });
+  const dispatch = createDispatch(dispatchHandlers);
 
   const offFrame = link.onFrame((bytes) => {
     if (closed) return;
@@ -235,7 +292,13 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     send(KIND.grant, "grant", grantFrame(wire)),
   );
   const offOutbound = engine.onOutbound((event: SyncEvent) =>
-    offerEvent(event, identity, carries, (frame) => send(KIND.event, "event", frame)),
+    offerEvent(
+      event,
+      identity,
+      carries,
+      (frame) => send(KIND.event, "event", frame),
+      options.crypto,
+    ),
   );
   /** A remote fold means this engine now holds more than its other neighbors may: announce, so they request. */
   const offFolds = engine.onFoldBatch((batch) => {
@@ -246,29 +309,33 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
    * Queued, so the events that arrived with the digest are folded before it is answered — which
    * is what makes it the last frame of the exchange rather than merely the last one sent.
    */
-  const onDigest = (
-    scopeThere: string,
-    at: ReadonlyMap<PeerId, SeqNum>,
-    digests: ReadonlyMap<string, bigint>,
-    ahead: Ahead | undefined,
-  ): void => {
-    if (onDivergence === undefined) return;
-    queue = queue.then(() => {
-      const theirs = { scope: scopeThere, at, digests, ...(ahead !== undefined && { ahead }) };
-      const tables = divergenceAgainst(engine, interest, scope, theirs);
-      if (tables !== undefined && tables.length > 0)
-        onDivergence({ peer: identity.peerId, scope, tables });
-    });
-  };
-
   const resync = (): void => {
     sentCursors = true;
     sendCursors();
   };
 
-  // session open: every grant we hold, then our cursors — grants first, always.
+  /** What this device can reach, as the far side should record it: split horizon applied. */
+  const sendRoutes = (): void => {
+    if (closed) return;
+    const frame = routing.advertisement();
+    if (frame !== undefined) send(KIND.routes, "routes", frame);
+  };
+
+  /**
+   * Queued behind the cursors rather than sent beside them. The cursors go out on the work
+   * queue — they read the log first — so a synchronous advertisement would overtake them and
+   * arrive at a peer that has not yet learned whose link this is, which drops it.
+   */
+  const scheduleRoutes = (): void => void (queue = queue.then(sendRoutes));
+
+  // session open: grants first, always; then our cursors, which is how the far side learns
+  // whose link this is; then our routes, which are meaningless until it does — an ad that
+  // arrives before the cursors names a next hop the receiver cannot identify, and is dropped.
   for (const wire of grants.allWires()) send(KIND.grant, "grant", grantFrame(wire));
   resync();
+  scheduleRoutes();
+  // a route learned on another link is one this peer may want: that is how a chain converges
+  const offRoutes = routes?.onChange(scheduleRoutes) ?? (() => undefined);
 
   return {
     resync,
@@ -294,6 +361,9 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
       offRegistered();
       offOutbound();
       offFolds();
+      offRoutes();
+      // this link is gone, so every route that went through it is: the next attempt re-routes
+      routing.lost();
       link.close?.();
     },
   };

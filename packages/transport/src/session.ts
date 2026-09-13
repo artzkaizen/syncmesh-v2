@@ -1,10 +1,10 @@
 import type { PeerId } from "@syncmesh/kernel";
-import type { FrameLink } from "@syncmesh/transport";
 import type { Identity } from "@syncmesh/wire";
 
 import { Result } from "@syncmesh/result";
 
 import type { Hello, SessionKeys } from "./handshake.js";
+import type { FrameLink } from "./link.js";
 
 import {
   HELLO,

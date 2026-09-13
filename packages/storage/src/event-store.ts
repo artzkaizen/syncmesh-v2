@@ -1,6 +1,7 @@
 import type { EventStore, StoredEvent } from "@syncmesh/engine";
+import type { Hlc } from "@syncmesh/kernel";
 
-import { StoreFailure } from "@syncmesh/engine";
+import { DEFAULT_RECENT, StoreFailure } from "@syncmesh/engine";
 import { eventId, parseEventId } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { decodeEventCore, encodeEventCore } from "@syncmesh/wire";
@@ -8,7 +9,7 @@ import { decodeEventCore, encodeEventCore } from "@syncmesh/wire";
 import type { SqlDriver, SqlRow, SqlValue } from "./driver.js";
 
 import { dialectOf } from "./dialect.js";
-import { attempt, coverageOf, failure, hlcRow, inTransaction, seqOf } from "./sql.js";
+import { attempt, coverageOf, failure, headerRow, hlcRow, inTransaction, seqOf } from "./sql.js";
 
 /**
  * The `core` column holds the bytes the author's signature covers, not a re-encode of what this
@@ -65,6 +66,16 @@ export function decodeStoredEvent(row: SqlRow): Result<StoredEvent, StoreFailure
 const decodeRows = (rows: readonly SqlRow[]) => Result.all(rows.map(decodeStoredEvent));
 
 /**
+ * The stamp a page starts below, as the statement binds it.
+ *
+ * No cursor is a cursor above every stored stamp rather than a second statement without the
+ * predicate: the log stores milliseconds since the epoch, nothing in it is at the end of safe
+ * integers, and one statement that always binds three values is one statement to keep right.
+ */
+const cursorOf = (before: Hlc | undefined): readonly SqlValue[] =>
+  before === undefined ? [Number.MAX_SAFE_INTEGER, 0] : [before[0].epochMilliseconds, before[1]];
+
+/**
  * Opens the event log in the database behind `driver`, creating or migrating its tables in the
  * driver's dialect — `events` on a device's SQLite, `_syncmesh_events` in an app's Postgres.
  *
@@ -110,6 +121,17 @@ export function sqlEventStore(
     all: () =>
       Result.gen(async function* () {
         const rows = yield* Result.await(query("all failed", SQL.selectAll));
+        return decodeRows(rows);
+      }),
+    recent: (options) =>
+      Result.gen(async function* () {
+        const bind = [...cursorOf(options.before), options.limit ?? DEFAULT_RECENT];
+        const rows = yield* Result.await(query("recent failed", SQL.selectRecent, bind));
+        return Result.all(rows.map(headerRow));
+      }),
+    stranded: (mine) =>
+      Result.gen(async function* () {
+        const rows = yield* Result.await(query("stranded failed", SQL.selectStranded, [mine]));
         return decodeRows(rows);
       }),
     allSince: (cursors, scope = "synced") =>

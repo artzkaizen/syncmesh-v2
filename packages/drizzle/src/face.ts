@@ -3,6 +3,8 @@ import type { PartitionKey } from "@syncmesh/kernel";
 import type { SqlDriver, TxReceipt, Write } from "@syncmesh/storage";
 import type { PgDialect } from "drizzle-orm/pg-core";
 
+import type { ProxySink } from "./proxy.js";
+
 /** What both faces build on: the mesh's writer over the capturing connection, and the read scope. */
 export interface FaceDeps {
   readonly engine: Engine;
@@ -13,6 +15,19 @@ export interface FaceDeps {
   readonly actor?: Principal;
   /** Drizzle's Postgres dialect, constructed by the caller so the SQLite face never loads pg-core. */
   readonly pgDialect: () => PgDialect;
+}
+
+/**
+ * The surface one write scope runs on: a statement sink of its own, and the Drizzle over it.
+ *
+ * A scope's statements are the only ones its transaction admits, so a body that reaches past this
+ * for the handle's shared `db` is a task running beside its own transaction — it waits for the
+ * connection, and the connection is waiting for it. Write through `db` here; `sql` is for a
+ * transport feeding the scope statements it was handed (`adapters/browser`).
+ */
+export interface Span<Db> {
+  readonly db: Db;
+  readonly sql: ProxySink;
 }
 
 /** What a handle offers over its writes' receipts: the event each one became (D26). */

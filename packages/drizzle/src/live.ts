@@ -4,6 +4,7 @@ import type { SQLChunk, SQLWrapper } from "drizzle-orm";
 import { Column, Param, SQL, StringChunk, Subquery, Table, getTableName, is } from "drizzle-orm";
 
 import { replaceEqualDeep } from "./equal.js";
+import { ROW_SYNC_TABLE } from "./sync-of.js";
 
 /**
  * What a consumer reads, as one object whose **identity changes only when something changed** —
@@ -14,6 +15,16 @@ export interface LiveSnapshot<T> {
   /** Empty while pending, so a list never has to null-check. */
   readonly data: readonly T[];
   readonly status: "pending" | "error" | "success";
+  /**
+   * A local read has completed, and `data` is what it returned.
+   *
+   * The fact any empty-state claim rests on, and **not** the same fact as `status`. A query that
+   * has never run has no answer to report, and a re-run that failed keeps the last good rows and
+   * turns `status` to `error` without un-answering the question — so neither "not pending" nor
+   * "is success" means the store has spoken. This does, it is on the snapshot rather than beside
+   * it so it can never drift from the rows it describes, and once true it stays true.
+   */
+  readonly answered: boolean;
   readonly error: Error | undefined;
 }
 
@@ -72,19 +83,36 @@ const identityOf = (query: Runnable<unknown>): string => {
 };
 
 /**
+ * What a live query re-runs on: the two feeds a fold announces itself through, and nothing else.
+ *
+ * Narrower than `Engine` on purpose. A tab that holds no engine — because the origin's one engine
+ * is in another tab's worker — can satisfy this with fold batches that arrived over a port, and
+ * then every live query in the repository works there unchanged.
+ */
+export type LiveSource = Pick<Engine, "onFoldBatch" | "onAcknowledge">;
+
+/**
  * A live query is a re-run on exact invalidation (D20 §4): the fold names the tables it touched.
  *
  * Two queries asking the same question share one subscription and one re-run, refcounted by
  * `release` — two components rendering the same list used to run the same SQL twice per fold.
  */
-export const createLive = (engine: Engine) => {
+export const createLive = (engine: LiveSource) => {
   const shared = new Map<string, { readonly live: Live<never>; refs: number }>();
 
   const build = <T>(query: Runnable<T>): Live<T> => {
     const touched = tablesOf(query);
+    // the row-sync table appears in raw SQL rather than as a Drizzle table, so the walk cannot
+    // see it; the query's own text is what says whether a `syncOf` column was selected
+    const sql = identityOf(query);
     const listeners = new Set<(rows: readonly T[]) => void>();
     let current: readonly T[] | undefined;
-    let snap: LiveSnapshot<T> = { data: EMPTY, status: "pending", error: undefined };
+    let snap: LiveSnapshot<T> = {
+      answered: false,
+      data: EMPTY,
+      error: undefined,
+      status: "pending",
+    };
 
     const run = async (): Promise<readonly T[]> => {
       let fresh: readonly T[];
@@ -92,8 +120,10 @@ export const createLive = (engine: Engine) => {
         fresh = await query;
       } catch (cause) {
         const error = asError(cause);
-        // a failed run keeps the last good rows: a transient error must not blank a list
-        snap = { data: snap.data, status: "error", error };
+        // a failed run keeps the last good rows: a transient error must not blank a list — and
+        // it keeps `answered` too, because a read that fell over has told the caller nothing
+        // about what is in the store, in either direction
+        snap = { answered: snap.answered, data: snap.data, error, status: "error" };
         for (const listener of listeners) listener(snap.data);
         throw error;
       }
@@ -102,7 +132,7 @@ export const createLive = (engine: Engine) => {
       const changed = rows !== current || snap.status !== "success";
       current = rows;
       if (changed) {
-        snap = { data: rows, status: "success", error: undefined };
+        snap = { answered: true, data: rows, error: undefined, status: "success" };
         for (const listener of listeners) listener(rows);
       }
       return rows;
@@ -148,6 +178,12 @@ export const createLive = (engine: Engine) => {
           return;
         }
     });
+    /**
+     * An acknowledgement touches no row, so no fold names it — but it does change what a
+     * `syncOf` column reads. Only a query that selected one subscribes, which is what makes
+     * this opt-in per query: a report or a picker never re-runs on an ack at all.
+     */
+    const offAck = sql.includes(ROW_SYNC_TABLE) ? engine.onAcknowledge(schedule) : undefined;
 
     return {
       data: () => current,
@@ -157,7 +193,10 @@ export const createLive = (engine: Engine) => {
         listeners.add(listener);
         return () => void listeners.delete(listener);
       },
-      release: off,
+      release: () => {
+        off();
+        offAck?.();
+      },
     };
   };
 

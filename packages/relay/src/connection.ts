@@ -169,6 +169,13 @@ export function createConnection(socket: RelaySocket, room: RoomState): RelayCon
         refuse("rate", `this socket is over its ${traffic} rate`, true);
         return;
       }
+      // what its last frames cost the room, not what they cost to receive: a socket that owes
+      // fan-out is one whose writes are being multiplied across a crowd (gap audit №7). Asked
+      // rather than spent, so an event in a room of one — which amplifies nothing — costs nothing
+      if (traffic === "event" && conversation.budget.owes("fanout")) {
+        refuse("rate", "this socket is over its fanout rate", true);
+        return;
+      }
       if (frame.kind === "join") {
         onJoin(frame.versions, frame.peerId, frame.cursors, frame.interest);
         return;

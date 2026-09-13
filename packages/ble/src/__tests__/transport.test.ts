@@ -1,5 +1,6 @@
 import type { Peer } from "@syncmesh/transport/test-fixtures";
 
+import { HELLO, SEALED } from "@syncmesh/transport";
 import { peer } from "@syncmesh/transport/test-fixtures";
 import { describe, expect, test } from "bun:test";
 
@@ -14,7 +15,6 @@ import type {
 import { hintOf } from "../advert.js";
 import { base64ToBytes } from "../base64.js";
 import { HEADER_BYTES } from "../fragment.js";
-import { HELLO, SEALED } from "../handshake.js";
 import { bleTransport } from "../transport.js";
 
 const SERVICE = "19d74c40-95d0-4b3c-a4a3-d4a8c8bdfe01";

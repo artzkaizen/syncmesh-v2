@@ -2,10 +2,30 @@ import type { Handle, Mesh } from "@syncmesh/client";
 import type { Live, Runnable } from "@syncmesh/drizzle";
 import type { EventId } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
-import type { Output, PresenceMap, StandardSchemaV1 } from "@syncmesh/schema";
+import type { PresenceMap, StandardSchemaV1 } from "@syncmesh/schema";
 import type { TxReceipt } from "@syncmesh/storage";
 
 import { Result } from "@syncmesh/result";
+
+import type { AuthorityDef, AuthorityLink, MutationDef, QueryDef, Router } from "./procedures.js";
+import type { Write, WriteLedger } from "./write.js";
+
+import { isDef } from "./procedures.js";
+import { createWrite } from "./write.js";
+
+export type {
+  AuthorityContext,
+  AuthorityDef,
+  AuthorityHandlers,
+  AuthorityLink,
+  DeclaredErrors,
+  MutationDef,
+  ProcedureDef,
+  QueryDef,
+  RouteMeta,
+  Router,
+} from "./procedures.js";
+export { isDef, mutation, query } from "./procedures.js";
 
 /**
  * The one surface an app touches (D26): `api.books.list(…)` and `api.books.create(…)`, never a
@@ -48,129 +68,6 @@ export interface QueryCall<T> {
   readonly settled: () => Promise<void>;
 }
 
-export interface QueryDef<I, T> {
-  readonly kind: "query";
-  readonly schema?: StandardSchemaV1;
-  readonly route?: RouteMeta;
-  readonly run: (args: { readonly input: I; readonly mesh: Handle }) => Runnable<T>;
-}
-
-export interface MutationDef<I, T> {
-  readonly kind: "mutation";
-  readonly schema?: StandardSchemaV1;
-  readonly route?: RouteMeta;
-  readonly run: (args: { readonly input: I; readonly mesh: Handle }) => Promise<T> | T;
-}
-
-/** HTTP/OpenAPI metadata and nothing else (book ch. 7): the method describes HTTP, never transactions. */
-export interface RouteMeta {
-  readonly method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-  readonly path?: string;
-  readonly tags?: readonly string[];
-}
-
-/** The failures a gate declares by name; each crosses the wire as its own tag and revives typed. */
-export type DeclaredErrors = Readonly<Record<string, { readonly message?: string }>>;
-
-/**
- * A call that **cannot** run on this device: it needs other tenants' rows, the real clock, or the
- * outside world (D10's test for when a procedure should exist at all). The handler lives on the
- * server and never reaches the app's bundle — only this declaration does: the `.authority()`
- * terminal stands where the body would be, and after it no `.handler` exists to call (book ch. 7).
- */
-export interface AuthorityDef<I, T> {
-  readonly kind: "authority";
-  /** Which grammar declared it — a read-shaped gate or the write gate; OpenAPI reads this. */
-  readonly via: "query" | "mutation";
-  readonly schema?: StandardSchemaV1;
-  /** The answer's shape, parsed at the trust boundary — the one payload a client consumes off the wire. */
-  readonly output?: StandardSchemaV1;
-  readonly errors?: DeclaredErrors;
-  readonly route?: RouteMeta;
-  /** Phantom, both of them: the shapes exist for inference, and neither is ever called. */
-  readonly accepts?: (value: I) => void;
-  readonly yields?: (value: never) => T;
-}
-
-/**
- * Sends one authority call and returns what came back — an HTTP client, a queue, a test double.
- *
- * The input arrives already validated against the procedure's schema; what it is beyond that is
- * the contract's business and not this transport's, which is why it crosses as an opaque value.
- */
-/* oxlint-disable anti-slop/no-unknown-parameters -- the serialisation boundary: the schema has already run, and a link that named the shape could carry only one procedure */
-export type AuthorityLink = (
-  path: string,
-  input: unknown,
-) => Promise<ResultType<unknown, CallError>>;
-/* oxlint-enable anti-slop/no-unknown-parameters */
-
-/**
- * The bodiless half of the chain: after `.input()`, `.output(schema)` declares the answer and
- * `.authority()` names who decides. Typestate makes a gate body in shared code unrepresentable —
- * after `.output()` there is no `.handler` to call (book ch. 7).
- */
-const gateChain =
-  (via: "query" | "mutation", route: RouteMeta | undefined, schema: StandardSchemaV1 | undefined) =>
-  <I>() => ({
-    output: <O extends StandardSchemaV1>(output: O) => {
-      const settled = (errors?: DeclaredErrors): AuthorityDef<I, Output<O>> => {
-        const def = { kind: "authority" as const, via, output };
-        if (schema !== undefined) Object.assign(def, { schema });
-        if (route !== undefined) Object.assign(def, { route });
-        if (errors !== undefined) Object.assign(def, { errors });
-        return def;
-      };
-      return {
-        authority: () => settled(),
-        errors: (errors: DeclaredErrors) => ({ authority: () => settled(errors) }),
-      };
-    },
-  });
-
-export type ProcedureDef =
-  | QueryDef<never, unknown>
-  | MutationDef<never, unknown>
-  | AuthorityDef<never, unknown>;
-export interface Router {
-  readonly [key: string]: ProcedureDef | Router;
-}
-
-/** What a gate's body receives: the parsed input, the caller-shaped handle, its declared errors. */
-export interface AuthorityContext<I> {
-  readonly input: I;
-  /** The server's Drizzle surface, acting as the caller where the server binds one. */
-  readonly mesh: Handle;
-  /** One thrower per declared error name; the thrown tag crosses the wire and revives typed. */
-  readonly errors: Readonly<Record<string, (over?: { readonly message?: string }) => Error>>;
-}
-
-/**
- * The router's shape filtered to its `.authority()` leaves — the server's typed mirror (book
- * ch. 19): `satisfies AuthorityHandlers<typeof router>` makes a missing body, an extra body, or
- * a drifted signature a compile error at the object literal, never a deploy surprise.
- */
-export type AuthorityHandlers<R extends Router> = {
-  readonly [
-    K in keyof R as R[K] extends AuthorityDef<never, unknown>
-      ? K
-      : R[K] extends Router
-        ? [keyof AuthorityHandlers<R[K]>] extends [never]
-          ? never
-          : K
-        : never
-  ]: R[K] extends AuthorityDef<infer I, infer T>
-    ? (context: AuthorityContext<I>) => Promise<T> | T
-    : R[K] extends Router
-      ? AuthorityHandlers<R[K]>
-      : never;
-};
-
-/**
- * Validates through Standard Schema, so zod, valibot and arktype all work and none is a
- * dependency. This is the parse at the boundary every caller above it is typed against — the
- * runtime walk in {@link meshApi} erases what `Api<R>` states, and this restores it.
- */
 /* oxlint-disable anti-slop/no-unknown-parameters -- the I/O boundary itself: turning an unparsed input into `I` is what these three exist to do, and `Api<R>` types every call site above them */
 export const validate = <I>(
   schema: StandardSchemaV1 | undefined,
@@ -190,41 +87,6 @@ export const validate = <I>(
   const parsed = outcome.value as I;
   return Result.ok(parsed);
 };
-
-/**
- * A read that runs **on this device**, against local SQLite, with no network in it.
- *
- * Unmarked because it is the ordinary case (D26). What carries a qualifier is
- * {@link authority} — the call that needs a server and therefore fails on a ward with no
- * signal — because that is the one a reader has to notice.
- */
-const withRoute = <D extends object>(def: D, route: RouteMeta | undefined): D =>
-  route === undefined ? def : Object.assign(def, { route });
-
-const queryHead = (route?: RouteMeta) => ({
-  input: <S extends StandardSchemaV1>(schema: S) => ({
-    handler: <T>(run: QueryDef<Output<S>, T>["run"]): QueryDef<Output<S>, T> =>
-      withRoute({ kind: "query", schema, run }, route),
-    ...gateChain("query", route, schema)<Output<S>>(),
-  }),
-  handler: <T>(run: QueryDef<void, T>["run"]): QueryDef<void, T> =>
-    withRoute({ kind: "query", run }, route),
-});
-
-const mutationHead = (route?: RouteMeta) => ({
-  input: <S extends StandardSchemaV1>(schema: S) => ({
-    handler: <T>(run: MutationDef<Output<S>, T>["run"]): MutationDef<Output<S>, T> =>
-      withRoute({ kind: "mutation", schema, run }, route),
-    ...gateChain("mutation", route, schema)<Output<S>>(),
-  }),
-  handler: <T>(run: MutationDef<void, T>["run"]): MutationDef<void, T> =>
-    withRoute({ kind: "mutation", run }, route),
-});
-
-export const query = { ...queryHead(), route: (route: RouteMeta) => queryHead(route) };
-
-/** A write that runs on this device, inside one transaction, as one event. */
-export const mutation = { ...mutationHead(), route: (route: RouteMeta) => mutationHead(route) };
 
 /**
  * What `useCan` reads, bound to this api's instance so a component names no mesh and no instance.
@@ -247,13 +109,29 @@ export interface SyncSource {
   readonly subscribe: (listener: () => void) => () => void;
 }
 
+/**
+ * The rehearsal of one write (book ch. 15): inert like a read, because a screen builds it while
+ * deciding whether to draw the affordance at all. Running it executes the handler against the
+ * replica, judges the staged changes by the same rules every receiver runs, and rolls the
+ * transaction back — so it cannot drift from enforcement the way a second copy of the rules in
+ * UI code does, and a refusal carries the rule's own reason.
+ */
+export interface CanCall {
+  readonly kind: "can";
+  /** `"products.create"` — what a devtool shows, and half the identity. */
+  readonly path: string;
+  /** Path and input: the same question asked twice is the same rehearsal. */
+  readonly key: string;
+  /** `Ok` means it would have been allowed; the `Err` is the refusal, reason and all. */
+  readonly run: () => Promise<ResultType<void, CallError>>;
+  /** A grant landing can change the answer, so whatever gated a button re-asks. */
+  readonly subscribe: (listener: () => void) => () => void;
+}
+
 /** What a built leaf hands back: an inert read, or a write already running. */
 type ApiLeaf = (
   given: never,
-) =>
-  | QueryCall<unknown>
-  | Promise<ResultType<WriteResult<unknown>, CallError>>
-  | Promise<ResultType<unknown, CallError>>;
+) => QueryCall<unknown> | Write<unknown> | Promise<ResultType<unknown, CallError>>;
 
 /** One node of the built surface: a callable leaf, or a group of them. */
 type ApiNode = ApiLeaf | { readonly [key: string]: ApiNode };
@@ -268,7 +146,10 @@ export type Api<R extends Router> = {
   readonly [K in keyof R]: R[K] extends QueryDef<infer I, infer T>
     ? (input: I) => QueryCall<T>
     : R[K] extends MutationDef<infer I, infer T>
-      ? (input: I) => Promise<ResultType<WriteResult<T>, CallError>>
+      ? ((input: I) => Write<T>) & {
+          /** The same write, rehearsed against the replica and rolled back (ch. 15). */
+          readonly can: (input: I) => CanCall;
+        }
       : R[K] extends AuthorityDef<infer I, infer T>
         ? (input: I) => Promise<ResultType<T, CallError>>
         : R[K] extends Router
@@ -276,10 +157,26 @@ export type Api<R extends Router> = {
           : never;
 };
 
-/** A leaf, as opposed to a group: the three kinds the grammar can end in. */
-export const isDef = (node: ProcedureDef | Router): node is ProcedureDef =>
-  "kind" in node &&
-  (node.kind === "query" || node.kind === "mutation" || node.kind === "authority");
+/**
+ * Every member of a mesh this binding reads, and no more.
+ *
+ * Stated rather than taking `Mesh` whole because a tab that is not the origin's leader holds a
+ * mesh on another thread and can honestly answer exactly these — so the same `meshApi` builds the
+ * same api there, over a port, instead of a second implementation drifting beside this one. A
+ * real `Mesh` satisfies it by having more.
+ */
+export interface ApiMesh<PC extends PresenceMap = Record<string, never>> {
+  readonly on: Mesh<"sqlite", PC>["on"];
+  readonly settled: () => Promise<void>;
+  readonly can: Mesh<"sqlite", PC>["can"];
+  readonly syncOf: Mesh<"sqlite", PC>["syncOf"];
+  /** Plain teardown, not `Teardown`: this binding calls it, and never `using`s it. */
+  readonly onSyncChange: (listener: () => void) => () => void;
+  /** Only the subscription: a grant landing is what makes a gated affordance re-ask. */
+  readonly grants: { readonly onRegistered: (listener: () => void) => () => void };
+  /** The write ledger, the engine's own or a window's reader of the origin's ({@link WriteLedger}). */
+  readonly operations?: WriteLedger;
+}
 
 /**
  * Binds a router to one mesh and one instance: `api.books.list(…)`, `api.books.create(…)`.
@@ -293,7 +190,7 @@ export const isDef = (node: ProcedureDef | Router): node is ProcedureDef =>
  * export const api = meshApi(mesh, { books }, { instance: "org:acme" });
  */
 export function meshApi<R extends Router, PC extends PresenceMap = Record<string, never>>(
-  mesh: Mesh<"sqlite", PC>,
+  mesh: ApiMesh<PC>,
   router: R,
   options: {
     readonly instance?: string;
@@ -320,7 +217,45 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     settled: () => mesh.settled(),
   });
 
-  const write = async (def: MutationDef<never, unknown>, input: unknown) => {
+  /** `api.products.create.can(input)`: the write, rehearsed and rolled back (ch. 15). */
+  const rehearsal = (path: string, def: MutationDef<never, unknown>, input: unknown): CanCall => ({
+    kind: "can",
+    path,
+    key: JSON.stringify([path, input ?? null]),
+    run: async () => {
+      const parsed = validate<never>(def.schema, input);
+      if (parsed.isErr()) return parsed;
+      const open = handle();
+      return open.rehearse(async (span) => {
+        // the handler's return value is nothing to a rehearsal: only what it staged is judged —
+        // and it writes through the span, because the rehearsal's transaction is the span's alone
+        await def.run({ input: parsed.value, mesh: { ...open, ...span } });
+      });
+    },
+    subscribe: (listener) => mesh.grants.onRegistered(() => listener()),
+  });
+
+  /**
+   * A write, as the statement it is (book ch. 10): the id is allocated here so the handle can
+   * hand it back synchronously, and the commit runs under it.
+   */
+  const statement = (
+    path: string,
+    def: MutationDef<never, unknown>,
+    input: unknown,
+  ): Write<unknown> => {
+    const id = crypto.randomUUID();
+    const deps = { id, committed: write(path, def, input, id) };
+    if (mesh.operations !== undefined) Object.assign(deps, { ledger: mesh.operations });
+    return createWrite(deps);
+  };
+
+  const write = async (
+    path: string,
+    def: MutationDef<never, unknown>,
+    input: unknown,
+    operationId?: string,
+  ) => {
     const parsed = validate<never>(def.schema, input);
     if (parsed.isErr()) return parsed;
     const open = handle();
@@ -328,10 +263,21 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     const off = open.onCommit((r) => {
       receipt = r;
     });
-    // one transaction, so a handler that writes twice is still one event
+    // one transaction, so a handler that writes twice is still one event — and one *scope*, so
+    // the read a live query fires while the handler is mid-transaction waits for it rather than
+    // joining it and answering out of rows nothing has committed
+    const run = () => {
+      const span = open.span();
+      const inside = { ...open, ...span };
+      return span.db.transaction(() =>
+        Promise.resolve(def.run({ input: parsed.value, mesh: inside })),
+      );
+    };
     const ran = await Result.tryPromise({
-      try: () =>
-        open.db.transaction(() => Promise.resolve(def.run({ input: parsed.value, mesh: open }))),
+      // recorded under the id the caller already holds, so an interrupted write is findable — and
+      // under this procedure's own path, because the capture below sees SQL and cannot know it.
+      // Without the name the ledger reads `issue.update` for what a person called `issues.move`.
+      try: () => open.under({ id: operationId, label: path }, run),
       catch: (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause))),
     });
     off();
@@ -361,7 +307,10 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
       } else if (child.kind === "query") {
         out[name] = (given: never) => read(path, child, given);
       } else if (child.kind === "mutation") {
-        out[name] = (given: never) => write(child, given);
+        // the rehearsal rides on the call itself: `api.products.create.can(input)`
+        out[name] = Object.assign((given: never) => statement(path, child, given), {
+          can: (given: never) => rehearsal(path, child, given),
+        });
       } else {
         out[name] = (given: never) => remote(path, child, given);
       }

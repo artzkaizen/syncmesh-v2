@@ -140,6 +140,7 @@ function storeOver(memory: EventStore, disk: LocalLog): EventStore {
     appendBatch: (entries) => appendAll(memory, disk, entries),
     has: (id) => memory.has(id),
     all: () => memory.all(),
+    stranded: (mine) => memory.stranded(mine),
     allSince: (cursors, scope) => memory.allSince(cursors, scope),
     lastSeq: (peer, scope) => ok(disk.head().seqs[scope].get(peer)),
     maxHlc: () => ok(disk.head().hlc),

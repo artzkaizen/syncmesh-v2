@@ -52,7 +52,7 @@ describe("createApp", () => {
       driver: bunSqliteDriver(":memory:"),
     });
 
-    (await api.books.add({ id: "b1", title: "Dune" })).unwrap();
+    (await api.books.add({ id: "b1", title: "Dune" }).committed).unwrap();
     expect(await api.books.list().run()).toEqual([{ id: "b1", title: "Dune" }]);
     await mesh.stop();
   });

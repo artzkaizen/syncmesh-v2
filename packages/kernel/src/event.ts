@@ -23,6 +23,15 @@ export interface SyncEvent {
   readonly procedure: Procedure;
   readonly partition?: PartitionKey;
   readonly changes: readonly Change[];
+  /**
+   * This event's content is sealed and this device holds no key for it (book ch. 14), so
+   * `changes` is empty because there is nothing readable — not because nothing was written.
+   *
+   * A carrier stores it, relays it, counts it towards coverage and folds nothing, which is the
+   * whole of custody without judgment. Nothing else in the system needs to look at this: an
+   * empty change list already folds to nothing. It is here so a device can *say* why.
+   */
+  readonly sealed?: true;
   /** Never leaves this device; numbered in its own sequence namespace. */
   readonly local?: true;
 }

@@ -101,14 +101,14 @@ describe("useLiveQuery over api.*", () => {
     expect(renders.at(-1)).toBe("|settled=true");
 
     await act(async () => {
-      (await api.books.create({ id: "b1", title: "Dune" })).unwrap();
+      (await api.books.create({ id: "b1", title: "Dune" }).committed).unwrap();
     });
     await settle();
     expect(renders.at(-1)).toBe("Dune|settled=true");
 
     const before = renders.length;
     await act(async () => {
-      (await api.books.create({ id: "b2", title: "Ubik" })).unwrap();
+      (await api.books.create({ id: "b2", title: "Ubik" }).committed).unwrap();
     });
     await settle();
     expect(renders.at(-1)).toBe("Dune,Ubik|settled=true");
@@ -137,7 +137,7 @@ describe("useLiveQuery over api.*", () => {
       return null;
     };
 
-    (await api.books.create({ id: "b1", title: "Dune" })).unwrap();
+    (await api.books.create({ id: "b1", title: "Dune" }).committed).unwrap();
     const { settle } = await mount(createElement(Row, { id: "b1" }));
     expect(seen.at(-1)).toBe("local");
 
@@ -157,7 +157,7 @@ describe("useLiveQuery over api.*", () => {
 
   test("input the schema refuses never reaches the table", async () => {
     const { mesh, api } = await open();
-    const refused = await api.books.create({ id: "b3", title: "" });
+    const refused = await api.books.create({ id: "b3", title: "" }).committed;
     expect(refused.isErr()).toBe(true);
 
     const rows = await api.books.list().run();

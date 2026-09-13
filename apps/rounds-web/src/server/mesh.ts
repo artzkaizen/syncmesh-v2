@@ -8,17 +8,22 @@ import { mkdirSync } from "node:fs";
 import { PRACTICE, procedures, roundsSchema } from "../rounds.js";
 
 /**
- * The mesh, on the server.
+ * The mesh, on the server — now a choice rather than a constraint.
  *
- * A browser has no SQLite — `sqlite-wasm` over OPFS is unbuilt (E04) — so it cannot hold the
- * ward's partition and cannot run a read locally. This process can: it opens the partition, joins
- * the relay, and answers the browser's calls against it. The browser runs the *same procedures*,
- * one HTTP hop away.
+ * This used to say a browser has no SQLite. It does now: `@syncmesh/sqlite-wasm` holds a
+ * partition over OPFS on the page's own thread, so a browser can run a read locally and this app
+ * *could* be local-first.
  *
- * Which makes the honest description of this app **not local-first**. It is a normal web app on
- * top of a mesh node, and the reason to build it is that the ward's phones are on the same relay:
- * a reading taken on a phone with no signal appears here when it syncs, without this server ever
- * polling anything.
+ * It still is not, and the reason is what this screen is. A ward display is a shared, fixed,
+ * signed-in-once terminal, not somebody's device: giving it a replica of its own would mean a
+ * second copy of the ward's data on a machine in a corridor, an OPFS quota to manage and a
+ * leader election between tabs, to save a hop on a wired connection that is never offline. The
+ * phones are where local-first earns its cost, and they are on the same relay — a reading taken
+ * with no signal appears here when it syncs, without this server polling anything.
+ *
+ * So the honest description is unchanged: **a normal web app on top of a mesh node.** What
+ * changed is that it is now a decision with a reason, and `apps/issues` is where the browser
+ * replica is actually exercised.
  */
 
 const seed = (n: number) => Uint8Array.from({ length: 32 }, (_, i) => n + i);

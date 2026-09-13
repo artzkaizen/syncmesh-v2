@@ -32,6 +32,15 @@ export interface SessionHooks {
   readonly onBlobAnswer: (hash: string, bytes: Uint8Array | undefined) => void;
   /** The last catch-up page has landed: this source has nothing more to hand over right now. */
   readonly onCaughtUp: () => void;
+  /**
+   * Bytes that never became anything (book ch. 18): a frame this build cannot decode, or an event
+   * whose signature does not verify.
+   *
+   * Below a link rather than an ending of one — the socket is still up and the session continues —
+   * which is why it is `dropped` and not `closed`. A relay that has started serving another
+   * protocol, or one forwarding a peer's forgery, is silent without this.
+   */
+  readonly onDropped: (why: string) => void;
   /** What this session joined with, so a coverage scoped to something else is not adopted. */
   readonly interest?: Interest;
   /**
@@ -77,7 +86,12 @@ export function wireSession(
       const straight: StoredEvent[] = [];
       for (const wire of wires) {
         const verified = decodeAndVerify(wire);
-        if (verified.isErr()) continue; // junk from a relay is dropped, never folded
+        if (verified.isErr()) {
+          // junk from a relay is dropped, never folded — and said, because a relay handing this
+          // device unverifiable bytes is a fact about the room and not about this event
+          hooks.onDropped(verified.error.message);
+          continue;
+        }
         if (direct) {
           straight.push(verified.value);
           continue;
@@ -177,7 +191,10 @@ export function wireSession(
   const offFrame = dialed.onFrame((bytes) => {
     hooks.rearm();
     const decoded = decodeRelayFrame(bytes);
-    if (decoded.isErr()) return;
+    if (decoded.isErr()) {
+      hooks.onDropped(decoded.error.message);
+      return;
+    }
     const frame = decoded.value;
     if (frame.kind === "hello") {
       relayCursors = frame.cursors;
@@ -191,7 +208,11 @@ export function wireSession(
         else if (repaging) rescope();
         caughtUp = true;
         pushOutstanding();
-        hooks.onCaughtUp();
+        // behind the chain, not beside it: `fold` and `pushOutstanding` queue their work, so
+        // announcing here would announce a pass that has not folded a single event of its last
+        // page. What the hook means is "nothing more to hand over right now", and the moment that
+        // becomes true is the moment this chain drains
+        chain = chain.then(() => hooks.onCaughtUp());
       }
     } else if (frame.kind === "blob") hooks.onBlobAnswer(frame.hash, frame.bytes);
     else if (frame.kind === "blob-missing") hooks.onBlobAnswer(frame.hash, undefined);

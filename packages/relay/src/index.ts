@@ -27,7 +27,13 @@ export { createConnection } from "./connection.js";
 export type { Budget, RateLimit, RelayLimits, TrafficClass } from "./limits.js";
 export { DEFAULT_LIMITS, createBudget } from "./limits.js";
 export type { RelayRetention } from "./retention.js";
-export { DEFAULT_SWEEP, belowFloor, trimLog } from "./retention.js";
+export {
+  DEFAULT_MAX_BLOB_BYTES,
+  DEFAULT_SWEEP,
+  DURABLE_RETENTION,
+  belowFloor,
+  trimLog,
+} from "./retention.js";
 export { cappedBlobStore } from "./blob-cap.js";
 export type { HeldRoom, OpenedRoom, RoomTable, RoomTableOptions } from "./rooms.js";
 export { createRoomTable } from "./rooms.js";

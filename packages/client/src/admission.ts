@@ -62,27 +62,77 @@ export const boundable = (transport: Transport): boolean =>
  * Drops the links a transport is holding beyond its budget, keeping the ones {@link admit}
  * selects. A transport that cannot name its links, cannot close one, or declares no budget is
  * left alone — all three are needed before a drop is something anyone can act on.
+ */
+/**
+ * What this device knows about each of a medium's peers, in the one shape everything that ranks
+ * them takes. Shared by the budget and by churn so the two cannot disagree about which link is
+ * worth least — libp2p's pruner ranks once, for the same reason.
  *
  * Quality is `0` for every peer, and honestly so: no transport reports RSSI or a throughput
  * average yet, and inventing one would make the tiebreak look considered when it is arbitrary.
- * It is the third term and the smallest, so its absence changes nothing except that ties fall
- * through to the peer id.
  */
-export function enforceBudget(transport: Transport, facts: AdmissionFacts): readonly PeerId[] {
-  const reached = transport.reaches?.();
-  const budget = transport.maxLinks?.();
-  if (reached === undefined || budget === undefined || transport.drop === undefined) return [];
-  if (reached.size <= budget) return [];
-
-  const neighbours: Neighbour[] = [...reached].map((peer) => ({
+export const neighboursOf = (
+  facts: AdmissionFacts,
+  reached: ReadonlySet<PeerId>,
+): readonly Neighbour[] =>
+  [...reached].map((peer) => ({
     peer,
     behind: behindBy(facts, peer),
     shared: sharedWith(facts, peer),
     quality: 0,
     live: true, // every one of these is an open session; hysteresis applies to all of them alike
   }));
-  const keeping = new Set(admit(neighbours, { maxLinks: budget }));
+
+export function enforceBudget(transport: Transport, facts: AdmissionFacts): readonly PeerId[] {
+  const reached = transport.reaches?.();
+  const budget = transport.maxLinks?.();
+  if (reached === undefined || budget === undefined || transport.drop === undefined) return [];
+  if (reached.size <= budget) return [];
+
+  const keeping = new Set(admit(neighboursOf(facts, reached), { maxLinks: budget }));
   const dropped = [...reached].filter((peer) => !keeping.has(peer));
   for (const peer of dropped) transport.drop(peer);
+  return dropped;
+}
+
+/**
+ * The links this device holds across **every** medium, held to one number.
+ *
+ * Separate from each medium's own budget, and both are needed. A BLE controller degrades past
+ * roughly six links whatever the process can afford — that is a fact about the radio. A device
+ * holding six BLE links, thirty LAN links and a relay is within every one of those budgets and
+ * still out of file descriptors — that is a fact about the process. libp2p has only the second
+ * (300 connections on a server, 100 in a browser); a mesh that runs on radios needs both.
+ *
+ * Over the cap, the cheapest links go first, ranked on the same facts the per-medium budget uses.
+ */
+export function enforceCeiling(
+  transports: readonly Transport[],
+  facts: AdmissionFacts,
+  ceiling: number,
+): readonly PeerId[] {
+  const links = transports
+    .filter(boundable)
+    .flatMap((transport) =>
+      [...(transport.reaches?.() ?? [])].map((peer) => ({ transport, peer })),
+    );
+  if (links.length <= ceiling) return [];
+
+  const worth = new Map(
+    neighboursOf(facts, new Set(links.map((link) => link.peer))).map((n) => [n.peer, n]),
+  );
+  const cheapestFirst = [...links].sort((x, y) => {
+    const [a, b] = [worth.get(x.peer), worth.get(y.peer)];
+    return (
+      (a?.behind ?? 0) - (b?.behind ?? 0) ||
+      (a?.shared ?? 0) - (b?.shared ?? 0) ||
+      (x.peer < y.peer ? -1 : x.peer > y.peer ? 1 : 0)
+    );
+  });
+  const dropped: PeerId[] = [];
+  for (const link of cheapestFirst.slice(0, links.length - ceiling)) {
+    link.transport.drop?.(link.peer);
+    dropped.push(link.peer);
+  }
   return dropped;
 }

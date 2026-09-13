@@ -1,0 +1,51 @@
+{
+  "name": "@syncmesh/issues",
+  "version": "0.0.0",
+  "private": true,
+  "description": "An issue tracker: the worked domain a local-first app is actually judged on",
+  "type": "module",
+  "exports": {
+    ".": {
+      "@syncmesh/source": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "relay": "bun src/server/relay.ts"
+  },
+  "dependencies": {
+    "@syncmesh/browser": "workspace:*",
+    "@syncmesh/client": "workspace:*",
+    "@syncmesh/devtools": "workspace:*",
+    "@syncmesh/drizzle": "workspace:*",
+    "@syncmesh/orpc": "workspace:*",
+    "@syncmesh/react": "workspace:*",
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/schema": "workspace:*",
+    "@syncmesh/sqlite-wasm": "workspace:*",
+    "@syncmesh/storage": "workspace:*",
+    "@syncmesh/temporal": "workspace:*",
+    "@syncmesh/transports": "workspace:*",
+    "@syncmesh/wire": "workspace:*",
+    "@tanstack/react-router": "^1.170.32",
+    "drizzle-orm": "latest",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@syncmesh/config": "workspace:*",
+    "@syncmesh/engine": "workspace:*",
+    "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/relay": "workspace:*",
+    "@syncmesh/sqlite-bun": "workspace:*",
+    "@syncmesh/transport": "workspace:*",
+    "@tanstack/router-plugin": "^1.168.35",
+    "@types/bun": "catalog:",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

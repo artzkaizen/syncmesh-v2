@@ -3,7 +3,7 @@ import type { PeerId } from "@syncmesh/kernel";
 import type { CborValue } from "@syncmesh/wire";
 
 import { Result } from "@syncmesh/result";
-import { decodeCbor, encodeCbor, hexToBytes, isString } from "@syncmesh/wire";
+import { decodeCbor, encodeCbor, hexToBytes, isSafeNonNegative, isString } from "@syncmesh/wire";
 
 import type { SnapshotFrame } from "./snap-frame.js";
 
@@ -47,6 +47,10 @@ export type Frame =
       /** What the sender held above `at` when it counted; without it nothing may be compared. */
       readonly ahead?: Ahead;
     }
+  /** A signed acknowledgement of durable custody (book ch. 10): held, not accepted. */
+  | { readonly kind: "receipt"; readonly wire: Uint8Array }
+  /** What the sender can reach and how far: one advertisement per destination (book ch. 17). */
+  | { readonly kind: "routes"; readonly ads: readonly RouteAdWire[] }
   /** The join exchange (RFC-0019), one tag with a sub-kind of its own. */
   | SnapshotFrame
   /** A tag this build does not know; ignored, never an error. */
@@ -55,6 +59,23 @@ export type Frame =
 const peerBytes = (peer: PeerId): Uint8Array => hexToBytes(peer).unwrap();
 
 export const grantFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.grant, wire]);
+
+/** One signed custody receipt, on its way back to the author whose events it covers. */
+export const receiptFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.receipt, wire]);
+
+/** What a route advertisement carries on the wire: where to, how far, and until when. */
+export interface RouteAdWire {
+  readonly to: string;
+  readonly hops: number;
+  readonly expiresAtMs: number;
+}
+
+/**
+ * The sender's reachable destinations. The next hop is **not** on the wire: it is whoever sent
+ * the frame, which the receiving bridge already knows and a sender could otherwise lie about.
+ */
+export const routesFrame = (ads: readonly RouteAdWire[]): Uint8Array =>
+  encodeCbor([KIND.routes, ads.map((ad) => [ad.to, ad.hops, ad.expiresAtMs])]);
 
 export const grantRequestFrame = (peerId: PeerId, invite?: string): Uint8Array =>
   encodeCbor(
@@ -102,18 +123,52 @@ export function decodeFrame(frame: Uint8Array): Result<Frame, MalformedFrame> {
     );
     if (!Array.isArray(outer) || outer.length < 2) return malformedFrame("expected [kind, …]");
     const [kind, payload, extra] = outer;
-    if (kind === KIND.grant || kind === KIND.event || kind === KIND.presence) {
+    if (
+      kind === KIND.grant ||
+      kind === KIND.event ||
+      kind === KIND.presence ||
+      kind === KIND.receipt
+    ) {
       if (!(payload instanceof Uint8Array)) return malformedFrame("payload is not bytes");
       if (kind === KIND.grant) return Result.ok({ kind: "grant", wire: payload } as const);
       if (kind === KIND.event) return Result.ok({ kind: "event", wire: payload } as const);
+      if (kind === KIND.receipt) return Result.ok({ kind: "receipt", wire: payload } as const);
       return Result.ok({ kind: "presence", wire: payload } as const);
     }
-    if (kind === KIND.grantRequest) return decodeRequest(payload, extra);
-    if (kind === KIND.cursors) return decodeCursors(payload, extra, outer[3]);
-    if (kind === KIND.digest) return decodeDigest(payload, extra, outer[3], outer[4]);
-    if (kind === KIND.snapshot) return decodeSnapshotFrame(outer);
-    return Result.ok({ kind: "unknown" } as const);
+    return decodeTagged(kind, payload, extra, outer);
   });
+}
+
+/* oxlint-disable anti-slop/no-runtime-typeof -- decoding CBOR is this file's I/O boundary: the checks below are the parse that gives the values a contract */
+function decodeRoutes(payload: CborValue | undefined): Result<Frame, MalformedFrame> {
+  if (!Array.isArray(payload)) return malformedFrame("routes payload is not a list");
+  const ads: RouteAdWire[] = [];
+  for (const entry of payload) {
+    if (!Array.isArray(entry) || entry.length < 3)
+      return malformedFrame("route ad is not a triple");
+    const [to, hops, expiresAtMs] = entry;
+    if (typeof to !== "string") return malformedFrame("route destination is not text");
+    if (!isSafeNonNegative(hops)) return malformedFrame("route hops is not a count");
+    if (typeof expiresAtMs !== "number") return malformedFrame("route expiry is not a timestamp");
+    ads.push({ to, hops, expiresAtMs });
+  }
+  return Result.ok({ kind: "routes", ads });
+}
+/* oxlint-enable anti-slop/no-runtime-typeof */
+
+/** The tags whose payload is structured; one this build does not know is ignored, never an error. */
+function decodeTagged(
+  kind: CborValue | undefined,
+  payload: CborValue | undefined,
+  extra: CborValue | undefined,
+  outer: readonly CborValue[],
+): Result<Frame | { readonly kind: "unknown" }, MalformedFrame> {
+  if (kind === KIND.grantRequest) return decodeRequest(payload, extra);
+  if (kind === KIND.cursors) return decodeCursors(payload, extra, outer[3]);
+  if (kind === KIND.digest) return decodeDigest(payload, extra, outer[3], outer[4]);
+  if (kind === KIND.routes) return decodeRoutes(payload);
+  if (kind === KIND.snapshot) return decodeSnapshotFrame(outer);
+  return Result.ok({ kind: "unknown" } as const);
 }
 
 function decodeRequest(

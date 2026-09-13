@@ -27,12 +27,23 @@ export interface OperationsView {
     peer: PeerId,
     seq: SeqNum,
   ) => Promise<Result<readonly ReceiptRow[], StoreFailure>>;
-  /** Fires after the ledger changed — a receipt landed or a correction marked a record. */
+  /**
+   * Fires after the ledger changed — this device committed a write, a receipt landed, or a
+   * correction marked a record. The local commit's notification comes with the fold rather than
+   * with the insert, because the insert runs inside the write's own transaction: a listener that
+   * read the ledger from there would see a row a rollback can still take away.
+   */
   readonly onChange: (listener: () => void) => () => void;
 }
 
 export interface OpenedOperations {
   readonly view: OperationsView;
+  /**
+   * The store a writer must be given: the caller's rows, plus the notification a local commit
+   * owes its listeners. Handing the bare store to a writer instead is how a record lands that
+   * nothing watching the ledger ever hears about.
+   */
+  readonly store: OperationStore;
   readonly stop: () => void;
 }
 
@@ -52,13 +63,13 @@ export function wireOperations(deps: {
 }): WiredOperations {
   const extras: HandleExtras = { now: deps.now };
   if (deps.store === undefined) return { extras, stop: () => undefined };
-  Object.assign(extras, { operations: deps.store });
   const opened = openOperations({
     engine: deps.engine,
     store: deps.store,
     self: deps.self,
     now: deps.now,
   });
+  Object.assign(extras, { operations: opened.store });
   return { extras, view: opened.view, stop: opened.stop };
 }
 
@@ -66,6 +77,11 @@ export function wireOperations(deps: {
  * Watches acknowledgements and turns each one into durable receipts: when a peer's cursors
  * cover more of this device's events, every newly covered operation gets a receipt row —
  * idempotently, so replays and restarts cannot double-count.
+ *
+ * It also owns the writer's store ({@link OpenedOperations.store}), because a write this device
+ * commits is a ledger change like any other and has to reach `onChange` the same way. Watching
+ * folds alone cannot stand in for that: most folds write no record at all, and a listener told
+ * about every one of them learns nothing about the ledger.
  */
 export function openOperations(deps: {
   readonly engine: Engine;
@@ -77,6 +93,28 @@ export function openOperations(deps: {
   const listeners = new Set<() => void>();
   const changed = (): void => {
     for (const listener of listeners) listener();
+  };
+
+  /**
+   * A record written inside a commit whose listeners have not heard about it yet. The writer
+   * inserts it inside the engine's transaction, and the engine's fold notification is the first
+   * moment after that transaction is real — so the record is counted here and announced there,
+   * once per commit however many listeners are watching.
+   */
+  let unannounced = 0;
+  const recording: OperationStore = {
+    ...store,
+    record: async (op) => {
+      const written = await store.record(op);
+      if (written.isOk()) unannounced += 1;
+      return written;
+    },
+  };
+  /** The commits recorded since the last fold, cleared as they are announced. */
+  const announce = (): void => {
+    if (unannounced === 0) return;
+    unannounced = 0;
+    changed();
   };
 
   const settle = (): void => {
@@ -115,8 +153,9 @@ export function openOperations(deps: {
     for (const table of batch.writeTables)
       if (String(table) === "_corrections") {
         overruled();
-        return;
+        break;
       }
+    announce();
   });
   const off = (): void => {
     offAck();
@@ -124,6 +163,7 @@ export function openOperations(deps: {
   };
 
   return {
+    store: recording,
     view: {
       get: (id) => store.get(id),
       byEvent: (peer, seq) => store.byEvent(peer, seq),

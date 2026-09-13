@@ -43,6 +43,13 @@ export interface RelayRetention {
    * A ceiling on the blob bytes this room holds, over the bytes it has admitted **since it was
    * opened** — the `BlobStore` port cannot enumerate what a previous run left behind, so bytes
    * already on disk at open are outside the count until something touches them.
+   *
+   * Unlike the log, this one **has a default** ({@link DEFAULT_MAX_BLOB_BYTES}), and the asymmetry
+   * is the point: blobs are content-addressed, so a room that drops them answers `blob-missing`
+   * and whoever still holds the bytes puts them back. A trimmed event is gone from this hop for
+   * good. One of those is a cache and one is a promise, so only one gets a default.
+   *
+   * `Infinity` says "keep every blob", deliberately and in writing.
    */
   readonly maxBlobBytes?: number;
   /** How often the log is swept. Default one minute; the sweep costs one delete per author. */
@@ -51,6 +58,29 @@ export interface RelayRetention {
 
 /** Often enough that a duration cap is honest to within a minute, rarely enough to be free. */
 export const DEFAULT_SWEEP = Temporal.Duration.from({ minutes: 1 });
+
+/**
+ * The blob bytes a room keeps when nobody said (gap audit №8): one gibibyte.
+ *
+ * Nominal, and it is a *ceiling* rather than a target — a room that never approaches it never
+ * pays for it. It exists because the alternative default is unbounded disk, and for a cache
+ * whose misses are recoverable that is the wrong way round.
+ */
+export const DEFAULT_MAX_BLOB_BYTES = 1024 * 1024 * 1024;
+
+/**
+ * A production retention policy, named so an operator can choose it rather than assemble it.
+ *
+ * Thirty days of log is the shape of the promise most rooms actually want: long enough that a
+ * device off for a holiday still resumes from its cursors, short enough that disk is a function
+ * of the write rate rather than of the room's age. **It stops being somewhere a new device can
+ * bootstrap from history alone** — see {@link RelayRetention.keepEventsFor} — which is exactly
+ * why it is a preset a person picks and not a default that picks itself.
+ */
+export const DURABLE_RETENTION = {
+  keepEventsFor: Temporal.Duration.from({ days: 30 }),
+  maxBlobBytes: DEFAULT_MAX_BLOB_BYTES,
+} satisfies RelayRetention;
 
 /**
  * Past every stamp an event can carry: the age this cut measures is the room's, not the author's,
@@ -175,6 +205,10 @@ export interface RoomRetention {
   readonly sweep: () => Promise<void>;
   /** Stops the timer; the room's `close` owes this the way it owes the keepalive one. */
   readonly stop: () => void;
+  /** This room keeps its log forever — reported once at open, never enforced. */
+  readonly unbounded: boolean;
+  /** The blob ceiling actually in force, default included. */
+  readonly blobCeiling: number;
 }
 
 /**
@@ -185,7 +219,7 @@ export interface RoomRetention {
 export function roomRetention(options: RoomRetentionOptions): RoomRetention {
   const { store, policy, ceiling, now, serialize } = options;
   const keepFor = policy?.keepEventsFor;
-  const bytes = policy?.maxBlobBytes;
+  const bytes = policy?.maxBlobBytes ?? DEFAULT_MAX_BLOB_BYTES;
   let floor = options.booted;
   // what was already on disk is marked as arriving now: no row records when it really did, and
   // guessing older would throw away a restarted room's whole log on its first pass
@@ -213,9 +247,12 @@ export function roomRetention(options: RoomRetentionOptions): RoomRetention {
 
   return {
     blobs:
-      options.blobs === undefined || bytes === undefined
+      options.blobs === undefined || bytes === Number.POSITIVE_INFINITY
         ? options.blobs
         : cappedBlobStore(options.blobs, bytes),
+    /** Whether this room keeps its log forever, for the one telemetry event that says so. */
+    unbounded: keepFor === undefined,
+    blobCeiling: bytes,
     floor: () => floor,
     sweep,
     stop: () => {

@@ -118,7 +118,7 @@ describe("api.books.* is the whole surface", () => {
 
   test("a mutation returns the event it became, and the query then sees the row", async () => {
     const { mesh, api } = await open("member");
-    const created = await api.books.create({ id: "b1", title: "Dune" });
+    const created = await api.books.create({ id: "b1", title: "Dune" }).committed;
 
     expect(created.isOk()).toBe(true);
     const { eventId, data } = created.unwrap();
@@ -132,7 +132,7 @@ describe("api.books.* is the whole surface", () => {
 
   test("input the schema refuses is an Err, and writes nothing", async () => {
     const { mesh, api } = await open("member");
-    const refused = await api.books.create({ id: "b2", title: "" });
+    const refused = await api.books.create({ id: "b2", title: "" }).committed;
 
     expect(refused.isErr()).toBe(true);
     expect(await mesh.engine.eventsSince(new Map()).then((r) => r.unwrap().length)).toBe(0);
@@ -141,7 +141,7 @@ describe("api.books.* is the whole surface", () => {
 
   test("a write the caller's rules deny is an Err, not a throw", async () => {
     const { mesh, api } = await open("viewer");
-    const denied = await api.books.create({ id: "b3", title: "Dune" });
+    const denied = await api.books.create({ id: "b3", title: "Dune" }).committed;
 
     expect(denied.isErr()).toBe(true);
     expect(await mesh.engine.eventsSince(new Map()).then((r) => r.unwrap().length)).toBe(0);

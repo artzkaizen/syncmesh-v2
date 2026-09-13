@@ -6,8 +6,8 @@ export type {
   SqlValue,
   SqliteDriver,
 } from "./driver.js";
-export type { BoundSqlValue, SqliteBinding } from "./sqlite-driver.js";
-export { bindSqlite, sqliteDriver } from "./sqlite-driver.js";
+export type { AsyncSqliteBinding, BoundSqlValue, SqliteBinding } from "./sqlite-driver.js";
+export { asyncSqliteDriver, bindSqlite, sqliteDriver } from "./sqlite-driver.js";
 export { sqlEventStore, sqliteEventStore, type SqlEventStoreOptions } from "./event-store.js";
 export { LogCorrupt } from "./local-log.js";
 export type {
@@ -45,6 +45,15 @@ export type {
 } from "./open-stores.js";
 export { openStores, scopedStores, storeNameFor } from "./open-stores.js";
 export { DetachRefused, detachScope } from "./detach.js";
+export type { RowSync } from "./row-sync.js";
+export {
+  ACKED,
+  ROW_SYNC,
+  operationOfSql,
+  rowSyncDdl,
+  rowSyncTable,
+  syncOfSql,
+} from "./row-sync.js";
 export type { BudgetReport, StorageBudget } from "./budget.js";
 export { sweepBudget } from "./budget.js";
 export type { CaptureOptions } from "./capture.js";
@@ -65,7 +74,7 @@ export type { Compiled, CompileOptions } from "./read-filter.js";
 export { columnScalarKind } from "./read-filter.js";
 export type { PrincipalStatement, RlsOptions } from "./rls.js";
 export { installRls, principalSettings, rlsDdl } from "./rls.js";
-export { inTransaction } from "./sql.js";
+export { inTransaction, onConnection } from "./sql.js";
 export { compileRead } from "./read-filter.js";
 export type {
   TxReceipt,

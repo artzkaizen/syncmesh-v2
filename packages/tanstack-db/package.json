@@ -1,0 +1,31 @@
+{
+  "name": "@syncmesh/tanstack-db",
+  "version": "0.0.0",
+  "description": "TanStack DB collections over a mesh query: keyed diffs in, procedure bindings out",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@syncmesh/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@syncmesh/drizzle": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncmesh/config": "workspace:*",
+    "@tanstack/db": "^0.9.0",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "peerDependencies": {
+    "@tanstack/db": ">=0.9"
+  }
+}

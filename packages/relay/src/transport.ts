@@ -2,13 +2,26 @@ import type { Cursors, Interest, Unsubscribe } from "@syncmesh/engine";
 import type { Transport, TransportContext } from "@syncmesh/transport";
 
 import { createHub, interestFrom, narrows } from "@syncmesh/engine";
+import { Temporal } from "@syncmesh/temporal";
 import { grantFrame, grantRequestFrame, presenceFrame } from "@syncmesh/transport";
 
 import type { SessionHooks } from "./session.js";
 
 import { createBlobChannel } from "./blob-channel.js";
 import { RELAY_PROTOCOL_VERSIONS, joinFrame } from "./frames.js";
+import { createLinkReport } from "./link-report.js";
+import { createRedial } from "./redial.js";
 import { wireSession } from "./session.js";
+
+/** Why a socket this file hung up hung up, said once here and read by the close that follows. */
+const MUTE = "the relay stopped answering: no frame within 2.5 times its keepalive";
+const REFUSED = "the relay speaks none of the protocol versions this build offers";
+const UNSENT = "the frame did not leave the relay socket";
+const UNDIALLED = "the relay could not be dialled";
+
+/** A thrown cause in words, or the sentence that stands in when it brought none. */
+const reasonOf = (cause: unknown, fallback: string): string =>
+  cause instanceof Error ? cause.message : fallback;
 
 /**
  * One dialed connection to a relay: whole frames both ways, a close signal, and a `send`
@@ -49,10 +62,11 @@ export interface RelayTransportOptions {
 export function relayTransport(options: RelayTransportOptions): Transport {
   const name = options.name ?? "relay";
   const versions = options.versions ?? RELAY_PROTOCOL_VERSIONS;
-  const baseMs = options.reconnectMs ?? 500;
-  const maxMs = options.maxReconnectMs ?? 30_000;
   const status = createHub<boolean>();
   const blobs = createBlobChannel((frame) => sendSafe(frame));
+  // the mesh's clock where there is one, so a link event and the fold beside it agree — the same
+  // rule `createFrameTransport` follows, and the reason `ctx` is read per call rather than captured
+  const report = createLinkReport(name, () => ctx?.now?.() ?? Temporal.Now.instant());
 
   let ctx: TransportContext | undefined;
   let live: RelayDial | undefined;
@@ -61,13 +75,18 @@ export function relayTransport(options: RelayTransportOptions): Transport {
   /** This join asked from nothing because the interest outgrew what our cursors describe (D23). */
   let repaging = false;
   let online = false;
-  let backoff = baseMs;
-  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let deadline: ReturnType<typeof setTimeout> | undefined;
   let keepaliveMs: number | undefined;
   let unsubscribe: Unsubscribe[] = [];
   let readyResolve = (): void => undefined;
   let ready = new Promise<void>((resolve) => (readyResolve = resolve));
+  /**
+   * The deadline a dead relay is allowed to hold the mesh for, armed once per `start`.
+   *
+   * Held rather than folded into `ready`, because {@link Transport.whenReady} and
+   * {@link Transport.caughtUp} are two questions and only one of them is answered by a hello.
+   */
+  let forced = Promise.resolve();
   let caughtUpResolve = (): void => undefined;
   // re-armed on every reconnect: a session that dropped mid-catch-up has not finished its pass,
   // and answering otherwise would let an app draw an empty state over a half-delivered room
@@ -76,15 +95,33 @@ export function relayTransport(options: RelayTransportOptions): Transport {
   const sendSafe = (frame: Uint8Array): void => {
     try {
       live?.send(frame);
-    } catch {
+    } catch (cause) {
       // the frame did not leave; the reconnect's fresh join re-requests everything it covered
+      report.dropped(reasonOf(cause, UNSENT));
     }
   };
+
+  /** Ends the session for a reason of ours, so the close that follows can say what it was. */
+  const hangUp = (why: string): void => {
+    report.closing(why);
+    live?.close();
+  };
+
+  const redial = createRedial({
+    dial: options.dial,
+    done: () => stopped || fatal,
+    onDialed: (dialed) => session(dialed),
+    // a dial that never opened is not a link that closed: nothing was ever there to end, and this
+    // is the one ending a relay that is simply not running ever produces
+    onFailed: (cause) => report.undialled(reasonOf(cause, UNDIALLED)),
+    ...(options.reconnectMs !== undefined && { reconnectMs: options.reconnectMs }),
+    ...(options.maxReconnectMs !== undefined && { maxReconnectMs: options.maxReconnectMs }),
+  });
 
   const rearm = (): void => {
     if (keepaliveMs === undefined) return; // a hello-less relay arms nothing
     clearTimeout(deadline);
-    deadline = setTimeout(() => live?.close(), keepaliveMs * 2.5);
+    deadline = setTimeout(() => hangUp(MUTE), keepaliveMs * 2.5);
   };
 
   /**
@@ -121,16 +158,19 @@ export function relayTransport(options: RelayTransportOptions): Transport {
       rearm,
       rejoin: join,
       onHello: (announcedMs) => {
+        report.proven();
         keepaliveMs = announcedMs;
         rearm();
-        backoff = baseMs;
+        redial.settled();
         online = true;
         status.emit(true);
         readyResolve();
       },
       onVersionRefused: () => {
+        report.refused(REFUSED);
         fatal = true;
       },
+      onDropped: report.dropped,
       onBlobAnswer: blobs.answer,
       onCaughtUp: () => {
         repaging = false;
@@ -142,6 +182,7 @@ export function relayTransport(options: RelayTransportOptions): Transport {
     Object.assign(hooks, { repaging: () => repaging });
     const offs = wireSession(ctx, dialed, hooks);
     const offClose = dialed.onClose(() => {
+      report.closed();
       clearTimeout(deadline);
       for (const off of unsubscribe) off();
       unsubscribe = [];
@@ -152,33 +193,17 @@ export function relayTransport(options: RelayTransportOptions): Transport {
       }
       if (stopped || fatal) return;
       caughtUp = new Promise<void>((resolve) => (caughtUpResolve = resolve));
-      reconnectTimer = setTimeout(connect, backoff);
-      backoff = Math.min(backoff * 2, maxMs);
+      redial.again();
     });
     unsubscribe = [...offs, offClose];
     join();
   };
 
-  const connect = (): void => {
-    if (stopped || fatal) return;
-    Promise.resolve()
-      .then(() => options.dial())
-      .then((dialed) => {
-        if (stopped) {
-          dialed.close();
-          return;
-        }
-        session(dialed);
-      })
-      .catch(() => {
-        reconnectTimer = setTimeout(connect, backoff);
-        backoff = Math.min(backoff * 2, maxMs);
-      });
-  };
-
   return {
     name,
     kind: "websocket",
+    condition: report.condition,
+    onLinkEvent: report.onLinkEvent,
     priority: options.priority ?? 1,
     sendPresence: (wire) => sendSafe(presenceFrame(wire)),
     putBlob: blobs.put,
@@ -187,17 +212,27 @@ export function relayTransport(options: RelayTransportOptions): Transport {
       ctx = context;
       stopped = false;
       ready = new Promise<void>((resolve) => (readyResolve = resolve));
-      const forced = new Promise<void>((resolve) =>
-        setTimeout(resolve, options.forceReadyAfter ?? 1000),
-      );
+      forced = new Promise<void>((resolve) => setTimeout(resolve, options.forceReadyAfter ?? 1000));
       ready = Promise.race([ready, forced]);
-      connect();
+      redial.attempt();
       return Promise.resolve();
     },
     whenReady: () => ready,
-    // never longer than `whenReady` allows: a relay that never speaks force-resolves, and a
-    // source that cannot answer must not be the one that wedges the mesh
-    caughtUp: () => Promise.race([caughtUp, ready]),
+    /**
+     * The last page, or the deadline — **not** the hello.
+     *
+     * This used to race the catch-up against `ready`, and `ready` resolves the moment the relay
+     * says hello. A hello is the *start* of a first pass, so the answer came back before a single
+     * page had landed and `mesh.settled()` meant "the socket opened". Measured: a second install
+     * joining a seeded room read its own empty database, decided the workspace needed seeding and
+     * authored a duplicate of it — which converged, because that seed is deterministic, and left
+     * a log with two authors for every row.
+     *
+     * The deadline is still there and still does the job it was put there for: a relay that never
+     * speaks force-resolves at `forceReadyAfter`, so a source that cannot answer is never the one
+     * that wedges the mesh. What it no longer does is answer on behalf of one that is mid-sentence.
+     */
+    caughtUp: () => Promise.race([caughtUp, forced]),
     resync: () => join(),
     requestGrant: (invite) => {
       if (ctx !== undefined) sendSafe(grantRequestFrame(ctx.identity.peerId, invite));
@@ -205,7 +240,7 @@ export function relayTransport(options: RelayTransportOptions): Transport {
     onStatus: status.subscribe,
     stop: () => {
       stopped = true;
-      clearTimeout(reconnectTimer);
+      redial.cancel();
       clearTimeout(deadline);
       for (const off of unsubscribe) off();
       unsubscribe = [];

@@ -1989,6 +1989,7 @@ Every export of the new version, by package — if it is not on this list, it is
 | `@syncmesh/react` | `useQuery`, `useOperation`, `useCan` |
 | `@syncmesh/tanstack-db` | `syncmeshCollection` |
 | `@syncmesh/transports` | `ble`, `lan`, `awdl`, `wifiAware`, `webSocket`, `http`, `webSocketListener`; the `TransportAdapter` SPI |
+| `@syncmesh/browser` | one engine per origin, because only one browsing context may hold a durable database: `serveMesh(mesh)` in the elected tab's dedicated worker, `connectMesh({ link, schema })` in every tab, and the `MeshLink` between them. The only adapter an app calls itself — a driver is passed to `createClient`, this one is the worker entry you write |
 | shared types | `Query`, `Write`, `OperationStatus`, `CustodyReceipt`, `Coverage`, `RecoveryIssue`, `Milestone`, `BlobRef`, `SessionAsk`, `TransportSource`, `TransportCondition`, `Entropy` |
 
 ## Chapter 31. Glossary

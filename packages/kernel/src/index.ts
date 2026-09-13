@@ -32,5 +32,5 @@ export {
   stampOf,
 } from "./event.js";
 export type { PartitionKey } from "./partition.js";
-export { InvalidPartitionKey, PARTITION_KEY, parsePartitionKey } from "./partition.js";
+export { InvalidPartitionKey, PARTITION_KEY, kindOf, parsePartitionKey } from "./partition.js";
 export { readRows, readRowsIn } from "./state.js";

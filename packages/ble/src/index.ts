@@ -1,4 +1,12 @@
-export { HINT_CHARS, advertisement, hintFrom, hintOf } from "./advert.js";
+export {
+  GROUP_TAG_BYTES,
+  HINT_CHARS,
+  advertisement,
+  groupFrom,
+  groupTag,
+  hintFrom,
+  hintOf,
+} from "./advert.js";
 export { NotBase64, base64ToBytes, bytesToBase64 } from "./base64.js";
 export type { FragmentError, ReassemblyOptions } from "./fragment.js";
 export {
@@ -12,23 +20,6 @@ export {
 } from "./fragment.js";
 export type { DiscoveryOptions, Sighting } from "./dial.js";
 export { DEFAULT_TTL_MS, discovery, shouldDial } from "./dial.js";
-export type { Hello, SessionKeys } from "./handshake.js";
-export {
-  HELLO,
-  HELLO_BYTES,
-  HandshakeFailed,
-  SEAL_OVERHEAD,
-  SEALED,
-  ephemeralSecret,
-  readHello,
-  seal,
-  sealNonce,
-  sessionKeys,
-  unseal,
-  writeHello,
-} from "./handshake.js";
-export type { SessionOptions } from "./session.js";
-export { DEFAULT_MAX_PENDING, secureLink } from "./session.js";
 export type { LinkOptions } from "./link.js";
 export { SendFailed, bleLink } from "./link.js";
 export type {

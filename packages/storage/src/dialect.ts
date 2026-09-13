@@ -16,7 +16,24 @@ import { SQLITE } from "./dialect-sqlite.js";
 export interface EventSql {
   readonly insert: string;
   readonly selectAll: string;
+  /**
+   * The tail by stamp, newest first, with `length(core)` in place of the core itself — one page
+   * of headers, over the `hlc` index the log has carried since its first migration.
+   *
+   * Binds `(hlc_ms, hlc_logical, limit)` in that order in both dialects, which is why SQLite
+   * numbers its markers here: an open cursor is a stamp above every stored one, so the caller
+   * always binds three and the statement never has two shapes.
+   */
+  readonly selectRecent: string;
   readonly selectSince: string;
+  /**
+   * The rows with no signature whose author is not the bound peer — what a device can never send.
+   *
+   * A predicate rather than a walk, because the answer on a healthy log is no rows and the cost
+   * of asking should match: nothing is decoded, nothing is paged, and the audit `openEngine` runs
+   * at every boot stays a single statement. Binds `(peer)`.
+   */
+  readonly selectStranded: string;
   readonly selectHas: string;
   readonly selectLastSeq: string;
   readonly selectCompactable: string;

@@ -1,0 +1,50 @@
+{
+  "name": "@syncmesh/devtools",
+  "version": "0.0.0",
+  "description": "The inspector: events, storage, transports and queries, in a panel you can open in any app",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@syncmesh/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./react": {
+      "@syncmesh/source": "./src/react/index.ts",
+      "types": "./dist/react/index.d.ts",
+      "default": "./dist/react/index.js"
+    }
+  },
+  "dependencies": {
+    "@syncmesh/browser": "workspace:*",
+    "@syncmesh/client": "workspace:*",
+    "@syncmesh/engine": "workspace:*",
+    "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/temporal": "workspace:*",
+    "@syncmesh/transport": "workspace:*"
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "^18.0.1",
+    "@syncmesh/config": "workspace:*",
+    "@syncmesh/orpc": "workspace:*",
+    "@syncmesh/react": "workspace:*",
+    "@syncmesh/schema": "workspace:*",
+    "@types/bun": "catalog:",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  }
+}

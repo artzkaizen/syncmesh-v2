@@ -10,6 +10,7 @@ import type { Coverage } from "./sync.js";
 
 import { createEngine } from "./engine.js";
 import { StateCorrupt, allRows, rowsFor, writeKeysOf } from "./state-store.js";
+import { strandedWrites } from "./stranded.js";
 import { EMPTY_COVERAGE } from "./sync.js";
 
 /** What `createEngine` starts from: persisted state, what it covers, and the log tail above it. */
@@ -30,12 +31,21 @@ interface Cached {
  * its coverage, and moves the clock past the highest stored stamp before any write is numbered.
  * A corrupt or absent state store is rebuilt from the whole log — unless the log has been compacted,
  * in which case boot fails with `StateCorrupt` rather than open a partial state.
+ *
+ * **It also audits the log for writes this device can never send** ({@link StrandedWrites}) and
+ * reports them on `options.onError`. Boot is the moment that matters: opening a log under a key
+ * different from the one that wrote part of it is what strands those events, and it is the last
+ * point at which anybody could still be told. It reports rather than refuses — every database
+ * this has already happened to would be bricked by a refusal, and the events are folded and
+ * standing in the state either way — so a caller that wants to *stop* is told in time to.
  */
 export function openEngine(
   options: EngineOptions,
 ): Promise<Result<Engine, StoreFailure | StateCorrupt>> {
   const { store, stateStore, clock } = options;
   return Result.gen(async function* () {
+    for (const report of yield* Result.await(strandedWrites(store, options.peerId)))
+      options.onError?.(report);
     const cached =
       stateStore === undefined ? undefined : yield* Result.await(load(store, stateStore));
     const state = cached?.state ?? emptyState();

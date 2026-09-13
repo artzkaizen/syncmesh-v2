@@ -3,9 +3,10 @@ import type { BlobError, BlobHash, BlobStore } from "@syncmesh/storage";
 import type { Transport } from "@syncmesh/transport";
 
 import { Result as R } from "@syncmesh/result";
-import { BlobNotFound, BlobTimeout, hashOf, verifyBlob } from "@syncmesh/storage";
+import { BlobNotFound, BlobTimeout, hashOf, memoryBlobStore, verifyBlob } from "@syncmesh/storage";
 
 import { NoSuchCapability } from "./errors.js";
+import { meterBlobs } from "./inspect.js";
 
 export interface Blobs {
   /**
@@ -135,3 +136,16 @@ export function createBlobs(deps: BlobsDeps): Blobs {
 }
 
 export { BlobNotFound, NoSuchCapability };
+
+/**
+ * The blob surface, metered, over whichever transports can carry bytes out of band (D18).
+ *
+ * Assembled here rather than in the mesh because the default store is a fact about blobs: a mesh
+ * given none keeps them in memory, which is the right answer for a process that has not said
+ * where else they should go and the wrong one to restate at every call site.
+ */
+export const openBlobs = (
+  tally: Parameters<typeof meterBlobs>[0],
+  store: BlobStore | undefined,
+  transports: () => readonly Transport[],
+) => meterBlobs(tally, createBlobs({ store: store ?? memoryBlobStore(), transports }));

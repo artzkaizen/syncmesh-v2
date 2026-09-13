@@ -28,6 +28,9 @@ export interface OperationRow {
   readonly seq: SeqNum;
   readonly label: string;
   readonly atMs: number;
+  /** The write's own stamp, so a row can find its operation by the stamp it already carries. */
+  readonly hlcMs?: number;
+  readonly hlcLogical?: number;
   readonly status: OperationOutcome;
   /** Set when an authority overwrote this write's values, and why (ch. 20). */
   readonly correction?: { readonly by: string; readonly reason: string };
@@ -120,6 +123,8 @@ export function operationStore(
             Number(op.seq),
             op.label,
             op.atMs,
+            op.hlcMs ?? 0,
+            op.hlcLogical ?? 0,
             "applied",
           ]),
         ),

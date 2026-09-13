@@ -1,10 +1,10 @@
-export type { LiveCall, LiveResult } from "./use-live-query.js";
+export type { LiveCall, LiveResult, QueryOptions } from "./use-live-query.js";
 export { useLiveQuery } from "./use-live-query.js";
 export type { Coverage, QueryResult } from "./use-query.js";
 export { useQuery } from "./use-query.js";
 export type { PresenceTopic } from "./use-presence.js";
 export { usePresence } from "./use-presence.js";
-export type { CanSource } from "./use-can.js";
+export type { CanCall, CanSource } from "./use-can.js";
 export type { OperationRecord, OperationSource } from "./use-operation.js";
 export { useOperation } from "./use-operation.js";
 export type { SyncSource, SyncState } from "./use-sync-of.js";

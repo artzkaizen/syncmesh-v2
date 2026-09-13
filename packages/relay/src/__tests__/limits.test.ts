@@ -19,6 +19,8 @@ const tight = (event: number, blob: number) => ({
   rates: {
     event: { burst: event, every: SECOND },
     blob: { burst: blob, every: SECOND },
+    // not under test here: a room of one client fans out to nobody
+    fanout: DEFAULT_LIMITS.rates.fanout,
   },
 });
 
@@ -128,6 +130,71 @@ describe("per-socket token buckets", () => {
  * re-push a no-op. This compares digests rather than rows, because comparing rows is what let
  * five earlier convergence bugs ship green.
  */
+/** A rate table where the room's fan-out is what runs out, not its frames. */
+const amplified = (fanout: number) => ({
+  rates: {
+    event: DEFAULT_LIMITS.rates.event,
+    blob: DEFAULT_LIMITS.rates.blob,
+    fanout: { burst: fanout, every: SECOND },
+  },
+});
+
+describe("fan-out is metered too (gap audit №7)", () => {
+  test("a socket pays for the sends its event caused, not for the one it made", async () => {
+    const [a, b, c] = [peer(40, "acct_a"), peer(80, "acct_b"), peer(120, "acct_c")];
+    // three deliveries' worth: the first event reaches two other clients, the second would not
+    const room = await openRoom({ now: () => T0, limits: amplified(3) });
+    const sockets = [fakeSocket(), fakeSocket(), fakeSocket()];
+    const conns = sockets.map((s) => room.connect(s.socket));
+    conns[0]?.receive(join(a.identity.peerId));
+    conns[1]?.receive(join(b.identity.peerId));
+    conns[2]?.receive(join(c.identity.peerId));
+    await tick();
+
+    conns[0]?.receive(eventFrame(await write(a, "n1", "one")));
+    await tick();
+    expect(sockets[0]?.closedWith).toEqual([]); // two deliveries, one token left
+    expect(room.offset()).toBe(1);
+
+    // the second write is affordable as a frame and not as an amplification: two more deliveries
+    // against one remaining token, and the *next* frame is what pays for it
+    conns[0]?.receive(eventFrame(await write(a, "n2", "two")));
+    await tick();
+    expect(room.offset()).toBe(2);
+    conns[0]?.receive(eventFrame(await write(a, "n3", "three")));
+    await tick();
+
+    expect(sockets[0]?.ofKind("error")[0]?.code).toBe("rate");
+    expect(sockets[0]?.closedWith).toEqual(["rate"]);
+    // and the clients it was amplifying to are untouched: one socket's debt is its own
+    expect(sockets[1]?.closedWith).toEqual([]);
+    expect(sockets[2]?.closedWith).toEqual([]);
+    room.close();
+  });
+
+  test("a room of one costs nothing to write to, however tight the meter", async () => {
+    const a = peer(40, "acct_a");
+    const room = await openRoom({ now: () => T0, limits: amplified(1) });
+    const s = fakeSocket();
+    const conn = room.connect(s.socket);
+    conn.receive(join(a.identity.peerId));
+    await tick();
+
+    // an event nobody else is in the room for fans out to nobody, so it owes nothing
+    for (const [id, body] of [
+      ["n1", "one"],
+      ["n2", "two"],
+      ["n3", "three"],
+    ] as const) {
+      conn.receive(eventFrame(await write(a, id, body)));
+      await tick();
+    }
+    expect(s.closedWith).toEqual([]);
+    expect(room.offset()).toBe(3);
+    room.close();
+  });
+});
+
 describe("a rate-limited close loses nothing", () => {
   test("a client hung up on mid-push reconnects and both peers reach the same digest", async () => {
     const relay = await startRelay(0, {
@@ -139,6 +206,7 @@ describe("a rate-limited close loses nothing", () => {
           // above the join preamble, below a twelve-event push: this costs several sockets
           event: { burst: 8, every: Temporal.Duration.from({ milliseconds: 20 }) },
           blob: DEFAULT_LIMITS.rates.blob,
+          fanout: DEFAULT_LIMITS.rates.fanout,
         },
       },
     });

@@ -1,6 +1,7 @@
 import type { TelemetryEvent } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 
+import { createMemoryEventStore } from "@syncmesh/engine";
 import { hashOf, memoryBlobStore } from "@syncmesh/storage";
 import { eventFrame } from "@syncmesh/transport";
 import { describe, expect, test } from "bun:test";
@@ -8,7 +9,7 @@ import { describe, expect, test } from "bun:test";
 import type { RelayTelemetry } from "../telemetry.js";
 
 import { blobGetFrame, blobPutFrame, joinFrame } from "../frames.js";
-import { fakeSocket, openRoom, peer, tick, write } from "./fixtures.js";
+import { entryOf, fakeSocket, openRoom, peer, tick, write } from "./fixtures.js";
 
 const join = (peerId: PeerId) => joinFrame([1], peerId, new Map());
 
@@ -38,9 +39,43 @@ describe("what the relay reports (D17)", () => {
     const [joined] = of("relay.join");
     expect(joined?.sizes).toEqual({ cursors: 0, presence: 0 });
     const [caught] = of("relay.catchup");
-    expect(caught?.sizes).toEqual({ found: 0, admitted: 0, pages: 1 }); // one page always
+    expect(caught?.sizes).toEqual({ found: 0, admitted: 0, unsendable: 0, pages: 1 }); // one page always
     expect(of("relay.event")).toHaveLength(2);
     expect(seen.every((e) => e.duration.sign >= 0)).toBe(true);
+    room.close();
+  });
+
+  /**
+   * **A relay serving history handed a joiner a run with a hole in it and reported nothing.**
+   *
+   * `paged` cannot build an envelope for an entry the log holds without a signature — nobody but
+   * its author can sign it — so it leaves. Nothing downstream could tell: `found` is counted
+   * before interest, `admitted` before the envelopes, `pages` counts frames, and the joiner sees
+   * a page that is simply shorter than it would otherwise have been. The room's own cursors are
+   * honest about it (see cursors.test.ts), which stops the joiner *stalling* but does not stop
+   * the events being gone, and tells nobody.
+   *
+   * What the log ends up in that state is a device that rotated its key and kept its database.
+   * The count is the operator-visible end of it; `Engine.stranded` is the device-visible end.
+   */
+  test("an entry with no envelope is counted, not quietly left out of the pages", async () => {
+    const a = peer(40, "acct_a");
+    const wires = [await write(a, "n1", "one"), await write(a, "n2", "two")];
+    // SAFETY: the two writes above
+    const [w1, w2] = wires as [Uint8Array, Uint8Array];
+    const store = createMemoryEventStore();
+    await store.append(entryOf(w1));
+    // the shape a rotation leaves: the event, and no signature anybody here can replace
+    await store.append({ event: entryOf(w2).event });
+
+    const { room, of } = await watched({ store });
+    const s = fakeSocket();
+    room.connect(s.socket).receive(join(peer(41, "acct_b").identity.peerId));
+    await tick();
+
+    const [caught] = of("relay.catchup");
+    expect(caught?.sizes).toEqual({ found: 2, admitted: 2, unsendable: 1, pages: 1 });
+    expect(s.events()).toBe(1); // and the joiner really is one short
     room.close();
   });
 

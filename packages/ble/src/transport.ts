@@ -1,17 +1,16 @@
 import type { PeerId } from "@syncmesh/kernel";
-import type { Bridge, FrameLink, Transport } from "@syncmesh/transport";
+import type { Transport, Upgraded } from "@syncmesh/transport";
 
 import { Result } from "@syncmesh/result";
 import { createBackoff, createFrameTransport } from "@syncmesh/transport";
 
 import type { LinkOptions } from "./link.js";
-import type { BleRadio } from "./radio.js";
+import type { BleAdvertisement, BleRadio } from "./radio.js";
 
-import { advertisement, hintFrom, hintOf } from "./advert.js";
+import { advertisement, groupFrom, groupTag, hintFrom, hintOf } from "./advert.js";
 import { discovery, shouldDial } from "./dial.js";
 import { bleLink } from "./link.js";
 import { notifyLimit as notifyLimitOf, subscriberLimit, writeLimit } from "./radio.js";
-import { secureLink } from "./session.js";
 
 /**
  * BLE as a `FrameTransport`.
@@ -46,6 +45,19 @@ export interface BleOptions {
    * across every phone, not because an app has a view.
    */
   readonly maxLinks?: number;
+  /**
+   * The fleet this device belongs to, advertised in four bytes so a stranger's phone can be
+   * refused **before** a connection is spent (book ch. 17).
+   *
+   * This is the only cheap refusal BLE can make. Ten bytes of advertisement cannot name a peer,
+   * and a prefix of one cannot be refused on without closing the join corridor — but a group
+   * can, because one of ours carries it from config before it carries any credential.
+   *
+   * **An optimization, not a security control**, exactly as it is on every other medium: anyone
+   * can put any four bytes in the air, and everything that reaches a link still faces the grant
+   * and the `allow` rules. What it saves is a connection, a subscription and a handshake.
+   */
+  readonly group?: string;
 }
 
 /** What a BLE controller sustains before throughput and latency degrade across every link. */
@@ -65,9 +77,8 @@ export const BLE_BANDWIDTH_BPS = 24_000;
 interface Held {
   /** The radio end, which takes packets in; the bridge never sees it. */
   readonly link: ReturnType<typeof bleLink>;
-  /** The encrypted end, which is what was attached and what closing has to go through. */
-  readonly frames: FrameLink;
-  readonly bridge: Bridge;
+  /** The upgraded end, which is what was attached and what closing has to go through. */
+  readonly session: Upgraded;
   readonly connectionId?: string | undefined;
 }
 
@@ -79,6 +90,29 @@ const dropPeer = (
 ): void => {
   for (const [hint, id] of proven) if (id === peer) close(hint);
 };
+
+/**
+ * Connect, find the characteristic, subscribe, and take whatever MTU we are given.
+ *
+ * Four platform calls that only ever run together: a connection without a subscription carries
+ * nothing back, and an MTU learned after the link exists is learned too late — the session's
+ * hello is the first thing out, and a link built at the 20-byte floor would fragment it eleven
+ * ways. A failure is a value because a peer that will not connect is ordinary on this medium.
+ */
+const openConnection = (peripheralId: string, options: BleOptions) =>
+  Result.tryPromise({
+    try: async () => {
+      const { radio, serviceUuid, characteristicUuid } = options;
+      const connection = await radio.connect(peripheralId);
+      await radio.discoverServices(connection.connectionId);
+      await radio.subscribe(connection.connectionId, serviceUuid, characteristicUuid);
+      const mtu =
+        (await radio.requestMtu?.(connection.connectionId, options.mtu ?? DEFAULT_MTU)) ??
+        connection.mtu;
+      return { connectionId: connection.connectionId, mtu };
+    },
+    catch: (cause) => cause,
+  });
 
 export function bleTransport(options: BleOptions): Transport {
   const { radio, serviceUuid, characteristicUuid } = options;
@@ -106,7 +140,14 @@ export function bleTransport(options: BleOptions): Transport {
   const transport = createFrameTransport({
     name: options.name ?? "ble",
     kind: "ble",
-    open: async (ctx, attach) => {
+    ...(options.onDropped !== undefined && { onDropped: options.onDropped }),
+    /**
+     * Direct — a phone two metres away with no server in the path — and narrow. Not `costly`:
+     * low energy is the whole of what BLE is, which is why presence may ride it where an
+     * expensive radio would refuse the same frame.
+     */
+    route: () => ({ direct: true, bandwidthBps: BLE_BANDWIDTH_BPS }),
+    open: async (ctx, _attach, upgrade) => {
       const self = hintOf(ctx.identity.peerId);
       /**
        * A peer that will not connect is re-advertised every second or so, and dialling each
@@ -114,6 +155,20 @@ export function bleTransport(options: BleOptions): Transport {
        * because a dial that fails has not proved a peer id to key by.
        */
       const backoff = createBackoff();
+      /**
+       * Whether an advertisement is one of ours, when it says.
+       *
+       * Abstains rather than refuses when it does not: an older build advertises no group, and a
+       * platform that surfaces only the local name drops the field entirely. Refusing on a field
+       * that may simply not have arrived would make a working fleet invisible to itself.
+       */
+      const ours = options.group === undefined ? undefined : groupTag(options.group);
+      const ourFleet = (advert: BleAdvertisement): boolean => {
+        if (ours === undefined) return true;
+        const theirs = groupFrom(advert, serviceUuid);
+        if (theirs === undefined) return true;
+        return theirs.every((byte, at) => byte === ours[at]);
+      };
       const seen = discovery(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs });
 
       closeLink = (hint) => {
@@ -123,17 +178,17 @@ export function bleTransport(options: BleOptions): Transport {
         proven.delete(hint);
         if (link.connectionId !== undefined) byConnection.delete(link.connectionId);
         seen.forget(hint);
-        link.bridge.close();
-        link.frames.close?.();
+        link.session.close();
       };
 
-      /** A link, attached, and remembered under the hint the radio knows it by. */
-      const hold = (
-        hint: string,
-        connectionId: string | undefined,
-        mtu?: number,
-        peer?: PeerId,
-      ): Held => {
+      /**
+       * A link handed to the upgrader, remembered under the hint the radio knows it by.
+       *
+       * The radio fragments below this line, so what comes out of `bleLink` is already whole
+       * frames — `upgrade.frames` rather than `upgrade.bytes`, and no length prefix is paid for
+       * boundaries the medium already has.
+       */
+      const hold = (hint: string, connectionId: string | undefined, mtu?: number): Held => {
         const wiring: LinkOptions = {
           radio,
           serviceUuid,
@@ -152,42 +207,30 @@ export function bleTransport(options: BleOptions): Transport {
         // its presence is the role: a link with a connection writes, one without notifies
         if (connectionId !== undefined) Object.assign(wiring, { connectionId });
         const link = bleLink(wiring);
-        const frames = secureLink(link, {
-          identity: ctx.identity,
-          onDropped: drop,
-          // the session is open and the peer signed for its id: this link now reaches it
-          onEstablished: (id) => void proven.set(hint, id),
-          // a handshake that cannot finish is a link that will never carry anything
-          onFailed: (cause) => {
-            drop(`the session with ${hint} failed: ${String(cause)}`);
+        const session = upgrade.frames(link, {
+          onProven: (peer) => void proven.set(hint, peer),
+          /**
+           * The one ending worth remembering on this medium.
+           *
+           * BLE cannot ask the door before it dials — four bytes of advertisement name no peer
+           * — so a refusal costs a connection, a subscription and a handshake. Remembering it by
+           * hint is what stops the *next* advertisement costing the same, which on a radio that
+           * sustains six links and runs on a battery is the difference that matters.
+           */
+          onRefused: () => backoff.failed(hint),
+          onClosed: (why) => {
+            drop(why);
             closeLink(hint);
           },
         });
-        const entry: Held = {
-          link,
-          frames,
-          bridge: attach(frames, peer),
-          connectionId,
-        };
+        const entry: Held = { link, session, connectionId };
         held.set(hint, entry);
         if (connectionId !== undefined) byConnection.set(connectionId, hint);
         return entry;
       };
 
-      /** Connect, find the characteristic, subscribe, and take whatever MTU we are given. */
       const dial = async (hint: string, peripheralId: string): Promise<void> => {
-        const opened = await Result.tryPromise({
-          try: async () => {
-            const connection = await radio.connect(peripheralId);
-            await radio.discoverServices(connection.connectionId);
-            await radio.subscribe(connection.connectionId, serviceUuid, characteristicUuid);
-            const mtu =
-              (await radio.requestMtu?.(connection.connectionId, options.mtu ?? DEFAULT_MTU)) ??
-              connection.mtu;
-            return { connectionId: connection.connectionId, mtu };
-          },
-          catch: (cause) => cause,
-        });
+        const opened = await openConnection(peripheralId, options);
         if (opened.isErr()) {
           drop(`could not dial ${hint}: ${String(opened.error)}`);
           backoff.failed(hint);
@@ -203,13 +246,16 @@ export function bleTransport(options: BleOptions): Transport {
       await radio.publishServices({
         services: [{ uuid: serviceUuid, characteristics: [{ uuid: characteristicUuid }] }],
       });
-      await radio.startAdvertising(advertisement(ctx.identity.peerId, serviceUuid));
+      await radio.startAdvertising(advertisement(ctx.identity.peerId, serviceUuid, options.group));
       await radio.startScan({ serviceUuids: [serviceUuid] });
 
       radio.onScanResult((advert) => {
         const hint = hintFrom(advert, serviceUuid);
         // our own advertisement comes back on some platforms; dialling it would be a link to self
         if (hint === undefined || hint === self) return;
+        // the cheap refusal, and the only one this medium has room for: another fleet's phone
+        // is not a threat, merely not ours to spend a connection and a handshake on
+        if (!ourFleet(advert)) return;
         if (!seen.sighted(hint, advert.peripheralId)) return;
         if (!shouldDial(self, hint)) return; // the other end dials; we answer when it writes
         if (!backoff.ready(hint)) return; // still waiting out a failed dial to this peer
@@ -251,10 +297,7 @@ export function bleTransport(options: BleOptions): Transport {
       };
     },
     close: async () => {
-      for (const [, entry] of held) {
-        entry.bridge.close();
-        entry.frames.close?.();
-      }
+      for (const [, entry] of held) entry.session.close();
       held.clear();
       byConnection.clear();
       proven.clear(); // a stopped radio reaches nobody, whatever it proved while it was up
@@ -273,12 +316,6 @@ export function bleTransport(options: BleOptions): Transport {
 
   return {
     ...transport,
-    /**
-     * Direct — a phone two metres away with no server in the path — and narrow. Not `costly`:
-     * low energy is the whole of what BLE is, which is why presence may ride it where an
-     * expensive radio would refuse the same frame.
-     */
-    route: () => ({ direct: true, bandwidthBps: BLE_BANDWIDTH_BPS }),
     /**
      * The peers with an open session on this radio (E28), so a frame addressed to one of them
      * can be routed here instead of broadcast everywhere.

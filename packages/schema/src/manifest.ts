@@ -118,6 +118,20 @@ export interface Manifest<
   readonly tables: { readonly [K in keyof C]: TableEntry<P, R, C[K]> };
   /** The ephemeral tier (D16): topics that never touch the log, the snapshot or a cursor. */
   readonly presence?: PresenceBlock<P, PC>;
+  /**
+   * Kinds whose content is end-to-end encrypted (book ch. 14). Every carrier — another device,
+   * a relay, the server's custody role — holds the envelope and cannot read a value in it.
+   *
+   * A list of kinds rather than a flag inside the tree, because the tree is a tree of kinds and
+   * a boolean in it would be a node that is not one. Naming them here is also the only place
+   * where the whole set is visible at once, which is what a person deciding what a server may
+   * judge actually wants to read.
+   *
+   * **The trade is stated, not hidden**: sealing buys operator-proof custody and costs
+   * server-side judgment. Folding into Postgres, watchdogs and corrections are structurally
+   * unavailable for a sealed kind, because a judge has to read.
+   */
+  readonly sealed?: readonly PartitionKind<P>[];
 }
 
 export interface SchemaEntry<P extends PartitionTree = PartitionTree> {
@@ -150,12 +164,25 @@ export interface Schema<
   readonly merge: MergeSpec;
   /** Every declared kind, parents before children. */
   readonly kinds: readonly Kinds<P>[];
+  /** The kinds whose content is sealed; empty for a manifest that declares none. */
+  readonly sealedKinds: ReadonlySet<string>;
   readonly parentOf: (kind: Kinds<P>) => Kinds<P> | undefined;
   /** Roles that apply in a kind, inherited from its parent when it declares none. */
   readonly rolesFor: (kind: PartitionKind<P>) => readonly string[];
 }
 
 const RESERVED = new Set<string>(["global", "user", "local"]);
+
+/** The sealed kinds, checked against the tree: a typo here is a partition nobody encrypts. */
+const sealedIn = (
+  declared: readonly string[] | undefined,
+  parents: ReadonlyMap<string, string | undefined>,
+): ReadonlySet<string> => {
+  for (const kind of declared ?? [])
+    if (!parents.has(kind) && !RESERVED.has(kind))
+      panic(`sealed: unknown partition kind "${kind}"`);
+  return new Set<string>(declared ?? []);
+};
 
 /** One manifest for the data model (D06-A). Definition mistakes throw at module load. */
 export function defineSchema<
@@ -193,6 +220,7 @@ export function defineSchema<
     if (rules.size > 0) merge.set(tbl.name, rules);
   }
   const kinds = [...parents.keys()];
+  const sealedKinds = sealedIn(manifest.sealed, parents);
   const presence = presenceTopics<P, PC>(manifest.presence, parents);
   return {
     partitions,
@@ -207,6 +235,7 @@ export function defineSchema<
     merge,
     // SAFETY: kinds are the keys of the tree, which is what Kinds<P> names
     kinds: kinds as Kinds<P>[],
+    sealedKinds,
     // SAFETY: as above
     parentOf: (kind) => parents.get(kind) as Kinds<P> | undefined,
     rolesFor: (kind) => rolesFor(parents, roles, kind),

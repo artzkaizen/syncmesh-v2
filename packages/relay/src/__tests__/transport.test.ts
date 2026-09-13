@@ -1,81 +1,16 @@
 import type { Unsubscribe } from "@syncmesh/engine";
 
-import { createMemoryEventStore } from "@syncmesh/engine";
 import { describe, expect, test } from "bun:test";
 
-import type { RelayRoom } from "../room.js";
-import type { RelaySocket } from "../sender.js";
 import type { RelayDial } from "../transport.js";
 
 import { helloFrame } from "../frames.js";
-import { openRelayRoom } from "../room.js";
 import { relayTransport } from "../transport.js";
-import { bodyOf, peer, tick, write } from "./fixtures.js";
-
-/** An in-process dial to a live room: frames both ways, async delivery, a closable end. */
-const dialTo = (room: RelayRoom) => {
-  let dials = 0;
-  const dial = (): RelayDial => {
-    dials += 1;
-    const frames = new Set<(frame: Uint8Array) => void>();
-    const closes = new Set<() => void>();
-    let open = true;
-    const hangUp = (): void => {
-      if (!open) return;
-      open = false;
-      conn.closed();
-      // the close event lands after any frames already in flight, as on a real socket
-      queueMicrotask(() => {
-        for (const cb of closes) cb();
-      });
-    };
-    const socket: RelaySocket = {
-      send: (frame) => {
-        if (!open) return "dropped";
-        // a frame accepted before close still delivers: TCP flushes what send() took
-        const bytes = Uint8Array.from(frame);
-        queueMicrotask(() => {
-          for (const cb of frames) cb(bytes);
-        });
-        return "sent";
-      },
-      close: () => hangUp(),
-    };
-    const conn = room.connect(socket);
-    return {
-      send: (frame) => {
-        if (!open) throw new Error("relay socket is not open");
-        conn.receive(Uint8Array.from(frame));
-      },
-      onFrame: (cb) => {
-        frames.add(cb);
-        return () => void frames.delete(cb);
-      },
-      onClose: (cb) => {
-        closes.add(cb);
-        return () => void closes.delete(cb);
-      },
-      close: () => hangUp(),
-    };
-  };
-  return { dial, dials: () => dials };
-};
-
-const open = async (overrides: Partial<Parameters<typeof openRelayRoom>[0]> = {}) =>
-  (
-    await openRelayRoom({
-      name: "main",
-      store: createMemoryEventStore(),
-      epoch: "epoch-1",
-      keepaliveMs: 60_000,
-      pageSize: 2,
-      ...overrides,
-    })
-  ).unwrap();
+import { bodyOf, dialTo, openRoom, peer, tick, write } from "./fixtures.js";
 
 describe("relayTransport", () => {
   test("two peers converge through the room; a late joiner catches up in pages, then stays live", async () => {
-    const room = await open();
+    const room = await openRoom();
     const a = peer(40, "acct_a");
     const b = peer(80, "acct_b");
     await write(a, "n1", "one");
@@ -108,7 +43,7 @@ describe("relayTransport", () => {
   });
 
   test("a hang-up reconnects with a fresh join and resumes; a version refusal never reconnects", async () => {
-    const room = await open();
+    const room = await openRoom();
     const a = peer(40, "acct_a");
     const b = peer(80, "acct_b");
     const wired = dialTo(room);
@@ -120,13 +55,13 @@ describe("relayTransport", () => {
 
     room.close(); // the relay hangs up every socket
     await tick(30);
-    const revived = await open(); // a new room over a fresh store — the transport is still dialing the old one
+    const revived = await openRoom(); // a new room over a fresh store — the transport is still dialing the old one
     void revived;
     expect(wired.dials()).toBeGreaterThan(1); // backoff reconnects kept trying
     expect(offline).toContain(false);
     await ta.stop();
 
-    const refused = dialTo(await open());
+    const refused = dialTo(await openRoom());
     const t99 = relayTransport({ dial: refused.dial, versions: [99], reconnectMs: 5 });
     await t99.start(b.context);
     await tick(40);
@@ -191,7 +126,7 @@ describe("relayTransport", () => {
   });
 
   test("a grant-request travels through the relay to the peer that can answer it", async () => {
-    const room = await open();
+    const room = await openRoom();
     const a = peer(40, "acct_a");
     const b = peer(80, "acct_b");
     const asked: string[] = [];

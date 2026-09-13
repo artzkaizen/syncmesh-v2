@@ -4,6 +4,7 @@ import { eventFrame } from "@syncmesh/transport";
 import { describe, expect, test } from "bun:test";
 
 import { joinFrame } from "../frames.js";
+import { DEFAULT_LIMITS } from "../limits.js";
 import { T0, entryOf, fakeSocket, openRoom, peer, tick, write } from "./fixtures.js";
 
 const SECOND = Temporal.Duration.from({ seconds: 1 });
@@ -57,7 +58,13 @@ describe("what a room says it holds", () => {
     let at = T0;
     const room = await openRoom({
       now: () => at,
-      limits: { rates: { event: { burst: 1, every: SECOND }, blob: { burst: 1, every: SECOND } } },
+      limits: {
+        rates: {
+          event: { burst: 1, every: SECOND },
+          blob: { burst: 1, every: SECOND },
+          fanout: DEFAULT_LIMITS.rates.fanout,
+        },
+      },
     });
     const s = fakeSocket();
     const conn = room.connect(s.socket);

@@ -10,7 +10,8 @@ import type { ProjectionOptions } from "./projection.js";
 import { installCapture } from "./capture.js";
 import { sqlEventStore } from "./event-store.js";
 import { tablesProjection } from "./projection.js";
-import { inTransaction } from "./sql.js";
+import { rowSyncDdl, rowSyncTable, type RowSync } from "./row-sync.js";
+import { attempt, inTransaction } from "./sql.js";
 import { sqlStateStore } from "./state-store.js";
 
 /** The log and the state as one transaction sees them: what `Stores.atomic` hands its callback. */
@@ -30,6 +31,8 @@ export interface Stores extends ScopedStores {
    * `atomic` option takes.
    */
   readonly atomic: <T>(fn: (scoped: ScopedStores) => Promise<T>) => Promise<T>;
+  /** Where each row's own write got to, for `syncOf` (book ch. 10); absent with no tables. */
+  readonly rowSync?: RowSync;
   readonly close: () => Promise<void>;
 }
 
@@ -50,10 +53,18 @@ export function openStores(
   return Result.gen(async function* () {
     const events = yield* Result.await(sqlEventStore(driver));
     const stateOptions = {};
+    let rowSync: RowSync | undefined;
     if (options.tables !== undefined) {
       yield* Result.await(installCapture(driver, options.tables));
-      const projectionOptions =
-        options.partitionColumn === undefined ? {} : { partitionColumn: options.partitionColumn };
+      yield* Result.await(
+        attempt("row-sync tables failed to open", async () => {
+          for (const statement of rowSyncDdl) await driver.run(statement);
+        }),
+      );
+      rowSync = rowSyncTable(driver);
+      const projectionOptions = { rowSync };
+      if (options.partitionColumn !== undefined)
+        Object.assign(projectionOptions, { partitionColumn: options.partitionColumn });
       Object.assign(stateOptions, {
         projection: tablesProjection(driver, options.tables, projectionOptions),
       });
@@ -64,13 +75,14 @@ export function openStores(
       state: yield* Result.await(sqlStateStore(driver, { ...stateOptions, nested: true })),
     };
     const atomic: Stores["atomic"] = (fn) => inTransaction(driver, () => fn(scoped));
-    return Result.ok({
+    const opened = {
       events,
       state,
       driver,
       atomic,
       close: () => driver.close?.() ?? Promise.resolve(),
-    });
+    };
+    return Result.ok(rowSync === undefined ? opened : { ...opened, rowSync });
   });
 }
 

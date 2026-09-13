@@ -14,6 +14,8 @@ export const SQLITE_OPERATIONS: OperationSql = {
       seq INTEGER NOT NULL,
       label TEXT NOT NULL,
       at_ms INTEGER NOT NULL,
+      hlc_ms INTEGER NOT NULL DEFAULT 0,
+      hlc_logical INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL,
       corrected_by TEXT,
       corrected_reason TEXT
@@ -27,7 +29,8 @@ export const SQLITE_OPERATIONS: OperationSql = {
       PRIMARY KEY (peer, seq, holder)
     )`,
   ],
-  insertOp: `INSERT INTO operations (id, peer, seq, label, at_ms, status) VALUES (?, ?, ?, ?, ?, ?)`,
+  insertOp: `INSERT INTO operations (id, peer, seq, label, at_ms, hlc_ms, hlc_logical, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   selectOp: `SELECT id, peer, seq, label, at_ms, status, corrected_by, corrected_reason
     FROM operations WHERE id = ?`,
   selectOpByEvent: `SELECT id, peer, seq, label, at_ms, status, corrected_by, corrected_reason
@@ -50,6 +53,8 @@ export const POSTGRES_OPERATIONS: OperationSql = {
       seq BIGINT NOT NULL,
       label TEXT NOT NULL,
       at_ms BIGINT NOT NULL,
+      hlc_ms BIGINT NOT NULL DEFAULT 0,
+      hlc_logical INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL,
       corrected_by TEXT,
       corrected_reason TEXT
@@ -63,8 +68,8 @@ export const POSTGRES_OPERATIONS: OperationSql = {
       PRIMARY KEY (peer, seq, holder)
     )`,
   ],
-  insertOp: `INSERT INTO _syncmesh_operations (id, peer, seq, label, at_ms, status)
-    VALUES ($1, $2, $3, $4, $5, $6)`,
+  insertOp: `INSERT INTO _syncmesh_operations (id, peer, seq, label, at_ms, hlc_ms, hlc_logical, status)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
   selectOp: `SELECT id, peer, seq, label, at_ms, status, corrected_by, corrected_reason
     FROM _syncmesh_operations WHERE id = $1`,
   selectOpByEvent: `SELECT id, peer, seq, label, at_ms, status, corrected_by, corrected_reason

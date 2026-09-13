@@ -36,14 +36,32 @@ export type Client<R extends Router, PC extends PresenceMap = Record<string, nev
   readonly $status: Mesh<"sqlite", PC>["status"];
   /** The radios at runtime: a settings toggle adds one, removing one removes a route (ch. 16). */
   readonly $transports: Mesh<"sqlite", PC>["transports"];
+  /** Who this device can reach, over what (ch. 17). */
+  readonly $peers: Mesh<"sqlite", PC>["peers"];
+  /** Routes that span hops: the next hop to a service, and how far (ch. 17). */
+  readonly $routes: Mesh<"sqlite", PC>["routes"];
   /** Bytes outside the log, content-addressed and verified at both ends (ch. 12). */
   readonly $blobs: Mesh<"sqlite", PC>["blobs"];
   /** How a device's events get admitted at all (ch. 14). */
   readonly $grants: Mesh<"sqlite", PC>["grants"];
+  /** Who is calling, until when, and how to end it (ch. 14). */
+  readonly $auth: Mesh<"sqlite", PC>["auth"];
+  /** Local-only data with no replication promise (ch. 8). */
+  readonly $drafts: Mesh<"sqlite", PC>["drafts"];
   /** The ephemeral tier, pinned to an instance (ch. 16). */
   readonly $presence: Mesh<"sqlite", PC>["presence"];
   /** Leak counters and the flight deck (ch. 12). */
   readonly $inspect: Mesh<"sqlite", PC>["inspect"];
+  /** What the manifest declares, for anything that enumerates tables and kinds (ch. 6). */
+  readonly $schema: Mesh<"sqlite", PC>["schema"];
+  /**
+   * Read-only SQL over the mesh's own connection; `undefined` over a bare event store (ch. 9).
+   *
+   * `all` with no `run` beside it. Every procedure above is the way to *write* — a statement
+   * through a handle becomes a signed event — and this is the one way to read that cannot
+   * accidentally become one.
+   */
+  readonly $query: Mesh<"sqlite", PC>["query"];
   /** Which devices an account has vouched for (ch. 14). */
   readonly $accounts: Mesh<"sqlite", PC>["accounts"];
   /** Every transport's queue has run out. Never rejects, never stops early (ch. 13). */
@@ -78,10 +96,16 @@ export async function createClient<
     $recovery: mesh.recovery,
     $status: mesh.status,
     $transports: mesh.transports,
+    $peers: mesh.peers,
+    $routes: mesh.routes,
     $blobs: mesh.blobs,
     $grants: mesh.grants,
+    $auth: mesh.auth,
+    $drafts: mesh.drafts,
     $presence: mesh.presence,
     $inspect: mesh.inspect,
+    $schema: mesh.schema,
+    $query: mesh.query,
     $accounts: mesh.accounts,
     $flush: mesh.flush,
     $close: mesh.stop,

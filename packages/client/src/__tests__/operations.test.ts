@@ -1,10 +1,19 @@
+import type { OperationRow } from "@syncmesh/storage";
+
 import { correct, createLink } from "@syncmesh/engine";
-import { parsePartitionKey, type ColumnName, type RowKey, type TableName } from "@syncmesh/kernel";
+import {
+  parsePartitionKey,
+  type ColumnName,
+  type PeerId,
+  type RowKey,
+  type TableName,
+} from "@syncmesh/kernel";
 import { defineSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver, defaultStore } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,6 +68,26 @@ const registerAll = (mesh: { readonly grants: Pick<MeshGrants, "register"> }) =>
   }
 };
 
+/** One registered device on an in-memory store; `authority` is for the tests that play the office. */
+const soloMesh = async (extra: { readonly authority?: PeerId } = {}) => {
+  const mesh = (
+    await createMesh({
+      driver: bunSqliteDriver(":memory:"),
+      schema: schema(),
+      identity: deviceA,
+      issuer: issuer.peerId,
+      now: () => T0,
+      ...extra,
+    })
+  ).unwrap();
+  registerAll(mesh);
+  return mesh;
+};
+
+/** Ends a wait that should not have needed waiting: a notification that never comes is the bug. */
+const timeout = (ms: number) =>
+  new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), ms));
+
 describe("the write ledger", () => {
   test("a write records an operation; a peer's acknowledgement becomes a durable receipt", async () => {
     const open = async (device: typeof deviceA) => {
@@ -99,18 +128,61 @@ describe("the write ledger", () => {
     await b.stop();
   });
 
+  test("a local commit notifies the ledger, once per write", async () => {
+    const mesh = await soloMesh();
+    const handle = mesh.on("org:acme").unwrap();
+    const ledger = mesh.operations ?? panicNoLedger();
+    let notified = 0;
+    const off = ledger.onChange(() => {
+      notified += 1;
+    });
+
+    await handle.db.insert(notes).values({ id: "n1", body: "hello" });
+    expect(notified).toBe(1);
+    await handle.db.insert(notes).values({ id: "n2", body: "again" });
+    expect(notified).toBe(2);
+
+    // an update is a write like any other: one record, one notification
+    await handle.db.update(notes).set({ body: "hello again" }).where(eq(notes.id, "n1"));
+    expect(notified).toBe(3);
+
+    off();
+    await handle.db.insert(notes).values({ id: "n3", body: "unheard" });
+    expect(notified).toBe(3);
+    await mesh.stop();
+  });
+
+  test("a listener waiting on an id sees the record the write is about to create", async () => {
+    const mesh = await soloMesh();
+    const handle = mesh.on("org:acme").unwrap();
+    const ledger = mesh.operations ?? panicNoLedger();
+
+    // the id is in hand before the commit, which is the whole reason a UI can watch for it
+    const id = crypto.randomUUID();
+    expect((await ledger.get(id)).unwrap()).toBeUndefined();
+    let resolve: (row: OperationRow | undefined) => void = () => undefined;
+    const appeared = new Promise<OperationRow | undefined>((settle) => {
+      resolve = settle;
+    });
+    const off = ledger.onChange(() => {
+      void ledger.get(id).then((row) => resolve(row.unwrapOr(undefined)));
+    });
+
+    await handle.under({ id }, async () => {
+      await handle.db.insert(notes).values({ id: "n1", body: "in flight" });
+    });
+
+    const record = await Promise.race([appeared, timeout(1000)]);
+    expect(record?.id).toBe(id);
+    expect(record?.label).toBe("notes.insert");
+    expect(record?.status).toBe("applied");
+    off();
+    await mesh.stop();
+  });
+
   test("a correction marks the displaced record superseded, reason attached", async () => {
-    const mesh = (
-      await createMesh({
-        driver: bunSqliteDriver(":memory:"),
-        schema: schema(),
-        identity: deviceA,
-        issuer: issuer.peerId,
-        authority: deviceA.peerId, // this device plays the office, so its own correction folds
-        now: () => T0,
-      })
-    ).unwrap();
-    registerAll(mesh);
+    // this device plays the office, so its own correction folds
+    const mesh = await soloMesh({ authority: deviceA.peerId });
     const handle = mesh.on("org:acme").unwrap();
     await handle.db.insert(notes).values({ id: "n1", body: "priced wrong" });
     const ledger = mesh.operations ?? panicNoLedger();

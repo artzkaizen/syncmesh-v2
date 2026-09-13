@@ -77,7 +77,7 @@ const settle = async () => {
 };
 
 // Ann admits a patient and takes a reading. Every call is `api.*`; no handle, no SQL.
-(await ann.api.patients.admit({ id: "p1", name: "J. Okonkwo", bed: "4B" })).unwrap();
+(await ann.api.patients.admit({ id: "p1", name: "J. Okonkwo", bed: "4B" }).committed).unwrap();
 const first = (
   await ann.api.observations.record({
     patientId: "p1",
@@ -85,7 +85,7 @@ const first = (
     value: "128/84",
     takenAt: Date.now(),
     author: "ann",
-  })
+  }).committed
 ).unwrap();
 
 await settle();
@@ -103,10 +103,11 @@ const offline = (
     value: "88",
     takenAt: Date.now(),
     author: "raj",
-  })
+  }).committed
 ).unwrap();
 (
   await ann.api.observations.amend({ amends: first.data.id, value: "126/82", author: "ann" })
+    .committed
 ).unwrap();
 
 console.log("raj's reading while offline:", raj.mesh.syncOf("observation", offline.data.id));

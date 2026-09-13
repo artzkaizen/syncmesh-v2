@@ -5,20 +5,26 @@
   "description": "Benchmarks that back the numbers in the RFCs and decisions",
   "type": "module",
   "scripts": {
+    "browser": "bun run src/browser-mesh.ts",
     "join": "bun run src/join.ts",
     "storage": "bun run src/storage.ts"
   },
   "devDependencies": {
+    "@syncmesh/browser": "workspace:*",
+    "@syncmesh/client": "workspace:*",
     "@syncmesh/config": "workspace:*",
+    "@syncmesh/drizzle": "workspace:*",
     "@syncmesh/engine": "workspace:*",
     "@syncmesh/kernel": "workspace:*",
     "@syncmesh/result": "workspace:*",
+    "@syncmesh/schema": "workspace:*",
     "@syncmesh/sqlite-bun": "workspace:*",
     "@syncmesh/storage": "workspace:*",
     "@syncmesh/temporal": "workspace:*",
     "@syncmesh/transport": "workspace:*",
     "@syncmesh/wire": "workspace:*",
     "@types/bun": "catalog:",
+    "drizzle-orm": "latest",
     "mitata": "1.0.34",
     "typescript": "catalog:",
     "vite-plus": "catalog:"

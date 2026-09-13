@@ -11,12 +11,17 @@ import { Result, TaggedError } from "@syncmesh/result";
 import { bytesToHex, verify } from "@syncmesh/wire";
 
 /**
- * What a sniffer is allowed to learn from a BLE link, and what it is not.
+ * What a sniffer is allowed to learn from a link, and what it is not.
  *
  * Events carry their own signatures, so nothing here is what makes a write trustworthy — the
- * bridge would reject a forged one either way. What this adds is confidentiality: a radio
- * broadcasts to whoever is in the room, and without it every row a device syncs is readable by
- * anyone holding an antenna.
+ * bridge would reject a forged one either way. What this adds is confidentiality: every medium
+ * a device is reachable on is shared with strangers — a radio broadcasts to whoever is in the
+ * room, an access point carries everyone's packets past everyone's network card — and without
+ * this, every row a device syncs is readable by anybody standing in either place.
+ *
+ * One exchange for every medium, deliberately. A device that speaks BLE to the phone beside it
+ * and Wi-Fi to the laptop across the room is not two security stories, and a per-medium
+ * handshake would be two chances to get it wrong.
  *
  * Two frames, one per direction, crossing without waiting for each other: each end signs a
  * fresh X25519 public key with the Ed25519 key that *is* its peer id, and the two agree a
@@ -41,12 +46,12 @@ export const SEAL_OVERHEAD = 1 + NONCE_BYTES + 16;
 const utf8 = (s: string) => new TextEncoder().encode(s);
 
 /**
- * Domain separation. The signature says "this ephemeral key is mine, for a BLE session" and
+ * Domain separation. The signature says "this ephemeral key is mine, for a link session" and
  * cannot be lifted from anywhere else the same Ed25519 key signs — nor lifted out to stand in
  * for an event.
  */
-const CONTEXT = utf8("syncmesh/ble/hello/v1");
-const INFO = utf8("syncmesh/ble/session/v1");
+const CONTEXT = utf8("syncmesh/link/hello/v1");
+const INFO = utf8("syncmesh/link/session/v1");
 
 export class HandshakeFailed extends TaggedError("HandshakeFailed")<{ message: string }> {}
 

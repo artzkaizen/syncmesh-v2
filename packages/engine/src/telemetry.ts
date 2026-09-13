@@ -72,6 +72,22 @@ export type RelayTelemetry =
       readonly sizes: {
         readonly found: number;
         readonly admitted: number;
+        /**
+         * **Admitted entries the relay could not build an envelope for, and so did not send.**
+         *
+         * Zero on every healthy room, and the one number here that is a fault rather than a
+         * measurement. An entry with no signature beside it can never be forwarded — nobody but
+         * its author can sign it — so a joiner is handed a run with a hole in it, and the
+         * joiner has no way at all to notice: `admitted` counts what passed interest, `pages`
+         * counts frames, and neither moves when an event is dropped on the way into one.
+         *
+         * It is reported rather than refused because refusing would take the rest of the history
+         * away from a joiner that can still use it. Counted rather than named, because every
+         * `relay.*` variant is anonymous by construction (D17) and an event id is a peer id with
+         * a number after it. A non-zero reading is the signal; which events is a question for
+         * the device that holds them, where `Engine.stranded` names them.
+         */
+        readonly unsendable: number;
         readonly pages: number;
       };
       readonly duration: Temporal.Duration;
@@ -91,6 +107,23 @@ export type RelayTelemetry =
       /** `bytes: 0` is a `blob-missing` answer — the room does not hold them. */
       readonly type: "relay.blob.get";
       readonly sizes: { readonly bytes: number };
+      readonly duration: Temporal.Duration;
+    }
+  | {
+      /**
+       * A room opened keeping its log forever (gap audit №8).
+       *
+       * Not a warning and not a default anyone changed for you: a room that keeps everything is
+       * the only kind a **new** device can bootstrap from history alone, so trimming is a real
+       * decision about what the room *is* and not a disk setting. What this does is make the
+       * decision visible — an operator reading telemetry learns which of their rooms grow
+       * forever, rather than learning it from a disk alert.
+       *
+       * `sizes.blobBytes` is the blob ceiling that *is* in force; blobs are content-addressed,
+       * so dropping them costs nothing that cannot be put back, and they default to a ceiling.
+       */
+      readonly type: "relay.retention.unbounded";
+      readonly sizes: { readonly blobBytes: number };
       readonly duration: Temporal.Duration;
     };
 

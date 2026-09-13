@@ -172,10 +172,16 @@ export const POSTGRES: Dialect = {
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       ON CONFLICT (peer, seq, local) DO NOTHING`,
     selectAll: `SELECT core, local, sig FROM _syncmesh_events ORDER BY hlc_ms, hlc_logical, peer, seq`,
+    selectRecent: `SELECT peer, seq, local, hlc_ms, hlc_logical, partition, octet_length(core)
+      FROM _syncmesh_events
+      WHERE hlc_ms < $1 OR (hlc_ms = $1 AND hlc_logical < $2)
+      ORDER BY hlc_ms DESC, hlc_logical DESC LIMIT $3`,
     selectSince: `SELECT e.core, e.local, e.sig FROM _syncmesh_events e
       WHERE e.local = $1
         AND e.seq > COALESCE((SELECT f.value::bigint FROM jsonb_each_text($2::jsonb) AS f WHERE f.key = e.peer), 0)
       ORDER BY e.peer, e.seq`,
+    selectStranded: `SELECT core, local, sig FROM _syncmesh_events
+      WHERE sig IS NULL AND local = 0 AND peer <> $1 ORDER BY peer, seq`,
     selectHas: `SELECT 1 FROM _syncmesh_events WHERE peer = $1 AND seq = $2 AND local = $3 LIMIT 1`,
     selectLastSeq: `SELECT MAX(seq) FROM (
       SELECT seq FROM _syncmesh_events WHERE peer = $1 AND local = $2

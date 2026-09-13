@@ -13,6 +13,7 @@ import { createHub, trackCoverage, type Unsubscribe } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { createPresenceStore } from "@syncmesh/transport";
+import { isRelayable } from "@syncmesh/wire";
 
 import type { RelayConnection } from "./connection.js";
 import type { Fanout } from "./fanout.js";
@@ -140,7 +141,7 @@ export async function openRelayRoom(
    * from. Any log the relay did not fill itself holds both (`StartRelayOptions.store`).
    */
   const servable = (entry: StoredEvent): boolean =>
-    entry.sig !== undefined && entry.event.local !== true;
+    isRelayable(entry) && entry.event.local !== true;
   // contiguous, and over the same entries: a MAX cursor over a hole is a claim the room cannot
   // take back, because every client asks for what is *above* the number it was given
   const coverage = trackCoverage(trimmed.value);
@@ -224,6 +225,15 @@ export async function openRelayRoom(
   };
   // subscribed after the state exists, because a fanned-in frame is ingested through it
   const offFan = fan?.onFrame(fanIn(state));
+
+  // said once, at open, and never again: which rooms grow forever is a thing an operator should
+  // learn from a dashboard rather than from a disk alert (gap audit №8)
+  if (retention.unbounded)
+    telemetry.emit({
+      type: "relay.retention.unbounded",
+      sizes: { blobBytes: retention.blobCeiling },
+      duration: Temporal.Duration.from({ seconds: 0 }),
+    });
 
   return Result.ok({
     connect: (socket) => createConnection(socket, state),

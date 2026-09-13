@@ -1,5 +1,6 @@
 import type {
   Engine,
+  EngineError,
   EngineOptions,
   EventStore,
   StateCorrupt,
@@ -10,7 +11,7 @@ import type {
 } from "@syncmesh/engine";
 import type { MergeSpec, PeerId } from "@syncmesh/kernel";
 import type { Table } from "@syncmesh/schema";
-import type { OperationStore, SqlDriver, StoreLocked, Stores } from "@syncmesh/storage";
+import type { OperationStore, RowSync, SqlDriver, StoreLocked, Stores } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { Grant, Identity } from "@syncmesh/wire";
 
@@ -47,6 +48,12 @@ export interface BootOptions {
   /** Install RLS from the read rules on boot; postgres drivers only. */
   readonly rls?: boolean;
   readonly now: () => Temporal.Instant;
+  /**
+   * Threaded straight to {@link EngineOptions.onError}, which is the only reason it is on the
+   * options rather than a subscription taken afterwards: the stranded-writes audit runs *inside*
+   * `openEngine`, and a caller cannot subscribe to a call that has not returned.
+   */
+  readonly onError?: (error: EngineError) => void;
   readonly grantFor: (peer: PeerId) => Grant | undefined;
   /** Shipped config, threaded straight through: whether the ladder reads `_links` (D21). */
   readonly accounts?: boolean;
@@ -60,6 +67,8 @@ export interface Booted {
   readonly driver?: SqlDriver;
   /** The write ledger's store, on that same connection; present exactly when `driver` is. */
   readonly operations?: OperationStore;
+  /** Where each row's own write got to (book ch. 10); present when the stores hold tables. */
+  readonly rowSync?: RowSync;
   /** The same ladder the engine runs on every write — for judging a captured transaction before it commits (D20). */
   readonly validate: Validator;
   readonly close: () => Promise<void>;
@@ -117,6 +126,21 @@ function policiesFor(
   return installRls(driver, options.schema);
 }
 
+/**
+ * Which stores this boot runs on: the caller's own log, the set they opened, a connection they
+ * handed over, or the platform's durable default — decided once, here, so the boot below reads
+ * as one path rather than four.
+ */
+function storesFor(
+  options: BootOptions,
+  tables: readonly Table[],
+): Promise<Result<Stores | undefined, MeshOpenError>> {
+  if (options.store !== undefined) return Promise.resolve(Result.ok(undefined));
+  if (options.stores !== undefined) return Promise.resolve(Result.ok(options.stores));
+  if (options.driver !== undefined) return openStores(options.driver, { tables });
+  return defaultStores(options.dataDir, String(options.identity.peerId), tables);
+}
+
 /** Opens the stores the options name (or the platform default) and boots the engine over them (D05). */
 export function openMeshEngine(options: BootOptions): Promise<Result<Booted, MeshOpenError>> {
   const { schema, identity, now } = options;
@@ -128,14 +152,7 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
     panic("`stores` is already a log and a connection: pass it alone");
   return Result.gen(async function* () {
     const tables = schema.entries.map((e) => e.table);
-    const owned =
-      options.store !== undefined
-        ? undefined
-        : options.stores !== undefined
-          ? options.stores
-          : options.driver !== undefined
-            ? yield* Result.await(openStores(options.driver, { tables }))
-            : yield* Result.await(defaultStores(options.dataDir, String(identity.peerId), tables));
+    const owned = yield* Result.await(storesFor(options, tables));
     // SAFETY: one of the two is defined — `owned` is opened exactly when `store` is absent
     const store = (options.store ?? owned?.events) as EventStore;
     const validate = createValidator(validatorFor(options));
@@ -156,8 +173,10 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
       });
     if (options.undoDepth !== undefined)
       Object.assign(engineOptions, { undoDepth: options.undoDepth });
+    if (options.onError !== undefined) Object.assign(engineOptions, { onError: options.onError });
     const engine = yield* Result.await(openEngine(engineOptions));
     const booted = { engine, store, validate };
+    if (owned?.rowSync !== undefined) Object.assign(booted, { rowSync: owned.rowSync });
     const driver = options.driver ?? owned?.driver;
     yield* Result.await(policiesFor(options, driver));
     if (driver !== undefined) {

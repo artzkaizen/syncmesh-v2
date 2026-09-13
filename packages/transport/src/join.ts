@@ -1,7 +1,12 @@
 import type { Cursors, Engine, Interest, Snapshot } from "@syncmesh/engine";
-import type { KeyedRecord } from "@syncmesh/kernel";
+import type { KeyedRecord, PeerId } from "@syncmesh/kernel";
 
-import { decodeSnapshotRows, encodeSnapshotRows } from "@syncmesh/wire";
+import {
+  decodeSnapshotRows,
+  encodeRecord,
+  encodeSnapshotRows,
+  verifyCheckpoint,
+} from "@syncmesh/wire";
 
 import type { SnapshotFrame } from "./snap-frame.js";
 
@@ -28,12 +33,17 @@ import { snapAckFrame, snapChunkFrame, snapManifestFrame, snapRequestFrame } fro
  * "Who vouches for a snapshot?").
  */
 
-/** What a completed join installed, and the fact that it arrived unproven. */
+/** What a completed join installed, and whether anything vouched for it. */
 export interface SnapshotInstalled {
   readonly rows: number;
   /** The slice the rows were complete for; absent means the sender's whole state. */
   readonly scope?: Interest;
-  /** Always true today: a snapshot carries no per-event signatures to check. */
+  /**
+   * The rows arrived with nothing to check them against: no per-event signatures, and either no
+   * checkpoint certificate or one this device could not verify. A verified certificate (book
+   * ch. 4) is what makes this `false` — the authority signed *which state* this is, and the
+   * hash over the installed rows matched.
+   */
   readonly provisional: boolean;
 }
 
@@ -45,6 +55,18 @@ export interface JoinDeps {
   readonly onSnapshot?: (installed: SnapshotInstalled) => void;
   /** Distinguishes one exchange from another; the sender picks it. */
   readonly idPrefix: string;
+  /**
+   * This device's own checkpoint certificate, to relay with the state it sends. A peer holds the
+   * authority's unchanged and cannot re-sign it, which is the point: it may forward a checkpoint
+   * it could never have minted.
+   */
+  readonly certificate?: () => Uint8Array | undefined;
+  /**
+   * Whose certificate this device will believe — the issuer pinned in config, exactly as grants
+   * are. Absent, no certificate is checked and every install stays provisional, which is the
+   * honest state of an ungranted mesh.
+   */
+  readonly trust?: PeerId;
 }
 
 /** A join in progress: what was promised, and the pages that have arrived so far. */
@@ -53,6 +75,8 @@ interface Incoming {
   readonly at: Cursors;
   readonly scope?: Interest;
   readonly pages: Map<number, readonly KeyedRecord[]>;
+  /** The sender's relayed certificate, verified against the rows once they are all here. */
+  readonly certificate?: Uint8Array;
 }
 
 export interface JoinExchange {
@@ -63,7 +87,7 @@ export interface JoinExchange {
 }
 
 export function createJoinExchange(deps: JoinDeps): JoinExchange {
-  const { engine, send, onSnapshot, idPrefix } = deps;
+  const { engine, send, onSnapshot, idPrefix, certificate, trust } = deps;
   const rowsPerChunk = deps.rowsPerChunk ?? 500;
   const incoming = new Map<string, Incoming>();
   /** The rows each exchange sent, kept so a page named as missing can be sent again. */
@@ -86,6 +110,7 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
         snapshot.rows.length,
         snapshot.coverage.synced,
         snapshot.scope,
+        certificate?.(),
       ),
     );
     pages.forEach((page, index) =>
@@ -94,7 +119,9 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
   };
 
   const onManifest = (frame: Extract<SnapshotFrame, { kind: "snap-manifest" }>): void => {
-    const started = { chunks: frame.chunks, at: frame.at, pages: new Map() };
+    const base = { chunks: frame.chunks, at: frame.at, pages: new Map() };
+    const started =
+      frame.certificate === undefined ? base : { ...base, certificate: frame.certificate };
     const held: Incoming = frame.scope === undefined ? started : { ...started, scope: frame.scope };
     incoming.set(frame.id, held);
     // an empty snapshot has no pages to wait for, so it is already complete
@@ -126,8 +153,23 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
     const installed = await engine.installSnapshot(snapshot);
     incoming.delete(id);
     send("snap-ack", snapAckFrame(id, []));
-    const report = { rows: installed.rows, provisional: true };
+    const report = { rows: installed.rows, provisional: !vouchedFor(held, rows) };
     onSnapshot?.(held.scope === undefined ? report : { ...report, scope: held.scope });
+  };
+
+  /**
+   * Whether the authority signed exactly this state. Both halves have to hold: the signature is
+   * the issuer's, and the rows hash to what it covers — a relayed certificate over altered rows
+   * fails the second even though it passes the first.
+   */
+  const vouchedFor = (held: Incoming, rows: readonly KeyedRecord[]): boolean => {
+    if (held.certificate === undefined || trust === undefined) return false;
+    const hashed = rows.map((row) => ({
+      table: String(row.table),
+      key: String(row.key),
+      record: encodeRecord(row.record),
+    }));
+    return verifyCheckpoint(held.certificate, trust, hashed).isOk();
   };
 
   const onAck = (frame: Extract<SnapshotFrame, { kind: "snap-ack" }>): void => {

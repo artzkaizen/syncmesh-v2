@@ -64,10 +64,10 @@ describe("watch — detection is a subscription, enforcement is a write", () => 
       reactions += 1;
       for (const row of rows)
         if (row.priceCents < FLOOR)
-          (await api.products.reprice({ id: row.id, priceCents: FLOOR })).unwrap();
+          (await api.products.reprice({ id: row.id, priceCents: FLOOR }).committed).unwrap();
     });
 
-    (await api.products.add({ id: "p1", priceCents: 90 })).unwrap();
+    (await api.products.add({ id: "p1", priceCents: 90 }).committed).unwrap();
     await settled();
 
     expect(await api.products.list().run()).toEqual([{ id: "p1", priceCents: FLOOR }]);
@@ -76,7 +76,7 @@ describe("watch — detection is a subscription, enforcement is a write", () => 
     expect(reactions).toBe(converged); // corrected state stops matching: the fixed point
 
     // a compliant write wakes the watchdog and changes nothing
-    (await api.products.add({ id: "p2", priceCents: 500 })).unwrap();
+    (await api.products.add({ id: "p2", priceCents: 500 }).committed).unwrap();
     await settled();
     expect((await api.products.list().run()).map((r) => r.priceCents).sort()).toEqual([120, 500]);
 

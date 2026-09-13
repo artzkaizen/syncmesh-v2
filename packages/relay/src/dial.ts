@@ -17,7 +17,12 @@ export const webSocketDial = (url: string) => (): Promise<RelayDial> =>
       resolve({
         send: (frame) => {
           if (ws.readyState !== WebSocket.OPEN) throw new Error("relay socket is not open");
-          ws.send(frame);
+          // SAFETY: the DOM types `send` as taking a view over a plain `ArrayBuffer`, and a bare
+          // `Uint8Array` is over `ArrayBufferLike` — which is to say it *could* be over a
+          // `SharedArrayBuffer`. Nothing in syncmesh allocates one: every frame reaching here was
+          // built by `@syncmesh/transport` or this package. Sending a copy instead would be a
+          // second allocation per frame to satisfy a case that does not occur.
+          ws.send(frame as Uint8Array<ArrayBuffer>);
         },
         onFrame: (cb) => {
           frames.add(cb);

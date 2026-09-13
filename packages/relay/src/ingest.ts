@@ -74,6 +74,10 @@ export function ingestEvent(conversation: Conversation, wire: Uint8Array): void 
     const { id, relayed, receivers } = outcome.value;
     if (relayed !== undefined) {
       room.publish(relayed);
+      // the sender pays for the sends it caused (gap audit №7). After the fact, because how many
+      // clients an event reaches is not known until it has reached them — what the charge buys
+      // is the *next* frame from this socket being unaffordable
+      conversation.budget.charge("fanout", receivers);
       room.report({
         type: "relay.event",
         sizes: { bytes: wire.byteLength, receivers },

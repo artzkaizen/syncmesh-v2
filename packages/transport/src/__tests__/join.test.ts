@@ -1,6 +1,8 @@
 import type { Interest } from "@syncmesh/engine";
+import type { PeerId } from "@syncmesh/kernel";
 
 import { readRow } from "@syncmesh/kernel";
+import { checkpointHash, createIdentity, encodeRecord, issueCheckpoint } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import type { BridgeOptions } from "../bridge.js";
@@ -17,6 +19,10 @@ interface JoinOptions {
   readonly rowsPerChunk?: number;
   /** Drops the chunk frames whose index this names, once each — a page lost in flight. */
   readonly drop?: readonly number[];
+  /** What the holder relays with its state (book ch. 4). */
+  readonly certificate?: () => Uint8Array | undefined;
+  /** Whose certificate the joiner believes. */
+  readonly trust?: PeerId;
 }
 
 /**
@@ -51,10 +57,14 @@ const connect = (holder: Peer, joiner: Peer, options: JoinOptions = {}) => {
       ...extra,
     });
   const paging = options.rowsPerChunk === undefined ? {} : { rowsPerChunk: options.rowsPerChunk };
-  const held = side(holder, historyless, paging);
-  const joined = side(joiner, b, {
+  const vouching =
+    options.certificate === undefined ? paging : { ...paging, certificate: options.certificate };
+  const held = side(holder, historyless, vouching);
+  const believing: Partial<BridgeOptions> = {
     onSnapshot: (report: SnapshotInstalled) => void installed.push(report),
-  });
+  };
+  if (options.trust !== undefined) Object.assign(believing, { trust: options.trust });
+  const joined = side(joiner, b, believing);
   const settle = async () => {
     for (let round = 0; round < 8; round += 1) {
       await control.flush();
@@ -183,6 +193,75 @@ describe("the join exchange", () => {
     link.request();
     await link.settle();
     expect(link.installed).toEqual([{ rows: 0, provisional: true }]);
+    link.close();
+  });
+});
+
+describe("who vouches for a snapshot (book ch. 4)", () => {
+  /** The rows the holder is about to send, hashed the way a receiver will hash them. */
+  const stateOf = (holder: Peer) =>
+    [...holder.engine.state()].flatMap(([table, rows]) =>
+      [...rows].map(([key, record]) => ({
+        table: String(table),
+        key: String(key),
+        record: encodeRecord(record),
+      })),
+    );
+
+  test("a verified certificate makes the install no longer provisional", async () => {
+    const authority = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 7 + i)).unwrap();
+    const holder = peer(40, "acct_x");
+    const joiner = peer(80, "acct_y");
+    for (let i = 1; i <= 4; i += 1) (await write(holder, `n${i}`, `body ${i}`)).unwrap();
+
+    const certificate = issueCheckpoint(authority, {
+      stateHash: checkpointHash(stateOf(holder)),
+      coverage: new Map([[holder.identity.peerId, 4]]),
+      now: T0,
+    });
+    const link = connect(holder, joiner, {
+      certificate: () => certificate,
+      trust: authority.peerId,
+    });
+    link.request();
+    await link.settle();
+
+    expect(link.installed).toEqual([{ rows: 4, provisional: false }]);
+    link.close();
+  });
+
+  test("a certificate from anyone but the trusted issuer leaves it provisional", async () => {
+    const authority = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 7 + i)).unwrap();
+    const impostor = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 200 - i)).unwrap();
+    const holder = peer(40, "acct_x");
+    const joiner = peer(80, "acct_y");
+    (await write(holder, "n1", "body 1")).unwrap();
+
+    // the relaying peer mints its own over the very same rows: the hash is right, the key is not
+    const forged = issueCheckpoint(impostor, {
+      stateHash: checkpointHash(stateOf(holder)),
+      coverage: new Map([[holder.identity.peerId, 1]]),
+      now: T0,
+    });
+    const link = connect(holder, joiner, {
+      certificate: () => forged,
+      trust: authority.peerId,
+    });
+    link.request();
+    await link.settle();
+
+    expect(link.installed).toEqual([{ rows: 1, provisional: true }]);
+    link.close();
+  });
+
+  test("no certificate at all is provisional, exactly as it always was", async () => {
+    const holder = peer(40, "acct_x");
+    const joiner = peer(80, "acct_y");
+    (await write(holder, "n1", "body 1")).unwrap();
+    const link = connect(holder, joiner);
+    link.request();
+    await link.settle();
+    expect(link.installed).toEqual([{ rows: 1, provisional: true }]);
     link.close();
   });
 });

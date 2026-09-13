@@ -11,9 +11,15 @@ import type { FaceDeps } from "./face.js";
 import { postgresFace } from "./postgres.js";
 import { sqliteFace } from "./sqlite.js";
 
-export type { Live, LiveSnapshot, Runnable } from "./live.js";
+export type { Live, LiveSnapshot, LiveSource, Runnable } from "./live.js";
+export { createLive } from "./live.js";
+export type { ProxyMethod, ProxyResult, ProxySink, WriteNaming } from "./proxy.js";
+export type { ReadScope } from "./read.js";
+export { readPredicate, readScope } from "./read.js";
+export type { SyncState } from "./sync-of.js";
+export { ROW_SYNC_TABLE, columns, operationOf, syncOf } from "./sync-of.js";
 export { replaceEqualDeep } from "./equal.js";
-export type { CommitHub } from "./face.js";
+export type { CommitHub, Span } from "./face.js";
 export type { SqliteMeshDb } from "./sqlite.js";
 export type { PostgresMeshDb } from "./postgres.js";
 

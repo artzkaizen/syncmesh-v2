@@ -1,3 +1,6 @@
+export type { OpenChannel } from "./channel.js";
+export { channelTests } from "./channel.js";
+
 import type { Engine, Quarantined, SuiteCase } from "@syncmesh/engine";
 import type { ColumnName, Procedure, RowKey, TableName } from "@syncmesh/kernel";
 import type { GrantRegistry, Identity } from "@syncmesh/wire";

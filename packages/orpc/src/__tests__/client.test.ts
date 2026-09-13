@@ -40,7 +40,7 @@ describe("createClient — the client is the api (book ch. 8)", () => {
     });
 
     // tier one: the app's own procedures, unprefixed
-    (await client.books.add({ id: "b1", title: "Dune" })).unwrap();
+    (await client.books.add({ id: "b1", title: "Dune" }).committed).unwrap();
     expect(await client.books.list().run()).toEqual([{ id: "b1", title: "Dune" }]);
 
     // tier two: framework surface, every name spelled with a $ no procedure can collide with

@@ -6,7 +6,16 @@ import { Temporal } from "@syncmesh/temporal";
  * enough for a blob flood, and one tight enough for blobs hangs up on the honest client the
  * relay just finished paging.
  */
-export type TrafficClass = "event" | "blob";
+/**
+ * `fanout` is not a frame class — nothing arrives under it. It is what a socket's frames *cost
+ * the room*: one token per client an event was delivered to (gap audit №7).
+ *
+ * Ingress metering alone prices a flood at what it costs to receive, which is the cheap half. A
+ * single event in a room of five hundred is five hundred sends, and a client that can push four
+ * thousand frames a second can make the relay do two million — the amplification vector, and the
+ * one a per-socket frame rate does not see.
+ */
+export type TrafficClass = "event" | "blob" | "fanout";
 
 export interface RateLimit {
   /**
@@ -53,6 +62,14 @@ export const DEFAULT_LIMITS = {
   rates: {
     event: { burst: 4096, every: Temporal.Duration.from({ milliseconds: 1 }) },
     blob: { burst: 64, every: Temporal.Duration.from({ milliseconds: 100 }) },
+    /**
+     * Deliveries this socket may cause. Nominal, and stated as such: the right number depends on
+     * the room's size and how chatty its app is, and inventing a measured-looking one would make
+     * a guess look considered. What the default *is* chosen to do is leave an ordinary client in
+     * an ordinary room untouched while stopping a device that pushes a whole catch-up into a
+     * crowd — roughly a hundred thousand deliveries back to back, then twenty thousand a second.
+     */
+    fanout: { burst: 100_000, every: Temporal.Duration.from({ microseconds: 50 }) },
   },
 } satisfies RelayLimits;
 
@@ -64,6 +81,22 @@ export interface Budget {
    * ceiling exists to prevent, and its reconnect re-requests from cursors and loses nothing.
    */
   readonly take: (traffic: TrafficClass) => boolean;
+  /**
+   * Spends tokens for work already done, and never refuses — the sends have happened.
+   *
+   * Charging after the fact is the only honest order for fan-out: how many clients an event
+   * reaches is not known until it has reached them, and holding it to find out would be the
+   * latency the whole relay exists to avoid. What the charge buys is the *next* frame from this
+   * socket being unaffordable, which is how a flood stops after one round instead of never.
+   */
+  readonly charge: (traffic: TrafficClass, count: number) => void;
+  /**
+   * Whether this class is in debt — {@link charge} took more than there was.
+   *
+   * Asked rather than spent, because a frame that causes no fan-out should cost no fan-out: an
+   * event in a room of one is not amplification, and taxing it would meter the wrong thing.
+   */
+  readonly owes: (traffic: TrafficClass) => boolean;
 }
 
 interface Bucket {
@@ -80,20 +113,34 @@ interface Bucket {
  */
 export function createBudget(limits: RelayLimits, now: () => Temporal.Instant): Budget {
   const held = new Map<TrafficClass, Bucket>();
+
+  /** What this class has to spend right now, refilled from the time since it was last asked. */
+  const available = (traffic: TrafficClass, current: Temporal.Instant): number => {
+    const rate = limits.rates[traffic];
+    const bucket = held.get(traffic);
+    const everyMs = rate.every.total({ unit: "milliseconds" });
+    const gained =
+      bucket === undefined || everyMs <= 0
+        ? rate.burst
+        : bucket.tokens + bucket.at.until(current).total({ unit: "milliseconds" }) / everyMs;
+    return Math.min(rate.burst, gained);
+  };
+
   return {
     take: (traffic) => {
-      const rate = limits.rates[traffic];
       const current = now();
-      const bucket = held.get(traffic);
-      const everyMs = rate.every.total({ unit: "milliseconds" });
-      const gained =
-        bucket === undefined || everyMs <= 0
-          ? rate.burst
-          : bucket.tokens + bucket.at.until(current).total({ unit: "milliseconds" }) / everyMs;
-      const tokens = Math.min(rate.burst, gained);
+      const tokens = available(traffic, current);
       const spent = tokens >= 1;
       held.set(traffic, { tokens: spent ? tokens - 1 : tokens, at: current });
       return spent;
+    },
+    owes: (traffic) => available(traffic, now()) < 1,
+    charge: (traffic, count) => {
+      if (count <= 0) return;
+      const current = now();
+      // it may go negative, and it must: a socket that caused more sends than it could afford
+      // owes them, and owing is what makes the next frame wait rather than the debt vanishing
+      held.set(traffic, { tokens: available(traffic, current) - count, at: current });
     },
   };
 }

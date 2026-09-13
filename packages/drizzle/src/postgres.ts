@@ -6,7 +6,7 @@ import { getTableName } from "drizzle-orm";
 import { PgRemoteDatabase } from "drizzle-orm/pg-proxy";
 import { PgProxyTransaction, PgRemoteSession } from "drizzle-orm/pg-proxy/session";
 
-import type { FaceDeps } from "./face.js";
+import type { FaceDeps, Span } from "./face.js";
 
 import { commitHub } from "./face.js";
 import { createLive } from "./live.js";
@@ -62,14 +62,29 @@ export function postgresFace(deps: FaceDeps) {
       },
     });
   }
-  const { callback } = createProxy(proxyDeps);
+  const { callback, scope: mintSink, rehearse: rehearseOn, under } = createProxy(proxyDeps);
   const remote: RemoteCallback = (statement, params, method) => callback(statement, params, method);
   const dialect = pgDialect();
-  const db: PostgresMeshDb = new PgRemoteDatabase(
-    dialect,
-    new CapturingSession(remote, dialect),
-    undefined,
-  );
+  const over = (sink: RemoteCallback): PostgresMeshDb =>
+    new PgRemoteDatabase(dialect, new CapturingSession(sink, dialect), undefined);
+  const db = over(remote);
+
+  const newSpan = (): Span<PostgresMeshDb> => {
+    const sql = mintSink();
+    return { sql, db: over((statement, params, method) => sql(statement, params, method)) };
+  };
+
+  /**
+   * `db.transaction()` on this handle is a scope, not a bare `BEGIN` on the shared sink: the `tx`
+   * the body is handed writes through a sink nobody else has, so a read fired at the handle
+   * meanwhile waits for the connection instead of landing inside the transaction and coming back
+   * with a row nobody has committed. A body that ignores `tx` and reaches for `db` is the task
+   * running beside its own transaction, and will wait for itself.
+   */
+  const transaction: PostgresMeshDb["transaction"] = (body, config) =>
+    newSpan().db.transaction(body, config);
+  Object.assign(db, { transaction });
+
   const scope = readScope("postgres", deps);
   /** The table as this principal may read it: a subquery with the `read` rule (and the pin) compiled in. */
   const read = <T extends PgTable>(table: T): Source<T> => {
@@ -80,5 +95,31 @@ export function postgresFace(deps: FaceDeps) {
     // SAFETY: the alias wraps exactly the table's columns — what `.as()` would have typed had `from` taken T
     return aliased as Source<T>;
   };
-  return { db, read, live: createLive(engine), onCommit: hub.onCommit };
+  return {
+    db,
+    /**
+     * A write scope of this handle's own: the {@link Span} a caller opens a transaction on when
+     * the body doing the writing is somewhere else — a procedure handler given a mesh to write
+     * through. `db.transaction()` mints one of these for itself; this is the same thing, handed
+     * over rather than kept.
+     */
+    span: newSpan,
+    read,
+    live: createLive(engine),
+    onCommit: hub.onCommit,
+    /** Runs a write under what the caller knows about it: its id, and the procedure it is. */
+    under,
+    /**
+     * The write, rehearsed: statements run, the ladder judges, everything rolls back (ch. 15).
+     *
+     * The body reads and writes through the {@link Span} it is handed, exactly as it does on the
+     * real write path, and **not** through the handle's `db`: the rehearsal is the one transaction
+     * the handle is holding, and only the span's own sink is inside it. It must not open a
+     * transaction of its own either, for the same reason.
+     */
+    rehearse: (open: (span: Span<PostgresMeshDb>) => Promise<void>) => {
+      const scope = newSpan();
+      return rehearseOn(scope.sql, () => open(scope));
+    },
+  };
 }
