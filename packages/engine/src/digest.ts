@@ -58,7 +58,6 @@ export type TableDigests = ReadonlyMap<TableName, bigint>;
 export function tableDigests(state: State, interest?: Interest): TableDigests {
   const digests = new Map<TableName, bigint>();
   for (const [table, rows] of state) {
-    if (interest?.tables !== undefined && !interest.tables.includes(table)) continue;
     const within = [...rows.values()].filter((record) => rowsIn(record, interest));
     if (within.length === 0) continue;
     digests.set(table, sum(within.map(rowDigest)));

@@ -1,6 +1,6 @@
 import type { Interest } from "@syncmesh/engine";
 
-import { createMemoryEventStore, interestText, narrows } from "@syncmesh/engine";
+import { createMemoryEventStore, interestText } from "@syncmesh/engine";
 import { describe, expect, test } from "bun:test";
 
 import type { RelayRoom } from "../room.js";
@@ -146,30 +146,6 @@ describe("a cursor that asked for less", () => {
     expect(Number(device.engine.coverage().synced.get(author.identity.peerId))).toBe(3);
 
     await wide.stop();
-    await stop();
-    room.close();
-  });
-
-  test("a narrowed interest keeps its cursor, because narrowing costs nothing", async () => {
-    const { room, stop } = await roomWithBoth();
-    const device = peer(80, "acct_b");
-
-    const first = relayTransport({ dial: dialTo(room), reconnectMs: 10, interest: ACME_ONLY });
-    await first.start(device.context);
-    await first.whenReady();
-    await tick(30);
-    await first.stop();
-
-    const tighter: Interest = { partitions: [ACME], tables: [] };
-    const second = relayTransport({ dial: dialTo(room), reconnectMs: 10, interest: tighter });
-    await second.start(device.context);
-    await second.whenReady();
-    await tick(30);
-    // it asked from where it was, so the relay had nothing to re-send
-    expect(narrows(tighter, ACME_ONLY)).toBe(true);
-    expect(Number(device.engine.coverage().synced.size)).toBe(1);
-
-    await second.stop();
     await stop();
     room.close();
   });

@@ -108,7 +108,6 @@ export {
   interestText,
   matchesInterest,
   narrows,
-  predicateColumns,
   rowsIn,
 } from "./interest.js";
 export type { AccountLink, Dispute, LinkRow } from "./accounts.js";

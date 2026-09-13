@@ -56,7 +56,6 @@ export function snapshotOf(
   const { interest } = options;
   const rows: SnapshotRow[] = [];
   for (const [table, records] of state) {
-    if (interest?.tables !== undefined && !interest.tables.includes(table)) continue;
     for (const [key, record] of records) {
       // tombstones travel: without them a joiner would resurrect every row anyone deleted
       if (rowsIn(record, interest)) rows.push({ table, key, record });
