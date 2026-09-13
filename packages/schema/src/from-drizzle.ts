@@ -213,30 +213,32 @@ function readRuntime(drizzle: DrizzleTableLike): DrizzleRuntime {
 }
 
 /**
- * A Drizzle table as a manifest entry: the columns derived, the sync policy declared.
+ * A Drizzle table's derived half, for spreading into its manifest entry.
  *
- * **The wrapper names its ORM, so there is no second declaration to drift from it.** The shape it
- * replaces spells the derivation out at every table — `{ columns: fromDrizzle(products, { merge }),
- * partition: "shop", allow }` — so the merge rules sit next to the *derivation* and the policy
- * next to the entry, and the two can disagree about which table they are for.
+ * ```ts
+ * products: {
+ *   ...drizzleTable(products, { merge: { stock: "counter" } }),
+ *   partition: "shop",
+ *   allow: ({ role }) => ({ read: role("viewer"), $default: role("editor") }),
+ * },
+ * ```
  *
- * **It cannot type `allow` yet, and that is why the tracker still writes entries inline.** The
- * role names come from the manifest's sibling `roles` key, and TypeScript does not flow a
- * contextual type into a nested call — so `({ role }) => …` written inside this call has no
- * ladder to check against, and `partition` falls back to the reserved kinds. Closing that means
- * `syncSchema` handing the policy context in rather than the entry being built before it, which
- * is a change to the manifest's own shape. Use it for tables whose policy is the default.
+ * **The wrapper names its ORM, so there is no second declaration to drift from it.** What it
+ * replaces wrote the derivation and the policy as two things about one table —
+ * `columns: fromDrizzle(products, { merge })` on one line and the rules on the next — so the
+ * merge strategies sat beside the *derivation* and could name a column the entry was not about.
+ * Here the table is named once and everything derived from it comes from that naming.
+ *
+ * **It is spread into the entry rather than wrapping it, and the reason is not style.** The
+ * `allow` callback's parameter and the `partition` literal are both checked against the sibling
+ * `roles` and `partitions` keys of the manifest — and TypeScript resolves those by *contextual
+ * typing*, which reaches an object literal written in place and does not reach through a function
+ * call. Written as `drizzleTable(products, { partition, allow })` the policy is checked against
+ * nothing: `({ role }) =>` takes an implicit `any` and `partition: "shop"` widens to `string`,
+ * which then matches only the reserved-kind arm of the entry. Spreading keeps the literal where
+ * the checker can see it, which is what makes a typo in a role name a compile error.
  */
-export function drizzleTable<const D extends DrizzleTableLike, const E extends object>(
+export const drizzleTable = <const D extends DrizzleTableLike>(
   drizzle: D,
-  options: E & FromDrizzleOptions<D>,
-): E & { readonly columns: ColumnsFromDrizzle<D> } {
-  // SAFETY: `options` is declared as the intersection being destructured here, so both keys are
-  // exactly the optional ones `FromDrizzleOptions` names and the rest is the caller's own `E`
-  const { merge, onWarn, ...policy } = options as E & FromDrizzleOptions<D>;
-  const derived: FromDrizzleOptions<D> = {};
-  if (merge !== undefined) Object.assign(derived, { merge });
-  if (onWarn !== undefined) Object.assign(derived, { onWarn });
-  // SAFETY: `policy` is `options` minus the two keys the derivation consumes, which leaves `E`
-  return { ...(policy as E), columns: fromDrizzle(drizzle, derived) };
-}
+  options: FromDrizzleOptions<D> = {},
+) => ({ columns: fromDrizzle(drizzle, options) });

@@ -1,4 +1,4 @@
-import { fromDrizzle, ladder, syncSchema, t } from "@syncmesh/schema";
+import { drizzleTable, ladder, syncSchema, t } from "@syncmesh/schema";
 
 import { ActivityKind, IssueStatus, Priority, ProjectStatus, ReactionSubject } from "./domain.js";
 import {
@@ -23,10 +23,16 @@ import {
  * warning is right and the bridge is `./time.ts`, so the handler swallows them rather than
  * printing the same known fact ten times at import.
  */
-const columnsOf = <D extends Parameters<typeof fromDrizzle>[0]>(
+const named = <D extends Parameters<typeof drizzleTable>[0]>(
   drizzle: D,
-  options?: Parameters<typeof fromDrizzle<D>>[1],
-) => fromDrizzle(drizzle, { ...options, onWarn: () => undefined });
+  options?: Parameters<typeof drizzleTable<D>>[1],
+) => drizzleTable(drizzle, { ...options, onWarn: () => undefined });
+
+/** The same, for the four tables that override a derived column by name before using it. */
+const columnsOf = <D extends Parameters<typeof drizzleTable>[0]>(
+  drizzle: D,
+  options?: Parameters<typeof drizzleTable<D>>[1],
+) => named(drizzle, options).columns;
 
 const issueColumns = columnsOf(issue, { merge: { views: "counter" } });
 const projectColumns = columnsOf(project);
@@ -109,7 +115,7 @@ export const issuesSchema = () =>
     tables: {
       /** Only an admin shapes the workspace. A guest — a contractor on one project — reads. */
       team: {
-        columns: columnsOf(team),
+        ...named(team),
         partition: "workspace",
         allow: ({ role }) => ({ $default: role("admin"), read: role("guest") }),
       },
@@ -120,7 +126,7 @@ export const issuesSchema = () =>
        * against the signed grant's account, so "their own" is not something a client asserts.
        */
       member: {
-        columns: columnsOf(member),
+        ...named(member),
         partition: "workspace",
         allow: ({ any, owner, role }) => ({
           $default: role("admin"),
@@ -145,7 +151,7 @@ export const issuesSchema = () =>
       },
 
       label: {
-        columns: columnsOf(label),
+        ...named(label),
         partition: "workspace",
         allow: ({ role }) => ({
           $default: role("member"),
@@ -177,7 +183,7 @@ export const issuesSchema = () =>
       },
 
       issuelabel: {
-        columns: columnsOf(issueLabel),
+        ...named(issueLabel),
         partition: "workspace",
         allow: ({ deny, role }) => ({
           $default: role("member"),
@@ -196,7 +202,7 @@ export const issuesSchema = () =>
        * `seedConversation`, which has to open a device per voice because of this line.
        */
       comment: {
-        columns: columnsOf(comment),
+        ...named(comment),
         partition: "workspace",
         allow: ({ any, deny, owner, role }) => ({
           $default: deny,
@@ -237,7 +243,7 @@ export const issuesSchema = () =>
 
       /** Inside the sealed kind. The roles are the workspace's, inherited down the tree. */
       disclosure: {
-        columns: columnsOf(disclosure),
+        ...named(disclosure),
         partition: "embargo",
         allow: ({ role }) => ({ $default: role("admin") }),
       },
