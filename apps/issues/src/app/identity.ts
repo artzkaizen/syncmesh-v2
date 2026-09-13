@@ -1,8 +1,4 @@
-import type { SqlDriver } from "@syncmesh/storage";
-import type { Identity } from "@syncmesh/wire";
-
-import { Result, TaggedError } from "@syncmesh/result";
-import { SEED_LENGTH, bytesToHex, createIdentity, hexToBytes } from "@syncmesh/wire";
+import { createIdentity } from "@syncmesh/wire";
 
 /**
  * Who this install is, and who vouched for it.
@@ -58,66 +54,3 @@ export const AUTHORITY_PEER = createIdentity(bytes(200)).unwrap().peerId;
 
 /** Ada, who is an admin — the seed attributes its comments to her, and only an admin may seed. */
 export const ACTOR = "acct_ada";
-
-/**
- * This install's key could not be read or written, so it has no stable name to sign under.
- *
- * Fatal on purpose, and not recoverable by generating one: a device that made a fresh key every
- * time it failed to read the old one would author under a new name on every reload, which is the
- * crowd-of-strangers log this whole file exists to prevent.
- */
-export class DeviceKeyUnavailable extends TaggedError("DeviceKeyUnavailable")<{
-  message: string;
-  cause?: unknown;
-}> {}
-
-/**
- * One row, in the same database the log is in.
- *
- * **Not local storage, and for the same reason the seed counts issues instead of setting a flag:**
- * a key kept beside the database outlives the database it describes. Clear the OPFS file and
- * `localStorage` still names an author whose whole log is gone — so the device would rejoin the
- * room claiming a sequence it can no longer produce, and the relay would hand it back events it
- * is supposed to have written. A key in the file is gone when the file is, which is the truth.
- */
-const CREATE = `CREATE TABLE IF NOT EXISTS "_device" ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL)`;
-const READ = `SELECT "value" FROM "_device" WHERE "key" = 'seed'`;
-const WRITE = `INSERT INTO "_device" ("key", "value") VALUES ('seed', ?)`;
-
-const unavailable = (message: string) => (cause: unknown) =>
-  new DeviceKeyUnavailable({ message, cause });
-
-/**
- * This install's device key: read from the database, or generated into it on the first boot.
- *
- * Asked of a driver rather than of the mesh because the mesh cannot be built without the answer —
- * `createApp` takes the identity that will sign its events. So the one table this app owns outside
- * its schema is written directly, before an engine exists over the same file.
- *
- * There is no race between two tabs: only the worker that won the origin's election is ever handed
- * a port, so only one thread of this origin ever reaches here (`mesh-worker.ts`). A second *browser
- * profile* is a second origin with a second file, which is the whole point — it gets its own key.
- */
-export function deviceIdentity(driver: SqlDriver): Promise<Result<Identity, DeviceKeyUnavailable>> {
-  return Result.gen(async function* () {
-    const seed = yield* await Result.tryPromise({
-      try: async () => {
-        await driver.run(CREATE);
-        const held = await driver.all(READ);
-        const value = held[0]?.[0];
-        // the column is TEXT NOT NULL, so anything there is this install's key in hex
-        if (value !== undefined && value !== null) return String(value);
-        const fresh = bytesToHex(crypto.getRandomValues(new Uint8Array(SEED_LENGTH)));
-        await driver.run(WRITE, [fresh]);
-        return fresh;
-      },
-      catch: unavailable("this install's device key could not be read from its own database"),
-    });
-    const raw = yield* hexToBytes(seed).mapError(
-      unavailable("this install's stored device key is not the 32 bytes a key is"),
-    );
-    return createIdentity(raw).mapError(
-      unavailable("this install's stored device key is not the 32 bytes a key is"),
-    );
-  });
-}

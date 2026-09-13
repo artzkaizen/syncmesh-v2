@@ -1,10 +1,10 @@
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { describe, expect, test } from "bun:test";
 
-import { deviceIdentity } from "../app/identity.js";
+import { deviceIdentity } from "../identity.js";
 
 /**
- * The device key is the one thing in this app a relay makes dangerous to get wrong. Two installs
+ * The device key is the one thing a relay makes dangerous to get wrong. Two installs
  * under one `peerId` are one author with two sequence streams, and the failure is not an error —
  * it is a write folded, found to be below a cursor the other install already moved, and dropped.
  * So the two properties are tested directly: it survives a reboot, and it is never shared.

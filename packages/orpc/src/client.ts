@@ -5,7 +5,7 @@ import type { Api, Router } from "./api.js";
 import type { ClientOptions } from "./options.js";
 
 import { createApp } from "./app.js";
-import { flatten } from "./options.js";
+import { flatten, named } from "./options.js";
 
 /**
  * One noun (book ch. 8, rule 1): the client **is** the api. Procedures sit at the top level —
@@ -87,7 +87,7 @@ export async function createClient<
   C extends ColumnsMap,
   PC extends PresenceMap = Record<string, never>,
 >(options: ClientOptions<R, P, RS, C, PC>): Promise<Client<R, PC>> {
-  const { api, mesh } = await createApp(flatten(options));
+  const { api, mesh } = await createApp(flatten(await named(options)));
   // assigned onto the api rather than spread into a fresh object: `api` is a walked tree of
   // callables, and spreading one would copy the leaves off their own group objects
   // SAFETY: every `$` key the Client type names is assigned right here, and `api` is already

@@ -7,7 +7,7 @@ import type { ClientOptions } from "./options.js";
 import { isDef } from "./api.js";
 import { createApp } from "./app.js";
 import { createHandler } from "./http.js";
-import { flatten } from "./options.js";
+import { flatten, named } from "./options.js";
 import { replicaFor } from "./scope.js";
 
 /**
@@ -63,7 +63,7 @@ export async function createServer<
 >(options: ServerOptions<R, P, RS, C, PC>): Promise<Server<R, PC>> {
   const { handlers, watchdogs, ...clientOptions } = options;
   // the same construction a device makes: a server is a node with extra duties (ch. 19)
-  const app = await createApp(flatten(clientOptions));
+  const app = await createApp(flatten(await named(clientOptions)));
 
   const handlerOptions = { procedures: options.procedures, api: app.api };
   if (handlers !== undefined)

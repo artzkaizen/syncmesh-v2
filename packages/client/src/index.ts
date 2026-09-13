@@ -43,3 +43,5 @@ export { NoSuchTransport, createForcing, standInFor } from "./forced.js";
 export type { MeshShaping, RunningTransports } from "./transports.js";
 export { TransportAddFailed, runTransports } from "./transports.js";
 export { keyRingFor, transportContextFor } from "./transport-context.js";
+
+export { DeviceKeyUnavailable, deviceIdentity } from "./identity.js";

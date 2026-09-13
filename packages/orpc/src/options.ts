@@ -8,6 +8,8 @@ import type { BlobStore, SqlDriver, Stores } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { Entropy, Identity } from "@syncmesh/wire";
 
+import { deviceIdentity } from "@syncmesh/client";
+import { panic } from "@syncmesh/result";
 import { useEntropy } from "@syncmesh/wire";
 
 import type { AuthorityLink, Router } from "./api.js";
@@ -61,8 +63,20 @@ export interface ClientOptions<
    * React Native, where there is no global one.
    */
   readonly entropy?: Entropy;
-  /** This device's signing key. Interim: the book makes the key store the library's problem. */
-  readonly identity: Identity;
+  /**
+   * This device's signing key — **optional, because minting and keeping it is the library's job**
+   * (book ch. 8).
+   *
+   * Absent, it is read from the database `storage` names, or minted into it on the first run
+   * ({@link deviceIdentity}). Pass one only where the key comes from somewhere this cannot reach:
+   * a platform keychain, a test fixture that needs two devices to be a known pair, or a server
+   * whose identity is config every other peer already trusts.
+   *
+   * A build that ships a fixed one makes every install of it the same author, which is the
+   * silent corruption a log cannot report — two profiles writing under one name, allocating
+   * `(author, seq)` from two sequences, the loser's writes dropped as stale rather than refused.
+   */
+  readonly identity?: Identity;
   /** Carries `authority` calls. Absent, one fails naming itself rather than pretending. */
   readonly link?: AuthorityLink;
   /** Everything the engine reports, from before there is a client to report it on. */
@@ -192,4 +206,32 @@ export const flatten = <
   // `TRUST_KEYS` and `STORAGE_KEYS` are checked against the group types by `satisfies`, and the
   // ungrouped rest is copied through unchanged. Nothing is widened and nothing is invented.
   return flat as unknown as AppOptions<R, P, RS, C, PC>;
+};
+
+/**
+ * The options with this device's identity settled — read from its own database, or minted there.
+ *
+ * Resolved here rather than inside `createMesh` because the identity is an *input* to opening a
+ * mesh: the default store is one file per peer id, so there is no mesh to ask before the answer
+ * exists. The driver a caller names is asked directly, which is also the only place the key can
+ * honestly live — beside the log it signs, gone when that is gone.
+ */
+export const named = async <
+  R extends Router,
+  P extends PartitionTree,
+  RS extends Roles<P>,
+  C extends ColumnsMap,
+  PC extends PresenceMap,
+>(
+  options: ClientOptions<R, P, RS, C, PC>,
+): Promise<ClientOptions<R, P, RS, C, PC> & { readonly identity: Identity }> => {
+  if (options.identity !== undefined) return { ...options, identity: options.identity };
+  const driver = options.storage?.driver ?? options.storage?.stores?.driver;
+  if (driver === undefined)
+    panic(
+      "no identity and nowhere to keep one: pass `storage: sqlite({ driver })` so the device key can live beside the log it signs, or pass `identity` from your own key store",
+    );
+  const minted = await deviceIdentity(driver);
+  if (minted.isErr()) panic(minted.error.message, minted.error);
+  return { ...options, identity: minted.value };
 };

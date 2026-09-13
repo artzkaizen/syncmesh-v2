@@ -3,6 +3,7 @@ import type { EngineError } from "@syncmesh/engine";
 import type { Client } from "@syncmesh/orpc";
 
 import { MeshCallFailed, serveMesh } from "@syncmesh/browser";
+import { deviceIdentity } from "@syncmesh/client";
 import { createInspectorHost } from "@syncmesh/devtools";
 import { createClient, httpLink, sqlite } from "@syncmesh/orpc";
 import { Result, serializeTagged } from "@syncmesh/result";
@@ -17,7 +18,7 @@ import { WORKSPACE, WORKSPACE_ID } from "../domain.js";
 import { procedures } from "../procedures.js";
 import { issuesSchema } from "../schema.js";
 import { seedWorkspace } from "../seed.js";
-import { ACTOR, AUTHORITY_PEER, deviceIdentity, issuer } from "./identity.js";
+import { ACTOR, AUTHORITY_PEER, issuer } from "./identity.js";
 import { dialRelay } from "./relay.js";
 
 /**
@@ -161,8 +162,8 @@ const buildHost = (): Promise<Result<MeshHost, MeshCallFailed>> =>
     const driver = yield* (await openDriver()).mapError(
       refused("this origin's database would not open"),
     );
-    // before the engine, over the same file: `createApp` takes the identity that signs its events,
-    // so the one question the log cannot answer is asked of the database directly
+    // asked before the client rather than left to it, because this app's transports want the peer
+    // id at construction — `createClient` would mint the same key out of the same table
     const device = yield* (await deviceIdentity(driver)).mapError(
       refused("this install's device key would not open"),
     );
