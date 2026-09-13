@@ -2,7 +2,7 @@
   "name": "@syncmesh/examples",
   "version": "0.0.0",
   "private": true,
-  "description": "The two hosting shapes you run yourself: a relay embedded in a backend process, and a Redis fleet behind a load balancer",
+  "description": "The two hosting shapes you run yourself: a relay embedded in a backend process, and a fleet behind a load balancer",
   "type": "module",
   "exports": {
     "./rounds/schema": {
@@ -36,7 +36,6 @@
     "@syncmesh/wire": "workspace:*",
     "@types/bun": "catalog:",
     "drizzle-orm": "latest",
-    "redis": "^6.2.1",
     "typescript": "catalog:",
     "vite-plus": "catalog:",
     "zod": "^3.25.76"
