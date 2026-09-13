@@ -86,21 +86,3 @@ export function meshDrizzle<D extends SqlDialect = "sqlite">(
   // SAFETY: the driver's dialect is D; each face is the D-typed handle
   return (driver.dialect === "postgres" ? postgresFace(deps) : sqliteFace(deps)) as MeshHandle<D>;
 }
-
-/**
- * The mesh's tagged error inside a rejected statement or transaction — Drizzle wraps proxy
- * failures, so `PolicyDenied` and friends ride the `cause` chain. `undefined` for anything else.
- */
-export const taggedCause = (thrown: Error): (Error & { readonly _tag: string }) | undefined => {
-  let current: unknown = thrown;
-  while (current instanceof Error) {
-    // SAFETY: reading an optional discriminant off an Error; absent on plain errors, the walk continues
-    const tagged = current as Error & { readonly _tag?: string };
-    if (tagged._tag !== undefined) {
-      // SAFETY: _tag was just checked present — restated as required for the caller
-      return tagged as Error & { readonly _tag: string };
-    }
-    current = current.cause;
-  }
-  return undefined;
-};

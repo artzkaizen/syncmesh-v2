@@ -38,7 +38,7 @@ import type { JsonValue } from "@syncmesh/kernel";
 import type { SqlDialect } from "@syncmesh/storage";
 
 import { os } from "@orpc/server";
-import { taggedCause } from "@syncmesh/drizzle";
+import { PolicyDenied } from "@syncmesh/engine";
 
 /**
  * Who is calling, as your auth established it. The caller reached the server over HTTP with a
@@ -84,6 +84,21 @@ export interface MeshContext<D extends SqlDialect = "sqlite"> {
  * }
  * ```
  */
+/**
+ * A refusal the caller's own rules made, found under Drizzle's wrapper.
+ *
+ * The capture throws `PolicyDenied` as itself; Drizzle catches it inside `transaction()` and
+ * re-throws a `DrizzleQueryError` carrying the original as `cause`. So the unwrap is **one step
+ * and one known shape** — not the walk-any-chain-and-match-a-tag-by-string helper this replaced,
+ * which would have found a `PolicyDenied` nested at any depth, put there for any reason, and
+ * turned somebody else's failure into this caller's `FORBIDDEN`.
+ */
+const refusal = (cause: unknown): PolicyDenied | undefined => {
+  if (cause instanceof PolicyDenied) return cause;
+  const under = cause instanceof Error ? cause.cause : undefined;
+  return under instanceof PolicyDenied ? under : undefined;
+};
+
 export function withMesh<D extends SqlDialect = "sqlite">(mesh: Mesh<D>) {
   return os
     .$context<CallerContext>()
@@ -100,9 +115,7 @@ export function withMesh<D extends SqlDialect = "sqlite">(mesh: Mesh<D>) {
       try {
         return await next({ context: { mesh: handle.value } satisfies MeshContext<D> });
       } catch (cause) {
-        // a write the caller's rules refused surfaces as the transaction rejecting
-        const denied = cause instanceof Error && taggedCause(cause)?._tag === "PolicyDenied";
-        throw denied ? errors.FORBIDDEN() : cause;
+        throw refusal(cause) === undefined ? cause : errors.FORBIDDEN();
       }
     });
 }

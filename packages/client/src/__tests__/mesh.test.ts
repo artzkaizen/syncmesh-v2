@@ -1,6 +1,5 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
-import { taggedCause } from "@syncmesh/drizzle";
 import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
@@ -10,6 +9,14 @@ import { eq } from "drizzle-orm";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import { createMesh } from "../mesh.js";
+
+/** The tag the capture threw, under Drizzle's one wrapper — the same unwrap `withMesh` does. */
+const tagOf = (thrown: Error): string | undefined => {
+  // SAFETY: reading an optional discriminant off an Error — absent on a plain one, which is
+  // what `undefined` here means
+  const tagged = (thrown.cause instanceof Error ? thrown.cause : thrown) as { _tag?: string };
+  return tagged._tag;
+};
 
 const catalog = sqliteTable("catalog", {
   id: text().primaryKey(),
@@ -77,8 +84,7 @@ const granted = async (role = "member") => {
 const outcome = (write: Promise<unknown>) =>
   write.then(
     () => "ok",
-    (cause: unknown) =>
-      cause instanceof Error ? (taggedCause(cause)?._tag ?? String(cause)) : String(cause),
+    (cause: unknown) => (cause instanceof Error ? (tagOf(cause) ?? String(cause)) : String(cause)),
   );
 
 describe("on — one handle per pin and principal", () => {

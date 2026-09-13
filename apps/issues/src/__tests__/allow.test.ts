@@ -1,6 +1,5 @@
 import type { Result } from "@syncmesh/result";
 
-import { taggedCause } from "@syncmesh/drizzle";
 import { describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 
@@ -19,9 +18,17 @@ import { T0, accountOf, openDevice, settle } from "./fixtures.js";
  * re-implementing it.
  */
 
+/** The tag the capture threw, under Drizzle's one wrapper — the same unwrap `withMesh` does. */
+const tagOf = (thrown: Error): string | undefined => {
+  // SAFETY: reading an optional discriminant off an Error — absent on a plain one, which is
+  // what `undefined` here means
+  const tagged = (thrown.cause instanceof Error ? thrown.cause : thrown) as { _tag?: string };
+  return tagged._tag;
+};
+
 /* oxlint-disable-next-line anti-slop/no-unknown-parameters -- a thrown value is the one thing that really is unknown; naming its tag is the parse */
 const why = (thrown: unknown): string =>
-  thrown instanceof Error ? (taggedCause(thrown)?._tag ?? thrown.message) : String(thrown);
+  thrown instanceof Error ? (tagOf(thrown) ?? thrown.message) : String(thrown);
 
 /** What a call answered with: the rule's own tag when it refused, `"allowed"` when it did not. */
 const refusal = async (call: Promise<Result<unknown, Error>>): Promise<string> => {

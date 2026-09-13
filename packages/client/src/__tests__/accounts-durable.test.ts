@@ -1,6 +1,5 @@
 import type { CellValue, ColumnName, PeerId, Procedure, Row, RowKey } from "@syncmesh/kernel";
 
-import { taggedCause } from "@syncmesh/drizzle";
 import { createEngine, createMemoryEventStore, linkDevice, links } from "@syncmesh/engine";
 import { createHlcClock, parseAccountId, parsePartitionKey } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
@@ -28,6 +27,14 @@ import { createMesh } from "../mesh.js";
  * what the log already keeps; and `can` answers what the write does, in the mesh — no issuer,
  * accounts on — that links exist for.
  */
+
+/** The tag the capture threw, under Drizzle's one wrapper — the same unwrap `withMesh` does. */
+const tagOf = (thrown: Error): string | undefined => {
+  // SAFETY: reading an optional discriminant off an Error — absent on a plain one, which is
+  // what `undefined` here means
+  const tagged = (thrown.cause instanceof Error ? thrown.cause : thrown) as { _tag?: string };
+  return tagged._tag;
+};
 
 const notes = sqliteTable("notes", {
   id: text().primaryKey(),
@@ -85,8 +92,7 @@ const inTempDir = async (run: (dataDir: string) => Promise<void>) => {
 const outcome = (write: Promise<unknown>) =>
   write.then(
     () => "ok",
-    (cause: unknown) =>
-      cause instanceof Error ? (taggedCause(cause)?._tag ?? String(cause)) : String(cause),
+    (cause: unknown) => (cause instanceof Error ? (tagOf(cause) ?? String(cause)) : String(cause)),
   );
 
 const column = (name: string): ColumnName => {
