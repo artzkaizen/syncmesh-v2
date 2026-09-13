@@ -68,10 +68,15 @@ describe("postgresFanout", () => {
     expect(heard).toEqual([frame]);
   });
 
-  test("a frame too large for a notification is dropped loudly, never split", async () => {
+  test("a frame too large to carry sends a wake, so the instance that is behind knows it", async () => {
     const pg = fakePostgres();
     const oversize: number[] = [];
-    const fanout = postgresFanout({ client: pg.client, onOversize: (n) => void oversize.push(n) });
+    const gaps: number[] = [];
+    const fanout = postgresFanout({
+      client: pg.client,
+      onOversize: (n) => void oversize.push(n),
+      onGap: () => void gaps.push(1),
+    });
     const a = fanout.connect("r");
     const b = fanout.connect("r");
     const heard: number[] = [];
@@ -81,12 +86,29 @@ describe("postgresFanout", () => {
     // Postgres caps a payload at 8000 bytes and base64 costs four for every three; reassembly
     // here would be a second delivery guarantee inside a transport that promises none
     a.publish(new Uint8Array(9000));
-    expect(heard).toEqual([]);
-    expect(oversize).toEqual([9000]);
-    expect(pg.notified).toEqual([]);
+    expect(heard).toEqual([]); // no frame, because none would fit
+    expect(oversize).toEqual([9000]); // the sender knows what it could not send
+    expect(gaps).toEqual([1]); // and so does the instance that is now behind
+    expect(pg.notified).toHaveLength(1); // a wake went out, not silence
 
     a.publish(Uint8Array.of(1));
     expect(heard).toEqual([1]); // and the link still works afterwards
+  });
+
+  test("a wake is not mistaken for a frame, and never reaches its own sender", async () => {
+    const pg = fakePostgres();
+    const gaps: number[] = [];
+    const fanout = postgresFanout({ client: pg.client, onGap: () => void gaps.push(1) });
+    const a = fanout.connect("r");
+    const heard: number[] = [];
+    a.onFrame((f) => void heard.push(f.length));
+    await Promise.resolve();
+
+    a.publish(new Uint8Array(9000));
+    // the sender already knows it could not send: a wake echoed back to it would count the
+    // same outage twice, once as a cause and once as a symptom
+    expect(gaps).toEqual([]);
+    expect(heard).toEqual([]); // and an empty frame is not what a wake is
   });
 
   test("close stops this link listening and leaves the other's standing", async () => {

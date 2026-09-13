@@ -21,7 +21,19 @@ const server = await createServer({
   schema: roundsSchema(),
   procedures: {},
   storage: sqlite({ driver: bunSqliteDriver(`${dataDir}/node.db`) }),
-  custody: { port, dataDir, fanout: postgresFanout({ client: fanout }) },
+  custody: {
+    port,
+    dataDir,
+    fanout: postgresFanout({
+      client: fanout,
+      // both sides of the same outage: what this instance could not send, and what another
+      // instance could not send it. Neither recovers the frame — a device that holds the event
+      // connecting here does — but a fleet can see it happening from either end
+      onOversize: (bytes) => console.warn(`${name}: frame too large to fan out (${bytes}B)`),
+      onGap: () =>
+        console.warn(`${name}: another instance is ahead by something it could not send`),
+    }),
+  },
 });
 
 console.log(`${name} serving ${server.serving?.url ?? port}, fanning out over ${url}`);
