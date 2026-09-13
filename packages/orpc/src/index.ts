@@ -106,3 +106,5 @@ export function withMesh<D extends SqlDialect = "sqlite">(mesh: Mesh<D>) {
       }
     });
 }
+
+export type { Custody, Serving } from "./custody.js";

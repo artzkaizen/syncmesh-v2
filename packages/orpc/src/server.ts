@@ -2,10 +2,12 @@ import type { ColumnsMap, PartitionTree, PresenceMap, Roles } from "@syncmesh/sc
 
 import type { Api, AuthorityHandlers, ProcedureDef, Router } from "./api.js";
 import type { App } from "./app.js";
+import type { Custody, Serving } from "./custody.js";
 import type { ClientOptions } from "./options.js";
 
 import { isDef } from "./api.js";
 import { createApp } from "./app.js";
+import { serveCustody } from "./custody.js";
 import { createHandler } from "./http.js";
 import { flatten, named } from "./options.js";
 import { replicaFor } from "./scope.js";
@@ -24,6 +26,15 @@ export interface ServerOptions<
 > extends Omit<ClientOptions<R, P, RS, C, PC>, "link"> {
   /** The router's `.authority()` leaves, mirrored — completeness checked by the type. */
   readonly handlers?: AuthorityHandlers<R>;
+  /**
+   * Serve custody: accept peers over WebSocket and keep what they send ({@link Custody}).
+   *
+   * With no `handlers` beside it this **is** the relay — the pure-custody configuration, and the
+   * reason `startRelay` is no longer an entry of its own. With handlers it is an authority that
+   * also happens to be reachable by radio, which is a deployment choice and not a second kind of
+   * node.
+   */
+  readonly custody?: Custody;
   /** Started with the server, stopped with it; each takes the api and returns its teardown. */
   readonly watchdogs?: readonly ((api: Api<R>) => () => void)[];
 }
@@ -36,7 +47,9 @@ export interface Server<
   readonly fetch: (request: Request) => Promise<Response>;
   /** From `.route()` metadata: authority calls are plain request/response, so the spec is too. */
   readonly openapi: (info: { readonly title: string; readonly version: string }) => object;
-  /** Stops the watchdogs, then the mesh. */
+  /** Where peers dial this node, when it serves custody; absent when it only answers HTTP. */
+  readonly serving?: Serving;
+  /** Stops the watchdogs, the rooms it serves, then the mesh. */
   readonly stop: () => Promise<void>;
 }
 
@@ -61,7 +74,7 @@ export async function createServer<
   C extends ColumnsMap,
   PC extends PresenceMap = Record<string, never>,
 >(options: ServerOptions<R, P, RS, C, PC>): Promise<Server<R, PC>> {
-  const { handlers, watchdogs, ...clientOptions } = options;
+  const { handlers, watchdogs, custody, ...clientOptions } = options;
   // the same construction a device makes: a server is a node with extra duties (ch. 19)
   const app = await createApp(flatten(await named(clientOptions)));
 
@@ -78,6 +91,7 @@ export async function createServer<
   const fetch = createHandler(handlerOptions);
 
   const stops = (watchdogs ?? []).map((start) => start(app.api));
+  const serving = custody === undefined ? undefined : await serveCustody(custody);
 
   const openapi: Server<R, PC>["openapi"] = (info) => {
     const paths: Record<string, Record<string, OpenApiOperation>> = {};
@@ -98,12 +112,13 @@ export async function createServer<
     return { openapi: "3.1.0", info, paths };
   };
 
+  const served = { ...app, fetch, openapi };
+  if (serving !== undefined) Object.assign(served, { serving });
   return {
-    ...app,
-    fetch,
-    openapi,
+    ...served,
     stop: async () => {
       for (const stop of stops) stop();
+      await serving?.stop();
       await app.mesh.stop();
     },
   };
