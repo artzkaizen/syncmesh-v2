@@ -2,9 +2,10 @@ import type { Mesh } from "@syncmesh/client";
 import type { ColumnsMap, PartitionTree, PresenceMap, Roles } from "@syncmesh/schema";
 
 import type { Api, Router } from "./api.js";
-import type { AppOptions } from "./app.js";
+import type { ClientOptions } from "./options.js";
 
 import { createApp } from "./app.js";
+import { flatten } from "./options.js";
 
 /**
  * One noun (book ch. 8, rule 1): the client **is** the api. Procedures sit at the top level —
@@ -85,8 +86,8 @@ export async function createClient<
   const RS extends Roles<P>,
   C extends ColumnsMap,
   PC extends PresenceMap = Record<string, never>,
->(options: AppOptions<R, P, RS, C, PC>): Promise<Client<R, PC>> {
-  const { api, mesh } = await createApp(options);
+>(options: ClientOptions<R, P, RS, C, PC>): Promise<Client<R, PC>> {
+  const { api, mesh } = await createApp(flatten(options));
   // assigned onto the api rather than spread into a fresh object: `api` is a walked tree of
   // callables, and spreading one would copy the leaves off their own group objects
   // SAFETY: every `$` key the Client type names is assigned right here, and `api` is already

@@ -4,6 +4,8 @@ export type { App, AppOptions } from "./app.js";
 export { createApp } from "./app.js";
 export type { Client } from "./client.js";
 export { createClient } from "./client.js";
+export type { ClientOptions, SqliteStorage, Trust } from "./options.js";
+export { sqlite } from "./options.js";
 export type {
   Api,
   ApiMesh,

@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { z } from "zod";
 
-import { createClient, mutation, query } from "../index.js";
+import { createClient, mutation, query, sqlite } from "../index.js";
 
 const book = sqliteTable("book", { id: text().primaryKey(), title: text().notNull() });
 
@@ -36,7 +36,7 @@ describe("createClient — the client is the api (book ch. 8)", () => {
       schema,
       procedures,
       identity,
-      driver: bunSqliteDriver(":memory:"),
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     });
 
     // tier one: the app's own procedures, unprefixed
@@ -60,7 +60,7 @@ describe("createClient — the client is the api (book ch. 8)", () => {
       schema,
       procedures,
       identity,
-      driver: bunSqliteDriver(":memory:"),
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     });
     await client.$close();
     expect(client.$mesh.running()).toBe(false);

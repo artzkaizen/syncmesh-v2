@@ -1,7 +1,6 @@
 import type { PartitionKey, PeerId } from "@syncmesh/kernel";
 
 import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
-import { randomBytes } from "@noble/ciphers/utils.js";
 import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -9,6 +8,7 @@ import { Result, TaggedError } from "@syncmesh/result";
 
 import type { Identity } from "./identity.js";
 
+import { randomBytes } from "./entropy.js";
 import { hexToBytes } from "./hex.js";
 
 /**

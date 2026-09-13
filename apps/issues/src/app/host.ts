@@ -1,10 +1,10 @@
 import type { MeshHost, WirePort } from "@syncmesh/browser";
 import type { EngineError } from "@syncmesh/engine";
-import type { App } from "@syncmesh/orpc";
+import type { Client } from "@syncmesh/orpc";
 
 import { MeshCallFailed, serveMesh } from "@syncmesh/browser";
 import { createInspectorHost } from "@syncmesh/devtools";
-import { createApp } from "@syncmesh/orpc";
+import { createClient, sqlite } from "@syncmesh/orpc";
 import { Result, serializeTagged } from "@syncmesh/result";
 import { wasmSqliteDriver } from "@syncmesh/sqlite-wasm";
 import { Temporal } from "@syncmesh/temporal";
@@ -84,15 +84,15 @@ const refused = (what: string) => (cause: unknown) =>
  * relay is running — which is what `replica.ts` promises when it says pulling the cable changes
  * nothing on screen.
  */
-const seedOnce = (app: App<Procedures, IssuesPresence>) =>
+const seedOnce = (app: Client<Procedures, IssuesPresence>) =>
   Result.gen(async function* () {
-    const [before] = await app.api.issues.summary({ workspaceId: WORKSPACE_ID }).run();
+    const [before] = await app.issues.summary({ workspaceId: WORKSPACE_ID }).run();
     if (before !== undefined && before.total > 0) return Result.ok(undefined);
-    await app.mesh.settled();
+    await app.$mesh.settled();
     // asked again, because that is what the wait was for: a relay that had the room has filled it
-    const [after] = await app.api.issues.summary({ workspaceId: WORKSPACE_ID }).run();
+    const [after] = await app.issues.summary({ workspaceId: WORKSPACE_ID }).run();
     if (after !== undefined && after.total > 0) return Result.ok(undefined);
-    const handle = yield* app.mesh
+    const handle = yield* app.$mesh
       .on(WORKSPACE)
       .mapError(refused(`this build names a workspace the manifest rejects: ${WORKSPACE}`));
     yield* await Result.tryPromise({
@@ -157,18 +157,19 @@ const buildHost = (): Promise<Result<MeshHost, MeshCallFailed>> =>
     );
     const app = yield* await Result.tryPromise({
       try: () =>
-        createApp({
+        createClient({
           schema: issuesSchema(),
           procedures,
           identity: device,
-          issuer: issuer.peerId,
-          driver,
-          onError: report,
+          // grouped because they are one decision each, not seven fields that happen to be here
+          trust: { issuer: issuer.peerId },
+          storage: sqlite({ driver }),
           transports: dialRelay(device.peerId),
+          onError: report,
         }),
       catch: refused("the mesh could not open over the database"),
     });
-    yield* app.mesh.grants
+    yield* app.$grants
       .register(
         issueGrant(issuer, {
           account: ACTOR,
@@ -186,7 +187,7 @@ const buildHost = (): Promise<Result<MeshHost, MeshCallFailed>> =>
     // the inspector is an argument and not a flag: a build that dropped this line serves an origin
     // whose windows can read their own data and learn nothing about the device carrying it, and
     // nothing here subscribes to anything until some tab actually opens the panel
-    return Result.ok(serveMesh(app.mesh, { inspector: createInspectorHost(app.mesh) }));
+    return Result.ok(serveMesh(app.$mesh, { inspector: createInspectorHost(app.$mesh) }));
   });
 
 /** Answers every call on this port with the reason there is no mesh behind it, and nothing else. */

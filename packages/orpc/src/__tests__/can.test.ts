@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { z } from "zod";
 
-import { createClient, mutation, query } from "../index.js";
+import { createClient, mutation, query, sqlite } from "../index.js";
 
 const products = sqliteTable("products", { id: text().primaryKey(), name: text().notNull() });
 
@@ -54,8 +54,8 @@ const open = async () =>
     schema,
     procedures,
     identity: device,
-    issuer: issuer.peerId,
-    driver: bunSqliteDriver(":memory:"),
+    trust: { issuer: issuer.peerId },
+    storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     now: () => T0,
   });
 
