@@ -19,7 +19,12 @@ export interface SourceStatus {
  * book's vocabulary and deliberately absent here: nothing in the engine reports either yet, and
  * a health a UI cannot trust is worse than one word fewer.
  */
-export type MeshHealth = "blocked-recovery" | "offline" | "catching-up" | "local-ready";
+export type MeshHealth =
+  /**
+   * The client exists and its database does not yet — the first tens of milliseconds of every
+   * launch, reported by the client rather than by this store, which only exists once it is over.
+   */
+  "opening" | "blocked-recovery" | "offline" | "catching-up" | "local-ready";
 
 export interface MeshStatus {
   readonly health: MeshHealth;

@@ -49,8 +49,8 @@ const grant = (role: "editor" | "viewer") =>
     now: T0,
   });
 
-const open = async () =>
-  createClient({
+const open = async () => {
+  const client = createClient({
     schema,
     procedures,
     identity: device,
@@ -58,6 +58,9 @@ const open = async () =>
     storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     now: () => T0,
   });
+  await client.$ready;
+  return client;
+};
 
 describe(".can — the real check, rehearsed (book ch. 15)", () => {
   test("a viewer's rehearsal refuses with the rule's own verdict, and writes nothing", async () => {

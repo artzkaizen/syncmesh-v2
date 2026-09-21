@@ -2,8 +2,8 @@ export type { CallBody, HandlerOptions, HttpLinkOptions } from "./http.js";
 export { createHandler, findProcedure, httpLink } from "./http.js";
 export type { Client } from "./client.js";
 export { createClient } from "./client.js";
-export type { ClientOptions, SqliteStorage, Trust } from "./options.js";
-export { sqlite } from "./options.js";
+export type { ClientOptions, PostgresStorage, SqliteStorage, Storage, Trust } from "./options.js";
+export { postgres, sqlite } from "./options.js";
 export type {
   Api,
   ApiMesh,

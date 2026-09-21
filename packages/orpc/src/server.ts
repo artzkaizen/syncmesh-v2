@@ -79,7 +79,8 @@ export async function createServer<
 >(options: ServerOptions<R, P, RS, C, PC>): Promise<Server<R, PC>> {
   const { handlers, watchdogs, custody, ...clientOptions } = options;
   // the same construction a device makes: a server is a node with extra duties (ch. 19)
-  const client = await createClient(clientOptions);
+  const client = createClient(clientOptions);
+  await client.$ready;
 
   const handlerOptions = { procedures: options.procedures, api: client };
   if (handlers !== undefined)

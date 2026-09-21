@@ -6,8 +6,7 @@ import { eq } from "drizzle-orm";
 import { sqliteTable, integer, text } from "drizzle-orm/sqlite-core";
 import { z } from "zod";
 
-import { createApp } from "../app.js";
-import { mutation, query, watch } from "../index.js";
+import { createClient, mutation, query, sqlite, watch } from "../index.js";
 
 const products = sqliteTable("products", {
   id: text().primaryKey(),
@@ -53,12 +52,13 @@ const settled = () => new Promise((resolve) => setTimeout(resolve, 25));
 
 describe("watch — detection is a subscription, enforcement is a write", () => {
   test("a below-floor price is corrected, and the watchdog converges instead of looping", async () => {
-    const { api, mesh } = await createApp({
+    const api = createClient({
       schema,
       procedures,
       identity,
-      driver: bunSqliteDriver(":memory:"),
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     });
+    await api.$ready;
 
     let reactions = 0;
     const off = watch(api.products.list(), async (rows) => {
@@ -82,6 +82,6 @@ describe("watch — detection is a subscription, enforcement is a write", () => 
     expect((await api.products.list().run()).map((r) => r.priceCents).sort()).toEqual([120, 500]);
 
     off();
-    await mesh.stop();
+    await api.$close();
   });
 });

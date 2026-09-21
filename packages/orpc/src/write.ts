@@ -89,7 +89,8 @@ export interface WriteDeps {
   readonly id: string;
   readonly committed: Promise<ResultType<WriteResult<unknown>, CallError>>;
   /** The ledger this write's record lives in; absent for a mesh that keeps none. */
-  readonly ledger?: WriteLedger;
+  /** Read when a record is, never at construction: a write made before the mesh opened has one later. */
+  readonly ledger?: WriteLedger | undefined;
 }
 
 const DEFAULT_WAIT_MS = 30_000;
@@ -103,8 +104,15 @@ export function createWrite<T>(deps: WriteDeps): Write<T> {
     if (row?.isOk() === true) held = row.value;
     for (const listener of listeners) listener();
   };
-  // the commit is what first makes a record exist; everything after it arrives by subscription
-  const first = deps.committed.then(reread, () => undefined);
+  // the commit is what first makes a record exist; everything after it arrives by subscription —
+  // and a watcher who arrived before there was a ledger to watch is attached to it here
+  const first = deps.committed.then(
+    async () => {
+      await reread();
+      if (watchers > 0) offLedger ??= deps.ledger?.onChange(() => void reread());
+    },
+    () => undefined,
+  );
 
   /**
    * The ledger subscription is refcounted rather than held for the handle's life. A write is a

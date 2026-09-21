@@ -32,12 +32,13 @@ const identity = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 21 + i
 
 describe("createClient — the client is the api (book ch. 8)", () => {
   test("procedures sit at the top level and the machinery sits beside them under $", async () => {
-    const client = await createClient({
+    const client = createClient({
       schema,
       procedures,
       identity,
       storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     });
+    await client.$ready;
 
     // tier one: the app's own procedures, unprefixed
     (await client.books.add({ id: "b1", title: "Dune" }).committed).unwrap();
@@ -56,12 +57,13 @@ describe("createClient — the client is the api (book ch. 8)", () => {
   });
 
   test("$close is the mesh's stop: a second open of the same file proves it let go", async () => {
-    const client = await createClient({
+    const client = createClient({
       schema,
       procedures,
       identity,
       storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     });
+    await client.$ready;
     await client.$close();
     expect(client.$mesh.running()).toBe(false);
   });

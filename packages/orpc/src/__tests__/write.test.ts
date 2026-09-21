@@ -43,7 +43,7 @@ const panicNoLedger = () => {
 };
 
 const open = async () => {
-  const client = await createClient({
+  const client = createClient({
     schema,
     procedures,
     identity: device,
@@ -51,6 +51,7 @@ const open = async () => {
     storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     now: () => T0,
   });
+  await client.$ready;
   client.$grants
     .register(
       issueGrant(issuer, {

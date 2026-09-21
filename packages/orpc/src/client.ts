@@ -1,10 +1,13 @@
-import type { Mesh } from "@syncmesh/client";
+import type { Mesh, MeshStatus } from "@syncmesh/client";
 import type { ColumnsMap, PartitionTree, PresenceMap, Roles } from "@syncmesh/schema";
 
-import type { Api, Router } from "./api.js";
+import { createMesh } from "@syncmesh/client";
+import { panic } from "@syncmesh/result";
+
+import type { Api, ApiMesh, Router } from "./api.js";
 import type { ClientOptions } from "./options.js";
 
-import { createApp } from "./app.js";
+import { meshApi } from "./api.js";
 import { flatten, named } from "./options.js";
 
 /**
@@ -16,24 +19,38 @@ import { flatten, named } from "./options.js";
  * name is the app's own procedure. That is what makes the collision impossible by construction
  * rather than by a reserved-words list somebody has to maintain.
  *
+ * **The client is a value, and the database opens underneath it.** `createClient` returns at
+ * once; `$ready` is when the mesh exists. Until then a read is pending — the same
+ * `hasAnswered: false` a screen already draws for — a write commits when it can, and `$status`
+ * says `opening`. This is what puts the shell on screen in the first frame on a phone, where
+ * opening SQLite is I/O that used to stand between launch and anything at all.
+ *
  * @example
- * export const client = await createClient({
+ * export const client = createClient({
  *   schema,
  *   procedures: router,
- *   identity: await loadIdentity(),
  *   driver: bunSqliteDriver("rounds.db"),
  *   transports: [relayTransport({ dial: webSocketDial(RELAY_URL) })],
  * });
  *
  * const products = client.products.list({ shopId });      // a descriptor, inert until read
+ * await client.$ready;                                     // the mesh, when a script needs it
  * await client.$flush();                                   // the machinery, when it is needed
  */
 export type Client<R extends Router, PC extends PresenceMap = Record<string, never>> = Api<R> & {
+  /**
+   * The mesh exists. Rejects if it never will — no database, no key, whatever `createMesh`
+   * refused for — with the reason, and every `$` surface below throws the same reason after.
+   *
+   * A script awaits this before it reads `$mesh`; a screen never has to, because every read it
+   * makes is pending until then and every write it makes waits for it.
+   */
+  readonly $ready: Promise<void>;
   /** The write ledger: what a write became, who holds it, what overruled it (ch. 10). */
   readonly $operations: Mesh<"sqlite", PC>["operations"];
   /** What is stuck and why, with the operator's idempotent nudge (ch. 18). */
   readonly $recovery: Mesh<"sqlite", PC>["recovery"];
-  /** Per-source conditions and one overall health (ch. 18). */
+  /** Per-source conditions and one overall health — `opening` before there is a mesh (ch. 18). */
   readonly $status: Mesh<"sqlite", PC>["status"];
   /** The radios at runtime: a settings toggle adds one, removing one removes a route (ch. 16). */
   readonly $transports: Mesh<"sqlite", PC>["transports"];
@@ -75,42 +92,138 @@ export type Client<R extends Router, PC extends PresenceMap = Record<string, nev
   /**
    * The mesh underneath, for the few facts that are neither a procedure nor `$`-surface:
    * `ready`, `settled`, `requestGrant`, `history`, `engine`. Everything an app *reads or
-   * writes* is a procedure.
+   * writes* is a procedure. Throws before `$ready`.
    */
   readonly $mesh: Mesh<"sqlite", PC>;
 };
 
-export async function createClient<
+/** What `$status` says before there is a mesh to ask: no sources, and the one word for it. */
+const OPENING: MeshStatus = { health: "opening", sources: new Map() };
+
+/**
+ * The `$` surfaces that are the mesh's, reached through one getter each so that every one of
+ * them answers the same way before `$ready`: with the reason there is no mesh, not `undefined`.
+ */
+const MESH_SURFACES = [
+  "operations",
+  "recovery",
+  "transports",
+  "peers",
+  "routes",
+  "blobs",
+  "grants",
+  "auth",
+  "drafts",
+  "presence",
+  "inspect",
+  "query",
+  "accounts",
+] as const;
+
+export function createClient<
   R extends Router,
   P extends PartitionTree,
   const RS extends Roles<P>,
   C extends ColumnsMap,
   PC extends PresenceMap = Record<string, never>,
->(options: ClientOptions<R, P, RS, C, PC>): Promise<Client<R, PC>> {
-  const { api, mesh } = await createApp(flatten(await named(options)));
-  // assigned onto the api rather than spread into a fresh object: `api` is a walked tree of
-  // callables, and spreading one would copy the leaves off their own group objects
-  // SAFETY: every `$` key the Client type names is assigned right here, and `api` is already
-  // `Api<R>` — the assertion states the union the assignment just built
-  const client = Object.assign(api, {
-    $operations: mesh.operations,
-    $recovery: mesh.recovery,
-    $status: mesh.status,
-    $transports: mesh.transports,
-    $peers: mesh.peers,
-    $routes: mesh.routes,
-    $blobs: mesh.blobs,
-    $grants: mesh.grants,
-    $auth: mesh.auth,
-    $drafts: mesh.drafts,
-    $presence: mesh.presence,
-    $inspect: mesh.inspect,
-    $schema: mesh.schema,
-    $query: mesh.query,
-    $accounts: mesh.accounts,
-    $flush: mesh.flush,
-    $close: mesh.stop,
-    $mesh: mesh,
-  }) as Client<R, PC>;
-  return client;
+>(options: ClientOptions<R, P, RS, C, PC>): Client<R, PC> {
+  let mesh: Mesh<"sqlite", PC> | undefined;
+  /** The same mesh under the narrower name the api binds to, built once rather than per call. */
+  let bound: ApiMesh<PC> | undefined;
+  let refused: Error | undefined;
+  const watching = new Set<() => void>();
+
+  const opening = (async (): Promise<void> => {
+    // `procedures` and `link` are the client's own and pass through `flatten` unchanged, so the
+    // api above was built from them already; what `createMesh` takes is everything else
+    const { procedures: _procedures, link: _link, ...meshOptions } = flatten(await named(options));
+    const opened = await createMesh(meshOptions);
+    // the tagged error travels as the cause, so a caller who does want to branch — "storage
+    // damaged, rejoin?" — still can, without every other caller unwrapping to reach it
+    if (opened.isErr())
+      return panic(`the app could not open: ${opened.error.message}`, opened.error);
+    mesh = opened.value;
+    bound = { ...mesh, self: mesh.engine.peerId };
+  })();
+  const ready = opening.then(
+    () => {
+      // `opening` → whatever the mesh says: the one change every status watcher is waiting on
+      for (const listener of watching) listener();
+    },
+    (cause: unknown) => {
+      refused = cause instanceof Error ? cause : new Error(String(cause));
+      throw refused;
+    },
+  );
+  // observed here so a refusal is never an unhandled rejection — a screen reads it off `$status`
+  // and never awaits `$ready` at all, and it still rejects for the script that does
+  ready.catch(() => undefined);
+
+  /** The mesh, or the sentence for why there is none — never `undefined`. */
+  const held = (): Mesh<"sqlite", PC> => {
+    if (mesh !== undefined) return mesh;
+    throw new Error(
+      refused === undefined
+        ? "the mesh has not opened yet — await `client.$ready` before reaching past the api"
+        : `the mesh could not open: ${refused.message}`,
+    );
+  };
+
+  const carries = {};
+  if (options.link !== undefined) Object.assign(carries, { link: options.link });
+  const api = meshApi<R, PC>(
+    { current: () => bound, ready, schema: options.schema },
+    options.procedures,
+    carries,
+  );
+
+  /** `$status` before and after: `opening` with no sources, then the mesh's own reading. */
+  const status: Mesh<"sqlite", PC>["status"] = {
+    get: () => mesh?.status.get() ?? OPENING,
+    subscribe: (listener) => {
+      if (mesh !== undefined) return mesh.status.subscribe(listener);
+      watching.add(listener);
+      let off: (() => void) | undefined;
+      void ready.then(
+        () => {
+          if (watching.has(listener)) off = held().status.subscribe(listener);
+        },
+        () => undefined,
+      );
+      return () => {
+        watching.delete(listener);
+        off?.();
+      };
+    },
+  };
+
+  // defined as getters rather than assigned: the values do not exist yet, and a getter is what
+  // lets `client.$grants` be the mesh's the moment there is one and a sentence until then
+  const surfaces: PropertyDescriptorMap = {
+    $ready: { enumerable: true, value: ready },
+    $status: { enumerable: true, value: status },
+    $schema: { enumerable: true, value: options.schema },
+    $flush: {
+      enumerable: true,
+      value: () =>
+        ready.then(
+          () => held().flush(),
+          () => undefined,
+        ),
+    },
+    $close: {
+      enumerable: true,
+      value: () =>
+        ready.then(
+          () => held().stop(),
+          () => undefined,
+        ),
+    },
+    $mesh: { enumerable: true, get: () => held() },
+  };
+  for (const name of MESH_SURFACES)
+    surfaces[`$${name}`] = { enumerable: true, get: () => held()[name] };
+  // SAFETY: every `$` key the Client type names is defined right here, and `api` is already
+  // `Api<R>` — the assertion states the union the definitions just built
+  return Object.defineProperties(api, surfaces) as Client<R, PC>;
 }

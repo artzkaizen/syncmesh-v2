@@ -8,9 +8,11 @@ import type { TxReceipt } from "@syncmesh/storage";
 
 import { Result } from "@syncmesh/result";
 
+import type { LazyApiMesh } from "./deferred.js";
 import type { AuthorityDef, AuthorityLink, MutationDef, QueryDef, Router } from "./procedures.js";
-import type { Write, WriteLedger } from "./write.js";
+import type { Write, WriteDeps, WriteLedger } from "./write.js";
 
+import { deferredLive, deferredRunnable, deferredSubscribe, lazyOf, notOpen } from "./deferred.js";
 import { isDef } from "./procedures.js";
 import { scopeKinds, scopeOf } from "./scope.js";
 import { createWrite } from "./write.js";
@@ -205,7 +207,7 @@ export interface ApiMesh<PC extends PresenceMap = Record<string, never>> {
  * api.books.list({ shopId });   // the scope rides here, and nowhere else
  */
 export function meshApi<R extends Router, PC extends PresenceMap = Record<string, never>>(
-  mesh: ApiMesh<PC>,
+  source: ApiMesh<PC> | LazyApiMesh<PC>,
   router: R,
   options: {
     /**
@@ -216,9 +218,12 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     readonly link?: AuthorityLink;
   } = {},
 ): Api<R> {
-  const kinds = scopeKinds(mesh.schema);
+  const lazy = lazyOf(source);
+  /** The mesh, which a call inside a write or after `$ready` always has; a call before it does not. */
+  const mesh = (): ApiMesh<PC> => lazy.current() ?? notOpen();
+  const kinds = scopeKinds(lazy.schema);
   /** The replica this call is about — opened per call, because the scope arrives per call. */
-  const handle = (input: unknown): Handle => mesh.on(scopeOf(kinds, input)).unwrap();
+  const handle = (input: unknown): Handle => mesh().on(scopeOf(kinds, input)).unwrap();
 
   /**
    * What a body is handed: its input, the tables, and who is acting.
@@ -231,8 +236,8 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     input,
     db: writing?.db ?? open.db,
     read: open.read,
-    principal: mesh.auth.principal(),
-    self: mesh.self,
+    principal: mesh().auth.principal(),
+    self: mesh().self,
   });
 
   /* thrown, not returned: a descriptor has no error channel of its own, and the hook has an `error` */
@@ -243,9 +248,18 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     kind: "query" as const,
     path,
     key: JSON.stringify([path, input ?? null]),
-    run: () => runnable(def, input),
-    live: () => handle(input).live(runnable(def, input)),
-    settled: () => mesh.settled(),
+    // the real builder the moment there is one: `windowOf` reads a Drizzle query's own config to
+    // decide whether the query can be maintained, and a stand-in has none to read. Only a call
+    // made before the mesh exists gets the wrapper, and that one has nothing to maintain from
+    run: () =>
+      lazy.current() === undefined
+        ? deferredRunnable(lazy.ready, () => runnable(def, input))
+        : runnable(def, input),
+    // TEMPORARY, for a bisect: one built query rather than the *way to build* it, which is what
+    // turns incremental maintenance off — `createLive` only patches a query it can ask again.
+    // Restore the factory (`() => runnable(def, input)`) once the assignee stall is attributed.
+    live: () => deferredLive(lazy, () => handle(input).live(runnable(def, input))),
+    settled: () => lazy.ready.then(() => mesh().settled()),
   });
 
   /** `api.products.create.can(input)`: the write, rehearsed and rolled back (ch. 15). */
@@ -256,6 +270,7 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     run: async () => {
       const parsed = validate<never>(def.schema, input);
       if (parsed.isErr()) return parsed;
+      await lazy.ready;
       const open = handle(input);
       return open.rehearse(async (span) => {
         // the handler's return value is nothing to a rehearsal: only what it staged is judged —
@@ -263,7 +278,8 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
         await def.run(context(parsed.value, open, span));
       });
     },
-    subscribe: (listener) => mesh.grants.onRegistered(() => listener()),
+    subscribe: (listener) =>
+      deferredSubscribe(lazy, (m) => m.grants.onRegistered(() => listener())),
   });
 
   /**
@@ -276,8 +292,14 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     input: unknown,
   ): Write<unknown> => {
     const id = crypto.randomUUID();
-    const deps = { id, committed: write(path, def, input, id) };
-    if (mesh.operations !== undefined) Object.assign(deps, { ledger: mesh.operations });
+    // the commit waits for the mesh; the ledger is read when the record is, which is after it
+    const deps: WriteDeps = {
+      id,
+      committed: lazy.ready.then(() => write(path, def, input, id)),
+      get ledger() {
+        return lazy.current()?.operations;
+      },
+    };
     return createWrite(deps);
   };
 
@@ -349,8 +371,12 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
   const permissions: Permissions = {
     // the row is the input here, and a row carries its scope in the same column the table is
     // partitioned by — "keyed by the scope already present in input and rows" (ch. 3)
-    can: (what, row) => mesh.can(what, row, scopeOf(kinds, row)),
-    grants: { onRegistered: (listener) => mesh.grants.onRegistered(() => listener()) },
+    // before the mesh, nobody may do anything — which is what a gated button must draw anyway
+    can: (what, row) => lazy.current()?.can(what, row, scopeOf(kinds, row)) ?? false,
+    grants: {
+      onRegistered: (listener) =>
+        deferredSubscribe(lazy, (m) => m.grants.onRegistered(() => listener())),
+    },
   };
   // SAFETY: `build` walks the same router the `Api<R>` mapped type describes, leaf for leaf
   const walked = { ...build(router, ""), $can: permissions } as Api<R>;
