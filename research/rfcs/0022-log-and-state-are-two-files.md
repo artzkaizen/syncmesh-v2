@@ -44,17 +44,31 @@ the first draft of this section overstated it in three places. The corrected lin
 | `changes` | drained and cleared inside every write; holds nothing between them |
 | **the app's own tables** | D20's projection — the thing you query, written by the fold |
 
-**The basis is not "the log". It is a durable snapshot plus the retained event tail**, and two
-existing features are why:
+**And below a compaction floor it is not derived at all — it is the only copy.** This is the
+correction that costs the RFC its best idea, so it is worth being exact about.
 
-- **Compaction deletes events** once the state that stood for them was persisted (RFC-0015). A
-  log with a floor above zero is not a complete history.
-- **Snapshot installation imports rows without their event history** (RFC-0019). A device that
-  joined from a snapshot has rows no replay can reconstruct.
+`compactLog` refuses outright without a state store — *"no state store: the log is the only copy
+of state"* — and then clamps the floor to what has actually been persisted:
 
-So a state file may only be discarded when the events above the floor, plus a snapshot covering
-everything below it, are both present — and the snapshot's own `coverage` and `scope` travel with
-it, because a number without the interest that qualifies it is the lie D23 describes.
+```ts
+/** Never above what is persisted: a device cannot refold what it deleted. */
+export const clampToPersisted = (floor: Cursors, persisted: Cursors): Cursors => …
+```
+
+So compaction deletes events **because** the rows that stood for them are on disk. Below the
+floor, the folded state is the durable half. Snapshot installation (RFC-0019) does the same thing
+from the other direction: it imports rows with no event history behind them.
+
+`refoldable(store)` is that question, named and exported, because it is the one a caller has to
+ask **before** discarding anything:
+
+```ts
+export const refoldable = (store: EventStore): Promise<Result<boolean, StoreFailure>> =>
+  store.compactedBelow().then((f) => f.map((floor) => floor.synced.size === 0 && floor.local.size === 0));
+```
+
+A device that has never compacted can rebuild everything, which is most devices for most of their
+lives. One that has cannot, and its remedy is a peer rather than its own disk.
 
 **`acked` is not derived either, and losing it is now a decision rather than a surprise.** It
 moves when a *peer acknowledges*, which touches no row and leaves no event; the map it comes from,
@@ -180,12 +194,16 @@ prefix. Only the log gets a real namespace.
 So: `syncmesh.events` in the attached log, `syncmesh_state_rows` beside the app's tables. One word
 everywhere, two separators, and the reason is the trigger restriction rather than taste.
 
-**A schema change is a new file, not a migration.** The filename carries a hash
-of the app manifest, as LiveStore's `state${schema.hash}.db` does. Change a
-column and the old state file is orphaned, a new one is opened empty, and the
-fold rebuilds it from the log. No `ALTER`, no migration ladder for anything
-derived, nothing to get wrong on a device you cannot inspect. Old files are
-swept on a bound, the way LiveStore keeps `MAX_ARCHIVED_STATE_DBS_IN_DEV`.
+**A schema change is a new file — but only on a device that has never compacted.** The idea was
+LiveStore's `state${schema.hash}.db`: change a column, orphan the old file, open an empty one, let
+the fold rebuild it. No `ALTER`, no migration ladder for anything derived.
+
+It only holds while `refoldable(store)` is true. On a compacted device the old file is the only
+copy of everything below the floor, so orphaning it is deleting data, and the honest options are
+to migrate it in place or to rejoin from a peer — neither of which is "no migration ladder".
+
+That is a real limit on the borrowed idea rather than a detail. A young replica gets the clean
+version; an old one gets a migration or a rejoin, and has to be told which.
 
 This is what makes the fingerprint added in `syncmesh_meta` this week
 *mostly* redundant: it compares DDL text and then reinstalls in place, which
@@ -222,10 +240,19 @@ writing down rather than papering over with a lowest-common-denominator design.
    Pinned by a test that interrupts a write between the halves and asserts the row comes back on
    the next boot — and that the cursor never runs ahead of the log, which is the unrecoverable
    direction. Swapping the two halves makes it fail, which was checked by doing it.
-2. **A durable recovery basis.** A snapshot with its coverage and scope, so "discard the state
-   file" is only offered where the events above the floor plus that snapshot can rebuild it.
-   ✅ `acked` is decided: discarded with the rest, because the loss understates delivery and never
-   overstates it, and it returns on the next acknowledged write.
+2. ✅ **The recovery basis, and what it costs.** Two answers, both smaller than this asked for and
+   one of them unwelcome:
+
+   - `acked` is discarded with the rest. The loss understates delivery and never overstates it,
+     and it returns on the next acknowledged write.
+   - The folded state is **not** disposable on a device that has compacted, because compaction
+     deletes events precisely to the extent that the rows are on disk. `refoldable(store)` is that
+     question, and it gates everything below.
+
+   What is *not* done, and is now optional rather than required: a durable snapshot written at
+   compaction time would make the state file disposable again on an old device. It duplicates
+   every row it covers, which is why it is worth having only if the schema-change story turns out
+   to matter more than the disk.
 3. **Split the stores**, with the log's lock covering both files, and `openStores` opening the log
    and attaching the state file in that order.
 4. **Hash the manifest into the state filename**, sweep orphans on a bound, and decide whether the

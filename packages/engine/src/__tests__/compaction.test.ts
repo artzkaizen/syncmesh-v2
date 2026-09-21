@@ -11,6 +11,7 @@ import type { EventStore } from "../store.js";
 import { openEngine } from "../boot.js";
 import { dueForCompaction } from "../compaction.js";
 import { createLink } from "../link.js";
+import { refoldable } from "../compaction.js";
 import { StateCorrupt, createMemoryStateStore, type StateStore } from "../state-store.js";
 import {
   CREATE,
@@ -148,6 +149,26 @@ describe("compaction — RFC-0015 §2", () => {
     expect(done.removed).toBe(3);
     expect(done.floor.synced.get(PEER_A)).toBe(seq(3));
     expect(await count(store)).toBe(2);
+  });
+
+  /**
+   * The pair `refoldable` answers, and the reason the answer is not always yes.
+   *
+   * RFC-0022 wants to throw the folded state away whenever the schema changes and rebuild it from
+   * the log. That works until the log has been compacted: compaction deletes events once the
+   * state that stood for them was persisted, and only ever that far, so below a floor the folded
+   * state is not a cache of the log — it is the **only copy**.
+   */
+  test("state is refoldable until the log is compacted, and then it is not", async () => {
+    const stateStore = createMemoryStateStore();
+    const { engine, store } = setup(PEER_A, 100, { stateStore });
+    (await write(engine, "n1", "n1")).unwrap();
+    expect((await refoldable(store)).unwrap()).toBe(true);
+
+    engine.acknowledge(PEER_B, cursors([[PEER_A, seq(1)]]), T0);
+    expect((await engine.compact({ now: T0 })).unwrap().removed).toBe(1);
+    // the events that stood for these rows are gone; the rows are now the durable copy
+    expect((await refoldable(store)).unwrap()).toBe(false);
   });
 
   /**

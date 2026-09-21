@@ -84,6 +84,26 @@ export function ackFloor(acks: Iterable<Ack>, authors: Iterable<PeerId>): Cursor
   return floor;
 }
 
+/**
+ * Whether this device's folded state could be thrown away and rebuilt from the log alone.
+ *
+ * **The question RFC-0022 rests on, and the answer is not always yes.** Compaction deletes events
+ * once the state that stood for them was persisted — and only ever that far, which is what
+ * {@link clampToPersisted} enforces. So below a compaction floor the folded state is not a cache
+ * of the log: it is the **only copy**, and discarding it discards data no replay can recover.
+ *
+ * A device that has never compacted can refold everything, which is most devices for most of
+ * their lives. One that has cannot, and its remedy is a peer rather than its own disk — which is
+ * exactly what `openEngine` says when it finds an absent cache over a compacted log.
+ *
+ * Asked of the store rather than the engine because the caller is deciding whether to *open* one:
+ * a schema change that wants a fresh state file has to know this before it discards the old.
+ */
+export const refoldable = (store: EventStore): Promise<Result<boolean, StoreFailure>> =>
+  store
+    .compactedBelow()
+    .then((found) => found.map((floor) => floor.synced.size === 0 && floor.local.size === 0));
+
 /** Never above what is persisted: a device cannot refold what it deleted. */
 export const clampToPersisted = (floor: Cursors, persisted: Cursors): Cursors => {
   const clamped = new Map<PeerId, SeqNum>();

@@ -46,6 +46,7 @@ export {
   writeKeysOf,
 } from "./state-store.js";
 export type { Ack, CompactError, CompactOptions, Compaction } from "./compaction.js";
+export { refoldable } from "./compaction.js";
 export type { LinkOptions } from "./link.js";
 export {
   CannotRevert,

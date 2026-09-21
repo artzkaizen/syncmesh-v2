@@ -162,7 +162,9 @@ describe("openEngine — a write interrupted between its two commits", () => {
     const stateStore: StateStore = {
       ...inner,
       commit: (rows, coverage) =>
-        alive ? inner.commit(rows, coverage) : Promise.resolve(Result.ok(0)),
+        alive
+          ? inner.commit(rows, coverage)
+          : Promise.resolve(Result.ok<void, StoreFailure>(undefined)),
     };
     return { stateStore, kill: () => void (alive = false) };
   };
