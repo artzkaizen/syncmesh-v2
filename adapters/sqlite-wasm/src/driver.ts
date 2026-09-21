@@ -12,8 +12,13 @@ import { loadSqlite } from "./module.js";
 import { connectSqlite } from "./remote.js";
 import { openDatabase, originHasOpfs, threadHasSyncAccessHandles } from "./vfs.js";
 
-/** The pool holds a file open per slot, so the default is "three scoped stores and their journals". */
-const CAPACITY = 8;
+/**
+ * The pool holds one access handle per slot, and a store now takes four: the log and its journal,
+ * the derived half and its journal (RFC-0022). Eight covered three stores when a store was one
+ * file; it covers two now, and this is what an origin runs out of rather than disk. Sixteen is
+ * three scoped stores (D07) with room over, which is what the old number was claiming.
+ */
+const CAPACITY = 16;
 
 /** Everything of this origin's under one root, so a second library's OPFS files are never in reach. */
 const DIRECTORY = "/syncmesh";

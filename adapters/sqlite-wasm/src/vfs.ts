@@ -313,6 +313,12 @@ const installPool = async (
  * the access handles without touching the files, so a worker that has closed its stores stops
  * blocking every other browsing context of the origin; `unpauseVfs` takes them back, which is why
  * an open is async on a path that looks synchronous.
+ *
+ * **`initialCapacity` is initial**, and a pool that exists already keeps the slot count it was
+ * created with — so raising the default does nothing for an origin that has ever run the app, and
+ * the symptom would be an open refused for want of a slot long after the number was changed.
+ * `reserveMinimumCapacity` is the call that means "at least this many": it grows a pool that is
+ * short and returns without side effects on one that is not.
  */
 export async function holdPool(
   install: NonNullable<OptionalVfs["installOpfsSAHPoolVfs"]>,
@@ -328,6 +334,14 @@ export async function holdPool(
     return held;
   }
   const pool = held.value;
+  const reserved = await Result.tryPromise({
+    try: () => pool.util.reserveMinimumCapacity(options.capacity),
+    catch: poolFailure(directory),
+  });
+  if (reserved.isErr()) {
+    dropLease(directory);
+    return reserved;
+  }
   if (pool.util.isPaused()) {
     const woken = await Result.tryPromise({
       try: () => pool.util.unpauseVfs(),

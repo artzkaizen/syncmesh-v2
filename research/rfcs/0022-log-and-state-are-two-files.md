@@ -480,13 +480,12 @@ journal mode, on any runtime. Get that right and the pragma above becomes a free
 optimisation somebody can take later; get it wrong and it becomes silent data
 loss with a performance improvement attached to it.
 
-**The SAH pool's capacity must grow.** It holds one access handle per slot, and
-every database *and its journal* takes one:
-
-```ts
-/** The pool holds a file open per slot, so the default is "three scoped stores and their journals". */
-const CAPACITY = 8;
-```
+**The SAH pool's capacity must grow** — done, and confirmed by running the app.
+It holds one access handle per slot, and a store now takes four: the log and its
+journal, the derived half and its journal. Eight covered three stores when a
+store was one file; it covers two now, so `CAPACITY` is 16. This is what an
+origin runs out of rather than disk, and the failure is an open that is refused
+rather than anything visible in the data.
 
 Three scoped stores is 3 × 2 = 6 today. Splitting makes each scope two files —
 three with blobs — so the same three stores need 12 to 18. `CAPACITY` is a
