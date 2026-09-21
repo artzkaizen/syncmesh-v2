@@ -51,7 +51,7 @@ const grants = Object.entries(staff).map(([name, who]) =>
 );
 
 const device = async (name: keyof typeof staff, transport: Transport) => {
-  const app = await createClient({
+  const app = createClient({
     schema: roundsSchema(),
     procedures,
     identity: staff[name],
@@ -60,6 +60,8 @@ const device = async (name: keyof typeof staff, transport: Transport) => {
     transports: [transport],
     now: () => T0,
   });
+  // a script, not a screen: `$grants` is mesh surface, so it waits for the mesh the api does not
+  await app.$ready;
   for (const grant of grants) app.$grants.register(grant).unwrap();
   return app;
 };

@@ -1,9 +1,12 @@
-import type { Brand, Change, Hlc, PeerId, Stamp } from "@syncmesh/kernel";
-
-import { PEER_ID_HEX, parsePeerId } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
 
+import type { Change } from "./change.js";
+import type { Hlc } from "./hlc.js";
 import type { PartitionKey } from "./partition.js";
+import type { Brand } from "./primitives.js";
+import type { Stamp } from "./stamp.js";
+
+import { PEER_ID_HEX, parsePeerId, type PeerId } from "./peer-id.js";
 
 export type ProtocolVersion = 1;
 

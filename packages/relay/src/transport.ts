@@ -1,4 +1,5 @@
 import type { Cursors, Interest, Unsubscribe } from "@syncmesh/engine";
+import type { PeerId } from "@syncmesh/kernel";
 import type { Transport, TransportContext } from "@syncmesh/transport";
 
 import { createHub, interestFrom, narrows } from "@syncmesh/engine";
@@ -14,6 +15,23 @@ import { createRedial } from "./redial.js";
 import { wireSession } from "./session.js";
 
 /** Why a socket this file hung up hung up, said once here and read by the close that follows. */
+/**
+ * How long a peer stays claimed after it was last heard through this relay.
+ *
+ * Long against the cursor traffic that re-arms it — a device that is moving at all reports its
+ * position far more often than this — and short against somebody leaving a building. Erring long
+ * would be the worse mistake: a claim outranks a medium that says nothing, so an entry that
+ * outlives the peer pulls frames away from the radio that is actually holding them.
+ */
+const HEARD_TTL_MS = 60_000;
+
+/** The claimed peers, with the ones that have gone quiet dropped on the way past. */
+const stillHeard = (heard: Map<PeerId, number>): ReadonlySet<PeerId> => {
+  const cutoff = Date.now() - HEARD_TTL_MS;
+  for (const [peer, at] of heard) if (at < cutoff) heard.delete(peer);
+  return new Set(heard.keys());
+};
+
 const MUTE = "the relay stopped answering: no frame within 2.5 times its keepalive";
 const REFUSED = "the relay speaks none of the protocol versions this build offers";
 const UNSENT = "the frame did not leave the relay socket";
@@ -143,11 +161,41 @@ export function relayTransport(options: RelayTransportOptions): Transport {
     return repaging ? new Map() : coverage.synced;
   };
 
+  /**
+   * Peers whose traffic has come through this relay, and when each was last heard.
+   *
+   * What `Transport.delivers` answers from. Timed out rather than kept, because a claim that
+   * outlives the peer is worse than no claim at all: routing ranks a claim above a medium that
+   * says nothing, so a stale entry here would pull frames away from a radio that *is* holding the
+   * device. {@link HEARD_TTL_MS} is generous against the cursor traffic that feeds it — a live
+   * peer re-arms its entry every time it moves — and short against a person walking out of a
+   * building.
+   */
+  const heard = new Map<PeerId, number>();
+
   const join = (): void => {
     if (ctx === undefined) return;
     sendSafe(joinFrame(versions, ctx.identity.peerId, askFrom(ctx), options.interest));
     for (const wire of ctx.grants.allWires()) sendSafe(grantFrame(wire));
   };
+
+  /**
+   * Peers still claimed, with the ones that have gone quiet dropped on the way past.
+   *
+   * **Nothing is claimed while this source is down**, and that guard is load-bearing now rather
+   * than tidy. A claim ranks above a medium that merely says nothing, so a relay that went on
+   * claiming a room it could no longer reach would *take* frames from the radio sitting next to the
+   * device — the exact failure this whole scheme was built to stop, reintroduced by the fix for it.
+   *
+   * What remains is the window where this socket is dead and nothing has noticed: a relay's silent
+   * death is only detected at 2.5× the keepalive it announced, and until then `online` is still
+   * true. That floor belongs to the relay protocol rather than to routing, and it is the honest
+   * limit of what this can promise.
+   *
+   * `stopped` as well as `online`, because a transport taken out of the mesh keeps whatever it last
+   * believed: `online` only turns over when a socket *closes*, and a stopped source never gets one.
+   */
+  const delivers = (): ReadonlySet<PeerId> => (online && !stopped ? stillHeard(heard) : new Set());
 
   const session = (dialed: RelayDial): void => {
     if (ctx === undefined) return;
@@ -172,6 +220,7 @@ export function relayTransport(options: RelayTransportOptions): Transport {
       },
       onDropped: report.dropped,
       onBlobAnswer: blobs.answer,
+      onPeerHeard: (peer) => void heard.set(peer, Date.now()),
       onCaughtUp: () => {
         repaging = false;
         caughtUpResolve();
@@ -202,6 +251,30 @@ export function relayTransport(options: RelayTransportOptions): Transport {
   return {
     name,
     kind: "websocket",
+    /**
+     * Who this relay demonstrably carries, so routing can rank it against a radio.
+     *
+     * Deliberately **not** `reaches`: this medium holds one link, and `churn` counts `reaches`
+     * against `maxLinks` before hanging something up. A relay answering "forty" there would be
+     * asked to close links it never had. See `Transport.delivers`.
+     */
+    delivers,
+    /**
+     * Drop whatever we are holding and dial again immediately.
+     *
+     * Called when something outside knows the network moved — see `Transport.wake`. Hanging up
+     * first matters: after a Wi-Fi drop the old socket is usually *not* closed, merely orphaned, so
+     * dialling without ending it would leave two sessions and let the stale one keep claiming the
+     * keepalive deadline. `settled()` resets the backoff, because a network that just came back
+     * should not be made to wait out a delay earned while it was gone.
+     */
+    wake: () => {
+      if (stopped || fatal) return;
+      redial.cancel();
+      redial.settled();
+      if (live === undefined) redial.attempt();
+      else hangUp("the network changed, so this link is being re-established");
+    },
     condition: report.condition,
     onLinkEvent: report.onLinkEvent,
     priority: options.priority ?? 1,

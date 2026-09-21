@@ -1,7 +1,14 @@
-import type { PeerId, Row, RowKey, State, TableName } from "@syncmesh/kernel";
+import type { PeerId, Row, RowKey, Stamp, State, TableName } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
-import { emptyState, getRecord, mergeRecord, readRow, readRowsIn } from "@syncmesh/kernel";
+import {
+  emptyState,
+  getRecord,
+  isVisible,
+  mergeRecord,
+  readRow,
+  readRowsIn,
+} from "@syncmesh/kernel";
 import { type EventId, type PartitionKey, type Procedure, type SyncEvent } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
@@ -96,6 +103,23 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi {
   readonly state: () => State;
   /** The visible rows of `table` that belong to `partition`. */
   readonly rowsIn: (table: TableName, partition: PartitionKey) => ReadonlyMap<RowKey, Row>;
+  /**
+   * The delete that is currently hiding the row — `undefined` for a row that is visible, and for
+   * one this device has never held.
+   *
+   * The named way to ask a question the row reads cannot answer. A tombstoned record leaves every
+   * read above it — {@link Engine.rowsIn}, `readRow`, and the app's own tables, which the storage
+   * projection hard-deletes from — so *deleted* and *never heard of* arrive at a screen as the
+   * same empty answer, and a detail view has no way to tell them apart. The record itself is kept
+   * regardless, because a concurrent edit has to be able to beat the delete (RFC-0014 §1), so the
+   * fact was always here; what was missing was a name for it.
+   *
+   * The stamp rather than a boolean, because it is what the kernel holds and both halves are real:
+   * the peer is the **device** that deleted the row and the HLC is that device's clock. Neither is
+   * an account and neither is this device's wall time, so what a screen can honestly draw from
+   * this is that the row was deleted — the rest wants the event log to join against.
+   */
+  readonly deletedAt: (table: TableName, key: RowKey) => Stamp | undefined;
   /** Writes the compensating event for one of this engine's last `undoDepth` writes, in that event's partition. */
   readonly revert: (id: EventId) => Promise<Result<SyncEvent, RevertError>>;
   readonly canRevert: (id: EventId) => boolean;
@@ -319,6 +343,12 @@ export function createEngine(options: EngineOptions): Engine {
     ...chains,
     state: stateOf,
     rowsIn: (table, partition) => readRowsIn(stateOf(), table, partition),
+    deletedAt: (table, key) => {
+      const record = getRecord(stateOf(), table, key);
+      // a visible row is not deleted even when it carries a tombstone: an edit stamped above the
+      // delete is the CRDT's answer to a concurrent pair, and `isVisible` is where that is decided
+      return record === undefined || isVisible(record) ? undefined : record.deleteStamp;
+    },
     revert,
     canRevert: (id) => undo.some((u) => u.event.id === id),
     cursors: () => Promise.resolve(Result.ok(coverage.current().synced)),

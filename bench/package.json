@@ -7,6 +7,7 @@
   "scripts": {
     "browser": "bun run src/browser-mesh.ts",
     "join": "bun run src/join.ts",
+    "scale": "bun run src/scale/index.ts",
     "storage": "bun run src/storage.ts"
   },
   "devDependencies": {

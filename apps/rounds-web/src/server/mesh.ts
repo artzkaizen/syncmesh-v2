@@ -37,7 +37,7 @@ const station = createIdentity(seed(200)).unwrap();
 
 mkdirSync(".syncmesh", { recursive: true }); // `bunSqliteDriver` opens a file, it does not make a directory
 
-export const client = await createClient({
+export const client = createClient({
   schema: roundsSchema(),
   procedures,
   identity: station,
@@ -48,6 +48,7 @@ export const client = await createClient({
   storage: sqlite({ driver: nodeSqliteDriver(".syncmesh/rounds-web.db") }),
   transports: [relayTransport({ dial: webSocketDial(RELAY_URL) })],
 });
+await client.$ready;
 
 client.$grants
   .register(

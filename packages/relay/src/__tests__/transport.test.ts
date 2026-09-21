@@ -145,7 +145,50 @@ describe("relayTransport", () => {
     tb.requestGrant?.("inv-42");
     await tick(20);
     expect(asked).toEqual(["inv-42"]);
+
     await ta.stop();
+    await tb.stop();
+    room.close();
+  });
+});
+
+/**
+ * What a relay can honestly say about peers it is not linked to.
+ *
+ * It holds one socket and cannot enumerate a room, so before this it claimed nobody — and routing
+ * reads "claims nobody" as a shrug, which let any radio that *did* claim a peer narrow the relay
+ * away entirely. When that radio's claim was stale, the frame went to a dead link and the relay
+ * that could have carried it was never asked.
+ */
+describe("what the relay says it delivers to", () => {
+  test("a peer heard through the room is claimed; one this relay never carried is not", async () => {
+    const room = await openRoom();
+    const a = peer(40, "acct_a");
+    const b = peer(80, "acct_b");
+
+    const ta = relayTransport({ dial: dialTo(room).dial, reconnectMs: 10 });
+    await ta.start(a.context);
+    await ta.whenReady();
+    const tb = relayTransport({ dial: dialTo(room).dial, reconnectMs: 10 });
+    await tb.start(b.context);
+    await tb.whenReady();
+    await tick(20);
+
+    // b authors, so b reports its position — which is the evidence a's relay claims b on
+    await write(b, "n1", "one");
+    await tick(20);
+
+    expect(ta.delivers?.().has(b.identity.peerId)).toBe(true);
+    // never in this room, so nothing was ever carried for it and nothing is claimed
+    expect(ta.delivers?.().has(peer(120, "acct_c").identity.peerId)).toBe(false);
+    // and never itself: a medium that claimed this device would route its own frames into a loop
+    expect(ta.delivers?.().has(a.identity.peerId)).toBe(false);
+
+    // a source that is down claims nobody: a claim outranks a medium that says nothing, so a
+    // relay still claiming a room it cannot reach would take frames from the radio beside it
+    await ta.stop();
+    expect(ta.delivers?.().size).toBe(0);
+
     await tb.stop();
     room.close();
   });

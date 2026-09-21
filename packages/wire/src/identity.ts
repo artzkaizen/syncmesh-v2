@@ -5,6 +5,7 @@ import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha2.js";
 import { parsePeerId } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
+import { hostSigner } from "./signing.js";
 
 import { bytesToHex } from "./hex.js";
 
@@ -42,7 +43,7 @@ export function createIdentity(seed: Uint8Array): Result<Identity, InvalidSeed> 
   return Result.ok({
     peerId,
     publicKey,
-    sign: (bytes) => ed.sign(bytes, seed),
+    sign: (bytes) => hostSigner()?.sign(bytes, seed) ?? ed.sign(bytes, seed),
     // the clamped scalar an Ed25519 seed already expands to, which is the X25519 secret for it
     agree: (theirPublicKey) =>
       x25519.getSharedSecret(ed.utils.getExtendedPublicKey(seed).head, theirPublicKey),
@@ -52,7 +53,7 @@ export function createIdentity(seed: Uint8Array): Result<Identity, InvalidSeed> 
 /** Never throws: a malformed signature or key is simply not valid. */
 export function verify(bytes: Uint8Array, signature: Uint8Array, publicKey: Uint8Array): boolean {
   return Result.try({
-    try: () => ed.verify(signature, bytes, publicKey),
+    try: () => hostSigner()?.verify(bytes, signature, publicKey) ?? ed.verify(signature, bytes, publicKey),
     catch: () => false,
   }).unwrapOr(false);
 }

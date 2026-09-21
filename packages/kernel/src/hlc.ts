@@ -68,7 +68,36 @@ const clamp = (stamp: Hlc, limit: Temporal.Instant): Hlc =>
  */
 export function hlcOf(ms: number, logical: number): Hlc {
   // SAFETY: both come from a form that was written from an Hlc; Logical is a non-negative integer
-  return [Temporal.Instant.fromEpochMilliseconds(ms), logical as Logical];
+  return [instantAt(ms), logical as Logical];
+}
+
+/**
+ * How many distinct milliseconds {@link instantAt} keeps before it starts over.
+ *
+ * Large enough to cover the burst this exists for — a replica rebuilding its state, where every
+ * cell of every row asks for an instant and a row's cells all share one — and small enough that a
+ * process running for weeks cannot grow a map for every millisecond it has ever seen.
+ */
+const INSTANT_CACHE = 4096;
+
+const instants = new Map<number, Temporal.Instant>();
+
+/**
+ * The instant for this millisecond, built once.
+ *
+ * `Temporal.Instant` holds nanoseconds as a `BigInt`, so constructing one is far from free on an
+ * engine without fast bignums — and the cells of a single row were written together and therefore
+ * all carry the same millisecond. Instants are immutable, so handing the same one to every cell
+ * that asks for it is a shared value rather than shared state.
+ */
+function instantAt(ms: number): Temporal.Instant {
+  const known = instants.get(ms);
+  if (known !== undefined) return known;
+  const at = Temporal.Instant.fromEpochMilliseconds(ms);
+  // cleared rather than evicted one at a time: this is a burst cache, and the burst starts over
+  if (instants.size >= INSTANT_CACHE) instants.clear();
+  instants.set(ms, at);
+  return at;
 }
 
 export function compareHlc(a: Hlc, b: Hlc): Ordering {

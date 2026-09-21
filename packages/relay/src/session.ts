@@ -33,6 +33,15 @@ export interface SessionHooks {
   /** The last catch-up page has landed: this source has nothing more to hand over right now. */
   readonly onCaughtUp: () => void;
   /**
+   * Another device in this room just spoke through the relay, so the relay demonstrably carries it.
+   *
+   * The evidence a relay has for `Transport.delivers`: it holds one link and cannot enumerate a
+   * room, so the only honest thing it can say about a peer is that traffic from them arrived here.
+   * Cursors rather than events, deliberately — a relayed event may be history from a device that
+   * left hours ago, while cursors are a live peer reporting its position now.
+   */
+  readonly onPeerHeard?: (peer: PeerId) => void;
+  /**
    * Bytes that never became anything (book ch. 18): a frame this build cannot decode, or an event
    * whose signature does not verify.
    *
@@ -180,8 +189,10 @@ export function wireSession(
   const onSession = (frame: Extract<RelayFrame, { kind: "session" }>["frame"]): void => {
     if (frame.kind === "presence") context.onPresence?.(frame.wire);
     else if (frame.kind === "grant") void grants.register(frame.wire);
-    else if (frame.kind === "cursors") engine.acknowledge(frame.from, frame.cursors, now());
-    else if (frame.kind === "grant-request") {
+    else if (frame.kind === "cursors") {
+      hooks.onPeerHeard?.(frame.from);
+      engine.acknowledge(frame.from, frame.cursors, now());
+    } else if (frame.kind === "grant-request") {
       const request = { peerId: frame.peerId };
       if (frame.invite !== undefined) Object.assign(request, { invite: frame.invite });
       context.onGrantRequest?.(request);
