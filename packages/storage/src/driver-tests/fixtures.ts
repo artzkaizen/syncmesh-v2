@@ -118,12 +118,19 @@ export const COUNTERS = table("counters", { id: t.integer().primaryKey(), n: t.i
 export const sqlOf = (driver: { readonly dialect?: "sqlite" | "postgres" }) =>
   driver.dialect === "postgres"
     ? {
-        events: "_syncmesh_events",
-        rows: "_syncmesh_state",
-        compaction: "_syncmesh_compaction",
+        events: "syncmesh.events",
+        changes: "syncmesh.changes",
+        rows: "syncmesh.state_rows",
+        compaction: "syncmesh.compaction",
         junk: "'\\x00'::bytea",
       }
-    : { events: "events", rows: "state_rows", compaction: "compaction", junk: "X'00'" };
+    : {
+        events: "syncmesh_events",
+        changes: "syncmesh_changes",
+        rows: "syncmesh_state_rows",
+        compaction: "syncmesh_compaction",
+        junk: "X'00'",
+      };
 
 /**
  * The SQL an app would write in the driver's dialect: boolean and timestamp literals and binds,
@@ -153,5 +160,5 @@ export const sqlText = (driver: { readonly dialect?: "sqlite" | "postgres" }) =>
         boolText: (b: boolean) => (b ? "1" : "0"),
         tsText: (ms: number) => String(ms),
         jsonText: (v: SqlValue) => String(v),
-        guard: `SELECT armed FROM _syncmesh_capture`,
+        guard: `SELECT armed FROM syncmesh_capture`,
       };

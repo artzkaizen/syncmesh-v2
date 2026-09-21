@@ -6,7 +6,7 @@ import { bytesToHex } from "@syncmesh/wire";
 
 import type { SqlDriver } from "./driver.js";
 
-import { dialectOf } from "./dialect.js";
+import { dialectOf, engineTable, namespaceDdl } from "./dialect.js";
 import { attempt } from "./sql.js";
 
 /**
@@ -102,13 +102,14 @@ export function memoryBlobStore(): BlobStore {
  * that wants its photos back after a restart. The table is the mesh's own, not the app's.
  */
 export function sqlBlobStore(driver: SqlDriver): Promise<Result<BlobStore, BlobError>> {
-  const { placeholder: p } = dialectOf(driver);
+  const { placeholder: p, name: dialect } = dialectOf(driver);
+  const TABLE = engineTable("blobs", dialect);
   const bytes = driver.dialect === "postgres" ? "BYTEA" : "BLOB";
   // a put is idempotent because the name is the content: the second one has nothing to change
   const insert =
     driver.dialect === "postgres"
-      ? `INSERT INTO _syncmesh_blobs (hash, bytes) VALUES ($1, $2) ON CONFLICT (hash) DO NOTHING`
-      : `INSERT OR IGNORE INTO _syncmesh_blobs (hash, bytes) VALUES (?, ?)`;
+      ? `INSERT INTO ${TABLE} (hash, bytes) VALUES ($1, $2) ON CONFLICT (hash) DO NOTHING`
+      : `INSERT OR IGNORE INTO ${TABLE} (hash, bytes) VALUES (?, ?)`;
   const store: BlobStore = {
     put: async (raw) => {
       const hash = hashOf(raw);
@@ -125,7 +126,7 @@ export function sqlBlobStore(driver: SqlDriver): Promise<Result<BlobStore, BlobE
       );
     },
     get: async (hash) => {
-      const rows = await driver.all(`SELECT bytes FROM _syncmesh_blobs WHERE hash = ${p(1)}`, [
+      const rows = await driver.all(`SELECT bytes FROM ${TABLE} WHERE hash = ${p(1)}`, [
         String(hash),
       ]);
       const cell = rows[0]?.[0];
@@ -133,15 +134,18 @@ export function sqlBlobStore(driver: SqlDriver): Promise<Result<BlobStore, BlobE
       return verifyBlob(hash, cell);
     },
     has: async (hash) =>
-      (await driver.all(`SELECT 1 FROM _syncmesh_blobs WHERE hash = ${p(1)}`, [String(hash)]))
-        .length > 0,
+      (await driver.all(`SELECT 1 FROM ${TABLE} WHERE hash = ${p(1)}`, [String(hash)])).length > 0,
     delete: async (hash) => {
-      await driver.run(`DELETE FROM _syncmesh_blobs WHERE hash = ${p(1)}`, [String(hash)]);
+      await driver.run(`DELETE FROM ${TABLE} WHERE hash = ${p(1)}`, [String(hash)]);
     },
   };
-  return driver
-    .run(
-      `CREATE TABLE IF NOT EXISTS _syncmesh_blobs (hash TEXT PRIMARY KEY, bytes ${bytes} NOT NULL)`,
-    )
-    .then(() => Result.ok<BlobStore, BlobError>(store));
+  // the namespace first: this store is opened on its own by callers that never opened a log
+  const ddl = [
+    ...namespaceDdl(dialect),
+    `CREATE TABLE IF NOT EXISTS ${TABLE} (hash TEXT PRIMARY KEY, bytes ${bytes} NOT NULL)`,
+  ];
+  return (async () => {
+    for (const sql of ddl) await driver.run(sql);
+    return Result.ok<BlobStore, BlobError>(store);
+  })();
 }

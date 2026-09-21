@@ -202,7 +202,7 @@ const selects = (peer: PeerId) => {
  * `current_setting('syncmesh.account')` and `principalSettings` puts the *grant's* account
  * there — so the text moving is the same event as the verdict moving.
  */
-const RLS_READ_POLICY = `CREATE POLICY "_syncmesh_read" ON "notes" FOR SELECT USING ((COALESCE("ownerId" = NULLIF(current_setting('syncmesh.account', TRUE), ''), FALSE)) AND ((NULLIF(current_setting('syncmesh.partition', TRUE), '') IS NULL OR "_partition" = NULLIF(current_setting('syncmesh.partition', TRUE), ''))))`;
+const RLS_READ_POLICY = `CREATE POLICY "syncmesh_read" ON "notes" FOR SELECT USING ((COALESCE("ownerId" = NULLIF(current_setting('syncmesh.account', TRUE), ''), FALSE)) AND ((NULLIF(current_setting('syncmesh.partition', TRUE), '') IS NULL OR "_partition" = NULLIF(current_setting('syncmesh.partition', TRUE), ''))))`;
 
 const rlsFor = (peer: PeerId) => ({
   ddl: rlsDdl(notes.table, LADDER, notes.allow),

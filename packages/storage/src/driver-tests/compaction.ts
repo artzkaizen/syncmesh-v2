@@ -104,14 +104,21 @@ export const sqliteMigrationCases = (openDriver: OpenDriver): readonly SuiteCase
     run: async () => {
       const driver = await openDriver("compaction-migrate");
       const store = await filled(driver);
-      await driver.run("DROP TABLE compaction");
-      await driver.run("ALTER TABLE events DROP COLUMN sig");
+      await driver.run("DROP TABLE syncmesh_compaction");
+      await driver.run("ALTER TABLE syncmesh_events DROP COLUMN sig");
+      // a version-1 database predates the namespace as well as the compaction table, so the
+      // downgrade puts the names back too — otherwise this walks the ladder over tables whose
+      // names only the last step produces, which is a database that never existed
+      await driver.run("ALTER TABLE syncmesh_events RENAME TO events");
+      await driver.run("ALTER TABLE syncmesh_state_rows RENAME TO state_rows");
+      await driver.run("ALTER TABLE syncmesh_cursors RENAME TO state_cursors");
+      await driver.run("DROP TABLE IF EXISTS syncmesh_scope");
       await driver.run("PRAGMA user_version = 1");
       const migrated = (await sqlEventStore(driver)).unwrap();
-      equal(Number((await driver.all("PRAGMA user_version"))[0]?.[0]), 4, "user_version");
+      equal(Number((await driver.all("PRAGMA user_version"))[0]?.[0]), 5, "user_version");
       // the step this version added: an old database gains an empty scope, which reads as the
       // unscoped cursor it has always had (D23)
-      equal((await driver.all("SELECT scope FROM state_scope")).length, 0, "no scope yet");
+      equal((await driver.all("SELECT scope FROM syncmesh_scope")).length, 0, "no scope yet");
       equal((await migrated.compactedBelow()).unwrap().synced.size, 0, "empty floors");
       const all = (await store.all()).unwrap();
       equal(all.length, 5, "events intact");

@@ -7,10 +7,11 @@ import { Result } from "@syncmesh/result";
 import type { SqlDriver } from "./driver.js";
 import type { ProjectionOptions } from "./projection.js";
 
-import { installCapture } from "./capture.js";
+import { captureDdlFor, installCapture } from "./capture.js";
+import { dialectOf } from "./dialect.js";
 import { sqlEventStore } from "./event-store.js";
 import { tablesProjection } from "./projection.js";
-import { rowSyncDdl, rowSyncTable, type RowSync } from "./row-sync.js";
+import { rowSyncDdlFor, rowSyncTable, type RowSync } from "./row-sync.js";
 import { attempt, inTransaction } from "./sql.js";
 import { sqlStateStore } from "./state-store.js";
 
@@ -46,6 +47,36 @@ export interface OpenStoresOptions extends ProjectionOptions {
   readonly tables?: readonly Table[];
 }
 
+/**
+ * The app's tables and their capture, installed **only when this database has not got them.**
+ *
+ * Every statement here is `IF NOT EXISTS`, so running them all on every launch was correct and
+ * quietly wasteful: forty-odd statements to parse, per open, to discover there was nothing to do.
+ * What replaces that is one read of one row. The row holds the exact DDL last installed, so
+ * "unchanged" is string equality rather than a version somebody has to remember to bump — add a
+ * column, add a table, change a dialect, and the text differs and everything is reinstalled.
+ *
+ * The one thing it cannot see is a change made *around* it: drop a trigger by hand and this will
+ * still say the schema is installed. That is the same bargain every migration table makes, and
+ * the repair is the same — clear the row, or the file.
+ */
+const installed = (
+  driver: SqlDriver,
+  tables: readonly Table[],
+): Promise<Result<void, StoreFailure>> => {
+  const { schema, name: dialect } = dialectOf(driver);
+  const rowSyncDdl = rowSyncDdlFor(dialect);
+  const wanted = [...captureDdlFor(driver, tables), ...rowSyncDdl].join(";\n");
+  return attempt("the app schema failed to install", async () => {
+    await driver.run(schema.ddl);
+    const [held] = await driver.all(schema.read);
+    if (held?.[0] === wanted) return;
+    await installCapture(driver, tables).then((done) => done.unwrap());
+    for (const statement of rowSyncDdl) await driver.run(statement);
+    await driver.run(schema.write, [wanted]);
+  });
+};
+
 export function openStores(
   driver: SqlDriver,
   options: OpenStoresOptions = {},
@@ -55,12 +86,7 @@ export function openStores(
     const stateOptions = {};
     let rowSync: RowSync | undefined;
     if (options.tables !== undefined) {
-      yield* Result.await(installCapture(driver, options.tables));
-      yield* Result.await(
-        attempt("row-sync tables failed to open", async () => {
-          for (const statement of rowSyncDdl) await driver.run(statement);
-        }),
-      );
+      yield* Result.await(installed(driver, options.tables));
       rowSync = rowSyncTable(driver);
       const projectionOptions = { rowSync };
       if (options.partitionColumn !== undefined)

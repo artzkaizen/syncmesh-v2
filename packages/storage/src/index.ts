@@ -47,10 +47,11 @@ export { openStores, scopedStores, storeNameFor } from "./open-stores.js";
 export { DetachRefused, detachScope } from "./detach.js";
 export type { RowSync } from "./row-sync.js";
 export {
-  ACKED,
-  ROW_SYNC,
+  ROW_SYNC_NOUN,
+  ackedTableName,
+  rowSyncTableName,
   operationOfSql,
-  rowSyncDdl,
+  rowSyncDdlFor,
   rowSyncTable,
   syncOfSql,
 } from "./row-sync.js";

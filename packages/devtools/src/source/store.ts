@@ -15,9 +15,9 @@ import { QueryFailed } from "../contract.js";
  * is owed the weight of the log and not a word of its contents. The same line separates this from
  * the app's own tables: a row count is a fact about storage, a row is somebody's data.
  *
- * Two dialects and two sets of names, because SQLite keeps the short ones on the device and
- * Postgres prefixes `_syncmesh_` — it is the app's own database, and `events` is already
- * somebody's table there. Nothing on `Mesh` says which one is underneath (`query` is the driver's
+ * Two dialects and two spellings of one namespace: `syncmesh_events` in the single file SQLite
+ * has, `syncmesh.events` in the real schema Postgres gets (RFC-0022). Nothing on `Mesh` says
+ * which one is underneath (`query` is the driver's
  * `all` and nothing else), so this asks: it runs the SQLite-shaped count once and, if the database
  * has never heard of that table, runs the Postgres-shaped one. The answer is remembered.
  */
@@ -31,19 +31,19 @@ interface StoreSql {
 }
 
 const SQLITE = {
-  log: "SELECT peer, local, COUNT(*), MAX(seq), SUM(length(core)) FROM events GROUP BY peer, local",
-  tables: "SELECT tbl, COUNT(*) FROM state_rows GROUP BY tbl",
-  floors: "SELECT peer, local, seq FROM compaction",
-  writes: "SELECT status, COUNT(*) FROM operations GROUP BY status",
+  log: "SELECT peer, local, COUNT(*), MAX(seq), SUM(length(core)) FROM syncmesh_events GROUP BY peer, local",
+  tables: "SELECT tbl, COUNT(*) FROM syncmesh_state_rows GROUP BY tbl",
+  floors: "SELECT peer, local, seq FROM syncmesh_compaction",
+  writes: "SELECT status, COUNT(*) FROM syncmesh_operations GROUP BY status",
   version: "PRAGMA user_version",
 } satisfies StoreSql;
 
 const POSTGRES = {
-  log: "SELECT peer, local, COUNT(*), MAX(seq), SUM(length(core)) FROM _syncmesh_events GROUP BY peer, local",
-  tables: "SELECT tbl, COUNT(*) FROM _syncmesh_state GROUP BY tbl",
-  floors: "SELECT peer, local, seq FROM _syncmesh_compaction",
-  writes: "SELECT status, COUNT(*) FROM _syncmesh_operations GROUP BY status",
-  version: "SELECT value FROM _syncmesh_meta WHERE key = 'version'",
+  log: "SELECT peer, local, COUNT(*), MAX(seq), SUM(length(core)) FROM syncmesh.events GROUP BY peer, local",
+  tables: "SELECT tbl, COUNT(*) FROM syncmesh.state_rows GROUP BY tbl",
+  floors: "SELECT peer, local, seq FROM syncmesh.compaction",
+  writes: "SELECT status, COUNT(*) FROM syncmesh.operations GROUP BY status",
+  version: "SELECT value FROM syncmesh.meta WHERE key = 'version'",
 } satisfies StoreSql;
 
 /** Which set of names to use, when the host already knows and would rather not pay for the probe. */

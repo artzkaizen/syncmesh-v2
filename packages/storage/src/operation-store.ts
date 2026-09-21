@@ -6,7 +6,7 @@ import { Result } from "@syncmesh/result";
 
 import type { SqlDriver, SqlRow } from "./driver.js";
 
-import { dialectOf } from "./dialect.js";
+import { dialectOf, namespaceDdl } from "./dialect.js";
 import { attempt } from "./sql.js";
 
 /* oxlint-disable anti-slop/no-runtime-typeof -- decoding SQL rows *is* this file's I/O boundary: the driver hands back positional SqlValues, and the checks here are the parse that restores the row's contract */
@@ -109,6 +109,8 @@ export function operationStore(
   return Result.gen(async function* () {
     yield* Result.await(
       attempt("operation tables failed to open", async () => {
+        for (const statement of namespaceDdl(driver.dialect ?? "sqlite"))
+          await driver.run(statement);
         for (const statement of sql.ddl) await driver.run(statement);
       }),
     );

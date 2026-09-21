@@ -211,7 +211,7 @@ describe("the fold writes the same tables", () => {
       "from a",
       "org:acme",
     ]);
-    expect(Number((await bDriver.all(`SELECT COUNT(*) FROM _syncmesh_changes`))[0]?.[0])).toBe(0);
+    expect(Number((await bDriver.all(`SELECT COUNT(*) FROM syncmesh_changes`))[0]?.[0])).toBe(0);
 
     const writeB = createWriter({ engine: b, validate, driver: bDriver, tables });
     (

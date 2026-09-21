@@ -5,9 +5,10 @@ import type { CaptureSql, Dialect } from "./dialect.js";
 import type { SqlValue } from "./driver.js";
 
 import { POSTGRES_OPERATIONS } from "./dialect-operations.js";
+import { namespaceDdl } from "./dialect.js";
 import { columnsOf, literal, quote } from "./identifiers.js";
 
-const CHANGES = "_syncmesh_changes";
+const CHANGES = "syncmesh.changes";
 
 /** What a Drizzle `pg-core` column of the kind would be, so a mesh-created table reads like the app's own. */
 const sqlType = (kind: ColumnKind): string => {
@@ -65,7 +66,7 @@ const capture: CaptureSql = {
       const name = literal(table.name);
       const pk = table.columnNames[table.primaryKey];
       if (pk === undefined) continue;
-      const fn = `"_syncmesh_capture_${String(table.name)}"`;
+      const fn = `syncmesh."capture_${String(table.name)}"`;
       const log = (values: string) =>
         `INSERT INTO ${CHANGES} (tbl, key, op, old, new) VALUES (${name}, ${values});`;
       statements.push(
@@ -82,7 +83,7 @@ const capture: CaptureSql = {
           END IF;
           RETURN NULL;
         END $$`,
-        `CREATE OR REPLACE TRIGGER "_syncmesh_${String(table.name)}" AFTER INSERT OR UPDATE OR DELETE ON ${quote(table.name)} FOR EACH ROW EXECUTE FUNCTION ${fn}()`,
+        `CREATE OR REPLACE TRIGGER "syncmesh_${String(table.name)}" AFTER INSERT OR UPDATE OR DELETE ON ${quote(table.name)} FOR EACH ROW EXECUTE FUNCTION ${fn}()`,
       );
     }
     return statements;
@@ -97,12 +98,12 @@ const capture: CaptureSql = {
 
 /** The floor a cursor map sets for this author, from the JSON the caller binds. */
 const PG_FLOOR = `COALESCE((SELECT f.value::bigint FROM jsonb_each_text($3::jsonb) AS f WHERE f.key = e.peer), 0)`;
-const PG_COMPACTABLE = `FROM _syncmesh_events e
+const PG_COMPACTABLE = `FROM syncmesh.events e
   WHERE e.local = $1 AND e.hlc_ms < $2 AND e.seq <= ${PG_FLOOR}`;
 
 const POSTGRES_MIGRATIONS: readonly (readonly string[])[] = [
   [
-    `CREATE TABLE IF NOT EXISTS _syncmesh_events (
+    `CREATE TABLE IF NOT EXISTS syncmesh.events (
       peer TEXT NOT NULL,
       seq BIGINT NOT NULL,
       local INTEGER NOT NULL,
@@ -113,20 +114,20 @@ const POSTGRES_MIGRATIONS: readonly (readonly string[])[] = [
       sig BYTEA,
       PRIMARY KEY (peer, seq, local)
     )`,
-    `CREATE INDEX IF NOT EXISTS _syncmesh_events_hlc ON _syncmesh_events (hlc_ms, hlc_logical)`,
-    `CREATE TABLE IF NOT EXISTS _syncmesh_state (
+    `CREATE INDEX IF NOT EXISTS events_hlc ON syncmesh.events (hlc_ms, hlc_logical)`,
+    `CREATE TABLE IF NOT EXISTS syncmesh.state_rows (
       tbl TEXT NOT NULL,
       key TEXT NOT NULL,
       record BYTEA NOT NULL,
       PRIMARY KEY (tbl, key)
     )`,
-    `CREATE TABLE IF NOT EXISTS _syncmesh_cursors (
+    `CREATE TABLE IF NOT EXISTS syncmesh.cursors (
       peer TEXT NOT NULL,
       local INTEGER NOT NULL,
       seq BIGINT NOT NULL,
       PRIMARY KEY (peer, local)
     )`,
-    `CREATE TABLE IF NOT EXISTS _syncmesh_compaction (
+    `CREATE TABLE IF NOT EXISTS syncmesh.compaction (
       peer TEXT NOT NULL,
       local INTEGER NOT NULL,
       seq BIGINT NOT NULL,
@@ -138,7 +139,7 @@ const POSTGRES_MIGRATIONS: readonly (readonly string[])[] = [
   [
     // one row, or none: the interest this device's cursors are true for (D23). A database that
     // has never held one is unscoped, which is the plain, stronger meaning of a cursor
-    `CREATE TABLE IF NOT EXISTS _syncmesh_scope (
+    `CREATE TABLE IF NOT EXISTS syncmesh.scope (
       id INTEGER PRIMARY KEY CHECK (id = 0),
       scope TEXT NOT NULL
     )`,
@@ -167,74 +168,84 @@ const postgresCell = (kind: ColumnKind, cell: CellValue): SqlValue => {
 export const POSTGRES: Dialect = {
   name: "postgres",
   events: {
-    insert: `INSERT INTO _syncmesh_events
+    insert: `INSERT INTO syncmesh.events
       (peer, seq, local, hlc_ms, hlc_logical, partition, core, sig)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       ON CONFLICT (peer, seq, local) DO NOTHING`,
-    selectAll: `SELECT core, local, sig FROM _syncmesh_events ORDER BY hlc_ms, hlc_logical, peer, seq`,
+    selectAll: `SELECT core, local, sig FROM syncmesh.events ORDER BY hlc_ms, hlc_logical, peer, seq`,
     selectRecent: `SELECT peer, seq, local, hlc_ms, hlc_logical, partition, octet_length(core)
-      FROM _syncmesh_events
+      FROM syncmesh.events
       WHERE hlc_ms < $1 OR (hlc_ms = $1 AND hlc_logical < $2)
       ORDER BY hlc_ms DESC, hlc_logical DESC LIMIT $3`,
-    selectSince: `SELECT e.core, e.local, e.sig FROM _syncmesh_events e
+    selectSince: `SELECT e.core, e.local, e.sig FROM syncmesh.events e
       WHERE e.local = $1
         AND e.seq > COALESCE((SELECT f.value::bigint FROM jsonb_each_text($2::jsonb) AS f WHERE f.key = e.peer), 0)
       ORDER BY e.peer, e.seq`,
-    selectStranded: `SELECT core, local, sig FROM _syncmesh_events
+    selectStranded: `SELECT core, local, sig FROM syncmesh.events
       WHERE sig IS NULL AND local = 0 AND peer <> $1 ORDER BY peer, seq`,
-    selectHas: `SELECT 1 FROM _syncmesh_events WHERE peer = $1 AND seq = $2 AND local = $3 LIMIT 1`,
+    selectHas: `SELECT 1 FROM syncmesh.events WHERE peer = $1 AND seq = $2 AND local = $3 LIMIT 1`,
     selectLastSeq: `SELECT MAX(seq) FROM (
-      SELECT seq FROM _syncmesh_events WHERE peer = $1 AND local = $2
-      UNION ALL SELECT seq FROM _syncmesh_compaction WHERE peer = $1 AND local = $2) AS u`,
+      SELECT seq FROM syncmesh.events WHERE peer = $1 AND local = $2
+      UNION ALL SELECT seq FROM syncmesh.compaction WHERE peer = $1 AND local = $2) AS u`,
     selectCompactable: `SELECT e.peer, MAX(e.seq), COUNT(*) ${PG_COMPACTABLE} GROUP BY e.peer`,
     selectCompactableStamp: `SELECT e.hlc_ms, e.hlc_logical ${PG_COMPACTABLE} AND e.peer = $4
       ORDER BY e.hlc_ms DESC, e.hlc_logical DESC LIMIT 1`,
     deleteCompactable: `DELETE ${PG_COMPACTABLE}`,
-    upsertFloor: `INSERT INTO _syncmesh_compaction (peer, local, seq, hlc_ms, hlc_logical)
+    upsertFloor: `INSERT INTO syncmesh.compaction (peer, local, seq, hlc_ms, hlc_logical)
       VALUES ($1, $2, $3, $4, $5)
       ON CONFLICT (peer, local) DO UPDATE SET
-        seq = GREATEST(_syncmesh_compaction.seq, excluded.seq),
+        seq = GREATEST(syncmesh.compaction.seq, excluded.seq),
         hlc_logical = CASE
-          WHEN excluded.hlc_ms > _syncmesh_compaction.hlc_ms THEN excluded.hlc_logical
-          WHEN excluded.hlc_ms = _syncmesh_compaction.hlc_ms
-            THEN GREATEST(_syncmesh_compaction.hlc_logical, excluded.hlc_logical)
-          ELSE _syncmesh_compaction.hlc_logical END,
-        hlc_ms = GREATEST(_syncmesh_compaction.hlc_ms, excluded.hlc_ms)`,
-    selectFloors: `SELECT peer, local, seq FROM _syncmesh_compaction`,
+          WHEN excluded.hlc_ms > syncmesh.compaction.hlc_ms THEN excluded.hlc_logical
+          WHEN excluded.hlc_ms = syncmesh.compaction.hlc_ms
+            THEN GREATEST(syncmesh.compaction.hlc_logical, excluded.hlc_logical)
+          ELSE syncmesh.compaction.hlc_logical END,
+        hlc_ms = GREATEST(syncmesh.compaction.hlc_ms, excluded.hlc_ms)`,
+    selectFloors: `SELECT peer, local, seq FROM syncmesh.compaction`,
     selectMaxHlc: `SELECT hlc_ms, hlc_logical FROM (
-      SELECT hlc_ms, hlc_logical FROM _syncmesh_events
-      UNION ALL SELECT hlc_ms, hlc_logical FROM _syncmesh_compaction) AS u
+      SELECT hlc_ms, hlc_logical FROM syncmesh.events
+      UNION ALL SELECT hlc_ms, hlc_logical FROM syncmesh.compaction) AS u
       ORDER BY hlc_ms DESC, hlc_logical DESC LIMIT 1`,
   },
   state: {
-    upsertRow: `INSERT INTO _syncmesh_state (tbl, key, record) VALUES ($1, $2, $3)
+    upsertRow: `INSERT INTO syncmesh.state_rows (tbl, key, record) VALUES ($1, $2, $3)
       ON CONFLICT (tbl, key) DO UPDATE SET record = excluded.record`,
-    upsertCursor: `INSERT INTO _syncmesh_cursors (peer, local, seq) VALUES ($1, $2, $3)
+    upsertCursor: `INSERT INTO syncmesh.cursors (peer, local, seq) VALUES ($1, $2, $3)
       ON CONFLICT (peer, local) DO UPDATE SET seq = excluded.seq`,
-    selectRows: `SELECT tbl, key, record FROM _syncmesh_state`,
-    selectCursors: `SELECT peer, local, seq FROM _syncmesh_cursors`,
-    anyCursor: `SELECT 1 FROM _syncmesh_cursors LIMIT 1`,
-    clearRows: `DELETE FROM _syncmesh_state`,
-    clearCursors: `DELETE FROM _syncmesh_cursors`,
-    selectScope: `SELECT scope FROM _syncmesh_scope`,
-    upsertScope: `INSERT INTO _syncmesh_scope (id, scope) VALUES (0, $1)
+    selectRows: `SELECT tbl, key, record FROM syncmesh.state_rows`,
+    selectCursors: `SELECT peer, local, seq FROM syncmesh.cursors`,
+    anyCursor: `SELECT 1 FROM syncmesh.cursors LIMIT 1`,
+    clearRows: `DELETE FROM syncmesh.state_rows`,
+    clearCursors: `DELETE FROM syncmesh.cursors`,
+    selectScope: `SELECT scope FROM syncmesh.scope`,
+    upsertScope: `INSERT INTO syncmesh.scope (id, scope) VALUES (0, $1)
       ON CONFLICT (id) DO UPDATE SET scope = excluded.scope`,
-    clearScope: `DELETE FROM _syncmesh_scope`,
+    clearScope: `DELETE FROM syncmesh.scope`,
   },
   capture,
   operations: POSTGRES_OPERATIONS,
   placeholder: (position) => `$${position}`,
   cell: postgresCell,
+  schema: {
+    ddl: `CREATE TABLE IF NOT EXISTS syncmesh.meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+    read: `SELECT value FROM syncmesh.meta WHERE key = 'schema'`,
+    write: `INSERT INTO syncmesh.meta (key, value) VALUES ('schema', $1)
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+  },
   migrate: async (driver) => {
+    // before anything else: every name below is qualified into it, including `meta` itself
+    for (const sql of namespaceDdl("postgres")) await driver.run(sql);
     await driver.run(
-      `CREATE TABLE IF NOT EXISTS _syncmesh_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+      `CREATE TABLE IF NOT EXISTS syncmesh.meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
     );
-    const [row] = await driver.all(`SELECT value FROM _syncmesh_meta WHERE key = 'version'`);
+    const [row] = await driver.all(`SELECT value FROM syncmesh.meta WHERE key = 'version'`);
     const applied = Number(row?.[0] ?? 0);
+    // nothing to apply is nothing to write; see the same guard in the SQLite dialect
+    if (applied >= POSTGRES_MIGRATIONS.length) return;
     for (const step of POSTGRES_MIGRATIONS.slice(applied))
       for (const sql of step) await driver.run(sql);
     await driver.run(
-      `INSERT INTO _syncmesh_meta (key, value) VALUES ('version', $1)
+      `INSERT INTO syncmesh.meta (key, value) VALUES ('version', $1)
         ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
       [String(POSTGRES_MIGRATIONS.length)],
     );

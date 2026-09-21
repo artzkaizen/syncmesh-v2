@@ -18,7 +18,7 @@ export interface Drafts {
   readonly forget: (key: string) => Promise<ResultType<void, StoreFailure>>;
 }
 
-const TABLE = "_syncmesh_drafts";
+const TABLE = "syncmesh_drafts";
 
 export const draftsDdl = `CREATE TABLE IF NOT EXISTS ${TABLE} (key TEXT PRIMARY KEY, value TEXT NOT NULL)`;
 

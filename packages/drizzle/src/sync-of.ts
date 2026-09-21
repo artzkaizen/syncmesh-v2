@@ -3,7 +3,7 @@ import type { SQL } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import type { SQLiteTable } from "drizzle-orm/sqlite-core";
 
-import { ROW_SYNC, operationOfSql, syncOfSql } from "@syncmesh/storage";
+import { ROW_SYNC_NOUN, operationOfSql, syncOfSql } from "@syncmesh/storage";
 import { getTableColumns, getTableName, sql } from "drizzle-orm";
 
 /**
@@ -23,17 +23,28 @@ export type SyncState = "local" | "delivered" | "remote";
 /** The table's own columns, for spreading beside a selected `syncOf`. */
 export const columns = <T extends PgTable | SQLiteTable>(table: T) => getTableColumns(table);
 
-export function syncOf(self: PeerId, table: PgTable | SQLiteTable): SQL<SyncState | null> {
+export function syncOf(
+  self: PeerId,
+  table: PgTable | SQLiteTable,
+  dialect: "sqlite" | "postgres" = "sqlite",
+): SQL<SyncState | null> {
   const name = getTableName(table);
   const primary = primaryKeyOf(table);
-  const correlated = sql.raw(syncOfSql(self, name, `${quoteIdent(name)}.${quoteIdent(primary)}`));
+  const correlated = sql.raw(
+    syncOfSql(self, name, `${quoteIdent(name)}.${quoteIdent(primary)}`, dialect),
+  );
   // SAFETY: the CASE has three arms and every one of them is a SyncState; a row the table has no
   // sync entry for yields NULL, which is why the column is nullable rather than total
   return correlated as SQL<SyncState | null>;
 }
 
 /** The name the row-sync subquery correlates on; a query that selects `syncOf` names this table. */
-export const ROW_SYNC_TABLE = ROW_SYNC;
+/**
+ * What a live query looks for to decide whether a query selected a `syncOf` column — the part of
+ * the name both dialects share, because it is `syncmesh_row_sync` on a device and
+ * `syncmesh.row_sync` on Postgres and this has to recognise either.
+ */
+export const ROW_SYNC_TABLE = ROW_SYNC_NOUN;
 
 /**
  * The row's pending operation id — the join key into `$operations` (book ch. 10), where the
@@ -53,9 +64,9 @@ export function operationOf(
   dialect: "sqlite" | "postgres" = "sqlite",
 ): SQL<string | null> {
   const name = getTableName(table);
-  const ledger = dialect === "postgres" ? "_syncmesh_operations" : "operations";
+  const ledger = dialect === "postgres" ? "syncmesh.operations" : "syncmesh_operations";
   const correlated = sql.raw(
-    operationOfSql(name, `${quoteIdent(name)}.${quoteIdent(primaryKeyOf(table))}`, ledger),
+    operationOfSql(name, `${quoteIdent(name)}.${quoteIdent(primaryKeyOf(table))}`, ledger, dialect),
   );
   // SAFETY: the subquery selects the ledger's own text id, or NULL where the row has no record —
   // a peer's write, or one made before this device kept a ledger

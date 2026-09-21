@@ -64,6 +64,61 @@ export interface StateSql {
  * dialect — bytes as lowercase hex, timestamps as epoch milliseconds, JSON as its text — so one
  * decoder reads it back.
  */
+/**
+ * The engine's namespace, spelled the way each dialect can spell it.
+ *
+ * Postgres has real schemas, so everything the engine owns goes in `syncmesh` and an app's own
+ * `events` table can never collide with ours. SQLite has none — `ATTACH` is the nearest thing and
+ * it means a second file (RFC-0022) — so the same namespace is a `syncmesh_` prefix in the one
+ * file. One word either way, which is what a person has to remember; the separator is whatever
+ * the dialect can express.
+ *
+ * The leading underscore half of these carried is gone. It said "internal" to a reader and
+ * nothing at all to the database, while the other half carried no prefix and could collide.
+ */
+/**
+ * Making the namespace, for a dialect that has one to make.
+ *
+ * Every store here creates its own tables and several are opened directly — a blob store without
+ * an event store, capture without either — so "the schema exists" cannot be something only
+ * `migrate` arranges. Each of them runs this first instead, and on SQLite it is nothing.
+ *
+ * The grants restore exactly the reach these tables had in `public` and add none: a schema is a
+ * permission boundary that `public` was not, and a role that could read them yesterday would
+ * otherwise fail to resolve their names today. Row-level security is what guards the app's data
+ * (`rls.ts`), and permission to *name* a table is not permission to read a row of it.
+ */
+export const namespaceDdl = (dialect: SqlDialect): readonly string[] =>
+  dialect === "postgres"
+    ? [
+        `CREATE SCHEMA IF NOT EXISTS syncmesh`,
+        `GRANT USAGE ON SCHEMA syncmesh TO PUBLIC`,
+        `GRANT ALL ON ALL TABLES IN SCHEMA syncmesh TO PUBLIC`,
+        `GRANT USAGE ON ALL SEQUENCES IN SCHEMA syncmesh TO PUBLIC`,
+        `ALTER DEFAULT PRIVILEGES IN SCHEMA syncmesh GRANT ALL ON TABLES TO PUBLIC`,
+        `ALTER DEFAULT PRIVILEGES IN SCHEMA syncmesh GRANT USAGE ON SEQUENCES TO PUBLIC`,
+      ]
+    : [];
+
+export const engineTable = (name: string, dialect: SqlDialect = "sqlite"): string =>
+  dialect === "postgres" ? `syncmesh.${name}` : `syncmesh_${name}`;
+
+/**
+ * The one row that records which app schema this database was last opened with.
+ *
+ * In `meta`, beside the migration version, because they are the same kind of fact — what shape
+ * this database is already at — and a second table for the second one would have been a table
+ * per question.
+ */
+export interface SchemaSql {
+  /** Creates `meta` where it does not exist. The one statement a launch always runs. */
+  readonly ddl: string;
+  /** The fingerprint last installed, or no rows on a database that has never been opened. */
+  readonly read: string;
+  /** Writes it, under this dialect's own placeholder. */
+  readonly write: string;
+}
+
 export interface CaptureSql {
   /** `CREATE TABLE IF NOT EXISTS` for a synced table: its columns plus `_partition`, only the key constrained. */
   readonly tableDdl: (table: Table) => string;
@@ -114,6 +169,15 @@ export interface Dialect {
   readonly cell: (kind: ColumnKind, cell: CellValue) => SqlValue;
   /** Brings the mesh's own tables up to date; a no-op when they already are. */
   readonly migrate: (driver: SqlDriver) => Promise<void>;
+  /**
+   * Where the app-schema fingerprint lives, so a launch that changed nothing installs nothing.
+   *
+   * The engine's own tables are versioned by {@link SqlDialect.migrate}; these are the ones
+   * derived from the *app's* manifest — a table and a trigger set per synced table — which have
+   * no version to compare because they are whatever the manifest currently says. The fingerprint
+   * is that: identical text means an identical shape, and nothing to do.
+   */
+  readonly schema: SchemaSql;
 }
 
 export const dialectOf = (driver: SqlDriver): Dialect =>

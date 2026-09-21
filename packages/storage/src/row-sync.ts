@@ -1,9 +1,9 @@
 import type { RowWrite } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 
-import type { SqlDriver } from "./driver.js";
+import type { SqlDialect, SqlDriver } from "./driver.js";
 
-import { dialectOf } from "./dialect.js";
+import { dialectOf, engineTable, namespaceDdl } from "./dialect.js";
 
 /**
  * Where each row's own write got to, as a table a query can join (book ch. 10).
@@ -14,17 +14,28 @@ import { dialectOf } from "./dialect.js";
  * row "is", and asking the developer to restate it as a string is the bug rather than the fix.
  * The place that already names the table, typed, is the query. So this is what the query joins.
  *
- * Two tables, because the two facts change at different times. `_syncmesh_row_sync` changes when
- * a row is folded — the winning write's author and stamp — and `_syncmesh_acked` changes when a
+ * Two tables, because the two facts change at different times. `row_sync` changes when
+ * a row is folded — the winning write's author and stamp — and `acked` changes when a
  * peer acknowledges, which touches no row at all. Keeping the watermark out of the row means an
  * acknowledgement is one update rather than one per row it settles.
  */
 
-export const ROW_SYNC = "_syncmesh_row_sync";
-export const ACKED = "_syncmesh_acked";
+/** The row-sync tables, per dialect. The bare nouns are in {@link ROW_SYNC_NOUN}. */
+export const rowSyncTableName = (dialect: SqlDialect = "sqlite"): string =>
+  engineTable("row_sync", dialect);
+export const ackedTableName = (dialect: SqlDialect = "sqlite"): string =>
+  engineTable("acked", dialect);
 
-export const rowSyncDdl: readonly string[] = [
-  `CREATE TABLE IF NOT EXISTS ${ROW_SYNC} (
+/**
+ * The part of the name that is the same in both dialects, for the one caller that has to
+ * recognise this table inside SQL text it did not build (`@syncmesh/drizzle`'s live queries ask
+ * whether a query selected a `syncOf` column by looking for it).
+ */
+export const ROW_SYNC_NOUN = "row_sync";
+
+export const rowSyncDdlFor = (dialect: SqlDialect = "sqlite"): readonly string[] => [
+  ...namespaceDdl(dialect),
+  `CREATE TABLE IF NOT EXISTS ${rowSyncTableName(dialect)} (
     tbl TEXT NOT NULL,
     key TEXT NOT NULL,
     peer TEXT NOT NULL,
@@ -33,7 +44,7 @@ export const rowSyncDdl: readonly string[] = [
     PRIMARY KEY (tbl, key)
   )`,
   // one row, or none: the highest stamp of this device's own writes any peer has acknowledged
-  `CREATE TABLE IF NOT EXISTS ${ACKED} (
+  `CREATE TABLE IF NOT EXISTS ${ackedTableName(dialect)} (
     id INTEGER PRIMARY KEY CHECK (id = 0),
     hlc_ms BIGINT NOT NULL,
     hlc_logical INTEGER NOT NULL
@@ -49,7 +60,9 @@ export interface RowSync {
 }
 
 export function rowSyncTable(driver: SqlDriver): RowSync {
-  const mark = dialectOf(driver).placeholder;
+  const { placeholder: mark, name: dialect } = dialectOf(driver);
+  const ROW_SYNC = rowSyncTableName(dialect);
+  const ACKED = ackedTableName(dialect);
   const marks = (n: number) => Array.from({ length: n }, (_, i) => mark(i + 1)).join(", ");
   const upsert = `INSERT INTO ${ROW_SYNC} (tbl, key, peer, hlc_ms, hlc_logical) VALUES (${marks(5)})
     ON CONFLICT(tbl, key) DO UPDATE SET peer = excluded.peer, hlc_ms = excluded.hlc_ms, hlc_logical = excluded.hlc_logical`;
@@ -108,18 +121,28 @@ const quoted = (value: string): string => `'${value.replaceAll("'", "''")}'`;
  * the author of the displaced write and lives on their operation record; to a reader who never
  * wrote the old value, the corrected value is simply the value.
  */
-export const operationOfSql = (table: string, keyColumn: string, operations: string): string =>
-  `(SELECT o.id FROM ${ROW_SYNC} rs
+export const operationOfSql = (
+  table: string,
+  keyColumn: string,
+  operations: string,
+  dialect: SqlDialect = "sqlite",
+): string =>
+  `(SELECT o.id FROM ${rowSyncTableName(dialect)} rs
       JOIN ${operations} o
         ON o.peer = rs.peer AND o.hlc_ms = rs.hlc_ms AND o.hlc_logical = rs.hlc_logical
     WHERE rs.tbl = ${quoted(table)} AND rs.key = ${keyColumn})`;
 
-export const syncOfSql = (self: PeerId, table: string, keyColumn: string): string =>
+export const syncOfSql = (
+  self: PeerId,
+  table: string,
+  keyColumn: string,
+  dialect: SqlDialect = "sqlite",
+): string =>
   `(SELECT CASE
       WHEN rs.peer <> ${quoted(String(self))} THEN 'remote'
       WHEN EXISTS (
-        SELECT 1 FROM ${ACKED} a
+        SELECT 1 FROM ${ackedTableName(dialect)} a
         WHERE a.hlc_ms > rs.hlc_ms OR (a.hlc_ms = rs.hlc_ms AND a.hlc_logical >= rs.hlc_logical)
       ) THEN 'delivered'
       ELSE 'local' END
-    FROM ${ROW_SYNC} rs WHERE rs.tbl = ${quoted(table)} AND rs.key = ${keyColumn})`;
+    FROM ${rowSyncTableName(dialect)} rs WHERE rs.tbl = ${quoted(table)} AND rs.key = ${keyColumn})`;

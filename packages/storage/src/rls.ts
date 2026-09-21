@@ -214,14 +214,14 @@ export function rlsDdl(
   return [
     `ALTER TABLE ${name} ENABLE ROW LEVEL SECURITY`,
     `ALTER TABLE ${name} FORCE ROW LEVEL SECURITY`,
-    `DROP POLICY IF EXISTS "_syncmesh_read" ON ${name}`,
-    `CREATE POLICY "_syncmesh_read" ON ${name} FOR SELECT USING (${predicate})`,
-    `DROP POLICY IF EXISTS "_syncmesh_insert" ON ${name}`,
-    `CREATE POLICY "_syncmesh_insert" ON ${name} FOR INSERT WITH CHECK (TRUE)`,
-    `DROP POLICY IF EXISTS "_syncmesh_update" ON ${name}`,
-    `CREATE POLICY "_syncmesh_update" ON ${name} FOR UPDATE USING (TRUE) WITH CHECK (TRUE)`,
-    `DROP POLICY IF EXISTS "_syncmesh_delete" ON ${name}`,
-    `CREATE POLICY "_syncmesh_delete" ON ${name} FOR DELETE USING (TRUE)`,
+    `DROP POLICY IF EXISTS "syncmesh_read" ON ${name}`,
+    `CREATE POLICY "syncmesh_read" ON ${name} FOR SELECT USING (${predicate})`,
+    `DROP POLICY IF EXISTS "syncmesh_insert" ON ${name}`,
+    `CREATE POLICY "syncmesh_insert" ON ${name} FOR INSERT WITH CHECK (TRUE)`,
+    `DROP POLICY IF EXISTS "syncmesh_update" ON ${name}`,
+    `CREATE POLICY "syncmesh_update" ON ${name} FOR UPDATE USING (TRUE) WITH CHECK (TRUE)`,
+    `DROP POLICY IF EXISTS "syncmesh_delete" ON ${name}`,
+    `CREATE POLICY "syncmesh_delete" ON ${name} FOR DELETE USING (TRUE)`,
   ];
 }
 

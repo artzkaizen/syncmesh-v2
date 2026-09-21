@@ -29,9 +29,9 @@ const driver = (known: Record<string, readonly SqlRow[]>) => {
 };
 
 const SQLITE_LOG =
-  "SELECT peer, local, COUNT(*), MAX(seq), SUM(length(core)) FROM events GROUP BY peer, local";
+  "SELECT peer, local, COUNT(*), MAX(seq), SUM(length(core)) FROM syncmesh_events GROUP BY peer, local";
 const POSTGRES_LOG =
-  "SELECT peer, local, COUNT(*), MAX(seq), SUM(length(core)) FROM _syncmesh_events GROUP BY peer, local";
+  "SELECT peer, local, COUNT(*), MAX(seq), SUM(length(core)) FROM syncmesh.events GROUP BY peer, local";
 
 describe("the storage reader", () => {
   test("reads the device's short names when the device answers to them", async () => {
@@ -49,7 +49,7 @@ describe("the storage reader", () => {
     const held = await createStoreReader(fake.query)();
     expect(held.isOk()).toBe(true);
     expect(fake.asked).toContain(SQLITE_LOG);
-    expect(fake.asked.some((sql) => sql.includes("_syncmesh_state"))).toBe(true);
+    expect(fake.asked.some((sql) => sql.includes("syncmesh.state_rows"))).toBe(true);
   });
 
   test("the probe runs once; the answer is remembered", async () => {
