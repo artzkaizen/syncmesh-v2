@@ -43,7 +43,22 @@ export const rowSyncDdlFor = (dialect: SqlDialect = "sqlite"): readonly string[]
     hlc_logical INTEGER NOT NULL,
     PRIMARY KEY (tbl, key)
   )`,
-  // one row, or none: the highest stamp of this device's own writes any peer has acknowledged
+  /**
+   * One row, or none: the highest stamp of this device's own writes any peer has acknowledged.
+   *
+   * **The one table here that a replay cannot rebuild** (RFC-0022). An acknowledgement touches no
+   * row and leaves no event, so nothing in the log remembers it — and the map it is derived from,
+   * `engine.acks()`, is in memory and does not survive a restart either.
+   *
+   * Discarding it is nonetheless the decision, because the loss only runs one way: `syncOf` reads
+   * `delivered` from a watermark existing above the row's stamp, so with no watermark the
+   * `EXISTS` is false and the row reads `local`. A confirmed write reports as unconfirmed — an
+   * understatement, never a claim that an undelivered write arrived.
+   *
+   * It comes back on the next **acknowledged write** rather than the next cursor exchange: the
+   * ledger prunes a write once it is acknowledged, so there is nothing left to re-derive from,
+   * and what restores the mark is a later stamp covering every earlier row behind it.
+   */
   `CREATE TABLE IF NOT EXISTS ${ackedTableName(dialect)} (
     id INTEGER PRIMARY KEY CHECK (id = 0),
     hlc_ms BIGINT NOT NULL,

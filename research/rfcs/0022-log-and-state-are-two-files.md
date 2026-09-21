@@ -56,11 +56,22 @@ So a state file may only be discarded when the events above the floor, plus a sn
 everything below it, are both present — and the snapshot's own `coverage` and `scope` travel with
 it, because a number without the interest that qualifies it is the lie D23 describes.
 
-**`acked` is not derived either.** It moves when a *peer acknowledges*, which touches no row and
-leaves no event; `row-sync.ts` updates it directly. Either the acknowledgement evidence becomes
-durable and the watermark is rebuilt from that, or discarding the state file explicitly loses
-delivery status — every `delivered` reverting to `local` until the next acknowledgement. The
-second is defensible and must be a decision rather than a surprise.
+**`acked` is not derived either, and losing it is now a decision rather than a surprise.** It
+moves when a *peer acknowledges*, which touches no row and leaves no event; the map it comes from,
+`engine.acks()`, is in memory and does not survive a restart either.
+
+It is discarded with the rest, because the loss only runs one way. `syncOf` reads `delivered` from
+a watermark existing above the row's stamp, so with none the `EXISTS` is false and every row reads
+`local` — a confirmed write reporting as unconfirmed, never the reverse, and never a claim that an
+undelivered write arrived.
+
+It returns on the next **acknowledged write**, not on the next cursor exchange: the ledger prunes a
+write once it has been acknowledged, so nothing is left to re-derive from, and what restores the
+mark is a later stamp covering every earlier row behind it. A device that is writing pays seconds;
+one that only reads carries `local` on its own old writes until it writes again.
+
+That asymmetry was a guess in the first draft — "it heals on the next exchange" — and the test
+written to pin it disproved it. It is pinned to what actually happens now.
 
 And what was never derived:
 
@@ -213,8 +224,8 @@ writing down rather than papering over with a lowest-common-denominator design.
    direction. Swapping the two halves makes it fail, which was checked by doing it.
 2. **A durable recovery basis.** A snapshot with its coverage and scope, so "discard the state
    file" is only offered where the events above the floor plus that snapshot can rebuild it.
-   Decide what happens to `acked` — rebuilt from durable acknowledgement evidence, or explicitly
-   lost.
+   ✅ `acked` is decided: discarded with the rest, because the loss understates delivery and never
+   overstates it, and it returns on the next acknowledged write.
 3. **Split the stores**, with the log's lock covering both files, and `openStores` opening the log
    and attaching the state file in that order.
 4. **Hash the manifest into the state filename**, sweep orphans on a bound, and decide whether the
