@@ -228,7 +228,7 @@ export function List(props: ListProps) {
     >
       <SortBar onSort={props.onSort} shown={totalOf(counts)} sort={sort} />
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
-        {!answer.isReady ? (
+        {answer.answered === "none" ? (
           <Notice>
             {answer.error === undefined
               ? "Reading the local replica…"
@@ -236,7 +236,7 @@ export function List(props: ListProps) {
           </Notice>
         ) : rows.length === 0 ? (
           <Notice>
-            {answer.coverage.kind === "caught-up"
+            {answer.answered === "settled"
               ? "Nothing matches these filters."
               : "Nothing here yet — still hearing from the rest of the mesh."}
           </Notice>

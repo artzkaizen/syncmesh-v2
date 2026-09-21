@@ -106,7 +106,7 @@ export default function WorkspaceScreen() {
     );
   };
 
-  if (!teams.hasAnswered) return <Notice>Reading the workspace…</Notice>;
+  if (teams.answered === "none") return <Notice>Reading the workspace…</Notice>;
 
   return (
     <ScrollView

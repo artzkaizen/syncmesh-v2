@@ -111,9 +111,9 @@ export default function PeopleScreen() {
     [choose, openBy, actor.account],
   );
 
-  if (!people.hasAnswered) return <Notice>Reading the workspace…</Notice>;
+  if (people.answered === "none") return <Notice>Reading the workspace…</Notice>;
   if (people.data.length === 0)
-    return people.isSettled ? (
+    return people.answered === "settled" ? (
       <Notice spinner={false}>This workspace has no members yet.</Notice>
     ) : (
       <Notice>Catching up with the workspace…</Notice>

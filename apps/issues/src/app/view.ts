@@ -1,4 +1,4 @@
-import type { Coverage } from "@syncmesh/react";
+import type { Answered } from "@syncmesh/react";
 
 import type { IssueStatus } from "../domain.js";
 import type {
@@ -354,8 +354,7 @@ export type Panel =
 /** What the panel needs of the read it asked for: `useQuery`'s shape, and nothing more. */
 export interface PanelRead {
   readonly data: readonly IssueDetailRow[] | undefined;
-  readonly isReady: boolean;
-  readonly coverage: Coverage;
+  readonly answered: Answered;
   readonly error: Error | undefined;
 }
 
@@ -416,9 +415,12 @@ export const panelFor = (
   if (known !== undefined)
     return { kind: "open", row: known, operation: undefined, sync: undefined };
   if (deleted) return { kind: "deleted" };
-  if (!found.isReady)
+  // `answered !== "none"` implies rows, because `"local"` *means* the store handed some back —
+  // but the pair is two fields and this is the branch that must not guess, so it checks both
+  if (found.answered === "none" || found.data === undefined)
     return found.error === undefined
       ? { kind: "waiting" }
       : { kind: "unreadable", reason: found.error.message };
-  return { kind: found.coverage.kind === "caught-up" ? "missing" : "catching-up" };
+  // the store has answered and the row is not in it: absent here, or absent everywhere
+  return { kind: found.answered === "settled" ? "missing" : "catching-up" };
 };

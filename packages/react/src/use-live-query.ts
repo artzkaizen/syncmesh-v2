@@ -2,6 +2,10 @@ import type { Live } from "@syncmesh/drizzle";
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
+import type { Answered } from "./answered.js";
+
+import { answeredFrom } from "./answered.js";
+
 /**
  * The slice of a bound call these hooks need. `@syncmesh/orpc`'s `QueryCall` satisfies it
  * structurally and is not imported: the same reason `@syncmesh/ble` takes a `BleRadio` rather
@@ -44,22 +48,32 @@ export interface LiveResult<T> {
   readonly isError: boolean;
   readonly isSuccess: boolean;
   /**
-   * Every source that could still fill this scope has answered. What separates "there are no
-   * books" from "the relay has not replied yet" — the question React Query has no word for,
-   * because HTTP has no second source to wait on.
-   */
-  readonly isSettled: boolean;
-  /**
-   * **This device's own storage** has answered: a local read completed and `data` is what it
-   * returned. The other half of {@link isSettled}, and never a substitute for it.
+   * **How far this question has been answered** — and the only fact that licenses an empty state.
    *
-   * `isSettled` is about the *sources* and this is about *the store in front of them*, so a
-   * screen that wants to say "there is no such thing here" needs both and neither alone will do.
-   * On a device with no transport `isSettled` is true before the first read has run; and neither
-   * `isPending` nor `isSuccess` stands in for this one, because a read that threw leaves the
-   * query neither pending nor successful while having established nothing about what is stored.
+   * One ordered value rather than two booleans, because two booleans describe four states for a
+   * three-state progression and the fourth one lies. It used to be `hasAnswered` beside
+   * `isSettled`, and a device with no transport has `isSettled: true` **before the first read has
+   * run** — sources answer nearest first, and with no far sources there is nothing to wait for.
+   * A screen reading `isSettled` alone drew a confident "nothing here" over a store it had not
+   * asked yet.
+   *
+   * They were never two subjects either. This device's storage *is* the first source, so
+   * `isSettled` was about a set that contains what `hasAnswered` was about — a subset, not a
+   * sibling, which is why no pair of names for them ever read correctly.
+   *
+   * - `"none"` — no read has completed. `data` is `[]` and carries **no information**; the only
+   *   honest UI is a skeleton. On a phone this is the whole cold start, because the client is a
+   *   value and the database opens underneath it.
+   * - `"local"` — this device's storage answered and `data` is what it returned. Empty means *not
+   *   on this device yet*, never *nothing exists*. Survives a failed re-run: the last good rows
+   *   stand, and `status` carries the error.
+   * - `"settled"` — the storage and every other source that could fill this scope have each
+   *   finished a first pass. **Empty means empty**, and this is the only state where it does.
+   *
+   * `none → local → settled`, and a device with no transports skips the middle. Never backwards
+   * within one subscription; a changed input is a new question and starts again at `"none"`.
    */
-  readonly hasAnswered: boolean;
+  readonly answered: Answered;
   readonly error: Error | undefined;
 }
 
@@ -81,9 +95,9 @@ const asError = (cause: unknown): Error =>
  * descriptor carries everything the subscription needs.
  *
  * ```tsx
- * const { data, hasAnswered, isSettled } = useLiveQuery(api.books.list({ page: 1 }));
- * if (!hasAnswered) return <Spinner />;
- * if (data.length === 0) return isSettled ? <NoBooks /> : <StillSyncing />;
+ * const { data, answered } = useLiveQuery(api.books.list({ page: 1 }));
+ * if (answered === "none") return <Spinner />;
+ * if (data.length === 0) return answered === "settled" ? <NoBooks /> : <StillSyncing />;
  * ```
  *
  * A query can be held back two ways, and they collapse onto one path here: no call at all, or
@@ -168,8 +182,7 @@ export function useLiveQuery<T>(
       isPending: status === "pending",
       isError: status === "error",
       isSuccess: status === "success",
-      isSettled: key !== undefined && settledFor === key,
-      hasAnswered: snap?.answered ?? false,
+      answered: answeredFrom(snap?.answered ?? false, key !== undefined && settledFor === key),
       error: snap?.error,
     };
   }, [snap, settledFor, key]);

@@ -97,7 +97,7 @@ export default function IdentityScreen() {
     [account],
   );
 
-  if (!people.hasAnswered) return <Notice>Reading the workspace…</Notice>;
+  if (people.answered === "none") return <Notice>Reading the workspace…</Notice>;
 
   /**
    * An empty roster is a workspace this device has not heard yet, not a workspace with nobody in
@@ -107,9 +107,9 @@ export default function IdentityScreen() {
   if (people.data.length === 0)
     return (
       <View className="flex-1 items-center justify-center gap-4 p-8">
-        {people.isSettled ? null : <Spinner size="sm" />}
+        {people.answered === "settled" ? null : <Spinner size="sm" />}
         <Text className="text-center text-[15px] text-muted-foreground">
-          {people.isSettled
+          {people.answered === "settled"
             ? "This workspace has no members yet."
             : "Catching up with the workspace — nobody has arrived yet."}
         </Text>

@@ -94,31 +94,31 @@ describe("useLiveQuery over api.*", () => {
     const renders: string[] = [];
 
     const List = () => {
-      const { data, isPending, isSettled, error } = useLiveQuery(api.books.list({ orgId: ORG }));
+      const { data, isPending, answered, error } = useLiveQuery(api.books.list({ orgId: ORG }));
       renders.push(
         error !== undefined
           ? `err:${error.message}`
-          : `${isPending ? "…" : data.map((b) => b.title).join(",")}|settled=${String(isSettled)}`,
+          : `${isPending ? "…" : data.map((b) => b.title).join(",")}|${answered}`,
       );
       return null;
     };
 
     const { settle } = await mount(createElement(List));
     // no transports: every source has answered, and the list is empty because it is empty
-    expect(renders.at(-1)).toBe("|settled=true");
+    expect(renders.at(-1)).toBe("|settled");
 
     await act(async () => {
       (await api.books.create({ orgId: ORG, id: "b1", title: "Dune" }).committed).unwrap();
     });
     await settle();
-    expect(renders.at(-1)).toBe("Dune|settled=true");
+    expect(renders.at(-1)).toBe("Dune|settled");
 
     const before = renders.length;
     await act(async () => {
       (await api.books.create({ orgId: ORG, id: "b2", title: "Ubik" }).committed).unwrap();
     });
     await settle();
-    expect(renders.at(-1)).toBe("Dune,Ubik|settled=true");
+    expect(renders.at(-1)).toBe("Dune,Ubik|settled");
     expect(renders.length).toBeGreaterThan(before);
 
     await mesh.stop();

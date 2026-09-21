@@ -253,8 +253,7 @@ describe("the detail panel's state", () => {
     patch: Partial<PanelRead> = {},
   ): PanelRead => ({
     data: rows,
-    isReady: rows !== undefined,
-    coverage: { kind: "caught-up" },
+    answered: rows === undefined ? "none" : "settled",
     error: undefined,
     ...patch,
   });
@@ -280,11 +279,13 @@ describe("the detail panel's state", () => {
 
   test("a read still in flight is never reported missing", () => {
     expect(panelFor("issue-0", read(undefined), NONE)).toEqual({ kind: "waiting" });
-    // a device with no transport settles before its own first read has come back, so "every
-    // source has answered" is not a licence to call an answer that has not arrived an empty one
-    expect(panelFor("issue-0", read(undefined, { coverage: { kind: "caught-up" } }), NONE)).toEqual(
-      { kind: "waiting" },
-    );
+    // A device with no transport settles before its own first read comes back, so "everything has
+    // answered" was never a licence to call an unarrived answer an empty one. `answered` makes
+    // that state unrepresentable — `"settled"` requires the store — and this pins the belt beside
+    // the braces: rows that are not there are not an absence, whatever the progression says.
+    expect(panelFor("issue-0", read(undefined, { answered: "settled" }), NONE)).toEqual({
+      kind: "waiting",
+    });
   });
 
   test("a read that fell over says so, rather than reporting the issue absent", () => {
@@ -330,7 +331,7 @@ describe("the detail panel's state", () => {
   test("absent here and absent everywhere are two sentences", () => {
     expect(panelFor("issue-0", read([]), NONE)).toEqual({ kind: "missing" });
     // an issue authored on a device this one has not heard from is not on this device *yet*
-    expect(panelFor("issue-0", read([], { coverage: { kind: "local-only" } }), NONE)).toEqual({
+    expect(panelFor("issue-0", read([], { answered: "local" }), NONE)).toEqual({
       kind: "catching-up",
     });
   });
@@ -349,7 +350,7 @@ describe("the detail panel's state", () => {
   });
 
   test("a delete this device already holds outranks a catch-up that cannot undo it", () => {
-    const behind = read([], { coverage: { kind: "local-only" } });
+    const behind = read([], { answered: "local" });
     expect(panelFor("issue-0", behind, NONE, true)).toEqual({ kind: "deleted" });
     // and it is still the honest answer while this panel's own read is in flight
     expect(panelFor("issue-0", read(undefined), NONE, true)).toEqual({ kind: "deleted" });

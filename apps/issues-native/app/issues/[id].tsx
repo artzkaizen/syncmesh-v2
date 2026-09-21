@@ -273,9 +273,9 @@ function Detail({ id }: { readonly id: string }) {
     whoChoices,
   ]);
 
-  if (!found.hasAnswered) return <Centred>Reading the local replica…</Centred>;
+  if (found.answered === "none") return <Centred>Reading the local replica…</Centred>;
   if (row === undefined)
-    return <Absent deleted={device.deleted("issue", id)} settled={found.isSettled} />;
+    return <Absent deleted={device.deleted("issue", id)} settled={found.answered === "settled"} />;
 
   if (pending.current !== undefined) {
     const { asked, what } = pending.current;

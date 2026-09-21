@@ -190,22 +190,22 @@ function Issues() {
   /**
    * The cold-join timeline, recorded as it happens rather than reconstructed after.
    *
-   * `hasAnswered` and `isSettled` are the two instants worth knowing apart (see below), and the
-   * scale is read once the second one lands so a duration can be quoted against the work it
-   * covered rather than on its own. The numbers live in Settings now; this only records them.
+   * `answered` walking `none → local → settled` marks the two instants worth knowing apart (see
+   * below), and the scale is read once it reaches the end, so a duration can be quoted against
+   * the work it covered rather than on its own. The numbers live in Settings; this records them.
    */
   useEffect(() => {
-    if (listed.hasAnswered) sawAnswered();
+    if (listed.answered !== "none") sawAnswered();
     // rows, not an answer: the two diverge by the whole of a cold join
     if (addressable.length > 0) sawFirstRows();
-    if (!listed.isSettled) return;
+    if (listed.answered !== "settled") return;
     sawSettled();
     void device.scale().then((scale) => {
       sawScale(scale);
       // eslint-disable-next-line no-console -- the number is the point, and a log outlives a screen
       console.log("[join]", summary());
     });
-  }, [addressable.length, listed.hasAnswered, listed.isSettled, device]);
+  }, [addressable.length, listed.answered !== "none", listed.answered === "settled", device]);
 
   const renderItem = useCallback(
     ({ item }: { readonly item: Line }) =>
@@ -231,15 +231,15 @@ function Issues() {
   );
 
   /**
-   * **Two different questions, and neither answers the other.**
+   * **Two instants, one ordered field.**
    *
-   * `hasAnswered` is about this device's storage: a local read completed. `isSettled` is about the
-   * *sources* behind it: every peer that could still fill this scope has replied. A query over an
-   * empty store answers instantly while the relay has said nothing, so an app that drew "Nothing
-   * open" on `hasAnswered` alone would be stating something false about a workspace it has simply
-   * not heard about yet.
+   * `"local"` is this device's storage having answered; `"settled"` is every source behind it
+   * having replied too. A query over an empty store answers instantly while the relay has said
+   * nothing, so an app that drew "Nothing open" on the first would be stating something false
+   * about a workspace it has simply not heard about yet — and two booleans let it, because a
+   * device with no transport reports the second before the first.
    */
-  if (!issues.hasAnswered) return <Notice>Reading the local replica…</Notice>;
+  if (issues.answered === "none") return <Notice>Reading the local replica…</Notice>;
   if (issues.error !== undefined)
     return (
       <Notice spinner={false}>This device could not read the list: {issues.error.message}</Notice>
@@ -275,7 +275,7 @@ function Issues() {
           <Empty
             narrowed={isNarrowed(filters)}
             onClear={() => setFilters(OPEN_ONLY)}
-            settled={issues.isSettled}
+            settled={issues.answered === "settled"}
           />
         }
         ListHeaderComponent={

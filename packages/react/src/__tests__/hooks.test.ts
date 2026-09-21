@@ -357,7 +357,7 @@ describe("usePresence", () => {
 });
 
 describe("useQuery — the book's dialect (ch. 9)", () => {
-  test("disabled without a call, ready with undefined data first, coverage settles apart from isReady", async () => {
+  test("disabled with no call, then local, then settled — one field walking the progression", async () => {
     const { handle } = await open();
     await handle.db.insert(jobs).values({ id: "j1", title: "one", rank: 1 });
 
@@ -377,9 +377,9 @@ describe("useQuery — the book's dialect (ch. 9)", () => {
             settled: () => settledGate,
           }
         : undefined;
-      const { data, status, isReady, isEnabled, coverage } = useQuery(call);
+      const { data, status, answered, isEnabled } = useQuery(call);
       seen.push(
-        `${status}/${isEnabled ? "on" : "off"}/${isReady ? "ready" : "…"}/${coverage.kind}/${
+        `${status}/${isEnabled ? "on" : "off"}/${answered}/${
           data === undefined ? "∅" : data.map((r) => r.id).join(",")
         }`,
       );
@@ -387,39 +387,39 @@ describe("useQuery — the book's dialect (ch. 9)", () => {
     };
 
     const { settle } = await mount(createElement(Screen));
-    expect(seen.at(-1)).toBe("disabled/off/…/local-only/∅"); // no call: disabled, not crashed
+    expect(seen.at(-1)).toBe("disabled/off/none/∅"); // no call: disabled, and nothing asked
 
     await act(async () => pick(true));
     await settle();
-    // local store answered (isReady, rows in) while the world has not (coverage local-only)
-    expect(seen.at(-1)).toBe("success/on/ready/local-only/j1");
+    // this device answered and the world has not: the middle of the progression
+    expect(seen.at(-1)).toBe("success/on/local/j1");
 
     await act(async () => releaseSettled());
     await settle();
-    expect(seen.at(-1)).toBe("success/on/ready/caught-up/j1"); // the two facts settle apart
+    expect(seen.at(-1)).toBe("success/on/settled/j1"); // and now the far sources have too
   });
 
   /**
    * The regression behind a detail panel that said "that issue is not on this device" about a row
    * the list beside it was still drawing.
    *
-   * `isReady` used to be `!isPending`, and a read that threw is neither pending nor successful —
+   * `answered` used to be `!isPending`, and a read that threw is neither pending nor successful —
    * so the failed read was handed to the caller as a ready one with no rows, which every
    * empty-state branch in the repository reads as "there is nothing here". Absence has to come
    * from the store having answered; a query this device could not run has told it nothing.
    */
-  test("a read that threw is never ready, so no empty state can be drawn over it", async () => {
+  test("a read that threw never answers, so no empty state can be drawn over it", async () => {
     const { handle } = await open();
     const ghost = sqliteTable("ghost", { id: text().primaryKey() });
     const seen: string[] = [];
     const Screen = () => {
-      const { data, status, isReady, error } = useQuery({
+      const { data, status, answered, error } = useQuery({
         key: "ghost",
         live: () => handle.live(handle.db.select({ id: ghost.id }).from(ghost)),
         settled: () => Promise.resolve(),
       });
       seen.push(
-        `${status}/${isReady ? "ready" : "…"}/${data === undefined ? "∅" : String(data.length)}/${
+        `${status}/${answered}/${data === undefined ? "∅" : String(data.length)}/${
           error === undefined ? "-" : "error"
         }`,
       );
@@ -429,7 +429,7 @@ describe("useQuery — the book's dialect (ch. 9)", () => {
     const { settle } = await mount(createElement(Screen));
     await settle();
     // the rows are withheld rather than reported as none, and the reason is carried up
-    expect(seen.at(-1)).toBe("error/…/∅/error");
+    expect(seen.at(-1)).toBe("error/none/∅/error");
   });
 
   /**
@@ -522,9 +522,8 @@ describe("useQuery — the book's dialect (ch. 9)", () => {
       [
         result.data === undefined ? "∅" : String(result.data.length),
         result.status,
-        result.isReady,
+        result.answered,
         result.isEnabled,
-        result.coverage.kind,
         result.error === undefined ? "-" : "error",
       ].join("/");
 
@@ -537,6 +536,6 @@ describe("useQuery — the book's dialect (ch. 9)", () => {
     const { settle } = await mount(createElement(Screen));
     await settle();
     expect(reports.at(-1)).toBe(reports.at(-2));
-    expect(reports.at(-1)).toBe("∅/disabled/false/false/local-only/-");
+    expect(reports.at(-1)).toBe("∅/disabled/none/false/-");
   });
 });

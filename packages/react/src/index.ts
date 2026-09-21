@@ -1,6 +1,7 @@
+export type { Answered } from "./answered.js";
 export type { LiveCall, LiveResult, QueryOptions } from "./use-live-query.js";
 export { useLiveQuery } from "./use-live-query.js";
-export type { Coverage, QueryResult } from "./use-query.js";
+export type { QueryResult } from "./use-query.js";
 export { useQuery } from "./use-query.js";
 export type { PresenceTopic } from "./use-presence.js";
 export { usePresence } from "./use-presence.js";
