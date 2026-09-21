@@ -256,14 +256,30 @@ writing down rather than papering over with a lowest-common-denominator design.
    compaction time would make the state file disposable again on an old device. It duplicates
    every row it covers, which is why it is worth having only if the schema-change story turns out
    to matter more than the disk.
-3. **Split the stores**, with the log's lock covering both files, and `openStores` opening the log
-   and attaching the state file in that order.
-4. **Hash the manifest into the state filename**, sweep orphans on a bound, and decide whether the
-   hash includes the dialect.
-5. **Blobs behind their own `BlobStore`**, with irreplaceable bytes distinguished from cache.
+3. **Split the stores into two files — not started, and the cost is a migration design.**
+
+   On SQLite a second file means `ATTACH`, which renames *every* table in the attached one, so the
+   log's SQL has to be built per layout: `SQLITE` is a module-level constant with 37 table names
+   baked into template literals, and it would become a function of where the log lives.
+
+   The harder half is the ladder. `SQLITE_MIGRATIONS` is keyed on `PRAGMA user_version` of `main`,
+   and `main` would be the *state* file while the migrations it gates are the *log's* — one
+   counter tracking two schemas with two histories. A split database and a single-file one would
+   also be two shapes to migrate between, on devices nobody can inspect.
+
+   None of that is unreasonable work. It is simply larger than the prizes left after the premise
+   correction above: the namespace is already done in one file, and a cheaper `VACUUM` and a
+   smaller backup do not pay for a migration design on the write path.
+
+4. **Hash the manifest into the state filename** — depends on 3, and on `refoldable` being true.
+5. **Blobs behind their own `BlobStore`**, with irreplaceable bytes distinguished from cache. The
+   one remaining piece that is additive rather than a migration, and the only one that can be
+   built without 3.
 
 ✅ Already done, and independently useful: the `syncmesh` namespace (a `CREATE SCHEMA` on Postgres,
-a `syncmesh_` prefix on SQLite, one migration step that renames in place), and the boot gap above.
+a `syncmesh_` prefix on SQLite, one migration step that renames in place), the boot gap above, the
+commit ordering, `refoldable`, and `LOG_TABLES`/`STATE_TABLES` — the line itself, written as data
+and checked against a real schema, so whoever does 3 does not have to rediscover where it runs.
 
 ## Answered, by measurement
 

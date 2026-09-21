@@ -100,6 +100,42 @@ export const namespaceDdl = (dialect: SqlDialect): readonly string[] =>
       ]
     : [];
 
+/**
+ * Which half of the store each engine table belongs to (RFC-0022).
+ *
+ * **The durable half cannot be recomputed; the derived half can** — up to a compaction floor, and
+ * `refoldable` is the runtime form of that caveat. Written down as data rather than prose because
+ * three separate things need to agree on it and each of them drifts on its own otherwise: what a
+ * backup has to include, what may be discarded and refolded, and which file each table lands in
+ * if the two are ever separated.
+ *
+ * Splitting them into two SQLite files is *not* done, and the reason is written in the RFC: on
+ * SQLite a second file means `ATTACH`, which renames every table in it, and the migration ladder
+ * is keyed on `PRAGMA user_version` of `main` — one counter that would then be tracking two
+ * schemas with two histories. That is a migration design, not a refactor, and the split's
+ * remaining prizes (a cheaper `VACUUM`, a smaller backup) do not pay for it yet.
+ */
+export const LOG_TABLES = [
+  "events",
+  "compaction",
+  "scope",
+  "operations",
+  "receipts",
+  "grants",
+  "blobs",
+  "meta",
+] as const;
+
+/** The other half: a pure function of {@link LOG_TABLES}, while `refoldable` says so. */
+export const STATE_TABLES = [
+  "state_rows",
+  "cursors",
+  "row_sync",
+  "acked",
+  "changes",
+  "capture",
+] as const;
+
 export const engineTable = (name: string, dialect: SqlDialect = "sqlite"): string =>
   dialect === "postgres" ? `syncmesh.${name}` : `syncmesh_${name}`;
 

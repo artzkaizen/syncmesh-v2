@@ -86,3 +86,5 @@ export type {
   WriterDeps,
 } from "./writer.js";
 export { createWriter } from "./writer.js";
+
+export { LOG_TABLES, STATE_TABLES } from "./dialect.js";
