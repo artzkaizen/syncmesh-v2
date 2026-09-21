@@ -72,12 +72,27 @@ interface Verdict {
 export function remoteHandle(deps: RemoteHandleDeps): Handle {
   const { wire, handle, schema, source, partition, actor } = deps;
 
+  const send = (
+    statement: string,
+    params: readonly unknown[],
+    method: ProxyMethod,
+    span?: number,
+  ): Promise<ProxyResult> =>
+    wire.ask<ProxyResult>({
+      kind: "sql",
+      handle,
+      statement,
+      params,
+      method,
+      ...(span !== undefined && { span }),
+    });
+
+  /** The shared sink: an ordinary read, belonging to no span and never landing inside one. */
   const sql = (
     statement: string,
     params: readonly unknown[],
     method: ProxyMethod,
-  ): Promise<ProxyResult> =>
-    wire.ask<ProxyResult>({ kind: "sql", handle, statement, params, method });
+  ): Promise<ProxyResult> => send(statement, params, method);
 
   const db = drizzle((statement, params, method) => sql(statement, params, method));
   const scoping = { schema };
@@ -91,6 +106,10 @@ export function remoteHandle(deps: RemoteHandleDeps): Handle {
 
   /** This tab's spans on this handle, queued: see {@link scoped} for why there is a queue. */
   let spans = Promise.resolve();
+  /** Names this tab's spans apart on the wire; only ever compared for equality by the host. */
+  let minted = 0;
+  /** The span this tab is inside, if any — one at a time, which is what `scoped` guarantees. */
+  let inside: number | undefined;
 
   /**
    * A host-side scope whose body runs here: the host enters it, holds the handle for the whole
@@ -116,8 +135,10 @@ export function remoteHandle(deps: RemoteHandleDeps): Handle {
       finished = resolve;
     });
     await ahead;
+    const token = (minted += 1);
+    inside = token;
     try {
-      const body = { kind: "enter", handle, mode } as const;
+      const body = { kind: "enter", handle, mode, span: token } as const;
       await wire.ask({
         ...body,
         ...(named.id !== undefined && { operationId: named.id }),
@@ -133,6 +154,7 @@ export function remoteHandle(deps: RemoteHandleDeps): Handle {
       const verdict = await wire.ask<Verdict | null>({ kind: "leave", handle });
       return { thrown, value, verdict };
     } finally {
+      inside = undefined;
       finished();
     }
   };
@@ -145,12 +167,26 @@ export function remoteHandle(deps: RemoteHandleDeps): Handle {
   };
 
   /**
-   * A span on this side is the tab's own statements, unchanged: the authorship is the *host's* to
-   * assign, and it does — `serveHandle` holds a span for the length of this tab's `enter`/`leave`
-   * and feeds everything arriving from here into it. There is nothing for a second sink to mean
-   * over a port where every statement already travels as a message from this tab.
+   * The span's own sink: the same statements, tagged with the span they belong to.
+   *
+   * The authorship is still the host's to assign, but *which* of this tab's statements are the
+   * span's is only knowable here. "Everything arriving from this tab" is what the host used to
+   * assume, and it is one tick away from being wrong: a detail panel rehearses a delete while its
+   * own `issues.get` reads, both from this tab, and the read was fed into the rehearsal's
+   * transaction — answering out of rows the rehearsal had staged and would roll back, so a panel
+   * said "not on this device" about a row sitting in the list beside it. Tagging is what lets the
+   * host place a statement by the sink it came through rather than by who sent it.
    */
-  const span = (): Span<typeof db> => ({ db, sql });
+  const span = (): Span<typeof db> => {
+    const token = inside;
+    if (token === undefined) return { db, sql };
+    const into = (statement: string, params: readonly unknown[], method: ProxyMethod) =>
+      send(statement, params, method, token);
+    return {
+      db: drizzle((statement, params, method) => into(statement, params, method)),
+      sql: into,
+    };
+  };
 
   const rehearse = async (
     open: (scope: Span<typeof db>) => Promise<void>,

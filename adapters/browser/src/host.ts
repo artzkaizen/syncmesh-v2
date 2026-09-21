@@ -16,7 +16,9 @@ import type {
   HostMessage,
   InspectAnswer,
   InspectBody,
+  LeaveBody,
   OpenHandleBody,
+  SqlBody,
   Topic,
   WirePort,
 } from "./protocol.js";
@@ -32,6 +34,8 @@ export type HostMesh = Pick<
   | "on"
   | "engine"
   | "can"
+  // the one fact the app's tables cannot hold: a deleted row is gone from them, tombstone and all
+  | "deletedAt"
   | "grants"
   | "flush"
   | "ready"
@@ -52,6 +56,14 @@ export interface ServeOptions {
    * of that origin can read their own data and learn nothing about the mesh carrying it.
    */
   readonly inspector?: MeshInspector | undefined;
+  /**
+   * How long one tab's rehearsal may hold this origin's handle, in milliseconds.
+   *
+   * Only a test has a reason to say: the default is tuned for a body running across a port
+   * (`host-handle.ts`), and shortening it is how a test stands in the state a torn-down window
+   * leaves behind without waiting five seconds to do it.
+   */
+  readonly spanLimit?: number | undefined;
 }
 
 /** What the host is holding for its clients. A subscription left behind after a tab closes shows here. */
@@ -166,8 +178,30 @@ const namingOf = (message: EnterBody): WriteNaming => ({
   label: message.label,
 });
 
+/**
+ * The three messages that speak to one handle: a statement, and the two ends of a span.
+ *
+ * Out here rather than inside `serveMesh` because it needs nothing of the mesh — only the handle
+ * the caller already resolved and the tab that sent it. `span` travels on all three: it is what
+ * lets the handle place a statement by the sink it came through rather than by who sent it
+ * (`host-handle.ts`).
+ */
+const onHandle = async <Owner>(
+  served: ServedHandle<Owner>,
+  owner: Owner,
+  message: SqlBody | EnterBody | LeaveBody,
+): Promise<Answered> => {
+  if (message.kind === "sql")
+    return served.sql(owner, message.statement, message.params, message.method, message.span);
+  if (message.kind === "enter")
+    return served.enter(owner, message.mode, message.span, namingOf(message));
+  const verdict = await served.leave(owner);
+  if (verdict === undefined || verdict.isOk()) return null;
+  return { refused: serializeTagged(verdict.error) };
+};
+
 export function serveMesh(mesh: HostMesh, options: ServeOptions = {}): MeshHost {
-  const { inspector } = options;
+  const { inspector, spanLimit } = options;
   const clients = new Set<Client>();
   const served = new Map<string, ServedHandle<Client>>();
   const feeds = new Map<Topic, { readonly off: Unsubscribe; count: number }>();
@@ -221,10 +255,14 @@ export function serveMesh(mesh: HostMesh, options: ServeOptions = {}): MeshHost 
       }
       // the receipt's route is the entry itself, which does not exist until `serveHandle` returns
       let created!: ServedHandle<Client>;
-      created = serveHandle<Client>(opened.value, (owner, receipt) => {
-        const seat = owner.numbers.get(created);
-        if (seat !== undefined) post(owner, { kind: "commit", handle: seat, payload: receipt });
-      });
+      created = serveHandle<Client>(
+        opened.value,
+        (owner, receipt) => {
+          const seat = owner.numbers.get(created);
+          if (seat !== undefined) post(owner, { kind: "commit", handle: seat, payload: receipt });
+        },
+        spanLimit,
+      );
       served.set(key, created);
       entry = created;
     }
@@ -250,20 +288,8 @@ export function serveMesh(mesh: HostMesh, options: ServeOptions = {}): MeshHost 
     if (message.kind === "ledger") return answerLedger(mesh.operations, message.path, message.args);
     if (message.kind === "inspect") return inspect(inspector, message);
     if (message.kind === "handle") return declare(client, message);
-    if (message.kind === "sql")
-      return handle(client, message.handle).sql(
-        client,
-        message.statement,
-        message.params,
-        message.method,
-      );
-    if (message.kind === "enter")
-      return handle(client, message.handle).enter(client, message.mode, namingOf(message));
-    if (message.kind === "leave") {
-      const verdict = await handle(client, message.handle).leave(client);
-      if (verdict === undefined || verdict.isOk()) return null;
-      return { refused: serializeTagged(verdict.error) };
-    }
+    if (message.kind === "sql" || message.kind === "enter" || message.kind === "leave")
+      return onHandle(handle(client, message.handle), client, message);
     if (message.kind === "subscribe") subscribe(client, message.topic);
     else unsubscribe(client, message.topic);
     return null;

@@ -74,7 +74,10 @@ export function transportContextFor(base: {
     sessions,
     crypto: base.keys.crypto(),
     admits: oneSeatPerPeer(
-      async (ask: AdmissionAsk) => (await gate.admit({ ...ask, stage: "proven" })) === "allow",
+      // the ask's own rung wins: spreading it *under* a fixed `proven` — which is what this did —
+      // silently promoted every cheap dial-rung question to the strict one, so the ladder had two
+      // rungs in `gate.ts` and one everywhere it was actually asked
+      async (ask: AdmissionAsk) => (await gate.admit({ stage: "proven", ...ask })) === "allow",
       (peer) => sessions.get(peer) !== undefined,
     ),
     now: base.now,

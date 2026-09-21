@@ -55,7 +55,16 @@ export type CallPath =
   | "running"
   | "principal"
   /** This origin's peer id. Never changes, so a window asks once and keeps it. */
-  | "self";
+  | "self"
+  /**
+   * Whether the origin holds a tombstone for one row — `Engine.deletedAt`, reduced to a boolean.
+   *
+   * The stamp itself does not cross and is not wanted here. A `Stamp` carries a
+   * `Temporal.Instant`, which a structured clone hands over as a plain object rather than as
+   * itself, and both halves inside it are the *deleting device's* — a peer id, not an account,
+   * and that device's clock, not this window's. What a window can honestly draw is the boolean.
+   */
+  | "deleted";
 
 /** The four reads of the durable write ledger, by the names `OperationsView` already gives them. */
 export type LedgerPath = "get" | "byEvent" | "unsettled" | "receiptsOf";
@@ -97,6 +106,16 @@ export interface SqlBody {
   readonly statement: string;
   readonly params: readonly unknown[];
   readonly method: ProxyMethod;
+  /**
+   * Which open span this statement came through, absent for an ordinary read.
+   *
+   * A statement is placed by the sink it came through, and over a port the sink is this number:
+   * the tab is the only side that knows whether a `SELECT` belongs to the write it is running or
+   * to a live query that happened to fire in the same tick. Without it the host can only ask "is
+   * this tab inside something", which answers yes for both and feeds a detail panel's read into a
+   * rehearsal's staged `DELETE` — the read then reports the row as gone (`host-handle.ts`).
+   */
+  readonly span?: number;
 }
 
 /**
@@ -110,6 +129,8 @@ export interface EnterBody {
   readonly kind: "enter";
   readonly handle: number;
   readonly mode: "under" | "rehearse";
+  /** The token this span's own statements will carry, so the host can tell them apart. */
+  readonly span: number;
   readonly operationId?: string;
   /**
    * The procedure the tab is inside, so the write's durable record carries the name a person

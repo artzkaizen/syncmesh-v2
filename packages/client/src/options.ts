@@ -7,7 +7,7 @@ import type { Transport, TransportContext } from "@syncmesh/transport";
 import type { Identity } from "@syncmesh/wire";
 
 import type { SessionProvider } from "./auth.js";
-import type { MeshShaping } from "./transports.js";
+import type { Knock, MeshShaping } from "./transports.js";
 
 /**
  * Everything one mesh is constructed from. Grouped rather than flat because the groups are the
@@ -59,8 +59,31 @@ export interface MeshOptions<
   readonly undoDepth?: number;
   /** Started at construction (D12); `mesh.transports.add/remove` reshape the set later (book ch. 8). */
   readonly transports?: readonly Transport[];
+  /**
+   * The platform signals that mean *look at your links again* (see {@link Knock}).
+   *
+   * Recovery is the library's job, not the app's: an app names the signals its platform has and the
+   * mesh does the rest, which is the difference between getting reconnection by existing and
+   * rewriting the same `AppState` listener in every app built on this. Absent — and it is absent on
+   * every server, where nothing goes to sleep and no radio is switched off in a lift — nothing
+   * subscribes and nothing changes.
+   *
+   * These are *signals*, not a policy. Each one only ever says "something outside changed"; what to
+   * do about it belongs to the medium, and each already knows: the relay hangs up an orphaned
+   * socket and redials with its backoff reset, the radio stops and restarts discovery.
+   */
+  readonly knocks?: readonly Knock[];
   /** An ungranted peer asked to exist on some link — forward it to your issuer, or answer with `grants.issue`. Untrusted. */
   readonly onGrantRequest?: TransportContext["onGrantRequest"];
+  /**
+   * A signed checkpoint this device can offer with the state it serves (RFC-0019, book ch. 4).
+   *
+   * Read per call rather than held, because the thing it stands for moves: a certificate names a
+   * `stateHash` and the coverage that produced it, so the newest one is the only one that matches
+   * what this device would send now. Only a process holding the issuer key can mint one — but any
+   * process may *forward* one, which is how state travels further than the authority that vouched.
+   */
+  readonly certificate?: TransportContext["certificate"];
   /** The peer whose events may write `global` tables — the relay's id, shipped in config like the issuer's. */
   readonly authority?: PeerId;
   /**

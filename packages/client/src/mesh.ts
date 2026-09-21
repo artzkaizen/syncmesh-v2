@@ -25,6 +25,7 @@ import { openHandles, readableWith } from "./handles.js";
 import { historyView } from "./history-view.js";
 import { createHandleTally, linksAcross, meterHandles } from "./inspect.js";
 import { openInternal } from "./internal.js";
+import { joinIfEmpty } from "./join.js";
 import { wireOperations } from "./operations.js";
 import { createPeers } from "./peers.js";
 import { openPresence } from "./presence.js";
@@ -150,9 +151,20 @@ function assemble<
     partitions: () => (grants.grantFor(identity.peerId)?.partitions ?? []).map(String),
     ...(options.mesh !== undefined && { shaping: options.mesh }),
     ...(options.onGrantRequest !== undefined && { onGrantRequest: options.onGrantRequest }),
+    // the same anchor grants are checked against: a snapshot is state nobody signed per event, so
+    // the certificate over it is the only thing that can make it more than provisional
+    ...(options.issuer !== undefined && { trust: options.issuer }),
+    ...(options.certificate !== undefined && { certificate: options.certificate }),
   });
   const { routes } = transportContext;
-  const links = runTransports(options.transports ?? [], transportContext, options.mesh ?? {});
+  const links = runTransports(
+    options.transports ?? [],
+    transportContext,
+    options.mesh ?? {},
+    options.knocks ?? [],
+  );
+  // a device holding nothing asks for state instead of history; one that holds coverage does not
+  void joinIfEmpty(engine, { ready: links.ready, list: links.list });
 
   const surface: Mesh<D, PC> = {
     engine,
@@ -162,6 +174,9 @@ function assemble<
     schema,
     on,
     history,
+    // SAFETY: table names and keys are opaque strings in the kernel — the same laundering
+    // `historyView` does for the identical pair
+    deletedAt: (table, key) => engine.deletedAt(table as never, key as never),
     presence: (instance) => {
       const partition = parsePartitionKey(instance);
       if (partition.isErr()) panic(`presence: ${partition.error.message}`);

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 
 import type { FollowerMesh } from "../client.js";
 
@@ -153,6 +154,22 @@ describe("the mesh over a port", () => {
     );
     expect(thrown).toBeInstanceOf(MeshHostGone);
     expect(b.mesh.running()).toBe(false);
+    await stop();
+  });
+
+  test("a tab tells a deleted row from one the origin never held", async () => {
+    const { tab, stop } = await meshOrigin();
+    const a = tab("leader");
+    const b = tab();
+    const handle = a.mesh.on(ACME).unwrap();
+    await handle.db.insert(book).values({ id: "b4", title: "Persuasion" });
+    await handle.db.delete(book).where(eq(book.id, "b4"));
+    await settled();
+
+    // the query is the same empty answer for both, which is the reason this call exists
+    expect(await titles(b.mesh)).toEqual([]);
+    expect(await b.mesh.deleted("book", "b4")).toBe(true);
+    expect(await b.mesh.deleted("book", "never-written")).toBe(false);
     await stop();
   });
 

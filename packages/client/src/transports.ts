@@ -5,6 +5,7 @@ import type {
   LinkEvent,
   RouteCandidate,
   RouteMessage,
+  RoutePolicy,
   Transport,
   TransportCondition,
   TransportContext,
@@ -33,6 +34,20 @@ export interface MeshShaping {
   /** Periodic random re-peering; `false` turns it off for a fleet that would rather not. */
   readonly churn?: ChurnOptions | false;
   /**
+   * How this app would rather order the mediums that could carry a frame.
+   *
+   * The built-in order prices bandwidth and power, which suits a phone in a pocket and not every
+   * deployment: a rack of devices on mains power would rather spend the radio than wait for a
+   * relay, and a fleet paying for cellular would rather wait. This is where that preference goes,
+   * so a transport somebody else writes can be ranked against the five shipped here without
+   * editing any of them.
+   *
+   * **It orders and never excludes** — see `RoutePolicy`. Reachability stays the library's, because
+   * that is the rule that decides whether a write is delivered at all, and a preference that could
+   * suppress a medium could lose one.
+   */
+  readonly routes?: RoutePolicy;
+  /**
    * Segments fleets that share an app but should not auto-connect — a depot's vans and a
    * warehouse's scanners running the same build.
    *
@@ -58,6 +73,41 @@ export interface MeshShaping {
    */
   readonly maxConnections?: number;
 }
+
+/**
+ * Something outside the mesh that knows the world may have moved, wired to the door that acts on it.
+ *
+ * `Transport.wake` is the door — *check the link now, because something outside knows it may have
+ * changed* — and a `Knock` is what knocks on it. They are two halves that know different things: a
+ * transport knows how to re-establish its own link and nothing about the platform it runs on, and a
+ * platform signal knows the phone came back to the foreground and nothing about sockets. The mesh
+ * is the only thing holding both, so the mesh is where they meet.
+ *
+ * **This exists because a socket does not always learn that its network went away.** Switch a
+ * phone's Wi-Fi off and the connection underneath is abandoned rather than closed: no `close` event
+ * arrives, so the relay went on believing it had a live link for the ~37 seconds its keepalive
+ * deadline takes to expire, with writes sitting safe on disk and going nowhere. Bluetooth has the
+ * same shape — an adapter switching off is not a link ending, so nothing restarted discovery. Both
+ * were found by a person using the app, twice, weeks apart, and neither is something a transport
+ * can notice for itself.
+ *
+ * **It is a seam rather than an app's job on purpose.** Before this, recovery was a loop over
+ * transports and an `AppState` listener written in application code, which meant every app built on
+ * this would write the same loop, and each would get it slightly wrong in its own way — forgetting
+ * to unsubscribe, capturing the transport array so a radio switched on later never woke, waking on
+ * `isConnected` instead of `isInternetReachable`. An app should get recovery by existing.
+ *
+ * A `Knock` subscribes when the mesh starts and is let go when it stops; returning the unsubscribe
+ * *is* the shape, because a subscription whose owner cannot let go of it outlives the mesh it was
+ * made for. `@syncmesh/react-native` ships the two a phone has.
+ *
+ * @example
+ * import { foreground } from "@syncmesh/react-native";
+ * import { reachability } from "@syncmesh/react-native/network";
+ *
+ * const app = createClient({ schema, procedures, knocks: [foreground(), reachability()] });
+ */
+export type Knock = (wake: () => void) => Unsubscribe;
 
 /** The medium refused to start, or the set had already stopped; the mesh runs on without it. */
 export class TransportAddFailed extends TaggedError("TransportAddFailed")<{
@@ -153,6 +203,34 @@ export interface RunningTransports {
 }
 
 /**
+ * The facts everything that ranks a peer reads: one view, so the budget and churn cannot disagree
+ * about which link is worth least. Read when a ranking runs rather than when the mesh opens —
+ * churn's first round is minutes away, and the acks it ranks on are not the boot's.
+ */
+const factsFrom = (context: TransportContext) => (): AdmissionFacts => ({
+  acks: () => context.engine.acks(),
+  held: () => context.engine.coverage().synced,
+  partitionsOf: (device: PeerId) => context.grants.grantFor(device)?.partitions.map(String),
+  self: context.identity.peerId,
+});
+
+/**
+ * Every medium told to look at its link again, because something outside said the world moved.
+ *
+ * Takes the **live** set rather than closing over the one a mesh was constructed with. A radio
+ * switched on from a settings screen half an hour into a session is exactly the medium a foreground
+ * signal should reach, and a loop over a captured array would leave it out forever — the same bug
+ * `$status.subscribe` has and {@link RunningTransports.onLinkEvent} was written to avoid.
+ *
+ * Nothing here is selective about which mediums are worth waking, because nothing here can be:
+ * waking a healthy transport is free by contract ({@link Transport.wake}), and a medium whose link
+ * cannot go stale without saying so declares no `wake` at all and is skipped by its own absence.
+ */
+const wakeEvery = (transports: readonly Transport[]): void => {
+  for (const transport of transports) transport.wake?.();
+};
+
+/**
  * Score the candidates and hand back the transports behind the survivors (RFC-0012 §2).
  *
  * Candidates are matched to their transport by identity rather than by name, so two mediums
@@ -167,6 +245,7 @@ const scoreRoutes = (
   among: readonly Transport[],
   online: ReadonlyMap<Transport, boolean>,
   message: RouteMessage,
+  policy: RoutePolicy | undefined,
 ): readonly Transport[] => {
   const owners = new Map<RouteCandidate, Transport>();
   const candidates = among.map((t) => {
@@ -175,19 +254,33 @@ const scoreRoutes = (
       online: online.get(t) ?? true,
       ...(t.route?.() ?? ORDINARY_LINK),
     };
-    // a medium that cannot enumerate its links stays absent, which reads as "cannot say"
-    const reaches = t.reaches?.();
-    if (reaches !== undefined) Object.assign(candidate, { reaches });
+    /**
+     * What this medium claims about peers, for routing: adjacency and transitive reach together.
+     *
+     * `reaches` is the links it holds and `delivers` is what it can carry to through them — a
+     * relay's one socket and the room behind it. Routing wants both, because the question a frame
+     * asks is "can you get this to P", not "is P on the other end of a cable". They stay separate
+     * on the transport itself because `churn` counts `reaches` against `maxLinks` before closing
+     * something, and a relay answering forty there would be told to hang up links it never had.
+     *
+     * Absent from both stays absent: a medium that tracks neither says nothing, which `pickRoutes`
+     * reads as a shrug rather than a refusal.
+     */
+    const adjacency = t.reaches?.();
+    const transitive = t.delivers?.();
+    if (adjacency !== undefined || transitive !== undefined)
+      Object.assign(candidate, { reaches: new Set([...(adjacency ?? []), ...(transitive ?? [])]) });
     owners.set(candidate, t);
     return candidate;
   });
-  return pickRoutes(candidates, message).flatMap((c) => owners.get(c) ?? []);
+  return pickRoutes(candidates, message, policy).flatMap((c) => owners.get(c) ?? []);
 };
 
 export function runTransports(
   transports: readonly Transport[],
   context: TransportContext,
   shaping: MeshShaping = {},
+  knocks: readonly Knock[] = [],
 ): RunningTransports {
   /**
    * Whether each medium is up, from the one place that says so. A transport that has not spoken
@@ -223,6 +316,10 @@ export function runTransports(
   const started = Promise.all(starts.values());
   let running = true;
 
+  // guarded on `running` because a knock is a subscription on somebody else's event source, and a
+  // signal arriving after `stop()` let go would redial a socket the mesh has already finished with
+  const answered = knocks.map((knock) => knock(() => void (running && wakeEvery(active))));
+
   /**
    * Holds each radio to the links it says it sustains (E28).
    *
@@ -230,17 +327,7 @@ export function runTransports(
    * changes which partitions are shared — rather than on a timer. There is no clock in this file,
    * and adding one to ask a question whose inputs announce themselves would be a worse answer.
    */
-  /**
-   * The facts everything that ranks a peer reads: one view, so the budget and churn cannot
-   * disagree about which link is worth least. Read when a ranking runs rather than when the mesh
-   * opens — churn's first round is minutes away, and the acks it ranks on are not the boot's.
-   */
-  const facts = (): AdmissionFacts => ({
-    acks: () => context.engine.acks(),
-    held: () => context.engine.coverage().synced,
-    partitionsOf: (device: PeerId) => context.grants.grantFor(device)?.partitions.map(String),
-    self: context.identity.peerId,
-  });
+  const facts = factsFrom(context);
   const sweep = (): void => {
     if (!running) return;
     const now = facts();
@@ -350,7 +437,7 @@ export function runTransports(
   const route = (
     message: RouteMessage,
     among: readonly Transport[] = active,
-  ): readonly Transport[] => scoreRoutes(among, online, message);
+  ): readonly Transport[] => scoreRoutes(among, online, message, shaping.routes);
 
   /**
    * Every transport worth putting this on, in order — not the single best one.
@@ -417,6 +504,9 @@ export function runTransports(
     stop: async () => {
       running = false;
       forcing.clear();
+      // the platform's listeners first: they are the only subscriptions here that outlive the
+      // process this mesh runs in, and one left behind holds every transport it captured with it
+      for (const off of answered) off();
       for (const stopWatching of watching.values()) stopWatching();
       watching.clear();
       for (const off of offAdmission) off();

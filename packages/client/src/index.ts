@@ -40,7 +40,16 @@ export type { GrantsRestored, IssueRequest, MeshGrants, StandingOf } from "./gra
 export { DeviceRevoked, NoGrantHeld, createMeshGrants, rememberGrants } from "./grants.js";
 export type { ForcedMedium, Forcing, ForcingDeps } from "./forced.js";
 export { NoSuchTransport, createForcing, standInFor } from "./forced.js";
-export type { MeshShaping, RunningTransports } from "./transports.js";
+/**
+ * The shape `Mesh.onTelemetry` emits, exported because that method's signature already refers to it.
+ *
+ * A public type that names a type nobody can import is only nameable inside this package: any
+ * consumer whose own inferred type touched it hit `TS2883 — the inferred type cannot be named
+ * without a reference to 'MeshTelemetry'`, which `@syncmesh/devtools` did on every dts emit. The
+ * build printed it and carried on with exit 0, so it sat there being reported and ignored.
+ */
+export type { MeshTelemetry } from "./telemetry.js";
+export type { Knock, MeshShaping, RunningTransports } from "./transports.js";
 export { TransportAddFailed, runTransports } from "./transports.js";
 export { keyRingFor, transportContextFor } from "./transport-context.js";
 

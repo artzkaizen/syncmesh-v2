@@ -64,6 +64,16 @@ export interface FollowerMesh extends Pick<
   /** This origin's peer id; the one fact a window must await before it can build a `syncOf`. */
   readonly selfId: () => Promise<PeerId>;
   /**
+   * Whether the origin holds a tombstone for that row — what separates *deleted* from *never
+   * heard of*, which every query answers identically.
+   *
+   * The boolean rather than the `Stamp` the origin's `Engine.deletedAt` returns, for the reason
+   * the protocol's own `"deleted"` path states: the stamp names the deleting **device** and
+   * carries that device's clock, so neither half is something a window may put on screen, and a
+   * `Temporal.Instant` does not survive a structured clone as itself in any case.
+   */
+  readonly deleted: (table: string, key: string) => Promise<boolean>;
+  /**
    * What a tab may read about the **device**, where the host was given an inspector.
    *
    * A door and not a surface: the names that go through it are the inspector's, this file never
@@ -193,6 +203,8 @@ export function connectMesh(options: ConnectOptions): FollowerMesh {
      * a port is, and asked exactly once because a device's name does not change while it runs.
      */
     selfId: () => wire.ask<PeerId>({ kind: "call", path: "self", args: [] }),
+    deleted: (table, key) =>
+      wire.ask<boolean>({ kind: "call", path: "deleted", args: [table, key] }),
     inspect: remoteInspect(wire),
     can: (what, row, instance) =>
       canAnswers.read(JSON.stringify([what, row ?? null, instance ?? null]), () =>

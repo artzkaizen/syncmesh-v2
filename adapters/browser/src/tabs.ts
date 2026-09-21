@@ -55,6 +55,7 @@ const NO_LOCKS =
 interface BrowserScope {
   readonly SharedWorker?: unknown;
   readonly addEventListener?: (type: string, listener: () => void) => void;
+  readonly removeEventListener?: (type: string, listener: () => void) => void;
 }
 
 // SAFETY: narrowing `globalThis` to the two properties this module reads off it — one that a
@@ -209,11 +210,36 @@ const hold = (tab: Tab, port: MessagePort, role: MeshLink["role"]): MeshLink => 
   const link = linkOver(port, role);
   tab.links.add(link);
   link.onLost(() => port.close());
+
+  /**
+   * Goodbye to the host, on the way out — the same best-effort notice the rendezvous already gets.
+   *
+   * A reload is the common way a tab stops existing, and it is the one where the host is told
+   * nothing: `pagehide` reaches {@link attach} and tells the *rendezvous*, while the host is left
+   * holding a client that will never speak again. That matters because a client is what the turn
+   * on a handle is taken *for* — so a tab reloaded mid-statement leaves the origin's one handle
+   * held by nobody, and every tab that opens afterwards waits behind it for ever. `bye` is what
+   * runs `disconnect`, which rolls back whatever the tab left open and hands the handle on.
+   *
+   * Best effort, exactly like the broker's: nothing fires on a crash, and a lost goodbye costs
+   * the wait it was meant to save rather than correctness.
+   */
+  const farewell = () => {
+    try {
+      port.postMessage({ kind: "bye" });
+    } catch {
+      // a port already closed by the other end; there is nobody left to tell
+    }
+  };
+  browser.addEventListener?.("pagehide", farewell);
+
   return {
     port,
     role,
     onLost: (listener) => link.onLost(listener),
+    lost: () => link.lost(),
     close: () => {
+      browser.removeEventListener?.("pagehide", farewell);
       tab.links.delete(link);
       link.close();
       port.close();

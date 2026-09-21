@@ -3,7 +3,7 @@
  * and in-flight blob fetch the mesh has handed out and not yet seen released. A dropped
  * reference stays in the count instead of silently dying — the chaos epilogue asserts zeros.
  */
-import type { Live, Runnable } from "@syncmesh/drizzle";
+import type { Live, LiveQuery } from "@syncmesh/drizzle";
 import type { SqlDialect } from "@syncmesh/storage";
 import type { Transport } from "@syncmesh/transport";
 
@@ -96,7 +96,7 @@ export function meterHandles<D extends SqlDialect>(
       if (held !== undefined) return held;
       const wrapped: Handle<D> = {
         ...handle,
-        live: <T>(query: Runnable<T>) => meterLive(handle.live(query)),
+        live: <T>(query: LiveQuery<T>) => meterLive(handle.live(query)),
       };
       metered.set(handle, wrapped);
       return wrapped;

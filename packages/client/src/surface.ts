@@ -1,5 +1,5 @@
 import type { Engine } from "@syncmesh/engine";
-import type { EventId, InvalidPartitionKey, Row as WireCells } from "@syncmesh/kernel";
+import type { EventId, InvalidPartitionKey, Stamp, Row as WireCells } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
 import type { PartitionTree, PresenceMap, PresenceTopic, SchemaEntry } from "@syncmesh/schema";
 import type { SqlDialect, SqlDriver } from "@syncmesh/storage";
@@ -79,6 +79,22 @@ export interface Mesh<
     key: string,
     options?: HistoryViewOptions,
   ) => Promise<Result<readonly RevisionView[], unknown>>;
+  /**
+   * The delete that is hiding a row, or `undefined` for one that is visible and for one this
+   * device has never held — `Engine.deletedAt` at the door an app actually stands at.
+   *
+   * Here as well as on the engine because of the arguments, not the answer. A table name and a
+   * row key are branded strings the kernel mints, and a screen holding `"issue"` and an id has
+   * neither; {@link Mesh.history} takes the same pair as plain text, for the same reason and one
+   * line above.
+   *
+   * It is the only read of this fact that survives the fold. A row that stops being visible is
+   * deleted outright from the app's own tables, so a procedure, a `SELECT` and `query` alike
+   * answer *deleted* and *never heard of* with one empty result. What may honestly be said from
+   * the stamp is on `Engine.deletedAt`: it names a **device**, not an account, and carries that
+   * device's clock rather than this one's.
+   */
+  readonly deletedAt: (table: string, key: string) => Stamp | undefined;
   /**
    * The ephemeral tier pinned to an instance (D16) — `mesh.presence("board:b1").cursor.set(…)`.
    * Values are signed, conflated at every hop, and never touch the log.

@@ -7,7 +7,7 @@ import type { HostMesh } from "./host.js";
 import type { CallAnswer, CallPath } from "./protocol.js";
 
 /**
- * The seven mesh methods a window may ask for by name, answered on the thread that has them.
+ * The eight mesh methods a window may ask for by name, answered on the thread that has them.
  *
  * Beside `host.ts` rather than inside it because this is the *vocabulary* and that is the
  * *machinery*: a method added here is a line, and `serveMesh` does not grow.
@@ -37,6 +37,9 @@ export const answer = async (
   if (path === "query") return (await mesh.query?.(first, absent<SqlValue[]>(second))) ?? [];
   if (path === "principal") return mesh.auth.principal();
   if (path === "self") return mesh.engine.peerId;
+  // the boolean rather than the stamp: a `Temporal.Instant` does not cross as itself, and neither
+  // half of the stamp is a window's to draw — see the `"deleted"` path in protocol.ts
+  if (path === "deleted") return mesh.deletedAt(first, second) !== undefined;
   if (path === "running") return mesh.running();
   if (path === "flush") await mesh.flush();
   if (path === "ready") await mesh.ready();

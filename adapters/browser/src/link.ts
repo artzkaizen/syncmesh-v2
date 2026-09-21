@@ -17,6 +17,16 @@ export interface MeshLink {
   readonly role: "leader" | "follower";
   /** The host went away (its tab closed). The link is dead; a new one must be asked for. */
   readonly onLost: (listener: () => void) => () => void;
+  /**
+   * Declare the host gone from this side, for the one observer that can see it go.
+   *
+   * The election is what *normally* knows, and it is the better witness — it learns from the lock
+   * rather than from a guess. But it is not the only one: a tab that connected to a worker already
+   * being torn down holds a port that will never answer and about which the election has nothing
+   * more to say, and the only party that can tell is the one waiting on it. Optional because a
+   * link that cannot die (a `MessageChannel` in a test) has nothing to declare.
+   */
+  readonly lost?: () => void;
   readonly close: () => void;
 }
 
