@@ -18,7 +18,6 @@ import { describe, expect, test } from "bun:test";
 import { gt } from "drizzle-orm";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { act, createElement, useEffect, useState } from "react";
-import { createRoot, type Root } from "react-dom/client";
 
 import type { OperationRecord } from "../use-operation.js";
 import type { QueryResult } from "../use-query.js";
@@ -28,6 +27,7 @@ import { useLiveQuery } from "../use-live-query.js";
 import { useOperation } from "../use-operation.js";
 import { usePresence } from "../use-presence.js";
 import { useQuery } from "../use-query.js";
+import { mount } from "./mount.js";
 
 const jobs = sqliteTable("jobs", {
   id: text().primaryKey(),
@@ -68,15 +68,6 @@ const open = async () => {
 };
 
 /** Mounts an element and returns the root plus a settle that flushes effects and async updates. */
-const mount = async (element: Parameters<Root["render"]>[0]) => {
-  const container = document.createElement("div");
-  const root = createRoot(container);
-  await act(async () => root.render(element));
-  const settle = () => act(async () => new Promise((resolve) => setTimeout(resolve, 15)));
-  await settle();
-  return { root, container, settle };
-};
-
 describe("useLiveQuery", () => {
   test("rows arrive, one render per change, none for an untouched result, and a changed filter re-subscribes", async () => {
     const { handle } = await open();

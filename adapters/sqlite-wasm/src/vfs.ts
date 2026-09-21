@@ -381,6 +381,54 @@ const fileOf = (name: string) => `${encodeURIComponent(name)}.db`;
  */
 const keepers = new Map<string, Database>();
 
+/**
+ * The durability settings, on a database that has just been opened and has done nothing else.
+ *
+ * **The same three every other adapter sets** — Bun, Node and Expo all write `WAL` and
+ * `synchronous = NORMAL` (RFC-0004) — because a store that is durable differently per runtime is
+ * a store whose failure modes are only ever exercised on one of them. The browser was the
+ * exception and this removes it.
+ *
+ * `locking_mode = exclusive` is what makes WAL possible here at all, and its position is not
+ * negotiable. The WASM build has no shared-memory APIs, so it cannot keep the WAL index that
+ * coordinates connections; exclusive locking removes the need for one, and SQLite requires it be
+ * set **immediately after opening, before anything else touches the handle** (supported since
+ * 3.47; this package is on 3.53). Unprefixed, it also covers databases attached later.
+ *
+ * It costs nothing that is used. One writer per origin is already this adapter's shape twice
+ * over: `opfs-sahpool` takes exclusive access handles for a whole directory, and the mesh elects
+ * a single worker to hold the engine — a second tab is refused by the VFS before any of this is
+ * reached, which is what {@link OpfsPoolHeld} exists to say.
+ *
+ * Memory databases are left alone: there is no file, so there is nothing to journal.
+ */
+const durably = (db: Database, storage: WasmStorage): Database => {
+  if (storage === "memory") return db;
+  db.exec("PRAGMA locking_mode = exclusive");
+  db.exec("PRAGMA journal_mode = WAL");
+  /**
+   * **`PRAGMA journal_mode` answers with the mode in effect, and does not fail.** A build or a VFS
+   * that will not take WAL leaves the database in `delete` and says so in a row nobody reads —
+   * which would make "WAL everywhere" a belief rather than a fact, on the one runtime where it is
+   * hardest to check.
+   *
+   * So it is read back, and a refusal undoes the exclusive locking that was only ever asked for
+   * to make WAL possible. Paying for a lock and not getting the journal is the one outcome with
+   * no argument for it.
+   */
+  const answered = db.exec({
+    sql: "PRAGMA journal_mode",
+    rowMode: "array",
+    returnValue: "resultRows",
+  });
+  // one row, one cell, and SQLite writes the mode in lower case — so anything that is not the
+  // string `wal` is this build declining, whatever else it turns out to be
+  const [mode] = answered[0] ?? [];
+  if (mode !== "wal") db.exec("PRAGMA locking_mode = normal");
+  db.exec("PRAGMA synchronous = NORMAL");
+  return db;
+};
+
 const memoryDatabase = (sqlite3: Sqlite3Static, options: VfsOptions): OpenedDatabase => {
   const uri = `file:/${fileOf(options.name)}?vfs=memdb`;
   if (!keepers.has(uri)) keepers.set(uri, new sqlite3.oo1.DB(uri, "c"));
@@ -413,7 +461,7 @@ const sahPoolDatabase = async (
   const directory = `${options.directory}/pool`;
   const held = await holdPool(install, directory, options);
   return held.map((pool) => ({
-    db: new pool.util.OpfsSAHPoolDb(`/${fileOf(options.name)}`),
+    db: durably(new pool.util.OpfsSAHPoolDb(`/${fileOf(options.name)}`), "opfs-sahpool"),
     storage: "opfs-sahpool" as const,
     release: releaseOnce(pool, directory),
   }));
@@ -425,7 +473,7 @@ const opfsDatabaseIn = (
 ): Result<OpenedDatabase, OpfsUnavailable> =>
   Result.try({
     try: () => ({
-      db: new OpfsDb(`${options.directory}/db/${fileOf(options.name)}`, "c"),
+      db: durably(new OpfsDb(`${options.directory}/db/${fileOf(options.name)}`, "c"), "opfs"),
       storage: "opfs" as const,
       release: () => {},
     }),
