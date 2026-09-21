@@ -64,7 +64,9 @@ export function operationOf(
   dialect: "sqlite" | "postgres" = "sqlite",
 ): SQL<string | null> {
   const name = getTableName(table);
-  const ledger = dialect === "postgres" ? "syncmesh.operations" : "syncmesh_operations";
+  // the ledger is durable, so it lives in the log — spelled the same on both dialects:
+  // a schema on Postgres, an attached database on SQLite (RFC-0022)
+  const ledger = "syncmesh.operations";
   const correlated = sql.raw(
     operationOfSql(name, `${quoteIdent(name)}.${quoteIdent(primaryKeyOf(table))}`, ledger, dialect),
   );

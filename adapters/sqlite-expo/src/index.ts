@@ -2,7 +2,7 @@ import type { StoreFailure } from "@syncmesh/engine";
 import type { Result } from "@syncmesh/result";
 import type { OpenStoresOptions, SqliteDriver, StoreLocked, Stores } from "@syncmesh/storage";
 
-import { acquireStoreLock, openStores } from "@syncmesh/storage";
+import { acquireStoreLock, attachLog, logPathFor, openStores } from "@syncmesh/storage";
 import { openDatabaseSync } from "expo-sqlite";
 
 import type { ExpoDatabase } from "./driver.js";
@@ -61,7 +61,10 @@ export async function defaultStore(
     close: () => lockDb.closeSync(),
   });
   if (lock.isErr()) return lock;
-  const stores = await openStores(expoSqliteDriver(path), options);
+  // the state file is `main`; the log is attached beside it, and the lock above covers both
+  const driver = expoSqliteDriver(path);
+  await attachLog(driver, logPathFor(path));
+  const stores = await openStores(driver, options);
   if (stores.isErr()) {
     lock.value.release();
     return stores;

@@ -1,13 +1,10 @@
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
-import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-
-import type { SqlRow } from "../driver.js";
 
 import { operationStore } from "../operation-store.js";
 import { inTransaction } from "../sql.js";
-import { sqliteDriver } from "../sqlite-driver.js";
+import { openPair } from "./pair.js";
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- test fixtures */
 const A = "a".repeat(64) as PeerId;
@@ -16,14 +13,7 @@ const seq = (n: number) => n as SeqNum;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 
 const open = async () => {
-  const db = new Database(":memory:", { strict: true });
-  const driver = sqliteDriver({
-    exec: (sql) => db.run(sql),
-    run: (sql, params) => void db.run(sql, [...params]),
-    // SAFETY: SQLite hands back exactly SqlValue shapes
-    all: (sql, params) => db.query(sql).values(...params) as readonly SqlRow[],
-    close: () => db.close(),
-  });
+  const driver = await openPair();
   return { driver, store: (await operationStore(driver)).unwrap() };
 };
 

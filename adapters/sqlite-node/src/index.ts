@@ -8,7 +8,13 @@ import type {
   Stores,
 } from "@syncmesh/storage";
 
-import { acquireStoreLock, openStores, sqliteDriver } from "@syncmesh/storage";
+import {
+  ATTACHED_LOG,
+  acquireStoreLock,
+  logPathFor,
+  openStores,
+  sqliteDriver,
+} from "@syncmesh/storage";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -22,6 +28,11 @@ export function nodeSqliteDriver(path: string): SqliteDriver {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA synchronous = NORMAL");
+  // a store is two files: this one holds the app's tables and the projection, and the durable log
+  // is attached beside it as `syncmesh` (RFC-0022)
+  db.prepare(`ATTACH DATABASE ? AS ${ATTACHED_LOG}`).run(
+    path === ":memory:" ? ":memory:" : logPathFor(path),
+  );
 
   return sqliteDriver({
     exec: (sql) => db.exec(sql),
@@ -64,7 +75,9 @@ export async function defaultStore(
     close: () => lockDb.close(),
   });
   if (lock.isErr()) return lock;
-  const stores = await openStores(nodeSqliteDriver(path), options);
+  // the state file is `main`; the log is attached beside it, and the lock above covers both
+  const driver = nodeSqliteDriver(path);
+  const stores = await openStores(driver, options);
   if (stores.isErr()) {
     lock.value.release();
     return stores;

@@ -6,7 +6,7 @@ import { bytesToHex } from "@syncmesh/wire";
 
 import type { SqlDriver } from "./driver.js";
 
-import { dialectOf, engineTable, namespaceDdl } from "./dialect.js";
+import { dialectOf, logTable, namespaceDdl } from "./dialect.js";
 import { attempt } from "./sql.js";
 
 /**
@@ -103,7 +103,7 @@ export function memoryBlobStore(): BlobStore {
  */
 export function sqlBlobStore(driver: SqlDriver): Promise<Result<BlobStore, BlobError>> {
   const { placeholder: p, name: dialect } = dialectOf(driver);
-  const TABLE = engineTable("blobs", dialect);
+  const TABLE = logTable("blobs");
   const bytes = driver.dialect === "postgres" ? "BYTEA" : "BLOB";
   // a put is idempotent because the name is the content: the second one has nothing to change
   const insert =

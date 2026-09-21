@@ -256,22 +256,24 @@ writing down rather than papering over with a lowest-common-denominator design.
    compaction time would make the state file disposable again on an old device. It duplicates
    every row it covers, which is why it is worth having only if the schema-change story turns out
    to matter more than the disk.
-3. **Split the stores into two files — not started, and the cost is a migration design.**
+3. ✅ **Split the stores into two files.** `<name>.db` is `main` and holds the app's own tables,
+   their capture triggers and the projection; `<name>.db.log` is attached as `syncmesh` and holds
+   the durable half. Each adapter opens the pair, because each knows its own paths and its own
+   VFS — and on OPFS the VFS has to be named in the attach URI or the file silently opens
+   non-persistent. `openStores` refuses a connection without it rather than failing later at the
+   first query that does not resolve.
 
-   On SQLite a second file means `ATTACH`, which renames *every* table in the attached one, so the
-   log's SQL has to be built per layout: `SQLITE` is a module-level constant with 37 table names
-   baked into template literals, and it would become a function of where the log lives.
+   The `user_version` worry was mine and wrong: `PRAGMA syncmesh.user_version` is a property of
+   the attached file and persists with it, so each half is versioned by the file it lives in.
+   Two ladders, one step each, no history to walk — nothing has shipped.
 
-   The harder half is the ladder. `SQLITE_MIGRATIONS` is keyed on `PRAGMA user_version` of `main`,
-   and `main` would be the *state* file while the migrations it gates are the *log's* — one
-   counter tracking two schemas with two histories. A split database and a single-file one would
-   also be two shapes to migrate between, on devices nobody can inspect.
+   `logPathFor` and `storeFilesFor` are the only places that know a store is two files. A test
+   caught what that is for: leaving an org deleted the state file and the **log survived**, so
+   rejoining found every event still there. `StoreScope` exists so that forgetting is a file
+   deletion; with two files it is two, and saying so in one function is the difference.
 
-   None of that is unreasonable work. It is simply larger than the prizes left after the premise
-   correction above: the namespace is already done in one file, and a cheaper `VACUUM` and a
-   smaller backup do not pay for a migration design on the write path.
-
-4. **Hash the manifest into the state filename** — depends on 3, and on `refoldable` being true.
+4. **Hash the manifest into the state filename** — depends on `refoldable` being true, so it is
+   only offered to a device that has never compacted.
 5. **Blobs behind their own `BlobStore`**, with irreplaceable bytes distinguished from cache. The
    one remaining piece that is additive rather than a migration, and the only one that can be
    built without 3.

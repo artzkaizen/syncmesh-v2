@@ -1,14 +1,15 @@
-import type { EventStore, StateStore, StoreFailure } from "@syncmesh/engine";
+import type { EventStore, StateStore } from "@syncmesh/engine";
 import type { PartitionKey } from "@syncmesh/kernel";
 import type { Table } from "@syncmesh/schema";
 
+import { StoreFailure } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
 
 import type { SqlDriver } from "./driver.js";
 import type { ProjectionOptions } from "./projection.js";
 
 import { captureDdlFor, installCapture } from "./capture.js";
-import { dialectOf } from "./dialect.js";
+import { ATTACHED_LOG, dialectOf } from "./dialect.js";
 import { sqlEventStore } from "./event-store.js";
 import { tablesProjection } from "./projection.js";
 import { rowSyncDdlFor, rowSyncTable, type RowSync } from "./row-sync.js";
@@ -77,11 +78,62 @@ const installed = (
   });
 };
 
+/**
+ * Attaches the log file under the name its tables are written against.
+ *
+ * **The connection's owner does this, not `openStores`**, because the paths are the opener's:
+ * an adapter knows where its files go, a test knows it wants two in memory, and a driver handed
+ * in from outside may have been opened by somebody with their own arrangement. What `openStores`
+ * does is refuse to proceed without it, so a missing attach fails at the open rather than at the
+ * first query against a table that does not resolve.
+ *
+ * `:memory:` is a real answer here — it gives a second, private in-memory database — and is what
+ * a test wants when it is not testing durability.
+ */
+/**
+ * Where one store's log lives, given where its derived half does.
+ *
+ * **A store is two files now, and this is the only place that says so.** Everything that treats
+ * a scope as a unit has to agree: the opener attaches both, and whoever forgets a scope deletes
+ * both. `StoreScope` exists so that leaving an org is a file deletion and nothing of another org
+ * can be caught in it — and a caller that deleted only the first would leave the log behind, with
+ * every event still in it, to be found again on the next join.
+ */
+export const logPathFor = (statePath: string): string => `${statePath}.log`;
+
+/** Both files of one store, for a caller that has to delete or copy the set. */
+export const storeFilesFor = (statePath: string): readonly string[] => [
+  statePath,
+  logPathFor(statePath),
+];
+
+export const attachLog = (driver: SqlDriver, path: string): Promise<void> =>
+  driver.run(`ATTACH DATABASE ? AS ${ATTACHED_LOG}`, [path]);
+
+/**
+ * Whether this connection has the log attached; `openStores` will not open a store without it.
+ *
+ * Through `attempt`, because a driver that cannot answer is a store failure like any other — a
+ * bare `await` here would throw out of the `Result.gen` below and surface as a panic instead of
+ * the reason the disk gave.
+ */
+const logAttached = (driver: SqlDriver): Promise<Result<boolean, StoreFailure>> =>
+  attempt("could not read the attached databases", async () =>
+    (await driver.all("PRAGMA database_list")).some((row) => String(row[1]) === ATTACHED_LOG),
+  );
+
 export function openStores(
   driver: SqlDriver,
   options: OpenStoresOptions = {},
 ): Promise<Result<Stores, StoreFailure>> {
   return Result.gen(async function* () {
+    if (driver.dialect !== "postgres" && !(yield* Result.await(logAttached(driver)))) {
+      return Result.err(
+        new StoreFailure({
+          message: `the log is not attached as \`${ATTACHED_LOG}\` — call attachLog(driver, path) on this connection first`,
+        }),
+      );
+    }
     const events = yield* Result.await(sqlEventStore(driver));
     const stateOptions = {};
     let rowSync: RowSync | undefined;

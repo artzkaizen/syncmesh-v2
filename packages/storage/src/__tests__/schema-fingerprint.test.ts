@@ -1,11 +1,10 @@
 import { syncSchema, t } from "@syncmesh/schema";
-import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 
-import type { SqlDriver, SqlRow, SqlValue, SqliteDriver } from "../driver.js";
+import type { SqlDriver, SqlRow, SqlValue } from "../driver.js";
 
 import { openStores } from "../open-stores.js";
-import { sqliteDriver } from "../sqlite-driver.js";
+import { openPair } from "./pair.js";
 
 /**
  * Opening a database that has not changed installs nothing.
@@ -41,17 +40,6 @@ const wider = syncSchema({
   },
 });
 
-const inMemory = (): SqliteDriver => {
-  const db = new Database(":memory:", { create: true, strict: true });
-  return sqliteDriver({
-    exec: (sql) => db.run(sql),
-    run: (sql, params) => void db.run(sql, [...params]),
-    // SAFETY: SQLite hands back text, integers, reals, blobs and NULL — exactly SqlValue
-    all: (sql, params) => db.query(sql).values(...params) as readonly SqlRow[],
-    close: () => db.close(),
-  });
-};
-
 /** The same driver, counting the statements that reach it. */
 const counting = (inner: SqlDriver) => {
   const ran: string[] = [];
@@ -69,7 +57,7 @@ const counting = (inner: SqlDriver) => {
 
 describe("the app schema is installed once, not once per launch", () => {
   test("a second open of an unchanged database runs one statement instead of forty", async () => {
-    const file = inMemory();
+    const file = await openPair();
     const counted = counting(file);
     const tables = schema.entries.map((entry) => entry.table);
 
@@ -84,7 +72,7 @@ describe("the app schema is installed once, not once per launch", () => {
   });
 
   test("a changed manifest is installed again, with no version for anyone to bump", async () => {
-    const file = inMemory();
+    const file = await openPair();
     const counted = counting(file);
 
     (await openStores(counted.driver, { tables: schema.entries.map((e) => e.table) })).unwrap();

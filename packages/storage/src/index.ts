@@ -43,7 +43,14 @@ export type {
   StoreScope,
   Stores,
 } from "./open-stores.js";
-export { openStores, scopedStores, storeNameFor } from "./open-stores.js";
+export {
+  attachLog,
+  logPathFor,
+  openStores,
+  scopedStores,
+  storeFilesFor,
+  storeNameFor,
+} from "./open-stores.js";
 export { DetachRefused, detachScope } from "./detach.js";
 export type { RowSync } from "./row-sync.js";
 export {
@@ -87,4 +94,4 @@ export type {
 } from "./writer.js";
 export { createWriter } from "./writer.js";
 
-export { LOG_TABLES, STATE_TABLES } from "./dialect.js";
+export { ATTACHED_LOG, LOG_TABLES, STATE_TABLES, logTable, stateTable } from "./dialect.js";

@@ -1,16 +1,16 @@
 import { parsePartitionKey } from "@syncmesh/kernel";
-import { Database } from "bun:sqlite";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { SqlRow, SqliteDriver } from "../driver.js";
+import type { SqliteDriver } from "../driver.js";
 import type { StoreScope } from "../open-stores.js";
 
 import { A, B, event } from "../driver-tests/fixtures.js";
 import { scopedStores, storeNameFor } from "../open-stores.js";
-import { sqliteDriver } from "../sqlite-driver.js";
+import { storeFilesFor } from "../open-stores.js";
+import { openPair } from "./pair.js";
 
 const ACME = parsePartitionKey("org:acme").unwrap();
 const GLOBEX = parsePartitionKey("org:globex").unwrap();
@@ -18,16 +18,8 @@ const GLOBEX = parsePartitionKey("org:globex").unwrap();
 const dir = mkdtempSync(join(tmpdir(), "syncmesh-scopes-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-const driver = (path: string): SqliteDriver => {
-  const db = new Database(path, { create: true, strict: true });
-  return sqliteDriver({
-    exec: (sql) => db.run(sql),
-    run: (sql, params) => void db.run(sql, [...params]),
-    // SAFETY: SQLite hands back text, integers, reals, blobs and NULL — exactly SqlValue
-    all: (sql, params) => db.query(sql).values(...params) as readonly SqlRow[],
-    close: () => db.close(),
-  });
-};
+// one pair per scope: the state file at `path`, its log beside it as `<path>.log`
+const driver = (path: string): Promise<SqliteDriver> => openPair(path);
 
 const pathFor = (scope: StoreScope) => join(dir, `${storeNameFor(scope)}.db`);
 const set = scopedStores({ driverFor: (scope) => driver(pathFor(scope)) });
@@ -63,7 +55,9 @@ describe("one engine's storage per scope", () => {
     await storesFor(ACME);
     await storesFor(GLOBEX);
     await set.forget(ACME);
-    unlinkSync(pathFor(ACME));
+    // both files, because a store is two now and the log is the half that holds the events —
+    // deleting only the first leaves every one of them to be found again on the next join
+    for (const file of storeFilesFor(pathFor(ACME))) unlinkSync(file);
 
     expect(set.opened()).toEqual([GLOBEX]);
     expect(existsSync(pathFor(ACME))).toBe(false);

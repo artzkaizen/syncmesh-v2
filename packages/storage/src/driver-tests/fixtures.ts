@@ -125,10 +125,12 @@ export const sqlOf = (driver: { readonly dialect?: "sqlite" | "postgres" }) =>
         junk: "'\\x00'::bytea",
       }
     : {
-        events: "syncmesh_events",
+        // the durable half is an attached database on SQLite and a schema on Postgres, so it is
+        // spelled the same either way; only the derived half differs (RFC-0022)
+        events: "syncmesh.events",
         changes: "syncmesh_changes",
         rows: "syncmesh_state_rows",
-        compaction: "syncmesh_compaction",
+        compaction: "syncmesh.compaction",
         junk: "X'00'",
       };
 

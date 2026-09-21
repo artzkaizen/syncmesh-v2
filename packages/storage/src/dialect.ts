@@ -65,17 +65,41 @@ export interface StateSql {
  * decoder reads it back.
  */
 /**
- * The engine's namespace, spelled the way each dialect can spell it.
+ * Where the log lives, and therefore how its tables are spelled.
  *
- * Postgres has real schemas, so everything the engine owns goes in `syncmesh` and an app's own
- * `events` table can never collide with ours. SQLite has none — `ATTACH` is the nearest thing and
- * it means a second file (RFC-0022) — so the same namespace is a `syncmesh_` prefix in the one
- * file. One word either way, which is what a person has to remember; the separator is whatever
- * the dialect can express.
+ * SQLite has no schemas, so the log is a **second file attached under the name `syncmesh`** —
+ * which is the one mechanism that gives real `syncmesh.events` there, and the reason the durable
+ * half can be backed up, vacuumed and reasoned about on its own (RFC-0022). Postgres has one
+ * database and one `CREATE SCHEMA syncmesh`, so both halves already live under that name.
  *
- * The leading underscore half of these carried is gone. It said "internal" to a reader and
- * nothing at all to the database, while the other half carried no prefix and could collide.
+ * The derived half is whatever the connection opened as `main`, because the app's own tables are
+ * there and must stay unqualified: every Drizzle query in every procedure names them directly,
+ * and a trigger cannot write across an attached database anyway. So the engine's derived tables
+ * share `main` with the app's and take a `syncmesh_` prefix to stay out of their way.
  */
+export const ATTACHED_LOG = "syncmesh";
+
+/**
+ * A durable table: the log's own. `syncmesh.events` on both dialects — an attached database on
+ * SQLite, a schema on Postgres — because the durable half is the half that is named the same
+ * everywhere, and a reader should not have to know which mechanism is underneath.
+ */
+export const logTable = (name: string): string => `${ATTACHED_LOG}.${name}`;
+
+/**
+ * A derived table: rebuilt by folding the log, up to a compaction floor (see `refoldable`).
+ *
+ * `syncmesh.state_rows` on Postgres, where one schema holds both halves; `syncmesh_state_rows` on
+ * SQLite, where this half shares `main` with the app's own tables and a prefix is the only
+ * separator available.
+ */
+export const stateTable = (name: string, dialect: SqlDialect = "sqlite"): string =>
+  dialect === "postgres" ? `${ATTACHED_LOG}.${name}` : `${ATTACHED_LOG}_${name}`;
+
+/** @deprecated Say which half it is: {@link logTable} or {@link stateTable}. */
+export const engineTable = (name: string, dialect: SqlDialect = "sqlite"): string =>
+  stateTable(name, dialect);
+
 /**
  * Making the namespace, for a dialect that has one to make.
  *
@@ -135,9 +159,6 @@ export const STATE_TABLES = [
   "changes",
   "capture",
 ] as const;
-
-export const engineTable = (name: string, dialect: SqlDialect = "sqlite"): string =>
-  dialect === "postgres" ? `syncmesh.${name}` : `syncmesh_${name}`;
 
 /**
  * The one row that records which app schema this database was last opened with.

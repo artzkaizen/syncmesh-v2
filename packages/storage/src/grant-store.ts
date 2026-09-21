@@ -5,7 +5,7 @@ import { Result } from "@syncmesh/result";
 
 import type { SqlDriver } from "./driver.js";
 
-import { dialectOf, engineTable, namespaceDdl } from "./dialect.js";
+import { dialectOf, logTable, namespaceDdl } from "./dialect.js";
 import { attempt } from "./sql.js";
 
 /**
@@ -43,7 +43,7 @@ export function memoryGrantStore(): GrantStore {
 /** The grants in the database the rest of the mesh already uses. The table is the mesh's own. */
 export function sqlGrantStore(driver: SqlDriver): Promise<Result<GrantStore, StoreFailure>> {
   const { placeholder: p, name: dialect } = dialectOf(driver);
-  const TABLE = engineTable("grants", dialect);
+  const TABLE = logTable("grants");
   const bytes = driver.dialect === "postgres" ? "BYTEA" : "BLOB";
   // keyed by device, so the upsert is how a re-issued grant supersedes the one before it
   const upsert =

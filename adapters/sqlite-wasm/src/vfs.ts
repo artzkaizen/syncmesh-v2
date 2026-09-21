@@ -145,7 +145,7 @@ const NOT_A_WORKER =
  * Note what their presence does **not** tell you: `installOpfsSAHPoolVfs` is a function in a
  * window too. It is defined by the build, not by the thread, and only rejects once called.
  */
-interface OptionalVfs {
+export interface OptionalVfs {
   readonly installOpfsSAHPoolVfs?: Sqlite3Static["installOpfsSAHPoolVfs"];
   readonly oo1: { readonly OpfsDb?: Sqlite3Static["oo1"]["OpfsDb"] };
 }
@@ -154,7 +154,7 @@ const sahPoolInstaller = (sqlite3: OptionalVfs) => sqlite3.installOpfsSAHPoolVfs
 const opfsDbClass = (sqlite3: OptionalVfs) => sqlite3.oo1.OpfsDb;
 
 /** A pool and how many databases opened on it are still open; at zero the access handles go back. */
-interface HeldPool {
+export interface HeldPool {
   readonly util: SAHPoolUtil;
   open: number;
 }
@@ -236,7 +236,7 @@ const takeLease = async (
   return Result.ok(undefined);
 };
 
-const dropLease = (directory: string) => {
+export const dropLease = (directory: string) => {
   leases.get(directory)?.release();
   leases.delete(directory);
 };
@@ -314,7 +314,7 @@ const installPool = async (
  * blocking every other browsing context of the origin; `unpauseVfs` takes them back, which is why
  * an open is async on a path that looks synchronous.
  */
-async function holdPool(
+export async function holdPool(
   install: NonNullable<OptionalVfs["installOpfsSAHPoolVfs"]>,
   directory: string,
   options: VfsOptions,
@@ -368,118 +368,6 @@ export interface VfsOptions {
 }
 
 /** Names go in a path and come from partition ids, which hold characters a path does not. */
-const fileOf = (name: string) => `${encodeURIComponent(name)}.db`;
-
-/**
- * One idle connection per memory database, never closed.
- *
- * `memdb` frees a database when its last connection goes, and `:memory:` does not even get that
- * far — it is private to one connection. Both would make a close-and-reopen of the same name lose
- * everything, which is not what "memory" is promising: it promises the life of the thread, and a
- * store closed and reopened between two screens is the same thread. This is what holds the pages
- * for that long, and no longer.
- */
-const keepers = new Map<string, Database>();
-
-/**
- * The durability settings, on a database that has just been opened and has done nothing else.
- *
- * **The same three every other adapter sets** — Bun, Node and Expo all write `WAL` and
- * `synchronous = NORMAL` (RFC-0004) — because a store that is durable differently per runtime is
- * a store whose failure modes are only ever exercised on one of them. The browser was the
- * exception and this removes it.
- *
- * `locking_mode = exclusive` is what makes WAL possible here at all, and its position is not
- * negotiable. The WASM build has no shared-memory APIs, so it cannot keep the WAL index that
- * coordinates connections; exclusive locking removes the need for one, and SQLite requires it be
- * set **immediately after opening, before anything else touches the handle** (supported since
- * 3.47; this package is on 3.53). Unprefixed, it also covers databases attached later.
- *
- * It costs nothing that is used. One writer per origin is already this adapter's shape twice
- * over: `opfs-sahpool` takes exclusive access handles for a whole directory, and the mesh elects
- * a single worker to hold the engine — a second tab is refused by the VFS before any of this is
- * reached, which is what {@link OpfsPoolHeld} exists to say.
- *
- * Memory databases are left alone: there is no file, so there is nothing to journal.
- */
-const durably = (db: Database, storage: WasmStorage): Database => {
-  if (storage === "memory") return db;
-  db.exec("PRAGMA locking_mode = exclusive");
-  db.exec("PRAGMA journal_mode = WAL");
-  /**
-   * **`PRAGMA journal_mode` answers with the mode in effect, and does not fail.** A build or a VFS
-   * that will not take WAL leaves the database in `delete` and says so in a row nobody reads —
-   * which would make "WAL everywhere" a belief rather than a fact, on the one runtime where it is
-   * hardest to check.
-   *
-   * So it is read back, and a refusal undoes the exclusive locking that was only ever asked for
-   * to make WAL possible. Paying for a lock and not getting the journal is the one outcome with
-   * no argument for it.
-   */
-  const answered = db.exec({
-    sql: "PRAGMA journal_mode",
-    rowMode: "array",
-    returnValue: "resultRows",
-  });
-  // one row, one cell, and SQLite writes the mode in lower case — so anything that is not the
-  // string `wal` is this build declining, whatever else it turns out to be
-  const [mode] = answered[0] ?? [];
-  if (mode !== "wal") db.exec("PRAGMA locking_mode = normal");
-  db.exec("PRAGMA synchronous = NORMAL");
-  return db;
-};
-
-const memoryDatabase = (sqlite3: Sqlite3Static, options: VfsOptions): OpenedDatabase => {
-  const uri = `file:/${fileOf(options.name)}?vfs=memdb`;
-  if (!keepers.has(uri)) keepers.set(uri, new sqlite3.oo1.DB(uri, "c"));
-  return { db: new sqlite3.oo1.DB(uri, "c"), storage: "memory", release: () => {} };
-};
-
-/**
- * Closing twice is not an error anywhere else in the port, and must not double-drop the pool here.
- *
- * At zero the access handles and the lease go back together, in that order. They are the same
- * claim said twice — one to SQLite, one to every other tab — and a lease outliving the handles
- * would lock out a context that could have had them.
- */
-function releaseOnce(pool: HeldPool, directory: string): () => void {
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    pool.open -= 1;
-    if (pool.open > 0) return;
-    pool.util.pauseVfs();
-    dropLease(directory);
-  };
-}
-
-const sahPoolDatabase = async (
-  install: NonNullable<OptionalVfs["installOpfsSAHPoolVfs"]>,
-  options: VfsOptions,
-): Promise<Result<OpenedDatabase, PoolFailure>> => {
-  const directory = `${options.directory}/pool`;
-  const held = await holdPool(install, directory, options);
-  return held.map((pool) => ({
-    db: durably(new pool.util.OpfsSAHPoolDb(`/${fileOf(options.name)}`), "opfs-sahpool"),
-    storage: "opfs-sahpool" as const,
-    release: releaseOnce(pool, directory),
-  }));
-};
-
-const opfsDatabaseIn = (
-  OpfsDb: NonNullable<OptionalVfs["oo1"]["OpfsDb"]>,
-  options: VfsOptions,
-): Result<OpenedDatabase, OpfsUnavailable> =>
-  Result.try({
-    try: () => ({
-      db: durably(new OpfsDb(`${options.directory}/db/${fileOf(options.name)}`, "c"), "opfs"),
-      storage: "opfs" as const,
-      release: () => {},
-    }),
-    catch: (cause) => new OpfsUnavailable({ requested: "opfs", cause }),
-  });
-
 const refuse = (requested: Exclude<WasmStorage, "memory">) =>
   Promise.resolve(Result.err(new OpfsUnavailable({ requested, message: NOT_A_WORKER })));
 
@@ -495,6 +383,8 @@ const refuse = (requested: Exclude<WasmStorage, "memory">) =>
  * while the older VFS also needs COOP/COEP — and a thread that has both and still cannot open the
  * pool gets an error, not a silent memory database.
  */
+import { memoryDatabase, opfsDatabaseIn, sahPoolDatabase } from "./databases.js";
+
 export function openDatabase(
   sqlite3: Sqlite3Static,
   storage: WasmStorage | "auto",

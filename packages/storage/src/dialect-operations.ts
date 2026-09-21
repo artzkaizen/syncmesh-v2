@@ -3,13 +3,13 @@ import type { OperationSql } from "./dialect.js";
 /*
  * The write ledger's statements, one set per dialect (book ch. 10). SQLite keeps the short
  * One namespace, spelled the way each dialect can spell it: `syncmesh.operations` in a real
- * schema on Postgres, `syncmesh_operations` in the one file SQLite has. Same shapes, same column
+ * schema on Postgres, `syncmesh.operations` in the one file SQLite has. Same shapes, same column
  * order, so one decoder reads both.
  */
 
 export const SQLITE_OPERATIONS: OperationSql = {
   ddl: [
-    `CREATE TABLE IF NOT EXISTS syncmesh_operations (
+    `CREATE TABLE IF NOT EXISTS syncmesh.operations (
       id TEXT PRIMARY KEY,
       peer TEXT NOT NULL,
       seq INTEGER NOT NULL,
@@ -21,8 +21,10 @@ export const SQLITE_OPERATIONS: OperationSql = {
       corrected_by TEXT,
       corrected_reason TEXT
     )`,
-    `CREATE UNIQUE INDEX IF NOT EXISTS syncmesh_operations_event ON syncmesh_operations (peer, seq)`,
-    `CREATE TABLE IF NOT EXISTS syncmesh_receipts (
+    // the schema qualifies the index name and the table is unqualified: an index lives in its
+    // table's database, so SQLite treats naming both as a syntax error
+    `CREATE UNIQUE INDEX IF NOT EXISTS syncmesh.operations_event ON operations (peer, seq)`,
+    `CREATE TABLE IF NOT EXISTS syncmesh.receipts (
       peer TEXT NOT NULL,
       seq INTEGER NOT NULL,
       holder TEXT NOT NULL,
@@ -30,20 +32,20 @@ export const SQLITE_OPERATIONS: OperationSql = {
       PRIMARY KEY (peer, seq, holder)
     )`,
   ],
-  insertOp: `INSERT INTO syncmesh_operations (id, peer, seq, label, at_ms, hlc_ms, hlc_logical, status)
+  insertOp: `INSERT INTO syncmesh.operations (id, peer, seq, label, at_ms, hlc_ms, hlc_logical, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   selectOp: `SELECT id, peer, seq, label, at_ms, status, corrected_by, corrected_reason
-    FROM syncmesh_operations WHERE id = ?`,
+    FROM syncmesh.operations WHERE id = ?`,
   selectOpByEvent: `SELECT id, peer, seq, label, at_ms, status, corrected_by, corrected_reason
-    FROM syncmesh_operations WHERE peer = ? AND seq = ?`,
+    FROM syncmesh.operations WHERE peer = ? AND seq = ?`,
   selectUnsettled: `SELECT o.id, o.peer, o.seq, o.label, o.at_ms, o.status, o.corrected_by, o.corrected_reason
-    FROM syncmesh_operations o LEFT JOIN syncmesh_receipts r ON r.peer = o.peer AND r.seq = o.seq
+    FROM syncmesh.operations o LEFT JOIN syncmesh.receipts r ON r.peer = o.peer AND r.seq = o.seq
     WHERE r.peer IS NULL ORDER BY o.at_ms, o.seq`,
-  markCorrected: `UPDATE syncmesh_operations SET status = 'superseded', corrected_by = ?, corrected_reason = ?
+  markCorrected: `UPDATE syncmesh.operations SET status = 'superseded', corrected_by = ?, corrected_reason = ?
     WHERE peer = ? AND seq = ?`,
-  insertReceiptsThrough: `INSERT OR IGNORE INTO syncmesh_receipts (peer, seq, holder, at_ms)
-    SELECT peer, seq, ?, ? FROM syncmesh_operations WHERE peer = ? AND seq <= ?`,
-  selectReceipts: `SELECT holder, at_ms FROM syncmesh_receipts WHERE peer = ? AND seq = ? ORDER BY at_ms, holder`,
+  insertReceiptsThrough: `INSERT OR IGNORE INTO syncmesh.receipts (peer, seq, holder, at_ms)
+    SELECT peer, seq, ?, ? FROM syncmesh.operations WHERE peer = ? AND seq <= ?`,
+  selectReceipts: `SELECT holder, at_ms FROM syncmesh.receipts WHERE peer = ? AND seq = ? ORDER BY at_ms, holder`,
 };
 
 export const POSTGRES_OPERATIONS: OperationSql = {

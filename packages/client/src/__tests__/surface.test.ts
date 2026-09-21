@@ -88,7 +88,7 @@ describe("mesh.schema — the manifest, enumerable", () => {
 describe("mesh.query — the door that cannot write", () => {
   test("reads, and has no `run` beside it to reach for", async () => {
     const mesh = await open();
-    const rows = await mesh.query!("SELECT COUNT(*) FROM syncmesh_events");
+    const rows = await mesh.query!("SELECT COUNT(*) FROM syncmesh.events");
 
     expect(rows[0]?.[0]).toBe(0);
     // the shape is the design: the only SQL door that authors events is `mesh.on().db`, whose

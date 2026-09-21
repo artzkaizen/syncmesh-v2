@@ -15,6 +15,7 @@ import { wasmSqliteDriver } from "../index.js";
  * this repository. They need a browser runner.
  */
 describe("sqlite-wasm passes the driver contract", () => {
+  // the adapter opens the pair itself, as every other one does
   for (const c of driverTests(async (name) =>
     (await wasmSqliteDriver({ name, storage: "memory" })).unwrap(),
   ))

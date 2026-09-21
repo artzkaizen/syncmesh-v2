@@ -1,13 +1,10 @@
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { encodeEventCore } from "@syncmesh/wire";
-import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-
-import type { SqlRow } from "../driver.js";
 
 import { A, B, entry, hlc } from "../driver-tests/fixtures.js";
 import { sqlEventStore } from "../event-store.js";
-import { sqliteDriver } from "../sqlite-driver.js";
+import { openPair } from "./pair.js";
 
 /**
  * The one statement per dialect behind `Engine.recentEvents`, over real SQL (gap 1).
@@ -21,14 +18,7 @@ import { sqliteDriver } from "../sqlite-driver.js";
 const ACME = parsePartitionKey("org:acme").unwrap();
 
 const open = async () => {
-  const db = new Database(":memory:", { strict: true });
-  const driver = sqliteDriver({
-    exec: (sql) => db.run(sql),
-    run: (sql, params) => void db.run(sql, [...params]),
-    // SAFETY: SQLite hands back exactly SqlValue shapes
-    all: (sql, params) => db.query(sql).values(...params) as readonly SqlRow[],
-    close: () => db.close(),
-  });
+  const driver = await openPair();
   return (await sqlEventStore(driver)).unwrap();
 };
 

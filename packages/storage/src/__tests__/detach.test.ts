@@ -1,20 +1,18 @@
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
 import { parsePartitionKey } from "@syncmesh/kernel";
-import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { SqlRow } from "../driver.js";
 import type { StoreScope } from "../open-stores.js";
 
 import { sweepBudget } from "../budget.js";
 import { detachScope } from "../detach.js";
 import { scopedStores, storeNameFor } from "../open-stores.js";
 import { operationStore } from "../operation-store.js";
-import { sqliteDriver } from "../sqlite-driver.js";
+import { openPair } from "./pair.js";
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- test fixtures */
 const A = "a".repeat(64) as PeerId;
@@ -24,16 +22,7 @@ const seq = (n: number) => n as SeqNum;
 
 const ORG = parsePartitionKey("org:acme").unwrap();
 
-const fileDriver = (path: string) => {
-  const db = new Database(path, { create: true, strict: true });
-  return sqliteDriver({
-    exec: (sql) => db.run(sql),
-    run: (sql, params) => void db.run(sql, [...params]),
-    // SAFETY: SQLite hands back exactly SqlValue shapes
-    all: (sql, params) => db.query(sql).values(...params) as readonly SqlRow[],
-    close: () => db.close(),
-  });
-};
+const fileDriver = (path: string) => openPair(path);
 
 describe("detach — a partition leaves whole, or not at all", () => {
   test("unsent intent refuses; a receipt clears it; the file is gone after", async () => {
