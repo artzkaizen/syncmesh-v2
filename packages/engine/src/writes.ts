@@ -117,10 +117,22 @@ export function createWritePath(deps: WriteDeps) {
                 mutateOptions,
               );
               (await scoped.events.append({ event })).unwrap();
+              /**
+               * **The ledger row belongs to the durable half, so it lands with the event.**
+               *
+               * It used to be written after `persist`, which was harmless while one transaction
+               * covered both — and is not, the moment the log and the derived state can commit
+               * separately (RFC-0022). A tear there left a write that happened with no record
+               * that it had been started, which is the one thing the record exists to prevent:
+               * its `id` is minted *before* the commit so an interrupted caller can find it.
+               *
+               * Above `persist` rather than below, and that is the whole ordering rule: whatever
+               * cannot be recomputed goes first, whatever can goes second, and a crash between
+               * them costs a replay rather than a fact.
+               */
+              await mutateOptions.record?.(event);
               const folded = fold([{ event }], "local");
               await persist(folded, scoped.state);
-              // the operation record's seat: same transaction, so record and event land together
-              await mutateOptions.record?.(event);
               return { event, folded };
             }),
           catch: (cause) => asStoreFailure(cause),

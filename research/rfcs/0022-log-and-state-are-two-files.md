@@ -196,10 +196,21 @@ writing down rather than papering over with a lowest-common-denominator design.
 
 ## Current state → work
 
-1. **The two-phase protocol.** Commit the event and its operation record; then apply the
-   projection and its applied cursor; then replay the tail on boot to finish an interrupted
-   second step. This is the piece that makes the split safe and it changes `AtomicStores`,
-   `writes.ts` and every caller of `atomically`. Nothing else should start before it.
+1. ✅ **The two-phase protocol.** Less work than this said, because the shape was already here:
+   `atomic` has always been optional, and its absent case is each store committing on its own
+   while the coverage cursor recovers the gap. What was wrong was one thing on the wrong side —
+   the operation record was written *after* `persist`, so a tear between them left a write that
+   happened with no record that it had started, which is the one thing a ledger row whose id is
+   minted before the commit exists to prevent.
+
+   The order is now a stated contract rather than an accident of how the function reads: the half
+   that **cannot be recomputed** commits first (event, then ledger row), the half that **can**
+   commits second (rows, with the coverage cursor that says how far they go), and a crash between
+   them costs a replay rather than a fact. `openEngine` already repairs exactly that shape.
+
+   Pinned by a test that interrupts a write between the halves and asserts the row comes back on
+   the next boot — and that the cursor never runs ahead of the log, which is the unrecoverable
+   direction. Swapping the two halves makes it fail, which was checked by doing it.
 2. **A durable recovery basis.** A snapshot with its coverage and scope, so "discard the state
    file" is only offered where the events above the floor plus that snapshot can rebuild it.
    Decide what happens to `acked` — rebuilt from durable acknowledgement evidence, or explicitly

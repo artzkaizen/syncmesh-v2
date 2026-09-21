@@ -50,8 +50,19 @@ export interface EngineOptions {
   readonly boot?: Boot;
   /**
    * Runs a write's store calls in one transaction: the event appended to the log and its rows
-   * committed to the state store land together or not at all. The callback gets the stores to
-   * use inside; absent, each store commits on its own and the cursor sidecar recovers the gap.
+   * committed to the state store land together or not at all.
+   *
+   * **Optional, and the absent case is a protocol rather than a degradation.** Without it each
+   * store commits on its own, in an order the write path guarantees: the durable half first — the
+   * event, and the operation record that names it — then the derived half, whose commit carries
+   * the rows *and* the coverage cursor that says how far they go. A crash between the two leaves
+   * the log ahead of the cursor, which is precisely what `openEngine` repairs by replaying
+   * `allSince(coverage)`. Nothing is lost; a boot does the work the crash interrupted.
+   *
+   * That is what makes two files possible (RFC-0022), where one transaction cannot span them:
+   * SQLite commits atomically across attached databases only in rollback-journal mode, and every
+   * device here runs WAL. It is also why the order above is a contract and not an accident — the
+   * half that cannot be recomputed commits first.
    */
   readonly atomic?: <T>(fn: (scoped: AtomicStores) => Promise<T>) => Promise<T>;
 }

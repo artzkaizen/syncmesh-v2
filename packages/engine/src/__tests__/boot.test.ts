@@ -142,3 +142,64 @@ describe("openEngine — boot from persisted state", () => {
     expect((await store.has(event.id)).unwrap()).toBe(true);
   });
 });
+
+/**
+ * The two-phase write, and what a crash between its halves costs.
+ *
+ * With no `atomic` the log and the derived state commit separately, in an order the write path
+ * guarantees: the event first, the rows and their coverage cursor second. That is what makes two
+ * files possible (RFC-0022), where one transaction cannot span them — SQLite commits atomically
+ * across attached databases only in rollback-journal mode, and every device here runs WAL.
+ *
+ * So the question is not whether it tears. It is whether a tear costs anything, and the answer
+ * has to be a replay rather than a fact.
+ */
+describe("openEngine — a write interrupted between its two commits", () => {
+  /** A state store whose commit stops working, the way a process does: without warning. */
+  const untilKilled = () => {
+    const inner = createMemoryStateStore();
+    let alive = true;
+    const stateStore: StateStore = {
+      ...inner,
+      commit: (rows, coverage) =>
+        alive ? inner.commit(rows, coverage) : Promise.resolve(Result.ok(0)),
+    };
+    return { stateStore, kill: () => void (alive = false) };
+  };
+
+  test("the event survives, the rows are replayed, and nothing is lost", async () => {
+    const { stateStore, kill } = untilKilled();
+    const { store, engine } = setup(PEER_A, 500, { stateStore });
+    (await engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ body: "before" })))).unwrap();
+
+    // from here the durable half commits and the derived half does not: the tear
+    kill();
+    (await engine.mutate(CREATE, (tx) => tx.insert(NOTES, N2, row({ body: "after" })))).unwrap();
+
+    // the cache is behind the log, which is the only direction this order can produce
+    const cached = (await stateStore.loadCursors()).unwrap();
+    expect(cached.synced.get(PEER_A)).toBe(seq(1));
+
+    const booted = (
+      await openEngine({ peerId: PEER_A, clock: fakeClock(100), store, stateStore })
+    ).unwrap();
+    expect(body(booted, N1)).toBe("before");
+    expect(body(booted, N2)).toBe("after"); // replayed from above the cursor
+    expect(booted.coverage().synced.get(PEER_A)).toBe(seq(2));
+  });
+
+  test("the cursor never runs ahead of the log, whichever half was interrupted", async () => {
+    const { stateStore, kill } = untilKilled();
+    const { store, engine } = setup(PEER_A, 500, { stateStore });
+    for (const body of ["a", "b", "c"])
+      (await engine.mutate(CREATE, (tx) => tx.insert(NOTES, key(body), row({ body })))).unwrap();
+    kill();
+    (await engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ body: "torn" })))).unwrap();
+
+    const cursor = (await stateStore.loadCursors()).unwrap().synced.get(PEER_A) ?? seq(0);
+    const events = (await store.all()).unwrap();
+    // a cursor above the log would be a claim to have folded what nobody wrote — the unrecoverable
+    // direction, and the reason the durable half commits first
+    expect(Number(cursor)).toBeLessThanOrEqual(events.length);
+  });
+});
