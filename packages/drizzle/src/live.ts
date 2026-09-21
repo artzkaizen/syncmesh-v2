@@ -1,10 +1,13 @@
 import type { Engine } from "@syncmesh/engine";
-import type { SQLChunk, SQLWrapper } from "drizzle-orm";
+import type { SQLWrapper } from "drizzle-orm";
 
-import { Column, Param, SQL, StringChunk, Subquery, Table, getTableName, is } from "drizzle-orm";
+import type { LiveChange } from "./patch.js";
 
 import { replaceEqualDeep } from "./equal.js";
+import { patchWindow } from "./patch.js";
 import { ROW_SYNC_TABLE } from "./sync-of.js";
+import { identityOf, tablesOf } from "./tree.js";
+import { windowOf } from "./window.js";
 
 /**
  * What a consumer reads, as one object whose **identity changes only when something changed** —
@@ -28,6 +31,17 @@ export interface LiveSnapshot<T> {
   readonly error: Error | undefined;
 }
 
+/**
+ * Told the rows, and told what moved to get them — the second only when the query was
+ * **maintained** rather than re-read (see {@link LiveWindow}).
+ *
+ * `undefined` is an honest answer and not a missing one: a re-run knows the new rows and has no
+ * way to name the difference, because the fact that would have named it — which keys the fold
+ * wrote — is the thing a re-run threw away. A consumer that can use a delta takes it when it is
+ * there and diffs when it is not.
+ */
+export type LiveListener<T> = (rows: readonly T[], changes?: readonly LiveChange<T>[]) => void;
+
 export interface Live<T> {
   /** The rows as of the last run; `undefined` until `ready` resolves. */
   readonly data: () => readonly T[] | undefined;
@@ -35,52 +49,34 @@ export interface Live<T> {
   readonly snapshot: () => LiveSnapshot<T>;
   readonly ready: Promise<readonly T[]>;
   /** Fires once per fold batch that touched one of the query's tables, and only when the rows changed. */
-  readonly subscribe: (listener: (rows: readonly T[]) => void) => () => void;
+  readonly subscribe: (listener: LiveListener<T>) => () => void;
   readonly release: () => void;
 }
 
 /** What a live query needs from a Drizzle query: its SQL to find the tables, and to be awaited. */
 export type Runnable<T> = SQLWrapper & PromiseLike<readonly T[]>;
 
-/** Every table a query's SQL mentions, through columns, subqueries and nested fragments. */
-const tablesOf = (query: SQLWrapper): ReadonlySet<string> => {
-  const names = new Set<string>();
-  const walk = (chunk: SQLChunk): void => {
-    if (is(chunk, Table)) names.add(getTableName(chunk));
-    else if (is(chunk, Column)) names.add(getTableName(chunk.table));
-    else if (is(chunk, Subquery)) walk(chunk._.sql);
-    else if (is(chunk, SQL)) for (const inner of chunk.queryChunks) walk(inner);
-  };
-  walk(query.getSQL());
-  return names;
-};
+/**
+ * The question, or the way to ask it again.
+ *
+ * A factory is what buys incremental maintenance: the probe a fold triggers is this query with a
+ * key filter added and the limit dropped, and a Drizzle builder is mutated by its own chained
+ * calls — so narrowing the one the caller is holding would narrow the query it is about to
+ * await. Handed a built query instead, every fold re-runs it whole, which is what this did
+ * before and still does for anything it cannot maintain.
+ */
+export type LiveQuery<T> = Runnable<T> | (() => Runnable<T>);
 
 const EMPTY: readonly never[] = [];
 
+/**
+ * Above this many changed keys, the probe stops being small and the re-run stops being the
+ * expensive option — a catch-up folding a thousand events is one statement either way.
+ */
+const PROBE_KEYS = 100;
+
 const asError = (cause: unknown): Error =>
   cause instanceof Error ? cause : new Error(String(cause));
-
-/**
- * A query's identity for sharing: every table, column, literal and bind it names, in order.
- *
- * Walked from the typed chunk tree rather than `toSQL()`, for the same reason {@link tablesOf}
- * is — the tree is what Drizzle guarantees, and reading it needs no assertion about a shape the
- * builder never promised.
- */
-const identityOf = (query: Runnable<unknown>): string => {
-  const parts: string[] = [];
-  const walk = (chunk: SQLChunk): void => {
-    if (is(chunk, Table)) parts.push(`t:${getTableName(chunk)}`);
-    else if (is(chunk, Column)) parts.push(`c:${getTableName(chunk.table)}.${chunk.name}`);
-    else if (is(chunk, Subquery)) walk(chunk._.sql);
-    else if (is(chunk, Param)) parts.push(`p:${JSON.stringify(chunk.value) ?? "?"}`);
-    else if (is(chunk, StringChunk)) parts.push(`s:${chunk.value.join("")}`);
-    else if (is(chunk, SQL)) for (const inner of chunk.queryChunks) walk(inner);
-    else parts.push("?"); // a chunk kind this build does not name: never shared, always safe
-  };
-  walk(query.getSQL());
-  return parts.join("\u0000");
-};
 
 /**
  * What a live query re-runs on: the two feeds a fold announces itself through, and nothing else.
@@ -92,7 +88,8 @@ const identityOf = (query: Runnable<unknown>): string => {
 export type LiveSource = Pick<Engine, "onFoldBatch" | "onAcknowledge">;
 
 /**
- * A live query is a re-run on exact invalidation (D20 §4): the fold names the tables it touched.
+ * A live query is maintained from exact invalidation (D20 §4): the fold names the rows it wrote,
+ * and a query that can be patched from those rows is, rather than asked again.
  *
  * Two queries asking the same question share one subscription and one re-run, refcounted by
  * `release` — two components rendering the same list used to run the same SQL twice per fold.
@@ -100,18 +97,24 @@ export type LiveSource = Pick<Engine, "onFoldBatch" | "onAcknowledge">;
 export const createLive = (engine: LiveSource) => {
   const shared = new Map<string, { readonly live: Live<never>; refs: number }>();
 
-  const build = <T>(query: Runnable<T>): Live<T> => {
+  const build = <T>(query: Runnable<T>, rebuild: (() => Runnable<T>) | undefined): Live<T> => {
     const touched = tablesOf(query);
     // the row-sync table appears in raw SQL rather than as a Drizzle table, so the walk cannot
     // see it; the query's own text is what says whether a `syncOf` column was selected
     const sql = identityOf(query);
-    const listeners = new Set<(rows: readonly T[]) => void>();
+    const plan = rebuild === undefined ? undefined : windowOf(query, rebuild);
+    const listeners = new Set<LiveListener<T>>();
     let current: readonly T[] | undefined;
     let snap: LiveSnapshot<T> = {
       answered: false,
       data: EMPTY,
       error: undefined,
       status: "pending",
+    };
+
+    const publish = (rows: readonly T[], changes: readonly LiveChange<T>[] | undefined): void => {
+      snap = { answered: true, data: rows, error: undefined, status: "success" };
+      for (const listener of listeners) listener(rows, changes);
     };
 
     const run = async (): Promise<readonly T[]> => {
@@ -124,18 +127,41 @@ export const createLive = (engine: LiveSource) => {
         // it keeps `answered` too, because a read that fell over has told the caller nothing
         // about what is in the store, in either direction
         snap = { answered: snap.answered, data: snap.data, error, status: "error" };
-        for (const listener of listeners) listener(snap.data);
+        for (const listener of listeners) listener(snap.data, undefined);
         throw error;
       }
       // identity is the change decision, and every unchanged row keeps its reference
       const rows = current === undefined ? fresh : replaceEqualDeep(current, fresh);
       const changed = rows !== current || snap.status !== "success";
       current = rows;
-      if (changed) {
-        snap = { answered: true, data: rows, error: undefined, status: "success" };
-        for (const listener of listeners) listener(rows);
-      }
+      if (changed) publish(rows, undefined);
       return rows;
+    };
+
+    /**
+     * The whole point: one small statement for the keys the fold named, spliced into the rows
+     * already in hand. `false` means it could not be done and the caller must re-read — which is
+     * never wrong, only slower, so every doubt resolves that way.
+     */
+    const maintain = async (keys: ReadonlySet<string>): Promise<boolean> => {
+      if (plan === undefined || current === undefined || snap.status !== "success") return false;
+      if (keys.size === 0 || keys.size > PROBE_KEYS) return false;
+      const probe = plan.probe([...keys]);
+      if (probe === undefined) return false;
+      const patched = patchWindow(plan, current, keys, await probe);
+      if (patched === undefined) return false;
+      current = patched.rows;
+      if (patched.changes.length > 0) publish(patched.rows, patched.changes);
+      return true;
+    };
+
+    /** Keys awaiting maintenance; `undefined` says the next run has to read everything. */
+    let waiting: Set<string> | undefined = new Set();
+    const step = async (): Promise<void> => {
+      const keys = waiting;
+      waiting = new Set();
+      if (keys !== undefined && (await maintain(keys).catch(() => false))) return;
+      await run();
     };
 
     /**
@@ -146,44 +172,63 @@ export const createLive = (engine: LiveSource) => {
      * also collapses a burst — a catch-up of a thousand events is one re-run, not a thousand.
      */
     let running = false;
-    let again = false;
+    let queued = false;
     const schedule = (): void => {
       if (running) {
-        again = true;
+        queued = true;
         return;
       }
       running = true;
-      void run()
+      void step()
         .catch(() => undefined)
         .finally(() => {
           running = false;
-          if (!again) return;
-          again = false;
+          if (!queued) return;
+          queued = false;
           schedule();
         });
+    };
+
+    /** A fold's verdict on this query: these keys moved, or `undefined` for "read it all again". */
+    const wake = (keys: ReadonlySet<string> | undefined): void => {
+      if (keys === undefined) waiting = undefined;
+      else if (waiting !== undefined) for (const key of keys) waiting.add(key);
+      schedule();
     };
 
     running = true;
     const ready = run().finally(() => {
       running = false;
-      if (!again) return;
-      again = false;
+      if (!queued) return;
+      queued = false;
       schedule();
     });
 
     const off = engine.onFoldBatch((batch) => {
-      for (const table of batch.writeTables)
-        if (touched.has(String(table))) {
-          schedule();
-          return;
-        }
+      let mine = false;
+      let foreign = false;
+      let keys: ReadonlySet<string> | undefined;
+      for (const table of batch.writeTables) {
+        const name = String(table);
+        if (!touched.has(name)) continue;
+        mine = true;
+        // a write to another table this query reads — the one a read rule joins against — can
+        // change which rows are visible without naming a single one of them; so can a batch
+        // that named a table without naming its keys, which is a fold this build cannot read
+        const written = name === plan?.table ? batch.writeKeys.get(table) : undefined;
+        if (written === undefined) foreign = true;
+        else keys = written;
+      }
+      if (mine) wake(foreign ? undefined : keys);
     });
     /**
      * An acknowledgement touches no row, so no fold names it — but it does change what a
      * `syncOf` column reads. Only a query that selected one subscribes, which is what makes
      * this opt-in per query: a report or a picker never re-runs on an ack at all.
      */
-    const offAck = sql.includes(ROW_SYNC_TABLE) ? engine.onAcknowledge(schedule) : undefined;
+    const offAck = sql.includes(ROW_SYNC_TABLE)
+      ? engine.onAcknowledge(() => wake(undefined))
+      : undefined;
 
     return {
       data: () => current,
@@ -210,7 +255,11 @@ export const createLive = (engine: LiveSource) => {
   };
 
   /* oxlint-disable anti-slop/no-chained-type-assertions -- one shared map cannot be typed per query, and no narrower type spans two different ones; the key is what fixes the row shape */
-  return <T>(query: Runnable<T>): Live<T> => {
+  return <T>(source: LiveQuery<T>): Live<T> => {
+    /* oxlint-disable-next-line anti-slop/no-runtime-typeof -- a Drizzle builder is an object and never a function, so this *is* the parse: it tells the question from the way to ask it again without either having to carry a tag */
+    const rebuild = typeof source === "function" ? source : undefined;
+    // SAFETY: the same check narrowed `rebuild`, so the other arm is the query itself
+    const query = rebuild === undefined ? (source as Runnable<T>) : rebuild();
     const id = identityOf(query);
     const held = shared.get(id);
     if (held !== undefined) {
@@ -219,7 +268,7 @@ export const createLive = (engine: LiveSource) => {
       const live = held.live as unknown as Live<T>;
       return { ...live, release: () => drop(id) };
     }
-    const live = build(query);
+    const live = build(query, rebuild);
     // SAFETY: erased on the way in and restored on the way out under the same key; the entry is unreachable except through that key
     shared.set(id, { live: live as unknown as Live<never>, refs: 1 });
     return { ...live, release: () => drop(id) };

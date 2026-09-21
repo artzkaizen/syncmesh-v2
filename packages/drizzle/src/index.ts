@@ -11,8 +11,14 @@ import type { FaceDeps } from "./face.js";
 import { postgresFace } from "./postgres.js";
 import { sqliteFace } from "./sqlite.js";
 
-export type { Live, LiveSnapshot, LiveSource, Runnable } from "./live.js";
+export type { Live, LiveListener, LiveQuery, LiveSnapshot, LiveSource, Runnable } from "./live.js";
 export { createLive } from "./live.js";
+export type { LiveChange, Patched } from "./patch.js";
+export { patchWindow } from "./patch.js";
+export type { LiveWindow } from "./window.js";
+export { windowOf } from "./window.js";
+export { compareCells } from "./order.js";
+export { identityOf, tablesOf } from "./tree.js";
 export type { ProxyMethod, ProxyResult, ProxySink, WriteNaming } from "./proxy.js";
 export type { ReadScope } from "./read.js";
 export { readPredicate, readScope } from "./read.js";
