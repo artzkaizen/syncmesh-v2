@@ -47,6 +47,7 @@ export type { Admission, AdmissionAsk, AdmissionHandler, GateOptions } from "./g
 export { createAdmissionGate, oneSeatPerPeer } from "./gate.js";
 export type { RouteCandidate, RouteMessage } from "./route-scorer.js";
 export type { RouteProfile } from "./route-scorer.js";
+export type { RoutePolicy } from "./route-scorer.js";
 export { ORDINARY_LINK, pickRoutes, scoreRoute } from "./route-scorer.js";
 export type { Destination, Route, RouteAd, RouteTable, RouteTableOptions } from "./routes.js";
 export { createRouteTable } from "./routes.js";
@@ -77,6 +78,8 @@ export {
 } from "./transport.js";
 export type { DiscoveryOptions, Sighting } from "./discovery.js";
 export { DEFAULT_TTL_MS, createDiscovery, shouldDial } from "./discovery.js";
+export type { Liveness, LivenessOptions } from "./liveness.js";
+export { DEFAULT_KEEPALIVE_MS, SILENCE_FACTOR, createLiveness } from "./liveness.js";
 export type { Hello, SessionKeys } from "./handshake.js";
 export {
   HELLO,

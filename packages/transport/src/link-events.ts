@@ -43,7 +43,10 @@ export interface LinkEvent {
    * for it.
    */
   readonly peer?: PeerId;
-  /** In words a person can act on; absent for `proven`, which has no why. */
+  /**
+   * In words a person can act on; absent for a `proven` that is a link simply opening, which has
+   * no why. A second `proven` on one link carries one, because that one happened for a reason.
+   */
   readonly why?: string;
   readonly at: Temporal.Instant;
 }
@@ -70,6 +73,15 @@ const reported = (options: UpgradeOptions, note: (fact: LinkFact) => void): Upgr
       proven = peer;
       note({ kind: "proven", peer });
       options.onProven?.(peer);
+    },
+    /**
+     * `proven` again, with the reason it happened twice. It is the same fact — this peer signed
+     * for this link — and a feed that said nothing here would be silent about the one ending a
+     * medium never reports: the far side's half of a link dying without a close.
+     */
+    onSuperseded: (peer) => {
+      note({ kind: "proven", peer, why: "the peer handshook again; the older session is gone" });
+      options.onSuperseded?.(peer);
     },
     onRefused: (peer) => {
       note({ kind: "refused", peer, why: "the door did not admit this peer" });

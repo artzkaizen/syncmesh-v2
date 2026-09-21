@@ -80,8 +80,18 @@ interface Incoming {
 }
 
 export interface JoinExchange {
-  /** Asks the far side for state instead of history, narrowed to what this device wants. */
-  readonly request: (interest?: Interest) => void;
+  /**
+   * Asks the far side for state instead of history, narrowed to what this device wants.
+   *
+   * `adoptUnvouched` decides what happens when the state arrives with nothing to check it
+   * against, and it belongs to whoever asked rather than to this file, because the two callers
+   * want opposite things. A rebuild is the last resort for a replica whose fold will not
+   * converge: replaying is the broken thing, so it takes the coverage and stops asking for
+   * history — that is the point of it. A device joining because it happens to be empty has no
+   * such problem, and buying its way out of verification with state nobody signed for would
+   * retire the signatures that were going to check it.
+   */
+  readonly request: (interest?: Interest, adoptUnvouched?: boolean) => void;
   /** One arriving frame of the exchange; anything else is not ours. */
   readonly dispatch: (frame: SnapshotFrame) => Promise<void>;
 }
@@ -93,6 +103,8 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
   /** The rows each exchange sent, kept so a page named as missing can be sent again. */
   const outgoing = new Map<string, readonly (readonly KeyedRecord[])[]>();
   let exchanges = 0;
+  /** Whether state arriving with nothing to vouch for it may still retire history. */
+  let unvouchedMayAdopt = true;
 
   /** Answers a request with a manifest and then the pages, which is the whole of the sending side. */
   const serve = (interest: Interest | undefined): void => {
@@ -143,17 +155,36 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
     }
   };
 
-  /** Every page is here: install as one, adopt the coverage last, and close the exchange. */
+  /**
+   * Every page is here: install as one, adopt the coverage last, and close the exchange.
+   *
+   * **The rows and the coverage are two different claims, and only one of them needs vouching.**
+   * The rows merge through the same field-level merge every other source goes through, so an
+   * unvouched snapshot cannot corrupt anything a verified event later contradicts — a newer
+   * stamp still wins. Adopting the *coverage* is the irreversible half: it is the statement "I
+   * hold every event up to N from this author", and it is what stops this device ever asking for
+   * those events as history. Bought with state nobody signed for, it would retire the very
+   * signatures that would have checked it.
+   *
+   * So an unvouched install offers this device's own coverage back — `adopt` only ever raises a
+   * cursor, so that advances nothing — and the rows become a head start rather than a substitute
+   * for verification. The history still arrives, still verifies, and merges over the top.
+   */
   const complete = async (id: string, held: Incoming): Promise<void> => {
     const rows = [...Array(held.chunks).keys()].flatMap((i) => [...(held.pages.get(i) ?? [])]);
+    const vouched = vouchedFor(held, rows);
     // `local` stays empty: a device's own local-only events never travel, so a snapshot has
     // nothing to say about them and adopting a floor for them would be a claim it cannot make
-    const base = { rows, coverage: { synced: held.at, local: new Map() } };
-    const snapshot: Snapshot = held.scope === undefined ? base : { ...base, scope: held.scope };
+    const adopts = vouched || unvouchedMayAdopt;
+    const coverage = adopts ? { synced: held.at, local: new Map() } : engine.coverage();
+    const base = { rows, coverage };
+    // the scope travels with the coverage it qualifies, so an unvouched install keeps neither
+    const snapshot: Snapshot =
+      adopts && held.scope !== undefined ? { ...base, scope: held.scope } : base;
     const installed = await engine.installSnapshot(snapshot);
     incoming.delete(id);
     send("snap-ack", snapAckFrame(id, []));
-    const report = { rows: installed.rows, provisional: !vouchedFor(held, rows) };
+    const report = { rows: installed.rows, provisional: !vouched };
     onSnapshot?.(held.scope === undefined ? report : { ...report, scope: held.scope });
   };
 
@@ -187,7 +218,13 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
   };
 
   return {
-    request: (interest) => send("snap-req", snapRequestFrame(interest)),
+    request: (interest, adoptUnvouched = true) => {
+      // held until the manifest it triggers arrives: the exchange id is the sender's, so this
+      // side cannot tie one to its own ask. Overlapping joins under different policies would
+      // take the newest, which is why the two callers that exist never run at once.
+      unvouchedMayAdopt = adoptUnvouched;
+      send("snap-req", snapRequestFrame(interest));
+    },
     dispatch: async (frame) => {
       switch (frame.kind) {
         case "snap-req":

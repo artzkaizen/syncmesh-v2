@@ -25,6 +25,15 @@ const connectOverLoopback: Connect = async (peers) => {
     stop: async () => {
       await Promise.all(transports.flat().map((t) => t.stop()));
     },
+    /**
+     * No `sever`: there is no medium here to take away.
+     *
+     * A loopback pair is two functions in one process, and what the suite's severance models is
+     * an interface going out from under a connection — a socket orphaned, an adapter switched
+     * off. Muting these two functions would be a fixture severing itself, and the cases over it
+     * would be measuring the mute. The media that can answer the question honestly — the relay's
+     * socket, the LAN, the radios — are where those cases run.
+     */
     chaos: {
       drop: (count) => pairs[0]!.control.dropNext(count),
       resyncAll: () => {

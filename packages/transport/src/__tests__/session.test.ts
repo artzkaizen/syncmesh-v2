@@ -15,12 +15,14 @@ import {
   seal,
   sealNonce,
   sessionKeys,
+  unseal,
   writeHello,
 } from "../handshake.js";
-import { secureLink } from "../session.js";
+import { KEYS_REMEMBERED, secureLink } from "../session.js";
 
 const ALICE = createIdentity(seed(11)).unwrap();
 const BOB = createIdentity(seed(12)).unwrap();
+const MALLORY = createIdentity(seed(13)).unwrap();
 
 const bytes = (s: string) => new TextEncoder().encode(s);
 const text = (b: Uint8Array) => new TextDecoder().decode(b);
@@ -30,16 +32,18 @@ const watch = (link: FrameLink, identity: Identity, options: { maxPending?: numb
   const got: string[] = [];
   const dropped: string[] = [];
   const failed: unknown[] = [];
+  const superseded: PeerId[] = [];
   let peer: PeerId | undefined;
   const secure = secureLink(link, {
     identity,
     onDropped: (why) => void dropped.push(why),
     onFailed: (cause) => void failed.push(cause),
     onEstablished: (id) => void (peer = id),
+    onSuperseded: (id) => void superseded.push(id),
     ...options,
   });
   secure.onFrame((frame) => void got.push(text(frame)));
-  return { secure, got, dropped, failed, peer: () => peer };
+  return { secure, got, dropped, failed, superseded, peer: () => peer };
 };
 
 /** Two devices over an in-process radio, plus everything either of them put on the air. */
@@ -185,5 +189,100 @@ describe("a session refusing what it should", () => {
     const keys = sessionKeys(bobSecret, bob, readHello(radio.sent[0] ?? new Uint8Array()).unwrap());
     radio.deliver(seal(keys.unwrap().seal, bytes("after the close"), sealNonce()));
     expect(alice.got).toEqual([]);
+  });
+});
+
+/**
+ * One end of a session driven by hand: what a peer that restarted actually does to the peer that
+ * did not. The other side is a `stub`, because the two halves have to be out of step — which a
+ * loopback pair, being one switch, cannot be.
+ */
+const bobSays = (radio: ReturnType<typeof stub>) => {
+  const secret = ephemeralSecret();
+  const hello = writeHello(BOB, secret);
+  radio.deliver(hello.frame);
+  const answered = radio.sent.filter((frame) => frame[0] === HELLO).at(-1);
+  const keys = sessionKeys(
+    secret,
+    hello,
+    readHello(answered ?? new Uint8Array()).unwrap(),
+  ).unwrap();
+  return {
+    hello,
+    keys,
+    /** What the far end would hand up, sealed under the session this hello agreed. */
+    send: (what: string) => radio.deliver(seal(keys.seal, bytes(what), sealNonce())),
+  };
+};
+
+describe("a peer that starts over on a link nothing said had ended", () => {
+  test("its second hello takes the session, and frames cross again", () => {
+    const radio = stub();
+    const alice = watch(radio.link, ALICE);
+    const first = bobSays(radio);
+    first.send("before the radio went");
+    expect(alice.got).toEqual(["before the radio went"]);
+
+    // Bluetooth off and on: Bob's device kept nothing, and Alice's stack was told nothing
+    const second = bobSays(radio);
+    expect(alice.superseded).toEqual([BOB.peerId]);
+    second.send("after it came back");
+    expect(alice.got).toEqual(["before the radio went", "after it came back"]);
+
+    // and the other direction, which is the half that was stranded: Alice's frames open under
+    // the new session rather than arriving as bytes Bob has no key for
+    alice.secure.send(bytes("and back the other way"));
+    const sealed = radio.sent.at(-1) ?? new Uint8Array();
+    expect(text(unseal(second.keys.open, sealed).unwrap())).toBe("and back the other way");
+  });
+
+  test("a stranger's hello cannot take a link off the peer that proved it", () => {
+    const radio = stub();
+    const alice = watch(radio.link, ALICE);
+    const bob = bobSays(radio);
+
+    radio.deliver(writeHello(MALLORY, ephemeralSecret()).frame);
+    expect(alice.superseded).toEqual([]);
+    expect(alice.dropped.at(-1)).toContain(MALLORY.peerId.slice(0, 8));
+
+    // Bob's session is untouched, which is the whole of what refusing was for
+    bob.send("still bob's link");
+    expect(alice.got).toEqual(["still bob's link"]);
+  });
+
+  test("the hello this session was agreed under, offered again, is a replay and is refused", () => {
+    const radio = stub();
+    const alice = watch(radio.link, ALICE);
+    const bob = bobSays(radio);
+
+    radio.deliver(bob.hello.frame);
+    expect(alice.superseded).toEqual([]);
+    expect(alice.dropped.at(-1)).toContain("already agreed a session under");
+
+    bob.send("still readable");
+    expect(alice.got).toEqual(["still readable"]);
+  });
+
+  test("the keys it remembers are a window, so a link does not grow for as long as it works", () => {
+    const radio = stub();
+    const alice = watch(radio.link, ALICE);
+    const first = bobSays(radio);
+
+    // every restart is one more key to remember, and superseding is what keeps this link object
+    // alive across them — so an unbounded set grows for exactly as long as the feature works
+    const sessions = [first];
+    for (let restart = 0; restart < KEYS_REMEMBERED; restart += 1) sessions.push(bobSays(radio));
+    expect(alice.superseded.length).toBe(KEYS_REMEMBERED);
+
+    // the newest is still refused: the window is what the guard is actually for, and a replay is
+    // answerable in the seconds after it is captured rather than a hundred sessions later
+    const newest = sessions.at(-1) ?? first;
+    radio.deliver(newest.hello.frame);
+    expect(alice.dropped.at(-1)).toContain("already agreed a session under");
+
+    // and the oldest has been let go rather than kept forever — replaying it is accepted, which
+    // is the cost being paid for the bound and is the thing worth stating out loud
+    radio.deliver(first.hello.frame);
+    expect(alice.superseded.length).toBe(KEYS_REMEMBERED + 1);
   });
 });

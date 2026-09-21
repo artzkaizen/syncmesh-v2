@@ -44,6 +44,13 @@ export interface UpgradeOptions {
   readonly claimed?: PeerId;
   /** The handshake proved who is there. What an adapter's `reaches()` is built from. */
   readonly onProven?: (peer: PeerId) => void;
+  /**
+   * The same peer handshook again over this link and the new session replaced the old one — see
+   * `secureLink`. Nothing for an adapter to do: the peer, the link and the bridge are the ones it
+   * already has. Worth hearing, because it is the only evidence anywhere that the far side's half
+   * of a link died with nothing reporting it.
+   */
+  readonly onSuperseded?: (peer: PeerId) => void;
   /** This link is over — a failed handshake, a closed door, or the medium going away. */
   readonly onClosed?: (why: string) => void;
   /**
@@ -113,16 +120,31 @@ export function createUpgrader(deps: UpgraderDeps): Upgrader {
     let bridge: Bridge | undefined;
     let closed = false;
 
+    /**
+     * Declared before {@link close} and assigned after, because the handshake can fail *during*
+     * construction.
+     *
+     * `secureLink` sends its hello before it returns (`session.ts`), so a link that is already
+     * dead — a socket closed between dial and upgrade, a radio switched off mid-handshake — takes
+     * the `onFailed` path, which calls `close`, which reached `session` while its `const` was
+     * still in the temporal dead zone: `ReferenceError: Cannot access 'session' before
+     * initialization`, thrown out of a failure handler and replacing the real reason with a crash.
+     *
+     * `undefined` here is therefore a real state and not a formality: it means the session never
+     * got far enough to have anything to close.
+     */
+    let session: ReturnType<typeof secureLink> | undefined;
+
     const close = (why: string): void => {
       if (closed) return;
       closed = true;
       peer = undefined;
       bridge?.close();
-      session.close?.();
+      session?.close?.();
       options.onClosed?.(why);
     };
 
-    const session = secureLink(link, {
+    session = secureLink(link, {
       identity: deps.identity,
       ...(deps.onDropped !== undefined && { onDropped: deps.onDropped }),
       /**
@@ -135,6 +157,13 @@ export function createUpgrader(deps: UpgraderDeps): Upgrader {
         options.onProven?.(proven);
         void admitted(proven);
       },
+      /**
+       * Reported, and nothing more. The door was asked about this peer when the link first
+       * proved it and the bridge is still the bridge for that conversation — attaching a second
+       * one here would put two sessions on one link, and asking the door again would be asking
+       * it to answer twice about a device that never left.
+       */
+      ...(options.onSuperseded !== undefined && { onSuperseded: options.onSuperseded }),
       onFailed: (cause) => close(`the session with ${who} failed: ${String(cause)}`),
     });
 

@@ -3,7 +3,12 @@ import type { ByteStream, Transport, TransportCondition, Upgraded } from "@syncm
 
 import { parsePeerId } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
-import { createBackoff, createFrameTransport, shouldDial } from "@syncmesh/transport";
+import {
+  createBackoff,
+  createFrameTransport,
+  createLiveness,
+  shouldDial,
+} from "@syncmesh/transport";
 
 import type { P2pFabric, P2pProtocol } from "./fabric.js";
 
@@ -31,6 +36,15 @@ export interface P2pOptions {
   readonly fabric: P2pFabric;
   readonly name?: string;
   readonly maxFrameBytes?: number;
+  /**
+   * How often a data path that has gone quiet is prodded, and at 2.5× that, given up on.
+   *
+   * The only thing on this medium that ever notices a radio switched off underneath it. The
+   * platform reports peers appearing and peers leaving; what it does not report is its own
+   * adapter taking every path with it, so a path nobody is measuring is one this device holds
+   * until it restarts. Default is `DEFAULT_KEEPALIVE_MS`, which is 5s.
+   */
+  readonly keepaliveMs?: number;
   /** A path or a frame that went nowhere, for a log a person reads on a device. */
   readonly onDropped?: (why: string) => void;
   /**
@@ -84,6 +98,9 @@ const p2pTransport = (protocol: P2pProtocol, adapter: string, options: P2pOption
   const drop = (why: string) => options.onDropped?.(why);
   let condition: TransportCondition = "ok";
   let closePath = (id: string): void => void id;
+  let stopWatching = (): void => undefined;
+  /** Assigned by `open`, because what it drops and re-publishes belongs to that run. */
+  let wake = (): void => undefined;
 
   const transport = createFrameTransport({
     name: options.name ?? adapter,
@@ -105,12 +122,77 @@ const p2pTransport = (protocol: P2pProtocol, adapter: string, options: P2pOption
        */
       const opening = new Set<string>();
 
+      /**
+       * Publishes the service, which is also how this device is told who else is running it.
+       *
+       * Kept as one function because it is run more than once: a radio that was switched off took
+       * the discovery session with it, and the platform reports peers to a session rather than to
+       * a device. Nothing is re-reported to a subscriber that no longer exists, so the way back
+       * from a radio that came up again is to ask for it again.
+       */
+      const publish = async (): Promise<void> => {
+        const published = await Result.tryPromise({
+          try: () => fabric.publish(serviceName(options.id, protocol), announces(self)),
+          catch: (cause) => cause,
+        });
+        if (published.isErr()) {
+          condition = "discovery-failed";
+          drop(`${adapter} could not publish its service: ${String(published.error)}`);
+          return;
+        }
+        condition = "ok";
+      };
+
+      /**
+       * The deadline that ends a data path nobody closed.
+       *
+       * Switch this radio off and every path it was holding dies where it stands, with no path
+       * close, no failed write and no peer-lost: the platform talks about peers and about
+       * services, and says nothing about its own adapter taking the links with it. Silence is
+       * therefore the only evidence there is — and a path this device prodded and heard nothing
+       * back from is one to drop and open again rather than hold.
+       */
+      const alive = createLiveness<string>({
+        ...(options.keepaliveMs !== undefined && { everyMs: options.keepaliveMs }),
+        // the far side answers cursors with a digest, always: a re-request is this protocol's
+        // keepalive, and the one frame both ends already know how to handle
+        probe: () => transport.resync?.(),
+        dead: (id) => {
+          drop(`the path to ${id} went quiet and was dropped`);
+          backoff.forget(id);
+          closePath(id);
+          // and asked for again, because a peer is reported to a discovery session and this
+          // device may be the one whose session went away
+          void publish();
+        },
+      });
+      stopWatching = alive.stop;
+
       closePath = (id) => {
         const entry = held.get(id);
         if (entry === undefined) return;
         held.delete(id);
+        alive.forget(id);
         proven.delete(id);
         entry.link.close();
+      };
+
+      /**
+       * Everything this radio holds is dropped and discovery starts again, because something
+       * outside knows the medium moved (`Transport.wake`).
+       *
+       * Unconditional, and that is the point: a data path belongs to the radio that negotiated
+       * it, so a radio that was off has none left however alive they look from here — and an
+       * abandoned path is indistinguishable from a healthy idle one until a deadline says
+       * otherwise. Waiting that deadline out is what this exists to skip.
+       */
+      wake = () => {
+        // deleted from under the iterator by `closePath`, which a Map allows
+        for (const id of held.keys()) {
+          backoff.forget(id);
+          closePath(id);
+        }
+        void publish();
       };
 
       /**
@@ -121,7 +203,9 @@ const p2pTransport = (protocol: P2pProtocol, adapter: string, options: P2pOption
        */
       const hold = (id: string, stream: ByteStream, claimed?: string): void => {
         const announced = claimedPeer(claimed);
-        const link = upgrade.bytes(stream, {
+        // watched before it is upgraded, so the deadline is re-armed by anything that arrives —
+        // including the peer's hello, which is the first evidence this path carries at all
+        const link = upgrade.bytes(alive.watch(id, stream), {
           ...(announced !== undefined && { claimed: announced }),
           ...(options.maxFrameBytes !== undefined && { maxFrameBytes: options.maxFrameBytes }),
           onProven: (peer) => void proven.set(id, peer),
@@ -180,16 +264,10 @@ const p2pTransport = (protocol: P2pProtocol, adapter: string, options: P2pOption
         closePath(id);
       });
 
-      const published = await Result.tryPromise({
-        try: () => fabric.publish(serviceName(options.id, protocol), announces(self)),
-        catch: (cause) => cause,
-      });
-      if (published.isErr()) {
-        condition = "discovery-failed";
-        drop(`${adapter} could not publish its service: ${String(published.error)}`);
-      }
+      await publish();
     },
     close: async () => {
+      stopWatching();
       for (const [, entry] of held) entry.link.close();
       held.clear();
       proven.clear(); // a stopped radio reaches nobody, whatever it proved while it was up
@@ -205,6 +283,8 @@ const p2pTransport = (protocol: P2pProtocol, adapter: string, options: P2pOption
     ...transport,
     reaches: () => new Set(proven.values()),
     maxLinks: () => options.maxLinks ?? DEFAULT_MAX_LINKS,
+    /** See `wake` in `open`: drop every path and publish the service again. */
+    wake: () => wake(),
     drop: (peer) => {
       for (const [id, found] of proven) if (found === peer) closePath(id);
     },

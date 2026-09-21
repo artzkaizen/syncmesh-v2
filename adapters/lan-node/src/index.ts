@@ -36,6 +36,19 @@ export interface NodeLanOptions {
   readonly seeds?: () => readonly LanAddress[];
   /** The port announcements are received on. Default the group's, which is what multicast needs. */
   readonly discoveryPort?: number;
+  /**
+   * The local IPv4 addresses to join the group on and send from. Default every one this machine
+   * has that is not the loopback.
+   *
+   * **A multicast datagram has to be told which way to go.** A machine with one network card has
+   * an obvious answer and the kernel picks it; a laptop has Wi-Fi, a VPN, a container bridge and
+   * four virtual cards, and the kernel's answer is the default route — which on macOS is scoped,
+   * so the send fails outright with `EHOSTUNREACH` and the room is silent for a reason that has
+   * nothing to do with the room. Announcing on all of them costs one small datagram per card
+   * every couple of seconds and removes the entire class of problem; a function, because a
+   * laptop's interfaces change while the process runs.
+   */
+  readonly interfaces?: () => readonly string[];
   /** A socket that failed after it was open, for a log a person reads on a machine. */
   readonly onDropped?: (why: string) => void;
 }
@@ -107,7 +120,11 @@ export async function nodeLan(
   options: NodeLanOptions = {},
 ): Promise<Result<NodeLanNetwork, LanUnavailable | LanUnsupported>> {
   const loaded = await R.tryPromise({
-    try: async () => ({ dgram: await import("node:dgram"), net: await import("node:net") }),
+    try: async () => ({
+      dgram: await import("node:dgram"),
+      net: await import("node:net"),
+      os: await import("node:os"),
+    }),
     catch: (cause) =>
       new LanUnsupported({
         adapter: "lan",
@@ -115,10 +132,17 @@ export async function nodeLan(
       }),
   });
   if (loaded.isErr()) return loaded;
-  const { dgram, net } = loaded.value;
+  const { dgram, net, os } = loaded.value;
 
   const group = options.group ?? DEFAULT_GROUP;
   const joins = options.multicast !== false;
+  /** Every card that could carry a room: not the loopback, and IPv4 because the group is. */
+  const everyCard = (): readonly string[] =>
+    Object.values(os.networkInterfaces())
+      .flatMap((found) => found ?? [])
+      .filter((one) => one.family === "IPv4" && !one.internal)
+      .map((one) => one.address);
+  const cards = options.interfaces ?? everyCard;
   const announcements = new Set<(bytes: Uint8Array, from: LanAddress) => void>();
   const connections = new Set<(stream: LanStream) => void>();
   const drop = options.onDropped;
@@ -152,6 +176,13 @@ export async function nodeLan(
   const port = listening.value;
 
   const radio = dgram.createSocket({ type: "udp4", reuseAddr: true });
+  const join = (card: string | undefined): void => {
+    const joined = R.try({
+      try: () => radio.addMembership(group.host, card),
+      catch: (cause) => String(cause),
+    });
+    if (joined.isErr()) drop?.(`${card ?? "this machine"} did not join the group: ${joined.error}`);
+  };
   radio.on("message", (bytes, from) => {
     for (const cb of announcements)
       cb(new Uint8Array(bytes), { host: from.address, port: from.port });
@@ -164,7 +195,11 @@ export async function nodeLan(
         radio.once("error", reject);
         radio.bind(options.discoveryPort ?? (joins ? group.port : 0), () => {
           if (joins) {
-            radio.addMembership(group.host);
+            // per card, and each one tolerated: a virtual interface that will not carry a group
+            // is an ordinary thing on a laptop, and it must not cost the socket the ones that will
+            const on = cards();
+            if (on.length === 0) join(undefined);
+            else for (const card of on) join(card);
             // our own announcement comes back, and the transport discards it by peer id — but
             // a device alone in a room is the one that most needs to know its socket works
             radio.setMulticastLoopback(true);
@@ -184,14 +219,43 @@ export async function nodeLan(
   // SAFETY: a bound udp4 socket always reports an address; the call above resolved on its bind
   const discovery = radio.address() as { address: string; port: number };
 
+  /**
+   * The group, once per card, and the seeds.
+   *
+   * Only a beat where **nothing** left the machine is reported. One card refusing among six is
+   * the normal state of a laptop, and a line for each of them every two seconds would bury the
+   * case a person actually needs to see.
+   */
+  const blast = (bytes: Uint8Array): void => {
+    const on = joins ? cards() : [];
+    let failed = 0;
+    const answered = (cause: Error | null): void => {
+      if (cause === null) return;
+      failed += 1;
+      if (failed === on.length) drop?.(`no announcement left this machine: ${cause.message}`);
+    };
+    for (const card of on) {
+      // set immediately before the send: the option applies to the sends that follow it, and
+      // the alternative is a socket per card for a datagram that repeats every two seconds anyway
+      const aimed = R.try({
+        try: () => radio.setMulticastInterface(card),
+        catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
+      });
+      if (aimed.isErr()) {
+        answered(aimed.error);
+        continue;
+      }
+      radio.send(bytes, group.port, group.host, answered);
+    }
+    for (const where of options.seeds?.() ?? [])
+      radio.send(bytes, where.port, where.host, (cause) => {
+        if (cause !== null)
+          drop?.(`an announcement to ${where.host} did not leave: ${String(cause)}`);
+      });
+  };
+
   return R.ok({
-    announce: (bytes) => {
-      const to = [...(joins ? [group] : []), ...(options.seeds?.() ?? [])];
-      for (const where of to)
-        radio.send(bytes, where.port, where.host, (cause) => {
-          if (cause !== null) drop?.(`an announcement did not leave: ${String(cause)}`);
-        });
-    },
+    announce: blast,
     onAnnouncement: (cb) => subscribe(announcements, cb),
     address: () => ({ host: options.host ?? "0.0.0.0", port }),
     dial: (to) =>

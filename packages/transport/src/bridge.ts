@@ -106,7 +106,7 @@ export interface Bridge {
    * session: the rows it is entitled to, and the coverage they stand for, rather than every
    * event that ever produced them.
    */
-  readonly requestSnapshot: (interest?: Interest) => void;
+  readonly requestSnapshot: (interest?: Interest, adoptUnvouched?: boolean) => void;
   /** Asks the far side for a grant for this device (flow A step ②). */
   readonly requestGrant: (invite?: string) => void;
   /** Sends one grant's wire bytes now (the answer to a request). */

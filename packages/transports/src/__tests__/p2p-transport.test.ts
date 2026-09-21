@@ -1,15 +1,69 @@
-import type { Connect, SuiteNetwork, SuitePeer } from "@syncmesh/transport/transport-tests";
+import type {
+  Connect,
+  Severable,
+  SuiteNetwork,
+  SuitePeer,
+} from "@syncmesh/transport/transport-tests";
 
-import { suitePeers, transportTests } from "@syncmesh/transport/transport-tests";
+import {
+  severable,
+  severableStream,
+  suitePeers,
+  transportTests,
+} from "@syncmesh/transport/transport-tests";
 import { describe, expect, test } from "bun:test";
 
-import type { P2pProtocol } from "../p2p/fabric.js";
+import type { P2pFabric, P2pProtocol } from "../p2p/fabric.js";
 
 import { awdl, wifiAware } from "../p2p/transport.js";
 import { virtualFabric } from "../p2p/virtual-fabric.js";
 
 const ROOM = "the-ward";
 const build = { awdl, wifiAware };
+
+/**
+ * How often a chain prods a quiet path, small enough that a case can wait a deadline out.
+ *
+ * The contract gives a severed medium twenty settle rounds to notice by itself, and this is what
+ * decides what those rounds are worth in milliseconds. A keepalive of 150ms drops a silent path
+ * at 375ms: the same code path production runs at 5s, in a thirtieth of the time, comfortably
+ * longer than the four rounds a `wake()` is allowed and comfortably longer again than the quiet
+ * a case with a dropped frame in it goes through before it looks.
+ */
+const KEEPALIVE_MS = 150;
+
+/**
+ * The radio itself, between a real adapter and the virtual fabric — the part a switch in Settings
+ * turns off.
+ *
+ * Off, it finds nobody, is found by nobody, opens no path, and carries nothing over the paths it
+ * already had. What it does not do is say any of that: no peer-lost, no path close, no error. A
+ * fixture that reported a lost peer here would be handing the adapter the one thing it never gets
+ * from a radio that was switched off under it, and the case below would prove nothing.
+ */
+const radioOf = (fabric: P2pFabric, medium: Severable): P2pFabric => ({
+  protocol: fabric.protocol,
+  publish: async (service, announced) => {
+    if (medium.carrying()) await fabric.publish(service, announced);
+  },
+  onPeerFound: (cb) =>
+    fabric.onPeerFound((peer) => {
+      if (medium.carrying()) cb(peer);
+    }),
+  onPeerLost: (cb) =>
+    fabric.onPeerLost((id) => {
+      if (medium.carrying()) cb(id);
+    }),
+  connect: async (id) => {
+    if (!medium.carrying()) throw new Error(`${id} is not in range: this radio is off`);
+    return severableStream(await fabric.connect(id), medium);
+  },
+  onPath: (cb) =>
+    fabric.onPath((stream, from) => {
+      if (medium.carrying()) cb(severableStream(stream, medium), from);
+    }),
+  stop: fabric.stop,
+});
 
 /**
  * Three real adapters on one virtual fabric, in a chain: each device is reported only its
@@ -22,13 +76,15 @@ const openChain = async (
   protocol: P2pProtocol,
 ) => {
   const air = virtualFabric();
+  const medium = severable();
   const names = peers.map((_peer, i) => `device-${i}`);
   const transports = peers.map((_peer, i) => {
     const neighbours = [names[i - 1], names[i + 1]].filter((n): n is string => n !== undefined);
     return build[which]({
       id: ROOM,
-      fabric: air.fabricFor(names[i] ?? String(i), protocol, neighbours),
+      fabric: radioOf(air.fabricFor(names[i] ?? String(i), protocol, neighbours), medium),
       name: `${which}:${i}`,
+      keepaliveMs: KEEPALIVE_MS,
     });
   });
   await Promise.all(transports.map((transport, i) => transport.start(peers[i]!)));
@@ -38,6 +94,9 @@ const openChain = async (
       // more rounds than a pair needs: a path opens with a handshake, the bridge attaches only
       // once that names the peer, and a chain has to carry the result one hop further
       for (let round = 0; round < 12; round += 1) {
+        // real time, not only microtasks: what notices an abandoned path is a deadline, and a
+        // settle that only drained promises would starve every timer in the transport under test
+        await new Promise((resolve) => setTimeout(resolve, 4));
         await air.settle();
         for (const transport of transports) await transport.flush?.();
       }
@@ -45,12 +104,18 @@ const openChain = async (
     stop: async () => {
       await Promise.all(transports.map((transport) => transport.stop()));
     },
+    /** The OS said the radio moved: every device drops its paths and publishes again. */
+    wake: () => transports.forEach((transport) => transport.wake?.()),
     chaos: {
       drop: (count: number) => air.drop(count),
       resyncAll: () => transports.forEach((transport) => transport.resync?.()),
+      /** Every radio in the room goes off where it stands, and none of them mentions it. */
+      sever: medium.sever,
+      /** They are on again. A path opened before this one stays as dead as the radio left it. */
+      restore: medium.restore,
     },
   } satisfies SuiteNetwork;
-  return { air, names, transports, network };
+  return { air, medium, names, transports, network };
 };
 
 for (const [which, protocol] of [

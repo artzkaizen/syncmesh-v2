@@ -75,7 +75,8 @@ const connect = (holder: Peer, joiner: Peer, options: JoinOptions = {}) => {
   return {
     installed,
     settle,
-    request: (interest?: Interest) => joined.requestSnapshot(interest),
+    request: (interest?: Interest, adoptUnvouched?: boolean) =>
+      joined.requestSnapshot(interest, adoptUnvouched),
     chunkCount: () => chunks,
     close: () => [held.close(), joined.close()],
   };
@@ -97,6 +98,24 @@ describe("the join exchange", () => {
     expect(Number(joiner.engine.coverage().synced.get(holder.identity.peerId))).toBe(12);
     // and it holds no log of its own: it has state it never replayed
     expect((await joiner.engine.eventsSince(new Map())).unwrap()).toEqual([]);
+    link.close();
+  });
+
+  test("an unasked-for join takes the rows as a head start, not as a reason to skip history", async () => {
+    const holder = peer(40, "acct_x");
+    const joiner = peer(80, "acct_y");
+    for (let i = 1; i <= 12; i += 1) (await write(holder, `n${i}`, `body ${i}`)).unwrap();
+
+    const link = connect(holder, joiner);
+    // what `joinIfEmpty` asks: nobody chose this, so unvouched state must not retire history
+    link.request(undefined, false);
+    await link.settle();
+
+    // the rows are in — they merge like any other source, and a later event still wins
+    expect(readRow(joiner.engine.state(), NOTES, key("n7"))?.get(BODY)).toBe("body 7");
+    expect(link.installed).toEqual([{ rows: 12, provisional: true }]);
+    // but the coverage was not bought: the joiner still asks for every one of those events
+    expect(joiner.engine.coverage().synced.get(holder.identity.peerId)).toBeUndefined();
     link.close();
   });
 

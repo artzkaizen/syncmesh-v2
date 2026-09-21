@@ -11,6 +11,7 @@ import type { Bridge, BridgeOptions } from "./bridge.js";
 import type { AdmissionAsk } from "./gate.js";
 import type { LinkEvent, LinkFact } from "./link-events.js";
 import type { FrameLink } from "./link.js";
+import type { TransportCondition, TransportKind } from "./medium.js";
 import type { PeerSessions, SessionLink } from "./peer-session.js";
 import type { RouteMessage } from "./route-scorer.js";
 import type { RouteProfile } from "./route-scorer.js";
@@ -35,6 +36,20 @@ export interface TransportContext {
    * `$recovery.rebuild` listens to, and what tells it whether anything vouched for the rows.
    */
   readonly onSnapshot?: BridgeOptions["onSnapshot"];
+  /**
+   * A checkpoint this device holds, offered alongside any state it serves (RFC-0019).
+   *
+   * Forwarded verbatim and never re-signed: a peer may pass on a certificate it could not itself
+   * have minted, which is what lets state travel further than the authority that vouched for it.
+   */
+  readonly certificate?: BridgeOptions["certificate"];
+  /**
+   * Whose certificate this device will believe — the issuer from `trust`, exactly as grants use.
+   *
+   * Absent, arriving state is still installed but every install is provisional, because nothing
+   * present could tell a vouched snapshot from an invented one.
+   */
+  readonly trust?: BridgeOptions["trust"];
   /**
    * Whether this transport is the one to carry a frame (E28). The mesh supplies it from
    * `pickRoutes`; a transport running without one carries everything, which is what every
@@ -138,6 +153,23 @@ export interface TransportVisibility {
  */
 export interface Transport {
   readonly name: string;
+  /**
+   * Check the link now, because something outside knows it may have changed.
+   *
+   * **A socket does not always learn that its network went away.** Switch a phone's Wi-Fi off and
+   * the TCP connection underneath is not closed so much as abandoned: no `close` event arrives, so
+   * a transport that waits to be told is still holding what it believes is a live link. What
+   * eventually notices is the keepalive deadline — 2.5× the relay's 15s — which means **up to
+   * ~37 seconds** where writes queue locally and go nowhere after the network is back. That is not
+   * broken forever, but for an app whose whole claim is that it catches up by itself it may as
+   * well be: a person reaches for the reload long before 37 seconds are up.
+   *
+   * So this is the door for a platform that *does* know — an OS reachability callback, an app
+   * returning to the foreground — to say "look again" and have the link re-established on the spot
+   * rather than on a timeout. Optional because not every transport has a link that can go stale
+   * without saying so, and calling it on a healthy one must be free.
+   */
+  readonly wake?: () => void;
   readonly start: (ctx: TransportContext) => Promise<void>;
   /** Resolves when the medium is usable — or after the force-ready timeout, so a dead network never wedges the mesh. */
   readonly whenReady: () => Promise<void>;
@@ -169,6 +201,23 @@ export interface Transport {
    */
   readonly reaches?: () => ReadonlySet<PeerId>;
   /**
+   * The peers this medium can get a frame *to*, which is not the same as the ones it has a link to.
+   *
+   * A relay holds exactly one link — to the server — and forty phones behind it. Those forty are
+   * deliverable through this medium and are not adjacent to it, and the distinction is load-bearing
+   * rather than pedantic: {@link reaches} is what `churn` counts against {@link maxLinks} before it
+   * closes something, so a medium that answered "forty" there would be asked to hang up links it
+   * does not have. Routing wants the union of the two; everything else wants adjacency.
+   *
+   * **Earned rather than declared.** The honest source is traffic that actually arrived: a peer
+   * whose cursors came in over this medium is one this medium demonstrably carries. A roster the
+   * far side asserts would be a claim nobody checked, and a stale or hostile one would narrow every
+   * other medium away — which is the failure this whole three-answer scheme exists to stop.
+   *
+   * Optional, and absent is "cannot say" rather than "nobody" — see `pickRoutes`.
+   */
+  readonly delivers?: () => ReadonlySet<PeerId>;
+  /**
    * How many links this medium sustains at once (RFC-0012 §1, E28) — what {@link admit} spends.
    *
    * Declared by the medium and never configured by the app. It is a property of the radio: a BLE
@@ -199,7 +248,7 @@ export interface Transport {
    * usable log does on its first session, and what `$recovery.rebuild` does when one is beyond
    * repair. Absent on a medium with no session to ask.
    */
-  readonly requestSnapshot?: (interest?: Interest) => void;
+  readonly requestSnapshot?: (interest?: Interest, adoptUnvouched?: boolean) => void;
   /**
    * Everything this medium has already taken in is folded and saved. What `mesh.flush()` awaits
    * before a close: a frame that arrived is folded on a queue, and the save at the end of that
@@ -250,32 +299,9 @@ export interface Transport {
   readonly condition?: () => TransportCondition;
 }
 
-/**
- * The medium behind a source. Central and peripheral BLE permissions are separate because the
- * platforms separate them, and a person can hold one without the other.
- */
-export type TransportKind =
-  | "ble"
-  | "lan"
-  | "awdl"
-  | "wifi-aware"
-  | "websocket"
-  | "http"
-  | "unknown";
-
-/** What a source is doing, or why it is not (book ch. 18). `ok` is the only one that carries. */
-export type TransportCondition =
-  | "ok"
-  | "connecting-failed"
-  | "listen-failed"
-  | "discovery-failed"
-  | "radio-off"
-  | "no-permission-central"
-  | "no-permission-peripheral"
-  | "no-hardware"
-  | "backgrounded"
-  | "temporarily-unavailable"
-  | "unknown";
+// the two vocabularies a source is described by, kept where every other reader can take them
+// without holding a `Transport` — see `medium.ts`
+export type { TransportCondition, TransportKind } from "./medium.js";
 
 export interface FrameTransportOptions {
   readonly name: string;
@@ -368,6 +394,9 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
           Object.assign(bridgeOptions, { onPresence: ctx.onPresence });
         if (ctx.onSnapshot !== undefined)
           Object.assign(bridgeOptions, { onSnapshot: ctx.onSnapshot });
+        if (ctx.certificate !== undefined)
+          Object.assign(bridgeOptions, { certificate: ctx.certificate });
+        if (ctx.trust !== undefined) Object.assign(bridgeOptions, { trust: ctx.trust });
         // one table, every link: a route learned here is one every other link may advertise
         if (ctx.routes !== undefined) Object.assign(bridgeOptions, { routes: ctx.routes });
         // the same key ring on every link: what a device can read does not depend on the medium
@@ -453,8 +482,8 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
     resync: () => {
       for (const bridge of speaking()) bridge.resync();
     },
-    requestSnapshot: (interest) => {
-      for (const bridge of speaking()) bridge.requestSnapshot(interest);
+    requestSnapshot: (interest, adoptUnvouched) => {
+      for (const bridge of speaking()) bridge.requestSnapshot(interest, adoptUnvouched);
     },
     requestGrant: (invite) => {
       for (const bridge of speaking()) bridge.requestGrant(invite);

@@ -28,5 +28,30 @@ export { P2pPathFailed, P2pUnsupported, announces, claimedBy, serviceName } from
 export type { WebSocketOptions } from "./web-socket.js";
 export { CannotListen, webSocket } from "./web-socket.js";
 
+export type {
+  BoundFabric,
+  FabricOptions,
+  RnP2pClosed,
+  RnP2pData,
+  RnP2pFound,
+  RnP2pLost,
+  RnP2pManager,
+  RnP2pPath,
+  RnP2pSubscription,
+} from "./p2p/rn-p2p.js";
+export { fabricFrom } from "./p2p/rn-p2p.js";
+export type { Path, PathIo } from "./native-stream.js";
+export { NativeStreamFailed, pathOver } from "./native-stream.js";
+export type {
+  BoundLan,
+  RnLanAnnouncement,
+  RnLanClosed,
+  RnLanConnection,
+  RnLanData,
+  RnLanManager,
+  RnLanOptions,
+  RnLanSubscription,
+} from "./lan/rn-lan.js";
+export { lanFrom } from "./lan/rn-lan.js";
 export type { P2pOptions } from "./p2p/transport.js";
 export { DEFAULT_MAX_LINKS, P2P_BANDWIDTH_BPS, awdl, wifiAware } from "./p2p/transport.js";

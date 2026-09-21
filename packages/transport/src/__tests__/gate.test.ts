@@ -48,6 +48,44 @@ describe("the admission gate — the door, derived from grants (book ch. 14)", (
     expect(await gate.admit(ask(stranger.peerId))).toBe("deny");
   });
 
+  /**
+   * The rung the ask carries is the rung the gate is asked at.
+   *
+   * `transport-context.ts` used to spread the ask *under* a fixed `stage: "proven"`, so every
+   * cheap dial-rung question arrived labelled as the strict one. Nothing changed for the default
+   * policy, which reads grants and not rungs — but a handler is documented to read `stage` before
+   * it reads `peer`, and this is what makes that documentation true.
+   */
+  test("a handler is told which rung it is on", async () => {
+    const rungs: (string | undefined)[] = [];
+    const gate = createAdmissionGate({
+      grants: registry(),
+      partitions: () => ["org:acme"],
+      handler: (asked) => {
+        rungs.push(asked.stage);
+        return "allow";
+      },
+    });
+    await gate.admit({ ...ask(member.peerId), stage: "dial" });
+    await gate.admit({ ...ask(member.peerId), stage: "proven" });
+    expect(rungs).toEqual(["dial", "proven"]);
+  });
+
+  /**
+   * The cost of the default, pinned so it is a decision rather than a surprise.
+   *
+   * A grant reaches a device as data, and the bridge trades grants only after this has admitted
+   * the link — so a pair that has never been introduced is refused here on both rungs, forever,
+   * however many times they see each other. That is why BLE between two phones works only once
+   * they have both been on a relay, and it is the same for the local network and both Wi-Fi
+   * radios. `requesting` is the corridor meant to break it, and nothing sets it yet.
+   */
+  test("an unintroduced pair is refused at both rungs, which is why first contact needs a relay", async () => {
+    const gate = createAdmissionGate({ grants: registry(), partitions: () => ["org:acme"] });
+    expect(await gate.admit({ ...ask(stranger.peerId), stage: "dial" })).toBe("deny");
+    expect(await gate.admit({ ...ask(stranger.peerId), stage: "proven" })).toBe("deny");
+  });
+
   test("a grant for somebody else's partitions is not a key to ours", async () => {
     const gate = createAdmissionGate({
       grants: registry(["org:other"]),

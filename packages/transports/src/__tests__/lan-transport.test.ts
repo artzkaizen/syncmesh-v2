@@ -1,12 +1,65 @@
-import type { Connect, SuiteNetwork, SuitePeer } from "@syncmesh/transport/transport-tests";
+import type {
+  Connect,
+  Severable,
+  SuiteNetwork,
+  SuitePeer,
+} from "@syncmesh/transport/transport-tests";
 
-import { suitePeers, transportTests } from "@syncmesh/transport/transport-tests";
+import {
+  severable,
+  severableStream,
+  suitePeers,
+  transportTests,
+} from "@syncmesh/transport/transport-tests";
 import { describe, expect, test } from "bun:test";
+
+import type { LanNetwork } from "../lan/network.js";
 
 import { lan } from "../lan/transport.js";
 import { virtualLan } from "../lan/virtual-lan.js";
 
 const ROOM = "the-clinic";
+
+/**
+ * How often a chain announces and prods, small enough that a case can wait a deadline out.
+ *
+ * The contract gives a severed medium twenty settle rounds to notice by itself, and this is what
+ * decides what those rounds are worth in milliseconds. A keepalive of 150ms hangs up on a silent
+ * connection at 375ms: the same code path production runs at 5s, in a thirtieth of the time,
+ * comfortably longer than the four rounds a `wake()` is allowed and comfortably longer again
+ * than the quiet a case with a dropped frame in it goes through before it looks.
+ */
+const BEAT = { announceEveryMs: 10, keepaliveMs: 150 };
+
+/**
+ * The device's own network interface, between a real `lan()` and the virtual one — the layer a
+ * Wi-Fi switch actually takes away.
+ *
+ * Everything below it keeps working: the access point is fine, the other devices are fine, and
+ * this device's kernel accepts what it is handed. It simply carries none of it, and tells nobody
+ * that it stopped — which is why the transport above goes on believing it holds the links it had.
+ * Closing the connections here instead would be a fixture testing the one case that never
+ * happened to a user.
+ */
+const interfaceOf = (network: LanNetwork, medium: Severable): LanNetwork => ({
+  announce: (bytes) => {
+    if (medium.carrying()) network.announce(bytes);
+  },
+  onAnnouncement: (cb) =>
+    network.onAnnouncement((bytes, from) => {
+      if (medium.carrying()) cb(bytes, from);
+    }),
+  address: network.address,
+  dial: async (to) => {
+    if (!medium.carrying()) throw new Error("no route to host: this device has no network");
+    return severableStream(await network.dial(to), medium);
+  },
+  onConnection: (cb) =>
+    network.onConnection((stream) => {
+      if (medium.carrying()) cb(severableStream(stream, medium));
+    }),
+  close: network.close,
+});
 
 /**
  * Three real `lan()` transports on one virtual network, in a chain: each device hears only its
@@ -15,13 +68,15 @@ const ROOM = "the-clinic";
  */
 const openChain = async (peers: readonly SuitePeer[], room = ROOM) => {
   const air = virtualLan();
+  const medium = severable();
   const names = peers.map((_peer, i) => `device-${i}`);
   const transports = peers.map((_peer, i) => {
     const neighbours = [names[i - 1], names[i + 1]].filter((n): n is string => n !== undefined);
     return lan({
       id: room,
-      network: air.networkFor(names[i] ?? String(i), neighbours),
+      network: interfaceOf(air.networkFor(names[i] ?? String(i), neighbours), medium),
       name: `lan:${i}`,
+      ...BEAT,
     });
   });
   await Promise.all(transports.map((transport, i) => transport.start(peers[i]!)));
@@ -30,7 +85,10 @@ const openChain = async (peers: readonly SuitePeer[], room = ROOM) => {
     settle: async () => {
       // a session opens with a handshake before the bridge has said anything at all, and an
       // announcement has to cross before there is a session to open
-      for (let round = 0; round < 6; round += 1) {
+      for (let round = 0; round < 8; round += 1) {
+        // real time, not only microtasks: what notices an abandoned socket is a deadline, and a
+        // settle that only drained promises would starve every timer in the transport under test
+        await new Promise((resolve) => setTimeout(resolve, 5));
         await air.settle();
         for (const transport of transports) await transport.flush?.();
       }
@@ -38,12 +96,18 @@ const openChain = async (peers: readonly SuitePeer[], room = ROOM) => {
     stop: async () => {
       await Promise.all(transports.map((transport) => transport.stop()));
     },
+    /** The OS said the network moved: every device drops what it holds and announces again. */
+    wake: () => transports.forEach((transport) => transport.wake?.()),
     chaos: {
       drop: (count: number) => air.drop(count),
       resyncAll: () => transports.forEach((transport) => transport.resync?.()),
+      /** The access point is gone: no announcement, no dial, and nothing said about either. */
+      sever: medium.sever,
+      /** It is back, and only a connection opened after this carries anything. */
+      restore: medium.restore,
     },
   } satisfies SuiteNetwork;
-  return { air, transports, network };
+  return { air, medium, transports, network };
 };
 
 const connectOverLan: Connect = async (peers) => (await openChain(peers)).network;
