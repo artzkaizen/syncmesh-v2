@@ -1,7 +1,18 @@
 {
-  "jsPlugins": ["../index.ts"],
+  "jsPlugins": [
+    "../index.ts"
+  ],
   "rules": {
-    "syncmesh/no-floating-result": ["error", { "callees": ["engine.mutate"] }],
-    "no-unused-expressions": "off"
+    "syncmesh/no-floating-result": [
+      "error",
+      {
+        "callees": [
+          "engine.mutate"
+        ]
+      }
+    ],
+    "no-unused-expressions": "off",
+    "syncmesh/no-rendered-length": "error",
+    "syncmesh/no-length-against-limit": "error"
   }
 }

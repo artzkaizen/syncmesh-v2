@@ -1,0 +1,12 @@
+{
+  "name": "hermes-profile",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Records the app's JS thread with Hermes' sampling profiler over the dev server's inspector socket, and says where a stall went",
+  "bin": "./profile.ts",
+  "type": "module",
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}
