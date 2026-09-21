@@ -45,6 +45,7 @@ export type {
 } from "./open-stores.js";
 export {
   attachLog,
+  lockPathFor,
   logPathFor,
   openStores,
   scopedStores,

@@ -6,7 +6,14 @@ export class StoreLocked extends TaggedError("StoreLocked")<{
   cause?: unknown;
 }> {}
 
-/** An exclusive hold on one store's data, kept for the life of the open. */
+/**
+ * An exclusive hold on one store's data, kept for the life of the open.
+ *
+ * **One lock, both files.** A store is a state file and its log (RFC-0022), and they are opened,
+ * rebuilt and forgotten as a unit — so the hold is over the pair rather than over either half.
+ * Nothing opens a log without the state file it belongs to, and nothing deletes one without the
+ * other; `storeFilesFor` is the list, and this is what says only one opener may hold it.
+ */
 export interface StoreLock {
   /** Lets the next opener in; closing the store calls this. */
   readonly release: () => void;

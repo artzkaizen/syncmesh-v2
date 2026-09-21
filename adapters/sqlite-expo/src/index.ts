@@ -2,7 +2,13 @@ import type { StoreFailure } from "@syncmesh/engine";
 import type { Result } from "@syncmesh/result";
 import type { OpenStoresOptions, SqliteDriver, StoreLocked, Stores } from "@syncmesh/storage";
 
-import { acquireStoreLock, attachLog, logPathFor, openStores } from "@syncmesh/storage";
+import {
+  acquireStoreLock,
+  attachLog,
+  lockPathFor,
+  logPathFor,
+  openStores,
+} from "@syncmesh/storage";
 import { openDatabaseSync } from "expo-sqlite";
 
 import type { ExpoDatabase } from "./driver.js";
@@ -54,7 +60,8 @@ export async function defaultStore(
   options: DefaultStoreOptions,
 ): Promise<Result<Stores, StoreFailure | StoreLocked>> {
   const path = `${options.name}.db`;
-  const lockDb: ExpoDatabase = openDatabaseSync(`${path}.lock`);
+  const lockDb: ExpoDatabase = openDatabaseSync(lockPathFor(path));
+  // over the store, not the file: `path` and its log are opened and forgotten together
   const lock = acquireStoreLock({
     path,
     run: (sql) => lockDb.execSync(sql),

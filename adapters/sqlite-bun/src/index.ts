@@ -11,6 +11,7 @@ import type {
 import {
   ATTACHED_LOG,
   acquireStoreLock,
+  lockPathFor,
   logPathFor,
   openStores,
   sqliteDriver,
@@ -69,7 +70,8 @@ export async function defaultStore(
 ): Promise<Result<Stores, StoreFailure | StoreLocked>> {
   mkdirSync(options.dir, { recursive: true });
   const path = join(options.dir, `${options.name}.db`);
-  const lockDb = new Database(`${path}.lock`, { create: true, strict: true });
+  const lockDb = new Database(lockPathFor(path), { create: true, strict: true });
+  // over the store, not the file: `path` and its log are opened and forgotten together
   const lock = acquireStoreLock({
     path,
     run: (sql) => lockDb.run(sql),

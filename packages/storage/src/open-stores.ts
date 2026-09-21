@@ -101,6 +101,16 @@ const installed = (
  */
 export const logPathFor = (statePath: string): string => `${statePath}.log`;
 
+/**
+ * The sidecar the store's lock is held on — a third file, and deliberately not either half.
+ *
+ * A lock taken on one of the data files would be a transaction held open against it for the life
+ * of the process, which is the thing WAL exists to avoid. So the hold is on a file with nothing
+ * in it, and what it guards is the **store** — every path in {@link storeFilesFor}, opened,
+ * rebuilt, migrated or deleted only by whoever holds it.
+ */
+export const lockPathFor = (statePath: string): string => `${statePath}.lock`;
+
 /** Both files of one store, for a caller that has to delete or copy the set. */
 export const storeFilesFor = (statePath: string): readonly string[] => [
   statePath,

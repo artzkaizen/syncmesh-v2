@@ -274,9 +274,18 @@ writing down rather than papering over with a lowest-common-denominator design.
 
 4. **Hash the manifest into the state filename** — depends on `refoldable` being true, so it is
    only offered to a device that has never compacted.
-5. **Blobs behind their own `BlobStore`**, with irreplaceable bytes distinguished from cache. The
-   one remaining piece that is additive rather than a migration, and the only one that can be
-   built without 3.
+5. ✅ **Blobs say whether losing them costs anything.** Not a separate store in the end — the
+   distinction the RFC asked for was already encoded in which *method* stored the bytes, and only
+   needed recording: `put` is a local creation and the only copy, `putAt` is bytes that arrived
+   under a name from a peer that still holds them.
+
+   `origin` and `irreplaceable()` are what a backup and an eviction sweep read. Our own bytes
+   arriving back from a peer stay `mine`, because demoting them on an echo would license dropping
+   the only copy — the insert ignores the conflict, and a test fails if it stops doing so.
+
+   The in-memory store keeps no origin and answers `mine` for everything, which is the safe
+   direction: a cache that wrongly says "droppable" loses bytes, one that wrongly says "keep"
+   costs space, and only one of those is recoverable.
 
 ✅ Already done, and independently useful: the `syncmesh` namespace (a `CREATE SCHEMA` on Postgres,
 a `syncmesh_` prefix on SQLite, one migration step that renames in place), the boot gap above, the
