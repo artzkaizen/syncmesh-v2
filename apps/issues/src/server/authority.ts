@@ -1,4 +1,5 @@
-import { createServer, sqlite } from "@syncmesh/orpc";
+import { createServer, postgres, sqlite } from "@syncmesh/orpc";
+import { postgresDriver } from "@syncmesh/postgres";
 import { relayTransport, webSocketDial } from "@syncmesh/relay";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
@@ -9,6 +10,7 @@ import { authorityHandlers } from "../authority.js";
 import { WORKSPACE } from "../domain.js";
 import { procedures } from "../procedures.js";
 import { issuesSchema } from "../schema.js";
+import { certificates } from "./checkpoint.js";
 
 /**
  * The one thing in this tracker that a device cannot do for itself — `bun run --cwd apps/issues authority`.
@@ -47,20 +49,73 @@ const issuer = createIdentity(bytes(1)).unwrap();
  */
 export const authority = createIdentity(bytes(200)).unwrap();
 
-mkdirSync(".syncmesh", { recursive: true });
+/**
+ * Where this node folds to — a file by default, the app's own Postgres when it has one.
+ *
+ * Both are the same store to the engine: a log, the rows it folds to, and the capture that turns
+ * a write into an event. What differs is who else is reading. `.syncmesh/issues-authority.db` is
+ * this process's own and nobody else's, which is exactly right for `bun run authority` with
+ * nothing provisioned; a `DATABASE_URL` says the rows belong in a database an existing backend
+ * already queries, and the fold puts them there — `SELECT * FROM issue` from a report or a cron
+ * job sees what the mesh agreed on without asking the mesh anything (book ch. 18).
+ *
+ * `rls` goes with it and only with it: the schema's `read` rules become the database's own row
+ * policies, so a hand-written `SELECT` on that connection cannot see past them. It is belt to the
+ * fold's braces — every receiver already checks `allow` — and it is Postgres-only because row
+ * policies are.
+ */
+const DATABASE_URL = Bun.env["DATABASE_URL"];
+
+const storage = async () => {
+  if (DATABASE_URL === undefined) {
+    mkdirSync(".syncmesh", { recursive: true }); // the driver opens a file; it makes no directory
+    return sqlite({ driver: bunSqliteDriver(".syncmesh/issues-authority.db") });
+  }
+  /**
+   * `pglite://<dir>` — a real Postgres with nothing to provision, kept in a directory here.
+   *
+   * The same engine as a server, compiled to wasm and given PGlite's Node filesystem, so the
+   * statements this node emits are the statements a server would run and the data outlives the
+   * process. What it is for is the gap between the two other answers: a file is not Postgres and
+   * proves nothing about this path, and standing up a server is more than anyone will do to try
+   * a demo. (It is the test runner PGlite's filesystem cannot abide, not Bun — see the
+   * `dumpDataDir` note in `packages/orpc`'s postgres test.)
+   */
+  if (DATABASE_URL.startsWith("pglite://")) {
+    const dir = DATABASE_URL.slice("pglite://".length) || ".syncmesh/pg";
+    mkdirSync(dir, { recursive: true });
+    const { PGlite } = await import("@electric-sql/pglite");
+    const { pgliteDriver } = await import("@syncmesh/postgres");
+    return postgres({ driver: pgliteDriver(new PGlite(dir)), rls: true });
+  }
+  const { default: connect } = await import("postgres");
+  return postgres({ driver: postgresDriver(connect(DATABASE_URL)), rls: true });
+};
+
+/**
+ * Bound after the server exists, because the thing it hashes is the server's own state.
+ *
+ * The option is read per call rather than held, so handing it a closure that is empty for the
+ * first instant is sound: nothing asks for a certificate until a peer requests state, which is
+ * necessarily after this process is up.
+ */
+let taking: (() => Uint8Array) | undefined;
 
 const server = await createServer({
+  certificate: () => taking?.(),
   schema: issuesSchema(),
   procedures,
   handlers: authorityHandlers,
   identity: authority,
   trust: { issuer: issuer.peerId, authority: authority.peerId },
-  storage: sqlite({ driver: bunSqliteDriver(".syncmesh/issues-authority.db") }),
+  storage: await storage(),
   transports: [relayTransport({ dial: webSocketDial(RELAY) })],
 });
 
 // an authority acts as an admin: `patchOnly` is the rule that makes it the only writer of
 // `number`, and admin is the one role that rule does not narrow
+taking = certificates(server.mesh.engine, issuer);
+
 server.mesh.grants
   .register(
     issueGrant(issuer, {
@@ -102,7 +157,7 @@ const listening = Bun.serve({
   },
 });
 console.log(
-  `authority on http://localhost:${String(listening.port)} — relays through ${RELAY}; the app dials it unless VITE_AUTHORITY_URL says otherwise`,
+  `authority on http://localhost:${listening.port} — relays through ${RELAY}; the app dials it unless VITE_AUTHORITY_URL says otherwise`,
 );
 
 const stop = async (): Promise<void> => {

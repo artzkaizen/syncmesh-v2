@@ -3,10 +3,12 @@ import type { ReactNode } from "react";
 import { useLiveQuery } from "@syncmesh/react";
 import { useMemo } from "react";
 
+import type { Acting } from "./install.js";
 import type { Replica } from "./replica.js";
 
 import { WORKSPACE_ID } from "../domain.js";
-import { CatalogHeld, ReplicaHeld } from "./context.js";
+import { ActingHeld, CatalogHeld, ReplicaHeld } from "./context.js";
+import { Picker } from "./picker.js";
 import { ReachBadge } from "./reach-badge.js";
 import { byId } from "./view.js";
 
@@ -21,9 +23,11 @@ import { byId } from "./view.js";
  */
 
 export function Workspace({
+  acting,
   replica,
   children,
 }: {
+  readonly acting: Acting;
   readonly replica: Replica;
   readonly children: ReactNode;
 }) {
@@ -53,13 +57,20 @@ export function Workspace({
 
   return (
     <ReplicaHeld value={replica}>
-      <CatalogHeld value={catalog}>
-        {children}
-        {/* above the screen rather than inside it, because what it reports is the device's and not
-            this workspace's — and because it has to be drawn on every route, including the ones
-            that are still being written */}
-        <ReachBadge />
-      </CatalogHeld>
+      <ActingHeld value={acting}>
+        <CatalogHeld value={catalog}>
+          {/* the picker instead of the app, and not a redirect to a route that draws it: an
+              install nobody has answered for has no URL worth keeping, and a router that
+              bounced every address to `/identity` would put a page in the history for a
+              question rather than for a place. The roster it needs is one context up, which
+              is the other reason it stands here */}
+          {acting.chosen ? children : <Picker />}
+          {/* above the screen rather than inside it, because what it reports is the device's and
+              not this workspace's — and because it has to be drawn on every route, including the
+              ones that are still being written */}
+          <ReachBadge />
+        </CatalogHeld>
+      </ActingHeld>
     </ReplicaHeld>
   );
 }

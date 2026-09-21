@@ -55,6 +55,27 @@ describe("the seeded workspace", () => {
     expect(counts.reduce((held, row) => held + row.total, 0)).toBe(40);
     expect(counts.every((row) => ISSUE_STATUS.some((known) => known === row.status))).toBe(true);
 
+    // a grouped board pages per column, not on a flat limit: the first N of *every* status,
+    // so a column whose issues all rank late is filled from its own ranking rather than starved
+    // by a shared one. One statement, so a drag across columns still re-reads atomically.
+    const windowed = await ada.issues
+      .list({ workspaceId: WORKSPACE_ID, teamId, perStatus: 2 })
+      .run();
+    const perStatus = new Map<string, number>();
+    for (const row of windowed) perStatus.set(row.status, (perStatus.get(row.status) ?? 0) + 1);
+    expect([...perStatus.values()].every((n) => n <= 2)).toBe(true);
+
+    // every status that has any issue at all is represented — the starvation this exists to fix
+    const present = new Set(
+      (await ada.issues.list({ workspaceId: WORKSPACE_ID, teamId }).run()).map((r) => r.status),
+    );
+    expect(new Set(perStatus.keys())).toEqual(present);
+
+    // and the badge beside it is counted without the window, so "more" is two exact numbers
+    const badges = await ada.issues.counts({ workspaceId: WORKSPACE_ID, teamId }).run();
+    const todo = badges.find((r) => r.status === "todo");
+    expect(todo === undefined || todo.total >= (perStatus.get("todo") ?? 0)).toBe(true);
+
     const mine = await ada.issues
       .assigned({ workspaceId: WORKSPACE_ID, assigneeId: workspace.memberIds[0] ?? "" })
       .run();
@@ -105,6 +126,44 @@ describe("the seeded workspace", () => {
         voices.add(row.authorId);
     expect(voices).toContain(accountOf("bo"));
     expect(voices).toContain(accountOf("chidi"));
+
+    // a thread pages backwards on `(createdAt, id)`: newest first, resuming strictly before the
+    // oldest row drawn. Two pages must not overlap and must not skip — the `id` tiebreak is what
+    // holds when two comments share a millisecond, which seeded conversations do.
+    let issueId = "";
+    let total = 0;
+    for (const candidate of workspace.issueIds) {
+      const held =
+        (await ada.comments.total({ workspaceId: WORKSPACE_ID, issueId: candidate }).run())[0]
+          ?.total ?? 0;
+      if (held > total) {
+        total = held;
+        issueId = candidate;
+      }
+    }
+    // the seeded conversation has to give us something to page, or this asserts nothing
+    expect(total).toBeGreaterThan(2);
+    {
+      const first = await ada.comments
+        .forIssue({ workspaceId: WORKSPACE_ID, issueId, limit: 2 })
+        .run();
+      expect(first).toHaveLength(2);
+      const oldest = first.at(-1);
+      const next = await ada.comments
+        .forIssue({
+          workspaceId: WORKSPACE_ID,
+          issueId,
+          limit: 2,
+          before: { at: (oldest?.createdAt ?? new Date()).getTime(), id: oldest?.id ?? "" },
+        })
+        .run();
+      const seen = new Set(first.map((row) => row.id));
+      expect(next.every((row) => !seen.has(row.id))).toBe(true);
+      // newest first: every row of the second page is older than the last of the first
+      expect(next.every((row) => row.createdAt <= (oldest?.createdAt ?? new Date()))).toBe(true);
+      // and the count beside it is the whole thread, not the page
+      expect(total).toBeGreaterThanOrEqual(first.length + next.length);
+    }
 
     for (const device of [ada, bo, chidi]) await device.$mesh.stop();
   });

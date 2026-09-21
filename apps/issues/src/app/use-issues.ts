@@ -3,10 +3,10 @@ import type { QueryResult } from "@syncmesh/react";
 import { useQuery } from "@syncmesh/react";
 
 import type { Replica } from "./replica.js";
-import type { Filters, IssueRow } from "./view.js";
+import type { Filters, IssueRow, StatusCount } from "./view.js";
 
 import { WORKSPACE_ID } from "../domain.js";
-import { useReplica } from "./context.js";
+import { useApi } from "./context.js";
 
 /**
  * How many rows each question is worth asking for. A filtered list is the screen's whole content
@@ -36,14 +36,18 @@ const SEARCHED = 100;
  * real device without a DOM — including the one that matters, that clearing the search box gets
  * back the exact list, and the exact subscription key, that was there before anyone typed.
  */
-export const issuesCall = (api: Replica["api"], filters: Filters) => {
+export const issuesCall = (api: Replica["api"], filters: Filters, perStatus: number) => {
   const text = filters.text.trim();
   return text === ""
     ? api.issues.list({
         workspaceId: WORKSPACE_ID,
         teamId: filters.teamId ?? undefined,
         assigneeId: filters.assigneeId ?? undefined,
+        creatorId: filters.creatorId ?? undefined,
         openOnly: filters.openOnly,
+        // the board pages per column: a flat limit fills whichever statuses rank first and
+        // starves the rest, however far somebody scrolls (`procedures/reads.ts` has the why)
+        perStatus,
         limit: LISTED,
       })
     : api.issues.search({ workspaceId: WORKSPACE_ID, text, limit: SEARCHED });
@@ -62,7 +66,41 @@ export const issuesCall = (api: Replica["api"], filters: Filters) => {
  * Beside `list.tsx` rather than inside it for the reason `context.ts` gives at length: a hook
  * exported from a `.tsx` file costs Fast Refresh for every module that imports it.
  */
-export function useIssues(filters: Filters): QueryResult<IssueRow> {
-  const { api } = useReplica();
-  return useQuery(issuesCall(api, filters));
+export function useIssues(filters: Filters, perStatus: number): QueryResult<IssueRow> {
+  const api = useApi();
+  return useQuery(issuesCall(api, filters, perStatus));
+}
+
+/** The first window every board opens on, and the step each "Show more" adds to it. */
+export const PER_STATUS = 50;
+
+/**
+ * The badges, as their own read — **never the length of {@link useIssues}'s rows**.
+ *
+ * A page and a count are two questions, and the whole reason this hook exists beside that one is
+ * that they have different completeness: the page is capped at {@link LISTED} and the count is a
+ * `GROUP BY` with no `LIMIT`. Counting the page instead is the bug that makes a tracker show 50,
+ * then 1,240 after a scroll — and the same bug, in its quieter form, is a status that sits at 0
+ * while rows are being written into it because none of them were on the first page.
+ *
+ * **Disabled for the two views SQL cannot count.** A text search is `issues.search`, a different
+ * procedure with a `LIKE` this `GROUP BY` does not carry; a label filter is tested against the
+ * catalog on this device rather than joined (`list.tsx` says why). In both cases the hook returns
+ * no rows, `countsFor` falls back to counting what is on screen, and the badge renders `+`
+ * whenever that was a page. Saying "at least" is the honest answer there; a confident wrong
+ * number is not.
+ */
+export function useIssueCounts(filters: Filters): QueryResult<StatusCount> {
+  const api = useApi();
+  const countable = filters.text.trim() === "" && filters.labelId === null;
+  return useQuery(
+    api.issues.counts({
+      workspaceId: WORKSPACE_ID,
+      teamId: filters.teamId ?? undefined,
+      assigneeId: filters.assigneeId ?? undefined,
+      creatorId: filters.creatorId ?? undefined,
+      openOnly: filters.openOnly,
+    }),
+    { enabled: countable },
+  );
 }

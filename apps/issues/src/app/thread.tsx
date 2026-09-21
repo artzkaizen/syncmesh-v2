@@ -1,11 +1,11 @@
 import { useLiveQuery } from "@syncmesh/react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import type { ActivityRow, CommentRow } from "./view.js";
 
 import { WORKSPACE_ID } from "../domain.js";
 import { Avatar } from "./atoms.js";
-import { useCatalog, useReplica } from "./context.js";
+import { useActor, useCatalog, useApi } from "./context.js";
 import {
   BUTTON,
   CAPTION,
@@ -34,7 +34,8 @@ import {
 const EMOJI = ["👍", "🎉", "👀", "🚀", "😄", "❤️"] as const;
 
 function Reactions({ subjectId }: { readonly subjectId: string }) {
-  const { api, actor } = useReplica();
+  const api = useApi();
+  const actor = useActor().account;
   const tally = useLiveQuery(
     api.reactions.tally({ workspaceId: WORKSPACE_ID, subject: "comment", subjectId }),
   ).data;
@@ -163,7 +164,7 @@ function sentence(
 }
 
 function History({ issueId }: { readonly issueId: string }) {
-  const { api } = useReplica();
+  const api = useApi();
   const catalog = useCatalog();
   const rows = useLiveQuery(api.history.forIssue({ workspaceId: WORKSPACE_ID, issueId })).data;
   const name = (id: string) => catalog.member.get(id)?.name;
@@ -182,7 +183,8 @@ function History({ issueId }: { readonly issueId: string }) {
 
 /** The composer. `comment.insert` is `owner("authorId")`, so this tab can only ever speak as itself. */
 function Composer({ issueId }: { readonly issueId: string }) {
-  const { api, actor } = useReplica();
+  const api = useApi();
+  const actor = useActor().account;
   const [body, setBody] = useState("");
   return (
     <form
@@ -213,12 +215,55 @@ function Composer({ issueId }: { readonly issueId: string }) {
   );
 }
 
+/** How many comments a thread opens on, and the step "Show earlier" adds. */
+const SHOWN = 50;
+
+/**
+ * A thread: the newest {@link SHOWN}, oldest at the top, with the rest one click behind them.
+ *
+ * **A growing limit over `thread`'s descending order rather than its cursor**, and the difference
+ * is that comments can be edited. A cursor hands back a page that was true when it was fetched;
+ * a second page held beside the first is a second subscription that the first does not re-run,
+ * so an edit to an older comment would sit stale on screen until something else re-read it. One
+ * growing window is one subscription, and every row in it is live. The cursor stays on the
+ * procedure for the reader that genuinely cannot hold the thread — and for `activity`, which is
+ * append-only by the manifest and so has nothing to go stale.
+ *
+ * The query is newest-first because that is the end a thread pages from; the flip to reading
+ * order happens here, once, rather than in the SQL where it would cost the index.
+ */
 export function Thread({ issueId }: { readonly issueId: string }) {
-  const { api } = useReplica();
-  const comments = useLiveQuery(api.comments.forIssue({ workspaceId: WORKSPACE_ID, issueId })).data;
+  const api = useApi();
+  const [shown, setShown] = useState(SHOWN);
+  const newestFirst = useLiveQuery(
+    api.comments.forIssue({ workspaceId: WORKSPACE_ID, issueId, limit: shown }),
+  ).data;
+  const total = useLiveQuery(api.comments.total({ workspaceId: WORKSPACE_ID, issueId })).data[0]
+    ?.total;
+  const comments = useMemo(() => [...newestFirst].reverse(), [newestFirst]);
+  // exact: the count is its own read with no LIMIT, so this is a subtraction and not a guess
+  const earlier = total === undefined ? 0 : Math.max(0, total - comments.length);
   return (
     <div style={{ borderTop: HAIRLINE, display: "grid", gap: SPACE.lg, padding: SPACE.lg }}>
-      <span style={CAPTION}>{comments.length} comments</span>
+      <span style={CAPTION}>
+        {total ?? comments.length} {(total ?? comments.length) === 1 ? "comment" : "comments"}
+      </span>
+      {earlier > 0 ? (
+        <button
+          onClick={() => setShown((held) => held + SHOWN)}
+          style={{
+            ...CAPTION,
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+            justifySelf: "start",
+            padding: 0,
+          }}
+          type="button"
+        >
+          Show {earlier.toLocaleString()} earlier
+        </button>
+      ) : undefined}
       <ul style={{ display: "grid", gap: SPACE.lg, listStyle: "none", margin: 0, padding: 0 }}>
         {comments.map((row) => (
           <Remark key={row.id} of={row} />

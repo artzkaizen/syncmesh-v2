@@ -3,15 +3,20 @@ import { describe, expect, test } from "bun:test";
 import type { IssueDetailRow, IssueRow, PanelRead } from "../app/view.js";
 
 import {
+  NO_FILTERS,
+  countText,
+  countsFor,
   dropBetween,
   groupByStatus,
   isDraggable,
   labelsByIssue,
   panelFor,
+  shownStatuses,
   sortIssues,
   taggedWith,
+  totalOf,
 } from "../app/view.js";
-import { ISSUE_STATUS } from "../domain.js";
+import { ISSUE_STATUS, OPEN_STATUS } from "../domain.js";
 import { sequence } from "../rank.js";
 
 /**
@@ -89,6 +94,70 @@ describe("grouping", () => {
     expect(groups.map((group) => group.status)).toEqual([...ISSUE_STATUS]);
     expect(groups.find((group) => group.status === "started")?.rows).toHaveLength(1);
     expect(groups.find((group) => group.status === "backlog")?.rows).toHaveLength(0);
+  });
+});
+
+/**
+ * The badge, which is the number on this screen most able to be quietly wrong.
+ *
+ * Every case below is one a person looking at the app would read as fine. A column that can never
+ * receive a row still draws a header saying 0; a count taken from a page of 500 reads as a count
+ * of the issues; a status the `GROUP BY` returned no row for is genuinely empty and not unknown.
+ * The type is what makes the difference sayable, so these are the tests that it is being said.
+ */
+describe("what a badge is allowed to claim", () => {
+  test("a status the filters cannot reach is not rendered at all", () => {
+    // `openOnly` is a WHERE on the rows: `done` and `canceled` are unreachable, not empty, and a
+    // header over an unreachable status is both a lie and a drop target that eats cards
+    expect(shownStatuses(NO_FILTERS)).toEqual([...OPEN_STATUS]);
+    expect(shownStatuses({ ...NO_FILTERS, openOnly: false })).toEqual([...ISSUE_STATUS]);
+
+    const groups = groupByStatus([rowAt(0, { status: "todo" })], shownStatuses(NO_FILTERS));
+    expect(groups.map((group) => group.status)).toEqual([...OPEN_STATUS]);
+  });
+
+  test("the count read answers, and the page under it is never counted", () => {
+    // one row on screen, 1,240 in the store: the badge is the store's answer, not the page's
+    const groups = groupByStatus([rowAt(0, { status: "todo" })], [...OPEN_STATUS]);
+    const counts = countsFor(
+      [...OPEN_STATUS],
+      groups,
+      [{ status: "todo", total: 1240 }],
+      /* truncated */ true,
+    );
+    expect(counts.get("todo")).toEqual({ kind: "exact", value: 1240 });
+    expect(countText(counts.get("todo") ?? { kind: "unknown" })).toBe("1,240");
+
+    // a status the GROUP BY returned no row for has none — absent is zero, and it is exact
+    expect(counts.get("backlog")).toEqual({ kind: "exact", value: 0 });
+  });
+
+  test("with no count read, a truncated page says 'at least' rather than a number", () => {
+    const groups = groupByStatus([rowAt(0, { status: "todo" })], [...OPEN_STATUS]);
+    const capped = countsFor([...OPEN_STATUS], groups, undefined, true);
+    expect(capped.get("todo")).toEqual({ kind: "atLeast", value: 1 });
+    expect(countText(capped.get("todo") ?? { kind: "unknown" })).toBe("1+");
+
+    // the same rows, known to be all of them, are an exact count and lose the `+`
+    const whole = countsFor([...OPEN_STATUS], groups, undefined, false);
+    expect(whole.get("todo")).toEqual({ kind: "exact", value: 1 });
+    expect(countText(whole.get("todo") ?? { kind: "unknown" })).toBe("1");
+  });
+
+  test("a total is only as certain as its least certain part", () => {
+    const exact = new Map([
+      ["todo", { kind: "exact", value: 3 }],
+      ["backlog", { kind: "exact", value: 4 }],
+    ] as const);
+    expect(totalOf(exact)).toEqual({ kind: "exact", value: 7 });
+
+    // one `atLeast` among them makes the sum a floor, which is the whole point of carrying it
+    const mixed = new Map([
+      ["todo", { kind: "exact", value: 3 }],
+      ["backlog", { kind: "atLeast", value: 500 }],
+    ] as const);
+    expect(totalOf(mixed)).toEqual({ kind: "atLeast", value: 503 });
+    expect(countText(totalOf(mixed))).toBe("503+");
   });
 });
 
@@ -263,6 +332,44 @@ describe("the detail panel's state", () => {
     // an issue authored on a device this one has not heard from is not on this device *yet*
     expect(panelFor("issue-0", read([], { coverage: { kind: "local-only" } }), NONE)).toEqual({
       kind: "catching-up",
+    });
+  });
+
+  /**
+   * The bug a person actually hit: delete on one phone, and the other one — with the panel open —
+   * said "not on this device", which is what you say about something you have never heard of.
+   *
+   * The read is identical in both cases and always will be, because the projection takes the row
+   * out of this device's SQLite the moment it stops being visible. The tombstone the kernel keeps
+   * for convergence is the only thing that tells them apart, and it reaches here as one boolean.
+   */
+  test("deleted is not the same absence as never-heard-of", () => {
+    expect(panelFor("issue-0", read([]), NONE, true)).toEqual({ kind: "deleted" });
+    expect(panelFor("issue-0", read([]), NONE, false)).toEqual({ kind: "missing" });
+  });
+
+  test("a delete this device already holds outranks a catch-up that cannot undo it", () => {
+    const behind = read([], { coverage: { kind: "local-only" } });
+    expect(panelFor("issue-0", behind, NONE, true)).toEqual({ kind: "deleted" });
+    // and it is still the honest answer while this panel's own read is in flight
+    expect(panelFor("issue-0", read(undefined), NONE, true)).toEqual({ kind: "deleted" });
+  });
+
+  test("a row that came back beats the tombstone underneath it", () => {
+    const row = detail(0);
+    // a concurrent edit stamped above the delete makes the row visible again; the panel opens on
+    // it rather than reporting a deletion the replica has already overruled
+    expect(panelFor("issue-0", read([row]), NONE, true)).toEqual({
+      kind: "open",
+      row,
+      operation: "op-1",
+      sync: "local",
+    });
+    expect(panelFor("issue-0", read([]), [rowAt(0)], true)).toEqual({
+      kind: "open",
+      row: rowAt(0),
+      operation: undefined,
+      sync: undefined,
     });
   });
 });

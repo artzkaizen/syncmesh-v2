@@ -27,6 +27,7 @@ describe("the view a URL carries", () => {
       team: undefined,
       label: undefined,
       assignee: undefined,
+      author: undefined,
       open: true,
       q: "",
       sort: "manual",
@@ -39,6 +40,7 @@ describe("the view a URL carries", () => {
       team: "team-eng",
       label: "label-bug",
       assignee: "acct_ada",
+      author: "acct_bo",
       open: false,
       q: "latency",
       sort: "priority",
@@ -47,6 +49,7 @@ describe("the view a URL carries", () => {
     expect(filtersOf(view)).toEqual({
       teamId: "team-eng",
       assigneeId: "acct_ada",
+      creatorId: "acct_bo",
       labelId: "label-bug",
       openOnly: false,
       text: "latency",
@@ -79,6 +82,21 @@ describe("the view a URL carries", () => {
     expect(view.label).toBe("7");
   });
 
+  /**
+   * The two questions about a person are different questions and the URL has to keep them apart:
+   * `?assignee=` is what is on somebody's plate, `?author=` is what they asked for. They compose —
+   * both naming one account is "I filed it and it came back to me" — so a schema that folded
+   * either into the other would quietly answer a query nobody made.
+   */
+  test("who filed it and who is doing it are two filters, not one", () => {
+    const both = filtersOf(View.parse({ assignee: "acct_ada", author: "acct_ada" }));
+    expect(both.assigneeId).toBe("acct_ada");
+    expect(both.creatorId).toBe("acct_ada");
+    const filed = filtersOf(View.parse({ author: "acct_bo" }));
+    expect(filed.creatorId).toBe("acct_bo");
+    expect(filed.assigneeId).toBeNull();
+  });
+
   test("every sort the list offers round trips", () => {
     for (const sort of SORTS) expect(View.parse({ sort }).sort).toBe(sort);
   });
@@ -95,6 +113,7 @@ describe("the round trip through the address bar", () => {
   const filtered = {
     teamId: "team-eng",
     assigneeId: "acct_bo",
+    creatorId: "acct_ada",
     labelId: "label-perf",
     openOnly: false,
     text: "timeout",
@@ -117,6 +136,15 @@ describe("the round trip through the address bar", () => {
     expect(Object.hasOwn(patch, "team")).toBe(true);
     expect(patch.team).toBeUndefined();
     expect(filtersOf(View.parse({ ...viewOf(filtered), ...patch })).teamId).toBeNull();
+  });
+
+  /** The newest filter, through the same gate every other one goes through. */
+  test("the author survives the address bar and can be taken off again", () => {
+    expect(filtersOf(View.parse(viewOf(filtered))).creatorId).toBe("acct_ada");
+    const patch = viewOf({ ...filtered, creatorId: null });
+    expect(Object.hasOwn(patch, "author")).toBe(true);
+    expect(patch.author).toBeUndefined();
+    expect(filtersOf(View.parse({ ...viewOf(filtered), ...patch })).creatorId).toBeNull();
   });
 
   /** The sort is not a filter, and a filter change must not quietly reset it. */

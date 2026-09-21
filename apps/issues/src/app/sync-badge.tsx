@@ -1,6 +1,6 @@
 import { useOperation } from "@syncmesh/react";
 
-import { useReplica } from "./context.js";
+import { useFollower } from "./context.js";
 import { syncNote } from "./sync-note.js";
 import { COLOR, SEVERITY_COLOR, TEXT } from "./ui.js";
 
@@ -37,7 +37,7 @@ export function SyncBadge({
   /** `undefined` is *not read yet*, not "no operation"; see `view.ts`'s `Panel`. */
   readonly operation: string | null | undefined;
 }) {
-  const { mesh } = useReplica();
+  const mesh = useFollower();
   const note = syncNote(sync ?? undefined, useOperation(mesh.operations, operation ?? undefined));
   if (note === undefined) return null;
   return (

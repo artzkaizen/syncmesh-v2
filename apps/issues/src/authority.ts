@@ -1,7 +1,7 @@
 import type { AuthorityHandlers } from "@syncmesh/orpc";
 
 import { Temporal } from "@syncmesh/temporal";
-import { desc, eq } from "drizzle-orm";
+import { eq, max } from "drizzle-orm";
 
 import type { Procedures } from "./procedures.js";
 
@@ -49,12 +49,21 @@ export const authorityHandlers = {
       if (row.number !== null)
         return { number: row.number, identifier: identifierOf(owning.key, row.number) };
 
+      /**
+       * `max` rather than `ORDER BY number DESC LIMIT 1`, because the two dialects disagree
+       * about where a NULL goes.
+       *
+       * Most issues have no number until somebody asks for one, so the column is full of NULLs —
+       * and SQLite sorts them *last* on a descending order while Postgres sorts them *first*. The
+       * ordered read therefore answered 40 on a device and `null` on a server, and `(null ?? 0) + 1`
+       * is 1: the same handler handing out ENG-41 in one place and a second ENG-1 in the other.
+       * `max` ignores NULLs in both, which is the whole reason to say what is wanted rather than
+       * how to find it.
+       */
       const [highest] = await db
-        .select({ number: issue.number })
+        .select({ number: max(issue.number) })
         .from(issue)
-        .where(eq(issue.teamId, row.teamId))
-        .orderBy(desc(issue.number))
-        .limit(1);
+        .where(eq(issue.teamId, row.teamId));
       const number = (highest?.number ?? 0) + 1;
       const now = Temporal.Now.instant();
       await db.update(issue).set({ number }).where(eq(issue.id, input.issueId));

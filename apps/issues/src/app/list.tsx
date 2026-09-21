@@ -4,21 +4,27 @@ import { useOperation } from "@syncmesh/react";
 import { useMemo, useRef, useState } from "react";
 
 import type { Landing } from "./section.js";
-import type { Filters, IssueRow, Sort } from "./view.js";
+import type { Counted, Filters, IssueRow, Sort } from "./view.js";
 
 import { WORKSPACE_ID } from "../domain.js";
-import { useCatalog, useReplica } from "./context.js";
+import { useActor, useCatalog, useApi, useFollower } from "./context.js";
 import { Section } from "./section.js";
 import { BUTTON, CAPTION, COLOR, HAIRLINE, SPACE, TEXT } from "./ui.js";
+import { useIssueCounts } from "./use-issues.js";
 import {
   SORTS,
   SORT_LABEL,
+  countText,
+  countsFor,
+  moreIn,
   dropBetween,
   groupByStatus,
   isDraggable,
   labelsByIssue,
+  shownStatuses,
   sortIssues,
   taggedWith,
+  totalOf,
 } from "./view.js";
 
 /**
@@ -43,7 +49,8 @@ function SortBar({
 }: {
   readonly sort: Sort;
   readonly onSort: (next: Sort) => void;
-  readonly shown: number;
+  /** The count read's answer, not the length of the page under it — see `view.ts`'s `Counted`. */
+  readonly shown: Counted;
 }) {
   return (
     <div
@@ -57,7 +64,7 @@ function SortBar({
       }}
     >
       <span style={{ ...CAPTION, marginRight: "auto" }}>
-        {shown} {shown === 1 ? "issue" : "issues"}
+        {countText(shown)} {shown.kind !== "unknown" && shown.value === 1 ? "issue" : "issues"}
       </span>
       <span style={{ ...CAPTION, color: COLOR.textFaint }}>Sort</span>
       {SORTS.map((option) => (
@@ -102,7 +109,7 @@ function SortBar({
  * window across the port whichever tab holds the engine.
  */
 function LastMove({ id }: { readonly id: string | undefined }) {
-  const { mesh } = useReplica();
+  const mesh = useFollower();
   const record = useOperation(mesh.operations, id);
   if (record === undefined) return null;
   return (
@@ -129,11 +136,14 @@ export interface ListProps {
   readonly onSelect: (id: string) => void;
   /** From `useIssues`, held one level up because the panel is judged against it too. */
   readonly answer: QueryResult<IssueRow>;
+  /** Widens every status's window by a step. Held beside the read, in `routes/_shell/route.tsx`. */
+  readonly onMore: () => void;
 }
 
 export function List(props: ListProps) {
   const { answer, filters, sort, selectedId } = props;
-  const { api, actor } = useReplica();
+  const api = useApi();
+  const actor = useActor().account;
   const catalog = useCatalog();
   /**
    * The drag lives in refs and is only mirrored into state for the insertion line.
@@ -166,7 +176,21 @@ export function List(props: ListProps) {
     const wanted = filters.labelId === null ? undefined : taggedWith(tags, filters.labelId);
     return sortIssues(wanted === undefined ? base : base.filter((row) => wanted.has(row.id)), sort);
   }, [answer.data, filters.labelId, tags, sort]);
-  const groups = useMemo(() => groupByStatus(rows), [rows]);
+  /**
+   * The statuses on screen, the rows under each, and the badge beside each — three separate
+   * facts, because they have three different completenesses. `statuses` is what the filters can
+   * reach, `groups` is the page this device is drawing, and `counts` is a `GROUP BY` with no
+   * `LIMIT`. Only the last one may be rendered as a number.
+   */
+  const statuses = useMemo(() => shownStatuses(filters), [filters]);
+  const groups = useMemo(() => groupByStatus(rows, statuses), [rows, statuses]);
+  const tally = useIssueCounts(filters);
+  const counts = useMemo(
+    // no page-length inference left: the badge is a GROUP BY with no LIMIT and the rows are a
+    // window over the same filters, so `atLeast` survives only where there is no count read
+    () => countsFor(statuses, groups, tally.data, false),
+    [statuses, groups, tally.data],
+  );
   const chips = useMemo(() => labelsByIssue(tags), [tags]);
   const movable = isDraggable(sort);
 
@@ -202,7 +226,7 @@ export function List(props: ListProps) {
     <section
       style={{ display: "flex", flex: 1, flexDirection: "column", minWidth: 0, overflow: "hidden" }}
     >
-      <SortBar onSort={props.onSort} shown={rows.length} sort={sort} />
+      <SortBar onSort={props.onSort} shown={totalOf(counts)} sort={sort} />
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
         {!answer.isReady ? (
           <Notice>
@@ -220,7 +244,10 @@ export function List(props: ListProps) {
           groups.map((group) => (
             <Section
               chips={chips}
+              count={counts.get(group.status) ?? { kind: "unknown" }}
               group={group}
+              more={moreIn(counts.get(group.status) ?? { kind: "unknown" }, group.rows.length)}
+              onMore={props.onMore}
               key={group.status}
               landing={landing}
               movable={movable}

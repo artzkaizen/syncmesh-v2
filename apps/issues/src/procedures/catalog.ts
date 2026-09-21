@@ -1,11 +1,11 @@
 import { mutation, query } from "@syncmesh/orpc";
 import { Temporal } from "@syncmesh/temporal";
-import { asc, eq, isNull, or } from "drizzle-orm";
+import { and, asc, count, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import * as z from "zod";
 
-import { Id, ProjectStatus, scoped } from "../domain.js";
+import { Id, OPEN_STATUS, ProjectStatus, scoped } from "../domain.js";
 import { between } from "../rank.js";
-import { label, member, project, team } from "../tables.js";
+import { issue, label, member, project, team } from "../tables.js";
 import { at, atOrNull, parseInstant } from "../time.js";
 
 /**
@@ -54,6 +54,27 @@ export const members = {
     .handler(({ db }) =>
       db.select().from(member).where(isNull(member.deactivatedAt)).orderBy(asc(member.name)),
     ),
+
+  /**
+   * How much open work each person is carrying, as one grouped read.
+   *
+   * **A roster needs this and cannot get it by asking per person.** Twelve members is twelve
+   * queries and twelve subscriptions that re-run on every fold; the same screen over a real
+   * workspace is hundreds. One `GROUP BY` is a single live query whose result changes when the
+   * issues do, which is also the only version that stays correct while somebody reassigns.
+   *
+   * Unassigned issues are left out rather than bucketed under a null key: "nobody" is not a member
+   * and a roster has no row to put it on. `read(issue)` rather than the bare table, so a guest's
+   * count reflects what a guest can see instead of quietly leaking totals through an aggregate.
+   */
+  workload: query.input(scoped({})).handler(({ db, read }) => {
+    const source = read(issue);
+    return db
+      .select({ assigneeId: source.assigneeId, open: count() })
+      .from(source)
+      .where(and(inArray(source.status, [...OPEN_STATUS]), isNotNull(source.assigneeId)))
+      .groupBy(source.assigneeId);
+  }),
 
   /**
    * A person edits their own row. The rule is `any(owner("id"), role("admin"))`, so the `id` in

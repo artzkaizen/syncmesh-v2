@@ -6,7 +6,7 @@ import type { Filters } from "./view.js";
 
 import { WORKSPACE_ID } from "../domain.js";
 import { Avatar, Section } from "./atoms.js";
-import { useCatalog, useReplica } from "./context.js";
+import { useActor, useCatalog, useApi } from "./context.js";
 import { COLOR, HAIRLINE, RADIUS, SIDEBAR_WIDTH, SPACE, TEXT } from "./ui.js";
 
 /**
@@ -85,14 +85,17 @@ export function Sidebar({
   readonly filters: Filters;
   readonly onFilters: (next: Filters) => void;
 }) {
-  const { api, actor } = useReplica();
+  const api = useApi();
+  const actor = useActor().account;
   const catalog = useCatalog();
   const totals = useLiveQuery(api.issues.labelTotals({ workspaceId: WORKSPACE_ID })).data;
   const countOf = (labelId: string) => totals.find((row) => row.labelId === labelId)?.total;
 
   /** Clicking the selected thing clears it, so "all teams" is the absence of a choice, not a row. */
-  const toggle = <K extends "teamId" | "assigneeId" | "labelId">(key: K, id: string) =>
-    onFilters({ ...filters, [key]: filters[key] === id ? null : id });
+  const toggle = <K extends "teamId" | "assigneeId" | "creatorId" | "labelId">(
+    key: K,
+    id: string,
+  ) => onFilters({ ...filters, [key]: filters[key] === id ? null : id });
 
   return (
     <nav
@@ -120,6 +123,16 @@ export function Sidebar({
           onClick={() => toggle("assigneeId", actor)}
         >
           Assigned to me
+        </FilterRow>
+        {/* the other half of "mine": what I asked for, as distinct from what I was given. They
+            compose — both lit is "I filed it and it came back to me" — which is why this is a
+            second row rather than a mode the row above switches between */}
+        <FilterRow
+          active={filters.creatorId === actor}
+          lead={<Avatar size={14} who={catalog.member.get(actor)} />}
+          onClick={() => toggle("creatorId", actor)}
+        >
+          Reported by me
         </FilterRow>
       </Section>
 
@@ -151,13 +164,30 @@ export function Sidebar({
         ))}
       </Section>
 
-      <Section title="People">
+      <Section title="Assigned to">
         {catalog.members.map((who) => (
           <FilterRow
             active={filters.assigneeId === who.id}
             key={who.id}
             lead={<Avatar size={14} who={who} />}
             onClick={() => toggle("assigneeId", who.id)}
+          >
+            {who.name}
+          </FilterRow>
+        ))}
+      </Section>
+
+      {/* a second list of the same twelve names, and it earns the pixels: an author filter that
+          shared the People rows would have to hide behind a mode toggle, and a mode is a piece of
+          state the URL does not carry and the person cannot see. Two sections say which is which
+          at a glance and both go into the address bar. */}
+      <Section title="Reported by">
+        {catalog.members.map((who) => (
+          <FilterRow
+            active={filters.creatorId === who.id}
+            key={who.id}
+            lead={<Avatar size={14} who={who} />}
+            onClick={() => toggle("creatorId", who.id)}
           >
             {who.name}
           </FilterRow>

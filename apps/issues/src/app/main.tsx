@@ -5,8 +5,10 @@ import { RouterProvider } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 
+import type { Acting } from "./install.js";
 import type { Replica, ReplicaUnavailable } from "./replica.js";
 
+import { onWiped, watchActing } from "./install.js";
 import { onReplica, openReplica } from "./replica.js";
 import { router } from "./router.js";
 import { COLOR, FONT, SEVERITY_COLOR, SPACE, TEXT } from "./ui.js";
@@ -76,6 +78,26 @@ interface Held {
 function Boot() {
   const [held, setHeld] = useState<Held>();
   const [failure, setFailure] = useState<ReplicaUnavailable>();
+  /**
+   * Who this install is, asked of the worker rather than decided here.
+   *
+   * Beside the replica and not inside it, because the two are answers to different questions with
+   * different lifetimes — `replica.ts` says which — and because this subscription must outlive a
+   * handover: the tab holding the engine can close without anybody changing who they are.
+   */
+  const [acting, setActing] = useState<Acting>();
+
+  useEffect(() => watchActing(setActing), []);
+
+  /**
+   * The database this page was reading has been deleted, so the page is reloaded.
+   *
+   * Every window hears it, not only the one whose button was pressed: they were all reading the
+   * file that just went, and a tab left drawing the last rows of a replica that no longer exists
+   * is exactly the stale screen the rest of this app spends its effort avoiding. A reload here is
+   * a cold join, which is the thing a person asked for.
+   */
+  useEffect(() => onWiped(() => location.reload()), []);
 
   useEffect(() => {
     let live = true;
@@ -105,7 +127,7 @@ function Boot() {
         </span>
       </Centered>
     );
-  if (held === undefined)
+  if (held === undefined || acting === undefined)
     return (
       <Centered>
         <span>
@@ -117,7 +139,7 @@ function Boot() {
   return (
     // the workspace's live reads are above the router and keyed with the tree, because they are
     // the mesh's; the router below is the URL's and outlives every replica this tab holds
-    <Workspace key={held.epoch} replica={held.replica}>
+    <Workspace acting={acting} key={held.epoch} replica={held.replica}>
       <RouterProvider router={router} />
     </Workspace>
   );

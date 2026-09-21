@@ -12,7 +12,7 @@ import type {
   team,
 } from "../tables.js";
 
-import { ISSUE_STATUS } from "../domain.js";
+import { ISSUE_STATUS, OPEN_STATUS } from "../domain.js";
 
 /**
  * What the screen does to rows after the mesh has handed them over, with no React in it.
@@ -45,6 +45,15 @@ export type IssueLabelRow = typeof issueLabel.$inferSelect;
 export interface Filters {
   readonly teamId: string | null;
   readonly assigneeId: string | null;
+  /**
+   * Who filed it, which is a different question from who is doing it.
+   *
+   * "Everything I raised" and "everything on my plate" are the two views a person actually wants
+   * of themselves, and a tracker that offers only the second cannot answer "what did I ask for
+   * that nobody picked up" — the query somebody runs before a standup. It composes with
+   * `assigneeId` rather than replacing it, which is what makes "filed by me, on Bo" one list.
+   */
+  readonly creatorId: string | null;
   readonly labelId: string | null;
   /** Work in flight only: triage, backlog, todo, started. What a person means by "open". */
   readonly openOnly: boolean;
@@ -54,6 +63,7 @@ export interface Filters {
 export const NO_FILTERS = {
   teamId: null,
   assigneeId: null,
+  creatorId: null,
   labelId: null,
   openOnly: true,
   text: "",
@@ -115,13 +125,130 @@ export interface Group {
 }
 
 /**
- * Grouped the way a board reads, left to right — and **empty groups are kept**. A status with
- * nothing in it is a drop target and a fact ("nothing is in progress"); dropping it from the list
- * would make the app lose a column the moment it emptied, which is exactly when a person wants to
- * drag something into it.
+ * Which statuses a set of filters can actually produce rows for.
+ *
+ * `openOnly` is a `WHERE` on the rows (`procedures/reads.ts`), so under it `done` and `canceled`
+ * are not empty columns — they are **unreachable** ones. Rendering them anyway is what put two
+ * headers on screen that read 0 forever, and worse: {@link Group}s are drop targets, so a card
+ * dragged onto "Canceled" was written, filtered out by the very query that drew the board, and
+ * vanished with the badge it landed on still reading 0.
  */
-export const groupByStatus = (rows: readonly IssueRow[]): readonly Group[] =>
-  ISSUE_STATUS.map((status) => ({ status, rows: rows.filter((row) => row.status === status) }));
+export const shownStatuses = (filters: Filters): readonly IssueStatus[] =>
+  filters.openOnly ? OPEN_STATUS : ISSUE_STATUS;
+
+/**
+ * Grouped the way a board reads, left to right — over the statuses the filters can reach, and
+ * **keeping the empty ones among those**. A reachable status with nothing in it is a drop target
+ * and a fact ("nothing is in progress"); dropping it would lose a column the moment it emptied,
+ * which is exactly when somebody wants to drag the first card into it.
+ */
+export const groupByStatus = (
+  rows: readonly IssueRow[],
+  statuses: readonly IssueStatus[] = ISSUE_STATUS,
+): readonly Group[] =>
+  statuses.map((status) => ({ status, rows: rows.filter((row) => row.status === status) }));
+
+/**
+ * A number this screen is allowed to show, beside what it is a number **of**.
+ *
+ * A bare `number` is the bug. It cannot tell "there are 40" from "40 have arrived so far", and
+ * the second rendered as the first is a figure that grows while somebody is reading it — the
+ * failure every partially-replicated tracker ships at least once. The cases here are the three
+ * honest things a device can say, and the point of the type is that there is no fourth: an
+ * unqualified integer cannot reach the screen, because {@link countText} will not produce one.
+ *
+ * `atLeast` is a **promise**, not an apology. "500+" resolving to "1,240" is a number keeping its
+ * word; "50" becoming "1,240" is a number that lied and was corrected.
+ *
+ * Interest is partitions and nothing finer (`engine/interest.ts`), so a count over held
+ * partitions is exact and `exact` is the ordinary case. A mesh that later holds *some* of the
+ * partitions a view spans grows a fourth case here — a value beside the partitions missing from
+ * it — and it is a new member rather than a reinterpretation of these three.
+ */
+export type Counted =
+  | { readonly kind: "exact"; readonly value: number }
+  | { readonly kind: "atLeast"; readonly value: number }
+  | { readonly kind: "unknown" };
+
+const EXACT_ZERO: Counted = { kind: "exact", value: 0 };
+
+/** `exact` when the rows behind it were all of them, `atLeast` when they were a page. */
+export const counted = (value: number, truncated: boolean): Counted =>
+  truncated ? { kind: "atLeast", value } : { kind: "exact", value };
+
+/** What a badge renders. The `+` is not decoration: it is the whole difference the type exists for. */
+export const countText = (count: Counted): string =>
+  count.kind === "unknown"
+    ? "—"
+    : `${count.value.toLocaleString()}${count.kind === "atLeast" ? "+" : ""}`;
+
+/** One row of `issues.counts`, as the screen consumes it. */
+export interface StatusCount {
+  readonly status: string;
+  readonly total: number;
+}
+
+/**
+ * The badge for each rendered status — from the count read when it can answer, from the rows when
+ * it cannot.
+ *
+ * The count read is a `GROUP BY` with no `LIMIT`, so where it applies the answer is exact and
+ * stays exact however far the list is scrolled. It does **not** apply to every view: a label
+ * filter is tested against the catalog on this device rather than joined in SQL (see
+ * {@link taggedWith} and `list.tsx`), and a text search is a different procedure entirely. In
+ * both cases the only rows this screen can count are the ones it was handed — so the number is
+ * derived from them and marked `atLeast` whenever those rows were a page rather than the set.
+ *
+ * That fallback is the honest one and not a smaller version of the bug: `atLeast` renders with a
+ * `+`, so a figure that may still grow says so before it does.
+ */
+export function countsFor(
+  statuses: readonly IssueStatus[],
+  groups: readonly Group[],
+  counts: readonly StatusCount[] | undefined,
+  truncated: boolean,
+): ReadonlyMap<IssueStatus, Counted> {
+  const byStatus = new Map<IssueStatus, Counted>();
+  const exact = counts === undefined ? undefined : new Map(counts.map((r) => [r.status, r.total]));
+  for (const status of statuses) {
+    const total = exact?.get(status);
+    if (total !== undefined) byStatus.set(status, { kind: "exact", value: total });
+    // a status the GROUP BY returned no row for genuinely has none; absent is zero, not unknown
+    else if (exact !== undefined) byStatus.set(status, EXACT_ZERO);
+    else {
+      const rows = groups.find((group) => group.status === status)?.rows.length ?? 0;
+      byStatus.set(status, counted(rows, truncated));
+    }
+  }
+  return byStatus;
+}
+
+/**
+ * How many more of this status exist than are on screen — **exactly**, or `0` when unknowable.
+ *
+ * This is the question `wasTruncated` used to guess at by comparing a page's length against the
+ * limit that produced it, which is ambiguous at exactly the limit and silently wrong if the two
+ * constants ever drift. It needs no guess any more: the badge is a `GROUP BY` with no `LIMIT`,
+ * the rows are a window over the same filters, and both are exact — so the difference between
+ * them is the count of what a window is holding back, and the button that says so never lies.
+ *
+ * `atLeast` is the label-filter and text-search case, where there is no count read to subtract
+ * from. Nothing is claimed there rather than a number guessed.
+ */
+export const moreIn = (count: Counted, shown: number): number =>
+  count.kind === "exact" ? Math.max(0, count.value - shown) : 0;
+
+/** The one number the header strip shows: every rendered badge, added up. */
+export const totalOf = (counts: ReadonlyMap<IssueStatus, Counted>): Counted => {
+  let value = 0;
+  let truncated = false;
+  for (const count of counts.values()) {
+    if (count.kind === "unknown") return { kind: "unknown" };
+    value += count.value;
+    truncated ||= count.kind === "atLeast";
+  }
+  return counted(value, truncated);
+};
 
 /** Which issues carry a given label, as the set a filter tests against. */
 export const taggedWith = (tags: readonly IssueLabelRow[], labelId: string): ReadonlySet<string> =>
@@ -190,18 +317,27 @@ export type IssueDetailRow = IssueRow & {
 /**
  * What the detail panel has to draw, as the situations that are actually distinguishable.
  *
- * Four of the five are ways of *not* having the issue, and they are separate because they are
+ * Five of the six are ways of *not* having the issue, and they are separate because they are
  * different facts about different things. `waiting` is about this read. `unreadable` is about a
  * read that fell over, which establishes nothing in either direction. `catching-up` is about the
  * other devices — an issue authored on a laptop this phone has not heard from yet is genuinely
- * not here *yet*, and saying so flatly would be as wrong as the opposite. Only `missing` is a
- * claim about this device's storage, and it is the one that needs the most evidence.
+ * not here *yet*, and saying so flatly would be as wrong as the opposite. `missing` is a claim
+ * about this device's storage, and it is the one that needs the most evidence.
+ *
+ * `deleted` is the one that is a claim about the **issue** rather than about this device, and it
+ * is the only one of the five that is positive knowledge: the row is gone from every query
+ * because a tombstone in the replica's own state is hiding it, which is a fact this device holds
+ * rather than an absence it is interpreting. It outranks `catching-up` and `missing` for that
+ * reason — a device that is still hearing from the mesh already knows this much — and it says
+ * nothing about *who* deleted it, because the tombstone names a device and a device is not a
+ * person (`Engine.deletedAt`).
  */
 export type Panel =
   | { readonly kind: "waiting" }
   | { readonly kind: "unreadable"; readonly reason: string }
   | { readonly kind: "catching-up" }
   | { readonly kind: "missing" }
+  | { readonly kind: "deleted" }
   | {
       readonly kind: "open";
       readonly row: IssueRow;
@@ -258,12 +394,28 @@ export interface PanelRead {
  * `unreadable` is for: the reason is shown rather than swallowed, because a query this device
  * could not run is news.
  */
-export const panelFor = (id: string, found: PanelRead, listed: readonly IssueRow[]): Panel => {
+export const panelFor = (
+  id: string,
+  found: PanelRead,
+  listed: readonly IssueRow[],
+  /**
+   * Whether this device holds a tombstone for the issue — `Engine.deletedAt`, asked of the mesh
+   * and reduced to the one thing a screen may say from it.
+   *
+   * Defaulted, because a caller that cannot ask has not learned that the issue is *present*: the
+   * absence of an answer is not an answer, and the panel falls back to the two sentences it could
+   * always say. It is read after the rows and before the read's own state, so a row that a
+   * concurrent edit brought back still opens, and an issue this device watched a peer delete says
+   * so rather than waiting on a catch-up that will never produce it.
+   */
+  deleted = false,
+): Panel => {
   const row = found.data?.find((candidate) => candidate.id === id);
   if (row !== undefined) return { kind: "open", row, operation: row.operation, sync: row.sync };
   const known = listed.find((candidate) => candidate.id === id);
   if (known !== undefined)
     return { kind: "open", row: known, operation: undefined, sync: undefined };
+  if (deleted) return { kind: "deleted" };
   if (!found.isReady)
     return found.error === undefined
       ? { kind: "waiting" }

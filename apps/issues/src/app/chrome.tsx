@@ -2,11 +2,13 @@ import type { DevtoolsControls } from "@syncmesh/devtools";
 
 import { ForcedBadge } from "@syncmesh/devtools/react";
 import { useLiveQuery } from "@syncmesh/react";
+import { Link } from "@tanstack/react-router";
 
 import type { Replica } from "./replica.js";
 
 import { WORKSPACE_ID } from "../domain.js";
-import { useReplica } from "./context.js";
+import { Avatar } from "./atoms.js";
+import { useActing, useCatalog, useApi, useTab } from "./context.js";
 import {
   BUTTON,
   COLOR,
@@ -20,8 +22,8 @@ import {
 } from "./ui.js";
 
 /**
- * The strip across the top: who this is, what is in it, where it is stored, which tab is holding
- * it, and one search box.
+ * The strip across the top: who this is, who *you* are, what is in it, where it is stored, which
+ * tab is holding it, and one search box.
  */
 
 /**
@@ -164,7 +166,7 @@ function Count({
  * becomes something you can see rather than something you have to be told.
  */
 function Summary() {
-  const { api } = useReplica();
+  const api = useApi();
   const [totals] = useLiveQuery(api.issues.summary({ workspaceId: WORKSPACE_ID })).data;
   return (
     <div style={{ display: "flex", gap: SPACE.xl }}>
@@ -187,6 +189,41 @@ function Summary() {
  * one device here and one set of radios. That is the whole reason it earns a seat beside the two
  * badges that say which database and which tab.
  */
+/**
+ * Who this install is acting as, in the header, on every screen the list is on.
+ *
+ * It is a link to the picker rather than a menu, and it is drawn even when nothing is unusual —
+ * the same argument the storage and role badges make. An app that can be anybody in the workspace
+ * and does not say who it currently is, is an app where a comment signed by the wrong person looks
+ * exactly like a comment signed by the right one, and the log is what would eventually say so.
+ */
+function Whoami() {
+  const acting = useActing();
+  const catalog = useCatalog();
+  const me = catalog.member.get(acting.actor.account);
+  return (
+    <Link
+      style={{
+        alignItems: "center",
+        border: HAIRLINE,
+        borderRadius: RADIUS.pill,
+        color: COLOR.textDim,
+        display: "inline-flex",
+        gap: SPACE.xs,
+        padding: `2px ${String(SPACE.sm)}px 2px 2px`,
+        textDecoration: "none",
+        ...TEXT.xs,
+      }}
+      title="Go in as somebody else, or at another role"
+      to="/identity"
+    >
+      <Avatar size={18} who={me} />
+      {me?.name ?? acting.actor.account}
+      <span style={{ color: COLOR.textFaint }}>{acting.actor.role}</span>
+    </Link>
+  );
+}
+
 export function Chrome({
   text,
   onText,
@@ -196,7 +233,7 @@ export function Chrome({
   readonly onText: (next: string) => void;
   readonly controls: DevtoolsControls;
 }) {
-  const { durable, role, shared } = useReplica();
+  const { durable, role, shared } = useTab();
   return (
     <header
       style={{
@@ -215,10 +252,14 @@ export function Chrome({
       <StorageBadge durable={durable} />
       <ModeBadge role={role} shared={shared} />
       <ForcedBadge controls={controls} />
+      {/* the placeholder names the identifier on purpose: `issues.search` matches a ticket
+          number as well as text (`procedures/reads.ts`), and that is the thing people actually
+          paste in — out of a commit message, a standup, a link somebody sent them. A box that
+          only advertised titles would leave the feature undiscovered */}
       <input
-        aria-label="Search issues"
+        aria-label="Search issues by title, description or number"
         onChange={(event) => onText(event.target.value)}
-        placeholder="Search titles and descriptions…"
+        placeholder="Search titles, descriptions, or ENG-42…"
         style={{
           ...INPUT,
           ...BUTTON,
@@ -230,6 +271,13 @@ export function Chrome({
         value={text}
       />
       <Summary />
+      <Whoami />
+      <Link style={{ ...BUTTON, textDecoration: "none" }} to="/people">
+        People
+      </Link>
+      <Link style={{ ...BUTTON, textDecoration: "none" }} to="/settings">
+        Settings
+      </Link>
     </header>
   );
 }

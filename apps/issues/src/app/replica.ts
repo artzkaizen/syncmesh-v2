@@ -7,7 +7,6 @@ import { Result, TaggedError } from "@syncmesh/result";
 
 import { procedures } from "../procedures.js";
 import { issuesSchema } from "../schema.js";
-import { ACTOR } from "./identity.js";
 
 /**
  * The tracker's replica, opened **for the tab** and held for the origin.
@@ -56,7 +55,16 @@ export class ReplicaUnavailable extends TaggedError("ReplicaUnavailable")<{
   cause?: unknown;
 }> {}
 
-/** Everything a screen needs from the mesh, and nothing it does not. */
+/**
+ * Everything a screen needs from the mesh, and nothing it does not.
+ *
+ * **Who this tab is acting as is deliberately not here.** It used to be — one field, a constant
+ * read out of `identity.ts` — and that was honest only while the answer could never change. It can
+ * now: the actor is a row in the origin's database, chosen by a person, and a second window that
+ * kept its own copy would go on attributing comments to whoever it was told at boot. So it is a
+ * fact about the *install* rather than about this object, it is held by the worker that holds the
+ * database, and it reaches the screens through `install.ts` and `useActor` instead.
+ */
 export interface Replica {
   /** The only surface a component touches: `api.issues.list(…)`, never Drizzle and never a handle. */
   readonly api: Api<typeof procedures>;
@@ -87,8 +95,6 @@ export interface Replica {
    * database. The header says which mode it is in before anything has failed.
    */
   readonly shared: boolean;
-  /** Who this tab is acting as. Every write takes it, because a handler cannot ask the mesh. */
-  readonly actor: string;
 }
 
 const unavailable = (message: string) => (cause: unknown) =>
@@ -147,7 +153,6 @@ const openOnce = (): Promise<Result<Replica, ReplicaUnavailable>> =>
       durable,
       role: link.role,
       shared: rendezvousAvailable(),
-      actor: ACTOR,
     });
   });
 

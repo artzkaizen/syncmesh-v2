@@ -90,7 +90,8 @@ const base = (who: Who) => ({
 
 /** One person's device: their identity, their grant, their own SQLite file, the whole API. */
 export const openDevice = async (who: Who) => {
-  const app = await createClient(base(who));
+  const app = createClient(base(who));
+  await app.$ready;
   register(app.$mesh);
   return app;
 };
@@ -116,7 +117,8 @@ export const openAuthority = async () => {
 
 /** A device that can reach an authority — the same app, plus the one link the gate needs. */
 export const openDeviceWithAuthority = async (who: Who, url: string) => {
-  const app = await createClient({ ...base(who), link: httpLink(url) });
+  const app = createClient({ ...base(who), link: httpLink(url) });
+  await app.$ready;
   register(app.$mesh);
   return app;
 };

@@ -41,7 +41,7 @@ export const issues = {
 };
 
 /** The thread and the three writes over it, in one place, because a UI treats them as one. */
-export const comments = { forIssue: reads.thread, ...commentWrites };
+export const comments = { forIssue: reads.thread, total: reads.threadCount, ...commentWrites };
 
 export { history, issueLabels, labels, members, projects, reactions, teams };
 

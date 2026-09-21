@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { issuesCall } from "../app/use-issues.js";
+import { PER_STATUS, issuesCall } from "../app/use-issues.js";
 import { NO_FILTERS } from "../app/view.js";
 import { WORKSPACE } from "../domain.js";
 import { seedWorkspace } from "../seed.js";
@@ -26,19 +26,19 @@ describe("the screen's one read of the issues", () => {
   test("searching and then clearing gets back exactly the list that was there before", async () => {
     const { ada } = await seeded();
 
-    const first = issuesCall(ada, NO_FILTERS);
+    const first = issuesCall(ada, NO_FILTERS, PER_STATUS);
     const listed = await first.run();
     expect(listed.length).toBeGreaterThan(0);
 
     // somebody types: a different procedure, a different key, and genuinely different rows
-    const searching = issuesCall(ada, { ...NO_FILTERS, text: "relay" });
+    const searching = issuesCall(ada, { ...NO_FILTERS, text: "relay" }, PER_STATUS);
     const found = await searching.run();
     expect(found.length).toBeGreaterThan(0);
     expect(searching.key).not.toBe(first.key);
     expect(found).not.toEqual(listed);
 
     // and clears it again — whitespace included, because that is what a half-deleted box holds
-    const cleared = issuesCall(ada, { ...NO_FILTERS, text: "  " });
+    const cleared = issuesCall(ada, { ...NO_FILTERS, text: "  " }, PER_STATUS);
     expect(cleared.key).toBe(first.key);
     expect(await cleared.run()).toEqual(listed);
 
@@ -49,13 +49,15 @@ describe("the screen's one read of the issues", () => {
     const { ada, workspace } = await seeded();
     const teamId = workspace.teamIds.ENG ?? "";
 
-    const filtered = issuesCall(ada, { ...NO_FILTERS, teamId });
+    const filtered = issuesCall(ada, { ...NO_FILTERS, teamId }, PER_STATUS);
     expect(filtered.path).toBe("issues.list");
     const rows = await filtered.run();
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((row) => row.teamId === teamId)).toBe(true);
 
-    expect(issuesCall(ada, { ...NO_FILTERS, teamId, text: "relay" }).path).toBe("issues.search");
+    expect(issuesCall(ada, { ...NO_FILTERS, teamId, text: "relay" }, PER_STATUS).path).toBe(
+      "issues.search",
+    );
 
     await ada.$mesh.stop();
   });

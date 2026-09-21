@@ -1,6 +1,7 @@
 import type { MeshHost, WirePort } from "@syncmesh/browser";
 import type { EngineError } from "@syncmesh/engine";
 import type { Client } from "@syncmesh/orpc";
+import type { SqlDriver } from "@syncmesh/storage";
 
 import { MeshCallFailed, serveMesh } from "@syncmesh/browser";
 import { deviceIdentity } from "@syncmesh/client";
@@ -8,8 +9,6 @@ import { createInspectorHost } from "@syncmesh/devtools";
 import { createClient, httpLink, sqlite } from "@syncmesh/orpc";
 import { Result, serializeTagged } from "@syncmesh/result";
 import { wasmSqliteDriver } from "@syncmesh/sqlite-wasm";
-import { Temporal } from "@syncmesh/temporal";
-import { issueGrant } from "@syncmesh/wire";
 
 import type { Procedures } from "../procedures.js";
 import type { IssuesPresence } from "../schema.js";
@@ -18,7 +17,8 @@ import { WORKSPACE, WORKSPACE_ID } from "../domain.js";
 import { procedures } from "../procedures.js";
 import { issuesSchema } from "../schema.js";
 import { seedWorkspace } from "../seed.js";
-import { ACTOR, AUTHORITY_PEER, issuer } from "./identity.js";
+import { AUTHORITY_PEER, AUTHORITY_URL, issuer } from "./identity.js";
+import { serveInstall } from "./install.js";
 import { dialRelay } from "./relay.js";
 
 /**
@@ -124,15 +124,45 @@ const seedOnce = (app: Client<Procedures, IssuesPresence>) =>
 const openDriver = () => wasmSqliteDriver({ name: DATABASE, whenHeld: "wait" });
 
 /**
- * Where `issues.claimNumber` goes, and the only call in this app that leaves the device.
+ * The OPFS root this origin's databases live under, named here because removing it is the one
+ * thing the adapter that created it does not offer.
  *
- * Configured rather than discovered, like the issuer and the authority's key: a device compares
- * the authority's *events* against a peer id it already trusts, and the URL is only how it asks.
- * Absent, the call fails naming itself — `runs on the authority, and no link was configured` —
- * which is the honest answer on a laptop with the server switched off, and a great deal better
- * than a number that never arrives.
+ * `/syncmesh` is `@syncmesh/sqlite-wasm`'s own default (`adapters/sqlite-wasm/src/driver.ts`), and
+ * a second copy of a constant is normally the thing this codebase refuses to write. It is written
+ * anyway because the alternative is worse: the adapter's pool holds a slot file per database *and*
+ * per journal under opaque names it chose, so there is nothing an app could remove one file at a
+ * time, and a reset that deleted the wrong subtree would be a reset that corrupted the rest.
  */
-const AUTHORITY_URL = import.meta.env["VITE_AUTHORITY_URL"] ?? "http://localhost:5252";
+const ROOT = "syncmesh";
+
+/**
+ * Throws this install away: the mesh, the connection, and then the files underneath both.
+ *
+ * **The order is the whole of it.** The access-handle pool takes exclusive handles for every slot
+ * in {@link ROOT} the moment it installs, and a directory whose files are held open cannot be
+ * removed by anybody — this worker included. `$close` stops the transports and the engine but
+ * deliberately leaves the connection open, because a driver you passed stays yours to close
+ * (`client/src/boot.ts`); closing it is what takes the pool to zero, and at zero the pool pauses
+ * and hands the handles back. Only then is there anything to delete.
+ *
+ * It does not reload anything. The windows are told (`install.ts`), and each of them decides — a
+ * worker has no page to navigate, and a reset performed for a person who then sees the last frame
+ * of a database that no longer exists is the failure this is meant to end rather than cause.
+ */
+const wipe = async (close: () => Promise<void>, driver: SqlDriver): Promise<void> => {
+  await close();
+  await driver.close?.();
+  const gone = await Result.tryPromise({
+    try: async () => {
+      const root = await navigator.storage.getDirectory();
+      await root.removeEntry(ROOT, { recursive: true });
+    },
+    catch: reasonOf,
+  });
+  // a reset that silently did nothing is the worst outcome here: the app comes back looking
+  // identical, and the person who asked for a cold join has no way to tell they did not get one
+  console.log(`[syncmesh] reset: ${gone.isOk() ? "database deleted" : `refused — ${gone.error}`}`);
+};
 
 /**
  * What the engine reports, in the one thread that can hear it.
@@ -168,8 +198,8 @@ const buildHost = (): Promise<Result<MeshHost, MeshCallFailed>> =>
       refused("this install's device key would not open"),
     );
     const app = yield* await Result.tryPromise({
-      try: () =>
-        createClient({
+      try: async () => {
+        const opened = createClient({
           schema: issuesSchema(),
           procedures,
           identity: device,
@@ -179,23 +209,23 @@ const buildHost = (): Promise<Result<MeshHost, MeshCallFailed>> =>
           transports: dialRelay(device.peerId),
           link: httpLink(AUTHORITY_URL),
           onError: report,
-        }),
+        });
+        await opened.$ready;
+        return opened;
+      },
       catch: refused("the mesh could not open over the database"),
     });
-    yield* app.$grants
-      .register(
-        issueGrant(issuer, {
-          account: ACTOR,
-          device: device.peerId,
-          role: "admin",
-          // SAFETY: the workspace this build runs under, in the documented kind:id form
-          partitions: [WORKSPACE] as never,
-          validFor: Temporal.Duration.from({ days: 30 }),
-          // the real clock: a grant minted at a fixed instant is born expired
-          now: Temporal.Now.instant(),
-        }),
-      )
-      .mapError(refused("the device's own grant would not register"));
+    // who this install is, read out of the same database the device key came from, and the grant
+    // that says so — every window of this origin is told, and told again whenever it moves
+    yield* (
+      await serveInstall({
+        driver,
+        issuer,
+        device: device.peerId,
+        grants: app.$grants,
+        wipe: () => wipe(app.$close, driver),
+      })
+    ).mapError((failure) => refused("this install could not say who it is")(failure.message));
     yield* await seedOnce(app);
     // the inspector is an argument and not a flag: a build that dropped this line serves an origin
     // whose windows can read their own data and learn nothing about the device carrying it, and

@@ -4,7 +4,8 @@ import type { IssueRow, Panel } from "./view.js";
 
 import { ISSUE_STATUS, PRIORITY_NAME, WORKSPACE_ID } from "../domain.js";
 import { Avatar, Identifier, LabelChip, Section, StatusMark } from "./atoms.js";
-import { useCatalog, useReplica, useShownRows } from "./context.js";
+import { useActor, useCatalog, useApi, useFollower, useShownRows } from "./context.js";
+import { useDeleted } from "./deleted.js";
 import { useOpened } from "./opened.js";
 import { SyncBadge } from "./sync-badge.js";
 import { Thread } from "./thread.js";
@@ -33,7 +34,8 @@ import { panelFor } from "./view.js";
  */
 
 function StatusPicker({ row }: { readonly row: IssueRow }) {
-  const { api, actor } = useReplica();
+  const api = useApi();
+  const actor = useActor().account;
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: SPACE.xs }}>
       {ISSUE_STATUS.map((status) => (
@@ -74,7 +76,8 @@ function StatusPicker({ row }: { readonly row: IssueRow }) {
  * panel, which is the lesser harm of the two by some distance.
  */
 function AssigneePicker({ row }: { readonly row: IssueRow }) {
-  const { api, actor } = useReplica();
+  const api = useApi();
+  const actor = useActor().account;
   const catalog = useCatalog();
   return (
     <div style={{ alignItems: "center", display: "flex", gap: SPACE.sm }}>
@@ -104,7 +107,8 @@ function AssigneePicker({ row }: { readonly row: IssueRow }) {
 }
 
 function PriorityPicker({ row }: { readonly row: IssueRow }) {
-  const { api, actor } = useReplica();
+  const api = useApi();
+  const actor = useActor().account;
   return (
     <div style={{ display: "flex", gap: SPACE.xs }}>
       {PRIORITY_NAME.map((name, level) => (
@@ -134,7 +138,8 @@ function PriorityPicker({ row }: { readonly row: IssueRow }) {
 
 /** Attach and detach, as a row of every label with the attached ones lit. Both are one row written. */
 function LabelPicker({ row }: { readonly row: IssueRow }) {
-  const { api, actor } = useReplica();
+  const api = useApi();
+  const actor = useActor().account;
   const catalog = useCatalog();
   const attached = new Set(
     catalog.tags.filter((tag) => tag.issueId === row.id).map((tag) => tag.labelId),
@@ -170,15 +175,20 @@ function LabelPicker({ row }: { readonly row: IssueRow }) {
 }
 
 /**
- * The panel before it has an issue to draw, which is four different sentences and not one.
+ * The panel before it has an issue to draw, which is five different sentences and not one.
  *
  * Only `missing` is a claim about this device's storage, and it is the only one that needs every
- * source to have answered first. The other three are a read still running, a read that fell over,
- * and a mesh this device has not finished hearing from — each of them a reason not to know, and
- * none of them a reason to say no.
+ * source to have answered first. Three of the rest are a read still running, a read that fell
+ * over, and a mesh this device has not finished hearing from — each of them a reason not to know,
+ * and none of them a reason to say no.
+ *
+ * `deleted` is the odd one out: it is the only sentence here that reports something this device
+ * *knows*, rather than something it has failed to find. See `view.ts`'s `Panel`, and `useDeleted`
+ * for where the fact comes from.
  */
 const SAID = {
   "catching-up": "Not on this device yet — still hearing from the rest of the mesh.",
+  deleted: "That issue was deleted.",
   missing: "That issue is not on this device.",
   waiting: "Opening\u2026",
 } satisfies Record<Exclude<Panel, { kind: "open" | "unreadable" }>["kind"], string>;
@@ -222,13 +232,11 @@ function Blank({ panel }: { readonly panel: Exclude<Panel, { kind: "open" }> }) 
  * `view.ts`'s `panelFor`.
  */
 export function Detail({ id, onClose }: { readonly id: string; readonly onClose: () => void }) {
-  const { api } = useReplica();
+  const api = useApi();
+  const mesh = useFollower();
   const catalog = useCatalog();
-  const panel = panelFor(
-    id,
-    useQuery(api.issues.get({ workspaceId: WORKSPACE_ID, id })),
-    useShownRows(),
-  );
+  const found = useQuery(api.issues.get({ workspaceId: WORKSPACE_ID, id }));
+  const panel = panelFor(id, found, useShownRows(), useDeleted(mesh, id, found.data));
 
   useOpened(api, id, panel.kind === "open" ? panel.row.number : undefined);
 

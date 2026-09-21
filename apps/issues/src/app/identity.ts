@@ -52,5 +52,16 @@ export const issuer = createIdentity(bytes(1)).unwrap();
  */
 export const AUTHORITY_PEER = createIdentity(bytes(200)).unwrap().peerId;
 
-/** Ada, who is an admin — the seed attributes its comments to her, and only an admin may seed. */
-export const ACTOR = "acct_ada";
+/**
+ * Where `issues.claimNumber` goes, and the only call in this app that leaves the device.
+ *
+ * Configured rather than discovered, like the issuer and the key above it: a device compares the
+ * authority's *events* against a peer id it already trusts, and the URL is only how it asks.
+ * Absent, the call fails naming itself — `runs on the authority, and no link was configured` —
+ * which is the honest answer on a laptop with the server switched off, and a great deal better
+ * than a number that never arrives.
+ *
+ * Read here rather than in `host.ts` because two threads need it and they must not disagree: the
+ * worker dials it, and the settings screen in a window shows a person what this install was told.
+ */
+export const AUTHORITY_URL = import.meta.env["VITE_AUTHORITY_URL"] ?? "http://localhost:5252";

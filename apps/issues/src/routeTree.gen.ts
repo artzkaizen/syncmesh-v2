@@ -10,11 +10,29 @@
 
 import { Route as rootRouteImport } from "./routes/__root";
 import { Route as ShellRouteRouteImport } from "./routes/_shell/route";
+import { Route as IdentityRouteImport } from "./routes/identity";
+import { Route as PeopleRouteImport } from "./routes/people";
+import { Route as SettingsRouteImport } from "./routes/settings";
 import { Route as ShellIndexRouteImport } from "./routes/_shell/index";
 import { Route as ShellIssuesIdRouteImport } from "./routes/_shell/issues/$id";
 
 const ShellRouteRoute = ShellRouteRouteImport.update({
   id: "/_shell",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const IdentityRoute = IdentityRouteImport.update({
+  id: "/identity",
+  path: "/identity",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const PeopleRoute = PeopleRouteImport.update({
+  id: "/people",
+  path: "/people",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const SettingsRoute = SettingsRouteImport.update({
+  id: "/settings",
+  path: "/settings",
   getParentRoute: () => rootRouteImport,
 } as any);
 const ShellIndexRoute = ShellIndexRouteImport.update({
@@ -30,28 +48,47 @@ const ShellIssuesIdRoute = ShellIssuesIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   "/": typeof ShellIndexRoute;
+  "/identity": typeof IdentityRoute;
+  "/people": typeof PeopleRoute;
+  "/settings": typeof SettingsRoute;
   "/issues/$id": typeof ShellIssuesIdRoute;
 }
 export interface FileRoutesByTo {
+  "/identity": typeof IdentityRoute;
+  "/people": typeof PeopleRoute;
+  "/settings": typeof SettingsRoute;
   "/": typeof ShellIndexRoute;
   "/issues/$id": typeof ShellIssuesIdRoute;
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport;
   "/_shell": typeof ShellRouteRouteWithChildren;
+  "/identity": typeof IdentityRoute;
+  "/people": typeof PeopleRoute;
+  "/settings": typeof SettingsRoute;
   "/_shell/": typeof ShellIndexRoute;
   "/_shell/issues/$id": typeof ShellIssuesIdRoute;
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath;
-  fullPaths: "/" | "/issues/$id";
+  fullPaths: "/" | "/identity" | "/people" | "/settings" | "/issues/$id";
   fileRoutesByTo: FileRoutesByTo;
-  to: "/" | "/issues/$id";
-  id: "__root__" | "/_shell" | "/_shell/" | "/_shell/issues/$id";
+  to: "/identity" | "/people" | "/settings" | "/" | "/issues/$id";
+  id:
+    | "__root__"
+    | "/_shell"
+    | "/identity"
+    | "/people"
+    | "/settings"
+    | "/_shell/"
+    | "/_shell/issues/$id";
   fileRoutesById: FileRoutesById;
 }
 export interface RootRouteChildren {
   ShellRouteRoute: typeof ShellRouteRouteWithChildren;
+  IdentityRoute: typeof IdentityRoute;
+  PeopleRoute: typeof PeopleRoute;
+  SettingsRoute: typeof SettingsRoute;
 }
 
 declare module "@tanstack/react-router" {
@@ -61,6 +98,27 @@ declare module "@tanstack/react-router" {
       path: "";
       fullPath: "/";
       preLoaderRoute: typeof ShellRouteRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/identity": {
+      id: "/identity";
+      path: "/identity";
+      fullPath: "/identity";
+      preLoaderRoute: typeof IdentityRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/people": {
+      id: "/people";
+      path: "/people";
+      fullPath: "/people";
+      preLoaderRoute: typeof PeopleRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/settings": {
+      id: "/settings";
+      path: "/settings";
+      fullPath: "/settings";
+      preLoaderRoute: typeof SettingsRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     "/_shell/": {
@@ -96,6 +154,9 @@ const ShellRouteRouteWithChildren = ShellRouteRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   ShellRouteRoute: ShellRouteRouteWithChildren,
+  IdentityRoute: IdentityRoute,
+  PeopleRoute: PeopleRoute,
+  SettingsRoute: SettingsRoute,
 };
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

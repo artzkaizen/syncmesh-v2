@@ -5,11 +5,12 @@ import {
   stripSearchParams,
   useParams,
 } from "@tanstack/react-router";
+import { useRef, useState } from "react";
 
 import type { Filters, IssueRow, Sort } from "../../app/view.js";
 
 import { Chrome } from "../../app/chrome.js";
-import { ShownRows, useReplica } from "../../app/context.js";
+import { ShownRows, useFollower } from "../../app/context.js";
 import { Devtools } from "../../app/devtools.js";
 import { inspectorControls } from "../../app/inspector.js";
 import { List } from "../../app/list.js";
@@ -17,7 +18,7 @@ import { List } from "../../app/list.js";
 import { IMPLIED, View, filtersOf, viewOf } from "../../app/search.js";
 import { Sidebar } from "../../app/sidebar.js";
 import { COLOR, FONT, TEXT } from "../../app/ui.js";
-import { useIssues } from "../../app/use-issues.js";
+import { PER_STATUS, useIssues } from "../../app/use-issues.js";
 
 /**
  * Everything that is on screen whichever issue is open: the header, the filters, the list, and
@@ -58,7 +59,7 @@ export const Route = createFileRoute("/_shell")({
 const EMPTY: readonly IssueRow[] = [];
 
 function Shell() {
-  const { mesh } = useReplica();
+  const mesh = useFollower();
   const search = Route.useSearch();
   const navigate = Route.useNavigate();
   /**
@@ -77,7 +78,22 @@ function Shell() {
    * against it, so "that issue is not on this device" cannot be said about a row this screen is
    * drawing one pane to the left — `app/view.ts`'s `panelFor` has the measurement.
    */
-  const answer = useIssues(filters);
+  /**
+   * How many rows of **each** status the board is holding, and the button that widens it.
+   *
+   * Held here because the read is, and keyed on the filters so that narrowing the board starts a
+   * fresh window rather than carrying somebody's expanded "In progress" into a different team's
+   * board. The window is per status rather than a flat limit — `procedures/reads.ts` says why a
+   * grouped board cannot page on one.
+   */
+  const [perStatus, setPerStatus] = useState(PER_STATUS);
+  const narrowing = JSON.stringify(filters);
+  const opened = useRef(narrowing);
+  if (opened.current !== narrowing) {
+    opened.current = narrowing;
+    setPerStatus(PER_STATUS);
+  }
+  const answer = useIssues(filters, perStatus);
   /** A filter change is a navigation. The sort travels with it, because it is not in the patch. */
   const show = (next: Filters) =>
     void navigate({ search: (previous: View) => ({ ...previous, ...viewOf(next) }) });
@@ -111,6 +127,7 @@ function Shell() {
           <List
             answer={answer}
             filters={filters}
+            onMore={() => setPerStatus((held) => held + PER_STATUS)}
             onSelect={openIssue}
             onSort={sortBy}
             selectedId={id}

@@ -1,8 +1,9 @@
 import type { IssueStatus } from "../domain.js";
-import type { Group } from "./view.js";
+import type { Counted, Group } from "./view.js";
 
 import { Row } from "./row.js";
 import { CAPTION, COLOR, HAIRLINE, SPACE, STATUS_STYLE, TEXT } from "./ui.js";
+import { countText } from "./view.js";
 
 /**
  * One status group: a sticky header, its rows, and the two drop targets they make between them.
@@ -21,6 +22,11 @@ export interface Landing {
 
 interface SectionProps {
   readonly group: Group;
+  /**
+   * The badge, from the count read rather than from `group.rows` — the two are different
+   * questions and `view.ts`'s {@link Counted} is the note explaining why this is not a number.
+   */
+  readonly count: Counted;
   readonly chips: ReadonlyMap<string, readonly string[]>;
   readonly movable: boolean;
   readonly landing: Landing | undefined;
@@ -29,6 +35,37 @@ interface SectionProps {
   readonly onOver: (where: Landing) => void;
   readonly onDrop: () => void;
   readonly onSelect: (id: string) => void;
+  /** How many more of this status exist than are drawn — exact, or 0 when there is no count read. */
+  readonly more: number;
+  readonly onMore: () => void;
+}
+
+/**
+ * What a window is holding back, as a number rather than as a scroll that may or may not end.
+ *
+ * `count` is a subtraction of two exact reads — the status's `GROUP BY` total minus the rows this
+ * window drew — so it says how many, not "more". A board that only hinted at more would be back
+ * to the thing this screen was fixed for: a number on screen that changes without explanation.
+ */
+function More({ count, onClick }: { readonly count: number; readonly onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        ...TEXT.xs,
+        background: "none",
+        border: "none",
+        color: COLOR.textFaint,
+        cursor: "pointer",
+        padding: `${String(SPACE.xs)}px ${String(SPACE.lg)}px`,
+        textAlign: "left",
+        width: "100%",
+      }}
+      type="button"
+    >
+      Show {count.toLocaleString()} more
+    </button>
+  );
 }
 
 /**
@@ -37,7 +74,7 @@ interface SectionProps {
  * drops onto existing rows could never receive one.
  */
 export function Section(props: SectionProps) {
-  const { group, landing, movable } = props;
+  const { count, group, landing, more, movable } = props;
   const { color, label } = STATUS_STYLE[group.status];
   const here = landing?.status === group.status ? landing : undefined;
   return (
@@ -65,7 +102,7 @@ export function Section(props: SectionProps) {
       >
         <span style={{ background: color, borderRadius: 999, height: 6, width: 6 }} />
         <span style={{ ...CAPTION, color: COLOR.text }}>{label}</span>
-        <span style={{ ...TEXT.xs, color: COLOR.textFaint }}>{group.rows.length}</span>
+        <span style={{ ...TEXT.xs, color: COLOR.textFaint }}>{countText(count)}</span>
       </div>
       {group.rows.map((row) => (
         <Row
@@ -81,6 +118,7 @@ export function Section(props: SectionProps) {
           selected={props.selectedId === row.id}
         />
       ))}
+      {more > 0 ? <More count={more} onClick={props.onMore} /> : undefined}
     </div>
   );
 }

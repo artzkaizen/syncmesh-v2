@@ -58,8 +58,9 @@ export const IMPLIED = {
  * The names are the query string's, and they are deliberately not the names of the fields they
  * set: `team`, `label` and `assignee` are what a person would guess from looking at the sidebar,
  * where `teamId` in an address bar reads like an implementation detail leaking, and `q` is what
- * every search box on the web is called. {@link filtersOf} is the only place the two vocabularies
- * meet.
+ * every search box on the web is called. `author` is the widest of these gaps — the column is
+ * `creatorId` and the procedure's filter is too — and it is still the right name, because nobody
+ * shares a link that says `creator`. {@link filtersOf} is the only place the two vocabularies meet.
  *
  * Every field ends in `.catch`, which is a decision rather than laziness. A URL is typed by
  * people, truncated by chat clients and kept in bookmarks across deploys, so a value that no
@@ -71,6 +72,8 @@ export const View = z.object({
   team: Chosen,
   label: Chosen,
   assignee: Chosen,
+  /** Who filed it. `author` rather than `creator`, because that is the word a URL is read in. */
+  author: Chosen,
   /** Work in flight only — the `Open only` view in the sidebar. */
   open: z.boolean().default(IMPLIED.open).catch(IMPLIED.open),
   /** The header's search box. Empty means the filtered list rather than a search. */
@@ -84,6 +87,7 @@ export type View = z.infer<typeof View>;
 export const filtersOf = (view: View): Filters => ({
   teamId: view.team ?? null,
   assigneeId: view.assignee ?? null,
+  creatorId: view.author ?? null,
   labelId: view.label ?? null,
   openOnly: view.open,
   text: view.q,
@@ -100,6 +104,7 @@ export const filtersOf = (view: View): Filters => ({
 export const viewOf = (filters: Filters): Omit<View, "sort"> => ({
   team: filters.teamId ?? undefined,
   assignee: filters.assigneeId ?? undefined,
+  author: filters.creatorId ?? undefined,
   label: filters.labelId ?? undefined,
   open: filters.openOnly,
   q: filters.text,

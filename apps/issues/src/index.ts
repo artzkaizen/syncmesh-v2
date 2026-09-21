@@ -33,10 +33,23 @@ export {
   PROJECT_STATUS,
   REACTION_SUBJECT,
   WORKSPACE,
+  WORKSPACE_ID,
   identifierOf,
   type ActivityKind,
   type IssueStatus,
 } from "./domain.js";
+export {
+  ActorUnavailable,
+  DEFAULT_ACTOR,
+  ROLES,
+  ROLE_EXPLAINS,
+  actorGrant,
+  forgetActor,
+  rememberActor,
+  storedActor,
+  type Actor,
+  type Role,
+} from "./actor.js";
 export { procedures, type Procedures } from "./procedures.js";
 export { authorityHandlers } from "./authority.js";
 export { seedConversation, seedWorkspace, type SeedOptions, type SeededWorkspace } from "./seed.js";
