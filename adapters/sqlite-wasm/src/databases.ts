@@ -9,7 +9,7 @@
 import type { Database, Sqlite3Static } from "@sqlite.org/sqlite-wasm";
 
 import { Result } from "@syncmesh/result";
-import { ATTACHED_LOG } from "@syncmesh/storage";
+import { ATTACHED_LOG, statePathFor } from "@syncmesh/storage";
 
 import type {
   HeldPool,
@@ -25,6 +25,21 @@ import { OpfsUnavailable, dropLease, holdPool } from "./vfs.js";
 const fileOf = (name: string) => `${encodeURIComponent(name)}.db`;
 
 /**
+ * Attaches this database's log beside it, under the name its tables are written against.
+ *
+ * **Every database here is a pair** (RFC-0022): the durable log is the file the store is named
+ * after, and the derived half — the app's own tables and the projection — hangs off it under a
+ * name carrying the app's schema, and is what gets opened as `main`. The adapter does it rather
+ * than the caller because the adapter is what knows the VFS, and on OPFS the VFS has to be named
+ * in the URI or the attached file opens on the build's default one, which is not persistent.
+ * That failure has no symptom until a reload.
+ */
+const attached = (db: Database, path: string, vfs: WasmStorage): Database => {
+  db.exec(`ATTACH DATABASE 'file:${path}?vfs=${vfs}' AS ${ATTACHED_LOG}`);
+  return db;
+};
+
+/**
  * One idle connection per memory database, never closed.
  *
  * `memdb` frees a database when its last connection goes, and `:memory:` does not even get that
@@ -33,20 +48,6 @@ const fileOf = (name: string) => `${encodeURIComponent(name)}.db`;
  * store closed and reopened between two screens is the same thread. This is what holds the pages
  * for that long, and no longer.
  */
-/**
- * Attaches this database's log beside it, under the name its tables are written against.
- *
- * **Every database here is a pair** (RFC-0022): the derived half is `main`, holding the app's own
- * tables and the projection, and the durable half is a second file attached as `syncmesh`. The
- * adapter does it rather than the caller because the adapter is what knows the VFS — and on OPFS
- * the VFS has to be named in the URI, or the attached file opens on the build's default one,
- * which is not persistent. That failure has no symptom until a reload.
- */
-const attached = (db: Database, path: string): Database => {
-  db.exec(`ATTACH DATABASE '${path}' AS ${ATTACHED_LOG}`);
-  return db;
-};
-
 const keepers = new Map<string, Database>();
 
 /**
@@ -98,12 +99,13 @@ const durably = (db: Database, storage: WasmStorage): Database => {
 };
 
 export const memoryDatabase = (sqlite3: Sqlite3Static, options: VfsOptions): OpenedDatabase => {
-  const uri = `file:/${fileOf(options.name)}?vfs=memdb`;
-  // the log is a second memory database under its own name, kept open for the same reason main is
-  const logUri = `file:/${fileOf(options.name)}.log?vfs=memdb`;
-  for (const held of [uri, logUri])
+  const log = `/${fileOf(options.name)}`;
+  const logUri = `file:${log}?vfs=memdb`;
+  // the derived half is a second memory database, kept open for the same reason the log is
+  const stateUri = `file:${statePathFor(log, options.schema)}?vfs=memdb`;
+  for (const held of [stateUri, logUri])
     if (!keepers.has(held)) keepers.set(held, new sqlite3.oo1.DB(held, "c"));
-  const db = new sqlite3.oo1.DB(uri, "c");
+  const db = new sqlite3.oo1.DB(stateUri, "c");
   db.exec(`ATTACH DATABASE '${logUri}' AS ${ATTACHED_LOG}`);
   return { db, storage: "memory", release: () => {} };
 };
@@ -133,10 +135,12 @@ export const sahPoolDatabase = async (
 ): Promise<Result<OpenedDatabase, PoolFailure>> => {
   const directory = `${options.directory}/pool`;
   const held = await holdPool(install, directory, options);
+  const log = `/${fileOf(options.name)}`;
   return held.map((pool) => ({
     db: attached(
-      durably(new pool.util.OpfsSAHPoolDb(`/${fileOf(options.name)}`), "opfs-sahpool"),
-      `/${fileOf(options.name)}.log`,
+      durably(new pool.util.OpfsSAHPoolDb(statePathFor(log, options.schema)), "opfs-sahpool"),
+      log,
+      "opfs-sahpool",
     ),
     storage: "opfs-sahpool" as const,
     release: releaseOnce(pool, directory),
@@ -146,15 +150,18 @@ export const sahPoolDatabase = async (
 export const opfsDatabaseIn = (
   OpfsDb: NonNullable<OptionalVfs["oo1"]["OpfsDb"]>,
   options: VfsOptions,
-): Result<OpenedDatabase, OpfsUnavailable> =>
-  Result.try({
+): Result<OpenedDatabase, OpfsUnavailable> => {
+  const log = `${options.directory}/db/${fileOf(options.name)}`;
+  return Result.try({
     try: () => ({
       db: attached(
-        durably(new OpfsDb(`${options.directory}/db/${fileOf(options.name)}`, "c"), "opfs"),
-        `${options.directory}/db/${fileOf(options.name)}.log`,
+        durably(new OpfsDb(statePathFor(log, options.schema), "c"), "opfs"),
+        log,
+        "opfs",
       ),
       storage: "opfs" as const,
       release: () => {},
     }),
     catch: (cause) => new OpfsUnavailable({ requested: "opfs", cause }),
   });
+};

@@ -6,8 +6,9 @@ import {
   acquireStoreLock,
   attachLog,
   lockPathFor,
-  logPathFor,
   openStores,
+  schemaNameFor,
+  statePathFor,
 } from "@syncmesh/storage";
 import { openDatabaseSync } from "expo-sqlite";
 
@@ -27,7 +28,8 @@ export { expoSqliteDriverOver, traceStatements } from "./driver.js";
  * `SELECT` answers with the aeroplane in flight (book ch. 3).
  *
  * @param name A database name — `expo-sqlite` resolves it under the app's sandbox — or
- *   `":memory:"` for one that lives as long as the driver.
+ *   `":memory:"` for one that lives as long as the driver. This is the **derived** half; the log
+ *   is attached onto the driver afterwards with `attachLog` (RFC-0022).
  *
  * @example
  * const client = createClient({ schema, procedures, storage: sqlite({ driver: expoSqliteDriver("issues.db") }) });
@@ -40,13 +42,13 @@ export function expoSqliteDriver(name: string): SqliteDriver {
 }
 
 export interface DefaultStoreOptions extends OpenStoresOptions {
-  /** Database name; `<name>.db` inside the app's own sandbox. */
+  /** The store's name; `<name>.db` inside the app's own sandbox is the log. */
   readonly name: string;
 }
 
 /**
- * The durable default on a phone: event log and folded state in one SQLite file, held under an
- * exclusive lock.
+ * The durable default on a phone: the event log at `<name>.db` with the folded state beside it,
+ * both held under one exclusive lock.
  *
  * The lock matters less here than on a desktop — an app is one process — and it is kept anyway,
  * because the failure it prevents is the same one everywhere: two engines over one log stamp
@@ -59,18 +61,18 @@ export interface DefaultStoreOptions extends OpenStoresOptions {
 export async function defaultStore(
   options: DefaultStoreOptions,
 ): Promise<Result<Stores, StoreFailure | StoreLocked>> {
-  const path = `${options.name}.db`;
-  const lockDb: ExpoDatabase = openDatabaseSync(lockPathFor(path));
-  // over the store, not the file: `path` and its log are opened and forgotten together
+  const logPath = `${options.name}.db`;
+  const lockDb: ExpoDatabase = openDatabaseSync(lockPathFor(logPath));
+  // over the store, not the file: every file named after `logPath` is held and released together
   const lock = acquireStoreLock({
-    path,
+    path: logPath,
     run: (sql) => lockDb.execSync(sql),
     close: () => lockDb.closeSync(),
   });
   if (lock.isErr()) return lock;
-  // the state file is `main`; the log is attached beside it, and the lock above covers both
-  const driver = expoSqliteDriver(path);
-  await attachLog(driver, logPathFor(path));
+  // the app's schema names the derived half, so a changed column refolds instead of migrating
+  const driver = expoSqliteDriver(statePathFor(logPath, schemaNameFor(options.tables ?? [])));
+  await attachLog(driver, logPath);
   const stores = await openStores(driver, options);
   if (stores.isErr()) {
     lock.value.release();

@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 
 import type { SqlRow, SqliteDriver } from "../driver.js";
 
-import { attachLog } from "../open-stores.js";
+import { attachLog, statePathFor } from "../open-stores.js";
 import { sqliteDriver } from "../sqlite-driver.js";
 
 /**
@@ -15,8 +15,13 @@ import { sqliteDriver } from "../sqlite-driver.js";
  * Here rather than in `driver-tests/`, which is the suite every adapter runs and may not import
  * `bun:sqlite` — this is storage's own bun-only corner.
  */
-export const openPair = async (path = ":memory:"): Promise<SqliteDriver> => {
-  const db = new Database(path, { create: true, strict: true });
+export const openPair = async (logPath = ":memory:", schema = "test"): Promise<SqliteDriver> => {
+  // `logPath` names the store, and the state file hangs off it — the same way round as a real
+  // adapter, so a test cannot pass because it opened the halves in an order nothing else does
+  const db = new Database(logPath === ":memory:" ? ":memory:" : statePathFor(logPath, schema), {
+    create: true,
+    strict: true,
+  });
   const driver = sqliteDriver({
     exec: (sql) => db.run(sql),
     run: (sql, params) => void db.run(sql, [...params]),
@@ -26,6 +31,6 @@ export const openPair = async (path = ":memory:"): Promise<SqliteDriver> => {
   });
   // `:memory:` attaches a second, private in-memory database — a real log, for a test that is
   // not testing durability
-  await attachLog(driver, path === ":memory:" ? ":memory:" : `${path}.log`);
+  await attachLog(driver, logPath);
   return driver;
 };

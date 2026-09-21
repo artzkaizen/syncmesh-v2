@@ -52,6 +52,7 @@ const opening = (held: Map<number, Held>, handle: () => number, call: OpenCall) 
     const opened = yield* Result.await(
       openDatabase(sqlite3, call.storage, {
         name: call.name,
+        schema: call.schema,
         directory: call.directory,
         capacity: call.capacity,
         ...(call.whenHeld !== undefined && { whenHeld: call.whenHeld }),

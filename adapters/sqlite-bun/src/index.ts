@@ -12,35 +12,44 @@ import {
   ATTACHED_LOG,
   acquireStoreLock,
   lockPathFor,
-  logPathFor,
   openStores,
+  schemaNameFor,
   sqliteDriver,
+  statePathFor,
 } from "@syncmesh/storage";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * Opens `path` with `bun:sqlite` as a driver for `@syncmesh/storage`. Sets WAL and `synchronous = NORMAL` (RFC-0004).
+ * Opens the store at `logPath` with `bun:sqlite` as a driver for `@syncmesh/storage`. Sets WAL and
+ * `synchronous = NORMAL` (RFC-0004).
  *
- * **A store is two files, and this opens both** (RFC-0022): `path` is the derived half and holds
- * the app's own tables and the projection; the durable log is attached beside it as `syncmesh`.
- * The adapter does it rather than the caller because the adapter is what knows the paths, and a
- * connection without it resolves none of the log's tables.
+ * **A store is two files, and this opens both** (RFC-0022). The name you give is the **log's** —
+ * the durable half, attached as `syncmesh`. The derived half hangs off it under a name carrying
+ * `schema`, and is opened as `main`: it holds the app's own tables and the projection, and is the
+ * one that can be deleted and refolded. The adapter opens the pair rather than the caller because
+ * the adapter is what knows the paths, and a connection without the attach resolves none of the
+ * log's tables.
  *
- * @param path A file path, or `":memory:"` for a database that lives as long as the driver — in
- * which case the log is a second, private in-memory database and the pair is ephemeral together.
+ * @param logPath A file path, or `":memory:"` for a store that lives as long as the driver — in
+ * which case the derived half is a second, private in-memory database and the pair is ephemeral
+ * together.
+ * @param schema Names the derived half; pass `schemaNameFor(tables)` so that changing a column
+ * opens an empty file to refold into rather than the previous shape's rows.
  *
  * @example
  * const store = (await sqliteEventStore(bunSqliteDriver("app.db"))).unwrap();
  */
-export function bunSqliteDriver(path: string): SqliteDriver {
-  const db = new Database(path, { create: true, strict: true });
+export function bunSqliteDriver(logPath: string, schema = schemaNameFor([])): SqliteDriver {
+  const memory = logPath === ":memory:";
+  const db = new Database(memory ? ":memory:" : statePathFor(logPath, schema), {
+    create: true,
+    strict: true,
+  });
   db.run("PRAGMA journal_mode = WAL");
   db.run("PRAGMA synchronous = NORMAL");
-  db.run(`ATTACH DATABASE ? AS ${ATTACHED_LOG}`, [
-    path === ":memory:" ? ":memory:" : logPathFor(path),
-  ]);
+  db.run(`ATTACH DATABASE ? AS ${ATTACHED_LOG}`, [memory ? ":memory:" : logPath]);
 
   return sqliteDriver({
     exec: (sql) => db.run(sql),
@@ -52,14 +61,14 @@ export function bunSqliteDriver(path: string): SqliteDriver {
 }
 
 export interface DefaultStoreOptions extends OpenStoresOptions {
-  /** Database name; `<dir>/<name>.db` on disk. */
+  /** The store's name; `<dir>/<name>.db` is the log, and the rest of its files hang off that. */
   readonly name: string;
   readonly dir: string;
 }
 
 /**
- * The durable default on Bun: event log and persisted state in one SQLite file, the directory
- * created if missing, held under an exclusive lock — a second open fails now with `StoreLocked`,
+ * The durable default on Bun: the event log at `<dir>/<name>.db` with the folded state beside it,
+ * the directory created if missing, both held under one exclusive lock — a second open fails now with `StoreLocked`,
  * and `close` releases the hold.
  *
  * @example
@@ -69,17 +78,17 @@ export async function defaultStore(
   options: DefaultStoreOptions,
 ): Promise<Result<Stores, StoreFailure | StoreLocked>> {
   mkdirSync(options.dir, { recursive: true });
-  const path = join(options.dir, `${options.name}.db`);
-  const lockDb = new Database(lockPathFor(path), { create: true, strict: true });
-  // over the store, not the file: `path` and its log are opened and forgotten together
+  const logPath = join(options.dir, `${options.name}.db`);
+  const lockDb = new Database(lockPathFor(logPath), { create: true, strict: true });
+  // over the store, not the file: every file named after `logPath` is held and released together
   const lock = acquireStoreLock({
-    path,
+    path: logPath,
     run: (sql) => lockDb.run(sql),
     close: () => lockDb.close(),
   });
   if (lock.isErr()) return lock;
-  // the state file is `main`; the log is attached beside it, and the lock above covers both
-  const driver = bunSqliteDriver(path);
+  // the app's schema names the derived half, so a changed column refolds instead of migrating
+  const driver = bunSqliteDriver(logPath, schemaNameFor(options.tables ?? []));
   const stores = await openStores(driver, options);
   if (stores.isErr()) {
     lock.value.release();

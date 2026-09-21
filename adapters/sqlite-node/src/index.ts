@@ -12,28 +12,31 @@ import {
   ATTACHED_LOG,
   acquireStoreLock,
   lockPathFor,
-  logPathFor,
   openStores,
+  schemaNameFor,
   sqliteDriver,
+  statePathFor,
 } from "@syncmesh/storage";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 /**
- * Opens `path` with `node:sqlite` as a driver for `@syncmesh/storage`. Sets WAL and `synchronous = NORMAL` (RFC-0004).
+ * Opens the store at `logPath` with `node:sqlite` as a driver for `@syncmesh/storage`. Sets WAL and
+ * `synchronous = NORMAL` (RFC-0004).
  *
- * @param path A file path, or `":memory:"` for a database that lives as long as the driver.
+ * @param logPath The **log's** path — the durable half, attached as `syncmesh`. The derived half
+ * hangs off it under a name carrying `schema` and is opened as `main` (RFC-0022). `":memory:"`
+ * gives a pair that lives as long as the driver.
+ * @param schema Names the derived half; pass `schemaNameFor(tables)` so that changing a column
+ * opens an empty file to refold into rather than the previous shape's rows.
  */
-export function nodeSqliteDriver(path: string): SqliteDriver {
-  const db = new DatabaseSync(path);
+export function nodeSqliteDriver(logPath: string, schema = schemaNameFor([])): SqliteDriver {
+  const memory = logPath === ":memory:";
+  const db = new DatabaseSync(memory ? ":memory:" : statePathFor(logPath, schema));
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA synchronous = NORMAL");
-  // a store is two files: this one holds the app's tables and the projection, and the durable log
-  // is attached beside it as `syncmesh` (RFC-0022)
-  db.prepare(`ATTACH DATABASE ? AS ${ATTACHED_LOG}`).run(
-    path === ":memory:" ? ":memory:" : logPathFor(path),
-  );
+  db.prepare(`ATTACH DATABASE ? AS ${ATTACHED_LOG}`).run(memory ? ":memory:" : logPath);
 
   return sqliteDriver({
     exec: (sql) => db.exec(sql),
@@ -51,14 +54,14 @@ export function nodeSqliteDriver(path: string): SqliteDriver {
 }
 
 export interface DefaultStoreOptions extends OpenStoresOptions {
-  /** Database name; `<dir>/<name>.db` on disk. */
+  /** The store's name; `<dir>/<name>.db` is the log, and the rest of its files hang off that. */
   readonly name: string;
   readonly dir: string;
 }
 
 /**
- * The durable default on Node: event log and persisted state in one SQLite file, the directory
- * created if missing, held under an exclusive lock — a second open fails now with `StoreLocked`,
+ * The durable default on Node: the event log at `<dir>/<name>.db` with the folded state beside it,
+ * the directory created if missing, both held under one exclusive lock — a second open fails now with `StoreLocked`,
  * and `close` releases the hold.
  *
  * @example
@@ -68,17 +71,17 @@ export async function defaultStore(
   options: DefaultStoreOptions,
 ): Promise<Result<Stores, StoreFailure | StoreLocked>> {
   mkdirSync(options.dir, { recursive: true });
-  const path = join(options.dir, `${options.name}.db`);
-  const lockDb = new DatabaseSync(lockPathFor(path));
-  // over the store, not the file: `path` and its log are opened and forgotten together
+  const logPath = join(options.dir, `${options.name}.db`);
+  const lockDb = new DatabaseSync(lockPathFor(logPath));
+  // over the store, not the file: every file named after `logPath` is held and released together
   const lock = acquireStoreLock({
-    path,
+    path: logPath,
     run: (sql) => lockDb.exec(sql),
     close: () => lockDb.close(),
   });
   if (lock.isErr()) return lock;
-  // the state file is `main`; the log is attached beside it, and the lock above covers both
-  const driver = nodeSqliteDriver(path);
+  // the app's schema names the derived half, so a changed column refolds instead of migrating
+  const driver = nodeSqliteDriver(logPath, schemaNameFor(options.tables ?? []));
   const stores = await openStores(driver, options);
   if (stores.isErr()) {
     lock.value.release();

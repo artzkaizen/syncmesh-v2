@@ -1,7 +1,7 @@
 import type { SqliteDriver } from "@syncmesh/storage";
 
 import { Result, TaggedError } from "@syncmesh/result";
-import { sqliteDriver } from "@syncmesh/storage";
+import { schemaNameFor, sqliteDriver } from "@syncmesh/storage";
 
 import type { SqliteWasmUnavailable } from "./module.js";
 import type { WirePort } from "./protocol.js";
@@ -36,6 +36,13 @@ export interface WasmSqliteOptions {
    * a partition id with a slash or a colon in it is still one file and still injective.
    */
   readonly name: string;
+  /**
+   * The shape of the app's tables, as `schemaNameFor(tables)` gives it. It names the derived half
+   * of the pair, so changing a column opens an empty file and refolds from the log into it rather
+   * than migrating the previous shape's rows (RFC-0022). Omitted, every shape shares one file —
+   * which is what a driver opened with no tables at all wants.
+   */
+  readonly schema?: string;
   /**
    * Which VFS to open on; `"auto"` by default, which takes the best that is reachable from this
    * page — through a worker where that is what it takes — and only reports `OpfsUnavailable` when
@@ -154,9 +161,11 @@ const needsWorker = (options: WasmSqliteOptions, storage: WasmStorage | "auto") 
  * transaction of a thousand statements is a thousand tasks — real, and still the only way a
  * browser is durable at all. `storage: "memory"` stays on the calling thread and pays none of it.
  *
- * **No WAL.** Both OPFS VFSes refuse it: WAL wants shared memory across connections, which is the
- * one thing a VFS built out of exclusive file handles cannot offer. The rollback journal is what
- * a browser gets, and the pool's capacity has to have room for it.
+ * **WAL, where the build will take it.** SQLite has allowed it in WASM since 3.47, under
+ * `PRAGMA locking_mode = exclusive` set before anything else touches the handle — that is what
+ * stands in for the shared memory a VFS of exclusive file handles cannot offer. The mode is read
+ * back rather than assumed, and a build that declines is left on the rollback journal with the
+ * exclusive lock given up again. Either way the pool's capacity has to have room for the journal.
  *
  * **Close, and tabs.** `close` shuts the connection *and* gives back what the VFS was holding: on
  * `"opfs-sahpool"` the last driver to close returns the access handles for the whole directory, so
@@ -181,6 +190,7 @@ export function wasmSqliteDriver(
   const storage = options.storage ?? "auto";
   const where = {
     name: options.name,
+    schema: options.schema ?? schemaNameFor([]),
     directory: options.directory ?? DIRECTORY,
     capacity: options.capacity ?? CAPACITY,
     ...(options.whenHeld !== undefined && { whenHeld: options.whenHeld }),

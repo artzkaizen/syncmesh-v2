@@ -46,7 +46,8 @@ export type {
 export {
   attachLog,
   lockPathFor,
-  logPathFor,
+  schemaNameFor,
+  statePathFor,
   openStores,
   scopedStores,
   storeFilesFor,

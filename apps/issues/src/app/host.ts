@@ -8,7 +8,9 @@ import { deviceIdentity } from "@syncmesh/client";
 import { createInspectorHost } from "@syncmesh/devtools";
 import { createClient, httpLink, sqlite } from "@syncmesh/orpc";
 import { Result, serializeTagged } from "@syncmesh/result";
+import { syncedTables } from "@syncmesh/schema";
 import { wasmSqliteDriver } from "@syncmesh/sqlite-wasm";
+import { schemaNameFor } from "@syncmesh/storage";
 
 import type { Procedures } from "../procedures.js";
 import type { IssuesPresence } from "../schema.js";
@@ -121,7 +123,14 @@ const seedOnce = (app: Client<Procedures, IssuesPresence>) =>
  * has won the election may ask for it**, which this one has: `openHost` runs on the port, and a
  * port is only ever handed to the winner.
  */
-const openDriver = () => wasmSqliteDriver({ name: DATABASE, whenHeld: "wait" });
+const openDriver = () =>
+  wasmSqliteDriver({
+    name: DATABASE,
+    // the log keeps `DATABASE`; the folded half is named after the schema, so a deploy that adds
+    // a column opens an empty file and refolds into it rather than migrating a tab's rows
+    schema: schemaNameFor(syncedTables(issuesSchema())),
+    whenHeld: "wait",
+  });
 
 /**
  * The OPFS root this origin's databases live under, named here because removing it is the one

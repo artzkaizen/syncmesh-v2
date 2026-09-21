@@ -24,6 +24,8 @@ export interface WirePort {
 export interface OpenCall {
   readonly kind: "open";
   readonly name: string;
+  /** Names the derived half; the log keeps `name` (RFC-0022). See `VfsOptions.schema`. */
+  readonly schema: string;
   readonly storage: WasmStorage | "auto";
   readonly directory: string;
   readonly capacity: number;

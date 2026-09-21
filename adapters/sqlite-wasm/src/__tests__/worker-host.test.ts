@@ -29,6 +29,7 @@ describe("sqlite-wasm passes the driver contract across a port", () => {
     (
       await host.open({
         name: scoped(name),
+        schema: "test",
         storage: "memory",
         directory: "/syncmesh",
         capacity: 8,
@@ -48,10 +49,22 @@ describe("what the page is told when it cannot have a durable database", () => {
 
   test("two databases on one host are two databases, and a closed one says so", async () => {
     const first = (
-      await host.open({ name: "port-one", storage: "memory", directory: "/syncmesh", capacity: 8 })
+      await host.open({
+        name: "port-one",
+        schema: "test",
+        storage: "memory",
+        directory: "/syncmesh",
+        capacity: 8,
+      })
     ).unwrap();
     const second = (
-      await host.open({ name: "port-two", storage: "memory", directory: "/syncmesh", capacity: 8 })
+      await host.open({
+        name: "port-two",
+        schema: "test",
+        storage: "memory",
+        directory: "/syncmesh",
+        capacity: 8,
+      })
     ).unwrap();
     await first.run("CREATE TABLE only_in_first (a TEXT)");
     expect(await second.all("SELECT name FROM sqlite_master")).toEqual([]);

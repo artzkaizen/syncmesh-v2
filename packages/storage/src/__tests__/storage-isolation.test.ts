@@ -18,8 +18,8 @@ const GLOBEX = parsePartitionKey("org:globex").unwrap();
 const dir = mkdtempSync(join(tmpdir(), "syncmesh-scopes-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-// one pair per scope: the state file at `path`, its log beside it as `<path>.log`
-const driver = (path: string): Promise<SqliteDriver> => openPair(path);
+// one pair per scope: the log at `path`, with its state file hanging off it
+const driver = (logPath: string): Promise<SqliteDriver> => openPair(logPath);
 
 const pathFor = (scope: StoreScope) => join(dir, `${storeNameFor(scope)}.db`);
 const set = scopedStores({ driverFor: (scope) => driver(pathFor(scope)) });
@@ -57,7 +57,7 @@ describe("one engine's storage per scope", () => {
     await set.forget(ACME);
     // both files, because a store is two now and the log is the half that holds the events —
     // deleting only the first leaves every one of them to be found again on the next join
-    for (const file of storeFilesFor(pathFor(ACME))) unlinkSync(file);
+    for (const file of storeFilesFor(pathFor(ACME), "test")) unlinkSync(file);
 
     expect(set.opened()).toEqual([GLOBEX]);
     expect(existsSync(pathFor(ACME))).toBe(false);

@@ -2,10 +2,12 @@ import type { EventStore, StateStore } from "@syncmesh/engine";
 import type { PartitionKey } from "@syncmesh/kernel";
 import type { Table } from "@syncmesh/schema";
 
-import { StoreFailure } from "@syncmesh/engine";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { StoreFailure, refoldable } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
+import { bytesToHex } from "@syncmesh/wire";
 
-import type { SqlDriver } from "./driver.js";
+import type { SqlDialect, SqlDriver } from "./driver.js";
 import type { ProjectionOptions } from "./projection.js";
 
 import { captureDdlFor, installCapture } from "./capture.js";
@@ -49,6 +51,24 @@ export interface OpenStoresOptions extends ProjectionOptions {
 }
 
 /**
+ * A short, stable name for one shape of the app's schema.
+ *
+ * It names the **state file**: change a column and the name changes, so the fold opens an empty
+ * file and rebuilds it from the log rather than migrating the old one in place (RFC-0022). That
+ * only works while `refoldable` is true — a device that has compacted holds rows the log can no
+ * longer produce, and for it the old file is not an orphan but the only copy.
+ *
+ * Derived from the DDL the tables actually produce rather than from the manifest object, because
+ * the DDL is what the file contains. Twelve hex characters: this distinguishes a handful of
+ * shapes on one device over its life, not a corpus.
+ */
+export const schemaNameFor = (tables: readonly Table[], dialect: SqlDialect = "sqlite"): string =>
+  bytesToHex(sha256(new TextEncoder().encode(captureDdlFor({ dialect }, tables).join(";")))).slice(
+    0,
+    12,
+  );
+
+/**
  * The app's tables and their capture, installed **only when this database has not got them.**
  *
  * Every statement here is `IF NOT EXISTS`, so running them all on every launch was correct and
@@ -60,23 +80,80 @@ export interface OpenStoresOptions extends ProjectionOptions {
  * The one thing it cannot see is a change made *around* it: drop a trigger by hand and this will
  * still say the schema is installed. That is the same bargain every migration table makes, and
  * the repair is the same — clear the row, or the file.
+ *
+ * **A changed schema is only free while the log can still produce the rows.** The row it compares
+ * lives in the log, which is shared; the file it is comparing against is the derived half, which
+ * `schemaNameFor` gives a different name to for every shape. So changing a column normally opens
+ * an empty file and refolds into it, and the previous shape's file is an orphan nobody reads.
+ * Once the log has been compacted that stops being true — the old file holds rows no fold can
+ * produce again — and the open refuses rather than silently presenting an empty database.
  */
 const installed = (
   driver: SqlDriver,
   tables: readonly Table[],
-): Promise<Result<void, StoreFailure>> => {
-  const { schema, name: dialect } = dialectOf(driver);
-  const rowSyncDdl = rowSyncDdlFor(dialect);
-  const wanted = [...captureDdlFor(driver, tables), ...rowSyncDdl].join(";\n");
-  return attempt("the app schema failed to install", async () => {
-    await driver.run(schema.ddl);
-    const [held] = await driver.all(schema.read);
-    if (held?.[0] === wanted) return;
-    await installCapture(driver, tables).then((done) => done.unwrap());
-    for (const statement of rowSyncDdl) await driver.run(statement);
-    await driver.run(schema.write, [wanted]);
+  events: EventStore,
+): Promise<Result<void, StoreFailure>> =>
+  Result.gen(async function* () {
+    const { schema, name: dialect } = dialectOf(driver);
+    const rowSyncDdl = rowSyncDdlFor(dialect);
+    const wanted = [...captureDdlFor(driver, tables), ...rowSyncDdl].join(";\n");
+    const held = yield* Result.await(
+      attempt("could not read the installed schema", async () => {
+        await driver.run(schema.ddl);
+        const [row] = await driver.all(schema.read);
+        return row?.[0];
+      }),
+    );
+    if (held === wanted) return Result.ok(undefined);
+    if (held !== undefined && !(yield* Result.await(refoldable(events)))) {
+      return Result.err(
+        new StoreFailure({
+          message:
+            "the app's tables changed shape and this log has been compacted — the rows below the floor exist only in the state file the previous shape wrote, so there is nothing left to refold them from. Keep the previous schema, or rejoin from a peer.",
+        }),
+      );
+    }
+    yield* Result.await(
+      attempt("the app schema failed to install", async () => {
+        await installCapture(driver, tables).then((done) => done.unwrap());
+        for (const statement of rowSyncDdl) await driver.run(statement);
+        await driver.run(schema.write, [wanted]);
+      }),
+    );
+    return Result.ok(undefined);
   });
-};
+
+/**
+ * A store's files, all derived from one stable name: **the log's**.
+ *
+ * The log is the base because it is the half that cannot be replaced, and because the derived
+ * half's filename carries a hash of the app's schema (RFC-0022) — so it changes, and a name that
+ * changed could not be the thing everything else is named after. "Back up `<name>.db`" stays true
+ * for the life of the store.
+ *
+ * A store is three files: the log, one state file per schema the log has been folded under, and a
+ * lock sidecar. The sidecar is a third file rather than a hold on either half, because a lock
+ * taken on data is a transaction held open against it for the life of the process, which is what
+ * WAL exists to avoid.
+ */
+export const statePathFor = (logPath: string, schema: string): string =>
+  `${logPath}.state@${schema}`;
+
+/** The hold is over the **store** — every file below — and only one opener may have it. */
+export const lockPathFor = (logPath: string): string => `${logPath}.lock`;
+
+/**
+ * Both halves, for a caller that has to delete or copy the set.
+ *
+ * `StoreScope` exists so that leaving an org is a file deletion and nothing of another org can be
+ * caught in it. With more than one file that is more than one deletion, and a caller that forgot
+ * the log would leave every event in it to be found again on the next join — which a test caught
+ * doing exactly that.
+ */
+export const storeFilesFor = (logPath: string, schema: string): readonly string[] => [
+  logPath,
+  statePathFor(logPath, schema),
+];
 
 /**
  * Attaches the log file under the name its tables are written against.
@@ -90,33 +167,6 @@ const installed = (
  * `:memory:` is a real answer here — it gives a second, private in-memory database — and is what
  * a test wants when it is not testing durability.
  */
-/**
- * Where one store's log lives, given where its derived half does.
- *
- * **A store is two files now, and this is the only place that says so.** Everything that treats
- * a scope as a unit has to agree: the opener attaches both, and whoever forgets a scope deletes
- * both. `StoreScope` exists so that leaving an org is a file deletion and nothing of another org
- * can be caught in it — and a caller that deleted only the first would leave the log behind, with
- * every event still in it, to be found again on the next join.
- */
-export const logPathFor = (statePath: string): string => `${statePath}.log`;
-
-/**
- * The sidecar the store's lock is held on — a third file, and deliberately not either half.
- *
- * A lock taken on one of the data files would be a transaction held open against it for the life
- * of the process, which is the thing WAL exists to avoid. So the hold is on a file with nothing
- * in it, and what it guards is the **store** — every path in {@link storeFilesFor}, opened,
- * rebuilt, migrated or deleted only by whoever holds it.
- */
-export const lockPathFor = (statePath: string): string => `${statePath}.lock`;
-
-/** Both files of one store, for a caller that has to delete or copy the set. */
-export const storeFilesFor = (statePath: string): readonly string[] => [
-  statePath,
-  logPathFor(statePath),
-];
-
 export const attachLog = (driver: SqlDriver, path: string): Promise<void> =>
   driver.run(`ATTACH DATABASE ? AS ${ATTACHED_LOG}`, [path]);
 
@@ -148,7 +198,7 @@ export function openStores(
     const stateOptions = {};
     let rowSync: RowSync | undefined;
     if (options.tables !== undefined) {
-      yield* Result.await(installed(driver, options.tables));
+      yield* Result.await(installed(driver, options.tables, events));
       rowSync = rowSyncTable(driver);
       const projectionOptions = { rowSync };
       if (options.partitionColumn !== undefined)
