@@ -18,6 +18,7 @@ import type { Grant, Identity } from "@syncmesh/wire";
 import { createValidator, openEngine } from "@syncmesh/engine";
 import { createHlcClock } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
+import { syncedTables } from "@syncmesh/schema";
 import { installRls, openStores, operationStore } from "@syncmesh/storage";
 
 import { NoDefaultStore } from "./errors.js";
@@ -151,7 +152,7 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
   if (options.stores !== undefined && (options.store ?? options.driver) !== undefined)
     panic("`stores` is already a log and a connection: pass it alone");
   return Result.gen(async function* () {
-    const tables = schema.entries.map((e) => e.table);
+    const tables = syncedTables(schema);
     const owned = yield* Result.await(storesFor(options, tables));
     // SAFETY: one of the two is defined — `owned` is opened exactly when `store` is absent
     const store = (options.store ?? owned?.events) as EventStore;

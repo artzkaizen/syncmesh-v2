@@ -171,6 +171,19 @@ export interface Schema<
   readonly rolesFor: (kind: PartitionKind<P>) => readonly string[];
 }
 
+/**
+ * Every table a manifest declares, for the calls that take a list rather than a manifest:
+ * `openStores`, `schemaNameFor`, the Drizzle bridge. Not `tablesOf`, which `@syncmesh/drizzle`
+ * already has for a different question — which tables a *query* reads.
+ *
+ * Reads `entries` rather than `tables`, because `entries` is the one that already has the mesh's
+ * own reserved tables folded in — a store opened from `tables` would be missing them and find out
+ * at the first write.
+ */
+export const syncedTables = (schema: {
+  readonly entries: readonly Pick<SchemaEntry, "table">[];
+}): readonly Table[] => schema.entries.map((entry) => entry.table);
+
 const RESERVED = new Set<string>(["global", "user", "local"]);
 
 /** The sealed kinds, checked against the tree: a typo here is a partition nobody encrypts. */

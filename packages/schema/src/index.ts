@@ -42,7 +42,7 @@ export type {
 } from "./manifest.js";
 export type { AllowFn, Combinators } from "./bind.js";
 export { combinators } from "./bind.js";
-export { ladder, syncSchema } from "./manifest.js";
+export { ladder, syncSchema, syncedTables } from "./manifest.js";
 export type { PresenceBlock, PresenceEntry, PresenceMap, PresenceTopic } from "./manifest.js";
 export {
   RESERVED,

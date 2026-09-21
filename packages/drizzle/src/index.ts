@@ -3,6 +3,7 @@ import type { PartitionKey } from "@syncmesh/kernel";
 import type { OperationStore, SqlDialect, SqlDriver } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 
+import { syncedTables } from "@syncmesh/schema";
 import { createWriter } from "@syncmesh/storage";
 import { PgDialect } from "drizzle-orm/pg-core";
 
@@ -74,7 +75,7 @@ export function meshDrizzle<D extends SqlDialect = "sqlite">(
   options: MeshDrizzleOptions<D>,
 ): MeshHandle<D> {
   const { engine, validate, driver, schema, partition, as: actor } = options;
-  const tables = schema.entries.map((e) => e.table);
+  const tables = syncedTables(schema);
   const writerDeps = { engine, validate, driver, tables, schema };
   if (actor !== undefined) Object.assign(writerDeps, { actor });
   if (options.operations !== undefined)
