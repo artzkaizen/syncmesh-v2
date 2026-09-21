@@ -64,7 +64,10 @@ ask **before** discarding anything:
 
 ```ts
 export const refoldable = (store: EventStore): Promise<Result<boolean, StoreFailure>> =>
-  store.compactedBelow().then((f) => f.map((floor) => floor.synced.size === 0 && floor.local.size === 0));
+  Result.gen(async function* () {
+    const floor = yield* Result.await(store.compactedBelow());
+    return Result.ok(floor.synced.size === 0 && floor.local.size === 0);
+  });
 ```
 
 A device that has never compacted can rebuild everything, which is most devices for most of their

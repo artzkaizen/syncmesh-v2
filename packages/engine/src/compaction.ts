@@ -100,9 +100,10 @@ export function ackFloor(acks: Iterable<Ack>, authors: Iterable<PeerId>): Cursor
  * a schema change that wants a fresh state file has to know this before it discards the old.
  */
 export const refoldable = (store: EventStore): Promise<Result<boolean, StoreFailure>> =>
-  store
-    .compactedBelow()
-    .then((found) => found.map((floor) => floor.synced.size === 0 && floor.local.size === 0));
+  Result.gen(async function* () {
+    const floor = yield* Result.await(store.compactedBelow());
+    return Result.ok(floor.synced.size === 0 && floor.local.size === 0);
+  });
 
 /** Never above what is persisted: a device cannot refold what it deleted. */
 export const clampToPersisted = (floor: Cursors, persisted: Cursors): Cursors => {

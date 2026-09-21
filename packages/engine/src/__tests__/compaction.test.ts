@@ -10,8 +10,8 @@ import type { EventStore } from "../store.js";
 
 import { openEngine } from "../boot.js";
 import { dueForCompaction } from "../compaction.js";
-import { createLink } from "../link.js";
 import { refoldable } from "../compaction.js";
+import { createLink } from "../link.js";
 import { StateCorrupt, createMemoryStateStore, type StateStore } from "../state-store.js";
 import {
   CREATE,
