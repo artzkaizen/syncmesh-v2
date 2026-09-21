@@ -32,6 +32,7 @@ const fake = () => {
   const connected: string[] = [];
   let published = 0;
   const on = {
+    adapter: new Set<(state: string) => void>(),
     scan: new Set<(e: BleAdvertisement) => void>(),
     value: new Set<(e: BleValueChanged) => void>(),
     write: new Set<(e: BleWriteRequested) => void>(),
@@ -79,6 +80,7 @@ const fake = () => {
     onCharacteristicValueChanged: (cb) => sub(on.value, cb),
     onCharacteristicWriteRequested: (cb) => sub(on.write, cb),
     onSubscribersChanged: (cb) => sub(on.subscribers, cb),
+    onAdapterStateChanged: (cb) => sub(on.adapter, cb),
   };
   return {
     radio,
@@ -93,6 +95,8 @@ const fake = () => {
     notified: (e: BleValueChanged) => on.value.forEach((cb) => cb(e)),
     dropped: (connectionId: string) =>
       on.connection.forEach((cb) => cb({ connectionId, state: "disconnected" })),
+    /** The adapter itself moving — Bluetooth toggled in Control Centre, or permission answered. */
+    adapterBecomes: (state: string) => on.adapter.forEach((cb) => cb(state)),
   };
 };
 
@@ -207,5 +211,48 @@ describe("the BLE transport", () => {
     radio.saw({ peripheralId: "headphones", localName: "AirPods" });
     await settle();
     expect(radio.connected).toEqual([]);
+  });
+});
+
+/**
+ * The radio itself going away and coming back, which is not a link ending.
+ *
+ * Found on two phones: Bluetooth toggled off and on again, and neither device ever saw the other
+ * until the app was relaunched. Nothing in the session layer notices, because from its point of
+ * view no peer disconnected — the medium stopped existing, and the OS tore down scanning and
+ * advertising underneath it. It is the same shape as a Wi-Fi drop abandoning a socket rather than
+ * closing it, and it went unnoticed for the same reason: no test asked the question.
+ */
+describe("a radio that is switched off and on", () => {
+  test("publishes, advertises and scans again once the adapter returns", async () => {
+    const radio = fake();
+    await start(radio.radio, small);
+    expect(radio.published()).toBe(1);
+    expect(radio.scans).toEqual([SERVICE]);
+
+    radio.adapterBecomes("poweredOff");
+    radio.adapterBecomes("poweredOn");
+    await settle();
+    await settle();
+
+    // discovery was re-established rather than left torn down: a second publish and a second scan
+    expect(radio.published()).toBe(2);
+    expect(radio.scans).toEqual([SERVICE, SERVICE]);
+    expect(radio.advertised).toEqual([
+      hintOf(small.identity.peerId),
+      hintOf(small.identity.peerId),
+    ]);
+  });
+
+  test("does nothing on the first poweredOn, which `open` is already handling", async () => {
+    const radio = fake();
+    await start(radio.radio, small);
+
+    // the adapter settling into `poweredOn` for the first time is `open`'s own work arriving, not
+    // a recovery — restarting the transport from inside its own open would be a loop
+    radio.adapterBecomes("poweredOn");
+    await settle();
+    expect(radio.published()).toBe(1);
+    expect(radio.scans).toEqual([SERVICE]);
   });
 });
