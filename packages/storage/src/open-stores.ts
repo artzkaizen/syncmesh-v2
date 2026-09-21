@@ -11,7 +11,7 @@ import type { SqlDialect, SqlDriver } from "./driver.js";
 import type { ProjectionOptions } from "./projection.js";
 
 import { captureDdlFor, installCapture } from "./capture.js";
-import { ATTACHED_LOG, dialectOf } from "./dialect.js";
+import { ATTACHED_LOG, dialectOf, placementOf } from "./dialect.js";
 import { sqlEventStore } from "./event-store.js";
 import { tablesProjection } from "./projection.js";
 import { rowSyncDdlFor, rowSyncTable, type RowSync } from "./row-sync.js";
@@ -187,7 +187,13 @@ export function openStores(
   options: OpenStoresOptions = {},
 ): Promise<Result<Stores, StoreFailure>> {
   return Result.gen(async function* () {
-    if (driver.dialect !== "postgres" && !(yield* Result.await(logAttached(driver)))) {
+    // an inline driver was never going to attach anything — its runtime has no `ATTACH` — so the
+    // guard would be refusing the one arrangement that is correct there (RFC-0022)
+    if (
+      placementOf(driver) === "attached" &&
+      driver.dialect !== "postgres" &&
+      !(yield* Result.await(logAttached(driver)))
+    ) {
       return Result.err(
         new StoreFailure({
           message: `the log is not attached as \`${ATTACHED_LOG}\` — call attachLog(driver, path) on this connection first`,

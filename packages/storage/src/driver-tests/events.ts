@@ -159,8 +159,11 @@ export const eventCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
     name: "events: a driver without transactions is still correct",
     run: async () => {
       const full = await openDriver("events-no-tx");
-      const bare = { run: full.run, all: full.all };
-      if (full.dialect !== undefined) Object.assign(bare, { dialect: full.dialect });
+      // everything but the transaction, rather than an allow-list of what to keep: naming the
+      // parts to carry meant the next property added to the port was dropped here in silence,
+      // and `log` was — the store then named `syncmesh.events` at a connection that has one
+      // database, which is a different failure wearing this test's name
+      const { transaction: _withoutIt, ...bare } = full;
       const store = await open(bare);
       (await store.appendBatch([entry(A, 1, 1), entry(A, 2, 2)])).unwrap();
       equal((await store.lastSeq(A, "synced")).unwrap(), seq(2), "lastSeq");

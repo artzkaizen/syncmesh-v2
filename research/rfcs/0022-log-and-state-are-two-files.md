@@ -238,24 +238,41 @@ this design is built out of are outside it:
   `PRAGMA <schema>.user_version` is how a device remembers how far it has
   migrated, and an object has no way to answer it.
 
-So `adapters/cloudflare-do` is red at the namespace commit, and honestly so —
-the failure is `migrate` refusing to create `syncmesh.events`, which is the
-adapter telling the truth about where it runs. Attaching in the test would only
-hide it, because the fake is `bun:sqlite` and would take the statement a real
-object rejects.
+**Resolved: a third spelling of the same namespace**, chosen by the driver
+rather than by the dialect, because a Durable Object is SQLite in every other
+respect. `SqlDriver.log` is `"attached"` or `"inline"`; the latter puts both
+halves in one database and spells the log `syncmesh_events`, beside
+`syncmesh_state_rows`. The ladder's position moves from a pragma to a row in
+`syncmesh_meta` — which is how Postgres already does it, for the same reason in
+a different form: a schema has no `user_version` either.
 
-The shape that fits is **Postgres's, not SQLite's**: one database, the namespace
-spelled as a prefix, both halves inside it, and the migration ladder recording
-its position in a row rather than a pragma. That makes the relay's store the
-third spelling of the same namespace — `syncmesh.` by schema, `syncmesh.` by
-attach, `syncmesh_` by prefix — and it should be chosen by the driver rather
-than by the dialect, because a Durable Object is a SQLite driver in every other
-respect.
+So there are three, and one rule underneath them:
 
-It is also worth asking whether a relay wants the split at all. A relay holds no
-folded state to throw away; it holds a log and the receipts. Half of what this
-RFC buys — delete the derived file, refold from the log — is not something a
-relay ever does.
+| runtime | namespace by | log | ladder position |
+|---|---|---|---|
+| Postgres | `CREATE SCHEMA` | `syncmesh.events` | a row in `meta` |
+| device | `ATTACH` | `syncmesh.events` | `PRAGMA syncmesh.user_version` |
+| Durable Object | prefix | `syncmesh_events` | a row in `meta` |
+
+Two dialect instances from one factory, not two files of near-identical SQL: the
+difference is one separator plus the two `CREATE INDEX` statements, which differ
+in shape rather than in name — an index must live in its table's database, which
+SQLite spells by qualifying the *index* and leaving the table bare.
+
+**The test fake is `bun:sqlite` and would take a statement a real object
+rejects**, so passing tests could never have been the evidence here. What stands
+in for it is an assertion over the statements the inline dialect actually emits:
+no `ATTACH`, no `PRAGMA`, no qualified name, and both halves still created.
+Restoring the pragma makes it fail, which was checked.
+
+The line itself is unaffected, and that is the point of having written it down
+as data. `LOG_TABLES` and `STATE_TABLES` say which tables a backup must include
+and which may be discarded and refolded; neither of those was ever a question
+about files.
+
+What a relay does *not* get is the rest of the RFC's prize. It holds no folded
+state to throw away, so the schema-named state file and `refoldable` are
+inert there — correctly, since `openStores` is not what a relay opens.
 
 ## Current state → work
 
