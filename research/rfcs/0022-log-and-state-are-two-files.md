@@ -226,6 +226,37 @@ The `state@<hash>` trick does not carry over either: a schema is not a file.
 There, a changed manifest stays a migration. That asymmetry is honest and worth
 writing down rather than papering over with a lowest-common-denominator design.
 
+## Durable Objects have neither of the two mechanisms this rests on
+
+A Durable Object's SQLite is reached through `ctx.storage.sql.exec`, and
+Cloudflare permits a restricted statement surface over it. Two of the things
+this design is built out of are outside it:
+
+- **`ATTACH` is not allowed.** There is one database per object and no
+  filesystem to put a second one on, so the log cannot be a separate file.
+- **`PRAGMA` is not allowed either**, which takes the migration ladder with it:
+  `PRAGMA <schema>.user_version` is how a device remembers how far it has
+  migrated, and an object has no way to answer it.
+
+So `adapters/cloudflare-do` is red at the namespace commit, and honestly so —
+the failure is `migrate` refusing to create `syncmesh.events`, which is the
+adapter telling the truth about where it runs. Attaching in the test would only
+hide it, because the fake is `bun:sqlite` and would take the statement a real
+object rejects.
+
+The shape that fits is **Postgres's, not SQLite's**: one database, the namespace
+spelled as a prefix, both halves inside it, and the migration ladder recording
+its position in a row rather than a pragma. That makes the relay's store the
+third spelling of the same namespace — `syncmesh.` by schema, `syncmesh.` by
+attach, `syncmesh_` by prefix — and it should be chosen by the driver rather
+than by the dialect, because a Durable Object is a SQLite driver in every other
+respect.
+
+It is also worth asking whether a relay wants the split at all. A relay holds no
+folded state to throw away; it holds a log and the receipts. Half of what this
+RFC buys — delete the derived file, refold from the log — is not something a
+relay ever does.
+
 ## Current state → work
 
 1. ✅ **The two-phase protocol.** Less work than this said, because the shape was already here:
@@ -256,24 +287,40 @@ writing down rather than papering over with a lowest-common-denominator design.
    compaction time would make the state file disposable again on an old device. It duplicates
    every row it covers, which is why it is worth having only if the schema-change story turns out
    to matter more than the disk.
-3. ✅ **Split the stores into two files.** `<name>.db` is `main` and holds the app's own tables,
-   their capture triggers and the projection; `<name>.db.log` is attached as `syncmesh` and holds
-   the durable half. Each adapter opens the pair, because each knows its own paths and its own
-   VFS — and on OPFS the VFS has to be named in the attach URI or the file silently opens
-   non-persistent. `openStores` refuses a connection without it rather than failing later at the
-   first query that does not resolve.
+3. ✅ **Split the stores into two files.** `<name>.db` is the **log**, attached as `syncmesh`;
+   the app's own tables, their capture triggers and the projection are in a second file that
+   hangs off it and is opened as `main`. Each adapter opens the pair, because each knows its own
+   paths and its own VFS — and on OPFS the VFS has to be named in the attach URI or the file
+   silently opens non-persistent. `openStores` refuses a connection without it rather than
+   failing later at the first query that does not resolve.
+
+   Which of the two carries the store's name was decided by item 4 below: the derived half's
+   filename changes with the schema, and a name that changes cannot be the thing everything else
+   is named after. So the log is the base — `<name>.db` — and "back up `<name>.db`" stays true
+   for the life of the store.
 
    The `user_version` worry was mine and wrong: `PRAGMA syncmesh.user_version` is a property of
    the attached file and persists with it, so each half is versioned by the file it lives in.
    Two ladders, one step each, no history to walk — nothing has shipped.
 
-   `logPathFor` and `storeFilesFor` are the only places that know a store is two files. A test
-   caught what that is for: leaving an org deleted the state file and the **log survived**, so
-   rejoining found every event still there. `StoreScope` exists so that forgetting is a file
-   deletion; with two files it is two, and saying so in one function is the difference.
+   `statePathFor`, `lockPathFor` and `storeFilesFor` are the only places that know a store is
+   more than one file. A test caught what that is for: leaving an org deleted the state file and
+   the **log survived**, so rejoining found every event still there. `StoreScope` exists so that
+   forgetting is a file deletion; with two files it is two, and saying so in one function is the
+   difference.
 
-4. **Hash the manifest into the state filename** — depends on `refoldable` being true, so it is
-   only offered to a device that has never compacted.
+4. ✅ **Hash the manifest into the state filename.** `schemaNameFor(tables)` is twelve hex
+   characters of the DDL the tables actually produce — the DDL rather than the manifest object,
+   because the DDL is what the file contains. The state file is `<name>.db.state@<hash>`, so
+   adding a column opens an empty file and refolds into it instead of migrating rows in place,
+   and the previous shape's file is an orphan nobody reads.
+
+   The gate is `refoldable`, as this said it would be, and it reads the row the fingerprint was
+   already keeping: `syncmesh.meta`'s `schema` lives in the **log**, which is shared by every
+   state file, so a changed shape is visible from any of them. When it changed and the log has
+   been compacted, the open refuses — below the floor the old file is not an orphan but the only
+   copy, and opening the new one would present an empty database with no error. A test pins it,
+   and removing the gate makes it fail.
 5. ✅ **Blobs say whether losing them costs anything.** Not a separate store in the end — the
    distinction the RFC asked for was already encoded in which *method* stored the bytes, and only
    needed recording: `put` is a local creation and the only copy, `putAt` is bytes that arrived
