@@ -5,9 +5,9 @@ import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha2.js";
 import { parsePeerId } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
-import { hostSigner } from "./signing.js";
 
 import { bytesToHex } from "./hex.js";
+import { hostSigner } from "./signing.js";
 
 ed.hashes.sha512 = sha512;
 
@@ -53,7 +53,8 @@ export function createIdentity(seed: Uint8Array): Result<Identity, InvalidSeed> 
 /** Never throws: a malformed signature or key is simply not valid. */
 export function verify(bytes: Uint8Array, signature: Uint8Array, publicKey: Uint8Array): boolean {
   return Result.try({
-    try: () => hostSigner()?.verify(bytes, signature, publicKey) ?? ed.verify(signature, bytes, publicKey),
+    try: () =>
+      hostSigner()?.verify(bytes, signature, publicKey) ?? ed.verify(signature, bytes, publicKey),
     catch: () => false,
   }).unwrapOr(false);
 }
