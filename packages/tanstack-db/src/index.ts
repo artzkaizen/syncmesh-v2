@@ -1,4 +1,4 @@
-import type { Live } from "@syncmesh/drizzle";
+import type { Live, LiveChange } from "@syncmesh/drizzle";
 import type { BaseCollectionConfig, SyncConfig } from "@tanstack/db";
 
 /**
@@ -49,8 +49,32 @@ export function syncmeshCollection<T extends object, TKey extends string | numbe
       const live = query.live();
       let held = new Map<TKey, T>();
 
+      /**
+       * The delta the mesh already knew, forwarded — the whole delivery, without reading the
+       * list.
+       *
+       * A maintained query hands over exactly which keys moved, which is the shape TanStack's
+       * protocol is written in. Rebuilding a map of a thousand rows to rediscover the one the
+       * fold named is the cost this exists to avoid.
+       */
+      const forward = (changes: readonly LiveChange<T>[]): void => {
+        begin();
+        for (const change of changes) {
+          const key = keyOf(change.row);
+          if (change.kind === "delete") {
+            held.delete(key);
+            write({ type: "delete", key });
+            continue;
+          }
+          held.set(key, change.row);
+          write({ type: change.kind, value: change.row });
+        }
+        void commit();
+      };
+
       /** One delivery as TanStack's protocol wants it: the diff, not the snapshot. */
-      const publish = (rows: readonly T[]): void => {
+      const publish = (rows: readonly T[], changes?: readonly LiveChange<T>[]): void => {
+        if (changes !== undefined) return forward(changes);
         const fresh = new Map(rows.map((row) => [keyOf(row), row]));
         begin();
         for (const [key, row] of fresh) {

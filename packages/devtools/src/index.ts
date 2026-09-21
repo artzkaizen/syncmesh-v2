@@ -1,9 +1,15 @@
 /**
- * The parts of the inspector that are not React.
+ * The parts of the inspector that are not React, and do not need a DOM.
  *
  * A separate entry from `./react` so that a host can name a tab, read the tokens, or check what
  * the panel remembered without pulling a renderer into its graph — and so the component tree can
  * be replaced one day without the contract moving.
+ *
+ * Nothing reachable from here reads `window`, `document` or `localStorage`, which is what makes it
+ * importable on React Native: the readings a native panel draws — {@link createLinkRing},
+ * {@link watchMediums}, {@link createFrames} — are the same ones the browser panel draws, and a
+ * second copy of them in an app is a second set of thresholds to keep in step. The browser half
+ * lives behind `./dom`.
  */
 
 export type {
@@ -72,9 +78,6 @@ export {
   watchMediums,
 } from "./source/index.js";
 
-export { PREFIX, STYLESHEET } from "./css.js";
-export type { FramePump, LongFrameEntry, LongFrameScript, LongFrameWatch } from "./dom.js";
-export { framesOf, watchLongFrames } from "./dom.js";
 export type { FrameBlame, FrameBucket, FrameReading, Frames as FrameSampler } from "./frames.js";
 export { BUCKETS, BUCKET_MS, STALLED_MS, createFrames, droppedIn } from "./frames.js";
 export type { DevtoolsStorage } from "./persist.js";

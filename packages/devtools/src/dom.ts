@@ -1,7 +1,11 @@
 import type { DevtoolsStorage } from "./persist.js";
 
 /**
- * The one place this package reaches for a browser.
+ * The browser half of the inspector: the globals it reaches for, and the sheet it paints with.
+ *
+ * Its own entry (`@syncmesh/devtools/dom`) so that the root entry stays importable where there is
+ * no DOM — React Native, a worker, a server render that only needs the contract. Nothing here is
+ * reachable from `.`; a caller that wants it names it.
  *
  * Every access goes through `globalThis` and answers `undefined` when it is not there, for two
  * reasons that happen to point the same way. The repo's rule is that `packages/*` are
@@ -13,6 +17,13 @@ import type { DevtoolsStorage } from "./persist.js";
  * touches outside itself — which, for something an app installs and forgets, is the honest answer
  * to "what does this cost me".
  */
+
+/**
+ * The stylesheet ships from this entry rather than its own. {@link STYLESHEET} is inert text, but
+ * it is text only a DOM can read, and {@link PREFIX} names the classes it declares — splitting
+ * them from the shadow root that adopts them would be two entries for one decision.
+ */
+export { PREFIX, STYLESHEET } from "./css.js";
 
 export const documentOf = (): Document | undefined =>
   // SAFETY: the DOM lib declares `document` as always present, which is false in every runtime

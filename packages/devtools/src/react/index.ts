@@ -14,9 +14,14 @@
  * reorder them, or slot one of its own between them without a fork — see {@link DevtoolsTab}. What
  * they read is {@link DevtoolsSource}, and the whole non-React half is re-exported through here so
  * that a panel needs one import rather than two entry points and a rule about which is which.
+ *
+ * That includes `./dom`: this entry renders into a document, so an app that has already accepted
+ * a renderer has already accepted a DOM, and splitting the sheet and the globals out of its
+ * surface would buy nothing it could spend.
  */
 
 export * from "../index.js";
+export * from "../dom.js";
 
 export type { SyncmeshDevtoolsProps } from "./devtools.js";
 export { SyncmeshDevtools } from "./devtools.js";
