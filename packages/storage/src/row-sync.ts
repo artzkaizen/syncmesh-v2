@@ -3,7 +3,7 @@ import type { PeerId } from "@syncmesh/kernel";
 
 import type { SqlDialect, SqlDriver } from "./driver.js";
 
-import { dialectOf, engineTable, namespaceDdl } from "./dialect.js";
+import { dialectOf, namespaceDdl, stateTable } from "./dialect.js";
 
 /**
  * Where each row's own write got to, as a table a query can join (book ch. 10).
@@ -22,9 +22,9 @@ import { dialectOf, engineTable, namespaceDdl } from "./dialect.js";
 
 /** The row-sync tables, per dialect. The bare nouns are in {@link ROW_SYNC_NOUN}. */
 export const rowSyncTableName = (dialect: SqlDialect = "sqlite"): string =>
-  engineTable("row_sync", dialect);
+  stateTable("row_sync", dialect);
 export const ackedTableName = (dialect: SqlDialect = "sqlite"): string =>
-  engineTable("acked", dialect);
+  stateTable("acked", dialect);
 
 /**
  * The part of the name that is the same in both dialects, for the one caller that has to

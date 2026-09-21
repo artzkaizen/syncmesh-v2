@@ -96,10 +96,6 @@ export const logTable = (name: string): string => `${ATTACHED_LOG}.${name}`;
 export const stateTable = (name: string, dialect: SqlDialect = "sqlite"): string =>
   dialect === "postgres" ? `${ATTACHED_LOG}.${name}` : `${ATTACHED_LOG}_${name}`;
 
-/** @deprecated Say which half it is: {@link logTable} or {@link stateTable}. */
-export const engineTable = (name: string, dialect: SqlDialect = "sqlite"): string =>
-  stateTable(name, dialect);
-
 /**
  * Making the namespace, for a dialect that has one to make.
  *
@@ -237,7 +233,7 @@ export interface Dialect {
   readonly schema: SchemaSql;
 }
 
-export const dialectOf = (driver: SqlDriver): Dialect =>
+export const dialectOf = (driver: Pick<SqlDriver, "dialect">): Dialect =>
   driver.dialect === "postgres" ? POSTGRES : SQLITE;
 
 export { POSTGRES, SQLITE };
