@@ -150,6 +150,30 @@ describe("compaction — RFC-0015 §2", () => {
     expect(await count(store)).toBe(2);
   });
 
+  /**
+   * The same refusal, for a cache that is **gone** rather than damaged.
+   *
+   * Boot asked about the floors on the corrupt path and not on the empty one, because for most of
+   * this system's life they were the same case: no folded state meant a database nobody had
+   * written, and a fresh log has no floor. They stop being the same case the moment the state
+   * store can be discarded on purpose — a schema change that opens a new state file (RFC-0022),
+   * an operator clearing a cache — and the difference is a device that rebuilds whatever sits
+   * above the floor, drops the rest, and reports itself healthy.
+   */
+  test("an absent cache over a compacted log fails boot too, not just a corrupt one", async () => {
+    const stateStore = createMemoryStateStore();
+    const { engine, store } = setup(PEER_A, 100, { stateStore });
+    (await write(engine, "n1", "n1")).unwrap();
+    engine.acknowledge(PEER_B, cursors([[PEER_A, seq(1)]]), T0);
+    expect((await engine.compact({ now: T0 })).unwrap().removed).toBe(1);
+
+    // the cache is thrown away, which is exactly what a hash-named state file does on a change
+    (await stateStore.clear()).unwrap();
+    const booted = await openEngine({ peerId: PEER_A, clock: fakeClock(1), store, stateStore });
+    expect(booted.isErr() && booted.error._tag).toBe("StateCorrupt");
+    expect(booted.isErr() && booted.error.message).toContain("rejoin from a peer");
+  });
+
   test("a corrupt cache over a compacted log fails boot instead of opening a partial state", async () => {
     const inner = createMemoryStateStore();
     let corrupt = false;

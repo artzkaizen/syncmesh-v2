@@ -75,15 +75,45 @@ function load(
   stateStore: StateStore,
 ): Promise<Result<Cached | undefined, StoreFailure | StateCorrupt>> {
   return Result.gen(async function* () {
-    if (yield* Result.await(stateStore.isEmpty())) return Result.ok(undefined);
+    /**
+     * Whether the log can still answer for everything, which is what "rebuild it from the log"
+     * quietly assumes.
+     *
+     * Compaction deletes events once the state that stood for them was persisted, so a log with a
+     * floor above zero **is not** a complete history: replaying it rebuilds whatever sits above
+     * the floor and silently drops the rest. Refusing is the only honest answer — the rows are on
+     * a peer, and `rejoin` is how this device gets them.
+     */
+    const floors = yield* Result.await(store.compactedBelow());
+    const partial = floors.synced.size > 0 || floors.local.size > 0;
+
+    /**
+     * **An absent state store is checked too, and this used to return before it was.**
+     *
+     * The corrupt path below has always asked; the empty one went straight to a full replay. For
+     * most of this system's life those were the same thing, because an empty state store meant a
+     * database nobody had written yet and a fresh log has no floor. It stops being the same thing
+     * the moment the state store can be *discarded* — a schema change that opens a new state file
+     * (RFC-0022), an operator clearing a cache — and then the difference is a device that rebuilds
+     * two thirds of its rows and reports itself healthy.
+     */
+    if (yield* Result.await(stateStore.isEmpty())) {
+      if (partial)
+        return Result.err(
+          new StateCorrupt({
+            message:
+              "there is no folded state and the log is compacted below what would rebuild it — rejoin from a peer",
+          }),
+        );
+      return Result.ok(undefined);
+    }
     const loaded = Result.all([await stateStore.loadAll(), await stateStore.loadCursors()]);
     if (loaded.isOk()) {
       const [state, coverage] = loaded.value;
       return Result.ok({ state, coverage });
     }
     if (loaded.error._tag === "StoreFailure") return Result.err(loaded.error);
-    const floors = yield* Result.await(store.compactedBelow());
-    if (floors.synced.size > 0 || floors.local.size > 0) {
+    if (partial) {
       return Result.err(
         new StateCorrupt({
           message: `${loaded.error.message}; the log is compacted below it — rejoin from a peer`,
