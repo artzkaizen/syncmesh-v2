@@ -1,7 +1,7 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
 import { parsePartitionKey } from "@syncmesh/kernel";
-import { evaluate, gt, isIn, lt, ne } from "@syncmesh/policy";
+import { NO_ROLES, evaluate, gt, isIn, lt, ne } from "@syncmesh/policy";
 import { describe, expect, test } from "bun:test";
 
 import { EVERYTHING, interestKey, matchesInterest, narrows } from "../interest.js";
@@ -37,7 +37,11 @@ const unpinnedOf = (event: SyncEvent): SyncEvent => {
 
 describe("the predicate grammar", () => {
   test("the comparisons agree with evaluate, and are false across kinds", () => {
-    const ctx = { grant: { account: "", claims: {} }, roles: [], row: row({ rank: 5, name: "b" }) };
+    const ctx = {
+      grant: { account: "", claims: {} },
+      roles: NO_ROLES,
+      row: row({ rank: 5, name: "b" }),
+    };
     expect(evaluate(gt("rank", 4), ctx)).toBe(true);
     expect(evaluate(gt("rank", 5), ctx)).toBe(false);
     expect(evaluate(lt("name", "c"), ctx)).toBe(true);

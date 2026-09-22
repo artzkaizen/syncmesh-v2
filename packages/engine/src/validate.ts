@@ -11,6 +11,7 @@ import {
   type Operation,
   type PolicyContext,
   type PolicyGrant,
+  type RoleSet,
 } from "@syncmesh/policy";
 import { Result } from "@syncmesh/result";
 import { type Table } from "@syncmesh/schema";
@@ -38,7 +39,8 @@ export interface ValidatorSchema {
     readonly visibility: "partition" | "authority";
     readonly allow?: AllowBlock;
   }[];
-  rolesFor(kind: string): readonly string[];
+  /** The roles a kind's rules may name, and whether their order is seniority. */
+  rolesFor(kind: string): RoleSet;
   /** The manifest's own tables (`_policy`, `_corrections`); absent, they cannot be written at all. */
   readonly reserved?: readonly Table[];
 }
@@ -302,7 +304,7 @@ export type Author = Principal & { readonly partitions?: readonly PartitionKey[]
 
 export function policyContext(
   principal: Principal,
-  roles: readonly string[],
+  roles: RoleSet,
   row: Row | undefined,
   patch: Row | undefined,
 ): PolicyContext {

@@ -1,7 +1,7 @@
 import type { Principal, StoreFailure, ValidatorSchema } from "@syncmesh/engine";
 import type { CellValue, JsonValue } from "@syncmesh/kernel";
 import type { PartitionKey } from "@syncmesh/kernel";
-import type { AllowBlock, PolicyNode, ScalarKind } from "@syncmesh/policy";
+import type { AllowBlock, PolicyNode, RoleSet, ScalarKind } from "@syncmesh/policy";
 import type { Result } from "@syncmesh/result";
 import type { ColumnKind, Table } from "@syncmesh/schema";
 
@@ -82,7 +82,7 @@ type Handlers = {
 };
 
 /** One compiler per node, mirroring `evaluate`'s handler table, so the two cannot drift apart silently. */
-function policyPredicate(table: Table, ladder: readonly string[], allow: AllowBlock): string {
+function policyPredicate(table: Table, roles: RoleSet, allow: AllowBlock): string {
   const columns = new Map(
     columnsOf(table).map(([key, name, column]) => [key, { name: quote(name), column }]),
   );
@@ -113,10 +113,13 @@ function policyPredicate(table: Table, ladder: readonly string[], allow: AllowBl
   const handlers: Handlers = {
     allow: () => "TRUE",
     deny: () => "FALSE",
+    // `roleAtLeast` in SQL: a ladder admits the wanted rung and every one before it, a flat set
+    // admits exactly the wanted name, and a role the set does not know admits nobody
     role: (node) => {
-      const needed = ladder.indexOf(node.role);
+      const needed = roles.names.indexOf(node.role);
       if (needed === -1) return "FALSE";
-      const array = `ARRAY[${ladder.map(str).join(", ")}]::text[]`;
+      if (!roles.ordered) return leaf(`${setting(GUC.role)} = ${str(node.role)}`);
+      const array = `ARRAY[${roles.names.map(str).join(", ")}]::text[]`;
       return leaf(`array_position(${array}, ${setting(GUC.role)}) <= ${needed + 1}`);
     },
     owner: (node) => {
@@ -197,7 +200,7 @@ export interface RlsOptions {
  */
 export function rlsDdl(
   table: Table,
-  ladder: readonly string[],
+  roles: RoleSet,
   allow: AllowBlock | undefined,
   options: RlsOptions = {},
 ): readonly string[] {
@@ -205,7 +208,7 @@ export function rlsDdl(
   const partitionColumn = options.partitionColumn ?? "_partition";
   const filters: string[] = [];
   // a table with no rules is readable by anyone who holds it — what can() says for "read"
-  if (allow !== undefined) filters.push(policyPredicate(table, ladder, allow));
+  if (allow !== undefined) filters.push(policyPredicate(table, roles, allow));
   if (partitionColumn !== false) {
     const column = `"${partitionColumn.replaceAll('"', '""')}"`;
     filters.push(`(${setting(GUC.partition)} IS NULL OR ${column} = ${setting(GUC.partition)})`);
@@ -233,8 +236,8 @@ export function installRls(
 ): Promise<Result<void, StoreFailure>> {
   return attempt("could not install row-level security", async () => {
     for (const entry of schema.entries) {
-      const ladder = schema.rolesFor(entry.partition);
-      for (const sql of rlsDdl(entry.table, ladder, entry.allow, options)) await driver.run(sql);
+      const roles = schema.rolesFor(entry.partition);
+      for (const sql of rlsDdl(entry.table, roles, entry.allow, options)) await driver.run(sql);
     }
   });
 }
