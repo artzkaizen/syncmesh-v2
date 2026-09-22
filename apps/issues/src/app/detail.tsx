@@ -233,6 +233,7 @@ function Blank({ panel }: { readonly panel: Exclude<Panel, { kind: "open" }> }) 
  */
 export function Detail({ id, onClose }: { readonly id: string; readonly onClose: () => void }) {
   const api = useApi();
+  const actor = useActor().account;
   const mesh = useFollower();
   const catalog = useCatalog();
   const found = useQuery(api.issues.get({ workspaceId: WORKSPACE_ID, id }));
@@ -241,11 +242,13 @@ export function Detail({ id, onClose }: { readonly id: string; readonly onClose:
   useOpened(api, id, panel.kind === "open" ? panel.row.number : undefined);
 
   /**
-   * The destructive gate rehearses; the editing one asks the rule by name.
+   * Both gates rehearse the write they guard.
    *
-   * Rehearsing is the stronger check: the handler runs against the replica, the staged change is
+   * Rehearsing is the real check: the handler runs against the replica, the staged change is
    * judged by the rules every receiver runs, and the transaction rolls back — so this panel cannot
-   * keep a second, drifting copy of a rule. Asking the rule by name is a prediction of that.
+   * keep a second, drifting copy of a rule. The editing gate rehearses `issues.edit` with no field
+   * named: the row is touched and nothing on it changes, which is the update every picker below
+   * makes minus the value, and exactly what `issue.update` judges.
    *
    * It is worth knowing what this line cost before it was safe. Wired up, it used to **delete the
    * issue it was asked about** — 120 issues down to 119 for every detail panel opened, with no
@@ -261,7 +264,7 @@ export function Detail({ id, onClose }: { readonly id: string; readonly onClose:
    * the sink it came through now, so the rehearsal's staged `DELETE` is invisible to this read.
    */
   const mayDelete = useCan(api.issues.remove.can({ workspaceId: WORKSPACE_ID, id }));
-  const mayEdit = useCan(api.$can, "issue.update");
+  const mayEdit = useCan(api.issues.edit.can({ workspaceId: WORKSPACE_ID, id, actorId: actor }));
 
   if (panel.kind !== "open") return <Blank panel={panel} />;
 

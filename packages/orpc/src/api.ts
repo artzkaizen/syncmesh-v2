@@ -98,27 +98,6 @@ export interface QueryCall<T> {
 /* oxlint-disable anti-slop/no-unknown-parameters -- every `input` below is the call's own argument on its way to `validate`, which is the parser. The surface above them (`Api<R>`) is typed per procedure, so a caller cannot reach these with anything else; taking a named type here would mean parsing before the procedure that owns the schema has been chosen. */
 
 /**
- * What `useCan` reads, bound to this api's instance so a component names no mesh and no instance.
- * `@syncmesh/react`'s `CanSource` is satisfied structurally; neither package imports the other.
- */
-export interface Permissions {
-  readonly can: (what: `${string}.${string}`, row?: never) => boolean;
-  readonly grants: {
-    /** A grant landed: whatever gated a button may now answer differently. */
-    readonly onRegistered: (listener: () => void) => () => void;
-  };
-}
-
-/**
- * Where each row's write has reached, bound to this api's mesh — `useSyncOf` reads it, and the
- * subscription is what turns a receipt from a reading taken once into one that updates.
- */
-export interface SyncSource {
-  readonly at: (table: string, key: string) => "local" | "delivered" | "remote" | undefined;
-  readonly subscribe: (listener: () => void) => () => void;
-}
-
-/**
  * The rehearsal of one write (book ch. 15): inert like a read, because a screen builds it while
  * deciding whether to draw the affordance at all. Running it executes the handler against the
  * replica, judges the staged changes by the same rules every receiver runs, and rolls the
@@ -145,13 +124,13 @@ type ApiLeaf = (
 /** One node of the built surface: a callable leaf, or a group of them. */
 type ApiNode = ApiLeaf | { readonly [key: string]: ApiNode };
 
-/** The shape `meshApi` builds: a query becomes a descriptor, a mutation a `Result`-returning call. */
+/**
+ * The shape `meshApi` builds: a query becomes a descriptor, a mutation a `Write` with its `.can`
+ * rehearsal beside it, an authority call a `Result`-returning promise. Nothing else sits on it:
+ * what a hook reads is built from one of these typed references, never from a string naming a
+ * table the type system already knows (book ch. 15).
+ */
 export type Api<R extends Router> = {
-  /** `useCan(api.$can, "book.insert")` — the `$` marks framework surface, not a procedure. */
-  readonly $can: Permissions;
-  /** `useSyncOf(api.$sync, "observation", row.id)` — where that row's write got to. */
-  readonly $sync: SyncSource;
-} & {
   readonly [K in keyof R]: R[K] extends QueryDef<infer I, infer T>
     ? (input: I) => QueryCall<T>
     : R[K] extends MutationDef<infer I, infer T>
@@ -185,8 +164,7 @@ export interface ApiMesh<PC extends PresenceMap = Record<string, never>> {
    * "nothing here can say more" — rather than failing to build at all.
    */
   readonly coverage?: ReadCoverageView;
-  readonly can: Mesh<"sqlite", PC>["can"];
-  /** Only the subscription: a grant landing is what makes a gated affordance re-ask. */
+  /** Only the subscription: a grant landing is what makes a rehearsal re-ask. */
   readonly grants: { readonly onRegistered: (listener: () => void) => () => void };
   /** Who this device acts as; a handler is handed it rather than asking, because it never picks. */
   readonly auth: { readonly principal: () => Principal | undefined };
@@ -405,18 +383,7 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     return out;
   };
 
-  const permissions: Permissions = {
-    // the row is the input here, and a row carries its scope in the same column the table is
-    // partitioned by — "keyed by the scope already present in input and rows" (ch. 3)
-    // before the mesh, nobody may do anything — which is what a gated button must draw anyway
-    can: (what, row) => lazy.current()?.can(what, row, scopeOf(kinds, row)) ?? false,
-    grants: {
-      onRegistered: (listener) =>
-        deferredSubscribe(lazy, (m) => m.grants.onRegistered(() => listener())),
-    },
-  };
   // SAFETY: `build` walks the same router the `Api<R>` mapped type describes, leaf for leaf
-  const walked = { ...build(router, ""), $can: permissions } as Api<R>;
-  return walked;
+  return build(router, "") as Api<R>;
 }
 /* oxlint-enable anti-slop/no-unknown-parameters */

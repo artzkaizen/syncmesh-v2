@@ -39,7 +39,7 @@ export interface SyncStates {
 }
 
 /**
- * Answers `$sync` per row without a sidecar table.
+ * Answers a row's sync state — what the `syncOf` column reads — without a sidecar table.
  *
  * A record carries the stamp of the write that won it — `{ hlc, peer }` — and the peer alone
  * settles `"remote"`. Telling `"local"` from `"delivered"` needs the event's **sequence number**,

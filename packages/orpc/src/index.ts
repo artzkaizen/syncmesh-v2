@@ -15,13 +15,11 @@ export type {
   CanCall,
   DeclaredErrors,
   MutationDef,
-  Permissions,
   ProcedureDef,
   QueryCall,
   QueryDef,
   RouteMeta,
   Router,
-  SyncSource,
   WriteResult,
 } from "./api.js";
 // `meshApi` is deliberately absent: it builds a client out of a mesh, which is `createClient`'s

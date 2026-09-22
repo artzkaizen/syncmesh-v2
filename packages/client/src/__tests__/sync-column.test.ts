@@ -93,7 +93,7 @@ describe("syncOf — row state is a column, not a lookup (book ch. 10)", () => {
   });
 
   /**
-   * **What a discarded state cache costs `$sync`, and in which direction.**
+   * **What a discarded state cache costs the `syncOf` column, and in which direction.**
    *
    * `acked` is one row on the derived side — the highest stamp of this device's own writes any
    * peer has acknowledged — and RFC-0022 proposes throwing that side away whenever the schema

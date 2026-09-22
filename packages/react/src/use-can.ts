@@ -1,12 +1,4 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-
-/** The slice of a mesh the hook reads: `can`, and the grant stream that changes its answer. */
-export interface CanSource<R> {
-  readonly can: (what: `${string}.${string}`, row?: R) => boolean;
-  readonly grants: {
-    readonly onRegistered: (listener: (...args: never[]) => void) => () => void;
-  };
-}
+import { useEffect, useRef, useState } from "react";
 
 /**
  * A rehearsal descriptor — `api.products.create.can(input)`. `@syncmesh/orpc`'s `CanCall`
@@ -18,18 +10,17 @@ export interface CanCall {
   readonly subscribe: (listener: () => void) => () => void;
 }
 
-const isRehearsal = <R>(source: CanSource<R> | CanCall): source is CanCall => "run" in source;
-
 /**
- * Whether this caller may do the thing, as React state — re-asked the moment a grant registers,
+ * Whether this caller may make the write, as React state — re-asked the moment a grant registers,
  * so every gated button flips without a reload.
  *
- * Two shapes, because there are two honest questions. Given a **rehearsal** —
- * `useCan(api.products.create.can({ shopId }))` — the handler runs against the replica and rolls
- * back, which is the real check rather than a prediction of it (book ch. 15); it answers `false`
- * until the first rehearsal returns, because a button drawn before the answer is a guess. Given
- * a **mesh and a rule name**, it asks the rules directly and answers synchronously, which is
- * what a row-level affordance inside a list wants.
+ * One shape, one argument: a rehearsal descriptor built from the mutation the affordance would
+ * call — `useCan(api.products.create.can({ shopId }))` for a new-row button,
+ * `useCan(api.products.update.can({ id: row.id }))` for a row's own. The handler runs against the
+ * replica and rolls back, which is the real check rather than a prediction of it (book ch. 15),
+ * and the descriptor is the same typed reference the button will fire, so nothing here names a
+ * table or a rule by string. It answers `false` until the first rehearsal returns, because a
+ * button drawn before the answer is a guess.
  *
  * ```tsx
  * {useCan(api.products.create.can({ shopId })) && <NewProduct />}
@@ -43,19 +34,6 @@ const isRehearsal = <R>(source: CanSource<R> | CanCall): source is CanCall => "r
  * before the verdict is a guess, so a disabled check and a refused one want the identical UI.
  * When there is genuinely nothing to ask — no row, no id — build no descriptor and do not render
  * the component that would gate on one.
- */
-export function useCan<R>(source: CanSource<R>, what: `${string}.${string}`, row?: R): boolean;
-export function useCan(rehearsal: CanCall): boolean;
-export function useCan<R>(
-  source: CanSource<R> | CanCall,
-  what?: `${string}.${string}`,
-  row?: R,
-): boolean {
-  return isRehearsal(source) ? useRehearsed(source) : useRule(source, what, row);
-}
-
-/**
- * The rehearsal: asynchronous by nature, so the answer arrives rather than being read.
  *
  * Keyed on `key` and nothing else. A descriptor is built fresh on every render — `can(input)`
  * returns a new object each call — so an effect that depended on the descriptor re-ran on every
@@ -71,12 +49,12 @@ export function useCan<R>(
  * The live descriptor is reached through a ref so that dropping it from the dependencies cannot
  * leave the effect rehearsing a stale input.
  */
-function useRehearsed(call: CanCall): boolean {
-  const { key } = call;
+export function useCan(rehearsal: CanCall): boolean {
+  const { key } = rehearsal;
   const [allowed, setAllowed] = useState(false);
   const [asked, setAsked] = useState(0);
-  const latest = useRef(call);
-  latest.current = call;
+  const latest = useRef(rehearsal);
+  latest.current = rehearsal;
 
   useEffect(() => {
     let live = true;
@@ -98,18 +76,4 @@ function useRehearsed(call: CanCall): boolean {
   }, [key, asked]);
 
   return allowed;
-}
-
-/** The rule, asked directly: synchronous, and what a per-row affordance in a list wants. */
-function useRule<R>(
-  mesh: CanSource<R>,
-  what: `${string}.${string}` | undefined,
-  row: R | undefined,
-): boolean {
-  const subscribe = useCallback((notify: () => void) => mesh.grants.onRegistered(notify), [mesh]);
-  const read = useCallback(
-    () => (what === undefined ? false : mesh.can(what, row)),
-    [mesh, what, row],
-  );
-  return useSyncExternalStore(subscribe, read);
 }

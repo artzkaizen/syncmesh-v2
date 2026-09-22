@@ -124,15 +124,18 @@ describe("useLiveQuery over api.*", () => {
     await mesh.stop();
   });
 
-  test("api.$can gates a button without the component naming a mesh or an instance", async () => {
+  test("a rehearsal gates a button without the component naming a mesh or an instance", async () => {
     const { mesh, api } = await open();
     let allowed: boolean | undefined;
     const Button = () => {
-      allowed = useCan(api.$can, "book.insert");
+      allowed = useCan(api.books.create.can({ orgId: ORG, id: "b0", title: "Gate" }));
       return null;
     };
-    await mount(createElement(Button));
+    const { settle } = await mount(createElement(Button));
+    await settle();
     expect(allowed).toBe(true);
+    // rehearsed and rolled back: the row the verdict was about was never written
+    expect(await api.books.list({ orgId: ORG }).run()).toEqual([]);
     await mesh.stop();
   });
 
