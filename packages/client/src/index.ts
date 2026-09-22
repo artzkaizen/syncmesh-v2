@@ -22,7 +22,7 @@ export type {
 } from "./mesh.js";
 export type { HandleCounts, Inspect, Teardown } from "./inspect.js";
 export type { OperationsView } from "./operations.js";
-export { openOperations, wireOperations } from "./operations.js";
+export { openOperations, operationRefs, wireOperations } from "./operations.js";
 export type { RecoveryIssue, RecoveryView } from "./recovery.js";
 export type { Auth, AuthStatus, Session, SessionAsk, SessionProvider } from "./auth.js";
 export { createAuth } from "./auth.js";

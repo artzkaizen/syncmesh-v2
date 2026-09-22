@@ -1,35 +1,59 @@
 import type { Engine } from "@syncmesh/engine";
 import type { SQLWrapper } from "drizzle-orm";
 
-import type { LiveChange } from "./patch.js";
+import type { LiveChange, LiveDiff } from "./patch.js";
 
 import { replaceEqualDeep } from "./equal.js";
-import { patchWindow } from "./patch.js";
+import { diffOf, patchWindow, stateOf } from "./patch.js";
 import { ROW_SYNC_TABLE } from "./sync-of.js";
 import { identityOf, tablesOf } from "./tree.js";
-import { windowOf } from "./window.js";
+import { keyOfRows, windowOf } from "./window.js";
+
+/**
+ * Before any local read has completed: `data` is empty and carries **no information**, so
+ * there is nothing to key and nothing to diff — the only honest UI is a skeleton.
+ *
+ * `status` is `error` here when the first read fell over, which establishes nothing in either
+ * direction; a caller reading `!isPending` would take that for an answer.
+ */
+export interface LiveUnanswered {
+  readonly answered: false;
+  readonly data: readonly never[];
+  readonly status: "pending" | "error";
+  readonly error: Error | undefined;
+}
+
+/**
+ * A local read has completed, and `data` is what it returned.
+ *
+ * The fact any empty-state claim rests on, and **not** the same fact as `status`: a re-run that
+ * failed keeps the last good rows and turns `status` to `error` without un-answering the
+ * question. It is on the snapshot rather than beside it so it can never drift from the rows it
+ * describes, and once reached it is never left.
+ */
+export interface LiveAnswered<T> {
+  readonly answered: true;
+  readonly data: readonly T[];
+  /**
+   * The same rows keyed by primary key — the identity the diff is decided by (book ch. 9).
+   * Built once per delivery here, so a consumer keyed on rows never rebuilds a map to find one.
+   */
+  readonly state: ReadonlyMap<string, T>;
+  /** What this delivery changed against the one before; every map empty on a failed re-run. */
+  readonly diff: LiveDiff<T>;
+  readonly status: "error" | "success";
+  readonly error: Error | undefined;
+}
 
 /**
  * What a consumer reads, as one object whose **identity changes only when something changed** —
  * which is what lets `useSyncExternalStore` hold it without tearing, and what stops a component
  * re-rendering because an unrelated table was written.
+ *
+ * Two arms on `answered`, because `state` and `diff` describe rows and an unanswered query has
+ * none to describe.
  */
-export interface LiveSnapshot<T> {
-  /** Empty while pending, so a list never has to null-check. */
-  readonly data: readonly T[];
-  readonly status: "pending" | "error" | "success";
-  /**
-   * A local read has completed, and `data` is what it returned.
-   *
-   * The fact any empty-state claim rests on, and **not** the same fact as `status`. A query that
-   * has never run has no answer to report, and a re-run that failed keeps the last good rows and
-   * turns `status` to `error` without un-answering the question — so neither "not pending" nor
-   * "is success" means the store has spoken. This does, it is on the snapshot rather than beside
-   * it so it can never drift from the rows it describes, and once true it stays true.
-   */
-  readonly answered: boolean;
-  readonly error: Error | undefined;
-}
+export type LiveSnapshot<T> = LiveUnanswered | LiveAnswered<T>;
 
 /**
  * Told the rows, and told what moved to get them — the second only when the query was
@@ -68,6 +92,8 @@ export type Runnable<T> = SQLWrapper & PromiseLike<readonly T[]>;
 export type LiveQuery<T> = Runnable<T> | (() => Runnable<T>);
 
 const EMPTY: readonly never[] = [];
+const NONE: ReadonlyMap<string, never> = new Map<string, never>();
+const NO_DIFF: LiveDiff<never> = { added: NONE, removed: NONE, changed: NONE };
 
 /**
  * Above this many changed keys, the probe stops being small and the re-run stops being the
@@ -77,6 +103,26 @@ const PROBE_KEYS = 100;
 
 const asError = (cause: unknown): Error =>
   cause instanceof Error ? cause : new Error(String(cause));
+
+/**
+ * A re-run's rows with every unchanged row's identity restored — matched by key where the query
+ * has one, so a row keeps its object across an insert above it; by position where it does not.
+ * The array itself is `current` when nothing moved, which is the change decision.
+ */
+const mergeRows = <T>(
+  current: readonly T[],
+  before: ReadonlyMap<string, T>,
+  fresh: readonly T[],
+  keyOf: ((row: T) => string) | undefined,
+): readonly T[] => {
+  if (keyOf === undefined) return replaceEqualDeep(current, fresh);
+  const rows = fresh.map((row) => {
+    const was = before.get(keyOf(row));
+    return was === undefined ? row : replaceEqualDeep(was, row);
+  });
+  const same = rows.length === current.length && rows.every((row, at) => row === current[at]);
+  return same ? current : rows;
+};
 
 /**
  * What a live query re-runs on: the two feeds a fold announces itself through, and nothing else.
@@ -103,6 +149,7 @@ export const createLive = (engine: LiveSource) => {
     // see it; the query's own text is what says whether a `syncOf` column was selected
     const sql = identityOf(query);
     const plan = rebuild === undefined ? undefined : windowOf(query, rebuild);
+    const keyOf = keyOfRows(query);
     const listeners = new Set<LiveListener<T>>();
     let current: readonly T[] | undefined;
     let snap: LiveSnapshot<T> = {
@@ -111,9 +158,13 @@ export const createLive = (engine: LiveSource) => {
       error: undefined,
       status: "pending",
     };
+    /** The rows as last keyed, which is what the next delivery is diffed against. */
+    const held = (): ReadonlyMap<string, T> => (snap.answered ? snap.state : NONE);
 
     const publish = (rows: readonly T[], changes: readonly LiveChange<T>[] | undefined): void => {
-      snap = { answered: true, data: rows, error: undefined, status: "success" };
+      const state = stateOf(rows, keyOf);
+      const diff = diffOf(held(), state);
+      snap = { answered: true, data: rows, state, diff, error: undefined, status: "success" };
       for (const listener of listeners) listener(rows, changes);
     };
 
@@ -126,12 +177,13 @@ export const createLive = (engine: LiveSource) => {
         // a failed run keeps the last good rows: a transient error must not blank a list — and
         // it keeps `answered` too, because a read that fell over has told the caller nothing
         // about what is in the store, in either direction
-        snap = { answered: snap.answered, data: snap.data, error, status: "error" };
+        snap = snap.answered
+          ? { ...snap, diff: NO_DIFF, error, status: "error" }
+          : { ...snap, error, status: "error" };
         for (const listener of listeners) listener(snap.data, undefined);
         throw error;
       }
-      // identity is the change decision, and every unchanged row keeps its reference
-      const rows = current === undefined ? fresh : replaceEqualDeep(current, fresh);
+      const rows = current === undefined ? fresh : mergeRows(current, held(), fresh, keyOf);
       const changed = rows !== current || snap.status !== "success";
       current = rows;
       if (changed) publish(rows, undefined);

@@ -81,20 +81,13 @@ const configOf = (query: SQLWrapper): SelectConfig | undefined => {
 };
 
 /**
- * The single table a source is a view of: the table itself, or a plain filtered select over one
- * — which is what `read(table)` hands back, the table with the caller's read rule compiled in.
- *
- * A subquery that *computed* a column is rejected, and that rejection is load-bearing:
- * `issues.list` with `perStatus` numbers its rows with `row_number() OVER (PARTITION BY
- * status …)`, whose value depends on every other row in the partition. A probe restricted to the
- * keys a fold wrote would number those keys 1, 2, 3, and the outer `WHERE within <= n` would
- * admit rows that belong nowhere near the top of their column.
+ * The single table a source is a view of: the table itself, or a select over one — which is
+ * what `read(table)` hands back, the table with the caller's read rule compiled in. A source that
+ * names two tables is a join, and a join can hand out one table's key twice.
  */
-const sourceTableOf = (source: unknown): string | undefined => {
+const singleTableOf = (source: unknown): string | undefined => {
   if (is(source, Table)) return getTableName(source);
   if (!is(source, Subquery)) return undefined;
-  for (const field of Object.values(source._.selectedFields))
-    if (!is(field, Column)) return undefined;
   const named = new Set<string>();
   walkSql(source._.sql, (chunk) => {
     if (is(chunk, Table)) named.add(getTableName(chunk));
@@ -103,6 +96,19 @@ const sourceTableOf = (source: unknown): string | undefined => {
   const [only] = named;
   return named.size === 1 ? only : undefined;
 };
+
+/**
+ * Whether every column a source hands out is one of its table's own, none computed.
+ *
+ * A subquery that *computed* a column cannot be probed, and that rejection is load-bearing:
+ * `issues.list` with `perStatus` numbers its rows with `row_number() OVER (PARTITION BY
+ * status …)`, whose value depends on every other row in the partition. A probe restricted to the
+ * keys a fold wrote would number those keys 1, 2, 3, and the outer `WHERE within <= n` would
+ * admit rows that belong nowhere near the top of their column.
+ */
+const plainFields = (source: unknown): boolean =>
+  !is(source, Subquery) ||
+  Object.values(source._.selectedFields).every((field) => is(field, Column));
 
 /**
  * Which output field each of the source's columns became, and `undefined` if any field is not a
@@ -225,6 +231,22 @@ const limitOf = (
 };
 
 /**
+ * The primary key a row of this query is keyed by, or `undefined` for a query that hands out none.
+ *
+ * One plain select over one table, projecting its one primary column: the only shape under which
+ * a key is unique per row. Looser than {@link windowOf} on purpose — a computed column, an
+ * expression in the `ORDER BY` or an `OFFSET` all stop a query being *maintained* and none of
+ * them stops its rows being *keyed*.
+ */
+export const keyOfRows = <T>(query: Runnable<T>): ((row: T) => string) | undefined => {
+  const config = configOf(query);
+  if (config === undefined || !isPlain(config)) return undefined;
+  const keyField = keyFieldOf(config.fields);
+  if (keyField === undefined || singleTableOf(config.table) === undefined) return undefined;
+  return (row) => String(cellOf(row, keyField));
+};
+
+/**
  * The plan for maintaining this query, or `undefined` to say it must re-run.
  *
  * `again` rebuilds the same question — the procedure's handler run a second time — because the
@@ -240,7 +262,7 @@ export const windowOf = <T>(
   // an offset addresses a position, and every position below it moves when a row above changes
   if (config === undefined || !isPlain(config) || config.offset !== undefined) return undefined;
 
-  const table = sourceTableOf(config.table);
+  const table = plainFields(config.table) ? singleTableOf(config.table) : undefined;
   const byColumn = fieldsByColumn(config.fields);
   const keyField = keyFieldOf(config.fields);
   if (table === undefined || byColumn === undefined || keyField === undefined) return undefined;

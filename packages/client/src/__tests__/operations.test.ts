@@ -89,6 +89,12 @@ const soloMesh = async (extra: { readonly authority?: PeerId } = {}) => {
 const timeout = (ms: number) =>
   new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), ms));
 
+/** A ref reads after the ledger announces; this is the few ticks between the two. */
+const until = async (ok: () => boolean): Promise<void> => {
+  for (let round = 0; round < 100 && !ok(); round += 1) await timeout(5);
+  if (!ok()) throw new Error("the ref never read what the ledger announced");
+};
+
 describe("the write ledger", () => {
   test("a write records an operation; a peer's acknowledgement becomes a durable receipt", async () => {
     const open = async (device: typeof deviceA) => {
@@ -200,6 +206,13 @@ describe("the write ledger", () => {
     expect(vouches.map((v) => v.holder)).toEqual([deviceB.peerId]);
     // the lineage is the store's own, minted on its first boot: present, and B's rather than ours
     expect(vouches[0]?.incarnation).toMatch(/^[0-9a-f]{64}$/);
+
+    // and the same custody reads off a ref, which is the record a detail view holds
+    const ref = ledger.get(record?.id ?? "");
+    const off = ref.subscribe(() => undefined);
+    await until(() => ref.status() !== undefined);
+    expect(ref.status()?.vouches.map((v) => v.holder)).toEqual([deviceB.peerId]);
+    off();
     await a.stop();
     await b.stop();
   });
@@ -317,6 +330,87 @@ describe("the write ledger", () => {
     expect(after[0]?.id).toBe(before[0]?.id ?? "");
     await reopened.mesh.stop();
     await reopened.close();
+  });
+});
+
+/**
+ * `get(id)` is a ref (book ch. 10, D27): one object per id while anything holds it, `status()`
+ * the record as last read, `subscribe` for when it reads differently — and still awaitable for
+ * the store's own read, which every existing caller of `get` is.
+ */
+describe("an operation ref", () => {
+  test("one object per id while held, reading the record the write is about to create", async () => {
+    const mesh = await soloMesh();
+    const handle = mesh.on("org:acme").unwrap();
+    const ledger = mesh.operations ?? panicNoLedger();
+
+    const id = crypto.randomUUID();
+    const ref = ledger.get(id);
+    expect(ref.id).toBe(id);
+    expect(ref.status()).toBeUndefined();
+    // awaitable: the store's one-shot read, and nothing has been written under this id yet
+    expect((await ref).unwrap()).toBeUndefined();
+
+    let told = 0;
+    const off = ref.subscribe(() => {
+      told += 1;
+    });
+    // held, so the same object comes back — which is what lets a hook key on it
+    expect(ledger.get(id)).toBe(ref);
+
+    await handle.under({ id }, async () => {
+      await handle.db.insert(notes).values({ id: "n1", body: "in flight" });
+    });
+    await until(() => told === 1);
+    const record = ref.status();
+    expect(record?.label).toBe("notes.insert");
+    expect(record?.status).toBe("applied");
+    expect(record?.vouches).toEqual([]);
+
+    // another write announces the whole ledger; this record did not move, so it keeps its
+    // identity and its watchers hear nothing
+    await handle.db.insert(notes).values({ id: "n2", body: "another" });
+    await timeout(20);
+    expect(ref.status()).toBe(record);
+    expect(told).toBe(1);
+
+    off();
+    // released: nothing holds the id, so the next ask opens afresh
+    expect(ledger.get(id)).not.toBe(ref);
+    await mesh.stop();
+  });
+
+  test("a correction reaches a held ref", async () => {
+    const mesh = await soloMesh({ authority: deviceA.peerId });
+    const handle = mesh.on("org:acme").unwrap();
+    const ledger = mesh.operations ?? panicNoLedger();
+    const id = crypto.randomUUID();
+    await handle.under({ id }, async () => {
+      await handle.db.insert(notes).values({ id: "n1", body: "priced wrong" });
+    });
+    const ref = ledger.get(id);
+    const off = ref.subscribe(() => undefined);
+    await until(() => ref.status()?.status === "applied");
+    const op = ref.status() ?? panicNoLedger();
+
+    (
+      await correct(
+        mesh.engine,
+        {
+          event: `${String(op.peer)}-${String(op.seq)}`,
+          table: NOTES,
+          key: N1,
+          reason: "below the floor",
+          partition: parsePartitionKey("org:acme").unwrap(),
+        },
+        (tx) => tx.update(NOTES, N1, new Map([[BODY, "corrected"]])),
+      )
+    ).unwrap();
+
+    await until(() => ref.status()?.status === "superseded");
+    expect(ref.status()?.correction?.reason).toBe("below the floor");
+    off();
+    await mesh.stop();
   });
 });
 

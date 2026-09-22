@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test";
 import { asc, count, desc, eq, sql } from "drizzle-orm";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
+import type { LiveSnapshot } from "../live.js";
 import type { LiveChange } from "../patch.js";
 
 import { meshDrizzle } from "../index.js";
@@ -236,6 +237,123 @@ describe("a live query is maintained from the keys a fold named", () => {
     const { told } = listening(live);
     await settle();
     expect(told).toEqual([]);
+    live.release();
+  });
+});
+
+/** The snapshot once the store has spoken — the arm `state` and `diff` live on. */
+const answered = <T>(live: { readonly snapshot: () => LiveSnapshot<T> }) => {
+  const snap = live.snapshot();
+  if (!snap.answered) throw new Error("the store has not answered");
+  return snap;
+};
+
+/**
+ * The book's fourth live invariant (ch. 9): unchanged rows keep object identity across
+ * deliveries, and each delivery exposes a keyed diff — computed here, not by a consumer
+ * re-keying the list. A re-run is the case that matters: the listener's delta is honestly
+ * `undefined` there, and the diff is present regardless.
+ */
+describe("every delivery carries a keyed diff, and unchanged rows keep their identity", () => {
+  test("a re-run names exactly the keys that changed and keeps the rest", async () => {
+    const mesh = await open();
+    for (const [at, id] of ["a", "b", "c"].entries())
+      await mesh.db.insert(jobs).values({ id, title: id, status: "open", rank: at });
+    // a built query rather than a factory: nothing maintains it, so every fold is a re-run
+    const live = mesh.live<Job>(mesh.db.select().from(jobs).orderBy(asc(jobs.rank), asc(jobs.id)));
+    const before = await live.ready;
+    const first = answered(live);
+    expect([...first.diff.added.keys()]).toEqual(["a", "b", "c"]);
+    expect(first.state.get("b")).toBe(before[1]!);
+    const { told } = listening(live);
+
+    await mesh.db.update(jobs).set({ title: "B!" }).where(eq(jobs.id, "b"));
+    await settle();
+    // the listener's delta is honestly absent on a re-run; the snapshot's diff is not
+    expect(told[0]?.changes).toBeUndefined();
+    const snap = answered(live);
+    expect([...snap.diff.changed.keys()]).toEqual(["b"]);
+    expect(snap.diff.added.size).toBe(0);
+    expect(snap.diff.removed.size).toBe(0);
+    expect(snap.diff.changed.get("b")).toBe(snap.data[1]!);
+    expect(snap.data[0]).toBe(before[0]!);
+    expect(snap.data[2]).toBe(before[2]!);
+    expect(snap.state.get("a")).toBe(before[0]!);
+
+    // an insert above every row shifts every position, and no row changes identity for it —
+    // which a positional merge got wrong, because it compared each row with its new neighbour
+    await mesh.db.insert(jobs).values({ id: "0", title: "0", status: "open", rank: -1 });
+    await settle();
+    const shifted = answered(live);
+    expect(shifted.data.map((r) => r.id)).toEqual(["0", "a", "b", "c"]);
+    expect([...shifted.diff.added.keys()]).toEqual(["0"]);
+    expect(shifted.diff.changed.size).toBe(0);
+    expect(shifted.data[1]).toBe(snap.data[0]!);
+    expect(shifted.data[3]).toBe(snap.data[2]!);
+
+    await mesh.db.delete(jobs).where(eq(jobs.id, "a"));
+    await settle();
+    const gone = answered(live);
+    expect([...gone.diff.removed.keys()]).toEqual(["a"]);
+    // removed holds the row as it last was
+    expect(gone.diff.removed.get("a")).toBe(shifted.data[1]!);
+    expect(gone.state.has("a")).toBe(false);
+    live.release();
+  });
+
+  test("a query that projects no primary key is keyed by position, and still diffs", async () => {
+    const mesh = await open();
+    for (const [at, [id, status]] of [
+      ["a", "open"],
+      ["b", "open"],
+      ["c", "done"],
+    ].entries())
+      await mesh.db
+        .insert(jobs)
+        .values({ id: id ?? "", title: id ?? "", status: status ?? "", rank: at });
+    const live = mesh.live(
+      mesh.db
+        .select({ status: jobs.status, total: count() })
+        .from(jobs)
+        .groupBy(jobs.status)
+        .orderBy(asc(jobs.status)),
+    );
+    await live.ready;
+    expect([...answered(live).state.keys()]).toEqual(["0", "1"]);
+
+    await mesh.db.update(jobs).set({ status: "done" }).where(eq(jobs.id, "a"));
+    await settle();
+    const snap = answered(live);
+    expect(snap.data).toEqual([
+      { status: "done", total: 2 },
+      { status: "open", total: 1 },
+    ]);
+    // both groups' counts moved, so both positions read as changed
+    expect([...snap.diff.changed.keys()]).toEqual(["0", "1"]);
+    live.release();
+  });
+
+  test("a maintained delivery's diff agrees with its delta", async () => {
+    const mesh = await open();
+    for (const [at, id] of ["a", "b", "c"].entries())
+      await mesh.db.insert(jobs).values({ id, title: id, status: "open", rank: at });
+    const live = mesh.live<Job>(() =>
+      mesh.db
+        .select()
+        .from(jobs)
+        .where(eq(jobs.status, "open"))
+        .orderBy(asc(jobs.rank), asc(jobs.id)),
+    );
+    const before = await live.ready;
+    const { told } = listening(live);
+
+    await mesh.db.update(jobs).set({ title: "B!" }).where(eq(jobs.id, "b"));
+    await settle();
+    expect(told[0]?.changes?.map((c) => `${c.kind}:${c.key}`)).toEqual(["update:b"]);
+    const snap = answered(live);
+    expect([...snap.diff.changed.keys()]).toEqual(["b"]);
+    expect(snap.diff.added.size + snap.diff.removed.size).toBe(0);
+    expect(snap.state.get("a")).toBe(before[0]!);
     live.release();
   });
 });

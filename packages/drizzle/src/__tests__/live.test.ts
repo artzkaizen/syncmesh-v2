@@ -51,6 +51,8 @@ const answering = <T>(runs: readonly (() => Promise<readonly T[]>)[]): Runnable<
   };
 };
 
+const boom = () => Promise.reject(new Error("the port closed mid-query"));
+
 /**
  * `answered` is the fact an empty-state claim rests on, and it is not any of the other three.
  *
@@ -61,8 +63,6 @@ const answering = <T>(runs: readonly (() => Promise<readonly T[]>)[]): Runnable<
  * empty state over a store it never heard from.
  */
 describe("a snapshot says whether the store answered", () => {
-  const boom = () => Promise.reject(new Error("the port closed mid-query"));
-
   test("a query that has not run has not answered", async () => {
     const { source } = feed();
     const live = createLive(source)(answering([() => Promise.resolve([{ id: "j1" }])]));
@@ -103,6 +103,36 @@ describe("a snapshot says whether the store answered", () => {
     expect(snap.data).toEqual([{ id: "j1" }]);
     // the question was answered once and a failed re-run does not un-answer it
     expect(snap.answered).toBe(true);
+    live.release();
+  });
+});
+
+/**
+ * A hand-rolled `Runnable` carries no Drizzle projection, so there is no primary key to read off
+ * it: the row's position is the only identity it has, and the snapshot says so by keying on it.
+ */
+describe("a snapshot carries the rows keyed, and what the delivery changed", () => {
+  test("the first delivery adds everything; a re-run that threw changes nothing", async () => {
+    const { source, fold } = feed();
+    const live = createLive(source)(
+      answering([() => Promise.resolve([{ id: "j1" }, { id: "j2" }]), boom]),
+    );
+    await live.ready;
+    const first = live.snapshot();
+    if (!first.answered) throw new Error("the store has not answered");
+    expect([...first.state.keys()]).toEqual(["0", "1"]);
+    expect(first.state.get("1")).toBe(first.data[1]!);
+    expect([...first.diff.added.keys()]).toEqual(["0", "1"]);
+
+    const settled = new Promise<void>((resolve) => live.subscribe(() => resolve()));
+    fold();
+    await settled;
+    const snap = live.snapshot();
+    if (!snap.answered) throw new Error("a failed re-run does not un-answer");
+    expect(snap.status).toBe("error");
+    // the rows and their keying are the ones in hand, and this delivery changed none of them
+    expect(snap.state).toBe(first.state);
+    expect(snap.diff.added.size + snap.diff.removed.size + snap.diff.changed.size).toBe(0);
     live.release();
   });
 });

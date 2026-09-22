@@ -1,12 +1,12 @@
 export type { Answered } from "./answered.js";
-export type { LiveCall, LiveResult, QueryOptions } from "./use-live-query.js";
+export type { LiveCall, LiveDiff, LiveResult, QueryOptions } from "./use-live-query.js";
 export { useLiveQuery } from "./use-live-query.js";
 export type { QueryResult } from "./use-query.js";
 export { useQuery } from "./use-query.js";
 export type { PresenceTopic } from "./use-presence.js";
 export { usePresence } from "./use-presence.js";
-export type { CanCall, CanSource } from "./use-can.js";
-export type { OperationRecord, OperationSource } from "./use-operation.js";
+export type { CanCall } from "./use-can.js";
+export type { OperationRecord, OperationRef } from "./use-operation.js";
 export { useOperation } from "./use-operation.js";
 export { useCan } from "./use-can.js";
 export type { Diagnosable, ProviderProps, SyncmeshReact } from "./factory.js";

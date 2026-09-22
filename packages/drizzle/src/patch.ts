@@ -23,6 +23,51 @@ export interface Patched<T> {
   readonly changes: readonly LiveChange<T>[];
 }
 
+/**
+ * What one delivery changed, keyed the way `state` is (book ch. 9, the fourth live invariant).
+ *
+ * Present on **every** delivery, a re-run included — unlike {@link LiveChange}, which a query
+ * hands over only when it was maintained. Decided by identity alone: the live layer already
+ * kept every unchanged row the object it was, so a row under `changed` is one whose reference
+ * moved, and `removed` holds each row as it last was.
+ */
+export interface LiveDiff<T> {
+  readonly added: ReadonlyMap<string, T>;
+  readonly removed: ReadonlyMap<string, T>;
+  readonly changed: ReadonlyMap<string, T>;
+}
+
+/**
+ * The rows keyed the way the query keys them — by its primary key when it projects one, and by
+ * position when it does not.
+ *
+ * An aggregate, a join, a projection without the key: none of these hand out a primary key, so
+ * the row's place in the list is the only identity it has. A diff over position over-reports a
+ * shift as a change and never under-reports one, which is the safe side to err on.
+ */
+export const stateOf = <T>(
+  rows: readonly T[],
+  keyOf: ((row: T) => string) | undefined,
+): ReadonlyMap<string, T> =>
+  new Map(rows.map((row, at) => [keyOf === undefined ? String(at) : keyOf(row), row]));
+
+/** The keyed diff between two deliveries, decided by identity. */
+export const diffOf = <T>(
+  before: ReadonlyMap<string, T>,
+  after: ReadonlyMap<string, T>,
+): LiveDiff<T> => {
+  const added = new Map<string, T>();
+  const removed = new Map<string, T>();
+  const changed = new Map<string, T>();
+  for (const [key, row] of after) {
+    const was = before.get(key);
+    if (was === undefined) added.set(key, row);
+    else if (was !== row) changed.set(key, row);
+  }
+  for (const [key, row] of before) if (!after.has(key)) removed.set(key, row);
+  return { added, removed, changed };
+};
+
 /** Two runs already in the query's order, woven into one. */
 const weave = <T>(left: readonly T[], right: readonly T[], order: (a: T, b: T) => number): T[] => {
   const woven: T[] = [];

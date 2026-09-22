@@ -1,5 +1,5 @@
 import type { ReadCoverage } from "@syncmesh/client";
-import type { Live } from "@syncmesh/drizzle";
+import type { Live, LiveSnapshot } from "@syncmesh/drizzle";
 
 import { LOCAL_ONLY } from "@syncmesh/client";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -7,6 +7,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import type { Answered } from "./answered.js";
 
 import { answeredFrom } from "./answered.js";
+
+/** What one delivery changed, keyed by primary key — the snapshot's own diff (book ch. 9). */
+export type LiveDiff<T> = Extract<LiveSnapshot<T>, { readonly answered: true }>["diff"];
 
 /**
  * The slice of a bound call these hooks need. `@syncmesh/orpc`'s `QueryCall` satisfies it
@@ -51,6 +54,13 @@ export interface QueryOptions {
 export interface LiveResult<T> {
   /** The rows as of the last run; empty while pending, so a list never has to null-check. */
   readonly data: readonly T[];
+  /**
+   * The same rows keyed by primary key — the identity the live layer diffs by (book ch. 9).
+   * Built once per delivery in the subscription layer, never per render; empty until answered.
+   */
+  readonly state: ReadonlyMap<string, T>;
+  /** What the last delivery changed, by key; every map empty until answered. */
+  readonly diff: LiveDiff<T>;
   readonly status: "pending" | "error" | "success";
   readonly isPending: boolean;
   readonly isError: boolean;
@@ -94,7 +104,9 @@ export interface LiveResult<T> {
 }
 
 const EMPTY: readonly never[] = [];
-export { LOCAL_ONLY };
+const NONE: ReadonlyMap<string, never> = new Map<string, never>();
+const NO_DIFF: LiveDiff<never> = { added: NONE, removed: NONE, changed: NONE };
+export { LOCAL_ONLY, NONE, NO_DIFF };
 
 const asError = (cause: unknown): Error =>
   cause instanceof Error ? cause : new Error(String(cause));
@@ -208,6 +220,8 @@ export function useLiveQuery<T>(
     const status = snap?.status ?? "pending";
     return {
       data: snap?.data ?? EMPTY,
+      state: snap?.answered ? snap.state : NONE,
+      diff: snap?.answered ? snap.diff : NO_DIFF,
       status,
       isPending: status === "pending",
       isError: status === "error",

@@ -20,6 +20,7 @@ import { gt } from "drizzle-orm";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { act, createElement, useEffect, useState } from "react";
 
+import type { LiveResult } from "../use-live-query.js";
 import type { OperationRecord } from "../use-operation.js";
 import type { QueryResult } from "../use-query.js";
 
@@ -114,24 +115,64 @@ describe("useLiveQuery", () => {
     await settle();
     expect(renders.at(-1)).toBe("j2@2");
   });
+
+  /**
+   * `state` is the rows keyed by primary key and `diff` is what the delivery changed (book
+   * ch. 9) — both built once in the subscription layer, so a render that changed nothing hands
+   * back the same map, and a fold that added a row names exactly that row.
+   */
+  test("state is the rows keyed, diff names the delivery, and neither is rebuilt per render", async () => {
+    const { handle } = await open();
+    await handle.db.insert(jobs).values({ id: "j1", title: "one", rank: 1 });
+    let last: LiveResult<{ readonly id: string }> | undefined;
+    let rerender: () => void = () => undefined;
+    const List = () => {
+      const [, bump] = useState(0);
+      rerender = () => bump((n) => n + 1);
+      last = useLiveQuery({
+        key: "jobs-keyed",
+        live: () => handle.live(handle.db.select({ id: jobs.id }).from(jobs).orderBy(jobs.id)),
+        settled: () => Promise.resolve(),
+      });
+      return null;
+    };
+    const { settle } = await mount(createElement(List));
+    await settle();
+    expect([...(last?.state.keys() ?? [])]).toEqual(["j1"]);
+    expect(last?.state.get("j1")).toBe(last?.data[0]);
+    expect([...(last?.diff.added.keys() ?? [])]).toEqual(["j1"]);
+
+    const held = last?.state;
+    await act(async () => rerender());
+    expect(last?.state).toBe(held);
+
+    await act(async () => {
+      await handle.db.insert(jobs).values({ id: "j2", title: "two", rank: 3 });
+    });
+    await settle();
+    expect([...(last?.diff.added.keys() ?? [])]).toEqual(["j2"]);
+    expect(last?.diff.changed.size).toBe(0);
+    // the row the fold did not name is the object it already was, under the same key
+    expect(last?.state.get("j1")).toBe(held?.get("j1"));
+  });
 });
 
 describe("useCan", () => {
   test("flips the moment a grant registers", async () => {
     const listeners = new Set<() => void>();
     let allowed = false;
-    const mesh = {
-      can: () => allowed,
-      grants: {
-        onRegistered: (listener: () => void) => {
-          listeners.add(listener);
-          return () => void listeners.delete(listener);
-        },
+    // `api.jobs.create.can(input)`, as the hook sees it: a verdict to ask for, and the grant feed
+    const rehearsal = {
+      key: "jobs.create:{orgId:acme}",
+      run: () => Promise.resolve({ isOk: () => allowed }),
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => void listeners.delete(listener);
       },
     };
     const seen: boolean[] = [];
     const Button = () => {
-      seen.push(useCan(mesh, "jobs.insert"));
+      seen.push(useCan(rehearsal));
       return null;
     };
     await mount(createElement(Button));
@@ -176,26 +217,22 @@ describe("useCan", () => {
 
 describe("useOperation", () => {
   /**
-   * The ledger announces this device's own commits, so a mounted record view hears about every
-   * write in the app. Re-reading per render on top of that is how a list of twenty writes turns
-   * one commit into hundreds of reads — and since every read decodes a fresh row, a view keyed on
-   * the source object never settles.
+   * The hook takes one ref — `client.$operations.get(id)` — and hands its record to React
+   * (book ch. 10). The ref owns the reading and the identity: a record that reads the same is
+   * the same object, so an unrelated commit announcing the ledger costs this view no render.
    */
-  test("reads once per id, however many times the component renders", async () => {
+  test("one subscription per id however many times the component renders, and an unchanged record keeps its identity", async () => {
     const listeners = new Set<() => void>();
     let row: OperationRecord | undefined;
-    let reads = 0;
-    // a fresh source per render is what a structurally-satisfied interface invites
-    const ledger = () => ({
-      get: (asked: string) => {
-        reads += 1;
-        return Promise.resolve({ unwrapOr: () => (row?.id === asked ? row : undefined) });
-      },
-      onChange: (listener: () => void) => {
+    // `client.$operations.get(id)`, as the hook sees it: an id, the record as last read, a feed
+    const ref = {
+      id: "op-1",
+      status: () => row,
+      subscribe: (listener: () => void) => {
         listeners.add(listener);
         return () => void listeners.delete(listener);
       },
-    });
+    };
     const notify = () => {
       for (const listener of listeners) listener();
     };
@@ -204,15 +241,14 @@ describe("useOperation", () => {
     const Detail = () => {
       const [, bump] = useState(0);
       rerender = () => bump((n) => n + 1);
-      seen.push(useOperation(ledger(), "op-1"));
+      seen.push(useOperation(ref));
       return null;
     };
 
     const { settle } = await mount(createElement(Detail));
-    expect(reads).toBe(1);
+    expect(seen.at(-1)).toBeUndefined();
     for (let i = 0; i < 5; i += 1) await act(async () => rerender());
-    expect(reads).toBe(1);
-    expect(listeners.size).toBe(1); // and one subscription, not one per render
+    expect(listeners.size).toBe(1); // one subscription, not one per render
 
     // the id was watched before the record existed, which is the only interesting case
     await act(async () => {
@@ -222,14 +258,12 @@ describe("useOperation", () => {
     await settle();
     expect(seen.at(-1)?.status).toBe("applied");
 
-    // another write's commit announces the whole ledger; this record did not move, so the view
-    // hands back the record it already had — React may re-render the hook itself before bailing
-    // out of an identical state, but nothing under it sees a new object
+    // the ledger announces with the same record: the store's snapshot is the same object, so
+    // React bails out and nothing renders
     const before = seen.length;
     await act(async () => notify());
     await settle();
-    expect(seen.at(-1)).toBe(seen[before - 1]);
-    expect(seen.length).toBeLessThanOrEqual(before + 1);
+    expect(seen.length).toBe(before);
 
     await act(async () => {
       row = { id: "op-1", label: "issue.update", status: "superseded" };
@@ -237,6 +271,17 @@ describe("useOperation", () => {
     });
     await settle();
     expect(seen.at(-1)?.status).toBe("superseded");
+  });
+
+  test("no ref reads nothing and subscribes to nothing", async () => {
+    const seen: (OperationRecord | undefined)[] = [];
+    const Detail = () => {
+      seen.push(useOperation(undefined));
+      return null;
+    };
+    const { settle } = await mount(createElement(Detail));
+    await settle();
+    expect(seen).toEqual([undefined]);
   });
 });
 
@@ -595,6 +640,8 @@ describe("useQuery — the book's dialect (ch. 9)", () => {
         result.answered,
         result.isEnabled,
         result.error === undefined ? "-" : "error",
+        result.state.size,
+        result.diff.added.size,
       ].join("/");
 
     const reports: string[] = [];
@@ -606,6 +653,6 @@ describe("useQuery — the book's dialect (ch. 9)", () => {
     const { settle } = await mount(createElement(Screen));
     await settle();
     expect(reports.at(-1)).toBe(reports.at(-2));
-    expect(reports.at(-1)).toBe("∅/disabled/none/false/-");
+    expect(reports.at(-1)).toBe("∅/disabled/none/false/-/0/0");
   });
 });

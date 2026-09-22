@@ -3,14 +3,26 @@ import type { ReadCoverage } from "@syncmesh/client";
 import { useMemo } from "react";
 
 import type { Answered } from "./answered.js";
-import type { LiveCall, QueryOptions } from "./use-live-query.js";
+import type { LiveCall, LiveDiff, QueryOptions } from "./use-live-query.js";
 
-import { LOCAL_ONLY, useLiveQuery } from "./use-live-query.js";
+import { LOCAL_ONLY, NONE, NO_DIFF, useLiveQuery } from "./use-live-query.js";
 
 /** TanStack Query's dialect, plus the one word HTTP-born libraries cannot have (book ch. 9). */
 export interface QueryResult<T> {
   /** `undefined` until the local query stabilizes, then the rows. */
   readonly data: readonly T[] | undefined;
+  /**
+   * The same rows keyed by primary key — keyed access, the identity the live layer diffs by
+   * (book ch. 9). Built once per delivery in the subscription layer; empty until answered.
+   */
+  readonly state: ReadonlyMap<string, T>;
+  /** What the last delivery changed, by key; every map empty until answered. */
+  readonly diff: LiveDiff<T>;
+  /**
+   * `"idle"` is absent on purpose: a descriptor is inert until this hook consumes it, and
+   * consuming it starts the read — there is no moment in which a subscribed query has not been
+   * asked. A pre-`$ready` read is `pending`, and `"disabled"` is the word for not asking.
+   */
   readonly status: "pending" | "error" | "success" | "disabled";
   /**
    * **How far this question has been answered** — `"none"`, `"local"` or `"settled"`.
@@ -101,6 +113,8 @@ export function useQuery<T>(call: LiveCall<T> | undefined, options?: QueryOption
     if (!enabled) {
       return {
         data: undefined,
+        state: NONE,
+        diff: NO_DIFF,
         status: "disabled" as const,
         answered: "none" as const,
         coverage: LOCAL_ONLY,
@@ -110,6 +124,8 @@ export function useQuery<T>(call: LiveCall<T> | undefined, options?: QueryOption
     }
     return {
       data: live.answered === "none" ? undefined : live.data,
+      state: live.state,
+      diff: live.diff,
       status: live.status,
       answered: live.answered,
       coverage: live.coverage,
