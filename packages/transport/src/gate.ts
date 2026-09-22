@@ -126,7 +126,7 @@ export function createAdmissionGate(options: GateOptions) {
      */
     if (held === undefined) return "deny";
     const ours = new Set(partitions());
-    return held.partitions.some((partition) => ours.has(String(partition))) ? "allow" : "deny";
+    return held.partitions.some((partition) => ours.has(partition)) ? "allow" : "deny";
   };
 
   return {
