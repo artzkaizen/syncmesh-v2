@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { announce, dismiss, onToasts, overruledBy, toasts } from "../app/overrule.js";
+import { announce, dismiss, onToasts, overruledBy, toasts } from "../overrule.js";
 
 describe("what the app says when a write is overruled", () => {
   test("the sentence names the office and carries its reason", () => {

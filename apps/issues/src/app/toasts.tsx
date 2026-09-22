@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 
-import { dismiss, onToasts, toasts } from "./overrule.js";
+import { dismiss, onToasts, toasts } from "../overrule.js";
 import { BUTTON, COLOR, HAIRLINE, RADIUS, SPACE, TEXT } from "./ui.js";
 
 /** The lines the app is saying over the screen, bottom right; each goes by itself or on its ×. */

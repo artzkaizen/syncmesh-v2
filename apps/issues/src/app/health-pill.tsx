@@ -1,4 +1,4 @@
-import { healthWord } from "./health-word.js";
+import { healthWord } from "../health-word.js";
 import { mesh } from "./mesh.js";
 import { COLOR, HAIRLINE, RADIUS, SPACE, TEXT } from "./ui.js";
 

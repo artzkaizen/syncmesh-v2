@@ -56,3 +56,13 @@ export { seedConversation, seedWorkspace, type SeedOptions, type SeededWorkspace
 export { FIRST_RANK, between, sequence } from "./rank.js";
 export { at, atOrNull, instantOf, parseInstant } from "./time.js";
 export { record, type Change } from "./history.js";
+export { healthWord, type HealthWord } from "./health-word.js";
+export {
+  announce,
+  dismiss,
+  onToasts,
+  overruledBy,
+  toasts,
+  useOverruled,
+  type Toast,
+} from "./overrule.js";

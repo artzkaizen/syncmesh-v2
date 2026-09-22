@@ -1,7 +1,7 @@
 import { useOperation } from "@syncmesh/react";
 
+import { useOverruled } from "../overrule.js";
 import { mesh } from "./mesh.js";
-import { useOverruled } from "./overrule.js";
 import { syncNote } from "./sync-note.js";
 import { COLOR, SEVERITY_COLOR, TEXT } from "./ui.js";
 

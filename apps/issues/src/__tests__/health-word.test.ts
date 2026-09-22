@@ -2,7 +2,7 @@ import type { Reading, Source } from "@syncmesh/react";
 
 import { describe, expect, test } from "bun:test";
 
-import { healthWord } from "../app/health-word.js";
+import { healthWord } from "../health-word.js";
 
 const source = (condition: Source["condition"]): Source => ({
   kind: "unknown",
