@@ -335,11 +335,33 @@ no free text; weighted by refuser identity, never by count. Rejects an unsigned 
 relays forward unread bytes, and authority-only correction (D) as the whole answer because a
 refused event never folded on the refuser and sealed partitions have no corrections.
 
-### 3.5 Delete-resurrection, proven
-Ditto's nastiest class — a device offline past the tombstone TTL resurrects a deleted row. Our
-event log plus coverage chains plus compaction floors should make it impossible. **No test pins
-it.** Add the chaos scenario: a device offline past the retention floor rejoins and must not
-resurrect.
+### 3.5 Delete-resurrection — **proven for every peer past the floor; two findings**
+`transport/src/__tests__/resurrection.test.ts`: three peers over real bridged links, x folds a row
+and goes dark, b deletes it, b and c compact past the delete so it is in no log, x comes back.
+Every peer past the floor never shows the row again — through the rejoin session, a forced re-fold
+of x's whole log, and a forced row repair, with the digest byte-identical — and x rejoins from
+state *on request* (`requestSnapshot()`: row hidden, cursor past the compacted run, delta-sync
+resumes). Lives in transport rather than chaos because chaos stamps acks with the wall clock and
+keeps a relay log that would hand x the delete anyway. Two things it found are items now:
+
+### 3.6 A returning device does not rejoin from state on its own
+The `test.todo` in that file: with no manual step, x keeps the row, its cursor for b stays 0,
+and nothing device-to-device asks for a snapshot. The cursors frame carries no floor
+(`transport/src/outbound.ts` `cursorsAfter`), `divergenceAgainst` declines because x's coverage
+is below the floor, the holdback buffers b's tail forever, `join.ts`'s `joinIfEmpty` fires only
+on empty coverage, and `$recovery.rebuild` is manual and refuses by default while the device has
+pending writes — which a device that wrote while dark will have. Only the relay knows floors
+(`relay/src/retention.ts`). RFC-0015 §3 and D15 say the peer "rejoins from state"; nothing
+peer-to-peer does it. This is D31's "pin D15's compaction floor for every peer", now with a
+red test naming the exact observed state. Needs a floor on the wire — a decision.
+
+### 3.7 Dedup below the compaction floor
+`receiveBatch` of x's old insert on b reports `folded: 1, skipped: 0` and b's log regains the
+event *below its floor*: `admit.ts` dedups by `store.has(event.id)`, which a compacted store
+cannot answer. State stays correct only because `mergeRecord` is a max-join. Unreachable on the
+wire today (`eventsSince` sends only above the receiver's cursor), reachable through a relay hop
+or a peer with regressed cursors. The resurrection tests assert the observable guarantee, so a
+dedup fix will not break them.
 
 ## 4 · Verified *not* gaps — do not re-do these
 
@@ -376,9 +398,9 @@ below are marked against that.
 | §2.2 `ladder` direction | **done** — comment corrected to *senior first*, and `roleAtLeast`'s direction pinned by three tests in `policy/src/__tests__/evaluate.test.ts` so it cannot rot again |
 | §2.4 read-only query `db` | **done** — `QueryContext` / `MutationContext` split in `orpc/src/procedures.ts`; `reading()` in `api.ts` hands a query body a `db` with no write verbs, in the type *and* on the object |
 | §2.8 one noun | **done** — `scopeReads` (`drizzle/src/scoped.ts`) substitutes every table in `from`/joins with the caller's scoped source; `read` is gone from the handler context and all `apps/issues` handlers |
-| §2.1 flat partitions | **core done; `flat()` done; every call site we own migrated** — what remains is `manifest.test.ts`'s deliberate tree-form tests, one devtools stub typed against the other agent's `MeshSchema`, and 5 files the other agent holds; per-kind `role()` narrowing on `drizzleTable` done — see below |
+| §2.1 flat partitions | **done** — value form, `flat()`, per-kind `role()` narrowing on `drizzleTable`, and the tree form deleted (`syncSchema<C, PC>`, `MeshSchema.kinds`, zero occurrences of the old symbols) |
 | §2.5 signed custody | **owned by the other agent** (D28); not touched |
-| §2.3 grant-driven sweep | not started — gated on §2.5 |
+| §2.3 grant-driven sweep | **done** — `createSweep` on `mesh.recovery.stores`; refusals reported, never bypassed; `detachScope` stays on the cursor tier until the relay frame (D28) |
 | §2.6 coverage on reads | **done** — `local-only \| partial \| caught-up` with source + checkpoint, mesh → `QueryCall` → `useLiveQuery` |
 | §2.7 tagged wire errors | **done** — smaller than written: the wire half already existed |
 
@@ -496,6 +518,13 @@ while every test mesh, which *has* coverage, stayed green. `LOCAL_ONLY` is now d
 `call.coverage()` to the same reference on a mesh without coverage; `adapters/browser` 43/43;
 `apps/issues` verified rendering in the browser (`document.readyState` complete, no error
 overlay, 120 seeded issues on screen).
+
+**Third pass, 2026-09-22 (three parallel sub-agents, disjoint files, each verified by me).**
+The tree form is deleted (`efc263d`): `syncSchema<C, PC>`, no `PartitionTree`/`Kinds`/`Roles`/
+`parentOf`, `MeshSchema.kinds`, the last six fixtures migrated, zero occurrences of the old
+symbols, 0 type errors tree-wide. The grant-driven sweep is built and wired (`0c0d45c`): nine
+tests on a real mesh over a set of files. The resurrection proof is in (`7751464`): two passing,
+one honest `test.todo` — §3.5–3.7 above.
 
 **Verified after the second pass:** 688 green across `policy` 16, `schema` 55, `storage` 72,
 `drizzle` 48, `orpc` 36, `react` 25, `relay` 133, `devtools` 159, `adapters/cloudflare-do` 29,
