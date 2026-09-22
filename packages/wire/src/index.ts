@@ -97,5 +97,5 @@ export type { KeyRing } from "./keyring.js";
 export { createKeyRing } from "./keyring.js";
 
 export type { Entropy } from "./entropy.js";
-export { NoSecureRandomness, randomBytes, useEntropy } from "./entropy.js";
-export { useSigner, type Signer } from "./signing.js";
+export { NoSecureRandomness, randomBytes, supplyEntropy } from "./entropy.js";
+export { supplySigner, type Signer } from "./signing.js";

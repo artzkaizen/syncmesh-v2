@@ -34,7 +34,7 @@ let supplied: Entropy | undefined;
  * argument on every key, nonce and content key in the system — and one place that forgot it would
  * be one place drawing from a different source than the rest, which is the bug this prevents.
  */
-export const useEntropy = (fill: Entropy): void => {
+export const supplyEntropy = (fill: Entropy): void => {
   supplied = fill;
 };
 

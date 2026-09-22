@@ -1,4 +1,4 @@
-import { useNativeCrypto } from "@syncmesh/react-native/crypto";
+import { installNativeCrypto } from "@syncmesh/react-native/crypto";
 import { Stack, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { HeroUINativeProvider, Spinner } from "heroui-native";
@@ -27,7 +27,7 @@ import "../global.css";
  * re-answered "is it ready" before it could draw, in four spellings of the same card. That is one
  * question, with one answer, that changes once per launch. It belongs here.
  */
-useNativeCrypto();
+installNativeCrypto();
 
 export default function RootLayout() {
   return (

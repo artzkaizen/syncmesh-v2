@@ -33,9 +33,9 @@ because a phone on an access point with no route is connected and useless.
 ## The signer — `@syncmesh/react-native/crypto`
 
 ```ts
-import { useNativeCrypto } from "@syncmesh/react-native/crypto";
+import { installNativeCrypto } from "@syncmesh/react-native/crypto";
 
-useNativeCrypto();
+installNativeCrypto();
 ```
 
 Ed25519 through OpenSSL instead of through Hermes, over `react-native-quick-crypto`. The bundled

@@ -10,7 +10,7 @@ import type { Entropy, Identity } from "@syncmesh/wire";
 
 import { deviceIdentity } from "@syncmesh/client";
 import { panic } from "@syncmesh/result";
-import { useEntropy } from "@syncmesh/wire";
+import { supplyEntropy } from "@syncmesh/wire";
 
 import type { AuthorityLink, Router } from "./api.js";
 
@@ -267,7 +267,7 @@ export const flatten = <R extends Router, C extends ColumnsMap, PC extends Prese
   // SAFETY: a `ClientOptions` is a plain record of its own declared keys
   const ungrouped = rest as Record<string, unknown>;
   // before anything else: the first key this client mints must come from the source the app named
-  if (entropy !== undefined) useEntropy(entropy);
+  if (entropy !== undefined) supplyEntropy(entropy);
   const flat: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(ungrouped)) if (value !== undefined) flat[key] = value;
   spread(flat, trust, TRUST_KEYS);

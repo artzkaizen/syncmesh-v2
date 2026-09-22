@@ -1,6 +1,6 @@
 import type { Signer } from "@syncmesh/wire";
 
-import { useSigner } from "@syncmesh/wire";
+import { supplySigner } from "@syncmesh/wire";
 import { createPrivateKey, createPublicKey, sign, verify } from "react-native-quick-crypto";
 
 /**
@@ -103,12 +103,12 @@ const native: Signer = {
  * every other optional medium takes here — so a failure to reach OpenSSL is reported and swallowed
  * rather than thrown.
  */
-export function useNativeCrypto(): void {
+export function installNativeCrypto(): void {
   try {
     // proves the module answers before anything depends on it: a signer installed and then found
     // to be absent would fail inside the fold, where there is nothing useful to do about it
     native.verify(Uint8Array.of(1), new Uint8Array(64), new Uint8Array(32));
-    useSigner(native);
+    supplySigner(native);
   } catch (cause) {
     // eslint-disable-next-line no-console -- a silent fallback to 7ms/signature is worth a line
     console.warn("[crypto] native Ed25519 unavailable, using the bundled implementation", cause);

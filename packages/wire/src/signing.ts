@@ -32,7 +32,7 @@ let supplied: Signer | undefined;
  * by Ed25519 and by the bytes each core encodes; a signer that disagreed with the bundled one
  * about any message would be a broken signer, not a configurable policy.
  */
-export const useSigner = (signer: Signer): void => {
+export const supplySigner = (signer: Signer): void => {
   supplied = signer;
 };
 
