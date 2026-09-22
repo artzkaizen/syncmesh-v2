@@ -56,6 +56,11 @@ have `fromDrizzle` refuse `boolean` on SQLite with a message that says why.
 unexpressible: a caller cannot tell "already done" from "failed". *Fix:* a distinguishable
 outcome — `Ok` with no event id, or a `NothingWritten` tag.
 
+**Closed 2026-09-22.** A mutation that stages nothing returns `Err(NothingWritten { path })`,
+a `TaggedError` in `packages/orpc/src/errors.ts`, so *already done* and *failed* are two
+values. Test: "NothingWritten: an idempotent mutation can finally report 'already done'" in
+`packages/orpc/src/__tests__/api.test.ts`.
+
 ## 7. Two declared errors collapse in `openapi()`
 
 `createServer`'s OpenAPI builder keys every declared error under `"422"`, so a procedure with two

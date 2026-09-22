@@ -162,7 +162,7 @@ above wearing transport clothes.
 
 The tell, from the Ditto study: **Ditto needs query subscriptions because Ditto has no
 partitions** — one database per app, so the query is their only knife. Syncmesh's knife is
-the schema: `partition: "shop"` already exists, and "a 1 GB catalog on a clerk's phone"
+the schema: `partition: shop` already exists, and "a 1 GB catalog on a clerk's phone"
 means the partition is drawn too coarse — a partition per shop, per ward, per region,
 granted precisely. Genuinely-global reference data that is too big for edges is
 authority-`query` territory (ch. 7), or drawn finer. Scale answers every sizing question
@@ -294,13 +294,16 @@ export const products = pgTable("products", {
 });
 
 // sync/schema.ts — a build input, never a live connection
+import { drizzleTable, ladder, partition, syncSchema } from "@syncmesh/schema";
+
+// a kind is a value: a name, a role set (senior first) and `sealed` — `sealed: true` is ch. 14
+export const shop = partition("shop", { roles: ladder("owner", "editor", "viewer") });
+
 export const schema = syncSchema({
-  partitions: { shop: {} },          // add `sealed: true` for end-to-end encryption — ch. 14
-  roles: { shop: ladder("owner", "editor", "viewer") },
   tables: {
     // the wrapper names its ORM, so no separate adapter declaration exists to drift from it
     products: drizzleTable(products, {
-      partition: "shop",
+      partition: shop,
       immutable: ["createdBy"],
       merge: { name: "lww", priceCents: "lww", stock: "counter" },
       allow: ({ role }) => ({
@@ -324,6 +327,17 @@ exclude. Private tables stay out the only way that cannot drift: the **module bo
 data is excluded from events, snapshots, exports and handler outputs, not merely hidden in
 the UI. Unsupported database features fail at schema construction with actionable errors —
 a boot error on the developer's machine, not a build step.
+
+**A partition kind is a value.** `partition("shop", { roles: ladder(…) })` declares a kind
+with a name, a role set and `sealed` (default `false`), and a table names it the way a query
+names a Drizzle table — `partition: shop`, never a string; the reserved kinds ship as values
+too (`global`, `user`, `local`). A kind that shares a ladder references it:
+`partition("vault", { sealed: true, roles: shop.roles })`. There is no nesting. D07 had
+decided a nested kind (`{ org: { shelf: {} } }`) would live in its parent's store, but that
+was never implemented — `storeNameFor` built every filename from `kind:id` with no parent
+lookup, and instance keys are flat, so a "nested" instance never recorded which parent it
+belonged to — and the tree had silently degraded into "inherit the parent's ladder". The
+schema describes the data model; where files go is storage's business (ch. 13).
 
 **Ids: the platform generates, syncmesh only checks.** The primary key's `$defaultFn` is the
 id generator — ordinary app code riding the platform's entropy: `crypto.getRandomValues` is
@@ -584,6 +598,11 @@ type Coverage =
   | { readonly kind: "local-only" }
   | { readonly kind: "partial"; readonly source: SourceId; readonly checkpoint: Checkpoint }
   | { readonly kind: "caught-up"; readonly source: SourceId; readonly checkpoint: Checkpoint };
+
+interface Checkpoint {
+  readonly at: Temporal.Instant;   // when that source finished its first pass
+  readonly cursors: Cursors;       // the per-author cursors this device held at that moment
+}
 ```
 
 Every answer carries its coverage, because empty local rows are not proof the remote scope
@@ -1008,11 +1027,13 @@ carried signed**, because a mesh has no central evaluator to walk a graph or met
 ```ts
 import { ladder, flat } from "@syncmesh/schema";
 
-roles: {
-  shop: ladder("owner", "editor", "viewer"),  // seniority, highest first: owner ≥ editor ≥
-                                              //   viewer; role("editor") = editor OR HIGHER
-  org:  flat("auditor", "billing"),           // no ordering; role("auditor") = exactly that
-}
+const shop = partition("shop", {
+  roles: ladder("owner", "editor", "viewer"),  // seniority, highest first: owner ≥ editor ≥
+                                               //   viewer; role("editor") = editor OR HIGHER
+});
+const org = partition("org", {
+  roles: flat("auditor", "billing"),           // no ordering; role("auditor") = exactly that
+});
 ```
 
 Stateless builders producing the literal union that types `role()` per partition kind. The
@@ -1589,12 +1610,12 @@ export const supplierCosts = pgTable("supplier_costs", {
 
 ```ts
 // sync/schema.ts — the sync declaration over those tables
+export const shop = partition("shop", { roles: ladder("owner", "editor", "viewer") });
+
 export const schema = syncSchema({
-  partitions: { shop: {} },
-  roles: { shop: ladder("owner", "editor", "viewer") },
   tables: {
     products: drizzleTable(products, {
-      partition: "shop",
+      partition: shop,
       immutable: ["createdBy"],
       merge: { name: "lww", priceCents: "lww" },
       allow: ({ role }) => ({
@@ -1605,7 +1626,7 @@ export const schema = syncSchema({
     // rooms fold too — everyone sees reserved names — but only the authority may create
     // them, because uniqueness is a global invariant: writes are gated, reads replicate.
     rooms: drizzleTable(rooms, {
-      partition: "shop",
+      partition: shop,
       immutable: ["shopId", "name"],
       allow: ({ role, authority }) => ({
         read: role("viewer"),
@@ -1614,7 +1635,7 @@ export const schema = syncSchema({
     }),
     // devices write the ask; only the server writes the answer
     nameRequests: drizzleTable(nameRequests, {
-      partition: "shop",
+      partition: shop,
       immutable: ["shopId", "name"],
       merge: { status: "lww", roomId: "lww" },
       allow: ({ role, authority }) => ({
@@ -1826,6 +1847,17 @@ flattened to `Error` at the one boundary that matters, no `counter` merge (a tes
 opposite), no LAN/AWDL/Wi-Fi Aware adapters, no per-peer multiplexer, no signed checkpoints, no
 sealed partitions.
 
+**Re-audited 2026-09-22.** Already built and not owed: the `syncOf`/`operationOf` columns,
+the `.authority()` terminal, `client.$transports.add`/`.remove`. `waitFor` on the `Write`
+handle was deleted on purpose by D27, not left unbuilt. Landed since the first audit:
+partition kinds as values (`partition(...)`, `ladder(...)`, the reserved `global`/`user`/
+`local`; the `partitions:`/`roles:`/`sealed:` blocks are gone from `syncSchema`); one noun
+in handlers — `db` only, with the caller's `allow.read` and partition pin applied to every
+table source on SQLite and Postgres, and a `query` handler's `db` carrying no write verbs;
+`NothingWritten` as the tagged answer to a mutation that stages nothing; and `Coverage` on
+reads — `local-only | partial | caught-up`, `checkpoint = { at, cursors }` — beside
+`answered` on `useQuery`/`useLiveQuery`.
+
 ## Chapter 26. Keep, refine, build, cut
 
 Verdicts by subsystem; the mechanism for each is promotion of existing machinery wherever
@@ -1870,7 +1902,10 @@ one exists.
 
 The cut list, complete: `createMesh`+`createApp` → `createClient`; the two procedure systems
 → one grammar; the bodiless `authority.input().returns<T>()` builder → the `.authority()`
-terminal; `CallError = Error` + `taggedCause()` → tagged wire errors; `Interest.tables`/
+terminal; `CallError = Error` + `taggedCause()` → tagged wire errors (done 2026-09-22; `taggedCause`
+was already gone, the wire already revived tags — what remained were five bare `new Error`
+mint sites, now `InputInvalid`, `SchemaNotSynchronous`, `NothingWritten`,
+`AuthorityUnreachable`, `NoBodyBound`); `Interest.tables`/
 `Interest.where` → partition-granular interest; `redis-fanout.ts` → `postgresFanout`;
 `startRelay` → `createServer`-with-no-handlers; `mesh.syncOf()`+`useSyncOf` → the `syncOf`
 column; per-link `Bridge` → `PeerSession`; fail-open budget → fail-closed gate;
