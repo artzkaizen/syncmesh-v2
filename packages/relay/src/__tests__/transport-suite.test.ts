@@ -119,6 +119,7 @@ const connectThroughRelay: Connect = async (peers) => {
   await Promise.all(transports.map((transport, i) => transport.start(peers[i]!)));
 
   return {
+    transports,
     settle: async () => {
       for (let round = 0; round < 8; round += 1) {
         await new Promise((resolve) => setTimeout(resolve, 5));

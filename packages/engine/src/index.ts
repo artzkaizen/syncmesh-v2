@@ -134,7 +134,7 @@ export {
 export type { RepairApi, RepairRow, TableDigests } from "./digest.js";
 export { divergentRows, divergentTables, rowDigest, rowDigests, tableDigests } from "./digest.js";
 export type { SuiteCase } from "./suite.js";
-export { SuiteFailure, check, equal } from "./suite.js";
+export { SuiteFailure, check, equal, spreadable } from "./suite.js";
 export { graceMillis } from "./rules.js";
 export type { Principal } from "./validate.js";
 export type { Durations, Inspector, InspectorOptions, TelemetryStats } from "./inspector.js";

@@ -82,6 +82,7 @@ const openChain = async (peers: readonly SuitePeer[], room = ROOM) => {
   await Promise.all(transports.map((transport, i) => transport.start(peers[i]!)));
 
   const network = {
+    transports,
     settle: async () => {
       // a session opens with a handshake before the bridge has said anything at all, and an
       // announcement has to cross before there is a session to open

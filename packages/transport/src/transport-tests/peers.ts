@@ -17,7 +17,7 @@ import { Temporal } from "@syncmesh/temporal";
 import { createGrantRegistry, createIdentity, issueGrant } from "@syncmesh/wire";
 
 import type { ByteStream } from "../framing.js";
-import type { TransportContext } from "../transport.js";
+import type { Transport, TransportContext } from "../transport.js";
 
 /** One peer the suite built; wire its transport to the others however the medium connects. */
 export interface SuitePeer extends TransportContext {
@@ -31,6 +31,8 @@ export interface SuiteNetwork {
   /** Frames in flight and folds settled. */
   readonly settle: () => Promise<void>;
   readonly stop: () => Promise<void>;
+  /** Every transport in this network, as the mesh would hold them; what the contract reads the shape of. */
+  readonly transports: readonly Transport[];
   /**
    * `Transport.wake` on every transport in this network: something outside knows the link may
    * have changed, so look at it now rather than at the next deadline.

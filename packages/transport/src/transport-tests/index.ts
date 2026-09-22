@@ -5,7 +5,7 @@ export { severable, severableStream, suitePeers } from "./peers.js";
 
 import type { Quarantined, SuiteCase } from "@syncmesh/engine";
 
-import { check, equal } from "@syncmesh/engine";
+import { check, equal, spreadable } from "@syncmesh/engine";
 
 import type { Connect, SuiteNetwork, SuitePeer } from "./peers.js";
 
@@ -271,6 +271,19 @@ const survivesLoss = (openNetwork: Open): readonly SuiteCase[] => [
   },
 ];
 
+/** What a transport must be for a wrapper to build on it, before any of it runs (D29). */
+const wrappable = (openNetwork: Open): readonly SuiteCase[] => [
+  {
+    name: "transport: every member is an own property, so a wrapper that spreads it keeps them all",
+    run: async () => {
+      const { network } = await openNetwork();
+      await network.settle();
+      for (const transport of network.transports) spreadable(transport, transport.name);
+      await network.stop();
+    },
+  },
+];
+
 /**
  * The contract every transport must satisfy, over a three-peer chain, for any test runner.
  *
@@ -284,5 +297,5 @@ export function transportTests(connect: Connect): readonly SuiteCase[] {
     return { peers, network };
   };
 
-  return [...carries(openNetwork), ...survivesLoss(openNetwork)];
+  return [...wrappable(openNetwork), ...carries(openNetwork), ...survivesLoss(openNetwork)];
 }

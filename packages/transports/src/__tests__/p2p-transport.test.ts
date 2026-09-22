@@ -90,6 +90,7 @@ const openChain = async (
   await Promise.all(transports.map((transport, i) => transport.start(peers[i]!)));
 
   const network = {
+    transports,
     settle: async () => {
       // more rounds than a pair needs: a path opens with a handshake, the bridge attaches only
       // once that names the peer, and a chain has to carry the result one hop further

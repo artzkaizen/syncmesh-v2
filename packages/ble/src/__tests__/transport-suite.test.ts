@@ -153,6 +153,7 @@ const openChain = async (peers: Parameters<Connect>[0]) => {
   await Promise.all(transports.map((transport, i) => transport.start(peers[i]!)));
 
   const network = {
+    transports,
     settle: async () => {
       // more rounds than a loopback needs: a BLE frame is fragments, and a session opens with a
       // handshake before the bridge has said anything at all

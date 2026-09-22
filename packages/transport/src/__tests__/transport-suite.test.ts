@@ -16,6 +16,7 @@ const connectOverLoopback: Connect = async (peers) => {
   await Promise.all(peers.flatMap((peer, i) => transports[i]!.map((t) => t.start(peer))));
 
   return {
+    transports: transports.flat(),
     settle: async () => {
       for (let round = 0; round < 8; round += 1) {
         for (const pair of pairs) await pair.control.flush();
