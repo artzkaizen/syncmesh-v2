@@ -123,6 +123,7 @@ export const LOG_TABLES = [
   "scope",
   "operations",
   "receipts",
+  "vouches",
   "grants",
   "blobs",
   "meta",

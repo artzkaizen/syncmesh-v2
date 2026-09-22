@@ -1,8 +1,9 @@
 import type { Engine, StoreFailure } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
-import type { OperationRow, OperationStore, ReceiptRow } from "@syncmesh/storage";
+import type { OperationRow, OperationStore, ReceiptRow, VouchRow } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
+import type { CustodyReceipt } from "@syncmesh/wire";
 
 import { corrections } from "@syncmesh/engine";
 import { parseEventId } from "@syncmesh/kernel";
@@ -20,13 +21,42 @@ export interface OperationsView {
     peer: PeerId,
     seq: SeqNum,
   ) => Promise<Result<OperationRow | undefined, StoreFailure>>;
-  /** Every write of this device no peer has receipted yet, oldest first. */
+  /**
+   * Every write of this device **nobody has told it they hold**, oldest first — the reading that
+   * gates a destructive action (D27), and the honest words for it.
+   *
+   * Not "unsaved": the write is durable here the moment it commits. Not "unaccepted" either — a
+   * peer holding an event is delivery and not approval. And a write some peer quarantined stays
+   * here for good, because a parked event holds that peer's cursor below it and its
+   * acknowledgement never rises to cover the refused write. So a screen built on this says
+   * *nobody has this yet*, never *syncing…*, which would be a spinner that cannot stop.
+   */
   readonly unsettled: () => Promise<Result<readonly OperationRow[], StoreFailure>>;
-  /** Who holds the event, and since when. Delivery, never approval. */
+  /**
+   * Who holds the event, and since when. Delivery, never approval.
+   *
+   * A holder here has **claimed** custody in its cursors, not signed for it: the signed path
+   * exists (`transport/src/custody.ts`) and reaches nothing yet, so a row is a peer's word.
+   * Enough to report; not yet enough to license an eviction — see D28.
+   */
   readonly receiptsOf: (
     peer: PeerId,
     seq: SeqNum,
   ) => Promise<Result<readonly ReceiptRow[], StoreFailure>>;
+  /**
+   * Every write of this device **nobody has signed for**, oldest first (D28) — the reading that
+   * may gate something destructive, and the only one that may.
+   *
+   * `unsettled` above is the weaker tier: a peer said in its cursors that it holds this. This one
+   * is the stronger: a peer put its name and its storage lineage to holding it, and a peer that
+   * rebuilt its store since is no longer counted.
+   */
+  readonly soleCustody: () => Promise<Result<readonly OperationRow[], StoreFailure>>;
+  /** Who signed for the event, out of which store, and when. */
+  readonly vouchesOf: (
+    peer: PeerId,
+    seq: SeqNum,
+  ) => Promise<Result<readonly VouchRow[], StoreFailure>>;
   /**
    * Fires after the ledger changed — this device committed a write, a receipt landed, or a
    * correction marked a record. The local commit's notification comes with the fold rather than
@@ -38,6 +68,11 @@ export interface OperationsView {
 
 export interface OpenedOperations {
   readonly view: OperationsView;
+  /**
+   * A verified custody receipt for one of this device's writes: the far side has signed for
+   * holding it. Handed to the transports, which is the only place a receipt arrives.
+   */
+  readonly vouched: (receipt: CustodyReceipt) => void;
   /**
    * The store a writer must be given: the caller's rows, plus the notification a local commit
    * owes its listeners. Handing the bare store to a writer instead is how a record lands that
@@ -51,6 +86,8 @@ export interface WiredOperations {
   /** What every handle's writer needs threaded in ({@link HandleExtras}). */
   readonly extras: HandleExtras;
   readonly view?: OperationsView;
+  /** Absent for a mesh over a bare event store: nowhere to put a vouch, so none is asked for. */
+  readonly vouched?: (receipt: CustodyReceipt) => void;
   readonly stop: () => void;
 }
 
@@ -70,7 +107,7 @@ export function wireOperations(deps: {
     now: deps.now,
   });
   Object.assign(extras, { operations: opened.store });
-  return { extras, view: opened.view, stop: opened.stop };
+  return { extras, view: opened.view, vouched: opened.vouched, stop: opened.stop };
 }
 
 /**
@@ -129,6 +166,31 @@ export function openOperations(deps: {
     }
   };
 
+  /**
+   * One arriving vouch, made durable.
+   *
+   * The transport has already verified the signature and already dropped anything that was not
+   * about this device's own log, so what reaches here is a fact about our writes: this holder,
+   * out of this store, has these. `vouch` forgets the holder's older lineage before it records
+   * the new one, which is how a peer that rebuilt stops counting for what it lost.
+   */
+  const vouched = (receipt: CustodyReceipt): void => {
+    void store
+      .vouch(
+        receipt.holder,
+        receipt.author,
+        receipt.throughSeq,
+        receipt.incarnation,
+        receipt.issuedAt.epochMilliseconds,
+      )
+      .then((written) => {
+        // evidence, not silence: the holder re-vouches on the next exchange either way
+        if (written.isErr())
+          console.warn(`vouch for ${String(receipt.holder)} failed:`, written.error);
+        else changed();
+      });
+  };
+
   /** A folded `_corrections` row naming one of this device's writes marks its record superseded. */
   const overruled = (): void => {
     for (const row of corrections(engine)) {
@@ -164,11 +226,14 @@ export function openOperations(deps: {
 
   return {
     store: recording,
+    vouched,
     view: {
       get: (id) => store.get(id),
       byEvent: (peer, seq) => store.byEvent(peer, seq),
       unsettled: () => store.unsettled(),
+      soleCustody: () => store.soleCustody(),
       receiptsOf: (peer, seq) => store.receiptsOf(peer, seq),
+      vouchesOf: (peer, seq) => store.vouchesOf(peer, seq),
       onChange: (listener) => {
         listeners.add(listener);
         return () => void listeners.delete(listener);

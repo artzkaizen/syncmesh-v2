@@ -13,6 +13,11 @@
       "@syncmesh/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./internal": {
+      "@syncmesh/source": "./src/internal.ts",
+      "types": "./dist/internal.d.ts",
+      "default": "./dist/internal.js"
     }
   },
   "dependencies": {
@@ -34,7 +39,7 @@
     "@syncmesh/temporal": "workspace:*",
     "@syncmesh/wire": "workspace:*",
     "@types/bun": "catalog:",
-    "drizzle-orm": "latest",
+    "drizzle-orm": "catalog:",
     "typescript": "catalog:",
     "vite-plus": "catalog:",
     "zod": "^3.25.76"

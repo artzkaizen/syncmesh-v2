@@ -1,4 +1,4 @@
-import { meshApi, mutation, query } from "@syncmesh/orpc";
+import { mutation, query } from "@syncmesh/orpc";
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 
@@ -24,9 +24,10 @@ const books = {
 };
 
 const apiTab = async (origin: Awaited<ReturnType<typeof meshOrigin>>) => {
-  const { mesh } = origin.tab();
+  const { client, mesh } = origin.tab("follower", { books });
   // awaited once, the way a window does it: the port cannot answer synchronously
-  return { mesh, api: meshApi({ ...mesh, self: await mesh.selfId() }, { books }) };
+  await client.$ready;
+  return { mesh, api: client };
 };
 
 describe("the app's api in a tab that holds no engine", () => {

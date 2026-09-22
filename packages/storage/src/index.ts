@@ -15,6 +15,7 @@ export type {
   OperationRow,
   OperationStore,
   ReceiptRow,
+  VouchRow,
 } from "./operation-store.js";
 export { operationStore } from "./operation-store.js";
 export type { StoreLock } from "./lock.js";

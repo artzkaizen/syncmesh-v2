@@ -100,34 +100,37 @@ describe("a write is a statement (book ch. 10)", () => {
     await client.$close();
   });
 
-  test("waitFor(committed) settles once the record exists; a refused write cannot be waited on", async () => {
+  test("a write the input schema refuses commits nothing, and opens no record", async () => {
     const client = await open();
-    const good = client.notes.add({ orgId: "acme", id: "n1", body: "hello" });
-    const settled = await good.waitFor({ milestone: "committed" });
-    expect(settled.unwrap().id).toBe(good.id);
+    const refused = client.notes.add({ orgId: "acme", id: "n2", body: "" });
 
-    const refused = client.notes.add({ orgId: "acme", id: "n2", body: "" }); // the input schema refuses
-    const waited = await refused.waitFor({ milestone: "committed" });
-    const error = waited.match({ ok: () => undefined, err: (e) => e });
-    expect(error?._tag).toBe("WaitUnreachable");
+    const settled = await refused.committed;
+    expect(settled.isErr()).toBe(true);
+    // no commit, no operation row: there is no journey to ask about
+    expect(refused.status()).toBeUndefined();
+    expect(
+      (await (client.$operations ?? panicNoLedger()).get(refused.id)).unwrap(),
+    ).toBeUndefined();
     await client.$close();
   });
 
-  test("waiting for copies nobody signed expires, and says so without touching the write", async () => {
+  test("custody is read from the ledger, never asked for at the call site (D27)", async () => {
     const client = await open();
     const write = client.notes.add({ orgId: "acme", id: "n1", body: "hello" });
-    (await write.committed).unwrap();
+    const { eventId } = (await write.committed).unwrap();
 
-    const waited = await write.waitFor({
-      milestone: "replicated",
-      remoteCopies: 1,
-      within: Temporal.Duration.from({ milliseconds: 30 }),
-    });
-    const error = waited.match({ ok: () => undefined, err: (e) => e });
-    expect(error?._tag).toBe("WaitExpired");
-    // the wait ended, not the write: the row is there and the record still reads applied
-    expect(await client.notes.list().run()).toHaveLength(1);
-    expect(write.status()?.status).toBe("applied");
+    // the handle offers nothing to await past the commit: no milestone, no copy count
+    expect("waitFor" in write).toBe(false);
+
+    const ledger = client.$operations ?? panicNoLedger();
+    const [peer, seq] = eventId.split("-");
+    // SAFETY: an event id is `<author>-<seq>`, both halves written by this device's own commit
+    const receipts = (await ledger.receiptsOf(peer as never, Number(seq) as never)).unwrap();
+    expect(receipts).toHaveLength(0);
+
+    // and the reading that replaces the count: nobody has told this device they hold it
+    const unsettled = (await ledger.unsettled()).unwrap();
+    expect(unsettled.map((op) => op.id)).toEqual([write.id]);
     await client.$close();
   });
 });

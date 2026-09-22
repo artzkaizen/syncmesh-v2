@@ -144,6 +144,11 @@ function assemble<
     grants,
     now,
     onPresence: (wire) => void presence.receive(wire),
+    // the two halves of signed custody (D28): what this device can vouch for out of its own
+    // store, and where a peer's vouch for this device's writes lands. A mesh over a bare event
+    // store has neither, and passes neither, rather than passing a sink with nowhere to write
+    ...(booted.incarnation !== undefined && { incarnation: booted.incarnation }),
+    ...(wired.vouched !== undefined && { onReceipt: wired.vouched }),
     onSnapshot: (installed) => snapshots.emit(installed),
     servesAuthority: options.authority === identity.peerId,
     keys,

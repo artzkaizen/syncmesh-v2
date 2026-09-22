@@ -273,7 +273,7 @@ function Detail({ id }: { readonly id: string }) {
     whoChoices,
   ]);
 
-  if (found.answered === "none") return <Centred>Reading the local replica…</Centred>;
+  // if (found.answered === "none") return <Centred>Reading the local replica…</Centred>;
   if (row === undefined)
     return <Absent deleted={device.deleted("issue", id)} settled={found.answered === "settled"} />;
 

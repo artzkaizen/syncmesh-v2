@@ -6,11 +6,13 @@ import {
   type ColumnName,
   type PeerId,
   type RowKey,
+  type SeqNum,
   type TableName,
 } from "@syncmesh/kernel";
 import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver, defaultStore } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
+import { linkTransport, loopbackPair, type LoopbackControl } from "@syncmesh/transport";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
@@ -124,6 +126,81 @@ describe("the write ledger", () => {
     const receipts = op === undefined ? [] : (await ledger.receiptsOf(op.peer, op.seq)).unwrap();
     expect(receipts.map((r) => r.holder)).toEqual([deviceB.peerId]);
     link.close();
+    await a.stop();
+    await b.stop();
+  });
+
+  test("an in-process link acknowledges and signs nothing: settled, still sole custody", async () => {
+    const open = async (device: typeof deviceA) => {
+      const mesh = (
+        await createMesh({
+          driver: bunSqliteDriver(":memory:"),
+          schema: schema(),
+          identity: device,
+          issuer: issuer.peerId,
+          now: () => T0,
+        })
+      ).unwrap();
+      registerAll(mesh);
+      return mesh;
+    };
+    const a = await open(deviceA);
+    const b = await open(deviceB);
+    await a.on("org:acme").unwrap().db.insert(notes).values({ id: "n1", body: "hello" });
+
+    const link = createLink(a.engine, b.engine, { now: () => T0 });
+    (await link.catchUp()).unwrap();
+    await a.delivered();
+
+    const ledger = a.operations ?? panicNoLedger();
+    // the weaker tier is satisfied by a cursor, and an in-process link is cursors and nothing else
+    expect((await ledger.unsettled()).unwrap()).toHaveLength(0);
+    // the stronger one is not, and must not be: nobody signed, so nothing here licenses a wipe
+    expect((await ledger.soleCustody()).unwrap()).toHaveLength(1);
+    link.close();
+    await a.stop();
+    await b.stop();
+  });
+
+  test("over a real link the holder signs, and the write leaves sole custody", async () => {
+    const { a: sideA, b: sideB, control } = loopbackPair();
+    const open = async (device: typeof deviceA, name: string, link: typeof sideA) => {
+      const mesh = (
+        await createMesh({
+          driver: bunSqliteDriver(":memory:"),
+          schema: schema(),
+          identity: device,
+          issuer: issuer.peerId,
+          now: () => T0,
+          transports: [linkTransport(name, () => link)],
+        })
+      ).unwrap();
+      registerAll(mesh);
+      return mesh;
+    };
+    const a = await open(deviceA, "loopback:a", sideA);
+    const b = await open(deviceB, "loopback:b", sideB);
+    await a.on("org:acme").unwrap().db.insert(notes).values({ id: "n1", body: "hello" });
+
+    const settle = async (control: LoopbackControl) => {
+      for (let round = 0; round < 12; round += 1) {
+        await control.flush();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    };
+    await settle(control);
+
+    const ledger = a.operations ?? panicNoLedger();
+    // SAFETY: this device's first write, so its event is sequence 1 — a branded integer
+    const record = (await ledger.byEvent(deviceA.peerId, 1 as SeqNum)).unwrap();
+    expect(record).toBeDefined();
+    expect((await ledger.soleCustody()).unwrap()).toHaveLength(0);
+
+    const vouches =
+      record === undefined ? [] : (await ledger.vouchesOf(record.peer, record.seq)).unwrap();
+    expect(vouches.map((v) => v.holder)).toEqual([deviceB.peerId]);
+    // the lineage is the store's own, minted on its first boot: present, and B's rather than ours
+    expect(vouches[0]?.incarnation).toMatch(/^[0-9a-f]{64}$/);
     await a.stop();
     await b.stop();
   });

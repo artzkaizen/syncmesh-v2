@@ -53,4 +53,4 @@ export type { Knock, MeshShaping, RunningTransports } from "./transports.js";
 export { TransportAddFailed, runTransports } from "./transports.js";
 export { keyRingFor, transportContextFor } from "./transport-context.js";
 
-export { DeviceKeyUnavailable, deviceIdentity } from "./identity.js";
+export { DeviceKeyUnavailable, deviceIdentity, deviceIncarnation } from "./identity.js";

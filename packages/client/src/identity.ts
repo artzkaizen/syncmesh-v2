@@ -38,11 +38,33 @@ export class DeviceKeyUnavailable extends TaggedError("DeviceKeyUnavailable")<{
 }> {}
 
 const CREATE = `CREATE TABLE IF NOT EXISTS "_device" ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL)`;
-const READ = `SELECT "value" FROM "_device" WHERE "key" = 'seed'`;
-const WRITE = `INSERT INTO "_device" ("key", "value") VALUES ('seed', ?)`;
+const READ = `SELECT "value" FROM "_device" WHERE "key" = ?`;
+const WRITE = `INSERT INTO "_device" ("key", "value") VALUES (?, ?)`;
 
 const unavailable = (message: string) => (cause: unknown) =>
   new DeviceKeyUnavailable({ message, cause });
+
+/**
+ * Reads one durable value of this install, minting it on the first ask.
+ *
+ * Shared by the key and the lineage because they are the same fact twice: both are true of *this
+ * database* and neither may outlive it. A second table, or a second place, is how one of them
+ * ends up describing a store that is gone.
+ */
+const remembered = (driver: SqlDriver, key: string, message: string) =>
+  Result.tryPromise({
+    try: async () => {
+      await driver.run(CREATE);
+      const held = await driver.all(READ, [key]);
+      const value = held[0]?.[0];
+      // the column is TEXT NOT NULL, so anything there is what this install wrote
+      if (value !== undefined && value !== null) return String(value);
+      const fresh = bytesToHex(randomBytes(SEED_LENGTH));
+      await driver.run(WRITE, [key, fresh]);
+      return fresh;
+    },
+    catch: unavailable(message),
+  });
 
 /**
  * Asked of a driver rather than of a mesh, because the mesh cannot be built without the answer —
@@ -57,19 +79,11 @@ export function deviceIdentity(
   driver: SqlDriver,
 ): Promise<ResultType<Identity, DeviceKeyUnavailable>> {
   return Result.gen(async function* () {
-    const seed = yield* await Result.tryPromise({
-      try: async () => {
-        await driver.run(CREATE);
-        const held = await driver.all(READ);
-        const value = held[0]?.[0];
-        // the column is TEXT NOT NULL, so anything there is this install's key in hex
-        if (value !== undefined && value !== null) return String(value);
-        const fresh = bytesToHex(randomBytes(SEED_LENGTH));
-        await driver.run(WRITE, [fresh]);
-        return fresh;
-      },
-      catch: unavailable("this install's device key could not be read from its own database"),
-    });
+    const seed = yield* await remembered(
+      driver,
+      "seed",
+      "this install's device key could not be read from its own database",
+    );
     const raw = yield* hexToBytes(seed).mapError(
       unavailable("this install's stored device key is not the 32 bytes a key is"),
     );
@@ -77,4 +91,32 @@ export function deviceIdentity(
       unavailable("this install's stored device key is not the 32 bytes a key is"),
     );
   });
+}
+
+/**
+ * This store's **incarnation**: the lineage a custody receipt signs over (D28).
+ *
+ * A peer's name says who it is; this says which of its databases is talking. Lose the store and
+ * rebuild it and the incarnation is fresh, so every vouch made with the store that is gone stops
+ * counting — which is the difference between *still holding* and *holding again, having lost what
+ * it had*, and the only reason an author can tell them apart.
+ *
+ * **It earns its keep on the peers whose key outlives their storage**, which is most of the ones
+ * an app leans on for durability: a device mints a new key with a new database (the key lives in
+ * the file, see above), but a relay or an authority is configured with a keypair and redeployed
+ * over an empty volume under the same name. Without this, that relay goes on counting as a holder
+ * of writes it threw away.
+ *
+ * Minted rather than derived from the file's contents: nothing here needs to be a function of the
+ * data, only different from the last one, and randomness is the only version of that which
+ * survives a store rebuilt from an identical backup.
+ */
+export function deviceIncarnation(
+  driver: SqlDriver,
+): Promise<ResultType<string, DeviceKeyUnavailable>> {
+  return remembered(
+    driver,
+    "incarnation",
+    "this install's storage lineage could not be read from its own database",
+  );
 }

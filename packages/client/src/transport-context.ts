@@ -43,6 +43,10 @@ export function transportContextFor(base: {
   /** A join completed somewhere (RFC-0019); what `$recovery.rebuild` waits on. */
   readonly onSnapshot: NonNullable<TransportContext["onSnapshot"]>;
   readonly onGrantRequest?: TransportContext["onGrantRequest"];
+  /** This device's storage lineage, so what it holds can be signed for (D28). */
+  readonly incarnation?: TransportContext["incarnation"];
+  /** Where a peer's signed custody of this device's own writes lands (D28). */
+  readonly onReceipt?: TransportContext["onReceipt"];
   /** This device answers for the authority itself; every other learns the way to one. */
   readonly servesAuthority: boolean;
   /** What this device can read of the sealed partitions (book ch. 14). */
@@ -86,5 +90,7 @@ export function transportContextFor(base: {
   };
   if (base.onGrantRequest !== undefined)
     Object.assign(context, { onGrantRequest: base.onGrantRequest });
+  if (base.incarnation !== undefined) Object.assign(context, { incarnation: base.incarnation });
+  if (base.onReceipt !== undefined) Object.assign(context, { onReceipt: base.onReceipt });
   return context;
 }

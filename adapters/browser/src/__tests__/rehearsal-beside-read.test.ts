@@ -1,4 +1,4 @@
-import { meshApi, mutation, query } from "@syncmesh/orpc";
+import { mutation, query } from "@syncmesh/orpc";
 import { describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
@@ -84,8 +84,9 @@ const staged = (() => {
 })();
 
 const apiTab = async (origin: Awaited<ReturnType<typeof meshOrigin>>) => {
-  const { mesh } = origin.tab();
-  return meshApi({ ...mesh, self: await mesh.selfId() }, { books });
+  const { client } = origin.tab("follower", { books });
+  await client.$ready;
+  return client;
 };
 
 describe("a statement is placed by the sink it came through", () => {
@@ -127,8 +128,9 @@ describe("a statement is placed by the sink it came through", () => {
    */
   test("a rehearsal orphaned by a closing window does not wedge the next tab", async () => {
     const origin = await meshOrigin();
-    const window = origin.tab();
-    const first = meshApi({ ...window.mesh, self: await window.mesh.selfId() }, { books });
+    const window = origin.tab("follower", { books });
+    const first = window.client;
+    await first.$ready;
     expect(
       (await first.books.create({ orgId: ORG, id: "b2", title: "Persuasion" }).committed).isOk(),
     ).toBe(true);

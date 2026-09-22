@@ -22,6 +22,7 @@ import { syncedTables } from "@syncmesh/schema";
 import { installRls, openStores, operationStore } from "@syncmesh/storage";
 
 import { NoDefaultStore } from "./errors.js";
+import { deviceIncarnation } from "./identity.js";
 
 export type MeshOpenError = StoreFailure | StateCorrupt | NoDefaultStore | StoreLocked;
 
@@ -68,6 +69,12 @@ export interface Booted {
   readonly driver?: SqlDriver;
   /** The write ledger's store, on that same connection; present exactly when `driver` is. */
   readonly operations?: OperationStore;
+  /**
+   * This store's lineage, minted into it on the first boot (D28) — what this device's custody
+   * receipts sign over. Present exactly when `driver` is: a mesh over a bare event store has no
+   * file to name, so it signs for nothing and says so by having nothing to say.
+   */
+  readonly incarnation?: string;
   /** Where each row's own write got to (book ch. 10); present when the stores hold tables. */
   readonly rowSync?: RowSync;
   /** The same ladder the engine runs on every write — for judging a captured transaction before it commits (D20). */
@@ -184,6 +191,22 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
       Object.assign(booted, { driver });
       const operations = yield* Result.await(operationStore(driver));
       Object.assign(booted, { operations });
+      /*
+       * Beside the device key, in the same table and for the same reason: both are true of this
+       * database and neither may outlive it.
+       *
+       * **A lineage that will not read is not fatal, and the key is.** Without a key this device
+       * has no name to sign events under and there is nothing to open; without a lineage it still
+       * reads, writes, syncs and acknowledges — it just cannot sign for what it holds, so no peer
+       * counts it as a custodian. Refusing to open over that would trade every working thing for
+       * one that only other devices consult.
+       */
+      const lineage = await deviceIncarnation(driver);
+      if (lineage.isOk()) Object.assign(booted, { incarnation: lineage.value });
+      else
+        console.warn(
+          `[syncmesh] this store cannot sign for what it holds: ${lineage.error.message}`,
+        );
     }
     return Result.ok({
       ...booted,

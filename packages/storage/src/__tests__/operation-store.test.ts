@@ -45,6 +45,50 @@ describe("operationStore", () => {
     expect((await store.unsettled()).unwrap().map((op) => op.id)).toEqual(["op-3"]);
   });
 
+  test("a claim is not a signature: a receipted write is settled and still sole-custody", async () => {
+    const { store } = await open();
+    (await store.record({ id: "op-1", peer: A, seq: seq(1), label: "l", atMs: 1 })).unwrap();
+
+    (await store.acknowledge(B, A, seq(1), 10)).unwrap();
+
+    // the weaker tier moved: somebody said in its cursors that it holds this
+    expect((await store.unsettled()).unwrap()).toEqual([]);
+    // the stronger one did not, and that is the whole point — a cursor is a peer's word
+    expect((await store.soleCustody()).unwrap().map((op) => op.id)).toEqual(["op-1"]);
+  });
+
+  test("a vouch is, and it carries the store it was made out of", async () => {
+    const { store } = await open();
+    (await store.record({ id: "op-1", peer: A, seq: seq(1), label: "l", atMs: 1 })).unwrap();
+    (await store.record({ id: "op-2", peer: A, seq: seq(2), label: "l", atMs: 2 })).unwrap();
+
+    (await store.vouch(B, A, seq(1), "inc-1", 10)).unwrap();
+
+    expect((await store.vouchesOf(A, seq(1))).unwrap()).toEqual([
+      { holder: B, incarnation: "inc-1", atMs: 10 },
+    ]);
+    // only through seq 1: the signature covers what it says it covers
+    expect((await store.soleCustody()).unwrap().map((op) => op.id)).toEqual(["op-2"]);
+  });
+
+  test("a holder that rebuilt its store stops counting for what it lost", async () => {
+    const { store } = await open();
+    (await store.record({ id: "op-1", peer: A, seq: seq(1), label: "l", atMs: 1 })).unwrap();
+    (await store.record({ id: "op-2", peer: A, seq: seq(2), label: "l", atMs: 2 })).unwrap();
+    (await store.vouch(B, A, seq(2), "inc-1", 10)).unwrap();
+    expect((await store.soleCustody()).unwrap()).toEqual([]);
+
+    // B comes back under a fresh lineage, holding only the first: the rest was on the disk it lost
+    (await store.vouch(B, A, seq(1), "inc-2", 20)).unwrap();
+
+    expect((await store.soleCustody()).unwrap().map((op) => op.id)).toEqual(["op-2"]);
+    expect((await store.vouchesOf(A, seq(1))).unwrap()).toEqual([
+      { holder: B, incarnation: "inc-2", atMs: 20 },
+    ]);
+    // and the vouch it made with the store that is gone is gone with it
+    expect((await store.vouchesOf(A, seq(2))).unwrap()).toEqual([]);
+  });
+
   test("a correction marks the displaced write and keeps the why", async () => {
     const { store } = await open();
     (await store.record({ id: "op-1", peer: A, seq: seq(1), label: "l", atMs: 1 })).unwrap();

@@ -67,7 +67,13 @@ export type CallPath =
   | "deleted";
 
 /** The four reads of the durable write ledger, by the names `OperationsView` already gives them. */
-export type LedgerPath = "get" | "byEvent" | "unsettled" | "receiptsOf";
+export type LedgerPath =
+  | "get"
+  | "byEvent"
+  | "unsettled"
+  | "soleCustody"
+  | "receiptsOf"
+  | "vouchesOf";
 
 /** A serialized tagged error as {@link failures} revives it: a field bag with no shape until then. */
 export type WireFailure = Record<string, unknown>;

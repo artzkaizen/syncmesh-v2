@@ -37,6 +37,18 @@ export const sqliteOperations = (log: LogPlacement): OperationSql => {
       at_ms INTEGER NOT NULL,
       PRIMARY KEY (peer, seq, holder)
     )`,
+      // signed custody, beside the claims rather than a column on them (D28): a cursor and a
+      // signature are different facts with different provenance, and the only way to keep them
+      // from being read as one is to keep them from being stored as one
+      `CREATE TABLE IF NOT EXISTS ${t("vouches")} (
+      peer TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      holder TEXT NOT NULL,
+      incarnation TEXT NOT NULL,
+      at_ms INTEGER NOT NULL,
+      PRIMARY KEY (peer, seq, holder)
+    )`,
+      indexDdl("vouches_holder", "vouches", "(holder, incarnation)"),
     ],
     insertOp: `INSERT INTO ${t("operations")} (id, peer, seq, label, at_ms, hlc_ms, hlc_logical, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -52,6 +64,14 @@ export const sqliteOperations = (log: LogPlacement): OperationSql => {
     insertReceiptsThrough: `INSERT OR IGNORE INTO ${t("receipts")} (peer, seq, holder, at_ms)
     SELECT peer, seq, ?, ? FROM ${t("operations")} WHERE peer = ? AND seq <= ?`,
     selectReceipts: `SELECT holder, at_ms FROM ${t("receipts")} WHERE peer = ? AND seq = ? ORDER BY at_ms, holder`,
+    selectSoleCustody: `SELECT o.id, o.peer, o.seq, o.label, o.at_ms, o.status, o.corrected_by, o.corrected_reason
+    FROM ${t("operations")} o LEFT JOIN ${t("vouches")} v ON v.peer = o.peer AND v.seq = o.seq
+    WHERE v.peer IS NULL ORDER BY o.at_ms, o.seq`,
+    deleteStaleVouches: `DELETE FROM ${t("vouches")} WHERE holder = ? AND incarnation <> ?`,
+    insertVouchesThrough: `INSERT OR REPLACE INTO ${t("vouches")} (peer, seq, holder, incarnation, at_ms)
+    SELECT peer, seq, ?, ?, ? FROM ${t("operations")} WHERE peer = ? AND seq <= ?`,
+    selectVouches: `SELECT holder, incarnation, at_ms FROM ${t("vouches")} WHERE peer = ? AND seq = ?
+    ORDER BY at_ms, holder`,
   };
 };
 
@@ -77,6 +97,15 @@ export const POSTGRES_OPERATIONS: OperationSql = {
       at_ms BIGINT NOT NULL,
       PRIMARY KEY (peer, seq, holder)
     )`,
+    `CREATE TABLE IF NOT EXISTS syncmesh.vouches (
+      peer TEXT NOT NULL,
+      seq BIGINT NOT NULL,
+      holder TEXT NOT NULL,
+      incarnation TEXT NOT NULL,
+      at_ms BIGINT NOT NULL,
+      PRIMARY KEY (peer, seq, holder)
+    )`,
+    `CREATE INDEX IF NOT EXISTS vouches_holder ON syncmesh.vouches (holder, incarnation)`,
   ],
   insertOp: `INSERT INTO syncmesh.operations (id, peer, seq, label, at_ms, hlc_ms, hlc_logical, status)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
@@ -94,5 +123,15 @@ export const POSTGRES_OPERATIONS: OperationSql = {
     SELECT peer, seq, $1, $2 FROM syncmesh.operations WHERE peer = $3 AND seq <= $4
     ON CONFLICT DO NOTHING`,
   selectReceipts: `SELECT holder, at_ms FROM syncmesh.receipts WHERE peer = $1 AND seq = $2
+    ORDER BY at_ms, holder`,
+  selectSoleCustody: `SELECT o.id, o.peer, o.seq, o.label, o.at_ms, o.status, o.corrected_by, o.corrected_reason
+    FROM syncmesh.operations o
+    LEFT JOIN syncmesh.vouches v ON v.peer = o.peer AND v.seq = o.seq
+    WHERE v.peer IS NULL ORDER BY o.at_ms, o.seq`,
+  deleteStaleVouches: `DELETE FROM syncmesh.vouches WHERE holder = $1 AND incarnation <> $2`,
+  insertVouchesThrough: `INSERT INTO syncmesh.vouches (peer, seq, holder, incarnation, at_ms)
+    SELECT peer, seq, $1, $2, $3 FROM syncmesh.operations WHERE peer = $4 AND seq <= $5
+    ON CONFLICT (peer, seq, holder) DO UPDATE SET incarnation = EXCLUDED.incarnation, at_ms = EXCLUDED.at_ms`,
+  selectVouches: `SELECT holder, incarnation, at_ms FROM syncmesh.vouches WHERE peer = $1 AND seq = $2
     ORDER BY at_ms, holder`,
 };

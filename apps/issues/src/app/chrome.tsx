@@ -50,10 +50,18 @@ const DURABLE = {
   severity: "ok",
 } satisfies Mode;
 
+/**
+ * One sentence for every way an origin ends up without a file, because the badge cannot know
+ * which. It used to name a single cause — a browser exposing synchronous file handles to no
+ * thread — and that reads as a confident diagnosis of the wrong thing in a private window, where
+ * the handles are there and the *origin* is refused. The reason the browser actually gave is on
+ * the driver and in the console; what belongs here is the consequence, which is the same either
+ * way and is the part that costs somebody their work.
+ */
 const MEMORY = {
   label: "Memory — not saved",
   detail:
-    "SQLite's OPFS backends need synchronous file handles, which this browser exposes to no thread at all — so the origin's worker opened a memory database and everything here is gone at the next reload",
+    "This origin has no durable storage here, so its worker opened a memory database and everything on this screen is gone at the next reload. A private window is the usual reason — Firefox provides none at all in one, where Chrome's incognito provides an ephemeral one — and so is a cookie policy that denies site storage, or a browser without synchronous file handles. The reason this one gave is in the console.",
   severity: "critical",
 } satisfies Mode;
 

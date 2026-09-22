@@ -2,7 +2,6 @@ import type { FollowerMesh, MeshLink, MeshLinkFailure } from "@syncmesh/browser"
 import type { Api } from "@syncmesh/orpc";
 
 import { connectMesh, openMeshLink, rendezvousAvailable } from "@syncmesh/browser";
-import { meshApi } from "@syncmesh/orpc";
 import { Result, TaggedError } from "@syncmesh/result";
 
 import { procedures } from "../procedures.js";
@@ -139,17 +138,17 @@ const openOnce = (): Promise<Result<Replica, ReplicaUnavailable>> =>
     ).mapError(
       (failure) => new ReplicaUnavailable({ message: sentenceOf(failure), cause: failure }),
     );
-    const mesh = connectMesh({ link, schema: issuesSchema() });
+    const client = connectMesh({ link, schema: issuesSchema(), procedures });
     // registered before the first call, so a host that dies mid-boot is a reconnect and not a
     // failure screen over a link nobody is watching any more
     link.onLost(() => void reopen());
-    const durable = yield* await durabilityOf(mesh);
+    const durable = yield* await durabilityOf(client.$mesh);
     // awaited once: a window builds `syncOf` SQL correlated on this origin's author id, and the
-    // port cannot answer that synchronously
-    const self = await mesh.selfId();
+    // port cannot answer that synchronously. `connectMesh` is already asking; this is the wait
+    await client.$ready;
     return Result.ok({
-      api: meshApi({ ...mesh, self }, procedures),
-      mesh,
+      api: client,
+      mesh: client.$mesh,
       durable,
       role: link.role,
       shared: rendezvousAvailable(),

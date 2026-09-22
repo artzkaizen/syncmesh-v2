@@ -2,10 +2,12 @@ import type { Handle, Mesh, MeshSchema, OnOptions } from "@syncmesh/client";
 import type { LiveSource } from "@syncmesh/drizzle";
 import type { FoldBatch, Principal, ValidatorSchema } from "@syncmesh/engine";
 import type { InvalidPartitionKey, PeerId } from "@syncmesh/kernel";
+import type { Api, Router } from "@syncmesh/orpc";
 import type { Result as ResultType } from "@syncmesh/result";
 import type { SqlRow, SqlValue } from "@syncmesh/storage";
 
 import { parsePartitionKey } from "@syncmesh/kernel";
+import { meshApi } from "@syncmesh/orpc/internal";
 import { Result } from "@syncmesh/result";
 
 import type { RemoteInspect } from "./inspect.js";
@@ -36,9 +38,10 @@ import { openWire } from "./wire.js";
  * *controls* still reach through that door rather than sitting on this interface, because a radio
  * held from tab three is held for the device — which is a sentence a caller should have to read.
  *
- * It satisfies `@syncmesh/orpc`'s `ApiMesh` structurally, so `meshApi(mesh, router, { instance })`
- * builds the same api here that it builds on the leader — one implementation of the app's surface,
- * not two.
+ * It satisfies `@syncmesh/orpc`'s `ApiMesh` structurally, so `meshApi(mesh, router)` builds the
+ * same api here that it builds on the leader — one implementation of the app's surface, not two.
+ * No scope is bound at construction, here or there: a call carries the replica it is about in its
+ * own input (book ch. 3), which is what lets one api answer for every workspace a window opens.
  */
 export interface FollowerMesh extends Pick<
   Mesh,
@@ -90,8 +93,16 @@ export interface FollowerMesh extends Pick<
   readonly stop: () => Promise<void>;
 }
 
-export interface ConnectOptions {
+export interface ConnectOptions<R extends Router> {
   readonly link: MeshLink;
+  /**
+   * The app's procedures, so this returns the surface a component calls rather than the plumbing
+   * under it: `client.issues.list(…)`, the same names the leader's `createClient` hands back.
+   *
+   * Bundled like {@link ConnectOptions.schema} and for the same reason — procedures are code, and
+   * a tab that asked the host for them would be asking for the bundle it is already running.
+   */
+  readonly procedures: R;
   /**
    * The manifest this tab already bundles — the same value the host was built with.
    *
@@ -103,19 +114,8 @@ export interface ConnectOptions {
   readonly schema: ValidatorSchema & MeshSchema;
 }
 
-/**
- * A tab's thin client of the origin's one mesh (`research/browser-durability.md` §4).
- *
- * Every tab calls this, the elected one included, so there is exactly one code path: the leader's
- * link is a port to its own worker and a follower's is a port the rendezvous forwarded, and
- * nothing here can tell which. That is what stops the two from drifting apart, which is the
- * failure a second implementation of a seventeen-surface client would eventually be.
- *
- * @example
- * const mesh = connectMesh({ link: await meshLink(), schema });
- * export const api = meshApi(mesh, router, { instance: "org:acme" });
- */
-export function connectMesh(options: ConnectOptions): FollowerMesh {
+/** The port half of {@link connectMesh}: everything a window can honestly answer, and no api. */
+function followerMesh(options: ConnectOptions<Router>): FollowerMesh {
   const { link, schema } = options;
   const wire = openWire(link);
 
@@ -233,5 +233,82 @@ export function connectMesh(options: ConnectOptions): FollowerMesh {
       wire.close();
       return Promise.resolve();
     },
+  };
+}
+
+/**
+ * What a tab gets back: the app's procedures at the top level, and the few controls a *window* is
+ * entitled to under `$`.
+ *
+ * The same shape `createClient` hands the leader (book ch. 30), which is the whole point — a
+ * component calls `client.issues.list(…)` and cannot tell which tab holds the engine. It is
+ * deliberately **not** the same list of controls: `$transports`, `$recovery`, `$auth`, `$accounts`,
+ * `$blobs` and `$presence` are facts and settings of the **device**, and a window is not a device.
+ * A radio toggled in tab three is the origin's radio, and that is a sentence a caller should have
+ * to read — so those reach through {@link FollowerClient.$mesh} rather than sitting here.
+ */
+export type FollowerClient<R extends Router> = Api<R> & {
+  /** The window's own view of the origin's mesh, for what a `$` control here does not cover. */
+  readonly $mesh: FollowerMesh;
+  /** The origin's **one** write ledger: a write made in any window becomes the same row. */
+  readonly $operations: FollowerMesh["operations"];
+  /** The device's own feeds, where the host was handed an inspector. */
+  readonly $inspect: FollowerMesh["inspect"];
+  readonly $flush: FollowerMesh["flush"];
+  /** Resolves when this window knows who the origin is — a query selecting `syncOf` needs it. */
+  readonly $ready: Promise<void>;
+  readonly $close: FollowerMesh["stop"];
+};
+
+/**
+ * A tab's thin client of the origin's one mesh (`research/browser-durability.md` §4).
+ *
+ * Every tab calls this, the elected one included, so there is exactly one code path: the leader's
+ * link is a port to its own worker and a follower's is a port the rendezvous forwarded, and
+ * nothing here can tell which. That is what stops the two from drifting apart, which is the
+ * failure a second implementation of a seventeen-surface client would eventually be.
+ *
+ * **It binds the router itself, and that is why it takes one.** An app used to be handed the mesh
+ * and left to bind its own api, which put the builder — internal to `createClient` everywhere else
+ * — in application code, and made the follower's surface a thing each app assembled by hand. One
+ * call makes a client here exactly as one call makes one on the leader.
+ *
+ * No scope is bound at construction, here or there: a call carries the replica it is about in its
+ * own input (book ch. 3), which is what lets one client answer for every workspace a window opens.
+ *
+ * @example
+ * const client = connectMesh({ link: await meshLink(), schema, procedures });
+ * client.issues.list({ workspaceId });   // the scope rides here, and nowhere else
+ */
+export function connectMesh<R extends Router>(options: ConnectOptions<R>): FollowerClient<R> {
+  const mesh = followerMesh(options);
+  /**
+   * The api is built now and the peer id arrives later, which is the shape `meshApi` already has
+   * for `createClient`: a lazy source, so a component can hold a descriptor before the port has
+   * answered. Asking synchronously is not available — a window cannot know the origin's name
+   * without a round trip — and awaiting here would make every tab's boot wait on one.
+   */
+  let self: PeerId | undefined;
+  const ready = mesh.selfId().then((id) => {
+    self = id;
+  });
+  // a window that never awaits `$ready` still must not turn a dead port into an unhandled rejection
+  ready.catch(() => undefined);
+  const api = meshApi<R>(
+    {
+      current: () => (self === undefined ? undefined : { ...mesh, self }),
+      ready,
+      schema: options.schema,
+    },
+    options.procedures,
+  );
+  return {
+    ...api,
+    $mesh: mesh,
+    $operations: mesh.operations,
+    $inspect: mesh.inspect,
+    $flush: mesh.flush,
+    $ready: ready,
+    $close: mesh.stop,
   };
 }

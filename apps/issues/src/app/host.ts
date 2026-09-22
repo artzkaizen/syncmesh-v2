@@ -50,7 +50,23 @@ import { dialRelay } from "./relay.js";
 /** One OPFS file for this app. A second mesh in this origin would name a second one (D07). */
 const DATABASE = "issues";
 
-const reasonOf = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
+/**
+ * The account a refusal carries, which is not always on the error itself.
+ *
+ * **A `cause` is appended rather than discarded**, because the sentence that identifies a failure
+ * is routinely one hop under the one that reports it: `OpfsUnavailable` wraps whatever the browser
+ * refused with, and reading only `.message` threw the browser's own words away. That is not
+ * hypothetical — it is how a Gecko browser refusing this origin an OPFS reached the screen as
+ * `this origin's database would not open:` and nothing after the colon.
+ *
+ * The tag stands in where a message is empty, so an error can be silent in its sentence but never
+ * silent on screen.
+ */
+const reasonOf = (cause: unknown): string => {
+  if (!(cause instanceof Error)) return String(cause);
+  const said = cause.message === "" ? cause.name : cause.message;
+  return cause.cause === undefined ? said : `${said} — ${reasonOf(cause.cause)}`;
+};
 
 /**
  * A refusal shaped so it survives the port.

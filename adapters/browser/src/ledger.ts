@@ -4,7 +4,7 @@ import type { OperationsView } from "@syncmesh/client";
 import type { StoreFailure } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
-import type { OperationRow, ReceiptRow } from "@syncmesh/storage";
+import type { OperationRow, ReceiptRow, VouchRow } from "@syncmesh/storage";
 
 import { Result } from "@syncmesh/result";
 
@@ -35,10 +35,20 @@ export interface RemoteOperations {
     seq: SeqNum,
   ) => Promise<ResultType<OperationRow | undefined, LedgerFailure>>;
   readonly unsettled: () => Promise<ResultType<readonly OperationRow[], LedgerFailure>>;
+  /**
+   * The writes nobody has signed for (D28) — served across the port because the window is where
+   * the destructive button is. A tab that offers "clear this device" and cannot ask what only
+   * this device holds is a tab that asks the person to decide blind.
+   */
+  readonly soleCustody: () => Promise<ResultType<readonly OperationRow[], LedgerFailure>>;
   readonly receiptsOf: (
     peer: PeerId,
     seq: SeqNum,
   ) => Promise<ResultType<readonly ReceiptRow[], LedgerFailure>>;
+  readonly vouchesOf: (
+    peer: PeerId,
+    seq: SeqNum,
+  ) => Promise<ResultType<readonly VouchRow[], LedgerFailure>>;
   /** Fires after the origin's ledger changed, in every tab that is watching it. */
   readonly onChange: (listener: () => void) => () => void;
 }
@@ -61,16 +71,21 @@ export const answerLedger = async (
   if (view === undefined) throw new NoWriteLedger({ message: NO_LEDGER });
   // SAFETY: each argument is what the tab's own typed method took before it was posted
   const [first, second] = args as [string, number];
+  // SAFETY: every per-event read takes the author and sequence a caller read off an event id;
+  // the tab's own typed method is the only thing that posts them
+  const event = () => [first as PeerId, second as SeqNum] as const;
   const read =
     path === "get"
       ? view.get(first)
       : path === "unsettled"
         ? view.unsettled()
-        : // SAFETY: `byEvent` and `receiptsOf` both take the author and sequence a caller read off
-          // an event id; the tab's own typed method is the only thing that posts them
-          path === "byEvent"
-          ? view.byEvent(first as PeerId, second as SeqNum)
-          : view.receiptsOf(first as PeerId, second as SeqNum);
+        : path === "soleCustody"
+          ? view.soleCustody()
+          : path === "byEvent"
+            ? view.byEvent(...event())
+            : path === "vouchesOf"
+              ? view.vouchesOf(...event())
+              : view.receiptsOf(...event());
   const outcome = await read;
   if (outcome.isErr()) throw outcome.error;
   return outcome.value;
@@ -96,6 +111,8 @@ export const remoteLedger = (wire: MeshWire): RemoteOperations => ({
   get: (id) => askLedger<OperationRow | undefined>(wire, "get", [id]),
   byEvent: (peer, seq) => askLedger<OperationRow | undefined>(wire, "byEvent", [peer, seq]),
   unsettled: () => askLedger<readonly OperationRow[]>(wire, "unsettled", []),
+  soleCustody: () => askLedger<readonly OperationRow[]>(wire, "soleCustody", []),
   receiptsOf: (peer, seq) => askLedger<readonly ReceiptRow[]>(wire, "receiptsOf", [peer, seq]),
+  vouchesOf: (peer, seq) => askLedger<readonly VouchRow[]>(wire, "vouchesOf", [peer, seq]),
   onChange: (listener) => wire.listen("writes", () => listener()),
 });

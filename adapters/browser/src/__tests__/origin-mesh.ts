@@ -1,3 +1,5 @@
+import type { Router } from "@syncmesh/orpc";
+
 import { createMesh } from "@syncmesh/client";
 import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
@@ -5,7 +7,7 @@ import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 
-import type { FollowerMesh } from "../client.js";
+import type { FollowerClient, FollowerMesh } from "../client.js";
 import type { ServeOptions } from "../host.js";
 
 import { connectMesh } from "../client.js";
@@ -45,7 +47,9 @@ export const settled = async (): Promise<void> => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
-export interface Tab {
+export interface Tab<R extends Router> {
+  /** What a window actually holds: the app's procedures, and the port under `$mesh`. */
+  readonly client: FollowerClient<R>;
   readonly mesh: FollowerMesh;
   readonly link: ReturnType<typeof linkOver>;
   /** Drops this tab's port the way its window closing would, without stopping the origin. */
@@ -55,7 +59,7 @@ export interface Tab {
 export interface MeshOrigin {
   readonly mesh: Awaited<ReturnType<typeof openMesh>>;
   readonly host: ReturnType<typeof serveMesh>;
-  readonly tab: (role?: "leader" | "follower") => Tab;
+  readonly tab: <R extends Router>(role?: "leader" | "follower", procedures?: R) => Tab<R>;
   readonly stop: () => Promise<void>;
 }
 
@@ -91,12 +95,16 @@ export async function meshOrigin(options: ServeOptions = {}): Promise<MeshOrigin
   return {
     mesh,
     host,
-    tab: (role = "follower") => {
+    // a tab is a client: procedures at the top level, the mesh under `$mesh` for the tests that
+    // want the port itself
+    // SAFETY: the default stands in for a caller that named no procedures, so `R` is inferred as
+    // the empty router and the empty object is exactly a value of it — there is nothing to call
+    tab: <R extends Router>(role: "leader" | "follower" = "follower", procedures = {} as R) => {
       const channel = new MessageChannel();
       host.accept(channel.port2);
       const link = linkOver(channel.port1, role);
-      const mesh = connectMesh({ link, schema });
-      return { mesh, link, close: () => void mesh.stop() };
+      const client = connectMesh({ link, schema, procedures });
+      return { client, mesh: client.$mesh, link, close: () => void client.$close() };
     },
     stop: async () => {
       host.stop();

@@ -90,10 +90,15 @@ const main = async (): Promise<void> => {
   const host = serveMesh(mesh);
   const channel = new MessageChannel();
   host.accept(channel.port2);
-  const follower = connectMesh({ link: linkOver(channel.port1, "follower"), schema });
+  // no procedures: this measures the port, not an api, and `{}` is a router like any other
+  const follower = connectMesh({
+    link: linkOver(channel.port1, "follower"),
+    schema,
+    procedures: {},
+  });
 
   const local = mesh.on(ACME).unwrap();
-  const remote = follower.on(ACME).unwrap();
+  const remote = follower.$mesh.on(ACME).unwrap();
 
   console.log(`empty round trip over a MessageChannel: ${(await roundTrip(2000)).toFixed(4)} ms`);
   console.log("");
@@ -116,7 +121,7 @@ const main = async (): Promise<void> => {
     );
   }
 
-  await follower.stop();
+  await follower.$close();
   host.stop();
   await mesh.stop();
 };

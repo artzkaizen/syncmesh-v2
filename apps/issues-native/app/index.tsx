@@ -239,7 +239,7 @@ function Issues() {
    * about a workspace it has simply not heard about yet — and two booleans let it, because a
    * device with no transport reports the second before the first.
    */
-  if (issues.answered === "none") return <Notice>Reading the local replica…</Notice>;
+  // if (issues.answered === "none") return <Notice>Reading the local replica…</Notice>;
   if (issues.error !== undefined)
     return (
       <Notice spinner={false}>This device could not read the list: {issues.error.message}</Notice>

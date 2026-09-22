@@ -41,6 +41,19 @@ export interface ReceiptRow {
   readonly atMs: number;
 }
 
+/**
+ * Signed custody: this holder put its name to holding the event, out of the store it names.
+ *
+ * The incarnation is what a claim cannot carry. A holder that rebuilt its database announces a
+ * fresh one, and every vouch it made under the old one is void — which is the difference between
+ * *still holding* and *holding again, having lost what it had*.
+ */
+export interface VouchRow {
+  readonly holder: PeerId;
+  readonly incarnation: string;
+  readonly atMs: number;
+}
+
 export interface OperationStore {
   /**
    * One row for a committed write. Runs plain statements on the shared connection, so calling
@@ -54,9 +67,13 @@ export interface OperationStore {
     peer: PeerId,
     seq: SeqNum,
   ) => Promise<ResultType<OperationRow | undefined, StoreFailure>>;
-  /** Every operation no peer has receipted yet, oldest first. */
+  /** Every operation no peer has claimed custody of yet, oldest first (D27). */
   readonly unsettled: () => Promise<ResultType<readonly OperationRow[], StoreFailure>>;
-  /** Receipts for every operation `holder`'s acknowledged cursor now covers — idempotent. */
+  /**
+   * Receipts for every operation `holder`'s acknowledged cursor now covers — idempotent.
+   *
+   * A cursor, so a claim: the holder says it has these. Signing it is D28's question.
+   */
   readonly acknowledge: (
     holder: PeerId,
     author: PeerId,
@@ -67,6 +84,34 @@ export interface OperationStore {
     peer: PeerId,
     seq: SeqNum,
   ) => Promise<ResultType<readonly ReceiptRow[], StoreFailure>>;
+  /**
+   * Records signed custody through `throughSeq`, and **forgets every vouch this holder made
+   * under a different incarnation first**.
+   *
+   * The order is the whole of it: a peer that lost its store and rebuilt arrives with a new
+   * lineage, and the vouches it made with the store it lost have to stop counting before the new
+   * ones land. Doing it the other way round leaves a peer vouching for events it no longer has.
+   */
+  readonly vouch: (
+    holder: PeerId,
+    author: PeerId,
+    throughSeq: SeqNum,
+    incarnation: string,
+    atMs: number,
+  ) => Promise<ResultType<void, StoreFailure>>;
+  readonly vouchesOf: (
+    peer: PeerId,
+    seq: SeqNum,
+  ) => Promise<ResultType<readonly VouchRow[], StoreFailure>>;
+  /**
+   * Every write of this device **nobody has signed for**, oldest first (D28).
+   *
+   * The stronger of the two readings, and the only one that may gate something destructive: a
+   * write absent from here is held, on disk, by a peer that put its name to holding it. A write
+   * listed here may still have been claimed by somebody — see `unsettled` — and a claim is a
+   * peer's word about itself.
+   */
+  readonly soleCustody: () => Promise<ResultType<readonly OperationRow[], StoreFailure>>;
   /** Marks the displaced write superseded and remembers why (ch. 20). */
   readonly correct: (
     peer: PeerId,
@@ -154,6 +199,34 @@ export function operationStore(
             Number(throughSeq),
           ]),
         ),
+      vouch: (holder, author, throughSeq, incarnation, atMs) =>
+        attempt("vouch insert failed", async () => {
+          await driver.run(sql.deleteStaleVouches, [String(holder), incarnation]);
+          await driver.run(sql.insertVouchesThrough, [
+            String(holder),
+            incarnation,
+            atMs,
+            String(author),
+            Number(throughSeq),
+          ]);
+        }),
+      vouchesOf: (peer, seq) =>
+        Result.gen(async function* () {
+          const held = yield* Result.await(rows(sql.selectVouches, [String(peer), Number(seq)]));
+          return Result.all(
+            held.map(([holder, incarnation, atMs]) => {
+              if (typeof holder !== "string" || typeof incarnation !== "string")
+                return Result.err(new StoreFailure({ message: "vouch row does not decode" }));
+              // SAFETY: holder was written from a PeerId by vouch
+              return Result.ok({ holder: holder as PeerId, incarnation, atMs: Number(atMs) });
+            }),
+          );
+        }),
+      soleCustody: () =>
+        Result.gen(async function* () {
+          const held = yield* Result.await(rows(sql.selectSoleCustody, []));
+          return Result.all(held.map(decodeOp));
+        }),
       receiptsOf: (peer, seq) =>
         Result.gen(async function* () {
           const held = yield* Result.await(rows(sql.selectReceipts, [String(peer), Number(seq)]));

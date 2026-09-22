@@ -32,6 +32,21 @@ export interface TransportContext {
   /** Where arriving ephemeral values go (D16); absent, presence frames are ignored. */
   readonly onPresence?: BridgeOptions["onPresence"];
   /**
+   * This device's storage lineage, which is what makes its custody signable (D28).
+   *
+   * Absent, this device vouches for nothing it holds — it still receives events and still
+   * acknowledges them in its cursors, but no peer can count it as a signed holder. Which is the
+   * honest outcome: a device that cannot say *which* store held the event is claiming custody it
+   * has no way to lose.
+   */
+  readonly incarnation?: BridgeOptions["incarnation"];
+  /**
+   * A verified receipt for one of **this device's own** writes — somebody signed for holding it.
+   * Absent, receipts are still checked on arrival and then dropped, which is what every link did
+   * before the ledger had anywhere to put them.
+   */
+  readonly onReceipt?: BridgeOptions["onReceipt"];
+  /**
    * A join completed on some link (RFC-0019): state arrived instead of history. What
    * `$recovery.rebuild` listens to, and what tells it whether anything vouched for the rows.
    */
@@ -410,6 +425,11 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
           Object.assign(bridgeOptions, { onGrantRequest: ctx.onGrantRequest });
         if (ctx.onPresence !== undefined)
           Object.assign(bridgeOptions, { onPresence: ctx.onPresence });
+        // the two halves of signed custody: what this device can vouch for, and where a peer's
+        // vouch for us lands. Neither is required, and a link with only one of them is coherent
+        if (ctx.incarnation !== undefined)
+          Object.assign(bridgeOptions, { incarnation: ctx.incarnation });
+        if (ctx.onReceipt !== undefined) Object.assign(bridgeOptions, { onReceipt: ctx.onReceipt });
         if (ctx.onSnapshot !== undefined)
           Object.assign(bridgeOptions, { onSnapshot: ctx.onSnapshot });
         if (ctx.certificate !== undefined)
