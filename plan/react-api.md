@@ -365,7 +365,10 @@ Counts: S 6 (G2, G4, G10, G15, G16, G3), M 7 (G1, G6, G7, G8, G9, G13, G14; G5 r
 | 2026-09-22 | G1 web: `FollowerClient` reads `$status`/`$transports`/`$peers`/`$routes`/`$auth` from one `DeviceReading` the host pushes; ledger hands out `OperationRef` | `9288ed1` |
 | 2026-09-22 | G1–G4 web: `syncmeshReact(openClient())` in `mesh.ts`, `<mesh.Provider whileOpening>` at the root, tree keyed on the link's epoch; G2 pill; G4 first-launch and overrule toast; `ReplicaHeld` deleted | `7fc09d8` |
 | 2026-09-22 | G16 `supplyEntropy`/`supplySigner`/`installNativeCrypto` | `6804fa3` |
+| 2026-09-22 | G13 `QueryCall` is thenable — `await api.books.list(input)` is `Result<ReadAnswer<T>>` with `coverage` beside `data`; `path`/`key`/`run`/`live`/`settled`/`coverage`/`onCoverage` moved under `"~mesh"`; hooks, `tanstack-db`, the HTTP handler and the port follower read it there | `4e8ad6a` |
+| 2026-09-22 | `healthWord` and the overrule store lifted to `@syncmesh/issues` so both apps share one copy | `048574e` |
+| 2026-09-22 | G1–G4 native: `Device.client` beside the narrowed `api`; `openedClient` settled from the replica store; `mesh.Provider` replaces `MeshGate` and `DeviceHeld`; the pill in the list header; the detail screen's last write followed into an overrule toast. On-device rendering not verified (no simulator was booted); type check and lint are | `1e6de37` |
 
-In flight: G1–G3 native (`Device.api` widened, `MeshGate` → `mesh.Provider`, the pill on `index.tsx`), G4 native
-toast (`$operations` on `Device`), G13 (`~mesh` adapter surface). Held: G14 parked by the user; G15 undecided;
-G11 on D27's compaction question; G12 on D32.
+Held: G14 parked by the user; G15 undecided; G11 on D27's compaction question; G12 on D32. G3 resolved by
+doing what the web does — the provider at the root, `whileOpening` as the splash, per-screen skeletons from
+`answered`.
