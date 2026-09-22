@@ -474,7 +474,7 @@ export function runTransports(
     sendPresence: (wire) => {
       for (const t of every({ cls: KIND.presence, bytes: wire.length })) t.sendPresence?.(wire);
     },
-    withBlobs: () => active.filter((t) => t.putBlob !== undefined),
+    withBlobs: () => active.filter((t) => t.blobs !== undefined),
     list: () => [...active],
     online: (transport) => online.get(transport),
     onLinkEvent: linkEvents.subscribe,

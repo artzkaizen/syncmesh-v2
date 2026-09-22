@@ -35,14 +35,13 @@ describe("observe: what it must not change", () => {
     const [plain, carrier] = seam.observe([
       fake("radio"),
       fake("relay", {
-        putBlob: () => Promise.resolve(),
-        fetchBlob: () => Promise.resolve(undefined),
+        blobs: { upload: () => Promise.resolve(), download: () => Promise.resolve(undefined) },
       }),
     ]);
-    // `withBlobs()` reads exactly this: a wrapper that defined putBlob unconditionally would
+    // `withBlobs()` reads exactly this: a wrapper that defined `blobs` unconditionally would
     // make every medium claim it could carry bytes
-    expect(plain?.putBlob).toBeUndefined();
-    expect(carrier?.putBlob).toBeDefined();
+    expect(plain?.blobs).toBeUndefined();
+    expect(carrier?.blobs).toBeDefined();
     expect(
       runTransports([plain!, carrier!], context)
         .withBlobs()
@@ -165,11 +164,13 @@ describe("mesh.* telemetry (D17)", () => {
     const links = runTransports(
       seam.observe([
         fake("relay", {
-          putBlob: (hash, bytes) => {
-            held.set(hash, bytes);
-            return Promise.resolve();
+          blobs: {
+            upload: (hash, bytes) => {
+              held.set(hash, bytes);
+              return Promise.resolve();
+            },
+            download: (hash) => Promise.resolve(held.get(hash)),
           },
-          fetchBlob: (hash) => Promise.resolve(held.get(hash)),
         }),
       ]),
       context,

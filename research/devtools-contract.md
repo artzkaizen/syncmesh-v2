@@ -283,7 +283,7 @@ at the end of the list would silently re-order somebody's diagnosis.
 
 The stand-in **copies the capability shape** rather than inventing one. A stand-in for a medium
 that could enumerate its links enumerates none; a stand-in for one that never could still cannot,
-and is still reported in `DevtoolsLinks.silent` as *cannot say*. It declares no `putBlob`, no
+and is still reported in `DevtoolsLinks.silent` as *cannot say*. It declares no `blobs`, no
 `sendPresence`, no `caughtUp` — all of which are true of a radio that is off — and its `onStatus`
 answers `false` **on subscribe**, because `undefined` from a status hub means *has not said* and a
 medium somebody just switched off has said, and said no.

@@ -67,6 +67,8 @@ export type {
   TransportCondition,
   TransportContext,
   TransportKind,
+  TransportBlobs,
+  DownloadBlobOptions,
   TransportVisibility,
   VisibilityToken,
 } from "./transport.js";

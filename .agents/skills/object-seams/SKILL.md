@@ -67,6 +67,6 @@ seen in one place? — not a number.
 
 ## Optional members stay absent
 
-`withBlobs()` reads `putBlob !== undefined`; settling reads `caughtUp !== undefined`. A capability a
+`withBlobs()` reads `blobs !== undefined`; settling reads `caughtUp !== undefined`. A capability a
 transport does not have is a member it does not declare — not a method that returns nothing. A
 class either declares a method or does not, which is the other reason the seam is a literal.

@@ -82,7 +82,7 @@ export interface RelayTransportOptions {
 class RelayLink {
   readonly name: string;
   readonly status = createHub<boolean>();
-  readonly blobs = createBlobChannel((frame) => this.sendSafe(frame));
+  readonly blobChannel = createBlobChannel((frame) => this.sendSafe(frame));
   // the mesh's clock where there is one, so a link event and the fold beside it agree — the same
   // rule `createFrameTransport` follows, and the reason `ctx` is read per call rather than captured
   readonly report: LinkReport;
@@ -241,7 +241,7 @@ class RelayLink {
         this.fatal = true;
       },
       onDropped: this.report.dropped,
-      onBlobAnswer: this.blobs.answer,
+      onBlobAnswer: this.blobChannel.answer,
       onPeerHeard: (peer) => void this.heard.set(peer, Date.now()),
       onCaughtUp: () => {
         this.repaging = false;
@@ -360,8 +360,7 @@ export function relayTransport(options: RelayTransportOptions): Transport {
     onLinkEvent: link.report.onLinkEvent,
     priority: options.priority ?? 1,
     sendPresence: (wire) => link.sendPresence(wire),
-    putBlob: link.blobs.put,
-    fetchBlob: link.blobs.fetch,
+    blobs: link.blobChannel.capability,
     start: (context) => link.start(context),
     whenReady: () => link.whenReady(),
     caughtUp: () => link.caughtUp(),

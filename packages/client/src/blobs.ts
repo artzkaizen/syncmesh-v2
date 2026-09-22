@@ -84,7 +84,7 @@ export function createBlobs(deps: BlobsDeps): Blobs {
     const timeoutMs = options.timeoutMs ?? 10_000;
     options.onProgress?.(0, undefined); // the ask left; nobody knows the size yet
     for (const transport of carriers) {
-      const answer = await transport.fetchBlob?.(String(hash), timeoutMs);
+      const answer = await transport.blobs?.download(String(hash), { timeoutMs });
       if (answer === undefined) continue;
       const verified = verifyBlob(hash, answer);
       if (verified.isErr()) return R.err(verified.error); // junk, whoever served it
@@ -107,7 +107,7 @@ export function createBlobs(deps: BlobsDeps): Blobs {
       if (stored.isErr()) return R.err(stored.error);
       const carriers = transports();
       if (carriers.length === 0) return noCapability("carry");
-      await Promise.all(carriers.flatMap((t) => t.putBlob?.(String(hash), bytes) ?? []));
+      await Promise.all(carriers.flatMap((t) => t.blobs?.upload(String(hash), bytes) ?? []));
       return R.ok(hash);
     },
     fetch,

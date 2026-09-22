@@ -147,6 +147,26 @@ export interface TransportVisibility {
   ) => Promise<Result<void, VisibilityLost | VisibilityTimeout>>;
 }
 
+export interface DownloadBlobOptions {
+  /** How long to wait for an answer before giving `undefined`. */
+  readonly timeoutMs: number;
+}
+
+/**
+ * Bytes crossing this medium out of band, by hash (D18): what a medium with a store on the far
+ * side can carry. A capability, not an obligation — a raw radio has nobody to hand bytes to, so
+ * it declares none and `mesh.blobs` answers `NoSuchCapability` rather than pretending (D30).
+ */
+export interface TransportBlobs {
+  /** Offers bytes under their own hash; the far end verifies before it keeps them. */
+  readonly upload: (hash: string, bytes: Uint8Array) => Promise<void>;
+  /** Asks for bytes by hash; `undefined` when nobody there holds them, or the deadline passed. */
+  readonly download: (
+    hash: string,
+    options: DownloadBlobOptions,
+  ) => Promise<Uint8Array | undefined>;
+}
+
 /**
  * The two-tier port (D12-A): required `name/start/stop/whenReady`, optional capabilities.
  * An absent capability is a fact about the medium, not a bug.
@@ -260,12 +280,10 @@ export interface Transport {
   /** Sends one ephemeral value to every open session; dropped, never queued, on a full link. */
   readonly sendPresence?: (wire: Uint8Array) => void;
   /**
-   * Offers bytes under their own hash (D18). Absent is a fact about the medium, not a bug: a
-   * raw radio says so rather than pretending, and `mesh.blobs` answers `NoSuchCapability`.
+   * Bytes out of band, by hash (D18, D30). Absent is a fact about the medium, not a bug: a raw
+   * radio says so rather than pretending, and `mesh.blobs` answers `NoSuchCapability`.
    */
-  readonly putBlob?: (hash: string, bytes: Uint8Array) => Promise<void>;
-  /** Asks for bytes by hash; `undefined` when nobody there holds them, or the deadline passed. */
-  readonly fetchBlob?: (hash: string, timeoutMs: number) => Promise<Uint8Array | undefined>;
+  readonly blobs?: TransportBlobs;
   /**
    * Naming a position in an ordered log and waiting to reach it (RFC-0020 §3.2). Present only on
    * a medium that has one — a relay room does, a peer-to-peer radio does not.
