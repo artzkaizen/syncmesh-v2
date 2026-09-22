@@ -92,7 +92,7 @@ const first = (
 await settle();
 
 // Raj, on the other phone, already has both — nothing was fetched.
-const onRaj = await raj.observations.forPatient({ patientId: "p1" }).run();
+const onRaj = (await raj.observations.forPatient({ patientId: "p1" })).unwrap().data;
 console.log("raj sees:", onRaj.map((o) => `${o.code} ${o.value}`).join(", "));
 
 // The radio goes down. Both keep writing.
@@ -110,7 +110,7 @@ const offline = (
   await ann.observations.amend({ amends: first.data.id, value: "126/82", author: "ann" }).committed
 ).unwrap();
 
-const reachOf = async (id: string) => (await raj.observations.reach({ id }).run())[0]?.sync;
+const reachOf = async (id: string) => (await raj.observations.reach({ id })).unwrap().data[0]?.sync;
 console.log("raj's reading while offline:", await reachOf(offline.data.id));
 
 // the radio is back. A link that dropped frames while it was down asks from its last
@@ -125,7 +125,7 @@ for (const [who, side] of [
   ["ann", ann],
   ["raj", raj],
 ] as const) {
-  const rows = await side.observations.forPatient({ patientId: "p1" }).run();
+  const rows = (await side.observations.forPatient({ patientId: "p1" })).unwrap().data;
   console.log(
     `${who}:`,
     rows.map((o) => `${o.code}=${o.value}${o.amends === null ? "" : " (amends)"}`).join(" | "),
