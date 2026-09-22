@@ -19,6 +19,7 @@ import type { MeshInternal } from "./internal.js";
 import type { OperationsView } from "./operations.js";
 import type { Peers } from "./peers.js";
 import type { Topics } from "./presence.js";
+import type { ReadCoverageView } from "./read-coverage.js";
 import type { RecoveryView } from "./recovery.js";
 import type { Status } from "./status.js";
 import type { MeshTelemetrySeam } from "./telemetry.js";
@@ -203,6 +204,11 @@ export interface Mesh<
    * storage has already spoken by the time a mesh exists, then a relay, then a radio.
    */
   readonly settled: () => Promise<void>;
+  /**
+   * How much of the world has answered, with the source and checkpoint it is good to (book
+   * ch. 9) — `settled()`'s per-source completions kept instead of collapsed into one promise.
+   */
+  readonly coverage: ReadCoverageView;
   readonly running: () => boolean;
   /** Asks every connected peer for a grant for this device (flow A). */
   readonly requestGrant: (invite?: string) => void;

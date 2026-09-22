@@ -1,4 +1,4 @@
-import type { Handle, Mesh, MeshSchema } from "@syncmesh/client";
+import type { Handle, Mesh, MeshSchema, ReadCoverage, ReadCoverageView } from "@syncmesh/client";
 import type { Live, Runnable } from "@syncmesh/drizzle";
 import type { Principal } from "@syncmesh/engine";
 import type { EventId, PeerId } from "@syncmesh/kernel";
@@ -6,6 +6,7 @@ import type { Result as ResultType } from "@syncmesh/result";
 import type { PresenceMap } from "@syncmesh/schema";
 import type { TxReceipt } from "@syncmesh/storage";
 
+import { LOCAL_ONLY } from "@syncmesh/client";
 import { readOnly, scopeReads } from "@syncmesh/drizzle";
 import { Result } from "@syncmesh/result";
 
@@ -86,6 +87,12 @@ export interface QueryCall<T> {
    * "no books" from "the relay has not answered yet" (RFC-0019).
    */
   readonly settled: () => Promise<void>;
+  /**
+   * How far the world has answered this read, with the source and checkpoint it is good to
+   * (book ch. 9). `local-only` before the mesh opens and until a source completes its first pass.
+   */
+  readonly coverage: () => ReadCoverage;
+  readonly onCoverage: (listener: () => void) => () => void;
 }
 
 /* oxlint-disable anti-slop/no-unknown-parameters -- every `input` below is the call's own argument on its way to `validate`, which is the parser. The surface above them (`Api<R>`) is typed per procedure, so a caller cannot reach these with anything else; taking a named type here would mean parsing before the procedure that owns the schema has been chosen. */
@@ -172,6 +179,12 @@ export interface ApiMesh<PC extends PresenceMap = Record<string, never>> {
   /** The manifest, for the one thing this binding reads off it: which kinds a call can scope to. */
   readonly schema: MeshSchema;
   readonly settled: () => Promise<void>;
+  /**
+   * Optional, because a mesh reached over a port (`adapters/browser`) forwards what it can ask
+   * for, and until it forwards this a read there honestly answers `local-only` — the word for
+   * "nothing here can say more" — rather than failing to build at all.
+   */
+  readonly coverage?: ReadCoverageView;
   readonly can: Mesh<"sqlite", PC>["can"];
   /** Only the subscription: a grant landing is what makes a gated affordance re-ask. */
   readonly grants: { readonly onRegistered: (listener: () => void) => () => void };
@@ -269,6 +282,11 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     // Restore the factory (`() => runnable(def, input)`) once the assignee stall is attributed.
     live: () => deferredLive(lazy, () => handle(input).live(runnable(def, input))),
     settled: () => lazy.ready.then(() => mesh().settled()),
+    // one shared object, never a literal: a mesh reached over a port has no coverage yet, and a
+    // fresh `{ kind }` per call here is exactly the snapshot loop React refuses
+    coverage: () => lazy.current()?.coverage?.get() ?? LOCAL_ONLY,
+    onCoverage: (listener: () => void) =>
+      deferredSubscribe(lazy, (m) => m.coverage?.subscribe(listener) ?? (() => undefined)),
   });
 
   /** `api.products.create.can(input)`: the write, rehearsed and rolled back (ch. 15). */

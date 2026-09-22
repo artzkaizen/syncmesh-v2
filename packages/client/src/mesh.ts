@@ -29,6 +29,7 @@ import { joinIfEmpty } from "./join.js";
 import { wireOperations } from "./operations.js";
 import { createPeers } from "./peers.js";
 import { openPresence } from "./presence.js";
+import { createReadCoverage } from "./read-coverage.js";
 import { openRecovery, recoveryDeps } from "./recovery.js";
 import { createStatus } from "./status.js";
 import { createSyncStates } from "./sync-state.js";
@@ -218,6 +219,11 @@ function assemble<
     onTelemetry: (listener) => tally.wrap("subscriptions", telemetry(listener)),
     ready: links.ready,
     settled: links.settled,
+    coverage: createReadCoverage({
+      transports: links.list,
+      cursors: () => engine.coverage().synced,
+      now,
+    }),
     running: links.running,
     requestGrant: links.requestGrant,
     transports: {

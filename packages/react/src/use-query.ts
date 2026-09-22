@@ -1,9 +1,11 @@
+import type { ReadCoverage } from "@syncmesh/client";
+
 import { useMemo } from "react";
 
 import type { Answered } from "./answered.js";
 import type { LiveCall, QueryOptions } from "./use-live-query.js";
 
-import { useLiveQuery } from "./use-live-query.js";
+import { LOCAL_ONLY, useLiveQuery } from "./use-live-query.js";
 
 /** TanStack Query's dialect, plus the one word HTTP-born libraries cannot have (book ch. 9). */
 export interface QueryResult<T> {
@@ -24,6 +26,17 @@ export interface QueryResult<T> {
    * A disabled query is `"none"` — it asked nothing, so nothing has answered.
    */
   readonly answered: Answered;
+  /**
+   * How much of the **world** has answered, and to which source's checkpoint (book ch. 9).
+   *
+   * Not the fourth readiness state the comment above rejects — `answered` is still the only
+   * progression a screen walks. This is the other fact beside it, with a *name* on it: a query
+   * over an empty local store is `answered: "local"` at once while coverage is still
+   * `local-only`, and when it moves it says *which* source the rows are now good to. A disabled
+   * query, and one over a device with no transports, reads `local-only` — the honest word for
+   * "nothing here can say more".
+   */
+  readonly coverage: ReadCoverage;
   readonly isEnabled: boolean;
   readonly error: Error | undefined;
 }
@@ -90,6 +103,7 @@ export function useQuery<T>(call: LiveCall<T> | undefined, options?: QueryOption
         data: undefined,
         status: "disabled" as const,
         answered: "none" as const,
+        coverage: LOCAL_ONLY,
         isEnabled: false,
         error: undefined,
       };
@@ -98,6 +112,7 @@ export function useQuery<T>(call: LiveCall<T> | undefined, options?: QueryOption
       data: live.answered === "none" ? undefined : live.data,
       status: live.status,
       answered: live.answered,
+      coverage: live.coverage,
       isEnabled: true,
       error: live.error,
     };

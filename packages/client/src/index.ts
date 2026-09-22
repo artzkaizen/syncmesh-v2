@@ -32,6 +32,13 @@ export type { PeerEdge, PeerGraph, Peers } from "./peers.js";
 export { createPeers } from "./peers.js";
 export type { MeshHealth, MeshStatus, SourceStatus, Status } from "./status.js";
 export { createStatus } from "./status.js";
+export type {
+  Checkpoint,
+  ReadCoverage,
+  ReadCoverageDeps,
+  ReadCoverageView,
+} from "./read-coverage.js";
+export { LOCAL_ONLY, createReadCoverage } from "./read-coverage.js";
 export { openRecovery } from "./recovery.js";
 export { createHandleTally } from "./inspect.js";
 export type { SyncState } from "./sync-state.js";

@@ -1,4 +1,5 @@
 import "./dom.js";
+import type { ReadCoverage } from "@syncmesh/client";
 import type { Engine } from "@syncmesh/engine";
 
 import { meshDrizzle } from "@syncmesh/drizzle";
@@ -355,6 +356,11 @@ describe("usePresence", () => {
   });
 });
 
+describe("useLiveQuery — coverage names a source (ch. 9)", () => {
+  test("local-only, then partial naming the near source, then caught-up naming the far one", async () => {
+    const { handle } = await open();
+    await handle.db.insert(jobs).values({ id: "j1", title: "one", rank: 1 });
+
     const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
     const checkpoint = { at: T0, cursors: new Map() };
     let reading: ReadCoverage = { kind: "local-only" };
@@ -441,9 +447,9 @@ describe("useQuery — the book's dialect (ch. 9)", () => {
             settled: () => settledGate,
           }
         : undefined;
-      const { data, status, answered, isEnabled } = useQuery(call);
+      const { data, status, answered, coverage, isEnabled } = useQuery(call);
       seen.push(
-        `${status}/${isEnabled ? "on" : "off"}/${answered}/${
+        `${status}/${isEnabled ? "on" : "off"}/${answered}/${coverage.kind}/${
           data === undefined ? "∅" : data.map((r) => r.id).join(",")
         }`,
       );
@@ -451,16 +457,16 @@ describe("useQuery — the book's dialect (ch. 9)", () => {
     };
 
     const { settle } = await mount(createElement(Screen));
-    expect(seen.at(-1)).toBe("disabled/off/none/∅"); // no call: disabled, and nothing asked
+    expect(seen.at(-1)).toBe("disabled/off/none/local-only/∅"); // no call: disabled, and nothing asked
 
     await act(async () => pick(true));
     await settle();
     // this device answered and the world has not: the middle of the progression
-    expect(seen.at(-1)).toBe("success/on/local/j1");
+    expect(seen.at(-1)).toBe("success/on/local/local-only/j1");
 
     await act(async () => releaseSettled());
     await settle();
-    expect(seen.at(-1)).toBe("success/on/settled/j1"); // and now the far sources have too
+    expect(seen.at(-1)).toBe("success/on/settled/local-only/j1"); // and now the far sources have too
   });
 
   /**

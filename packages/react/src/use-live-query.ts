@@ -1,5 +1,7 @@
+import type { ReadCoverage } from "@syncmesh/client";
 import type { Live } from "@syncmesh/drizzle";
 
+import { LOCAL_ONLY } from "@syncmesh/client";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import type { Answered } from "./answered.js";
@@ -16,6 +18,12 @@ export interface LiveCall<T> {
   readonly key: string;
   readonly live: () => Live<T>;
   readonly settled: () => Promise<void>;
+  /**
+   * Optional so a test can still drive this hook with three functions; a call that carries
+   * neither reads as `local-only`, which is the honest word for "nothing here can say more".
+   */
+  readonly coverage?: () => ReadCoverage;
+  readonly onCoverage?: (listener: () => void) => () => void;
 }
 
 /**
@@ -74,10 +82,19 @@ export interface LiveResult<T> {
    * within one subscription; a changed input is a new question and starts again at `"none"`.
    */
   readonly answered: Answered;
+  /**
+   * How much of the **world** has answered — the word an HTTP-born library cannot have (book
+   * ch. 9). `answered` says whether this device's read has stabilised; this says which source
+   * the rows are good to, and to what checkpoint. They are different facts: a query over an
+   * empty local store is `answered: "local"` instantly while coverage is still `local-only`, and
+   * conflating them is how offline apps draw confident empty states.
+   */
+  readonly coverage: ReadCoverage;
   readonly error: Error | undefined;
 }
 
 const EMPTY: readonly never[] = [];
+export { LOCAL_ONLY };
 
 const asError = (cause: unknown): Error =>
   cause instanceof Error ? cause : new Error(String(cause));
@@ -159,6 +176,19 @@ export function useLiveQuery<T>(
   );
   const snap = useSyncExternalStore(subscribe, read, read);
 
+  const subscribeCoverage = useCallback(
+    (notify: () => void) =>
+      key === undefined
+        ? () => undefined
+        : (current.current?.onCoverage?.(notify) ?? (() => undefined)),
+    [key],
+  );
+  const readCoverage = useCallback(
+    () => (key === undefined ? LOCAL_ONLY : (current.current?.coverage?.() ?? LOCAL_ONLY)),
+    [key],
+  );
+  const coverage = useSyncExternalStore(subscribeCoverage, readCoverage, readCoverage);
+
   const [settledFor, setSettledFor] = useState<string>();
   useEffect(() => {
     if (key === undefined) return undefined;
@@ -183,7 +213,8 @@ export function useLiveQuery<T>(
       isError: status === "error",
       isSuccess: status === "success",
       answered: answeredFrom(snap?.answered ?? false, key !== undefined && settledFor === key),
+      coverage,
       error: snap?.error,
     };
-  }, [snap, settledFor, key]);
+  }, [snap, settledFor, key, coverage]);
 }

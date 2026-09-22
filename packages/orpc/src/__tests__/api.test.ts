@@ -220,6 +220,24 @@ describe("a call the device cannot run", () => {
  * on purpose (a handler may throw a class this package never heard of), so narrowing to the
  * class is what a caller actually does.
  */
+describe("coverage on a read is a stable snapshot", () => {
+  /**
+   * `useSyncExternalStore` compares snapshots by reference. A mesh reached over a port
+   * (`adapters/browser`) carries no `coverage`, and the first cut answered that with a fresh
+   * `{ kind: "local-only" }` per call — "Maximum update depth exceeded" in the browser, and green
+   * in every test, because every test mesh has coverage.
+   */
+  test("a mesh with no coverage answers with the same object every time", async () => {
+    const { mesh } = await open("member");
+    const { coverage: _dropped, ...bare } = mesh;
+    const api = meshApi({ ...bare, self: device.peerId }, { books });
+    const call = api.books.list({ orgId: ORG });
+    expect(call.coverage()).toBe(call.coverage());
+    expect(call.coverage().kind).toBe("local-only");
+    void _dropped;
+  });
+});
+
 describe("the failures this layer mints carry a tag", () => {
   const failure = <T>(result: { isErr: () => boolean; error?: Error } & T): Error | undefined =>
     result.isErr() ? result.error : undefined;
