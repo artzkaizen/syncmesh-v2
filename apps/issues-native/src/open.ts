@@ -58,6 +58,7 @@ let started = false;
  */
 const observed = (replica: Device, chosen: boolean): Device => ({
   api: replica.api,
+  client: replica.client,
   authority: replica.authority,
   deleted: replica.deleted,
   chosen,
@@ -127,6 +128,27 @@ export const subscribeReplica = (listener: () => void): (() => void) => {
 };
 
 export const replicaSnapshot = (): Opened => current;
+
+/**
+ * The client as a promise, for `syncmeshReact`, settled from the same store the screens read.
+ *
+ * One open, two readers: the store answers `useDevice()` synchronously, and this answers the
+ * factory's `Provider` once. Rejected on `unavailable`, because on a phone a refused open is
+ * final — there is no other tab to be promoted — and the provider's `whenUnavailable` is the
+ * one place that sentence is drawn. A later `signInAs` re-settles the store with a fresh wrapper
+ * and reaches nobody here: the client did not change, who is acting did.
+ *
+ * Taken before {@link startReplica} runs below, so the store is still `opening` when this
+ * subscribes and the first settle is the one it hears.
+ */
+export const openedClient = new Promise<Device["client"]>((resolve, reject) => {
+  const off = subscribeReplica(() => {
+    if (current.kind === "opening") return;
+    off();
+    if (current.kind === "ready") resolve(current.replica.client);
+    else reject(current.reason);
+  });
+});
 
 // the work starts here rather than in an effect, so it overlaps React mounting instead of queueing
 // behind it — see the note above on why React Query's reason for deferring does not apply

@@ -25,6 +25,7 @@ import { Avatar } from "../../src/people";
 import { PickerSheet } from "../../src/picker-sheet";
 import { PropertyPill, PropertyRow } from "../../src/property-row";
 import { SyncNote } from "../../src/sync-note";
+import { Overruled } from "../../src/toasts";
 
 /**
  * One issue, and every control that writes to it.
@@ -151,10 +152,15 @@ function Detail({ id }: { readonly id: string }) {
    * identical and have nothing to do with each other: `commit` is the engine appending and folding
    * locally, `visible` is the live query re-running and React drawing the result.
    */
+  // the last write this screen made, followed by `Overruled` below so the office's correction of
+  // it is said out loud rather than only redrawn
+  const [lastWrite, setLastWrite] = useState<string>();
   const attempt = useCallback((what: string, run: () => Write<unknown>) => {
     const asked = Date.now();
     pending.current = { what, asked };
-    void run().committed.then((landed) => {
+    const write = run();
+    setLastWrite(write.id);
+    void write.committed.then((landed) => {
       if (landed.isErr()) {
         pending.current = undefined;
         Alert.alert(`${what} was refused`, landed.error.message);
@@ -362,6 +368,7 @@ function Detail({ id }: { readonly id: string }) {
         }}
       />
 
+      <Overruled id={lastWrite} />
       <ScrollView className="flex-1" contentContainerStyle={{ gap: 20, padding: 16 }}>
         <View className="gap-2">
           <Text className="text-[13px] text-muted-foreground">{identifier}</Text>

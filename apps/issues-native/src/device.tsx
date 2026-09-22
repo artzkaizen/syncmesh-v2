@@ -1,10 +1,11 @@
 import type { Actor } from "@syncmesh/issues";
 
-import { createContext, useContext, useSyncExternalStore } from "react";
+import { syncmeshReact } from "@syncmesh/react";
+import { useSyncExternalStore } from "react";
 
-import type { Device, MeshUnavailable } from "./mesh";
+import type { Device } from "./mesh";
 
-import { replicaSnapshot, subscribeReplica } from "./open";
+import { openedClient, replicaSnapshot, subscribeReplica } from "./open";
 
 /**
  * What a screen is given: the calls it makes, and who it is making them as.
@@ -15,18 +16,37 @@ import { replicaSnapshot, subscribeReplica } from "./open";
  * it for six of the eight screens here. The two whose subject genuinely *is* the device — settings
  * and devtools, which show the relay, the authority and how much is stored — ask for it by that
  * name.
- *
- * Every one of these used to be spelled `replica={useReplica()}` handed into a component that
- * destructured two fields off it. That is prop-drilling a bag one level to avoid naming what was
- * wanted, and it put a storage noun in the type signature of every screen in the app.
  */
 
-const DeviceHeld = createContext<Device | undefined>(undefined);
+/**
+ * The client, bound once, for every screen in this app.
+ *
+ * `mesh.Provider` is the one place that knows the database opens slowly: it sits above the
+ * navigator in `app/_layout.tsx`, draws `whileOpening` until {@link openedClient} answers and the
+ * tree after, so everything under it may read `mesh.api` as a property. `mesh.useStatus()` and
+ * its siblings are the device's own facts as React state — what the header pill and the settings
+ * screen draw by.
+ *
+ * **Deliberately not `use()` and not Suspense**, which is where this parts company with LiveStore
+ * — whose `useStore` calls `React.use(promise)` and lets a boundary above draw the fallback.
+ * Suspending reads better and was tried: it stops the *whole tree* until the promise settles, and
+ * nothing at all appeared for ~500ms on the phone. The provider hands back a status instead, so
+ * the frame draws now and fills in when the engine lands.
+ */
+export const mesh = syncmeshReact(openedClient);
 
+/**
+ * The device, read off the store the open settles into.
+ *
+ * Under `mesh.Provider` the store is always `ready` — the provider's own promise resolved from
+ * it — so the throw is for a screen mounted above the provider, which is a wiring mistake and
+ * not a state to draw.
+ */
 const held = (): Device => {
-  const device = useContext(DeviceHeld);
-  if (device === undefined) throw new Error("a screen asked for the mesh outside <MeshGate>");
-  return device;
+  const opened = useSyncExternalStore(subscribeReplica, replicaSnapshot);
+  if (opened.kind !== "ready")
+    throw new Error("a screen asked for the device outside <mesh.Provider>");
+  return opened.replica;
 };
 
 /** The procedures, bound to this device's own database. `api.issues.list({…})` and nothing else. */
@@ -42,32 +62,3 @@ export const useActor = (): Actor => held().actor;
 
 /** This device itself: where it syncs, how much it holds, and the two buttons that change that. */
 export const useDevice = (): Device => held();
-
-/**
- * The one place in this app that knows the database opens slowly.
- *
- * Above the navigator, asked once. It used to be asked in all eight screens, each of which
- * re-answered "is it ready yet" before it could draw, in four different spellings of the same
- * card — one question, one answer, changing once per launch, answered eight times.
- *
- * **Deliberately not `use()` and not Suspense**, which is where this parts company with LiveStore
- * — whose `useStore` calls `React.use(promise)` and lets a boundary above draw the fallback.
- * Suspending reads better and was tried: it stops the *whole tree* until the promise settles, and
- * nothing at all appeared for ~500ms on the phone. `useSyncExternalStore` hands back a status
- * instead, so the frame draws now and fills in when the engine lands — and that only costs a
- * branch because there is exactly one of them, here.
- */
-export function MeshGate({
-  children,
-  whileOpening,
-  whenUnavailable,
-}: {
-  readonly children: React.ReactNode;
-  readonly whileOpening: React.ReactNode;
-  readonly whenUnavailable: (reason: MeshUnavailable) => React.ReactNode;
-}) {
-  const opened = useSyncExternalStore(subscribeReplica, replicaSnapshot);
-  if (opened.kind === "opening") return whileOpening;
-  if (opened.kind === "unavailable") return whenUnavailable(opened.reason);
-  return <DeviceHeld value={opened.replica}>{children}</DeviceHeld>;
-}

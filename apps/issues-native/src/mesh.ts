@@ -1,6 +1,6 @@
 import type { MeshStatus, OperationsView } from "@syncmesh/client";
 import type { DevtoolsLinkEvent } from "@syncmesh/devtools";
-import type { Api } from "@syncmesh/orpc";
+import type { Api, Client } from "@syncmesh/orpc";
 import type { Transport } from "@syncmesh/transport";
 
 import { deviceIdentity } from "@syncmesh/client";
@@ -14,6 +14,7 @@ import {
   rememberActor,
   storedActor,
   type Actor,
+  type IssuesPresence,
 } from "@syncmesh/issues";
 import { createClient, httpLink, sqlite } from "@syncmesh/orpc";
 import { foreground } from "@syncmesh/react-native";
@@ -146,7 +147,18 @@ const AUTHORITY_URL = configured("authorityUrl") ?? `http://${lanHost()}:5252`;
 console.log(`[mesh] relay ${RELAY_URL} · authority ${AUTHORITY_URL}`);
 
 export interface Device {
+  /** The procedures, and only those: what a screen calls. The same object as {@link Device.client}, narrowed. */
   readonly api: Api<typeof procedures>;
+  /**
+   * The whole client, for `syncmeshReact` and nothing else.
+   *
+   * The factory's hooks read `$status`, `$peers`, `$routes` and `$auth` off it to draw the pill
+   * and the settings screen, and `$operations` to follow a write the office may overrule. A
+   * screen still calls procedures through {@link Device.api}: the narrowing is what keeps the
+   * transports out of reach of the code that draws, and the factory is the one reader whose job
+   * is the device itself.
+   */
+  readonly client: Client<typeof procedures, IssuesPresence>;
   /**
    * Whether this device holds a tombstone for a row: *deleted*, as against *never heard of*.
    *
@@ -249,10 +261,9 @@ const DATABASE = "issues.db";
 /**
  * The client behind {@link opening}, which is the thing that actually has to be stopped.
  *
- * `Device.api` is narrowed to the procedures on purpose — a screen has no business reaching the
- * transports — so the `$close` that stops them is held here instead of widening that type for the
- * sake of one caller that is not a screen. {@link Instruments} rides along for the same reason and
- * with the same door.
+ * `$close` is held here rather than read off {@link Device.client}, because the one caller that
+ * stops the mesh is the module that opened it — a hot reload, a reset — and not a screen.
+ * {@link Instruments} rides along for the same reason and with the same door.
  */
 let live: { readonly $close: () => Promise<void>; readonly instruments: Instruments } | undefined;
 
@@ -509,6 +520,7 @@ const open = (): Promise<Result<Device, MeshUnavailable>> =>
 
     return Result.ok({
       api: app,
+      client: app,
       deleted: (table: string, key: string) => app.$mesh.deletedAt(table, key) !== undefined,
       // a getter, because `acting` moves under {@link signInAs} and a copied field would not
       get actor() {

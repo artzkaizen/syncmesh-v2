@@ -5,10 +5,10 @@ import { HeroUINativeProvider, Spinner } from "heroui-native";
 import { Pressable, Text, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 
-import type { MeshUnavailable } from "../src/mesh";
-
-import { MeshGate } from "../src/device";
+import { mesh } from "../src/device";
+import { HealthPill } from "../src/health-pill";
 import { sawTap } from "../src/nav-timing";
+import { Toasts } from "../src/toasts";
 
 import "@syncmesh/react-native/entropy";
 
@@ -19,13 +19,14 @@ import "../global.css";
  *
  * `GestureHandlerRootView` is outermost because HeroUI's overlays are gesture-driven and mount
  * into it — a sheet that dismisses by dragging has nothing to drag against otherwise. Beyond that
- * there is nothing here but the gate: no store and no query client. {@link MeshGate} is the
- * one place that knows the database opens slowly — it asks once, above the navigator, and every
- * screen below it is handed a replica rather than a verdict about one.
+ * there is nothing here but the gate: no store and no query client. `mesh.Provider` is the one
+ * place that knows the database opens slowly — it asks once, above the navigator, and every
+ * screen below it reads `mesh.api` as a property rather than a verdict about one.
  *
  * It used to be the other way round: eight screens each subscribed to the open state and each
  * re-answered "is it ready" before it could draw, in four spellings of the same card. That is one
- * question, with one answer, that changes once per launch. It belongs here.
+ * question, with one answer, that changes once per launch. It belongs here. The toasts sit beside
+ * the navigator for the mirror reason: a write overruled on one screen is news on every screen.
  */
 installNativeCrypto();
 
@@ -50,8 +51,8 @@ export default function RootLayout() {
          * one because that is where it is actually read as a title; nothing you navigate *to*
          * pays for it, because a pushed screen already has its name in the bar you came from.
          */}
-        <MeshGate
-          whenUnavailable={(reason: MeshUnavailable) => <Blocked>{reason.message}</Blocked>}
+        <mesh.Provider
+          whenUnavailable={(reason) => <Blocked>{reason.message}</Blocked>}
           whileOpening={<Blocked spinner>Opening the local database…</Blocked>}
         >
           <Stack screenOptions={{ headerLargeTitle: false }}>
@@ -69,6 +70,7 @@ export default function RootLayout() {
                  */
                 headerRight: () => (
                   <View className="flex-row items-center gap-4">
+                    <HealthPill />
                     <HeaderLink href="/people">People</HeaderLink>
                     <HeaderLink href="/settings">Settings</HeaderLink>
                   </View>
@@ -92,7 +94,8 @@ export default function RootLayout() {
               options={{ headerLargeTitle: false, presentation: "modal", title: "Go in as" }}
             />
           </Stack>
-        </MeshGate>
+          <Toasts />
+        </mesh.Provider>
       </HeroUINativeProvider>
     </GestureHandlerRootView>
   );
