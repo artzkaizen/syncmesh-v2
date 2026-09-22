@@ -73,30 +73,44 @@ const keepers = new Map<string, Database>();
  */
 const durably = (db: Database, storage: WasmStorage): Database => {
   if (storage === "memory") return db;
-  db.exec("PRAGMA locking_mode = exclusive");
-  db.exec("PRAGMA journal_mode = WAL");
-  /**
-   * **`PRAGMA journal_mode` answers with the mode in effect, and does not fail.** A build or a VFS
-   * that will not take WAL leaves the database in `delete` and says so in a row nobody reads —
-   * which would make "WAL everywhere" a belief rather than a fact, on the one runtime where it is
-   * hardest to check.
-   *
-   * So it is read back, and a refusal undoes the exclusive locking that was only ever asked for
-   * to make WAL possible. Paying for a lock and not getting the journal is the one outcome with
-   * no argument for it.
-   */
-  const answered = db.exec({
-    sql: "PRAGMA journal_mode",
-    rowMode: "array",
-    returnValue: "resultRows",
-  });
-  // one row, one cell, and SQLite writes the mode in lower case — so anything that is not the
-  // string `wal` is this build declining, whatever else it turns out to be
-  const [mode] = answered[0] ?? [];
-  if (mode !== "wal") db.exec("PRAGMA locking_mode = normal");
+  // a refusal undoes the exclusive locking that was only ever asked for to make WAL possible:
+  // paying for a lock and not getting the journal is the one outcome with no argument for it
+  if (!walTaken(db)) db.exec("PRAGMA locking_mode = normal");
   db.exec("PRAGMA synchronous = NORMAL");
   return db;
 };
+
+/**
+ * Asks for WAL, and answers whether it was given.
+ *
+ * **A VFS can decline in two ways and only one of them is quiet.** `PRAGMA journal_mode` normally
+ * answers with the mode in effect rather than failing, so a build that will not take WAL leaves
+ * the database in `delete` and says so in a row nobody reads — which is why the mode is read back
+ * rather than assumed. But the switch also *writes*: WAL needs a `-wal` file, and on the
+ * access-handle pool a file is a slot. A pool with no slot free, or any I/O error underneath,
+ * raises rather than answers.
+ *
+ * Unhandled, that throw killed the open — and with it the app, over a journal. **A database
+ * without WAL is a working database; a database that will not open is not.** So both refusals
+ * land in the same place, and the caller learns the same thing from each: no.
+ */
+const walTaken = (db: Database): boolean =>
+  Result.try({
+    try: () => {
+      db.exec("PRAGMA locking_mode = exclusive");
+      db.exec("PRAGMA journal_mode = WAL");
+      const answered = db.exec({
+        sql: "PRAGMA journal_mode",
+        rowMode: "array",
+        returnValue: "resultRows",
+      });
+      // one row, one cell, and SQLite writes the mode in lower case — so anything that is not the
+      // string `wal` is this build declining, whatever else it turns out to be
+      const [mode] = answered[0] ?? [];
+      return mode === "wal";
+    },
+    catch: (cause) => cause,
+  }).unwrapOr(false);
 
 export const memoryDatabase = (sqlite3: Sqlite3Static, options: VfsOptions): OpenedDatabase => {
   const log = `/${fileOf(options.name)}`;
@@ -129,22 +143,47 @@ function releaseOnce(pool: HeldPool, directory: string): () => void {
   };
 }
 
+/**
+ * What the pool cannot promise past the point it hands the slots over: that SQLite will take them.
+ *
+ * Opening the pair is four calls that can each throw — the database, `locking_mode`,
+ * `journal_mode`, the `ATTACH` — and `Result.map` turns a throw into a `Panic`, which is neither
+ * catchable by the caller nor legible when it arrives across a port. So the work happens under
+ * `Result.try`, the same way {@link opfsDatabaseIn} below has always done it.
+ *
+ * **And the pool goes back.** A throw here used to leave the slots taken and the lease held for
+ * the life of the worker, so the second attempt met `OpfsPoolHeld` from the first one's corpse and
+ * the origin reported another tab that did not exist.
+ */
 export const sahPoolDatabase = async (
   install: NonNullable<OptionalVfs["installOpfsSAHPoolVfs"]>,
   options: VfsOptions,
 ): Promise<Result<OpenedDatabase, PoolFailure>> => {
   const directory = `${options.directory}/pool`;
   const held = await holdPool(install, directory, options);
+  if (held.isErr()) return held;
+  const pool = held.value;
   const log = `/${fileOf(options.name)}`;
-  return held.map((pool) => ({
-    db: attached(
-      durably(new pool.util.OpfsSAHPoolDb(statePathFor(log, options.schema)), "opfs-sahpool"),
-      log,
-      "opfs-sahpool",
-    ),
-    storage: "opfs-sahpool" as const,
-    release: releaseOnce(pool, directory),
-  }));
+  const release = releaseOnce(pool, directory);
+  const opened = Result.try({
+    try: () => ({
+      db: attached(
+        durably(new pool.util.OpfsSAHPoolDb(statePathFor(log, options.schema)), "opfs-sahpool"),
+        log,
+        "opfs-sahpool",
+      ),
+      storage: "opfs-sahpool" as const,
+      release,
+    }),
+    catch: (cause) =>
+      new OpfsUnavailable({
+        requested: "opfs-sahpool",
+        message: "the access-handle pool installed, and SQLite would not open a database on it",
+        cause,
+      }),
+  });
+  if (opened.isErr()) release();
+  return opened;
 };
 
 export const opfsDatabaseIn = (
@@ -162,6 +201,11 @@ export const opfsDatabaseIn = (
       storage: "opfs" as const,
       release: () => {},
     }),
-    catch: (cause) => new OpfsUnavailable({ requested: "opfs", cause }),
+    catch: (cause) =>
+      new OpfsUnavailable({
+        requested: "opfs",
+        message: "the OPFS VFS is installed, and SQLite would not open a database on it",
+        cause,
+      }),
   });
 };

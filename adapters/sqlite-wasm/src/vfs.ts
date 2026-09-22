@@ -85,19 +85,25 @@ export const originHasOpfs = (): boolean => host.navigator?.storage?.getDirector
  * but it *is* returned when a thread that could have had one is refused, because a device with
  * storage that will not open is a fact the app has to see rather than quietly lose writes over.
  *
- * Two causes, and neither of them clears on its own — which is exactly what separates this tag
- * from {@link OpfsPoolHeld}, where waiting is the remedy. `message` states the first, because it
- * is not a browser fault and no amount of retrying fixes it; `cause` carries SQLite's own words
- * for the second.
+ * Several causes, none of which clears on its own — which is exactly what separates this tag from
+ * {@link OpfsPoolHeld}, where waiting is the remedy.
  *
  * 1. **This thread is not a dedicated worker.** `createSyncAccessHandle` is
  *    `[Exposed=DedicatedWorker]`, so no window has it and no window ever will. Opening the
  *    database in a worker is the entire remedy, and {@link wasmSqliteDriver} does that by default.
  * 2. The browser is too old for synchronous access handles (Safari before 17, Chrome before 108).
+ * 3. The browser has them and is refusing this origin an OPFS anyway — a private window, or a
+ *    cookie policy strict enough to deny site storage. `cause` is the only account of that one.
+ *
+ * **`message` is required, and that is the point.** It used to be optional, and the two sites that
+ * had a `cause` to hand left it unset — so an origin refused by its browser reported itself to the
+ * app as an error with an empty sentence, and the tab drew `this origin's database would not
+ * open:` with nothing after the colon. The reason was in `cause` the whole time. A tagged error
+ * with no message is one that every screen printing `.message` renders as silence.
  */
 export class OpfsUnavailable extends TaggedError("OpfsUnavailable")<{
   readonly requested: Exclude<WasmStorage, "memory">;
-  message?: string;
+  message: string;
   cause?: unknown;
 }> {}
 
@@ -124,11 +130,43 @@ export class OpfsPoolHeld extends TaggedError("OpfsPoolHeld")<{
 }> {}
 
 /**
+ * The browser will not give this origin an origin private file system at all.
+ *
+ * A third fact and a third remedy, which is why it is a third tag. Nothing is wrong with the
+ * build, the thread or another tab: the storage is there and this browsing context is not allowed
+ * it. **A private window is the one every developer meets** — Firefox provides no OPFS in one and
+ * refuses `navigator.storage.getDirectory()` with a `SecurityError`, where Chrome's incognito
+ * hands over an ephemeral one. The same refusal comes from a cookie policy that denies site
+ * storage, and from a build with the File System API switched off.
+ *
+ * It does not clear by waiting and there is nothing the app can do about it, which is what makes
+ * it different from {@link OpfsPoolHeld} — and why `"auto"` treats it as an answer rather than a
+ * failure: see {@link openDatabase}.
+ */
+export class OpfsDenied extends TaggedError("OpfsDenied")<{
+  message: string;
+  cause?: unknown;
+}> {}
+
+/**
  * The `DOMException` names the File System API uses for a file whose access handle is already
  * out. `NoModificationAllowedError` is what the specification says; `InvalidStateError` is what
  * some builds have shipped. Anything else is a pool that failed for a reason of its own.
  */
 const CONTENDED = new Set(["NoModificationAllowedError", "InvalidStateError"]);
+
+/**
+ * The names a browser refuses an origin its file system under. `sqlite-wasm` calls
+ * `navigator.storage.getDirectory()` without wrapping what it throws, so the `DOMException`
+ * arrives here as the browser raised it and its name is the whole classification.
+ */
+const DENIED = new Set(["SecurityError", "NotAllowedError"]);
+
+const NO_FILE_SYSTEM =
+  "this browser will not give the origin private file system to this origin. A private window is " +
+  "the usual cause — Firefox provides no OPFS in one, where Chrome's incognito provides an " +
+  "ephemeral one — and so is a cookie policy that denies site storage, or a build with the File " +
+  "System API switched off";
 
 /** What a window is told, spelled out, because the rule is not guessable from the symptom. */
 const NOT_A_WORKER =
@@ -244,8 +282,12 @@ export const dropLease = (directory: string) => {
 /** One pool per OPFS directory, because the VFS itself allows exactly one and rejects the second. */
 const pools = new Map<string, Promise<Result<HeldPool, PoolFailure>>>();
 
-/** Either reason a pool will not install, kept apart because only one of them is another tab. */
-export type PoolFailure = OpfsUnavailable | OpfsPoolHeld;
+/**
+ * Every reason a pool will not install, kept apart because the remedies have nothing in common:
+ * another tab is holding it and will let go, this browser is refusing the origin outright, or the
+ * thread and build simply cannot.
+ */
+export type PoolFailure = OpfsUnavailable | OpfsPoolHeld | OpfsDenied;
 
 /**
  * Which of the two a refused install was. The classification happens here, where the original
@@ -254,16 +296,23 @@ export type PoolFailure = OpfsUnavailable | OpfsPoolHeld;
  */
 const poolFailure =
   (directory: string) =>
-  (cause: unknown): PoolFailure =>
-    cause instanceof Error && CONTENDED.has(cause.name)
-      ? new OpfsPoolHeld({
-          directory,
-          message:
-            "another browsing context of this origin holds the OPFS access-handle pool; " +
-            "one context at a time may have it, and it is released when that one closes its stores",
-          cause,
-        })
-      : new OpfsUnavailable({ requested: "opfs-sahpool", cause });
+  (cause: unknown): PoolFailure => {
+    const name = cause instanceof Error ? cause.name : "";
+    if (CONTENDED.has(name))
+      return new OpfsPoolHeld({
+        directory,
+        message:
+          "another browsing context of this origin holds the OPFS access-handle pool; " +
+          "one context at a time may have it, and it is released when that one closes its stores",
+        cause,
+      });
+    if (DENIED.has(name)) return new OpfsDenied({ message: NO_FILE_SYSTEM, cause });
+    return new OpfsUnavailable({
+      requested: "opfs-sahpool",
+      message: "the access-handle pool would not install on this thread",
+      cause,
+    });
+  };
 
 function poolIn(
   install: NonNullable<OptionalVfs["installOpfsSAHPoolVfs"]>,
@@ -402,10 +451,22 @@ const refuse = (requested: Exclude<WasmStorage, "memory">) =>
  * prefers the access-handle pool over the older OPFS VFS because the pool needs only the worker
  * while the older VFS also needs COOP/COEP — and a thread that has both and still cannot open the
  * pool gets an error, not a silent memory database.
+ *
+ * **{@link OpfsDenied} is the one exception, and it is the same rule rather than a hole in it.**
+ * `"auto"` means "the best this context can have", and a browser refusing the origin a file system
+ * has answered that question as completely as a window lacking sync handles does: there is nothing
+ * to wait for and nothing the app can do. So it resolves to memory — and the driver reports
+ * `storage: "memory"`, which is what stops this from being a silent downgrade. An app that draws
+ * that tier tells the truth without having to know why. **Asking for a durable VFS by name still
+ * errors**, because a caller who named one was not asking what was available.
+ *
+ * A private window is the case every developer meets: Firefox provides no OPFS in one at all,
+ * where Chrome's incognito provides an ephemeral one. Before this, the app simply would not start
+ * in Firefox private browsing, and the reason it gave was empty.
  */
 import { memoryDatabase, opfsDatabaseIn, sahPoolDatabase } from "./databases.js";
 
-export function openDatabase(
+export async function openDatabase(
   sqlite3: Sqlite3Static,
   storage: WasmStorage | "auto",
   options: VfsOptions,
@@ -421,15 +482,26 @@ export function openDatabase(
         ? "opfs"
         : "memory";
   const chosen = storage === "auto" ? best : storage;
-  if (chosen === "memory") return Promise.resolve(Result.ok(memoryDatabase(sqlite3, options)));
+  if (chosen === "memory") return Result.ok(memoryDatabase(sqlite3, options));
   if (!durable) return refuse(chosen);
-  if (chosen === "opfs-sahpool")
-    return install === undefined
-      ? Promise.resolve(Result.err(new OpfsUnavailable({ requested: "opfs-sahpool" })))
-      : sahPoolDatabase(install, options);
-  return Promise.resolve(
-    OpfsDb === undefined
-      ? Result.err(new OpfsUnavailable({ requested: "opfs" }))
-      : opfsDatabaseIn(OpfsDb, options),
-  );
+  if (chosen === "opfs")
+    return OpfsDb === undefined
+      ? Result.err(
+          new OpfsUnavailable({
+            requested: "opfs",
+            message: "this build of sqlite-wasm has no OPFS VFS",
+          }),
+        )
+      : opfsDatabaseIn(OpfsDb, options);
+  if (install === undefined)
+    return Result.err(
+      new OpfsUnavailable({
+        requested: "opfs-sahpool",
+        message: "this build of sqlite-wasm has no access-handle pool VFS to install",
+      }),
+    );
+  const opened = await sahPoolDatabase(install, options);
+  return opened.isErr() && storage === "auto" && opened.error._tag === "OpfsDenied"
+    ? Result.ok(memoryDatabase(sqlite3, options))
+    : opened;
 }

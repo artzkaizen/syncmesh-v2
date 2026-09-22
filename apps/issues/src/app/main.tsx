@@ -1,6 +1,6 @@
 import type { Result } from "@syncmesh/result";
 
-import { panic } from "@syncmesh/result";
+import { isTaggedError, panic } from "@syncmesh/result";
 import { RouterProvider } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -33,6 +33,38 @@ import { Workspace } from "./workspace.js";
  * a second contender wearing the same face. `openReplica` is memoised for that reason, and strict
  * mode is left off so the counter that `Detail` bumps on open counts views rather than renders.
  */
+
+/**
+ * One cause as a line.
+ *
+ * JSON rather than `String` for what is not an error, so a value reads as itself instead of
+ * `[object Object]` — the one thing a diagnostic must never say. A cause that crossed the port is
+ * prose by then (`serializeTagged` flattens it) and comes back quoted, which is the honest shape:
+ * those are somebody else's words.
+ */
+const said = (cause: unknown): string =>
+  cause instanceof Error ? cause.message : JSON.stringify(cause);
+
+/**
+ * The worker's own words for a failure, which is what the sentence above it cannot be.
+ *
+ * `openMeshLink` and the boot round trip each wrap what they caught in a sentence about the mesh,
+ * so the part a person can act on — `OpfsUnavailable`, a `DOMException` name, SQLite's own
+ * refusal — sits one or two `cause` hops under it and was reaching the screen nowhere. The tag
+ * leads because it is the part that says *which* failure this is, and a bug report that has it
+ * starts in the right file.
+ *
+ * At most two deep, and that is a property of the boundary rather than a limit chosen here:
+ * `serializeTagged` flattens a cause to its message on the way across the port, so whatever the
+ * worker was holding arrives as prose one level down.
+ */
+const because = (failure: ReplicaUnavailable): string | undefined => {
+  const { cause } = failure;
+  if (cause === undefined) return undefined;
+  if (!isTaggedError(cause)) return said(cause);
+  const tagged = `${cause._tag}: ${cause.message}`;
+  return cause.cause === undefined ? tagged : `${tagged} — ${said(cause.cause)}`;
+};
 
 const Centered = ({ children }: { readonly children: React.ReactNode }) => (
   <div
@@ -103,6 +135,10 @@ function Boot() {
     let live = true;
     const settle = (opened: Result<Replica, ReplicaUnavailable>): void => {
       if (!live) return;
+      // the screen renders the reason as prose; this is the live error, whose fields — which VFS
+      // was refused, which directory is held — are the ones a bug report is actually written from
+      // eslint-disable-next-line no-console -- the app has not started; there is no screen yet
+      if (opened.isErr()) console.error("[syncmesh] the replica would not open", opened.error);
       setFailure(opened.isOk() ? undefined : opened.error);
       if (opened.isOk())
         setHeld((current) => ({ replica: opened.value, epoch: (current?.epoch ?? 0) + 1 }));
@@ -115,11 +151,25 @@ function Boot() {
     };
   }, []);
 
+  const reason = failure === undefined ? undefined : because(failure);
   if (failure !== undefined)
     return (
       <Centered>
         <strong style={{ color: SEVERITY_COLOR.critical }}>The replica would not open</strong>
         <span>{failure.message}</span>
+        {reason !== undefined && (
+          <code
+            style={{
+              ...TEXT.xs,
+              color: COLOR.textDim,
+              fontFamily: FONT.mono,
+              maxWidth: "68ch",
+              textAlign: "center",
+            }}
+          >
+            {reason}
+          </code>
+        )}
         <span style={{ ...TEXT.xs, color: COLOR.textFaint }}>
           This tab holds no database of its own: one tab of this origin owns the engine and the rest
           read it over a port. Where a browser has no SharedWorker there is nothing to introduce

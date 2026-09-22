@@ -392,3 +392,88 @@ gone — a lost link closes its `MessagePort` as it dies, so a dead port cannot 
 Nothing polls and nothing expires. The fast notice is the leaving tab's `pagehide`, the slow one is
 the new leader announcing, and where the fast notice never comes — a crash, a kill — the slow one
 still does, so a lost message costs latency and never correctness.
+
+## 8. A private window has no OPFS, and Firefox and Chrome disagree about it
+
+Found by running `apps/issues` in a Zen (Firefox) private window, where it would not start at all.
+The reason it gave was the empty string.
+
+### The behaviour
+
+`navigator.storage.getDirectory()` **throws** in Firefox private browsing:
+
+```
+SecurityError: Security error when calling GetDirectory
+```
+
+That is by design and not a bug in Firefox. Private browsing has no profile directory to put an
+origin private file system in, so the API is refused rather than emptied. Chrome disagrees:
+incognito **does** get an OPFS, a real one, discarded when the last incognito window closes. So the
+same code, the same origin and the same API give opposite answers in the two browsers, and only one
+of them is the one a developer tests in first.
+
+| | Chrome incognito | Firefox / Zen private |
+|---|---|---|
+| `navigator.storage.getDirectory` | present | present |
+| `FileSystemFileHandle.prototype.createSyncAccessHandle` | present in a worker | present in a worker |
+| calling `getDirectory()` | resolves; ephemeral OPFS | **throws `SecurityError`** |
+| what the app could do before | ran durably | would not start |
+
+Note the first two rows: **every capability probe says yes.** `threadHasSyncAccessHandles()` and
+`originHasOpfs()` both pass in a Firefox private window, because both ask whether a method exists
+and the method does exist. The refusal is a *permission*, and the only way to discover it is to
+call and be told no. That is why this could not have been decided before attempting the open, and
+why the classification has to happen where the `DOMException` still is.
+
+The same `SecurityError` comes from two settings a person may not know are on:
+
+- **Never Remember History** (Firefox Settings → Privacy) makes every window private, permanently.
+  A developer with this set has no durable browser storage anywhere and no window that behaves
+  differently to compare against.
+- **Cookies and site data blocked** — the Custom cookie setting at *All cookies*, or a per-site
+  block. Denying site storage denies OPFS with it.
+
+### Why it presented as a syncmesh bug
+
+Three layers each dropped the browser's sentence, and the screen ended in a bare colon:
+
+1. `OpfsUnavailable` declared `message?: string`. The construction sites that had a `cause` in hand
+   left the message unset, on the reasoning that the cause carried the words — so the error's own
+   sentence was empty.
+2. `apps/issues`'s `reasonOf` read `.message` and nothing else, so a wrapped error reported the
+   wrapper's sentence and discarded the chain under it.
+3. `sahPoolDatabase` built its result with `Result.map`, which turns a throwing callback into a
+   `Panic` — untyped, and illegible by the time it crosses a port. It also left the pool's access
+   handles and the Web Lock held, so the *next* attempt was told another tab owned the database,
+   by the corpse of the first.
+
+All three are fixed. `message` is required on `OpfsUnavailable`, `reasonOf` walks the cause chain
+and falls back to the tag where a message is empty, and the pool's open runs under `Result.try`
+with the lease released on failure. The lesson generalises past this incident: **a tagged error
+with an optional message is an error that some screen will render as silence**, and the place that
+knows the cause is never the place that prints it.
+
+### The happy path
+
+`OpfsDenied` is now its own tag, classified from the `DOMException` name where it is raised, beside
+`OpfsPoolHeld` and for the same reason: a different remedy deserves a different tag. Contention
+clears by waiting. Denial never clears, and there is nothing the app can do about it.
+
+So **`"auto"` resolves a denial to `"memory"`**, and this is the existing rule rather than an
+exception to it. `"auto"` has always meant "the best this context can have", and has always
+answered `"memory"` where no thread could be durable. A browser refusing the origin a file system
+answers the same question just as completely. Asking for `"opfs-sahpool"` *by name* still errors —
+a caller who named a VFS was not asking what was available.
+
+What keeps this from being the silent downgrade the rest of this document argues against is that
+the driver reports `storage: "memory"`, and `apps/issues` already draws that tier in the header as
+`Memory — not saved`, at critical severity. The app degrades, says so in the one place a person is
+looking, and never claims a write survived. That badge's sentence was corrected here too: it named
+a single cause — a browser with no synchronous file handles anywhere — which is a confident
+diagnosis of the wrong thing in a private window, where the handles are present and the origin is
+refused.
+
+**For testing a second device, a private window was the wrong tool regardless.** Its log dies with
+the window, so convergence cannot be observed across a restart and a second device that forgets
+everything is not a second device. A separate browser profile (`about:profiles`) is the one that
+works: isolated storage, its own device key, durable across restarts, and it dials the same relay.

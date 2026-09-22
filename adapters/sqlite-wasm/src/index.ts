@@ -1,6 +1,12 @@
 export { SqliteWasmUnavailable } from "./module.js";
 export type { PoolFailure, WasmStorage, WhenPoolHeld } from "./vfs.js";
-export { OpfsPoolHeld, OpfsUnavailable, originHasOpfs, threadHasSyncAccessHandles } from "./vfs.js";
+export {
+  OpfsDenied,
+  OpfsPoolHeld,
+  OpfsUnavailable,
+  originHasOpfs,
+  threadHasSyncAccessHandles,
+} from "./vfs.js";
 export type { RemoteSqlite } from "./remote.js";
 export { connectSqlite } from "./remote.js";
 export type { WirePort } from "./protocol.js";
