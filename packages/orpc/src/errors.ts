@@ -77,3 +77,7 @@ export class NoBodyBound extends TaggedError("NoBodyBound")<{
   readonly path: string;
   message: string;
 }> {}
+
+/** A thrower's failure as the `Error` a `Result` carries; a bare value is wrapped, never lost. */
+export const asError = (cause: unknown): Error =>
+  cause instanceof Error ? cause : new Error(String(cause));

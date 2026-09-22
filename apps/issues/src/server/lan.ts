@@ -200,7 +200,7 @@ const picture = (): void => {
 const ticking = setInterval(picture, 2000);
 
 /** Every issue in the workspace, maintained — what a screen would subscribe to, printed instead. */
-const live = client.issues.list({ limit: 200, workspaceId: WORKSPACE_ID }).live();
+const live = client.issues.list({ limit: 200, workspaceId: WORKSPACE_ID })["~mesh"].live();
 const known = new Set<string>();
 let first = true;
 live.subscribe((rows) => {
@@ -216,7 +216,7 @@ live.subscribe((rows) => {
 await live.ready;
 
 const teamOf = async (): Promise<string | undefined> =>
-  (await client.teams.list({ workspaceId: WORKSPACE_ID }).run())[0]?.id;
+  (await client.teams.list({ workspaceId: WORKSPACE_ID })).unwrap().data[0]?.id;
 
 if (present("seed") && (await teamOf()) === undefined) {
   const made = await seedWorkspace(client.$mesh.on(WORKSPACE).unwrap().db, {

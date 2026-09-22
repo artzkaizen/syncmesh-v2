@@ -60,7 +60,7 @@ describe("createClient, before the mesh exists", () => {
       storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     });
     // no await: the api is fully built, because a descriptor needs no mesh to be built from
-    expect(client.books.list().path).toBe("books.list");
+    expect(client.books.list()["~mesh"].path).toBe("books.list");
     expect(client.$status.get().health).toBe("opening");
     expect(client.$status.get().sources.size).toBe(0);
 
@@ -78,7 +78,7 @@ describe("createClient, before the mesh exists", () => {
       storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     });
     // the descriptor is built and subscribed in the first frame, before anything has opened
-    const live = client.books.list().live();
+    const live = client.books.list()["~mesh"].live();
     expect(live.snapshot().status).toBe("pending");
     expect(live.snapshot().answered).toBe(false);
     expect(live.snapshot().data).toEqual([]);
@@ -106,7 +106,7 @@ describe("createClient, before the mesh exists", () => {
     const write = client.books.add({ id: "b2", title: "Ubik" });
     expect(write.id).toMatch(/^[0-9a-f-]{36}$/);
     (await write.committed).unwrap();
-    expect(await client.books.list().run()).toEqual([{ id: "b2", title: "Ubik" }]);
+    expect(await client.books.list()["~mesh"].run()).toEqual([{ id: "b2", title: "Ubik" }]);
     await client.$close();
   });
 

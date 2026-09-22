@@ -79,16 +79,18 @@ describe("useLiveQuery", () => {
       const [floor, setFloor] = useState(0);
       raise = () => setFloor(2);
       const { data, isPending } = useLiveQuery({
-        key: `jobs>${floor}`,
-        live: () =>
-          handle.live(
-            handle.db
-              .select({ id: jobs.id })
-              .from(jobs)
-              .where(gt(jobs.rank, floor))
-              .orderBy(jobs.id),
-          ),
-        settled: () => Promise.resolve(),
+        "~mesh": {
+          key: `jobs>${floor}`,
+          live: () =>
+            handle.live(
+              handle.db
+                .select({ id: jobs.id })
+                .from(jobs)
+                .where(gt(jobs.rank, floor))
+                .orderBy(jobs.id),
+            ),
+          settled: () => Promise.resolve(),
+        },
       });
       renders.push(`${isPending ? "…" : data.map((r) => r.id).join(",")}@${floor}`);
       return null;
@@ -130,9 +132,11 @@ describe("useLiveQuery", () => {
       const [, bump] = useState(0);
       rerender = () => bump((n) => n + 1);
       last = useLiveQuery({
-        key: "jobs-keyed",
-        live: () => handle.live(handle.db.select({ id: jobs.id }).from(jobs).orderBy(jobs.id)),
-        settled: () => Promise.resolve(),
+        "~mesh": {
+          key: "jobs-keyed",
+          live: () => handle.live(handle.db.select({ id: jobs.id }).from(jobs).orderBy(jobs.id)),
+          settled: () => Promise.resolve(),
+        },
       });
       return null;
     };
@@ -292,16 +296,18 @@ describe("the done-when", () => {
     const Item = ({ index }: { readonly index: number }) => {
       counts[index] = (counts[index] ?? 0) + 1;
       useLiveQuery({
-        key: `jobs>${index}`,
-        live: () =>
-          handle.live(
-            handle.db
-              .select({ id: jobs.id })
-              .from(jobs)
-              .where(gt(jobs.rank, index))
-              .orderBy(jobs.id),
-          ),
-        settled: () => Promise.resolve(),
+        "~mesh": {
+          key: `jobs>${index}`,
+          live: () =>
+            handle.live(
+              handle.db
+                .select({ id: jobs.id })
+                .from(jobs)
+                .where(gt(jobs.rank, index))
+                .orderBy(jobs.id),
+            ),
+          settled: () => Promise.resolve(),
+        },
       });
       return null;
     };
@@ -418,13 +424,15 @@ describe("useLiveQuery — coverage names a source (ch. 9)", () => {
     const seen: string[] = [];
     const Screen = () => {
       const { answered, coverage } = useLiveQuery({
-        key: "jobs-all",
-        live: () => handle.live(handle.db.select({ id: jobs.id }).from(jobs).orderBy(jobs.id)),
-        settled: () => Promise.resolve(),
-        coverage: () => reading,
-        onCoverage: (listener) => {
-          listeners.add(listener);
-          return () => void listeners.delete(listener);
+        "~mesh": {
+          key: "jobs-all",
+          live: () => handle.live(handle.db.select({ id: jobs.id }).from(jobs).orderBy(jobs.id)),
+          settled: () => Promise.resolve(),
+          coverage: () => reading,
+          onCoverage: (listener) => {
+            listeners.add(listener);
+            return () => void listeners.delete(listener);
+          },
         },
       });
       seen.push(
@@ -458,9 +466,11 @@ describe("useLiveQuery — coverage names a source (ch. 9)", () => {
     let kind = "";
     const Screen = () => {
       const { coverage } = useLiveQuery({
-        key: "jobs-bare",
-        live: () => handle.live(handle.db.select({ id: jobs.id }).from(jobs)),
-        settled: () => Promise.resolve(),
+        "~mesh": {
+          key: "jobs-bare",
+          live: () => handle.live(handle.db.select({ id: jobs.id }).from(jobs)),
+          settled: () => Promise.resolve(),
+        },
       });
       kind = coverage.kind;
       return null;
@@ -487,9 +497,12 @@ describe("useQuery — the book's dialect (ch. 9)", () => {
       pick = setOn;
       const call = on
         ? {
-            key: "jobs-all",
-            live: () => handle.live(handle.db.select({ id: jobs.id }).from(jobs).orderBy(jobs.id)),
-            settled: () => settledGate,
+            "~mesh": {
+              key: "jobs-all",
+              live: () =>
+                handle.live(handle.db.select({ id: jobs.id }).from(jobs).orderBy(jobs.id)),
+              settled: () => settledGate,
+            },
           }
         : undefined;
       const { data, status, answered, coverage, isEnabled } = useQuery(call);
@@ -529,9 +542,11 @@ describe("useQuery — the book's dialect (ch. 9)", () => {
     const seen: string[] = [];
     const Screen = () => {
       const { data, status, answered, error } = useQuery({
-        key: "ghost",
-        live: () => handle.live(handle.db.select({ id: ghost.id }).from(ghost)),
-        settled: () => Promise.resolve(),
+        "~mesh": {
+          key: "ghost",
+          live: () => handle.live(handle.db.select({ id: ghost.id }).from(ghost)),
+          settled: () => Promise.resolve(),
+        },
       });
       seen.push(
         `${status}/${answered}/${data === undefined ? "∅" : String(data.length)}/${
@@ -564,23 +579,25 @@ describe("useQuery — the book's dialect (ch. 9)", () => {
     let opens = 0;
     let subscribers = 0;
     const call = {
-      key: "jobs-all",
-      live: () => {
-        opens += 1;
-        const inner = handle.live(handle.db.select({ id: jobs.id }).from(jobs).orderBy(jobs.id));
-        return {
-          ...inner,
-          subscribe: (listener: (rows: readonly { readonly id: string }[]) => void) => {
-            subscribers += 1;
-            const off = inner.subscribe(listener);
-            return () => {
-              subscribers -= 1;
-              off();
-            };
-          },
-        };
+      "~mesh": {
+        key: "jobs-all",
+        live: () => {
+          opens += 1;
+          const inner = handle.live(handle.db.select({ id: jobs.id }).from(jobs).orderBy(jobs.id));
+          return {
+            ...inner,
+            subscribe: (listener: (rows: readonly { readonly id: string }[]) => void) => {
+              subscribers += 1;
+              const off = inner.subscribe(listener);
+              return () => {
+                subscribers -= 1;
+                off();
+              };
+            },
+          };
+        },
+        settled: () => Promise.resolve(),
       },
-      settled: () => Promise.resolve(),
     };
 
     let mounts = 0;
@@ -629,9 +646,11 @@ describe("useQuery — the book's dialect (ch. 9)", () => {
   test("no call and `enabled: false` produce the same disabled result", async () => {
     const { handle } = await open();
     const call = {
-      key: "jobs-all",
-      live: () => handle.live(handle.db.select({ id: jobs.id }).from(jobs).orderBy(jobs.id)),
-      settled: () => Promise.resolve(),
+      "~mesh": {
+        key: "jobs-all",
+        live: () => handle.live(handle.db.select({ id: jobs.id }).from(jobs).orderBy(jobs.id)),
+        settled: () => Promise.resolve(),
+      },
     };
     const reportOf = (result: QueryResult<{ readonly id: string }>) =>
       [

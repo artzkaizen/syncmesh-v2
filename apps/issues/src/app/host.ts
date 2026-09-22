@@ -103,13 +103,18 @@ const refused = (what: string) => (cause: unknown) =>
  * relay is running — which is what `replica.ts` promises when it says pulling the cable changes
  * nothing on screen.
  */
-const seedOnce = (app: Client<Procedures, IssuesPresence>) =>
-  Result.gen(async function* () {
-    const [before] = await app.issues.summary({ workspaceId: WORKSPACE_ID }).run();
+const seedOnce = (app: Client<Procedures, IssuesPresence>) => {
+  /** The one read the boot makes: awaited as a `Result`, so a refused count is this gen's `Err`. */
+  const counted = async () =>
+    (await app.issues.summary({ workspaceId: WORKSPACE_ID })).mapError(
+      refused("the workspace could not be counted"),
+    );
+  return Result.gen(async function* () {
+    const [before] = (yield* await counted()).data;
     if (before !== undefined && before.total > 0) return Result.ok(undefined);
     await app.$mesh.settled();
     // asked again, because that is what the wait was for: a relay that had the room has filled it
-    const [after] = await app.issues.summary({ workspaceId: WORKSPACE_ID }).run();
+    const [after] = (yield* await counted()).data;
     if (after !== undefined && after.total > 0) return Result.ok(undefined);
     const handle = yield* app.$mesh
       .on(WORKSPACE)
@@ -122,6 +127,7 @@ const seedOnce = (app: Client<Procedures, IssuesPresence>) =>
     });
     return Result.ok(undefined);
   });
+};
 
 /**
  * The pool the tab that just closed was holding is not always back yet, so this waits to be handed it.

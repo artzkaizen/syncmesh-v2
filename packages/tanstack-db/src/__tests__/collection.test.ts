@@ -17,7 +17,14 @@ const liveOf = (initial: readonly Product[]) => {
   let released = 0;
   const live: Live<Product> = {
     data: () => rows,
-    snapshot: () => ({ answered: true, data: rows, status: "success", error: undefined }),
+    snapshot: () => ({
+      answered: true,
+      data: rows,
+      state: new Map(rows.map((row) => [row.id, row])),
+      diff: { added: new Map(), removed: new Map(), changed: new Map() },
+      status: "success",
+      error: undefined,
+    }),
     ready: Promise.resolve(initial),
     subscribe: (listener) => {
       listeners.add(listener);
@@ -36,9 +43,11 @@ const liveOf = (initial: readonly Product[]) => {
 };
 
 const query = (source: ReturnType<typeof liveOf>, settled = Promise.resolve()) => ({
-  key: JSON.stringify(["products.list", null]),
-  live: () => source.live,
-  settled: () => settled,
+  "~mesh": {
+    key: JSON.stringify(["products.list", null]),
+    live: () => source.live,
+    settled: () => settled,
+  },
 });
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 10));

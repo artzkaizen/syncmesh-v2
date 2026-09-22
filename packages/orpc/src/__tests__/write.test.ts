@@ -95,7 +95,7 @@ describe("a write is a statement (book ch. 10)", () => {
     expect("then" in write).toBe(false);
 
     (await write.committed).unwrap();
-    expect(await client.notes.list().run()).toEqual([{ id: "n1", body: "hello" }]);
+    expect(await client.notes.list()["~mesh"].run()).toEqual([{ id: "n1", body: "hello" }]);
     await client.$close();
   });
 

@@ -118,10 +118,11 @@ describe("api.books.* is the whole surface", () => {
     const b = api.books.list({ orgId: ORG, shelf: "sci-fi" });
     const other = api.books.list({ orgId: ORG });
 
-    expect(a.kind).toBe("query");
-    expect(a.path).toBe("books.list");
-    expect(a.key).toBe(b.key);
-    expect(a.key).not.toBe(other.key);
+    // the public surface is `then`, alone; the rest rides the adapter key (book ch. 9)
+    expect(Object.keys(a).sort()).toEqual(["then", "~mesh"]);
+    expect(a["~mesh"].path).toBe("books.list");
+    expect(a["~mesh"].key).toBe(b["~mesh"].key);
+    expect(a["~mesh"].key).not.toBe(other["~mesh"].key);
     // nothing ran: the row a later create writes is not in any of them yet
     expect(await mesh.engine.eventsSince(new Map()).then((r) => r.unwrap().length)).toBe(0);
     await mesh.stop();
@@ -136,8 +137,51 @@ describe("api.books.* is the whole surface", () => {
     expect(String(eventId)).toMatch(/^[0-9a-f]{64}-\d+$/);
     expect(data).toEqual({ id: "b1" });
 
-    const rows = await api.books.list({ orgId: ORG }).run();
+    const rows = await api.books.list({ orgId: ORG })["~mesh"].run();
     expect(rows).toEqual([{ id: "b1", title: "Dune", shelf: null }]);
+    await mesh.stop();
+  });
+
+  test("awaiting a read is a Result carrying the rows and their coverage", async () => {
+    const { mesh, api } = await open("member");
+    (await api.books.create({ orgId: ORG, id: "b1", title: "Dune" }).committed).unwrap();
+
+    const answer = (await api.books.list({ orgId: ORG })).unwrap();
+    expect(answer.data).toEqual([{ id: "b1", title: "Dune", shelf: null }]);
+    // no transport is configured, so nothing beyond this device has spoken
+    expect(answer.coverage.kind).toBe("local-only");
+    await mesh.stop();
+  });
+
+  test("a read runs when it is awaited, never when it is built", async () => {
+    const { mesh } = await open("member");
+    let runs = 0;
+    const counted = meshApi(
+      { ...mesh, self: device.peerId },
+      {
+        books: {
+          list: query.input(z.object({ orgId: z.string() })).handler(({ db }) => {
+            runs += 1;
+            return db.select().from(book);
+          }),
+        },
+      },
+    );
+    const call = counted.books.list({ orgId: ORG });
+    expect(runs).toBe(0);
+    await call;
+    expect(runs).toBe(1);
+    await call;
+    expect(runs).toBe(2); // a descriptor is a question, not a cache: each await asks again
+    await mesh.stop();
+  });
+
+  test("input the schema refuses is the awaited Err, not a throw", async () => {
+    const { mesh, api } = await open("member");
+    // SAFETY: the point of the test — an input `Api` would refuse at the type level, sent anyway
+    const refused = await api.books.list({ orgId: ORG, shelf: 7 as never });
+    expect(refused.isErr()).toBe(true);
+    expect(refused.isErr() && refused.error).toBeInstanceOf(InputInvalid);
     await mesh.stop();
   });
 
@@ -232,8 +276,8 @@ describe("coverage on a read is a stable snapshot", () => {
     const { coverage: _dropped, ...bare } = mesh;
     const api = meshApi({ ...bare, self: device.peerId }, { books });
     const call = api.books.list({ orgId: ORG });
-    expect(call.coverage()).toBe(call.coverage());
-    expect(call.coverage().kind).toBe("local-only");
+    expect(call["~mesh"].coverage()).toBe(call["~mesh"].coverage());
+    expect(call["~mesh"].coverage().kind).toBe("local-only");
     void _dropped;
   });
 });

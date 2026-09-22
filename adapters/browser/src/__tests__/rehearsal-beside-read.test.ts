@@ -104,7 +104,7 @@ describe("a statement is placed by the sink it came through", () => {
     const rehearsing = api.books.remove.can({ orgId: ORG, id: "b1" }).run();
     await staged.inside;
 
-    const reading = api.books.get({ orgId: ORG, id: "b1" }).run();
+    const reading = api.books.get({ orgId: ORG, id: "b1" })["~mesh"].run();
     // long enough for the read to reach the host and be placed, whichever way it is placed
     await new Promise((resolve) => setTimeout(resolve, 20));
     staged.release();
@@ -113,7 +113,7 @@ describe("a statement is placed by the sink it came through", () => {
     expect((await rehearsing).isOk()).toBe(true);
 
     // and the rehearsal rolled back: the row is still there for the next read
-    expect(await api.books.get({ orgId: ORG, id: "b1" }).run()).toEqual([
+    expect(await api.books.get({ orgId: ORG, id: "b1" })["~mesh"].run()).toEqual([
       { id: "b1", title: "Dune" },
     ]);
     await origin.stop();
@@ -142,7 +142,7 @@ describe("a statement is placed by the sink it came through", () => {
 
     const next = await apiTab(origin);
     const answered = await Promise.race([
-      next.books.get({ orgId: ORG, id: "b2" }).run(),
+      next.books.get({ orgId: ORG, id: "b2" })["~mesh"].run(),
       new Promise((resolve) => setTimeout(() => resolve("wedged"), 2000)),
     ]);
     expect(answered).toEqual([{ id: "b2", title: "Persuasion" }]);
@@ -170,7 +170,7 @@ describe("a statement is placed by the sink it came through", () => {
     await orphaned.inside;
 
     const answered = await Promise.race([
-      api.books.get({ orgId: ORG, id: "b3" }).run(),
+      api.books.get({ orgId: ORG, id: "b3" })["~mesh"].run(),
       new Promise((resolve) => setTimeout(() => resolve("wedged"), 3000)),
     ]);
     expect(answered).toEqual([{ id: "b3", title: "Villette" }]);
@@ -201,7 +201,7 @@ describe("a statement is placed by the sink it came through", () => {
 
     const next = await apiTab(origin);
     const answered = await Promise.race([
-      next.books.get({ orgId: ORG, id: "b4" }).run(),
+      next.books.get({ orgId: ORG, id: "b4" })["~mesh"].run(),
       new Promise((resolve) => setTimeout(() => resolve("wedged"), 3000)),
     ]);
     expect(answered).toEqual([{ id: "b4", title: "Emma" }]);

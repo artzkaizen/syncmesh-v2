@@ -45,8 +45,10 @@ const watching = <T>(live: {
 const tick = () => new Promise((done) => setTimeout(done, 5));
 
 /** The query, opened the way `meshApi` opens one when maintenance is on: by the way to build it. */
-const maintaining = <T>(device: Device, call: { readonly run: () => Runnable<T> }) =>
-  device.$mesh.on(WORKSPACE).unwrap().live(call.run);
+const maintaining = <T>(
+  device: Device,
+  call: { readonly "~mesh": { readonly run: () => Runnable<T> } },
+) => device.$mesh.on(WORKSPACE).unwrap().live(call["~mesh"].run);
 
 const seeded = async (device: Device) => {
   const made = await seedWorkspace(device.$mesh.on(WORKSPACE).unwrap().db, { issues: 6, now: T0 });
@@ -85,7 +87,8 @@ describe("the tracker's lists are maintained rather than re-read", () => {
   test("a board keeps its order when a card's rank moves", async () => {
     const ada = await openDevice("ada");
     await seeded(ada);
-    const teamId = (await ada.issues.list({ workspaceId: WORKSPACE_ID }).run())[0]?.teamId ?? "";
+    const teamId =
+      (await ada.issues.list({ workspaceId: WORKSPACE_ID })["~mesh"].run())[0]?.teamId ?? "";
     const board = maintaining(ada, ada.issues.board({ workspaceId: WORKSPACE_ID, teamId }));
     const before = await board.ready;
     const watch = watching(board);
@@ -112,7 +115,7 @@ describe("the tracker's lists are maintained rather than re-read", () => {
   test("a count over the same filters re-reads, and says so by naming no delta", async () => {
     const ada = await openDevice("ada");
     await seeded(ada);
-    const open = (await ada.issues.list({ workspaceId: WORKSPACE_ID }).run()).find(
+    const open = (await ada.issues.list({ workspaceId: WORKSPACE_ID })["~mesh"].run()).find(
       (row) => row.status === "todo",
     );
     const counts = maintaining(ada, ada.issues.counts({ workspaceId: WORKSPACE_ID }));

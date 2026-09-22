@@ -15,18 +15,23 @@ export type LiveDiff<T> = Extract<LiveSnapshot<T>, { readonly answered: true }>[
  * The slice of a bound call these hooks need. `@syncmesh/orpc`'s `QueryCall` satisfies it
  * structurally and is not imported: the same reason `@syncmesh/ble` takes a `BleRadio` rather
  * than the module that supplies one — a test can drive this hook with three functions.
+ *
+ * Read under `~mesh` because that is where a descriptor keeps its adapter surface (book ch. 9):
+ * a hook is an adapter, and a screen holding the same descriptor sees only `then`.
  */
 export interface LiveCall<T> {
-  /** Identity. Two renders that ask the same question share one subscription; a changed input re-subscribes. */
-  readonly key: string;
-  readonly live: () => Live<T>;
-  readonly settled: () => Promise<void>;
-  /**
-   * Optional so a test can still drive this hook with three functions; a call that carries
-   * neither reads as `local-only`, which is the honest word for "nothing here can say more".
-   */
-  readonly coverage?: () => ReadCoverage;
-  readonly onCoverage?: (listener: () => void) => () => void;
+  readonly "~mesh": {
+    /** Identity. Two renders that ask the same question share one subscription; a changed input re-subscribes. */
+    readonly key: string;
+    readonly live: () => Live<T>;
+    readonly settled: () => Promise<void>;
+    /**
+     * Optional so a test can still drive this hook with three functions; a call that carries
+     * neither reads as `local-only`, which is the honest word for "nothing here can say more".
+     */
+    readonly coverage?: () => ReadCoverage;
+    readonly onCoverage?: (listener: () => void) => () => void;
+  };
 }
 
 /**
@@ -144,7 +149,7 @@ export function useLiveQuery<T>(
   options?: QueryOptions,
 ): LiveResult<T> {
   // one disabled path: `enabled: false` *is* the no-call case from here down
-  const asked = options?.enabled === false ? undefined : call;
+  const asked = options?.enabled === false ? undefined : call?.["~mesh"];
   const key = asked?.key;
   const current = useRef(asked);
   current.current = asked;

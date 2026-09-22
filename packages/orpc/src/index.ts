@@ -18,6 +18,7 @@ export type {
   ProcedureDef,
   QueryCall,
   QueryDef,
+  ReadAnswer,
   RouteMeta,
   Router,
   WriteResult,

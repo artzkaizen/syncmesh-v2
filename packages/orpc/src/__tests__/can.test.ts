@@ -77,7 +77,7 @@ describe(".can — the real check, rehearsed (book ch. 15)", () => {
     const written = await client.products.create({ shopId: "lagos", id: "p1", name: "Desk lamp" })
       .committed;
     expect(written.isErr()).toBe(true);
-    expect(await client.products.list().run()).toEqual([]);
+    expect(await client.products.list()["~mesh"].run()).toEqual([]);
     await client.$close();
   });
 
@@ -90,12 +90,12 @@ describe(".can — the real check, rehearsed (book ch. 15)", () => {
       .run();
     expect(rehearsed.isOk()).toBe(true);
     // the rehearsal ran the handler against the replica and rolled it back: nothing happened
-    expect(await client.products.list().run()).toEqual([]);
+    expect(await client.products.list()["~mesh"].run()).toEqual([]);
 
     (
       await client.products.create({ shopId: "lagos", id: "p1", name: "Desk lamp" }).committed
     ).unwrap();
-    expect(await client.products.list().run()).toEqual([{ id: "p1", name: "Desk lamp" }]);
+    expect(await client.products.list()["~mesh"].run()).toEqual([{ id: "p1", name: "Desk lamp" }]);
     await client.$close();
   });
 
@@ -109,7 +109,7 @@ describe(".can — the real check, rehearsed (book ch. 15)", () => {
     expect(first.key).toBe(same.key);
     expect(first.key).not.toBe(other.key);
     expect(first.path).toBe("products.create");
-    expect(await client.products.list().run()).toEqual([]); // built three, ran none
+    expect(await client.products.list()["~mesh"].run()).toEqual([]); // built three, ran none
     await client.$close();
   });
 });

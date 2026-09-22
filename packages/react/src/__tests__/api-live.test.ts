@@ -135,7 +135,7 @@ describe("useLiveQuery over api.*", () => {
     await settle();
     expect(allowed).toBe(true);
     // rehearsed and rolled back: the row the verdict was about was never written
-    expect(await api.books.list({ orgId: ORG }).run()).toEqual([]);
+    expect(await api.books.list({ orgId: ORG })["~mesh"].run()).toEqual([]);
     await mesh.stop();
   });
 
@@ -175,7 +175,7 @@ describe("useLiveQuery over api.*", () => {
     const refused = await api.books.create({ orgId: ORG, id: "b3", title: "" }).committed;
     expect(refused.isErr()).toBe(true);
 
-    const rows = await api.books.list({ orgId: ORG }).run();
+    const rows = await api.books.list({ orgId: ORG })["~mesh"].run();
     expect(rows).toEqual([]);
     await mesh.stop();
   });

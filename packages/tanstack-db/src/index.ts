@@ -16,12 +16,17 @@ import type { BaseCollectionConfig, SyncConfig } from "@tanstack/db";
  * can be discarded by a server that, here, does not exist.
  */
 
-/** The slice of a mesh query this adapter needs; `@syncmesh/orpc`'s `QueryCall` satisfies it. */
+/**
+ * The slice of a mesh query this adapter needs, under the key every adapter opens (book ch. 9);
+ * `@syncmesh/orpc`'s `QueryCall` satisfies it.
+ */
 export interface MeshQuery<T> {
-  readonly key: string;
-  readonly live: () => Live<T>;
-  /** Every source that could still fill this scope has answered — what gates the ready state. */
-  readonly settled: () => Promise<void>;
+  readonly "~mesh": {
+    readonly key: string;
+    readonly live: () => Live<T>;
+    /** Every source that could still fill this scope has answered — what gates the ready state. */
+    readonly settled: () => Promise<void>;
+  };
 }
 
 export interface SyncmeshCollectionOptions<
@@ -46,7 +51,7 @@ export function syncmeshCollection<T extends object, TKey extends string | numbe
 
   const sync: SyncConfig<T, TKey> = {
     sync: ({ begin, write, commit, markReady }) => {
-      const live = query.live();
+      const live = query["~mesh"].live();
       let held = new Map<TKey, T>();
 
       /**
@@ -98,7 +103,7 @@ export function syncmeshCollection<T extends object, TKey extends string | numbe
           publish(rows);
           // ready is coverage, not arrival: an empty local store answers instantly, and drawing
           // "nothing here" before the relay has spoken is how offline apps lie
-          void query.settled().then(markReady, markReady);
+          void query["~mesh"].settled().then(markReady, markReady);
         },
         () => markReady(),
       );

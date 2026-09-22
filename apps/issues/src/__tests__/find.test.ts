@@ -21,12 +21,12 @@ const seeded = async () => {
 };
 
 const find = async (device: Awaited<ReturnType<typeof openDevice>>, text: string) =>
-  device.issues.search({ workspaceId: WORKSPACE_ID, text }).run();
+  device.issues.search({ workspaceId: WORKSPACE_ID, text })["~mesh"].run();
 
 describe("searching for an issue", () => {
   test("finds one by its number, however the identifier was typed", async () => {
     const { ada } = await seeded();
-    const listed = await ada.issues.list({ workspaceId: WORKSPACE_ID }).run();
+    const listed = await ada.issues.list({ workspaceId: WORKSPACE_ID })["~mesh"].run();
     const numbered = listed.find((row) => row.number !== null);
     expect(numbered).toBeDefined();
     const number = numbered?.number ?? 0;

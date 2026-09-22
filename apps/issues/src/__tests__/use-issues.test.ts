@@ -27,20 +27,20 @@ describe("the screen's one read of the issues", () => {
     const { ada } = await seeded();
 
     const first = issuesCall(ada, NO_FILTERS, PER_STATUS);
-    const listed = await first.run();
+    const listed = await first["~mesh"].run();
     expect(listed.length).toBeGreaterThan(0);
 
     // somebody types: a different procedure, a different key, and genuinely different rows
     const searching = issuesCall(ada, { ...NO_FILTERS, text: "relay" }, PER_STATUS);
-    const found = await searching.run();
+    const found = await searching["~mesh"].run();
     expect(found.length).toBeGreaterThan(0);
-    expect(searching.key).not.toBe(first.key);
+    expect(searching["~mesh"].key).not.toBe(first["~mesh"].key);
     expect(found).not.toEqual(listed);
 
     // and clears it again — whitespace included, because that is what a half-deleted box holds
     const cleared = issuesCall(ada, { ...NO_FILTERS, text: "  " }, PER_STATUS);
-    expect(cleared.key).toBe(first.key);
-    expect(await cleared.run()).toEqual(listed);
+    expect(cleared["~mesh"].key).toBe(first["~mesh"].key);
+    expect(await cleared["~mesh"].run()).toEqual(listed);
 
     await ada.$mesh.stop();
   });
@@ -50,14 +50,14 @@ describe("the screen's one read of the issues", () => {
     const teamId = workspace.teamIds.ENG ?? "";
 
     const filtered = issuesCall(ada, { ...NO_FILTERS, teamId }, PER_STATUS);
-    expect(filtered.path).toBe("issues.list");
-    const rows = await filtered.run();
+    expect(filtered["~mesh"].path).toBe("issues.list");
+    const rows = await filtered["~mesh"].run();
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((row) => row.teamId === teamId)).toBe(true);
 
-    expect(issuesCall(ada, { ...NO_FILTERS, teamId, text: "relay" }, PER_STATUS).path).toBe(
-      "issues.search",
-    );
+    expect(
+      issuesCall(ada, { ...NO_FILTERS, teamId, text: "relay" }, PER_STATUS)["~mesh"].path,
+    ).toBe("issues.search");
 
     await ada.$mesh.stop();
   });

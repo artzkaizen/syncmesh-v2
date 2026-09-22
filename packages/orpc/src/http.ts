@@ -147,7 +147,8 @@ export function createHandler<R extends Router>(options: HandlerOptions<R>) {
     const ran = await Result.tryPromise({
       try: async () => {
         const made = call(input);
-        return def.kind === "query" && "run" in made ? made.run() : made;
+        // the rows, not the `Result` awaiting the descriptor would give: a query crosses as `{ data }`
+        return def.kind === "query" && "~mesh" in made ? made["~mesh"].run() : made;
       },
       catch: (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause))),
     });
@@ -174,7 +175,9 @@ const wireError = (error: Error): Record<string, unknown> =>
     : { _tag: "UnhandledException", message: error.message };
 
 /** What a leaf hands back: rows behind a `run()` for a query, or a `Result` for anything else. */
-type Leaf = (input: unknown) => { readonly run: () => Promise<unknown> } | Promise<unknown>;
+type Leaf = (
+  input: unknown,
+) => { readonly "~mesh": { readonly run: () => Promise<unknown> } } | Promise<unknown>;
 
 const leafAt = (api: object, path: string): Leaf | undefined => {
   let node: unknown = api;

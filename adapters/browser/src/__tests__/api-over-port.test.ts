@@ -37,7 +37,7 @@ describe("the app's api in a tab that holds no engine", () => {
     const a = await apiTab(origin);
     const b = await apiTab(origin);
 
-    const live = b.api.books.list({ orgId: ORG }).live();
+    const live = b.api.books.list({ orgId: ORG })["~mesh"].live();
     expect(await live.ready).toEqual([]);
     const rendered: number[] = [];
     live.subscribe((rows) => rendered.push(rows.length));
@@ -63,7 +63,7 @@ describe("the app's api in a tab that holds no engine", () => {
       .run();
 
     expect(allowed.isOk()).toBe(true);
-    expect(await a.api.books.list({ orgId: ORG }).run()).toEqual([]);
+    expect(await a.api.books.list({ orgId: ORG })["~mesh"].run()).toEqual([]);
     await stop();
   });
 
@@ -84,7 +84,7 @@ describe("the app's api in a tab that holds no engine", () => {
     expect((await rehearsal).isOk()).toBe(true);
     expect((await written).isOk()).toBe(true);
     // the handle is handed back rather than held by whoever got in first
-    expect(await a.api.books.list({ orgId: ORG }).run()).toEqual([
+    expect(await a.api.books.list({ orgId: ORG })["~mesh"].run()).toEqual([
       { id: "b3", title: "Persuasion" },
     ]);
     expect(origin.host.census().handles).toBe(0);
@@ -99,7 +99,9 @@ describe("the app's api in a tab that holds no engine", () => {
 
     expect(write.id).toMatch(/^[0-9a-f-]{36}$/);
     expect((await write.committed).isOk()).toBe(true);
-    expect(await a.api.books.list({ orgId: ORG }).run()).toEqual([{ id: "b2", title: "Emma" }]);
+    expect(await a.api.books.list({ orgId: ORG })["~mesh"].run()).toEqual([
+      { id: "b2", title: "Emma" },
+    ]);
     await stop();
   });
 });

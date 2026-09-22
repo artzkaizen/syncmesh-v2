@@ -120,7 +120,7 @@ describe("who may do what (RFC-0008)", () => {
       false,
     );
     // and nothing was actually removed by asking
-    expect(await ada.projects.list({ workspaceId: WORKSPACE_ID }).run()).toHaveLength(
+    expect(await ada.projects.list({ workspaceId: WORKSPACE_ID })["~mesh"].run()).toHaveLength(
       seeded.projectIds.length,
     );
 
@@ -151,8 +151,8 @@ describe("who may do what (RFC-0008)", () => {
     const seeded = await seedWorkspace(ada.$mesh.on(WORKSPACE).unwrap().db, { issues: 6, now: T0 });
     await settle(ada, dalia);
 
-    expect(await dalia.issues.list({ workspaceId: WORKSPACE_ID }).run()).toHaveLength(6);
-    expect(await dalia.teams.list({ workspaceId: WORKSPACE_ID }).run()).toHaveLength(3);
+    expect(await dalia.issues.list({ workspaceId: WORKSPACE_ID })["~mesh"].run()).toHaveLength(6);
+    expect(await dalia.teams.list({ workspaceId: WORKSPACE_ID })["~mesh"].run()).toHaveLength(3);
     expect(
       await refusal(
         dalia.issues.create({
@@ -203,7 +203,7 @@ describe("who may do what (RFC-0008)", () => {
     const seeded = await seedWorkspace(ada.$mesh.on(WORKSPACE).unwrap().db, { issues: 3, now: T0 });
     const issueId = seeded.issueIds[0] ?? "";
 
-    const feed = await ada.history.forIssue({ workspaceId: WORKSPACE_ID, issueId }).run();
+    const feed = await ada.history.forIssue({ workspaceId: WORKSPACE_ID, issueId })["~mesh"].run();
     expect(feed.length).toBeGreaterThan(0);
     expect(ada.$mesh.can("activity.insert", undefined, WORKSPACE)).toBe(true);
     expect(ada.$mesh.can("activity.update", undefined, WORKSPACE)).toBe(false);

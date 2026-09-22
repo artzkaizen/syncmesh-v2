@@ -23,7 +23,7 @@ describe("the seeded workspace", () => {
     expect(workspace.projectIds).toHaveLength(6);
     expect(Object.keys(workspace.teamIds)).toEqual(["ENG", "DES", "OPS"]);
 
-    const summary = (await ada.issues.summary({ workspaceId: WORKSPACE_ID }).run())[0];
+    const summary = (await ada.issues.summary({ workspaceId: WORKSPACE_ID })["~mesh"].run())[0];
     expect(summary?.total).toBe(120);
     // every fourth issue is left unnumbered on purpose: what a tracker looks like mid-flight
     expect(summary?.unnumbered).toBe(30);
@@ -33,11 +33,13 @@ describe("the seeded workspace", () => {
     const twice = await seedWorkspace(again.$mesh.on(WORKSPACE).unwrap().db, { now: T0 });
     expect(twice.issueIds).toEqual(workspace.issueIds);
     expect(
-      await again.issues.list({ workspaceId: WORKSPACE_ID, teamId: twice.teamIds.ENG ?? "" }).run(),
+      await again.issues
+        .list({ workspaceId: WORKSPACE_ID, teamId: twice.teamIds.ENG ?? "" })
+        ["~mesh"].run(),
     ).toEqual(
       await ada.issues
         .list({ workspaceId: WORKSPACE_ID, teamId: workspace.teamIds.ENG ?? "" })
-        .run(),
+        ["~mesh"].run(),
     );
 
     for (const device of [ada, again]) await device.$mesh.stop();
@@ -47,11 +49,11 @@ describe("the seeded workspace", () => {
     const { ada, workspace } = await seeded();
     const teamId = workspace.teamIds.ENG ?? "";
 
-    const board = await ada.issues.board({ workspaceId: WORKSPACE_ID, teamId }).run();
+    const board = await ada.issues.board({ workspaceId: WORKSPACE_ID, teamId })["~mesh"].run();
     expect(board.every((row) => row.teamId === teamId)).toBe(true);
     expect(board.every((row) => row.status !== "done" && row.status !== "canceled")).toBe(true);
 
-    const counts = await ada.issues.counts({ workspaceId: WORKSPACE_ID, teamId }).run();
+    const counts = await ada.issues.counts({ workspaceId: WORKSPACE_ID, teamId })["~mesh"].run();
     expect(counts.reduce((held, row) => held + row.total, 0)).toBe(40);
     expect(counts.every((row) => ISSUE_STATUS.some((known) => known === row.status))).toBe(true);
 
@@ -60,40 +62,46 @@ describe("the seeded workspace", () => {
     // by a shared one. One statement, so a drag across columns still re-reads atomically.
     const windowed = await ada.issues
       .list({ workspaceId: WORKSPACE_ID, teamId, perStatus: 2 })
-      .run();
+      ["~mesh"].run();
     const perStatus = new Map<string, number>();
     for (const row of windowed) perStatus.set(row.status, (perStatus.get(row.status) ?? 0) + 1);
     expect([...perStatus.values()].every((n) => n <= 2)).toBe(true);
 
     // every status that has any issue at all is represented — the starvation this exists to fix
     const present = new Set(
-      (await ada.issues.list({ workspaceId: WORKSPACE_ID, teamId }).run()).map((r) => r.status),
+      (await ada.issues.list({ workspaceId: WORKSPACE_ID, teamId })["~mesh"].run()).map(
+        (r) => r.status,
+      ),
     );
     expect(new Set(perStatus.keys())).toEqual(present);
 
     // and the badge beside it is counted without the window, so "more" is two exact numbers
-    const badges = await ada.issues.counts({ workspaceId: WORKSPACE_ID, teamId }).run();
+    const badges = await ada.issues.counts({ workspaceId: WORKSPACE_ID, teamId })["~mesh"].run();
     const todo = badges.find((r) => r.status === "todo");
     expect(todo === undefined || todo.total >= (perStatus.get("todo") ?? 0)).toBe(true);
 
     const mine = await ada.issues
       .assigned({ workspaceId: WORKSPACE_ID, assigneeId: workspace.memberIds[0] ?? "" })
-      .run();
+      ["~mesh"].run();
     expect(mine.every((row) => row.assigneeId === workspace.memberIds[0])).toBe(true);
 
-    const found = await ada.issues.search({ workspaceId: WORKSPACE_ID, text: "relay" }).run();
+    const found = await ada.issues
+      .search({ workspaceId: WORKSPACE_ID, text: "relay" })
+      ["~mesh"].run();
     expect(found.length).toBeGreaterThan(0);
     expect(found.every((row) => /relay/i.test(`${row.title} ${row.description}`))).toBe(true);
 
     // a search term with a LIKE wildcard in it is a term, not a pattern
-    expect(await ada.issues.search({ workspaceId: WORKSPACE_ID, text: "%" }).run()).toHaveLength(0);
+    expect(
+      await ada.issues.search({ workspaceId: WORKSPACE_ID, text: "%" })["~mesh"].run(),
+    ).toHaveLength(0);
 
     const byProject = await ada.issues
       .list({ workspaceId: WORKSPACE_ID, projectId: workspace.projectIds[0] ?? "" })
-      .run();
+      ["~mesh"].run();
     expect(byProject.length).toBeGreaterThan(0);
 
-    const totals = await ada.issues.labelTotals({ workspaceId: WORKSPACE_ID }).run();
+    const totals = await ada.issues.labelTotals({ workspaceId: WORKSPACE_ID })["~mesh"].run();
     expect(totals.length).toBeGreaterThan(3);
 
     await ada.$mesh.stop();
@@ -122,7 +130,9 @@ describe("the seeded workspace", () => {
 
     const voices = new Set<string>();
     for (const issueId of workspace.issueIds)
-      for (const row of await ada.comments.forIssue({ workspaceId: WORKSPACE_ID, issueId }).run())
+      for (const row of await ada.comments
+        .forIssue({ workspaceId: WORKSPACE_ID, issueId })
+        ["~mesh"].run())
         voices.add(row.authorId);
     expect(voices).toContain(accountOf("bo"));
     expect(voices).toContain(accountOf("chidi"));
@@ -134,8 +144,9 @@ describe("the seeded workspace", () => {
     let total = 0;
     for (const candidate of workspace.issueIds) {
       const held =
-        (await ada.comments.total({ workspaceId: WORKSPACE_ID, issueId: candidate }).run())[0]
-          ?.total ?? 0;
+        (
+          await ada.comments.total({ workspaceId: WORKSPACE_ID, issueId: candidate })["~mesh"].run()
+        )[0]?.total ?? 0;
       if (held > total) {
         total = held;
         issueId = candidate;
@@ -146,7 +157,7 @@ describe("the seeded workspace", () => {
     {
       const first = await ada.comments
         .forIssue({ workspaceId: WORKSPACE_ID, issueId, limit: 2 })
-        .run();
+        ["~mesh"].run();
       expect(first).toHaveLength(2);
       const oldest = first.at(-1);
       const next = await ada.comments
@@ -156,7 +167,7 @@ describe("the seeded workspace", () => {
           limit: 2,
           before: { at: (oldest?.createdAt ?? new Date()).getTime(), id: oldest?.id ?? "" },
         })
-        .run();
+        ["~mesh"].run();
       const seen = new Set(first.map((row) => row.id));
       expect(next.every((row) => !seen.has(row.id))).toBe(true);
       // newest first: every row of the second page is older than the last of the first

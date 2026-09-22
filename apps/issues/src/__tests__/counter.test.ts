@@ -9,7 +9,7 @@ import { T0, accountOf, openDevice, settle, type Device } from "./fixtures.js";
  */
 
 const viewsOf = async (device: Device, id: string) =>
-  (await device.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0]?.views ?? -1;
+  (await device.issues.get({ workspaceId: WORKSPACE_ID, id })["~mesh"].run())[0]?.views ?? -1;
 
 describe("view counts across a partition (book ch. 2)", () => {
   test("two devices counting while apart sum, rather than one of them winning", async () => {
@@ -46,10 +46,10 @@ describe("view counts across a partition (book ch. 2)", () => {
     const ada = await openDevice("ada");
     const seeded = await seedWorkspace(ada.$mesh.on(WORKSPACE).unwrap().db, { issues: 3, now: T0 });
     const id = seeded.issueIds[0] ?? "";
-    const before = (await ada.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0];
+    const before = (await ada.issues.get({ workspaceId: WORKSPACE_ID, id })["~mesh"].run())[0];
 
     (await ada.issues.view({ workspaceId: WORKSPACE_ID, id }).committed).unwrap();
-    const after = (await ada.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0];
+    const after = (await ada.issues.get({ workspaceId: WORKSPACE_ID, id })["~mesh"].run())[0];
 
     expect(after?.views).toBe((before?.views ?? 0) + 1);
     // otherwise every issue anyone glanced at would float to the top of "recently updated"
@@ -86,7 +86,7 @@ describe("view counts across a partition (book ch. 2)", () => {
 
     const tally = await bo.reactions
       .tally({ workspaceId: WORKSPACE_ID, subject: "issue", subjectId })
-      .run();
+      ["~mesh"].run();
     expect(tally).toEqual([{ emoji: "🚀", total: 2 }]);
 
     // Tapping it again is the same row, because the key is (actor, subject, emoji). The write
@@ -101,7 +101,9 @@ describe("view counts across a partition (book ch. 2)", () => {
     }).committed;
     expect(again.isErr()).toBe(true);
     expect(
-      await bo.reactions.tally({ workspaceId: WORKSPACE_ID, subject: "issue", subjectId }).run(),
+      await bo.reactions
+        .tally({ workspaceId: WORKSPACE_ID, subject: "issue", subjectId })
+        ["~mesh"].run(),
     ).toEqual([{ emoji: "🚀", total: 2 }]);
 
     for (const device of [ada, bo]) await device.$mesh.stop();

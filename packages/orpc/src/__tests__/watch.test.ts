@@ -71,7 +71,7 @@ describe("watch — detection is a subscription, enforcement is a write", () => 
     (await api.products.add({ id: "p1", priceCents: 90 }).committed).unwrap();
     await settled();
 
-    expect(await api.products.list().run()).toEqual([{ id: "p1", priceCents: FLOOR }]);
+    expect(await api.products.list()["~mesh"].run()).toEqual([{ id: "p1", priceCents: FLOOR }]);
     const converged = reactions;
     await settled();
     expect(reactions).toBe(converged); // corrected state stops matching: the fixed point
@@ -79,7 +79,9 @@ describe("watch — detection is a subscription, enforcement is a write", () => 
     // a compliant write wakes the watchdog and changes nothing
     (await api.products.add({ id: "p2", priceCents: 500 }).committed).unwrap();
     await settled();
-    expect((await api.products.list().run()).map((r) => r.priceCents).sort()).toEqual([120, 500]);
+    expect((await api.products.list()["~mesh"].run()).map((r) => r.priceCents).sort()).toEqual([
+      120, 500,
+    ]);
 
     off();
     await api.$close();

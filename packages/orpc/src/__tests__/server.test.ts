@@ -66,7 +66,9 @@ describe("createServer — a node with extra duties", () => {
       expect(refusal !== undefined && "tag" in refusal && refusal.tag).toBe("NAME_TAKEN");
 
       // the row the gate wrote is ordinary state, readable through the same procedures
-      expect(await server.api.rooms.list().run()).toEqual([{ id: "room-annex", name: "annex" }]);
+      expect(await server.api.rooms.list()["~mesh"].run()).toEqual([
+        { id: "room-annex", name: "annex" },
+      ]);
 
       const spec = server.openapi({ title: "Rooms", version: "1.0.0" });
       expect(spec).toMatchObject({

@@ -6,7 +6,6 @@ import type { Result as ResultType } from "@syncmesh/result";
 import type { PresenceMap } from "@syncmesh/schema";
 import type { TxReceipt } from "@syncmesh/storage";
 
-import { LOCAL_ONLY } from "@syncmesh/client";
 import { readOnly, scopeReads } from "@syncmesh/drizzle";
 import { Result } from "@syncmesh/result";
 
@@ -14,9 +13,10 @@ import type { LazyApiMesh } from "./deferred.js";
 import type { AuthorityDef, AuthorityLink, MutationDef, QueryDef, Router } from "./procedures.js";
 import type { Write, WriteDeps, WriteLedger } from "./write.js";
 
-import { deferredLive, deferredRunnable, deferredSubscribe, lazyOf, notOpen } from "./deferred.js";
-import { AuthorityUnreachable, NothingWritten } from "./errors.js";
+import { deferredSubscribe, lazyOf, notOpen } from "./deferred.js";
+import { AuthorityUnreachable, NothingWritten, asError } from "./errors.js";
 import { isDef } from "./procedures.js";
+import { readOf } from "./read.js";
 import { scopeKinds, scopeOf } from "./scope.js";
 import { validate } from "./validate.js";
 import { createWrite } from "./write.js";
@@ -68,31 +68,55 @@ export interface WriteResult<T> {
  */
 export type CallError = Error;
 
+/** What a read answers with: the rows, and how much of the world they are good to (book ch. 9). */
+export interface ReadAnswer<T> {
+  readonly data: readonly T[];
+  /**
+   * `local-only` before the mesh opens and until a source completes its first pass; empty rows
+   * under it are not proof the scope is empty (RFC-0019).
+   */
+  readonly coverage: ReadCoverage;
+}
+
 /**
- * A read that has not run. Inert on purpose — building one in a component body is free, and
- * `useLiveQuery` decides when it executes.
+ * A read that has not run. Its public surface is `then`, and nothing else (book ch. 9).
+ *
+ * Inert on purpose: `then` runs it lazily and never at construction, so building one in a
+ * component body is free and `useLiveQuery` decides when it executes. Awaiting it returns a
+ * `Result` — an input the schema refuses is an `Err` here like everywhere else — and the answer
+ * carries its coverage, because rows alone cannot say whether the relay has spoken yet.
+ *
+ * Everything an adapter opens rides `~mesh`: the hooks, the collection adapter and devtools read
+ * it, application code never does. Reads are the one thenable surface because a read's only
+ * product is its answer; a write's product is its effect, so {@link Write} is not one.
+ *
+ * @example
+ * const answer = await api.books.list({ orgId });
+ * if (answer.isOk()) answer.value.data; // the rows, beside `answer.value.coverage`
  */
-export interface QueryCall<T> {
-  readonly kind: "query";
-  /** `"books.list"` — the name a devtool shows, and half the subscription's identity. */
-  readonly path: string;
-  /** Identity: the path and the input. Two renders that ask the same question share one subscription. */
-  readonly key: string;
-  /** Builds the query, un-run — a one-shot read, and what `live` subscribes. */
-  readonly run: () => Runnable<T>;
-  /** The subscription: re-runs on every fold batch touching one of the query's tables. */
-  readonly live: () => Live<T>;
-  /**
-   * Every source that could still fill this scope has finished its first pass — what separates
-   * "no books" from "the relay has not answered yet" (RFC-0019).
-   */
-  readonly settled: () => Promise<void>;
-  /**
-   * How far the world has answered this read, with the source and checkpoint it is good to
-   * (book ch. 9). `local-only` before the mesh opens and until a source completes its first pass.
-   */
-  readonly coverage: () => ReadCoverage;
-  readonly onCoverage: (listener: () => void) => () => void;
+export interface QueryCall<T> extends PromiseLike<ResultType<ReadAnswer<T>, CallError>> {
+  /** Adapter surface. Not for application code. */
+  readonly "~mesh": {
+    /** `"books.list"` — the name a devtool shows, and half the subscription's identity. */
+    readonly path: string;
+    /** Identity: the path and the input. Two renders that ask the same question share one subscription. */
+    readonly key: string;
+    /** Builds the query, un-run — a one-shot read, and what `live` subscribes. */
+    readonly run: () => Runnable<T>;
+    /** The subscription: re-runs on every fold batch touching one of the query's tables. */
+    readonly live: () => Live<T>;
+    /**
+     * Every source that could still fill this scope has finished its first pass — what separates
+     * "no books" from "the relay has not answered yet" (RFC-0019).
+     */
+    readonly settled: () => Promise<void>;
+    /**
+     * How far the world has answered this read, with the source and checkpoint it is good to
+     * (book ch. 9). `local-only` before the mesh opens and until a source completes its first pass.
+     */
+    readonly coverage: () => ReadCoverage;
+    readonly onCoverage: (listener: () => void) => () => void;
+  };
 }
 
 /* oxlint-disable anti-slop/no-unknown-parameters -- every `input` below is the call's own argument on its way to `validate`, which is the parser. The surface above them (`Api<R>`) is typed per procedure, so a caller cannot reach these with anything else; taking a named type here would mean parsing before the procedure that owns the schema has been chosen. */
@@ -240,32 +264,16 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     return { ...writable, db: readOnly(writable.db) };
   };
 
-  /* thrown, not returned: a descriptor has no error channel of its own, and the hook has an `error` */
-  const runnable = (def: QueryDef<never, unknown>, input: unknown) =>
-    ((open) => def.run(reading(validate<never>(def.schema, input).unwrap(), open)))(handle(input));
-
-  const read = (path: string, def: QueryDef<never, unknown>, input: unknown) => ({
-    kind: "query" as const,
-    path,
-    key: JSON.stringify([path, input ?? null]),
-    // the real builder the moment there is one: `windowOf` reads a Drizzle query's own config to
-    // decide whether the query can be maintained, and a stand-in has none to read. Only a call
-    // made before the mesh exists gets the wrapper, and that one has nothing to maintain from
-    run: () =>
-      lazy.current() === undefined
-        ? deferredRunnable(lazy.ready, () => runnable(def, input))
-        : runnable(def, input),
-    // TEMPORARY, for a bisect: one built query rather than the *way to build* it, which is what
-    // turns incremental maintenance off — `createLive` only patches a query it can ask again.
-    // Restore the factory (`() => runnable(def, input)`) once the assignee stall is attributed.
-    live: () => deferredLive(lazy, () => handle(input).live(runnable(def, input))),
-    settled: () => lazy.ready.then(() => mesh().settled()),
-    // one shared object, never a literal: a mesh reached over a port has no coverage yet, and a
-    // fresh `{ kind }` per call here is exactly the snapshot loop React refuses
-    coverage: () => lazy.current()?.coverage?.get() ?? LOCAL_ONLY,
-    onCoverage: (listener: () => void) =>
-      deferredSubscribe(lazy, (m) => m.coverage?.subscribe(listener) ?? (() => undefined)),
-  });
+  const reads = {
+    lazy,
+    handle,
+    /** The handler's own query, built against the replica the raw input names; `parsed` is what it reads. */
+    running: (def: QueryDef<never, unknown>, parsed: never, input: unknown) =>
+      def.run(reading(parsed, handle(input))),
+    settled: () => mesh().settled(),
+  };
+  const read = (path: string, def: QueryDef<never, unknown>, input: unknown) =>
+    readOf(reads, path, def, input);
 
   /** `api.products.create.can(input)`: the write, rehearsed and rolled back (ch. 15). */
   const rehearsal = (path: string, def: MutationDef<never, unknown>, input: unknown): CanCall => ({
@@ -333,7 +341,7 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
       // under this procedure's own path, because the capture below sees SQL and cannot know it.
       // Without the name the ledger reads `issue.update` for what a person called `issues.move`.
       try: () => open.under({ id: operationId, label: path }, run),
-      catch: (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause))),
+      catch: asError,
     });
     off();
     if (ran.isErr()) return ran;

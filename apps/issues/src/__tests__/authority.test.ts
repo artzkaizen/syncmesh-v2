@@ -50,8 +50,12 @@ describe("the one call a device cannot make for itself (D10, book ch. 7)", () =>
     const id = await file(bo, teamId, "the board tears on a slow fold");
 
     // filed and usable with no server in sight: the tracker does not wait to be given a name
-    expect((await bo.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0]?.number).toBeNull();
-    expect((await bo.issues.summary({ workspaceId: WORKSPACE_ID }).run())[0]?.unnumbered).toBe(1);
+    expect(
+      (await bo.issues.get({ workspaceId: WORKSPACE_ID, id })["~mesh"].run())[0]?.number,
+    ).toBeNull();
+    expect(
+      (await bo.issues.summary({ workspaceId: WORKSPACE_ID })["~mesh"].run())[0]?.unnumbered,
+    ).toBe(1);
 
     await settle(bo, authority.server);
     const claimed = (
@@ -61,8 +65,12 @@ describe("the one call a device cannot make for itself (D10, book ch. 7)", () =>
 
     // the authority's write is an ordinary event, so it folds on every device like any other
     await settle(authority.server, bo, ada);
-    expect((await ada.issues.get({ workspaceId: WORKSPACE_ID, id }).run())[0]?.number).toBe(1);
-    const feed = await ada.history.forIssue({ workspaceId: WORKSPACE_ID, issueId: id }).run();
+    expect(
+      (await ada.issues.get({ workspaceId: WORKSPACE_ID, id })["~mesh"].run())[0]?.number,
+    ).toBe(1);
+    const feed = await ada.history
+      .forIssue({ workspaceId: WORKSPACE_ID, issueId: id })
+      ["~mesh"].run();
     expect(feed.at(-1)).toMatchObject({ kind: "numbered", toValue: "1", actorId: "authority" });
 
     await authority.stop();

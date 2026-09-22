@@ -59,7 +59,7 @@ describe("storage: postgres — the fold materializes into the app's own databas
     await client.$ready;
 
     (await client.books.add({ id: "b1", title: "Dune" }).committed).unwrap();
-    expect(await client.books.list().run()).toEqual([{ id: "b1", title: "Dune" }]);
+    expect(await client.books.list()["~mesh"].run()).toEqual([{ id: "b1", title: "Dune" }]);
 
     // the point of the exercise: read it the way an existing backend would, over its own
     // connection, knowing nothing about meshes
@@ -114,7 +114,7 @@ describe("storage: postgres — the fold materializes into the app's own databas
       storage: postgres({ driver: pgliteDriver(second) }),
     });
     await after.$ready;
-    expect(await after.books.list().run()).toEqual([{ id: "b2", title: "Middlemarch" }]);
+    expect(await after.books.list()["~mesh"].run()).toEqual([{ id: "b2", title: "Middlemarch" }]);
 
     const events = await second.query<{ n: number }>(`SELECT count(*)::int AS n FROM ${LOG_TABLE}`);
     expect(events.rows[0]?.n).toBeGreaterThan(0);

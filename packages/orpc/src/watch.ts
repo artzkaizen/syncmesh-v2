@@ -19,7 +19,8 @@ export function watch<T>(
   call: QueryCall<T>,
   react: (rows: readonly T[]) => Promise<void> | void,
 ): () => void {
-  const live = call.live();
+  const { path, live: open } = call["~mesh"];
+  const live = open();
   let running = false;
   let queued: readonly T[] | undefined;
 
@@ -32,7 +33,7 @@ export function watch<T>(
     void Promise.resolve(react(rows))
       .catch((cause: unknown) => {
         // a thrower never decides the data; the failure is evidence for the operator
-        console.warn(`watch(${call.path}) reaction failed:`, cause);
+        console.warn(`watch(${path}) reaction failed:`, cause);
       })
       .finally(() => {
         running = false;

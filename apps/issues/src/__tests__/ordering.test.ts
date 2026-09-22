@@ -18,7 +18,9 @@ const open = async () => {
 };
 
 const order = async (device: Device, teamId: string) =>
-  (await device.issues.list({ workspaceId: WORKSPACE_ID, teamId }).run()).map((row) => row.id);
+  (await device.issues.list({ workspaceId: WORKSPACE_ID, teamId })["~mesh"].run()).map(
+    (row) => row.id,
+  );
 
 let running: readonly Device[] = [];
 afterEach(async () => {
@@ -74,7 +76,7 @@ describe("manual order across a partition (book ch. 2, D25)", () => {
   test("a drag across board columns moves status and rank as one event, so no device sees it torn", async () => {
     const { ada, bo, teamId } = await open();
     running = [ada, bo];
-    const board = await ada.issues.board({ workspaceId: WORKSPACE_ID, teamId }).run();
+    const board = await ada.issues.board({ workspaceId: WORKSPACE_ID, teamId })["~mesh"].run();
     const card = board[0] ?? { id: "", status: "triage" as const };
 
     (
@@ -89,13 +91,15 @@ describe("manual order across a partition (book ch. 2, D25)", () => {
     ).unwrap();
     await settle(ada, bo);
 
-    const landed = (await bo.issues.board({ workspaceId: WORKSPACE_ID, teamId }).run()).find(
-      (row) => row.id === card.id,
-    );
+    const landed = (
+      await bo.issues.board({ workspaceId: WORKSPACE_ID, teamId })["~mesh"].run()
+    ).find((row) => row.id === card.id);
     expect(landed?.status).toBe("started");
     expect(landed?.startedAt).not.toBeNull();
     // one write, one event: the history row and the move arrived together or not at all
-    const feed = await bo.history.forIssue({ workspaceId: WORKSPACE_ID, issueId: card.id }).run();
+    const feed = await bo.history
+      .forIssue({ workspaceId: WORKSPACE_ID, issueId: card.id })
+      ["~mesh"].run();
     expect(feed.some((row) => row.kind === "status" && row.toValue === "started")).toBe(true);
   });
 
