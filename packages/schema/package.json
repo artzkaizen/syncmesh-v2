@@ -24,7 +24,7 @@
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
     "@types/bun": "catalog:",
-    "drizzle-orm": "0.45.2",
+    "drizzle-orm": "catalog:",
     "fast-check": "catalog:",
     "typescript": "catalog:",
     "vite-plus": "catalog:",

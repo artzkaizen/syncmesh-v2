@@ -31,7 +31,7 @@
     "@syncmesh/transports": "workspace:*",
     "@syncmesh/wire": "workspace:*",
     "@tanstack/react-router": "^1.170.32",
-    "drizzle-orm": "latest",
+    "drizzle-orm": "catalog:",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "zod": "^4.1.13"
@@ -47,6 +47,7 @@
     "@syncmesh/transport": "workspace:*",
     "@tanstack/router-plugin": "^1.168.35",
     "@types/bun": "catalog:",
+    "@types/node": "catalog:",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^5.0.0",
