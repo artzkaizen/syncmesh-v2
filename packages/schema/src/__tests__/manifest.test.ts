@@ -1,12 +1,15 @@
 import type { PolicyNode } from "@syncmesh/policy";
 
+import { NO_ROLES } from "@syncmesh/policy";
 import { describe, expect, test } from "bun:test";
 
 import { t } from "../column.js";
 import { syncSchema } from "../manifest.js";
+import { flat, global, isPartition, ladder, local, partition, user } from "../partition.js";
 
 const id = () => t.uuid().primaryKey();
 const none = ({ deny }: { readonly deny: PolicyNode }) => ({ $default: deny });
+const compare = (a: string, b: string) => a.localeCompare(b);
 
 const schema = syncSchema({
   partitions: { org: { shelf: {} } },
@@ -54,8 +57,12 @@ describe("syncSchema", () => {
     expect(schema.kinds).toEqual(["org", "shelf"]);
     expect(schema.parentOf("shelf")).toBe("org");
     expect(schema.parentOf("org")).toBeUndefined();
-    expect(schema.rolesFor("shelf")).toEqual(["owner", "admin", "member"]);
-    expect(schema.rolesFor("user")).toEqual([]);
+    // the tree form's bare array is a ladder: it has no way to spell a flat set
+    expect(schema.rolesFor("shelf")).toEqual({
+      names: ["owner", "admin", "member"],
+      ordered: true,
+    });
+    expect(schema.rolesFor("user")).toEqual(NO_ROLES);
   });
 
   test("merge spec is assembled from column rules; lww omitted", () => {
@@ -121,5 +128,112 @@ describe("syncSchema", () => {
       });
     };
     expect(rejected).toBeInstanceOf(Function);
+  });
+});
+
+/**
+ * A kind is a value, not a position in a tree (§2.1). The set of kinds is derived from what
+ * references them, because a kind nothing stores in and nothing announces on holds nothing.
+ */
+describe("partition() — kinds declared as values", () => {
+  const workspace = partition("workspace", { roles: ladder("owner", "admin", "member") });
+  const embargo = partition("embargo", { sealed: true, roles: workspace.roles });
+
+  const built = syncSchema({
+    tables: {
+      issue: { columns: { id: id() }, partition: workspace, allow: none },
+      disclosure: { columns: { id: id() }, partition: embargo, allow: none },
+      rates: { columns: { id: id() }, partition: global },
+      settings: { columns: { id: id() }, partition: user },
+      scratch: { columns: { id: id() }, partition: local },
+    },
+  });
+
+  test("the kinds are the ones the tables reference — nothing declares them twice", () => {
+    expect([...built.kinds].slice().sort(compare)).toEqual(["embargo", "workspace"]);
+    expect(
+      built.entries
+        .map((e) => String(e.partition))
+        .slice()
+        .sort(compare),
+    ).toEqual(["embargo", "global", "local", "user", "workspace"]);
+  });
+
+  test("sealing rides the kind, not a list beside it", () => {
+    expect(built.sealedKinds.has("embargo")).toBe(true);
+    expect(built.sealedKinds.has("workspace")).toBe(false);
+  });
+
+  test("a shared ladder is a value reference, which is what nesting was faking", () => {
+    expect(built.rolesFor("workspace")).toEqual(ladder("owner", "admin", "member"));
+    expect(built.rolesFor("embargo")).toBe(workspace.roles);
+    expect(built.rolesFor("global")).toEqual(NO_ROLES);
+  });
+
+  test("ladder() is ordered and flat() is not; both keep the names as written", () => {
+    expect(ladder("owner", "admin", "member")).toEqual({
+      names: ["owner", "admin", "member"],
+      ordered: true,
+    });
+    expect(flat("auditor", "billing")).toEqual({ names: ["auditor", "billing"], ordered: false });
+    expect(() => ladder("owner", "owner")).toThrow(/named twice/);
+    expect(() => flat("auditor", "auditor")).toThrow(/named twice/);
+  });
+
+  test("rolesFor carries the ordering through, including a flat set shared by reference", () => {
+    const org = partition("org", { roles: flat("auditor", "billing") });
+    const ledger = partition("ledger", { sealed: true, roles: org.roles });
+    const shop = partition("shop", { roles: ladder("owner", "editor") });
+    const withFlat = syncSchema({
+      tables: {
+        audits: { columns: { id: id() }, partition: org, allow: none },
+        entries: { columns: { id: id() }, partition: ledger, allow: none },
+        products: { columns: { id: id() }, partition: shop, allow: none },
+      },
+    });
+    expect(withFlat.rolesFor("org").ordered).toBe(false);
+    expect(withFlat.rolesFor("ledger")).toEqual({ names: ["auditor", "billing"], ordered: false });
+    expect(withFlat.rolesFor("shop")).toEqual({ names: ["owner", "editor"], ordered: true });
+  });
+
+  test("a reserved name cannot be declared, and a kind name follows the table grammar", () => {
+    expect(() => partition("global")).toThrow();
+    expect(() => partition("Not A Kind")).toThrow();
+  });
+
+  test("two distinct values with one name is the failure object keys made impossible", () => {
+    const one = partition("ward", { roles: ladder("nurse") });
+    const two = partition("ward", { roles: ladder("nurse") });
+    expect(() =>
+      syncSchema({
+        tables: {
+          a: { columns: { id: id() }, partition: one, allow: none },
+          b: { columns: { id: id() }, partition: two, allow: none },
+        },
+      }),
+    ).toThrow(/declared twice/);
+    // the same value twice is the ordinary case and says nothing
+    expect(
+      syncSchema({
+        tables: {
+          a: { columns: { id: id() }, partition: one, allow: none },
+          b: { columns: { id: id() }, partition: one, allow: none },
+        },
+      }).kinds,
+    ).toEqual(["ward"]);
+  });
+
+  test("a table in a declared kind still needs a rule; a reserved one still refuses to have any", () => {
+    expect(() =>
+      syncSchema({ tables: { a: { columns: { id: id() }, partition: workspace } } }),
+    ).toThrow(/needs an allow rule/);
+    expect(() =>
+      syncSchema({ tables: { a: { columns: { id: id() }, partition: global, allow: none } } }),
+    ).toThrow(/takes no allow rule/);
+  });
+
+  test("isPartition tells a declared kind from the tree form's bare name", () => {
+    expect(isPartition(workspace)).toBe(true);
+    expect(isPartition("workspace")).toBe(false);
   });
 });

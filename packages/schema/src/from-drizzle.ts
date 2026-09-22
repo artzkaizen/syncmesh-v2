@@ -4,6 +4,12 @@ import type { Temporal } from "@syncmesh/temporal";
 import { panic } from "@syncmesh/result";
 
 import type { AppValue } from "./convert.js";
+import type {
+  DrizzleEntry,
+  DrizzleTableInKind,
+  DrizzleTableOptions,
+  DrizzleTableReserved,
+} from "./drizzle-options.js";
 import type { Columns } from "./table.js";
 
 import {
@@ -213,32 +219,47 @@ function readRuntime(drizzle: DrizzleTableLike): DrizzleRuntime {
 }
 
 /**
- * A Drizzle table's derived half, for spreading into its manifest entry.
+ * A Drizzle table's manifest entry: the derived columns, where its rows live, and who may do what.
  *
  * ```ts
- * products: {
- *   ...drizzleTable(products, { merge: { stock: "counter" } }),
- *   partition: "shop",
+ * products: drizzleTable(products, {
+ *   partition: shop,
+ *   merge: { stock: "counter" },
  *   allow: ({ role }) => ({ read: role("viewer"), $default: role("editor") }),
- * },
+ * }),
  * ```
  *
- * **The wrapper names its ORM, so there is no second declaration to drift from it.** What it
- * replaces wrote the derivation and the policy as two things about one table —
- * `columns: fromDrizzle(products, { merge })` on one line and the rules on the next — so the
- * merge strategies sat beside the *derivation* and could name a column the entry was not about.
- * Here the table is named once and everything derived from it comes from that naming.
+ * **The wrapper names its ORM, so there is no second declaration to drift from it**, and it is a
+ * function, so it can infer what a manifest's mapped type cannot: the kind `partition` names.
+ * `role()` is typed against that kind's own ladder — `role("viewer")` on a table whose kind has no
+ * `viewer` does not compile — where the spread form (`{ ...drizzleTable(products), partition,
+ * allow }`) checks it against every ladder the manifest declares, or any string under the value
+ * form. A reserved kind (`global`, `user`, `local`) takes no `allow`; a declared kind requires one.
  *
- * **It is spread into the entry rather than wrapping it, and the reason is not style.** The
- * `allow` callback's parameter and the `partition` literal are both checked against the sibling
- * `roles` and `partitions` keys of the manifest — and TypeScript resolves those by *contextual
- * typing*, which reaches an object literal written in place and does not reach through a function
- * call. Written as `drizzleTable(products, { partition, allow })` the policy is checked against
- * nothing: `({ role }) =>` takes an implicit `any` and `partition: "shop"` widens to `string`,
- * which then matches only the reserved-kind arm of the entry. Spreading keeps the literal where
- * the checker can see it, which is what makes a typo in a role name a compile error.
+ * Called with the derivation options alone it returns `{ columns }`, for an entry that overrides a
+ * derived column by name before spreading it in.
  */
-export const drizzleTable = <const D extends DrizzleTableLike>(
+export function drizzleTable<const D extends DrizzleTableLike>(
   drizzle: D,
-  options: FromDrizzleOptions<D> = {},
-) => ({ columns: fromDrizzle(drizzle, options) });
+  options: DrizzleTableReserved<D>,
+): DrizzleEntry<D> & Pick<DrizzleTableReserved<D>, "partition">;
+export function drizzleTable<const D extends DrizzleTableLike, N extends string, R extends string>(
+  drizzle: D,
+  options: DrizzleTableInKind<D, N, R>,
+): DrizzleEntry<D> & Pick<DrizzleTableInKind<D, N, R>, "partition" | "allow">;
+// the derivation-only form stays last: it is all-optional, so a literal that also names `merge` or
+// `onWarn` survives the first overload pass, and `allow` would be typed by it — as `any` — before
+// the kind form is tried
+export function drizzleTable<const D extends DrizzleTableLike>(
+  drizzle: D,
+  options?: FromDrizzleOptions<D>,
+): DrizzleEntry<D>;
+export function drizzleTable<const D extends DrizzleTableLike>(
+  drizzle: D,
+  options: DrizzleTableOptions<D> = {},
+) {
+  const { partition, allow, ...derive } = options;
+  const columns = fromDrizzle(drizzle, derive);
+  if (partition === undefined) return { columns };
+  return allow === undefined ? { columns, partition } : { columns, partition, allow };
+}

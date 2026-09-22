@@ -1,4 +1,4 @@
-import { drizzleTable, ladder, syncSchema, t } from "@syncmesh/schema";
+import { drizzleTable, ladder, partition, syncSchema, t } from "@syncmesh/schema";
 
 import { ActivityKind, IssueStatus, Priority, ProjectStatus, ReactionSubject } from "./domain.js";
 import {
@@ -73,32 +73,36 @@ export const ISSUE_MEMBER_COLUMNS = [
  * write, since a handle is pinned to one instance. A workspace is the boundary people actually
  * cross rarely and the boundary an admin actually thinks in.
  *
- * **`embargo` nests under it and is sealed.** See {@link issuesSchema.sealed} below.
- *
  * The role ladder is senior-first: `role("member")` admits owners and admins too.
  */
+const workspace = partition("workspace", {
+  roles: ladder("owner", "admin", "member", "guest"),
+});
+
+/**
+ * Exactly one kind is sealed, and it is not the tracker.
+ *
+ * Sealing a workspace would be the easy gesture and the wrong trade. Everything a hosted
+ * tracker is worth — the gapless issue number an authority mints, a nightly sweep that moves
+ * stale issues back to triage, folding into Postgres so the org's BI tool can read it, a
+ * correction when someone deletes a project they should not have — needs a server that can
+ * *read*, and a sealed partition is precisely one no server can read. Paying that for issues
+ * titled "fix the footer padding" buys nothing.
+ *
+ * An embargoed vulnerability report is the scope where the trade flips. There the operator is
+ * in the threat model, the content is worth more than the tooling around it, and giving up
+ * server-side judgment costs nothing because nobody wanted an automated sweep over it. It is
+ * its own instance per embargo (`embargo:acme-2026-001`), so the key that ends is the whole
+ * story: revoke it and the device carries the events and reads none of them.
+ *
+ * It takes the workspace's ladder by referring to it. Under the tree form this was implicit —
+ * `embargo` sat inside `workspace` and inherited it — which read as containment and was only
+ * ever ladder inheritance; `embargo:acme-2026-001` was always a scope of its own.
+ */
+const embargo = partition("embargo", { sealed: true, roles: workspace.roles });
+
 export const issuesSchema = () =>
   syncSchema({
-    partitions: { workspace: { embargo: {} } },
-    roles: { workspace: ladder("owner", "admin", "member", "guest") },
-    /**
-     * Exactly one kind is sealed, and it is not the tracker.
-     *
-     * Sealing a workspace would be the easy gesture and the wrong trade. Everything a hosted
-     * tracker is worth — the gapless issue number an authority mints, a nightly sweep that
-     * moves stale issues back to triage, folding into Postgres so the org's BI tool can read
-     * it, a correction when someone deletes a project they should not have — needs a server
-     * that can *read*, and a sealed partition is precisely one no server can read. Paying that
-     * for issues titled "fix the footer padding" buys nothing.
-     *
-     * An embargoed vulnerability report is the scope where the trade flips. There the operator
-     * is in the threat model, the content is worth more than the tooling around it, and giving
-     * up server-side judgment costs nothing because nobody wanted an automated sweep over it.
-     * It is its own instance per embargo (`embargo:acme-2026-001`), so the key that ends is the
-     * whole story: revoke it and the device carries the events and reads none of them.
-     */
-    sealed: ["embargo"],
-
     presence: {
       /**
        * Who is looking at this issue, and whether they are mid-sentence. Presence and not a
@@ -106,7 +110,7 @@ export const issuesSchema = () =>
        * closes, and a fact with that shape must never enter a log that replays forever.
        */
       viewing: {
-        partition: "workspace",
+        partition: workspace,
         of: { issueId: t.text(), typing: t.boolean() },
         ttlMs: 15_000,
       },
@@ -116,7 +120,7 @@ export const issuesSchema = () =>
       /** Only an admin shapes the workspace. A guest — a contractor on one project — reads. */
       team: {
         ...named(team),
-        partition: "workspace",
+        partition: workspace,
         allow: ({ role }) => ({ $default: role("admin"), read: role("guest") }),
       },
 
@@ -127,7 +131,7 @@ export const issuesSchema = () =>
        */
       member: {
         ...named(member),
-        partition: "workspace",
+        partition: workspace,
         allow: ({ any, owner, role }) => ({
           $default: role("admin"),
           read: role("guest"),
@@ -142,7 +146,7 @@ export const issuesSchema = () =>
        */
       project: {
         columns: { ...projectColumns, status: projectColumns.status.check(ProjectStatus) },
-        partition: "workspace",
+        partition: workspace,
         allow: ({ role }) => ({
           $default: role("member"),
           read: role("guest"),
@@ -152,7 +156,7 @@ export const issuesSchema = () =>
 
       label: {
         ...named(label),
-        partition: "workspace",
+        partition: workspace,
         allow: ({ role }) => ({
           $default: role("member"),
           read: role("guest"),
@@ -173,7 +177,7 @@ export const issuesSchema = () =>
           status: issueColumns.status.check(IssueStatus),
           priority: issueColumns.priority.check(Priority),
         },
-        partition: "workspace",
+        partition: workspace,
         allow: ({ all, any, patchOnly, role }) => ({
           $default: role("member"),
           read: role("guest"),
@@ -184,7 +188,7 @@ export const issuesSchema = () =>
 
       issuelabel: {
         ...named(issueLabel),
-        partition: "workspace",
+        partition: workspace,
         allow: ({ deny, role }) => ({
           $default: role("member"),
           read: role("guest"),
@@ -203,7 +207,7 @@ export const issuesSchema = () =>
        */
       comment: {
         ...named(comment),
-        partition: "workspace",
+        partition: workspace,
         allow: ({ any, deny, owner, role }) => ({
           $default: deny,
           read: role("guest"),
@@ -216,7 +220,7 @@ export const issuesSchema = () =>
       /** You add and remove your own reaction. Editing one is meaningless, so it is refused. */
       reaction: {
         columns: { ...reactionColumns, subject: reactionColumns.subject.check(ReactionSubject) },
-        partition: "workspace",
+        partition: workspace,
         allow: ({ deny, owner, role }) => ({
           $default: deny,
           read: role("guest"),
@@ -233,7 +237,7 @@ export const issuesSchema = () =>
        */
       activity: {
         columns: { ...activityColumns, kind: activityColumns.kind.check(ActivityKind) },
-        partition: "workspace",
+        partition: workspace,
         allow: ({ deny, role }) => ({
           $default: deny,
           read: role("guest"),
@@ -244,7 +248,7 @@ export const issuesSchema = () =>
       /** Inside the sealed kind. The roles are the workspace's, inherited down the tree. */
       disclosure: {
         ...named(disclosure),
-        partition: "embargo",
+        partition: embargo,
         allow: ({ role }) => ({ $default: role("admin") }),
       },
     },

@@ -25,8 +25,9 @@ import {
   text as sqliteText,
 } from "drizzle-orm/sqlite-core";
 
-import { fromDrizzle, type DrizzleWarning } from "../from-drizzle.js";
+import { drizzleTable, fromDrizzle, type DrizzleWarning } from "../from-drizzle.js";
 import { syncSchema } from "../manifest.js";
+import { global, ladder, partition } from "../partition.js";
 import { checkRow, table, type Row } from "../table.js";
 
 type Equal<A, B> =
@@ -45,6 +46,11 @@ const books = pgTable("books", {
   code: varchar("code", { length: 8 }).unique(),
   addedAt: timestamp("added_at").defaultNow(),
 });
+
+const workspace = partition("workspace", { roles: ladder("owner", "admin", "member", "guest") });
+const embargo = partition("embargo", { sealed: true, roles: workspace.roles });
+const ward = partition("ward", { roles: ladder("consultant", "nurse") });
+const archive = partition("archive");
 
 describe("fromDrizzle — the pinned mapping", () => {
   test("maps every supported Postgres column to its frozen kind and modifiers", () => {
@@ -144,17 +150,17 @@ describe("fromDrizzle — refusals at module load", () => {
 
 describe("fromDrizzle — end to end", () => {
   test("an imported table goes into a manifest and admits a row the mesh would accept", () => {
+    const org = partition("org");
     const schema = syncSchema({
-      partitions: { org: {} },
       tables: {
         books: {
           columns: fromDrizzle(books, { merge: { rating: "max" } }),
-          partition: "org",
+          partition: org,
           allow: ({ deny }) => ({ $default: deny }),
         },
         plain: {
           columns: fromDrizzle(pgTable("plain", { id: uuid("id").primaryKey(), n: integer("n") })),
-          partition: "org",
+          partition: org,
           allow: ({ deny }) => ({ $default: deny }),
         },
       },
@@ -183,5 +189,90 @@ describe("fromDrizzle — end to end", () => {
     // SAFETY: deliberately an unknown column, to exercise the runtime guard behind the type
     const unknownColumn = { nope: "max" } as never;
     expect(() => fromDrizzle(books, { merge: unknownColumn })).toThrow("does not have");
+  });
+});
+
+describe("drizzleTable — role() is typed against the referenced kind", () => {
+  test("a role from the kind's own ladder compiles and builds the rule the spread form built", () => {
+    const spread = syncSchema({
+      tables: {
+        books: {
+          ...drizzleTable(books),
+          partition: workspace,
+          allow: ({ role }) => ({ read: role("admin"), $default: role("owner") }),
+        },
+      },
+    });
+    const called = syncSchema({
+      tables: {
+        books: drizzleTable(books, {
+          partition: workspace,
+          merge: { rating: "max" },
+          allow: ({ role }) => ({ read: role("admin"), $default: role("owner") }),
+        }),
+      },
+    });
+    expect(called.entries[0]?.allow).toEqual({
+      read: { kind: "role", role: "admin" },
+      $default: { kind: "role", role: "owner" },
+    });
+    expect(called.entries[0]?.allow).toEqual(spread.entries[0]?.allow);
+    expect(called.kinds).toEqual(["workspace"]);
+    expect(called.merge.get(called.tables.books.name)?.size).toBe(1);
+    expect(called.rolesFor("workspace")).toBe(workspace.roles);
+  });
+
+  test("a role the kind does not have is a compile error", () => {
+    const other = drizzleTable(books, {
+      partition: ward,
+      // @ts-expect-error a role from a different kind
+      allow: ({ deny, role }) => ({ $default: deny, read: role("guest") }),
+    });
+    const none = drizzleTable(books, {
+      partition: archive,
+      // @ts-expect-error a kind with no roles has no role() to call
+      allow: ({ deny, role }) => ({ $default: deny, read: role("anything") }),
+    });
+    const typo = drizzleTable(books, {
+      partition: workspace,
+      // @ts-expect-error not a role in the manifest
+      allow: ({ deny, role }) => ({ $default: deny, read: role("nope") }),
+    });
+    expect(other).toHaveProperty("partition", ward);
+    expect(none).toHaveProperty("partition", archive);
+    expect(typo).toHaveProperty("partition", workspace);
+  });
+
+  test("roles: other.roles shares the union, so embargo may name a workspace role", () => {
+    const schema = syncSchema({
+      tables: {
+        books: drizzleTable(books, {
+          partition: embargo,
+          allow: ({ owner, role }) => ({ read: role("guest"), $default: owner("id") }),
+        }),
+      },
+    });
+    expect(schema.entries[0]?.allow?.read).toEqual({ kind: "role", role: "guest" });
+    expect(schema.rolesFor("embargo")).toBe(workspace.roles);
+    expect(schema.sealedKinds.has("embargo")).toBe(true);
+  });
+
+  test("a reserved kind takes no allow; a declared kind requires one", () => {
+    const schema = syncSchema({ tables: { books: drizzleTable(books, { partition: global }) } });
+    expect(schema.entries[0]?.partition).toBe("global");
+    expect(schema.entries[0]?.allow).toBeUndefined();
+    // @ts-expect-error a table in a declared kind needs an allow rule
+    const bare = drizzleTable(books, { partition: workspace });
+    expect(bare).toHaveProperty("columns");
+    expect(() =>
+      syncSchema({
+        tables: {
+          books: drizzleTable(books, {
+            partition: global,
+            allow: ({ deny }) => ({ $default: deny }),
+          }),
+        },
+      }),
+    ).toThrow("takes no allow rule");
   });
 });

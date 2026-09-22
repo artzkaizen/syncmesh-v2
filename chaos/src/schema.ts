@@ -1,4 +1,4 @@
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 
 /**
  * One table, one partition, one rule.
@@ -11,10 +11,10 @@ import { syncSchema, t } from "@syncmesh/schema";
 export const WORKSPACE = "workspace:chaos";
 export const NOTE = "note";
 
+const workspace = partition("workspace", { roles: ladder("admin", "member") });
+
 export const chaosSchema = () =>
   syncSchema({
-    partitions: { workspace: {} },
-    roles: { workspace: ["admin", "member"] },
     tables: {
       note: {
         columns: {
@@ -23,7 +23,7 @@ export const chaosSchema = () =>
           ownerId: t.text(),
           at: t.integer(),
         },
-        partition: "workspace",
+        partition: workspace,
         // a row belongs to the account that made it; everyone in the workspace can read it
         allow: ({ owner, role, any }) => ({
           $default: any(owner("ownerId"), role("admin")),
