@@ -1,5 +1,6 @@
 import type { SqlRow } from "@syncmesh/storage";
 
+import { attachLog } from "@syncmesh/storage";
 import { captureTests, storeTests } from "@syncmesh/storage/driver-tests";
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
@@ -41,11 +42,16 @@ describe("@syncmesh/sqlite-expo passes the store contract", () => {
   // one database per name, kept alive across a driver's `close`, so a case that reopens by name
   // finds what it wrote — a phone's file outlives the connection the same way
   const databases = new Map<string, ReturnType<typeof fakeExpo>>();
-  const openDriver = (name: string) => {
-    const held = databases.get(name) ?? fakeExpo(":memory:");
+  const openDriver = async (name: string) => {
+    const known = databases.get(name);
+    const held = known ?? fakeExpo(":memory:");
     databases.set(name, held);
     const driver = expoSqliteDriverOver(held);
-    return Promise.resolve({ ...driver, close: () => Promise.resolve() });
+    // a store opens only over a connection with the log attached as `syncmesh` (RFC-0022). On a
+    // phone the adapter's own `attachLog(driver, logPath)` does this; here the fake does it once
+    // per database, because the connection outlives every `close` above
+    if (known === undefined) await attachLog(driver, ":memory:");
+    return { ...driver, close: () => Promise.resolve() };
   };
   for (const c of [...storeTests(openDriver), ...captureTests(openDriver)]) test(c.name, c.run);
 });
