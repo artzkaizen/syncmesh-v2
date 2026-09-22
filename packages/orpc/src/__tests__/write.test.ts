@@ -1,4 +1,4 @@
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -10,13 +10,12 @@ import { createClient, mutation, query, sqlite } from "../index.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
 
+const org = partition("org", { roles: ladder("member") });
 const schema = syncSchema({
-  partitions: { org: {} },
-  roles: { org: ["member"] },
   tables: {
     notes: {
       columns: { id: t.text().primaryKey(), body: t.text() },
-      partition: "org",
+      partition: org,
       allow: ({ role }) => ({ $default: role("member") }),
     },
   },

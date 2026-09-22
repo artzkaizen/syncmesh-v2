@@ -152,7 +152,7 @@ export const harness = () => {
       stranded: () => Promise.resolve(Result.ok([])),
     },
     accounts: { disputes: () => [] },
-    schema: { entries: [], partitions: {}, sealedKinds: new Set<string>(), presence: [] },
+    schema: { entries: [], kinds: [], sealedKinds: new Set<string>(), presence: [] },
     running: () => true,
     settled: () => Promise.resolve(),
   };

@@ -3,7 +3,7 @@
 import type { MeshOptions, MeshShaping } from "@syncmesh/client";
 import type { EventStore, StateStore } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
-import type { ColumnsMap, PartitionTree, PresenceMap, Roles, Schema } from "@syncmesh/schema";
+import type { ColumnsMap, PresenceMap, Schema } from "@syncmesh/schema";
 import type { BlobStore, SqlDriver, Stores } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { Entropy, Identity } from "@syncmesh/wire";
@@ -24,14 +24,8 @@ import type { AuthorityLink, Router } from "./api.js";
  * **No tenant, workspace or shop appears here.** Scope is input, never construction (book ch. 3);
  * a client is built once and every call says which replica it is about.
  */
-export interface ClientOptions<
-  R extends Router,
-  P extends PartitionTree,
-  RS extends Roles<P>,
-  C extends ColumnsMap,
-  PC extends PresenceMap,
-> {
-  readonly schema: Schema<P, RS, C, PC>;
+export interface ClientOptions<R extends Router, C extends ColumnsMap, PC extends PresenceMap> {
+  readonly schema: Schema<C, PC>;
   /** The app's own API — every read and every write it performs. */
   readonly procedures: R;
   /**
@@ -48,9 +42,9 @@ export interface ClientOptions<
    */
   readonly trust?: Trust;
   /** Who is calling, and how to prove it (book ch. 14). */
-  readonly auth?: MeshOptions<P, RS, C, "sqlite", PC>["auth"];
+  readonly auth?: MeshOptions<C, "sqlite", PC>["auth"];
   /** Started at construction; `$transports.add/remove` reshape the set later. */
-  readonly transports?: MeshOptions<P, RS, C, "sqlite", PC>["transports"];
+  readonly transports?: MeshOptions<C, "sqlite", PC>["transports"];
   /**
    * The platform signals that mean *look at your links again* — an app returning to the
    * foreground, a network becoming reachable (`@syncmesh/react-native` ships both).
@@ -59,7 +53,7 @@ export interface ClientOptions<
    * runs and tells every medium to re-check its link when one of them fires. Absent — every server,
    * and any device where nothing sleeps — nothing subscribes and nothing changes.
    */
-  readonly knocks?: MeshOptions<P, RS, C, "sqlite", PC>["knocks"];
+  readonly knocks?: MeshOptions<C, "sqlite", PC>["knocks"];
   /** Fleet shaping: periodic re-peering, and what belongs to the room rather than a medium. */
   readonly mesh?: MeshShaping;
   /**
@@ -67,7 +61,7 @@ export interface ClientOptions<
    * a peer asking for one, else deny. This is for the rule a deployment adds on top ("no BLE on
    * site"), never the rule that makes the default work.
    */
-  readonly admission?: MeshOptions<P, RS, C, "sqlite", PC>["onGrantRequest"];
+  readonly admission?: MeshOptions<C, "sqlite", PC>["onGrantRequest"];
   /**
    * A signed checkpoint to offer with any state this node serves (RFC-0019, book ch. 4).
    *
@@ -76,7 +70,7 @@ export interface ClientOptions<
    * hash of what it installed. Only a holder of the issuer key can mint one — `issueCheckpoint` —
    * but any node may forward the one it was given.
    */
-  readonly certificate?: MeshOptions<P, RS, C, "sqlite", PC>["certificate"];
+  readonly certificate?: MeshOptions<C, "sqlite", PC>["certificate"];
   /**
    * The engine's CSPRNG, for the one moment it is needed before any key exists: device keys and
    * handshake nonces. Defaults to `globalThis.crypto.getRandomValues`; pass `expo-crypto`'s on
@@ -100,7 +94,7 @@ export interface ClientOptions<
   /** Carries `authority` calls. Absent, one fails naming itself rather than pretending. */
   readonly link?: AuthorityLink;
   /** Everything the engine reports, from before there is a client to report it on. */
-  readonly onError?: MeshOptions<P, RS, C, "sqlite", PC>["onError"];
+  readonly onError?: MeshOptions<C, "sqlite", PC>["onError"];
   readonly now?: () => Temporal.Instant;
   readonly undoDepth?: number;
 }
@@ -266,15 +260,9 @@ const spread = (
  * Keys are assigned rather than spread because `exactOptionalPropertyTypes` reads an explicit
  * `undefined` as a value, and "no issuer" is the absence of the key, not the presence of nothing.
  */
-export const flatten = <
-  R extends Router,
-  P extends PartitionTree,
-  RS extends Roles<P>,
-  C extends ColumnsMap,
-  PC extends PresenceMap,
->(
-  options: ClientOptions<R, P, RS, C, PC>,
-): AppOptions<R, P, RS, C, PC> => {
+export const flatten = <R extends Router, C extends ColumnsMap, PC extends PresenceMap>(
+  options: ClientOptions<R, C, PC>,
+): AppOptions<R, C, PC> => {
   const { storage, trust, admission, entropy, ...rest } = options;
   // SAFETY: a `ClientOptions` is a plain record of its own declared keys
   const ungrouped = rest as Record<string, unknown>;
@@ -289,7 +277,7 @@ export const flatten = <
   // SAFETY: every key written above is one of `AppOptions`' own, under the name it declares —
   // `TRUST_KEYS` and `STORAGE_KEYS` are checked against the group types by `satisfies`, and the
   // ungrouped rest is copied through unchanged. Nothing is widened and nothing is invented.
-  return flat as unknown as AppOptions<R, P, RS, C, PC>;
+  return flat as unknown as AppOptions<R, C, PC>;
 };
 
 /**
@@ -300,11 +288,9 @@ export const flatten = <
  */
 export interface AppOptions<
   R extends Router,
-  P extends PartitionTree,
-  RS extends Roles<P>,
   C extends ColumnsMap,
   PC extends PresenceMap,
-> extends MeshOptions<P, RS, C, "sqlite", PC> {
+> extends MeshOptions<C, "sqlite", PC> {
   readonly procedures: R;
   readonly link?: AuthorityLink;
 }
@@ -317,15 +303,9 @@ export interface AppOptions<
  * exists. The driver a caller names is asked directly, which is also the only place the key can
  * honestly live — beside the log it signs, gone when that is gone.
  */
-export const named = async <
-  R extends Router,
-  P extends PartitionTree,
-  RS extends Roles<P>,
-  C extends ColumnsMap,
-  PC extends PresenceMap,
->(
-  options: ClientOptions<R, P, RS, C, PC>,
-): Promise<ClientOptions<R, P, RS, C, PC> & { readonly identity: Identity }> => {
+export const named = async <R extends Router, C extends ColumnsMap, PC extends PresenceMap>(
+  options: ClientOptions<R, C, PC>,
+): Promise<ClientOptions<R, C, PC> & { readonly identity: Identity }> => {
   if (options.identity !== undefined) return { ...options, identity: options.identity };
   const storage = options.storage;
   const driver =

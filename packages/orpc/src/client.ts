@@ -1,5 +1,5 @@
 import type { Mesh, MeshStatus } from "@syncmesh/client";
-import type { ColumnsMap, PartitionTree, PresenceMap, Roles } from "@syncmesh/schema";
+import type { ColumnsMap, PresenceMap } from "@syncmesh/schema";
 
 import { createMesh } from "@syncmesh/client";
 import { panic } from "@syncmesh/result";
@@ -122,11 +122,9 @@ const MESH_SURFACES = [
 
 export function createClient<
   R extends Router,
-  P extends PartitionTree,
-  const RS extends Roles<P>,
   C extends ColumnsMap,
   PC extends PresenceMap = Record<string, never>,
->(options: ClientOptions<R, P, RS, C, PC>): Client<R, PC> {
+>(options: ClientOptions<R, C, PC>): Client<R, PC> {
   let mesh: Mesh<"sqlite", PC> | undefined;
   /** The same mesh under the narrower name the api binds to, built once rather than per call. */
   let bound: ApiMesh<PC> | undefined;

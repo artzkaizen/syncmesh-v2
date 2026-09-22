@@ -1,4 +1,4 @@
-import type { ColumnsMap, PartitionTree, PresenceMap, Roles } from "@syncmesh/schema";
+import type { ColumnsMap, PresenceMap } from "@syncmesh/schema";
 
 import type { Api, AuthorityHandlers, ProcedureDef, Router } from "./api.js";
 import type { Client } from "./client.js";
@@ -18,11 +18,9 @@ import { replicaFor } from "./scope.js";
  */
 export interface ServerOptions<
   R extends Router,
-  P extends PartitionTree,
-  RS extends Roles<P>,
   C extends ColumnsMap,
   PC extends PresenceMap,
-> extends Omit<ClientOptions<R, P, RS, C, PC>, "link"> {
+> extends Omit<ClientOptions<R, C, PC>, "link"> {
   /** The router's `.authority()` leaves, mirrored — completeness checked by the type. */
   readonly handlers?: AuthorityHandlers<R>;
   /**
@@ -72,11 +70,9 @@ interface OpenApiOperation {
 
 export async function createServer<
   R extends Router,
-  P extends PartitionTree,
-  const RS extends Roles<P>,
   C extends ColumnsMap,
   PC extends PresenceMap = Record<string, never>,
->(options: ServerOptions<R, P, RS, C, PC>): Promise<Server<R, PC>> {
+>(options: ServerOptions<R, C, PC>): Promise<Server<R, PC>> {
   const { handlers, watchdogs, custody, ...clientOptions } = options;
   // the same construction a device makes: a server is a node with extra duties (ch. 19)
   const client = createClient(clientOptions);

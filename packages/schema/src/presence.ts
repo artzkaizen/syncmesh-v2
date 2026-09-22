@@ -1,19 +1,19 @@
 import { panic } from "@syncmesh/result";
 
+import type { Partition } from "./partition.js";
 import type { Columns } from "./table.js";
-import type { Kinds, PartitionTree } from "./manifest.js";
 
 import { parseColumnName, parseTableName } from "./names.js";
-import { RESERVED, isPartition, type Partition } from "./partition.js";
+import { isPartition } from "./partition.js";
 
 /**
  * A presence topic: a cursor, a typing flag, who-is-here. Declared next to the tables because an
  * ephemeral value from a peer needs a shape for the same reason a row does — unvalidated, it is
  * an injection surface. Never stored, never in the log (D16).
  */
-export interface PresenceEntry<P extends PartitionTree, C extends Columns = Columns> {
+export interface PresenceEntry<C extends Columns = Columns> {
   /** The instance kind a value belongs to; `board` means one cursor set per board. */
-  readonly partition: Kinds<P> | Partition;
+  readonly partition: Partition;
   /** The value's columns, checked on send and on receive exactly as a row's are. */
   readonly of: C;
   /** How long a value stays live without being re-sent. Default 10_000. */
@@ -23,13 +23,13 @@ export interface PresenceEntry<P extends PartitionTree, C extends Columns = Colu
 export type PresenceMap = Readonly<Record<string, Columns>>;
 
 /** What a manifest declares under `presence:` — one entry per topic. */
-export type PresenceBlock<P extends PartitionTree, PC extends PresenceMap> = {
-  readonly [K in keyof PC]: PresenceEntry<P, PC[K]>;
+export type PresenceBlock<PC extends PresenceMap> = {
+  readonly [K in keyof PC]: PresenceEntry<PC[K]>;
 };
 
 /**
  * A presence topic as the schema holds it: its shape, where it lives, how long it lasts. The
- * kind is a plain string here — it was checked against the tree at definition, and every reader
+ * kind is a plain string here — it was a declared value at definition, and every reader
  * downstream treats it as opaque.
  */
 export interface PresenceTopic {
@@ -40,9 +40,8 @@ export interface PresenceTopic {
 }
 
 /** Topic declarations, validated the way tables are: a real kind, a real name, a usable shape. */
-export function presenceTopics<P extends PartitionTree, PC extends PresenceMap>(
-  block: PresenceBlock<P, PC> | undefined,
-  parents: ReadonlyMap<string, string | undefined>,
+export function presenceTopics<PC extends PresenceMap>(
+  block: PresenceBlock<PC> | undefined,
   declare: (value: Partition) => string,
 ): readonly PresenceTopic[] {
   if (block === undefined) return [];
@@ -51,9 +50,9 @@ export function presenceTopics<P extends PartitionTree, PC extends PresenceMap>(
       panic(`presence ${name}: a topic name follows the table grammar`);
     // a topic announces *about* an instance, so a kind only presence names is still a kind this
     // manifest declares — collected here for the same reason a table's is
-    const kind = isPartition(entry.partition) ? declare(entry.partition) : entry.partition;
-    if (!isPartition(entry.partition) && !parents.has(kind) && !RESERVED.has(kind))
-      panic(`presence ${name}: unknown partition kind "${String(kind)}"`);
+    if (!isPartition(entry.partition))
+      panic(`presence ${name}: unknown partition kind "${String(entry.partition)}"`);
+    const kind = declare(entry.partition);
     const columns = Object.keys(entry.of);
     if (columns.length === 0) panic(`presence ${name}: a topic needs at least one column`);
     for (const column of columns)

@@ -1,6 +1,6 @@
 import { PGlite } from "@electric-sql/pglite";
 import { pgliteDriver } from "@syncmesh/postgres";
-import { syncSchema, t } from "@syncmesh/schema";
+import { local, syncSchema, t } from "@syncmesh/schema";
 import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import { pgTable, text } from "drizzle-orm/pg-core";
@@ -29,7 +29,7 @@ const LOG_TABLE = "syncmesh.events";
 
 const schema = syncSchema({
   tables: {
-    book: { columns: { id: t.text().primaryKey(), title: t.text() }, partition: "local" },
+    book: { columns: { id: t.text().primaryKey(), title: t.text() }, partition: local },
   },
 });
 

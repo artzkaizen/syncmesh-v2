@@ -1,7 +1,7 @@
 import type { Engine } from "@syncmesh/engine";
 import type { EventId, InvalidPartitionKey, Stamp, Row as WireCells } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
-import type { PartitionTree, PresenceMap, PresenceTopic, SchemaEntry } from "@syncmesh/schema";
+import type { PresenceMap, PresenceTopic, SchemaEntry } from "@syncmesh/schema";
 import type { SqlDialect, SqlDriver } from "@syncmesh/storage";
 import type { RouteTable } from "@syncmesh/transport";
 
@@ -25,19 +25,12 @@ import type { Status } from "./status.js";
 import type { MeshTelemetrySeam } from "./telemetry.js";
 import type { RunningTransports } from "./transports.js";
 
-/**
- * One table as anything outside the app's own generics can read it.
- *
- * The kind is a plain string here and a union in the manifest, and that is deliberate: a panel
- * enumerating kinds is not narrowing on one, and widening `Schema` far enough to be generic-free
- * collapses every declared kind to the three reserved ones — which would hand a reader `"global"`
- * for a table that lives in `org`.
- */
-export type MeshSchemaEntry = Omit<SchemaEntry, "partition"> & { readonly partition: string };
+/** One table as anything outside the app's own generics reads it: the entry the manifest built. */
+export type MeshSchemaEntry = SchemaEntry;
 
 /**
  * What the manifest says, for anything that has to enumerate rather than write: which tables
- * sync and where their rows live, the kind tree, which kinds are sealed, and the presence topics.
+ * sync and where their rows live, the declared kinds, which are sealed, and the presence topics.
  *
  * A narrowing rather than a copy: `mesh.schema` **is** the manifest the validator and the fold
  * are reading, and this type is all of it anything outside can see — so there is nothing here to
@@ -48,8 +41,8 @@ export type MeshSchemaEntry = Omit<SchemaEntry, "partition"> & { readonly partit
 export interface MeshSchema {
   /** Every synced table, where its rows live, and its rules as data. */
   readonly entries: readonly MeshSchemaEntry[];
-  /** The declared kinds as a tree, parents outside children. */
-  readonly partitions: PartitionTree;
+  /** The declared kinds, in the order the manifest first references them; never a reserved one. */
+  readonly kinds: readonly string[];
   /**
    * The kinds whose content is end-to-end encrypted (book ch. 14) — what tells a reader that an
    * empty table is *sealed* rather than empty, which is the difference between a diagnosis and a

@@ -9,7 +9,13 @@ import type { AllowFn } from "./bind.js";
 import { combinators } from "./bind.js";
 import { strategyOf } from "./column.js";
 import { sourceName } from "./from-drizzle.js";
-import { RESERVED, isPartition, type Partition } from "./partition.js";
+import {
+  RESERVED,
+  global,
+  isPartition,
+  type Partition,
+  type ReservedPartition,
+} from "./partition.js";
 import {
   presenceTopics,
   type PresenceBlock,
@@ -19,74 +25,25 @@ import {
 import { reservedTables } from "./reserved.js";
 import { table, type Columns, type PrimaryKey, type Table } from "./table.js";
 
-/** Kinds as a tree: a key is a kind, nesting is nesting, a leaf is `{}`. Top-level kinds get their own store per instance. */
-export interface PartitionTree {
-  readonly [kind: string]: PartitionTree;
-}
-
-type Keys<P> = string extends keyof P ? never : keyof P & string;
-type Level2<P> = { [A in Keys<P>]: Keys<P[A]> }[Keys<P>];
-type Level3<P> = { [A in Keys<P>]: { [B in Keys<P[A]>]: Keys<P[A][B]> }[Keys<P[A]>] }[Keys<P>];
-type Level4<P> = {
-  [A in Keys<P>]: {
-    [B in Keys<P[A]>]: { [C in Keys<P[A][B]>]: Keys<P[A][B][C]> }[Keys<P[A][B]>];
-  }[Keys<P[A]>];
-}[Keys<P>];
-/** Every kind in the tree, to four levels deep. */
-export type Kinds<P> = Keys<P> | Level2<P> | Level3<P> | Level4<P>;
-
-export type ReservedKind = "global" | "user" | "local";
-
-/** A declared kind, or one of the three every app has: `global` (server-written, everyone reads), `user` (the account's devices), `local` (this device). */
-export type PartitionKind<P extends PartitionTree> = Kinds<P> | ReservedKind;
-
-/** The tree form's role block: a bare array per kind, read as a {@link ladder} (senior first). */
-export type Roles<P extends PartitionTree> = {
-  readonly [K in Kinds<P>]?: readonly string[];
-};
-
-/**
- * The names `role()` accepts: the manifest's own ladders where it has them, else any string.
- *
- * A manifest declaring kinds as values carries no `roles:` block, so `RoleNames` is `never` and
- * `role()` would take no argument at all. Narrowing those to the referenced kind's own ladder is
- * the win the value form is *for*, and it needs the entry's partition type at the entry — which
- * a mapped type cannot give. It arrives with `drizzleTable`, which is a function and can infer.
- */
-export type RoleNamesOr<R extends Roles<PartitionTree>> = [RoleNames<R>] extends [never]
-  ? string
-  : RoleNames<R>;
-
-/** Every role named anywhere in the manifest's ladders. */
-export type RoleNames<R extends Roles<PartitionTree>> = R[keyof R] extends
-  | readonly (infer X)[]
-  | undefined
-  ? X & string
-  : never;
-
 /** Every table is written the same way: its columns, where its rows live, and who may do what. */
-export type TableEntry<
-  P extends PartitionTree,
-  R extends Roles<P> = Roles<P>,
-  C extends Columns = Columns,
-> =
+export type TableEntry<C extends Columns = Columns> =
   | {
       readonly columns: C;
       /**
-       * Where this table's rows live: the {@link Partition} value that declares the kind, or —
-       * for a manifest still using the tree form — its name.
+       * Where this table's rows live: the {@link Partition} value that declares the kind. A
+       * declared kind needs `allow`; omitted, the table is `global`.
        *
-       * A declared kind needs `allow`; omitted means `global`. A second arm for the value form
-       * was tried and withdrawn: two arms whose `allow` differ only in their role-name parameter
-       * defeat contextual typing, and every `allow: ({ role }) => …` in the repo went `any`.
+       * `role()` here takes any name; only `drizzleTable` can narrow it to the kind's own
+       * ladder, because it is a function and can infer the kind where a mapped type cannot.
        */
-      readonly partition: Kinds<P> | Partition;
-      readonly allow: AllowFn<C, RoleNamesOr<R>>;
+      readonly partition: Partition;
+      readonly allow: AllowFn<C, string>;
       readonly visibility?: undefined;
     }
   | {
       readonly columns: Columns;
-      readonly partition?: ReservedKind | Partition;
+      /** One of the three every app has; what the kind is *is* its rule, so no `allow`. */
+      readonly partition?: ReservedPartition;
       readonly allow?: undefined;
       readonly visibility?: undefined;
     }
@@ -101,36 +58,16 @@ export type TableEntry<
 export type ColumnsMap = Readonly<Record<string, Columns>>;
 
 /** `C` — each table's columns — is inferred first, so every entry's `allow` is typed to its own table. */
-export interface Manifest<
-  P extends PartitionTree,
-  R extends Roles<P>,
-  C extends ColumnsMap,
-  PC extends PresenceMap = Record<string, never>,
-> {
-  readonly partitions?: P;
-  readonly roles?: R;
-  readonly tables: { readonly [K in keyof C]: TableEntry<P, R, C[K]> };
+export interface Manifest<C extends ColumnsMap, PC extends PresenceMap = Record<string, never>> {
+  readonly tables: { readonly [K in keyof C]: TableEntry<C[K]> };
   /** The ephemeral tier (D16): topics that never touch the log, the snapshot or a cursor. */
-  readonly presence?: PresenceBlock<P, PC>;
-  /**
-   * Kinds whose content is end-to-end encrypted (book ch. 14). Every carrier — another device,
-   * a relay, the server's custody role — holds the envelope and cannot read a value in it.
-   *
-   * A list of kinds rather than a flag inside the tree, because the tree is a tree of kinds and
-   * a boolean in it would be a node that is not one. Naming them here is also the only place
-   * where the whole set is visible at once, which is what a person deciding what a server may
-   * judge actually wants to read.
-   *
-   * **The trade is stated, not hidden**: sealing buys operator-proof custody and costs
-   * server-side judgment. Folding into Postgres, watchdogs and corrections are structurally
-   * unavailable for a sealed kind, because a judge has to read.
-   */
-  readonly sealed?: readonly PartitionKind<P>[];
+  readonly presence?: PresenceBlock<PC>;
 }
 
-export interface SchemaEntry<P extends PartitionTree = PartitionTree> {
+export interface SchemaEntry {
   readonly table: Table;
-  readonly partition: PartitionKind<P>;
+  /** The name of the kind the table's rows live in; one of the reserved three or a declared one. */
+  readonly partition: string;
   readonly visibility: "partition" | "authority";
   /** The rules, as data — what the `_policy` row will carry. Absent for user, local and global tables. */
   readonly allow?: AllowBlock;
@@ -140,28 +77,20 @@ export type TablesOf<C extends ColumnsMap> = {
   readonly [K in keyof C]: Table<C[K], PrimaryKey<C[K]>>;
 };
 
-export interface Schema<
-  P extends PartitionTree,
-  R extends Roles<P>,
-  C extends ColumnsMap,
-  PC extends PresenceMap = Record<string, never>,
-> {
-  readonly partitions: P;
-  readonly roles: R;
+export interface Schema<C extends ColumnsMap, PC extends PresenceMap = Record<string, never>> {
   readonly tables: TablesOf<C>;
   /** Declared presence topics, in declaration order; empty when the manifest declares none. */
   readonly presence: readonly PresenceTopic[];
   /** The value shape a topic declares, for the hooks that infer from it. */
   readonly presenceOf: PC;
-  readonly entries: readonly SchemaEntry<P>[];
+  readonly entries: readonly SchemaEntry[];
   readonly reserved: readonly Table[];
   readonly merge: MergeSpec;
-  /** Every declared kind — the tree's, then the ones table entries reference as values. */
+  /** Every declared kind, in the order the tables and topics first reference them; never a reserved one. */
   readonly kinds: readonly string[];
   /** The kinds whose content is sealed; empty for a manifest that declares none. */
   readonly sealedKinds: ReadonlySet<string>;
-  readonly parentOf: (kind: string) => Kinds<P> | undefined;
-  /** The roles that apply in a kind and whether they are ordered — inherited from its parent under the tree form when it declares none. */
+  /** The roles that apply in a kind and whether they are ordered; {@link NO_ROLES} for a reserved or unknown one. */
   readonly rolesFor: (kind: string) => RoleSet;
 }
 
@@ -178,43 +107,22 @@ export const syncedTables = (schema: {
   readonly entries: readonly Pick<SchemaEntry, "table">[];
 }): readonly Table[] => schema.entries.map((entry) => entry.table);
 
-/** The sealed kinds, checked against the tree: a typo here is a partition nobody encrypts. */
-const sealedIn = (
-  declared: readonly string[] | undefined,
-  parents: ReadonlyMap<string, string | undefined>,
-): ReadonlySet<string> => {
-  for (const kind of declared ?? [])
-    if (!parents.has(kind) && !RESERVED.has(kind))
-      panic(`sealed: unknown partition kind "${kind}"`);
-  return new Set<string>(declared ?? []);
-};
-
 /** One manifest for the data model (D06-A). Definition mistakes throw at module load. */
 export function syncSchema<
-  const P extends PartitionTree,
-  const R extends Roles<P>,
   const C extends ColumnsMap,
   const PC extends PresenceMap = Record<string, never>,
->(manifest: Manifest<P, R, C, PC>): Schema<P, R, C, PC> {
-  // SAFETY: an absent tree declares no kinds, which every P admits; an absent roles map declares none, which every R admits
-  const partitions = manifest.partitions ?? ({} as P);
-  // SAFETY: as above
-  const roles = manifest.roles ?? ({} as R);
-  const parents = flatten(partitions);
-  for (const name of Object.keys(roles))
-    if (!parents.has(name)) panic(`roles: unknown partition kind "${name}"`);
-
+>(manifest: Manifest<C, PC>): Schema<C, PC> {
   const built: Record<string, Table> = {};
-  const entries: SchemaEntry<P>[] = [];
+  const entries: SchemaEntry[] = [];
   const merge = new Map<TableName, Map<ColumnName, StrategyName>>();
-  const tables: Readonly<Record<string, TableEntry<P, R, Columns>>> = manifest.tables;
+  const tables: Readonly<Record<string, TableEntry>> = manifest.tables;
   /**
-   * Kinds declared as values, collected from what references them (§2.1).
+   * The kinds, collected from what references them (§2.1).
    *
    * Derived rather than listed, because a kind nothing stores in and nothing announces on holds
-   * nothing — there is no manifest entry for it to be missing from. What the tree form got for
-   * free and this has to check for is a **duplicate name**: object keys could not collide, two
-   * `partition("ward")` values in two modules can.
+   * nothing — there is no manifest entry for it to be missing from. What object keys got for
+   * free and this has to check for is a **duplicate name**: two `partition("ward")` values in
+   * two modules can collide.
    */
   const declared = new Map<string, Partition>();
   const declare = (value: Partition): string => {
@@ -231,10 +139,9 @@ export function syncSchema<
     if (source !== undefined && source !== name)
       panic(`${name}: imported columns come from the Drizzle table "${source}"`);
     const tbl = table(name, entry.columns);
-    if (isPartition(entry.partition)) declare(entry.partition);
-    const partition = partitionOf<P, R>(name, entry, parents);
+    const partition = partitionOf(name, entry, declare);
     built[name] = tbl;
-    const base: SchemaEntry<P> = {
+    const base: SchemaEntry = {
       table: tbl,
       partition,
       visibility: entry.visibility ?? "partition",
@@ -243,70 +150,39 @@ export function syncSchema<
     const rules = mergeRulesFor(name, tbl);
     if (rules.size > 0) merge.set(tbl.name, rules);
   }
-  const presence = presenceTopics<P, PC>(manifest.presence, parents, declare);
-  for (const name of declared.keys())
-    if (parents.has(name)) panic(`partition kind "${name}" is declared twice`);
-  const kinds = [...parents.keys(), ...declared.keys()];
-  const sealedKinds = new Set<string>([
-    ...sealedIn(manifest.sealed, parents),
-    ...[...declared.values()].filter((p) => p.sealed).map((p) => p.name),
-  ]);
+  const presence = presenceTopics<PC>(manifest.presence, declare);
   return {
-    partitions,
-    roles,
     // SAFETY: built has exactly the keys of T, each the table its entry describes
-    tables: built as Schema<P, R, C, PC>["tables"],
+    tables: built as Schema<C, PC>["tables"],
     presence,
     // SAFETY: the shapes are exactly the `of` maps the manifest declared, keyed as it keyed them
     presenceOf: Object.fromEntries(presence.map((t) => [t.name, t.columns])) as PC,
     entries,
     reserved: reservedTables,
     merge,
-    kinds,
-    sealedKinds,
-    // SAFETY: as above
-    parentOf: (kind) => parents.get(kind) as Kinds<P> | undefined,
-    rolesFor: (kind) => declared.get(String(kind))?.roles ?? rolesFor(parents, roles, kind),
+    kinds: [...declared.keys()],
+    sealedKinds: new Set([...declared.values()].filter((p) => p.sealed).map((p) => p.name)),
+    rolesFor: (kind) => declared.get(kind)?.roles ?? NO_ROLES,
   };
 }
 
-function partitionOf<P extends PartitionTree, R extends Roles<P>>(
+/** The kind a table's rows live in, with the two `allow` guards the types cannot express for a value. */
+function partitionOf(
   name: string,
-  entry: TableEntry<P, R, Columns>,
-  parents: ReadonlyMap<string, string | undefined>,
-): PartitionKind<P> {
+  entry: TableEntry,
+  declare: (value: Partition) => string,
+): string {
   if (entry.visibility === "authority") return "global";
-  if (isPartition(entry.partition)) {
-    // a reserved kind's rule *is* what it is (server-written, one account, one device), so an
-    // `allow` block on one would be a second rule with nothing to say
-    if (RESERVED.has(entry.partition.name) && entry.allow !== undefined)
-      panic(`${name}: a table in the reserved kind "${entry.partition.name}" takes no allow rule`);
-    if (!RESERVED.has(entry.partition.name) && entry.allow === undefined)
-      panic(`${name}: a table in a declared partition kind needs an allow rule`);
-    // SAFETY: the name came off a Partition this manifest declares, which is what PartitionKind names
-    return entry.partition.name as PartitionKind<P>;
-  }
-  const partition = entry.partition ?? "global";
-  const known = parents.has(partition);
-  if (!known && !RESERVED.has(partition)) panic(`${name}: unknown partition kind "${partition}"`);
-  if (known && entry.allow === undefined)
+  const value = entry.partition ?? global;
+  // a manifest built where the types did not reach — generated, or spread from `any`
+  if (!isPartition(value)) panic(`${name}: unknown partition kind "${String(value)}"`);
+  // a reserved kind's rule *is* what it is (server-written, one account, one device), so an
+  // `allow` block on one would be a second rule with nothing to say
+  if (RESERVED.has(value.name) && entry.allow !== undefined)
+    panic(`${name}: a table in the reserved kind "${value.name}" takes no allow rule`);
+  if (!RESERVED.has(value.name) && entry.allow === undefined)
     panic(`${name}: a table in a declared partition kind needs an allow rule`);
-  return partition;
-}
-
-/** Kind → parent kind, in tree order; reserved and duplicate names throw. */
-function flatten(
-  tree: PartitionTree,
-  parent?: string,
-  into = new Map<string, string | undefined>(),
-): Map<string, string | undefined> {
-  for (const [kind, children] of Object.entries(tree)) {
-    if (RESERVED.has(kind)) panic(`partition kind "${kind}" is reserved`);
-    if (into.has(kind)) panic(`partition kind "${kind}" is declared twice`);
-    into.set(kind, parent);
-    flatten(children, kind, into);
-  }
-  return into;
+  return declare(value);
 }
 
 /** The strategies the fold needs: `lww` is the default and is left out, so an empty map means no rules. */
@@ -318,19 +194,4 @@ function mergeRulesFor(name: string, tbl: Table): Map<ColumnName, StrategyName> 
       rules.set(tbl.columnNames[key] ?? panic(`${name}.${key}: unnamed column`), strategy);
   }
   return rules;
-}
-
-/** The tree form's roles for a kind: its own array or the nearest ancestor's, each a ladder because the tree form has no other shape. */
-function rolesFor(
-  parents: ReadonlyMap<string, string | undefined>,
-  roles: Readonly<Record<string, readonly string[] | undefined>>,
-  kind: string,
-): RoleSet {
-  let current: string | undefined = kind;
-  while (current !== undefined) {
-    const declared = roles[current];
-    if (declared !== undefined) return { names: declared, ordered: true };
-    current = parents.get(current);
-  }
-  return NO_ROLES;
 }

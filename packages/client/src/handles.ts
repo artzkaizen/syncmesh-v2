@@ -1,7 +1,7 @@
 import type { Principal } from "@syncmesh/engine";
 import type { InvalidPartitionKey, PartitionKey } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
-import type { ColumnsMap, PartitionTree, PresenceMap, Roles, Schema } from "@syncmesh/schema";
+import type { ColumnsMap, PresenceMap, Schema } from "@syncmesh/schema";
 import type { OperationStore, SqlDialect, SqlDriver } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { KeyRing } from "@syncmesh/wire";
@@ -68,13 +68,11 @@ export const readableWith =
   (partition: PartitionKey): boolean =>
     !schema.sealedKinds.has(kindOf(partition)) || keys.keyFor(partition) !== undefined;
 
-export function openHandles<
-  P extends PartitionTree,
-  RS extends Roles<P>,
-  C extends ColumnsMap,
-  D extends SqlDialect,
-  PC extends PresenceMap,
->(schema: Schema<P, RS, C, PC>, booted: Booted, extras: HandleExtras = {}): OpenHandle<D> {
+export function openHandles<C extends ColumnsMap, D extends SqlDialect, PC extends PresenceMap>(
+  schema: Schema<C, PC>,
+  booted: Booted,
+  extras: HandleExtras = {},
+): OpenHandle<D> {
   const handles = new Map<string, Handle<D>>();
   const { engine, validate } = booted;
 

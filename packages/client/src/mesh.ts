@@ -1,4 +1,4 @@
-import type { ColumnsMap, PartitionTree, PresenceMap, Roles } from "@syncmesh/schema";
+import type { ColumnsMap, PresenceMap } from "@syncmesh/schema";
 import type { SqlDialect, SqlValue, TxReceipt } from "@syncmesh/storage";
 import type { SnapshotInstalled } from "@syncmesh/transport";
 
@@ -50,12 +50,10 @@ export type { TxReceipt };
  * boot is (D05): the clock must pass every stored stamp before a write is numbered.
  */
 export async function createMesh<
-  P extends PartitionTree,
-  const RS extends Roles<P>,
   C extends ColumnsMap,
   D extends SqlDialect = "sqlite",
   PC extends PresenceMap = Record<string, never>,
->(options: MeshOptions<P, RS, C, D, PC>): Promise<Result<Mesh<D, PC>, MeshOpenError>> {
+>(options: MeshOptions<C, D, PC>): Promise<Result<Mesh<D, PC>, MeshOpenError>> {
   const { identity, issuer, issuerKey } = options;
   if (issuerKey !== undefined && issuerKey.peerId !== issuer)
     panic(
@@ -92,13 +90,10 @@ interface Assembled {
   readonly booted: Booted;
 }
 
-function assemble<
-  P extends PartitionTree,
-  RS extends Roles<P>,
-  C extends ColumnsMap,
-  D extends SqlDialect,
-  PC extends PresenceMap,
->(options: MeshOptions<P, RS, C, D, PC>, deps: Assembled): Mesh<D, PC> {
+function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends PresenceMap>(
+  options: MeshOptions<C, D, PC>,
+  deps: Assembled,
+): Mesh<D, PC> {
   const { schema, identity } = options;
   const { grants, now, booted } = deps;
   const { engine } = booted;
@@ -116,7 +111,7 @@ function assemble<
   Object.assign(wired.extras, { sessionPrincipal: auth.principal });
   const keys = keyRingFor(identity, grants);
   Object.assign(wired.extras, { canRead: readableWith(schema, keys) });
-  const on = meterHandles<D>(tally, openHandles<P, RS, C, D, PC>(schema, booted, wired.extras));
+  const on = meterHandles<D>(tally, openHandles<C, D, PC>(schema, booted, wired.extras));
   const flush = createFlush({ transports: () => links.list() });
   const snapshots = createHub<SnapshotInstalled>();
   const recovery = openRecovery(

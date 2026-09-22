@@ -29,7 +29,7 @@ export const RESERVED = new Set<string>(["global", "user", "local"]);
  * holds too many of them is answered by `scopedStores`' cache, never by the app drawing a tree.
  */
 export interface Partition<N extends string = string, R extends string = string> {
-  /** The discriminant that tells a declared kind from the bare string the tree form used. */
+  /** The discriminant that marks a declared kind, for a manifest built where the types did not reach. */
   readonly declared: true;
   readonly name: N;
   /**
@@ -108,9 +108,9 @@ export const ladder = <const N extends readonly string[]>(...names: N): RoleSet<
 export const flat = <const N extends readonly string[]>(...names: N): RoleSet<N[number]> =>
   roleSet(names, false);
 
-/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof, anti-slop/require-safety-comment-for-type-assertion -- this IS the boundary: a manifest entry's `partition` is whatever the app wrote there, and telling a declared kind from the tree form's bare name is the parse. There is no earlier place to do it. */
+/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof, anti-slop/require-safety-comment-for-type-assertion -- this IS the boundary: a manifest entry's `partition` is whatever the app wrote there, and telling a declared kind from anything else is the parse. There is no earlier place to do it. */
 
-/** Whether a table entry's `partition` is a declared value rather than the tree form's string. */
+/** Whether a manifest entry's `partition` is a declared kind rather than something a generated manifest wrote there. */
 export const isPartition = (value: unknown): value is Partition =>
   typeof value === "object" && value !== null && (value as Partition).declared === true;
 

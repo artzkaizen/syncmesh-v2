@@ -1,6 +1,6 @@
 import { connectMesh, linkOver, serveMesh } from "@syncmesh/browser";
 import { createMesh } from "@syncmesh/client";
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -22,13 +22,12 @@ import { sqliteTable, text } from "drizzle-orm/sqlite-core";
  */
 const book = sqliteTable("book", { id: text().primaryKey(), title: text().notNull() });
 
+const org = partition("org", { roles: ladder("owner", "member", "viewer") });
 const schema = syncSchema({
-  partitions: { org: {} },
-  roles: { org: ["owner", "member", "viewer"] },
   tables: {
     book: {
       columns: { id: t.text().primaryKey(), title: t.text() },
-      partition: "org",
+      partition: org,
       allow: ({ role }) => ({ $default: role("member"), read: role("viewer") }),
     },
   },

@@ -9,7 +9,7 @@ import {
   type SeqNum,
   type TableName,
 } from "@syncmesh/kernel";
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver, defaultStore } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { linkTransport, loopbackPair, type LoopbackControl } from "@syncmesh/transport";
@@ -31,14 +31,13 @@ const NOTES = "notes" as TableName;
 const N1 = "n1" as RowKey;
 const BODY = "body" as ColumnName;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
+const org = partition("org", { roles: ladder("member") });
 const schema = () =>
   syncSchema({
-    partitions: { org: {} },
-    roles: { org: ["member"] },
     tables: {
       notes: {
         columns: { id: t.text().primaryKey(), body: t.text() },
-        partition: "org",
+        partition: org,
         allow: ({ role }) => ({ $default: role("member") }),
       },
     },

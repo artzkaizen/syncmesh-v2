@@ -1,6 +1,6 @@
 import type { EngineError, EventStore, StateStore } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
-import type { ColumnsMap, PartitionTree, PresenceMap, Roles, Schema } from "@syncmesh/schema";
+import type { ColumnsMap, PresenceMap, Schema } from "@syncmesh/schema";
 import type { BlobStore, SqlDialect, SqlDriver, Stores } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { Transport, TransportContext } from "@syncmesh/transport";
@@ -14,13 +14,11 @@ import type { Knock, MeshShaping } from "./transports.js";
  * decisions: where the data lives, who is trusted, what the radios are, and who is calling.
  */
 export interface MeshOptions<
-  P extends PartitionTree,
-  RS extends Roles<P>,
   C extends ColumnsMap,
   D extends SqlDialect = "sqlite",
   PC extends PresenceMap = Record<string, never>,
 > {
-  readonly schema: Schema<P, RS, C, PC>;
+  readonly schema: Schema<C, PC>;
   readonly identity: Identity;
   /**
    * How this device shapes its part of the mesh (book ch. 17): periodic re-peering, and what

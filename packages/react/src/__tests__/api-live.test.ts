@@ -4,7 +4,7 @@ import { syncOf } from "@syncmesh/drizzle";
 import { parsePeerId, type SeqNum } from "@syncmesh/kernel";
 import { mutation, query } from "@syncmesh/orpc";
 import { meshApi } from "@syncmesh/orpc/internal";
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -20,13 +20,12 @@ import { useLiveQuery } from "../use-live-query.js";
 
 const book = sqliteTable("book", { id: text().primaryKey(), title: text().notNull() });
 
+const org = partition("org", { roles: ladder("owner", "member") });
 const schema = syncSchema({
-  partitions: { org: {} },
-  roles: { org: ["owner", "member"] },
   tables: {
     book: {
       columns: { id: t.text().primaryKey(), title: t.text() },
-      partition: "org",
+      partition: org,
       allow: ({ role }) => ({ $default: role("member") }),
     },
   },

@@ -1,4 +1,4 @@
-import { syncSchema, t } from "@syncmesh/schema";
+import { local, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -18,7 +18,7 @@ const schema = syncSchema({
   tables: {
     products: {
       columns: { id: t.text().primaryKey(), priceCents: t.integer() },
-      partition: "local",
+      partition: local,
     },
   },
 });

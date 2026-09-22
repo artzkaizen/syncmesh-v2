@@ -29,12 +29,6 @@ export {
 } from "./table.js";
 export type {
   Manifest,
-  PartitionKind,
-  PartitionTree,
-  ReservedKind,
-  RoleNames,
-  RoleNamesOr,
-  Roles,
   Schema,
   SchemaEntry,
   ColumnsMap,
