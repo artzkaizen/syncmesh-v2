@@ -1,7 +1,14 @@
 import type { EngineError, EventStore, StateStore } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 import type { ColumnsMap, PresenceMap, Schema } from "@syncmesh/schema";
-import type { BlobStore, SqlDialect, SqlDriver, Stores } from "@syncmesh/storage";
+import type {
+  BlobStore,
+  ScopedStoreSet,
+  SqlDialect,
+  SqlDriver,
+  StoreScope,
+  Stores,
+} from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { Transport, TransportContext } from "@syncmesh/transport";
 import type { Identity } from "@syncmesh/wire";
@@ -52,6 +59,17 @@ export interface MeshOptions<
    * opened them is what knows when they are finished with.
    */
   readonly stores?: Stores;
+  /**
+   * The set those `stores` came from, and how to delete one scope's files — what lets
+   * `mesh.recovery.stores` shed a store this device no longer holds a grant for (book ch. 13).
+   *
+   * Absent, there is no sweep: a mesh over one driver has nothing to shed but itself. The
+   * deletion is yours for the same reason the set is — only the caller knows where the files are.
+   */
+  readonly sweep?: {
+    readonly set: ScopedStoreSet;
+    readonly remove: (scope: StoreScope) => Promise<void>;
+  };
   /** Where the default store's file goes. Default `.syncmesh`. */
   readonly dataDir?: string;
   readonly undoDepth?: number;

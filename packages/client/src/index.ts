@@ -40,6 +40,17 @@ export type {
 } from "./read-coverage.js";
 export { LOCAL_ONLY, createReadCoverage } from "./read-coverage.js";
 export { openRecovery } from "./recovery.js";
+export type {
+  MeshSweep,
+  StoreSweep,
+  SweepCandidate,
+  SweepDeps,
+  SweepReason,
+  SweepOver,
+  SweepRefusal,
+  SweepReport,
+} from "./sweep.js";
+export { createSweep, sweepFor } from "./sweep.js";
 export { createHandleTally } from "./inspect.js";
 export type { SyncState } from "./sync-state.js";
 export { createMesh } from "./mesh.js";

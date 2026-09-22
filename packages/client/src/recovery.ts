@@ -12,6 +12,8 @@ import type { SnapshotInstalled } from "@syncmesh/transport";
 
 import { Result } from "@syncmesh/result";
 
+import type { StoreSweep } from "./sweep.js";
+
 import { HistoryUnavailable, RebuildRefused } from "./errors.js";
 
 /**
@@ -90,6 +92,11 @@ export interface RecoveryView {
   readonly rebuild: (
     options?: RebuildOptions,
   ) => Promise<ResultType<RebuildReport, HistoryUnavailable | RebuildRefused>>;
+  /**
+   * The open stores no live grant covers, and the sweep that sheds them whole (plan §2.3).
+   * Absent on a mesh that was not told which stores this device holds.
+   */
+  readonly stores?: StoreSweep;
 }
 
 export interface RebuildOptions {
@@ -153,6 +160,8 @@ export interface RecoveryDeps {
   readonly onSnapshot: (cb: (installed: SnapshotInstalled) => void) => Unsubscribe;
   /** This device's own writes no peer has acknowledged yet. */
   readonly pending: () => number;
+  /** The grant-driven store sweep, where the caller holds the set of open stores. */
+  readonly stores?: StoreSweep;
 }
 
 /**
@@ -215,6 +224,7 @@ export function openRecovery(engine: Engine, deps?: RecoveryDeps): RecoveryView 
     stranded: () => engine.stranded(),
     run: () => engine.retryQuarantined(),
     rebuild: (options = {}) => rebuildFrom(deps, options),
+    ...(deps?.stores !== undefined && { stores: deps.stores }),
   };
 }
 

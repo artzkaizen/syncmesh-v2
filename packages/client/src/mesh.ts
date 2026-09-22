@@ -32,6 +32,7 @@ import { openPresence } from "./presence.js";
 import { createReadCoverage } from "./read-coverage.js";
 import { openRecovery, recoveryDeps } from "./recovery.js";
 import { createStatus } from "./status.js";
+import { sweepFor } from "./sweep.js";
 import { createSyncStates } from "./sync-state.js";
 import { followTelemetry } from "./telemetry.js";
 import { keyRingFor, transportContextFor } from "./transport-context.js";
@@ -114,10 +115,11 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
   const on = meterHandles<D>(tally, openHandles<C, D, PC>(schema, booted, wired.extras));
   const flush = createFlush({ transports: () => links.list() });
   const snapshots = createHub<SnapshotInstalled>();
-  const recovery = openRecovery(
-    engine,
-    recoveryDeps(engine, identity.peerId, snapshots, () => links.list()),
-  );
+  const swept = sweepFor({ self: identity.peerId, grants, over: options.sweep });
+  const recovery = openRecovery(engine, {
+    ...recoveryDeps(engine, identity.peerId, snapshots, () => links.list()),
+    ...(swept.stores !== undefined && { stores: swept.stores }),
+  });
   const internal = openInternal({ engine, self: identity.peerId });
 
   // the watermark behind the `syncOf` column: one update per acknowledgement, however many rows
@@ -220,7 +222,10 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
       now,
     }),
     running: links.running,
-    requestGrant: links.requestGrant,
+    requestGrant: (invite) => {
+      swept.asked();
+      links.requestGrant(invite);
+    },
     transports: {
       add: links.add,
       remove: links.remove,
@@ -231,6 +236,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
       forced: links.forced,
     },
     stop: async () => {
+      swept.stop();
       wired.stop();
       syncStates.stop();
       presence.stop(); // an explicit departure, so peers see this device leave now
