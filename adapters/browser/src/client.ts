@@ -10,11 +10,13 @@ import { parsePartitionKey } from "@syncmesh/kernel";
 import { meshApi } from "@syncmesh/orpc/internal";
 import { Result } from "@syncmesh/result";
 
+import type { RemoteDevice } from "./device.js";
 import type { RemoteInspect } from "./inspect.js";
 import type { RemoteOperations } from "./ledger.js";
 import type { MeshLink } from "./link.js";
 
 import { createAsked } from "./asked.js";
+import { remoteDevice } from "./device.js";
 import { remoteInspect } from "./inspect.js";
 import { remoteLedger } from "./ledger.js";
 import { remoteHandle } from "./remote-handle.js";
@@ -23,20 +25,21 @@ import { openWire } from "./wire.js";
 /**
  * The mesh as a tab that does not hold it can honestly answer.
  *
- * Narrower than `Mesh`, and the omissions are the argument rather than a to-do list: `transports`,
- * `routes`, `recovery`, `auth`, `accounts`, `blobs` and `presence` are facts and controls of **the
- * device**, and a follower tab is not a device — it is one of several windows onto one. A radio
- * toggled in tab three is the origin's radio, and deciding what that means is a product question
- * (`research/browser-durability.md` §4 settles identity, not settings). What is here is what a
- * *window* needs: the data, the live queries over it, and the two synchronous questions a
- * component asks while it renders.
+ * Narrower than `Mesh`, and the line it draws is **facts cross, controls do not**. `recovery`,
+ * `accounts`, `blobs`, `presence`, and the `add`/`remove`/`force` half of `transports` are
+ * controls of **the device**, and a follower tab is not a device — it is one of several windows
+ * onto one. A radio toggled in tab three is the origin's radio, and deciding what that means is a
+ * product question (`research/browser-durability.md` §4 settles identity, not settings). The
+ * *facts* on those same surfaces — {@link FollowerMesh.status}, the media and who they reach,
+ * {@link FollowerMesh.peers}, {@link FollowerMesh.routes}, the session — are read in windows and
+ * nowhere else, so they cross as one pushed reading (`device.ts`) and answer synchronously from it.
  *
- * Two of those omissions have since been answered rather than argued away, and both cross as what
- * they are. {@link FollowerMesh.operations} is the origin's **one** write ledger, because a write
- * made in any window becomes the same row; and {@link FollowerMesh.inspect} is a door onto the
- * device's own feeds that exists only where the host was handed an inspector. The device's
- * *controls* still reach through that door rather than sitting on this interface, because a radio
- * held from tab three is held for the device — which is a sentence a caller should have to read.
+ * Two more cross as what they are. {@link FollowerMesh.operations} is the origin's **one** write
+ * ledger, because a write made in any window becomes the same row; and {@link FollowerMesh.inspect}
+ * is a door onto the device's own feeds that exists only where the host was handed an inspector.
+ * The device's *controls* still reach through that door rather than sitting on this interface,
+ * because a radio held from tab three is held for the device — which is a sentence a caller should
+ * have to read.
  *
  * It satisfies `@syncmesh/orpc`'s `ApiMesh` structurally, so `meshApi(mesh, router)` builds the
  * same api here that it builds on the leader — one implementation of the app's surface, not two.
@@ -62,8 +65,22 @@ export interface FollowerMesh extends Pick<
    * is a sentence rather than an empty table.
    */
   readonly operations: RemoteOperations;
-  /** Who the origin acts as. A window has no session of its own to differ with (ch. 14). */
-  readonly auth: { readonly principal: () => Principal | undefined };
+  /**
+   * Who the origin acts as, and until when. A window has no session of its own to differ with
+   * (ch. 14): `principal` is pushed for a handler to read mid-render, `status` and `subscribe`
+   * are the reading a session screen draws.
+   */
+  readonly auth: RemoteDevice["session"] & { readonly principal: () => Principal | undefined };
+  /** Per-source condition and one overall health, as the device last said (ch. 18). */
+  readonly status: RemoteDevice["status"];
+  /** The device's media as facts — name, kind, who each reaches — with no control attached. */
+  readonly transports: RemoteDevice["transports"];
+  /** Who the device can reach, over what (ch. 17). */
+  readonly peers: RemoteDevice["peers"];
+  /** Every destination the device knows a way to, and how far (ch. 17). */
+  readonly routes: RemoteDevice["routes"];
+  /** The device's first reading has landed; what `$ready` waits on beside {@link selfId}. */
+  readonly heard: () => Promise<void>;
   /** This origin's peer id; the one fact a window must await before it can build a `syncOf`. */
   readonly selfId: () => Promise<PeerId>;
   /**
@@ -188,13 +205,21 @@ function followerMesh(options: ConnectOptions<Router>): FollowerMesh {
   let alive = true;
   link.onLost(() => (alive = false));
 
+  // the device's facts, asked once now and pushed on change once something watches
+  const device = remoteDevice(wire);
+
   return {
     role: link.role,
     engine: source,
     schema,
     on,
     operations: remoteLedger(wire),
-    auth: { principal: () => acting },
+    auth: { ...device.session, principal: () => acting },
+    status: device.status,
+    transports: device.transports,
+    peers: device.peers,
+    routes: device.routes,
+    heard: device.heard,
     /**
      * This origin's peer id, awaited once.
      *
@@ -230,6 +255,7 @@ function followerMesh(options: ConnectOptions<Router>): FollowerMesh {
       alive = false;
       handles.clear();
       grantListeners.clear();
+      device.close();
       wire.close();
       return Promise.resolve();
     },
@@ -242,16 +268,29 @@ function followerMesh(options: ConnectOptions<Router>): FollowerMesh {
  *
  * The same shape `createClient` hands the leader (book ch. 30), which is the whole point — a
  * component calls `client.issues.list(…)` and cannot tell which tab holds the engine. It is
- * deliberately **not** the same list of controls: `$transports`, `$recovery`, `$auth`, `$accounts`,
- * `$blobs` and `$presence` are facts and settings of the **device**, and a window is not a device.
+ * deliberately **not** the same list of controls: `$recovery`, `$accounts`, `$blobs`, `$presence`
+ * and the toggles on `$transports` are settings of the **device**, and a window is not a device.
  * A radio toggled in tab three is the origin's radio, and that is a sentence a caller should have
- * to read — so those reach through {@link FollowerClient.$mesh} rather than sitting here.
+ * to read — so those reach through {@link FollowerClient.$mesh} rather than sitting here. The
+ * five `$` surfaces `@syncmesh/react`'s diagnostic hooks read — `$status`, `$transports`,
+ * `$peers`, `$routes`, `$auth` — are here in their read-only form, because a header pill is drawn
+ * in a window and nowhere else; each answers from the reading the device last pushed.
  */
 export type FollowerClient<R extends Router> = Api<R> & {
   /** The window's own view of the origin's mesh, for what a `$` control here does not cover. */
   readonly $mesh: FollowerMesh;
   /** The origin's **one** write ledger: a write made in any window becomes the same row. */
   readonly $operations: FollowerMesh["operations"];
+  /** Per-source condition and one overall health, as the device last said (ch. 18). */
+  readonly $status: FollowerMesh["status"];
+  /** The device's media as facts, with `onLinkEvent` and `forced` beside them; no toggles. */
+  readonly $transports: FollowerMesh["transports"];
+  /** Who the device can reach, over what (ch. 17). */
+  readonly $peers: FollowerMesh["peers"];
+  /** Every destination the device knows a way to, and how far (ch. 17). */
+  readonly $routes: FollowerMesh["routes"];
+  /** Who is signed in on the device, and until when (ch. 14). */
+  readonly $auth: FollowerMesh["auth"];
   /** The device's own feeds, where the host was handed an inspector. */
   readonly $inspect: FollowerMesh["inspect"];
   readonly $flush: FollowerMesh["flush"];
@@ -289,7 +328,8 @@ export function connectMesh<R extends Router>(options: ConnectOptions<R>): Follo
    * without a round trip — and awaiting here would make every tab's boot wait on one.
    */
   let self: PeerId | undefined;
-  const ready = mesh.selfId().then((id) => {
+  // and the device's first reading, so nothing drawn under `$ready` sees "not heard yet"
+  const ready = Promise.all([mesh.selfId(), mesh.heard()]).then(([id]) => {
     self = id;
   });
   // a window that never awaits `$ready` still must not turn a dead port into an unhandled rejection
@@ -306,6 +346,11 @@ export function connectMesh<R extends Router>(options: ConnectOptions<R>): Follo
     ...api,
     $mesh: mesh,
     $operations: mesh.operations,
+    $status: mesh.status,
+    $transports: mesh.transports,
+    $peers: mesh.peers,
+    $routes: mesh.routes,
+    $auth: mesh.auth,
     $inspect: mesh.inspect,
     $flush: mesh.flush,
     $ready: ready,

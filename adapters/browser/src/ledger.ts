@@ -6,6 +6,7 @@ import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
 import type { OperationRow, ReceiptRow, VouchRow } from "@syncmesh/storage";
 
+import { operationRefs } from "@syncmesh/client";
 import { Result } from "@syncmesh/result";
 
 import type { LedgerAnswer, LedgerPath } from "./protocol.js";
@@ -29,7 +30,12 @@ import { MeshCallFailed, MeshHostGone, NoWriteLedger } from "./protocol.js";
 export type LedgerFailure = StoreFailure | NoWriteLedger | MeshHostGone | MeshCallFailed;
 
 export interface RemoteOperations {
-  readonly get: (id: string) => Promise<ResultType<OperationRow | undefined, LedgerFailure>>;
+  /**
+   * A handle on one write by id — the same object per id while anything holds it, readable now,
+   * subscribable, and awaitable for the ledger's one-shot read — over the port, exactly as
+   * `mesh.operations.get` hands one back on the leader.
+   */
+  readonly get: ReturnType<typeof operationRefs<LedgerFailure>>;
   readonly byEvent: (
     peer: PeerId,
     seq: SeqNum,
@@ -107,12 +113,20 @@ const asFailure = (cause: unknown): LedgerFailure => {
 const askLedger = <T>(wire: MeshWire, path: LedgerPath, args: readonly unknown[]) =>
   Result.tryPromise({ try: () => wire.ask<T>({ kind: "ledger", path, args }), catch: asFailure });
 
-export const remoteLedger = (wire: MeshWire): RemoteOperations => ({
-  get: (id) => askLedger<OperationRow | undefined>(wire, "get", [id]),
-  byEvent: (peer, seq) => askLedger<OperationRow | undefined>(wire, "byEvent", [peer, seq]),
-  unsettled: () => askLedger<readonly OperationRow[]>(wire, "unsettled", []),
-  soleCustody: () => askLedger<readonly OperationRow[]>(wire, "soleCustody", []),
-  receiptsOf: (peer, seq) => askLedger<readonly ReceiptRow[]>(wire, "receiptsOf", [peer, seq]),
-  vouchesOf: (peer, seq) => askLedger<readonly VouchRow[]>(wire, "vouchesOf", [peer, seq]),
-  onChange: (listener) => wire.listen("writes", () => listener()),
-});
+export const remoteLedger = (wire: MeshWire): RemoteOperations => {
+  const get = (id: string) => askLedger<OperationRow | undefined>(wire, "get", [id]);
+  const vouchesOf = (peer: PeerId, seq: SeqNum) =>
+    askLedger<readonly VouchRow[]>(wire, "vouchesOf", [peer, seq]);
+  const onChange = (listener: () => void) => wire.listen("writes", () => listener());
+  return {
+    // the leader's own refs over the port's three reads: one live object per id, and the read
+    // that `await`ing one performs is the same `get` a tab always asked
+    get: operationRefs<LedgerFailure>({ get, vouchesOf, onChange }),
+    byEvent: (peer, seq) => askLedger<OperationRow | undefined>(wire, "byEvent", [peer, seq]),
+    unsettled: () => askLedger<readonly OperationRow[]>(wire, "unsettled", []),
+    soleCustody: () => askLedger<readonly OperationRow[]>(wire, "soleCustody", []),
+    receiptsOf: (peer, seq) => askLedger<readonly ReceiptRow[]>(wire, "receiptsOf", [peer, seq]),
+    vouchesOf,
+    onChange,
+  };
+};

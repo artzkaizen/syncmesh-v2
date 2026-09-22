@@ -7,6 +7,7 @@ export type {
   CallBody,
   CallPath,
   ClientMessage,
+  DeviceReading,
   EnterBody,
   HostMessage,
   InspectAnswer,
@@ -15,12 +16,17 @@ export type {
   LedgerBody,
   LedgerPath,
   LeaveBody,
+  LinkReading,
+  MediumReading,
   OpenHandleBody,
+  RouteReading,
   SqlBody,
   Topic,
   TopicBody,
   WirePort,
 } from "./protocol.js";
+export type { DeviceSource, RemoteDevice } from "./device.js";
+export { deviceReading, remoteDevice } from "./device.js";
 export {
   MeshCallFailed,
   MeshHostGone,
@@ -37,7 +43,7 @@ export { remoteLedger } from "./ledger.js";
 
 export type { MeshWire } from "./wire.js";
 export { openWire } from "./wire.js";
-export type { ConnectOptions, FollowerMesh } from "./client.js";
+export type { ConnectOptions, FollowerClient, FollowerMesh } from "./client.js";
 export { connectMesh } from "./client.js";
 export type { HostCensus, HostMesh, MeshHost, ServeOptions } from "./host.js";
 export { serveMesh } from "./host.js";

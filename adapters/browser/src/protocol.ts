@@ -1,9 +1,12 @@
 /* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type -- this file *is* the thread boundary: a `postMessage` hands over `unknown`, the `kind` is the parse, and a serialized tagged error has no shape until the class that declared it revives (`adapters/sqlite-wasm`'s protocol.ts disables the same two for the same reason) */
 
+import type { ForcedMedium, MeshStatus, PeerGraph } from "@syncmesh/client";
 import type { ProxyMethod, ProxyResult } from "@syncmesh/drizzle";
 import type { Principal } from "@syncmesh/engine";
+import type { PeerId } from "@syncmesh/kernel";
 import type { WirePort } from "@syncmesh/sqlite-wasm";
 import type { OperationRow, ReceiptRow, SqlRow } from "@syncmesh/storage";
+import type { LinkEvent, Route, TransportKind } from "@syncmesh/transport";
 
 import {
   EmptyMutation,
@@ -43,7 +46,14 @@ export type Topic =
    * and whenever the session changes — which is also the honest shape: the principal is the
    * *device's*, and a window has no session of its own to differ with.
    */
-  | "auth";
+  | "auth"
+  /**
+   * The device's facts about itself — health, media, peers, routes, session — as one
+   * {@link DeviceReading}, re-sent whole whenever any of them moves. See `device.ts`.
+   */
+  | "device"
+  /** One link-level fact as it happens; a sequence rather than a state, so not in the reading. */
+  | "links";
 
 /** The mesh methods a follower asks for by name; each answers with plain data or throws. */
 export type CallPath =
@@ -54,6 +64,8 @@ export type CallPath =
   | "settled"
   | "running"
   | "principal"
+  /** The current {@link DeviceReading}, asked once at connect and again on the first watch. */
+  | "device"
   /** This origin's peer id. Never changes, so a window asks once and keeps it. */
   | "self"
   /**
@@ -192,13 +204,54 @@ export interface TopicBody {
   readonly topic: Topic;
 }
 
+/** One medium's facts as a window may hold them; the controls stay with the device. */
+export interface MediumReading {
+  readonly name: string;
+  readonly kind: TransportKind | undefined;
+  /** The peers it has a proven link to; `undefined` where the medium cannot enumerate its links. */
+  readonly reaches: readonly PeerId[] | undefined;
+}
+
+/** A route with its expiry as epoch nanoseconds: a `Temporal.Instant` does not clone as itself. */
+export interface RouteReading extends Omit<Route, "expiresAt"> {
+  readonly expiresAt: bigint;
+}
+
+/** A link event with its instant flattened, for the same reason as {@link RouteReading}. */
+export interface LinkReading extends Omit<LinkEvent, "at"> {
+  readonly at: bigint;
+}
+
+/**
+ * The device's facts about itself, whole, as the host pushes them to every window.
+ *
+ * Everything in it is a structured-clone value: a `Map` of plain records, arrays of strings,
+ * bigints for instants. Nothing in it is a function, which is the line between a fact a window
+ * may hold and a control it may not.
+ */
+export interface DeviceReading {
+  readonly status: MeshStatus;
+  readonly media: readonly MediumReading[];
+  readonly forced: readonly ForcedMedium[];
+  readonly peers: PeerGraph;
+  readonly routes: readonly RouteReading[];
+  readonly auth: { readonly principal: Principal | null; readonly expiresAt: bigint | null };
+}
+
 /**
  * What a {@link CallBody} answers with: plain data, and `null` for the calls that answer nothing.
  *
  * Named rather than `unknown` because it is the whole list — the mesh methods a window is allowed
  * to ask for were chosen for this, and one that answered with a class instance would not cross.
  */
-export type CallAnswer = boolean | string | null | readonly SqlRow[] | Principal | undefined;
+export type CallAnswer =
+  | boolean
+  | string
+  | null
+  | readonly SqlRow[]
+  | Principal
+  | DeviceReading
+  | undefined;
 
 /** What a {@link LedgerBody} answers with — the ledger's own rows, and `undefined` for a miss. */
 export type LedgerAnswer =

@@ -6,8 +6,10 @@ import type { SqlValue } from "@syncmesh/storage";
 import type { HostMesh } from "./host.js";
 import type { CallAnswer, CallPath } from "./protocol.js";
 
+import { deviceReading } from "./device.js";
+
 /**
- * The eight mesh methods a window may ask for by name, answered on the thread that has them.
+ * The nine mesh methods a window may ask for by name, answered on the thread that has them.
  *
  * Beside `host.ts` rather than inside it because this is the *vocabulary* and that is the
  * *machinery*: a method added here is a line, and `serveMesh` does not grow.
@@ -36,6 +38,7 @@ export const answer = async (
     );
   if (path === "query") return (await mesh.query?.(first, absent<SqlValue[]>(second))) ?? [];
   if (path === "principal") return mesh.auth.principal();
+  if (path === "device") return deviceReading(mesh);
   if (path === "self") return mesh.engine.peerId;
   // the boolean rather than the stamp: a `Temporal.Instant` does not cross as itself, and neither
   // half of the stamp is a window's to draw — see the `"deleted"` path in protocol.ts

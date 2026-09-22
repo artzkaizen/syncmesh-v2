@@ -1,3 +1,5 @@
+import { Temporal } from "@syncmesh/temporal";
+import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 
@@ -184,6 +186,64 @@ describe("the mesh over a port", () => {
 
     expect(asked).toBe(1);
     expect(b.mesh.can("book.insert", undefined, ACME)).toBe(true);
+    await stop();
+  });
+});
+
+/**
+ * The device's facts in a window: read synchronously from the last reading, and re-sent whole
+ * when any of them moves. The one host subscription behind them is held only while a tab watches.
+ */
+describe("the device over a port", () => {
+  const neighbour = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 90 + i)).unwrap();
+  const later = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000 + 3_600_000);
+
+  test("a tab says `opening` until the device is heard, then what the device says", async () => {
+    const { mesh, tab, stop } = await meshOrigin();
+    const b = tab();
+    expect(b.client.$status.get().health).toBe("opening");
+    expect(() => b.client.$peers.graph()).toThrow("has not heard the device");
+
+    await b.client.$ready;
+    expect(b.client.$status.get()).toEqual(mesh.status.get());
+    expect(b.client.$peers.graph()).toEqual(mesh.peers.graph());
+    expect(b.client.$transports.list().map((medium) => medium.name)).toEqual(
+      mesh.transports.list().map((medium) => medium.name),
+    );
+    expect(b.client.$transports.forced()).toEqual(mesh.transports.forced());
+    expect(b.client.$auth.status()).toEqual(mesh.auth.status());
+    expect(b.client.$routes.all()).toEqual([]);
+    await stop();
+  });
+
+  test("a route learned on the device reaches a watching tab, and the feed is released after", async () => {
+    const { host, mesh, tab, stop } = await meshOrigin();
+    const b = tab();
+    await b.client.$ready;
+    const before = host.census().feeds;
+
+    const heard: number[] = [];
+    const off = b.client.$routes.onChange(() => heard.push(b.client.$routes.all().length));
+    await settled();
+    expect(host.census().feeds).toBe(before + 1);
+
+    expect(
+      mesh.routes.learn({ to: "authority", via: neighbour.peerId, hops: 0, expiresAt: later }),
+    ).toBe(true);
+    await settled();
+
+    // the first is the fresh reading a watcher is handed on the way in; the second is the route
+    expect(heard).toEqual([0, 1]);
+    const [route] = b.client.$routes.all();
+    expect(route?.to).toBe("authority");
+    expect(route?.via).toBe(neighbour.peerId);
+    expect(route?.hops).toBe(1);
+    // a real instant on this side, not the bigint that crossed
+    expect(route?.expiresAt.equals(later)).toBe(true);
+
+    off();
+    await settled();
+    expect(host.census().feeds).toBe(before);
     await stop();
   });
 });

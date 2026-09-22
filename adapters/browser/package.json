@@ -25,16 +25,16 @@
     "@syncmesh/drizzle": "workspace:*",
     "@syncmesh/engine": "workspace:*",
     "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/orpc": "workspace:*",
     "@syncmesh/result": "workspace:*",
     "@syncmesh/schema": "workspace:*",
     "@syncmesh/sqlite-wasm": "workspace:*",
-    "@syncmesh/storage": "workspace:*"
+    "@syncmesh/storage": "workspace:*",
+    "@syncmesh/temporal": "workspace:*"
   },
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
-    "@syncmesh/orpc": "workspace:*",
     "@syncmesh/sqlite-bun": "workspace:*",
-    "@syncmesh/temporal": "workspace:*",
     "@syncmesh/wire": "workspace:*",
     "@types/bun": "catalog:",
     "drizzle-orm": "catalog:",

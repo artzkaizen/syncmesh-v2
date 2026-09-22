@@ -7,6 +7,7 @@ import type { AnyTaggedError } from "@syncmesh/result";
 
 import { Result, serializeTagged } from "@syncmesh/result";
 
+import type { DeviceSource } from "./device.js";
 import type { ServedHandle } from "./host-handle.js";
 import type { MeshInspector } from "./inspect.js";
 import type {
@@ -23,12 +24,13 @@ import type {
   WirePort,
 } from "./protocol.js";
 
+import { deviceFeed } from "./device.js";
 import { answer } from "./host-calls.js";
 import { serveHandle } from "./host-handle.js";
 import { answerLedger } from "./ledger.js";
 import { MeshCallFailed, NoInspector, NoSuchMeshHandle } from "./protocol.js";
 
-/** Everything a host reads off the mesh it is serving, and no more. */
+/** Everything a host reads off the mesh, and no more; {@link DeviceSource} is what windows are *told*. */
 export type HostMesh = Pick<
   Mesh,
   | "on"
@@ -46,7 +48,8 @@ export type HostMesh = Pick<
   // the device's session, pushed to every window: a handler is handed `principal` synchronously
   // and a port cannot answer that way, so the origin tells rather than being asked
   | "auth"
->;
+> &
+  DeviceSource;
 
 export interface ServeOptions {
   /**
@@ -128,6 +131,8 @@ const feedFor = (deps: FeedDeps, topic: Topic): Unsubscribe => {
   // pushed rather than asked: a handler reads `principal` synchronously, and a port cannot answer
   // synchronously — so every window is told, and the device's session is the only one there is
   if (topic === "auth") return mesh.auth.subscribe(() => emit(mesh.auth.principal() ?? null));
+  // the device's facts, whole, on any of the feeds that move one of them; and each link event
+  if (topic === "device" || topic === "links") return deviceFeed(mesh, topic, emit);
   return inspector?.onForced(emit) ?? nothing;
 };
 
