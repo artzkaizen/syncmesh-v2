@@ -8,7 +8,7 @@ import {
 } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
 import { allow, role } from "@syncmesh/policy";
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
@@ -16,14 +16,13 @@ import { describe, expect, test } from "bun:test";
 
 import { createMesh } from "../mesh.js";
 
+const org = partition("org", { roles: ladder("member") });
 const schema = () =>
   syncSchema({
-    partitions: { org: {} },
-    roles: { org: ["member"] },
     tables: {
       notes: {
         columns: { id: t.text().primaryKey(), body: t.text() },
-        partition: "org",
+        partition: org,
         allow: ({ role: r }) => ({ $default: r("member") }),
       },
     },
@@ -85,8 +84,6 @@ describe("mesh.internal — the machinery, kept out of your namespace", () => {
       expect(mine).not.toContain(reserved);
       expect(() =>
         syncSchema({
-          partitions: { org: {} },
-          roles: { org: ["member"] },
           tables: { [reserved]: { columns: { id: t.text().primaryKey() } } },
         }),
       ).toThrow(/reserved/);

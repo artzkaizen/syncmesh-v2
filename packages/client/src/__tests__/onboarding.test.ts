@@ -1,6 +1,6 @@
 import { createLink, type Quarantined } from "@syncmesh/engine";
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, type Identity } from "@syncmesh/wire";
@@ -14,14 +14,13 @@ const controls = sqliteTable("controls", {
   title: text().notNull(),
   by: text().notNull(),
 });
+const org = partition("org", { roles: ladder("owner", "member") });
 const schema = () =>
   syncSchema({
-    partitions: { org: {} },
-    roles: { org: ["owner", "member"] },
     tables: {
       controls: {
         columns: { id: t.text().primaryKey(), title: t.text(), by: t.text() },
-        partition: "org",
+        partition: org,
         allow: ({ role }) => ({ $default: role("member") }),
       },
     },

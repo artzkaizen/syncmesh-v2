@@ -1,7 +1,7 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import {
@@ -15,24 +15,23 @@ import { describe, expect, test } from "bun:test";
 
 import { createMesh } from "../mesh.js";
 
+const board = partition("board", { roles: ladder("member") });
 const schema = () =>
   syncSchema({
-    partitions: { board: {} },
-    roles: { board: ["member"] },
     tables: {
       notes: {
         columns: { id: t.text().primaryKey(), body: t.text() },
-        partition: "board",
+        partition: board,
         allow: ({ role }) => ({ $default: role("member") }),
       },
     },
     presence: {
       cursor: {
-        partition: "board",
+        partition: board,
         of: { x: t.float(), y: t.float(), label: t.text().nullable() },
         ttlMs: 300,
       },
-      typing: { partition: "board", of: { noteId: t.text() }, ttlMs: 300 },
+      typing: { partition: board, of: { noteId: t.text() }, ttlMs: 300 },
     },
   });
 

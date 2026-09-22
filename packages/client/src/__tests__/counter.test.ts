@@ -1,5 +1,5 @@
 import { createLink } from "@syncmesh/engine";
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -16,14 +16,13 @@ const products = sqliteTable("products", {
   stock: integer().notNull(),
 });
 
+const shop = partition("shop", { roles: ladder("member") });
 const schema = () =>
   syncSchema({
-    partitions: { shop: {} },
-    roles: { shop: ["member"] },
     tables: {
       products: {
         columns: { id: t.text().primaryKey(), stock: t.integer({ merge: "counter" }) },
-        partition: "shop",
+        partition: shop,
         allow: ({ role }) => ({ $default: role("member") }),
       },
     },

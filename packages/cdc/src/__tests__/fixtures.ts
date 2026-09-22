@@ -5,7 +5,7 @@ import type { Grant, Identity } from "@syncmesh/wire";
 
 import { createEngine, createMemoryEventStore, createValidator } from "@syncmesh/engine";
 import { createHlcClock, parsePartitionKey } from "@syncmesh/kernel";
-import { syncSchema, scalarText, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, scalarText, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, verifyGrant } from "@syncmesh/wire";
 
@@ -22,9 +22,8 @@ export const GLOBEX = parsePartitionKey("org:globex").unwrap();
  * the way a projection should be, `owned` reads the author through `owner()` and `flagged`
  * reads the column through `rowIs`.
  */
+const org = partition("org", { roles: ladder("system", "admin", "viewer") });
 export const schema = syncSchema({
-  partitions: { org: {} },
-  roles: { org: ["system", "admin", "viewer"] },
   tables: {
     tasks: {
       columns: {
@@ -33,17 +32,17 @@ export const schema = syncSchema({
         title: t.text(),
         ownerId: t.text(),
       },
-      partition: "org",
+      partition: org,
       allow: ({ role }) => cdcAllow({ read: role("viewer"), writer: "system" }),
     },
     owned: {
       columns: { id: t.text().primaryKey(), orgId: t.text(), ownerId: t.text() },
-      partition: "org",
+      partition: org,
       allow: ({ owner }) => ({ $default: owner("ownerId") }),
     },
     flagged: {
       columns: { id: t.text().primaryKey(), orgId: t.text(), ownerId: t.text() },
-      partition: "org",
+      partition: org,
       allow: ({ rowIs }) => ({ $default: rowIs({ orgId: "acme" }) }),
     },
   },

@@ -1,7 +1,7 @@
 import type { Change, SyncEvent } from "@syncmesh/kernel";
 
 import { parsePartitionKey, readRow } from "@syncmesh/kernel";
-import { syncSchema, t } from "@syncmesh/schema";
+import { syncSchema, t, user } from "@syncmesh/schema";
 import { decodeEventCore, encodeEventCore } from "@syncmesh/wire";
 import { grownCore } from "@syncmesh/wire/wire-tests";
 import { describe, expect, test } from "bun:test";
@@ -17,23 +17,19 @@ const USER = parsePartitionKey("user:acct_a").unwrap();
 
 /** The build that shipped first: one table, two columns. */
 const oldSchema = syncSchema({
-  partitions: {},
-  roles: {},
   tables: {
-    notes: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "user" },
+    notes: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: user },
   },
 });
 
 /** The build that shipped next: a nullable column added, and a table added beside it. */
 const newSchema = syncSchema({
-  partitions: {},
-  roles: {},
   tables: {
     notes: {
       columns: { id: t.text().primaryKey(), body: t.text(), pinned: t.boolean().nullable() },
-      partition: "user",
+      partition: user,
     },
-    memos: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "user" },
+    memos: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: user },
   },
 });
 

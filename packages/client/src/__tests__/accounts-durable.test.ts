@@ -3,7 +3,7 @@ import type { CellValue, ColumnName, PeerId, Procedure, Row, RowKey } from "@syn
 import { createEngine, createMemoryEventStore, linkDevice, links } from "@syncmesh/engine";
 import { createHlcClock, parseAccountId, parsePartitionKey } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { RESERVED, syncSchema, t } from "@syncmesh/schema";
+import { RESERVED, partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import {
   createIdentity,
@@ -42,13 +42,13 @@ const notes = sqliteTable("notes", {
   ownerId: text().notNull(),
 });
 
+const org = partition("org");
 const schema = () =>
   syncSchema({
-    partitions: { org: {} },
     tables: {
       notes: {
         columns: { id: t.text().primaryKey(), title: t.text(), ownerId: t.text() },
-        partition: "org",
+        partition: org,
         allow: ({ owner }) => ({ $default: owner("ownerId") }),
       },
     },

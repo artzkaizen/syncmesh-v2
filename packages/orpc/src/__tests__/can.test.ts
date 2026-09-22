@@ -1,4 +1,4 @@
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -10,13 +10,12 @@ import { createClient, mutation, query, sqlite } from "../index.js";
 
 const products = sqliteTable("products", { id: text().primaryKey(), name: text().notNull() });
 
+const shop = partition("shop", { roles: ladder("editor", "viewer") });
 const schema = syncSchema({
-  partitions: { shop: {} },
-  roles: { shop: ["editor", "viewer"] },
   tables: {
     products: {
       columns: { id: t.text().primaryKey(), name: t.text() },
-      partition: "shop",
+      partition: shop,
       allow: ({ role }) => ({ read: role("viewer"), $default: role("editor") }),
     },
   },

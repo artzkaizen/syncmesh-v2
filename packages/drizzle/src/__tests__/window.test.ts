@@ -1,6 +1,6 @@
 import { createValidator, openEngine } from "@syncmesh/engine";
 import { createHlcClock, parsePartitionKey } from "@syncmesh/kernel";
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { type SqlDriver, openStores } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
@@ -22,9 +22,8 @@ const jobs = sqliteTable("jobs", {
   rank: integer().notNull(),
 });
 
+const org = partition("org", { roles: ladder("owner", "dispatcher") });
 const schema = syncSchema({
-  partitions: { org: {} },
-  roles: { org: ["owner", "dispatcher"] },
   tables: {
     jobs: {
       columns: {
@@ -33,7 +32,7 @@ const schema = syncSchema({
         status: t.text(),
         rank: t.integer(),
       },
-      partition: "org",
+      partition: org,
       allow: ({ role }) => ({ $default: role("dispatcher") }),
     },
   },

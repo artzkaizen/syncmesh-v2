@@ -1,6 +1,6 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, local, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -30,20 +30,19 @@ const books = sqliteTable("books", {
 });
 const drafts = sqliteTable("drafts", { id: text().primaryKey(), body: text().notNull() });
 
+const org = partition("org", { roles: ladder("admin", "member") });
 const schema = () =>
   syncSchema({
-    partitions: { org: {} },
-    roles: { org: ["admin", "member"] },
     tables: {
       catalog: {
         columns: { id: t.text().primaryKey(), code: t.text(), stock: t.integer() },
       },
       books: {
         columns: { id: t.text().primaryKey(), title: t.text(), createdBy: t.text() },
-        partition: "org",
+        partition: org,
         allow: ({ role }) => ({ $default: role("member"), delete: role("admin") }),
       },
-      drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "local" },
+      drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: local },
     },
   });
 

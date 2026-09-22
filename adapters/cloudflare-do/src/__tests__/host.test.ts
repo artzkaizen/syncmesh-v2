@@ -10,7 +10,7 @@ import {
   startRelay,
   webSocketDial,
 } from "@syncmesh/relay";
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
@@ -24,14 +24,13 @@ import { join } from "node:path";
 import { durableRelay } from "./hosts.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
+const org = partition("org", { roles: ladder("member") });
 const schema = () =>
   syncSchema({
-    partitions: { org: {} },
-    roles: { org: ["member"] },
     tables: {
       notes: {
         columns: { id: t.text().primaryKey(), body: t.text() },
-        partition: "org",
+        partition: org,
         allow: ({ role }) => ({ $default: role("member") }),
       },
     },

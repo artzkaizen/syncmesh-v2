@@ -3,7 +3,7 @@ import type { Grant } from "@syncmesh/wire";
 
 import { parsePartitionKey, readRow } from "@syncmesh/kernel";
 import { allow, deny, role } from "@syncmesh/policy";
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, verifyGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -19,13 +19,12 @@ const ACME = parsePartitionKey("org:acme").unwrap();
 const UPDATE = procedure("notes.update");
 const DELETE = procedure("notes.delete");
 
+const org = partition("org", { roles: ladder("admin", "member") });
 const schema = syncSchema({
-  partitions: { org: {} },
-  roles: { org: ["admin", "member"] },
   tables: {
     notes: {
       columns: { id: t.text().primaryKey(), title: t.text() },
-      partition: "org",
+      partition: org,
       // the bundle: a member writes and edits, and only an admin deletes
       allow: ({ role: r }) => ({ $default: r("member"), delete: r("admin") }),
     },

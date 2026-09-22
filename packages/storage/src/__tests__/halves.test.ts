@@ -1,4 +1,4 @@
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { describe, expect, test } from "bun:test";
 
 import { sqlBlobStore } from "../blob.js";
@@ -8,14 +8,14 @@ import { openStores } from "../open-stores.js";
 import { operationStore } from "../operation-store.js";
 import { openPair } from "./pair.js";
 
+const org = partition("org", { roles: ladder("member") });
+
 /** A manifest, so capture and the row-sync pair are installed alongside the rest. */
 const schema = syncSchema({
-  partitions: { org: {} },
-  roles: { org: ["member"] },
   tables: {
     note: {
       columns: { id: t.text().primaryKey(), body: t.text() },
-      partition: "org",
+      partition: org,
       allow: ({ role }) => ({ $default: role("member") }),
     },
   },

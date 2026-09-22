@@ -3,7 +3,7 @@ import type { Grant } from "@syncmesh/wire";
 
 import { createMemoryEventStore, createValidator, openEngine } from "@syncmesh/engine";
 import { createHlcClock, parsePartitionKey, readRow } from "@syncmesh/kernel";
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, local, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { installCapture } from "@syncmesh/storage";
 import { createWriter } from "@syncmesh/storage";
@@ -11,9 +11,8 @@ import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, verifyGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
+const org = partition("org", { roles: ladder("dispatcher", "viewer") });
 const schema = syncSchema({
-  partitions: { org: {} },
-  roles: { org: ["dispatcher", "viewer"] },
   tables: {
     jobs: {
       columns: {
@@ -22,10 +21,10 @@ const schema = syncSchema({
         rank: t.integer(),
         assignee: t.text().nullable(),
       },
-      partition: "org",
+      partition: org,
       allow: ({ role }) => ({ $default: role("viewer"), update: role("dispatcher") }),
     },
-    drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "local" },
+    drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: local },
   },
 });
 const tables = [schema.tables.jobs, schema.tables.drafts];

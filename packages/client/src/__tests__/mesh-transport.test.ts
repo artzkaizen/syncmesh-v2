@@ -1,5 +1,5 @@
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { linkTransport, loopbackPair, type LoopbackControl } from "@syncmesh/transport";
@@ -10,14 +10,13 @@ import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { createMesh } from "../mesh.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
+const org = partition("org", { roles: ladder("owner", "member") });
 const schema = () =>
   syncSchema({
-    partitions: { org: {} },
-    roles: { org: ["owner", "member"] },
     tables: {
       notes: {
         columns: { id: t.text().primaryKey(), body: t.text() },
-        partition: "org",
+        partition: org,
         allow: ({ role }) => ({ $default: role("member") }),
       },
     },

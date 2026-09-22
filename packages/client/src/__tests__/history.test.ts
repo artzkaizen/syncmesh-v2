@@ -1,6 +1,6 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -15,10 +15,9 @@ const todos = sqliteTable("todos", {
   title: text().notNull(),
   score: integer().notNull(),
 });
+const org = partition("org", { roles: ladder("member") });
 const schema = () =>
   syncSchema({
-    partitions: { org: {} },
-    roles: { org: ["member"] },
     tables: {
       todos: {
         columns: {
@@ -26,7 +25,7 @@ const schema = () =>
           title: t.text(),
           score: t.integer({ merge: "max" }),
         },
-        partition: "org",
+        partition: org,
         allow: ({ role }) => ({ $default: role("member") }),
       },
     },

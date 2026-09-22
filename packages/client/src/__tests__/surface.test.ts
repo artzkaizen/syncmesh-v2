@@ -1,7 +1,7 @@
 import type { LinkEvent, Transport } from "@syncmesh/transport";
 
 import { createHub, createMemoryEventStore } from "@syncmesh/engine";
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
@@ -19,20 +19,24 @@ import { createMesh } from "../mesh.js";
  * rather than handing over something that fails later.
  */
 
+const org = partition("org", { roles: ladder("member") });
+const team = partition("team", { sealed: true, roles: org.roles });
 const schema = () =>
   syncSchema({
-    partitions: { org: { team: {} } },
-    roles: { org: ["member"] },
     tables: {
       catalog: { columns: { id: t.text().primaryKey(), code: t.text() } },
       books: {
         columns: { id: t.text().primaryKey(), title: t.text() },
-        partition: "org",
+        partition: org,
+        allow: ({ role }) => ({ $default: role("member") }),
+      },
+      memos: {
+        columns: { id: t.text().primaryKey(), body: t.text() },
+        partition: team,
         allow: ({ role }) => ({ $default: role("member") }),
       },
     },
-    presence: { cursor: { partition: "org", of: { x: t.integer() } } },
-    sealed: ["team"],
+    presence: { cursor: { partition: org, of: { x: t.integer() } } },
   });
 
 const device = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 90 + i)).unwrap();
@@ -79,7 +83,11 @@ describe("mesh.schema — the manifest, enumerable", () => {
   test("says which kinds are sealed, so empty can be told from unreadable", async () => {
     const mesh = await open();
     expect([...mesh.schema.sealedKinds]).toEqual(["team"]);
-    expect(Object.keys(mesh.schema.partitions)).toEqual(["org"]);
+    expect([...new Set(mesh.schema.entries.map((entry) => entry.partition))]).toEqual([
+      "global",
+      "org",
+      "team",
+    ]);
     expect(mesh.schema.presence.map((topic) => topic.name)).toEqual(["cursor"]);
     await mesh.stop();
   });

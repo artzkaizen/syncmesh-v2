@@ -1,6 +1,6 @@
 import { createMesh } from "@syncmesh/client";
 import { Result } from "@syncmesh/result";
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -19,13 +19,12 @@ const book = sqliteTable("book", {
   shelf: text(),
 });
 
+const org = partition("org", { roles: ladder("owner", "member", "viewer") });
 const schema = syncSchema({
-  partitions: { org: {} },
-  roles: { org: ["owner", "member", "viewer"] },
   tables: {
     book: {
       columns: { id: t.text().primaryKey(), title: t.text(), shelf: t.text().nullable() },
-      partition: "org",
+      partition: org,
       allow: ({ role }) => ({ $default: role("member"), read: role("viewer") }),
     },
   },
@@ -200,5 +199,21 @@ describe("a call the device cannot run", () => {
 
     expect(declined.isErr()).toBe(true);
     await mesh.stop();
+  });
+});
+
+
+  test("InputInvalid: a rejected input is a tag, not a TypeError carrying prose", async () => {
+    const { api } = await open("member");
+    const refused = await api.books.create({ orgId: ORG, id: "b2", title: "" }).committed;
+    expect(failure(refused)).toBeInstanceOf(InputInvalid);
+  });
+
+  test("AuthorityUnreachable: a gate with no link fails now, typed, naming the path", async () => {
+    const { api } = await withAuthority();
+    const answered = await api.billing.charge({ bookId: "b1", cents: 500 });
+    const error = failure(answered);
+    expect(error).toBeInstanceOf(AuthorityUnreachable);
+    if (error instanceof AuthorityUnreachable) expect(error.path).toBe("billing.charge");
   });
 });

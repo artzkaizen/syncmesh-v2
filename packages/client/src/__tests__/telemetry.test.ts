@@ -1,7 +1,7 @@
 import type { Transport } from "@syncmesh/transport";
 
 import { createHub, type TelemetryEvent } from "@syncmesh/engine";
-import { syncSchema, t } from "@syncmesh/schema";
+import { local, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { memoryBlobStore } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
@@ -218,11 +218,9 @@ describe("follow: one listener rather than three", () => {
       await createMesh({
         driver: bunSqliteDriver(":memory:"),
         schema: syncSchema({
-          partitions: {},
-          roles: {},
           // a local table: this write never has to travel to be worth measuring
           tables: {
-            notes: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "local" },
+            notes: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: local },
           },
         }),
         identity: device,

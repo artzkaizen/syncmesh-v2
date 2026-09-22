@@ -9,7 +9,7 @@ import {
   openEngine,
 } from "@syncmesh/engine";
 import { createHlcClock, parsePartitionKey } from "@syncmesh/kernel";
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { openStores } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
@@ -34,13 +34,12 @@ const jobs = sqliteTable("jobs", {
   title: text().notNull(),
   rank: integer().notNull(),
 });
+const org = partition("org", { roles: ladder("member") });
 const schema = syncSchema({
-  partitions: { org: {} },
-  roles: { org: ["member"] },
   tables: {
     jobs: {
       columns: { id: t.text().primaryKey(), title: t.text(), rank: t.integer() },
-      partition: "org",
+      partition: org,
       allow: ({ role }) => ({ $default: role("member") }),
     },
   },
@@ -353,6 +352,71 @@ describe("usePresence", () => {
       notify();
     });
     expect(renders.at(-1)).toBe("");
+  });
+});
+
+    const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
+    const checkpoint = { at: T0, cursors: new Map() };
+    let reading: ReadCoverage = { kind: "local-only" };
+    const listeners = new Set<() => void>();
+    const move = (next: ReadCoverage) => {
+      reading = next;
+      for (const listener of listeners) listener();
+    };
+
+    const seen: string[] = [];
+    const Screen = () => {
+      const { answered, coverage } = useLiveQuery({
+        key: "jobs-all",
+        live: () => handle.live(handle.db.select({ id: jobs.id }).from(jobs).orderBy(jobs.id)),
+        settled: () => Promise.resolve(),
+        coverage: () => reading,
+        onCoverage: (listener) => {
+          listeners.add(listener);
+          return () => void listeners.delete(listener);
+        },
+      });
+      seen.push(
+        `${answered}/${coverage.kind}${coverage.kind === "local-only" ? "" : `@${coverage.source}`}`,
+      );
+      return null;
+    };
+
+    const { settle } = await mount(createElement(Screen));
+    await settle();
+    // the device answered; the world has not — two different facts, and this is where they split
+    expect(seen.at(-1)).toBe("settled/local-only");
+
+    await act(async () => move({ kind: "partial", source: "nearby", checkpoint }));
+    await settle();
+    expect(seen.at(-1)).toBe("settled/partial@nearby");
+
+    await act(async () => move({ kind: "caught-up", source: "internet", checkpoint }));
+    await settle();
+    expect(seen.at(-1)).toBe("settled/caught-up@internet");
+
+    // an unchanged reading is not a render: the store hands back the same object
+    const renders = seen.length;
+    await act(async () => move(reading));
+    await settle();
+    expect(seen.length).toBe(renders);
+  });
+
+  test("a call carrying no coverage reads local-only — the honest word for 'nothing here can say more'", async () => {
+    const { handle } = await open();
+    let kind = "";
+    const Screen = () => {
+      const { coverage } = useLiveQuery({
+        key: "jobs-bare",
+        live: () => handle.live(handle.db.select({ id: jobs.id }).from(jobs)),
+        settled: () => Promise.resolve(),
+      });
+      kind = coverage.kind;
+      return null;
+    };
+    const { settle } = await mount(createElement(Screen));
+    await settle();
+    expect(kind).toBe("local-only");
   });
 });
 

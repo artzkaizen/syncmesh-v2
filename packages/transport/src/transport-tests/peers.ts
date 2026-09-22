@@ -12,7 +12,7 @@ import type { GrantRegistry, Identity } from "@syncmesh/wire";
 
 import { createEngine, createMemoryEventStore, createValidator } from "@syncmesh/engine";
 import { createHlcClock, parsePartitionKey, readRow } from "@syncmesh/kernel";
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createGrantRegistry, createIdentity, issueGrant } from "@syncmesh/wire";
 
@@ -179,13 +179,12 @@ export const rowKey = (k: string) => k as RowKey;
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const ACME = parsePartitionKey("org:acme").unwrap();
 
+const org = partition("org", { roles: ladder("member") });
 const schema = syncSchema({
-  partitions: { org: {} },
-  roles: { org: ["member"] },
   tables: {
     notes: {
       columns: { id: t.text().primaryKey(), body: t.text() },
-      partition: "org",
+      partition: org,
       allow: ({ role }) => ({ $default: role("member") }),
     },
   },

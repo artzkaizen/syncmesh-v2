@@ -1,4 +1,4 @@
-import { syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { describe, expect, test } from "bun:test";
 
 import type { SqlDriver, SqlRow, SqlValue } from "../driver.js";
@@ -15,26 +15,23 @@ import { openPair } from "./pair.js";
  * count, because "it is still correct" was never in doubt.
  */
 
+const org = partition("org", { roles: ladder("member") });
 const schema = syncSchema({
-  partitions: { org: {} },
-  roles: { org: ["member"] },
   tables: {
     note: {
       columns: { id: t.text().primaryKey(), body: t.text() },
-      partition: "org",
+      partition: org,
       allow: ({ role }) => ({ $default: role("member") }),
     },
   },
 });
 
 const wider = syncSchema({
-  partitions: { org: {} },
-  roles: { org: ["member"] },
   tables: {
     note: {
       // one more column: a different shape, and the fingerprint has to notice
       columns: { id: t.text().primaryKey(), body: t.text(), title: t.text() },
-      partition: "org",
+      partition: org,
       allow: ({ role }) => ({ $default: role("member") }),
     },
   },

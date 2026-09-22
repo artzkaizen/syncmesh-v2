@@ -38,7 +38,7 @@ import {
   parsePeerId,
   readRow,
 } from "@syncmesh/kernel";
-import { syncSchema, t } from "@syncmesh/schema";
+import { partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import {
   bytesToHex,
@@ -93,12 +93,12 @@ const INTRUDER = seeded(200).unwrap();
 const ALICE_ID = String(parseAccountId(String(ALICE.peerId)).unwrap());
 const MALLORY_ID = String(parseAccountId(String(MALLORY.peerId)).unwrap());
 
+const org = partition("org");
 const schema = syncSchema({
-  partitions: { org: {} },
   tables: {
     notes: {
       columns: { id: t.text().primaryKey(), title: t.text(), ownerId: t.text() },
-      partition: "org",
+      partition: org,
       allow: ({ owner }) => ({ $default: owner("ownerId") }),
     },
   },
