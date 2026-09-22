@@ -3,12 +3,35 @@ import type { ColumnKind, Table } from "@syncmesh/schema";
 
 import type { CaptureSql, Dialect } from "./dialect.js";
 import type { SqlValue } from "./driver.js";
+import type { Rung } from "./ladder.js";
 
 import { POSTGRES_OPERATIONS } from "./dialect-operations.js";
 import { namespaceDdl } from "./dialect.js";
 import { columnsOf, literal, quote } from "./identifiers.js";
+import { ladder } from "./ladder.js";
 
 const CHANGES = "syncmesh.changes";
+
+/**
+ * Where the schema's position is kept: a row, because a schema has no `user_version` to put it
+ * in. One database and one `CREATE SCHEMA`, so there is one ladder rather than the two a device
+ * gets from its two files.
+ */
+const VERSION: Rung = {
+  read: async (driver) => {
+    await driver.run(
+      `CREATE TABLE IF NOT EXISTS syncmesh.meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+    );
+    const [row] = await driver.all(`SELECT value FROM syncmesh.meta WHERE key = 'version'`);
+    return Number(row?.[0] ?? 0);
+  },
+  write: (driver, step) =>
+    driver.run(
+      `INSERT INTO syncmesh.meta (key, value) VALUES ('version', $1)
+        ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+      [String(step)],
+    ),
+};
 
 /** What a Drizzle `pg-core` column of the kind would be, so a mesh-created table reads like the app's own. */
 const sqlType = (kind: ColumnKind): string => {
@@ -235,19 +258,6 @@ export const POSTGRES: Dialect = {
   migrate: async (driver) => {
     // before anything else: every name below is qualified into it, including `meta` itself
     for (const sql of namespaceDdl("postgres")) await driver.run(sql);
-    await driver.run(
-      `CREATE TABLE IF NOT EXISTS syncmesh.meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
-    );
-    const [row] = await driver.all(`SELECT value FROM syncmesh.meta WHERE key = 'version'`);
-    const applied = Number(row?.[0] ?? 0);
-    // nothing to apply is nothing to write; see the same guard in the SQLite dialect
-    if (applied >= POSTGRES_MIGRATIONS.length) return;
-    for (const step of POSTGRES_MIGRATIONS.slice(applied))
-      for (const sql of step) await driver.run(sql);
-    await driver.run(
-      `INSERT INTO syncmesh.meta (key, value) VALUES ('version', $1)
-        ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
-      [String(POSTGRES_MIGRATIONS.length)],
-    );
+    await ladder(driver, VERSION, POSTGRES_MIGRATIONS);
   },
 };

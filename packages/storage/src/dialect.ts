@@ -111,7 +111,7 @@ export interface CaptureSql {
  * caller can look an ambiguous outcome up instead of retrying into a duplicate.
  */
 export interface OperationSql {
-  /** Both tables and their indexes; idempotent, run on open. */
+  /** Every table and index of the ledger; idempotent, run on open. */
   readonly ddl: readonly string[];
   /** `id, peer, seq, label, at_ms, status`. */
   readonly insertOp: string;
@@ -119,14 +119,28 @@ export interface OperationSql {
   readonly selectOp: string;
   /** The full row by the event it became — `peer, seq`. */
   readonly selectOpByEvent: string;
-  /** Every op no peer has receipted yet, oldest first. */
+  /** Every op no peer has claimed custody of yet, oldest first. */
   readonly selectUnsettled: string;
+  /** Every op no peer has **signed** for, oldest first — what licenses nothing while it is listed (D28). */
+  readonly selectSoleCustody: string;
   /** `corrected_by, corrected_reason, peer, seq` — the displaced write learns why (ch. 20). */
   readonly markCorrected: string;
   /** `holder, at_ms, author, through_seq`: one receipt per op the holder's cursor now covers. */
   readonly insertReceiptsThrough: string;
   /** `holder, at_ms` per receipt of one event — `peer, seq`. */
   readonly selectReceipts: string;
+  /**
+   * `holder, incarnation`: forgets every vouch a holder made under a lineage it no longer has.
+   *
+   * Run before each insert, so learning that a peer rebuilt its store is what takes away the
+   * custody it claimed with the store it lost. This is the whole reason a receipt carries an
+   * incarnation at all — without it a wiped relay goes on counting as a holder forever.
+   */
+  readonly deleteStaleVouches: string;
+  /** `holder, incarnation, at_ms, author, through_seq`: one vouch per op the signature covers. */
+  readonly insertVouchesThrough: string;
+  /** `holder, incarnation, at_ms` per vouch of one event — `peer, seq`. */
+  readonly selectVouches: string;
 }
 
 export interface Dialect {

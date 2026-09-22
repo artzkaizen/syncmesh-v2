@@ -2,10 +2,12 @@ import type { CellValue } from "@syncmesh/kernel";
 import type { ColumnKind, Table } from "@syncmesh/schema";
 
 import type { CaptureSql, Dialect } from "./dialect.js";
-import type { LogPlacement, SqlDriver, SqlValue } from "./driver.js";
+import type { LogPlacement, SqlValue } from "./driver.js";
+import type { Rung } from "./ladder.js";
 
 import { sqliteOperations } from "./dialect-operations.js";
 import { columnsOf, literal, quote } from "./identifiers.js";
+import { ladder } from "./ladder.js";
 import { logTable, sqliteLogIndex } from "./namespace.js";
 
 const CHANGES = "syncmesh_changes";
@@ -85,12 +87,6 @@ const capture: CaptureSql = {
     `UPDATE ${quote(table)} SET "${partitionColumn.replaceAll('"', '""')}" = ? WHERE ${quote(pk)} = ?`,
 };
 
-/** Where a ladder remembers how far up it got. */
-interface Rung {
-  readonly read: (driver: SqlDriver) => Promise<number>;
-  readonly write: (driver: SqlDriver, step: number) => Promise<void>;
-}
-
 /**
  * The position as a `user_version`, which is a property of the file and persists with it — so the
  * log's ladder and the derived half's are each versioned by the database they live in.
@@ -120,19 +116,6 @@ const metaRow = (table: string, key: string): Rung => ({
   write: (driver, step) =>
     driver.run(`INSERT OR REPLACE INTO ${table} (key, value) VALUES (?, ?)`, [key, String(step)]),
 });
-
-/** Applies one ladder against the database it belongs to, and writes nothing when it is current. */
-const ladder = async (
-  driver: SqlDriver,
-  at: Rung,
-  steps: readonly (readonly string[])[],
-): Promise<void> => {
-  const applied = await at.read(driver);
-  // nothing to apply is nothing to write: a launch that migrated nothing should touch no page
-  if (applied >= steps.length) return;
-  for (const step of steps.slice(applied)) for (const sql of step) await driver.run(sql);
-  await at.write(driver, steps.length);
-};
 
 const sqliteCell = (kind: ColumnKind, cell: CellValue): SqlValue => {
   if (cell === null) return null;
