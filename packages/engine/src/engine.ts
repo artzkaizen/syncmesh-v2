@@ -266,7 +266,7 @@ export function createEngine(options: EngineOptions): Engine {
     cursors: () => coverage.current().synced,
   });
 
-  const { stateOf, setState, fold, persist, notify } = createFoldPath({
+  const { getState, setState, fold, persist, notify } = createFoldPath({
     merge,
     coverage,
     feeds,
@@ -279,13 +279,13 @@ export function createEngine(options: EngineOptions): Engine {
   fold(boot?.replay ?? [], "boot");
 
   const before = {
-    row: (table, key) => readRow(stateOf(), table, key),
-    records: (table) => stateOf().get(table),
-    partition: (table, key) => getRecord(stateOf(), table, key)?.partition,
+    row: (table, key) => readRow(getState(), table, key),
+    records: (table) => getState().get(table),
+    partition: (table, key) => getRecord(getState(), table, key)?.partition,
   } satisfies StateLookup;
 
   const snapshotDeps = {
-    stateOf,
+    getState,
     setState,
     coverageOf: coverage.current,
     adopt: coverage.adopt,
@@ -296,8 +296,8 @@ export function createEngine(options: EngineOptions): Engine {
   const snapshots = createSnapshotPath(snapshotDeps);
 
   const repair = createRepairPath({
-    stateOf,
-    mergeInto: (table, key, record) => setState(mergeRecord(stateOf(), table, key, record, merge)),
+    getState,
+    mergeInto: (table, key, record) => setState(mergeRecord(getState(), table, key, record, merge)),
     persist: (batch) => persist(batch, stateStore),
     notify,
   });
@@ -310,7 +310,7 @@ export function createEngine(options: EngineOptions): Engine {
     undoDepth,
     undo,
     atomically,
-    stateOf,
+    getState,
     fold,
     persist,
     notify,
@@ -341,10 +341,10 @@ export function createEngine(options: EngineOptions): Engine {
     receiveBatch: receiveAndRetry,
     receive: (entry) => receiveAndRetry([entry]),
     ...chains,
-    state: stateOf,
-    rowsIn: (table, partition) => readRowsIn(stateOf(), table, partition),
+    state: getState,
+    rowsIn: (table, partition) => readRowsIn(getState(), table, partition),
     deletedAt: (table, key) => {
-      const record = getRecord(stateOf(), table, key);
+      const record = getRecord(getState(), table, key);
       // a visible row is not deleted even when it carries a tombstone: an edit stamped above the
       // delete is the CRDT's answer to a concurrent pair, and `isVisible` is where that is decided
       return record === undefined || isVisible(record) ? undefined : record.deleteStamp;

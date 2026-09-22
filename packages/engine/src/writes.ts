@@ -56,7 +56,7 @@ export interface WriteDeps {
   readonly undoDepth: number;
   readonly undo: Undo[];
   readonly atomically: <T>(fn: (scoped: AtomicStores) => Promise<T>) => Promise<T>;
-  readonly stateOf: () => State;
+  readonly getState: () => State;
   readonly fold: (entries: readonly StoredEvent[], source: FoldSource) => FoldBatch;
   readonly persist: (batch: FoldBatch, into: StateStore | undefined) => Promise<void>;
   readonly notify: (batch: FoldBatch) => void;
@@ -80,7 +80,7 @@ export function createWritePath(deps: WriteDeps) {
     undoDepth,
     undo,
     atomically,
-    stateOf,
+    getState,
     fold,
     persist,
     notify,
@@ -99,7 +99,7 @@ export function createWritePath(deps: WriteDeps) {
       }
       const verdict = probeVerdict(validate, probeOf(peerId, changes, mutateOptions), before);
       if (verdict !== undefined) yield* verdict;
-      const inverse = undoDepth > 0 ? invert(stateOf(), changes) : [];
+      const inverse = undoDepth > 0 ? invert(getState(), changes) : [];
       const hlc = clock.tick();
       const scope = mutateOptions.local === true ? "local" : "synced";
       telemetry.emit({ type: "engine.mutate", sizes: { changes: changes.length }, duration });

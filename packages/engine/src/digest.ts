@@ -125,7 +125,7 @@ export interface RepairApi {
 }
 
 export interface RepairDeps {
-  readonly stateOf: () => State;
+  readonly getState: () => State;
   readonly mergeInto: (table: TableName, key: RowKey, record: RowRecord) => void;
   readonly persist: (batch: FoldBatch) => Promise<void>;
   readonly notify: (batch: FoldBatch) => void;
@@ -138,12 +138,12 @@ export interface RepairDeps {
  * never that this peer has seen the events behind it.
  */
 export function createRepairPath(deps: RepairDeps): RepairApi {
-  const { stateOf, mergeInto, persist, notify } = deps;
+  const { getState, mergeInto, persist, notify } = deps;
   return {
-    digest: (interest) => tableDigests(stateOf(), interest),
-    rowDigests: (table, interest) => rowDigests(stateOf(), table, interest),
+    digest: (interest) => tableDigests(getState(), interest),
+    rowDigests: (table, interest) => rowDigests(getState(), table, interest),
     rowRecords: (table: TableName, keys: readonly RowKey[]): readonly RepairRow[] => {
-      const rows = stateOf().get(table);
+      const rows = getState().get(table);
       return keys.flatMap((key) => {
         const record = rows?.get(key);
         return record === undefined ? [] : [{ key, record }];
