@@ -8,7 +8,9 @@ import type { Replica } from "./replica.js";
 
 import { WORKSPACE_ID } from "../domain.js";
 import { Avatar } from "./atoms.js";
-import { useActing, useCatalog, useApi, useTab } from "./context.js";
+import { useActing, useCatalog, useTab } from "./context.js";
+import { HealthPill } from "./health-pill.js";
+import { mesh } from "./mesh.js";
 import {
   BUTTON,
   COLOR,
@@ -174,8 +176,7 @@ function Count({
  * becomes something you can see rather than something you have to be told.
  */
 function Summary() {
-  const api = useApi();
-  const [totals] = useLiveQuery(api.issues.summary({ workspaceId: WORKSPACE_ID })).data;
+  const [totals] = useLiveQuery(mesh.api.issues.summary({ workspaceId: WORKSPACE_ID })).data;
   return (
     <div style={{ display: "flex", gap: SPACE.xl }}>
       <Count label="Issues" value={totals?.total ?? 0} />
@@ -260,6 +261,9 @@ export function Chrome({
       <StorageBadge durable={durable} />
       <ModeBadge role={role} shared={shared} />
       <ForcedBadge controls={controls} />
+      {/* the fourth pill, and like the third usually not there: one word while the mesh is
+          catching up, retrying a medium, or has none to carry on — nothing when it is caught up */}
+      <HealthPill />
       {/* the placeholder names the identifier on purpose: `issues.search` matches a ticket
           number as well as text (`procedures/reads.ts`), and that is the thing people actually
           paste in — out of a commit message, a standup, a link somebody sent them. A box that

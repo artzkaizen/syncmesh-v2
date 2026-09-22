@@ -6,8 +6,9 @@ import type { MemberRow } from "./view.js";
 
 import { WORKSPACE_ID } from "../domain.js";
 import { Avatar } from "./atoms.js";
-import { useActing, useApi } from "./context.js";
+import { useActing } from "./context.js";
 import { enterAs } from "./install.js";
+import { mesh } from "./mesh.js";
 import { BUTTON, COLOR, HAIRLINE, RADIUS, SPACE, TEXT } from "./ui.js";
 
 /**
@@ -94,7 +95,7 @@ function Person({
 }
 
 export function People() {
-  const api = useApi();
+  const { api } = mesh;
   const acting = useActing();
   const people = useLiveQuery(api.members.list({ workspaceId: WORKSPACE_ID })).data;
   const workload = useLiveQuery(api.members.workload({ workspaceId: WORKSPACE_ID })).data;

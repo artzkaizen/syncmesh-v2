@@ -1,13 +1,17 @@
 import { panic } from "@syncmesh/result";
-import { createContext, useContext } from "react";
+import { createContext, useContext, useSyncExternalStore } from "react";
 
 import type { Actor } from "../actor.js";
 import type { Acting } from "./install.js";
 import type { Replica } from "./replica.js";
 import type { IssueLabelRow, IssueRow, LabelRow, MemberRow, ProjectRow, TeamRow } from "./view.js";
 
+import { mesh } from "./mesh.js";
+import { onReplica, replicaState } from "./replica.js";
+
 /**
- * The four contexts this app threads, and the hooks that read them.
+ * The three contexts this app threads, the hooks that read them, and the two doors onto the
+ * client for the modules not yet reading `mesh.api` themselves.
  *
  * **A `.ts` file, because a context belongs to neither side of itself.** It is made once, provided
  * by a component and read by other components, so the module holding it is imported by both — and
@@ -17,13 +21,13 @@ import type { IssueLabelRow, IssueRow, LabelRow, MemberRow, ProjectRow, TeamRow 
  * worker, re-runs the `navigator.locks` election and re-opens the OPFS database. Components live
  * in `.tsx`, everything else lives beside them in `.ts`, and an edit is a hot update again.
  *
- * Context rather than prop drilling for the replica is the ordinary reason. Context for the
- * catalog is a stronger one: teams, people, labels and projects are read by the header, the
- * sidebar, every row in the list and every line of the detail panel, and each of those asking for
- * itself would be five subscriptions per screen instead of five per app.
+ * **There is no context for the client.** `mesh.api` is a property of the module in `mesh.ts`,
+ * bound once for the life of the tab, and `<mesh.Provider>` gates the tree on it; a context would
+ * exist only to be imported. Context for the catalog is the real case: teams, people, labels and
+ * projects are read by the header, the sidebar, every row in the list and every line of the
+ * detail panel, and each of those asking for itself would be five subscriptions per screen
+ * instead of five per app.
  */
-
-export const ReplicaHeld = createContext<Replica | undefined>(undefined);
 
 /**
  * Who this install is acting as, which is the origin's answer and not this window's.
@@ -65,42 +69,29 @@ const NONE: readonly IssueRow[] = [];
 export const ShownRows = createContext<readonly IssueRow[]>(NONE);
 
 /**
- * Panics rather than returning `undefined`, because a component rendered outside the provider is
- * a wiring mistake and not a state to draw. The alternative — an optional replica threaded
- * through every view — would put a null check in a hundred places to describe a situation that
- * cannot arise once.
+ * `mesh.api`, for `detail.tsx` and `routes/_shell/route.tsx`; every other screen reads it as the
+ * property it is. Not a subscription: the client is one object for the life of the tab.
  */
-/**
- * What a screen actually wants, named — rather than one bag it destructures two fields off.
- *
- * `Replica` is five unrelated facts: the api, the port to the worker holding the engine, and
- * three about *this tab's* storage situation. Handing all five to every component put a storage
- * noun in the signature of every screen in the app, and made "what does this screen depend on"
- * unanswerable without reading its body. Fifteen of the twenty call sites wanted `api` alone.
- *
- * The provider is unchanged; only the door is. `<Workspace>` still holds one object, because a
- * leader handover replaces all of it at once and splitting the *context* would let the three
- * halves disagree about which tab is live.
- */
-const held = (): Replica =>
-  useContext(ReplicaHeld) ?? panic("a component asked for the replica outside <Workspace>");
-
-/** The procedures, bound to this origin's mesh. `api.issues.list(…)` and nothing else. */
-export const useApi = (): Replica["api"] => held().api;
+export const useApi = (): typeof mesh.api => mesh.api;
 
 /**
- * The window's view of the origin's engine — a thin client over a port, never an engine itself.
+ * `mesh.api.$mesh` — the port half of the client — for the same two callers.
  *
- * Four callers, and every one of them is reaching for `operations` or handing the whole thing to
- * devtools. Named rather than destructured out of a bag so that a screen touching the mesh is a
- * screen you can find.
+ * Reaching for `operations` or handing the whole thing to devtools is what every caller of it
+ * does; named so that a screen touching the mesh is a screen you can find.
  */
-export const useFollower = (): Replica["mesh"] => held().mesh;
+export const useFollower = (): typeof mesh.api.$mesh => mesh.api.$mesh;
 
-/** Whether this tab is durable, whether it holds the engine, and whether tabs can share one. */
+/**
+ * Whether this tab is durable, whether it holds the engine, and whether tabs can share one.
+ *
+ * A hook over the link this tab holds, because `role` moves on a leader handover; the snapshot
+ * keeps its identity until the link changes. Panics under no link, because a component asking
+ * outside `<mesh.Provider>` is a wiring mistake and not a state to draw.
+ */
 export const useTab = (): Pick<Replica, "durable" | "role" | "shared"> => {
-  const { durable, role, shared } = held();
-  return { durable, role, shared };
+  const { held } = useSyncExternalStore(onReplica, replicaState);
+  return held?.replica ?? panic("a component asked which tab this is before a link was held");
 };
 
 export const useCatalog = (): Catalog =>

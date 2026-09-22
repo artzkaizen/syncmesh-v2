@@ -5,7 +5,8 @@ import type { ActivityRow, CommentRow } from "./view.js";
 
 import { WORKSPACE_ID } from "../domain.js";
 import { Avatar } from "./atoms.js";
-import { useActor, useCatalog, useApi } from "./context.js";
+import { useActor, useCatalog } from "./context.js";
+import { mesh } from "./mesh.js";
 import {
   BUTTON,
   CAPTION,
@@ -34,7 +35,7 @@ import {
 const EMOJI = ["👍", "🎉", "👀", "🚀", "😄", "❤️"] as const;
 
 function Reactions({ subjectId }: { readonly subjectId: string }) {
-  const api = useApi();
+  const { api } = mesh;
   const actor = useActor().account;
   const tally = useLiveQuery(
     api.reactions.tally({ workspaceId: WORKSPACE_ID, subject: "comment", subjectId }),
@@ -164,7 +165,7 @@ function sentence(
 }
 
 function History({ issueId }: { readonly issueId: string }) {
-  const api = useApi();
+  const { api } = mesh;
   const catalog = useCatalog();
   const rows = useLiveQuery(api.history.forIssue({ workspaceId: WORKSPACE_ID, issueId })).data;
   const name = (id: string) => catalog.member.get(id)?.name;
@@ -183,7 +184,7 @@ function History({ issueId }: { readonly issueId: string }) {
 
 /** The composer. `comment.insert` is `owner("authorId")`, so this tab can only ever speak as itself. */
 function Composer({ issueId }: { readonly issueId: string }) {
-  const api = useApi();
+  const { api } = mesh;
   const actor = useActor().account;
   const [body, setBody] = useState("");
   return (
@@ -233,7 +234,7 @@ const SHOWN = 50;
  * order happens here, once, rather than in the SQL where it would cost the index.
  */
 export function Thread({ issueId }: { readonly issueId: string }) {
-  const api = useApi();
+  const { api } = mesh;
   const [shown, setShown] = useState(SHOWN);
   const newestFirst = useLiveQuery(
     api.comments.forIssue({ workspaceId: WORKSPACE_ID, issueId, limit: shown }),

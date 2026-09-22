@@ -7,9 +7,10 @@ import type { Scale } from "./install.js";
 import type { Reach } from "./reach.js";
 
 import { Avatar } from "./atoms.js";
-import { useActing, useCatalog, useFollower, useTab } from "./context.js";
+import { useActing, useCatalog, useTab } from "./context.js";
 import { AUTHORITY_URL } from "./identity.js";
 import { leaveWorkspace, scaleOf, wipeReplica } from "./install.js";
+import { mesh } from "./mesh.js";
 import { watchReach } from "./reach.js";
 import { BUTTON, CAPTION, COLOR, HAIRLINE, SEVERITY_COLOR, SPACE, TEXT } from "./ui.js";
 
@@ -90,7 +91,7 @@ const Dangerous = ({
 );
 
 export function Settings() {
-  const mesh = useFollower();
+  const follower = mesh.api.$mesh;
   const { durable, role, shared } = useTab();
   const acting = useActing();
   const catalog = useCatalog();
@@ -102,13 +103,13 @@ export function Settings() {
   const [scale, setScale] = useState<Scale>();
   useEffect(() => {
     let live = true;
-    void scaleOf(mesh).then((held) => {
+    void scaleOf(follower).then((held) => {
       if (live) setScale(held);
     });
     return () => {
       live = false;
     };
-  }, [mesh]);
+  }, [follower]);
 
   return (
     <>

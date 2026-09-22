@@ -1,12 +1,13 @@
+import type { Api } from "@syncmesh/orpc";
 import type { QueryResult } from "@syncmesh/react";
 
 import { useQuery } from "@syncmesh/react";
 
-import type { Replica } from "./replica.js";
+import type { procedures } from "../procedures.js";
 import type { Filters, IssueRow, StatusCount } from "./view.js";
 
 import { WORKSPACE_ID } from "../domain.js";
-import { useApi } from "./context.js";
+import { mesh } from "./mesh.js";
 
 /**
  * How many rows each question is worth asking for. A filtered list is the screen's whole content
@@ -36,7 +37,7 @@ const SEARCHED = 100;
  * real device without a DOM — including the one that matters, that clearing the search box gets
  * back the exact list, and the exact subscription key, that was there before anyone typed.
  */
-export const issuesCall = (api: Replica["api"], filters: Filters, perStatus: number) => {
+export const issuesCall = (api: Api<typeof procedures>, filters: Filters, perStatus: number) => {
   const text = filters.text.trim();
   return text === ""
     ? api.issues.list({
@@ -67,7 +68,7 @@ export const issuesCall = (api: Replica["api"], filters: Filters, perStatus: num
  * exported from a `.tsx` file costs Fast Refresh for every module that imports it.
  */
 export function useIssues(filters: Filters, perStatus: number): QueryResult<IssueRow> {
-  const api = useApi();
+  const { api } = mesh;
   return useQuery(issuesCall(api, filters, perStatus));
 }
 
@@ -91,7 +92,7 @@ export const PER_STATUS = 50;
  * number is not.
  */
 export function useIssueCounts(filters: Filters): QueryResult<StatusCount> {
-  const api = useApi();
+  const { api } = mesh;
   const countable = filters.text.trim() === "" && filters.labelId === null;
   return useQuery(
     api.issues.counts({

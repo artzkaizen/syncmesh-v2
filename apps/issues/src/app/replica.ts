@@ -1,8 +1,7 @@
-import type { FollowerMesh, MeshLink, MeshLinkFailure } from "@syncmesh/browser";
-import type { Api } from "@syncmesh/orpc";
+import type { FollowerClient, FollowerMesh, MeshLink, MeshLinkFailure } from "@syncmesh/browser";
 
 import { connectMesh, openMeshLink, rendezvousAvailable } from "@syncmesh/browser";
-import { Result, TaggedError } from "@syncmesh/result";
+import { Result, TaggedError, panic } from "@syncmesh/result";
 
 import { procedures } from "../procedures.js";
 import { issuesSchema } from "../schema.js";
@@ -65,17 +64,16 @@ export class ReplicaUnavailable extends TaggedError("ReplicaUnavailable")<{
  * database, and it reaches the screens through `install.ts` and `useActor` instead.
  */
 export interface Replica {
-  /** The only surface a component touches: `api.issues.list(…)`, never Drizzle and never a handle. */
-  readonly api: Api<typeof procedures>;
   /**
-   * The window's own view of the origin's mesh — a thin client over a port, never an engine.
+   * The client over this link: the procedures, and the window's `$` surfaces beside them.
    *
-   * A `FollowerMesh` and not a `Mesh`, in the leader's tab as much as in any other, because both
-   * hold exactly the same thing: a port to the worker that owns the engine. Typing the leader's
-   * as more would be claiming a surface this page does not have, and would put a branch in every
-   * component that reads it.
+   * A `FollowerClient` and not a `Client`, in the leader's tab as much as in any other, because
+   * both hold exactly the same thing: a port to the worker that owns the engine. Typing the
+   * leader's as more would be claiming a surface this page does not have, and would put a branch
+   * in every component that reads it. `api.$mesh` is the port half, for the few callers that
+   * want it by that name.
    */
-  readonly mesh: FollowerMesh;
+  readonly api: FollowerClient<typeof procedures>;
   /**
    * Whether the origin's one database has a file underneath it.
    *
@@ -148,7 +146,6 @@ const openOnce = (): Promise<Result<Replica, ReplicaUnavailable>> =>
     await client.$ready;
     return Result.ok({
       api: client,
-      mesh: client.$mesh,
       durable,
       role: link.role,
       shared: rendezvousAvailable(),
@@ -157,15 +154,58 @@ const openOnce = (): Promise<Result<Replica, ReplicaUnavailable>> =>
 
 type Opened = Result<Replica, ReplicaUnavailable>;
 
+/** The replica this tab holds and which one it is, because the second has to **replace** the first. */
+export interface Held {
+  readonly replica: Replica;
+  /**
+   * Counts the links this tab has held; keys the tree.
+   *
+   * Every live query in the tree is subscribed to the mesh it was built against, and the hooks
+   * key a subscription on the *question* rather than on the mesh — `useLiveQuery`'s own contract,
+   * and the right one for an app whose mesh outlives its screens. A handover breaks that
+   * assumption once: the old subscriptions are on a port that is closed, and a tree that merely
+   * re-rendered would go on showing the last rows it was given over a database that has moved
+   * on. So the epoch keys the tree and the whole of it is rebuilt — and what the rebuild no
+   * longer costs is the screen, because the filters and the open issue are in the address bar and
+   * the router is built once, outside the key.
+   */
+  readonly epoch: number;
+}
+
+/** What this tab holds and the last reason it could not: one snapshot, for `useSyncExternalStore`. */
+export interface ReplicaState {
+  /** `undefined` until the first open succeeds. */
+  readonly held: Held | undefined;
+  /** The last open or reopen that failed, cleared by the next that succeeds. */
+  readonly failure: ReplicaUnavailable | undefined;
+}
+
+let state: ReplicaState = { held: undefined, failure: undefined };
 let opening: Promise<Opened> | undefined;
-let held: Replica | undefined;
 let reopening = false;
 let again = false;
-const watchers = new Set<(opened: Opened) => void>();
+const watchers = new Set<() => void>();
+const heldOnce = Promise.withResolvers<void>();
 
 const remember = (opened: Opened): Opened => {
-  if (opened.isOk()) held = opened.value;
+  if (opened.isErr()) {
+    // the screen renders the reason as prose; this is the live error, whose fields — which VFS
+    // was refused, which directory is held — are the ones a bug report is actually written from
+    // eslint-disable-next-line no-console -- there may be no screen yet to put it on
+    console.error("[syncmesh] the replica would not open", opened.error);
+    state = { held: state.held, failure: opened.error };
+    return opened;
+  }
+  state = {
+    held: { replica: opened.value, epoch: (state.held?.epoch ?? 0) + 1 },
+    failure: undefined,
+  };
+  heldOnce.resolve();
   return opened;
+};
+
+const announce = (): void => {
+  for (const watch of watchers) watch();
 };
 
 /**
@@ -180,7 +220,8 @@ const remember = (opened: Opened): Opened => {
  * it then takes down with the rest. Measured: a survivor that ignored the second notice sat on a
  * link that had been killed a millisecond after it was made, and showed "the mesh this tab
  * reached could not answer" over a mesh that was fine. So the notice is remembered and the build
- * runs again, which settles the moment nothing has died underneath it.
+ * runs again, which settles the moment nothing has died underneath it — and only the settled
+ * outcome is announced, so the tree is not rebuilt over a link about to die.
  */
 const reopen = async (): Promise<void> => {
   if (reopening) {
@@ -188,17 +229,16 @@ const reopen = async (): Promise<void> => {
     return;
   }
   reopening = true;
-  const gone = held;
-  let opened: Opened;
+  const gone = state.held?.replica;
   do {
     again = false;
     opening = openOnce().then(remember);
-    opened = await opening;
+    await opening;
   } while (again);
   reopening = false;
   // the old client is talking to a worker that is no longer the host; its port is already closed
-  void gone?.mesh.stop();
-  for (const watch of watchers) watch(opened);
+  void gone?.api.$close();
+  announce();
 };
 
 /**
@@ -210,7 +250,12 @@ const reopen = async (): Promise<void> => {
  * on every reload.
  */
 export function openReplica(): Promise<Opened> {
-  opening ??= openOnce().then(remember);
+  opening ??= openOnce()
+    .then(remember)
+    .then((opened) => {
+      announce();
+      return opened;
+    });
   return opening;
 }
 
@@ -220,9 +265,47 @@ export function openReplica(): Promise<Opened> {
  * A callback rather than a promise because there is no last answer: a tab may be a follower, then
  * the leader, then a follower again, and each of those is a new client over a new port. It also
  * carries the one recovery worth having — a tab told there was no rendezvous can be promoted
- * later, and the app it could not draw arrives here.
+ * later, and the app it could not draw arrives here. The listener reads {@link replicaState}.
  */
-export function onReplica(listener: (opened: Opened) => void): () => void {
+export function onReplica(listener: () => void): () => void {
   watchers.add(listener);
   return () => void watchers.delete(listener);
+}
+
+/** The current snapshot; the same object until something changes, as `useSyncExternalStore` needs. */
+export const replicaState = (): ReplicaState => state;
+
+/** This app's procedures, bound over whichever link the tab holds. */
+type Client = FollowerClient<typeof procedures>;
+
+const current = (): Client =>
+  state.held?.replica.api ?? panic("no link is held yet — read the client under <mesh.Provider>");
+
+/**
+ * The client, as one object for the life of the tab.
+ *
+ * A leader handover is a new link and a new `FollowerClient` over it, and `syncmeshReact` binds
+ * one client once — so this is the façade the handover happens behind: every property read
+ * resolves against the client of the link currently held, and nothing above this file learns that
+ * the port moved. What does still move is the tree: `main.tsx` keys it on {@link Held.epoch},
+ * because a subscription taken on the old port is dead however this reads.
+ */
+export const client: Client = new Proxy(
+  // SAFETY: every read resolves against a `Client`; the empty target is never read itself
+  {} as Client,
+  {
+    // SAFETY: a name that is not a `Client` member reads `undefined` off the held client, which is
+    // exactly what the target would have answered
+    get: (_, key) => current()[key as keyof Client],
+  },
+);
+
+/**
+ * Starts the open and resolves with {@link client} the first time a link is held — however many
+ * attempts that takes, which is why it never rejects: a tab told there is no rendezvous can be
+ * promoted a minute later, and the failure in between is drawn from {@link replicaState}.
+ */
+export function openClient(): Promise<Client> {
+  void openReplica();
+  return heldOnce.promise.then(() => client);
 }

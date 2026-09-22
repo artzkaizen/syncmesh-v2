@@ -4,17 +4,19 @@ import { useLiveQuery } from "@syncmesh/react";
 import { useMemo } from "react";
 
 import type { Acting } from "./install.js";
-import type { Replica } from "./replica.js";
 
 import { WORKSPACE_ID } from "../domain.js";
-import { ActingHeld, CatalogHeld, ReplicaHeld } from "./context.js";
+import { ActingHeld, CatalogHeld } from "./context.js";
+import { mesh } from "./mesh.js";
 import { Picker } from "./picker.js";
 import { ReachBadge } from "./reach-badge.js";
+import { Toasts } from "./toasts.js";
 import { byId } from "./view.js";
 
 /**
  * The two things every screen needs and no screen should be handed down four levels of props:
- * the replica, and the small tables everything else is rendered *through*.
+ * who this install is, and the small tables everything else is rendered *through*. The client
+ * itself is `mesh.api`, a property, and needs no threading.
  *
  * The contexts themselves and the hooks that read them are in `context.ts`; this file provides
  * them and exports a component and nothing else, which is what keeps a hot update hot. The tables
@@ -24,14 +26,12 @@ import { byId } from "./view.js";
 
 export function Workspace({
   acting,
-  replica,
   children,
 }: {
   readonly acting: Acting;
-  readonly replica: Replica;
   readonly children: ReactNode;
 }) {
-  const { api } = replica;
+  const { api } = mesh;
   const teams = useLiveQuery(api.teams.list({ workspaceId: WORKSPACE_ID })).data;
   const members = useLiveQuery(api.members.list({ workspaceId: WORKSPACE_ID })).data;
   const labels = useLiveQuery(api.labels.list({ workspaceId: WORKSPACE_ID })).data;
@@ -56,21 +56,20 @@ export function Workspace({
   );
 
   return (
-    <ReplicaHeld value={replica}>
-      <ActingHeld value={acting}>
-        <CatalogHeld value={catalog}>
-          {/* the picker instead of the app, and not a redirect to a route that draws it: an
-              install nobody has answered for has no URL worth keeping, and a router that
-              bounced every address to `/identity` would put a page in the history for a
-              question rather than for a place. The roster it needs is one context up, which
-              is the other reason it stands here */}
-          {acting.chosen ? children : <Picker />}
-          {/* above the screen rather than inside it, because what it reports is the device's and
-              not this workspace's — and because it has to be drawn on every route, including the
-              ones that are still being written */}
-          <ReachBadge />
-        </CatalogHeld>
-      </ActingHeld>
-    </ReplicaHeld>
+    <ActingHeld value={acting}>
+      <CatalogHeld value={catalog}>
+        {/* the picker instead of the app, and not a redirect to a route that draws it: an
+            install nobody has answered for has no URL worth keeping, and a router that
+            bounced every address to `/identity` would put a page in the history for a
+            question rather than for a place. The roster it needs is one context up, which
+            is the other reason it stands here */}
+        {acting.chosen ? children : <Picker />}
+        {/* above the screen rather than inside it, because what they report is the device's and
+            not this workspace's — and because they have to be drawn on every route, including
+            the ones that are still being written */}
+        <ReachBadge />
+        <Toasts />
+      </CatalogHeld>
+    </ActingHeld>
   );
 }

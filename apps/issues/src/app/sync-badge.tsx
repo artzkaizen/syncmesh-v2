@@ -1,6 +1,7 @@
 import { useOperation } from "@syncmesh/react";
 
-import { useFollower } from "./context.js";
+import { mesh } from "./mesh.js";
+import { useOverruled } from "./overrule.js";
 import { syncNote } from "./sync-note.js";
 import { COLOR, SEVERITY_COLOR, TEXT } from "./ui.js";
 
@@ -37,8 +38,11 @@ export function SyncBadge({
   /** `undefined` is *not read yet*, not "no operation"; see `view.ts`'s `Panel`. */
   readonly operation: string | null | undefined;
 }) {
-  const mesh = useFollower();
-  const note = syncNote(sync ?? undefined, useOperation(mesh.operations, operation ?? undefined));
+  const record = useOperation(
+    operation === null || operation === undefined ? undefined : mesh.api.$operations.get(operation),
+  );
+  useOverruled(record);
+  const note = syncNote(sync ?? undefined, record);
   if (note === undefined) return null;
   return (
     <span

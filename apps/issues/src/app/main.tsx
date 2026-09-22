@@ -1,15 +1,14 @@
-import type { Result } from "@syncmesh/result";
-
 import { isTaggedError, panic } from "@syncmesh/result";
 import { RouterProvider } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 
 import type { Acting } from "./install.js";
-import type { Replica, ReplicaUnavailable } from "./replica.js";
+import type { ReplicaUnavailable } from "./replica.js";
 
 import { onWiped, watchActing } from "./install.js";
-import { onReplica, openReplica } from "./replica.js";
+import { mesh } from "./mesh.js";
+import { onReplica, replicaState } from "./replica.js";
 import { router } from "./router.js";
 import { COLOR, FONT, SEVERITY_COLOR, SPACE, TEXT } from "./ui.js";
 import { Workspace } from "./workspace.js";
@@ -19,13 +18,16 @@ import { Workspace } from "./workspace.js";
  *
  * There is exactly one await before the first pixel and it is the one that matters — this tab
  * finding whichever tab holds the engine, and on a fresh install that tab opening the database and
- * writing the seed through the log. After that the app never waits for anything again, because
+ * writing the seed through the log. `<mesh.Provider>` is that gate: it draws `whileOpening` until
+ * the first link is held and the tree after, which is what makes `mesh.api` a property every
+ * screen underneath can read. After that the app never waits for anything again, because
  * everything it needs is on this device.
  *
  * The replica is also handed back *later*, through {@link onReplica}: the tab holding the engine
- * can close, and the survivor that is promoted rebuilds its client over a new port. That is a new
- * `Replica` object and a re-render, not a reload — which is the whole difference between a
- * handover and a cold start.
+ * can close, and the survivor that is promoted rebuilds its client over a new port. `mesh.api`
+ * reads through to whichever link is held, and the tree is keyed on the link's epoch so that every
+ * subscription is retaken on the new port — a re-render, not a reload, which is the whole
+ * difference between a handover and a cold start.
  *
  * Deliberately **not** wrapped in `<StrictMode>`. Strict mode's double-invoked effects are a good
  * thing and this app would survive them at the React level; what it would not survive is the
@@ -85,40 +87,88 @@ const Centered = ({ children }: { readonly children: React.ReactNode }) => (
   </div>
 );
 
+/** The link this tab holds and the last reason it could not, as React state. */
+const useReplica = () => useSyncExternalStore(onReplica, replicaState);
+
+/** The replica would not open: the sentence, the worker's own words under it, and what that means. */
+function Unavailable({ failure }: { readonly failure: ReplicaUnavailable }) {
+  const reason = because(failure);
+  return (
+    <Centered>
+      <strong style={{ color: SEVERITY_COLOR.critical }}>The replica would not open</strong>
+      <span>{failure.message}</span>
+      {reason !== undefined && (
+        <code
+          style={{
+            ...TEXT.xs,
+            color: COLOR.textDim,
+            fontFamily: FONT.mono,
+            maxWidth: "68ch",
+            textAlign: "center",
+          }}
+        >
+          {reason}
+        </code>
+      )}
+      <span style={{ ...TEXT.xs, color: COLOR.textFaint }}>
+        This tab holds no database of its own: one tab of this origin owns the engine and the rest
+        read it over a port. Where a browser has no SharedWorker there is nothing to introduce them
+        through, and only the tab that won the election is live.
+      </span>
+    </Centered>
+  );
+}
+
+const REACHING = (
+  <Centered>
+    <span>
+      Reaching this origin&rsquo;s mesh — opening SQLite over OPFS in the elected tab&rsquo;s
+      worker, and seeding the workspace if this is the first run…
+    </span>
+  </Centered>
+);
+
 /**
- * A replica and which one it is, because the second one has to **replace** the first.
+ * What the gate draws before the first link is held: the sentence, or the reason there is none.
  *
- * Every live query in the tree is subscribed to the mesh it was built against, and the hooks key
- * a subscription on the *question* rather than on the mesh — `useLiveQuery`'s own contract, and
- * the right one for an app whose mesh outlives its screens. A handover breaks that assumption
- * once: the api is new, the old subscriptions are on a port that is closed, and a tree that
- * merely re-rendered would go on showing the last rows it was given over a database that has
- * moved on. So the epoch keys the tree and the whole of it is rebuilt.
- *
- * **What the rebuild no longer costs is the screen.** It used to take this tab's filters and its
- * open issue with it, which was the honest price of a stale screen being the worse outcome — but
- * those four values are in the address bar now rather than in React state, and the address bar is
- * not in the tree. The router is built once, outside the key; a handover tears the components
- * down, mounts them again against the new mesh and they read the same URL back. A promoted
- * follower now redraws the list it was already looking at.
+ * The failure is drawn here rather than by the factory's `whenUnavailable`, because a first open
+ * that fails is not final in this app — a tab told there is no rendezvous can be promoted later,
+ * and `openClient` resolves the moment it is.
  */
-interface Held {
-  readonly replica: Replica;
-  readonly epoch: number;
+function Reaching() {
+  const { failure } = useReplica();
+  return failure === undefined ? REACHING : <Unavailable failure={failure} />;
+}
+
+/**
+ * The app over the link this tab holds, rebuilt whole when the link changes — see `Held.epoch`.
+ *
+ * A reopen that fails after a first success is drawn over everything, as it always was: a tab
+ * whose leader went and whose reconnect was refused has nothing honest to show underneath.
+ */
+function App({ acting }: { readonly acting: Acting | undefined }) {
+  const { held, failure } = useReplica();
+  if (failure !== undefined) return <Unavailable failure={failure} />;
+  if (acting === undefined) return REACHING;
+  const epoch = held?.epoch ?? panic("the app drew before a link was held");
+  return (
+    // the workspace's live reads are above the router and keyed with the tree, because they are
+    // the mesh's; the router below is the URL's and outlives every link this tab holds
+    <Workspace acting={acting} key={epoch}>
+      <RouterProvider router={router} />
+    </Workspace>
+  );
 }
 
 function Boot() {
-  const [held, setHeld] = useState<Held>();
-  const [failure, setFailure] = useState<ReplicaUnavailable>();
   /**
    * Who this install is, asked of the worker rather than decided here.
    *
-   * Beside the replica and not inside it, because the two are answers to different questions with
+   * Beside the link and not inside it, because the two are answers to different questions with
    * different lifetimes — `replica.ts` says which — and because this subscription must outlive a
    * handover: the tab holding the engine can close without anybody changing who they are.
    */
   const [acting, setActing] = useState<Acting>();
-
   useEffect(() => watchActing(setActing), []);
 
   /**
@@ -131,67 +181,12 @@ function Boot() {
    */
   useEffect(() => onWiped(() => location.reload()), []);
 
-  useEffect(() => {
-    let live = true;
-    const settle = (opened: Result<Replica, ReplicaUnavailable>): void => {
-      if (!live) return;
-      // the screen renders the reason as prose; this is the live error, whose fields — which VFS
-      // was refused, which directory is held — are the ones a bug report is actually written from
-      // eslint-disable-next-line no-console -- the app has not started; there is no screen yet
-      if (opened.isErr()) console.error("[syncmesh] the replica would not open", opened.error);
-      setFailure(opened.isOk() ? undefined : opened.error);
-      if (opened.isOk())
-        setHeld((current) => ({ replica: opened.value, epoch: (current?.epoch ?? 0) + 1 }));
-    };
-    const off = onReplica(settle);
-    void openReplica().then(settle);
-    return () => {
-      live = false;
-      off();
-    };
-  }, []);
-
-  const reason = failure === undefined ? undefined : because(failure);
-  if (failure !== undefined)
-    return (
-      <Centered>
-        <strong style={{ color: SEVERITY_COLOR.critical }}>The replica would not open</strong>
-        <span>{failure.message}</span>
-        {reason !== undefined && (
-          <code
-            style={{
-              ...TEXT.xs,
-              color: COLOR.textDim,
-              fontFamily: FONT.mono,
-              maxWidth: "68ch",
-              textAlign: "center",
-            }}
-          >
-            {reason}
-          </code>
-        )}
-        <span style={{ ...TEXT.xs, color: COLOR.textFaint }}>
-          This tab holds no database of its own: one tab of this origin owns the engine and the rest
-          read it over a port. Where a browser has no SharedWorker there is nothing to introduce
-          them through, and only the tab that won the election is live.
-        </span>
-      </Centered>
-    );
-  if (held === undefined || acting === undefined)
-    return (
-      <Centered>
-        <span>
-          Reaching this origin&rsquo;s mesh — opening SQLite over OPFS in the elected tab&rsquo;s
-          worker, and seeding the workspace if this is the first run…
-        </span>
-      </Centered>
-    );
   return (
-    // the workspace's live reads are above the router and keyed with the tree, because they are
-    // the mesh's; the router below is the URL's and outlives every replica this tab holds
-    <Workspace acting={acting} key={held.epoch} replica={held.replica}>
-      <RouterProvider router={router} />
-    </Workspace>
+    // one gate, at the root: the tree under it may read `mesh.api` as a property, and the open
+    // it waits on started at import time, overlapping React mounting rather than queueing behind it
+    <mesh.Provider whileOpening={<Reaching />}>
+      <App acting={acting} />
+    </mesh.Provider>
   );
 }
 

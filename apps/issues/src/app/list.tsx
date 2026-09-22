@@ -7,7 +7,10 @@ import type { Landing } from "./section.js";
 import type { Counted, Filters, IssueRow, Sort } from "./view.js";
 
 import { WORKSPACE_ID } from "../domain.js";
-import { useActor, useCatalog, useApi, useFollower } from "./context.js";
+import { useActor, useCatalog } from "./context.js";
+import { FirstLaunch } from "./first-launch.js";
+import { mesh } from "./mesh.js";
+import { useOverruled } from "./overrule.js";
 import { Section } from "./section.js";
 import { BUTTON, CAPTION, COLOR, HAIRLINE, SPACE, TEXT } from "./ui.js";
 import { useIssueCounts } from "./use-issues.js";
@@ -109,8 +112,8 @@ function SortBar({
  * window across the port whichever tab holds the engine.
  */
 function LastMove({ id }: { readonly id: string | undefined }) {
-  const mesh = useFollower();
-  const record = useOperation(mesh.operations, id);
+  const record = useOperation(id === undefined ? undefined : mesh.api.$operations.get(id));
+  useOverruled(record);
   if (record === undefined) return null;
   return (
     <div
@@ -142,7 +145,7 @@ export interface ListProps {
 
 export function List(props: ListProps) {
   const { answer, filters, sort, selectedId } = props;
-  const api = useApi();
+  const { api } = mesh;
   const actor = useActor().account;
   const catalog = useCatalog();
   /**
@@ -228,19 +231,21 @@ export function List(props: ListProps) {
     >
       <SortBar onSort={props.onSort} shown={totalOf(counts)} sort={sort} />
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+        {/* the screen's own gate, inside the list: `answered` walks none → local → settled, and
+            each step is a different sentence. An empty *local* answer is the first launch —
+            this device holds nothing and nobody else has spoken — and is not "nothing matches" */}
         {answer.answered === "none" ? (
-          // <Notice>
-          //   {answer.error === undefined
-          //     ? "Reading the local replica…"
-          //     : `This device could not read the list: ${answer.error.message}`}
-          // </Notice>
-          <></>
-        ) : rows.length === 0 ? (
           <Notice>
-            {answer.answered === "settled"
-              ? "Nothing matches these filters."
-              : "Nothing here yet — still hearing from the rest of the mesh."}
+            {answer.error === undefined
+              ? "Reading the local replica…"
+              : `This device could not read the list: ${answer.error.message}`}
           </Notice>
+        ) : rows.length === 0 ? (
+          answer.answered === "settled" ? (
+            <Notice>Nothing matches these filters.</Notice>
+          ) : (
+            <FirstLaunch />
+          )
         ) : (
           groups.map((group) => (
             <Section

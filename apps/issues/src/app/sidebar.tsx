@@ -6,7 +6,8 @@ import type { Filters } from "./view.js";
 
 import { WORKSPACE_ID } from "../domain.js";
 import { Avatar, Section } from "./atoms.js";
-import { useActor, useCatalog, useApi } from "./context.js";
+import { useActor, useCatalog } from "./context.js";
+import { mesh } from "./mesh.js";
 import { COLOR, HAIRLINE, RADIUS, SIDEBAR_WIDTH, SPACE, TEXT } from "./ui.js";
 
 /**
@@ -85,7 +86,7 @@ export function Sidebar({
   readonly filters: Filters;
   readonly onFilters: (next: Filters) => void;
 }) {
-  const api = useApi();
+  const { api } = mesh;
   const actor = useActor().account;
   const catalog = useCatalog();
   const totals = useLiveQuery(api.issues.labelTotals({ workspaceId: WORKSPACE_ID })).data;
