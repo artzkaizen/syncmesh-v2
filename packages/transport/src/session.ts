@@ -104,6 +104,12 @@ export function secureLink(link: FrameLink, options: SessionOptions): FrameLink 
   let keys: SessionKeys | undefined;
   /** Who this session proved, so a second hello can be held to being from the same device. */
   let proven: PeerId | undefined;
+  /**
+   * Whether the peer has been seen to use the hello this session currently offers — a frame
+   * unsealed under the keys agreed from it. Until then our hello is still in flight, and a fresh
+   * hello arriving from the peer is the **answer** to it, not a new offer: see {@link supersede}.
+   */
+  let confirmed = false;
   let failure: unknown;
 
   /** A failure here is the link's, not one frame's: nothing more can be sent or read. */
@@ -120,6 +126,7 @@ export function secureLink(link: FrameLink, options: SessionOptions): FrameLink 
 
   const established = (peer: Hello, agreed: SessionKeys): void => {
     keys = agreed;
+    confirmed = false;
     proven = peer.peerId;
     remember(peer.ephemeral);
     const held = pending.splice(0);
@@ -169,17 +176,35 @@ export function secureLink(link: FrameLink, options: SessionOptions): FrameLink 
       );
     if (offered.has(bytesToHex(peer.value.ephemeral)))
       return onDropped?.("a hello this link has already agreed a session under, offered again");
-    // ours is fresh too: the peer discarded the secret behind the key it had from us, and
-    // agreeing the new session under the old one would carry a dead link's material into a live one
-    secret = fresh();
-    self = writeHello(identity, secret);
+    /**
+     * Offer, or answer? Two live sessions that each answer a fresh hello with a fresh hello of
+     * their own never stop: every answer is a key the other side has not seen, so it answers
+     * that too, and the pair re-key each other at microtask speed with no timer in the path —
+     * the whole event loop starves. Three BLE radios reach this state on their own, because two
+     * of them dial each other and the transport folds both connections into one link.
+     *
+     * What tells the two apart is whether the peer has ever *used* the hello we are offering
+     * now. If it has (`confirmed`), it is starting over and needs a hello it has never seen:
+     * ours is fresh too, because the peer discarded the secret behind the key it had from us,
+     * and agreeing the new session under the old one would carry a dead link's material into a
+     * live one. If it has not, our hello is still in flight and theirs is the answer to it —
+     * agree under what we already offered, and send nothing, so the exchange ends.
+     */
+    const offering = confirmed;
+    if (offering) {
+      secret = fresh();
+      self = writeHello(identity, secret);
+    }
     const agreed = sessionKeys(secret, self, peer.value);
     if (agreed.isErr()) return fail(agreed.error);
-    // unsealed, and before the keys change: it is what the far side agrees its half from, and it
-    // is waiting for it — its own hello was the first thing its new session sent
-    const greeted = put(self.frame);
-    if (greeted.isErr()) return fail(greeted.error);
+    if (offering) {
+      // unsealed, and before the keys change: it is what the far side agrees its half from, and
+      // it is waiting for it — its own hello was the first thing its new session sent
+      const greeted = put(self.frame);
+      if (greeted.isErr()) return fail(greeted.error);
+    }
     keys = agreed.value;
+    confirmed = false;
     remember(peer.value.ephemeral);
     options.onSuperseded?.(peer.value.peerId);
   };
@@ -190,6 +215,8 @@ export function secureLink(link: FrameLink, options: SessionOptions): FrameLink 
       if (frame[0] === HELLO) return supersede(frame);
       const opened = unseal(keys.open, frame);
       if (opened.isErr()) return onDropped?.(opened.error.message);
+      // the peer sealed under the keys our current hello agreed: it has seen that hello
+      confirmed = true;
       for (const listener of listeners) listener(opened.value);
       return;
     }

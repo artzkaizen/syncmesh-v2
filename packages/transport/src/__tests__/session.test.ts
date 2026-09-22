@@ -215,6 +215,62 @@ const bobSays = (radio: ReturnType<typeof stub>) => {
   };
 };
 
+describe("two live sessions that re-key each other converge (chaos: three BLE radios)", () => {
+  /**
+   * The loop this pins: an established session answered a fresh hello with a fresh hello of its
+   * own, the far side — also established — answered *that* with another, and the pair re-keyed
+   * each other at microtask speed with no timer in the path. Three BLE radios reach it on their
+   * own, because two of them dial each other and the transport folds both connections into one
+   * link. Driven through the stub so every frame is delivered by hand: a regression here is a
+   * failed assertion, never a hung suite.
+   */
+  test("a fresh hello is answered once; the answer to that answer is taken, not re-offered", () => {
+    const radio = stub();
+    const alice = watch(radio.link, ALICE);
+    const first = bobSays(radio);
+    first.send("settled"); // Alice has unsealed under this session: her hello is confirmed
+    expect(alice.got).toEqual(["settled"]);
+    const hellosBefore = radio.sent.filter((f) => f[0] === HELLO).length;
+
+    // Bob's other connection surfaces as a fresh hello on the same link: Alice must offer
+    const second = bobSays(radio);
+    expect(alice.superseded).toEqual([BOB.peerId]);
+    expect(radio.sent.filter((f) => f[0] === HELLO).length).toBe(hellosBefore + 1);
+    const offered = readHello(radio.sent.filter((f) => f[0] === HELLO).at(-1)!).unwrap();
+
+    // Bob, live and established too, answers Alice's fresh hello with a fresh hello of his own —
+    // exactly what a peer running this same code does. Alice's hello is unconfirmed, so this is
+    // the answer to it: she agrees under what she already offered and sends nothing more
+    const secret = ephemeralSecret();
+    const answer = writeHello(BOB, secret);
+    radio.deliver(answer.frame);
+    expect(alice.superseded).toEqual([BOB.peerId, BOB.peerId]);
+    expect(radio.sent.filter((f) => f[0] === HELLO).length).toBe(hellosBefore + 1); // no third hello
+
+    // and the keys converged: what Bob derives from (his answer, Alice's offer) opens both ways
+    const keys = sessionKeys(secret, answer, offered).unwrap();
+    radio.deliver(seal(keys.seal, bytes("converged"), sealNonce()));
+    expect(alice.got).toEqual(["settled", "converged"]);
+    alice.secure.send(bytes("and back"));
+    expect(text(unseal(keys.open, radio.sent.at(-1)!).unwrap())).toBe("and back");
+    void second;
+  });
+
+  test("a restarted peer still gets a fresh offer: confirmation is what tells the two apart", () => {
+    const radio = stub();
+    const alice = watch(radio.link, ALICE);
+    const before = bobSays(radio);
+    before.send("first life");
+    const hellos = () => radio.sent.filter((f) => f[0] === HELLO).length;
+    const n = hellos();
+    // Bob restarts: his new session has no keys and needs a hello it has never seen
+    const after = bobSays(radio);
+    expect(hellos()).toBe(n + 1);
+    after.send("second life");
+    expect(alice.got).toEqual(["first life", "second life"]);
+  });
+});
+
 describe("a peer that starts over on a link nothing said had ended", () => {
   test("its second hello takes the session, and frames cross again", () => {
     const radio = stub();
