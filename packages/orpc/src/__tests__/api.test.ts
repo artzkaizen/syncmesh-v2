@@ -12,6 +12,7 @@ import { z } from "zod";
 import type { AuthorityLink } from "../api.js";
 
 import { meshApi, mutation, query } from "../api.js";
+import { AuthorityUnreachable, InputInvalid, NothingWritten } from "../errors.js";
 
 const book = sqliteTable("book", {
   id: text().primaryKey(),
@@ -52,6 +53,14 @@ const books = {
     .input(z.object({ orgId: z.string(), id: z.string(), title: z.string().min(1) }))
     .handler(async ({ input, db }) => {
       await db.insert(book).values({ id: input.id, title: input.title });
+      return { id: input.id };
+    }),
+
+  /** Idempotent by construction: the second tap stages nothing, which is the point (§2.7). */
+  ensure: mutation
+    .input(z.object({ orgId: z.string(), id: z.string(), title: z.string().min(1) }))
+    .handler(async ({ input, db }) => {
+      await db.insert(book).values({ id: input.id, title: input.title }).onConflictDoNothing();
       return { id: input.id };
     }),
 };
@@ -202,6 +211,31 @@ describe("a call the device cannot run", () => {
   });
 });
 
+/**
+ * What this layer mints, it tags (§2.7). The wire half was already right — `wireError` sends
+ * `{ _tag, message, ...fields }` and the client revives the declared class — but the failures
+ * born on this side were bare `Error`s carrying prose.
+ *
+ * Asserted with `instanceof` rather than by reading `_tag`: `CallError` is `Error` at the top
+ * on purpose (a handler may throw a class this package never heard of), so narrowing to the
+ * class is what a caller actually does.
+ */
+describe("the failures this layer mints carry a tag", () => {
+  const failure = <T>(result: { isErr: () => boolean; error?: Error } & T): Error | undefined =>
+    result.isErr() ? result.error : undefined;
+
+  test("NothingWritten: an idempotent mutation can finally report 'already done'", async () => {
+    const { api } = await open("member");
+    const first = await api.books.ensure({ orgId: ORG, id: "b1", title: "Dune" }).committed;
+    expect(first.isOk()).toBe(true);
+
+    // the second tap stages nothing — which used to come back as Err("wrote nothing"), making
+    // idempotence unexpressible: a caller could not tell *already done* from *failed*
+    const again = await api.books.ensure({ orgId: ORG, id: "b1", title: "Dune" }).committed;
+    const error = failure(again);
+    expect(error).toBeInstanceOf(NothingWritten);
+    if (error instanceof NothingWritten) expect(error.path).toBe("books.ensure");
+  });
 
   test("InputInvalid: a rejected input is a tag, not a TypeError carrying prose", async () => {
     const { api } = await open("member");

@@ -20,6 +20,7 @@ import type {
 } from "./api.js";
 
 import { validate } from "./api.js";
+import { NoBodyBound } from "./errors.js";
 
 /**
  * The same procedures, over HTTP.
@@ -95,7 +96,12 @@ export function createHandler<R extends Router>(options: HandlerOptions<R>) {
   const decide = async (path: string, def: AuthorityDef<never, unknown>, input: unknown) => {
     const body = gate === undefined ? undefined : leafAt(gate.handlers, path);
     if (body === undefined || gate === undefined)
-      return Result.err(new Error(`${path} is a gate, and this server binds no body for it`));
+      return Result.err(
+        new NoBodyBound({
+          path,
+          message: `${path} is a gate, and this server binds no body for it`,
+        }),
+      );
     const parsed = validate<never>(def.schema, input);
     if (parsed.isErr()) return parsed;
     // the handle resolves lazily: a gate that reads no tables never opens one

@@ -3,7 +3,7 @@ import type { Live, Runnable } from "@syncmesh/drizzle";
 import type { Principal } from "@syncmesh/engine";
 import type { EventId, PeerId } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
-import type { PresenceMap, StandardSchemaV1 } from "@syncmesh/schema";
+import type { PresenceMap } from "@syncmesh/schema";
 import type { TxReceipt } from "@syncmesh/storage";
 
 import { Result } from "@syncmesh/result";
@@ -13,8 +13,10 @@ import type { AuthorityDef, AuthorityLink, MutationDef, QueryDef, Router } from 
 import type { Write, WriteDeps, WriteLedger } from "./write.js";
 
 import { deferredLive, deferredRunnable, deferredSubscribe, lazyOf, notOpen } from "./deferred.js";
+import { AuthorityUnreachable, NothingWritten } from "./errors.js";
 import { isDef } from "./procedures.js";
 import { scopeKinds, scopeOf } from "./scope.js";
+import { validate } from "./validate.js";
 import { createWrite } from "./write.js";
 
 export type {
@@ -30,6 +32,7 @@ export type {
   Router,
 } from "./procedures.js";
 export { isDef, mutation, query } from "./procedures.js";
+export { validate } from "./validate.js";
 
 /**
  * The one surface an app touches (D26): `api.books.list(…)` and `api.books.create(…)`, never a
@@ -48,7 +51,17 @@ export interface WriteResult<T> {
   readonly data: T;
 }
 
-/** Anything a call can fail with; a procedure's own declared errors ride the same channel. */
+/**
+ * Anything a call can fail with; a procedure's own declared errors ride the same channel.
+ *
+ * Still `Error` at the top, and deliberately: a handler may throw a class this package has never
+ * heard of, and narrowing the channel would be a lie about what can arrive. What changed is that
+ * everything **this layer** mints now carries a `_tag` — {@link InputInvalid},
+ * {@link NothingWritten}, {@link AuthorityUnreachable}, {@link NoBodyBound},
+ * {@link SchemaNotSynchronous} — so the failures a caller actually branches on are matchable
+ * rather than prose. Over HTTP they cross as `{ _tag, message, ...fields }` and revive into the
+ * class the caller declared (`wireError` in `http.ts`).
+ */
 export type CallError = Error;
 
 /**
@@ -72,25 +85,7 @@ export interface QueryCall<T> {
   readonly settled: () => Promise<void>;
 }
 
-/* oxlint-disable anti-slop/no-unknown-parameters -- the I/O boundary itself: turning an unparsed input into `I` is what these three exist to do, and `Api<R>` types every call site above them */
-export const validate = <I>(
-  schema: StandardSchemaV1 | undefined,
-  input: unknown,
-): ResultType<I, Error> => {
-  if (schema === undefined) {
-    // SAFETY: no schema means the procedure declared no input, so `I` is `void` and this asserts nothing about the value
-    const bare = input as I;
-    return Result.ok(bare);
-  }
-  const outcome = schema["~standard"].validate(input);
-  if (outcome instanceof Promise)
-    return Result.err(new TypeError("an input schema must validate synchronously"));
-  if (outcome.issues !== undefined)
-    return Result.err(new TypeError(outcome.issues.map((i) => i.message).join("; ")));
-  // SAFETY: Standard Schema guarantees `value` is the schema's output once `issues` is absent, and `I` is that output — `query`/`mutation` tie the two together with `Output<S>`
-  const parsed = outcome.value as I;
-  return Result.ok(parsed);
-};
+/* oxlint-disable anti-slop/no-unknown-parameters -- every `input` below is the call's own argument on its way to `validate`, which is the parser. The surface above them (`Api<R>`) is typed per procedure, so a caller cannot reach these with anything else; taking a named type here would mean parsing before the procedure that owns the schema has been chosen. */
 
 /**
  * What `useCan` reads, bound to this api's instance so a component names no mesh and no instance.
@@ -333,7 +328,12 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     off();
     if (ran.isErr()) return ran;
     if (receipt === undefined)
-      return Result.err(new Error(`${String(def.kind)} wrote nothing: no event to report`));
+      return Result.err(
+        new NothingWritten({
+          path,
+          message: `${path} staged no change, so there is no event to report`,
+        }),
+      );
     return Result.ok({ eventId: receipt.eventId, data: ran.value });
   };
 
@@ -341,7 +341,12 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     const parsed = validate<never>(def.schema, input);
     if (parsed.isErr()) return parsed;
     if (options.link === undefined)
-      return Result.err(new Error(`${path} runs on the authority, and no link was configured`));
+      return Result.err(
+        new AuthorityUnreachable({
+          path,
+          message: `${path} runs on the authority, and no link was configured`,
+        }),
+      );
     const answered = await options.link(path, parsed.value);
     if (answered.isErr() || def.output === undefined) return answered;
     // the trust boundary: the one payload a client consumes straight off the wire (book ch. 7)

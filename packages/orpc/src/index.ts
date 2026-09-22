@@ -27,6 +27,13 @@ export type {
 // `meshApi` is deliberately absent: it builds a client out of a mesh, which is `createClient`'s
 // job and `connectMesh`'s, not an app's. It lives at `@syncmesh/orpc/internal` for those two.
 export { mutation, query } from "./api.js";
+export {
+  AuthorityUnreachable,
+  InputInvalid,
+  NoBodyBound,
+  NothingWritten,
+  SchemaNotSynchronous,
+} from "./errors.js";
 export { watch } from "./watch.js";
 export type { Write, WriteLedger } from "./write.js";
 export { createWrite } from "./write.js";
