@@ -18,7 +18,7 @@ import { T0, accountOf, openDevice } from "./fixtures.js";
  * of the two happened, which is the fact the duration follows from.
  *
  * It is a test in *this* package rather than in `drizzle` because the interesting queries are the
- * real ones. `issues.list` reads through `read(issue)` — a subquery with the caller's rule
+ * real ones. `issues.list` reads through the caller's scoped source — a subquery with their rule
  * compiled into it — sorts by `(rank, id)` and pages at 200, and every one of those is a clause
  * the patcher had to be taught. A synthetic `SELECT * FROM t` proves none of it.
  *

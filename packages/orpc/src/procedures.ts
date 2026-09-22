@@ -1,5 +1,5 @@
 import type { Handle } from "@syncmesh/client";
-import type { Runnable } from "@syncmesh/drizzle";
+import type { ReadOnlyDb, Runnable } from "@syncmesh/drizzle";
 import type { Principal } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
@@ -27,12 +27,8 @@ import type { CallError } from "./api.js";
  * `db` is the right one for the path it is on without the handler knowing which: the handle's own
  * for a query, and the span's inside a write or a rehearsal, so one body serves all three.
  */
-export interface HandlerContext<I> {
+interface BaseContext<I> {
   readonly input: I;
-  /** The app's tables, through the capture: an `insert` here becomes a signed event (ch. 10). */
-  readonly db: Handle["db"];
-  /** A table as this caller may read it — the `read` rule compiled into a subquery (ch. 15). */
-  readonly read: Handle["read"];
   /** Who this device is acting as; `undefined` before the first session (ch. 14). */
   readonly principal: Principal | undefined;
   /**
@@ -42,18 +38,46 @@ export interface HandlerContext<I> {
   readonly self: PeerId;
 }
 
+/**
+ * What a `mutation` body gets: the app's tables through the capture, so an `insert` here becomes
+ * one signed event (ch. 10).
+ *
+ * `db` is the right one for the path it is on without the handler knowing which — the handle's
+ * own, or the span's inside a write or a rehearsal — and every table it *selects* from is
+ * already scoped to what this caller may read, on both dialects.
+ */
+export interface MutationContext<I> extends BaseContext<I> {
+  readonly db: Handle["db"];
+}
+
+/**
+ * What a `query` body gets: the same `db`, minus every verb that writes.
+ *
+ * There is no `read` beside it and no unscoped `db` behind it. One noun: `db.select().from(issue)`
+ * returns the rows this caller may read, because the source is substituted for the table **as
+ * they may read it** before the statement is built. The pair this replaced — a `db` that saw
+ * everything and a `read()` the handler had to remember to wrap each table in — was only ever
+ * safe on Postgres with `rls: true`, and silently returned the whole replica on every device.
+ */
+export interface QueryContext<I> extends BaseContext<I> {
+  readonly db: ReadOnlyDb<Handle["db"]>;
+}
+
+/** The writing shape, under the name it had when both kinds shared one context. */
+export type HandlerContext<I> = MutationContext<I>;
+
 export interface QueryDef<I, T> {
   readonly kind: "query";
   readonly schema?: StandardSchemaV1;
   readonly route?: RouteMeta;
-  readonly run: (args: HandlerContext<I>) => Runnable<T>;
+  readonly run: (args: QueryContext<I>) => Runnable<T>;
 }
 
 export interface MutationDef<I, T> {
   readonly kind: "mutation";
   readonly schema?: StandardSchemaV1;
   readonly route?: RouteMeta;
-  readonly run: (args: HandlerContext<I>) => Promise<T> | T;
+  readonly run: (args: MutationContext<I>) => Promise<T> | T;
 }
 
 /** HTTP/OpenAPI metadata and nothing else (book ch. 7): the method describes HTTP, never transactions. */

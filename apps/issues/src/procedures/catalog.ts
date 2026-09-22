@@ -64,11 +64,12 @@ export const members = {
    * issues do, which is also the only version that stays correct while somebody reassigns.
    *
    * Unassigned issues are left out rather than bucketed under a null key: "nobody" is not a member
-   * and a roster has no row to put it on. `read(issue)` rather than the bare table, so a guest's
-   * count reflects what a guest can see instead of quietly leaking totals through an aggregate.
+   * and a roster has no row to put it on. The source is scoped to the caller before the statement
+   * is built, so a guest's count reflects what a guest can see instead of quietly leaking totals
+   * through an aggregate — the leak an unscoped aggregate makes is why that is not optional.
    */
-  workload: query.input(scoped({})).handler(({ db, read }) => {
-    const source = read(issue);
+  workload: query.input(scoped({})).handler(({ db }) => {
+    const source = issue;
     return db
       .select({ assigneeId: source.assigneeId, open: count() })
       .from(source)
@@ -105,8 +106,8 @@ export const members = {
 };
 
 export const projects = {
-  list: query.input(scoped({ teamId: Id.optional() })).handler(({ input, db, read }) => {
-    const source = read(project);
+  list: query.input(scoped({ teamId: Id.optional() })).handler(({ input, db }) => {
+    const source = project;
     return db
       .select()
       .from(source)

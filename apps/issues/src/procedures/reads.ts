@@ -15,9 +15,10 @@ import { comment, issue, issueLabel } from "../tables.js";
  * load-bearing (see `../rank.ts`) and a component that forgot it would quietly show one device a
  * different order from another.
  *
- * Reads go through `read(table)` rather than the table directly. It compiles the caller's
- * `read` rule into the source, so a guest's list is filtered by the same rules a receiving
- * device enforces, not by a second copy of them written in TypeScript.
+ * Reads are scoped to the caller by the engine, not by this file: `db.select().from(issue)`
+ * substitutes the table **as this caller may read it**, with their `read` rule compiled into the
+ * source — so a guest's list is filtered by the same rules a receiving device enforces, never by
+ * a second copy of them written in TypeScript, and never by remembering to wrap a table.
  */
 
 /** The sort every ranked list uses. `id` is the tiebreak that makes a rank collision harmless. */
@@ -66,9 +67,10 @@ interface IssueFilters {
 /**
  * The `WHERE` behind both, so neither can narrow by something the other does not.
  *
- * The source is structural, like {@link byRank}'s: `read(issue)` hands back the table with the
- * caller's read rule compiled into it — a subquery, not the table — and naming the columns it
- * needs is what lets one predicate serve both procedures without either restating them.
+ * The source is structural, like {@link byRank}'s: naming only the columns it needs is what lets
+ * one predicate serve both procedures without either restating them. What the source *is* — the
+ * bare table here, the caller's scoped view by the time the statement is built — is the engine's
+ * business and deliberately not this predicate's.
  */
 const issueWhere = (
   input: IssueFilters,
@@ -125,8 +127,8 @@ export const list = query
       perStatus: z.int().min(1).max(200).optional(),
     }),
   )
-  .handler(({ input, db, read }) => {
-    const source = read(issue);
+  .handler(({ input, db }) => {
+    const source = issue;
     const where = issueWhere(input, source);
     if (input.perStatus === undefined)
       return db
@@ -166,8 +168,8 @@ export const list = query
  * a drag across columns changes `status` and `rank` in the same write, and two subscriptions
  * would show the card in neither column or both for the length of one fold.
  */
-export const board = query.input(scoped({ teamId: Id })).handler(({ input, db, read }) => {
-  const source = read(issue);
+export const board = query.input(scoped({ teamId: Id })).handler(({ input, db }) => {
+  const source = issue;
   return db
     .select()
     .from(source)
@@ -215,8 +217,8 @@ const numberIn = (text: string): number | undefined => {
 
 export const search = query
   .input(scoped({ text: z.string().min(1).max(200), limit: z.int().min(1).max(100).optional() }))
-  .handler(({ input, db, read }) => {
-    const source = read(issue);
+  .handler(({ input, db }) => {
+    const source = issue;
     const needle = `%${input.text.replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
     const number = numberIn(input.text);
     return (
@@ -258,8 +260,8 @@ export const search = query
  *
  * One subscription covers every status.
  */
-export const counts = query.input(scoped(ISSUE_FILTERS)).handler(({ input, db, read }) => {
-  const source = read(issue);
+export const counts = query.input(scoped(ISSUE_FILTERS)).handler(({ input, db }) => {
+  const source = issue;
   return db
     .select({ status: source.status, total: count() })
     .from(source)
@@ -275,8 +277,8 @@ export const counts = query.input(scoped(ISSUE_FILTERS)).handler(({ input, db, r
  */
 export const assigned = query
   .input(scoped({ assigneeId: Id, openOnly: z.boolean().optional() }))
-  .handler(({ input, db, read }) => {
-    const source = read(issue);
+  .handler(({ input, db }) => {
+    const source = issue;
     return db
       .select()
       .from(source)
@@ -316,8 +318,8 @@ export const labelTotals = query
  * therefore still waiting on an authority. The last one is the number a devtool wants, because
  * it is the only one on this screen that a network outage can move.
  */
-export const summary = query.input(scoped({})).handler(({ db, read }) => {
-  const source = read(issue);
+export const summary = query.input(scoped({})).handler(({ db }) => {
+  const source = issue;
   return db
     .select({
       total: count(),
@@ -360,8 +362,8 @@ export const thread = query
       limit: z.int().min(1).max(200).optional(),
     }),
   )
-  .handler(({ input, db, read }) => {
-    const source = read(comment);
+  .handler(({ input, db }) => {
+    const source = comment;
     const { before } = input;
     return db
       .select()
@@ -379,7 +381,7 @@ export const thread = query
   });
 
 /** How many comments the thread holds — counted without the cursor, so "earlier" is exact. */
-export const threadCount = query.input(scoped({ issueId: Id })).handler(({ input, db, read }) => {
-  const source = read(comment);
+export const threadCount = query.input(scoped({ issueId: Id })).handler(({ input, db }) => {
+  const source = comment;
   return db.select({ total: count() }).from(source).where(eq(source.issueId, input.issueId));
 });

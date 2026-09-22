@@ -144,8 +144,8 @@ export const issueLabels = {
    * three short columns — smaller than the issues it decorates — so the cheap thing and the
    * correct thing are the same thing here.
    */
-  list: query.input(scoped({})).handler(({ db, read }) => {
-    const source = read(issueLabel);
+  list: query.input(scoped({})).handler(({ db }) => {
+    const source = issueLabel;
     return db.select().from(source).orderBy(asc(source.issueId), asc(source.labelId));
   }),
 

@@ -23,6 +23,8 @@ export { identityOf, tablesOf } from "./tree.js";
 export type { ProxyMethod, ProxyResult, ProxySink, WriteNaming } from "./proxy.js";
 export type { ReadScope } from "./read.js";
 export { readPredicate, readScope } from "./read.js";
+export type { ReadOnlyDb } from "./scoped.js";
+export { readOnly, scopeReads } from "./scoped.js";
 export type { SyncState } from "./sync-of.js";
 export { ROW_SYNC_TABLE, columns, operationOf, syncOf } from "./sync-of.js";
 export { replaceEqualDeep } from "./equal.js";

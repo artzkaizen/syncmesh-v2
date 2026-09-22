@@ -6,6 +6,7 @@ import type { Result as ResultType } from "@syncmesh/result";
 import type { PresenceMap } from "@syncmesh/schema";
 import type { TxReceipt } from "@syncmesh/storage";
 
+import { readOnly, scopeReads } from "@syncmesh/drizzle";
 import { Result } from "@syncmesh/result";
 
 import type { LazyApiMesh } from "./deferred.js";
@@ -25,8 +26,10 @@ export type {
   AuthorityHandlers,
   AuthorityLink,
   DeclaredErrors,
+  MutationContext,
   MutationDef,
   ProcedureDef,
+  QueryContext,
   QueryDef,
   RouteMeta,
   Router,
@@ -229,15 +232,26 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
    */
   const context = <I>(input: I, open: Handle, writing?: { readonly db: Handle["db"] }) => ({
     input,
-    db: writing?.db ?? open.db,
-    read: open.read,
+    db: scopeReads(writing?.db ?? open.db, open.read),
     principal: mesh().auth.principal(),
     self: mesh().self,
   });
 
+  /**
+   * The same context with the write verbs taken off, for a `query` body (§2.4).
+   *
+   * Subtraction rather than a second object, so the two cannot drift: a query handler reads
+   * through exactly the `db` a mutation handler reads through, and the only difference is what
+   * is missing from it.
+   */
+  const reading = <I>(input: I, open: Handle) => {
+    const writable = context(input, open);
+    return { ...writable, db: readOnly(writable.db) };
+  };
+
   /* thrown, not returned: a descriptor has no error channel of its own, and the hook has an `error` */
   const runnable = (def: QueryDef<never, unknown>, input: unknown) =>
-    ((open) => def.run(context(validate<never>(def.schema, input).unwrap(), open)))(handle(input));
+    ((open) => def.run(reading(validate<never>(def.schema, input).unwrap(), open)))(handle(input));
 
   const read = (path: string, def: QueryDef<never, unknown>, input: unknown) => ({
     kind: "query" as const,
