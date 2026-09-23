@@ -8,7 +8,7 @@ import { Alert, Pressable, Text, View } from "react-native";
 
 import type { PersonRow } from "../src/people";
 
-import { useActor, useApi, useDevice } from "../src/device";
+import { mesh, useActor, useDevice } from "../src/device";
 import { sawCommit, sawRender } from "../src/nav-timing";
 import { Avatar, PERSON_HEIGHT } from "../src/people";
 
@@ -24,14 +24,13 @@ import { Avatar, PERSON_HEIGHT } from "../src/people";
  * screen over a real workspace would ask hundreds.
  */
 export default function PeopleScreen() {
-  const api = useApi();
   const actor = useActor();
   const device = useDevice();
   sawRender();
   useLayoutEffect(sawCommit, []);
   const router = useRouter();
-  const people = useLiveQuery(api.members.list({ workspaceId: WORKSPACE_ID }));
-  const workload = useLiveQuery(api.members.workload({ workspaceId: WORKSPACE_ID }));
+  const people = useLiveQuery(mesh.api.members.list({ workspaceId: WORKSPACE_ID }));
+  const workload = useLiveQuery(mesh.api.members.workload({ workspaceId: WORKSPACE_ID }));
 
   const openBy = useMemo(
     () =>

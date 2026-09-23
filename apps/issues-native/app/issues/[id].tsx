@@ -18,7 +18,7 @@ import {
 
 import { useAfterTransition } from "../../src/after-transition";
 import { PRIORITY_CHOICES, STATUS_CHOICES, labelChoices, peopleChoices } from "../../src/choices";
-import { useActor, useApi, useDevice } from "../../src/device";
+import { mesh, useActor, useDevice } from "../../src/device";
 import { Dot, PriorityGlyph, StatusGlyph } from "../../src/glyphs";
 import { sawCommit, sawRender } from "../../src/nav-timing";
 import { Avatar } from "../../src/people";
@@ -67,16 +67,19 @@ interface Asked {
 function Detail({ id }: { readonly id: string }) {
   const device = useDevice();
   const actor = useActor();
-  const api = useApi();
   const router = useRouter();
-  const found = useLiveQuery(api.issues.get({ workspaceId: WORKSPACE_ID, id }));
+  const found = useLiveQuery(mesh.api.issues.get({ workspaceId: WORKSPACE_ID, id }));
   const row = found.data[0];
 
-  const people = useLiveQuery(api.members.list({ workspaceId: WORKSPACE_ID }));
-  const labels = useLiveQuery(api.labels.list({ workspaceId: WORKSPACE_ID }));
-  const teams = useLiveQuery(api.teams.list({ workspaceId: WORKSPACE_ID }));
-  const attached = useLiveQuery(api.issues.labelsOf({ workspaceId: WORKSPACE_ID, issueId: id }));
-  const thread = useLiveQuery(api.comments.forIssue({ workspaceId: WORKSPACE_ID, issueId: id }));
+  const people = useLiveQuery(mesh.api.members.list({ workspaceId: WORKSPACE_ID }));
+  const labels = useLiveQuery(mesh.api.labels.list({ workspaceId: WORKSPACE_ID }));
+  const teams = useLiveQuery(mesh.api.teams.list({ workspaceId: WORKSPACE_ID }));
+  const attached = useLiveQuery(
+    mesh.api.issues.labelsOf({ workspaceId: WORKSPACE_ID, issueId: id }),
+  );
+  const thread = useLiveQuery(
+    mesh.api.comments.forIssue({ workspaceId: WORKSPACE_ID, issueId: id }),
+  );
 
   // a layout effect rather than an effect: this must run in the commit phase, which is the stage
   // being measured — `useEffect` fires after paint and would fold the two spans into one
@@ -176,31 +179,31 @@ function Detail({ id }: { readonly id: string }) {
     (status: string) =>
       attempt("The status change", () =>
         // SAFETY: every key came from `STATUS_CHOICES`, which is the procedure's own enum
-        api.issues.setStatus({
+        mesh.api.issues.setStatus({
           workspaceId: WORKSPACE_ID,
           id,
           actorId: account,
           status: status as never,
         }),
       ),
-    [api, attempt, id, account],
+    [attempt, id, account],
   );
   const pickPriority = useCallback(
     (level: string) =>
       attempt("The priority change", () =>
-        api.issues.edit({
+        mesh.api.issues.edit({
           workspaceId: WORKSPACE_ID,
           id,
           actorId: account,
           priority: Number(level),
         }),
       ),
-    [api, attempt, id, account],
+    [attempt, id, account],
   );
   const pickAssignee = useCallback(
     (who: string) =>
       attempt("The assignment", () =>
-        api.issues.assign({
+        mesh.api.issues.assign({
           workspaceId: WORKSPACE_ID,
           id,
           actorId: account,
@@ -208,13 +211,13 @@ function Detail({ id }: { readonly id: string }) {
           assigneeId: who === "" ? null : who,
         }),
       ),
-    [api, attempt, id, account],
+    [attempt, id, account],
   );
   const pickLabel = useCallback(
     (labelId: string) => {
       const on = attachedIds.has(labelId);
       attempt(on ? "Removing the label" : "Adding the label", () =>
-        (on ? api.issueLabels.detach : api.issueLabels.attach)({
+        (on ? mesh.api.issueLabels.detach : mesh.api.issueLabels.attach)({
           workspaceId: WORKSPACE_ID,
           issueId: id,
           labelId,
@@ -222,7 +225,7 @@ function Detail({ id }: { readonly id: string }) {
         }),
       );
     },
-    [api, attempt, attachedIds, id, account],
+    [attempt, attachedIds, id, account],
   );
 
   /**
@@ -301,14 +304,19 @@ function Detail({ id }: { readonly id: string }) {
     // a visible flash of the text you already sent
     setDraft("");
     attempt("The comment", () =>
-      api.comments.post({ workspaceId: WORKSPACE_ID, issueId: id, authorId: actor.account, body }),
+      mesh.api.comments.post({
+        workspaceId: WORKSPACE_ID,
+        issueId: id,
+        authorId: actor.account,
+        body,
+      }),
     );
   };
 
   const saveEdits = () => {
     setEditing(false);
     attempt("The edit", () =>
-      api.issues.edit({
+      mesh.api.issues.edit({
         workspaceId: WORKSPACE_ID,
         id,
         actorId: actor.account,
@@ -326,7 +334,7 @@ function Detail({ id }: { readonly id: string }) {
           // the screen leaves first: this row is what it is drawing, and deleting underneath it
           // would put "that issue is not on this device" on screen as the last thing you saw
           router.back();
-          attempt("The delete", () => api.issues.remove({ workspaceId: WORKSPACE_ID, id }));
+          attempt("The delete", () => mesh.api.issues.remove({ workspaceId: WORKSPACE_ID, id }));
         },
         style: "destructive",
         text: "Delete",

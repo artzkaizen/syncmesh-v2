@@ -12,7 +12,7 @@ import type { Filters } from "../src/filter-bar";
 import type { PersonRow } from "../src/people";
 import type { RowIssue } from "../src/row";
 
-import { useActor, useApi, useDevice } from "../src/device";
+import { mesh, useDevice } from "../src/device";
 import { FilterBar, OPEN_ONLY, isNarrowed } from "../src/filter-bar";
 import { StatusGlyph } from "../src/glyphs";
 import { sawAnswered, sawFirstRows, sawScale, sawSettled, summary } from "../src/measure";
@@ -97,8 +97,8 @@ function Issues() {
     if (assignee !== undefined) setFilters((held) => ({ ...held, assigneeId: assignee }));
   }, [assignee]);
 
-  const teams = useLiveQuery(device.api.teams.list({ workspaceId: WORKSPACE_ID }));
-  const people = useLiveQuery(device.api.members.list({ workspaceId: WORKSPACE_ID }));
+  const teams = useLiveQuery(mesh.api.teams.list({ workspaceId: WORKSPACE_ID }));
+  const people = useLiveQuery(mesh.api.members.list({ workspaceId: WORKSPACE_ID }));
 
   /**
    * Searching and filtering are two procedures, and which one runs is decided here.
@@ -114,11 +114,11 @@ function Issues() {
    */
   const searching = (filters.text ?? "").trim();
   const found = useLiveQuery(
-    device.api.issues.search({ workspaceId: WORKSPACE_ID, text: searching, limit: 100 }),
+    mesh.api.issues.search({ workspaceId: WORKSPACE_ID, text: searching, limit: 100 }),
     { enabled: searching !== "" },
   );
   const listed = useLiveQuery(
-    device.api.issues.list({
+    mesh.api.issues.list({
       workspaceId: WORKSPACE_ID,
       assigneeId: filters.assigneeId,
       creatorId: filters.creatorId,

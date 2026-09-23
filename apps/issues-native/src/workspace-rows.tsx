@@ -10,13 +10,13 @@ import { useCan } from "@syncmesh/react";
 import { ListGroup } from "heroui-native";
 import { Alert, Pressable, Text, View } from "react-native";
 
-import { useApi } from "./device";
+import { mesh } from "./device";
 import { Dot } from "./glyphs";
 
 /**
  * The rows of the workspace screen — one team, one label, one project — each with the one
  * destructive button that is its own, gated by rehearsing that very write with the row's id
- * (`api.teams.archive.can({ id })`, book ch. 15). A stand-in id would not do: a rehearsal that
+ * (`mesh.api.teams.archive.can({ id })`, book ch. 15). A stand-in id would not do: a rehearsal that
  * stages no change has nothing to refuse and answers "allowed", so the verdict has to be about
  * the row on screen.
  */
@@ -42,8 +42,7 @@ export const attempt = (what: string, run: () => Write<unknown>, done?: () => vo
 
 /** One team, with an archive that is greyed unless this actor may make that very write. */
 export const TeamRow = ({ team }: { readonly team: typeof teamTable.$inferSelect }) => {
-  const api = useApi();
-  const mayArchive = useCan(api.teams.archive.can({ workspaceId: WORKSPACE_ID, id: team.id }));
+  const mayArchive = useCan(mesh.api.teams.archive.can({ workspaceId: WORKSPACE_ID, id: team.id }));
   return (
     <ListGroup.Item>
       <ListGroup.ItemPrefix>
@@ -59,7 +58,7 @@ export const TeamRow = ({ team }: { readonly team: typeof teamTable.$inferSelect
           disabled={!mayArchive}
           onPress={() =>
             attempt("Archiving the team", () =>
-              api.teams.archive({ workspaceId: WORKSPACE_ID, id: team.id }),
+              mesh.api.teams.archive({ workspaceId: WORKSPACE_ID, id: team.id }),
             )
           }
         >
@@ -80,15 +79,14 @@ export const TeamRow = ({ team }: { readonly team: typeof teamTable.$inferSelect
 
 /** One label; a long press deletes it, and the chip is greyed when the rules would refuse. */
 export const LabelChip = ({ label }: { readonly label: typeof labelTable.$inferSelect }) => {
-  const api = useApi();
-  const mayRemove = useCan(api.labels.remove.can({ workspaceId: WORKSPACE_ID, id: label.id }));
+  const mayRemove = useCan(mesh.api.labels.remove.can({ workspaceId: WORKSPACE_ID, id: label.id }));
   return (
     <Pressable
       className={mayRemove ? undefined : "opacity-40"}
       disabled={!mayRemove}
       onLongPress={() =>
         attempt("Deleting the label", () =>
-          api.labels.remove({ workspaceId: WORKSPACE_ID, id: label.id }),
+          mesh.api.labels.remove({ workspaceId: WORKSPACE_ID, id: label.id }),
         )
       }
     >
@@ -102,8 +100,9 @@ export const LabelChip = ({ label }: { readonly label: typeof labelTable.$inferS
 
 /** One project, with a delete that is confirmed first and greyed unless this actor may make it. */
 export const ProjectRow = ({ project }: { readonly project: typeof projectTable.$inferSelect }) => {
-  const api = useApi();
-  const mayRemove = useCan(api.projects.remove.can({ workspaceId: WORKSPACE_ID, id: project.id }));
+  const mayRemove = useCan(
+    mesh.api.projects.remove.can({ workspaceId: WORKSPACE_ID, id: project.id }),
+  );
   return (
     <ListGroup.Item>
       <ListGroup.ItemContent>
@@ -120,7 +119,7 @@ export const ProjectRow = ({ project }: { readonly project: typeof projectTable.
               {
                 onPress: () =>
                   attempt("Deleting the project", () =>
-                    api.projects.remove({ workspaceId: WORKSPACE_ID, id: project.id }),
+                    mesh.api.projects.remove({ workspaceId: WORKSPACE_ID, id: project.id }),
                   ),
                 style: "destructive",
                 text: "Delete",

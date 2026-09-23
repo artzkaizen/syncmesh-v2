@@ -1,6 +1,6 @@
 import type { MeshStatus, OperationsView } from "@syncmesh/client";
 import type { DevtoolsLinkEvent } from "@syncmesh/devtools";
-import type { Api, Client } from "@syncmesh/orpc";
+import type { Client } from "@syncmesh/orpc";
 import type { Transport } from "@syncmesh/transport";
 
 import { deviceIdentity } from "@syncmesh/client";
@@ -147,16 +147,14 @@ const AUTHORITY_URL = configured("authorityUrl") ?? `http://${lanHost()}:5252`;
 console.log(`[mesh] relay ${RELAY_URL} · authority ${AUTHORITY_URL}`);
 
 export interface Device {
-  /** The procedures, and only those: what a screen calls. The same object as {@link Device.client}, narrowed. */
-  readonly api: Api<typeof procedures>;
   /**
    * The whole client, for `syncmeshReact` and nothing else.
    *
-   * The factory's hooks read `$status`, `$peers`, `$routes` and `$auth` off it to draw the pill
-   * and the settings screen, and `$operations` to follow a write the office may overrule. A
-   * screen still calls procedures through {@link Device.api}: the narrowing is what keeps the
-   * transports out of reach of the code that draws, and the factory is the one reader whose job
-   * is the device itself.
+   * Screens never read this. They reach the procedures as `mesh.api.issues.list({…})`, the one
+   * way both apps do, and the factory's hooks read `$status`, `$peers`, `$routes` and `$auth`
+   * off it to draw the pill and the settings screen, and `$operations` to follow a write the
+   * office may overrule. What stays here is what only a phone has: who is acting, whether they
+   * chose, and the two buttons that change that.
    */
   readonly client: Client<typeof procedures, IssuesPresence>;
   /**
@@ -519,7 +517,6 @@ const open = (): Promise<Result<Device, MeshUnavailable>> =>
     };
 
     return Result.ok({
-      api: app,
       client: app,
       deleted: (table: string, key: string) => app.$mesh.deletedAt(table, key) !== undefined,
       // a getter, because `acting` moves under {@link signInAs} and a copied field would not

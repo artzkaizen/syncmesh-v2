@@ -4,7 +4,7 @@ import { Button, Input, ListGroup, Spinner } from "heroui-native";
 import { useState } from "react";
 import { Alert, ScrollView, Text, View } from "react-native";
 
-import { useActor, useApi } from "../src/device";
+import { mesh, useActor } from "../src/device";
 import { LabelChip, ProjectRow, TeamRow, attempt } from "../src/workspace-rows";
 
 /**
@@ -14,7 +14,7 @@ import { LabelChip, ProjectRow, TeamRow, attempt } from "../src/workspace-rows";
  * re-stating the rule.** `team` is `$default: role("admin")`, a label is the same, a project
  * delete is an admin's while making one is any member's. Writing `if (role === "admin")` in this
  * file would be a second copy of those rules that drifts the first time the schema changes;
- * `api.teams.create.can(…)` runs the handler against the replica, has the staged row judged by
+ * `mesh.api.teams.create.can(…)` runs the handler against the replica, has the staged row judged by
  * the schema, and rolls back — the schema answering. A row's own button rehearses with that
  * row's id; an insert has no row to name yet, so it stages a stand-in that passes the
  * procedure's schema ({@link PROBE}); a row's button lives in `src/workspace-rows.tsx`. Signing
@@ -24,15 +24,14 @@ import { LabelChip, ProjectRow, TeamRow, attempt } from "../src/workspace-rows";
  * control. A guest who got past the UI would have the write refused on the way into the log.
  */
 export default function WorkspaceScreen() {
-  const api = useApi();
   const actor = useActor();
-  const teams = useLiveQuery(api.teams.list({ workspaceId: WORKSPACE_ID }));
-  const labels = useLiveQuery(api.labels.list({ workspaceId: WORKSPACE_ID }));
-  const projects = useLiveQuery(api.projects.list({ workspaceId: WORKSPACE_ID }));
+  const teams = useLiveQuery(mesh.api.teams.list({ workspaceId: WORKSPACE_ID }));
+  const labels = useLiveQuery(mesh.api.labels.list({ workspaceId: WORKSPACE_ID }));
+  const projects = useLiveQuery(mesh.api.projects.list({ workspaceId: WORKSPACE_ID }));
 
-  const mayAddTeam = useCan(api.teams.create.can(PROBE.team));
-  const mayAddLabel = useCan(api.labels.create.can(PROBE.label));
-  const mayAddProject = useCan(api.projects.create.can(PROBE.project));
+  const mayAddTeam = useCan(mesh.api.teams.create.can(PROBE.team));
+  const mayAddLabel = useCan(mesh.api.labels.create.can(PROBE.label));
+  const mayAddProject = useCan(mesh.api.projects.create.can(PROBE.project));
 
   const [teamName, setTeamName] = useState("");
   const [teamKey, setTeamKey] = useState("");
@@ -49,7 +48,7 @@ export default function WorkspaceScreen() {
     attempt(
       "Creating the team",
       () =>
-        api.teams.create({
+        mesh.api.teams.create({
           workspaceId: WORKSPACE_ID,
           key,
           name: teamName.trim(),
@@ -67,7 +66,7 @@ export default function WorkspaceScreen() {
     attempt(
       "Creating the label",
       () =>
-        api.labels.create({
+        mesh.api.labels.create({
           workspaceId: WORKSPACE_ID,
           name: labelName.trim(),
           color: PALETTE[labels.data.length % PALETTE.length] ?? "#6366f1",
@@ -81,7 +80,8 @@ export default function WorkspaceScreen() {
     if (projectName.trim() === "" || teamId === undefined) return;
     attempt(
       "Creating the project",
-      () => api.projects.create({ workspaceId: WORKSPACE_ID, teamId, name: projectName.trim() }),
+      () =>
+        mesh.api.projects.create({ workspaceId: WORKSPACE_ID, teamId, name: projectName.trim() }),
       () => setProjectName(""),
     );
   };

@@ -10,7 +10,7 @@ import { Pressable, Text, View } from "react-native";
 
 import type { PersonRow } from "../src/people";
 
-import { useDevice } from "../src/device";
+import { mesh, useDevice } from "../src/device";
 import { Avatar, PERSON_HEIGHT } from "../src/people";
 
 /**
@@ -29,7 +29,7 @@ import { Avatar, PERSON_HEIGHT } from "../src/people";
 export default function IdentityScreen() {
   const device = useDevice();
   const router = useRouter();
-  const people = useLiveQuery(device.api.members.list({ workspaceId: WORKSPACE_ID }));
+  const people = useLiveQuery(mesh.api.members.list({ workspaceId: WORKSPACE_ID }));
 
   /**
    * The selection, held here and not written until the button is pressed.

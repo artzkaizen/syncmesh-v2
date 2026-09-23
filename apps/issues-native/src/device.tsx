@@ -12,8 +12,8 @@ import { openedClient, replicaSnapshot, subscribeReplica } from "./open";
  *
  * **Not "the replica".** A replica is a database — the thing `src/mesh.ts` opens, holds a file
  * for, and folds events into. No screen wants one. A screen wants to ask a question
- * (`useApi()`), and to know whose name is on the answer (`useActor()`), and that is the whole of
- * it for six of the eight screens here. The two whose subject genuinely *is* the device — settings
+ * (`mesh.api.issues.list({…})`, the same spelling as the browser app), and to know whose name is
+ * on the answer (`useActor()`), and that is the whole of it for six of the eight screens here. The two whose subject genuinely *is* the device — settings
  * and devtools, which show the relay, the authority and how much is stored — ask for it by that
  * name.
  */
@@ -48,9 +48,6 @@ const held = (): Device => {
     throw new Error("a screen asked for the device outside <mesh.Provider>");
   return opened.replica;
 };
-
-/** The procedures, bound to this device's own database. `api.issues.list({…})` and nothing else. */
-export const useApi = (): Device["api"] => held().api;
 
 /**
  * Who every write this device makes is attributed to.

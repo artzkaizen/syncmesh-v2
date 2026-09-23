@@ -57,7 +57,6 @@ let started = false;
  * keeps that module free of any opinion about React.
  */
 const observed = (replica: Device, chosen: boolean): Device => ({
-  api: replica.api,
   client: replica.client,
   authority: replica.authority,
   deleted: replica.deleted,

@@ -16,7 +16,7 @@ import {
 
 import type { Choice } from "../../src/picker-sheet";
 
-import { useActor, useApi } from "../../src/device";
+import { mesh, useActor } from "../../src/device";
 import { PriorityGlyph, StatusGlyph } from "../../src/glyphs";
 import { Avatar } from "../../src/people";
 import { PickerSheet } from "../../src/picker-sheet";
@@ -38,10 +38,9 @@ type Sheet = "status" | "priority" | "assignee" | "team" | undefined;
 
 export default function NewIssueScreen() {
   const actor = useActor();
-  const api = useApi();
   const router = useRouter();
-  const teams = useLiveQuery(api.teams.list({ workspaceId: WORKSPACE_ID }));
-  const people = useLiveQuery(api.members.list({ workspaceId: WORKSPACE_ID }));
+  const teams = useLiveQuery(mesh.api.teams.list({ workspaceId: WORKSPACE_ID }));
+  const people = useLiveQuery(mesh.api.members.list({ workspaceId: WORKSPACE_ID }));
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -61,7 +60,7 @@ export default function NewIssueScreen() {
   const file = () => {
     if (!ready) return;
     setFiling(true);
-    void api.issues
+    void mesh.api.issues
       .create({
         workspaceId: WORKSPACE_ID,
         actorId: actor.account,

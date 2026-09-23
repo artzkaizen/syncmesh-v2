@@ -8,7 +8,7 @@ import { Alert, ScrollView, Text, View } from "react-native";
 import type { Scale } from "../src/measure";
 
 import { radioAbsence, radioState } from "../src/ble";
-import { useDevice } from "../src/device";
+import { mesh, useDevice } from "../src/device";
 import { summary } from "../src/measure";
 import { Avatar } from "../src/people";
 
@@ -28,7 +28,7 @@ import { Avatar } from "../src/people";
 export default function SettingsScreen() {
   const device = useDevice();
   const router = useRouter();
-  const people = useLiveQuery(device.api.members.list({ workspaceId: WORKSPACE_ID }));
+  const people = useLiveQuery(mesh.api.members.list({ workspaceId: WORKSPACE_ID }));
   const me = people.data.find((person) => person.id === device.actor.account);
 
   /**
