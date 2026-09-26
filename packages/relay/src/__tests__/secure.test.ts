@@ -209,4 +209,35 @@ describe("the relay socket is a sealed link (D36)", () => {
     await t.stop();
     room.close();
   });
+
+  test("a device pinned to the room's key converges; one pinned to another key is refused for good", async () => {
+    const room = await openRoom({ identity: ROOM_KEY });
+    const a = peer(40, "acct_a");
+    const wired = dialTo(room);
+    const pinned = relayTransport({ dial: wired.dial, relayKey: ROOM_KEY.peerId, reconnectMs: 5 });
+    await pinned.start(a.context);
+    await pinned.whenReady();
+    await tick(20);
+    expect(room.clients()).toBe(1);
+
+    const b = peer(80, "acct_b");
+    const other = dialTo(room);
+    const seen: LinkEvent[] = [];
+    const wrong = relayTransport({
+      dial: other.dial,
+      relayKey: createIdentity(seed(99)).unwrap().peerId,
+      reconnectMs: 5,
+      forceReadyAfter: 20,
+    });
+    wrong.onLinkEvent?.((event) => void seen.push(event));
+    await wrong.start(b.context);
+    await wrong.whenReady();
+    await tick(40);
+    expect(seen.find((e) => e.kind === "refused")?.why).toMatch(/signed by a key other than/);
+    expect(other.dials()).toBe(1);
+    expect(room.clients()).toBe(1); // a is still seated, and b never sat down
+    await wrong.stop();
+    await pinned.stop();
+    room.close();
+  });
 });

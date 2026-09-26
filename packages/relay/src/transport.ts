@@ -40,6 +40,8 @@ const MUTE = "the relay stopped answering: no frame within 2.5 times its keepali
 const REFUSED = "the relay speaks none of the protocol versions this build offers";
 const UNSENT = "the frame did not leave the relay socket";
 const UNSECURED = "the link is not sealed yet, and nothing but a hello travels before it is";
+const UNPINNED =
+  "the relay's hello is signed by a key other than the one this device was told to expect";
 const UNDIALLED = "the relay could not be dialled";
 
 /** A thrown cause in words, or the sentence that stands in when it brought none. */
@@ -73,6 +75,14 @@ export interface RelayTransportOptions {
   readonly interest?: Interest;
   /** How near this source is (RFC-0019); a relay sits between local storage and a radio. Default 1. */
   readonly priority?: number;
+  /**
+   * The room's own key (D36): the one peer id this device accepts a link hello from. A hello
+   * signed by any other key is a permanent refusal, like a version the relay will not speak —
+   * a relay that changed keys is a relay somebody has to look at, not one to keep redialling.
+   * Absent, any well-signed hello opens the link and `wss://` is what stands between this device
+   * and a machine in the middle; `RunningRelay.peerId` is what a host hands out to be pinned.
+   */
+  readonly relayKey?: PeerId;
 }
 
 /**
@@ -233,13 +243,14 @@ class RelayLink {
   }
 
   /**
-   * The relay refused this build's protocol, in one of its two voices: a typed `version` error,
-   * or a first frame this build was told not to answer. Permanent — no reconnect loop against it.
+   * The relay refused this build's protocol, in one of its voices: a typed `version` error, a
+   * first frame this build was told not to answer, or a hello from a key this device was told not
+   * to trust. Permanent — no reconnect loop against it.
    */
-  private refused(): void {
-    this.report.refused(REFUSED);
+  private refused(why = REFUSED): void {
+    this.report.refused(why);
     this.fatal = true;
-    this.hangUp(REFUSED);
+    this.hangUp(why);
   }
 
   /**
@@ -262,6 +273,12 @@ class RelayLink {
       const opened = link.receive(raw);
       if (opened.isErr()) {
         this.hangUp(opened.error.message);
+        return;
+      }
+      // pinned: the hello proved *a* key; it has to be *the* key, or this is not our relay
+      const pinned = this.options.relayKey;
+      if (pinned !== undefined && link.session()?.peer !== pinned) {
+        this.refused(UNPINNED);
         return;
       }
       this.link = link;

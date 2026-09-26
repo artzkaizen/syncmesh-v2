@@ -1,4 +1,5 @@
 import type { Interest } from "@syncmesh/engine";
+import type { PeerId } from "@syncmesh/kernel";
 import type { RelayDial } from "@syncmesh/relay";
 import type { Transport } from "@syncmesh/transport";
 
@@ -42,6 +43,8 @@ export interface WebSocketOptions {
   readonly interest?: Interest;
   /** How near this source is (RFC-0019); a relay sits between local storage and a radio. Default 1. */
   readonly priority?: number;
+  /** The relay's own key, when this device should accept a hello from no other (D36). */
+  readonly relayKey?: PeerId;
 }
 
 /**
@@ -79,5 +82,6 @@ export function webSocket(options: WebSocketOptions): Transport {
     ...(options.maxReconnectMs !== undefined && { maxReconnectMs: options.maxReconnectMs }),
     ...(options.interest !== undefined && { interest: options.interest }),
     ...(options.priority !== undefined && { priority: options.priority }),
+    ...(options.relayKey !== undefined && { relayKey: options.relayKey }),
   });
 }

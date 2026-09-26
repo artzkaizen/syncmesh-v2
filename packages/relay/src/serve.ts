@@ -1,9 +1,10 @@
 import type { EventStore, TelemetryListener } from "@syncmesh/engine";
+import type { PeerId } from "@syncmesh/kernel";
 import type { BlobStore, SqlDriver } from "@syncmesh/storage";
-import type { Identity } from "@syncmesh/wire";
 
 import { panic } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
+import { createIdentity, randomBytes, type Identity } from "@syncmesh/wire";
 
 import type { Fanout } from "./fanout.js";
 import type { GrantCache } from "./grant-cache.js";
@@ -72,6 +73,8 @@ export interface StartRelayOptions {
 export interface RunningRelay {
   readonly port: number;
   readonly url: string;
+  /** The key every room here signs its link hello with (D36) — what a client pins with `relayKey`. */
+  readonly peerId: PeerId;
   readonly stop: () => Promise<void>;
 }
 
@@ -142,7 +145,14 @@ export async function startRelay(
     );
   const dataDir = options.dataDir ?? ".syncmesh/relay";
   const access = createRoomAccess(options.posture);
-  const roomOptions = roomTuning(options);
+  // one key for every room this process opens, so the relay has one name a client can pin (D36)
+  const identity =
+    options.identity ??
+    createIdentity(randomBytes(32)).match({
+      ok: (value) => value,
+      err: (failure) => panic(`the relay's identity could not be made: ${failure.message}`),
+    });
+  const roomOptions = { ...roomTuning(options), identity };
 
   /**
    * A caller-supplied store has one lineage for as long as this process holds it. Minting inside
@@ -266,6 +276,7 @@ export async function startRelay(
   return {
     port: boundPort,
     url: `ws://localhost:${boundPort}`,
+    peerId: identity.peerId,
     stop: async () => {
       await table.close();
       await server.stop(true);
