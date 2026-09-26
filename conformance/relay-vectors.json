@@ -1,0 +1,113 @@
+{
+  "protocolVersions": [2],
+  "vectors": [
+    {
+      "description": "join, v1: one version, one cursor, no interest, no proof",
+      "kind": "join",
+      "tag": 8,
+      "wireHex": "850881015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f81825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0760"
+    },
+    {
+      "description": "join, v1: two versions offered, an interest in one partition",
+      "kind": "join",
+      "tag": 8,
+      "wireHex": "85088201025820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f81825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f07781b7b22706172746974696f6e73223a5b226f72673a61636d65225d7d"
+    },
+    {
+      "description": "join, v2: a first join: no cursors, no interest (proof in join-vectors.json)",
+      "kind": "join",
+      "tag": 8,
+      "wireHex": "86088102582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b80605840e1ce0042455ed48233c546f2158f0871423f55883af39d7a26f4b044bdcf32fdf63f60ae98eb2644f62f9296820752358a809e2653799250a121a4337535d802"
+    },
+    {
+      "description": "join, v2: a re-join holding seven of its own (proof in join-vectors.json)",
+      "kind": "join",
+      "tag": 8,
+      "wireHex": "86088102582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b8182582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b07605840ae788665912217f773f988b7876cfa98ba1a01de6892b4598d97ce161c933b0321fe0112f8275ba73f8cf2bb47f8e30eeb71013c757c4781b6758e555b40e209"
+    },
+    {
+      "description": "hello, the selected version and an empty retention floor",
+      "kind": "hello",
+      "tag": 9,
+      "wireHex": "860901193a986765706f63682d3181825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0780"
+    },
+    {
+      "description": "hello from a room that has trimmed its log",
+      "kind": "hello",
+      "tag": 9,
+      "wireHex": "860901193a986765706f63682d3181825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0781825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f04"
+    },
+    {
+      "description": "error, the typed version refusal",
+      "kind": "error",
+      "tag": 10,
+      "wireHex": "830a6776657273696f6e73746869732072656c617920737065616b732032"
+    },
+    {
+      "description": "error, the typed proof refusal (D33)",
+      "kind": "error",
+      "tag": 10,
+      "wireHex": "830a68756e70726f76656e782b746865206a6f696e20776173206e6f74207369676e656420627920746865206b6579206974206e616d6573"
+    },
+    {
+      "description": "ka",
+      "kind": "ka",
+      "tag": 11,
+      "wireHex": "810b"
+    },
+    {
+      "description": "ack",
+      "kind": "ack",
+      "tag": 12,
+      "wireHex": "830c656576742d3103"
+    },
+    {
+      "description": "page, grants on the first, more to come",
+      "kind": "page",
+      "tag": 13,
+      "wireHex": "850d8143a1b2c38144010203040109"
+    },
+    {
+      "description": "page, the last one",
+      "kind": "page",
+      "tag": 13,
+      "wireHex": "850d808144010203040009"
+    },
+    {
+      "description": "relayed",
+      "kind": "relayed",
+      "tag": 14,
+      "wireHex": "830e440102030404"
+    },
+    {
+      "description": "blob-put",
+      "kind": "blob-put",
+      "tag": 15,
+      "wireHex": "830f6762333a3031303244deadbeef"
+    },
+    {
+      "description": "blob-get",
+      "kind": "blob-get",
+      "tag": 16,
+      "wireHex": "82106762333a30313032"
+    },
+    {
+      "description": "blob",
+      "kind": "blob",
+      "tag": 17,
+      "wireHex": "83116762333a3031303244deadbeef"
+    },
+    {
+      "description": "blob-missing",
+      "kind": "blob-missing",
+      "tag": 18,
+      "wireHex": "82126762333a30313032"
+    },
+    {
+      "description": "challenge, the room's first frame on a socket (D33)",
+      "kind": "challenge",
+      "tag": 19,
+      "wireHex": "82135820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    }
+  ]
+}
