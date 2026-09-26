@@ -1,0 +1,53 @@
+{
+  "headerBytes": 8,
+  "layout": "[u32 message][u16 index][u16 total], big-endian; every fragment carries one",
+  "vectors": [
+    {
+      "description": "a 100-byte frame at a 40-byte write: three full fragments and a 4-byte tail",
+      "frameHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60616263",
+      "limit": 40,
+      "message": 3735928559,
+      "fragmentsHex": [
+        "deadbeef00000004000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "deadbeef00010004202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+        "deadbeef00020004404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+        "deadbeef0003000460616263"
+      ]
+    },
+    {
+      "description": "a 5-byte frame: one fragment, still with its header",
+      "frameHex": "deadbeef01",
+      "limit": 20,
+      "message": 1,
+      "fragmentsHex": ["0000000100000001deadbeef01"]
+    },
+    {
+      "description": "an empty frame: one header and nothing after it",
+      "frameHex": "",
+      "limit": 20,
+      "message": 2,
+      "fragmentsHex": ["0000000200000001"]
+    },
+    {
+      "description": "the largest message id, so the u32 goes out unsigned",
+      "frameHex": "deadbeef01",
+      "limit": 64,
+      "message": 4294967295,
+      "fragmentsHex": ["ffffffff00000001deadbeef01"]
+    }
+  ],
+  "refusals": [
+    {
+      "description": "a write limit that leaves no room for a header",
+      "frameBytes": 5,
+      "limit": 8,
+      "error": "LimitTooSmall"
+    },
+    {
+      "description": "a frame that would need more than 65535 fragments",
+      "frameBytes": 65536,
+      "limit": 9,
+      "error": "FrameTooLarge"
+    }
+  ]
+}

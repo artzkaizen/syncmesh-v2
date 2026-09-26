@@ -405,6 +405,8 @@
       "name": "@syncmesh/conformance",
       "version": "0.0.0",
       "devDependencies": {
+        "@syncmesh/ble": "workspace:*",
+        "@syncmesh/cloudflare-do": "workspace:*",
         "@syncmesh/config": "workspace:*",
         "@syncmesh/engine": "workspace:*",
         "@syncmesh/kernel": "workspace:*",

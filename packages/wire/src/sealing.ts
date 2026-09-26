@@ -120,11 +120,15 @@ const wrappingKey = (shared: Uint8Array, device: PeerId): Uint8Array =>
  * that arrived for a device the issuer did not mean to admit is a key nobody can take back.
  * A fresh ephemeral per wrap, so two devices' copies of one key share nothing an observer can use.
  */
-export const wrapKey = (device: PeerId, key: ContentKey): Uint8Array => {
-  const ephemeral = x25519.utils.randomSecretKey();
+export const wrapKey = (
+  device: PeerId,
+  key: ContentKey,
+  // injected only by the conformance vectors, which need the same bytes twice; random otherwise
+  ephemeral: Uint8Array = x25519.utils.randomSecretKey(),
+  nonce: Uint8Array = randomBytes(NONCE_BYTES),
+): Uint8Array => {
   const theirs = ed25519.utils.toMontgomery(hexToBytes(device).unwrap());
   const shared = x25519.getSharedSecret(ephemeral, theirs);
-  const nonce = randomBytes(NONCE_BYTES);
   const sealed = xchacha20poly1305(wrappingKey(shared, device), nonce).encrypt(key);
   const out = new Uint8Array(EPHEMERAL_BYTES + nonce.length + sealed.length);
   out.set(x25519.getPublicKey(ephemeral), 0);

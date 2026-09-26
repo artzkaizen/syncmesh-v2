@@ -35,6 +35,7 @@ export {
   certificateHolds,
   certifyFeed,
   chunkFrom,
+  feedCertificateCore,
   feedHeadOf,
   verifyChunk,
 } from "./feed.js";
