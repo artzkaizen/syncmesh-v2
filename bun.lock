@@ -419,6 +419,10 @@
         "vite-plus": "catalog:",
       },
     },
+    "crates/syncmesh-core": {
+      "name": "@syncmesh/core-rs",
+      "version": "0.0.0",
+    },
     "examples": {
       "name": "@syncmesh/examples",
       "version": "0.0.0",
@@ -1791,6 +1795,8 @@
     "@syncmesh/config": ["@syncmesh/config@workspace:tooling/config"],
 
     "@syncmesh/conformance": ["@syncmesh/conformance@workspace:conformance"],
+
+    "@syncmesh/core-rs": ["@syncmesh/core-rs@workspace:crates/syncmesh-core"],
 
     "@syncmesh/devtools": ["@syncmesh/devtools@workspace:packages/devtools"],
 

@@ -21,3 +21,6 @@ apps/*/.syncmesh/
 
 # chaos run output: databases and ledgers, regenerated from a seed
 .chaos/
+
+# cargo
+/target
