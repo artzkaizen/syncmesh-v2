@@ -1,7 +1,6 @@
 import type { PartitionKey } from "@syncmesh/kernel";
 import type { Change, Hlc, PeerId, Row, RowKey, SyncEvent, TableName } from "@syncmesh/kernel";
 import type { TableState } from "@syncmesh/kernel";
-import type { Temporal } from "@syncmesh/temporal";
 import type { Grant } from "@syncmesh/wire";
 
 import {
@@ -15,12 +14,14 @@ import {
 } from "@syncmesh/policy";
 import { Result } from "@syncmesh/result";
 import { type Table } from "@syncmesh/schema";
+import { Temporal } from "@syncmesh/temporal";
 
 import { checkLink } from "./accounts.js";
 import { checkAuthor } from "./author.js";
 import { RESERVED_AUTHOR_CLASS, UNPINNED_RESERVED, RESERVED_TABLE_NAMES } from "./authority.js";
 import { checkColumns } from "./columns.js";
 import {
+  ClockAhead,
   LocalOnly,
   PartitionNotGranted,
   PolicyDenied,
@@ -90,21 +91,29 @@ export interface ValidatorOptions {
    * strictly more and never less.
    */
   readonly accounts?: boolean;
+  /**
+   * The most a stamp may lead `now()` and still be admitted (D34). Needs `now`; absent either,
+   * no stamp is judged by the clock — which is what every validator built before the bound
+   * existed keeps getting.
+   */
+  readonly maxDrift?: Temporal.Duration;
 }
 
 export interface Validator {
-  /** Ladder: grant → device → revocation → grace → partition → schema → policy. The first failure is the verdict. */
+  /** Ladder: clock → grant → device → revocation → grace → partition → schema → policy. The first failure is the verdict. */
   readonly validate: (event: ProbeEvent, before: StateLookup) => Result<void, ValidationError>;
 }
 
 const RESERVED = new Set(["global", "user", "local"]);
 
 export function createValidator(options: ValidatorOptions): Validator {
-  const { schema, authority } = options;
+  const { schema, authority, now, maxDrift } = options;
   const entries = new Map(schema.entries.map((e) => [String(e.table.name), e]));
   const reserved = new Map((schema.reserved ?? []).map((t) => [String(t.name), t]));
 
   const validate: Validator["validate"] = (event, before) => {
+    const clock = checkClock(event, now, maxDrift);
+    if (clock !== undefined) return Result.err(clock);
     const verdict = checkAuthor(event, before, options);
     if (verdict.isErr()) return verdict;
     const author = verdict.value;
@@ -136,6 +145,30 @@ export function createValidator(options: ValidatorOptions): Validator {
   };
 
   return { validate };
+}
+
+/**
+ * The first rung, and the only one that reads a clock: a stamp further ahead of `now()` than
+ * `maxDrift` is `ClockAhead`. A probe carries no stamp and is not judged — it has not happened
+ * yet — and a validator given no bound judges nothing, so the rung costs one comparison and
+ * changes no verdict a caller did not ask for. Ahead only: a stamp from the past is history, and
+ * history is exactly what a device that was offline for a month has to be able to fold.
+ */
+function checkClock(
+  event: ProbeEvent,
+  now: (() => Temporal.Instant) | undefined,
+  maxDrift: Temporal.Duration | undefined,
+): ClockAhead | undefined {
+  if (event.hlc === undefined || now === undefined || maxDrift === undefined) return undefined;
+  const at = event.hlc[0];
+  const limit = now().add(maxDrift);
+  if (Temporal.Instant.compare(at, limit) <= 0) return undefined;
+  return new ClockAhead({
+    peer: event.peerId,
+    at: at.toString(),
+    limit: limit.toString(),
+    message: `stamped ${at.toString()}, past the ${limit.toString()} this device believes in`,
+  });
 }
 
 type Entry = ValidatorSchema["entries"][number];

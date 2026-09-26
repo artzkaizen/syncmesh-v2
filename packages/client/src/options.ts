@@ -149,4 +149,11 @@ export interface MeshOptions<
    */
   readonly onError?: (error: EngineError) => void;
   readonly now?: () => Temporal.Instant;
+  /**
+   * How far ahead of this device's clock a peer's stamp may run and still be folded (D34).
+   * Default five minutes. A stamp beyond it is parked, not dropped, and admitted on a retry once
+   * the clock has caught up; the device's own clock is clamped to the same bound when it adopts a
+   * remote one. Set identically on every peer, like every other rung of the ladder.
+   */
+  readonly clockDrift?: Temporal.Duration;
 }

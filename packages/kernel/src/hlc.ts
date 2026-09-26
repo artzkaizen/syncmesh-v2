@@ -21,6 +21,16 @@ export interface HlcClockOptions {
   readonly maxDrift?: Temporal.Duration;
 }
 
+/**
+ * How far ahead of a device's own clock a stamp may run before it is not believed (D34).
+ *
+ * Wide enough for a phone that has never met an NTP server, narrow enough that a clock set to
+ * next year cannot win every last-writer cell it touches: the bound is what makes "latest wins"
+ * mean latest rather than boldest. One number for the clock's clamp and the ladder's rung, so a
+ * device never adopts a stamp its own validator would have parked.
+ */
+export const DEFAULT_MAX_DRIFT: Temporal.Duration = Temporal.Duration.from({ minutes: 5 });
+
 const logical = (n: number): Logical => {
   // SAFETY: Logical is a branded non-negative integer; every caller passes 0 or a previous Logical + 1
   return n as Logical;

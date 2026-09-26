@@ -16,7 +16,7 @@ import type { Temporal } from "@syncmesh/temporal";
 import type { Grant, Identity } from "@syncmesh/wire";
 
 import { createValidator, openEngine } from "@syncmesh/engine";
-import { createHlcClock } from "@syncmesh/kernel";
+import { DEFAULT_MAX_DRIFT, createHlcClock } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
 import { syncedTables } from "@syncmesh/schema";
 import { installRls, openStores, operationStore } from "@syncmesh/storage";
@@ -50,6 +50,12 @@ export interface BootOptions {
   /** Install RLS from the read rules on boot; postgres drivers only. */
   readonly rls?: boolean;
   readonly now: () => Temporal.Instant;
+  /**
+   * The most a peer's stamp may lead `now()` and still be folded (D34); default
+   * {@link DEFAULT_MAX_DRIFT}. One bound for two seams — the clock clamps a remote stamp to it,
+   * the ladder parks an event beyond it — so a device never adopts a stamp it would not fold.
+   */
+  readonly clockDrift?: Temporal.Duration;
   /**
    * Threaded straight to {@link EngineOptions.onError}, which is the only reason it is on the
    * options rather than a subscription taken afterwards: the stranded-writes audit runs *inside*
@@ -117,6 +123,8 @@ function validatorFor(options: BootOptions): ValidatorOptions {
     // arms the grace rung, and answers for a local write that has no stamp yet; an event
     // arriving from a peer carries its own, so both sides read it the same way
     now,
+    // the same bound the clock clamps to (D34): what this device will not adopt, it does not fold
+    maxDrift: options.clockDrift ?? DEFAULT_MAX_DRIFT,
   } satisfies ValidatorOptions;
   if (authority !== undefined) Object.assign(validatorOptions, { authority });
   if (options.accounts === true) Object.assign(validatorOptions, { accounts: true });
@@ -166,7 +174,7 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
     const validate = createValidator(validatorFor(options));
     const engineOptions = {
       peerId: identity.peerId,
-      clock: createHlcClock({ now }),
+      clock: createHlcClock({ now, maxDrift: options.clockDrift ?? DEFAULT_MAX_DRIFT }),
       store,
       merge: schema.merge,
       validate,

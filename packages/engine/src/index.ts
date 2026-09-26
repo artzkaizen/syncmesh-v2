@@ -50,6 +50,7 @@ export { refoldable } from "./compaction.js";
 export type { LinkOptions } from "./link.js";
 export {
   CannotRevert,
+  ClockAhead,
   CompactionRefused,
   EmptyMutation,
   GrantDeviceMismatch,
