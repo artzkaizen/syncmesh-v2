@@ -146,3 +146,21 @@ Decisions first (№1–4 — they're blocking and cost no code), then the relay
 holes (№5–8 are small and compounding), then the durability proof (№10–13, the
 credibility work), then BLE hardware (№9, needs devices in hand), then the P3 loose
 ends epic by epic. P4 and doc rot interleave as warm-up tasks.
+
+
+## Addendum 2026-09-26 — code-level audit and the first fixes
+
+An independent read of the source (not the plan) found three gaps the list above did not name:
+
+1. **No clock-skew bound** — `createHlcClock({ now })` with no `maxDrift`, and no rung judging a
+   stamp; a fast clock won every `lww` cell and dragged every receiver's clock. **Fixed** (D34).
+2. **The relay trusted a claimed identity** — a bare `peerId` on `join`, `verifyJoin` defaulting
+   to admit, the superseding join closing the previous socket. **Fixed** (D33, protocol v2). The
+   relay link still skips the link handshake; that is D33's option C, now on E24's list.
+3. **Scale** — whole replica in memory, table map copied per write, tombstones never collected,
+   Wi-Fi Aware stubbed, no Android radio module, device seed in plaintext SQLite. Open.
+
+Also recorded: the conformance vectors cover event cores, receipts, grants and accounts only —
+no session frames, framing, handshake or relay control frames. Widening them is the prerequisite
+for a second (Rust) implementation of kernel + wire + storage + bridge, which is the direction
+the owner chose on 2026-09-26; see `docs/research/sync-engines.md` §5 in paper-canvas.
