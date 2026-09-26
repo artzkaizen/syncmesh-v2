@@ -33,3 +33,34 @@ pub use record::{Cell, CellValue, JsonValue, RowRecord, canonical_json};
 pub use stamp::Stamp;
 pub use state::State;
 pub use strategy::{MergeSpec, StrategyName, compare_value, counter_value};
+
+// The four remaining signed cores (D35 slice 3) and the record codec checkpoint rows are made of.
+pub mod account;
+pub mod checkpoint;
+pub mod grant;
+pub mod receipt;
+pub mod record_codec;
+pub mod signed;
+
+pub use account::{AccountCore, LinkOp, sign_link, verify_link};
+pub use checkpoint::{CheckpointCertificate, CheckpointRow, checkpoint_hash, verify_checkpoint};
+pub use grant::{Grant, issue_grant, verify_grant};
+pub use receipt::{CustodyReceipt, issue_receipt, verify_receipt};
+pub use record_codec::{decode_record, encode_record};
+pub use signed::Signed;
+
+// Session frames, length framing, relay control frames, the join proof and the link handshake
+// (D35 slice 4).
+pub mod frames;
+pub mod framing;
+pub mod handshake;
+pub mod join_proof;
+pub mod relay_frames;
+
+pub use frames::{Frame, MalformedFrame, SnapshotFrame, decode_frame};
+pub use framing::{FrameReader, FramingError, frame_with_length};
+pub use handshake::{
+    HandshakeFailed, Hello, SessionKeys, read_hello, seal, session_keys, unseal, write_hello,
+};
+pub use join_proof::{prove_join, verify_join_proof};
+pub use relay_frames::{Join, RELAY_PROTOCOL_VERSIONS, RelayFrame, decode_relay_frame, join_core};
