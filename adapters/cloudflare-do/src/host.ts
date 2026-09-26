@@ -5,6 +5,7 @@ import type { BlobStore, SqliteDriver } from "@syncmesh/storage";
 import { decodeRelayFrame, openRelayRoom } from "@syncmesh/relay";
 import { panic } from "@syncmesh/result";
 import { sqlBlobStore, sqliteEventStore } from "@syncmesh/storage";
+import { bytesToHex, createIdentity, hexToBytes, randomBytes, type Identity } from "@syncmesh/wire";
 
 import type { DurableSqlStorage } from "./driver.js";
 import type { DurableWebSocket } from "./socket.js";
@@ -75,6 +76,26 @@ async function epochOf(driver: SqliteDriver): Promise<string> {
   return fresh;
 }
 
+/**
+ * The key the room signs its link hello with (D36), kept beside the epoch so the room has one
+ * name across evictions and moves — the name a client could pin, once pinning is a thing. A
+ * fresh one per wake would work today, and would make every such wake look like a new relay.
+ */
+async function identityOf(driver: SqliteDriver): Promise<Identity> {
+  const held = await driver.all(`SELECT "value" FROM "_relay_meta" WHERE "key" = 'identity-seed'`);
+  const value = held[0]?.[0];
+  const seed =
+    value !== undefined && value !== null
+      ? hexToBytes(String(value)).match({ ok: (b) => b, err: () => undefined })
+      : undefined;
+  if (seed !== undefined) return createIdentity(seed).unwrap();
+  const fresh = randomBytes(32);
+  await driver.run(`INSERT INTO "_relay_meta" ("key", "value") VALUES ('identity-seed', ?)`, [
+    bytesToHex(fresh),
+  ]);
+  return createIdentity(fresh).unwrap();
+}
+
 const openBlobs = async (driver: SqliteDriver): Promise<BlobStore | undefined> => {
   const opened = await sqlBlobStore(driver);
   return opened.isOk() ? opened.value : undefined;
@@ -126,11 +147,13 @@ export function relayDurableHost(
       err: (failure) => panic(`the room's log failed to open: ${failure.message}`),
     });
     const epoch = await epochOf(driver);
+    const identity = await identityOf(driver);
     const blobs = options.blobs === false ? undefined : await openBlobs(driver);
     const room = await openRelayRoom({
       name: options.name ?? "main",
       store,
       epoch,
+      identity,
       ...(options.keepaliveMs !== undefined && { keepaliveMs: options.keepaliveMs }),
       ...(options.pageSize !== undefined && { pageSize: options.pageSize }),
       ...(options.maxBacklog !== undefined && { maxBacklog: options.maxBacklog }),
@@ -146,30 +169,43 @@ export function relayDurableHost(
   };
 
   /**
-   * Every socket the object holds, bound to the room and handed its script back. `waking` is the
-   * socket whose own frame is a fresh `join`: replaying its stored one as well would be a second
-   * join on one socket, which the room answers by closing the socket the newer join superseded —
-   * itself.
+   * Every socket the object holds, bound to the room and handed its script back. The frames a
+   * socket kept are replayed at once — except for `waking`, whose own frame is about to arrive:
+   * those are handed back to the caller, who replays them first unless that frame is a fresh
+   * `join`, when replaying the stored one as well would be a second join on one socket, which
+   * the room answers by closing the socket the newer join superseded — itself.
    */
-  const restore = async (waking: DurableWebSocket | undefined): Promise<void> => {
+  const restore = async (
+    waking: DurableWebSocket | undefined,
+  ): Promise<readonly Uint8Array[] | undefined> => {
     const room = await (opening ??= open());
+    let deferred: readonly Uint8Array[] | undefined;
     for (const ws of ctx.getWebSockets()) {
       if (live.has(ws)) continue;
       const kept = decodeResume(ws.deserializeAttachment());
-      // a socket challenged before the object slept is handed the same challenge back, so the
-      // join it is about to send — or the one replayed below — still verifies (D33); one never
-      // challenged is challenged now, and the nonce is kept before anything else is
-      const conn = room.connect(
-        durableRelaySocket(ws),
-        kept.nonce === undefined ? {} : { challenge: kept.nonce },
-      );
+      // the link picks up where the attachment says it stopped (D36): a challenge is handed back
+      // so the join about to arrive still verifies (D33); an offer finishes the handshake with the
+      // secret that was made; a session opens the next sealed frame. One never told anything is
+      // told now, and what it is told is kept before anything else is
+      const conn = room.connect(durableRelaySocket(ws), {
+        ...(kept.nonce !== undefined && { challenge: kept.nonce }),
+        ...(kept.offer !== undefined && { offer: kept.offer }),
+        ...(kept.session !== undefined && { session: kept.session }),
+        onSecured: (session) => resume.secured(ws, session),
+      });
       live.set(ws, conn);
-      if (kept.nonce === undefined) resume.challenged(ws, conn.challenge);
+      const offer = conn.offer();
+      if (kept.nonce === undefined && conn.challenge !== undefined)
+        resume.challenged(ws, conn.challenge);
+      else if (kept.offer === undefined && kept.session === undefined && offer !== undefined)
+        resume.offered(ws, offer);
       else resume.restored(ws, kept);
       // a socket with nothing kept never joined, or joined with a script too wide to keep; either
       // way it is left bound and silent, and its next frame gets the room's `join-first` refusal
-      if (ws !== waking) for (const frame of kept.frames) conn.receive(frame);
+      if (ws === waking) deferred = kept.frames;
+      else for (const frame of kept.frames) conn.replay(frame);
     }
+    return deferred;
   };
 
   return {
@@ -183,15 +219,22 @@ export function relayDurableHost(
       // the protocol is binary; a text frame is noise
       if (!(data instanceof ArrayBuffer)) return;
       const bytes = new Uint8Array(data);
+      const deferred = await restore(ws);
+      const conn = live.get(ws);
+      if (conn === undefined) return;
+      // opened before it is read: on a sealed link the bytes are a hello or a sealed frame, and
+      // only the plaintext says what belongs in the resume script (D36)
+      const plain = conn.open(bytes);
+      if (plain === undefined) return;
       // decoded here only to notice what belongs in the resume script — the connection decodes it
       // again, which is the price of a resume point the object can rebuild itself from
-      const decoded = decodeRelayFrame(bytes);
+      const decoded = decodeRelayFrame(plain);
       const frame = decoded.isOk() ? decoded.value : undefined;
       const joining = frame?.kind === "join";
-      await restore(joining ? ws : undefined);
-      if (joining) resume.joined(ws, bytes);
-      else if (frame?.kind === "session" && frame.frame.kind === "grant") resume.granted(ws, bytes);
-      live.get(ws)?.receive(bytes);
+      if (deferred !== undefined && !joining) for (const kept of deferred) conn.replay(kept);
+      if (joining) resume.joined(ws, plain);
+      else if (frame?.kind === "session" && frame.frame.kind === "grant") resume.granted(ws, plain);
+      conn.replay(plain);
     },
     leave: (ws) => {
       const conn = live.get(ws);

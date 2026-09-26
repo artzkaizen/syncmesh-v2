@@ -103,7 +103,8 @@ describe("relayTransport", () => {
         },
       };
     };
-    const t = relayTransport({ dial, reconnectMs: 5 });
+    // a hand-made relay that challenges (v2): offered, so the transport answers it
+    const t = relayTransport({ dial, versions: [2], reconnectMs: 5 });
     await t.start(a.context);
     await tick(60); // 10ms keepalive → 25ms deadline → the mute session is dropped and redialed
     expect(dials).toBeGreaterThan(1);

@@ -30,10 +30,15 @@ pub mod tag {
 
 /// The protocol this build speaks; `join` offers, `hello` picks the highest in common.
 ///
-/// **2** — the room challenges first and the join proves the key it names (D33). **1** — the bare
-/// join, believed on its word; not offered by this build, and admitted by a room only when its
-/// operator lists it.
-pub const RELAY_PROTOCOL_VERSIONS: [u64; 1] = [2];
+/// **3** — the socket runs the link handshake: both ends send a signed hello first, everything
+/// after travels sealed, and the join names the key the hello proved (D36). **2** — the room
+/// challenges first and the join proves the key it names (D33). **1** — the bare join, believed on
+/// its word. Neither 1 nor 2 is offered by this build; a room admits them only when its operator
+/// lists them.
+pub const RELAY_PROTOCOL_VERSIONS: [u64; 1] = [3];
+
+/// The version from which a relay socket is a sealed link (D36).
+pub const HANDSHAKE_VERSION: u64 = 3;
 
 /// What a challenge is: this many bytes, fresh per socket, and nothing else.
 pub const CHALLENGE_BYTES: usize = 32;
@@ -511,7 +516,11 @@ mod tests {
 
     #[test]
     fn versions_meet_at_the_highest_shared() {
-        assert_eq!(select_version(&[1, 2], &RELAY_PROTOCOL_VERSIONS), Some(2));
+        assert_eq!(
+            select_version(&[1, 2, 3], &RELAY_PROTOCOL_VERSIONS),
+            Some(3)
+        );
+        assert_eq!(select_version(&[1, 2], &RELAY_PROTOCOL_VERSIONS), None);
         assert_eq!(select_version(&[1], &RELAY_PROTOCOL_VERSIONS), None);
         assert_eq!(select_version(&[], &RELAY_PROTOCOL_VERSIONS), None);
         assert_eq!(select_version(&[1, 2, 3], &[1, 3]), Some(3));

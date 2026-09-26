@@ -10,7 +10,7 @@ import { blobGetFrame, joinFrame } from "../frames.js";
 import { DEFAULT_LIMITS, createBudget } from "../limits.js";
 import { startRelay } from "../serve.js";
 import { relayTransport } from "../transport.js";
-import { T0, bodyOf, fakeSocket, openRoom, peer, tick, until, write } from "./fixtures.js";
+import { T0, bodyOf, fakeSocket, scriptedRoom, peer, tick, until, write } from "./fixtures.js";
 
 const join = (peerId: PeerId) => joinFrame([1], peerId, new Map());
 const SECOND = Temporal.Duration.from({ seconds: 1 });
@@ -27,7 +27,7 @@ const tight = (event: number, blob: number) => ({
 describe("the frame-size cap", () => {
   test("a well-formed frame over the cap is refused before it is decoded, and the socket closed", async () => {
     const a = peer(40, "acct_a");
-    const room = await openRoom({ limits: { maxFrameBytes: 32 } });
+    const room = await scriptedRoom({ limits: { maxFrameBytes: 32 } });
     const s = fakeSocket();
     room.connect(s.socket).receive(join(a.identity.peerId)); // a valid join, comfortably over 32
     await tick();
@@ -40,7 +40,7 @@ describe("the frame-size cap", () => {
 
   test("the same frame under the cap is served normally", async () => {
     const a = peer(40, "acct_a");
-    const room = await openRoom({ limits: { maxFrameBytes: DEFAULT_LIMITS.maxFrameBytes } });
+    const room = await scriptedRoom({ limits: { maxFrameBytes: DEFAULT_LIMITS.maxFrameBytes } });
     const s = fakeSocket();
     room.connect(s.socket).receive(join(a.identity.peerId));
     await tick();
@@ -54,7 +54,7 @@ describe("the frame-size cap", () => {
 describe("per-socket token buckets", () => {
   test("event and blob are separate classes: spending one out leaves the other", async () => {
     const a = peer(40, "acct_a");
-    const room = await openRoom({ now: () => T0, limits: tight(1, 4) });
+    const room = await scriptedRoom({ now: () => T0, limits: tight(1, 4) });
     const s = fakeSocket();
     const conn = room.connect(s.socket);
     conn.receive(join(a.identity.peerId)); // the join spends the only event token there was
@@ -75,7 +75,7 @@ describe("per-socket token buckets", () => {
 
   test("over the rate the relay closes rather than buffers", async () => {
     const a = peer(40, "acct_a");
-    const room = await openRoom({ now: () => T0, limits: tight(2, 2) });
+    const room = await scriptedRoom({ now: () => T0, limits: tight(2, 2) });
     const s = fakeSocket();
     const conn = room.connect(s.socket);
     conn.receive(join(a.identity.peerId));
@@ -94,7 +94,7 @@ describe("per-socket token buckets", () => {
   test("tokens come back with time, so a client at the declared rate is never hung up on", async () => {
     const a = peer(40, "acct_a");
     let at = T0;
-    const room = await openRoom({ now: () => at, limits: tight(1, 1) });
+    const room = await scriptedRoom({ now: () => at, limits: tight(1, 1) });
     const s = fakeSocket();
     const conn = room.connect(s.socket);
     conn.receive(join(a.identity.peerId)); // spends the one token
@@ -143,7 +143,7 @@ describe("fan-out is metered too (gap audit №7)", () => {
   test("a socket pays for the sends its event caused, not for the one it made", async () => {
     const [a, b, c] = [peer(40, "acct_a"), peer(80, "acct_b"), peer(120, "acct_c")];
     // three deliveries' worth: the first event reaches two other clients, the second would not
-    const room = await openRoom({ now: () => T0, limits: amplified(3) });
+    const room = await scriptedRoom({ now: () => T0, limits: amplified(3) });
     const sockets = [fakeSocket(), fakeSocket(), fakeSocket()];
     const conns = sockets.map((s) => room.connect(s.socket));
     conns[0]?.receive(join(a.identity.peerId));
@@ -174,7 +174,7 @@ describe("fan-out is metered too (gap audit №7)", () => {
 
   test("a room of one costs nothing to write to, however tight the meter", async () => {
     const a = peer(40, "acct_a");
-    const room = await openRoom({ now: () => T0, limits: amplified(1) });
+    const room = await scriptedRoom({ now: () => T0, limits: amplified(1) });
     const s = fakeSocket();
     const conn = room.connect(s.socket);
     conn.receive(join(a.identity.peerId));

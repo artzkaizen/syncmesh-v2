@@ -1,8 +1,10 @@
 export type { RelayFrame } from "./frames.js";
 export {
   CHALLENGE_BYTES,
+  HANDSHAKE_VERSION,
   RELAY_PROTOCOL_VERSIONS,
   selectVersion,
+  speaksHandshake,
   ackFrame,
   blobFrame,
   blobGetFrame,
@@ -19,6 +21,8 @@ export {
   relayedFrame,
 } from "./frames.js";
 export { NONCE_BYTES, newChallenge, proveJoin, verifyJoinProof } from "./proof.js";
+export type { LinkOffer, LinkSession, SecureLink, SecureLinkOptions } from "./secure.js";
+export { LinkRefused, isHello, secureLink } from "./secure.js";
 export type { RelaySocket, SendOutcome, Sender } from "./sender.js";
 export { createSender } from "./sender.js";
 export type { Fanout, FanoutLink } from "./fanout.js";

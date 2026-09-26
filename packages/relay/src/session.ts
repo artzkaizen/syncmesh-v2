@@ -25,7 +25,7 @@ export interface SessionHooks {
   readonly rearm: () => void;
   /** Holdback overflow: a fresh join re-pages from our contiguous position. */
   readonly rejoin: () => void;
-  /** The room's challenge, first on every socket: what the join this session sends has to sign (D33). */
+  /** A challenging room's first frame: what a v2 join has to sign (D33). A sealed link never sends one (D36). */
   readonly onChallenge: (nonce: Uint8Array) => void;
   readonly onHello: (keepaliveMs: number) => void;
   /** The relay's typed version refusal is permanent — no reconnect loop against it. */

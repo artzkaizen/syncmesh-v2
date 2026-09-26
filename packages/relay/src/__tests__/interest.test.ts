@@ -7,11 +7,11 @@ import { encodeCbor, hexToBytes } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import { joinFrame } from "../frames.js";
-import { fakeSocket, openRoom, peer, tick, write } from "./fixtures.js";
+import { fakeSocket, scriptedRoom, peer, tick, write } from "./fixtures.js";
 
 const GLOBEX = parsePartitionKey("org:globex").unwrap();
 
-const open = () => openRoom({ pageSize: 100 });
+const open = () => scriptedRoom({ pageSize: 100 });
 
 const join = (peerId: PeerId, interest?: Interest) => joinFrame([1], peerId, new Map(), interest);
 

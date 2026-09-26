@@ -110,7 +110,8 @@ describe("relayTransport link events", () => {
         },
       };
     };
-    const t = relayTransport({ dial, reconnectMs: 5 });
+    // a hand-made relay that challenges (v2): offered, so the transport answers it
+    const t = relayTransport({ dial, versions: [2], reconnectMs: 5 });
     t.onLinkEvent?.((event) => void seen.push(event));
     await t.start(a.context);
     await tick(60);
@@ -140,7 +141,8 @@ describe("relayTransport link events", () => {
       onClose: () => () => undefined,
       close: () => undefined,
     });
-    const t = relayTransport({ dial, reconnectMs: 5 });
+    // a hand-made relay that challenges (v2): offered, so the transport answers it
+    const t = relayTransport({ dial, versions: [2], reconnectMs: 5 });
     t.onLinkEvent?.((event) => void seen.push(event));
     await t.start(a.context);
     await tick(30);

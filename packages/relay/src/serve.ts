@@ -1,5 +1,6 @@
 import type { EventStore, TelemetryListener } from "@syncmesh/engine";
 import type { BlobStore, SqlDriver } from "@syncmesh/storage";
+import type { Identity } from "@syncmesh/wire";
 
 import { panic } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
@@ -26,6 +27,7 @@ type RoomTuning = Partial<
     | "pageSize"
     | "maxBacklog"
     | "versions"
+    | "identity"
     | "limits"
     | "retention"
     | "fanout"
@@ -46,6 +48,8 @@ export interface StartRelayOptions {
   readonly maxBacklog?: number;
   /** Protocol versions every room here accepts (D14); narrowing it raises the relay's floor. */
   readonly versions?: readonly number[];
+  /** The key every room here signs its link hello with (D36). Absent, one fresh per process. */
+  readonly identity?: Identity;
   /** Per-socket frame-size and rate ceilings; see `DEFAULT_LIMITS` for what each one costs. */
   readonly limits?: Partial<RelayLimits>;
   /** What every room here stops keeping: log age and blob bytes. Absent, nothing is ever dropped. */
@@ -77,6 +81,7 @@ const roomTuning = (options: StartRelayOptions): RoomTuning => ({
   ...(options.pageSize !== undefined && { pageSize: options.pageSize }),
   ...(options.maxBacklog !== undefined && { maxBacklog: options.maxBacklog }),
   ...(options.versions !== undefined && { versions: options.versions }),
+  ...(options.identity !== undefined && { identity: options.identity }),
   ...(options.limits !== undefined && { limits: options.limits }),
   ...(options.retention !== undefined && { retention: options.retention }),
   ...(options.onTelemetry !== undefined && { onTelemetry: options.onTelemetry }),

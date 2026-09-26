@@ -18,7 +18,7 @@ import {
   entryOf,
   fakeSocket,
   mintFor,
-  openRoom as open,
+  scriptedRoom as open,
   peer,
   tick,
   write,

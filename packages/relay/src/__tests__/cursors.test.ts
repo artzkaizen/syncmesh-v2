@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 
 import { joinFrame } from "../frames.js";
 import { DEFAULT_LIMITS } from "../limits.js";
-import { T0, entryOf, fakeSocket, openRoom, peer, tick, write } from "./fixtures.js";
+import { T0, entryOf, fakeSocket, scriptedRoom, peer, tick, write } from "./fixtures.js";
 
 const SECOND = Temporal.Duration.from({ seconds: 1 });
 
@@ -15,7 +15,7 @@ const helloCursors = (s: ReturnType<typeof fakeSocket>) => {
   return hello === undefined ? [] : [...hello.cursors].map(([p, seq]) => `${p.slice(0, 6)}:${seq}`);
 };
 
-const joiner = async (room: Awaited<ReturnType<typeof openRoom>>, n: number) => {
+const joiner = async (room: Awaited<ReturnType<typeof scriptedRoom>>, n: number) => {
   const s = fakeSocket();
   room.connect(s.socket).receive(joinFrame([1], peer(n, "acct_j").identity.peerId, new Map()));
   await tick();
@@ -41,7 +41,7 @@ describe("what a room says it holds", () => {
     await store.append({ event: entryOf(w2).event });
     await store.append(entryOf(w3));
 
-    const room = await openRoom({ store });
+    const room = await scriptedRoom({ store });
     const s = await joiner(room, 200);
     expect(helloCursors(s)).toEqual([`${a.identity.peerId.slice(0, 6)}:1`]);
     // and the author, told that, offers the two the room is missing rather than nothing
@@ -56,7 +56,7 @@ describe("what a room says it holds", () => {
   test("a frame that arrives after a fatal refusal is not appended, and leaves no hole", async () => {
     const a = peer(40, "acct_a");
     let at = T0;
-    const room = await openRoom({
+    const room = await scriptedRoom({
       now: () => at,
       limits: {
         rates: {

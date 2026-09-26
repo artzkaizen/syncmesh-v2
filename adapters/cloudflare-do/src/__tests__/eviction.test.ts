@@ -3,7 +3,14 @@ import type { RelayDial, RelayFrame, RelayTelemetry } from "@syncmesh/relay";
 
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { decodeRelayFrame, joinCore, joinFrame, proveJoin } from "@syncmesh/relay";
+import {
+  decodeRelayFrame,
+  isHello,
+  joinCore,
+  joinFrame,
+  proveJoin,
+  secureLink,
+} from "@syncmesh/relay";
 import { Temporal } from "@syncmesh/temporal";
 import { grantFrame } from "@syncmesh/transport";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -110,4 +117,93 @@ describe("what an eviction may not lose", () => {
     wide.close();
     old.close();
   }, 20_000);
+});
+
+describe("what an eviction may not lose on a sealed link (D36)", () => {
+  /** A device's end of the link over a hibernatable socket, its raw bytes and the frames it opened. */
+  const device = (dialed: RelayDial, n: number) => {
+    const identity = identity_(n);
+    const link = secureLink(identity);
+    const frames: RelayFrame[] = [];
+    const hellos: Uint8Array[] = [];
+    dialed.onFrame((bytes) => {
+      if (isHello(bytes)) {
+        hellos.push(bytes);
+        return;
+      }
+      if (link.session() === undefined) return;
+      const opened = link.receive(bytes);
+      if (opened.isErr() || opened.value === undefined) return;
+      const decoded = decodeRelayFrame(opened.value);
+      if (decoded.isOk()) frames.push(decoded.value);
+    });
+    return {
+      identity,
+      link,
+      frames,
+      hellos,
+      /** Answers the room's hello — only now, so a test can put an eviction before the answer. */
+      answer: () => {
+        const hello = hellos[0];
+        if (hello === undefined) throw new Error("the room sent no hello");
+        link.receive(hello).unwrap();
+        if (link.hello !== undefined) dialed.send(link.hello);
+      },
+      send: (plain: Uint8Array) => {
+        const sealed = link.seal(plain);
+        if (sealed === undefined) throw new Error("the link is not secured");
+        dialed.send(sealed);
+      },
+    };
+  };
+  const identity_ = identity;
+
+  test("an object evicted between its hello and the device's answer still finishes the handshake, and one evicted after it still opens the next frame", async () => {
+    const object = durableRelay(new Database(":memory:"), { keepaliveMs: 60_000 });
+    const dialed = object.dial();
+    const a = device(dialed, 40);
+    await tick(60);
+    expect(a.hellos).toHaveLength(1);
+
+    // asleep with only its offer in the attachment: the secret it made, and the hello it sent
+    object.evict();
+    a.answer();
+    await tick(60);
+    a.send(joinFrame([3], a.identity.peerId, new Map()));
+    await tick(60);
+    expect(a.frames.filter((f) => f.kind === "hello")).toHaveLength(1);
+    expect(a.frames.filter((f) => f.kind === "error")).toHaveLength(0);
+
+    // asleep again, now with the session in the attachment: a sealed grant opens after the wake
+    object.evict();
+    a.send(grantFrame(mintFor(a.identity)));
+    await tick(60);
+    expect(a.frames.filter((f) => f.kind === "error")).toHaveLength(0);
+
+    // and the grant it handed the room is what a later joiner is paged, across yet another wake
+    object.evict();
+    const late = device(object.dial(), 41);
+    await tick(60);
+    late.answer();
+    await tick(60);
+    late.send(joinFrame([3], late.identity.peerId, new Map()));
+    await tick(60);
+    expect(late.frames.flatMap((f) => (f.kind === "page" ? f.grants : []))).toHaveLength(1);
+    dialed.close();
+  }, 20_000);
+
+  test("the room keeps one identity across evictions, so every hello a device hears is signed by the same key", async () => {
+    const object = durableRelay(new Database(":memory:"), { keepaliveMs: 60_000 });
+    const first = device(object.dial(), 40);
+    await tick(60);
+    object.evict();
+    const second = device(object.dial(), 41);
+    await tick(60);
+    const [h1, h2] = [first.hellos[0], second.hellos[0]];
+    if (h1 === undefined || h2 === undefined) throw new Error("a hello is missing");
+    // the peer id rides in the clear at bytes 1..33 of a hello
+    expect(Buffer.from(h1.subarray(1, 33)).toString("hex")).toBe(
+      Buffer.from(h2.subarray(1, 33)).toString("hex"),
+    );
+  });
 });

@@ -8,22 +8,15 @@ import { join as joinPath } from "node:path";
 import type { RelayFrame } from "../frames.js";
 
 import { webSocketDial } from "../dial.js";
-import { decodeRelayFrame } from "../frames.js";
 import { startRelay } from "../serve.js";
 import { relayTransport } from "../transport.js";
-import { bodyOf, peer, signedJoin, tick, write } from "./fixtures.js";
+import { bodyOf, peer, secureProbe, tick, write } from "./fixtures.js";
 
-/** Raw client: dial, answer the challenge with a signed join, and collect decoded frames — for looking at hellos and pages directly. */
+/** Raw client: dial, run the link handshake, join from empty cursors, and collect decoded frames — for looking at hellos and pages directly. */
 const probe = async (url: string, identity: Identity) => {
-  const dial = await webSocketDial(url)();
-  const frames: RelayFrame[] = [];
-  dial.onFrame((bytes) => {
-    const decoded = decodeRelayFrame(bytes);
-    if (decoded.isErr()) return;
-    frames.push(decoded.value);
-    if (decoded.value.kind === "challenge") dial.send(signedJoin(identity, decoded.value.nonce));
-  });
-  return { frames, close: () => dial.close() };
+  const probing = await secureProbe(webSocketDial(url), identity);
+  probing.join();
+  return probing;
 };
 
 describe("startRelay — D09-A, the embedded host", () => {

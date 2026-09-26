@@ -37,11 +37,21 @@ const KIND = {
 /**
  * The protocol this build speaks; `join` offers, `hello` picks the highest in common.
  *
- * **2** — the room challenges first and the join proves the key it names (D33). **1** — the bare
- * join, believed on its word; not offered by this build, and admitted by a room only when its
- * operator lists it, in which case the room is taking a device's name on trust and should know it.
+ * **3** — the socket runs the link handshake: both ends send a signed hello first, everything
+ * after travels sealed, and the join names the key the hello proved (D36). **2** — the room
+ * challenges first and the join proves the key it names (D33); the link's secrecy is `wss://`'s.
+ * **1** — the bare join, believed on its word. Neither 1 nor 2 is offered by this build; a room
+ * admits them only when its operator lists them, and a room lists 3 alone or not at all: it speaks
+ * a hello first or a challenge first, and a socket cannot be told both.
  */
-export const RELAY_PROTOCOL_VERSIONS: readonly number[] = [2];
+export const RELAY_PROTOCOL_VERSIONS: readonly number[] = [3];
+
+/** The version from which a relay socket is a sealed link (D36). */
+export const HANDSHAKE_VERSION = 3;
+
+/** Whether a room or a client offering these versions opens every socket with the link handshake. */
+export const speaksHandshake = (versions: readonly number[]): boolean =>
+  versions.includes(HANDSHAKE_VERSION);
 
 /** What a challenge is: this many bytes, fresh per socket, and nothing else. */
 export const CHALLENGE_BYTES = 32;
@@ -71,7 +81,10 @@ export type RelayFrame =
       readonly interest?: Interest;
       /** The join's body as the proof covers it: versions, peer, cursors, interest, re-encoded canonically. */
       readonly core: Uint8Array;
-      /** The named key's signature over the room's challenge and `core` (D33); absent on a v1 join. */
+      /**
+       * The named key's signature over the room's challenge and `core` (D33). Absent on a v1
+       * join, and on a v3 join, where the hello that opened the link already proved the key (D36).
+       */
       readonly proof?: Uint8Array;
     }
   /** The room's first frame on every socket: what a v2 join has to sign (D33). */

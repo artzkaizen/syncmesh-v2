@@ -16,6 +16,7 @@
     }
   },
   "dependencies": {
+    "@syncmesh/kernel": "workspace:*",
     "@syncmesh/relay": "workspace:*",
     "@syncmesh/result": "workspace:*",
     "@syncmesh/storage": "workspace:*",
@@ -26,7 +27,6 @@
     "@syncmesh/client": "workspace:*",
     "@syncmesh/config": "workspace:*",
     "@syncmesh/engine": "workspace:*",
-    "@syncmesh/kernel": "workspace:*",
     "@syncmesh/policy": "workspace:*",
     "@syncmesh/schema": "workspace:*",
     "@syncmesh/sqlite-bun": "workspace:*",

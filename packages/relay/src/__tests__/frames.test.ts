@@ -244,9 +244,10 @@ describe("selectVersion", () => {
     expect(selectVersion([1], [])).toBeUndefined();
   });
 
-  test("this build speaks 2 — the proven join (D33) — and offers only that by default", () => {
-    expect([...RELAY_PROTOCOL_VERSIONS]).toEqual([2]);
-    expect(selectVersion([2])).toBe(2);
+  test("this build speaks 3 — the sealed link (D36) — and offers only that by default", () => {
+    expect([...RELAY_PROTOCOL_VERSIONS]).toEqual([3]);
+    expect(selectVersion([3])).toBe(3);
+    expect(selectVersion([2])).toBeUndefined();
     expect(selectVersion([1])).toBeUndefined();
   });
 });

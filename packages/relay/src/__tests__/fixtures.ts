@@ -33,6 +33,7 @@ import type { RelayDial } from "../transport.js";
 import { decodeRelayFrame, joinCore, joinFrame } from "../frames.js";
 import { proveJoin } from "../proof.js";
 import { openRelayRoom } from "../room.js";
+import { isHello, secureLink } from "../secure.js";
 
 const org = partition("org", { roles: ladder("member") });
 export const schema = syncSchema({
@@ -172,11 +173,9 @@ export const fakeSocket = () => {
 };
 
 /**
- * A room on a fresh memory log; every option a test cares about is an override.
- *
- * Left open to v1 on purpose: most of this suite scripts a bare `joinFrame([1], …)` at a fake
- * socket to get at a room's behaviour *after* the join, and a proof there would be noise. What
- * a v2 join has to prove is `join-proof.test.ts`'s business, and it opens its rooms at `[2]`.
+ * A room on a fresh memory log at this build's own protocol — the sealed link (D36) — for every
+ * test that drives it through a real `relayTransport`; every option a test cares about is an
+ * override.
  */
 export const openRoom = async (overrides: Partial<RelayRoomOptions> = {}) =>
   (
@@ -187,10 +186,71 @@ export const openRoom = async (overrides: Partial<RelayRoomOptions> = {}) =>
       keepaliveMs: 60_000,
       pageSize: 2,
       maxBacklog: 8,
-      versions: [1, 2],
       ...overrides,
     })
   ).unwrap();
+
+/**
+ * A room left open to v1 and v2 on purpose: most of this suite scripts a bare `joinFrame([1], …)`
+ * at a fake socket to get at a room's behaviour *after* the join, and a handshake or a proof
+ * there would be noise. What a v2 join has to prove is `join-proof.test.ts`'s business, and what
+ * a sealed link has to do is `secure.test.ts`'s.
+ */
+export const scriptedRoom = (overrides: Partial<RelayRoomOptions> = {}) =>
+  openRoom({ versions: [1, 2], ...overrides });
+
+/**
+ * A raw client on a sealed link (D36): answers the room's hello, seals what it sends, opens what
+ * it hears, and keeps every frame the room said, decoded. What a probe of a real socket looks
+ * like now that a room speaks a hello first — `send` and `frames` are in the clear, the wire is not.
+ */
+export const secureProbe = async (
+  dial: () => Promise<RelayDial> | RelayDial,
+  identity: Identity,
+) => {
+  const dialed = await dial();
+  const link = secureLink(identity);
+  const frames: RelayFrame[] = [];
+  const raw: Uint8Array[] = [];
+  let secured = (): void => undefined;
+  const ready = new Promise<void>((resolve) => (secured = resolve));
+  dialed.onFrame((bytes) => {
+    raw.push(bytes);
+    if (link.session() === undefined) {
+      if (!isHello(bytes)) return;
+      link.receive(bytes).unwrap();
+      if (link.hello !== undefined) dialed.send(link.hello);
+      secured();
+      return;
+    }
+    const opened = link.receive(bytes);
+    if (opened.isErr() || opened.value === undefined) return;
+    const decoded = decodeRelayFrame(opened.value);
+    if (decoded.isOk()) frames.push(decoded.value);
+  });
+  await ready;
+  return {
+    dialed,
+    link,
+    frames,
+    /** Every byte the room sent, sealed or not — what a sniffer on the socket would hold. */
+    raw,
+    send: (plain: Uint8Array) => {
+      const sealed = link.seal(plain);
+      if (sealed === undefined) throw new Error("the probe's link is not secured");
+      dialed.send(sealed);
+    },
+    join: (cursors: Cursors = new Map(), interest?: Interest) =>
+      void (() => {
+        const sealed = link.seal(joinFrame([3], identity.peerId, cursors, interest));
+        if (sealed === undefined) throw new Error("the probe's link is not secured");
+        dialed.send(sealed);
+      })(),
+    ofKind: <K extends RelayFrame["kind"]>(kind: K) =>
+      frames.filter((f): f is Extract<RelayFrame, { kind: K }> => f.kind === kind),
+    close: () => dialed.close(),
+  };
+};
 
 /** A v2 join: the identity signs the room's challenge over the join's own body (D33). */
 export const signedJoin = (

@@ -9,7 +9,7 @@ import { describe, expect, test } from "bun:test";
 import type { RelayTelemetry } from "../telemetry.js";
 
 import { blobGetFrame, blobPutFrame, joinFrame } from "../frames.js";
-import { entryOf, fakeSocket, openRoom, peer, tick, write } from "./fixtures.js";
+import { entryOf, fakeSocket, scriptedRoom, peer, tick, write } from "./fixtures.js";
 
 const join = (peerId: PeerId) => joinFrame([1], peerId, new Map());
 
@@ -17,9 +17,9 @@ const join = (peerId: PeerId) => joinFrame([1], peerId, new Map());
 const isRelay = (event: TelemetryEvent): event is RelayTelemetry => event.type.startsWith("relay.");
 
 /** A room that keeps everything it reported, in order. */
-const watched = async (overrides: Partial<Parameters<typeof openRoom>[0]> = {}) => {
+const watched = async (overrides: Partial<Parameters<typeof scriptedRoom>[0]> = {}) => {
   const seen: RelayTelemetry[] = [];
-  const room = await openRoom(overrides);
+  const room = await scriptedRoom(overrides);
   room.onTelemetry((event) => void (isRelay(event) && seen.push(event)));
   return { room, seen, of: (type: string) => seen.filter((e) => e.type === type) };
 };
@@ -164,7 +164,7 @@ describe("a listener never affects correctness", () => {
   test("one that throws is dropped, and the room forwards exactly as it would have", async () => {
     const a = peer(40, "acct_a");
     const b = peer(80, "acct_b");
-    const room = await openRoom({
+    const room = await scriptedRoom({
       onTelemetry: () => {
         throw new Error("an observer misbehaving");
       },

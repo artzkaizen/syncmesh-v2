@@ -1,5 +1,5 @@
 {
-  "protocolVersions": [2],
+  "protocolVersions": [3],
   "vectors": [
     {
       "description": "join, v1: one version, one cursor, no interest, no proof",
@@ -26,6 +26,12 @@
       "wireHex": "86088102582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b8182582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b07605840ae788665912217f773f988b7876cfa98ba1a01de6892b4598d97ce161c933b0321fe0112f8275ba73f8cf2bb47f8e30eeb71013c757c4781b6758e555b40e209"
     },
     {
+      "description": "join, v3: on a sealed link, no proof — the hello that opened the link proved the key (D36); the link itself is handshake-vectors.json",
+      "kind": "join",
+      "tag": 8,
+      "wireHex": "850881035820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f81825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0760"
+    },
+    {
       "description": "hello, the selected version and an empty retention floor",
       "kind": "hello",
       "tag": 9,
@@ -48,6 +54,18 @@
       "kind": "error",
       "tag": 10,
       "wireHex": "830a68756e70726f76656e782b746865206a6f696e20776173206e6f74207369676e656420627920746865206b6579206974206e616d6573"
+    },
+    {
+      "description": "error, the typed link refusal: a frame in the clear on a sealed link (D36)",
+      "kind": "error",
+      "tag": 10,
+      "wireHex": "830a6968616e647368616b65782561206672616d6520696e2074686520636c656172206f6e2061207365616c6564206c696e6b"
+    },
+    {
+      "description": "error, the typed seat refusal: a join naming a key the hello did not prove (D36)",
+      "kind": "error",
+      "tag": 10,
+      "wireHex": "830a68696d706f73746f72783d746865206a6f696e206e616d65732061206b6579206f74686572207468616e20746865206f6e652074686174206f70656e65642074686973206c696e6b"
     },
     {
       "description": "ka",
@@ -104,7 +122,7 @@
       "wireHex": "82126762333a30313032"
     },
     {
-      "description": "challenge, the room's first frame on a socket (D33)",
+      "description": "challenge, a v2 room's first frame on a socket (D33); a v3 room sends a hello instead",
       "kind": "challenge",
       "tag": 19,
       "wireHex": "82135820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"

@@ -8,12 +8,12 @@ import { describe, expect, test } from "bun:test";
 import type { RelayRoomOptions } from "../room.js";
 
 import { webSocketDial } from "../dial.js";
-import { decodeRelayFrame, joinFrame } from "../frames.js";
+import { joinFrame } from "../frames.js";
 import { openRelayRoom } from "../room.js";
 import { createRoomTable } from "../rooms.js";
 import { startRelay } from "../serve.js";
 import { relayTransport } from "../transport.js";
-import { bodyOf, fakeSocket, mintFor, peer, signedJoin, tick, until, write } from "./fixtures.js";
+import { bodyOf, fakeSocket, mintFor, peer, secureProbe, tick, until, write } from "./fixtures.js";
 
 const IDLE = Temporal.Duration.from({ milliseconds: 40 });
 
@@ -55,19 +55,12 @@ describe("idle-room eviction", () => {
       keepaliveMs: 60_000,
     });
     const epochOnJoin = async () => {
-      const dialed = await webSocketDial(`${relay.url}/main`)();
-      const seen: string[] = [];
-      dialed.onFrame((bytes) => {
-        const frame = decodeRelayFrame(bytes);
-        if (frame.isErr()) return;
-        // the room speaks first (D33): answer its challenge with a signed join
-        if (frame.value.kind === "challenge")
-          dialed.send(signedJoin(a.identity, frame.value.nonce));
-        if (frame.value.kind === "hello") seen.push(frame.value.epoch);
-      });
-      await until(() => seen.length > 0, 2000);
-      dialed.close();
-      return seen[0];
+      // the room speaks first (D36): run its handshake, join over the sealed link, read the hello
+      const probing = await secureProbe(webSocketDial(`${relay.url}/main`), a.identity);
+      probing.join();
+      await until(() => probing.ofKind("hello").length > 0, 2000);
+      probing.close();
+      return probing.ofKind("hello")[0]?.epoch;
     };
     try {
       const first = await epochOnJoin();

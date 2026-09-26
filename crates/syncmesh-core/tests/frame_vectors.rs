@@ -307,6 +307,8 @@ fn relay_control_frames_are_reproduced_from_the_generator_inputs() {
         "b3:0102",
     );
     let nonce: [u8; 32] = std::array::from_fn(|i| i as u8);
+    // indexes follow conformance/src/generate-relay-vectors.ts; 2–3 are the v2 joins from
+    // join-vectors.json, checked in their own test below
     let expected: Vec<(usize, Vec<u8>)> = vec![
         (0, relay_frames::join_frame(&[1], &p, &cursors, None, None)),
         (
@@ -319,44 +321,57 @@ fn relay_control_frames_are_reproduced_from_the_generator_inputs() {
                 None,
             ),
         ),
+        // a v3 join proves nothing itself: the hello that opened the sealed link did (D36)
+        (4, relay_frames::join_frame(&[3], &p, &cursors, None, None)),
         (
-            4,
+            5,
             relay_frames::hello_frame(1, 15_000, "epoch-1", &cursors, &[]),
         ),
         (
-            5,
+            6,
             relay_frames::hello_frame(1, 15_000, "epoch-1", &cursors, &floor),
         ),
         (
-            6,
+            7,
             relay_frames::error_frame("version", "this relay speaks 2"),
         ),
         (
-            7,
+            8,
             relay_frames::error_frame("unproven", "the join was not signed by the key it names"),
         ),
-        (8, relay_frames::ka_frame()),
-        (9, relay_frames::ack_frame("evt-1", 3)),
+        (
+            9,
+            relay_frames::error_frame("handshake", "a frame in the clear on a sealed link"),
+        ),
         (
             10,
+            relay_frames::error_frame(
+                "impostor",
+                "the join names a key other than the one that opened this link",
+            ),
+        ),
+        (11, relay_frames::ka_frame()),
+        (12, relay_frames::ack_frame("evt-1", 3)),
+        (
+            13,
             relay_frames::page_frame(&[grant.to_vec()], &[event.to_vec()], true, 9, None),
         ),
         (
-            11,
+            14,
             relay_frames::page_frame(&[], &[event.to_vec()], false, 9, None),
         ),
-        (12, relay_frames::relayed_frame(&event, 4)),
-        (13, relay_frames::blob_put_frame(hash, &bytes)),
-        (14, relay_frames::blob_get_frame(hash)),
-        (15, relay_frames::blob_frame(hash, &bytes)),
-        (16, relay_frames::blob_missing_frame(hash)),
-        (17, relay_frames::challenge_frame(&nonce)),
+        (15, relay_frames::relayed_frame(&event, 4)),
+        (16, relay_frames::blob_put_frame(hash, &bytes)),
+        (17, relay_frames::blob_get_frame(hash)),
+        (18, relay_frames::blob_frame(hash, &bytes)),
+        (19, relay_frames::blob_missing_frame(hash)),
+        (20, relay_frames::challenge_frame(&nonce)),
     ];
     for (i, b) in expected {
         assert_eq!(to_hex(&b), to_hex(&wires[i]), "vector {i}");
     }
 
-    match decode_relay_frame(&wires[5]).unwrap() {
+    match decode_relay_frame(&wires[6]).unwrap() {
         RelayFrame::Hello {
             version,
             keepalive_ms,
@@ -384,7 +399,7 @@ fn relay_control_frames_are_reproduced_from_the_generator_inputs() {
         }
         f => panic!("expected join, got {}", f.kind()),
     }
-    match decode_relay_frame(&wires[10]).unwrap() {
+    match decode_relay_frame(&wires[13]).unwrap() {
         RelayFrame::Page {
             grants,
             events,

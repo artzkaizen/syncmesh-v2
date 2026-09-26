@@ -11,10 +11,11 @@ import type { Redial } from "./redial.js";
 import type { SessionHooks } from "./session.js";
 
 import { createBlobChannel } from "./blob-channel.js";
-import { RELAY_PROTOCOL_VERSIONS, joinCore, joinFrame } from "./frames.js";
+import { RELAY_PROTOCOL_VERSIONS, joinCore, joinFrame, speaksHandshake } from "./frames.js";
 import { createLinkReport } from "./link-report.js";
 import { proveJoin } from "./proof.js";
 import { createRedial } from "./redial.js";
+import { isHello, secureLink, type SecureLink } from "./secure.js";
 import { wireSession } from "./session.js";
 
 /** Why a socket this file hung up hung up, said once here and read by the close that follows. */
@@ -38,6 +39,7 @@ const stillHeard = (heard: Map<PeerId, number>): ReadonlySet<PeerId> => {
 const MUTE = "the relay stopped answering: no frame within 2.5 times its keepalive";
 const REFUSED = "the relay speaks none of the protocol versions this build offers";
 const UNSENT = "the frame did not leave the relay socket";
+const UNSECURED = "the link is not sealed yet, and nothing but a hello travels before it is";
 const UNDIALLED = "the relay could not be dialled";
 
 /** A thrown cause in words, or the sentence that stands in when it brought none. */
@@ -98,8 +100,14 @@ class RelayLink {
   /** This join asked from nothing because the interest outgrew what our cursors describe (D23). */
   private repaging = false;
   private online = false;
-  /** This session's challenge from the room; a join is sent once it has arrived, never before (D33). */
+  /** This session's challenge from the room; a v2 join is sent once it has arrived, never before (D33). */
   private nonce: Uint8Array | undefined;
+  /**
+   * This session's sealed link (D36), from the room's hello on. Everything this device sends after
+   * its own hello goes through it, and everything it hears is opened by it; a join is sent once the
+   * session exists, never before. Absent on a room that challenges instead.
+   */
+  private link: SecureLink | undefined;
   private deadline: ReturnType<typeof setTimeout> | undefined;
   private keepaliveMs: number | undefined;
   private unsubscribe: Unsubscribe[] = [];
@@ -146,8 +154,15 @@ class RelayLink {
   }
 
   private sendSafe(frame: Uint8Array): void {
+    const out = this.link === undefined ? frame : this.link.seal(frame);
+    if (out === undefined) {
+      // on a sealed link nothing leaves in the clear: what was asked for before the handshake is
+      // said to have been dropped, and the join after the handshake re-requests what it covered
+      this.report.dropped(UNSECURED);
+      return;
+    }
     try {
-      this.live?.send(frame);
+      this.live?.send(out);
     } catch (cause) {
       // the frame did not leave; the reconnect's fresh join re-requests everything it covered
       this.report.dropped(reasonOf(cause, UNSENT));
@@ -186,26 +201,98 @@ class RelayLink {
   }
 
   /**
-   * Joins the room, signing the challenge it sent (D33). Nothing is sent before that challenge:
-   * a join a room cannot verify is one it refuses, and sending it anyway would only earn a hang-up.
-   * A re-join on the same socket — the holdback's `rejoin` — signs the same challenge again over its
-   * new cursors, which is what the proof covering the body is for.
+   * Joins the room. On a sealed link (D36) the join is sent once the handshake is done and proves
+   * nothing itself: the hello already proved this key, and the room holds the join to that name.
+   * On a challenging room (D33) it signs the challenge, and nothing is sent before that challenge
+   * has arrived: a join a room cannot verify is one it refuses, and sending it anyway would only
+   * earn a hang-up. A re-join on the same socket — the holdback's `rejoin` — goes the same way
+   * over its new cursors.
    */
   join(): void {
-    if (this.ctx === undefined || this.nonce === undefined) return;
+    if (this.ctx === undefined) return;
     const { identity, grants } = this.ctx;
-    const cursors = this.askFrom(this.ctx);
-    const core = joinCore(this.versions, identity.peerId, cursors, this.options.interest);
-    this.sendSafe(
-      joinFrame(
-        this.versions,
-        identity.peerId,
-        cursors,
-        this.options.interest,
-        proveJoin(identity, this.nonce, core),
-      ),
-    );
+    if (this.link !== undefined) {
+      if (this.link.session() === undefined) return;
+      const cursors = this.askFrom(this.ctx);
+      this.sendSafe(joinFrame(this.versions, identity.peerId, cursors, this.options.interest));
+    } else {
+      if (this.nonce === undefined) return;
+      const cursors = this.askFrom(this.ctx);
+      const core = joinCore(this.versions, identity.peerId, cursors, this.options.interest);
+      this.sendSafe(
+        joinFrame(
+          this.versions,
+          identity.peerId,
+          cursors,
+          this.options.interest,
+          proveJoin(identity, this.nonce, core),
+        ),
+      );
+    }
     for (const wire of grants.allWires()) this.sendSafe(grantFrame(wire));
+  }
+
+  /**
+   * The relay refused this build's protocol, in one of its two voices: a typed `version` error,
+   * or a first frame this build was told not to answer. Permanent — no reconnect loop against it.
+   */
+  private refused(): void {
+    this.report.refused(REFUSED);
+    this.fatal = true;
+    this.hangUp(REFUSED);
+  }
+
+  /**
+   * Raw socket bytes to the frames the session reads (D36). The room's first frame says which
+   * protocol it speaks: a hello opens a sealed link, and our hello answers it in the clear before
+   * anything else; a CBOR frame is a challenging room, whose frames arrive as they are.
+   */
+  private inbound(raw: Uint8Array, deliver: (frame: Uint8Array) => void): void {
+    if (this.ctx === undefined) return;
+    if (this.link === undefined) {
+      if (!isHello(raw)) {
+        deliver(raw);
+        return;
+      }
+      if (!speaksHandshake(this.versions)) {
+        this.refused();
+        return;
+      }
+      const link = secureLink(this.ctx.identity);
+      const opened = link.receive(raw);
+      if (opened.isErr()) {
+        this.hangUp(opened.error.message);
+        return;
+      }
+      this.link = link;
+      // our hello answers the room's, in the clear; it is the last thing that travels so
+      if (link.hello !== undefined) {
+        try {
+          this.live?.send(link.hello);
+        } catch (cause) {
+          this.report.dropped(reasonOf(cause, UNSENT));
+          return;
+        }
+      }
+      this.join();
+      return;
+    }
+    const opened = this.link.receive(raw);
+    if (opened.isErr()) {
+      this.hangUp(opened.error.message);
+      return;
+    }
+    if (opened.value !== undefined) deliver(opened.value);
+  }
+
+  /** The dial as the session sees it: frames already opened, hellos already answered. */
+  private plain(dialed: RelayDial): RelayDial {
+    return {
+      send: dialed.send,
+      onFrame: (cb) => dialed.onFrame((raw) => this.inbound(raw, cb)),
+      onClose: dialed.onClose,
+      close: dialed.close,
+    };
   }
 
   /**
@@ -237,11 +324,17 @@ class RelayLink {
     this.live = dialed;
     this.keepaliveMs = undefined;
     this.nonce = undefined;
+    this.link = undefined;
     const hooks: SessionHooks = {
       sendSafe: (frame) => this.sendSafe(frame),
       rearm: () => this.rearm(),
       rejoin: () => this.join(),
       onChallenge: (nonce) => {
+        // a challenge is a v2 room; a build offering only the sealed link has nothing to sign it with
+        if (!this.versions.includes(2)) {
+          this.refused();
+          return;
+        }
         this.nonce = nonce;
         this.join();
       },
@@ -270,7 +363,7 @@ class RelayLink {
     if (this.options.interest !== undefined)
       Object.assign(hooks, { interest: this.options.interest });
     Object.assign(hooks, { repaging: () => this.repaging });
-    const offs = wireSession(this.ctx, dialed, hooks);
+    const offs = wireSession(this.ctx, this.plain(dialed), hooks);
     const offClose = dialed.onClose(() => {
       this.report.closed();
       clearTimeout(this.deadline);
@@ -286,7 +379,7 @@ class RelayLink {
       this.redial.again();
     });
     this.unsubscribe = [...offs, offClose];
-    // no join here: the room speaks first, and `onChallenge` answers it
+    // no join here: the room speaks first, and its hello or its challenge is what gets answered
   }
 
   /**

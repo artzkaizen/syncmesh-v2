@@ -9,6 +9,7 @@ import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
 import { parsePartitionKey } from "@syncmesh/kernel";
 import {
+  RELAY_PROTOCOL_VERSIONS,
   ackFrame,
   blobFrame,
   blobGetFrame,
@@ -60,6 +61,13 @@ export function relayVectors() {
       wireHex: v.joinHex,
     })),
     {
+      description:
+        "join, v3: on a sealed link, no proof — the hello that opened the link proved the key (D36); the link itself is handshake-vectors.json",
+      kind: "join",
+      tag: 8,
+      wireHex: bytesToHex(joinFrame([3], PEER, CURSORS)),
+    },
+    {
       description: "hello, the selected version and an empty retention floor",
       kind: "hello",
       tag: 9,
@@ -82,6 +90,21 @@ export function relayVectors() {
       kind: "error",
       tag: 10,
       wireHex: bytesToHex(errorFrame("unproven", "the join was not signed by the key it names")),
+    },
+    {
+      description: "error, the typed link refusal: a frame in the clear on a sealed link (D36)",
+      kind: "error",
+      tag: 10,
+      wireHex: bytesToHex(errorFrame("handshake", "a frame in the clear on a sealed link")),
+    },
+    {
+      description:
+        "error, the typed seat refusal: a join naming a key the hello did not prove (D36)",
+      kind: "error",
+      tag: 10,
+      wireHex: bytesToHex(
+        errorFrame("impostor", "the join names a key other than the one that opened this link"),
+      ),
     },
     { description: "ka", kind: "ka", tag: 11, wireHex: bytesToHex(kaFrame()) },
     { description: "ack", kind: "ack", tag: 12, wireHex: bytesToHex(ackFrame("evt-1", 3)) },
@@ -118,13 +141,14 @@ export function relayVectors() {
       wireHex: bytesToHex(blobMissingFrame(HASH)),
     },
     {
-      description: "challenge, the room's first frame on a socket (D33)",
+      description:
+        "challenge, a v2 room's first frame on a socket (D33); a v3 room sends a hello instead",
       kind: "challenge",
       tag: 19,
       wireHex: bytesToHex(challengeFrame(NONCE)),
     },
   ];
-  return { protocolVersions: [2], vectors: cases };
+  return { protocolVersions: [...RELAY_PROTOCOL_VERSIONS], vectors: cases };
 }
 
 if (import.meta.main) {
