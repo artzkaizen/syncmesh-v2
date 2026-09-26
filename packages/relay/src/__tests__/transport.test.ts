@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { RelayDial } from "../transport.js";
 
-import { helloFrame } from "../frames.js";
+import { challengeFrame, helloFrame } from "../frames.js";
 import { relayTransport } from "../transport.js";
 import { bodyOf, dialTo, openRoom, peer, tick, write } from "./fixtures.js";
 
@@ -90,6 +90,8 @@ describe("relayTransport", () => {
         },
         onFrame: (cb): Unsubscribe => {
           frames.add(cb);
+          // the room speaks first (D33): a challenge, which the transport answers with its join
+          queueMicrotask(() => cb(challengeFrame(new Uint8Array(32))));
           return () => void frames.delete(cb);
         },
         onClose: (cb): Unsubscribe => {

@@ -1,7 +1,7 @@
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
 import { parsePartitionKey } from "@syncmesh/kernel";
-import { bytesToHex, decodeCbor, encodeCbor, hexToBytes } from "@syncmesh/wire";
+import { bytesToHex, createIdentity, decodeCbor, encodeCbor, hexToBytes } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import {
@@ -11,15 +11,18 @@ import {
   blobGetFrame,
   blobMissingFrame,
   blobPutFrame,
+  challengeFrame,
   decodeRelayFrame,
   errorFrame,
   helloFrame,
+  joinCore,
   joinFrame,
   kaFrame,
   pageFrame,
   relayedFrame,
   selectVersion,
 } from "../frames.js";
+import { proveJoin } from "../proof.js";
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- test fixtures */
 const PEER = bytesToHex(Uint8Array.from({ length: 32 }, (_, i) => i)) as PeerId;
@@ -31,6 +34,20 @@ const GRANT = Uint8Array.of(0xa1, 0xb2, 0xc3);
 const EVENT = Uint8Array.of(0x01, 0x02, 0x03, 0x04);
 const BYTES = Uint8Array.of(0xde, 0xad, 0xbe, 0xef);
 const HASH = "b3:0102";
+const NONCE = Uint8Array.from({ length: 32 }, (_, i) => i);
+/** A device from a fixed seed, so its Ed25519 proof is the same bytes every run. */
+const DEVICE = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 200 + i)).unwrap();
+/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- a sequence is a branded integer; documented literal */
+const DEVICE_CURSORS = new Map([[DEVICE.peerId, 7 as SeqNum]]);
+/* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
+const SIGNED_JOIN = () =>
+  joinFrame(
+    [2],
+    DEVICE.peerId,
+    DEVICE_CURSORS,
+    undefined,
+    proveJoin(DEVICE, NONCE, joinCore([2], DEVICE.peerId, DEVICE_CURSORS)),
+  );
 
 /**
  * D14's vector, byte-frozen. These are the v1 relay control frames as this build emits them, and
@@ -56,6 +73,13 @@ const VECTORS = [
     wire: () => joinFrame([1, 2], PEER, CURSORS, { partitions: [ACME] }),
     wireHex:
       "85088201025820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f81825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f07781b7b22706172746974696f6e73223a5b226f72673a61636d65225d7d",
+  },
+  {
+    description: "join, v2: the named key's proof over the challenge and the join's own core (D33)",
+    tag: 8,
+    wire: SIGNED_JOIN,
+    wireHex:
+      "86088102582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b8182582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b07605840ae788665912217f773f988b7876cfa98ba1a01de6892b4598d97ce161c933b0321fe0112f8275ba73f8cf2bb47f8e30eeb71013c757c4781b6758e555b40e209",
   },
   {
     description: "hello, the selected version and an empty retention floor",
@@ -121,6 +145,12 @@ const VECTORS = [
     wire: () => blobMissingFrame(HASH),
     wireHex: "82126762333a30313032",
   },
+  {
+    description: "challenge, the room's first frame on a socket (D33)",
+    tag: 19,
+    wire: () => challengeFrame(NONCE),
+    wireHex: "82135820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  },
 ] as const;
 
 describe("the relay's v1 control frames (D14)", () => {
@@ -138,7 +168,7 @@ describe("the relay's v1 control frames (D14)", () => {
     }
   });
 
-  test("the tag space is the one the vector pins, with no gaps below 19", () => {
+  test("the tag space is the one the vector pins, with no gaps below 20", () => {
     const tags = new Map<number, string>();
     for (const vector of VECTORS) {
       const parts = decodeCbor(hexToBytes(vector.wireHex).unwrap()).unwrap();
@@ -146,8 +176,25 @@ describe("the relay's v1 control frames (D14)", () => {
       tags.set(vector.tag, vector.description);
     }
     expect([...tags.keys()].sort((a, b) => a - b)).toEqual([
-      8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+      8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
     ]);
+  });
+});
+
+describe("a v2 join decodes to the body its proof covers", () => {
+  test("the decoded core is the sender's `joinCore`, byte for byte, and the proof rides beside it", () => {
+    const decoded = decodeRelayFrame(SIGNED_JOIN()).unwrap();
+    if (decoded.kind !== "join") throw new Error("expected a join");
+    expect(bytesToHex(decoded.core)).toBe(bytesToHex(joinCore([2], DEVICE.peerId, DEVICE_CURSORS)));
+    expect(decoded.proof).toHaveLength(64);
+    expect(String(decoded.peerId)).toBe(String(DEVICE.peerId));
+  });
+
+  test("a v1 join — five elements, no proof — still decodes, with no proof and the same core rule", () => {
+    const decoded = decodeRelayFrame(joinFrame([1], PEER, CURSORS)).unwrap();
+    if (decoded.kind !== "join") throw new Error("expected a join");
+    expect(decoded.proof).toBeUndefined();
+    expect(bytesToHex(decoded.core)).toBe(bytesToHex(joinCore([1], PEER, CURSORS)));
   });
 });
 
@@ -167,7 +214,7 @@ describe("the vector is additive", () => {
   });
 
   test("a tag this build does not know decodes as `unknown`, never as an error", () => {
-    for (const tag of [19, 20, 99, 4096]) {
+    for (const tag of [20, 21, 99, 4096]) {
       const decoded = decodeRelayFrame(encodeCbor([tag, "whatever a v2 puts here", 7]));
       expect(decoded.unwrap().kind).toBe("unknown");
     }
@@ -177,7 +224,7 @@ describe("the vector is additive", () => {
     const before = VECTORS.map(
       (v) => decodeRelayFrame(hexToBytes(v.wireHex).unwrap()).unwrap().kind,
     );
-    decodeRelayFrame(encodeCbor([19, 1, 2, 3]));
+    decodeRelayFrame(encodeCbor([20, 1, 2, 3]));
     const after = VECTORS.map(
       (v) => decodeRelayFrame(hexToBytes(v.wireHex).unwrap()).unwrap().kind,
     );
@@ -197,8 +244,9 @@ describe("selectVersion", () => {
     expect(selectVersion([1], [])).toBeUndefined();
   });
 
-  test("this build speaks 1, and offers it by default", () => {
-    expect([...RELAY_PROTOCOL_VERSIONS]).toEqual([1]);
-    expect(selectVersion([1])).toBe(1);
+  test("this build speaks 2 — the proven join (D33) — and offers only that by default", () => {
+    expect([...RELAY_PROTOCOL_VERSIONS]).toEqual([2]);
+    expect(selectVersion([2])).toBe(2);
+    expect(selectVersion([1])).toBeUndefined();
   });
 });

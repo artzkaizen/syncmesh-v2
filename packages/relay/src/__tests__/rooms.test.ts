@@ -13,7 +13,7 @@ import { openRelayRoom } from "../room.js";
 import { createRoomTable } from "../rooms.js";
 import { startRelay } from "../serve.js";
 import { relayTransport } from "../transport.js";
-import { bodyOf, fakeSocket, mintFor, peer, tick, until, write } from "./fixtures.js";
+import { bodyOf, fakeSocket, mintFor, peer, signedJoin, tick, until, write } from "./fixtures.js";
 
 const IDLE = Temporal.Duration.from({ milliseconds: 40 });
 
@@ -33,6 +33,7 @@ const tableOver = (store: EventStore, overrides: Partial<RelayRoomOptions> = {})
           epoch: "epoch-1",
           keepaliveMs: 60_000,
           grants,
+          versions: [1, 2], // this file scripts bare joins to get at eviction; the proof is join-proof.test's
           ...overrides,
         })
       ).unwrap();
@@ -58,9 +59,12 @@ describe("idle-room eviction", () => {
       const seen: string[] = [];
       dialed.onFrame((bytes) => {
         const frame = decodeRelayFrame(bytes);
-        if (frame.isOk() && frame.value.kind === "hello") seen.push(frame.value.epoch);
+        if (frame.isErr()) return;
+        // the room speaks first (D33): answer its challenge with a signed join
+        if (frame.value.kind === "challenge")
+          dialed.send(signedJoin(a.identity, frame.value.nonce));
+        if (frame.value.kind === "hello") seen.push(frame.value.epoch);
       });
-      dialed.send(joinFrame([1], a.identity.peerId, new Map()));
       await until(() => seen.length > 0, 2000);
       dialed.close();
       return seen[0];

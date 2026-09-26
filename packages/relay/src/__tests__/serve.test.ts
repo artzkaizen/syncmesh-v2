@@ -1,3 +1,5 @@
+import type { Identity } from "@syncmesh/wire";
+
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,20 +8,21 @@ import { join as joinPath } from "node:path";
 import type { RelayFrame } from "../frames.js";
 
 import { webSocketDial } from "../dial.js";
-import { decodeRelayFrame, joinFrame } from "../frames.js";
+import { decodeRelayFrame } from "../frames.js";
 import { startRelay } from "../serve.js";
 import { relayTransport } from "../transport.js";
-import { bodyOf, peer, tick, write } from "./fixtures.js";
+import { bodyOf, peer, signedJoin, tick, write } from "./fixtures.js";
 
-/** Raw client: dial, join, and collect decoded frames — for looking at hellos and pages directly. */
-const probe = async (url: string, peerId: Parameters<typeof joinFrame>[1]) => {
+/** Raw client: dial, answer the challenge with a signed join, and collect decoded frames — for looking at hellos and pages directly. */
+const probe = async (url: string, identity: Identity) => {
   const dial = await webSocketDial(url)();
   const frames: RelayFrame[] = [];
   dial.onFrame((bytes) => {
     const decoded = decodeRelayFrame(bytes);
-    if (decoded.isOk()) frames.push(decoded.value);
+    if (decoded.isErr()) return;
+    frames.push(decoded.value);
+    if (decoded.value.kind === "challenge") dial.send(signedJoin(identity, decoded.value.nonce));
   });
-  dial.send(joinFrame([1], peerId, new Map()));
   return { frames, close: () => dial.close() };
 };
 
@@ -49,7 +52,7 @@ describe("startRelay — D09-A, the embedded host", () => {
       await ta.stop();
       await tb.stop();
 
-      const before = await probe(relay.url, a.identity.peerId);
+      const before = await probe(relay.url, a.identity);
       await tick(80);
       const epochBefore = before.frames.find((f) => f.kind === "hello");
       const held = before.frames
@@ -61,7 +64,7 @@ describe("startRelay — D09-A, the embedded host", () => {
 
       // the same file, a fresh process: same lineage, nothing re-sent to a caught-up joiner
       const revived = await startRelay(0, { dataDir, keepaliveMs: 60_000, pageSize: 2 });
-      const after = await probe(revived.url, a.identity.peerId);
+      const after = await probe(revived.url, a.identity);
       await tick(80);
       const epochAfter = after.frames.find((f) => f.kind === "hello");
       expect(epochAfter?.kind === "hello" && epochAfter.epoch).toBe(
@@ -75,7 +78,7 @@ describe("startRelay — D09-A, the embedded host", () => {
       await caught.whenReady();
       await tick(80);
       void pages;
-      const check = await probe(revived.url, b.identity.peerId);
+      const check = await probe(revived.url, b.identity);
       await tick(80);
       // b's empty-cursor probe still sees all 4 — the restart lost nothing
       const total = check.frames
@@ -133,7 +136,7 @@ describe("startRelay — D09-A, the embedded host", () => {
       await tick(80);
       await ta.stop();
 
-      const other = await probe(`${relay.url}/notes`, peer(80, "acct_b").identity.peerId);
+      const other = await probe(`${relay.url}/notes`, peer(80, "acct_b").identity);
       await tick(80);
       const total = other.frames
         .filter((f): f is Extract<RelayFrame, { kind: "page" }> => f.kind === "page")

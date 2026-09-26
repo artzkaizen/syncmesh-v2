@@ -5,7 +5,9 @@ import { tableDigests } from "@syncmesh/engine";
 import { seed } from "@syncmesh/kernel/test-fixtures";
 import {
   decodeRelayFrame,
+  joinCore,
   joinFrame,
+  proveJoin,
   relayTransport,
   startRelay,
   webSocketDial,
@@ -94,15 +96,20 @@ const converge = async (dial: Dial) => {
   return { both, digests };
 };
 
-/** A raw client: join with empty cursors and keep what comes back — hellos and pages, undigested. */
+/** A raw client: answer the challenge with a signed join from empty cursors and keep what comes back — hellos and pages, undigested. */
 const probe = async (dial: Dial, n: number) => {
   const dialed = await dial();
+  const identity = createIdentity(seed(n)).unwrap();
   const frames: RelayFrame[] = [];
   dialed.onFrame((bytes) => {
     const decoded = decodeRelayFrame(bytes);
-    if (decoded.isOk()) frames.push(decoded.value);
+    if (decoded.isErr()) return;
+    frames.push(decoded.value);
+    if (decoded.value.kind !== "challenge") return;
+    const core = joinCore([2], identity.peerId, new Map());
+    const proof = proveJoin(identity, decoded.value.nonce, core);
+    dialed.send(joinFrame([2], identity.peerId, new Map(), undefined, proof));
   });
-  dialed.send(joinFrame([1], createIdentity(seed(n)).unwrap().peerId, new Map()));
   await until(() => Promise.resolve(frames.some((f) => f.kind === "hello")));
   dialed.close();
   const hello = frames.find((f) => f.kind === "hello");

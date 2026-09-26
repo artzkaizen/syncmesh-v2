@@ -3,7 +3,7 @@ import type { RelayDial, RelayFrame, RelayTelemetry } from "@syncmesh/relay";
 
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { decodeRelayFrame, joinFrame } from "@syncmesh/relay";
+import { decodeRelayFrame, joinCore, joinFrame, proveJoin } from "@syncmesh/relay";
 import { Temporal } from "@syncmesh/temporal";
 import { grantFrame } from "@syncmesh/transport";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -49,7 +49,12 @@ const grantsPagedTo = async (object: ReturnType<typeof durableRelay>, n: number)
 
 describe("what an eviction may not lose", () => {
   test("the grants a still-connected device handed the room survive the wake", async () => {
-    const object = durableRelay(new Database(":memory:"), { keepaliveMs: 60_000 });
+    // left open to v1: this test scripts bare joins to get at the grant cache, and what a v2
+    // join proves is the relay's own suite's business
+    const object = durableRelay(new Database(":memory:"), {
+      keepaliveMs: 60_000,
+      versions: [1, 2],
+    });
 
     // one long-lived device: join, then its grant — the order `relayTransport.join()` sends them
     const a = identity(40);
@@ -71,7 +76,8 @@ describe("what an eviction may not lose", () => {
     const reported: TelemetryEvent[] = [];
     const object = durableRelay(new Database(":memory:"), {
       keepaliveMs: 60_000,
-      limits: { maxFrameBytes: 64 },
+      // room for a signed join (138 bytes, D33) and not for the 200-byte grant below
+      limits: { maxFrameBytes: 160 },
       versions: [2],
       onTelemetry: (event) => void reported.push(event),
     });
@@ -86,7 +92,14 @@ describe("what an eviction may not lose", () => {
     // and a frame over the ceiling is refused before it is decoded
     const wide = object.dial();
     const seen = collect(wide);
-    wide.send(joinFrame([2], identity(42).peerId, new Map()));
+    await tick(60);
+    const challenge = seen.find((f) => f.kind === "challenge");
+    if (challenge?.kind !== "challenge") throw new Error("the room sent no challenge");
+    const who = identity(42);
+    const core = joinCore([2], who.peerId, new Map());
+    wide.send(
+      joinFrame([2], who.peerId, new Map(), undefined, proveJoin(who, challenge.nonce, core)),
+    );
     await tick(60);
     wide.send(grantFrame(new Uint8Array(200)));
     await tick(60);

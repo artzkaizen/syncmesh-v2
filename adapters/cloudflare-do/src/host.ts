@@ -52,7 +52,7 @@ export interface RelayDurableHostOptions {
 
 /** The three callbacks of a hibernating WebSocket object, already wired to a room. */
 export interface RelayDurableHost {
-  /** Accepts the socket for hibernation; its connection is built when its `join` frame lands. */
+  /** Accepts the socket for hibernation and binds it to the room, whose challenge is its first frame (D33). */
   readonly join: (ws: DurableWebSocket) => void;
   readonly message: (ws: DurableWebSocket, data: ArrayBuffer | string) => Promise<void>;
   readonly leave: (ws: DurableWebSocket) => void;
@@ -155,18 +155,30 @@ export function relayDurableHost(
     const room = await (opening ??= open());
     for (const ws of ctx.getWebSockets()) {
       if (live.has(ws)) continue;
-      const conn = room.connect(durableRelaySocket(ws));
+      const kept = decodeResume(ws.deserializeAttachment());
+      // a socket challenged before the object slept is handed the same challenge back, so the
+      // join it is about to send — or the one replayed below — still verifies (D33); one never
+      // challenged is challenged now, and the nonce is kept before anything else is
+      const conn = room.connect(
+        durableRelaySocket(ws),
+        kept.nonce === undefined ? {} : { challenge: kept.nonce },
+      );
       live.set(ws, conn);
-      const script = decodeResume(ws.deserializeAttachment());
-      resume.restored(ws, script);
+      if (kept.nonce === undefined) resume.challenged(ws, conn.challenge);
+      else resume.restored(ws, kept);
       // a socket with nothing kept never joined, or joined with a script too wide to keep; either
       // way it is left bound and silent, and its next frame gets the room's `join-first` refusal
-      if (ws !== waking) for (const frame of script) conn.receive(frame);
+      if (ws !== waking) for (const frame of kept.frames) conn.receive(frame);
     }
   };
 
   return {
-    join: (ws) => ctx.acceptWebSocket(ws),
+    // bound at once rather than on the first frame: the room speaks first now, and a socket that
+    // is never told the challenge never sends a join the room would accept
+    join: (ws) => {
+      ctx.acceptWebSocket(ws);
+      void restore(undefined);
+    },
     message: async (ws, data) => {
       // the protocol is binary; a text frame is noise
       if (!(data instanceof ArrayBuffer)) return;

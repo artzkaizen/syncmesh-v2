@@ -35,6 +35,8 @@ const dialInto =
     if (!network.carrying()) throw new Error("no route to the relay: the network is down");
     const frames = new Set<(frame: Uint8Array) => void>();
     const closes = new Set<() => void>();
+    /** What the room sent before the transport subscribed — its challenge (D33) — kept as a socket would. */
+    const early: Uint8Array[] = [];
     /** This socket's own liveness. False for ever once a severance has passed under it. */
     const carrying = network.linked();
     let open = true;
@@ -55,7 +57,10 @@ const dialInto =
           return "sent"; // it left; it simply never arrives, which is the whole point
         }
         const bytes = Uint8Array.from(frame);
-        queueMicrotask(() => frames.forEach((cb) => cb(bytes)));
+        queueMicrotask(() => {
+          if (frames.size === 0) early.push(bytes);
+          else frames.forEach((cb) => cb(bytes));
+        });
         return "sent";
       },
       close: () => hangUp(),
@@ -76,6 +81,7 @@ const dialInto =
       },
       onFrame: (cb) => {
         frames.add(cb);
+        for (const bytes of early.splice(0)) cb(bytes);
         return () => void frames.delete(cb);
       },
       onClose: (cb) => {

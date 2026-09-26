@@ -1,5 +1,5 @@
 import type { Interest } from "@syncmesh/engine";
-import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
+import type { PeerId, SyncEvent } from "@syncmesh/kernel";
 
 import { matchesInterest, timed } from "@syncmesh/engine";
 import { cursorsFrame, presenceFrame } from "@syncmesh/transport";
@@ -11,19 +11,37 @@ import type { RelaySocket } from "./sender.js";
 import type { Conversation, RoomState } from "./state.js";
 
 import { sendCatchUp } from "./catchup.js";
-import { decodeRelayFrame, errorFrame, helloFrame, selectVersion } from "./frames.js";
+import {
+  challengeFrame,
+  decodeRelayFrame,
+  errorFrame,
+  helloFrame,
+  selectVersion,
+} from "./frames.js";
 import { ingestEvent, serveBlob } from "./ingest.js";
 import { createBudget } from "./limits.js";
+import { newChallenge, verifyJoinProof } from "./proof.js";
 import { BELOW_FLOOR, belowFloor } from "./retention.js";
 import { createSender } from "./sender.js";
 
 /** What the host wires each accepted socket to. */
 export interface RelayConnection {
+  /** The challenge this socket was sent, for a host that must hand it back after a sleep (D33). */
+  readonly challenge: Uint8Array;
   readonly receive: (bytes: Uint8Array) => void;
   /** The host's socket buffer drained: flush this connection's backlog in order. */
   readonly drain: () => void;
   /** The socket is gone; the host must call this exactly once. */
   readonly closed: () => void;
+}
+
+/** How a host opens a connection it is picking back up rather than starting. */
+export interface ConnectionOptions {
+  /**
+   * The challenge this socket already holds — a hibernating host waking a socket it challenged
+   * before it slept. Given, no new one is sent, because the client is about to answer the old one.
+   */
+  readonly challenge?: Uint8Array;
 }
 
 /** Which bucket a frame spends from: bulk is priced apart from everything else. */
@@ -40,8 +58,19 @@ const trafficOf = (kind: RelayFrame["kind"]): TrafficClass =>
  * nothing it cannot recover: its reconnect re-joins from its own cursors, and the room's dedup
  * makes the re-push a no-op.
  */
-export function createConnection(socket: RelaySocket, room: RoomState): RelayConnection {
+export function createConnection(
+  socket: RelaySocket,
+  room: RoomState,
+  options: ConnectionOptions = {},
+): RelayConnection {
   const sender = createSender(socket, room.maxBacklog, room.limits.maxBacklogBytes);
+  /**
+   * The room speaks first (D33): a fresh nonce for this socket, and the join has to sign it. Sent
+   * before anything is known about the far end, because it is what makes the first thing the far
+   * end says about itself checkable.
+   */
+  const challenge = options.challenge ?? newChallenge();
+  if (options.challenge === undefined) sender.send(challengeFrame(challenge));
   let me: PeerId | undefined;
   /**
    * A fatal refusal ends the conversation here and not only on the socket. `close()` starts a
@@ -72,15 +101,31 @@ export function createConnection(socket: RelaySocket, room: RoomState): RelayCon
   const wants = (event: SyncEvent): boolean =>
     interest === undefined || matchesInterest(interest, event);
 
-  const onJoin = (
-    versions: readonly number[],
-    peer: PeerId,
-    theirs: ReadonlyMap<PeerId, SeqNum>,
-    wanted: Interest | undefined,
-  ): void => {
+  const onJoin = (frame: Extract<RelayFrame, { kind: "join" }>): void => {
+    const { versions, peerId: peer, cursors: theirs, interest: wanted } = frame;
     const selected = selectVersion(versions, room.versions);
     if (selected === undefined) {
       refuse("version", `this relay speaks ${room.versions.join(", ")}`, true);
+      return;
+    }
+    /**
+     * The join names a key; from v2 it proves it (D33). Checked before the seat is taken — a name
+     * nobody proved must not be able to close the socket of the device that owns it — and checked
+     * even where a room still admits v1: an operator who lists 1 has chosen to take a bare join
+     * on trust, not to take a wrong signature for one.
+     */
+    const proven =
+      frame.proof === undefined
+        ? undefined
+        : verifyJoinProof(peer, challenge, frame.core, frame.proof);
+    if (proven === false || (proven === undefined && selected >= 2)) {
+      refuse(
+        "unproven",
+        proven === false
+          ? "the join was not signed by the key it names"
+          : "a v2 join signs the room's challenge with the key it names",
+        true,
+      );
       return;
     }
     /**
@@ -150,6 +195,7 @@ export function createConnection(socket: RelaySocket, room: RoomState): RelayCon
   };
 
   return {
+    challenge,
     receive: (bytes) => {
       if (closed) return;
       // the cheapest refusal there is: a frame over the cap is never decoded, only measured
@@ -177,7 +223,7 @@ export function createConnection(socket: RelaySocket, room: RoomState): RelayCon
         return;
       }
       if (frame.kind === "join") {
-        onJoin(frame.versions, frame.peerId, frame.cursors, frame.interest);
+        onJoin(frame);
         return;
       }
       if (me === undefined) {

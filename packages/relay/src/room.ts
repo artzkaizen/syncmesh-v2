@@ -15,7 +15,7 @@ import { Temporal } from "@syncmesh/temporal";
 import { createPresenceStore } from "@syncmesh/transport";
 import { isRelayable } from "@syncmesh/wire";
 
-import type { RelayConnection } from "./connection.js";
+import type { ConnectionOptions, RelayConnection } from "./connection.js";
 import type { Fanout } from "./fanout.js";
 import type { GrantCache } from "./grant-cache.js";
 import type { RelayLimits } from "./limits.js";
@@ -30,7 +30,7 @@ import { createGrantCache } from "./grant-cache.js";
 import { DEFAULT_LIMITS } from "./limits.js";
 import { roomRetention } from "./retention.js";
 
-export type { RelayConnection } from "./connection.js";
+export type { ConnectionOptions, RelayConnection } from "./connection.js";
 
 export interface RelayRoomOptions {
   readonly name: string;
@@ -91,7 +91,7 @@ export interface RelayRoomOptions {
  * relay can drop traffic but cannot forge it.
  */
 export interface RelayRoom {
-  readonly connect: (socket: RelaySocket) => RelayConnection;
+  readonly connect: (socket: RelaySocket, options?: ConnectionOptions) => RelayConnection;
   /**
    * Entries this room's log holds, counted up from what was there when it opened. A retention
    * sweep does not move it back down, so a restart after one starts lower than the number the
@@ -236,7 +236,7 @@ export async function openRelayRoom(
     });
 
   return Result.ok({
-    connect: (socket) => createConnection(socket, state),
+    connect: (socket, options) => createConnection(socket, state, options),
     offset: () => offset,
     clients: () => clients.size,
     floor: retention.floor,

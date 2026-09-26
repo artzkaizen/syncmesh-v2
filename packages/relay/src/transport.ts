@@ -11,8 +11,9 @@ import type { Redial } from "./redial.js";
 import type { SessionHooks } from "./session.js";
 
 import { createBlobChannel } from "./blob-channel.js";
-import { RELAY_PROTOCOL_VERSIONS, joinFrame } from "./frames.js";
+import { RELAY_PROTOCOL_VERSIONS, joinCore, joinFrame } from "./frames.js";
 import { createLinkReport } from "./link-report.js";
+import { proveJoin } from "./proof.js";
 import { createRedial } from "./redial.js";
 import { wireSession } from "./session.js";
 
@@ -97,6 +98,8 @@ class RelayLink {
   /** This join asked from nothing because the interest outgrew what our cursors describe (D23). */
   private repaging = false;
   private online = false;
+  /** This session's challenge from the room; a join is sent once it has arrived, never before (D33). */
+  private nonce: Uint8Array | undefined;
   private deadline: ReturnType<typeof setTimeout> | undefined;
   private keepaliveMs: number | undefined;
   private unsubscribe: Unsubscribe[] = [];
@@ -182,17 +185,27 @@ class RelayLink {
     return this.repaging ? new Map() : coverage.synced;
   }
 
+  /**
+   * Joins the room, signing the challenge it sent (D33). Nothing is sent before that challenge:
+   * a join a room cannot verify is one it refuses, and sending it anyway would only earn a hang-up.
+   * A re-join on the same socket — the holdback's `rejoin` — signs the same challenge again over its
+   * new cursors, which is what the proof covering the body is for.
+   */
   join(): void {
-    if (this.ctx === undefined) return;
+    if (this.ctx === undefined || this.nonce === undefined) return;
+    const { identity, grants } = this.ctx;
+    const cursors = this.askFrom(this.ctx);
+    const core = joinCore(this.versions, identity.peerId, cursors, this.options.interest);
     this.sendSafe(
       joinFrame(
         this.versions,
-        this.ctx.identity.peerId,
-        this.askFrom(this.ctx),
+        identity.peerId,
+        cursors,
         this.options.interest,
+        proveJoin(identity, this.nonce, core),
       ),
     );
-    for (const wire of this.ctx.grants.allWires()) this.sendSafe(grantFrame(wire));
+    for (const wire of grants.allWires()) this.sendSafe(grantFrame(wire));
   }
 
   /**
@@ -223,10 +236,15 @@ class RelayLink {
     if (this.ctx === undefined) return;
     this.live = dialed;
     this.keepaliveMs = undefined;
+    this.nonce = undefined;
     const hooks: SessionHooks = {
       sendSafe: (frame) => this.sendSafe(frame),
       rearm: () => this.rearm(),
       rejoin: () => this.join(),
+      onChallenge: (nonce) => {
+        this.nonce = nonce;
+        this.join();
+      },
       onHello: (announcedMs) => {
         this.report.proven();
         this.keepaliveMs = announcedMs;
@@ -268,7 +286,7 @@ class RelayLink {
       this.redial.again();
     });
     this.unsubscribe = [...offs, offClose];
-    this.join();
+    // no join here: the room speaks first, and `onChallenge` answers it
   }
 
   /**

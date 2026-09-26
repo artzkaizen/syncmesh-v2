@@ -25,6 +25,8 @@ export interface SessionHooks {
   readonly rearm: () => void;
   /** Holdback overflow: a fresh join re-pages from our contiguous position. */
   readonly rejoin: () => void;
+  /** The room's challenge, first on every socket: what the join this session sends has to sign (D33). */
+  readonly onChallenge: (nonce: Uint8Array) => void;
   readonly onHello: (keepaliveMs: number) => void;
   /** The relay's typed version refusal is permanent — no reconnect loop against it. */
   readonly onVersionRefused: () => void;
@@ -207,7 +209,8 @@ export function wireSession(
       return;
     }
     const frame = decoded.value;
-    if (frame.kind === "hello") {
+    if (frame.kind === "challenge") hooks.onChallenge(frame.nonce);
+    else if (frame.kind === "hello") {
       relayCursors = frame.cursors;
       hooks.onHello(frame.keepaliveMs);
     } else if (frame.kind === "page") {

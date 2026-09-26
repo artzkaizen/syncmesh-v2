@@ -1,4 +1,4 @@
-import type { EngineOptions } from "@syncmesh/engine";
+import type { Cursors, EngineOptions, Interest } from "@syncmesh/engine";
 import type { TransportContext } from "@syncmesh/transport";
 
 import { createEngine, createMemoryEventStore, createValidator } from "@syncmesh/engine";
@@ -30,7 +30,8 @@ import type { RelayRoom, RelayRoomOptions } from "../room.js";
 import type { RelaySocket, SendOutcome } from "../sender.js";
 import type { RelayDial } from "../transport.js";
 
-import { decodeRelayFrame } from "../frames.js";
+import { decodeRelayFrame, joinCore, joinFrame } from "../frames.js";
+import { proveJoin } from "../proof.js";
 import { openRelayRoom } from "../room.js";
 
 const org = partition("org", { roles: ladder("member") });
@@ -170,7 +171,13 @@ export const fakeSocket = () => {
   };
 };
 
-/** A room on a fresh memory log; every option a test cares about is an override. */
+/**
+ * A room on a fresh memory log; every option a test cares about is an override.
+ *
+ * Left open to v1 on purpose: most of this suite scripts a bare `joinFrame([1], …)` at a fake
+ * socket to get at a room's behaviour *after* the join, and a proof there would be noise. What
+ * a v2 join has to prove is `join-proof.test.ts`'s business, and it opens its rooms at `[2]`.
+ */
 export const openRoom = async (overrides: Partial<RelayRoomOptions> = {}) =>
   (
     await openRelayRoom({
@@ -180,9 +187,33 @@ export const openRoom = async (overrides: Partial<RelayRoomOptions> = {}) =>
       keepaliveMs: 60_000,
       pageSize: 2,
       maxBacklog: 8,
+      versions: [1, 2],
       ...overrides,
     })
   ).unwrap();
+
+/** A v2 join: the identity signs the room's challenge over the join's own body (D33). */
+export const signedJoin = (
+  identity: Identity,
+  nonce: Uint8Array,
+  cursors: Cursors = new Map(),
+  interest?: Interest,
+  versions: readonly number[] = [2],
+): Uint8Array =>
+  joinFrame(
+    versions,
+    identity.peerId,
+    cursors,
+    interest,
+    proveJoin(identity, nonce, joinCore(versions, identity.peerId, cursors, interest)),
+  );
+
+/** The challenge a scripted socket was sent — the room's first frame, or a throw naming its absence. */
+export const challengeOf = (s: ReturnType<typeof fakeSocket>): Uint8Array => {
+  const challenge = s.ofKind("challenge")[0];
+  if (challenge === undefined) throw new Error("the room sent no challenge");
+  return challenge.nonce;
+};
 
 /**
  * An in-process dial onto a live room: frames both ways, async delivery, a closable end.
@@ -208,12 +239,19 @@ export const dialTo = (room: RelayRoom) => {
         for (const cb of closes) cb();
       });
     };
+    // what the room sent before anyone was listening waits, as bytes on a real socket do: the
+    // room speaks first now (D33), and a dial's caller subscribes only after `dial()` returns
+    const backlog: Uint8Array[] = [];
     const socket: RelaySocket = {
       send: (frame) => {
         if (!open) return "dropped";
         // a frame accepted before close still delivers: TCP flushes what send() took
         const bytes = Uint8Array.from(frame);
         queueMicrotask(() => {
+          if (frames.size === 0) {
+            backlog.push(bytes);
+            return;
+          }
           for (const cb of frames) cb(bytes);
         });
         return "sent";
@@ -228,6 +266,7 @@ export const dialTo = (room: RelayRoom) => {
       },
       onFrame: (cb) => {
         frames.add(cb);
+        for (const bytes of backlog.splice(0)) cb(bytes);
         return () => void frames.delete(cb);
       },
       onClose: (cb) => {

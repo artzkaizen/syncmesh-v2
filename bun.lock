@@ -408,6 +408,7 @@
         "@syncmesh/config": "workspace:*",
         "@syncmesh/engine": "workspace:*",
         "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/relay": "workspace:*",
         "@syncmesh/result": "workspace:*",
         "@syncmesh/temporal": "workspace:*",
         "@syncmesh/wire": "workspace:*",

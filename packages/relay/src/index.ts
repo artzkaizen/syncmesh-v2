@@ -1,5 +1,6 @@
 export type { RelayFrame } from "./frames.js";
 export {
+  CHALLENGE_BYTES,
   RELAY_PROTOCOL_VERSIONS,
   selectVersion,
   ackFrame,
@@ -7,21 +8,24 @@ export {
   blobGetFrame,
   blobMissingFrame,
   blobPutFrame,
+  challengeFrame,
   decodeRelayFrame,
   errorFrame,
   helloFrame,
+  joinCore,
   joinFrame,
   kaFrame,
   pageFrame,
   relayedFrame,
 } from "./frames.js";
+export { NONCE_BYTES, newChallenge, proveJoin, verifyJoinProof } from "./proof.js";
 export type { RelaySocket, SendOutcome, Sender } from "./sender.js";
 export { createSender } from "./sender.js";
 export type { Fanout, FanoutLink } from "./fanout.js";
 export { memoryFanout } from "./fanout.js";
 export type { PostgresFanoutOptions, PostgresListener } from "./postgres-fanout.js";
 export { postgresFanout } from "./postgres-fanout.js";
-export type { RelayConnection, RelayRoom, RelayRoomOptions } from "./room.js";
+export type { ConnectionOptions, RelayConnection, RelayRoom, RelayRoomOptions } from "./room.js";
 export type { Client, Conversation, RoomState } from "./state.js";
 export { createConnection } from "./connection.js";
 export type { Budget, RateLimit, RelayLimits, TrafficClass } from "./limits.js";

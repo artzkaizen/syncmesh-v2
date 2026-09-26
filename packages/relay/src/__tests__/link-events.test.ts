@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { RelayDial } from "../transport.js";
 
-import { helloFrame } from "../frames.js";
+import { challengeFrame, helloFrame } from "../frames.js";
 import { relayTransport } from "../transport.js";
 import { dialTo, openRoom, peer, tick } from "./fixtures.js";
 
@@ -98,6 +98,7 @@ describe("relayTransport link events", () => {
         },
         onFrame: (cb) => {
           frames.add(cb);
+          queueMicrotask(() => cb(challengeFrame(new Uint8Array(32)))); // the room speaks first (D33)
           return () => void frames.delete(cb);
         },
         onClose: (cb) => {
@@ -133,6 +134,7 @@ describe("relayTransport link events", () => {
         }),
       onFrame: (cb) => {
         frames.add(cb);
+        queueMicrotask(() => cb(challengeFrame(new Uint8Array(32)))); // the room speaks first (D33)
         return () => void frames.delete(cb);
       },
       onClose: () => () => undefined,

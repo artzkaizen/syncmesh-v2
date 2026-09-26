@@ -15,6 +15,8 @@ import { ACME, GLOBEX, bodyOf, peer, tick, write } from "./fixtures.js";
 const dialTo = (room: RelayRoom) => (): RelayDial => {
   const frames = new Set<(frame: Uint8Array) => void>();
   const closes = new Set<() => void>();
+  /** What the room sent before the transport subscribed — its challenge (D33) — kept as a socket would. */
+  const early: Uint8Array[] = [];
   let open = true;
   const hangUp = (): void => {
     if (!open) return;
@@ -26,7 +28,10 @@ const dialTo = (room: RelayRoom) => (): RelayDial => {
     send: (frame) => {
       if (!open) return "dropped";
       const bytes = Uint8Array.from(frame);
-      queueMicrotask(() => frames.forEach((cb) => cb(bytes)));
+      queueMicrotask(() => {
+        if (frames.size === 0) early.push(bytes);
+        else frames.forEach((cb) => cb(bytes));
+      });
       return "sent";
     },
     close: () => hangUp(),
@@ -39,6 +44,7 @@ const dialTo = (room: RelayRoom) => (): RelayDial => {
     },
     onFrame: (cb) => {
       frames.add(cb);
+      for (const bytes of early.splice(0)) cb(bytes);
       return () => void frames.delete(cb);
     },
     onClose: (cb) => {

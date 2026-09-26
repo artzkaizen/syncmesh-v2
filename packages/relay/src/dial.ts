@@ -4,6 +4,11 @@ import type { RelayDial } from "./transport.js";
  * A `dial` over the platform WebSocket (browser, Bun, Node ≥ 21): resolves once open,
  * rejects if the socket errors first. Frames are binary; `send` throws unless the socket
  * is open, which is the honest-send rule reconnect depends on.
+ *
+ * The room speaks first (D33): its challenge can be on the wire before the caller of `dial()`
+ * has subscribed, and a runtime may dispatch `open` and that first `message` without yielding
+ * between them. What arrives before anyone is listening is kept and handed to the first
+ * subscriber, as the bytes would have sat in the socket's own buffer.
  */
 export const webSocketDial = (url: string) => (): Promise<RelayDial> =>
   new Promise((resolve, reject) => {
@@ -11,6 +16,7 @@ export const webSocketDial = (url: string) => (): Promise<RelayDial> =>
     ws.binaryType = "arraybuffer";
     const frames = new Set<(frame: Uint8Array) => void>();
     const closes = new Set<() => void>();
+    const early: Uint8Array[] = [];
     let opened = false;
     ws.onopen = () => {
       opened = true;
@@ -26,6 +32,7 @@ export const webSocketDial = (url: string) => (): Promise<RelayDial> =>
         },
         onFrame: (cb) => {
           frames.add(cb);
+          for (const bytes of early.splice(0)) cb(bytes);
           return () => void frames.delete(cb);
         },
         onClose: (cb) => {
@@ -41,7 +48,8 @@ export const webSocketDial = (url: string) => (): Promise<RelayDial> =>
     ws.onmessage = (message) => {
       if (message.data instanceof ArrayBuffer) {
         const bytes = new Uint8Array(message.data);
-        for (const cb of frames) cb(bytes);
+        if (frames.size === 0) early.push(bytes);
+        else for (const cb of frames) cb(bytes);
       }
     };
     ws.onclose = () => {
