@@ -1,9 +1,14 @@
-import type { Change, FoldableChange, Row } from "@syncmesh/kernel";
+import type { AdapterId, Change, ColumnName, FoldableChange, Row } from "@syncmesh/kernel";
 
 import { Result } from "@syncmesh/result";
 import { checkRow, type Table, type WireRow } from "@syncmesh/schema";
 
-import { SchemaViolation, UnknownChangeKind, type ValidationError } from "./errors.js";
+import {
+  DocColumnWrite,
+  SchemaViolation,
+  UnknownChangeKind,
+  type ValidationError,
+} from "./errors.js";
 
 /** The change kinds this build can fold. A kernel that grows one grows this set with it. */
 const FOLDABLE = new Set(["insert", "update", "delete", "doc"]);
@@ -34,11 +39,21 @@ export const unfoldableKind = (change: Change): string | undefined =>
 const declared = (table: Table, cells: Row): WireRow =>
   Object.fromEntries([...cells].filter(([name]) => String(name) in table.columns));
 
+/** A table's doc columns and the adapter each declares; empty for a table without any. */
+export type TableDocs = ReadonlyMap<ColumnName, AdapterId>;
+
+const NO_DOCS: TableDocs = new Map();
+
 /**
- * A change against the table it names: a kind this build can fold, and cells that pass the
- * columns it knows about.
+ * A change against the table it names: a kind this build can fold, cells that pass the columns it
+ * knows about, and no row write to a document column. A doc change's own rules are `checkDoc`'s,
+ * since they need the event it sits in.
  */
-export function checkColumns(table: Table, change: Change): Result<void, ValidationError> {
+export function checkColumns(
+  table: Table,
+  change: Change,
+  docs: TableDocs = NO_DOCS,
+): Result<void, ValidationError> {
   if (!foldable(change)) {
     const kind = unfoldableKind(change) ?? change.kind;
     return Result.err(
@@ -49,10 +64,20 @@ export function checkColumns(table: Table, change: Change): Result<void, Validat
       }),
     );
   }
-  // a doc change carries no cells: what it may name is the document rules' to say
   if (change.kind === "delete" || change.kind === "doc") return Result.ok(undefined);
-  const values = declared(table, change.kind === "insert" ? change.row : change.patch);
-  const r = checkRow(table, values, change.kind);
+  const cells = change.kind === "insert" ? change.row : change.patch;
+  for (const column of cells.keys()) {
+    if (!docs.has(column)) continue;
+    return Result.err(
+      new DocColumnWrite({
+        table: String(table.name),
+        key: String(change.key),
+        column: String(column),
+        message: `${String(table.name)}.${String(column)} is a document: it is opened and edited, never written as a value`,
+      }),
+    );
+  }
+  const r = checkRow(table, declared(table, cells), change.kind);
   return r.isErr()
     ? Result.err(
         new SchemaViolation({

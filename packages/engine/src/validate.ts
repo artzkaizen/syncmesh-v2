@@ -1,4 +1,4 @@
-import type { PartitionKey } from "@syncmesh/kernel";
+import type { DocColumns, PartitionKey } from "@syncmesh/kernel";
 import type { Change, Hlc, PeerId, Row, RowKey, SyncEvent, TableName } from "@syncmesh/kernel";
 import type { TableState } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
@@ -19,6 +19,7 @@ import { checkLink } from "./accounts.js";
 import { checkAuthor } from "./author.js";
 import { RESERVED_AUTHOR_CLASS, UNPINNED_RESERVED, RESERVED_TABLE_NAMES } from "./authority.js";
 import { checkColumns } from "./columns.js";
+import { checkCells, policyPatch, refuseReservedDoc } from "./doc-rules.js";
 import {
   LocalOnly,
   PartitionNotGranted,
@@ -50,6 +51,8 @@ export interface ValidatorSchema {
  */
 export type ProbeEvent = Pick<SyncEvent, "peerId" | "partition" | "changes" | "local"> & {
   readonly hlc?: Hlc;
+  /** Absent on a probe, which is not numbered yet; what a genesis's lineage is derived from. */
+  readonly seqNum?: SyncEvent["seqNum"];
 };
 
 /** The row a change applies to, as the device holds it; `undefined` when absent. */
@@ -88,6 +91,12 @@ export interface ValidatorOptions {
    * strictly more and never less.
    */
   readonly accounts?: boolean;
+  /**
+   * The mesh's document columns and the adapter each declares (RFC-0023 §4.1). Shipped config on
+   * every peer, like `authority`: a doc change is judged against it, never against which adapters
+   * a device happens to hold, so the verdict is the same with the adapter and without.
+   */
+  readonly docs?: DocColumns;
 }
 
 export interface Validator {
@@ -106,7 +115,7 @@ export function createValidator(options: ValidatorOptions): Validator {
     const verdict = checkAuthor(event, before, options);
     if (verdict.isErr()) return verdict;
     const author = verdict.value;
-    for (const change of event.changes) {
+    for (const [index, change] of event.changes.entries()) {
       const table = String(change.table);
       if (RESERVED_TABLE_NAMES.has(table)) {
         const reservedVerdict = checkReserved(table, change, event, reserved, authority);
@@ -124,8 +133,9 @@ export function createValidator(options: ValidatorOptions): Validator {
           new WrongPartition({ table, expected: held, message: `the row belongs to ${held}` }),
         );
       }
-      const columns = checkColumns(entry.table, change);
-      if (columns.isErr()) return columns;
+      const cells = checkCells(entry.table, options.docs, change, event, index);
+      if (cells.isErr()) return cells;
+      if (cells.value === "settled") continue;
       const rules = syncedRules(entry.table.name, event.partition, before.row) ?? entry.allow;
       const policy = checkPolicy(entry, rules, change, author, before.row, schema);
       if (policy.isErr()) return policy;
@@ -238,6 +248,7 @@ function checkReserved(
       ? checkLink(change, event)
       : checkAuthored(table, event, authority);
   if (authored.isErr()) return authored;
+  if (change.kind === "doc") return refuseReservedDoc(table, change);
   return checkColumns(definition, change);
 }
 
@@ -268,11 +279,10 @@ function checkPolicy(
   schema: ValidatorSchema,
 ): Result<void, ValidationError> {
   if (author === undefined || rules === undefined) return Result.ok(undefined);
-  const op: Operation = change.kind;
+  const op: Operation = change.kind === "doc" ? "update" : change.kind;
   const rule = resolveAllow(rules, op);
   const row = before(change.table, change.key);
-  const patch =
-    change.kind === "insert" ? change.row : change.kind === "update" ? change.patch : undefined;
+  const patch = policyPatch(change);
   const allowed = evaluate(
     rule,
     policyContext(author, schema.rolesFor(entry.partition), row, patch),

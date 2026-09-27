@@ -48,6 +48,8 @@ export type { LinkOptions } from "./link.js";
 export {
   CannotRevert,
   CompactionRefused,
+  DocChangeRefused,
+  DocColumnWrite,
   EmptyMutation,
   GrantDeviceMismatch,
   GrantStale,
@@ -63,8 +65,17 @@ export {
   UnknownTable,
   WrongPartition,
 } from "./errors.js";
+export type { TableDocs } from "./columns.js";
 export { checkColumns, foldable, unfoldableKind } from "./columns.js";
-export type { EngineError, LinkRung, MutateError, RevertError, ValidationError } from "./errors.js";
+export { checkCells, checkDoc } from "./doc-rules.js";
+export type {
+  DocRung,
+  EngineError,
+  LinkRung,
+  MutateError,
+  RevertError,
+  ValidationError,
+} from "./errors.js";
 export type { Hub, Unsubscribe } from "./listeners.js";
 export { createHub } from "./listeners.js";
 export type { Ahead, Coverage, Cursors, SyncDoc, SyncMessage, SyncState } from "./sync.js";

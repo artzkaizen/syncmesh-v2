@@ -103,6 +103,39 @@ export class SchemaViolation extends TaggedError("SchemaViolation")<{
   cause: RowError;
   message: string;
 }> {}
+/**
+ * Which rule a doc change broke (RFC-0023 §10, §11). Every one is decided from the schema and the
+ * event alone, so every peer at one schema version parks the same set.
+ *
+ * - `column` — the column is declared, but not as a document.
+ * - `adapter` — the change names another adapter than the column declares.
+ * - `lineage` — a genesis that names no lineage, one that is not the derivation of where it sits,
+ *   or two geneses for one document in one event.
+ * - `local` — a doc change in a local event; documents live on synced rows.
+ */
+export type DocRung = "column" | "adapter" | "lineage" | "local";
+
+/** A doc change nobody should fold, and the rung that says why. */
+export class DocChangeRefused extends TaggedError("DocChangeRefused")<{
+  table: string;
+  key: string;
+  column: string;
+  rung: DocRung;
+  message: string;
+}> {}
+
+/**
+ * A row write naming a document column (RFC-0023 §6.4). The column's cell is the lineage cell and
+ * its SQL column the materialised snapshot; neither is a value a row write may set, and letting one
+ * through would have a row rule join a cell only the lineage rule may.
+ */
+export class DocColumnWrite extends TaggedError("DocColumnWrite")<{
+  table: string;
+  key: string;
+  column: string;
+  message: string;
+}> {}
+
 export class PolicyDenied extends TaggedError("PolicyDenied")<{
   table: string;
   key: string;
@@ -124,4 +157,6 @@ export type ValidationError =
   | LocalOnly
   | ReadOnlyPartition
   | SchemaViolation
+  | DocChangeRefused
+  | DocColumnWrite
   | PolicyDenied;
