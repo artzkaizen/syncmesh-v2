@@ -11,8 +11,27 @@ export type { Cell, CellValue, ColumnName, JsonObject, JsonValue, RowRecord } fr
 export { canonicalJson, isJsonArray, isVisible, jsonObject } from "./record.js";
 export type { Change, FoldableChange, Row, RowChange, RowKey, TableName } from "./change.js";
 export { isRowChange } from "./change.js";
-export type { ActionId, AdapterId, DocBlobRef, DocChange, DocUpdate, LineageId } from "./doc.js";
-export { InvalidDocId, parseActionId, parseAdapterId, parseLineageId } from "./doc.js";
+export type {
+  ActionId,
+  AdapterId,
+  CellRule,
+  DocBlobRef,
+  DocChange,
+  DocColumns,
+  DocUpdate,
+  LineageId,
+} from "./doc.js";
+export {
+  InvalidDocId,
+  cellRules,
+  lineageCell,
+  lineageOf,
+  lineageRule,
+  parseActionId,
+  parseAdapterId,
+  parseLineageId,
+  withDocColumns,
+} from "./doc.js";
 export type { MergeSpec, Strategy, StrategyName } from "./strategy.js";
 export { compareValue, strategies } from "./strategy.js";
 export type { KeyedRecord, State, TableState } from "./state.js";

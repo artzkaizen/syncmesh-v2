@@ -2,11 +2,12 @@ import type { FoldableChange, Row, RowKey, TableName } from "./change.js";
 import type { PartitionKey } from "./partition.js";
 import type { Cell, ColumnName, RowRecord } from "./record.js";
 import type { State, TableState } from "./state.js";
+import type { MergeSpec } from "./strategy.js";
 
+import { cellRules, lineageCell, type CellRule, type DocChange } from "./doc.js";
 import { compareStamp, type Stamp } from "./stamp.js";
-import { strategies, type MergeSpec, type StrategyName } from "./strategy.js";
 
-type ColumnStrategies = ReadonlyMap<ColumnName, StrategyName> | undefined;
+type ColumnStrategies = ReadonlyMap<ColumnName, CellRule> | undefined;
 
 const later = (a: Stamp | undefined, b: Stamp | undefined): Stamp | undefined => {
   if (a === undefined) return b;
@@ -23,6 +24,10 @@ const EMPTY_RECORD: RowRecord = { cells: new Map() };
  * `deleteStamp` by stamp — so any order and any replay of the same changes converge.
  * `insert` and `update` both merge column by column (RFC-0014 §1); `merge` names the
  * strategy per column, defaulting to `lww`. `partition` is the event's; a row keeps the first it saw.
+ *
+ * A `doc` change touches state only when it is a genesis, and then only its column's lineage cell
+ * (RFC-0023 §5.3); every other doc change leaves the state as it was, because its update belongs
+ * to the doc log and not to any cell.
  */
 export function applyChange(
   state: State,
@@ -31,8 +36,7 @@ export function applyChange(
   merge?: MergeSpec,
   partition?: PartitionKey,
 ): State {
-  // a document update is the doc log's, never a cell's (RFC-0023 §6.4)
-  if (change.kind === "doc") return state;
+  if (change.kind === "doc") return applyGenesis(state, change, stamp, merge, partition);
   const base: RowRecord =
     change.kind === "delete"
       ? { cells: new Map(), deleteStamp: stamp }
@@ -42,6 +46,28 @@ export function applyChange(
         };
   const incoming = partition === undefined ? base : { ...base, partition };
   return mergeRecord(state, change.table, change.key, incoming, merge);
+}
+
+/**
+ * A genesis joins its lineage into the column's cell, and nothing else: no `writeStamp`, because a
+ * document edit is not a row write and must not resurrect a deleted row or outlive a later delete.
+ * The column is joined by the lineage rule whatever `merge` says, since the change itself is what
+ * names the column as a document.
+ */
+function applyGenesis(
+  state: State,
+  change: DocChange,
+  stamp: Stamp,
+  merge: MergeSpec | undefined,
+  partition: PartitionKey | undefined,
+): State {
+  if (change.genesis !== true || change.lineage === undefined) return state;
+  const cells = new Map([[change.column, lineageCell(change.lineage, stamp)]]);
+  const rules = new Map<ColumnName, CellRule>(merge?.get(change.table) ?? []);
+  rules.set(change.column, "lineage");
+  const spec = new Map(merge ?? []).set(change.table, rules);
+  const incoming = partition === undefined ? { cells } : { cells, partition };
+  return mergeRecord(state, change.table, change.key, incoming, spec);
 }
 
 /** Joins a whole record — a snapshot row — into the state; equivalent to folding its cells and stamps as changes. */
@@ -82,7 +108,7 @@ function mergeCells(
   const cells = new Map(current);
   for (const [column, candidate] of incoming) {
     const existing = cells.get(column);
-    const strategy = strategies[columnStrategies?.get(column) ?? "lww"];
+    const strategy = cellRules[columnStrategies?.get(column) ?? "lww"];
     // Joining a first arrival with itself is the identity for `lww`, `max` and `min`, and puts a
     // `counter` or `set` cell into its normal form. Storing it raw instead would leave the shape a
     // sender happened to send in the state, and two peers would digest the same set differently.

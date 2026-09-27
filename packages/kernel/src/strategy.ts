@@ -1,4 +1,5 @@
 import type { TableName } from "./change.js";
+import type { CellRule } from "./doc.js";
 import type { Ordering } from "./primitives.js";
 import type { Cell, CellValue, ColumnName, JsonValue } from "./record.js";
 
@@ -15,7 +16,11 @@ export type Strategy = (incoming: Cell, current: Cell) => Cell;
  */
 export type StrategyName = "lww" | "max" | "min";
 
-export type MergeSpec = ReadonlyMap<TableName, ReadonlyMap<ColumnName, StrategyName>>;
+/**
+ * Per table, the rule each column's cells join by; absent is `lww`. A doc column's is always the
+ * lineage rule, put there by `withDocColumns` and never declared by an app.
+ */
+export type MergeSpec = ReadonlyMap<TableName, ReadonlyMap<ColumnName, CellRule>>;
 
 /* oxlint-disable anti-slop/no-runtime-typeof -- CellValue is a closed union; typeof is its discriminant */
 const rank = (v: CellValue) =>
