@@ -5,6 +5,7 @@ import { Result, TaggedError, panic } from "@syncmesh/result";
 import type { AnyColumn, ColumnDef, Value } from "./column.js";
 
 import { KindMismatch, checkValue, scalarText, type ColumnError } from "./check.js";
+import { checkMerge } from "./column.js";
 import { parseColumnName, parseTableName } from "./names.js";
 
 export type Columns = Readonly<Record<string, AnyColumn>>;
@@ -65,20 +66,6 @@ function checkPrimaryKey(table: string, key: string, def: ColumnDef | undefined)
   if (def.nullable) panic(`${table}.${key}: a primary key cannot be nullable`);
 }
 
-/**
- * `merge` is only meaningful where the values order (D25).
- *
- * `max` and `min` pick the larger or smaller of the two cells, which needs an order the app
- * agrees with — a number has one, and "the larger of two booleans" is a question with no answer.
- * The types already refuse it; this is the runtime backstop for a cast that got past them.
- */
-function checkStrategy(name: string, key: string, def: ColumnDef): void {
-  if (def.merge === undefined || def.merge === "lww") return;
-  if (def.kind !== "integer" && def.kind !== "float") {
-    panic(`${name}.${key}: merge "${def.merge}" needs a numeric column`);
-  }
-}
-
 export function table<const C extends Columns>(name: string, columns: C): Table<C, PrimaryKey<C>> {
   const parsedName = parseTableName(name);
   if (parsedName.isErr()) panic(`${name}: ${parsedName.error.message}`);
@@ -94,7 +81,7 @@ export function table<const C extends Columns>(name: string, columns: C): Table<
     .map(([k]) => k);
   if (primaryKeys.length !== 1)
     panic(`${name}: expected exactly one primaryKey column, found ${primaryKeys.length}`);
-  for (const [key, c] of Object.entries(columns)) checkStrategy(name, key, c.def);
+  for (const [key, c] of Object.entries(columns)) checkMerge(`${name}.${key}`, c.def);
   // SAFETY: exactly one primary key was found above and it is a key of C
   const primaryKey = primaryKeys[0] as PrimaryKey<C>;
   checkPrimaryKey(name, String(primaryKey), columns[primaryKey]?.def);
