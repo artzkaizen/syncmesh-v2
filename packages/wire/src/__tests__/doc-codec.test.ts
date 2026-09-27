@@ -78,7 +78,7 @@ describe("a doc change on the wire (tag 6)", () => {
     const core = asMap(decodeCbor(encodeEventCore(event([doc({ lineage: LINEAGE })]))).unwrap());
     const change = asMap(asArray(core.get(7))[0]);
     expect(change.get(0)).toBe(6);
-    expect([...asMap(change.get(3)).keys()].sort()).toEqual([
+    expect([...asMap(change.get(3)).keys()].sort((a, b) => Number(a) - Number(b))).toEqual([
       DOC.column,
       DOC.adapter,
       DOC.lineage,
