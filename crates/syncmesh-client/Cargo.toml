@@ -1,0 +1,40 @@
+[package]
+name = "syncmesh-client"
+version = "0.0.0"
+edition = "2024"
+description = "A syncmesh device in Rust (D37): the engine, its stores, the relay link and the ephemeral tier, sans-IO, with an optional tokio WebSocket driver"
+license = "MIT"
+publish = false
+
+[features]
+default = []
+sqlite = ["dep:rusqlite"]
+tokio = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util"]
+
+[dependencies]
+syncmesh-core = { path = "../syncmesh-core" }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+getrandom = "0.3"
+rusqlite = { version = "0.37", features = ["bundled"], optional = true }
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "time",
+  "net",
+], optional = true }
+tokio-tungstenite = { version = "0.26", optional = true }
+futures-util = { version = "0.3", optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "time",
+  "net",
+  "process",
+  "io-util",
+] }

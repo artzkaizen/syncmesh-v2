@@ -7,6 +7,9 @@ use crate::hex::to_hex;
 
 pub const SEED_LENGTH: usize = 32;
 
+/// Clone is cheap and deliberate: a device holds one key and hands it to its engine, its link and
+/// its presence tier, which is three owners of one secret, not three secrets.
+#[derive(Clone)]
 pub struct Identity {
     signing: SigningKey,
     peer_id: PeerId,
