@@ -1,6 +1,28 @@
 export type { EventStore, SeqScope, StoredEvent } from "./store.js";
 export { StoreFailure, createMemoryEventStore } from "./store.js";
-export type { Tx } from "./tx.js";
+export type { DocWrite, Tx } from "./tx.js";
+export type {
+  DocAddress,
+  DocAppend,
+  DocEntryState,
+  DocHead,
+  DocHeadMode,
+  DocLogEntry,
+  DocStore,
+  LiveStates,
+} from "./doc-log.js";
+export {
+  LIVE_STATES,
+  createMemoryDocStore,
+  docAppends,
+  docChangeDigest,
+  docDigests,
+  docKey,
+  inTail,
+  liveStates,
+  nextState,
+  recordDocs,
+} from "./doc-log.js";
 export type {
   Engine,
   AtomicStores,

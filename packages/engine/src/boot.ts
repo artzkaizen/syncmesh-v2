@@ -1,6 +1,6 @@
 import type { State } from "@syncmesh/kernel";
 
-import { emptyState } from "@syncmesh/kernel";
+import { emptyState, getRecord, lineageOf } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
 import type { Engine, EngineOptions } from "./engine.js";
@@ -8,6 +8,7 @@ import type { StateStore } from "./state-store.js";
 import type { EventStore, StoreFailure, StoredEvent } from "./store.js";
 import type { Coverage } from "./sync.js";
 
+import { docAppends, recordDocs } from "./doc-log.js";
 import { createEngine } from "./engine.js";
 import { StateCorrupt, allRows, rowsFor, writeKeysOf } from "./state-store.js";
 import { EMPTY_COVERAGE } from "./sync.js";
@@ -54,6 +55,23 @@ export function openEngine(
           : rowsFor(engine.state(), writeKeysOf(replay.map((entry) => entry.event)));
       if (cached === undefined || rows.length > 0)
         yield* Result.await(stateStore.commit(rows, engine.coverage()));
+    }
+    // the replayed tail's doc entries, for a log that was appended outside a transaction with them;
+    // a re-append of what is already there is a no-op, so an atomic store loses nothing by it
+    const { docStore, docAdapters } = options;
+    if (docStore !== undefined) {
+      const state = engine.state();
+      yield* Result.await(
+        recordDocs(
+          docStore,
+          docAppends(
+            replay.map((entry) => entry.event),
+            (adapter) => docAdapters?.has(adapter) === true,
+          ),
+          (doc) => lineageOf(getRecord(state, doc.table, doc.key), doc.column),
+          (adapter) => docAdapters?.has(adapter) === true,
+        ),
+      );
     }
     return Result.ok(engine);
   });

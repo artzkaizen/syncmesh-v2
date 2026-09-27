@@ -8,6 +8,8 @@ import { Result } from "@syncmesh/result";
 import type { Boot } from "./boot.js";
 import type { Ack, CompactError, CompactOptions, Compaction } from "./compaction.js";
 import type { RepairApi } from "./digest.js";
+import type { DocStore } from "./doc-log.js";
+import type { DocApi, DocEngineOptions } from "./doc-path.js";
 import type { FeedApi } from "./feed.js";
 import type { Interest } from "./interest.js";
 import type { Parked, UnknownHandling } from "./quarantine.js";
@@ -23,6 +25,7 @@ import { admit } from "./admit.js";
 import { compactLog } from "./compaction.js";
 import { trackCoverage } from "./coverage.js";
 import { createRepairPath } from "./digest.js";
+import { createDocPath } from "./doc-path.js";
 import {
   ListenerFailure,
   type ValidationError,
@@ -31,7 +34,7 @@ import {
   type RevertError,
 } from "./errors.js";
 import { createFeedPath, trackFeeds } from "./feed.js";
-import { createFoldPath } from "./fold.js";
+import { createFoldPath, type FoldBatch } from "./fold.js";
 import { eventsWanted } from "./interest.js";
 import { createHub, type Unsubscribe } from "./listeners.js";
 import { createQuarantine, retryQuarantined, withRetry } from "./quarantine.js";
@@ -47,16 +50,7 @@ export interface MutateOptions extends Pick<SyncEvent, "action" | "undoOf"> {
   readonly local?: boolean;
 }
 
-/** Where a batch came from; `repair` carries no cursors (RFC-0014), `snapshot` adopts them last (RFC-0019). */
-export type FoldSource = "local" | "remote" | "boot" | "repair" | "snapshot";
-
-/** One notification per fold, however many events it covered. `writeKeys` is exact: live queries trust it. */
-export interface FoldBatch {
-  readonly source: FoldSource;
-  readonly eventCount: number;
-  readonly writeTables: ReadonlySet<TableName>;
-  readonly writeKeys: ReadonlyMap<TableName, ReadonlySet<RowKey>>;
-}
+export type { FoldBatch, FoldSource } from "./fold.js";
 
 export interface ReceiveReport {
   readonly folded: number;
@@ -71,7 +65,7 @@ export interface Quarantined {
   readonly reason: ValidationError;
 }
 
-export interface Engine extends FeedApi, RepairApi, SnapshotApi {
+export interface Engine extends FeedApi, RepairApi, SnapshotApi, DocApi {
   readonly peerId: PeerId;
   /** Records, stamps, numbers, appends, folds, then hands the event to `onOutbound` — a write is real once appended. */
   readonly mutate: (
@@ -159,7 +153,7 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi {
   readonly onTelemetry: (listener: TelemetryListener) => Unsubscribe;
 }
 
-export interface EngineOptions {
+export interface EngineOptions extends DocEngineOptions {
   readonly peerId: PeerId;
   readonly clock: HlcClock;
   readonly store: EventStore;
@@ -188,10 +182,11 @@ export interface EngineOptions {
   readonly atomic?: <T>(fn: (scoped: AtomicStores) => Promise<T>) => Promise<T>;
 }
 
-/** What a write touches inside `atomic`: the log, and the state store when there is one. */
+/** What a write touches inside `atomic`: the log, the state store and the doc log, where each exists. */
 export interface AtomicStores {
   readonly events: EventStore;
   readonly state?: StateStore;
+  readonly docs?: DocStore;
 }
 
 export function createEngine(options: EngineOptions): Engine {
@@ -199,7 +194,6 @@ export function createEngine(options: EngineOptions): Engine {
     peerId,
     clock,
     store,
-    merge,
     undoDepth = 0,
     validate,
     stateStore,
@@ -208,12 +202,17 @@ export function createEngine(options: EngineOptions): Engine {
     unknownHandling = "warn",
     quarantineLimit,
   } = options;
-  const plain: AtomicStores =
-    stateStore === undefined ? { events: store } : { events: store, state: stateStore };
-  const atomically = <T>(fn: (scoped: AtomicStores) => Promise<T>): Promise<T> =>
-    atomic === undefined ? fn(plain) : atomic((scoped) => fn(scoped));
-  const coverage = trackCoverage(boot?.coverage);
   const undo: Undo[] = [];
+  const docPath = createDocPath(options);
+  const { merge, hasAdapter, store: docStore } = docPath;
+  const plain: AtomicStores = {
+    events: store,
+    docs: docStore,
+    ...(stateStore !== undefined && { state: stateStore }),
+  };
+  const atomically = <T>(fn: (scoped: AtomicStores) => Promise<T>): Promise<T> =>
+    atomic === undefined ? fn(plain) : atomic((scoped) => fn({ docs: docStore, ...scoped }));
+  const coverage = trackCoverage(boot?.coverage);
   const errors = createHub<EngineError>();
   const report = (hook: ListenerFailure["hook"]) => (cause: unknown) =>
     errors.emit(new ListenerFailure({ hook, message: `${hook} listener threw`, cause }));
@@ -240,6 +239,7 @@ export function createEngine(options: EngineOptions): Engine {
     errors,
     atomic: atomic !== undefined,
     initial: boot?.state ?? emptyState(),
+    hasAdapter,
   });
   fold(boot?.replay ?? [], "boot");
 
@@ -254,7 +254,7 @@ export function createEngine(options: EngineOptions): Engine {
     setState,
     coverageOf: coverage.current,
     adopt: coverage.adopt,
-    persist: (batch: FoldBatch) => persist(batch, stateStore),
+    persist: (batch: FoldBatch) => persist(batch, plain),
     notify,
   };
   if (merge !== undefined) Object.assign(snapshotDeps, { merge });
@@ -263,7 +263,7 @@ export function createEngine(options: EngineOptions): Engine {
   const repair = createRepairPath({
     stateOf,
     mergeInto: (table, key, record) => setState(mergeRecord(stateOf(), table, key, record, merge)),
-    persist: (batch) => persist(batch, stateStore),
+    persist: (batch) => persist(batch, plain),
     notify,
   });
 
@@ -332,5 +332,6 @@ export function createEngine(options: EngineOptions): Engine {
     retryQuarantined: () => retryQuarantined(parked, receiveAndRetry),
     onQuarantine: quarantine.subscribe,
     onTelemetry: telemetry.subscribe,
+    ...docPath.api,
   };
 }
