@@ -4,6 +4,7 @@ import type { ColumnKind, Table } from "@syncmesh/schema";
 import type { CaptureSql, Dialect } from "./dialect.js";
 import type { SqlValue } from "./driver.js";
 
+import { POSTGRES_DOCS, POSTGRES_DOC_TABLES } from "./dialect-docs.js";
 import { columnsOf, literal, quote } from "./identifiers.js";
 
 const CHANGES = "_syncmesh_changes";
@@ -142,6 +143,7 @@ const POSTGRES_MIGRATIONS: readonly (readonly string[])[] = [
       scope TEXT NOT NULL
     )`,
   ],
+  POSTGRES_DOC_TABLES,
 ];
 
 const postgresCell = (kind: ColumnKind, cell: CellValue): SqlValue => {
@@ -214,6 +216,7 @@ export const POSTGRES: Dialect = {
       ON CONFLICT (id) DO UPDATE SET scope = excluded.scope`,
     clearScope: `DELETE FROM _syncmesh_scope`,
   },
+  docs: POSTGRES_DOCS,
   capture,
   placeholder: (position) => `$${position}`,
   cell: postgresCell,

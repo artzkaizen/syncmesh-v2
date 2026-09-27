@@ -211,7 +211,7 @@ export function createEngine(options: EngineOptions): Engine {
     ...(stateStore !== undefined && { state: stateStore }),
   };
   const atomically = <T>(fn: (scoped: AtomicStores) => Promise<T>): Promise<T> =>
-    atomic === undefined ? fn(plain) : atomic((scoped) => fn({ docs: docStore, ...scoped }));
+    atomic === undefined ? fn(plain) : atomic((scoped) => fn(docPath.within(scoped)));
   const coverage = trackCoverage(boot?.coverage);
   const errors = createHub<EngineError>();
   const report = (hook: ListenerFailure["hook"]) => (cause: unknown) =>

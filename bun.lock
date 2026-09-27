@@ -503,9 +503,16 @@
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
         "@types/bun": "catalog:",
+        "drizzle-orm": "catalog:",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
       },
+      "peerDependencies": {
+        "drizzle-orm": "^1.0.0-rc.4",
+      },
+      "optionalPeers": [
+        "drizzle-orm",
+      ],
     },
     "packages/temporal": {
       "name": "@syncmesh/temporal",

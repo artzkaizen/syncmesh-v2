@@ -18,6 +18,11 @@
       "@syncmesh/source": "./src/driver-tests/index.ts",
       "types": "./dist/driver-tests/index.d.ts",
       "default": "./dist/driver-tests/index.js"
+    },
+    "./doc-tables": {
+      "@syncmesh/source": "./src/doc-tables.ts",
+      "types": "./dist/doc-tables.d.ts",
+      "default": "./dist/doc-tables.js"
     }
   },
   "dependencies": {
@@ -33,7 +38,16 @@
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
     "@types/bun": "catalog:",
+    "drizzle-orm": "catalog:",
     "typescript": "catalog:",
     "vite-plus": "catalog:"
+  },
+  "peerDependencies": {
+    "drizzle-orm": "^1.0.0-rc.4"
+  },
+  "peerDependenciesMeta": {
+    "drizzle-orm": {
+      "optional": true
+    }
   }
 }

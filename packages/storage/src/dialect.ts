@@ -42,6 +42,25 @@ export interface StateSql {
 }
 
 /**
+ * The doc log and heads (RFC-0023 §6.2). Entry columns in `SELECT` and `INSERT` order: `author,
+ * seq, idx, tbl, key, col, lineage, hlc_ms, hlc_logical, action, undo_of, blob, size, state`.
+ */
+export interface DocSql {
+  /** Idempotent by `(author, seq, idx)`. */
+  readonly insertEntry: string;
+  readonly selectEntries: string;
+  /** One document's entries: binds `tbl, key, col`. */
+  readonly selectDocEntries: string;
+  /** Binds `state, author, seq, idx`. */
+  readonly updateState: string;
+  /** Binds `tbl, key, col, adapter, lineage, tail_count, tail_bytes`; a new head starts snapshot-less. */
+  readonly upsertHead: string;
+  readonly selectHeads: string;
+  /** `author, MIN(seq)` over the entries no snapshot covers. */
+  readonly selectUncovered: string;
+}
+
+/**
  * Change capture in one dialect (D20 §3): the table DDL, the log and its triggers, and the four
  * statements a capture runs around the app's own. The logged image is the same shape in every
  * dialect — bytes as lowercase hex, timestamps as epoch milliseconds, JSON as its text — so one
@@ -66,6 +85,7 @@ export interface Dialect {
   readonly name: SqlDialect;
   readonly events: EventSql;
   readonly state: StateSql;
+  readonly docs: DocSql;
   readonly capture: CaptureSql;
   /** The bind marker for the 1-based position — `?` or `$n`. */
   readonly placeholder: (position: number) => string;

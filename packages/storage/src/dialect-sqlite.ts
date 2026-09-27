@@ -4,6 +4,7 @@ import type { ColumnKind, Table } from "@syncmesh/schema";
 import type { CaptureSql, Dialect } from "./dialect.js";
 import type { SqlValue } from "./driver.js";
 
+import { SQLITE_DOCS, SQLITE_DOC_TABLES } from "./dialect-docs.js";
 import { columnsOf, literal, quote } from "./identifiers.js";
 
 const CHANGES = "_syncmesh_changes";
@@ -132,6 +133,7 @@ const SQLITE_MIGRATIONS: readonly (readonly string[])[] = [
       scope TEXT NOT NULL
     ) WITHOUT ROWID`,
   ],
+  SQLITE_DOC_TABLES,
 ];
 
 const sqliteCell = (kind: ColumnKind, cell: CellValue): SqlValue => {
@@ -197,6 +199,7 @@ export const SQLITE: Dialect = {
     upsertScope: `INSERT OR REPLACE INTO state_scope (id, scope) VALUES (0, ?)`,
     clearScope: `DELETE FROM state_scope`,
   },
+  docs: SQLITE_DOCS,
   capture,
   placeholder: () => "?",
   cell: sqliteCell,

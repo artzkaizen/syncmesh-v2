@@ -146,11 +146,13 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
     } satisfies EngineOptions;
     const stateStore = options.stateStore ?? owned?.state;
     if (stateStore !== undefined) Object.assign(engineOptions, { stateStore });
-    // log and state share a connection exactly when the stores are one `openStores` pair
+    // log and state share a connection exactly when the stores are one `openStores` pair; the
+    // doc log lives beside the log it indexes and commits in the same transaction (RFC-0023 §6.3)
     if (options.store === undefined && owned !== undefined)
       Object.assign(engineOptions, {
         atomic: <T>(fn: (scoped: { events: EventStore; state?: StateStore }) => Promise<T>) =>
           owned.atomic(fn),
+        docStore: owned.docs,
       });
     if (options.undoDepth !== undefined)
       Object.assign(engineOptions, { undoDepth: options.undoDepth });

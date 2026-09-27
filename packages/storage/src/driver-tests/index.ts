@@ -5,6 +5,7 @@ import type { SqlDriver } from "../driver.js";
 import { blobCases } from "./blobs.js";
 import { captureCases, captureRuleCases } from "./capture.js";
 import { compactionCases, sqliteMigrationCases } from "./compaction.js";
+import { docCases } from "./docs.js";
 import { eventCases } from "./events.js";
 import { readFilterCases } from "./read-filter.js";
 
@@ -32,6 +33,7 @@ export function storeTests(openDriver: OpenDriver): readonly SuiteCase[] {
     ...stateCases(openDriver),
     ...compactionCases(openDriver),
     ...blobCases(openDriver),
+    ...docCases(openDriver),
   ];
 }
 

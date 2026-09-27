@@ -4,6 +4,7 @@ import type { Result } from "@syncmesh/result";
 import { withDocColumns } from "@syncmesh/kernel";
 
 import type { DocHead, DocLogEntry, DocStore } from "./doc-log.js";
+import type { AtomicStores } from "./engine.js";
 import type { StoreFailure } from "./store.js";
 import type { Cursors } from "./sync.js";
 import type { Undo } from "./undo.js";
@@ -50,6 +51,13 @@ export interface DocPath {
    */
   readonly hold: () => Cursors;
   readonly api: DocApi;
+  /**
+   * The stores a transaction writes through, with the doc log this engine reads. A scope's own
+   * doc store is taken only when the engine was given one — the same database, in the same
+   * transaction; an engine keeping its doc log in memory keeps writing it there, or its reads
+   * and its writes would be two different logs.
+   */
+  readonly within: (scoped: AtomicStores) => AtomicStores;
   /** What compaction is clamped by: the doc log's uncovered entries, and {@link DocPath.hold}. */
   readonly compaction: { readonly docs: DocStore; readonly held: () => Cursors };
 }
@@ -70,6 +78,10 @@ export function createDocPath(options: DocOptions, peerId: PeerId, undo: readonl
     hasAdapter: (adapter) => docAdapters?.has(adapter) === true,
     hold,
     api: { docLog: docStore.entries, docHeads: docStore.heads },
+    within: (scoped) =>
+      options.docStore !== undefined && scoped.docs !== undefined
+        ? scoped
+        : { ...scoped, docs: docStore },
     compaction: { docs: docStore, held: hold },
   };
 }

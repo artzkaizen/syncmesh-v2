@@ -108,7 +108,7 @@ export const sqliteMigrationCases = (openDriver: OpenDriver): readonly SuiteCase
       await driver.run("ALTER TABLE events DROP COLUMN sig");
       await driver.run("PRAGMA user_version = 1");
       const migrated = (await sqlEventStore(driver)).unwrap();
-      equal(Number((await driver.all("PRAGMA user_version"))[0]?.[0]), 4, "user_version");
+      equal(Number((await driver.all("PRAGMA user_version"))[0]?.[0]), 5, "user_version");
       // the step this version added: an old database gains an empty scope, which reads as the
       // unscoped cursor it has always had (D23)
       equal((await driver.all("SELECT scope FROM state_scope")).length, 0, "no scope yet");
