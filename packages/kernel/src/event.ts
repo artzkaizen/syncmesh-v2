@@ -1,4 +1,4 @@
-import type { Brand, Change, Hlc, PeerId, Stamp } from "@syncmesh/kernel";
+import type { ActionId, Brand, Change, Hlc, PeerId, Stamp } from "@syncmesh/kernel";
 
 import { PEER_ID_HEX, parsePeerId } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
@@ -23,6 +23,13 @@ export interface SyncEvent {
   readonly procedure: Procedure;
   readonly partition?: PartitionKey;
   readonly changes: readonly Change[];
+  /**
+   * The action this event belongs to (event key 10); absent, the event is its own action. Drives
+   * history and undo only — an old build that skips it folds the event identically (RFC-0023 §5.2).
+   */
+  readonly action?: ActionId;
+  /** The action this event compensates (event key 11): an undo, and a redo is the undo of an undo. */
+  readonly undoOf?: ActionId;
   /** Never leaves this device; numbered in its own sequence namespace. */
   readonly local?: true;
 }

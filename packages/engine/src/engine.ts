@@ -41,7 +41,8 @@ import { type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
 import { createRevert, type Undo } from "./undo.js";
 import { createWritePath } from "./writes.js";
 
-export interface MutateOptions {
+/** Where a write goes, and the action it belongs to (event keys 10 and 11, RFC-0023 §5.2). */
+export interface MutateOptions extends Pick<SyncEvent, "action" | "undoOf"> {
   readonly partition?: PartitionKey;
   readonly local?: boolean;
 }

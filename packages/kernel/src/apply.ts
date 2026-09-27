@@ -31,6 +31,8 @@ export function applyChange(
   merge?: MergeSpec,
   partition?: PartitionKey,
 ): State {
+  // a document update is the doc log's, never a cell's (RFC-0023 §6.4)
+  if (change.kind === "doc") return state;
   const base: RowRecord =
     change.kind === "delete"
       ? { cells: new Map(), deleteStamp: stamp }

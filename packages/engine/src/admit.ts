@@ -85,7 +85,9 @@ const createOverlay = (
       partitions.get(`${String(table)}\u0000${String(key)}`) ?? before.partition(table, key),
     took: (event: SyncEvent) => {
       for (const change of event.changes) {
-        if (change.kind === "unknown") continue;
+        // a doc change moves no cell a rule reads: its update is the log's, and a genesis sets
+        // only the lineage cell, which is not a value any rule is written against
+        if (change.kind === "unknown" || change.kind === "doc") continue;
         const held = at(change.table);
         const id = String(change.key);
         if (change.kind === "delete") held.set(id, undefined);

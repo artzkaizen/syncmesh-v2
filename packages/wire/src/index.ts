@@ -9,6 +9,25 @@ export { MalformedSnapshot, decodeSnapshotRows, encodeSnapshotRows } from "./sna
 export type { Identity } from "./identity.js";
 export { InvalidSeed, SEED_LENGTH, createIdentity, verify } from "./identity.js";
 export { MalformedEvent, decodeEventCore, encodeEventCore } from "./event-codec.js";
+export {
+  DOC,
+  ID16_LENGTH,
+  MalformedDoc,
+  actionIdOf,
+  deriveLineage,
+  docChangeId,
+  docDataToCbor,
+  docFromCbor,
+} from "./doc-codec.js";
+export type { DocCheckpoint, SignedCheckpoint } from "./checkpoint-codec.js";
+export {
+  BadCheckpointSignature,
+  MalformedCheckpoint,
+  decodeCheckpoint,
+  decodeCheckpointCore,
+  encodeCheckpointCore,
+  signCheckpoint,
+} from "./checkpoint-codec.js";
 export type { SignedEvent, VerifiedEvent, WireError } from "./envelope.js";
 export {
   BadSignature,

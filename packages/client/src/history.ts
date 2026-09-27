@@ -79,7 +79,7 @@ export function rowHistory<T extends Table>(
         procedure: String(event.procedure),
         kind: change.kind,
         changed:
-          change.kind === "delete" || change.kind === "unknown"
+          change.kind === "delete" || change.kind === "unknown" || change.kind === "doc"
             ? {}
             : fromWirePatch(table, change.kind === "insert" ? change.row : change.patch),
         row: cells === undefined ? null : fromWireRow(table, cells),

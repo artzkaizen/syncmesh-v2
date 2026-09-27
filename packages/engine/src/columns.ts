@@ -6,7 +6,7 @@ import { checkRow, type Table, type WireRow } from "@syncmesh/schema";
 import { SchemaViolation, UnknownChangeKind, type ValidationError } from "./errors.js";
 
 /** The change kinds this build can fold. A kernel that grows one grows this set with it. */
-const FOLDABLE = new Set(["insert", "update", "delete"]);
+const FOLDABLE = new Set(["insert", "update", "delete", "doc"]);
 
 /**
  * Whether this build can fold the change — and, because it narrows, the only way to reach the
@@ -49,7 +49,8 @@ export function checkColumns(table: Table, change: Change): Result<void, Validat
       }),
     );
   }
-  if (change.kind === "delete") return Result.ok(undefined);
+  // a doc change carries no cells: what it may name is the document rules' to say
+  if (change.kind === "delete" || change.kind === "doc") return Result.ok(undefined);
   const values = declared(table, change.kind === "insert" ? change.row : change.patch);
   const r = checkRow(table, values, change.kind);
   return r.isErr()
