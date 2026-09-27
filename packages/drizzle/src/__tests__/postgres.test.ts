@@ -156,6 +156,24 @@ describe("Drizzle over a mesh — the Postgres face", () => {
     expect((await stores.events.all()).unwrap()).toHaveLength(0);
   });
 
+  test("a nested tx.transaction() is refused and the outer one rolls back — no savepoint reaches the capture", async () => {
+    const { db, stores, driver } = await open();
+    const failed = await db
+      .transaction(async (tx) => {
+        await tx.insert(jobs).values({ id: "j1", title: "one", status: "open", rank: 1 });
+        await tx.transaction(async (inner) => {
+          await inner.insert(jobs).values({ id: "j2", title: "two", status: "open", rank: 2 });
+        });
+      })
+      .then(
+        () => "resolved",
+        (cause: unknown) => String(cause),
+      );
+    expect(failed).toContain("Transactions are not supported");
+    expect(Number((await driver.all(`SELECT COUNT(*) FROM jobs`))[0]?.[0])).toBe(0);
+    expect((await stores.events.all()).unwrap()).toHaveLength(0);
+  });
+
   test("read(): the source a principal sees — dispatchers all, a tech their own, a viewer nothing", async () => {
     const seeded = await open();
     await seeded.db.insert(jobs).values([

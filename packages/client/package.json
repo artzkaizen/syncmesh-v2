@@ -33,12 +33,12 @@
     "@syncmesh/config": "workspace:*",
     "@syncmesh/relay": "workspace:*",
     "@types/bun": "catalog:",
-    "drizzle-orm": "latest",
+    "drizzle-orm": "catalog:",
     "fast-check": "catalog:",
     "typescript": "catalog:",
     "vite-plus": "catalog:"
   },
   "peerDependencies": {
-    "drizzle-orm": ">=0.44"
+    "drizzle-orm": "^1.0.0-rc.4"
   }
 }

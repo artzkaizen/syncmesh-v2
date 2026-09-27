@@ -1,7 +1,17 @@
 import type { Engine } from "@syncmesh/engine";
 import type { SQLChunk, SQLWrapper } from "drizzle-orm";
 
-import { Column, Param, SQL, StringChunk, Subquery, Table, getTableName, is } from "drizzle-orm";
+import {
+  Column,
+  Param,
+  SQL,
+  StringChunk,
+  Subquery,
+  Table,
+  getColumnTable,
+  getTableName,
+  is,
+} from "drizzle-orm";
 
 import { replaceEqualDeep } from "./equal.js";
 
@@ -36,7 +46,7 @@ const tablesOf = (query: SQLWrapper): ReadonlySet<string> => {
   const names = new Set<string>();
   const walk = (chunk: SQLChunk): void => {
     if (is(chunk, Table)) names.add(getTableName(chunk));
-    else if (is(chunk, Column)) names.add(getTableName(chunk.table));
+    else if (is(chunk, Column)) names.add(getTableName(getColumnTable(chunk)));
     else if (is(chunk, Subquery)) walk(chunk._.sql);
     else if (is(chunk, SQL)) for (const inner of chunk.queryChunks) walk(inner);
   };
@@ -60,7 +70,8 @@ const identityOf = (query: Runnable<unknown>): string => {
   const parts: string[] = [];
   const walk = (chunk: SQLChunk): void => {
     if (is(chunk, Table)) parts.push(`t:${getTableName(chunk)}`);
-    else if (is(chunk, Column)) parts.push(`c:${getTableName(chunk.table)}.${chunk.name}`);
+    else if (is(chunk, Column))
+      parts.push(`c:${getTableName(getColumnTable(chunk))}.${chunk.name}`);
     else if (is(chunk, Subquery)) walk(chunk._.sql);
     else if (is(chunk, Param)) parts.push(`p:${JSON.stringify(chunk.value) ?? "?"}`);
     else if (is(chunk, StringChunk)) parts.push(`s:${chunk.value.join("")}`);

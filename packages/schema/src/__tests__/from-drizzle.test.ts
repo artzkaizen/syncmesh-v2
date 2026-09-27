@@ -5,6 +5,7 @@ import { sql } from "drizzle-orm";
 import {
   bigint,
   boolean,
+  bytea,
   customType,
   doublePrecision,
   integer,
@@ -25,7 +26,7 @@ import {
   text as sqliteText,
 } from "drizzle-orm/sqlite-core";
 
-import { fromDrizzle, type DrizzleWarning } from "../from-drizzle.js";
+import { fromDrizzle, type ColumnsFromDrizzle, type DrizzleWarning } from "../from-drizzle.js";
 import { defineSchema } from "../manifest.js";
 import { checkRow, table, type Row } from "../table.js";
 
@@ -93,6 +94,31 @@ describe("fromDrizzle — the pinned mapping", () => {
     });
   });
 
+  test("Drizzle 1.0's own bytea is a blob; a mode-less SQLite blob() is JSON, as Drizzle now reads it", () => {
+    const bytes = fromDrizzle(pgTable("bytes", { id: uuid("id").primaryKey(), raw: bytea("raw") }));
+    expect(bytes.raw.def.kind).toBe("blob");
+    // 1.0 flipped blob()'s default mode from buffer to json; the mapping follows Drizzle's value
+    const t = sqliteTable("modeless", { id: sqliteText("id").primaryKey(), raw: blob("raw") });
+    expect(fromDrizzle(t).raw.def.kind).toBe("json");
+  });
+
+  test("a SQLite key is typed exactly; pg-core 1.0 does not type its key, so any non-null column may be", () => {
+    const notes = sqliteTable("notes", {
+      id: sqliteText("id").primaryKey(),
+      body: sqliteText("body").notNull(),
+    });
+    assertType<
+      Equal<ReturnType<typeof table<ColumnsFromDrizzle<typeof notes>>>["primaryKey"], "id">
+    >();
+    assertType<
+      Equal<
+        ReturnType<typeof table<ColumnsFromDrizzle<typeof books>>>["primaryKey"],
+        "id" | "title" | "big" | "starred"
+      >
+    >();
+    expect(table("books", fromDrizzle(books)).primaryKey).toBe("id");
+  });
+
   test("row types come from Drizzle's inference, with Date overridden to Temporal.Instant", () => {
     const imported = table("books", fromDrizzle(books));
     assertType<Equal<Row<typeof imported>["id"], string>>();
@@ -104,7 +130,7 @@ describe("fromDrizzle — the pinned mapping", () => {
 });
 
 describe("fromDrizzle — refusals at module load", () => {
-  test("serial, unbounded numeric, generated, custom types, and a missing single primary key", () => {
+  test("serial, unbounded numeric, generated, custom types, arrays, and a missing single primary key", () => {
     expect(() => fromDrizzle(pgTable("a", { id: serial("id").primaryKey() }))).toThrow(
       "serial has no value to sync",
     );
@@ -116,10 +142,14 @@ describe("fromDrizzle — refusals at module load", () => {
         pgTable("c", { id: uuid("id").primaryKey(), g: integer("g").generatedAlwaysAsIdentity() }),
       ),
     ).toThrow("generated");
-    const bytea = customType<{ data: Uint8Array }>({ dataType: () => "bytea" });
+    const custom = customType<{ data: Uint8Array }>({ dataType: () => "bytea" });
     expect(() =>
-      fromDrizzle(pgTable("d", { id: uuid("id").primaryKey(), raw: bytea("raw") })),
+      fromDrizzle(pgTable("d", { id: uuid("id").primaryKey(), raw: custom("raw") })),
     ).toThrow("not in the frozen mapping");
+    // 1.0 reports an int[] as an integer with dimensions; it must not import as one
+    expect(() =>
+      fromDrizzle(pgTable("g", { id: uuid("id").primaryKey(), tags: integer("tags").array() })),
+    ).toThrow("array (PgInteger[]) is not in the frozen mapping");
     expect(() => fromDrizzle(pgTable("e", { a: text("a"), b: text("b") }))).toThrow(
       "exactly one primary-key column",
     );

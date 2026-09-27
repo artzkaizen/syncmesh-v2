@@ -23,7 +23,7 @@
     "@syncmesh/wire": "workspace:*",
     "@tanstack/react-router": "^1.168.0",
     "@tanstack/react-start": "^1.168.0",
-    "drizzle-orm": "^0.45.2",
+    "drizzle-orm": "catalog:",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "zod": "^3.25.76"

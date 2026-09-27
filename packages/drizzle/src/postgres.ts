@@ -1,10 +1,11 @@
+import type { EmptyRelations } from "drizzle-orm";
 import type { PgDialect, PgTable, SubqueryWithSelection } from "drizzle-orm/pg-core";
-import type { RemoteCallback } from "drizzle-orm/pg-proxy";
+import type { PgRemoteQueryResultHKT, RemoteCallback } from "drizzle-orm/pg-proxy";
 
 import { principalSettings } from "@syncmesh/storage";
 import { getTableName } from "drizzle-orm";
-import { PgRemoteDatabase } from "drizzle-orm/pg-proxy";
-import { PgProxyTransaction, PgRemoteSession } from "drizzle-orm/pg-proxy/session";
+import { PgAsyncTransaction } from "drizzle-orm/pg-core";
+import { PgRemoteDatabase, PgRemoteSession } from "drizzle-orm/pg-proxy";
 
 import type { FaceDeps } from "./face.js";
 
@@ -13,12 +14,24 @@ import { createLive } from "./live.js";
 import { createProxy } from "./proxy.js";
 import { readPredicate, readScope } from "./read.js";
 
-export type PostgresMeshDb = PgRemoteDatabase<Record<string, never>>;
+export type PostgresMeshDb = PgRemoteDatabase<EmptyRelations>;
 
 /** `read(table)`: the table's columns behind an alias, as pg-core's own `.as()` would type it. */
 type Source<T extends PgTable> = SubqueryWithSelection<T["_"]["columns"], string>;
 
-type Body<T> = (tx: PgProxyTransaction<Record<string, never>, Record<string, never>>) => Promise<T>;
+type Tx = PgAsyncTransaction<PgRemoteQueryResultHKT, EmptyRelations>;
+type Body<T> = (tx: Tx) => Promise<T>;
+
+/**
+ * The transaction handed to `db.transaction()`'s body. Drizzle 1.0 no longer ships pg-proxy's own
+ * transaction class, so the face declares it; a nested `tx.transaction()` is refused, as pg-proxy
+ * refused it before — a savepoint would reach the capture as a plain statement.
+ */
+class CapturingTransaction extends PgAsyncTransaction<PgRemoteQueryResultHKT, EmptyRelations> {
+  override transaction<T>(_body: Body<T>): Promise<T> {
+    return Promise.reject(new Error("Transactions are not supported by the Postgres Proxy driver"));
+  }
+}
 
 /**
  * Drizzle's `pg-proxy` refuses `db.transaction()`; the mesh needs it as the capture boundary. This
@@ -26,17 +39,17 @@ type Body<T> = (tx: PgProxyTransaction<Record<string, never>, Record<string, nev
  * through the callback — so the proxy on the other side sees the same three control statements
  * on either dialect.
  */
-class CapturingSession extends PgRemoteSession<Record<string, never>, Record<string, never>> {
+class CapturingSession extends PgRemoteSession<EmptyRelations> {
   constructor(
     private readonly callback: RemoteCallback,
     private readonly pgDialect: PgDialect,
   ) {
-    super(callback, pgDialect, undefined);
+    super(callback, pgDialect, {});
   }
   override async transaction<T>(body: Body<T>): Promise<T> {
     await this.callback("begin", [], "execute");
     try {
-      const result = await body(new PgProxyTransaction(this.pgDialect, this, undefined, 0));
+      const result = await body(new CapturingTransaction(this.pgDialect, this, {}, 0, false));
       await this.callback("commit", [], "execute");
       return result;
     } catch (cause) {
@@ -68,7 +81,7 @@ export function postgresFace(deps: FaceDeps) {
   const db: PostgresMeshDb = new PgRemoteDatabase(
     dialect,
     new CapturingSession(remote, dialect),
-    undefined,
+    {},
   );
   const scope = readScope("postgres", deps);
   /** The table as this principal may read it: a subquery with the `read` rule (and the pin) compiled in. */
