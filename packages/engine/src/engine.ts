@@ -203,7 +203,7 @@ export function createEngine(options: EngineOptions): Engine {
     quarantineLimit,
   } = options;
   const undo: Undo[] = [];
-  const docPath = createDocPath(options);
+  const docPath = createDocPath(options, peerId, undo);
   const { merge, hasAdapter, store: docStore } = docPath;
   const plain: AtomicStores = {
     events: store,
@@ -321,7 +321,7 @@ export function createEngine(options: EngineOptions): Engine {
     },
     acks: () => new Map([...acks].map(([peer, ack]) => [peer, ack.cursors])),
     onAcknowledge: ackHub.subscribe,
-    compact: (options) => compactLog({ store, stateStore, acks }, options),
+    compact: (options) => compactLog({ store, stateStore, acks, ...docPath.compaction }, options),
     ...snapshots,
     eventsSince: (theirs, interest) => eventsWanted(store, theirs, interest),
     ...repair,
