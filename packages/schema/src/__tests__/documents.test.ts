@@ -1,3 +1,5 @@
+import type { PolicyNode } from "@syncmesh/policy";
+
 import { describe, expect, test } from "bun:test";
 import { bytea, integer, jsonb, pgTable, text, uuid } from "drizzle-orm/pg-core";
 import { blob, sqliteTable, text as sqliteText } from "drizzle-orm/sqlite-core";
@@ -9,12 +11,17 @@ import { columnFromDef, t } from "../column.js";
 import {
   DocColumnConstraint,
   DocColumnNotBinary,
+  InvalidDerive,
   MergeKindMismatch,
+  from,
+  type DeriveBlock,
+  type Derivation,
   type DocumentAdapter,
 } from "../documents.js";
 import { fromDrizzle } from "../from-drizzle.js";
 import { defineSchema } from "../manifest.js";
 import { table } from "../table.js";
+import { assertType, type Equal } from "./fixtures.js";
 
 /** The shape `@syncmesh/loro` exports; the schema reads only its id. */
 interface FakeDoc {
@@ -29,7 +36,9 @@ const notes = pgTable("notes", {
   wordCount: integer().notNull().default(0),
 });
 
-const oneTable = (columns: Columns) => defineSchema({ tables: { notes: { columns } } });
+const deny = ({ deny: no }: { readonly deny: PolicyNode }) => ({ $default: no });
+const oneTable = (columns: Columns, derive: DeriveBlock<Columns> = {}) =>
+  defineSchema({ tables: { notes: { columns, derive } } });
 // SAFETY: a merge value past the types, to exercise the runtime backstop behind them
 const cast = <T>(value: T) => value as never;
 
@@ -69,6 +78,49 @@ describe("declaring a document column", () => {
   test("the fold's merge map never names a document column", () => {
     const schema = oneTable(fromDrizzle(notes, { merge: { content: loro } }));
     expect(schema.merge.size).toBe(0);
+  });
+});
+
+describe("the manifest's shareable half", () => {
+  const schema = defineSchema({
+    partitions: { workspace: {} },
+    roles: { workspace: ["editor"] },
+    tables: {
+      notes: {
+        columns: fromDrizzle(notes, { merge: { content: loro } }),
+        partition: "workspace",
+        derive: {
+          title: from("content", (d: FakeDoc) => d.text.split("\n")[0] ?? ""),
+          wordCount: from("content", (d: FakeDoc) => d.text.split(/\s+/).length),
+        },
+        allow: deny,
+      },
+      plain: { columns: { id: t.uuid().primaryKey(), body: t.text() } },
+    },
+  });
+
+  test("carries { column, doc, derive } per document column, as plain data", () => {
+    const entries = schema.docs.get(schema.tables.notes.name);
+    const shared: unknown = JSON.parse(JSON.stringify(entries));
+    expect(shared).toEqual([{ column: "content", doc: "loro@1", derive: ["title", "wordCount"] }]);
+    expect(shared).toEqual(entries);
+    expect(schema.docs.has(schema.tables.plain.name)).toBe(false);
+  });
+
+  test("the derive functions stay on the entry, beside the rules", () => {
+    const derive = schema.entries[0]?.derive;
+    expect(Object.keys(derive ?? {})).toEqual(["title", "wordCount"]);
+    expect(derive?.title?.from).toBe("content");
+    // SAFETY: the materialiser hands the adapter's own document to the function it declared for
+    const run = derive?.title?.derive as ((doc: FakeDoc) => string) | undefined;
+    expect(run?.({ text: "Q3 plan\nbody" })).toBe("Q3 plan");
+    expect(schema.entries[1]?.derive).toBeUndefined();
+  });
+
+  test("from() keeps the source name and the value type", () => {
+    const d = from("content", (doc: FakeDoc) => doc.text.length);
+    assertType<Equal<typeof d, Derivation<"content", number>>>();
+    expect(d.from).toBe("content");
   });
 });
 
@@ -127,5 +179,29 @@ describe("construction refuses — RFC-0023 §4.1's error table", () => {
     expect(() =>
       table("notes", { id: t.uuid().primaryKey(), s: t.text({ merge: cast("max") }) }),
     ).toThrow(MergeKindMismatch);
+  });
+
+  const columns = fromDrizzle(notes, { merge: { content: loro } });
+  const body = (d: FakeDoc) => d.text;
+
+  test("InvalidDerive: a target that is the key, a document, missing, or merged by the app", () => {
+    expect(() => oneTable(columns, { id: from("content", body) })).toThrow(
+      "notes.id: derive cannot target the primary key",
+    );
+    expect(() => oneTable(columns, { content: from("content", body) })).toThrow(InvalidDerive);
+    expect(() => oneTable(columns, { nope: from("content", body) })).toThrow(
+      "names a column the table does not have",
+    );
+    const merged = fromDrizzle(notes, { merge: { content: loro, wordCount: "max" } });
+    expect(() => oneTable(merged, { wordCount: from("content", body) })).toThrow(
+      'targets a column the app writes under merge "max"',
+    );
+  });
+
+  test("InvalidDerive: a source that is not a document column of the same table", () => {
+    expect(() => oneTable(columns, { wordCount: from("title", body) })).toThrow(
+      'reads "title", which is not a document column of notes',
+    );
+    expect(() => oneTable(columns, { wordCount: from("elsewhere", body) })).toThrow(InvalidDerive);
   });
 });

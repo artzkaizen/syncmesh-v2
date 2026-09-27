@@ -4,9 +4,11 @@ import type { AllowBlock } from "@syncmesh/policy";
 import { panic } from "@syncmesh/result";
 
 import type { AllowFn } from "./bind.js";
+import type { DeriveBlock, DocColumnEntry } from "./documents.js";
 
 import { combinators } from "./bind.js";
 import { strategyOf } from "./column.js";
+import { docColumnsOf } from "./documents.js";
 import { sourceName } from "./from-drizzle.js";
 import { parseColumnName, parseTableName } from "./names.js";
 import { reservedTables } from "./reserved.js";
@@ -56,12 +58,14 @@ export type TableEntry<
       readonly partition: Kinds<P>;
       readonly allow: AllowFn<C, RoleNames<R>>;
       readonly visibility?: undefined;
+      readonly derive?: DeriveBlock<C>;
     }
   | {
       readonly columns: Columns;
       readonly partition?: ReservedKind;
       readonly allow?: undefined;
       readonly visibility?: undefined;
+      readonly derive?: DeriveBlock<Columns>;
     }
   | {
       readonly columns: C;
@@ -69,6 +73,7 @@ export type TableEntry<
       readonly visibility: "authority";
       readonly partition?: undefined;
       readonly allow?: undefined;
+      readonly derive?: DeriveBlock<C>;
     };
 
 export type ColumnsMap = Readonly<Record<string, Columns>>;
@@ -126,6 +131,8 @@ export interface SchemaEntry<P extends PartitionTree = PartitionTree> {
   readonly visibility: "partition" | "authority";
   /** The rules, as data — what the `_policy` row will carry. Absent for user, local and global tables. */
   readonly allow?: AllowBlock;
+  /** The derive functions, keyed by target column; absent when the table declares none. */
+  readonly derive?: DeriveBlock<Columns>;
 }
 
 export type TablesOf<C extends ColumnsMap> = {
@@ -148,6 +155,8 @@ export interface Schema<
   readonly entries: readonly SchemaEntry<P>[];
   readonly reserved: readonly Table[];
   readonly merge: MergeSpec;
+  /** Document columns per table, in column order; a table without one is absent. */
+  readonly docs: ReadonlyMap<TableName, readonly DocColumnEntry[]>;
   /** Every declared kind, parents before children. */
   readonly kinds: readonly Kinds<P>[];
   readonly parentOf: (kind: Kinds<P>) => Kinds<P> | undefined;
@@ -175,6 +184,7 @@ export function defineSchema<
   const built: Record<string, Table> = {};
   const entries: SchemaEntry<P>[] = [];
   const merge = new Map<TableName, Map<ColumnName, StrategyName>>();
+  const docs = new Map<TableName, readonly DocColumnEntry[]>();
   const tables: Readonly<Record<string, TableEntry<P, R, Columns>>> = manifest.tables;
   for (const [name, entry] of Object.entries(tables)) {
     const source = sourceName(entry.columns);
@@ -188,9 +198,13 @@ export function defineSchema<
       partition,
       visibility: entry.visibility ?? "partition",
     };
-    entries.push(entry.allow === undefined ? base : { ...base, allow: entry.allow(combinators()) });
+    const withAllow =
+      entry.allow === undefined ? base : { ...base, allow: entry.allow(combinators()) };
+    entries.push(entry.derive === undefined ? withAllow : { ...withAllow, derive: entry.derive });
     const rules = mergeRulesFor(name, tbl);
     if (rules.size > 0) merge.set(tbl.name, rules);
+    const documents = docColumnsOf(name, tbl, entry.derive ?? {});
+    if (documents.length > 0) docs.set(tbl.name, documents);
   }
   const kinds = [...parents.keys()];
   const presence = presenceTopics<P, PC>(manifest.presence, parents);
@@ -205,6 +219,7 @@ export function defineSchema<
     entries,
     reserved: reservedTables,
     merge,
+    docs,
     // SAFETY: kinds are the keys of the tree, which is what Kinds<P> names
     kinds: kinds as Kinds<P>[],
     // SAFETY: as above
