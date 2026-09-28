@@ -241,7 +241,7 @@ export const secureProbe = async (
       dialed.send(sealed);
     },
     join: (cursors: Cursors = new Map(), interest?: Interest) =>
-      void (() => {
+       (() => {
         const sealed = link.seal(joinFrame([3], identity.peerId, cursors, interest));
         if (sealed === undefined) throw new Error("the probe's link is not secured");
         dialed.send(sealed);
