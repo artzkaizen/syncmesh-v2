@@ -1,5 +1,6 @@
 import type { EngineError, StrandedWrites } from "@syncmesh/engine";
 
+import { omitUndefined } from "@syncmesh/result";
 import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
@@ -58,7 +59,7 @@ const open = async (
       authority: device.peerId,
       driver,
       now: () => T0,
-      ...(onError !== undefined && { onError }),
+      ...omitUndefined({ onError }),
     })
   ).unwrap();
   return {

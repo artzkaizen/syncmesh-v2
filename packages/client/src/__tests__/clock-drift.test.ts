@@ -1,4 +1,5 @@
 import { seed } from "@syncmesh/kernel/test-fixtures";
+import { omitUndefined } from "@syncmesh/result";
 import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
@@ -32,7 +33,7 @@ const open = async (n: number, now: Temporal.Instant, clockDrift?: Temporal.Dura
       schema: schema(),
       identity: createIdentity(seed(n)).unwrap(),
       now: () => now,
-      ...(clockDrift !== undefined && { clockDrift }),
+      ...omitUndefined({ clockDrift }),
     })
   ).unwrap();
 

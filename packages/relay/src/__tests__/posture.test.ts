@@ -1,4 +1,5 @@
 import { createMemoryEventStore } from "@syncmesh/engine";
+import { omitUndefined } from "@syncmesh/result";
 import { describe, expect, test } from "bun:test";
 
 import type { RelayPosture } from "../posture.js";
@@ -15,7 +16,7 @@ const serve = (posture?: RelayPosture) =>
     keepaliveMs: 60_000,
     store: createMemoryEventStore(),
     epoch: "epoch-1",
-    ...(posture !== undefined && { posture }),
+    ...omitUndefined({ posture }),
   });
 
 /** A plain GET: 426 means the posture let it through and only the missing upgrade stopped it. */

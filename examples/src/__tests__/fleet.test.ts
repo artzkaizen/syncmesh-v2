@@ -15,6 +15,7 @@ import {
   startRelay,
   webSocketDial,
 } from "@syncmesh/relay";
+import { omitUndefined } from "@syncmesh/result";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
@@ -85,7 +86,7 @@ const device = async (relay: RunningRelay, n: number, interest?: Interest, file?
         relayTransport({
           dial: webSocketDial(`${relay.url}/${ROOM}`),
           reconnectMs: 20,
-          ...(interest !== undefined && { interest }),
+          ...omitUndefined({ interest }),
         }),
       ],
     })

@@ -7,7 +7,7 @@ import {
   type PartitionKey,
   type Procedure,
 } from "@syncmesh/kernel";
-import { Result, TaggedError } from "@syncmesh/result";
+import { Result, TaggedError, omitUndefined } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 
 import type { EventCrypto } from "./sealing.js";
@@ -140,11 +140,11 @@ function decodeEventValue(
     const seqNum = yield* parseSeqNum(seq).mapError(
       (e) => new MalformedEvent({ message: e.message }),
     );
-    const place = {
+    const place = omitUndefined({
       peerId,
       seqNum,
-      ...(partition !== undefined && { partition: asPartition(partition) }),
-    };
+      partition: partition !== undefined ? asPartition(partition) : undefined,
+    });
     const changes = yield* readChanges(m, under, place, crypto);
     const base = {
       v: 1 as const,

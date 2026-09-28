@@ -1,7 +1,7 @@
 import type { AnyTaggedError } from "@syncmesh/result";
 import type { SqliteBinding } from "@syncmesh/storage";
 
-import { Result, serializeTagged } from "@syncmesh/result";
+import { Result, omitUndefined, serializeTagged } from "@syncmesh/result";
 
 import type { Answer, OpenCall, Reply, Request, StatementCall, WirePort } from "./protocol.js";
 import type { WasmStorage } from "./vfs.js";
@@ -50,13 +50,17 @@ const opening = (held: Map<number, Held>, handle: () => number, call: OpenCall) 
   Result.gen(async function* () {
     const sqlite3 = yield* Result.await(loadSqlite());
     const opened = yield* Result.await(
-      openDatabase(sqlite3, call.storage, {
-        name: call.name,
-        schema: call.schema,
-        directory: call.directory,
-        capacity: call.capacity,
-        ...(call.whenHeld !== undefined && { whenHeld: call.whenHeld }),
-      }),
+      openDatabase(
+        sqlite3,
+        call.storage,
+        omitUndefined({
+          name: call.name,
+          schema: call.schema,
+          directory: call.directory,
+          capacity: call.capacity,
+          whenHeld: call.whenHeld,
+        }),
+      ),
     );
     const db = handle();
     held.set(db, { binding: bindingFor(opened), storage: opened.storage });

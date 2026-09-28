@@ -10,7 +10,7 @@ import type { EventId, PeerId } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
 import type { SnapshotInstalled } from "@syncmesh/transport";
 
-import { Result } from "@syncmesh/result";
+import { omitUndefined, Result } from "@syncmesh/result";
 
 import type { StoreSweep } from "./sweep.js";
 
@@ -224,7 +224,7 @@ export function openRecovery(engine: Engine, deps?: RecoveryDeps): RecoveryView 
     stranded: () => engine.stranded(),
     run: () => engine.retryQuarantined(),
     rebuild: (options = {}) => rebuildFrom(deps, options),
-    ...(deps?.stores !== undefined && { stores: deps.stores }),
+    ...omitUndefined({ stores: deps?.stores }),
   };
 }
 

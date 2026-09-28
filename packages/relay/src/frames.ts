@@ -4,7 +4,7 @@ import type { Frame, MalformedFrame } from "@syncmesh/transport";
 import type { CborValue } from "@syncmesh/wire";
 
 import { interestFrom, interestText } from "@syncmesh/engine";
-import { Result } from "@syncmesh/result";
+import { Result, omitUndefined } from "@syncmesh/result";
 import {
   asPeer,
   cursorPairs,
@@ -262,11 +262,7 @@ const decodeJoin: ControlDecoder = (a, b, c, d, e) =>
     // SAFETY: `a`..`d` were just read out of a decoded CBOR array, so each is a CborValue
     const core = encodeCbor([a, b as CborValue, c as CborValue, (d ?? "") as CborValue]);
     const join = { kind: "join", versions: a, peerId, cursors, core } as const;
-    return Result.ok({
-      ...join,
-      ...(interest !== undefined && { interest }),
-      ...(e !== undefined && { proof: e }),
-    });
+    return Result.ok(omitUndefined({ ...join, interest, proof: e }));
   });
 
 const decodeChallenge: ControlDecoder = (a) =>

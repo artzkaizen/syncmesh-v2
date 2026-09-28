@@ -3,6 +3,7 @@
 import type { AuthStatus, Mesh, MeshStatus } from "@syncmesh/client";
 import type { LinkEvent, Route, Transport } from "@syncmesh/transport";
 
+import { omitUndefined } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 
 import type { DeviceReading, LinkReading, MediumReading } from "./protocol.js";
@@ -130,14 +131,14 @@ const refuse = (what: string) => (): Promise<never> =>
  */
 const mediumOf = (medium: MediumReading): Transport => {
   const reaches = medium.reaches === undefined ? undefined : new Set(medium.reaches);
-  return {
+  return omitUndefined({
     name: medium.name,
-    ...(medium.kind !== undefined && { kind: medium.kind }),
-    ...(reaches !== undefined && { reaches: () => reaches }),
+    kind: medium.kind,
+    reaches: reaches === undefined ? undefined : () => reaches,
     start: refuse("start"),
     stop: refuse("stop"),
     whenReady: () => Promise.resolve(),
-  };
+  });
 };
 
 const revive = (reading: DeviceReading): Held => ({

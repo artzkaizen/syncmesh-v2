@@ -28,6 +28,7 @@
     "@syncmesh/kernel": "workspace:*",
     "@syncmesh/orpc": "workspace:*",
     "@syncmesh/relay": "workspace:*",
+    "@syncmesh/result": "workspace:*",
     "@syncmesh/schema": "workspace:*",
     "@syncmesh/sqlite-bun": "workspace:*",
     "@syncmesh/storage": "workspace:*",

@@ -4,7 +4,7 @@ import type { SnapshotInstalled } from "@syncmesh/transport";
 
 import { createHub } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
-import { Result, panic } from "@syncmesh/result";
+import { omitUndefined, Result, panic } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { createGrantRegistry } from "@syncmesh/wire";
 
@@ -118,7 +118,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
   const swept = sweepFor({ self: identity.peerId, grants, over: options.sweep });
   const recovery = openRecovery(engine, {
     ...recoveryDeps(engine, identity.peerId, snapshots, () => links.list()),
-    ...(swept.stores !== undefined && { stores: swept.stores }),
+    ...omitUndefined({ stores: swept.stores }),
   });
   const internal = openInternal({ engine, self: identity.peerId });
 
@@ -145,19 +145,20 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     // the two halves of signed custody (D28): what this device can vouch for out of its own
     // store, and where a peer's vouch for this device's writes lands. A mesh over a bare event
     // store has neither, and passes neither, rather than passing a sink with nowhere to write
-    ...(booted.incarnation !== undefined && { incarnation: booted.incarnation }),
-    ...(wired.vouched !== undefined && { onReceipt: wired.vouched }),
+    ...omitUndefined({ incarnation: booted.incarnation, onReceipt: wired.vouched }),
     onSnapshot: (installed) => snapshots.emit(installed),
     servesAuthority: options.authority === identity.peerId,
     keys,
     // our own partitions, which is what the door's grant-derived default compares against
     partitions: () => (grants.grantFor(identity.peerId)?.partitions ?? []).map(String),
-    ...(options.mesh !== undefined && { shaping: options.mesh }),
-    ...(options.onGrantRequest !== undefined && { onGrantRequest: options.onGrantRequest }),
-    // the same anchor grants are checked against: a snapshot is state nobody signed per event, so
-    // the certificate over it is the only thing that can make it more than provisional
-    ...(options.issuer !== undefined && { trust: options.issuer }),
-    ...(options.certificate !== undefined && { certificate: options.certificate }),
+    ...omitUndefined({
+      shaping: options.mesh,
+      onGrantRequest: options.onGrantRequest,
+      // the same anchor grants are checked against: a snapshot is state nobody signed per event, so
+      // the certificate over it is the only thing that can make it more than provisional
+      trust: options.issuer,
+      certificate: options.certificate,
+    }),
   });
   const { routes } = transportContext;
   const links = runTransports(

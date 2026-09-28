@@ -2,7 +2,7 @@ import type { PeerId } from "@syncmesh/kernel";
 import type { ByteStream, Transport, TransportCondition, Upgraded } from "@syncmesh/transport";
 
 import { parsePeerId } from "@syncmesh/kernel";
-import { Result, panic } from "@syncmesh/result";
+import { Result, omitUndefined, panic } from "@syncmesh/result";
 import {
   createBackoff,
   createFrameTransport,
@@ -106,7 +106,7 @@ const p2pTransport = (protocol: P2pProtocol, adapter: string, options: P2pOption
     name: options.name ?? adapter,
     kind: protocol,
     condition: () => condition,
-    ...(options.onDropped !== undefined && { onDropped: options.onDropped }),
+    ...omitUndefined({ onDropped: options.onDropped }),
     /** Direct, wide, and expensive: these radios hold a duty cycle and cost power to do it. */
     route: () => ({ direct: true, bandwidthBps: P2P_BANDWIDTH_BPS, costly: true }),
     open: async (ctx, _attach, upgrade, mayDial) => {
@@ -153,7 +153,7 @@ const p2pTransport = (protocol: P2pProtocol, adapter: string, options: P2pOption
        * back from is one to drop and open again rather than hold.
        */
       const alive = createLiveness<string>({
-        ...(options.keepaliveMs !== undefined && { everyMs: options.keepaliveMs }),
+        ...omitUndefined({ everyMs: options.keepaliveMs }),
         // the far side answers cursors with a digest, always: a re-request is this protocol's
         // keepalive, and the one frame both ends already know how to handle
         probe: () => transport.resync?.(),
@@ -206,8 +206,7 @@ const p2pTransport = (protocol: P2pProtocol, adapter: string, options: P2pOption
         // watched before it is upgraded, so the deadline is re-armed by anything that arrives —
         // including the peer's hello, which is the first evidence this path carries at all
         const link = upgrade.bytes(alive.watch(id, stream), {
-          ...(announced !== undefined && { claimed: announced }),
-          ...(options.maxFrameBytes !== undefined && { maxFrameBytes: options.maxFrameBytes }),
+          ...omitUndefined({ claimed: announced, maxFrameBytes: options.maxFrameBytes }),
           onProven: (peer) => void proven.set(id, peer),
           // a refused peer is still published; without this its next report buys another path
           onRefused: () => backoff.failed(id),
@@ -216,7 +215,7 @@ const p2pTransport = (protocol: P2pProtocol, adapter: string, options: P2pOption
             closePath(id);
           },
         });
-        held.set(id, { link, ...(claimed !== undefined && { claimed }) });
+        held.set(id, { link, ...omitUndefined({ claimed }) });
       };
 
       const link = async (id: string, claimed: string): Promise<void> => {

@@ -2,6 +2,7 @@ import type { LinkOffer, LinkSession } from "@syncmesh/relay";
 import type { CborValue } from "@syncmesh/wire";
 
 import { parsePeerId } from "@syncmesh/kernel";
+import { omitUndefined } from "@syncmesh/result";
 import { bytesToHex, decodeCbor, encodeCbor, hexToBytes } from "@syncmesh/wire";
 
 import type { DurableWebSocket } from "./socket.js";
@@ -137,11 +138,7 @@ export function trackResume() {
     readonly nonce?: Uint8Array | undefined;
     readonly offer?: LinkOffer | undefined;
     readonly session?: LinkSession | undefined;
-  }): Pick<Resume, "nonce" | "offer" | "session"> => ({
-    ...(nonce !== undefined && { nonce }),
-    ...(offer !== undefined && { offer }),
-    ...(session !== undefined && { session }),
-  });
+  }): Pick<Resume, "nonce" | "offer" | "session"> => omitUndefined({ nonce, offer, session });
 
   return {
     /** The room challenged this socket; kept before anything else, so a sleep before the join loses nothing. */
@@ -168,11 +165,7 @@ export function trackResume() {
     /** Reads what a woken socket kept, and takes it on as this instance's own. */
     restored: (ws: DurableWebSocket, kept: Restored): void => {
       const [join, ...grants] = kept.frames;
-      scripts.set(ws, {
-        ...linkOf(kept),
-        ...(join !== undefined && { join }),
-        grants,
-      });
+      scripts.set(ws, omitUndefined({ ...linkOf(kept), join, grants }));
     },
     forget: (ws: DurableWebSocket): void => void scripts.delete(ws),
   };

@@ -56,3 +56,5 @@ export { relayTransport } from "./transport.js";
 export { webSocketDial } from "./dial.js";
 export type { RunningRelay, StartRelayOptions } from "./serve.js";
 export { startRelay } from "./serve.js";
+export type { RelayHost, RelayHostOptions, RoomStore, RoomTuning, SocketSession } from "./host.js";
+export { createGate, createRelayHost, epochOf } from "./host.js";

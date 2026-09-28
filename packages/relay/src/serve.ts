@@ -1,41 +1,19 @@
 import type { EventStore, TelemetryListener } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
-import type { BlobStore, SqlDriver } from "@syncmesh/storage";
+import type { BlobStore } from "@syncmesh/storage";
+import type { Temporal } from "@syncmesh/temporal";
+import type { Identity } from "@syncmesh/wire";
 
-import { panic } from "@syncmesh/result";
-import { Temporal } from "@syncmesh/temporal";
-import { createIdentity, randomBytes, type Identity } from "@syncmesh/wire";
+import { omitUndefined, panic } from "@syncmesh/result";
 
 import type { Fanout } from "./fanout.js";
-import type { GrantCache } from "./grant-cache.js";
+import type { RoomStore, RelayHostOptions, SocketSession } from "./host.js";
 import type { RelayLimits } from "./limits.js";
 import type { RelayPosture } from "./posture.js";
 import type { RelayRetention } from "./retention.js";
-import type { RelayConnection, RelayRoomOptions } from "./room.js";
-import type { OpenedRoom } from "./rooms.js";
 import type { RelaySocket, SendOutcome } from "./sender.js";
 
-import { DEFAULT_LIMITS } from "./limits.js";
-import { createRoomAccess } from "./posture.js";
-import { openRelayRoom } from "./room.js";
-import { createRoomTable } from "./rooms.js";
-
-/** What a host passes through to each room it opens; the room's own name and store are its business. */
-type RoomTuning = Partial<
-  Pick<
-    RelayRoomOptions,
-    | "keepaliveMs"
-    | "pageSize"
-    | "maxBacklog"
-    | "versions"
-    | "identity"
-    | "limits"
-    | "retention"
-    | "fanout"
-    | "blobs"
-    | "onTelemetry"
-  >
->;
+import { createRelayHost, epochOf } from "./host.js";
 
 export interface StartRelayOptions {
   /** Where the durable room logs live, one SQLite file per room. Default `.syncmesh/relay`. */
@@ -78,62 +56,64 @@ export interface RunningRelay {
   readonly stop: () => Promise<void>;
 }
 
-/** The host options that pass straight through to every room it opens, absent keys left absent. */
-const roomTuning = (options: StartRelayOptions): RoomTuning => ({
-  ...(options.keepaliveMs !== undefined && { keepaliveMs: options.keepaliveMs }),
-  ...(options.pageSize !== undefined && { pageSize: options.pageSize }),
-  ...(options.maxBacklog !== undefined && { maxBacklog: options.maxBacklog }),
-  ...(options.versions !== undefined && { versions: options.versions }),
-  ...(options.identity !== undefined && { identity: options.identity }),
-  ...(options.limits !== undefined && { limits: options.limits }),
-  ...(options.retention !== undefined && { retention: options.retention }),
-  ...(options.onTelemetry !== undefined && { onTelemetry: options.onTelemetry }),
-  ...(options.fanout !== undefined && { fanout: options.fanout }),
-});
-
-/** Everything that turns a request away before a socket exists, in refusal order. */
-const createGate =
-  (access: ReturnType<typeof createRoomAccess>, atCapacity: () => boolean) =>
-  async (request: Request, room: string): Promise<Response | undefined> => {
-    if (atCapacity())
-      return new Response("syncmesh relay: at capacity, retry shortly", { status: 503 });
-    if (!access.admitsOrigin(request.headers.get("origin")))
-      return new Response("syncmesh relay: origin not allowed", { status: 403 });
-    if (!access.announces(room))
-      return new Response("syncmesh relay: no such room", { status: 404 });
-    if (!(await access.admitsJoin(request, room)))
-      return new Response("syncmesh relay: join refused", { status: 403 });
-    return undefined;
-  };
-
-/** The epoch rides in the log's own file: a new file is honestly a new lineage. */
-async function epochOf(driver: SqlDriver): Promise<string> {
-  await driver.run(
-    `CREATE TABLE IF NOT EXISTS "_relay_meta" ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL)`,
-  );
-  const held = await driver.all(`SELECT "value" FROM "_relay_meta" WHERE "key" = 'epoch'`);
-  const value = held[0]?.[0];
-  if (value !== undefined && value !== null) return String(value); // the column is TEXT NOT NULL
-  const fresh = crypto.randomUUID();
-  await driver.run(`INSERT INTO "_relay_meta" ("key", "value") VALUES ('epoch', ?)`, [fresh]);
-  return fresh;
-}
-
 interface SocketData {
   readonly room: string;
-  conn?: RelayConnection;
-  /** Frames that raced the async room open; flushed the moment the connection exists. */
-  pending?: Uint8Array[];
-  /** Lets the room be evicted again; called from `close`, and idempotent so a retry is free. */
-  done?: () => void;
-  /** Whether `close` has already run — which it can, while `open` is still awaiting its room. */
-  gone?: boolean;
+  session?: SocketSession;
 }
 
+/** Bun's log opener: one SQLite file per room under `dataDir`, epoch persisted with the log. */
+const bunRoomStore =
+  (dataDir: string, serveBlobs: boolean) =>
+  async (name: string): Promise<RoomStore> => {
+    const { defaultStore } = await import("@syncmesh/sqlite-bun");
+    const stores = (await defaultStore({ name: `relay-${name}`, dir: dataDir })).match({
+      ok: (value) => value,
+      err: (failure) => panic(`the relay's log failed to open: ${failure.message}`),
+    });
+    const driver = stores.driver ?? panic("defaultStore always carries its driver");
+    // this room's own blob store, never shared across rooms: a room that inherited
+    // another room's store would serve and keep another room's bytes under D18
+    let blobs: BlobStore | undefined;
+    if (serveBlobs) {
+      const { sqlBlobStore } = await import("@syncmesh/storage");
+      const opened = await sqlBlobStore(driver);
+      if (opened.isOk()) blobs = opened.value;
+    }
+    return {
+      store: stores.events,
+      epoch: await epochOf(driver),
+      ...omitUndefined({ blobs }),
+      release: stores.close,
+    };
+  };
+
+/** The host options that pass straight through to every room this host opens, absent keys left absent. */
+const hostTuning = (
+  options: StartRelayOptions,
+  openRoomStore: RelayHostOptions["openRoomStore"],
+): RelayHostOptions =>
+  omitUndefined({
+    openRoomStore,
+    singleRoom:
+      options.store === undefined
+        ? undefined
+        : omitUndefined({ store: options.store, epoch: options.epoch }),
+    keepaliveMs: options.keepaliveMs,
+    pageSize: options.pageSize,
+    maxBacklog: options.maxBacklog,
+    versions: options.versions,
+    identity: options.identity,
+    limits: options.limits,
+    retention: options.retention,
+    idleAfter: options.idleAfter,
+    posture: options.posture,
+    onTelemetry: options.onTelemetry,
+    fanout: options.fanout,
+  });
 /**
  * D09-A: the embedded host — Bun's WebSocket server in the process you already run, one
  * durable SQLite log per room under `dataDir`, epoch persisted with the log. The room core
- * is host-agnostic; this is merely its first mount. Port 0 picks a free port.
+ * is host-agnostic (`createRelayHost`); this is merely its Bun mount. Port 0 picks a free port.
  */
 export async function startRelay(
   port: number,
@@ -141,82 +121,11 @@ export async function startRelay(
 ): Promise<RunningRelay> {
   if (!("Bun" in globalThis))
     panic(
-      "startRelay hosts the room over Bun.serve: run under Bun, or mount openRelayRoom on your own socket server",
+      "startRelay hosts the room over Bun.serve: run under Bun, or mount createRelayHost on your own socket server",
     );
   const dataDir = options.dataDir ?? ".syncmesh/relay";
-  const access = createRoomAccess(options.posture);
-  // one key for every room this process opens, so the relay has one name a client can pin (D36)
-  const identity =
-    options.identity ??
-    createIdentity(randomBytes(32)).match({
-      ok: (value) => value,
-      err: (failure) => panic(`the relay's identity could not be made: ${failure.message}`),
-    });
-  const roomOptions = { ...roomTuning(options), identity };
 
-  /**
-   * A caller-supplied store has one lineage for as long as this process holds it. Minting inside
-   * `open` gave every idle-room eviction a fresh epoch over an unchanged log, which is the one
-   * thing an epoch is supposed to mean it is not.
-   */
-  const storeEpoch = options.epoch ?? crypto.randomUUID();
-
-  const open = async (name: string, grants: GrantCache): Promise<OpenedRoom> => {
-    if (options.store !== undefined) {
-      const room = await openRelayRoom({
-        ...roomOptions,
-        name,
-        grants,
-        store: options.store,
-        epoch: storeEpoch,
-      });
-      // the caller opened that store and the caller closes it; an eviction here borrows nothing
-      return room.match({
-        ok: (value) => ({ room: value, release: () => undefined }),
-        err: (failure) => panic(`the relay's store failed to open: ${failure.message}`),
-      });
-    }
-    const { defaultStore } = await import("@syncmesh/sqlite-bun");
-    const stores = (await defaultStore({ name: `relay-${name}`, dir: dataDir })).match({
-      ok: (value) => value,
-      err: (failure) => panic(`the relay's log failed to open: ${failure.message}`),
-    });
-    const driver = stores.driver ?? panic("defaultStore always carries its driver");
-    // this room's own blob store, never written back into the shared tuning: the rooms are opened
-    // one after another, and a room that inherited the previous one's store would serve and keep
-    // another room's bytes under D18
-    let blobs: BlobStore | undefined;
-    if (options.blobs !== false) {
-      const { sqlBlobStore } = await import("@syncmesh/storage");
-      const opened = await sqlBlobStore(driver);
-      if (opened.isOk()) blobs = opened.value;
-    }
-    const room = await openRelayRoom({
-      ...roomOptions,
-      ...(blobs !== undefined && { blobs }),
-      name,
-      grants,
-      store: stores.events,
-      epoch: await epochOf(driver),
-    });
-    return room.match({
-      ok: (value) => ({ room: value, release: stores.close }),
-      err: (failure) => panic(`the relay's store failed to open: ${failure.message}`),
-    });
-  };
-
-  const table = createRoomTable({
-    open,
-    ...(options.idleAfter !== undefined && { idleAfter: options.idleAfter }),
-    now: () => Temporal.Now.instant(),
-  });
-  // a caller-supplied store is one log: it serves one room whatever the path says
-  const nameFor = (path: string): string => (options.store === undefined ? path : "main");
-
-  // the whole process's socket ceiling (gap audit №5); approximate under races, refused at fetch
-  const connectionCap = options.limits?.maxConnections ?? DEFAULT_LIMITS.maxConnections;
-  let live = 0;
-  const gate = createGate(access, () => live >= connectionCap);
+  const host = createRelayHost(hostTuning(options, bunRoomStore(dataDir, options.blobs !== false)));
 
   // D09-A on purpose: this file IS the Bun mount; the guard above already refused other runtimes
   const server = globalThis.Bun.serve<SocketData>({
@@ -225,22 +134,13 @@ export async function startRelay(
       const path = new URL(request.url).pathname.replace(/^\/+/, "");
       const room = path === "" ? "main" : path;
       // refused before a socket exists: a client the posture turns away costs the room nothing
-      const refused = await gate(request, room);
+      const refused = await host.gate(request, room);
       if (refused !== undefined) return refused;
       const upgraded = self.upgrade(request, { data: { room } });
       return upgraded ? undefined : new Response("syncmesh relay: WebSocket only", { status: 426 });
     },
     websocket: {
-      async open(ws) {
-        live += 1;
-        const held = await table.acquire(nameFor(ws.data.room));
-        ws.data.done = held.release;
-        // a socket closed while this was awaiting its room has already had its `close`, so nothing
-        // else will ever hand the room back and it would be held open for the life of the process
-        if (ws.data.gone === true) {
-          held.release();
-          return;
-        }
+      open(ws) {
         const socket: RelaySocket = {
           send: (frame): SendOutcome => {
             const sent = ws.send(frame);
@@ -248,26 +148,18 @@ export async function startRelay(
           },
           close: (reason) => ws.close(1000, reason),
         };
-        const conn = held.room.connect(socket);
-        ws.data.conn = conn;
-        for (const frame of ws.data.pending ?? []) conn.receive(frame);
-        delete ws.data.pending;
+        ws.data.session = host.accept(socket, ws.data.room);
       },
       message(ws, message) {
         // the protocol is binary; a text frame is noise
         if (!(message instanceof Uint8Array)) return;
-        const bytes = message;
-        if (ws.data.conn === undefined) (ws.data.pending ??= []).push(bytes);
-        else ws.data.conn.receive(bytes);
+        ws.data.session?.receive(message);
       },
       drain(ws) {
-        ws.data.conn?.drain();
+        ws.data.session?.drain();
       },
       close(ws) {
-        live -= 1;
-        ws.data.gone = true;
-        ws.data.conn?.closed();
-        ws.data.done?.();
+        ws.data.session?.closed();
       },
     },
   });
@@ -276,9 +168,9 @@ export async function startRelay(
   return {
     port: boundPort,
     url: `ws://localhost:${boundPort}`,
-    peerId: identity.peerId,
+    peerId: host.peerId,
     stop: async () => {
-      await table.close();
+      await host.close();
       await server.stop(true);
     },
   };

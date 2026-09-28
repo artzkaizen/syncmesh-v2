@@ -1,6 +1,8 @@
 import type { PeerId } from "@syncmesh/kernel";
 import type { Identity } from "@syncmesh/wire";
 
+import { omitUndefined } from "@syncmesh/result";
+
 import type { Bridge } from "./bridge.js";
 import type { ByteStream } from "./framing.js";
 import type { AdmissionAsk } from "./gate.js";
@@ -146,7 +148,16 @@ export function createUpgrader(deps: UpgraderDeps): Upgrader {
 
     session = secureLink(link, {
       identity: deps.identity,
-      ...(deps.onDropped !== undefined && { onDropped: deps.onDropped }),
+      ...omitUndefined({
+        onDropped: deps.onDropped,
+        /**
+         * Reported, and nothing more. The door was asked about this peer when the link first
+         * proved it and the bridge is still the bridge for that conversation — attaching a second
+         * one here would put two sessions on one link, and asking the door again would be asking
+         * it to answer twice about a device that never left.
+         */
+        onSuperseded: options.onSuperseded,
+      }),
       /**
        * The peer signed for its id, so this link now reaches it — and only now is it attachable
        * under a name. Attaching before this would hand one peer's conversation to whoever
@@ -157,13 +168,6 @@ export function createUpgrader(deps: UpgraderDeps): Upgrader {
         options.onProven?.(proven);
         void admitted(proven);
       },
-      /**
-       * Reported, and nothing more. The door was asked about this peer when the link first
-       * proved it and the bridge is still the bridge for that conversation — attaching a second
-       * one here would put two sessions on one link, and asking the door again would be asking
-       * it to answer twice about a device that never left.
-       */
-      ...(options.onSuperseded !== undefined && { onSuperseded: options.onSuperseded }),
       onFailed: (cause) => close(`the session with ${who} failed: ${String(cause)}`),
     });
 
@@ -187,10 +191,13 @@ export function createUpgrader(deps: UpgraderDeps): Upgrader {
 
   return {
     bytes: (stream, options = {}) => {
-      const link = framed(stream, {
-        ...(deps.onDropped !== undefined && { onDropped: deps.onDropped }),
-        ...(options.maxFrameBytes !== undefined && { maxFrameBytes: options.maxFrameBytes }),
-      });
+      const link = framed(
+        stream,
+        omitUndefined({
+          onDropped: deps.onDropped,
+          maxFrameBytes: options.maxFrameBytes,
+        }),
+      );
       const upgraded = upgrade(link, options);
       stream.onClose(() => upgraded.close());
       return upgraded;

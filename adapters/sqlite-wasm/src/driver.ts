@@ -1,6 +1,6 @@
 import type { SqliteDriver } from "@syncmesh/storage";
 
-import { Result, TaggedError } from "@syncmesh/result";
+import { Result, TaggedError, omitUndefined } from "@syncmesh/result";
 import { schemaNameFor, sqliteDriver } from "@syncmesh/storage";
 
 import type { SqliteWasmUnavailable } from "./module.js";
@@ -193,13 +193,13 @@ export function wasmSqliteDriver(
   options: WasmSqliteOptions,
 ): Promise<Result<WasmSqliteDriver, WasmSqliteFailure>> {
   const storage = options.storage ?? "auto";
-  const where = {
+  const where = omitUndefined({
     name: options.name,
     schema: options.schema ?? schemaNameFor([]),
     directory: options.directory ?? DIRECTORY,
     capacity: options.capacity ?? CAPACITY,
-    ...(options.whenHeld !== undefined && { whenHeld: options.whenHeld }),
-  };
+    whenHeld: options.whenHeld,
+  });
   return needsWorker(options, storage)
     ? inWorker(options.worker, storage, where)
     : inThread(storage, where);

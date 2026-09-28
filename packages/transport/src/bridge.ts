@@ -3,6 +3,7 @@ import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 import type { CustodyReceipt, EventCrypto, GrantRegistry, Identity } from "@syncmesh/wire";
 
 import { createHub, heldAhead, interestKey } from "@syncmesh/engine";
+import { omitUndefined } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { decodeAndVerify, signEvent } from "@syncmesh/wire";
 
@@ -162,7 +163,7 @@ const outboundFor = (
   interest: options.interest,
   scope,
   errors,
-  ...(options.crypto !== undefined && { crypto: options.crypto }),
+  ...omitUndefined({ crypto: options.crypto }),
 });
 
 /**

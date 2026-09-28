@@ -1,9 +1,9 @@
 import type { TelemetryListener } from "@syncmesh/engine";
-import type { RelayConnection, RelayLimits, RelayRoom } from "@syncmesh/relay";
+import type { LinkSession, RelayConnection, RelayLimits, RelayRoom } from "@syncmesh/relay";
 import type { BlobStore, SqliteDriver } from "@syncmesh/storage";
 
 import { decodeRelayFrame, openRelayRoom } from "@syncmesh/relay";
-import { panic } from "@syncmesh/result";
+import { omitUndefined, panic } from "@syncmesh/result";
 import { sqlBlobStore, sqliteEventStore } from "@syncmesh/storage";
 import { bytesToHex, createIdentity, hexToBytes, randomBytes, type Identity } from "@syncmesh/wire";
 
@@ -149,19 +149,21 @@ export function relayDurableHost(
     const epoch = await epochOf(driver);
     const identity = await identityOf(driver);
     const blobs = options.blobs === false ? undefined : await openBlobs(driver);
-    const room = await openRelayRoom({
-      name: options.name ?? "main",
-      store,
-      epoch,
-      identity,
-      ...(options.keepaliveMs !== undefined && { keepaliveMs: options.keepaliveMs }),
-      ...(options.pageSize !== undefined && { pageSize: options.pageSize }),
-      ...(options.maxBacklog !== undefined && { maxBacklog: options.maxBacklog }),
-      ...(options.limits !== undefined && { limits: options.limits }),
-      ...(options.versions !== undefined && { versions: options.versions }),
-      ...(options.onTelemetry !== undefined && { onTelemetry: options.onTelemetry }),
-      ...(blobs !== undefined && { blobs }),
-    });
+    const room = await openRelayRoom(
+      omitUndefined({
+        name: options.name ?? "main",
+        store,
+        epoch,
+        identity,
+        keepaliveMs: options.keepaliveMs,
+        pageSize: options.pageSize,
+        maxBacklog: options.maxBacklog,
+        limits: options.limits,
+        versions: options.versions,
+        onTelemetry: options.onTelemetry,
+        blobs,
+      }),
+    );
     return room.match({
       ok: (value) => value,
       err: (failure) => panic(`the room failed to open: ${failure.message}`),
@@ -187,12 +189,15 @@ export function relayDurableHost(
       // so the join about to arrive still verifies (D33); an offer finishes the handshake with the
       // secret that was made; a session opens the next sealed frame. One never told anything is
       // told now, and what it is told is kept before anything else is
-      const conn = room.connect(durableRelaySocket(ws), {
-        ...(kept.nonce !== undefined && { challenge: kept.nonce }),
-        ...(kept.offer !== undefined && { offer: kept.offer }),
-        ...(kept.session !== undefined && { session: kept.session }),
-        onSecured: (session) => resume.secured(ws, session),
-      });
+      const conn = room.connect(
+        durableRelaySocket(ws),
+        omitUndefined({
+          challenge: kept.nonce,
+          offer: kept.offer,
+          session: kept.session,
+          onSecured: (session: LinkSession) => resume.secured(ws, session),
+        }),
+      );
       live.set(ws, conn);
       const offer = conn.offer();
       if (kept.nonce === undefined && conn.challenge !== undefined)

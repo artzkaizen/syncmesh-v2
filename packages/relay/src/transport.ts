@@ -3,6 +3,7 @@ import type { PeerId } from "@syncmesh/kernel";
 import type { Transport, TransportContext } from "@syncmesh/transport";
 
 import { createHub, interestFrom, narrows } from "@syncmesh/engine";
+import { omitUndefined } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { grantFrame, grantRequestFrame, presenceFrame } from "@syncmesh/transport";
 
@@ -151,16 +152,18 @@ class RelayLink {
     this.name = options.name ?? "relay";
     this.versions = options.versions ?? RELAY_PROTOCOL_VERSIONS;
     this.report = createLinkReport(this.name, () => this.ctx?.now?.() ?? Temporal.Now.instant());
-    this.redial = createRedial({
-      dial: options.dial,
-      done: () => this.stopped || this.fatal,
-      onDialed: (dialed) => this.session(dialed),
-      // a dial that never opened is not a link that closed: nothing was ever there to end, and this
-      // is the one ending a relay that is simply not running ever produces
-      onFailed: (cause) => this.report.undialled(reasonOf(cause, UNDIALLED)),
-      ...(options.reconnectMs !== undefined && { reconnectMs: options.reconnectMs }),
-      ...(options.maxReconnectMs !== undefined && { maxReconnectMs: options.maxReconnectMs }),
-    });
+    this.redial = createRedial(
+      omitUndefined({
+        dial: options.dial,
+        done: () => this.stopped || this.fatal,
+        onDialed: (dialed: RelayDial) => this.session(dialed),
+        // a dial that never opened is not a link that closed: nothing was ever there to end, and this
+        // is the one ending a relay that is simply not running ever produces
+        onFailed: (cause: unknown) => this.report.undialled(reasonOf(cause, UNDIALLED)),
+        reconnectMs: options.reconnectMs,
+        maxReconnectMs: options.maxReconnectMs,
+      }),
+    );
   }
 
   private sendSafe(frame: Uint8Array): void {

@@ -2,7 +2,7 @@ import type { PeerId } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
 import type { Transport, TransportCondition } from "@syncmesh/transport";
 
-import { Result, TaggedError } from "@syncmesh/result";
+import { omitUndefined, Result, TaggedError } from "@syncmesh/result";
 
 import type { TransportAddFailed } from "./transports.js";
 
@@ -70,10 +70,12 @@ export function standInFor(real: Transport, as: TransportCondition): Transport {
       cb(false);
       return () => undefined;
     },
-    ...(real.kind !== undefined && { kind: real.kind }),
-    ...(real.priority !== undefined && { priority: real.priority }),
-    ...(real.maxLinks !== undefined && { maxLinks: real.maxLinks }),
-    ...(real.reaches !== undefined && { reaches: () => NOBODY }),
+    ...omitUndefined({
+      kind: real.kind,
+      priority: real.priority,
+      maxLinks: real.maxLinks,
+      reaches: real.reaches !== undefined ? () => NOBODY : undefined,
+    }),
   };
 }
 

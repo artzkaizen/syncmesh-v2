@@ -6,7 +6,7 @@ import type { SqlWriteError } from "@syncmesh/storage";
 import type { SQLiteTable } from "drizzle-orm/sqlite-core";
 
 import { createLive, readPredicate, readScope } from "@syncmesh/drizzle";
-import { Result } from "@syncmesh/result";
+import { Result, omitUndefined } from "@syncmesh/result";
 import { getTableName } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/sqlite-proxy";
 
@@ -78,14 +78,18 @@ export function remoteHandle(deps: RemoteHandleDeps): Handle {
     method: ProxyMethod,
     span?: number,
   ): Promise<ProxyResult> =>
-    wire.ask<ProxyResult>({
-      kind: "sql",
-      handle,
-      statement,
-      params,
-      method,
-      ...(span !== undefined && { span }),
-    });
+    wire.ask<ProxyResult>(
+      omitUndefined({
+        // as const: without the call's contextual type the discriminant widens to `string`,
+        // and the union it addresses stops matching
+        kind: "sql" as const,
+        handle,
+        statement,
+        params,
+        method,
+        span,
+      }),
+    );
 
   /** The shared sink: an ordinary read, belonging to no span and never landing inside one. */
   const sql = (
@@ -139,11 +143,7 @@ export function remoteHandle(deps: RemoteHandleDeps): Handle {
     inside = token;
     try {
       const body = { kind: "enter", handle, mode, span: token } as const;
-      await wire.ask({
-        ...body,
-        ...(named.id !== undefined && { operationId: named.id }),
-        ...(named.label !== undefined && { label: named.label }),
-      });
+      await wire.ask(omitUndefined({ ...body, operationId: named.id, label: named.label }));
       let thrown: unknown;
       let value: T | undefined;
       try {
