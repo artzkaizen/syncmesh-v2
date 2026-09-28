@@ -14,18 +14,30 @@ export type {
   CallError,
   CanCall,
   DeclaredErrors,
+  HandlerRun,
+  InputChain,
   MutationDef,
+  MutationRun,
+  OutputChain,
+  ProcDef,
+  ProcedureBuilder,
   ProcedureDef,
   QueryCall,
   QueryDef,
+  QueryMethod,
+  QueryRoute,
+  QueryRun,
   ReadAnswer,
+  RoutedChain,
   RouteMeta,
   Router,
+  WriteMethod,
   WriteResult,
+  WriteRoute,
 } from "./api.js";
 // `meshApi` is deliberately absent: it builds a client out of a mesh, which is `createClient`'s
 // job and `connectMesh`'s, not an app's. It lives at `@syncmesh/orpc/internal` for those two.
-export { mutation, query } from "./api.js";
+export { isDef, mutation, procedure, query } from "./api.js";
 export {
   AuthorityUnreachable,
   InputInvalid,

@@ -82,9 +82,30 @@ export interface MutationDef<I, T> {
 
 /** HTTP/OpenAPI metadata and nothing else (book ch. 7): the method describes HTTP, never transactions. */
 export interface RouteMeta {
-  readonly method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  readonly method?: "GET" | "QUERY" | "POST" | "PUT" | "PATCH" | "DELETE";
   readonly path?: string;
   readonly tags?: readonly string[];
+}
+
+/**
+ * Methods a query may be served over: reads only — a query never mutates (ledger A).
+ * QUERY is the safe-method-with-body (draft-ietf-httpbis-safe-method-w-body) for
+ * procedure inputs too large or structured for URL params.
+ */
+export type QueryMethod = "GET" | "QUERY";
+/** Methods a mutation or authority call may be served over. */
+export type WriteMethod = "POST" | "PUT" | "PATCH" | "DELETE";
+
+/**
+ * Routes constrained by what they serve (ledger A): a query chain accepts only
+ * QueryRoute, a mutation/authority chain only WriteRoute. A POST on a query or
+ * a GET on a mutation is a type error at the chain, not a runtime surprise.
+ */
+export interface QueryRoute extends Omit<RouteMeta, "method"> {
+  readonly method?: QueryMethod;
+}
+export interface WriteRoute extends Omit<RouteMeta, "method"> {
+  readonly method?: WriteMethod;
 }
 
 /** The failures a gate declares by name; each crosses the wire as its own tag and revives typed. */
@@ -219,6 +240,107 @@ export const query = { ...queryHead(), route: (route: RouteMeta) => queryHead(ro
 
 /** A write that runs on this device, inside one transaction, as one event. */
 export const mutation = { ...mutationHead(), route: (route: RouteMeta) => mutationHead(route) };
+
+/**
+ * One builder for all three kinds (ledger A): a contract is everything before the
+ * terminal, and the terminal only says where it runs — `.handler()` here, `.authority()`
+ * there. The HTTP method says what it is: GET/QUERY is a query, everything else a
+ * mutation — so there is no `.via()` step, and a POST on a query is unrepresentable:
+ *
+ * ```ts
+ * procedure().route({ method: "POST", path: "/books" })
+ *   .input(BookInput).output(Book).handler(async ({ db, input }) => …);
+ * procedure().route({ method: "POST", path: "/issues/number" })
+ *   .input(Claim).output(Numbered).errors({ NO_SUCH_ISSUE: … }).authority();
+ * ```
+ *
+ * The established `query` / `mutation` chains below keep working unchanged; this is
+ * the single vocabulary new code uses. Defs built here are byte-identical to theirs.
+ */
+export type QueryRun<I, T> = (args: QueryContext<I>) => Runnable<T>;
+export type MutationRun<I, T> = (args: MutationContext<I>) => Promise<T> | T;
+export type HandlerRun<V extends "query" | "mutation", I, T> = V extends "query"
+  ? QueryRun<I, T>
+  : MutationRun<I, T>;
+export type ProcDef<V extends "query" | "mutation", I, T> = V extends "query"
+  ? QueryDef<I, T>
+  : MutationDef<I, T>;
+
+export interface ProcedureBuilder {
+  /**
+   * Method is required and determines the kind: GET/QUERY builds a query chain,
+   * POST/PUT/PATCH/DELETE a mutation chain. No `.via()` step — the method says it.
+   */
+  readonly route: <M extends QueryMethod | WriteMethod>(
+    route: Omit<RouteMeta, "method"> & { readonly method: M },
+  ) => RoutedChain<M extends QueryMethod ? "query" : "mutation">;
+}
+export interface RoutedChain<V extends "query" | "mutation"> {
+  readonly input: <S extends StandardSchemaV1>(schema: S) => InputChain<V, Output<S>>;
+  readonly handler: <T>(run: HandlerRun<V, void, T>) => ProcDef<V, void, T>;
+  readonly output: <O extends StandardSchemaV1>(output: O) => OutputChain<void, Output<O>>;
+}
+export interface InputChain<V extends "query" | "mutation", I> {
+  readonly handler: <T>(run: HandlerRun<V, I, T>) => ProcDef<V, I, T>;
+  readonly output: <O extends StandardSchemaV1>(output: O) => OutputChain<I, Output<O>>;
+}
+export interface OutputChain<I, O> {
+  /** No `.handler` after `.output()`: a bodiless chain is an authority call, by typestate. */
+  readonly authority: () => AuthorityDef<I, O>;
+  readonly errors: (errors: DeclaredErrors) => {
+    readonly authority: () => AuthorityDef<I, O>;
+  };
+}
+export function procedure(): ProcedureBuilder {
+  return {
+    // SAFETY: the method literal selects the chain; the conditional return type
+    // restores the kind for callers, so a GET chain only builds query defs.
+    route: ((route: RouteMeta) =>
+      route.method === "GET" || route.method === "QUERY"
+        ? routedQuery(route)
+        : routedMutation(route)) as ProcedureBuilder["route"],
+  };
+}
+const outputed = <V extends "query" | "mutation", I, O extends StandardSchemaV1>(
+  via: V,
+  route: RouteMeta,
+  schema: StandardSchemaV1 | undefined,
+  output: O,
+): OutputChain<I, Output<O>> => {
+  const settled = (errors?: DeclaredErrors): AuthorityDef<I, Output<O>> => {
+    const def = { kind: "authority" as const, via, output };
+    if (schema !== undefined) Object.assign(def, { schema });
+    if (errors !== undefined) Object.assign(def, { errors });
+    // route is always present here — unlike gateChain, no terminal is reachable
+    // before .route(), so this assigns unconditionally rather than conditionally.
+    Object.assign(def, { route });
+    // SAFETY: same object shape gateChain builds (kind/via/output plus optional
+    // schema/errors/route); the only difference is route is guaranteed, not optional.
+    return def as AuthorityDef<I, Output<O>>;
+  };
+  return {
+    authority: () => settled(),
+    errors: (errors) => ({ authority: () => settled(errors) }),
+  };
+};
+
+const routedQuery = (route: RouteMeta): RoutedChain<"query"> => ({
+  input: (schema) => ({
+    handler: (run) => ({ kind: "query", schema, run, route }),
+    output: (output) => outputed("query", route, schema, output),
+  }),
+  handler: (run) => ({ kind: "query", run, route }),
+  output: (output) => outputed("query", route, undefined, output),
+});
+
+const routedMutation = (route: RouteMeta): RoutedChain<"mutation"> => ({
+  input: (schema) => ({
+    handler: (run) => ({ kind: "mutation", schema, run, route }),
+    output: (output) => outputed("mutation", route, schema, output),
+  }),
+  handler: (run) => ({ kind: "mutation", run, route }),
+  output: (output) => outputed("mutation", route, undefined, output),
+});
 
 /** A leaf, as opposed to a group: the three kinds the grammar can end in. */
 export const isDef = (node: ProcedureDef | Router): node is ProcedureDef =>

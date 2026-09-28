@@ -27,15 +27,27 @@ export type {
   AuthorityHandlers,
   AuthorityLink,
   DeclaredErrors,
+  HandlerRun,
+  InputChain,
   MutationContext,
   MutationDef,
+  MutationRun,
+  OutputChain,
+  ProcDef,
+  ProcedureBuilder,
   ProcedureDef,
   QueryContext,
   QueryDef,
+  QueryMethod,
+  QueryRoute,
+  QueryRun,
+  RoutedChain,
   RouteMeta,
   Router,
+  WriteMethod,
+  WriteRoute,
 } from "./procedures.js";
-export { isDef, mutation, query } from "./procedures.js";
+export { isDef, mutation, procedure, query } from "./procedures.js";
 export { validate } from "./validate.js";
 
 /**
