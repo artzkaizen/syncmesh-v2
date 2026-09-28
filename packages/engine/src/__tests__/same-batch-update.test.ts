@@ -1,7 +1,7 @@
 import type { PeerId } from "@syncmesh/kernel";
 
 import { parseAccountId, parsePartitionKey, readRow } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -28,12 +28,12 @@ const ALICE = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 10 + i)).
 const ALICE_ID = String(parseAccountId(String(ALICE.peerId)).unwrap());
 const NOW = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 
-const schema = defineSchema({
-  partitions: { org: {} },
+const org = partition("org");
+const schema = syncSchema({
   tables: {
     notes: {
       columns: { id: t.text().primaryKey(), title: t.text(), ownerId: t.text() },
-      partition: "org",
+      partition: org,
       allow: ({ owner }) => ({ $default: owner("ownerId") }),
     },
   },

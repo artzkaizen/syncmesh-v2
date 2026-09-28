@@ -2,6 +2,8 @@ import type { SyncEvent } from "@syncmesh/kernel";
 
 import { Result, TaggedError } from "@syncmesh/result";
 
+import type { EventCrypto } from "./sealing.js";
+
 import { decodeCbor, type MalformedCbor } from "./cbor-decode.js";
 import { encodeCbor } from "./cbor.js";
 import { decodeEventCore, encodeEventCore, type MalformedEvent } from "./event-codec.js";
@@ -71,17 +73,24 @@ export interface VerifiedEvent extends SignedEvent {
   readonly sig: Uint8Array;
 }
 
-export function signEvent(event: SyncEvent, identity: Identity): VerifiedEvent {
-  const core = encodeEventCore(event);
+export function signEvent(
+  event: SyncEvent,
+  identity: Identity,
+  crypto?: EventCrypto,
+): VerifiedEvent {
+  const core = encodeEventCore(event, crypto);
   const sig = identity.sign(core);
   return { event, core, sig, wire: encodeCbor([core, sig]) };
 }
 
 /** `[core, sig]` → the event, only if the signature covers the received core bytes. Never throws. */
-export function decodeAndVerify(wire: Uint8Array): Result<VerifiedEvent, WireError> {
+export function decodeAndVerify(
+  wire: Uint8Array,
+  crypto?: EventCrypto,
+): Result<VerifiedEvent, WireError> {
   return Result.gen(function* () {
     const { core, sig } = yield* splitEnvelope(wire);
-    const event = yield* decodeEventCore(core);
+    const event = yield* decodeEventCore(core, crypto);
     const publicKey = hexToBytes(event.peerId).unwrap();
     if (!verify(core, sig, publicKey))
       return Result.err(
@@ -109,6 +118,20 @@ export function decodeAndVerify(wire: Uint8Array): Result<VerifiedEvent, WireErr
  * author by a peer that asks for it, and does not become reachable through this hop.
  */
 export function relayEnvelope(entry: SignedEvent): Uint8Array | undefined {
-  if (entry.sig === undefined) return undefined;
+  if (!isRelayable(entry)) return undefined;
   return encodeCbor([entry.core ?? encodeEventCore(entry.event), entry.sig]);
+}
+
+/**
+ * Whether {@link relayEnvelope} can build bytes for this entry — the one place the rule "can
+ * this ever leave this device" is written down.
+ *
+ * A signature is the whole of it. An entry without one is either this device's own write, which
+ * `signEvent` re-signs on the way out and never relays, or an event authored by a key this device
+ * does not hold — and no key here can make one. Callers that decide anything about reachability
+ * ask this rather than re-testing `sig`, so a relay's advertised coverage, a forwarder's refusal
+ * and a device's own audit of what it is stuck holding cannot disagree about the same row.
+ */
+export function isRelayable(entry: SignedEvent): entry is SignedEvent & { sig: Uint8Array } {
+  return entry.sig !== undefined;
 }

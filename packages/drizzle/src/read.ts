@@ -46,8 +46,8 @@ export const readPredicate = (name: string, scope: ReadScope): SQL => {
   const filters: SQL[] = [];
   if (actor !== undefined && entry !== undefined) {
     // SAFETY: rolesFor is typed by the manifest's own kinds; this entry's partition is one of them
-    const ladder = schema.rolesFor(entry.partition as never);
-    filters.push(fragment(compileRead(entry.table, ladder, entry.allow, actor, { dialect })));
+    const roles = schema.rolesFor(entry.partition as never);
+    filters.push(fragment(compileRead(entry.table, roles, entry.allow, actor, { dialect })));
   }
   if (partition !== undefined) filters.push(sql`"_partition" = ${String(partition)}`);
   if (filters.length === 0) return dialect === "postgres" ? sql`TRUE` : sql`1`;

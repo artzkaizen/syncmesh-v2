@@ -1,0 +1,36 @@
+{
+  "name": "@syncmesh/sqlite-expo",
+  "version": "0.0.0",
+  "description": "expo-sqlite driver for @syncmesh/storage: the device's own database, on a phone",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@syncmesh/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@syncmesh/engine": "workspace:*",
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/storage": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncmesh/config": "workspace:*",
+    "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/temporal": "workspace:*",
+    "@syncmesh/wire": "workspace:*",
+    "@types/bun": "catalog:",
+    "expo-sqlite": "~57.0.3",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "peerDependencies": {
+    "expo-sqlite": ">=16 || >=57"
+  }
+}

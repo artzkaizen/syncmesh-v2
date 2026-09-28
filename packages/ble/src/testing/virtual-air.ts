@@ -64,12 +64,34 @@ export interface VirtualAir {
   /** The share of packets that vanish, 0 to 1 — interference, rather than a link going down. */
   readonly setLoss: (rate: number) => void;
   readonly connections: () => number;
+  /**
+   * Every advertiser puts its advertisement in the air again.
+   *
+   * **A real advertisement repeats and this one did not.** `startAdvertising` broadcast once, so a
+   * scanner that was busy at that instant — holding a link it had not yet discovered was dead —
+   * never heard the advertiser again, and a pair could not re-link without somebody restarting a
+   * scan. On a handset the controller re-emits every fraction of a second, which is why a device
+   * that hangs up a stale link finds its peer again moments later. Called by a test that lets time
+   * pass, so the default behaviour of every existing test is unchanged.
+   */
+  readonly readvertise: () => void;
 }
 
 export interface AirOptions {
   /** Seeded, so a run that loses a packet at an awkward moment loses it again on replay. */
   readonly random?: () => number;
 }
+
+/** Whether one device is in range of another: nobody hears themselves, and no limit means everyone. */
+const canHear = (
+  reach: ReadonlyMap<string, readonly string[] | undefined>,
+  listener: string,
+  speaker: string,
+): boolean => {
+  if (listener === speaker) return false;
+  const only = reach.get(listener);
+  return only === undefined || only.includes(speaker);
+};
 
 export function virtualAir(mtu = 185, options: AirOptions = {}): VirtualAir {
   const endpoints = new Map<string, Endpoint>();
@@ -98,11 +120,7 @@ export function virtualAir(mtu = 185, options: AirOptions = {}): VirtualAir {
     return fresh;
   };
 
-  const hears = (listener: string, speaker: string): boolean => {
-    if (listener === speaker) return false;
-    const only = reach.get(listener);
-    return only === undefined || only.includes(speaker);
-  };
+  const hears = (listener: string, speaker: string): boolean => canHear(reach, listener, speaker);
 
   /** Delivery is a turn later, as a radio's is; a packet that "left" has not arrived yet. */
   const later = (deliver: () => void): void => {
@@ -130,6 +148,7 @@ export function virtualAir(mtu = 185, options: AirOptions = {}): VirtualAir {
 
   return {
     connections: () => wires.length,
+    readvertise: () => endpoints.forEach(broadcast),
     drop: (count) => void (dropping = count),
     setReach: (id, reachable) => void reach.set(id, reachable),
     setLoss: (rate) => void (loss = rate),

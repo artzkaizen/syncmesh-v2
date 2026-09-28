@@ -105,18 +105,30 @@ describe("Link", () => {
     expect(readRow(b.engine.state(), NOTES, N1)).toEqual(merged);
   });
 
-  test("catchUp while offline is a no-op; close stops live forwarding", async () => {
+  /**
+   * **`catchUp` on a down link used to answer `Result.ok(undefined)`.** A success that did
+   * nothing, and indistinguishable from the success that did everything — so a test asserting
+   * convergence over a link somebody forgot to bring back up passed, and a caller looping until
+   * `catchUp` succeeds span forever against a link that would never speak. Same class of lie as
+   * a relay dropping an event out of a page and reporting the page count.
+   */
+  test("catchUp while offline says so, rather than succeeding at nothing", async () => {
     const a = setup();
     const b = setup(PEER_B);
     const link = createLink(a.engine, b.engine);
     link.setOnline(false);
     await a.engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ x: 1 })));
-    (await link.catchUp()).unwrap();
+
+    const refused = await link.catchUp();
+    expect(refused.isErr()).toBe(true);
+    expect(refused.isErr() && refused.error._tag).toBe("LinkOffline");
     expect(readRow(b.engine.state(), NOTES, N1)).toBeUndefined();
+
     link.setOnline(true);
-    link.close();
+    link.close(); // close takes the link back offline, and the refusal survives it
     await a.engine.mutate(CREATE, (tx) => tx.update(NOTES, N1, row({ x: 2 })));
     await link.flush();
+    expect((await link.catchUp()).isErr()).toBe(true);
     expect(readRow(b.engine.state(), NOTES, N1)).toBeUndefined();
   });
 

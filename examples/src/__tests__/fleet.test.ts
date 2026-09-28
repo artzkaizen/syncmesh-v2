@@ -7,9 +7,11 @@ import { parsePartitionKey } from "@syncmesh/kernel";
 import {
   RELAY_PROTOCOL_VERSIONS,
   decodeRelayFrame,
+  isHello,
   joinFrame,
   memoryFanout,
   relayTransport,
+  secureLink,
   startRelay,
   webSocketDial,
 } from "@syncmesh/relay";
@@ -119,16 +121,26 @@ const converge = async (first: RunningRelay, second: RunningRelay) => {
   return { both, digests };
 };
 
-/** What one instance's own log holds, asked the way a fresh phone asks: join empty, count the pages. */
+/** What one instance's own log holds, asked the way a fresh phone asks: answer the room's hello, join empty over the sealed link, count the pages (D36). */
 const eventsInLog = async (relay: RunningRelay, n: number): Promise<number> => {
   const dialed = await webSocketDial(`${relay.url}/${ROOM}`)();
+  const identity = createIdentity(seed(n)).unwrap();
+  const link = secureLink(identity);
   const frames: RelayFrame[] = [];
   dialed.onFrame((bytes) => {
-    const decoded = decodeRelayFrame(bytes);
+    if (link.session() === undefined) {
+      if (!isHello(bytes)) return;
+      link.receive(bytes).unwrap();
+      if (link.hello !== undefined) dialed.send(link.hello);
+      const join = link.seal(joinFrame([...RELAY_PROTOCOL_VERSIONS], identity.peerId, new Map()));
+      if (join !== undefined) dialed.send(join);
+      return;
+    }
+    const opened = link.receive(bytes);
+    if (opened.isErr() || opened.value === undefined) return;
+    const decoded = decodeRelayFrame(opened.value);
     if (decoded.isOk()) frames.push(decoded.value);
   });
-  const peer = createIdentity(seed(n)).unwrap().peerId;
-  dialed.send(joinFrame([...RELAY_PROTOCOL_VERSIONS], peer, new Map()));
   await until(() => Promise.resolve(frames.some((f) => f.kind === "page" && !f.more)));
   dialed.close();
   return frames.reduce((sum, f) => sum + (f.kind === "page" ? f.events.length : 0), 0);

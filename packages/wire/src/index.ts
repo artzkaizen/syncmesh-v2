@@ -14,6 +14,7 @@ export {
   BadSignature,
   MalformedEnvelope,
   decodeAndVerify,
+  isRelayable,
   relayEnvelope,
   signEvent,
   splitEnvelope,
@@ -34,10 +35,11 @@ export {
   certificateHolds,
   certifyFeed,
   chunkFrom,
+  feedCertificateCore,
   feedHeadOf,
   verifyChunk,
 } from "./feed.js";
-export type { Grant, GrantError, GrantOrigin, GrantRequest } from "./grant.js";
+export type { Grant, WrappedKey, GrantError, GrantOrigin, GrantRequest } from "./grant.js";
 export {
   BadGrantSignature,
   GrantExpired,
@@ -57,3 +59,44 @@ export {
 } from "./account.js";
 export type { GrantRegistry, GrantRegistryOptions } from "./grant-registry.js";
 export { createGrantRegistry } from "./grant-registry.js";
+export type {
+  CheckpointCertificate,
+  CheckpointError,
+  CheckpointRequest,
+  CheckpointRow,
+} from "./checkpoint.js";
+export {
+  BadCheckpointSignature,
+  CheckpointMismatch,
+  MalformedCheckpoint,
+  checkpointHash,
+  encodeCheckpoint,
+  issueCheckpoint,
+  verifyCheckpoint,
+} from "./checkpoint.js";
+export type { CustodyReceipt, ReceiptError, ReceiptRequest } from "./receipt.js";
+export {
+  BadReceiptSignature,
+  MalformedReceipt,
+  encodeReceipt,
+  issueReceipt,
+  verifyReceipt,
+} from "./receipt.js";
+export type { ContentKey, EventCrypto, KeyEpoch } from "./sealing.js";
+export {
+  CONTENT_KEY_BYTES,
+  FIRST_EPOCH,
+  SealFailed,
+  epochOf,
+  newContentKey,
+  openPayload,
+  sealPayload,
+  unwrapKey,
+  wrapKey,
+} from "./sealing.js";
+export type { KeyRing } from "./keyring.js";
+export { createKeyRing } from "./keyring.js";
+
+export type { Entropy } from "./entropy.js";
+export { NoSecureRandomness, randomBytes, supplyEntropy } from "./entropy.js";
+export { supplySigner, type Signer } from "./signing.js";

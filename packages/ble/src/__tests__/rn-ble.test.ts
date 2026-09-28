@@ -37,8 +37,9 @@ import { bleRadioFrom } from "../rn-ble.js";
  * not, and every difference between them is a silent failure rather than a type error, because
  * the module is loaded at runtime on a device.
  */
-const fake = () => {
+const fake = (state = "poweredOn") => {
   const listeners = new Map<string, (payload: never) => void>();
+  let adapter = state;
   const calls: { name: string; args: readonly unknown[] }[] = [];
   const record =
     (name: string) =>
@@ -46,6 +47,7 @@ const fake = () => {
       calls.push({ name, args });
     };
   const manager: RnBleManager = {
+    getState: async () => adapter,
     startAdvertising: record("startAdvertising"),
     stopAdvertising: record("stopAdvertising"),
     publishServices: record("publishServices"),
@@ -80,6 +82,14 @@ const fake = () => {
     manager,
     calls,
     listening: () => [...listeners.keys()],
+    /** The adapter settling, as CoreBluetooth reports it a moment after the managers are built. */
+    settle: (next: string) => {
+      adapter = next;
+      const listener = listeners.get("onStateChanged");
+      // SAFETY: the fake stores rn-ble's listener under its event name and hands it that event's
+      // own payload, which is exactly the contract `never` stands in for on the real module
+      listener?.({ state: next } as never);
+    },
     /** Fires an event with rn-ble's own payload shape, not the port's. */
     emit: (event: string, payload: RnEventPayload) => {
       const listener = listeners.get(event);
@@ -165,12 +175,24 @@ describe("rn-ble as a BleRadio", () => {
     expect(rn.listening()).toEqual([]);
   });
 
-  test("scans with duplicates off, because discovery already fires once per peer", async () => {
+  /**
+   * **This test used to assert the opposite, and that is the bug it now guards.**
+   *
+   * Core Bluetooth reports each peripheral once per scan session unless duplicates are asked
+   * for, and `bleTransport` recovers a dropped link by waiting for the peer's next
+   * advertisement — `seen.forget(hint)` on close exists to make the next sighting count, and the
+   * dial backoff is a wait for a later one. Off, the first drop is permanent: the radio says
+   * `ok`, reaches nobody, and two phones in a room never find each other again.
+   *
+   * `discovery()` firing once per peer is what makes duplicates cheap, not what makes them
+   * unnecessary — a sighting inside its TTL never reaches a dial.
+   */
+  test("scans with duplicates on, because a dropped link recovers on the next sighting", async () => {
     const rn = fake();
     await bleRadioFrom(rn.manager).startScan({ serviceUuids: ["svc"] });
     expect(rn.calls.find((c) => c.name === "startScan")?.args[0]).toEqual({
+      allowDuplicates: true,
       serviceUuids: ["svc"],
-      allowDuplicates: false,
     });
   });
 
@@ -183,5 +205,43 @@ describe("rn-ble as a BleRadio", () => {
     const rn = fake();
     const { requestMtu: _gone, ...without } = rn.manager;
     expect(bleRadioFrom(without).requestMtu).toBeUndefined();
+  });
+});
+
+/**
+ * The window between constructing a manager and CoreBluetooth answering with a real state.
+ *
+ * Worth a test because the failure is a race and reads like a hardware fault: publishing in that
+ * window rejects with `RNBleNotPoweredOnException: state=unknown`, which sounds like "this phone
+ * has no Bluetooth" and is actually "ask again in ten milliseconds". It was found on a real phone,
+ * where the transport published the instant it started and lost the race every time.
+ */
+describe("an adapter that has not reported its state yet", () => {
+  test("holds the call until the radio is on, rather than refusing", async () => {
+    const rn = fake("unknown");
+    const radio = bleRadioFrom(rn.manager);
+
+    const publishing = radio.publishServices({
+      services: [{ uuid: "1234", characteristics: [{ uuid: "5678" }] }],
+    });
+    // nothing may reach the module while the adapter is still starting up
+    await Promise.resolve();
+    expect(rn.calls.map((call) => call.name)).not.toContain("publishServices");
+
+    rn.settle("poweredOn");
+    await publishing;
+    expect(rn.calls.map((call) => call.name)).toContain("publishServices");
+  });
+
+  test("stops waiting on a state that will never become poweredOn, and lets the module refuse", async () => {
+    const rn = fake("unknown");
+    const radio = bleRadioFrom(rn.manager);
+
+    const scanning = radio.startScan({ serviceUuids: ["1234"] });
+    rn.settle("unsupported");
+    await scanning;
+    // `unsupported` is an answer, not a wait: the call goes through and the module raises the
+    // refusal a caller can act on, which is what a simulator with no radio should produce
+    expect(rn.calls.map((call) => call.name)).toContain("startScan");
   });
 });

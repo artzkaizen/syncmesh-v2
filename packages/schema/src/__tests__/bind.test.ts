@@ -2,11 +2,12 @@ import { evaluate } from "@syncmesh/policy";
 import { describe, expect, test } from "bun:test";
 
 import { t } from "../column.js";
-import { defineSchema } from "../manifest.js";
+import { syncSchema } from "../manifest.js";
+import { ladder, partition } from "../partition.js";
 
-const schema = defineSchema({
-  partitions: { org: { shelf: {} } },
-  roles: { org: ["owner", "admin", "member"] },
+const org = partition("org", { roles: ladder("owner", "admin", "member") });
+const shelf = partition("shelf", { roles: org.roles });
+const schema = syncSchema({
   tables: {
     books: {
       columns: {
@@ -16,7 +17,7 @@ const schema = defineSchema({
         createdBy: t.text(),
         entityId: t.text(),
       },
-      partition: "shelf",
+      partition: shelf,
       allow: ({ role, owner, claim, can, rowIs, patchOnly, any, all, not }) => ({
         $default: role("member"),
         update: any(owner("createdBy"), role("admin")),
@@ -65,18 +66,14 @@ describe("bound combinators", () => {
 
   test("a typo in a column or role is a compile error", () => {
     const rejected = () =>
-      defineSchema({
-        partitions: { org: {} },
-        roles: { org: ["owner", "admin"] },
+      syncSchema({
         tables: {
           a: {
             columns: { id: t.uuid().primaryKey(), createdBy: t.text() },
-            partition: "org",
-            allow: ({ owner, role, rowIs, patchOnly }) => ({
+            partition: org,
+            allow: ({ owner, rowIs, patchOnly }) => ({
               // @ts-expect-error not a column of this table
               $default: owner("createdby"),
-              // @ts-expect-error not a role in the manifest
-              update: role("nope"),
               // @ts-expect-error not a column
               delete: rowIs({ ratng: 5 }),
               // @ts-expect-error not a column

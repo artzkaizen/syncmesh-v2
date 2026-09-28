@@ -19,7 +19,8 @@ import {
   type DocumentAdapter,
 } from "../documents.js";
 import { fromDrizzle } from "../from-drizzle.js";
-import { defineSchema } from "../manifest.js";
+import { syncSchema } from "../manifest.js";
+import { ladder, partition } from "../partition.js";
 import { table } from "../table.js";
 import { assertType, type Equal } from "./fixtures.js";
 
@@ -38,7 +39,7 @@ const notes = pgTable("notes", {
 
 const deny = ({ deny: no }: { readonly deny: PolicyNode }) => ({ $default: no });
 const oneTable = (columns: Columns, derive: DeriveBlock<Columns> = {}) =>
-  defineSchema({ tables: { notes: { columns, derive } } });
+  syncSchema({ tables: { notes: { columns, derive } } });
 // SAFETY: a merge value past the types, to exercise the runtime backstop behind them
 const cast = <T>(value: T) => value as never;
 
@@ -82,13 +83,12 @@ describe("declaring a document column", () => {
 });
 
 describe("the manifest's shareable half", () => {
-  const schema = defineSchema({
-    partitions: { workspace: {} },
-    roles: { workspace: ["editor"] },
+  const workspace = partition("workspace", { roles: ladder("editor") });
+  const schema = syncSchema({
     tables: {
       notes: {
         columns: fromDrizzle(notes, { merge: { content: loro } }),
-        partition: "workspace",
+        partition: workspace,
         derive: {
           title: from("content", (d: FakeDoc) => d.text.split("\n")[0] ?? ""),
           wordCount: from("content", (d: FakeDoc) => d.text.split(/\s+/).length),

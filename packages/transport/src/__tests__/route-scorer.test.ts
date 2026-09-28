@@ -2,7 +2,7 @@ import type { PeerId } from "@syncmesh/kernel";
 
 import { describe, expect, test } from "bun:test";
 
-import type { RouteCandidate, RouteMessage } from "../route-scorer.js";
+import type { RouteCandidate, RouteMessage, RoutePolicy } from "../route-scorer.js";
 
 import { KIND } from "../frame-parts.js";
 import { ORDINARY_LINK, pickRoutes, scoreRoute } from "../route-scorer.js";
@@ -103,7 +103,19 @@ describe("narrowing to the link that reaches the peer", () => {
     ]);
     // a medium that cannot enumerate its links is never narrowed away by one that can
     expect(ids(pickRoutes([ble, relayToBoth], { ...liveEvent, to: bob }))).toEqual(["relay"]);
-    expect(ids(pickRoutes([ble, shippedRelay], { ...liveEvent, to: bob }))).toEqual(["ble"]);
+    /**
+     * Two mediums, neither of which tracks its links: there is no evidence about `bob` at all, so
+     * both are asked rather than the better-scoring one picked.
+     *
+     * This assertion used to read `["ble"]`. That was scoring answering a question nobody had
+     * asked — `direct` and bandwidth describe the *medium*, and the question was whether bob is on
+     * the other end of it. A radio outscores a relay on every small frame, so the cap handed each
+     * event to the medium with the shortest reach and no way of knowing whether it reached.
+     */
+    expect(ids(pickRoutes([ble, shippedRelay], { ...liveEvent, to: bob })).sort()).toEqual([
+      "ble",
+      "relay",
+    ]);
   });
 
   test("narrowing never empties the set while any link is online", () => {
@@ -205,5 +217,107 @@ describe("scoring one link against one frame", () => {
     const first = scoreRoute(ble, liveEvent);
     scoreRoute(relay, snapshotPage);
     expect(scoreRoute(ble, liveEvent)).toBe(first);
+  });
+});
+
+/**
+ * Delivery, as against dispatch: what happens to a frame when nobody can honestly say the peer
+ * is reachable, and what one medium's claim does to every other medium.
+ *
+ * These are the two ways a write disappears on real hardware. Two phones on Wi-Fi, one drops the
+ * network, and the event never arrives — not because BLE failed to carry it, but because routing
+ * had already decided BLE was the only medium that would be asked.
+ */
+describe("a frame for a peer, when the mediums disagree about reaching it", () => {
+  // SAFETY: a PeerId is 64 hex characters and this is 64 of one, which is the whole of the shape
+  const FAR = "f".repeat(64) as PeerId;
+  const event = { cls: KIND.event, bytes: 400 } satisfies RouteMessage;
+
+  /**
+   * A claim still wins, and that is a decision rather than an oversight.
+   *
+   * A `proven` entry outlives its link by up to the liveness deadline, so a claim can be stale and
+   * the frame can be handed to a radio that will not deliver it. The fix for that is to make the
+   * claim accurate — the deadline in `createLiveness`, which hangs up a quiet link — and to make
+   * the catch-up that follows prompt. Sending every event down a second medium forever, to cover a
+   * window that is bounded in seconds, is a permanent cost for a transient risk.
+   */
+  test("a claim is ranked above a shrug, so the medium holding the peer carries it", () => {
+    const claiming = { ...ble, reaches: new Set([FAR]) } satisfies RouteCandidate;
+    expect(pickRoutes([claiming, relay], { ...event, to: FAR }).map((route) => route.id)).toEqual([
+      "ble",
+    ]);
+
+    // and the other way round: a claiming relay beats a radio that cannot say, which is the case
+    // scoring alone got backwards
+    const relayClaims = { ...relay, reaches: new Set([FAR]) } satisfies RouteCandidate;
+    expect(pickRoutes([ble, relayClaims], { ...event, to: FAR }).map((route) => route.id)).toEqual([
+      "relay",
+    ]);
+  });
+
+  test("when nobody claims the peer, every medium is asked rather than the best-scoring one", () => {
+    // no `reaches` anywhere: neither medium can say. Scoring then decides on `direct` and
+    // bandwidth — facts about the *medium*, which answer a question nobody asked, because the
+    // question was whether this peer is on the other end of it.
+    const picked = pickRoutes([ble, relay], { ...event, to: FAR });
+
+    expect(picked.map((route) => route.id).sort()).toEqual(["ble", "relay"]);
+  });
+});
+
+/**
+ * An app's own ordering, and the two things it is not allowed to decide.
+ *
+ * The built-in order prices bandwidth and power, which suits a phone in a pocket and not a rack of
+ * devices on mains power. That preference belongs to whoever deployed them. What does *not* belong
+ * to them is whether a frame is delivered: a policy orders the mediums, and the mediums it ranks
+ * last are still asked when nothing above them claimed the addressee.
+ */
+describe("an app-supplied route policy", () => {
+  // SAFETY: a PeerId is 64 hex characters and this is 64 of one, which is the whole of the shape
+  const SOMEONE = "a".repeat(64) as PeerId;
+  const small = { cls: KIND.event, bytes: 400 } satisfies RouteMessage;
+
+  test("it reorders: a deployment that would rather spend the radio than wait", () => {
+    const bleClaims = { ...ble, reaches: new Set([SOMEONE]) } satisfies RouteCandidate;
+    const relayClaims = { ...relay, reaches: new Set([SOMEONE]) } satisfies RouteCandidate;
+    const both = [relayClaims, bleClaims];
+
+    // the built-in order puts the radio first for a small frame, on the direct bonus
+    expect(pickRoutes(both, { ...small, to: SOMEONE })[0]?.id).toBe("ble");
+
+    // a fleet on mains power inverts it — no edit to any adapter, just a different preference
+    const preferWide: RoutePolicy = (candidate) => (candidate.direct ? 100 : 2000);
+    expect(pickRoutes(both, { ...small, to: SOMEONE }, preferWide)[0]?.id).toBe("relay");
+  });
+
+  test("a policy that tries to refuse a medium ranks it last instead of losing the frame", () => {
+    const silence: RoutePolicy = () => 0;
+    const picked = pickRoutes([ble, relay], { ...small, to: SOMEONE }, silence);
+
+    // nobody claimed this peer, so both are asked whatever the policy thinks of them — a routing
+    // preference that could empty the set is a preference that can drop a write
+    expect(picked.length).toBe(2);
+  });
+
+  test("a policy that returns nonsense costs its preference, never a frame", () => {
+    const broken: RoutePolicy = () => Number.NaN;
+    const picked = pickRoutes([ble, relay], { ...small, to: SOMEONE }, broken);
+
+    expect(picked.length).toBe(2);
+    // and the built-in order still stands underneath, so the ranking is not arbitrary either
+    expect(picked[0]?.id).toBe("ble");
+  });
+
+  test("it cannot overturn the library's own refusals", () => {
+    const offline = { ...ble, online: false } satisfies RouteCandidate;
+    const insist: RoutePolicy = () => 9_000;
+    expect(pickRoutes([offline], small, insist)).toEqual([]);
+
+    // presence must never be the traffic that wakes a sleeping radio, whatever an app prefers
+    const sleeping = { ...ble, dormant: true } satisfies RouteCandidate;
+    const presence = { cls: KIND.presence, bytes: 60 } satisfies RouteMessage;
+    expect(pickRoutes([sleeping], presence, insist)).toEqual([]);
   });
 });

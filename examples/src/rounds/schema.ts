@@ -1,4 +1,4 @@
-import { defineSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 /** The ward this demo runs under: one practice, as `kind:id`. */
@@ -30,10 +30,10 @@ export const observation = sqliteTable("observation", {
 });
 
 /** The manifest: what syncs, which instance it hangs under, and who may write it. */
+const practice = partition("practice", { roles: ladder("owner", "clinician", "observer") });
+
 export const roundsSchema = () =>
-  defineSchema({
-    partitions: { practice: {} },
-    roles: { practice: ["owner", "clinician", "observer"] },
+  syncSchema({
     tables: {
       patient: {
         columns: {
@@ -41,7 +41,7 @@ export const roundsSchema = () =>
           name: t.text(),
           bed: t.text(),
         },
-        partition: "practice",
+        partition: practice,
         allow: ({ role }) => ({ $default: role("clinician"), read: role("observer") }),
       },
       observation: {
@@ -54,7 +54,7 @@ export const roundsSchema = () =>
           author: t.text(),
           amends: t.text().nullable(),
         },
-        partition: "practice",
+        partition: practice,
         // an observation is appended and amended, never updated or deleted
         // append and amend, never update or delete: `$default` is the refusal, and the two
         // operations an observation actually has are the exceptions to it

@@ -1,10 +1,9 @@
 import type { CellValue, ColumnName, PeerId, Procedure, Row, RowKey } from "@syncmesh/kernel";
 
-import { taggedCause } from "@syncmesh/drizzle";
 import { createEngine, createMemoryEventStore, linkDevice, links } from "@syncmesh/engine";
 import { createHlcClock, parseAccountId, parsePartitionKey } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { RESERVED, defineSchema, t } from "@syncmesh/schema";
+import { RESERVED, partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import {
   createIdentity,
@@ -29,19 +28,27 @@ import { createMesh } from "../mesh.js";
  * accounts on — that links exist for.
  */
 
+/** The tag the capture threw, under Drizzle's one wrapper — the same unwrap `withMesh` does. */
+const tagOf = (thrown: Error): string | undefined => {
+  // SAFETY: reading an optional discriminant off an Error — absent on a plain one, which is
+  // what `undefined` here means
+  const tagged = (thrown.cause instanceof Error ? thrown.cause : thrown) as { _tag?: string };
+  return tagged._tag;
+};
+
 const notes = sqliteTable("notes", {
   id: text().primaryKey(),
   title: text().notNull(),
   ownerId: text().notNull(),
 });
 
+const org = partition("org");
 const schema = () =>
-  defineSchema({
-    partitions: { org: {} },
+  syncSchema({
     tables: {
       notes: {
         columns: { id: t.text().primaryKey(), title: t.text(), ownerId: t.text() },
-        partition: "org",
+        partition: org,
         allow: ({ owner }) => ({ $default: owner("ownerId") }),
       },
     },
@@ -85,8 +92,7 @@ const inTempDir = async (run: (dataDir: string) => Promise<void>) => {
 const outcome = (write: Promise<unknown>) =>
   write.then(
     () => "ok",
-    (cause: unknown) =>
-      cause instanceof Error ? (taggedCause(cause)?._tag ?? String(cause)) : String(cause),
+    (cause: unknown) => (cause instanceof Error ? (tagOf(cause) ?? String(cause)) : String(cause)),
   );
 
 const column = (name: string): ColumnName => {

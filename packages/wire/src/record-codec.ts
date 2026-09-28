@@ -1,4 +1,4 @@
-import type { Cell, ColumnName, RowRecord, Stamp } from "@syncmesh/kernel";
+import type { Cell, ColumnName, PeerId, RowRecord, Stamp } from "@syncmesh/kernel";
 
 import { hlcOf, parsePartitionKey, parsePeerId } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
@@ -93,13 +93,37 @@ function decodeCell(value: CborValue): Result<readonly [ColumnName, Cell], Malfo
 const optionalStamp = (value: CborValue | undefined): Result<Stamp | undefined, MalformedRecord> =>
   value === null ? Result.ok(undefined) : stampFromCbor(value);
 
+/**
+ * The devices this process has already decoded a stamp for, keyed by their raw bytes.
+ *
+ * The population is a mesh's device set — a handful, and the same handful for the life of the
+ * process — while the *lookups* are one per cell, which is thousands per boot. The key is the
+ * bytes read as latin-1 rather than as hex because it is only ever compared, never shown: one
+ * string of 32 characters against `bytesToHex`'s loop of 32 `toString`/`padStart`/concat triples,
+ * which is the work this exists to stop repeating.
+ */
+const peers = new Map<string, PeerId>();
+
+const keyOf = (bytes: Uint8Array): string => String.fromCharCode(...bytes);
+
+/** The peer id for these bytes, validated the first time and remembered after. */
+function internPeer(bytes: Uint8Array): Result<PeerId, MalformedRecord> {
+  const key = keyOf(bytes);
+  const known = peers.get(key);
+  if (known !== undefined) return Result.ok(known);
+  return parsePeerId(bytesToHex(bytes))
+    .mapError((e) => new MalformedRecord({ message: e.message }))
+    .map((peerId) => {
+      peers.set(key, peerId);
+      return peerId;
+    });
+}
+
 function stampFromCbor(value: CborValue | undefined): Result<Stamp, MalformedRecord> {
   if (!Array.isArray(value) || value.length !== 3) return malformed("stamp is not a triple");
   const [ms, logical, peer] = value;
   if (!isSafeNonNegative(ms) || !isSafeNonNegative(logical))
     return malformed("stamp clock is not a pair of integers");
   if (!(peer instanceof Uint8Array)) return malformed("stamp peer is not bytes");
-  return parsePeerId(bytesToHex(peer))
-    .mapError((e) => new MalformedRecord({ message: e.message }))
-    .map((peerId) => ({ hlc: hlcOf(ms, logical), peer: peerId }));
+  return internPeer(peer).map((peerId) => ({ hlc: hlcOf(ms, logical), peer: peerId }));
 }

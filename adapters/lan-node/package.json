@@ -1,0 +1,30 @@
+{
+  "name": "@syncmesh/lan-node",
+  "version": "0.0.0",
+  "description": "The LAN network on Node's sockets: dgram for the group, net for the links",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@syncmesh/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/transport": "workspace:*",
+    "@syncmesh/transports": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncmesh/config": "workspace:*",
+    "@types/bun": "catalog:",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

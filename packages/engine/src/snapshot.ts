@@ -56,7 +56,6 @@ export function snapshotOf(
   const { interest } = options;
   const rows: SnapshotRow[] = [];
   for (const [table, records] of state) {
-    if (interest?.tables !== undefined && !interest.tables.includes(table)) continue;
     for (const [key, record] of records) {
       // tombstones travel: without them a joiner would resurrect every row anyone deleted
       if (rowsIn(record, interest)) rows.push({ table, key, record });
@@ -67,7 +66,7 @@ export function snapshotOf(
 
 /** What a snapshot install needs of the engine it lands in. */
 export interface InstallDeps {
-  readonly stateOf: () => State;
+  readonly getState: () => State;
   readonly setState: (next: State) => void;
   readonly adopt: (coverage: Coverage) => void;
   readonly persist: (batch: FoldBatch) => Promise<void>;
@@ -84,8 +83,8 @@ export interface InstallDeps {
  * One fold batch for the whole snapshot, so a joining device renders once rather than per row.
  */
 export async function installSnapshot(deps: InstallDeps, snapshot: Snapshot): Promise<Installed> {
-  const { stateOf, setState, adopt, persist, notify, merge } = deps;
-  let state = stateOf();
+  const { getState, setState, adopt, persist, notify, merge } = deps;
+  let state = getState();
   const writeKeys = new Map<TableName, Set<RowKey>>();
   for (const { table, key, record } of snapshot.rows) {
     state = mergeRecord(state, table, key, record, merge);
@@ -133,7 +132,7 @@ export function createSnapshotPath(
   deps: InstallDeps & { readonly coverageOf: () => Coverage },
 ): SnapshotApi {
   return {
-    snapshot: (options) => snapshotOf(deps.stateOf(), deps.coverageOf(), options),
+    snapshot: (options) => snapshotOf(deps.getState(), deps.coverageOf(), options),
     installSnapshot: (snap) => installSnapshot(deps, snap),
   };
 }

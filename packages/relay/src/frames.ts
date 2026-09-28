@@ -31,10 +31,30 @@ const KIND = {
   blobGet: 16,
   blob: 17,
   blobMissing: 18,
+  challenge: 19,
 } as const;
 
-/** The protocol this build speaks; `join` offers, `hello` picks the highest in common. */
-export const RELAY_PROTOCOL_VERSIONS: readonly number[] = [1];
+/**
+ * The protocol this build speaks; `join` offers, `hello` picks the highest in common.
+ *
+ * **3** — the socket runs the link handshake: both ends send a signed hello first, everything
+ * after travels sealed, and the join names the key the hello proved (D36). **2** — the room
+ * challenges first and the join proves the key it names (D33); the link's secrecy is `wss://`'s.
+ * **1** — the bare join, believed on its word. Neither 1 nor 2 is offered by this build; a room
+ * admits them only when its operator lists them, and a room lists 3 alone or not at all: it speaks
+ * a hello first or a challenge first, and a socket cannot be told both.
+ */
+export const RELAY_PROTOCOL_VERSIONS: readonly number[] = [3];
+
+/** The version from which a relay socket is a sealed link (D36). */
+export const HANDSHAKE_VERSION = 3;
+
+/** Whether a room or a client offering these versions opens every socket with the link handshake. */
+export const speaksHandshake = (versions: readonly number[]): boolean =>
+  versions.includes(HANDSHAKE_VERSION);
+
+/** What a challenge is: this many bytes, fresh per socket, and nothing else. */
+export const CHALLENGE_BYTES = 32;
 
 /**
  * D14's whole negotiation: the highest version both sides speak, or `undefined` for no overlap —
@@ -59,7 +79,16 @@ export type RelayFrame =
       readonly cursors: Cursors;
       /** What this device wants; absent asks for everything its policy already allows. */
       readonly interest?: Interest;
+      /** The join's body as the proof covers it: versions, peer, cursors, interest, re-encoded canonically. */
+      readonly core: Uint8Array;
+      /**
+       * The named key's signature over the room's challenge and `core` (D33). Absent on a v1
+       * join, and on a v3 join, where the hello that opened the link already proved the key (D36).
+       */
+      readonly proof?: Uint8Array;
     }
+  /** The room's first frame on every socket: what a v2 join has to sign (D33). */
+  | { readonly kind: "challenge"; readonly nonce: Uint8Array }
   | {
       readonly kind: "hello";
       readonly version: number;
@@ -106,19 +135,45 @@ const NO_CURSORS = new Map<PeerId, SeqNum>();
 const pairs = (cursors: Cursors): CborValue =>
   [...cursors].map(([peer, seq]): CborValue => [hexToBytes(peer).unwrap(), seq]);
 
+/** The four elements a join is made of, as CBOR values; the frame and the proof both read them. */
+const joinParts = (
+  versions: readonly number[],
+  peerId: PeerId,
+  cursors: Cursors,
+  interest: Interest | undefined,
+): readonly CborValue[] => [
+  [...versions],
+  hexToBytes(peerId).unwrap(),
+  pairs(cursors),
+  interestText(interest),
+];
+
+/**
+ * The bytes a join proof signs: the join's own body, canonically encoded, with the tag and the
+ * proof itself left out. A room recomputes this from what it decoded — canonical CBOR is what
+ * makes the re-encode land on the same bytes — so a join altered in flight fails its own proof.
+ */
+export const joinCore = (
+  versions: readonly number[],
+  peerId: PeerId,
+  cursors: Cursors,
+  interest?: Interest,
+): Uint8Array => encodeCbor([...joinParts(versions, peerId, cursors, interest)]);
+
+/** A join; with `proof`, a v2 join (see {@link joinCore} for what the proof is over). */
 export const joinFrame = (
   versions: readonly number[],
   peerId: PeerId,
   cursors: Cursors,
   interest?: Interest,
-): Uint8Array =>
-  encodeCbor([
-    KIND.join,
-    [...versions],
-    hexToBytes(peerId).unwrap(),
-    pairs(cursors),
-    interestText(interest),
-  ]);
+  proof?: Uint8Array,
+): Uint8Array => {
+  const parts = joinParts(versions, peerId, cursors, interest);
+  return encodeCbor(proof === undefined ? [KIND.join, ...parts] : [KIND.join, ...parts, proof]);
+};
+
+export const challengeFrame = (nonce: Uint8Array): Uint8Array =>
+  encodeCbor([KIND.challenge, nonce]);
 
 export const helloFrame = (
   version: number,
@@ -193,19 +248,31 @@ type ControlDecoder = (
   e: CborValue | undefined,
 ) => Result<RelayFrame, MalformedFrame>;
 
-const decodeJoin: ControlDecoder = (a, b, c, d) =>
+const decodeJoin: ControlDecoder = (a, b, c, d, e) =>
   Result.gen(function* () {
     if (!Array.isArray(a) || !a.every((v) => isSafeNonNegative(v)))
       return malformedFrame("join versions are not integers");
     const peerId = yield* asPeer(b);
     const cursors = yield* decodeCursorPairs(c);
     const interest = interestFrom(isString(d) ? d : undefined);
-    return Result.ok(
-      interest === undefined
-        ? ({ kind: "join", versions: a, peerId, cursors } as const)
-        : ({ kind: "join", versions: a, peerId, cursors, interest } as const),
-    );
+    if (e !== undefined && !(e instanceof Uint8Array))
+      return malformedFrame("join proof is not bytes");
+    // the body as the sender signed it: `b` is the peer's bytes and `d` its interest text, both
+    // already validated above, so this is the sender's own core and not a reconstruction of it
+    // SAFETY: `a`..`d` were just read out of a decoded CBOR array, so each is a CborValue
+    const core = encodeCbor([a, b as CborValue, c as CborValue, (d ?? "") as CborValue]);
+    const join = { kind: "join", versions: a, peerId, cursors, core } as const;
+    return Result.ok({
+      ...join,
+      ...(interest !== undefined && { interest }),
+      ...(e !== undefined && { proof: e }),
+    });
   });
+
+const decodeChallenge: ControlDecoder = (a) =>
+  a instanceof Uint8Array && a.length === CHALLENGE_BYTES
+    ? Result.ok({ kind: "challenge", nonce: a } as const)
+    : malformedFrame(`challenge is not ${CHALLENGE_BYTES} bytes`);
 
 const decodeHello: ControlDecoder = (a, b, c, d, e) =>
   Result.gen(function* () {
@@ -283,6 +350,7 @@ const CONTROL = new Map<number, ControlDecoder>([
   [KIND.blobGet, decodeBlobHash("blob-get")],
   [KIND.blob, decodeBlobBytes("blob")],
   [KIND.blobMissing, decodeBlobHash("blob-missing")],
+  [KIND.challenge, decodeChallenge],
 ]);
 
 /**

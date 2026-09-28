@@ -13,7 +13,7 @@ import { webSocketDial } from "../dial.js";
 import { blobGetFrame, blobPutFrame, joinFrame } from "../frames.js";
 import { startRelay } from "../serve.js";
 import { relayTransport } from "../transport.js";
-import { bodyOf, entryOf, fakeSocket, openRoom, peer, tick, until, write } from "./fixtures.js";
+import { bodyOf, entryOf, fakeSocket, scriptedRoom, peer, tick, until, write } from "./fixtures.js";
 
 const MS = (n: number) => Temporal.Duration.from({ milliseconds: n });
 const KEEP_MS = 1000;
@@ -41,7 +41,7 @@ const fourEvents = async (seeded: number, overrides: Partial<RelayRoomOptions> =
   const store = createMemoryEventStore();
   for (const wire of wires.slice(0, seeded)) (await store.append(entryOf(wire))).unwrap();
   let clock = T0;
-  const room = await openRoom({
+  const room = await scriptedRoom({
     store,
     retention: { keepEventsFor: KEEP },
     now: () => clock,
@@ -57,7 +57,7 @@ const fourEvents = async (seeded: number, overrides: Partial<RelayRoomOptions> =
   return { a, store, room, tick: (to: Temporal.Instant) => void (clock = to) };
 };
 
-const joinAt = (room: Awaited<ReturnType<typeof openRoom>>, who: PeerId, seq: number) => {
+const joinAt = (room: Awaited<ReturnType<typeof scriptedRoom>>, who: PeerId, seq: number) => {
   const s = fakeSocket();
   /* oxlint-disable-next-line anti-slop/require-safety-comment-for-type-assertion -- a test cursor */
   const cursors = seq === 0 ? new Map<PeerId, SeqNum>() : new Map([[who, seq as SeqNum]]);
@@ -187,7 +187,7 @@ describe("the room-log retention cap", () => {
     await room.sweep();
     room.close();
 
-    const revived = await openRoom({ store });
+    const revived = await scriptedRoom({ store });
     const s = joinAt(revived, a.identity.peerId, 2);
     await tick();
     const hello = s.ofKind("hello")[0];
@@ -202,7 +202,7 @@ describe("the room-log retention cap", () => {
     const store = createMemoryEventStore();
     for (const id of ["n1", "n2", "n3", "n4"])
       (await store.append(entryOf(await write(a, id, id)))).unwrap();
-    const room = await openRoom({ store });
+    const room = await scriptedRoom({ store });
     await room.sweep();
     expect((await store.all()).unwrap()).toHaveLength(4);
     const s = joinAt(room, peer(200, "acct_j").identity.peerId, 0);
@@ -302,7 +302,7 @@ describe("the blob retention cap", () => {
 
   test("a room serves its cap through the ordinary blob frames", async () => {
     const a = peer(40, "acct_a");
-    const room = await openRoom({
+    const room = await scriptedRoom({
       blobs: memoryBlobStore(),
       retention: { maxBlobBytes: 8 },
     });

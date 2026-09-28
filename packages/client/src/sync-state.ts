@@ -1,5 +1,6 @@
 import type { Engine } from "@syncmesh/engine";
 import type { Hlc, PeerId, RowKey, SeqNum, TableName } from "@syncmesh/kernel";
+import type { RowSync } from "@syncmesh/storage";
 
 import { getRecord } from "@syncmesh/kernel";
 
@@ -38,7 +39,7 @@ export interface SyncStates {
 }
 
 /**
- * Answers `$sync` per row without a sidecar table.
+ * Answers a row's sync state — what the `syncOf` column reads — without a sidecar table.
  *
  * A record carries the stamp of the write that won it — `{ hlc, peer }` — and the peer alone
  * settles `"remote"`. Telling `"local"` from `"delivered"` needs the event's **sequence number**,
@@ -53,7 +54,7 @@ export interface SyncStates {
  * Local-only tables are out of scope — their events never leave the device, so the question has
  * no answer rather than the answer `"local"`.
  */
-export function createSyncStates(engine: Engine, self: PeerId): SyncStates {
+export function createSyncStates(engine: Engine, self: PeerId, rowSync?: RowSync): SyncStates {
   const unacknowledged = new Map<string, SeqNum>();
   const listeners = new Set<() => void>();
   const changed = (): void => {
@@ -68,8 +69,34 @@ export function createSyncStates(engine: Engine, self: PeerId): SyncStates {
     return highest;
   };
 
+  /**
+   * The stamp of this device's own event at the acknowledged floor — the watermark `syncOf`
+   * compares each row against (book ch. 10). One update per acknowledgement, however many rows
+   * it settles, which is why the watermark lives beside the rows rather than in them.
+   */
+  const markWatermark = (floor: number): void => {
+    if (rowSync === undefined || floor === 0) return;
+    // the highest stamp among this device's own events the floor now covers; two numbers, which
+    // is all the comparison needs — reconstructing an Hlc to take it apart again proves nothing
+    let ms = -1;
+    let logical = -1;
+    for (const [at, seq] of unacknowledged) {
+      if (Number(seq) > floor) continue;
+      const [msText, logicalText] = at.split(":");
+      const atMs = Number(msText);
+      const atLogical = Number(logicalText);
+      if (atMs > ms || (atMs === ms && atLogical > logical)) {
+        ms = atMs;
+        logical = atLogical;
+      }
+    }
+    if (ms < 0) return;
+    void rowSync.acknowledge(ms, logical);
+  };
+
   const prune = (): void => {
     const floor = ackedThrough();
+    markWatermark(floor);
     let dropped = false;
     for (const [at, seq] of unacknowledged)
       if (Number(seq) <= floor) {

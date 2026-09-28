@@ -25,6 +25,8 @@ export interface SessionHooks {
   readonly rearm: () => void;
   /** Holdback overflow: a fresh join re-pages from our contiguous position. */
   readonly rejoin: () => void;
+  /** A challenging room's first frame: what a v2 join has to sign (D33). A sealed link never sends one (D36). */
+  readonly onChallenge: (nonce: Uint8Array) => void;
   readonly onHello: (keepaliveMs: number) => void;
   /** The relay's typed version refusal is permanent — no reconnect loop against it. */
   readonly onVersionRefused: () => void;
@@ -32,6 +34,24 @@ export interface SessionHooks {
   readonly onBlobAnswer: (hash: string, bytes: Uint8Array | undefined) => void;
   /** The last catch-up page has landed: this source has nothing more to hand over right now. */
   readonly onCaughtUp: () => void;
+  /**
+   * Another device in this room just spoke through the relay, so the relay demonstrably carries it.
+   *
+   * The evidence a relay has for `Transport.delivers`: it holds one link and cannot enumerate a
+   * room, so the only honest thing it can say about a peer is that traffic from them arrived here.
+   * Cursors rather than events, deliberately — a relayed event may be history from a device that
+   * left hours ago, while cursors are a live peer reporting its position now.
+   */
+  readonly onPeerHeard?: (peer: PeerId) => void;
+  /**
+   * Bytes that never became anything (book ch. 18): a frame this build cannot decode, or an event
+   * whose signature does not verify.
+   *
+   * Below a link rather than an ending of one — the socket is still up and the session continues —
+   * which is why it is `dropped` and not `closed`. A relay that has started serving another
+   * protocol, or one forwarding a peer's forgery, is silent without this.
+   */
+  readonly onDropped: (why: string) => void;
   /** What this session joined with, so a coverage scoped to something else is not adopted. */
   readonly interest?: Interest;
   /**
@@ -77,7 +97,12 @@ export function wireSession(
       const straight: StoredEvent[] = [];
       for (const wire of wires) {
         const verified = decodeAndVerify(wire);
-        if (verified.isErr()) continue; // junk from a relay is dropped, never folded
+        if (verified.isErr()) {
+          // junk from a relay is dropped, never folded — and said, because a relay handing this
+          // device unverifiable bytes is a fact about the room and not about this event
+          hooks.onDropped(verified.error.message);
+          continue;
+        }
         if (direct) {
           straight.push(verified.value);
           continue;
@@ -166,8 +191,10 @@ export function wireSession(
   const onSession = (frame: Extract<RelayFrame, { kind: "session" }>["frame"]): void => {
     if (frame.kind === "presence") context.onPresence?.(frame.wire);
     else if (frame.kind === "grant") void grants.register(frame.wire);
-    else if (frame.kind === "cursors") engine.acknowledge(frame.from, frame.cursors, now());
-    else if (frame.kind === "grant-request") {
+    else if (frame.kind === "cursors") {
+      hooks.onPeerHeard?.(frame.from);
+      engine.acknowledge(frame.from, frame.cursors, now());
+    } else if (frame.kind === "grant-request") {
       const request = { peerId: frame.peerId };
       if (frame.invite !== undefined) Object.assign(request, { invite: frame.invite });
       context.onGrantRequest?.(request);
@@ -177,9 +204,13 @@ export function wireSession(
   const offFrame = dialed.onFrame((bytes) => {
     hooks.rearm();
     const decoded = decodeRelayFrame(bytes);
-    if (decoded.isErr()) return;
+    if (decoded.isErr()) {
+      hooks.onDropped(decoded.error.message);
+      return;
+    }
     const frame = decoded.value;
-    if (frame.kind === "hello") {
+    if (frame.kind === "challenge") hooks.onChallenge(frame.nonce);
+    else if (frame.kind === "hello") {
       relayCursors = frame.cursors;
       hooks.onHello(frame.keepaliveMs);
     } else if (frame.kind === "page") {
@@ -191,7 +222,11 @@ export function wireSession(
         else if (repaging) rescope();
         caughtUp = true;
         pushOutstanding();
-        hooks.onCaughtUp();
+        // behind the chain, not beside it: `fold` and `pushOutstanding` queue their work, so
+        // announcing here would announce a pass that has not folded a single event of its last
+        // page. What the hook means is "nothing more to hand over right now", and the moment that
+        // becomes true is the moment this chain drains
+        chain = chain.then(() => hooks.onCaughtUp());
       }
     } else if (frame.kind === "blob") hooks.onBlobAnswer(frame.hash, frame.bytes);
     else if (frame.kind === "blob-missing") hooks.onBlobAnswer(frame.hash, undefined);

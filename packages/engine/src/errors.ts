@@ -5,6 +5,7 @@ import { TaggedError } from "@syncmesh/result";
 
 import type { QuarantineEvicted, UnreadableEvent } from "./quarantine.js";
 import type { StoreFailure } from "./store.js";
+import type { StrandedWrites } from "./stranded.js";
 
 export class EmptyMutation extends TaggedError("EmptyMutation")<{
   procedure: Procedure;
@@ -30,11 +31,17 @@ export type MutateError = EmptyMutation | ValidationError | StoreFailure;
 export type RevertError = CannotRevert | MutateError;
 
 /**
- * Reported through `onError`: a listener threw, the state cache refused a commit, or the
- * quarantine dropped an event it was holding — the three things that go wrong beside a call
- * rather than inside one, so no caller is standing there to be handed a `Result`.
+ * Reported through `onError`: a listener threw, the state cache refused a commit, the quarantine
+ * dropped an event it was holding, or the log was found holding writes nobody here can send —
+ * the things that go wrong beside a call rather than inside one, so no caller is standing there
+ * to be handed a `Result`.
  */
-export type EngineError = ListenerFailure | StoreFailure | QuarantineEvicted | UnreadableEvent;
+export type EngineError =
+  | ListenerFailure
+  | StoreFailure
+  | QuarantineEvicted
+  | UnreadableEvent
+  | StrandedWrites;
 
 export class NoGrant extends TaggedError("NoGrant")<{ peer: PeerId; message: string }> {}
 export class GrantDeviceMismatch extends TaggedError("GrantDeviceMismatch")<{
@@ -109,9 +116,25 @@ export class PolicyDenied extends TaggedError("PolicyDenied")<{
   op: string;
   message: string;
 }> {}
+/**
+ * The stamp runs further ahead of this device's clock than the drift bound allows (D34). Not a
+ * forgery verdict — a phone with its clock set wrong writes exactly this — but a stamp admitted
+ * as it stands would win every `lww` cell it touches and drag every receiver's clock after it.
+ * Parked rather than dropped: the author's cursor stops below it, and a retry admits it once
+ * the wall clock has caught up with the claim.
+ */
+export class ClockAhead extends TaggedError("ClockAhead")<{
+  peer: PeerId;
+  /** The stamp's instant, ISO. */
+  at: string;
+  /** The latest instant this device would have believed when it looked, ISO. */
+  limit: string;
+  message: string;
+}> {}
 
-/** Why an event is refused, in ladder order: grant → device → revocation → grace → partition → schema → policy; a reserved row also answers to its table's author class. */
+/** Why an event is refused, in ladder order: clock → grant → device → revocation → grace → partition → schema → policy; a reserved row also answers to its table's author class. */
 export type ValidationError =
+  | ClockAhead
   | NoGrant
   | LinkRefused
   | UnknownChangeKind

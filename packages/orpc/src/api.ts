@@ -1,11 +1,42 @@
-import type { Handle, Mesh } from "@syncmesh/client";
+import type { Handle, Mesh, MeshSchema, ReadCoverage, ReadCoverageView } from "@syncmesh/client";
 import type { Live, Runnable } from "@syncmesh/drizzle";
-import type { EventId } from "@syncmesh/kernel";
+import type { Principal } from "@syncmesh/engine";
+import type { EventId, PeerId } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
-import type { Output, PresenceMap, StandardSchemaV1 } from "@syncmesh/schema";
+import type { PresenceMap } from "@syncmesh/schema";
 import type { TxReceipt } from "@syncmesh/storage";
 
+import { readOnly, scopeReads } from "@syncmesh/drizzle";
 import { Result } from "@syncmesh/result";
+
+import type { LazyApiMesh } from "./deferred.js";
+import type { AuthorityDef, AuthorityLink, MutationDef, QueryDef, Router } from "./procedures.js";
+import type { Write, WriteDeps, WriteLedger } from "./write.js";
+
+import { deferredSubscribe, lazyOf, notOpen } from "./deferred.js";
+import { AuthorityUnreachable, NothingWritten, asError } from "./errors.js";
+import { isDef } from "./procedures.js";
+import { readOf } from "./read.js";
+import { scopeKinds, scopeOf } from "./scope.js";
+import { validate } from "./validate.js";
+import { createWrite } from "./write.js";
+
+export type {
+  AuthorityContext,
+  AuthorityDef,
+  AuthorityHandlers,
+  AuthorityLink,
+  DeclaredErrors,
+  MutationContext,
+  MutationDef,
+  ProcedureDef,
+  QueryContext,
+  QueryDef,
+  RouteMeta,
+  Router,
+} from "./procedures.js";
+export { isDef, mutation, query } from "./procedures.js";
+export { validate } from "./validate.js";
 
 /**
  * The one surface an app touches (D26): `api.books.list(…)` and `api.books.create(…)`, never a
@@ -24,200 +55,113 @@ export interface WriteResult<T> {
   readonly data: T;
 }
 
-/** Anything a call can fail with; a procedure's own declared errors ride the same channel. */
+/**
+ * Anything a call can fail with; a procedure's own declared errors ride the same channel.
+ *
+ * Still `Error` at the top, and deliberately: a handler may throw a class this package has never
+ * heard of, and narrowing the channel would be a lie about what can arrive. What changed is that
+ * everything **this layer** mints now carries a `_tag` — {@link InputInvalid},
+ * {@link NothingWritten}, {@link AuthorityUnreachable}, {@link NoBodyBound},
+ * {@link SchemaNotSynchronous} — so the failures a caller actually branches on are matchable
+ * rather than prose. Over HTTP they cross as `{ _tag, message, ...fields }` and revive into the
+ * class the caller declared (`wireError` in `http.ts`).
+ */
 export type CallError = Error;
 
-/**
- * A read that has not run. Inert on purpose — building one in a component body is free, and
- * `useLiveQuery` decides when it executes.
- */
-export interface QueryCall<T> {
-  readonly kind: "query";
-  /** `"books.list"` — the name a devtool shows, and half the subscription's identity. */
-  readonly path: string;
-  /** Identity: the path and the input. Two renders that ask the same question share one subscription. */
-  readonly key: string;
-  /** Builds the query, un-run — a one-shot read, and what `live` subscribes. */
-  readonly run: () => Runnable<T>;
-  /** The subscription: re-runs on every fold batch touching one of the query's tables. */
-  readonly live: () => Live<T>;
+/** What a read answers with: the rows, and how much of the world they are good to (book ch. 9). */
+export interface ReadAnswer<T> {
+  readonly data: readonly T[];
   /**
-   * Every source that could still fill this scope has finished its first pass — what separates
-   * "no books" from "the relay has not answered yet" (RFC-0019).
+   * `local-only` before the mesh opens and until a source completes its first pass; empty rows
+   * under it are not proof the scope is empty (RFC-0019).
    */
-  readonly settled: () => Promise<void>;
-}
-
-export interface QueryDef<I, T> {
-  readonly kind: "query";
-  readonly schema?: StandardSchemaV1;
-  readonly run: (args: { readonly input: I; readonly mesh: Handle }) => Runnable<T>;
-}
-
-export interface MutationDef<I, T> {
-  readonly kind: "mutation";
-  readonly schema?: StandardSchemaV1;
-  readonly run: (args: { readonly input: I; readonly mesh: Handle }) => Promise<T> | T;
+  readonly coverage: ReadCoverage;
 }
 
 /**
- * A call that **cannot** run on this device: it needs other tenants' rows, the real clock, or the
- * outside world (D10's test for when a procedure should exist at all). The handler lives on the
- * server and never reaches the app's bundle — only this declaration does.
+ * A read that has not run. Its public surface is `then`, and nothing else (book ch. 9).
  *
- * That split is a module boundary, not a naming convention. Put the implementations in a package
- * the app does not depend on, and importing one is a resolution error rather than something a
- * reviewer has to catch.
- */
-export interface AuthorityDef<I, T> {
-  readonly kind: "authority";
-  readonly schema?: StandardSchemaV1;
-  /** Phantom, both of them: the shapes exist for inference, and neither is ever called. */
-  readonly accepts?: (value: I) => void;
-  readonly yields?: (value: never) => T;
-}
-
-/**
- * Sends one authority call and returns what came back — an HTTP client, a queue, a test double.
+ * Inert on purpose: `then` runs it lazily and never at construction, so building one in a
+ * component body is free and `useLiveQuery` decides when it executes. Awaiting it returns a
+ * `Result` — an input the schema refuses is an `Err` here like everywhere else — and the answer
+ * carries its coverage, because rows alone cannot say whether the relay has spoken yet.
  *
- * The input arrives already validated against the procedure's schema; what it is beyond that is
- * the contract's business and not this transport's, which is why it crosses as an opaque value.
- */
-/* oxlint-disable anti-slop/no-unknown-parameters -- the serialisation boundary: the schema has already run, and a link that named the shape could carry only one procedure */
-export type AuthorityLink = (
-  path: string,
-  input: unknown,
-) => Promise<ResultType<unknown, CallError>>;
-/* oxlint-enable anti-slop/no-unknown-parameters */
-
-/**
- * Declares a call the server implements. Takes a schema and a return type and nothing else — a
- * body here would be a body in the app's bundle.
+ * Everything an adapter opens rides `~mesh`: the hooks, the collection adapter and devtools read
+ * it, application code never does. Reads are the one thenable surface because a read's only
+ * product is its answer; a write's product is its effect, so {@link Write} is not one.
  *
- * ```ts
- * export const billing = {
- *   charge: authority
- *     .input(z.object({ patientId: z.string(), cents: z.number().int() }))
- *     .returns<{ receiptId: string }>(),
- * };
- * ```
+ * @example
+ * const answer = await api.books.list({ orgId });
+ * if (answer.isOk()) answer.value.data; // the rows, beside `answer.value.coverage`
  */
-export const authority = {
-  input: <S extends StandardSchemaV1>(schema: S) => ({
-    returns: <T>(): AuthorityDef<Output<S>, T> => ({ kind: "authority", schema }),
-  }),
-  returns: <T>(): AuthorityDef<void, T> => ({ kind: "authority" }),
-};
-
-export type ProcedureDef =
-  | QueryDef<never, unknown>
-  | MutationDef<never, unknown>
-  | AuthorityDef<never, unknown>;
-export interface Router {
-  readonly [key: string]: ProcedureDef | Router;
-}
-
-/**
- * Validates through Standard Schema, so zod, valibot and arktype all work and none is a
- * dependency. This is the parse at the boundary every caller above it is typed against — the
- * runtime walk in {@link meshApi} erases what `Api<R>` states, and this restores it.
- */
-/* oxlint-disable anti-slop/no-unknown-parameters -- the I/O boundary itself: turning an unparsed input into `I` is what these three exist to do, and `Api<R>` types every call site above them */
-const validate = <I>(
-  schema: StandardSchemaV1 | undefined,
-  input: unknown,
-): ResultType<I, Error> => {
-  if (schema === undefined) {
-    // SAFETY: no schema means the procedure declared no input, so `I` is `void` and this asserts nothing about the value
-    const bare = input as I;
-    return Result.ok(bare);
-  }
-  const outcome = schema["~standard"].validate(input);
-  if (outcome instanceof Promise)
-    return Result.err(new TypeError("an input schema must validate synchronously"));
-  if (outcome.issues !== undefined)
-    return Result.err(new TypeError(outcome.issues.map((i) => i.message).join("; ")));
-  // SAFETY: Standard Schema guarantees `value` is the schema's output once `issues` is absent, and `I` is that output — `query`/`mutation` tie the two together with `Output<S>`
-  const parsed = outcome.value as I;
-  return Result.ok(parsed);
-};
-
-/**
- * A read that runs **on this device**, against local SQLite, with no network in it.
- *
- * Unmarked because it is the ordinary case (D26). What carries a qualifier is
- * {@link authority} — the call that needs a server and therefore fails on a ward with no
- * signal — because that is the one a reader has to notice.
- */
-export const query = {
-  input: <S extends StandardSchemaV1>(schema: S) => ({
-    handler: <T>(run: QueryDef<Output<S>, T>["run"]): QueryDef<Output<S>, T> => ({
-      kind: "query",
-      schema,
-      run,
-    }),
-  }),
-  handler: <T>(run: QueryDef<void, T>["run"]): QueryDef<void, T> => ({ kind: "query", run }),
-};
-
-/** A write that runs on this device, inside one transaction, as one event. */
-export const mutation = {
-  input: <S extends StandardSchemaV1>(schema: S) => ({
-    handler: <T>(run: MutationDef<Output<S>, T>["run"]): MutationDef<Output<S>, T> => ({
-      kind: "mutation",
-      schema,
-      run,
-    }),
-  }),
-  handler: <T>(run: MutationDef<void, T>["run"]): MutationDef<void, T> => ({
-    kind: "mutation",
-    run,
-  }),
-};
-
-/**
- * What `useCan` reads, bound to this api's instance so a component names no mesh and no instance.
- * `@syncmesh/react`'s `CanSource` is satisfied structurally; neither package imports the other.
- */
-export interface Permissions {
-  readonly can: (what: `${string}.${string}`, row?: never) => boolean;
-  readonly grants: {
-    /** A grant landed: whatever gated a button may now answer differently. */
-    readonly onRegistered: (listener: () => void) => () => void;
+export interface QueryCall<T> extends PromiseLike<ResultType<ReadAnswer<T>, CallError>> {
+  /** Adapter surface. Not for application code. */
+  readonly "~mesh": {
+    /** `"books.list"` — the name a devtool shows, and half the subscription's identity. */
+    readonly path: string;
+    /** Identity: the path and the input. Two renders that ask the same question share one subscription. */
+    readonly key: string;
+    /** Builds the query, un-run — a one-shot read, and what `live` subscribes. */
+    readonly run: () => Runnable<T>;
+    /** The subscription: re-runs on every fold batch touching one of the query's tables. */
+    readonly live: () => Live<T>;
+    /**
+     * Every source that could still fill this scope has finished its first pass — what separates
+     * "no books" from "the relay has not answered yet" (RFC-0019).
+     */
+    readonly settled: () => Promise<void>;
+    /**
+     * How far the world has answered this read, with the source and checkpoint it is good to
+     * (book ch. 9). `local-only` before the mesh opens and until a source completes its first pass.
+     */
+    readonly coverage: () => ReadCoverage;
+    readonly onCoverage: (listener: () => void) => () => void;
   };
 }
 
+/* oxlint-disable anti-slop/no-unknown-parameters -- every `input` below is the call's own argument on its way to `validate`, which is the parser. The surface above them (`Api<R>`) is typed per procedure, so a caller cannot reach these with anything else; taking a named type here would mean parsing before the procedure that owns the schema has been chosen. */
+
 /**
- * Where each row's write has reached, bound to this api's mesh — `useSyncOf` reads it, and the
- * subscription is what turns a receipt from a reading taken once into one that updates.
+ * The rehearsal of one write (book ch. 15): inert like a read, because a screen builds it while
+ * deciding whether to draw the affordance at all. Running it executes the handler against the
+ * replica, judges the staged changes by the same rules every receiver runs, and rolls the
+ * transaction back — so it cannot drift from enforcement the way a second copy of the rules in
+ * UI code does, and a refusal carries the rule's own reason.
  */
-export interface SyncSource {
-  readonly at: (table: string, key: string) => "local" | "delivered" | "remote" | undefined;
+export interface CanCall {
+  readonly kind: "can";
+  /** `"products.create"` — what a devtool shows, and half the identity. */
+  readonly path: string;
+  /** Path and input: the same question asked twice is the same rehearsal. */
+  readonly key: string;
+  /** `Ok` means it would have been allowed; the `Err` is the refusal, reason and all. */
+  readonly run: () => Promise<ResultType<void, CallError>>;
+  /** A grant landing can change the answer, so whatever gated a button re-asks. */
   readonly subscribe: (listener: () => void) => () => void;
 }
 
 /** What a built leaf hands back: an inert read, or a write already running. */
 type ApiLeaf = (
   given: never,
-) =>
-  | QueryCall<unknown>
-  | Promise<ResultType<WriteResult<unknown>, CallError>>
-  | Promise<ResultType<unknown, CallError>>;
+) => QueryCall<unknown> | Write<unknown> | Promise<ResultType<unknown, CallError>>;
 
 /** One node of the built surface: a callable leaf, or a group of them. */
 type ApiNode = ApiLeaf | { readonly [key: string]: ApiNode };
 
-/** The shape `meshApi` builds: a query becomes a descriptor, a mutation a `Result`-returning call. */
+/**
+ * The shape `meshApi` builds: a query becomes a descriptor, a mutation a `Write` with its `.can`
+ * rehearsal beside it, an authority call a `Result`-returning promise. Nothing else sits on it:
+ * what a hook reads is built from one of these typed references, never from a string naming a
+ * table the type system already knows (book ch. 15).
+ */
 export type Api<R extends Router> = {
-  /** `useCan(api.$can, "book.insert")` — the `$` marks framework surface, not a procedure. */
-  readonly $can: Permissions;
-  /** `useSyncOf(api.$sync, "observation", row.id)` — where that row's write got to. */
-  readonly $sync: SyncSource;
-} & {
   readonly [K in keyof R]: R[K] extends QueryDef<infer I, infer T>
     ? (input: I) => QueryCall<T>
     : R[K] extends MutationDef<infer I, infer T>
-      ? (input: I) => Promise<ResultType<WriteResult<T>, CallError>>
+      ? ((input: I) => Write<T>) & {
+          /** The same write, rehearsed against the replica and rolled back (ch. 15). */
+          readonly can: (input: I) => CanCall;
+        }
       : R[K] extends AuthorityDef<infer I, infer T>
         ? (input: I) => Promise<ResultType<T, CallError>>
         : R[K] extends Router
@@ -225,26 +169,60 @@ export type Api<R extends Router> = {
           : never;
 };
 
-const isDef = (node: ProcedureDef | Router): node is ProcedureDef =>
-  "kind" in node &&
-  (node.kind === "query" || node.kind === "mutation" || node.kind === "authority");
+/**
+ * Every member of a mesh this binding reads, and no more.
+ *
+ * Stated rather than taking `Mesh` whole because a tab that is not the origin's leader holds a
+ * mesh on another thread and can honestly answer exactly these — so the same `meshApi` builds the
+ * same api there, over a port, instead of a second implementation drifting beside this one. A
+ * real `Mesh` satisfies it by having more.
+ */
+export interface ApiMesh<PC extends PresenceMap = Record<string, never>> {
+  readonly on: Mesh<"sqlite", PC>["on"];
+  /** The manifest, for the one thing this binding reads off it: which kinds a call can scope to. */
+  readonly schema: MeshSchema;
+  readonly settled: () => Promise<void>;
+  /**
+   * Optional, because a mesh reached over a port (`adapters/browser`) forwards what it can ask
+   * for, and until it forwards this a read there honestly answers `local-only` — the word for
+   * "nothing here can say more" — rather than failing to build at all.
+   */
+  readonly coverage?: ReadCoverageView;
+  /** Only the subscription: a grant landing is what makes a rehearsal re-ask. */
+  readonly grants: { readonly onRegistered: (listener: () => void) => () => void };
+  /** Who this device acts as; a handler is handed it rather than asking, because it never picks. */
+  readonly auth: { readonly principal: () => Principal | undefined };
+  /**
+   * This device's author id, for the columns correlated on it (`syncOf`).
+   *
+   * A value rather than a reader because it never changes while a process runs, and because a
+   * window has to *await* it — the port cannot answer synchronously and a query that selected
+   * `syncOf` before the answer landed would be correlated on nothing.
+   */
+  readonly self: PeerId;
+  /** The write ledger, the engine's own or a window's reader of the origin's ({@link WriteLedger}). */
+  readonly operations?: WriteLedger;
+}
 
 /**
- * Binds a router to one mesh and one instance: `api.books.list(…)`, `api.books.create(…)`.
+ * Binds a router to one mesh: `api.books.list(…)`, `api.books.create(…)`.
  *
- * Bound at construction rather than resolved from a module-level default, because a device that
- * holds two tenants runs two meshes (D07) and an implicit one would silently write to whichever
- * booted last.
+ * **It binds no scope, and that is the contract** (book ch. 3). A client knows no tenant,
+ * workspace or shop; every call says which replica it is about by carrying the scope in its own
+ * input, and {@link scopeOf} reads it back out. The shape this replaced — one api bound to one
+ * instance at construction — is rejected by name in the book, for the reason that outlives any
+ * particular app: a scope id is ordinary data, and data changes without reconstruction. An app
+ * that bound it had to rebuild the api to change shop, and two shops meant two of everything.
  *
  * @example
  * const mesh = (await createMesh({ … })).unwrap();
- * export const api = meshApi(mesh, { books }, { instance: "org:acme" });
+ * export const api = meshApi(mesh, { books });
+ * api.books.list({ shopId });   // the scope rides here, and nowhere else
  */
 export function meshApi<R extends Router, PC extends PresenceMap = Record<string, never>>(
-  mesh: Mesh<"sqlite", PC>,
+  source: ApiMesh<PC> | LazyApiMesh<PC>,
   router: R,
   options: {
-    readonly instance?: string;
     /**
      * Carries the calls this device cannot run. Absent, an `authority` call fails as itself
      * rather than pretending — which is the honest answer on a device with no network
@@ -253,39 +231,127 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     readonly link?: AuthorityLink;
   } = {},
 ): Api<R> {
-  const handle = (): Handle => mesh.on(options.instance).unwrap();
+  const lazy = lazyOf(source);
+  /** The mesh, which a call inside a write or after `$ready` always has; a call before it does not. */
+  const mesh = (): ApiMesh<PC> => lazy.current() ?? notOpen();
+  const kinds = scopeKinds(lazy.schema);
+  /** The replica this call is about — opened per call, because the scope arrives per call. */
+  const handle = (input: unknown): Handle => mesh().on(scopeOf(kinds, input)).unwrap();
 
-  /* thrown, not returned: a descriptor has no error channel of its own, and the hook has an `error` */
-  const runnable = (def: QueryDef<never, unknown>, input: unknown) =>
-    def.run({ input: validate<never>(def.schema, input).unwrap(), mesh: handle() });
-
-  const read = (path: string, def: QueryDef<never, unknown>, input: unknown) => ({
-    kind: "query" as const,
-    path,
-    key: JSON.stringify([path, input ?? null]),
-    run: () => runnable(def, input),
-    live: () => handle().live(runnable(def, input)),
-    settled: () => mesh.settled(),
+  /**
+   * What a body is handed: its input, the tables, and who is acting.
+   *
+   * `db` is taken from `writing` where there is one, so a handler inside a write or a rehearsal
+   * reads and writes through the span's own sink rather than the handle's — the difference
+   * between landing inside the open transaction and waiting for it. The handler never sees which.
+   */
+  const context = <I>(input: I, open: Handle, writing?: { readonly db: Handle["db"] }) => ({
+    input,
+    db: scopeReads(writing?.db ?? open.db, open.read),
+    principal: mesh().auth.principal(),
+    self: mesh().self,
   });
 
-  const write = async (def: MutationDef<never, unknown>, input: unknown) => {
+  /**
+   * The same context with the write verbs taken off, for a `query` body (§2.4).
+   *
+   * Subtraction rather than a second object, so the two cannot drift: a query handler reads
+   * through exactly the `db` a mutation handler reads through, and the only difference is what
+   * is missing from it.
+   */
+  const reading = <I>(input: I, open: Handle) => {
+    const writable = context(input, open);
+    return { ...writable, db: readOnly(writable.db) };
+  };
+
+  const reads = {
+    lazy,
+    handle,
+    /** The handler's own query, built against the replica the raw input names; `parsed` is what it reads. */
+    running: (def: QueryDef<never, unknown>, parsed: never, input: unknown) =>
+      def.run(reading(parsed, handle(input))),
+    settled: () => mesh().settled(),
+  };
+  const read = (path: string, def: QueryDef<never, unknown>, input: unknown) =>
+    readOf(reads, path, def, input);
+
+  /** `api.products.create.can(input)`: the write, rehearsed and rolled back (ch. 15). */
+  const rehearsal = (path: string, def: MutationDef<never, unknown>, input: unknown): CanCall => ({
+    kind: "can",
+    path,
+    key: JSON.stringify([path, input ?? null]),
+    run: async () => {
+      const parsed = validate<never>(def.schema, input);
+      if (parsed.isErr()) return parsed;
+      await lazy.ready;
+      const open = handle(input);
+      return open.rehearse(async (span) => {
+        // the handler's return value is nothing to a rehearsal: only what it staged is judged —
+        // and it writes through the span, because the rehearsal's transaction is the span's alone
+        await def.run(context(parsed.value, open, span));
+      });
+    },
+    subscribe: (listener) =>
+      deferredSubscribe(lazy, (m) => m.grants.onRegistered(() => listener())),
+  });
+
+  /**
+   * A write, as the statement it is (book ch. 10): the id is allocated here so the handle can
+   * hand it back synchronously, and the commit runs under it.
+   */
+  const statement = (
+    path: string,
+    def: MutationDef<never, unknown>,
+    input: unknown,
+  ): Write<unknown> => {
+    const id = crypto.randomUUID();
+    // the commit waits for the mesh; the ledger is read when the record is, which is after it
+    const deps: WriteDeps = {
+      id,
+      committed: lazy.ready.then(() => write(path, def, input, id)),
+      get ledger() {
+        return lazy.current()?.operations;
+      },
+    };
+    return createWrite(deps);
+  };
+
+  const write = async (
+    path: string,
+    def: MutationDef<never, unknown>,
+    input: unknown,
+    operationId?: string,
+  ) => {
     const parsed = validate<never>(def.schema, input);
     if (parsed.isErr()) return parsed;
-    const open = handle();
+    const open = handle(input);
     let receipt: TxReceipt | undefined;
     const off = open.onCommit((r) => {
       receipt = r;
     });
-    // one transaction, so a handler that writes twice is still one event
+    // one transaction, so a handler that writes twice is still one event — and one *scope*, so
+    // the read a live query fires while the handler is mid-transaction waits for it rather than
+    // joining it and answering out of rows nothing has committed
+    const run = () => {
+      const span = open.span();
+      return span.db.transaction(() => Promise.resolve(def.run(context(parsed.value, open, span))));
+    };
     const ran = await Result.tryPromise({
-      try: () =>
-        open.db.transaction(() => Promise.resolve(def.run({ input: parsed.value, mesh: open }))),
-      catch: (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause))),
+      // recorded under the id the caller already holds, so an interrupted write is findable — and
+      // under this procedure's own path, because the capture below sees SQL and cannot know it.
+      // Without the name the ledger reads `issue.update` for what a person called `issues.move`.
+      try: () => open.under({ id: operationId, label: path }, run),
+      catch: asError,
     });
     off();
     if (ran.isErr()) return ran;
     if (receipt === undefined)
-      return Result.err(new Error(`${String(def.kind)} wrote nothing: no event to report`));
+      return Result.err(
+        new NothingWritten({
+          path,
+          message: `${path} staged no change, so there is no event to report`,
+        }),
+      );
     return Result.ok({ eventId: receipt.eventId, data: ran.value });
   };
 
@@ -293,8 +359,16 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     const parsed = validate<never>(def.schema, input);
     if (parsed.isErr()) return parsed;
     if (options.link === undefined)
-      return Result.err(new Error(`${path} runs on the authority, and no link was configured`));
-    return options.link(path, parsed.value);
+      return Result.err(
+        new AuthorityUnreachable({
+          path,
+          message: `${path} runs on the authority, and no link was configured`,
+        }),
+      );
+    const answered = await options.link(path, parsed.value);
+    if (answered.isErr() || def.output === undefined) return answered;
+    // the trust boundary: the one payload a client consumes straight off the wire (book ch. 7)
+    return validate<unknown>(def.output, answered.value);
   };
 
   const build = (node: Router, prefix: string): ApiNode => {
@@ -306,7 +380,10 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
       } else if (child.kind === "query") {
         out[name] = (given: never) => read(path, child, given);
       } else if (child.kind === "mutation") {
-        out[name] = (given: never) => write(child, given);
+        // the rehearsal rides on the call itself: `api.products.create.can(input)`
+        out[name] = Object.assign((given: never) => statement(path, child, given), {
+          can: (given: never) => rehearsal(path, child, given),
+        });
       } else {
         out[name] = (given: never) => remote(path, child, given);
       }
@@ -314,16 +391,7 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     return out;
   };
 
-  const permissions: Permissions = {
-    can: (what, row) => mesh.can(what, row, options.instance),
-    grants: { onRegistered: (listener) => mesh.grants.onRegistered(() => listener()) },
-  };
-  const sync: SyncSource = {
-    at: (table, key) => mesh.syncOf(table, key),
-    subscribe: (listener) => mesh.onSyncChange(listener),
-  };
   // SAFETY: `build` walks the same router the `Api<R>` mapped type describes, leaf for leaf
-  const walked = { ...build(router, ""), $can: permissions, $sync: sync } as Api<R>;
-  return walked;
+  return build(router, "") as Api<R>;
 }
 /* oxlint-enable anti-slop/no-unknown-parameters */

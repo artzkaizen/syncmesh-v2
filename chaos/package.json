@@ -5,7 +5,8 @@
   "description": "A mesh under deliberate fault: transports that come and go, devices that go dark and keep writing, and a replay log of everything that happened",
   "type": "module",
   "scripts": {
-    "run": "bun run src/run.ts"
+    "run": "bun run src/run.ts",
+    "test": "bun test"
   },
   "devDependencies": {
     "@syncmesh/ble": "workspace:*",

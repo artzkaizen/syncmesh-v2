@@ -1,7 +1,6 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
-import { taggedCause } from "@syncmesh/drizzle";
-import { defineSchema, t } from "@syncmesh/schema";
+import { ladder, local, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -10,6 +9,14 @@ import { eq } from "drizzle-orm";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import { createMesh } from "../mesh.js";
+
+/** The tag the capture threw, under Drizzle's one wrapper — the same unwrap `withMesh` does. */
+const tagOf = (thrown: Error): string | undefined => {
+  // SAFETY: reading an optional discriminant off an Error — absent on a plain one, which is
+  // what `undefined` here means
+  const tagged = (thrown.cause instanceof Error ? thrown.cause : thrown) as { _tag?: string };
+  return tagged._tag;
+};
 
 const catalog = sqliteTable("catalog", {
   id: text().primaryKey(),
@@ -23,20 +30,19 @@ const books = sqliteTable("books", {
 });
 const drafts = sqliteTable("drafts", { id: text().primaryKey(), body: text().notNull() });
 
+const org = partition("org", { roles: ladder("admin", "member") });
 const schema = () =>
-  defineSchema({
-    partitions: { org: {} },
-    roles: { org: ["admin", "member"] },
+  syncSchema({
     tables: {
       catalog: {
         columns: { id: t.text().primaryKey(), code: t.text(), stock: t.integer() },
       },
       books: {
         columns: { id: t.text().primaryKey(), title: t.text(), createdBy: t.text() },
-        partition: "org",
+        partition: org,
         allow: ({ role }) => ({ $default: role("member"), delete: role("admin") }),
       },
-      drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "local" },
+      drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: local },
     },
   });
 
@@ -77,8 +83,7 @@ const granted = async (role = "member") => {
 const outcome = (write: Promise<unknown>) =>
   write.then(
     () => "ok",
-    (cause: unknown) =>
-      cause instanceof Error ? (taggedCause(cause)?._tag ?? String(cause)) : String(cause),
+    (cause: unknown) => (cause instanceof Error ? (tagOf(cause) ?? String(cause)) : String(cause)),
   );
 
 describe("on — one handle per pin and principal", () => {

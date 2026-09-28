@@ -1,6 +1,6 @@
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { defineSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -10,14 +10,13 @@ import { join } from "node:path";
 
 import { createMesh } from "../mesh.js";
 
+const org = partition("org", { roles: ladder("member") });
 const schema = () =>
-  defineSchema({
-    partitions: { org: {} },
-    roles: { org: ["member"] },
+  syncSchema({
     tables: {
       notes: {
         columns: { id: t.text().primaryKey(), body: t.text() },
-        partition: "org",
+        partition: org,
         allow: ({ role }) => ({ $default: role("member") }),
       },
     },

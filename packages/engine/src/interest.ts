@@ -1,7 +1,5 @@
-import type { Change, PartitionKey, Row, RowRecord, SyncEvent, TableName } from "@syncmesh/kernel";
-import type { PolicyNode } from "@syncmesh/policy";
+import type { PartitionKey, RowRecord, SyncEvent } from "@syncmesh/kernel";
 
-import { evaluate } from "@syncmesh/policy";
 import { Result } from "@syncmesh/result";
 
 import type { EventStore, StoreFailure, StoredEvent } from "./store.js";
@@ -11,14 +9,17 @@ import type { Cursors } from "./sync.js";
  * What a device wants, so a sender can drop the rest before it becomes bytes. An interest
  * **narrows** and never widens: it is a request, not a permission, and it is applied after the
  * read policy has already decided what this device may see at all.
+ *
+ * **Partitions, and nothing finer** (book ch. 3). The table and row filters that used to live
+ * here are gone, and not as a simplification: a filtered projection of a log does not fold to
+ * identical state, so a device that folds may not hold a subset of a partition it claims — that
+ * is a NEVER, and narrowing below the partition was it wearing transport clothes. What stays is
+ * **transfer narrowing**: asking for some granted partitions now and others later, which shapes
+ * which bytes travel and never what this device holds.
  */
 export interface Interest {
   /** Only these instances. Absent, every instance the policy already allows. */
   readonly partitions?: readonly PartitionKey[];
-  /** Only these tables. Absent, all of them. */
-  readonly tables?: readonly TableName[];
-  /** Only rows matching this predicate — the same node language a rule is written in. */
-  readonly where?: PolicyNode;
 }
 
 /** An interest with nothing in it: the sender filters nothing, which is the old behaviour exactly. */
@@ -48,9 +49,6 @@ export const interestFrom = (text: string | undefined): Interest | undefined => 
 };
 
 /** No grant is consulted here: an interest asks about rows, never about who the caller is. */
-const ROWLESS = { grant: { account: "", claims: {} }, roles: [] } as const;
-
-const satisfies = (where: PolicyNode, row: Row): boolean => evaluate(where, { ...ROWLESS, row });
 
 /**
  * Whether one stored row falls inside an interest — the same narrowings the wire filter applies
@@ -58,27 +56,10 @@ const satisfies = (where: PolicyNode, row: Row): boolean => evaluate(where, { ..
  * what "the same slice" means; three answers here would be three kinds of false alarm.
  */
 export function rowsIn(record: RowRecord, interest: Interest | undefined): boolean {
-  if (interest === undefined) return true;
-  const { partitions, where } = interest;
-  if (partitions !== undefined) {
-    const held = record.partition;
-    if (held === undefined || !partitions.includes(held)) return false;
-  }
-  if (where === undefined) return true;
-  const row: Row = new Map([...record.cells].map(([column, cell]) => [column, cell.value]));
-  return evaluate(where, { ...ROWLESS, row });
-}
-
-/** Every column a predicate names, so a change that touches one can be recognised as relevant. */
-export function predicateColumns(node: PolicyNode, into = new Set<string>()): ReadonlySet<string> {
-  if (node.kind === "rowIs") for (const column of Object.keys(node.where)) into.add(column);
-  else if (node.kind === "compare" || node.kind === "isIn" || node.kind === "owner")
-    into.add(node.column);
-  else if (node.kind === "claimHas" || node.kind === "claimEquals") into.add(node.column);
-  else if (node.kind === "any" || node.kind === "all")
-    for (const inner of node.of) predicateColumns(inner, into);
-  else if (node.kind === "not") predicateColumns(node.of, into);
-  return into;
+  const partitions = interest?.partitions;
+  if (partitions === undefined) return true;
+  const held = record.partition;
+  return held !== undefined && partitions.includes(held);
 }
 
 /**
@@ -98,39 +79,6 @@ export function predicateColumns(node: PolicyNode, into = new Set<string>()): Re
  * put the event behind a scoped coverage that says it was accounted for, and nothing would ever
  * offer it again.
  */
-const changeMatches = (change: Change, where: PolicyNode, named: ReadonlySet<string>): boolean => {
-  if (change.kind === "delete" || change.kind === "unknown") return true;
-  if (change.kind === "insert") return satisfies(where, change.row);
-  if (satisfies(where, change.patch)) return true;
-  for (const column of change.patch.keys()) if (named.has(String(column))) return true;
-  return false;
-};
-
-/**
- * Whether this event is worth sending. An event is atomic — there is no half of one — so it
- * travels when **any** of its changes is wanted. Partition and table are map lookups and settle
- * the common case; only `where` costs a predicate evaluation.
- *
- * An **unpinned** event passes the partition test whatever instances are named (D24): it is about
- * no instance, so naming instances says nothing about it. A device that does not want it says so
- * with `tables`, which is the dimension that can express it.
- */
-export function matchesInterest(interest: Interest, event: SyncEvent): boolean {
-  const { partitions, tables, where } = interest;
-  if (partitions !== undefined) {
-    const wanted = event.partition;
-    // an unpinned event is about no instance, so naming instances does not exclude it (D24). The
-    // clause is "only rows in these instances", not "only rows that are in some instance and it
-    // is one of these" — and reading it the second way is what made a `global` catalog, whose
-    // whole promise is replication to every device, reach every device except the careful ones
-    if (wanted !== undefined && !partitions.includes(wanted)) return false;
-  }
-  const named = where === undefined ? new Set<string>() : predicateColumns(where);
-  return event.changes.some((change) => {
-    if (tables !== undefined && !tables.includes(change.table)) return false;
-    return where === undefined || changeMatches(change, where, named);
-  });
-}
 
 /**
  * A stable identity for an interest, so two devices asking the same thing are one subscription
@@ -140,11 +88,7 @@ export function matchesInterest(interest: Interest, event: SyncEvent): boolean {
 export function interestKey(interest: Interest): string {
   const sorted = (values: readonly string[] | undefined) =>
     values === undefined ? null : [...values].map(String).sort();
-  return JSON.stringify([
-    sorted(interest.partitions),
-    sorted(interest.tables),
-    interest.where ?? null,
-  ]);
+  return JSON.stringify([sorted(interest.partitions)]);
 }
 
 /**
@@ -161,17 +105,10 @@ export function narrows(next: Interest | undefined, previous: Interest | undefin
   // an unscoped cursor is already the stronger claim; nothing can widen past everything
   if (previous === undefined || isEverything(previous)) return true;
   if (next === undefined) return false;
-  return (
-    within(next.partitions, previous.partitions) &&
-    within(next.tables, previous.tables) &&
-    narrowsWhere(next.where, previous.where)
-  );
+  return within(next.partitions, previous.partitions);
 }
 
-const isEverything = (interest: Interest): boolean =>
-  interest.partitions === undefined &&
-  interest.tables === undefined &&
-  interest.where === undefined;
+const isEverything = (interest: Interest): boolean => interest.partitions === undefined;
 
 /** `undefined` means "all of them", so it is the widest value a list can take, never the emptiest. */
 const within = (
@@ -184,11 +121,17 @@ const within = (
   return next.every((value) => allowed.has(String(value)));
 };
 
-/** Adding a predicate narrows; dropping one widens; changing one is a question this does not answer. */
-const narrowsWhere = (next: PolicyNode | undefined, previous: PolicyNode | undefined): boolean => {
-  if (previous === undefined) return true;
-  if (next === undefined) return false;
-  return JSON.stringify(next) === JSON.stringify(previous);
+/**
+ * Whether one event is in the partitions the asker named.
+ *
+ * The whole of the filter now: an event belongs to exactly one instance, and an interest names
+ * the instances this device wants bytes for. There is nothing to say about its tables or its
+ * cells, because a device holds a partition entire or not at all (ch. 3).
+ */
+export const matchesInterest = (interest: Interest | undefined, event: SyncEvent): boolean => {
+  const partitions = interest?.partitions;
+  if (partitions === undefined) return true;
+  return event.partition !== undefined && partitions.includes(event.partition);
 };
 
 /**

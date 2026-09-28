@@ -1,5 +1,6 @@
 import type { Ahead, Engine, Interest } from "@syncmesh/engine";
 import type { PeerId, SeqNum, TableName } from "@syncmesh/kernel";
+import type { Identity } from "@syncmesh/wire";
 
 import { sameAhead } from "@syncmesh/engine";
 
@@ -63,4 +64,35 @@ export function divergenceAgainst(
   if (!sameCoverage(engine.coverage().synced, theirs.at)) return undefined;
   if (theirs.ahead === undefined || !sameAhead(engine.ahead(), theirs.ahead)) return undefined;
   return disagreements(tableNames(engine.digest(interest)), theirs.digests);
+}
+
+/**
+ * Answering a peer's digest, queued (book RFC-0014). The comparison runs **behind** the events
+ * that arrived with it, which is what makes a digest the last frame of an exchange rather than
+ * merely the last one sent: compared before the fold catches up, it reports a divergence that
+ * is only a fold in flight.
+ */
+export function answerDigest(deps: {
+  readonly engine: Engine;
+  readonly identity: Identity;
+  readonly interest: Interest | undefined;
+  readonly scope: string;
+  readonly onDivergence?: (divergence: Divergence) => void;
+  readonly queued: (run: () => void) => void;
+}): (
+  scopeThere: string,
+  at: ReadonlyMap<PeerId, SeqNum>,
+  digests: ReadonlyMap<string, bigint>,
+  ahead: Ahead | undefined,
+) => void {
+  const { engine, identity, interest, scope, onDivergence, queued } = deps;
+  return (scopeThere, at, digests, ahead) => {
+    if (onDivergence === undefined) return;
+    queued(() => {
+      const theirs = { scope: scopeThere, at, digests, ...(ahead !== undefined && { ahead }) };
+      const tables = divergenceAgainst(engine, interest, scope, theirs);
+      if (tables !== undefined && tables.length > 0)
+        onDivergence({ peer: identity.peerId, scope, tables });
+    });
+  };
 }

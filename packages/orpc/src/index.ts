@@ -1,29 +1,50 @@
-export type { CallBody, HandlerOptions } from "./http.js";
+export type { CallBody, HandlerOptions, HttpLinkOptions } from "./http.js";
 export { createHandler, findProcedure, httpLink } from "./http.js";
-export type { App, AppOptions } from "./app.js";
-export { createApp } from "./app.js";
+export type { Client } from "./client.js";
+export { createClient } from "./client.js";
+export type { ClientOptions, PostgresStorage, SqliteStorage, Storage, Trust } from "./options.js";
+export { postgres, sqlite } from "./options.js";
 export type {
   Api,
-  CallError,
+  ApiMesh,
+  AuthorityContext,
   AuthorityDef,
+  AuthorityHandlers,
   AuthorityLink,
+  CallError,
+  CanCall,
+  DeclaredErrors,
   MutationDef,
-  Permissions,
   ProcedureDef,
-  QueryDef,
   QueryCall,
+  QueryDef,
+  ReadAnswer,
+  RouteMeta,
   Router,
-  SyncSource,
   WriteResult,
 } from "./api.js";
-export { authority, meshApi, mutation, query } from "./api.js";
+// `meshApi` is deliberately absent: it builds a client out of a mesh, which is `createClient`'s
+// job and `connectMesh`'s, not an app's. It lives at `@syncmesh/orpc/internal` for those two.
+export { mutation, query } from "./api.js";
+export {
+  AuthorityUnreachable,
+  InputInvalid,
+  NoBodyBound,
+  NothingWritten,
+  SchemaNotSynchronous,
+} from "./errors.js";
+export { watch } from "./watch.js";
+export type { Write, WriteLedger } from "./write.js";
+export { createWrite } from "./write.js";
+export type { Server, ServerOptions } from "./server.js";
+export { createServer } from "./server.js";
 
 import type { Handle, Mesh } from "@syncmesh/client";
 import type { JsonValue } from "@syncmesh/kernel";
 import type { SqlDialect } from "@syncmesh/storage";
 
 import { os } from "@orpc/server";
-import { taggedCause } from "@syncmesh/drizzle";
+import { PolicyDenied } from "@syncmesh/engine";
 
 /**
  * Who is calling, as your auth established it. The caller reached the server over HTTP with a
@@ -61,14 +82,29 @@ export interface MeshContext<D extends SqlDialect = "sqlite"> {
  *     .input(z.object({ id: z.string().uuid(), tech: z.string() }))
  *     .errors({ NOT_FOUND: {} })
  *     .handler(async ({ input, context: { mesh }, errors }) => {
- *       const j = mesh.read(jobs)
- *       const [job] = await mesh.db.select().from(j).where(eq(j.id, input.id))
+ *       const j = read(jobs)
+ *       const [job] = await db.select().from(j).where(eq(j.id, input.id))
  *       if (job === undefined) throw errors.NOT_FOUND()
- *       await mesh.db.update(jobs).set({ assignee: input.tech }).where(eq(jobs.id, input.id))
+ *       await db.update(jobs).set({ assignee: input.tech }).where(eq(jobs.id, input.id))
  *     }),
  * }
  * ```
  */
+/**
+ * A refusal the caller's own rules made, found under Drizzle's wrapper.
+ *
+ * The capture throws `PolicyDenied` as itself; Drizzle catches it inside `transaction()` and
+ * re-throws a `DrizzleQueryError` carrying the original as `cause`. So the unwrap is **one step
+ * and one known shape** — not the walk-any-chain-and-match-a-tag-by-string helper this replaced,
+ * which would have found a `PolicyDenied` nested at any depth, put there for any reason, and
+ * turned somebody else's failure into this caller's `FORBIDDEN`.
+ */
+const refusal = (cause: unknown): PolicyDenied | undefined => {
+  if (cause instanceof PolicyDenied) return cause;
+  const under = cause instanceof Error ? cause.cause : undefined;
+  return under instanceof PolicyDenied ? under : undefined;
+};
+
 export function withMesh<D extends SqlDialect = "sqlite">(mesh: Mesh<D>) {
   return os
     .$context<CallerContext>()
@@ -85,9 +121,9 @@ export function withMesh<D extends SqlDialect = "sqlite">(mesh: Mesh<D>) {
       try {
         return await next({ context: { mesh: handle.value } satisfies MeshContext<D> });
       } catch (cause) {
-        // a write the caller's rules refused surfaces as the transaction rejecting
-        const denied = cause instanceof Error && taggedCause(cause)?._tag === "PolicyDenied";
-        throw denied ? errors.FORBIDDEN() : cause;
+        throw refusal(cause) === undefined ? cause : errors.FORBIDDEN();
       }
     });
 }
+
+export type { Custody, Serving } from "./custody.js";

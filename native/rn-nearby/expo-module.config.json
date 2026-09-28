@@ -1,0 +1,7 @@
+{
+  "platforms": ["apple"],
+  "apple": {
+    "modules": ["RNNearbyModule"],
+    "podspecPath": "RNNearby.podspec"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "@syncmesh/client-rs",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A syncmesh device in Rust (D37): engine, stores, relay link, presence and blobs, measured against the TypeScript relay",
+  "scripts": {
+    "build": "cargo build -p syncmesh-client --all-features",
+    "test": "cargo test -p syncmesh-client --all-features",
+    "typecheck": "cargo check -p syncmesh-client --all-features --tests"
+  }
+}

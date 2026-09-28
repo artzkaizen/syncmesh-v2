@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>syncmesh — tab election</title>
+    <style>
+      body {
+        font:
+          14px ui-monospace,
+          monospace;
+        padding: 2rem;
+      }
+      pre {
+        background: #f4f4f5;
+        padding: 1rem;
+        border-radius: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>syncmesh — which tab holds the mesh</h1>
+    <pre id="out">starting…</pre>
+    <!-- ?android removes the constructor before any module runs, which is what Chrome on
+         Android actually looks like: there is no SharedWorker to feature-detect. -->
+    <script>
+      if (location.search.includes("android")) delete window.SharedWorker;
+    </script>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

@@ -27,6 +27,9 @@ function dialOne(to: Delivery): RelayDial {
   const closes = new Set<() => void>();
   let attachment: Uint8Array | null = null;
   let state = OPEN;
+  // the room speaks first (D33) and the client subscribes after `dial()` returns: what was sent
+  // in between waits, as bytes on the platform's socket would
+  const backlog: Uint8Array[] = [];
 
   const server: DurableWebSocket = {
     get readyState() {
@@ -34,6 +37,10 @@ function dialOne(to: Delivery): RelayDial {
     },
     send: (data) => {
       if (!(data instanceof Uint8Array)) return;
+      if (frames.size === 0) {
+        backlog.push(data);
+        return;
+      }
       for (const cb of [...frames]) cb(data);
     },
     close: () => shut(),
@@ -56,6 +63,7 @@ function dialOne(to: Delivery): RelayDial {
     },
     onFrame: (cb) => {
       frames.add(cb);
+      for (const bytes of backlog.splice(0)) cb(bytes);
       return () => void frames.delete(cb);
     },
     onClose: (cb) => {

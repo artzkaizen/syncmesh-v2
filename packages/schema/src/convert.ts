@@ -1,5 +1,6 @@
 import type { CellValue, ColumnName, Row as WireCells } from "@syncmesh/kernel";
 
+import { counterValue } from "@syncmesh/kernel";
 import { Temporal } from "@syncmesh/temporal";
 
 import type { ColumnKind } from "./column.js";
@@ -16,7 +17,9 @@ export const toWireValue = (value: AppValue): CellValue =>
  * merge state rather than a value — the app is shown the total and the live elements, which is
  * also why neither is assignable: there is no way back from what it read to what the cell holds.
  */
-export const fromWireValue = (kind: ColumnKind, value: CellValue): AppValue => {
+export const fromWireValue = (kind: ColumnKind, value: CellValue, merge?: string): AppValue => {
+  // a counter cell only ever holds normal-form totals or null; the app reads the sum
+  if (merge === "counter" && value !== null) return counterValue(value);
   return kind === "timestamp" && !(value instanceof Uint8Array) && value !== null
     ? Temporal.Instant.fromEpochMilliseconds(Number(value))
     : value;
@@ -45,7 +48,7 @@ export function fromWireRow<T extends Table>(table: T, cells: WireCells): Row<T>
   for (const [name, column] of Object.entries(table.columns)) {
     const key = table.columnNames[name];
     const cell = key === undefined ? undefined : cells.get(key);
-    row[name] = fromWireValue(column.def.kind, cell ?? null);
+    row[name] = fromWireValue(column.def.kind, cell ?? null, column.def.merge);
   }
   // SAFETY: every column of the table was set from its own cell or null — the shape Row<T> declares
   return row as Row<T>;
@@ -57,7 +60,7 @@ export function fromWirePatch<T extends Table>(table: T, cells: WireCells): Part
   for (const [name, column] of Object.entries(table.columns)) {
     const key = table.columnNames[name];
     if (key === undefined || !cells.has(key)) continue;
-    row[name] = fromWireValue(column.def.kind, cells.get(key) ?? null);
+    row[name] = fromWireValue(column.def.kind, cells.get(key) ?? null, column.def.merge);
   }
   // SAFETY: every entry was set from its own column's cell — a subset of the shape Row<T> declares
   return row as Partial<Row<T>>;

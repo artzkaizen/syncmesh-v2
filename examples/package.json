@@ -2,7 +2,7 @@
   "name": "@syncmesh/examples",
   "version": "0.0.0",
   "private": true,
-  "description": "The two hosting shapes you run yourself: a relay embedded in a backend process, and a Redis fleet behind a load balancer",
+  "description": "The two hosting shapes you run yourself: a relay embedded in a backend process, and a fleet behind a load balancer",
   "type": "module",
   "exports": {
     "./rounds/schema": {

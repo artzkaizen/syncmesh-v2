@@ -1,0 +1,46 @@
+{
+  "expo": {
+    "name": "Issues",
+    "slug": "syncmesh-issues",
+    "version": "0.0.0",
+    "scheme": "syncmesh-issues",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "dev.syncmesh.issues",
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "Syncmesh uses Bluetooth to sync your issues directly with nearby devices, with no network in between.",
+        "NSBluetoothPeripheralUsageDescription": "Syncmesh uses Bluetooth to sync your issues directly with nearby devices, with no network in between.",
+        "UIBackgroundModes": ["bluetooth-central", "bluetooth-peripheral"]
+      },
+      "appleTeamId": "4RS97TDH36"
+    },
+    "android": {
+      "package": "dev.syncmesh.issues",
+      "edgeToEdgeEnabled": true
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      "react-native-quick-crypto",
+      [
+        "@syncmesh/rn-nearby/app.plugin.js",
+        {
+          "wifiAware": false,
+          "localNetworkReason": "Issues syncs directly with nearby devices when there is no network."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "relayUrl": null,
+      "authorityUrl": null,
+      "bluetooth": true,
+      "wifiDirect": true
+    }
+  }
+}

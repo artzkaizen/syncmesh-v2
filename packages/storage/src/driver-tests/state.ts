@@ -1,7 +1,7 @@
 import type { Coverage, StateStore } from "@syncmesh/engine";
 import type { SuiteCase } from "@syncmesh/engine";
 
-import { equal } from "@syncmesh/engine";
+import { equal, spreadable } from "@syncmesh/engine";
 import { encodeRecord } from "@syncmesh/wire";
 
 import type { SqlDriver } from "../driver.js";
@@ -101,6 +101,12 @@ export const stateCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       equal(loaded.isErr() ? loaded.error._tag : "ok", "StateCorrupt", "damaged row");
       (await store.clear()).unwrap();
       equal((await store.isEmpty()).unwrap(), true, "after clear");
+    },
+  },
+  {
+    name: "driver: every member is an own property, so a wrapper that spreads it keeps them all",
+    run: async () => {
+      spreadable(await openDriver("driver-shape"), "driver");
     },
   },
   {

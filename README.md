@@ -4,8 +4,11 @@ A local-first sync engine: every device is a full replica; devices converge with
 each other over any transport (BLE, Wi-Fi, a relay) with or without a server; a
 server is a peer with better uptime that can hold the rows in your database.
 
-**This repository is built by hand.** No generated code. The AI's job here is
-research — options, tradeoffs, prior art, and the plan — never the code.
+**How this repository is built.** Until 2026-09-26 it was built by hand, with the AI's job
+limited to research and the plan. The owner lifted that rule on 2026-09-26 ("Everything"): an
+agent may now write code here, under the same rules as anyone — a task is done when its test
+exists and passes, a decision is a file, and nothing about the wire changes without a frozen
+vector. Decisions and epics remain the record of _why_; read them before touching what they name.
 
 ## Where things are
 

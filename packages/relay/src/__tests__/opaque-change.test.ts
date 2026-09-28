@@ -5,7 +5,7 @@ import { decodeAndVerify, signEvent } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import { joinFrame } from "../frames.js";
-import { fakeSocket, openRoom, peer, tick, write } from "./fixtures.js";
+import { fakeSocket, scriptedRoom, peer, tick, write } from "./fixtures.js";
 
 /**
  * The same row, written under a tag this build has no fold for. Tag 3 is `increment`, reserved
@@ -22,7 +22,7 @@ const opaque = (at: { readonly table: Change["table"]; readonly key: Change["key
 describe("an event a relay cannot read", () => {
   test("is stored and re-served, rather than refused at the door", async () => {
     const author = peer(40, "acct_a");
-    const room = await openRoom({ pageSize: 100 });
+    const room = await scriptedRoom({ pageSize: 100 });
     const writer = fakeSocket();
     const conn = room.connect(writer.socket);
     conn.receive(joinFrame([1], author.identity.peerId, new Map()));

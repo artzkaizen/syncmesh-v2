@@ -1,0 +1,123 @@
+{
+  "deviceId": "32b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b",
+  "otherId": "da971dcae2b290b4025e2881d19f815591bf76c97693c595af3512c211fed947",
+  "framing": {
+    "lengthBytes": 4,
+    "byteOrder": "big-endian",
+    "defaultMaxFrameBytes": 8388608,
+    "example": {
+      "frameHex": "8301582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b65696e762d37",
+      "framedHex": "0000002a8301582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b65696e762d37"
+    }
+  },
+  "vectors": [
+    {
+      "description": "grant, carrying a frozen grant wire",
+      "kind": "grant",
+      "tag": 0,
+      "wireHex": "8200589c825857a800010166616363745f61025820da29e95b02e00ffa15645775fb1d2ba222a1943395eea06b94e2c057b7be69d003666d656d6265720481686f72673a61636d65051b0000018bcfe56800061b0000018bd01c568007a058404735e5b860621e2c3bf760e7c1e2f7f89569a5603e244019f966aa8de1c32851f91b3b94016bbf41154b0669fde19712c9f5492a30653df9a4efc4d8e0ab0407"
+    },
+    {
+      "description": "grant-request, no invite",
+      "kind": "grant-request",
+      "tag": 1,
+      "wireHex": "8201582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b"
+    },
+    {
+      "description": "grant-request with an invite",
+      "kind": "grant-request",
+      "tag": 1,
+      "wireHex": "8301582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b65696e762d37"
+    },
+    {
+      "description": "cursors, two authors",
+      "kind": "cursors",
+      "tag": 2,
+      "wireHex": "8302582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b8282582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b07825820da971dcae2b290b4025e2881d19f815591bf76c97693c595af3512c211fed94703"
+    },
+    {
+      "description": "cursors with what is held above them (D13)",
+      "kind": "cursors",
+      "tag": 2,
+      "wireHex": "8402582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b8282582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b07825820da971dcae2b290b4025e2881d19f815591bf76c97693c595af3512c211fed9470381825820da971dcae2b290b4025e2881d19f815591bf76c97693c595af3512c211fed947820506"
+    },
+    {
+      "description": "event, carrying a frozen event wire",
+      "kind": "event",
+      "tag": 3,
+      "wireHex": "820358c6825881a600010158209da891814f903cea173bc809a9abd1048a798caca6c591b5d843933d60898b8b020103821b0000019883d4860000056c6e6f7465732e6372656174650781a4000001656e6f74657302626b3103a464626f6479606670696e6e6564f4657469746c656568656c6c6f697570646174656441741b0000019883d4860058409c310f159ec216851a39e85708903f44870c616429f69303faad9c0c321cea8f56dd05def7fe90f175f6016b121e33cdc461452c48c858164ae5baa33e7e3605"
+    },
+    {
+      "description": "presence, a signed cursor position",
+      "kind": "presence",
+      "tag": 4,
+      "wireHex": "82045897825852a8000101582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b0266637572736f7203686f72673a61636d650463732d31050306a261780c61791828071b0000018bcfe652605840f8ca90d65761204c14a9415ced6f1e6b9518a9227d73f72658f92641d28587ddf81ecea2350e76def69e38be8a2b09ada90bee4aa1edead7b244da45a0244806"
+    },
+    {
+      "description": "digest of the whole state",
+      "kind": "digest",
+      "tag": 5,
+      "wireHex": "8405608282582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b07825820da971dcae2b290b4025e2881d19f815591bf76c97693c595af3512c211fed947038182656e6f746573686465616462656566"
+    },
+    {
+      "description": "digest of one partition, with ahead",
+      "kind": "digest",
+      "tag": 5,
+      "wireHex": "8505781b7b22706172746974696f6e73223a5b226f72673a61636d65225d7d8282582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b07825820da971dcae2b290b4025e2881d19f815591bf76c97693c595af3512c211fed947038182656e6f74657368646561646265656681825820da971dcae2b290b4025e2881d19f815591bf76c97693c595af3512c211fed947820506"
+    },
+    {
+      "description": "snapshot request, everything",
+      "kind": "snap-req",
+      "tag": 6,
+      "wireHex": "83060060"
+    },
+    {
+      "description": "snapshot request, one partition",
+      "kind": "snap-req",
+      "tag": 6,
+      "wireHex": "830600781b7b22706172746974696f6e73223a5b226f72673a61636d65225d7d"
+    },
+    {
+      "description": "snapshot manifest, whole state, no certificate",
+      "kind": "snap-manifest",
+      "tag": 6,
+      "wireHex": "88060166736e61702d3102058282582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b07825820da971dcae2b290b4025e2881d19f815591bf76c97693c595af3512c211fed9470360f6"
+    },
+    {
+      "description": "snapshot manifest, one partition, with a certificate",
+      "kind": "snap-manifest",
+      "tag": 6,
+      "wireHex": "88060166736e61702d3102058282582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b07825820da971dcae2b290b4025e2881d19f815591bf76c97693c595af3512c211fed94703781b7b22706172746974696f6e73223a5b226f72673a61636d65225d7d44c0c1c2c3"
+    },
+    {
+      "description": "snapshot chunk",
+      "kind": "snap-chunk",
+      "tag": 6,
+      "wireHex": "85060266736e61702d310048a0a1a2a3a4a5a6a7"
+    },
+    {
+      "description": "snapshot ack, complete",
+      "kind": "snap-ack",
+      "tag": 6,
+      "wireHex": "84060366736e61702d3180"
+    },
+    {
+      "description": "snapshot ack, one chunk missing",
+      "kind": "snap-ack",
+      "tag": 6,
+      "wireHex": "84060366736e61702d318101"
+    },
+    {
+      "description": "receipt, carrying a frozen custody receipt",
+      "kind": "receipt",
+      "tag": 7,
+      "wireHex": "820758a382585ea600010158206dc69d472f7f40f4769eadb159b32edae69b0729a33277980d074365311f4d77025820da971dcae2b290b4025e2881d19f815591bf76c97693c595af3512c211fed9470301046773746f72652d31051b0000018bcfe56800584077aab71c55f3e44d89c2af45534dccd8a8a86d85d095c72528eff95d5d4bee7229a5e08f54c30947e0b5ae03d1c38c1c9c85c80a2356b019b4ca9afd1fc41e02"
+    },
+    {
+      "description": "routes, one destination two hops away",
+      "kind": "routes",
+      "tag": 8,
+      "wireHex": "82088183784064613937316463616532623239306234303235653238383164313966383135353931626637366339373639336335393561663335313263323131666564393437021b0000018bcfe65260"
+    }
+  ]
+}

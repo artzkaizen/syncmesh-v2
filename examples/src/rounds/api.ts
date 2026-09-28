@@ -1,3 +1,4 @@
+import { syncOf } from "@syncmesh/drizzle";
 import { mutation, query } from "@syncmesh/orpc";
 import { asc, desc, eq } from "drizzle-orm";
 import * as z from "zod";
@@ -11,22 +12,30 @@ import { observation, patient } from "./schema.js";
  */
 
 export const patients = {
-  list: query.handler(({ mesh }) => mesh.db.select().from(patient).orderBy(asc(patient.bed))),
+  list: query.handler(({ db }) => db.select().from(patient).orderBy(asc(patient.bed))),
 
   admit: mutation
     .input(z.object({ id: z.string(), name: z.string().min(1), bed: z.string().min(1) }))
-    .handler(async ({ input, mesh }) => {
-      await mesh.db.insert(patient).values(input);
+    .handler(async ({ input, db }) => {
+      await db.insert(patient).values(input);
       return input;
     }),
 };
 
 export const observations = {
+  /** Where one reading's own write got to — a column, selected with the row it is about. */
+  reach: query.input(z.object({ id: z.string() })).handler(({ input, db, self }) =>
+    db
+      .select({ id: observation.id, sync: syncOf(self, observation) })
+      .from(observation)
+      .where(eq(observation.id, input.id)),
+  ),
+
   /** One patient's readings, newest first. Live: another clinician's entry arrives as a re-render. */
   forPatient: query
     .input(z.object({ patientId: z.string() }))
-    .handler(({ input, mesh }) =>
-      mesh.db
+    .handler(({ input, db }) =>
+      db
         .select()
         .from(observation)
         .where(eq(observation.patientId, input.patientId))
@@ -43,9 +52,9 @@ export const observations = {
         author: z.string().min(1),
       }),
     )
-    .handler(async ({ input, mesh }) => {
+    .handler(async ({ input, db }) => {
       const id = crypto.randomUUID();
-      await mesh.db.insert(observation).values({ id, ...input, amends: null });
+      await db.insert(observation).values({ id, ...input, amends: null });
       return { id };
     }),
 
@@ -55,14 +64,14 @@ export const observations = {
    */
   amend: mutation
     .input(z.object({ amends: z.string(), value: z.string().min(1), author: z.string().min(1) }))
-    .handler(async ({ input, mesh }) => {
-      const [previous] = await mesh.db
+    .handler(async ({ input, db }) => {
+      const [previous] = await db
         .select()
         .from(observation)
         .where(eq(observation.id, input.amends));
       if (previous === undefined) throw new Error(`no observation ${input.amends} to amend`);
       const id = crypto.randomUUID();
-      await mesh.db.insert(observation).values({
+      await db.insert(observation).values({
         id,
         patientId: previous.patientId,
         code: previous.code,

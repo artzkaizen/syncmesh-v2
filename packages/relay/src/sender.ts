@@ -23,25 +23,34 @@ export interface Sender {
   readonly alive: () => boolean;
 }
 
-export function createSender(socket: RelaySocket, maxBacklog: number): Sender {
+export function createSender(socket: RelaySocket, maxBacklog: number, maxBytes?: number): Sender {
   const queued: Uint8Array[] = [];
+  let queuedBytes = 0;
   let dead = false;
 
   const overflow = (): void => {
     dead = true;
     queued.length = 0;
+    queuedBytes = 0;
     socket.close("backlog ceiling: this client cannot keep up");
+  };
+
+  const enqueue = (frame: Uint8Array): void => {
+    queued.push(frame);
+    queuedBytes += frame.byteLength;
+    // frames alone are not a ceiling: a thousand near-cap blob frames is gigabytes of buffers
+    if (queued.length > maxBacklog || (maxBytes !== undefined && queuedBytes > maxBytes))
+      overflow();
   };
 
   return {
     send: (frame) => {
       if (dead) return;
       if (queued.length > 0) {
-        queued.push(frame);
-        if (queued.length > maxBacklog) overflow();
+        enqueue(frame);
         return;
       }
-      if (socket.send(frame) === "dropped") queued.push(frame);
+      if (socket.send(frame) === "dropped") enqueue(frame);
     },
     drain: () => {
       while (!dead && queued.length > 0) {
@@ -49,6 +58,7 @@ export function createSender(socket: RelaySocket, maxBacklog: number): Sender {
         const next = queued[0] as Uint8Array;
         if (socket.send(next) === "dropped") return;
         queued.shift();
+        queuedBytes -= next.byteLength;
       }
     },
     backlog: () => queued.length,

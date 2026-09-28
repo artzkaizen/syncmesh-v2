@@ -1,4 +1,4 @@
-import { defineSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 /** The room a relay serves these examples under; it is the path a device dials, `ws://host/acme`. */
@@ -25,14 +25,14 @@ export const notes = sqliteTable("notes", {
  * The manifest: the columns that sync, the instance they hang under, and who may write them.
  * A fresh one per mesh, because a schema is bound to the engine that folds through it.
  */
+const org = partition("org", { roles: ladder("owner", "member") });
+
 export const notesSchema = () =>
-  defineSchema({
-    partitions: { org: {} },
-    roles: { org: ["owner", "member"] },
+  syncSchema({
     tables: {
       notes: {
         columns: { id: t.text().primaryKey(), body: t.text(), author: t.text() },
-        partition: "org",
+        partition: org,
         allow: ({ role }) => ({ $default: role("member") }),
       },
     },
