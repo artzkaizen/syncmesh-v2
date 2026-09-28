@@ -15,8 +15,9 @@ function isAppFile(filename: string): boolean {
 	return /(^|\/)app\//.test(filename);
 }
 
+/** A `server/` directory anywhere in the path, or a `.server` module under any of the extensions an import spells. */
 function isServerModule(source: string): boolean {
-	return /(^|\/)server\//.test(source) || source.endsWith(".server") || source.endsWith(".server.ts");
+	return /(^|\/)server\//.test(source) || /\.server(\.[cm]?[jt]sx?)?$/.test(source);
 }
 
 export const noServerImportInAppRule = defineRule({

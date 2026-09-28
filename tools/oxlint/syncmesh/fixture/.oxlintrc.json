@@ -13,6 +13,7 @@
     ],
     "no-unused-expressions": "off",
     "syncmesh/no-rendered-length": "error",
-    "syncmesh/no-length-against-limit": "error"
+    "syncmesh/no-length-against-limit": "error",
+    "syncmesh/no-server-import-in-app": "error"
   }
 }
