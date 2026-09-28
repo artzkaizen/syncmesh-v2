@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use syncmesh_core::event::{PeerId, RowKey, SeqNum, SyncEvent, TableName};
+use syncmesh_core::event::{Change, PeerId, RowKey, SeqNum, SyncEvent, TableName};
 use syncmesh_core::hlc::Hlc;
 use syncmesh_core::record::RowRecord;
 use syncmesh_core::state::State;
@@ -129,13 +129,17 @@ pub trait StateStore {
     fn clear(&mut self) -> Result<(), StoreError>;
 }
 
-/// Every `(table, key)` the events touch.
+/// Every `(table, key)` whose record the events can move. A doc change counts only as a genesis —
+/// the one kind that sets a cell — so a document edit never re-runs a live query (RFC-0023 §4.2).
 pub fn write_keys_of<'a>(
     events: impl IntoIterator<Item = &'a SyncEvent>,
 ) -> BTreeMap<TableName, BTreeSet<RowKey>> {
     let mut keys: BTreeMap<TableName, BTreeSet<RowKey>> = BTreeMap::new();
     for event in events {
         for change in &event.changes {
+            if matches!(change, Change::Doc(d) if !d.genesis) {
+                continue;
+            }
             keys.entry(change.table().to_owned())
                 .or_default()
                 .insert(change.key().to_owned());

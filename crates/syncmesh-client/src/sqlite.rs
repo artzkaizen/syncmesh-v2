@@ -24,6 +24,11 @@ use syncmesh_core::record_codec::{decode_record, encode_record};
 use syncmesh_core::state::State;
 use syncmesh_core::{decode_event_core, encode_event_core};
 
+use std::collections::BTreeMap;
+
+use syncmesh_core::doc::Id16;
+
+use crate::doc_log::{DocAddress, DocEntryState, DocHead, DocHeadMode, DocLogEntry, DocStore};
 use crate::store::{Coverage, Cursors, EventStore, RowWrite, StateStore, StoreError, StoredEvent};
 
 /// The one key `sm_meta` holds today.
@@ -527,6 +532,320 @@ impl SqliteBlobStore {
             .execute("DELETE FROM sm_blobs WHERE hash = ?1", params![hash])
             .map(|removed| removed > 0)
             .map_err(failed("delete"))
+    }
+}
+
+// --- the doc log ------------------------------------------------------------------------------
+
+/// RFC-0023 §6.2 in a device's SQLite: the same columns, types, keys and index as the TypeScript's
+/// `doc_log`/`doc_heads` (`storage/src/doc-tables.ts`), under this crate's `sm_` prefix.
+const DOCS_DDL: &str = "
+CREATE TABLE IF NOT EXISTS sm_doc_log (
+    author      TEXT NOT NULL,
+    seq         INTEGER NOT NULL,
+    idx         INTEGER NOT NULL,
+    tbl         TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    col         TEXT NOT NULL,
+    lineage     BLOB,
+    hlc_ms      INTEGER NOT NULL,
+    hlc_logical INTEGER NOT NULL,
+    action      BLOB,
+    undo_of     BLOB,
+    blob        TEXT,
+    size        INTEGER NOT NULL,
+    state       TEXT NOT NULL,
+    PRIMARY KEY (author, seq, idx)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS sm_doc_log_doc ON sm_doc_log (tbl, key, col, state);
+CREATE TABLE IF NOT EXISTS sm_doc_heads (
+    tbl             TEXT NOT NULL,
+    key             TEXT NOT NULL,
+    col             TEXT NOT NULL,
+    adapter         TEXT NOT NULL,
+    lineage         BLOB,
+    covers          TEXT NOT NULL,
+    version         BLOB,
+    tail_count      INTEGER NOT NULL,
+    tail_bytes      INTEGER NOT NULL,
+    mode            TEXT NOT NULL,
+    materialised_at INTEGER,
+    PRIMARY KEY (tbl, key, col)
+) WITHOUT ROWID;
+";
+
+const ENTRY_COLUMNS: &str = "author, seq, idx, tbl, key, col, lineage, hlc_ms, hlc_logical, \
+                             action, undo_of, blob, size, state";
+
+/// The doc log and heads in SQLite: what an engine's `doc_store` takes on a device that persists.
+pub struct SqliteDocStore {
+    conn: Connection,
+}
+
+impl std::fmt::Debug for SqliteDocStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SqliteDocStore").finish_non_exhaustive()
+    }
+}
+
+impl SqliteDocStore {
+    pub fn open(path: &Path) -> Result<SqliteDocStore, StoreError> {
+        SqliteDocStore::over(open_file(path)?)
+    }
+
+    pub fn open_in_memory() -> Result<SqliteDocStore, StoreError> {
+        SqliteDocStore::over(open_memory()?)
+    }
+
+    fn over(conn: Connection) -> Result<SqliteDocStore, StoreError> {
+        conn.execute_batch(DOCS_DDL).map_err(failed("migrate"))?;
+        Ok(SqliteDocStore { conn })
+    }
+
+    fn select_entries(
+        &self,
+        filter: &str,
+        binds: &[&dyn rusqlite::ToSql],
+    ) -> Result<Vec<DocLogEntry>, StoreError> {
+        let sql =
+            format!("SELECT {ENTRY_COLUMNS} FROM sm_doc_log {filter} ORDER BY author, seq, idx");
+        let mut statement = self.conn.prepare_cached(&sql).map_err(failed("prepare"))?;
+        let rows = statement
+            .query_map(binds, |r| {
+                Ok((
+                    (
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ),
+                    (
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                        r.get::<_, String>(5)?,
+                    ),
+                    (
+                        r.get::<_, Option<Vec<u8>>>(6)?,
+                        r.get::<_, i64>(7)?,
+                        r.get::<_, i64>(8)?,
+                    ),
+                    (
+                        r.get::<_, Option<Vec<u8>>>(9)?,
+                        r.get::<_, Option<Vec<u8>>>(10)?,
+                    ),
+                    (
+                        r.get::<_, Option<String>>(11)?,
+                        r.get::<_, i64>(12)?,
+                        r.get::<_, String>(13)?,
+                    ),
+                ))
+            })
+            .map_err(failed("doc entries"))?;
+        rows.map(|row| {
+            let (
+                (author, seq, idx),
+                (table, key, column),
+                (lineage, ms, logical),
+                (action, undo),
+                (blob, size, state),
+            ) = row.map_err(failed("read"))?;
+            Ok(DocLogEntry {
+                doc: DocAddress { table, key, column },
+                author: PeerId::parse(&author)
+                    .map_err(|e| StoreError::new(format!("stored doc author: {e}")))?,
+                seq: seq_from_sql(seq)?,
+                index: u32::try_from(idx).map_err(|_| StoreError::new("stored doc index"))?,
+                lineage: id_from_sql(lineage)?,
+                hlc: Hlc::new(
+                    ms,
+                    u32::try_from(logical).map_err(|_| StoreError::new("stored doc logical"))?,
+                ),
+                action: id_from_sql(action)?,
+                undo_of: id_from_sql(undo)?,
+                blob,
+                size: u64::try_from(size).map_err(|_| StoreError::new("stored doc size"))?,
+                state: DocEntryState::parse(&state)
+                    .ok_or_else(|| StoreError::new(format!("stored doc state {state:?}")))?,
+            })
+        })
+        .collect()
+    }
+}
+
+fn id_from_sql(bytes: Option<Vec<u8>>) -> Result<Option<Id16>, StoreError> {
+    bytes
+        .map(|b| {
+            Id16::try_from(b.as_slice()).map_err(|_| StoreError::new("a stored id is not 16 bytes"))
+        })
+        .transpose()
+}
+
+impl DocStore for SqliteDocStore {
+    fn append(&mut self, entries: &[DocLogEntry]) -> Result<(), StoreError> {
+        let tx = self.conn.transaction().map_err(failed("begin"))?;
+        for e in entries {
+            tx.execute(
+                &format!(
+                    "INSERT OR IGNORE INTO sm_doc_log ({ENTRY_COLUMNS})
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"
+                ),
+                params![
+                    e.author.as_str(),
+                    seq_to_sql(e.seq),
+                    i64::from(e.index),
+                    e.doc.table,
+                    e.doc.key,
+                    e.doc.column,
+                    e.lineage.map(|l| l.to_vec()),
+                    e.hlc.ms,
+                    i64::from(e.hlc.logical),
+                    e.action.map(|a| a.to_vec()),
+                    e.undo_of.map(|a| a.to_vec()),
+                    e.blob,
+                    i64::try_from(e.size).unwrap_or(i64::MAX),
+                    e.state.as_str(),
+                ],
+            )
+            .map_err(failed("doc append"))?;
+        }
+        tx.commit().map_err(failed("commit"))
+    }
+
+    fn entries(&self) -> Result<Vec<DocLogEntry>, StoreError> {
+        self.select_entries("", &[])
+    }
+
+    fn entries_of(&self, doc: &DocAddress) -> Result<Vec<DocLogEntry>, StoreError> {
+        self.select_entries(
+            "WHERE tbl = ?1 AND key = ?2 AND col = ?3",
+            &[&doc.table, &doc.key, &doc.column],
+        )
+    }
+
+    fn set_state(
+        &mut self,
+        author: &PeerId,
+        seq: SeqNum,
+        index: u32,
+        state: DocEntryState,
+    ) -> Result<(), StoreError> {
+        self.conn
+            .execute(
+                "UPDATE sm_doc_log SET state = ?1 WHERE author = ?2 AND seq = ?3 AND idx = ?4",
+                params![
+                    state.as_str(),
+                    author.as_str(),
+                    seq_to_sql(seq),
+                    i64::from(index)
+                ],
+            )
+            .map_err(failed("doc state"))?;
+        Ok(())
+    }
+
+    fn upsert_head(
+        &mut self,
+        doc: &DocAddress,
+        adapter: &str,
+        lineage: Option<Id16>,
+        tail_count: u64,
+        tail_bytes: u64,
+    ) -> Result<(), StoreError> {
+        self.conn
+            .execute(
+                "INSERT INTO sm_doc_heads (tbl, key, col, adapter, lineage, covers, version,
+                     tail_count, tail_bytes, mode, materialised_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, '{}', NULL, ?6, ?7, 'none', NULL)
+                 ON CONFLICT (tbl, key, col) DO UPDATE SET adapter = excluded.adapter,
+                     lineage = excluded.lineage, tail_count = excluded.tail_count,
+                     tail_bytes = excluded.tail_bytes",
+                params![
+                    doc.table,
+                    doc.key,
+                    doc.column,
+                    adapter,
+                    lineage.map(|l| l.to_vec()),
+                    i64::try_from(tail_count).unwrap_or(i64::MAX),
+                    i64::try_from(tail_bytes).unwrap_or(i64::MAX),
+                ],
+            )
+            .map_err(failed("doc head"))?;
+        Ok(())
+    }
+
+    fn heads(&self) -> Result<Vec<DocHead>, StoreError> {
+        let mut statement = self
+            .conn
+            .prepare_cached(
+                "SELECT tbl, key, col, adapter, lineage, covers, version, tail_count, tail_bytes,
+                        mode, materialised_at
+                 FROM sm_doc_heads ORDER BY tbl, key, col",
+            )
+            .map_err(failed("prepare"))?;
+        let rows = statement
+            .query_map([], |r| {
+                Ok((
+                    (
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ),
+                    (
+                        r.get::<_, String>(3)?,
+                        r.get::<_, Option<Vec<u8>>>(4)?,
+                        r.get::<_, String>(5)?,
+                    ),
+                    (
+                        r.get::<_, Option<Vec<u8>>>(6)?,
+                        r.get::<_, i64>(7)?,
+                        r.get::<_, i64>(8)?,
+                    ),
+                    (r.get::<_, String>(9)?, r.get::<_, Option<i64>>(10)?),
+                ))
+            })
+            .map_err(failed("doc heads"))?;
+        rows.map(|row| {
+            let (
+                (table, key, column),
+                (adapter, lineage, covers),
+                (version, count, bytes),
+                (mode, at),
+            ) = row.map_err(failed("read"))?;
+            let covers = coverage_from_json(&format!(r#"{{"synced":{covers}}}"#))?.synced;
+            Ok(DocHead {
+                doc: DocAddress { table, key, column },
+                adapter,
+                lineage: id_from_sql(lineage)?,
+                covers,
+                version,
+                tail_count: u64::try_from(count)
+                    .map_err(|_| StoreError::new("stored tail count"))?,
+                tail_bytes: u64::try_from(bytes)
+                    .map_err(|_| StoreError::new("stored tail bytes"))?,
+                mode: DocHeadMode::parse(&mode)
+                    .ok_or_else(|| StoreError::new(format!("stored doc mode {mode:?}")))?,
+                materialised_at: at,
+            })
+        })
+        .collect()
+    }
+
+    fn uncovered_floor(&self) -> Result<BTreeMap<PeerId, u64>, StoreError> {
+        let mut statement = self
+            .conn
+            .prepare_cached(
+                "SELECT author, MIN(seq) FROM sm_doc_log WHERE state <> 'covered' GROUP BY author",
+            )
+            .map_err(failed("prepare"))?;
+        let rows = statement
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .map_err(failed("doc floor"))?;
+        rows.map(|row| {
+            let (author, min) = row.map_err(failed("read"))?;
+            let peer = PeerId::parse(&author)
+                .map_err(|e| StoreError::new(format!("stored doc author: {e}")))?;
+            Ok((peer, seq_from_sql(min)?.get() - 1))
+        })
+        .collect()
     }
 }
 
