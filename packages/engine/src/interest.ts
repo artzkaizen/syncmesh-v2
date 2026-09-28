@@ -75,6 +75,8 @@ export function rowsIn(record: RowRecord, interest: Interest | undefined): boole
  * matching — the stale-row hole that server-maintained views exist to close properly.
  *
  * An **unknown** change matches, because nothing here can read its cells to say otherwise (D22-A).
+ * So does a **doc** change: it carries no cells a predicate could be evaluated against, and the
+ * row it belongs to is what an interest selects.
  * Sending it costs the asker one parked event it can retry later; dropping it at the sender would
  * put the event behind a scoped coverage that says it was accounted for, and nothing would ever
  * offer it again.

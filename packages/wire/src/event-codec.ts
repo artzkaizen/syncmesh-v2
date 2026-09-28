@@ -15,12 +15,18 @@ import type { EventCrypto } from "./sealing.js";
 import { decodeCbor, type MalformedCbor } from "./cbor-decode.js";
 import { isSafeNonNegative, isString } from "./cbor-guards.js";
 import { encodeCbor, type CborKey, type CborValue } from "./cbor.js";
+import { actionIdOf, docDataToCbor, docFromCbor } from "./doc-codec.js";
 import { bytesToHex, hexToBytes } from "./hex.js";
 import { rowFromCbor, rowToCbor } from "./row-codec.js";
 
 export class MalformedEvent extends TaggedError("MalformedEvent")<{ message: string }> {}
 
-/** Event core map keys, frozen by the vectors (RFC-0002). */
+/**
+ * Event core map keys, frozen by the vectors (RFC-0002). 4 was never used and stays retired;
+ * 9 is `schemaVersion` on the branch that claims it. `action` and `undoOf` (RFC-0023 §5.2)
+ * drive history and undo only: a build that skips them folds the event identically, which is
+ * why neither needs a `v` bump.
+ */
 const KEY = {
   v: 0,
   peerId: 1,
@@ -36,6 +42,8 @@ const KEY = {
    * nothing in it, which is what a carrier does anyway.
    */
   sealed: 8,
+  action: 10,
+  undoOf: 11,
 } as const;
 
 /**
@@ -51,8 +59,9 @@ const sealingAad = (event: Pick<SyncEvent, "peerId" | "seqNum" | "partition">): 
 export const CHANGE = { kind: 0, table: 1, key: 2, data: 3 } as const;
 
 /**
- * The row-level change kinds, and the only ones an encoder here emits. 3, 4 and 5 are reserved
- * for the cell-level kinds (`CELL_KIND`).
+ * The change kinds an encoder here emits. 3, 4 and 5 were the cell lattices D25 deleted and are
+ * **never reused** — an old log may still hold them, and they decode as `unknown`. 6 is a document
+ * update (RFC-0023 §5.1).
  *
  * A tag this build does not know is decoded as an `unknown` change carrying its payload untouched
  * (D22-A), never folded as an ordinary value — which would silently mangle the column — and never
@@ -60,7 +69,7 @@ export const CHANGE = { kind: 0, table: 1, key: 2, data: 3 } as const;
  * park it. Parked, it holds the author's cursor open at its own sequence, which is the only place
  * a later build can pick the run back up from.
  */
-const KIND = { insert: 0, update: 1, delete: 2 } as const;
+const KIND = { insert: 0, update: 1, delete: 2, doc: 6 } as const;
 
 export function encodeEventCore(event: SyncEvent, crypto?: EventCrypto): Uint8Array {
   const core = new Map<CborKey, CborValue>([
@@ -71,6 +80,8 @@ export function encodeEventCore(event: SyncEvent, crypto?: EventCrypto): Uint8Ar
     [KEY.procedure, event.procedure],
   ]);
   if (event.partition !== undefined) core.set(KEY.partition, event.partition);
+  if (event.action !== undefined) core.set(KEY.action, hexToBytes(event.action).unwrap());
+  if (event.undoOf !== undefined) core.set(KEY.undoOf, hexToBytes(event.undoOf).unwrap());
   const changes = event.changes.map(encodeChange);
   const sealed =
     event.partition === undefined
@@ -98,6 +109,7 @@ const dataToCbor = (change: Change): CborValue => {
   if (change.kind === "delete") return null;
   if (change.kind === "insert") return rowToCbor(change.row);
   if (change.kind === "update") return rowToCbor(change.patch);
+  if (change.kind === "doc") return docDataToCbor(change);
   // SAFETY: an `unknown` change is only ever built by `decodeChange` below, from a value CBOR read
   return change.data as CborValue;
 };
@@ -125,6 +137,9 @@ function decodeEventValue(
   const hlc = m.get(KEY.hlc);
   const procedure = m.get(KEY.procedure);
   const partition = m.get(KEY.partition);
+  const changes = m.get(KEY.changes);
+  const action = actionIdOf(m.get(KEY.action));
+  const undoOf = actionIdOf(m.get(KEY.undoOf));
   const under = m.get(KEY.sealed);
   if (partition !== undefined && !isString(partition)) return malformed("partition is not text");
   if (!Array.isArray(hlc) || hlc.length !== 2) return malformed("hlc is not a pair");
@@ -155,10 +170,11 @@ function decodeEventValue(
       procedure: asProcedure(procedure),
       changes: changes.changes,
       ...(changes.sealed === true && { sealed: true as const }),
+      ...(partition !== undefined && { partition: asPartition(partition) }),
+      ...(action !== undefined && { action }),
+      ...(undoOf !== undefined && { undoOf }),
     };
-    return Result.ok(
-      partition === undefined ? base : { ...base, partition: asPartition(partition) },
-    );
+    return Result.ok(base);
   });
 }
 
@@ -210,6 +226,8 @@ function decodeChange(value: CborValue): Result<Change, MalformedEvent> {
   const t = asTable(table);
   const k = asKey(key);
   if (kind === KIND.delete) return Result.ok({ kind: "delete", table: t, key: k });
+  if (kind === KIND.doc)
+    return docFromCbor(t, k, data).mapError((e) => new MalformedEvent({ message: e.message }));
   // a tag this build does not know is kept whole rather than refused (D22-A). Refusing made the
   // event a wire error that both transports dropped before `admit` ran, so the quarantine D13
   // asks for could never see it — and a newer peer's write vanished with no trace anywhere

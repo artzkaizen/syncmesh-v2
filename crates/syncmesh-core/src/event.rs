@@ -151,6 +151,8 @@ pub enum Change {
         table: TableName,
         key: RowKey,
     },
+    /// An update to a document column (RFC-0023 §5.1, tag 6): the doc log's, never a cell's value.
+    Doc(crate::doc::DocChange),
     /// A change a newer build wrote and this one has no fold for (D22-A), kept exactly as it arrived.
     Unknown {
         tag: u64,
@@ -167,6 +169,7 @@ impl Change {
             | Change::Update { table, .. }
             | Change::Delete { table, .. }
             | Change::Unknown { table, .. } => table,
+            Change::Doc(doc) => &doc.table,
         }
     }
 
@@ -176,6 +179,7 @@ impl Change {
             | Change::Update { key, .. }
             | Change::Delete { key, .. }
             | Change::Unknown { key, .. } => key,
+            Change::Doc(doc) => &doc.key,
         }
     }
 }
@@ -191,6 +195,11 @@ pub struct SyncEvent {
     pub changes: Vec<Change>,
     /// The content is sealed and this device holds no key: `changes` is empty because nothing is readable.
     pub sealed: bool,
+    /// The action this event belongs to (key 10); `None`, the event is its own action. Drives
+    /// history and undo only — an old build that skips it folds the event identically.
+    pub action: Option<crate::doc::Id16>,
+    /// The action this event compensates (key 11): an undo, and a redo is the undo of an undo.
+    pub undo_of: Option<crate::doc::Id16>,
 }
 
 impl SyncEvent {

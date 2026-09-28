@@ -5,6 +5,7 @@ import type { CaptureSql, Dialect } from "./dialect.js";
 import type { LogPlacement, SqlValue } from "./driver.js";
 import type { Rung } from "./ladder.js";
 
+import { SQLITE_DOCS, SQLITE_DOC_TABLES } from "./dialect-docs.js";
 import { sqliteOperations } from "./dialect-operations.js";
 import { columnsOf, literal, quote } from "./identifiers.js";
 import { ladder } from "./ladder.js";
@@ -95,6 +96,7 @@ const userVersion = (schema: string): Rung => ({
   read: async (driver) => Number((await driver.all(`PRAGMA ${schema}.user_version`))[0]?.[0] ?? 0),
   write: (driver, step) => driver.run(`PRAGMA ${schema}.user_version = ${step}`),
 });
+
 
 /**
  * The position as a row, for a runtime whose SQL surface has no `PRAGMA` at all.
@@ -215,6 +217,8 @@ const sqliteDialect = (log: LogPlacement): Dialect => {
         PRIMARY KEY (peer, local)
       ) WITHOUT ROWID`,
     ],
+    // The doc log and heads (RFC-0023 §6.2): one step, after the state tables.
+    SQLITE_DOC_TABLES,
   ];
 
   return {
@@ -267,6 +271,7 @@ const sqliteDialect = (log: LogPlacement): Dialect => {
       upsertScope: `INSERT OR REPLACE INTO ${t("scope")} (id, scope) VALUES (0, ?)`,
       clearScope: `DELETE FROM ${t("scope")}`,
     },
+    docs: SQLITE_DOCS,
     capture,
     operations: sqliteOperations(log),
     placeholder: () => "?",

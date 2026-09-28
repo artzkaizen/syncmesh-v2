@@ -8,6 +8,7 @@ import type { Engine, MutateOptions } from "./engine.js";
 import type { Tx } from "./tx.js";
 
 import { CannotRevert } from "./errors.js";
+import { docWriteOf } from "./tx.js";
 
 export interface Undo {
   readonly event: SyncEvent;
@@ -25,6 +26,9 @@ export const REVERT = revertProcedure();
 export function invert(state: State, changes: readonly Change[]): readonly Change[] {
   const touched = new Map<string, { change: Change; columns: Set<ColumnName>; deleted: boolean }>();
   for (const change of changes) {
+    // a document update is compensated by its adapter (RFC-0023 §9), never by a row image; the
+    // whole-row invert has nothing to restore for it and must not take its row for one it wrote
+    if (change.kind === "doc") continue;
     const id = `${change.table}\u0000${change.key}`;
     const entry = touched.get(id) ?? { change, columns: new Set<ColumnName>(), deleted: false };
     if (change.kind === "delete") entry.deleted = true;
@@ -55,7 +59,8 @@ export const replay = (tx: Tx, changes: readonly Change[]): void => {
   for (const c of changes) {
     if (c.kind === "insert") tx.insert(c.table, c.key, c.row);
     else if (c.kind === "update") tx.update(c.table, c.key, c.patch);
-    else tx.delete(c.table, c.key);
+    else if (c.kind === "delete") tx.delete(c.table, c.key);
+    else if (c.kind === "doc") tx.doc(c.table, c.key, docWriteOf(c));
   }
 };
 

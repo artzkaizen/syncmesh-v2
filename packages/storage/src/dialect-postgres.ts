@@ -5,6 +5,7 @@ import type { CaptureSql, Dialect } from "./dialect.js";
 import type { SqlValue } from "./driver.js";
 import type { Rung } from "./ladder.js";
 
+import { POSTGRES_DOCS, POSTGRES_DOC_TABLES } from "./dialect-docs.js";
 import { POSTGRES_OPERATIONS } from "./dialect-operations.js";
 import { namespaceDdl } from "./dialect.js";
 import { columnsOf, literal, quote } from "./identifiers.js";
@@ -167,6 +168,7 @@ const POSTGRES_MIGRATIONS: readonly (readonly string[])[] = [
       scope TEXT NOT NULL
     )`,
   ],
+  POSTGRES_DOC_TABLES,
 ];
 
 const postgresCell = (kind: ColumnKind, cell: CellValue): SqlValue => {
@@ -245,6 +247,7 @@ export const POSTGRES: Dialect = {
       ON CONFLICT (id) DO UPDATE SET scope = excluded.scope`,
     clearScope: `DELETE FROM syncmesh.scope`,
   },
+  docs: POSTGRES_DOCS,
   capture,
   operations: POSTGRES_OPERATIONS,
   placeholder: (position) => `$${position}`,

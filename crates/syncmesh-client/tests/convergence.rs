@@ -328,7 +328,9 @@ fn history_of(entries: &[StoredEvent]) -> History {
                     }
                 }
                 Change::Delete { .. } => h.deletes.entry(at).or_default().push(stamp.clone()),
-                Change::Unknown { .. } => unreachable!("the generator writes no unknown changes"),
+                Change::Unknown { .. } | Change::Doc(_) => {
+                    unreachable!("the generator writes no unknown or doc changes")
+                }
             }
         }
     }
@@ -396,6 +398,7 @@ fn check_oracle(state: &State, entries: &[StoredEvent]) -> Result<(), TestCaseEr
                     prop_assert_eq!(&held.value, value, "max {:?}.{}", at, column);
                     prop_assert_eq!(&held.stamp, stamp, "max {:?}.{}", at, column);
                 }
+                StrategyName::Lineage => unreachable!("no generated column is a document"),
                 StrategyName::Min => {
                     // the smallest value; among equal values the newer stamp
                     let (value, stamp) = writes

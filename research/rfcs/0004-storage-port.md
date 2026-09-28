@@ -37,7 +37,7 @@ survive storage byte-identical, RFC-0002).
 |---|---|---|
 | `bun-sqlite-store.ts` | Bun / server | reference implementation |
 | `opfs-sqlite-store.ts` | Browser | sqlite-wasm; needs a crossOriginIsolated worker |
-| `drizzle-event-store.ts` | anywhere drizzle runs | drizzle-orm v1 rc over bun-sqlite driver |
+| `drizzle-event-store.ts` | anywhere drizzle runs | Drizzle 1.0 RC (`drizzle-orm@1.0.0-rc.4`, pinned) over the bun-sqlite driver |
 | `local-storage-store.ts` | Browser fallback | corrupt-persistence recovery is tested (recovers empty, warns) |
 
 **Scoped stores:** `createClient({ storeFor: (scope) => EventStore })` runs

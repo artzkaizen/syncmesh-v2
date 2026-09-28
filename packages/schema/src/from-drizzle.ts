@@ -47,6 +47,8 @@ interface DrizzleColumnInfo {
   readonly isUnique: boolean;
   readonly generated?: object;
   readonly generatedIdentity?: object;
+  /** Array depth; Drizzle 1.0 keeps the element's type in `dataType` and marks an array here. */
+  readonly dimensions?: number;
 }
 
 /** Drizzle keeps a table's runtime metadata under these symbols; reading them keeps drizzle-orm out of our runtime. */
@@ -64,6 +66,26 @@ export interface DrizzleWarning {
   readonly message: string;
 }
 
+/**
+ * Whether a Drizzle table names its key in its types. SQLite and MySQL columns still carry
+ * `isPrimaryKey: true`; pg-core 1.0 types every built column `isPrimaryKey: false`, so a
+ * Postgres table's key is known only at runtime.
+ */
+type KeyTyped<D extends DrizzleTableLike> =
+  true extends D["_"]["columns"][keyof D["_"]["columns"]]["_"]["isPrimaryKey"] ? true : false;
+
+/**
+ * A column's key flag. Where the table does not type its key, every non-null column is a
+ * candidate (`boolean`), so the table's `primaryKey` types as their union rather than `never`;
+ * `fromDrizzle` still finds the one real key at runtime and refuses anything else.
+ */
+type KeyFlag<D extends DrizzleTableLike, C extends DrizzleColumnLike> =
+  KeyTyped<D> extends true
+    ? C["_"]["isPrimaryKey"]
+    : C["_"]["notNull"] extends true
+      ? boolean
+      : false;
+
 export type ColumnsFromDrizzle<D extends DrizzleTableLike> = {
   readonly [K in keyof D["_"]["columns"] & string]: Column<
     DrizzleValue<D["_"]["columns"][K]>,
@@ -72,7 +94,7 @@ export type ColumnsFromDrizzle<D extends DrizzleTableLike> = {
       : D["_"]["columns"][K]["_"]["notNull"] extends true
         ? false
         : true,
-    D["_"]["columns"][K]["_"]["isPrimaryKey"]
+    KeyFlag<D, D["_"]["columns"][K]>
   >;
 };
 
@@ -93,6 +115,10 @@ export interface FromDrizzleOptions<D extends DrizzleTableLike> {
 /**
  * The frozen mapping: Drizzle `dataType` as the base, `columnType` only where the base is ambiguous.
  * It determines wire bytes, so changing an entry invalidates every existing log.
+ *
+ * The bases are the names Drizzle 0.45 used (`number`, `date`, `json`, `buffer`, …). Drizzle 1.0
+ * spells `dataType` as `"<type> <constraint>"` — `"number int32"`, `"object date"`, `"string uuid"`
+ * — and {@link frozenBase} reads the old base back out of it, so no entry moved in the upgrade.
  */
 const INTEGER_TYPES = new Set([
   "PgInteger",
@@ -121,11 +147,35 @@ const REFUSED = {
 
 const isRefused = (columnType: string): columnType is keyof typeof REFUSED => columnType in REFUSED;
 
+/**
+ * The 0.45 base of a Drizzle 1.0 `dataType`. The type word is the base, except `object`, which 0.45
+ * named by what the object held: a date, a buffer, or JSON — the geometric objects were JSON then.
+ * Anything else stays as written and falls through to the refusal.
+ */
+function frozenBase(dataType: string): string {
+  const [type = dataType, constraint] = dataType.split(" ");
+  if (type !== "object") return type;
+  switch (constraint) {
+    case "date":
+    case "buffer":
+    case "json":
+      return constraint;
+    case "point":
+    case "line":
+    case "geometry":
+      return "json";
+    default:
+      return dataType;
+  }
+}
+
 function kindFor(info: DrizzleColumnInfo): ColumnKind {
   if (isRefused(info.columnType)) panic(`${info.name}: ${REFUSED[info.columnType]}`);
   if (info.generated !== undefined || info.generatedIdentity !== undefined)
     panic(`${info.name}: generated columns have no value to sync`);
-  switch (info.dataType) {
+  if ((info.dimensions ?? 0) > 0)
+    panic(`${info.name}: array (${info.columnType}[]) is not in the frozen mapping`);
+  switch (frozenBase(info.dataType)) {
     case "string":
       return info.columnType === "PgUUID" ? "uuid" : "text";
     case "number":

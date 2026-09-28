@@ -3,6 +3,7 @@ import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { Temporal, addToInstant } from "@syncmesh/temporal";
 
+import type { DocStore } from "./doc-log.js";
 import type { StateCorrupt, StateStore } from "./state-store.js";
 import type { EventStore, StoreFailure } from "./store.js";
 import type { Coverage, Cursors } from "./sync.js";
@@ -62,6 +63,13 @@ interface CompactDeps {
   readonly store: EventStore;
   readonly stateStore: StateStore | undefined;
   readonly acks: ReadonlyMap<PeerId, Ack>;
+  /** Holds back every event with a doc change no persisted snapshot covers (RFC-0023 §8.3). */
+  readonly docs: DocStore;
+  /**
+   * Per author, a floor the engine itself holds: below this principal's last `undoDepth` writes
+   * that carry doc changes, whose updates an undo will need again (§8.3, clause 3).
+   */
+  readonly held: () => Cursors;
 }
 
 /** The lowest cursor per author across the peers still counted; an author no peer has acked floors at 0. */
@@ -84,6 +92,19 @@ export function ackFloor(acks: Iterable<Ack>, authors: Iterable<PeerId>): Cursor
   return floor;
 }
 
+/**
+ * Never above a hold: per author, the lower of the floor and the hold, and an author the floor
+ * names but no hold does keeps the floor. The opposite of {@link clampToPersisted}, where absence
+ * means nothing is persisted and so nothing may go.
+ */
+export const clampToHeld = (floor: Cursors, held: Cursors): Cursors => {
+  const clamped = new Map<PeerId, SeqNum>();
+  for (const [peer, seq] of floor) {
+    const hold = held.get(peer);
+    clamped.set(peer, hold !== undefined && hold < seq ? hold : seq);
+  }
+  return clamped;
+};
 /**
  * Whether this device's folded state could be thrown away and rebuilt from the log alone.
  *
@@ -126,7 +147,7 @@ export function compactLog(
   deps: CompactDeps,
   options: CompactOptions,
 ): Promise<Result<Compaction, CompactError>> {
-  const { store, stateStore, acks } = deps;
+  const { store, stateStore, acks, docs, held } = deps;
   const { now, keepAtLeast } = options;
   if (stateStore === undefined) {
     return Promise.resolve(
@@ -140,9 +161,16 @@ export function compactLog(
   }
   return Result.gen(async function* () {
     const persisted = yield* Result.await(stateStore.loadCursors());
-    const synced = clampToPersisted(
-      ackFloor(livePeers(acks, options), persisted.synced.keys()),
-      persisted.synced,
+    const uncovered = yield* Result.await(docs.uncoveredFloor());
+    const synced = clampToHeld(
+      clampToHeld(
+        clampToPersisted(
+          ackFloor(livePeers(acks, options), persisted.synced.keys()),
+          persisted.synced,
+        ),
+        uncovered,
+      ),
+      held(),
     );
     const local = persisted.local;
     const olderThan = keepAtLeast === undefined ? now : addToInstant(now, keepAtLeast.negated());

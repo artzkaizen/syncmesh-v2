@@ -1,6 +1,7 @@
 import { Result, TaggedError } from "@syncmesh/result";
 
 import type { Change } from "./change.js";
+import type { ActionId } from "./doc.js";
 import type { Hlc } from "./hlc.js";
 import type { PartitionKey } from "./partition.js";
 import type { Brand } from "./primitives.js";
@@ -26,6 +27,14 @@ export interface SyncEvent {
   readonly procedure: Procedure;
   readonly partition?: PartitionKey;
   readonly changes: readonly Change[];
+  /**
+  /**
+   * The action this event belongs to (event key 10); absent, the event is its own action. Drives
+   * history and undo only — an old build that skips it folds the event identically (RFC-0023 §5.2).
+   */
+  readonly action?: ActionId;
+  /** The action this event compensates (event key 11): an undo, and a redo is the undo of an undo. */
+  readonly undoOf?: ActionId;
   /**
    * This event's content is sealed and this device holds no key for it (book ch. 14), so
    * `changes` is empty because there is nothing readable — not because nothing was written.

@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use syncmesh_core::apply::apply_change;
+use syncmesh_core::doc::{DocColumns, Id16, derive_lineage, lineage_of, with_doc_columns};
 use syncmesh_core::envelope::sign_event;
 use syncmesh_core::event::{Change, PartitionKey, PeerId, RowKey, SeqNum, SyncEvent, TableName};
 use syncmesh_core::hlc::{DEFAULT_MAX_DRIFT_MS, HlcClock};
@@ -25,6 +26,10 @@ use syncmesh_core::state::State;
 use syncmesh_core::strategy::MergeSpec;
 
 use crate::coverage::CoverageTracker;
+use crate::doc_log::{
+    DocAppend, DocHead, DocLogEntry, DocStore, MemoryDocStore, doc_appends, record_docs,
+};
+use crate::doc_rules::doc_refusal;
 use crate::interest::{Interest, matches_interest};
 use crate::store::{
     Ahead, Coverage, Cursors, EventStore, StateStore, StoreError, StoredEvent, rows_for,
@@ -45,6 +50,9 @@ pub struct FoldBatch {
     pub source: FoldSource,
     pub event_count: usize,
     pub write_keys: BTreeMap<TableName, BTreeSet<RowKey>>,
+    /// The doc-log entries the batch appended. A doc edit moves no `write_keys`; a document
+    /// handle watches these for remote updates instead.
+    pub docs: Vec<DocAppend>,
 }
 
 impl FoldBatch {
@@ -89,6 +97,11 @@ pub enum MutateError {
     Unfoldable {
         procedure: String,
     },
+    /// A doc change the declared doc columns refuse (RFC-0023 §10), or a row write naming one.
+    DocRefused {
+        procedure: String,
+        reason: &'static str,
+    },
     Store(StoreError),
 }
 
@@ -99,6 +112,7 @@ impl std::fmt::Display for MutateError {
             MutateError::Unfoldable { procedure } => {
                 write!(f, "{procedure} wrote a change this build has no fold for")
             }
+            MutateError::DocRefused { procedure, reason } => write!(f, "{procedure}: {reason}"),
             MutateError::Store(e) => write!(f, "{e}"),
         }
     }
@@ -130,6 +144,15 @@ pub struct EngineOptions {
     pub now_ms: Option<NowMs>,
     /// Parked events kept before the oldest is dropped. Default 1000.
     pub quarantine_limit: usize,
+    /// The mesh's doc columns and the adapter each declares (RFC-0023 §4.1): their cells join by
+    /// the lineage rule, and doc changes are judged against them. `None` judges nothing — the
+    /// Rust counterpart of a TypeScript engine with no validator.
+    pub docs: Option<DocColumns>,
+    /// The adapters this device can materialise, by id. Empty is the `adapter-missing` mode: doc
+    /// changes fold, are kept and forwarded exactly as with one, and are only labelled differently.
+    pub doc_adapters: BTreeSet<String>,
+    /// Where the doc log and heads live; `None`, in memory.
+    pub doc_store: Option<Box<dyn DocStore + Send>>,
 }
 
 impl Default for EngineOptions {
@@ -139,6 +162,9 @@ impl Default for EngineOptions {
             max_drift_ms: Some(DEFAULT_MAX_DRIFT_MS),
             now_ms: None,
             quarantine_limit: 1000,
+            docs: None,
+            doc_adapters: BTreeSet::new(),
+            doc_store: None,
         }
     }
 }
@@ -162,6 +188,9 @@ pub struct Engine {
     acks: BTreeMap<PeerId, Ack>,
     parked: Vec<StoredEvent>,
     quarantine_limit: usize,
+    docs: Option<DocColumns>,
+    doc_adapters: BTreeSet<String>,
+    doc_store: Box<dyn DocStore + Send>,
 }
 
 impl Engine {
@@ -192,10 +221,18 @@ impl Engine {
             state_store,
             state,
             coverage: CoverageTracker::new(&coverage),
-            merge: options.merge,
+            merge: match &options.docs {
+                Some(docs) => Some(with_doc_columns(options.merge.as_ref(), docs)),
+                None => options.merge,
+            },
             acks: BTreeMap::new(),
             parked: Vec::new(),
             quarantine_limit: options.quarantine_limit,
+            docs: options.docs,
+            doc_adapters: options.doc_adapters,
+            doc_store: options
+                .doc_store
+                .unwrap_or_else(|| Box::new(MemoryDocStore::new())),
         };
         let replay = engine.store.all_since(&coverage.synced)?;
         let batch = engine.fold(&replay, FoldSource::Boot);
@@ -227,6 +264,20 @@ impl Engine {
         changes: Vec<Change>,
         partition: Option<PartitionKey>,
     ) -> Result<Mutated, MutateError> {
+        self.mutate_with(procedure, changes, partition, None, None)
+    }
+
+    /// [`Engine::mutate`], in an action (event key 10) and compensating another (key 11). A
+    /// genesis in `changes` names no lineage of its own: the one derived from its place in the
+    /// event is filled in once the event is numbered, whatever the caller wrote (RFC-0023 §5.3).
+    pub fn mutate_with(
+        &mut self,
+        procedure: &str,
+        changes: Vec<Change>,
+        partition: Option<PartitionKey>,
+        action: Option<Id16>,
+        undo_of: Option<Id16>,
+    ) -> Result<Mutated, MutateError> {
         if changes.is_empty() {
             return Err(MutateError::Empty {
                 procedure: procedure.to_owned(),
@@ -241,15 +292,35 @@ impl Engine {
         let last = self.store.last_seq(self.identity.peer_id())?;
         let seq_num = SeqNum::parse(last.map(|s| s.get()).unwrap_or(0) + 1)
             .ok_or_else(|| StoreError::new("the sequence space is exhausted"))?;
+        let peer_id = self.identity.peer_id().clone();
+        let changes = changes
+            .into_iter()
+            .enumerate()
+            .map(|(index, change)| match change {
+                Change::Doc(mut d) if d.genesis => {
+                    d.lineage = Some(derive_lineage(&peer_id, seq_num, index as u32));
+                    Change::Doc(d)
+                }
+                other => other,
+            })
+            .collect();
         let event = SyncEvent {
-            peer_id: self.identity.peer_id().clone(),
+            peer_id,
             seq_num,
             hlc,
             procedure: procedure.to_owned(),
             partition,
             changes,
             sealed: false,
+            action,
+            undo_of,
         };
+        if let Some(reason) = self.docs.as_ref().and_then(|d| doc_refusal(&event, d)) {
+            return Err(MutateError::DocRefused {
+                procedure: procedure.to_owned(),
+                reason,
+            });
+        }
         let entry = StoredEvent::from_verified(sign_event(event, &self.identity));
         self.store.append(&entry)?;
         let batch = self.fold(std::slice::from_ref(&entry), FoldSource::Local);
@@ -277,6 +348,10 @@ impl Engine {
                 .changes
                 .iter()
                 .any(|c| matches!(c, Change::Unknown { .. }))
+                || self
+                    .docs
+                    .as_ref()
+                    .is_some_and(|d| doc_refusal(&entry.event, d).is_some())
             {
                 quarantined += 1;
                 self.park(entry);
@@ -344,10 +419,12 @@ impl Engine {
                 );
             }
         }
+        let adapters = &self.doc_adapters;
         FoldBatch {
             source,
             event_count: entries.len(),
             write_keys,
+            docs: doc_appends(entries.iter().map(|e| &e.event), |a| adapters.contains(a)),
         }
     }
 
@@ -355,11 +432,27 @@ impl Engine {
         if batch.event_count == 0 {
             return Ok(());
         }
-        let Some(store) = self.state_store.as_mut() else {
-            return Ok(());
-        };
-        let rows = rows_for(&self.state, &batch.write_keys);
-        store.commit(&rows, &self.coverage.current())
+        if let Some(store) = self.state_store.as_mut() {
+            let rows = rows_for(&self.state, &batch.write_keys);
+            store.commit(&rows, &self.coverage.current())?;
+        }
+        let (state, adapters) = (&self.state, &self.doc_adapters);
+        record_docs(
+            self.doc_store.as_mut(),
+            &batch.docs,
+            |doc| lineage_of(state.record(&doc.table, &doc.key), &doc.column),
+            |a| adapters.contains(a),
+        )
+    }
+
+    /// Every doc-log entry this device holds (RFC-0023 §6.2).
+    pub fn doc_log(&self) -> Result<Vec<DocLogEntry>, StoreError> {
+        self.doc_store.entries()
+    }
+
+    /// Every document's head: its winning lineage and where its tail stands.
+    pub fn doc_heads(&self) -> Result<Vec<DocHead>, StoreError> {
+        self.doc_store.heads()
     }
 
     /// The visible rows of `table` that belong to `partition`.
