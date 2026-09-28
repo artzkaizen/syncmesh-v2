@@ -48,7 +48,7 @@ const sealingAad = (event: Pick<SyncEvent, "peerId" | "seqNum" | "partition">): 
   encodeCbor([hexToBytes(event.peerId).unwrap(), event.seqNum, event.partition ?? ""]);
 
 /** One change's map keys, shared with the cell-change codec so both write the same envelope. */
-export const CHANGE = { kind: 0, table: 1, key: 2, data: 3 } as const;
+const CHANGE = { kind: 0, table: 1, key: 2, data: 3 } as const;
 
 /**
  * The row-level change kinds, and the only ones an encoder here emits. 3, 4 and 5 are reserved

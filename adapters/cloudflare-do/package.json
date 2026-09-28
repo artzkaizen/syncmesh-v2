@@ -23,11 +23,9 @@
     "@syncmesh/wire": "workspace:*"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250726.0",
     "@syncmesh/client": "workspace:*",
     "@syncmesh/config": "workspace:*",
     "@syncmesh/engine": "workspace:*",
-    "@syncmesh/policy": "workspace:*",
     "@syncmesh/schema": "workspace:*",
     "@syncmesh/sqlite-bun": "workspace:*",
     "@syncmesh/temporal": "workspace:*",

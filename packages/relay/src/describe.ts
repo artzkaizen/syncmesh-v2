@@ -5,7 +5,6 @@ import { negotiate, serialize } from "@syncmesh/wire";
 import type { RelayHost } from "./host.js";
 
 import { RELAY_PROTOCOL_VERSIONS } from "./frames.js";
-import { requestRoom } from "./serve.js";
 
 /**
  * A room described over plain HTTP: what a `curl`, a health check or a person with a browser
@@ -16,6 +15,12 @@ import { requestRoom } from "./serve.js";
  * The body is one wire value, projected to JSON unless the caller's `Accept` asks for CBOR
  * (`negotiate`): a tool that decodes the socket's own bytes reads the same map either way.
  */
+/** The room a request's path names; `/` is `main`, and a leading slash is not part of the name. */
+export const requestRoom = (request: Request): string => {
+  const path = new URL(request.url).pathname.replace(/^\/+/, "");
+  return path === "" ? "main" : path;
+};
+
 export async function describeRoom(host: RelayHost, request: Request): Promise<Response> {
   const name = requestRoom(request);
   const refused = await host.admits(request, name);

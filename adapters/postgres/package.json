@@ -17,7 +17,6 @@
   },
   "dependencies": {
     "@syncmesh/engine": "workspace:*",
-    "@syncmesh/result": "workspace:*",
     "@syncmesh/storage": "workspace:*"
   },
   "devDependencies": {
@@ -25,8 +24,6 @@
     "@syncmesh/config": "workspace:*",
     "@syncmesh/kernel": "workspace:*",
     "@syncmesh/policy": "workspace:*",
-    "@syncmesh/schema": "workspace:*",
-    "@syncmesh/wire": "workspace:*",
     "@types/bun": "catalog:",
     "postgres": "^3.4.9",
     "typescript": "catalog:",

@@ -100,7 +100,7 @@ let engine: MeshModule | undefined;
 /** What the running mesh says about itself; `undefined` before it opens, and after a reset. */
 export const meshInstruments = (): Instruments | undefined => engine?.meshInstruments();
 
-export function startReplica(): void {
+function startReplica(): void {
   if (started) return;
   started = true;
   // `./mesh` drags in the engine, the procedures, the relay, the wire format, Drizzle and Zod —

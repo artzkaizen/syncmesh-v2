@@ -133,7 +133,7 @@ export const StorageBadge = ({ durable }: { readonly durable: boolean }) => (
   <Badge {...(durable ? DURABLE : MEMORY)} />
 );
 
-export const ModeBadge = ({
+const ModeBadge = ({
   role,
   shared,
 }: {

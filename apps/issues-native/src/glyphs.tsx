@@ -20,7 +20,7 @@ import { sawSubtreeRender } from "./nav-timing";
  */
 
 /** The palette these glyphs use, which is the status colour and nothing else in the app. */
-export const STATUS_COLOR = {
+const STATUS_COLOR = {
   triage: "#e5484d",
   backlog: "#8a8f98",
   todo: "#8a8f98",

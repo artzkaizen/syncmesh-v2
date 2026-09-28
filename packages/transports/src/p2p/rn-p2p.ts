@@ -5,7 +5,7 @@ import { Result } from "@syncmesh/result";
 
 import type { P2pFabric, P2pProtocol } from "./fabric.js";
 
-import { pathOver, type Path } from "../native-stream.js";
+import { createNativePaths } from "../native-paths.js";
 import { P2pUnsupported } from "./fabric.js";
 
 /**
@@ -141,9 +141,6 @@ const listen = <T>(manager: RnP2pManager, event: string, cb: (payload: T) => voi
 };
 /* oxlint-enable anti-slop/no-unknown-parameters */
 
-/** How many unclaimed handles may be held at once while a dial is out. See `early`. */
-const EARLY_PATHS = 8;
-
 export function fabricFrom(
   manager: RnP2pManager,
   protocol: P2pProtocol,
@@ -155,60 +152,12 @@ export function fabricFrom(
     );
 
   const drop = (why: string): void => options.onDropped?.(why);
-  /** Every open path, by the handle the platform named it with. */
-  const paths = new Map<string, Path>();
-
   /**
-   * What arrived about a path this side has not built yet.
-   *
-   * `connect` learns a handle when its promise settles, and the platform starts reporting that
-   * path the moment it opens — so the far end's hello can be in hand *before* there is anything
-   * to hand it to. An inbound path has no such gap: `onPath` builds it inside the event.
-   *
-   * **Only while a dial is outstanding**, which is exactly when the gap exists. Buffering outside
-   * it would leave a tombstone for every path that ever closed with bytes in flight — and a
-   * platform that reuses handles would then find one and shut a healthy new path on sight.
+   * Every open path, early bytes included — see `native-paths.ts` for the gap this
+   * covers: `connect` learns a handle when its promise settles, while the platform
+   * starts reporting that path the moment it opens.
    */
-  const early = new Map<string, { chunks: Uint8Array[]; closed: boolean }>();
-  let dialling = 0;
-  const earlyFor = (handle: string) => {
-    if (dialling === 0 || early.size >= EARLY_PATHS) return undefined;
-    const holding = early.get(handle) ?? { chunks: [], closed: false };
-    early.set(handle, holding);
-    return holding;
-  };
-
-  const forget = (handle: string): void => {
-    const path = paths.get(handle);
-    if (path === undefined) return;
-    paths.delete(handle);
-    path.shut();
-  };
-
-  /** We are ending this path, so the platform is told as well as this side. */
-  const release = (handle: string): void => {
-    manager.closePath(handle);
-    forget(handle);
-  };
-
-  const open = (handle: string): Path => {
-    // a handle the platform reused, or reported twice: the old object is dead either way, and
-    // leaving it in `paths` would route new bytes into a stream nobody is reading
-    forget(handle);
-    const path = pathOver(handle, {
-      close: () => release(handle),
-      resume: () => manager.resume(handle),
-      send: (bytes) => manager.send(handle, bytes),
-    });
-    paths.set(handle, path);
-    const waiting = early.get(handle);
-    if (waiting === undefined) return path;
-    early.delete(handle);
-    // in arrival order: a chunk that landed before the path existed is older than one after it
-    for (const chunk of waiting.chunks) path.accept(chunk);
-    if (waiting.closed) forget(handle);
-    return path;
-  };
+  const paths = createNativePaths(manager);
 
   const mine = (event: string, from: string): boolean => {
     if (from === protocol) return true;
@@ -228,14 +177,14 @@ export function fabricFrom(
     if (!mine("onPathData", event.protocol)) return;
     const held = paths.get(event.path);
     if (held !== undefined) return held.accept(event.bytes);
-    const waiting = earlyFor(event.path);
+    const waiting = paths.early(event.path);
     if (waiting === undefined) return drop(`bytes for a path nobody opened: ${event.path}`);
     waiting.chunks.push(Uint8Array.from(event.bytes));
   });
   const offClosed = listen<RnP2pClosed>(manager, "onPathClosed", (event) => {
     if (!mine("onPathClosed", event.protocol)) return;
-    if (paths.has(event.path)) return forget(event.path);
-    const waiting = earlyFor(event.path);
+    if (paths.has(event.path)) return paths.forget(event.path);
+    const waiting = paths.early(event.path);
     if (waiting !== undefined) waiting.closed = true;
   });
 
@@ -251,28 +200,24 @@ export function fabricFrom(
         if (mine("onPeerLost", lost.protocol)) cb(lost.id);
       }),
     connect: async (id) => {
-      dialling += 1;
+      paths.beginDial();
       try {
-        return open(await manager.connect(protocol, id)).stream;
+        return paths.open(await manager.connect(protocol, id)).stream;
       } finally {
-        dialling -= 1;
-        // nothing outstanding can claim what is left, so nothing may go on holding it
-        if (dialling === 0) early.clear();
+        paths.endDial();
       }
     },
     onPath: (cb) =>
       listen<RnP2pPath>(manager, "onPath", (arrived) => {
         if (!mine("onPath", arrived.protocol)) return;
-        cb(open(arrived.path).stream, arrived.from);
+        cb(paths.open(arrived.path).stream, arrived.from);
       }),
     /**
      * Stops the radio and ends every path **at the platform**, without deafening the fabric — see
      * {@link BoundFabric.dispose} for the other ending, and why they are two.
      */
     stop: async () => {
-      // deleted from under the iterator by `release`, which a Map allows
-      for (const handle of paths.keys()) release(handle);
-      early.clear();
+      paths.reset();
       await manager.stop(protocol);
     },
   };
@@ -281,8 +226,7 @@ export function fabricFrom(
     dispose: () => {
       offData();
       offClosed();
-      for (const handle of paths.keys()) release(handle);
-      early.clear();
+      paths.reset();
     },
     fabric,
   });

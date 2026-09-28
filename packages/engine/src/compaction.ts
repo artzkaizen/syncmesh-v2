@@ -65,7 +65,7 @@ interface CompactDeps {
 }
 
 /** The lowest cursor per author across the peers still counted; an author no peer has acked floors at 0. */
-export function ackFloor(acks: Iterable<Ack>, authors: Iterable<PeerId>): Cursors {
+function ackFloor(acks: Iterable<Ack>, authors: Iterable<PeerId>): Cursors {
   const list = [...acks];
   const floor = new Map<PeerId, SeqNum>();
   if (list.length === 0) return floor;
@@ -106,7 +106,7 @@ export const refoldable = (store: EventStore): Promise<Result<boolean, StoreFail
   });
 
 /** Never above what is persisted: a device cannot refold what it deleted. */
-export const clampToPersisted = (floor: Cursors, persisted: Cursors): Cursors => {
+const clampToPersisted = (floor: Cursors, persisted: Cursors): Cursors => {
   const clamped = new Map<PeerId, SeqNum>();
   for (const [peer, seq] of floor) {
     const held = persisted.get(peer);

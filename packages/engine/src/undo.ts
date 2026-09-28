@@ -19,7 +19,7 @@ const revertProcedure = (): Procedure => {
   return "revert" as Procedure;
 };
 
-export const REVERT = revertProcedure();
+const REVERT = revertProcedure();
 
 /** One change per touched row that restores it to how it was before the whole event. */
 export function invert(state: State, changes: readonly Change[]): readonly Change[] {

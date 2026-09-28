@@ -37,7 +37,7 @@ export interface ChurnOptions {
   readonly onChurned?: (peer: PeerId, transport: string) => void;
 }
 
-export const DEFAULT_CHURN_MS = 5 * 60_000;
+const DEFAULT_CHURN_MS = 5 * 60_000;
 
 export interface Churn {
   /** Considers every transport now, as the timer would. Returns what it dropped. */

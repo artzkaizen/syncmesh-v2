@@ -22,9 +22,6 @@
   },
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
-    "@syncmesh/kernel": "workspace:*",
-    "@syncmesh/temporal": "workspace:*",
-    "@syncmesh/wire": "workspace:*",
     "@types/bun": "catalog:",
     "expo-sqlite": "~57.0.3",
     "typescript": "catalog:",

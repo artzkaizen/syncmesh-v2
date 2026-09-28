@@ -96,7 +96,7 @@ export const DEFAULT_MTU = 517;
  * and being two orders of magnitude below one is the whole of what keeps a snapshot off the
  * radio without anyone having to name BLE inside the scorer.
  */
-export const BLE_BANDWIDTH_BPS = 24_000;
+const BLE_BANDWIDTH_BPS = 24_000;
 
 /** One peer's link and what the radio needs to find it again. */
 interface Held {

@@ -22,7 +22,7 @@ import { BELOW_FLOOR, belowFloor } from "./retention.js";
  * cannot disagree about it. Two relays holding the same events answer the same number, which is
  * what stops a scoped cursor depending on which relay happened to serve it.
  */
-export function scannedCoverage(
+function scannedCoverage(
   entries: readonly StoredEvent[],
   theirs: ReadonlyMap<PeerId, SeqNum>,
   interest: Interest,

@@ -31,7 +31,7 @@ const TITLE = "title" as ColumnName;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 
 /** The author's first three events: create, update, delete of one note, a millisecond apart. */
-export function feedEvents(): readonly SyncEvent[] {
+function feedEvents(): readonly SyncEvent[] {
   const device = createIdentity(DEVICE_SEED).unwrap();
   const peerId = parsePeerId(device.peerId).unwrap();
   const at = (seq: number, procedure: string, change: SyncEvent["changes"][number]): SyncEvent => {

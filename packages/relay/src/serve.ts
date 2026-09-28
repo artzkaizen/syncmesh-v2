@@ -12,7 +12,7 @@ import type { RelayPosture } from "./posture.js";
 import type { RelayRetention } from "./retention.js";
 import type { RelaySocket, SendOutcome } from "./sender.js";
 
-import { describeRoom } from "./describe.js";
+import { describeRoom, requestRoom } from "./describe.js";
 import { createRelayHost, durableRoomStore } from "./host.js";
 
 export interface StartRelayOptions {
@@ -101,12 +101,6 @@ export const hostTuning = (
     onTelemetry: options.onTelemetry,
     fanout: options.fanout,
   });
-/** The room a request's path names; `/` is `main`, and a leading slash is not part of the name. */
-export const requestRoom = (request: Request): string => {
-  const path = new URL(request.url).pathname.replace(/^\/+/, "");
-  return path === "" ? "main" : path;
-};
-
 /**
  * Whether a request is asking to become a socket at all. A plain `GET` on a room's path is
  * something else — a describe, a health check — and answering it with a 426 would be refusing

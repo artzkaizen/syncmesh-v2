@@ -53,11 +53,9 @@
         "@syncmesh/wire": "workspace:*",
       },
       "devDependencies": {
-        "@cloudflare/workers-types": "^4.20250726.0",
         "@syncmesh/client": "workspace:*",
         "@syncmesh/config": "workspace:*",
         "@syncmesh/engine": "workspace:*",
-        "@syncmesh/policy": "workspace:*",
         "@syncmesh/schema": "workspace:*",
         "@syncmesh/sqlite-bun": "workspace:*",
         "@syncmesh/temporal": "workspace:*",
@@ -89,7 +87,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@syncmesh/engine": "workspace:*",
-        "@syncmesh/result": "workspace:*",
         "@syncmesh/storage": "workspace:*",
       },
       "devDependencies": {
@@ -97,8 +94,6 @@
         "@syncmesh/config": "workspace:*",
         "@syncmesh/kernel": "workspace:*",
         "@syncmesh/policy": "workspace:*",
-        "@syncmesh/schema": "workspace:*",
-        "@syncmesh/wire": "workspace:*",
         "@types/bun": "catalog:",
         "postgres": "^3.4.9",
         "typescript": "catalog:",
@@ -189,7 +184,6 @@
         "@syncmesh/config": "workspace:*",
         "@syncmesh/kernel": "workspace:*",
         "@syncmesh/temporal": "workspace:*",
-        "@syncmesh/wire": "workspace:*",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
@@ -205,9 +199,6 @@
       },
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
-        "@syncmesh/kernel": "workspace:*",
-        "@syncmesh/temporal": "workspace:*",
-        "@syncmesh/wire": "workspace:*",
         "@types/bun": "catalog:",
         "expo-sqlite": "~57.0.3",
         "typescript": "catalog:",
@@ -243,8 +234,6 @@
       },
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
-        "@syncmesh/engine": "workspace:*",
-        "@syncmesh/kernel": "workspace:*",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
@@ -353,13 +342,10 @@
       "name": "@syncmesh/rounds-web",
       "version": "0.0.0",
       "dependencies": {
-        "@syncmesh/client": "workspace:*",
-        "@syncmesh/drizzle": "workspace:*",
         "@syncmesh/examples": "workspace:*",
         "@syncmesh/kernel": "workspace:*",
         "@syncmesh/orpc": "workspace:*",
         "@syncmesh/relay": "workspace:*",
-        "@syncmesh/schema": "workspace:*",
         "@syncmesh/sqlite-node": "workspace:*",
         "@syncmesh/temporal": "workspace:*",
         "@syncmesh/wire": "workspace:*",
@@ -368,7 +354,6 @@
         "drizzle-orm": "catalog:",
         "react": "^19.1.0",
         "react-dom": "^19.1.0",
-        "zod": "^3.25.76",
       },
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
@@ -388,7 +373,6 @@
         "@syncmesh/browser": "workspace:*",
         "@syncmesh/client": "workspace:*",
         "@syncmesh/config": "workspace:*",
-        "@syncmesh/drizzle": "workspace:*",
         "@syncmesh/engine": "workspace:*",
         "@syncmesh/kernel": "workspace:*",
         "@syncmesh/result": "workspace:*",
@@ -412,13 +396,11 @@
         "@syncmesh/ble": "workspace:*",
         "@syncmesh/client": "workspace:*",
         "@syncmesh/config": "workspace:*",
-        "@syncmesh/engine": "workspace:*",
         "@syncmesh/kernel": "workspace:*",
         "@syncmesh/relay": "workspace:*",
         "@syncmesh/result": "workspace:*",
         "@syncmesh/schema": "workspace:*",
         "@syncmesh/sqlite-bun": "workspace:*",
-        "@syncmesh/storage": "workspace:*",
         "@syncmesh/temporal": "workspace:*",
         "@syncmesh/transport": "workspace:*",
         "@syncmesh/wire": "workspace:*",
@@ -505,7 +487,6 @@
       },
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
-        "@syncmesh/engine": "workspace:*",
         "@syncmesh/transport": "workspace:*",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
@@ -553,7 +534,6 @@
         "@syncmesh/relay": "workspace:*",
         "@types/bun": "catalog:",
         "drizzle-orm": "catalog:",
-        "fast-check": "catalog:",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
       },
@@ -576,8 +556,6 @@
       "devDependencies": {
         "@happy-dom/global-registrator": "^18.0.1",
         "@syncmesh/config": "workspace:*",
-        "@syncmesh/orpc": "workspace:*",
-        "@syncmesh/react": "workspace:*",
         "@syncmesh/schema": "workspace:*",
         "@types/bun": "catalog:",
         "@types/react": "^19.1.0",
@@ -614,7 +592,6 @@
         "drizzle-orm": "catalog:",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
-        "zod": "^3.25.76",
       },
       "peerDependencies": {
         "drizzle-orm": ">=0.44",
@@ -702,7 +679,6 @@
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
         "@types/bun": "catalog:",
-        "fast-check": "catalog:",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
       },
@@ -756,7 +732,6 @@
       },
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
-        "@syncmesh/policy": "workspace:*",
         "@syncmesh/schema": "workspace:*",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
@@ -887,8 +862,6 @@
       },
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
-        "@syncmesh/schema": "workspace:*",
-        "@syncmesh/temporal": "workspace:*",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
@@ -1115,8 +1088,6 @@
     "@clack/core": ["@clack/core@0.5.0", "", { "dependencies": { "picocolors": "^1.0.0", "sisteransi": "^1.0.5" } }, "sha512-p3y0FIOwaYRUPRcMO7+dlmLh8PSRcrjuTndsiA0WAFbWES0mLZlrjVoBRZ9DzkPFJZG6KGkJmoEAY0ZcVWTkow=="],
 
     "@clack/prompts": ["@clack/prompts@0.11.0", "", { "dependencies": { "@clack/core": "0.5.0", "picocolors": "^1.0.0", "sisteransi": "^1.0.5" } }, "sha512-pMN5FcrEw9hUkZA4f+zLlzivQSeQf5dRGJjSUbvVYDLvpKCdQx5OaknvKzgbtXOizhP+SJJJjqEbOe55uKKfAw=="],
-
-    "@cloudflare/workers-types": ["@cloudflare/workers-types@4.20260702.1", "", {}, "sha512-mOhf5TUEB1m2vPrxtqoIGfz0fUC9xyxRDx5gWHy5s+OCo6dcV+g7wI1R7gYCMFohhqF/2y2xeKVwMwCJjfn/WA=="],
 
     "@craftzdog/react-native-buffer": ["@craftzdog/react-native-buffer@6.1.2", "", { "dependencies": { "ieee754": "^1.2.1", "react-native-quick-base64": "^3.0.0" } }, "sha512-KV1HitN05FHLLDG7Zb/yftDsa+mKBYBzFMQ0PMldvUicq6vWOtAvz9mDavt7Fzozh+WNqORE+yFDkkdWysZ/SA=="],
 

@@ -66,10 +66,10 @@ export {
   bunRoomStore,
   bunWebSocket,
   hostTuning,
-  requestRoom,
   startRelay,
   upgradeRoom,
 } from "./serve.js";
+export { requestRoom } from "./describe.js";
 export type { RelayHost, RelayHostOptions, RoomStore, RoomTuning, SocketSession } from "./host.js";
 export {
   createGate,

@@ -145,7 +145,7 @@ export interface Admissions {
  * more — and entries already in the log when the room opened are marked as arriving at that
  * moment, since nothing on disk records when they really did.
  */
-export function trackAdmissions(keepFor: Temporal.Duration, booted: Mark): Admissions {
+function trackAdmissions(keepFor: Temporal.Duration, booted: Mark): Admissions {
   const stepMs = durationMs(keepFor) / MARK_STEPS;
   const marks: Mark[] = [booted];
   return {

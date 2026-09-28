@@ -1,7 +1,7 @@
 {
   "name": "@syncmesh/transports",
   "version": "0.0.0",
-  "description": "The adapters: ble, lan, awdl, wifiAware — one import, one per medium",
+  "description": "The adapters: ble, lan, awdl, wifiAware \u2014 one import, one per medium",
   "license": "MIT",
   "files": [
     "dist"
@@ -31,8 +31,6 @@
   },
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
-    "@syncmesh/schema": "workspace:*",
-    "@syncmesh/temporal": "workspace:*",
     "@types/bun": "catalog:",
     "typescript": "catalog:",
     "vite-plus": "catalog:"

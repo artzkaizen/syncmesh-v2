@@ -11,13 +11,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@syncmesh/client": "workspace:*",
-    "@syncmesh/drizzle": "workspace:*",
     "@syncmesh/examples": "workspace:*",
     "@syncmesh/kernel": "workspace:*",
     "@syncmesh/orpc": "workspace:*",
     "@syncmesh/relay": "workspace:*",
-    "@syncmesh/schema": "workspace:*",
     "@syncmesh/sqlite-node": "workspace:*",
     "@syncmesh/temporal": "workspace:*",
     "@syncmesh/wire": "workspace:*",
@@ -25,8 +22,7 @@
     "@tanstack/react-start": "^1.168.0",
     "drizzle-orm": "catalog:",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "zod": "^3.25.76"
+    "react-dom": "^19.1.0"
   },
   "devDependencies": {
     "@syncmesh/config": "workspace:*",

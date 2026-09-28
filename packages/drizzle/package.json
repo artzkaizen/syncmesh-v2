@@ -33,8 +33,7 @@
     "@types/bun": "catalog:",
     "drizzle-orm": "catalog:",
     "typescript": "catalog:",
-    "vite-plus": "catalog:",
-    "zod": "^3.25.76"
+    "vite-plus": "catalog:"
   },
   "peerDependencies": {
     "drizzle-orm": ">=0.44"

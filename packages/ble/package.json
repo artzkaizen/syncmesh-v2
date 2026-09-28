@@ -26,7 +26,6 @@
   },
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
-    "@syncmesh/engine": "workspace:*",
     "@syncmesh/transport": "workspace:*",
     "@types/bun": "catalog:",
     "typescript": "catalog:",
