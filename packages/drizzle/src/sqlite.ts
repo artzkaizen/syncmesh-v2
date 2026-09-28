@@ -1,3 +1,4 @@
+import type { EmptyRelations } from "drizzle-orm";
 import type { SQLiteTable } from "drizzle-orm/sqlite-core";
 import type { SqliteRemoteDatabase } from "drizzle-orm/sqlite-proxy";
 
@@ -11,7 +12,7 @@ import { createLive } from "./live.js";
 import { createProxy } from "./proxy.js";
 import { readPredicate, readScope } from "./read.js";
 
-export type SqliteMeshDb = SqliteRemoteDatabase<Record<string, never>>;
+export type SqliteMeshDb = SqliteRemoteDatabase<EmptyRelations>;
 
 /** The SQLite face: Drizzle's `sqlite-proxy` over the device's own connection. */
 export function sqliteFace(deps: FaceDeps) {

@@ -19,6 +19,13 @@ use tokio::time::timeout;
 const STEP: Duration = Duration::from_secs(20);
 
 async fn room() -> (String, syncmesh_core::event::PeerId) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    serve(listener)
+}
+
+/// The room on a listener the caller already holds, so a device can be pointed at a port before
+/// anything answers there.
+fn serve(listener: tokio::net::TcpListener) -> (String, syncmesh_core::event::PeerId) {
     let identity = Identity::from_seed(&[9; 32]);
     let key = identity.peer_id().clone();
     let room = Room::new(
@@ -31,7 +38,6 @@ async fn room() -> (String, syncmesh_core::event::PeerId) {
         },
     )
     .unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(serve_room(listener, room));
     (format!("ws://127.0.0.1:{port}/licnep"), key)
@@ -179,6 +185,43 @@ async fn two_devices_converge_through_the_rust_room_with_presence_and_blobs() {
     )
     .unwrap();
     until(&mut c, |e| matches!(e, MeshEvent::Ended(_))).await;
+
+    a.stop().await;
+    b.stop().await;
+}
+
+#[tokio::test]
+async fn a_peer_sees_presence_set_before_the_link_came_up() {
+    let port = {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        probe.local_addr().unwrap().port()
+    };
+    let url = format!("ws://127.0.0.1:{port}/licnep");
+    let key = Identity::from_seed(&[9; 32]).peer_id().clone();
+    let partition = PartitionKey::parse("project:demo").unwrap();
+
+    // nothing listens yet: a's value is set offline and its first wire goes nowhere
+    let mut a = device(1, &url, &key);
+    let mut cursor = BTreeMap::new();
+    cursor.insert("x".to_owned(), CellValue::Number(7.0));
+    a.presence_set("cursor", &partition, cursor, 10_000);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .unwrap();
+    serve(listener);
+    until(&mut a, |e| *e == MeshEvent::Online(true)).await;
+    let mut b = device(2, &url, &key);
+    until(
+        &mut b,
+        |e| matches!(e, MeshEvent::Presence(t) if t.topic == "cursor"),
+    )
+    .await;
+    let peers = b.presence_peers("cursor", &partition);
+    assert_eq!(peers.len(), 1, "the value set offline arrived");
+    assert_eq!(peers[0].peer_id, *a.peer_id());
+    assert_eq!(peers[0].value["x"], CellValue::Number(7.0));
 
     a.stop().await;
     b.stop().await;

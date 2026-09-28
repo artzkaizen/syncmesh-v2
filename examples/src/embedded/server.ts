@@ -34,7 +34,7 @@ const dialing = RELAY_URL ?? `ws://localhost:${RELAY_PORT}/${ROOM}`;
 // 2 · your database and your Drizzle over it, exactly as your backend already had them. This is
 // a second connection to the file the mesh writes below — ordinary for SQLite in WAL mode, and
 // on Postgres it would be two clients on one pool.
-const db = drizzle(new Database(APP_DB, { create: true }));
+const db = drizzle({ client: new Database(APP_DB, { create: true }) });
 
 // 3 · the mesh's own connection to that same file. `store` is the event log, `stateStore` is
 // where a fold lands: the sidecar it needs for stamps, plus a projection that UPSERTs each

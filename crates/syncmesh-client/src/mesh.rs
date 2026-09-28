@@ -291,7 +291,7 @@ async fn pump(
                     // a fresh socket knows nothing about us: re-announce our presence and grants
                     let wires: Vec<Vec<u8>> = {
                         let mut tier = lock(&presence);
-                        tier.heartbeats_due(i64::MAX)
+                        tier.announce_all(now_ms())
                     };
                     for wire in wires {
                         let _ = commands.send(LinkCommand::Presence(wire)).await;
@@ -373,4 +373,61 @@ async fn heartbeat(presence: Arc<Mutex<PresenceTier>>, commands: mpsc::Sender<Li
 /// before the put has left.
 pub fn blob_hash(bytes: &[u8]) -> String {
     hash_of(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use syncmesh_core::record::CellValue;
+
+    use super::*;
+    use crate::presence::decode_and_verify_presence;
+
+    #[tokio::test]
+    async fn announce_on_link_return_uses_the_clock() {
+        let identity = Identity::from_seed(&[5; 32]);
+        let partition = PartitionKey::parse("project:demo").unwrap();
+        let mut tier = PresenceTier::new(identity.clone(), "s-offline".to_owned());
+        let mut cursor = Row::new();
+        cursor.insert("x".to_owned(), CellValue::Number(1.0));
+        // set while offline: the wire this returns has nowhere to go and is dropped
+        let _ = tier.set("cursor", &partition, cursor, 10_000, now_ms());
+        let presence = Arc::new(Mutex::new(tier));
+
+        let (link_tx, link_rx) = mpsc::channel(8);
+        let (event_tx, mut events) = mpsc::channel(8);
+        let (commands, mut sent) = mpsc::channel(8);
+        let blobs: Arc<Mutex<Box<dyn BlobStore + Send>>> =
+            Arc::new(Mutex::new(Box::new(MemoryBlobStore::new())));
+        let pumping = tokio::spawn(pump(
+            link_rx,
+            event_tx,
+            presence.clone(),
+            Arc::new(Mutex::new(GrantRegistry::new(identity.peer_id().clone()))),
+            blobs,
+            Waiters::default(),
+            commands,
+        ));
+
+        let before = now_ms();
+        link_tx.send(LinkEvent::Online(true)).await.unwrap();
+        assert_eq!(events.recv().await, Some(MeshEvent::Online(true)));
+        let after = now_ms();
+        let Some(LinkCommand::Presence(wire)) = sent.recv().await else {
+            panic!("the link came up and nothing was re-announced");
+        };
+        let announced = decode_and_verify_presence(&wire).unwrap().presence;
+        assert!(
+            (before + 10_000..=after + 10_000).contains(&announced.expires_ms),
+            "expiry {} is not now + ttl",
+            announced.expires_ms
+        );
+        let next = lock(&presence).next_heartbeat_ms().unwrap();
+        assert!(
+            (before..=after + 10_000).contains(&next),
+            "the heartbeat clock restarted at the real now, not {next}"
+        );
+
+        drop(link_tx);
+        pumping.await.unwrap();
+    }
 }

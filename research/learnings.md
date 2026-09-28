@@ -185,6 +185,29 @@ and every ISO date string silently becomes a timestamp.
 **General lesson: never key a wire-affecting decision off a third-party string
 that is not part of that library's public contract.**
 
+### Pinned to Drizzle 1.0 RC
+
+Every workspace pins `drizzle-orm@1.0.0-rc.4` through the root catalog; peers
+ask for `^1.0.0-rc.4`. Nothing in the repo needs `drizzle-kit`, `drizzle-zod` or
+`drizzle-valibot` (1.0 folds the validators into `drizzle-orm/zod` etc.). What
+1.0 changed underneath us:
+
+- `dataType` became `"<type> <constraint>"`; `fromDrizzle` reads the 0.45 base
+  back out of it, so no kind moved. pg-core's own `bytea` is `"object buffer"`
+  → `blob`.
+- A Postgres array is the element's `dataType` plus `dimensions > 0` —
+  `integer().array()` reports `"number int32"` / `PgInteger`. Refused explicitly;
+  read naively it imports as an integer.
+- SQLite `blob()` without a mode is JSON now (was a buffer). The mapping follows
+  what Drizzle stores; an app that meant bytes writes `blob({ mode: "buffer" })`.
+- pg-core types every built column `isPrimaryKey: false`, so a Postgres table's
+  key is only known at runtime. `fromDrizzle` types its `primaryKey` as the
+  union of the non-null columns there (SQLite keeps the exact key).
+- `pg-proxy` lost its transaction class; the mesh's Postgres face declares its
+  own over `PgAsyncTransaction`. Handles are typed with `EmptyRelations`: the
+  relational API (`db.query`, RQB v2) needs `defineRelations`, which the mesh
+  does not take yet.
+
 ---
 
 ## 6 · Change data capture — RFC-0021 **[written]**
