@@ -8,6 +8,13 @@
 > hooks, and `rls: true` for Postgres-enforced reads. Read `plan/decisions/D20.md` and the
 > epics E09/E10/E12/E17 for what is true now; read on only for the historical rationale.
 
+> **ALSO SUPERSEDED (2026-08-29, D25) for column definitions.** `.onConflict(strategy)` is gone:
+> every `t.*` builder takes `{ merge }`, which is `"lww" | "max" | "min"` on a number and `"lww"`
+> on everything else, and `fromDrizzle` takes `{ merge }` rather than `{ onConflict }`. The
+> `[design]` entries for `onConflict("counter")` / `("set")` (§4b, §25) are withdrawn, not
+> pending: `t.counter()` and `t.set()` were built, then deleted — lists, tags and memberships are
+> tables. Read `plan/decisions/D25.md`.
+
 > Read off the source; every untagged example runs and is covered by tests.
 > Anything not built yet is in one list at the end (§25), not sprinkled through.
 

@@ -3,7 +3,7 @@ import type { Grant } from "@syncmesh/wire";
 
 import { createMemoryEventStore, createValidator, openEngine } from "@syncmesh/engine";
 import { createHlcClock, parsePartitionKey, readRow } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { ladder, local, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { installCapture } from "@syncmesh/storage";
 import { createWriter } from "@syncmesh/storage";
@@ -11,9 +11,8 @@ import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, verifyGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
-const schema = defineSchema({
-  partitions: { org: {} },
-  roles: { org: ["dispatcher", "viewer"] },
+const org = partition("org", { roles: ladder("dispatcher", "viewer") });
+const schema = syncSchema({
   tables: {
     jobs: {
       columns: {
@@ -22,10 +21,10 @@ const schema = defineSchema({
         rank: t.integer(),
         assignee: t.text().nullable(),
       },
-      partition: "org",
+      partition: org,
       allow: ({ role }) => ({ $default: role("viewer"), update: role("dispatcher") }),
     },
-    drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "local" },
+    drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: local },
   },
 });
 const tables = [schema.tables.jobs, schema.tables.drafts];
@@ -211,7 +210,7 @@ describe("the fold writes the same tables", () => {
       "from a",
       "org:acme",
     ]);
-    expect(Number((await bDriver.all(`SELECT COUNT(*) FROM _syncmesh_changes`))[0]?.[0])).toBe(0);
+    expect(Number((await bDriver.all(`SELECT COUNT(*) FROM syncmesh_changes`))[0]?.[0])).toBe(0);
 
     const writeB = createWriter({ engine: b, validate, driver: bDriver, tables });
     (

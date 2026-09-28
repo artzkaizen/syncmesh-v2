@@ -1,0 +1,11 @@
+{
+  "name": "@syncmesh/core-rs",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Rust core (D35): canonical CBOR, identity, HLC, the lattice fold and the event envelope, measured against conformance/*.json",
+  "scripts": {
+    "build": "cargo build",
+    "test": "cargo test",
+    "typecheck": "cargo check --tests"
+  }
+}

@@ -1,5 +1,5 @@
 import type { Coverage, StateStore } from "@syncmesh/engine";
-import type { RowKey, RowRecord, State, TableName } from "@syncmesh/kernel";
+import type { RowKey, State, TableName, TableState } from "@syncmesh/kernel";
 
 import { StateCorrupt, type StoreFailure } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
@@ -9,19 +9,43 @@ import type { SqlDriver, SqlRow, SqlValue } from "./driver.js";
 import type { Projection } from "./projection.js";
 
 import { dialectOf } from "./dialect.js";
+import { lazyTable } from "./lazy-state.js";
 import { attempt, coverageOf, inTransaction, scopeOf } from "./sql.js";
 
 const corrupt = (message: string) => new StateCorrupt({ message });
 
-function decodeRow(row: SqlRow): Result<readonly [TableName, RowKey, RowRecord], StateCorrupt> {
+/**
+ * Where a stored row belongs and the bytes it holds, without reading inside them.
+ *
+ * The blob check stays eager because it is free and catches the shape of damage a migration or a
+ * hand-edited database produces; what the bytes *contain* is checked when they are decoded, which
+ * is now the first time the row is wanted rather than the moment the database opens.
+ */
+function addressOf(row: SqlRow): Result<readonly [TableName, RowKey, Uint8Array], StateCorrupt> {
   const [table, key, record] = row;
   if (!(record instanceof Uint8Array)) return Result.err(corrupt("record is not a blob"));
-  return decodeRecord(record)
-    .mapError((e) => corrupt(e.message))
-    .map((decoded) => {
-      // SAFETY: these columns were written from a TableName and a RowKey by commit(); the record's decode is the check that the row is intact
-      return [String(table) as TableName, String(key) as RowKey, decoded] as const;
-    });
+  // SAFETY: these columns were written from a TableName and a RowKey by commit()
+  return Result.ok([String(table) as TableName, String(key) as RowKey, record] as const);
+}
+
+/**
+ * One row of a table, decoded on the spot, so a cache the build can no longer read is found here.
+ *
+ * The rest of the cache is decoded lazily ({@link lazyTable}), which on its own would move the
+ * discovery of a damaged cache to whenever a row was first touched — and the engine's answer to a
+ * damaged cache is to clear it and rebuild from the log, which it can only do while it is still
+ * opening. The realistic damage is not one rotted row but a *format* the running build no longer
+ * reads, after an upgrade or a schema change, and that shows in the first row as surely as in all
+ * of them. So one per table is decoded and thrown away: enough to keep the rebuild reachable, at a
+ * cost that does not grow with the data. A single damaged row among sound ones is still found, but
+ * when it is read rather than when the database opens.
+ */
+function firstDecodes(records: ReadonlyMap<RowKey, Uint8Array>): Result<void, StateCorrupt> {
+  for (const record of records.values())
+    return decodeRecord(record)
+      .mapError((e) => corrupt(e.message))
+      .map(() => undefined);
+  return Result.ok(undefined);
 }
 
 export interface SqlStateStoreOptions {
@@ -57,12 +81,19 @@ export function sqlStateStore(
     loadAll: () =>
       Result.gen(async function* () {
         const rows = yield* Result.await(query("loadAll failed", SQL.selectRows));
-        const state = new Map<TableName, Map<RowKey, RowRecord>>();
+        const stored = new Map<TableName, Map<RowKey, Uint8Array>>();
         for (const row of rows) {
-          const [table, key, record] = yield* decodeRow(row);
-          const records = state.get(table) ?? new Map<RowKey, RowRecord>();
+          const [table, key, record] = yield* addressOf(row);
+          const records = stored.get(table) ?? new Map<RowKey, Uint8Array>();
           records.set(key, record);
-          state.set(table, records);
+          stored.set(table, records);
+        }
+        // the blobs go in undecoded: see `lazyTable` for why, and for the one caller that
+        // deliberately decodes a whole table
+        const state = new Map<TableName, TableState>();
+        for (const [table, records] of stored) {
+          yield* firstDecodes(records);
+          state.set(table, lazyTable(records));
         }
         return Result.ok<State>(state);
       }),

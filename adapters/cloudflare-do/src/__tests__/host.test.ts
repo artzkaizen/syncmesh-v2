@@ -5,12 +5,14 @@ import { tableDigests } from "@syncmesh/engine";
 import { seed } from "@syncmesh/kernel/test-fixtures";
 import {
   decodeRelayFrame,
+  isHello,
   joinFrame,
   relayTransport,
+  secureLink,
   startRelay,
   webSocketDial,
 } from "@syncmesh/relay";
-import { defineSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
@@ -24,14 +26,13 @@ import { join } from "node:path";
 import { durableRelay } from "./hosts.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
+const org = partition("org", { roles: ladder("member") });
 const schema = () =>
-  defineSchema({
-    partitions: { org: {} },
-    roles: { org: ["member"] },
+  syncSchema({
     tables: {
       notes: {
         columns: { id: t.text().primaryKey(), body: t.text() },
-        partition: "org",
+        partition: org,
         allow: ({ role }) => ({ $default: role("member") }),
       },
     },
@@ -95,15 +96,26 @@ const converge = async (dial: Dial) => {
   return { both, digests };
 };
 
-/** A raw client: join with empty cursors and keep what comes back — hellos and pages, undigested. */
+/** A raw client: answer the room's hello, join over the sealed link from empty cursors and keep what comes back — hellos and pages, undigested (D36). */
 const probe = async (dial: Dial, n: number) => {
   const dialed = await dial();
+  const identity = createIdentity(seed(n)).unwrap();
+  const link = secureLink(identity);
   const frames: RelayFrame[] = [];
   dialed.onFrame((bytes) => {
-    const decoded = decodeRelayFrame(bytes);
+    if (link.session() === undefined) {
+      if (!isHello(bytes)) return;
+      link.receive(bytes).unwrap();
+      if (link.hello !== undefined) dialed.send(link.hello);
+      const join = link.seal(joinFrame([3], identity.peerId, new Map()));
+      if (join !== undefined) dialed.send(join);
+      return;
+    }
+    const opened = link.receive(bytes);
+    if (opened.isErr() || opened.value === undefined) return;
+    const decoded = decodeRelayFrame(opened.value);
     if (decoded.isOk()) frames.push(decoded.value);
   });
-  dialed.send(joinFrame([1], createIdentity(seed(n)).unwrap().peerId, new Map()));
   await until(() => Promise.resolve(frames.some((f) => f.kind === "hello")));
   dialed.close();
   const hello = frames.find((f) => f.kind === "hello");

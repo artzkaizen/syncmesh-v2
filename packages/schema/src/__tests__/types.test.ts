@@ -17,8 +17,10 @@ describe("compile-time guarantees", () => {
     t.boolean({ merge: "min" });
     // @ts-expect-error nor for json
     t.json({ merge: "max" });
-    // @ts-expect-error and there is no strategy by that name any more (D25)
+    // the book (ch. 2) reinstates the one exception D25 cut: counts merge wrong under lww
     t.integer({ merge: "counter" });
+    // @ts-expect-error but a counter is a number's strategy, never text's
+    t.text({ merge: "counter" });
     expect(true).toBe(true);
   });
 

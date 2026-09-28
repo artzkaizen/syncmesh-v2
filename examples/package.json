@@ -2,28 +2,42 @@
   "name": "@syncmesh/examples",
   "version": "0.0.0",
   "private": true,
-  "description": "The two hosting shapes you run yourself: a relay embedded in a backend process, and a Redis fleet behind a load balancer",
+  "description": "The two hosting shapes you run yourself: a relay embedded in a backend process, and a fleet behind a load balancer",
   "type": "module",
+  "exports": {
+    "./rounds/schema": {
+      "@syncmesh/source": "./src/rounds/schema.ts",
+      "default": "./src/rounds/schema.ts"
+    },
+    "./rounds/api": {
+      "@syncmesh/source": "./src/rounds/api.ts",
+      "default": "./src/rounds/api.ts"
+    }
+  },
   "scripts": {
     "device": "bun --conditions=@syncmesh/source src/embedded/device.ts",
     "fleet": "docker compose -f src/fleet/compose.yaml up --build",
+    "rounds": "bun --conditions=@syncmesh/source src/rounds/device.ts",
     "server": "bun --conditions=@syncmesh/source src/embedded/server.ts"
   },
   "devDependencies": {
     "@syncmesh/client": "workspace:*",
     "@syncmesh/config": "workspace:*",
+    "@syncmesh/drizzle": "workspace:*",
     "@syncmesh/engine": "workspace:*",
     "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/orpc": "workspace:*",
     "@syncmesh/relay": "workspace:*",
     "@syncmesh/schema": "workspace:*",
     "@syncmesh/sqlite-bun": "workspace:*",
     "@syncmesh/storage": "workspace:*",
     "@syncmesh/temporal": "workspace:*",
+    "@syncmesh/transport": "workspace:*",
     "@syncmesh/wire": "workspace:*",
     "@types/bun": "catalog:",
-    "drizzle-orm": "latest",
-    "redis": "^6.2.1",
+    "drizzle-orm": "catalog:",
     "typescript": "catalog:",
-    "vite-plus": "catalog:"
+    "vite-plus": "catalog:",
+    "zod": "^3.25.76"
   }
 }

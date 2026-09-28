@@ -1,15 +1,16 @@
 import { parsePartitionKey } from "@syncmesh/kernel";
-import { Database } from "bun:sqlite";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { SqlRow, SqlValue, SqliteDriver } from "../driver.js";
+import type { SqliteDriver } from "../driver.js";
 import type { StoreScope } from "../open-stores.js";
 
 import { A, B, event } from "../driver-tests/fixtures.js";
 import { scopedStores, storeNameFor } from "../open-stores.js";
+import { storeFilesFor } from "../open-stores.js";
+import { openPair } from "./pair.js";
 
 const ACME = parsePartitionKey("org:acme").unwrap();
 const GLOBEX = parsePartitionKey("org:globex").unwrap();
@@ -17,36 +18,8 @@ const GLOBEX = parsePartitionKey("org:globex").unwrap();
 const dir = mkdtempSync(join(tmpdir(), "syncmesh-scopes-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-const bind = (params: readonly SqlValue[]) =>
-  params.map((p) => (p === true ? 1 : p === false ? 0 : p instanceof Date ? p.getTime() : p));
-
-const driver = (path: string): SqliteDriver => {
-  const db = new Database(path, { create: true, strict: true });
-  return {
-    dialect: "sqlite",
-    run: (sql, params = []) => {
-      db.run(sql, bind(params));
-      return Promise.resolve();
-    },
-    // SAFETY: SQLite hands back text, integers, reals, blobs and NULL — exactly SqlValue
-    all: (sql, params = []) => Promise.resolve(db.query(sql).values(...bind(params)) as SqlRow[]),
-    transaction: async (fn) => {
-      db.run("BEGIN IMMEDIATE");
-      try {
-        const out = await fn();
-        db.run("COMMIT");
-        return out;
-      } catch (cause) {
-        db.run("ROLLBACK");
-        throw cause;
-      }
-    },
-    close: () => {
-      db.close();
-      return Promise.resolve();
-    },
-  };
-};
+// one pair per scope: the log at `path`, with its state file hanging off it
+const driver = (logPath: string): Promise<SqliteDriver> => openPair(logPath);
 
 const pathFor = (scope: StoreScope) => join(dir, `${storeNameFor(scope)}.db`);
 const set = scopedStores({ driverFor: (scope) => driver(pathFor(scope)) });
@@ -82,7 +55,9 @@ describe("one engine's storage per scope", () => {
     await storesFor(ACME);
     await storesFor(GLOBEX);
     await set.forget(ACME);
-    unlinkSync(pathFor(ACME));
+    // both files, because a store is two now and the log is the half that holds the events —
+    // deleting only the first leaves every one of them to be found again on the next join
+    for (const file of storeFilesFor(pathFor(ACME), "test")) unlinkSync(file);
 
     expect(set.opened()).toEqual([GLOBEX]);
     expect(existsSync(pathFor(ACME))).toBe(false);

@@ -6,8 +6,20 @@ export type {
   SqlValue,
   SqliteDriver,
 } from "./driver.js";
+export type { AsyncSqliteBinding, BoundSqlValue, SqliteBinding } from "./sqlite-driver.js";
+export { asyncSqliteDriver, bindSqlite, sqliteDriver } from "./sqlite-driver.js";
 export { sqlEventStore, sqliteEventStore, type SqlEventStoreOptions } from "./event-store.js";
 export { LogCorrupt } from "./local-log.js";
+export type {
+  OperationOutcome,
+  OperationRow,
+  OperationStore,
+  ReceiptRow,
+  VouchRow,
+} from "./operation-store.js";
+export { operationStore } from "./operation-store.js";
+export type { StoreLock } from "./lock.js";
+export { acquireStoreLock, StoreLocked } from "./lock.js";
 export type {
   LocalStorageEventStoreOptions,
   LocalStorageLike,
@@ -32,7 +44,29 @@ export type {
   StoreScope,
   Stores,
 } from "./open-stores.js";
-export { openStores, scopedStores, storeNameFor } from "./open-stores.js";
+export {
+  attachLog,
+  lockPathFor,
+  schemaNameFor,
+  statePathFor,
+  openStores,
+  scopedStores,
+  storeFilesFor,
+  storeNameFor,
+} from "./open-stores.js";
+export { DetachRefused, detachScope } from "./detach.js";
+export type { RowSync } from "./row-sync.js";
+export {
+  ROW_SYNC_NOUN,
+  ackedTableName,
+  rowSyncTableName,
+  operationOfSql,
+  rowSyncDdlFor,
+  rowSyncTable,
+  syncOfSql,
+} from "./row-sync.js";
+export type { BudgetReport, StorageBudget } from "./budget.js";
+export { sweepBudget } from "./budget.js";
 export type { CaptureOptions } from "./capture.js";
 export { captureChanges, captureDdl, installCapture, tableDdl } from "./capture.js";
 export type { Projection, ProjectionOptions } from "./projection.js";
@@ -51,7 +85,7 @@ export type { Compiled, CompileOptions } from "./read-filter.js";
 export { columnScalarKind } from "./read-filter.js";
 export type { PrincipalStatement, RlsOptions } from "./rls.js";
 export { installRls, principalSettings, rlsDdl } from "./rls.js";
-export { inTransaction } from "./sql.js";
+export { inTransaction, onConnection } from "./sql.js";
 export { compileRead } from "./read-filter.js";
 export type {
   TxReceipt,
@@ -62,3 +96,5 @@ export type {
   WriterDeps,
 } from "./writer.js";
 export { createWriter } from "./writer.js";
+
+export { ATTACHED_LOG, LOG_TABLES, STATE_TABLES, logTable, stateTable } from "./dialect.js";

@@ -1,3 +1,5 @@
+import type { Identity } from "@syncmesh/wire";
+
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,21 +8,15 @@ import { join as joinPath } from "node:path";
 import type { RelayFrame } from "../frames.js";
 
 import { webSocketDial } from "../dial.js";
-import { decodeRelayFrame, joinFrame } from "../frames.js";
 import { startRelay } from "../serve.js";
 import { relayTransport } from "../transport.js";
-import { bodyOf, peer, tick, write } from "./fixtures.js";
+import { bodyOf, peer, secureProbe, tick, write } from "./fixtures.js";
 
-/** Raw client: dial, join, and collect decoded frames — for looking at hellos and pages directly. */
-const probe = async (url: string, peerId: Parameters<typeof joinFrame>[1]) => {
-  const dial = await webSocketDial(url)();
-  const frames: RelayFrame[] = [];
-  dial.onFrame((bytes) => {
-    const decoded = decodeRelayFrame(bytes);
-    if (decoded.isOk()) frames.push(decoded.value);
-  });
-  dial.send(joinFrame([1], peerId, new Map()));
-  return { frames, close: () => dial.close() };
+/** Raw client: dial, run the link handshake, join from empty cursors, and collect decoded frames — for looking at hellos and pages directly. */
+const probe = async (url: string, identity: Identity) => {
+  const probing = await secureProbe(webSocketDial(url), identity);
+  probing.join();
+  return probing;
 };
 
 describe("startRelay — D09-A, the embedded host", () => {
@@ -49,7 +45,7 @@ describe("startRelay — D09-A, the embedded host", () => {
       await ta.stop();
       await tb.stop();
 
-      const before = await probe(relay.url, a.identity.peerId);
+      const before = await probe(relay.url, a.identity);
       await tick(80);
       const epochBefore = before.frames.find((f) => f.kind === "hello");
       const held = before.frames
@@ -61,7 +57,7 @@ describe("startRelay — D09-A, the embedded host", () => {
 
       // the same file, a fresh process: same lineage, nothing re-sent to a caught-up joiner
       const revived = await startRelay(0, { dataDir, keepaliveMs: 60_000, pageSize: 2 });
-      const after = await probe(revived.url, a.identity.peerId);
+      const after = await probe(revived.url, a.identity);
       await tick(80);
       const epochAfter = after.frames.find((f) => f.kind === "hello");
       expect(epochAfter?.kind === "hello" && epochAfter.epoch).toBe(
@@ -75,7 +71,7 @@ describe("startRelay — D09-A, the embedded host", () => {
       await caught.whenReady();
       await tick(80);
       void pages;
-      const check = await probe(revived.url, b.identity.peerId);
+      const check = await probe(revived.url, b.identity);
       await tick(80);
       // b's empty-cursor probe still sees all 4 — the restart lost nothing
       const total = check.frames
@@ -85,6 +81,37 @@ describe("startRelay — D09-A, the embedded host", () => {
       check.close();
       await caught.stop();
       await revived.stop();
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test("the connection cap refuses the socket past it with 503, and a close frees the seat", async () => {
+    const dataDir = mkdtempSync(joinPath(tmpdir(), "syncmesh-relay-"));
+    try {
+      const relay = await startRelay(0, {
+        dataDir,
+        keepaliveMs: 60_000,
+        limits: { maxConnections: 1 },
+      });
+      const first = new WebSocket(relay.url);
+      await new Promise((resolve) => first.addEventListener("open", resolve, { once: true }));
+
+      const refused = await fetch(relay.url.replace("ws", "http"), {
+        headers: { upgrade: "websocket", connection: "upgrade" },
+      });
+      expect(refused.status).toBe(503);
+
+      first.close();
+      await tick(80); // the seat frees on close, so the next client is not locked out
+      const admitted = new WebSocket(relay.url);
+      const opened = await new Promise((resolve) => {
+        admitted.addEventListener("open", () => resolve(true), { once: true });
+        admitted.addEventListener("error", () => resolve(false), { once: true });
+      });
+      expect(opened).toBe(true);
+      admitted.close();
+      await relay.stop();
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
@@ -102,7 +129,7 @@ describe("startRelay — D09-A, the embedded host", () => {
       await tick(80);
       await ta.stop();
 
-      const other = await probe(`${relay.url}/notes`, peer(80, "acct_b").identity.peerId);
+      const other = await probe(`${relay.url}/notes`, peer(80, "acct_b").identity);
       await tick(80);
       const total = other.frames
         .filter((f): f is Extract<RelayFrame, { kind: "page" }> => f.kind === "page")

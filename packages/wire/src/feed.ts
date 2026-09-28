@@ -56,8 +56,11 @@ export function advanceFeed(head: FeedHead, core: Uint8Array): FeedHead {
 
 const KEY = { v: 0, peerId: 1, seq: 2, head: 3 } as const;
 
-/** What the author signs: the position and the chain hash there, and nothing else. */
-const certificateCore = (peerId: PeerId, head: FeedHead): Uint8Array =>
+/**
+ * What the author signs: the position and the chain hash there, and nothing else. Exported for
+ * the conformance vectors, which freeze these bytes so a second implementation can be measured.
+ */
+export const feedCertificateCore = (peerId: PeerId, head: FeedHead): Uint8Array =>
   encodeCbor(
     new Map<CborKey, CborValue>([
       [KEY.v, 1],
@@ -80,13 +83,13 @@ export interface FeedCertificate {
 export const certifyFeed = (identity: Identity, head: FeedHead): FeedCertificate => ({
   peerId: identity.peerId,
   head,
-  sig: identity.sign(certificateCore(identity.peerId, head)),
+  sig: identity.sign(feedCertificateCore(identity.peerId, head)),
 });
 
 /** Whether this certificate is really the named author's. Cheap, and the only signature a run costs. */
 export const certificateHolds = (certificate: FeedCertificate): boolean =>
   verify(
-    certificateCore(certificate.peerId, certificate.head),
+    feedCertificateCore(certificate.peerId, certificate.head),
     certificate.sig,
     hexToBytes(certificate.peerId).unwrap(),
   );

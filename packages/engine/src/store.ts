@@ -6,7 +6,10 @@ import { compareHlc } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 
+import type { EventHeader, RecentEvents } from "./recent.js";
 import type { Coverage, Cursors } from "./sync.js";
+
+import { isStranded } from "./stranded.js";
 
 export class StoreFailure extends TaggedError("StoreFailure")<{
   message: string;
@@ -37,6 +40,33 @@ export interface EventStore {
   readonly appendBatch: (entries: readonly StoredEvent[]) => Promise<Result<void, StoreFailure>>;
   readonly has: (id: EventId) => Promise<Result<boolean, StoreFailure>>;
   readonly all: () => Promise<Result<readonly StoredEvent[], StoreFailure>>;
+  /**
+   * The log's tail by stamp, newest first, as headers and never as entries — both scopes, so a
+   * local write shows up where `allSince` can never carry one.
+   *
+   * Optional because it is a read the backing store either has an index for or does not. A
+   * database answers it over the stamp index without touching a core; a store whose events are
+   * already objects in memory has nothing cheaper to offer than the walk `recentHeaders` does on
+   * its behalf, and declaring nothing is how it says so.
+   */
+  readonly recent?: (
+    options: RecentEvents,
+  ) => Promise<Result<readonly EventHeader[], StoreFailure>>;
+  /**
+   * Entries with no signature beside them whose author is not `mine` — the writes this device can
+   * never send, because nobody here can sign for the key that made them ({@link StrandedWrites}).
+   *
+   * Required, unlike `recent`, and that is the point. `openEngine` asks it at every boot, which
+   * is the one moment a device that rotated its key over a kept log can still be told so, and a
+   * store allowed to decline would put the silence back exactly where it was. It is also the
+   * question a log is best placed to answer cheaply: a database asks it as a predicate over a
+   * column it already has, and hands back the empty set every healthy log holds.
+   *
+   * Boot must not read the whole log to get this. A store with no index for it should still
+   * answer from what it holds rather than making the caller walk — `createMemoryEventStore` walks
+   * its own map, which is the cheapest form the question has there.
+   */
+  readonly stranded: (mine: PeerId) => Promise<Result<readonly StoredEvent[], StoreFailure>>;
   /** Events in the scope above the given per-author cursors, ordered by author then sequence. Synced by default. */
   readonly allSince: (
     cursors: Cursors,
@@ -83,6 +113,7 @@ export function createMemoryEventStore(): EventStore {
     },
     has: (id) => ok(events.has(id)),
     all: () => ok([...events.values()]),
+    stranded: (mine) => ok([...events.values()].filter((entry) => isStranded(entry, mine))),
     allSince: (cursors, scope = "synced") =>
       ok(
         [...events.values()]

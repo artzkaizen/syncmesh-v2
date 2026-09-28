@@ -1,9 +1,12 @@
-import type { Brand, Change, Hlc, PeerId, Stamp } from "@syncmesh/kernel";
-
-import { PEER_ID_HEX, parsePeerId } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
 
+import type { Change } from "./change.js";
+import type { Hlc } from "./hlc.js";
 import type { PartitionKey } from "./partition.js";
+import type { Brand } from "./primitives.js";
+import type { Stamp } from "./stamp.js";
+
+import { PEER_ID_HEX, parsePeerId, type PeerId } from "./peer-id.js";
 
 export type ProtocolVersion = 1;
 
@@ -23,6 +26,15 @@ export interface SyncEvent {
   readonly procedure: Procedure;
   readonly partition?: PartitionKey;
   readonly changes: readonly Change[];
+  /**
+   * This event's content is sealed and this device holds no key for it (book ch. 14), so
+   * `changes` is empty because there is nothing readable — not because nothing was written.
+   *
+   * A carrier stores it, relays it, counts it towards coverage and folds nothing, which is the
+   * whole of custody without judgment. Nothing else in the system needs to look at this: an
+   * empty change list already folds to nothing. It is here so a device can *say* why.
+   */
+  readonly sealed?: true;
   /** Never leaves this device; numbered in its own sequence namespace. */
   readonly local?: true;
 }

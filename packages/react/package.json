@@ -16,14 +16,17 @@
     }
   },
   "dependencies": {
+    "@syncmesh/client": "workspace:*",
     "@syncmesh/drizzle": "workspace:*",
-    "@syncmesh/result": "workspace:*"
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/transport": "workspace:*"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^18.0.1",
     "@syncmesh/config": "workspace:*",
     "@syncmesh/engine": "workspace:*",
     "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/orpc": "workspace:*",
     "@syncmesh/schema": "workspace:*",
     "@syncmesh/sqlite-bun": "workspace:*",
     "@syncmesh/storage": "workspace:*",
@@ -32,11 +35,12 @@
     "@types/bun": "catalog:",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
-    "drizzle-orm": "latest",
+    "drizzle-orm": "catalog:",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "typescript": "catalog:",
-    "vite-plus": "catalog:"
+    "vite-plus": "catalog:",
+    "zod": "^3.25.76"
   },
   "peerDependencies": {
     "react": ">=18"

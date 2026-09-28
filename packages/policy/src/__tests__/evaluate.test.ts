@@ -16,7 +16,7 @@ import {
   rowIs,
   type AllowBlock,
 } from "../ast.js";
-import { evaluate } from "../evaluate.js";
+import { evaluate, roleAtLeast, type RoleSet } from "../evaluate.js";
 import { ctx, grant, grantWithoutRole, row } from "./fixtures.js";
 
 describe("evaluate — every node, both outcomes", () => {
@@ -111,6 +111,52 @@ describe("evaluate — every node, both outcomes", () => {
       evaluate(rule, c),
       evaluate(JSON.parse(JSON.stringify(rule)), c),
     ]).toEqual([true, true, true]);
+  });
+});
+
+describe("roleAtLeast — the ladder's direction, pinned", () => {
+  /**
+   * Senior first. `ladder("owner", "admin", "member")` means `role("member")` admits owners and
+   * admins too, and this is the assertion that stops the array being written the other way round
+   * — which would compile, and would quietly invert every permission in an app.
+   */
+  const ladder = { names: ["owner", "admin", "member"], ordered: true } as const satisfies RoleSet;
+
+  test("a senior holder satisfies a junior requirement", () => {
+    expect(roleAtLeast(ladder, "owner", "member")).toBe(true);
+    expect(roleAtLeast(ladder, "admin", "member")).toBe(true);
+    expect(roleAtLeast(ladder, "member", "member")).toBe(true);
+  });
+
+  test("a junior holder never satisfies a senior requirement", () => {
+    expect(roleAtLeast(ladder, "member", "admin")).toBe(false);
+    expect(roleAtLeast(ladder, "member", "owner")).toBe(false);
+    expect(roleAtLeast(ladder, "admin", "owner")).toBe(false);
+  });
+
+  test("an unknown role on either side is never enough", () => {
+    expect(roleAtLeast(ladder, "auditor", "member")).toBe(false);
+    expect(roleAtLeast(ladder, "owner", "auditor")).toBe(false);
+    expect(roleAtLeast(ladder, undefined, "member")).toBe(false);
+  });
+
+  /**
+   * `flat("auditor", "billing")` names two roles with no order between them: position in the
+   * array is spelling, not seniority, so `role("billing")` admits billing and nobody else.
+   */
+  const flat = { names: ["auditor", "billing"], ordered: false } as const satisfies RoleSet;
+
+  test("in a flat set only the exact role passes, in either direction", () => {
+    expect(roleAtLeast(flat, "auditor", "auditor")).toBe(true);
+    expect(roleAtLeast(flat, "billing", "billing")).toBe(true);
+    expect(roleAtLeast(flat, "auditor", "billing")).toBe(false);
+    expect(roleAtLeast(flat, "billing", "auditor")).toBe(false);
+  });
+
+  test("a flat set is as strict about unknown roles as a ladder is", () => {
+    expect(roleAtLeast(flat, "owner", "auditor")).toBe(false);
+    expect(roleAtLeast(flat, "auditor", "owner")).toBe(false);
+    expect(roleAtLeast(flat, undefined, "auditor")).toBe(false);
   });
 });
 

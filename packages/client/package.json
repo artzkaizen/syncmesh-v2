@@ -33,7 +33,7 @@
     "@syncmesh/config": "workspace:*",
     "@syncmesh/relay": "workspace:*",
     "@types/bun": "catalog:",
-    "drizzle-orm": "latest",
+    "drizzle-orm": "catalog:",
     "fast-check": "catalog:",
     "typescript": "catalog:",
     "vite-plus": "catalog:"

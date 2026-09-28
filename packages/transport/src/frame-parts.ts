@@ -25,6 +25,10 @@ export const KIND = {
   presence: 4,
   digest: 5,
   snapshot: 6,
+  /** A signed acknowledgement of durable custody (book ch. 10); additive, so an older peer ignores it. */
+  receipt: 7,
+  /** What this peer can reach, and how far away it is (book ch. 17); additive like the rest. */
+  routes: 8,
 } as const;
 
 /**
@@ -32,6 +36,29 @@ export const KIND = {
  * when it asks what kind of traffic this is. One tag space, so the two can never disagree.
  */
 export type FrameClass = (typeof KIND)[keyof typeof KIND];
+
+/**
+ * The class of an encoded frame, without decoding it.
+ *
+ * Every frame is `[kind, …]` in CBOR, and every kind is a small integer — so the array header is
+ * one byte and the tag is the next, literally. Reading those two is what lets a peer session
+ * score a frame it is only forwarding: decoding the whole thing to learn that a snapshot page is
+ * a snapshot page would be paying for the payload twice.
+ *
+ * `undefined` for anything that is not one of ours, which the caller treats as the ordinary
+ * class rather than as a refusal — a frame nobody sends is divergence, not routing.
+ */
+export const classOf = (frame: Uint8Array): FrameClass | undefined => {
+  const header = frame[0];
+  const tag = frame[1];
+  // 0x80 is CBOR's array major type; a tag above 23 would not be one byte, and none of ours is
+  if (header === undefined || (header & 0xe0) !== 0x80 || tag === undefined || tag > 23)
+    return undefined;
+  // SAFETY: `KINDS` holds exactly the values of `KIND`, so a tag it contains is a FrameClass
+  return KINDS.has(tag) ? (tag as FrameClass) : undefined;
+};
+
+const KINDS = new Set<number>(Object.values(KIND));
 
 export const peerBytes = (peer: PeerId): Uint8Array => hexToBytes(peer).unwrap();
 

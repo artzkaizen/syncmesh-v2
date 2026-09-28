@@ -1,6 +1,6 @@
 import type { CellValue, ColumnName, Row } from "@syncmesh/kernel";
 
-import type { PolicyContext, PolicyGrant } from "../evaluate.js";
+import type { PolicyContext, PolicyGrant, RoleSet } from "../evaluate.js";
 
 export const column = (name: string): ColumnName => {
   // SAFETY: test fixture; column naming rules live in the schema package
@@ -10,7 +10,11 @@ export const column = (name: string): ColumnName => {
 export const row = (values: Readonly<Record<string, CellValue>>): Row =>
   new Map(Object.entries(values).map(([name, value]) => [column(name), value]));
 
-export const LADDER = ["owner", "admin", "member", "viewer"] as const;
+/** Senior first, as `ladder()` in `@syncmesh/schema` builds one; spelled out here because policy sits below the builders. */
+export const LADDER = {
+  names: ["owner", "admin", "member", "viewer"],
+  ordered: true,
+} as const satisfies RoleSet;
 
 export const grant = (overrides: Partial<PolicyGrant> = {}): PolicyGrant => ({
   account: "acct_a",

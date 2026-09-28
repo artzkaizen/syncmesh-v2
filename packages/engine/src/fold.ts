@@ -37,7 +37,7 @@ export interface FoldDeps {
  * three, which is what keeps that order from being re-decided once per caller.
  */
 export interface FoldPath {
-  readonly stateOf: () => State;
+  readonly getState: () => State;
   readonly setState: (next: State) => void;
   /**
    * Folds events into state, advancing each author's cursor and feed chain as they land.
@@ -89,7 +89,7 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
   };
 
   return {
-    stateOf: () => state,
+    getState: () => state,
     setState: (next) => void (state = next),
     fold,
     persist: async (batch, into) => {

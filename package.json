@@ -9,7 +9,9 @@
       "native/*",
       "tooling/*",
       "conformance",
+      "crates/*",
       "examples",
+      "chaos",
       "bench"
     ],
     "catalog": {
@@ -19,7 +21,8 @@
       "vite": "npm:@voidzero-dev/vite-plus-core@0.3.0",
       "vite-plus": "0.3.0",
       "@types/node": "^24.0.0",
-      "temporal-polyfill": "^1.0.4"
+      "temporal-polyfill": "^1.0.4",
+      "drizzle-orm": "^0.45.3"
     }
   },
   "type": "module",
@@ -40,9 +43,6 @@
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:"
-  },
-  "overrides": {
-    "vite": "catalog:"
   },
   "engines": {
     "bun": ">=1.4.0",

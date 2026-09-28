@@ -1,81 +1,16 @@
 import type { Unsubscribe } from "@syncmesh/engine";
 
-import { createMemoryEventStore } from "@syncmesh/engine";
 import { describe, expect, test } from "bun:test";
 
-import type { RelayRoom } from "../room.js";
-import type { RelaySocket } from "../sender.js";
 import type { RelayDial } from "../transport.js";
 
-import { helloFrame } from "../frames.js";
-import { openRelayRoom } from "../room.js";
+import { challengeFrame, helloFrame } from "../frames.js";
 import { relayTransport } from "../transport.js";
-import { bodyOf, peer, tick, write } from "./fixtures.js";
-
-/** An in-process dial to a live room: frames both ways, async delivery, a closable end. */
-const dialTo = (room: RelayRoom) => {
-  let dials = 0;
-  const dial = (): RelayDial => {
-    dials += 1;
-    const frames = new Set<(frame: Uint8Array) => void>();
-    const closes = new Set<() => void>();
-    let open = true;
-    const hangUp = (): void => {
-      if (!open) return;
-      open = false;
-      conn.closed();
-      // the close event lands after any frames already in flight, as on a real socket
-      queueMicrotask(() => {
-        for (const cb of closes) cb();
-      });
-    };
-    const socket: RelaySocket = {
-      send: (frame) => {
-        if (!open) return "dropped";
-        // a frame accepted before close still delivers: TCP flushes what send() took
-        const bytes = Uint8Array.from(frame);
-        queueMicrotask(() => {
-          for (const cb of frames) cb(bytes);
-        });
-        return "sent";
-      },
-      close: () => hangUp(),
-    };
-    const conn = room.connect(socket);
-    return {
-      send: (frame) => {
-        if (!open) throw new Error("relay socket is not open");
-        conn.receive(Uint8Array.from(frame));
-      },
-      onFrame: (cb) => {
-        frames.add(cb);
-        return () => void frames.delete(cb);
-      },
-      onClose: (cb) => {
-        closes.add(cb);
-        return () => void closes.delete(cb);
-      },
-      close: () => hangUp(),
-    };
-  };
-  return { dial, dials: () => dials };
-};
-
-const open = async (overrides: Partial<Parameters<typeof openRelayRoom>[0]> = {}) =>
-  (
-    await openRelayRoom({
-      name: "main",
-      store: createMemoryEventStore(),
-      epoch: "epoch-1",
-      keepaliveMs: 60_000,
-      pageSize: 2,
-      ...overrides,
-    })
-  ).unwrap();
+import { bodyOf, dialTo, openRoom, peer, tick, write } from "./fixtures.js";
 
 describe("relayTransport", () => {
   test("two peers converge through the room; a late joiner catches up in pages, then stays live", async () => {
-    const room = await open();
+    const room = await openRoom();
     const a = peer(40, "acct_a");
     const b = peer(80, "acct_b");
     await write(a, "n1", "one");
@@ -108,7 +43,7 @@ describe("relayTransport", () => {
   });
 
   test("a hang-up reconnects with a fresh join and resumes; a version refusal never reconnects", async () => {
-    const room = await open();
+    const room = await openRoom();
     const a = peer(40, "acct_a");
     const b = peer(80, "acct_b");
     const wired = dialTo(room);
@@ -120,13 +55,13 @@ describe("relayTransport", () => {
 
     room.close(); // the relay hangs up every socket
     await tick(30);
-    const revived = await open(); // a new room over a fresh store — the transport is still dialing the old one
+    const revived = await openRoom(); // a new room over a fresh store — the transport is still dialing the old one
     void revived;
     expect(wired.dials()).toBeGreaterThan(1); // backoff reconnects kept trying
     expect(offline).toContain(false);
     await ta.stop();
 
-    const refused = dialTo(await open());
+    const refused = dialTo(await openRoom());
     const t99 = relayTransport({ dial: refused.dial, versions: [99], reconnectMs: 5 });
     await t99.start(b.context);
     await tick(40);
@@ -155,6 +90,8 @@ describe("relayTransport", () => {
         },
         onFrame: (cb): Unsubscribe => {
           frames.add(cb);
+          // the room speaks first (D33): a challenge, which the transport answers with its join
+          queueMicrotask(() => cb(challengeFrame(new Uint8Array(32))));
           return () => void frames.delete(cb);
         },
         onClose: (cb): Unsubscribe => {
@@ -166,7 +103,8 @@ describe("relayTransport", () => {
         },
       };
     };
-    const t = relayTransport({ dial, reconnectMs: 5 });
+    // a hand-made relay that challenges (v2): offered, so the transport answers it
+    const t = relayTransport({ dial, versions: [2], reconnectMs: 5 });
     await t.start(a.context);
     await tick(60); // 10ms keepalive → 25ms deadline → the mute session is dropped and redialed
     expect(dials).toBeGreaterThan(1);
@@ -191,7 +129,7 @@ describe("relayTransport", () => {
   });
 
   test("a grant-request travels through the relay to the peer that can answer it", async () => {
-    const room = await open();
+    const room = await openRoom();
     const a = peer(40, "acct_a");
     const b = peer(80, "acct_b");
     const asked: string[] = [];
@@ -210,7 +148,50 @@ describe("relayTransport", () => {
     tb.requestGrant?.("inv-42");
     await tick(20);
     expect(asked).toEqual(["inv-42"]);
+
     await ta.stop();
+    await tb.stop();
+    room.close();
+  });
+});
+
+/**
+ * What a relay can honestly say about peers it is not linked to.
+ *
+ * It holds one socket and cannot enumerate a room, so before this it claimed nobody — and routing
+ * reads "claims nobody" as a shrug, which let any radio that *did* claim a peer narrow the relay
+ * away entirely. When that radio's claim was stale, the frame went to a dead link and the relay
+ * that could have carried it was never asked.
+ */
+describe("what the relay says it delivers to", () => {
+  test("a peer heard through the room is claimed; one this relay never carried is not", async () => {
+    const room = await openRoom();
+    const a = peer(40, "acct_a");
+    const b = peer(80, "acct_b");
+
+    const ta = relayTransport({ dial: dialTo(room).dial, reconnectMs: 10 });
+    await ta.start(a.context);
+    await ta.whenReady();
+    const tb = relayTransport({ dial: dialTo(room).dial, reconnectMs: 10 });
+    await tb.start(b.context);
+    await tb.whenReady();
+    await tick(20);
+
+    // b authors, so b reports its position — which is the evidence a's relay claims b on
+    await write(b, "n1", "one");
+    await tick(20);
+
+    expect(ta.delivers?.().has(b.identity.peerId)).toBe(true);
+    // never in this room, so nothing was ever carried for it and nothing is claimed
+    expect(ta.delivers?.().has(peer(120, "acct_c").identity.peerId)).toBe(false);
+    // and never itself: a medium that claimed this device would route its own frames into a loop
+    expect(ta.delivers?.().has(a.identity.peerId)).toBe(false);
+
+    // a source that is down claims nobody: a claim outranks a medium that says nothing, so a
+    // relay still claiming a room it cannot reach would take frames from the radio beside it
+    await ta.stop();
+    expect(ta.delivers?.().size).toBe(0);
+
     await tb.stop();
     room.close();
   });

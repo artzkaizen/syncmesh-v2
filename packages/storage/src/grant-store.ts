@@ -5,7 +5,7 @@ import { Result } from "@syncmesh/result";
 
 import type { SqlDriver } from "./driver.js";
 
-import { dialectOf } from "./dialect.js";
+import { dialectOf, logTable, namespaceDdl, placementOf } from "./dialect.js";
 import { attempt } from "./sql.js";
 
 /**
@@ -42,19 +42,20 @@ export function memoryGrantStore(): GrantStore {
 
 /** The grants in the database the rest of the mesh already uses. The table is the mesh's own. */
 export function sqlGrantStore(driver: SqlDriver): Promise<Result<GrantStore, StoreFailure>> {
-  const { placeholder: p } = dialectOf(driver);
+  const { placeholder: p, name: dialect } = dialectOf(driver);
+  const TABLE = logTable("grants", placementOf(driver));
   const bytes = driver.dialect === "postgres" ? "BYTEA" : "BLOB";
   // keyed by device, so the upsert is how a re-issued grant supersedes the one before it
   const upsert =
     driver.dialect === "postgres"
-      ? `INSERT INTO _syncmesh_grants (device, wire) VALUES ($1, $2)
+      ? `INSERT INTO ${TABLE} (device, wire) VALUES ($1, $2)
          ON CONFLICT (device) DO UPDATE SET wire = EXCLUDED.wire`
-      : `INSERT INTO _syncmesh_grants (device, wire) VALUES (?, ?)
+      : `INSERT INTO ${TABLE} (device, wire) VALUES (?, ?)
          ON CONFLICT (device) DO UPDATE SET wire = excluded.wire`;
   const store: GrantStore = {
     all: async () => {
       const rows = await attempt("reading stored grants failed", () =>
-        driver.all(`SELECT wire FROM _syncmesh_grants`),
+        driver.all(`SELECT wire FROM ${TABLE}`),
       );
       return rows.map((found) =>
         found.map((row) => row[0]).filter((cell) => cell instanceof Uint8Array),
@@ -67,13 +68,17 @@ export function sqlGrantStore(driver: SqlDriver): Promise<Result<GrantStore, Sto
     delete: async (device) =>
       (
         await attempt("forgetting a grant failed", () =>
-          driver.run(`DELETE FROM _syncmesh_grants WHERE device = ${p(1)}`, [String(device)]),
+          driver.run(`DELETE FROM ${TABLE} WHERE device = ${p(1)}`, [String(device)]),
         )
       ).map(() => undefined),
   };
-  return driver
-    .run(
-      `CREATE TABLE IF NOT EXISTS _syncmesh_grants (device TEXT PRIMARY KEY, wire ${bytes} NOT NULL)`,
-    )
-    .then(() => Result.ok<GrantStore, StoreFailure>(store));
+  // the namespace first, for the same reason the blob store does it: this opens on its own
+  const ddl = [
+    ...namespaceDdl(dialect),
+    `CREATE TABLE IF NOT EXISTS ${TABLE} (device TEXT PRIMARY KEY, wire ${bytes} NOT NULL)`,
+  ];
+  return (async () => {
+    for (const sql of ddl) await driver.run(sql);
+    return Result.ok<GrantStore, StoreFailure>(store);
+  })();
 }

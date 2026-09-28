@@ -33,12 +33,31 @@ export function scannedCoverage(
 }
 
 /**
+ * A catch-up's frames, and what did not make it into one.
+ *
+ * The second number exists because the first cannot carry it. A page is bytes; an entry the
+ * relay could not build bytes for leaves no trace in a page, in the page count, or in the
+ * admitted count that was taken before the envelopes were built — so without this, serving a
+ * joiner a run with a hole in it and serving it a whole run produce identical reports.
+ */
+export interface Paged {
+  readonly pages: readonly Uint8Array[];
+  /** Entries that can never leave this relay: no signature was stored, and nobody here can make one. */
+  readonly unsendable: number;
+}
+
+/**
  * A joiner's history as frames: `pageSize` events each, grants on the first, and always at least
  * one page — its `more: false` is what releases the client's push-outstanding, so a client that
  * is already caught up still gets told so. One frame is not a transfer, it is a cliff (RFC-0010).
  *
  * The scoped coverage rides the last page rather than a frame of its own: it is only true once
  * every page before it has landed, and a separate frame could be applied when it was not.
+ *
+ * **An entry with no envelope is counted, not merely skipped.** The room already keeps such an
+ * entry out of the cursors it advertises, so no joiner is told to stand above a hole — but
+ * "correctly advertised" and "silently short" are the same wire, and only one of them is a
+ * thing an operator can be told about. See {@link Paged.unsendable}.
  */
 export function paged(
   entries: readonly StoredEvent[],
@@ -46,7 +65,7 @@ export function paged(
   pageSize: number,
   offset: number,
   scoped?: Coverage,
-): readonly Uint8Array[] {
+): Paged {
   const wires = entries.map(relayEnvelope).filter((w): w is Uint8Array => w !== undefined);
   const pages: Uint8Array[] = [];
   let index = 0;
@@ -57,7 +76,7 @@ export function paged(
     const more = index < wires.length;
     pages.push(pageFrame(grantsForPage, slice, more, offset, more ? undefined : scoped));
   } while (index < wires.length);
-  return pages;
+  return { pages, unsendable: entries.length - wires.length };
 }
 
 /**
@@ -97,9 +116,15 @@ export function sendCatchUp(
       // and said so: only a filtered run needs the coverage, since an unfiltered one leaves the
       // joiner's own fold able to compute the same number
       const scoped = interest === undefined ? undefined : scannedCoverage(found, theirs, interest);
-      const pages = paged(admitted, room.grants.all(), room.pageSize, room.offset(), scoped);
+      const { pages, unsendable } = paged(
+        admitted,
+        room.grants.all(),
+        room.pageSize,
+        room.offset(),
+        scoped,
+      );
       for (const page of pages) sender.send(page);
-      return { found: found.length, admitted: admitted.length, pages: pages.length };
+      return { found: found.length, admitted: admitted.length, unsendable, pages: pages.length };
     });
     if (sizes !== undefined) room.report({ type: "relay.catchup", sizes, duration });
   });

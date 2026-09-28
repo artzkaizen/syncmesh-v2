@@ -34,6 +34,12 @@ export type SnapshotFrame =
       readonly at: Cursors;
       /** The slice these rows are complete for; absent means the sender's whole state. */
       readonly scope?: Interest;
+      /**
+       * The authority's signed checkpoint over these rows (book ch. 4), relayed unchanged by
+       * whoever is sending. Absent from a sender that holds none, which is every peer until an
+       * authority has issued one — the install is then provisional, as it always was.
+       */
+      readonly certificate?: Uint8Array;
     }
   /** One page of rows in the compact encoding, numbered so a lost one can be named. */
   | {
@@ -54,6 +60,7 @@ export const snapManifestFrame = (
   rows: number,
   at: Cursors,
   scope?: Interest,
+  certificate?: Uint8Array,
 ): Uint8Array =>
   encodeCbor([
     KIND.snapshot,
@@ -63,6 +70,8 @@ export const snapManifestFrame = (
     rows,
     cursorPairs(at),
     interestText(scope),
+    // appended: a reader that predates certificates destructures the first five and ignores this
+    certificate ?? null,
   ]);
 
 export const snapChunkFrame = (id: string, index: number, bytes: Uint8Array): Uint8Array =>
@@ -92,14 +101,15 @@ function decodeManifest(
   rest: readonly (CborValue | undefined)[],
 ): Result<SnapshotFrame, MalformedFrame> {
   return Result.gen(function* () {
-    const [id, chunks, rows, at, scopeText] = rest;
+    const [id, chunks, rows, at, scopeText, certificate] = rest;
     if (!isString(id)) return malformedFrame("snapshot id is not text");
     if (!isSafeNonNegative(chunks) || !isSafeNonNegative(rows))
       return malformedFrame("manifest counts are not integers");
     const cursors = yield* decodeCursorPairs(at);
     const scope = interestFrom(isString(scopeText) ? scopeText : undefined);
-    const manifest = { kind: "snap-manifest", id, chunks, rows, at: cursors } as const;
-    return Result.ok(scope === undefined ? manifest : { ...manifest, scope });
+    const base = { kind: "snap-manifest", id, chunks, rows, at: cursors } as const;
+    const manifest = scope === undefined ? base : { ...base, scope };
+    return Result.ok(certificate instanceof Uint8Array ? { ...manifest, certificate } : manifest);
   });
 }
 

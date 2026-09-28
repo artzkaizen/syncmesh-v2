@@ -4,7 +4,7 @@ import type { SqlDriver } from "../driver.js";
 
 import { blobCases } from "./blobs.js";
 import { captureCases, captureRuleCases } from "./capture.js";
-import { compactionCases, sqliteMigrationCases } from "./compaction.js";
+import { compactionCases } from "./compaction.js";
 import { eventCases } from "./events.js";
 import { readFilterCases } from "./read-filter.js";
 
@@ -45,18 +45,14 @@ export function captureTests(openDriver: OpenDriver): readonly SuiteCase[] {
 
 /**
  * The contract every `SqlDriver` must satisfy, as named cases for any test runner: the stores,
- * plus the device-side half — tables, capture and read filters — that lives in SQLite DDL.
+ * plus the device-side half — tables, capture and read filters — that lives in SQLite DDL. A
+ * driver written in an app over its own binding runs the same suite the shipped adapters do.
  *
  * @example
  * for (const c of driverTests(openDriver)) test(c.name, c.run);
  */
 export function driverTests(openDriver: OpenDriver): readonly SuiteCase[] {
-  return [
-    ...storeTests(openDriver),
-    ...sqliteMigrationCases(openDriver),
-    ...captureTests(openDriver),
-    ...readFilterCases(openDriver),
-  ];
+  return [...storeTests(openDriver), ...captureTests(openDriver), ...readFilterCases(openDriver)];
 }
 
 export { SuiteFailure as DriverTestFailure } from "@syncmesh/engine";

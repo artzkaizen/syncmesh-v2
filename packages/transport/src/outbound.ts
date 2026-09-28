@@ -1,5 +1,5 @@
 import type { Engine, Hub, Interest, StoredEvent } from "@syncmesh/engine";
-import type { Identity } from "@syncmesh/wire";
+import type { EventCrypto, Identity } from "@syncmesh/wire";
 
 import { TaggedError } from "@syncmesh/result";
 import { relayEnvelope, signEvent } from "@syncmesh/wire";
@@ -36,6 +36,8 @@ export interface OutboundDeps {
   readonly interest: Interest | undefined;
   readonly scope: string;
   readonly errors: Hub<BridgeError>;
+  /** What this device seals its own events with (book ch. 14); absent, they leave in the clear. */
+  readonly crypto?: EventCrypto;
 }
 
 /**
@@ -62,7 +64,8 @@ export function createOutbound(deps: OutboundDeps) {
    * as the bytes it arrived as, which `relayEnvelope` is the one place that decides.
    */
   const envelopeOf = (entry: StoredEvent): Uint8Array | undefined => {
-    if (entry.event.peerId === identity.peerId) return signEvent(entry.event, identity).wire;
+    if (entry.event.peerId === identity.peerId)
+      return signEvent(entry.event, identity, deps.crypto).wire;
     const wire = relayEnvelope(entry);
     if (wire === undefined) {
       errors.emit(

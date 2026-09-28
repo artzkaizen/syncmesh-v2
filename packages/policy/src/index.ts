@@ -20,8 +20,8 @@ export {
   role,
   rowIs,
 } from "./ast.js";
-export type { PolicyContext, PolicyGrant } from "./evaluate.js";
+export type { PolicyContext, PolicyGrant, RoleSet } from "./evaluate.js";
 export type { ScalarKind } from "./evaluate.js";
-export { claimAt, evaluate, roleAtLeast, scalarKindOf } from "./evaluate.js";
+export { NO_ROLES, claimAt, evaluate, roleAtLeast, scalarKindOf } from "./evaluate.js";
 export type { PolicyDoc } from "./doc.js";
 export { MalformedPolicy, parsePolicyDoc } from "./doc.js";

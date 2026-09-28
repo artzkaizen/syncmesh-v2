@@ -49,7 +49,7 @@ describe("chunks at the engine", () => {
     const a = setup(author.peerId, 100);
     for (let i = 1; i <= 200; i += 1) (await write(a, `n${i}`, `title ${i}`)).unwrap();
 
-    const cores = (await eventsOf(a)).map(encodeEventCore);
+    const cores = (await eventsOf(a)).map((event) => encodeEventCore(event));
     const chunk = chunkFrom(author, GENESIS, cores);
 
     const b = setup(impostor.peerId, 200);
@@ -66,7 +66,11 @@ describe("chunks at the engine", () => {
     expect(Number(head.seq)).toBe(3);
     // the same head the author would compute itself, which is what makes the certificate meaningful
     expect(head.hash).toEqual(
-      chunkFrom(author, GENESIS, (await eventsOf(a)).map(encodeEventCore)).certificate.head.hash,
+      chunkFrom(
+        author,
+        GENESIS,
+        (await eventsOf(a)).map((event) => encodeEventCore(event)),
+      ).certificate.head.hash,
     );
   });
 
@@ -107,7 +111,7 @@ describe("chunks at the engine", () => {
   test("a run that does not lead to its certificate folds nothing", async () => {
     const a = setup(author.peerId, 100);
     for (let i = 1; i <= 3; i += 1) (await write(a, `n${i}`, `t${i}`)).unwrap();
-    const cores = (await eventsOf(a)).map(encodeEventCore);
+    const cores = (await eventsOf(a)).map((event) => encodeEventCore(event));
     const chunk = chunkFrom(author, GENESIS, cores);
     // one event swapped for another of the author's own: the head no longer matches
     const tampered: FeedChunk = {
@@ -127,7 +131,7 @@ describe("chunks at the engine", () => {
     for (let i = 1; i <= 2; i += 1) (await write(a, `n${i}`, `t${i}`)).unwrap();
     const at = a.engine.feedHead(author.peerId);
     for (let i = 3; i <= 4; i += 1) (await write(a, `n${i}`, `t${i}`)).unwrap();
-    const cores = (await eventsOf(a)).map(encodeEventCore);
+    const cores = (await eventsOf(a)).map((event) => encodeEventCore(event));
 
     const b = setup(impostor.peerId, 200);
     // b is at genesis, and this run starts after the author's second event
@@ -167,7 +171,11 @@ describe("chunks at the engine", () => {
     const a = setup(author.peerId, 100);
     (await write(a, "n1", "allowed")).unwrap();
     (await write(a, "n2", "denied")).unwrap();
-    const chunk = chunkFrom(author, GENESIS, (await eventsOf(a)).map(encodeEventCore));
+    const chunk = chunkFrom(
+      author,
+      GENESIS,
+      (await eventsOf(a)).map((event) => encodeEventCore(event)),
+    );
 
     const refuse: Validator = {
       validate: (event) =>

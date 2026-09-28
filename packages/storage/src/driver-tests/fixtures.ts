@@ -21,7 +21,9 @@ import { Temporal } from "@syncmesh/temporal";
 import { encodeEventCore } from "@syncmesh/wire";
 import { grownCore } from "@syncmesh/wire/wire-tests";
 
-import type { SqlValue } from "../driver.js";
+import type { SqlDriver, SqlValue } from "../driver.js";
+
+import { logTable, placementOf } from "../namespace.js";
 
 export const A = parsePeerId("a".repeat(64)).unwrap();
 export const B = parsePeerId("b".repeat(64)).unwrap();
@@ -114,16 +116,34 @@ export const JOBS = table("jobs", {
 });
 export const COUNTERS = table("counters", { id: t.integer().primaryKey(), n: t.integer() });
 
-/** The mesh's own table names and a one-byte blob literal, in the driver's dialect — for cases that damage the store on purpose. */
-export const sqlOf = (driver: { readonly dialect?: "sqlite" | "postgres" }) =>
-  driver.dialect === "postgres"
+/**
+ * The mesh's own table names and a one-byte blob literal, as this driver spells them — for the
+ * cases that damage the store on purpose and therefore have to name a table directly.
+ *
+ * Three spellings, not two (RFC-0022). The durable half is `syncmesh.events` wherever the
+ * namespace is real — a schema on Postgres, an attached database on a device — and
+ * `syncmesh_events` on a connection that has only one database to put it in. Read off the driver
+ * rather than written per adapter, because a suite that names the tables itself would be the one
+ * place the naming rule is stated twice.
+ */
+export const sqlOf = (driver: Pick<SqlDriver, "dialect" | "log">) => {
+  const log = (name: string) => logTable(name, placementOf(driver));
+  return driver.dialect === "postgres"
     ? {
-        events: "_syncmesh_events",
-        rows: "_syncmesh_state",
-        compaction: "_syncmesh_compaction",
+        events: log("events"),
+        changes: "syncmesh.changes",
+        rows: "syncmesh.state_rows",
+        compaction: log("compaction"),
         junk: "'\\x00'::bytea",
       }
-    : { events: "events", rows: "state_rows", compaction: "compaction", junk: "X'00'" };
+    : {
+        events: log("events"),
+        changes: "syncmesh_changes",
+        rows: "syncmesh_state_rows",
+        compaction: log("compaction"),
+        junk: "X'00'",
+      };
+};
 
 /**
  * The SQL an app would write in the driver's dialect: boolean and timestamp literals and binds,
@@ -153,5 +173,5 @@ export const sqlText = (driver: { readonly dialect?: "sqlite" | "postgres" }) =>
         boolText: (b: boolean) => (b ? "1" : "0"),
         tsText: (ms: number) => String(ms),
         jsonText: (v: SqlValue) => String(v),
-        guard: `SELECT armed FROM _syncmesh_capture`,
+        guard: `SELECT armed FROM syncmesh_capture`,
       };

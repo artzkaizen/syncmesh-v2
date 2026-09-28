@@ -1,10 +1,11 @@
 export type { EventStore, SeqScope, StoredEvent } from "./store.js";
 export { StoreFailure, createMemoryEventStore } from "./store.js";
+export type { EventHeader, RecentEvents } from "./recent.js";
+export { DEFAULT_RECENT, headerOf, recentHeaders } from "./recent.js";
 export type { Tx } from "./tx.js";
+export type { AtomicStores, EngineOptions } from "./options.js";
 export type {
   Engine,
-  AtomicStores,
-  EngineOptions,
   FoldBatch,
   FoldSource,
   MutateOptions,
@@ -26,12 +27,15 @@ export {
   isUnknown,
   quarantineReason,
   retryQuarantined,
+  retryRefused,
+  withRetry,
 } from "./quarantine.js";
 export type { CoverageTracker } from "./coverage.js";
 export { trackCoverage } from "./coverage.js";
 export type { FoldDeps, FoldPath } from "./fold.js";
 export { createFoldPath } from "./fold.js";
 export type { Boot } from "./boot.js";
+export { StrandedWrites, isStranded, strandedWrites } from "./stranded.js";
 export { openEngine } from "./boot.js";
 export type { RowWrite, StateStore, WriteKeys } from "./state-store.js";
 export {
@@ -42,9 +46,11 @@ export {
   writeKeysOf,
 } from "./state-store.js";
 export type { Ack, CompactError, CompactOptions, Compaction } from "./compaction.js";
+export { refoldable } from "./compaction.js";
 export type { LinkOptions } from "./link.js";
 export {
   CannotRevert,
+  ClockAhead,
   CompactionRefused,
   EmptyMutation,
   GrantDeviceMismatch,
@@ -77,7 +83,7 @@ export {
   sameAhead,
 } from "./sync.js";
 export type { Link } from "./link.js";
-export { createLink } from "./link.js";
+export { LinkOffline, createLink } from "./link.js";
 export type { TelemetryEvent, TelemetryListener } from "./telemetry.js";
 export { timed } from "./telemetry.js";
 export type {
@@ -104,7 +110,6 @@ export {
   interestText,
   matchesInterest,
   narrows,
-  predicateColumns,
   rowsIn,
 } from "./interest.js";
 export type { AccountLink, Dispute, LinkRow } from "./accounts.js";
@@ -130,6 +135,8 @@ export {
 export type { RepairApi, RepairRow, TableDigests } from "./digest.js";
 export { divergentRows, divergentTables, rowDigest, rowDigests, tableDigests } from "./digest.js";
 export type { SuiteCase } from "./suite.js";
-export { SuiteFailure, check, equal } from "./suite.js";
+export { SuiteFailure, check, equal, spreadable } from "./suite.js";
 export { graceMillis } from "./rules.js";
 export type { Principal } from "./validate.js";
+export type { Durations, Inspector, InspectorOptions, TelemetryStats } from "./inspector.js";
+export { createInspector } from "./inspector.js";

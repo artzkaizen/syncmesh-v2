@@ -1,6 +1,6 @@
 import type { Principal } from "@syncmesh/engine";
 import type { CellValue, JsonValue } from "@syncmesh/kernel";
-import type { AllowBlock, PolicyNode, ScalarKind } from "@syncmesh/policy";
+import type { AllowBlock, PolicyNode, RoleSet, ScalarKind } from "@syncmesh/policy";
 import type { ColumnKind, Table } from "@syncmesh/schema";
 
 import { claimAt, resolveAllow, roleAtLeast, scalarKindOf } from "@syncmesh/policy";
@@ -62,7 +62,7 @@ const join = (parts: readonly Compiled[], op: "AND" | "OR"): Compiled => ({
 
 export function compileRead(
   table: Table,
-  ladder: readonly string[],
+  roles: RoleSet,
   allow: AllowBlock | undefined,
   principal: Principal,
   options: CompileOptions = {},
@@ -95,7 +95,7 @@ export function compileRead(
   const handlers: Handlers = {
     allow: () => ALWAYS,
     deny: () => NEVER,
-    role: (node) => (roleAtLeast(ladder, principal.role, node.role) ? ALWAYS : NEVER),
+    role: (node) => (roleAtLeast(roles, principal.role, node.role) ? ALWAYS : NEVER),
     owner: (node) => equals(node.column, principal.account),
     claimHas: (node) => {
       const list = claimAt(principal.claims, node.claim);

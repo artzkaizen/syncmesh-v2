@@ -1,8 +1,10 @@
 import type { EventStore, TelemetryListener } from "@syncmesh/engine";
+import type { PeerId } from "@syncmesh/kernel";
 import type { BlobStore, SqlDriver } from "@syncmesh/storage";
 
 import { panic } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
+import { createIdentity, randomBytes, type Identity } from "@syncmesh/wire";
 
 import type { Fanout } from "./fanout.js";
 import type { GrantCache } from "./grant-cache.js";
@@ -13,6 +15,7 @@ import type { RelayConnection, RelayRoomOptions } from "./room.js";
 import type { OpenedRoom } from "./rooms.js";
 import type { RelaySocket, SendOutcome } from "./sender.js";
 
+import { DEFAULT_LIMITS } from "./limits.js";
 import { createRoomAccess } from "./posture.js";
 import { openRelayRoom } from "./room.js";
 import { createRoomTable } from "./rooms.js";
@@ -25,6 +28,7 @@ type RoomTuning = Partial<
     | "pageSize"
     | "maxBacklog"
     | "versions"
+    | "identity"
     | "limits"
     | "retention"
     | "fanout"
@@ -45,6 +49,8 @@ export interface StartRelayOptions {
   readonly maxBacklog?: number;
   /** Protocol versions every room here accepts (D14); narrowing it raises the relay's floor. */
   readonly versions?: readonly number[];
+  /** The key every room here signs its link hello with (D36). Absent, one fresh per process. */
+  readonly identity?: Identity;
   /** Per-socket frame-size and rate ceilings; see `DEFAULT_LIMITS` for what each one costs. */
   readonly limits?: Partial<RelayLimits>;
   /** What every room here stops keeping: log age and blob bytes. Absent, nothing is ever dropped. */
@@ -67,8 +73,38 @@ export interface StartRelayOptions {
 export interface RunningRelay {
   readonly port: number;
   readonly url: string;
+  /** The key every room here signs its link hello with (D36) — what a client pins with `relayKey`. */
+  readonly peerId: PeerId;
   readonly stop: () => Promise<void>;
 }
+
+/** The host options that pass straight through to every room it opens, absent keys left absent. */
+const roomTuning = (options: StartRelayOptions): RoomTuning => ({
+  ...(options.keepaliveMs !== undefined && { keepaliveMs: options.keepaliveMs }),
+  ...(options.pageSize !== undefined && { pageSize: options.pageSize }),
+  ...(options.maxBacklog !== undefined && { maxBacklog: options.maxBacklog }),
+  ...(options.versions !== undefined && { versions: options.versions }),
+  ...(options.identity !== undefined && { identity: options.identity }),
+  ...(options.limits !== undefined && { limits: options.limits }),
+  ...(options.retention !== undefined && { retention: options.retention }),
+  ...(options.onTelemetry !== undefined && { onTelemetry: options.onTelemetry }),
+  ...(options.fanout !== undefined && { fanout: options.fanout }),
+});
+
+/** Everything that turns a request away before a socket exists, in refusal order. */
+const createGate =
+  (access: ReturnType<typeof createRoomAccess>, atCapacity: () => boolean) =>
+  async (request: Request, room: string): Promise<Response | undefined> => {
+    if (atCapacity())
+      return new Response("syncmesh relay: at capacity, retry shortly", { status: 503 });
+    if (!access.admitsOrigin(request.headers.get("origin")))
+      return new Response("syncmesh relay: origin not allowed", { status: 403 });
+    if (!access.announces(room))
+      return new Response("syncmesh relay: no such room", { status: 404 });
+    if (!(await access.admitsJoin(request, room)))
+      return new Response("syncmesh relay: join refused", { status: 403 });
+    return undefined;
+  };
 
 /** The epoch rides in the log's own file: a new file is honestly a new lineage. */
 async function epochOf(driver: SqlDriver): Promise<string> {
@@ -109,16 +145,14 @@ export async function startRelay(
     );
   const dataDir = options.dataDir ?? ".syncmesh/relay";
   const access = createRoomAccess(options.posture);
-  const roomOptions: RoomTuning = {
-    ...(options.keepaliveMs !== undefined && { keepaliveMs: options.keepaliveMs }),
-    ...(options.pageSize !== undefined && { pageSize: options.pageSize }),
-    ...(options.maxBacklog !== undefined && { maxBacklog: options.maxBacklog }),
-    ...(options.versions !== undefined && { versions: options.versions }),
-    ...(options.limits !== undefined && { limits: options.limits }),
-    ...(options.retention !== undefined && { retention: options.retention }),
-    ...(options.onTelemetry !== undefined && { onTelemetry: options.onTelemetry }),
-    ...(options.fanout !== undefined && { fanout: options.fanout }),
-  };
+  // one key for every room this process opens, so the relay has one name a client can pin (D36)
+  const identity =
+    options.identity ??
+    createIdentity(randomBytes(32)).match({
+      ok: (value) => value,
+      err: (failure) => panic(`the relay's identity could not be made: ${failure.message}`),
+    });
+  const roomOptions = { ...roomTuning(options), identity };
 
   /**
    * A caller-supplied store has one lineage for as long as this process holds it. Minting inside
@@ -179,6 +213,11 @@ export async function startRelay(
   // a caller-supplied store is one log: it serves one room whatever the path says
   const nameFor = (path: string): string => (options.store === undefined ? path : "main");
 
+  // the whole process's socket ceiling (gap audit №5); approximate under races, refused at fetch
+  const connectionCap = options.limits?.maxConnections ?? DEFAULT_LIMITS.maxConnections;
+  let live = 0;
+  const gate = createGate(access, () => live >= connectionCap);
+
   // D09-A on purpose: this file IS the Bun mount; the guard above already refused other runtimes
   const server = globalThis.Bun.serve<SocketData>({
     port,
@@ -186,17 +225,14 @@ export async function startRelay(
       const path = new URL(request.url).pathname.replace(/^\/+/, "");
       const room = path === "" ? "main" : path;
       // refused before a socket exists: a client the posture turns away costs the room nothing
-      if (!access.admitsOrigin(request.headers.get("origin")))
-        return new Response("syncmesh relay: origin not allowed", { status: 403 });
-      if (!access.announces(room))
-        return new Response("syncmesh relay: no such room", { status: 404 });
-      if (!(await access.admitsJoin(request, room)))
-        return new Response("syncmesh relay: join refused", { status: 403 });
+      const refused = await gate(request, room);
+      if (refused !== undefined) return refused;
       const upgraded = self.upgrade(request, { data: { room } });
       return upgraded ? undefined : new Response("syncmesh relay: WebSocket only", { status: 426 });
     },
     websocket: {
       async open(ws) {
+        live += 1;
         const held = await table.acquire(nameFor(ws.data.room));
         ws.data.done = held.release;
         // a socket closed while this was awaiting its room has already had its `close`, so nothing
@@ -228,6 +264,7 @@ export async function startRelay(
         ws.data.conn?.drain();
       },
       close(ws) {
+        live -= 1;
         ws.data.gone = true;
         ws.data.conn?.closed();
         ws.data.done?.();
@@ -239,6 +276,7 @@ export async function startRelay(
   return {
     port: boundPort,
     url: `ws://localhost:${boundPort}`,
+    peerId: identity.peerId,
     stop: async () => {
       await table.close();
       await server.stop(true);

@@ -19,6 +19,9 @@ export type {
   TaggedErrorInstance,
 } from "better-result";
 
+export type { RevivableTagged, TaggedCatalog } from "./wire.js";
+export { ForeignTagged, createTaggedCatalog, serializeTagged } from "./wire.js";
+
 import { panic } from "better-result";
 
 /**

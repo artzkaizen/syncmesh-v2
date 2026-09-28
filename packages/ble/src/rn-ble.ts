@@ -19,6 +19,19 @@ import type { BleAdvertisement, BleConnected, BleRadio } from "./radio.js";
  *   `remove()`; the port takes the function.
  */
 
+/**
+ * The two vocabularies a GATT characteristic is declared in, spelled out rather than left as
+ * `string`.
+ *
+ * They are unions in `@syncmesh/rn-ble` and were `string[]` here, which made this interface a
+ * *wider* claim than the module it describes — so the module did not satisfy it, and the file's
+ * own promise that "the real `BleManager` satisfies it by structure" was false at the one call
+ * that matters. Narrowing is what makes the promise true; it costs nothing, because the only
+ * characteristic this adapter ever publishes is the one below.
+ */
+type Property = "read" | "write" | "writeWithoutResponse" | "notify" | "indicate";
+type Permission = "readable" | "writeable";
+
 /** One `rn-ble` event subscription, which is an object rather than the function the port wants. */
 interface Subscription {
   readonly remove: () => void;
@@ -32,13 +45,15 @@ export interface RnBleManager {
     readonly serviceDataBase64?: Readonly<Record<string, string>>;
   }) => Promise<void>;
   readonly stopAdvertising: () => Promise<void>;
+  /** The adapter as it is right now — `unknown` until CoreBluetooth has finished starting up. */
+  readonly getState: () => Promise<string>;
   readonly publishServices: (spec: {
     readonly services: readonly {
       readonly uuid: string;
       readonly characteristics: readonly {
         readonly uuid: string;
-        readonly properties: readonly string[];
-        readonly permissions?: readonly string[];
+        readonly properties: readonly Property[];
+        readonly permissions?: readonly Permission[];
       }[];
     }[];
   }) => Promise<void>;
@@ -99,11 +114,53 @@ export function bleRadioFrom(manager: RnBleManager): BleRadio {
     return () => subscription.remove();
   };
 
+  /**
+   * Waits for the adapter to actually be on before doing anything that needs it.
+   *
+   * **`unknown` is not an error, it is "ask me in a moment".** A freshly constructed
+   * `CBCentralManager`/`CBPeripheralManager` reports `unknown` until CoreBluetooth has finished
+   * starting and called back with the real answer, which is a handful of milliseconds later and on
+   * a queue nobody here controls. Every call that needs the radio refuses in that window — the
+   * native module is right to refuse, and its message says exactly this: *"Listen for
+   * onStateChanged and retry once state == 'poweredOn'."*
+   *
+   * Nothing was listening. The transport published its services the moment it started, lost the
+   * race, and the rejection surfaced as `RNBleNotPoweredOnException: state=unknown` — which reads
+   * like "this phone has no Bluetooth" and is nothing of the sort.
+   *
+   * A terminal state resolves too rather than hanging: `unsupported` (a simulator), `unauthorized`
+   * (permission refused) and `poweredOff` are all answers, and the caller's own
+   * `RNBleNotPoweredOnException` is the honest thing to raise for them. Only `unknown` and
+   * `resetting` are worth waiting through, because only those become something else on their own.
+   */
+  const settled = new Set(["poweredOn", "poweredOff", "unauthorized", "unsupported"]);
+  const powered = (): Promise<void> =>
+    // subscribe *first*, then ask. The other order has a gap: `getState` is a round trip to the
+    // native side, and a state that settles while it is in flight fires its event before anything
+    // is listening — so the answer is missed and the wait never ends. A test caught exactly that.
+    new Promise<void>((resolve) => {
+      let done = (): void => undefined;
+      const finish = () => {
+        done();
+        resolve();
+      };
+      done = on<{ readonly state: string }>("onStateChanged", ({ state }) => {
+        if (settled.has(state)) finish();
+      });
+      void manager.getState().then((state) => {
+        if (settled.has(state)) finish();
+      });
+    });
+
   const radio: BleRadio = {
-    startAdvertising: (options) => manager.startAdvertising(options),
+    startAdvertising: async (options) => {
+      await powered();
+      return manager.startAdvertising(options);
+    },
     stopAdvertising: () => manager.stopAdvertising(),
-    publishServices: (spec) =>
-      manager.publishServices({
+    publishServices: async (spec) => {
+      await powered();
+      return manager.publishServices({
         services: spec.services.map((service) => ({
           uuid: service.uuid,
           characteristics: service.characteristics.map((c) => ({
@@ -111,11 +168,34 @@ export function bleRadioFrom(manager: RnBleManager): BleRadio {
             ...CHARACTERISTIC,
           })),
         })),
-      }),
+      });
+    },
     unpublishServices: () => manager.unpublishServices(),
-    // duplicates off: a scan that reports the same device several times a second would rebuild
-    // the link continuously, and `discovery()` above already fires once per peer
-    startScan: (options) => manager.startScan({ ...options, allowDuplicates: false }),
+    /**
+     * **Duplicates on, and this is not a tuning knob.**
+     *
+     * Core Bluetooth reports each peripheral *once per scan session* unless asked otherwise, and
+     * `bleTransport`'s whole recovery model is the next advertisement: a link that drops calls
+     * `seen.forget(hint)` precisely so the peer's next sighting is a fresh one that re-dials, and
+     * the dial backoff is a wait for a later sighting that a one-shot scan never delivers. With
+     * duplicates off, the first drop is permanent — the radio reports `ok`, reaches nobody, and
+     * two phones a foot apart never find each other again until the app is relaunched.
+     *
+     * This was off, on the reasoning that repeated reports would rebuild the link continuously
+     * and that `discovery()` already fires once per peer. The second half is true and is what
+     * makes the first half cost nothing: a sighting inside its TTL is dropped by `seen.sighted`
+     * before it reaches a dial. What the reasoning missed is that the dedupe it was relying on is
+     * exactly what makes a *re*-sighting necessary, and the platform was the only thing that
+     * could still supply one.
+     *
+     * Not a knob. iOS ignores the request while an app is backgrounded whatever it says, and a
+     * foreground scan that does not repeat is one this transport cannot recover from — so there
+     * is no caller for whom `false` is the right answer.
+     */
+    startScan: async (options) => {
+      await powered();
+      return manager.startScan({ ...options, allowDuplicates: true });
+    },
     stopScan: () => manager.stopScan(),
     connect: async (peripheralId): Promise<BleConnected> => {
       const opened = await manager.connect(peripheralId);
@@ -147,6 +227,10 @@ export function bleRadioFrom(manager: RnBleManager): BleRadio {
         cb(seen);
       }),
     onConnectionStateChanged: (cb) => on("onConnectionStateChanged", cb),
+    // the module's own `onStateChanged`, unwrapped from its envelope: callers want the state, and
+    // the envelope is an implementation detail of this bridge rather than of the port
+    onAdapterStateChanged: (cb) =>
+      on<{ readonly state: string }>("onStateChanged", ({ state }) => cb(state)),
     onCharacteristicValueChanged: (cb) => on("onCharacteristicValueChanged", cb),
     onCharacteristicWriteRequested: (cb) => on("onCharacteristicWriteRequested", cb),
     onSubscribersChanged: (cb) => on("onSubscribersChanged", cb),

@@ -9,10 +9,28 @@ export interface PolicyGrant {
   readonly claims: Readonly<Record<string, JsonValue>>;
 }
 
+/**
+ * The roles a partition kind names, and whether their order means anything.
+ *
+ * `ordered` is what tells the two shapes a manifest can declare apart when `role("editor")` is
+ * checked: on a ladder (senior first) it admits an editor *or anyone above*, in a flat set it
+ * admits an editor and nobody else. The set carries the flag so that no evaluator — this one,
+ * the SQL compilers — has to guess it from an array, where position would be secret semantics.
+ */
+export interface RoleSet<R extends string = string> {
+  /** Every role the kind names; most senior first when `ordered`. */
+  readonly names: readonly R[];
+  /** Whether position is seniority (a ladder) or nothing at all (a flat set). */
+  readonly ordered: boolean;
+}
+
+/** The set of a kind whose rules never name a role: nothing to hold, nothing to compare. */
+export const NO_ROLES: RoleSet<never> = { names: [], ordered: true };
+
 export interface PolicyContext {
   readonly grant: PolicyGrant;
-  /** The kind's role ladder, senior first. */
-  readonly roles: readonly string[];
+  /** The kind's roles, and whether their order is seniority. */
+  readonly roles: RoleSet;
   /** The row as it is before the write; absent for an insert or a row the device does not hold. */
   readonly row?: Row;
   /** The columns the write sets; absent for a read or a delete. */
@@ -80,18 +98,16 @@ function cell(ctx: PolicyContext, column: string): CellValue | undefined {
 }
 
 /**
- * `have` is `wanted` or more senior on the ladder (senior first); an unknown role on either side is
- * never enough. What `role("admin")` means in a rule — and what a server check must mean too.
+ * Whether `have` satisfies `role(wanted)` in this set: on a ladder (senior first), `wanted` or
+ * anyone above it; in a flat set, exactly `wanted`. An unknown role on either side is never
+ * enough. What `role("admin")` means in a rule — and what a server check must mean too.
  */
-export function roleAtLeast(
-  ladder: readonly string[],
-  have: string | undefined,
-  wanted: string,
-): boolean {
+export function roleAtLeast(roles: RoleSet, have: string | undefined, wanted: string): boolean {
   if (have === undefined) return false;
-  const mine = ladder.indexOf(have);
-  const needed = ladder.indexOf(wanted);
-  return mine !== -1 && needed !== -1 && mine <= needed;
+  const mine = roles.names.indexOf(have);
+  const needed = roles.names.indexOf(wanted);
+  if (mine === -1 || needed === -1) return false;
+  return roles.ordered ? mine <= needed : mine === needed;
 }
 
 /** The value under a dotted path in a grant's claims; `undefined` when the path leaves the object. */

@@ -77,6 +77,11 @@ export function cappedBlobStore(inner: BlobStore, maxBytes: number): BlobStore {
       }
       return stored;
     },
+    // what the cap does not shape, it forwards: where a blob came from and which ones only this
+    // store holds are the inner store's facts, and a sweep that asked the cap must get the same
+    // answer it would have got underneath
+    origin: (hash) => inner.origin(hash),
+    irreplaceable: () => inner.irreplaceable(),
     // a read is a touch: the bytes a room is still serving are the last ones it should drop —
     // unless this pass has already decided to drop them, where counting them would leave the cap
     // holding a hash the inner store is about to lose

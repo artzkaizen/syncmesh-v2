@@ -161,7 +161,7 @@ const chained = async (events: readonly SyncEvent[]): Promise<Measured> => {
   const runs: FeedChunk[] = [];
   let head = GENESIS;
   for (let from = 0; from < events.length; from += RUN) {
-    const cores = events.slice(from, from + RUN).map(encodeEventCore);
+    const cores = events.slice(from, from + RUN).map((event) => encodeEventCore(event));
     const run = chunkFrom(author, head, cores);
     head = run.certificate.head;
     runs.push(run);

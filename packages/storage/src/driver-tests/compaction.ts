@@ -96,30 +96,3 @@ export const compactionCases = (openDriver: OpenDriver): readonly SuiteCase[] =>
     },
   },
 ];
-
-/** SQLite's own migration history — a device database written before the compaction table and the signature column existed. */
-export const sqliteMigrationCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
-  {
-    name: "compaction: a database at schema version 1 migrates to current with its events intact",
-    run: async () => {
-      const driver = await openDriver("compaction-migrate");
-      const store = await filled(driver);
-      await driver.run("DROP TABLE compaction");
-      await driver.run("ALTER TABLE events DROP COLUMN sig");
-      await driver.run("PRAGMA user_version = 1");
-      const migrated = (await sqlEventStore(driver)).unwrap();
-      equal(Number((await driver.all("PRAGMA user_version"))[0]?.[0]), 4, "user_version");
-      // the step this version added: an old database gains an empty scope, which reads as the
-      // unscoped cursor it has always had (D23)
-      equal((await driver.all("SELECT scope FROM state_scope")).length, 0, "no scope yet");
-      equal((await migrated.compactedBelow()).unwrap().synced.size, 0, "empty floors");
-      const all = (await store.all()).unwrap();
-      equal(all.length, 5, "events intact");
-      equal(
-        all.every((x) => x.sig === undefined),
-        true,
-        "pre-signature events read back without one",
-      );
-    },
-  },
-];

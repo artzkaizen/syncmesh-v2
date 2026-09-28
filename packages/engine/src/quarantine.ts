@@ -198,6 +198,29 @@ export function createQuarantine(options: QuarantineOptions): QuarantineStore {
  * that is neither in the quarantine nor in the log is the one outcome this whole store exists
  * to prevent.
  */
+/**
+ * The parked events new state could plausibly clear, re-offered; the rest left where they are.
+ *
+ * What {@link retryQuarantined} is for a build upgrade, this is for a fold. `unknown-table` and
+ * `unknown-kind` say this build cannot read the event at all, and no row landing next to it
+ * changes that — re-offering them costs a walk and, worse, reports each one as newly refused
+ * every time a batch lands. `refused` is the ladder's verdict on the state at the time, and
+ * state moves: the row an update patches may have arrived in the batch that just folded.
+ */
+export async function retryRefused(
+  parked: QuarantineStore,
+  receive: (entries: readonly StoredEvent[]) => Promise<Result<ReceiveReport, StoreFailure>>,
+): Promise<Result<ReceiveReport, StoreFailure>> {
+  const held = parked.take();
+  const retry = held.filter(({ reason }) => !isUnknown(reason));
+  // back first, so a store emptied by `take` is whole again before anything can fail
+  for (const entry of held) if (isUnknown(entry.reason)) parked.park(entry);
+  if (retry.length === 0) return Result.ok({ folded: 0, skipped: 0, quarantined: 0 });
+  const report = await receive(retry.map(({ entry }) => reread(entry)));
+  if (report.isErr()) for (const entry of retry) parked.park(entry);
+  return report;
+}
+
 export async function retryQuarantined(
   parked: QuarantineStore,
   receive: (entries: readonly StoredEvent[]) => Promise<Result<ReceiveReport, StoreFailure>>,
@@ -229,3 +252,45 @@ const reread = (entry: StoredEvent): StoredEvent =>
     : decodeEventCore(entry.core)
         .map((event): StoredEvent => ({ ...entry, event }))
         .unwrapOr(entry);
+
+/**
+ * A batch, then another look at what new state could have cleared.
+ *
+ * A refusal is a verdict on the state at the time, and state moves. The common case is an update
+ * whose row arrives in a later page than the update itself: refused on the way past, then correct
+ * the moment the insert lands, with nothing to notice that it turned. Parked events are never
+ * re-offered on their own, so without this the event stays refused for the life of the device
+ * while the row it needs sits in the table beside it.
+ *
+ * Gated on `folded`, which is what makes it terminate: a retry runs only after a batch admitted
+ * something new, and a retry that admits nothing folds nothing and so asks for no other. The
+ * latch keeps the retry's own batch from walking the store a second time.
+ */
+export function withRetry(
+  receiveBatch: (entries: readonly StoredEvent[]) => Promise<Result<ReceiveReport, StoreFailure>>,
+  parked: QuarantineStore,
+) {
+  let retrying = false;
+  const receive = async (
+    entries: readonly StoredEvent[],
+  ): Promise<Result<ReceiveReport, StoreFailure>> => {
+    const report = await receiveBatch(entries);
+    if (retrying || report.isErr() || report.value.folded === 0) return report;
+    if (parked.list().length === 0) return report;
+    retrying = true;
+    try {
+      const again = await retryRefused(parked, receive);
+      if (again.isErr()) return report;
+      // `folded` grows because those events did land on this call; `quarantined` and `skipped`
+      // stay the batch's own, since a retry re-offers what an earlier call already counted
+      return Result.ok({
+        folded: report.value.folded + again.value.folded,
+        skipped: report.value.skipped,
+        quarantined: report.value.quarantined,
+      });
+    } finally {
+      retrying = false;
+    }
+  };
+  return receive;
+}

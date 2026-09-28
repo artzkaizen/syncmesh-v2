@@ -98,7 +98,7 @@ No listeners anywhere — kernel/temporal/result are pure. Injection seams: `now
 
 ## 4 · schema — the manifest
 
-- `column.ts`: builder `t` (`text/integer/float/boolean/timestamp/blob/uuid/json`), modifiers `nullable/primaryKey/unique/check(StandardSchemaV1)/onConflict(strategy)` — all data (`ColumnDef`), type-level erasure of illegal combos (pk can't be nullable; max/min only on numbers).
+- `column.ts`: builder `t` (`text/integer/float/boolean/timestamp/blob/uuid/json`), each taking `{ merge }` (`MergeFor<T>`: `"lww"|"max"|"min"` on numbers, `"lww"` elsewhere — D25); modifiers `nullable/primaryKey/unique/check(StandardSchemaV1)` — all data (`ColumnDef`), type-level erasure of illegal combos (pk can't be nullable; max/min only on numbers).
 - `table.ts`: `table(name, columns)` → `Table {name, columns, primaryKey, columnNames}`; panics at module load on bad defs (≠1 pk, pk not text/uuid/integer…). `checkRow(table, row, "insert"|"update")`, `rowKeyText`. `Row<T>`, `InsertRow<T>` (nullable → optional).
 - `convert.ts`: app ↔ wire (`Temporal.Instant` ↔ epoch ms is the only real conversion); `fromWireRow` reads a missing column as `null` (D19); `withNulls`.
 - `manifest.ts`: **`defineSchema({partitions: tree, roles: {kind: ladder}, tables: {name: {columns, partition, allow} | {columns, partition?: reserved} | {columns, visibility:"authority"}}})`** → `Schema {tables, entries: SchemaEntry[] (table+partition+visibility+evaluated AllowBlock), reserved, merge: MergeSpec, kinds (parents-first), parentOf, rolesFor}`. Reserved kinds `global|user|local`. Declared-kind tables **require** `allow`. `visibility:"authority"` forces global.

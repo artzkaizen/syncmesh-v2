@@ -34,6 +34,7 @@ export default defineConfig({
       ".windsurf/**",
       "tools/oxlint/anti-slop/**",
       "tools/oxlint/syncmesh/**",
+      "apps/*/src/routeTree.gen.ts",
     ],
     jsPlugins: [
       { name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" },
@@ -74,6 +75,15 @@ export default defineConfig({
           ],
         },
       ],
+
+      // Two rules about one mistake: a number on screen that is a fact about this page rather
+      // than about the data. Both were written from bugs this repository shipped — a status badge
+      // drawn from `group.rows.length` that sat at 0 while rows were written into it, and a
+      // `rows.length >= LISTED` that inferred truncation from the page that produced it. Neither
+      // needs type information: what makes them precise is that they look at where the number
+      // lands (a JSX child) and at what it is compared against (a limit), not at what it is.
+      "syncmesh/no-rendered-length": "error",
+      "syncmesh/no-length-against-limit": "error",
 
       "no-deprecated": "warn",
       "typescript/no-misused-spread": "off",
@@ -294,6 +304,7 @@ export default defineConfig({
       ".windsurf/**",
       "tools/oxlint/anti-slop/**",
       "tools/oxlint/syncmesh/**",
+      "apps/*/src/routeTree.gen.ts",
     ],
     sortPackageJson: { sortScripts: true },
     sortImports: {

@@ -8,7 +8,7 @@ import type { SqlDriver } from "../driver.js";
 import type { OpenDriver } from "./index.js";
 
 import { captureChanges, installCapture } from "../capture.js";
-import { COUNTERS as counters, JOBS as jobs, sqlText } from "./fixtures.js";
+import { COUNTERS as counters, JOBS as jobs, sqlText, sqlOf } from "./fixtures.js";
 
 const open = async (driver: SqlDriver) => {
   (await installCapture(driver, [jobs, counters])).unwrap();
@@ -205,7 +205,7 @@ export const captureRuleCases = (openDriver: OpenDriver): readonly SuiteCase[] =
         "org:acme",
         "an update never re-homes a row",
       );
-      equal(await count(driver, `SELECT COUNT(*) FROM _syncmesh_changes`), 0, "log empty");
+      equal(await count(driver, `SELECT COUNT(*) FROM ${sqlOf(driver).changes}`), 0, "log empty");
     },
   },
   {
@@ -221,7 +221,7 @@ export const captureRuleCases = (openDriver: OpenDriver): readonly SuiteCase[] =
       });
       equal(r.isErr(), true, "the capture fails");
       equal(await count(driver, `SELECT COUNT(*) FROM jobs`), 0, "row rolled back");
-      equal(await count(driver, `SELECT COUNT(*) FROM _syncmesh_changes`), 0, "log empty");
+      equal(await count(driver, `SELECT COUNT(*) FROM ${sqlOf(driver).changes}`), 0, "log empty");
       equal(await count(driver, L.guard), 0, "guard disarmed");
     },
   },
@@ -234,7 +234,11 @@ export const captureRuleCases = (openDriver: OpenDriver): readonly SuiteCase[] =
         `INSERT INTO jobs (id, title, rank, done) VALUES ('j1', 'from a peer', 1, ${L.F})`,
       );
       await driver.run(`UPDATE jobs SET title = 'merged' WHERE id = 'j1'`);
-      equal(await count(driver, `SELECT COUNT(*) FROM _syncmesh_changes`), 0, "nothing logged");
+      equal(
+        await count(driver, `SELECT COUNT(*) FROM ${sqlOf(driver).changes}`),
+        0,
+        "nothing logged",
+      );
       const changes = (
         await captured(driver, () => driver.run(`UPDATE jobs SET rank = 2 WHERE id = 'j1'`))
       ).unwrap();

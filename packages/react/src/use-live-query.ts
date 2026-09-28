@@ -1,58 +1,239 @@
-import type { Live, Runnable } from "@syncmesh/drizzle";
+import type { ReadCoverage } from "@syncmesh/client";
+import type { Live, LiveSnapshot } from "@syncmesh/drizzle";
 
-import { useEffect, useRef, useState } from "react";
+import { LOCAL_ONLY } from "@syncmesh/client";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
-import type { Keyed } from "./query-key.js";
+import type { Answered } from "./answered.js";
 
-import { queryKey } from "./query-key.js";
+import { answeredFrom } from "./answered.js";
 
-/** The slice of a mesh handle the hooks use: `mesh.on(...)`'s `live`. */
-export interface LiveSource {
-  readonly live: <T>(query: Runnable<T>) => Live<T>;
-}
+/** What one delivery changed, keyed by primary key — the snapshot's own diff (book ch. 9). */
+export type LiveDiff<T> = Extract<LiveSnapshot<T>, { readonly answered: true }>["diff"];
 
-export interface LiveRows<T> {
-  /** The rows as of the last run; `undefined` until the first run lands. */
-  readonly rows: readonly T[] | undefined;
-  readonly ready: boolean;
-}
-
-interface Held<T> {
-  readonly key: string;
-  readonly rows?: readonly T[];
+/**
+ * The slice of a bound call these hooks need. `@syncmesh/orpc`'s `QueryCall` satisfies it
+ * structurally and is not imported: the same reason `@syncmesh/ble` takes a `BleRadio` rather
+ * than the module that supplies one — a test can drive this hook with three functions.
+ *
+ * Read under `~mesh` because that is where a descriptor keeps its adapter surface (book ch. 9):
+ * a hook is an adapter, and a screen holding the same descriptor sees only `then`.
+ */
+export interface LiveCall<T> {
+  readonly "~mesh": {
+    /** Identity. Two renders that ask the same question share one subscription; a changed input re-subscribes. */
+    readonly key: string;
+    readonly live: () => Live<T>;
+    readonly settled: () => Promise<void>;
+    /**
+     * Optional so a test can still drive this hook with three functions; a call that carries
+     * neither reads as `local-only`, which is the honest word for "nothing here can say more".
+     */
+    readonly coverage?: () => ReadCoverage;
+    readonly onCoverage?: (listener: () => void) => () => void;
+  };
 }
 
 /**
- * A live Drizzle query as React state: one subscription per distinct question, one render per
- * fold batch that changed the rows. Build the query inline — its `toSQL()` is the identity, so a
- * re-render with the same question reuses the subscription and a changed filter re-subscribes.
+ * React Query's `enabled`, for a query that *could* run and should not yet.
  *
- * ```ts
- * const { db, live } = handle;
- * const { rows } = useLiveQuery(handle, db.select().from(jobs).orderBy(jobs.id));
+ * There is no other option here and there is deliberately no dependency array: a descriptor's
+ * `key` is the subscription's identity, so the only thing left for a caller to say is whether the
+ * question should be put at all. `undefined` and `true` both mean run it.
+ *
+ * Why both this and passing no call is in {@link useQuery}'s own comment, which is where the
+ * distinction bites.
+ */
+export interface QueryOptions {
+  /**
+   * Defaults to `true`. `false` is **exactly** what passing no call is: nothing is opened, nothing
+   * is subscribed, and an open subscription from a previous render is released.
+   *
+   * Identical by construction rather than by agreement — `enabled: false` is turned into no call
+   * on the first line of this hook, so there is one disabled path and not two that match today.
+   */
+  readonly enabled?: boolean;
+}
+
+/** React Query's names, minus what a live query makes meaningless (D26). */
+export interface LiveResult<T> {
+  /** The rows as of the last run; empty while pending, so a list never has to null-check. */
+  readonly data: readonly T[];
+  /**
+   * The same rows keyed by primary key — the identity the live layer diffs by (book ch. 9).
+   * Built once per delivery in the subscription layer, never per render; empty until answered.
+   */
+  readonly state: ReadonlyMap<string, T>;
+  /** What the last delivery changed, by key; every map empty until answered. */
+  readonly diff: LiveDiff<T>;
+  readonly status: "pending" | "error" | "success";
+  readonly isPending: boolean;
+  readonly isError: boolean;
+  readonly isSuccess: boolean;
+  /**
+   * **How far this question has been answered** — and the only fact that licenses an empty state.
+   *
+   * One ordered value rather than two booleans, because two booleans describe four states for a
+   * three-state progression and the fourth one lies. It used to be `hasAnswered` beside
+   * `isSettled`, and a device with no transport has `isSettled: true` **before the first read has
+   * run** — sources answer nearest first, and with no far sources there is nothing to wait for.
+   * A screen reading `isSettled` alone drew a confident "nothing here" over a store it had not
+   * asked yet.
+   *
+   * They were never two subjects either. This device's storage *is* the first source, so
+   * `isSettled` was about a set that contains what `hasAnswered` was about — a subset, not a
+   * sibling, which is why no pair of names for them ever read correctly.
+   *
+   * - `"none"` — no read has completed. `data` is `[]` and carries **no information**; the only
+   *   honest UI is a skeleton. On a phone this is the whole cold start, because the client is a
+   *   value and the database opens underneath it.
+   * - `"local"` — this device's storage answered and `data` is what it returned. Empty means *not
+   *   on this device yet*, never *nothing exists*. Survives a failed re-run: the last good rows
+   *   stand, and `status` carries the error.
+   * - `"settled"` — the storage and every other source that could fill this scope have each
+   *   finished a first pass. **Empty means empty**, and this is the only state where it does.
+   *
+   * `none → local → settled`, and a device with no transports skips the middle. Never backwards
+   * within one subscription; a changed input is a new question and starts again at `"none"`.
+   */
+  readonly answered: Answered;
+  /**
+   * How much of the **world** has answered — the word an HTTP-born library cannot have (book
+   * ch. 9). `answered` says whether this device's read has stabilised; this says which source
+   * the rows are good to, and to what checkpoint. They are different facts: a query over an
+   * empty local store is `answered: "local"` instantly while coverage is still `local-only`, and
+   * conflating them is how offline apps draw confident empty states.
+   */
+  readonly coverage: ReadCoverage;
+  readonly error: Error | undefined;
+}
+
+const EMPTY: readonly never[] = [];
+const NONE: ReadonlyMap<string, never> = new Map<string, never>();
+const NO_DIFF: LiveDiff<never> = { added: NONE, removed: NONE, changed: NONE };
+export { LOCAL_ONLY, NONE, NO_DIFF };
+
+const asError = (cause: unknown): Error =>
+  cause instanceof Error ? cause : new Error(String(cause));
+
+/**
+ * A procedure's read as React state: one subscription per distinct question, one render per fold
+ * batch that changed the rows — whether the change came from this device, another device over
+ * BLE, or the relay.
+ *
+ * `useSyncExternalStore` over the query's own cached snapshot, so a concurrent render can never
+ * tear and an unrelated table's fold costs no render at all: the snapshot keeps its identity
+ * unless the rows actually changed, and unchanged rows keep theirs inside it.
+ *
+ * There is no provider and nothing to thread: `api` is already bound to its mesh, so the
+ * descriptor carries everything the subscription needs.
+ *
+ * ```tsx
+ * const { data, answered } = useLiveQuery(api.books.list({ page: 1 }));
+ * if (answered === "none") return <Spinner />;
+ * if (data.length === 0) return answered === "settled" ? <NoBooks /> : <StillSyncing />;
+ * ```
+ *
+ * A query can be held back two ways, and they collapse onto one path here: no call at all, or
+ * `{ enabled: false }` beside a call that could have run. Either way `key` is `undefined`, so
+ * nothing is opened and nothing is subscribed; flipping `enabled` back to `true` is a changed key
+ * and subscribes exactly as a changed filter does, without the component remounting.
+ *
+ * ```tsx
+ * // the poll is paused, not gone: the descriptor is still the identity when it resumes
+ * const { data } = useLiveQuery(api.books.list({ page }), { enabled: tabVisible });
  * ```
  */
-export function useLiveQuery<T>(handle: LiveSource, query: Runnable<T> & Keyed): LiveRows<T> {
-  const key = queryKey(query);
-  const current = useRef(query);
-  current.current = query;
-  const [held, setHeld] = useState<Held<T>>({ key });
+export function useLiveQuery<T>(
+  call: LiveCall<T> | undefined,
+  options?: QueryOptions,
+): LiveResult<T> {
+  // one disabled path: `enabled: false` *is* the no-call case from here down
+  const asked = options?.enabled === false ? undefined : call?.["~mesh"];
+  const key = asked?.key;
+  const current = useRef(asked);
+  current.current = asked;
+
+  // building the query runs the input schema: a refusal is this render's error, not a throw;
+  // no call at all — the conditional-query case — opens nothing and subscribes to nothing
+  const opened = useMemo((): Live<T> | Error | undefined => {
+    if (key === undefined) return undefined;
+    try {
+      const live = current.current?.live();
+      // a read that threw is already on the snapshot, where this hook reports it; without this
+      // the same news is also an unhandled rejection, which is a crash report for a handled error
+      live?.ready.catch(() => undefined);
+      return live;
+    } catch (cause) {
+      return asError(cause);
+    }
+  }, [key]);
 
   useEffect(() => {
-    const live = handle.live(current.current);
+    if (opened instanceof Error || opened === undefined) return;
+    return () => opened.release();
+  }, [opened]);
+
+  const failed = useMemo(
+    () =>
+      opened instanceof Error
+        ? ({ answered: false, data: EMPTY, status: "error", error: opened } as const)
+        : undefined,
+    [opened],
+  );
+  const subscribe = useCallback(
+    (notify: () => void) =>
+      opened instanceof Error || opened === undefined ? () => undefined : opened.subscribe(notify),
+    [opened],
+  );
+  const read = useCallback(
+    () =>
+      failed ?? (opened instanceof Error || opened === undefined ? undefined : opened.snapshot()),
+    [opened, failed],
+  );
+  const snap = useSyncExternalStore(subscribe, read, read);
+
+  const subscribeCoverage = useCallback(
+    (notify: () => void) =>
+      key === undefined
+        ? () => undefined
+        : (current.current?.onCoverage?.(notify) ?? (() => undefined)),
+    [key],
+  );
+  const readCoverage = useCallback(
+    () => (key === undefined ? LOCAL_ONLY : (current.current?.coverage?.() ?? LOCAL_ONLY)),
+    [key],
+  );
+  const coverage = useSyncExternalStore(subscribeCoverage, readCoverage, readCoverage);
+
+  const [settledFor, setSettledFor] = useState<string>();
+  useEffect(() => {
+    if (key === undefined) return undefined;
     let open = true;
-    const deliver = (rows: readonly T[]): void => {
-      if (open) setHeld({ key, rows });
-    };
-    void live.ready.then(deliver);
-    const off = live.subscribe(deliver);
+    void current.current?.settled().then(
+      () => {
+        if (open) setSettledFor(key);
+      },
+      () => undefined,
+    );
     return () => {
       open = false;
-      off();
-      live.release();
     };
-  }, [handle, key]);
+  }, [key]);
 
-  const rows = held.key === key ? held.rows : undefined;
-  return { rows, ready: rows !== undefined };
+  return useMemo(() => {
+    const status = snap?.status ?? "pending";
+    return {
+      data: snap?.data ?? EMPTY,
+      state: snap?.answered ? snap.state : NONE,
+      diff: snap?.answered ? snap.diff : NO_DIFF,
+      status,
+      isPending: status === "pending",
+      isError: status === "error",
+      isSuccess: status === "success",
+      answered: answeredFrom(snap?.answered ?? false, key !== undefined && settledFor === key),
+      coverage,
+      error: snap?.error,
+    };
+  }, [snap, settledFor, key, coverage]);
 }

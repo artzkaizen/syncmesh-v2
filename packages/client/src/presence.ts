@@ -6,6 +6,7 @@ import type { Identity, Presence } from "@syncmesh/wire";
 
 import { panic } from "@syncmesh/result";
 import { checkValue } from "@syncmesh/schema";
+import { createPresenceStore } from "@syncmesh/transport";
 import { decodeAndVerifyPresence, signPresence } from "@syncmesh/wire";
 
 /** A topic's value as its columns declare it — the same mapping a row gets. */
@@ -189,3 +190,27 @@ export function createPresence(deps: PresenceDeps) {
     },
   };
 }
+
+/**
+ * The ephemeral tier, wired (D16): this device's identity, the manifest's topics, and the one
+ * place a value may leave from.
+ *
+ * `send` goes to every open session and nowhere else, because a presence value that cannot leave
+ * is dropped rather than queued — assembled here so that rule sits beside the code that keeps it.
+ */
+export const openPresence = (
+  identity: PresenceDeps["identity"],
+  topics: PresenceDeps["topics"],
+  store: {
+    readonly now: PresenceDeps["now"];
+    readonly accountOf: (peer: PeerId) => string | undefined;
+  },
+  send: PresenceDeps["send"],
+) =>
+  createPresence({
+    identity,
+    topics,
+    store: createPresenceStore({ now: store.now, accountOf: store.accountOf }),
+    send,
+    now: store.now,
+  });

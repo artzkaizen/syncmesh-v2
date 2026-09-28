@@ -21,6 +21,30 @@ export interface Grant {
   readonly expiresAt: Temporal.Instant;
   /** Free-form facts the issuing server vouches for; `allow` rules read them. */
   readonly claims: Readonly<Record<string, JsonValue>>;
+  /**
+   * Content keys for the sealed partitions this grant admits, each wrapped to this grant's
+   * device (book ch. 14). Absent for a grant over no sealed partition, which is most of them.
+   *
+   * The grant is the key's carrier because it is already the thing that says which device may
+   * see which partition. A second channel would be a second answer to that question, and the two
+   * would eventually disagree — a device holding a key for a partition its grant no longer
+   * covers is exactly the state sealing exists to prevent.
+   */
+  readonly keys?: readonly WrappedKey[];
+}
+
+/**
+ * One partition's content key for one epoch, sealed to this grant's device.
+ *
+ * A list of these rather than one per partition, because rotation means a device usually needs
+ * **more than one**: the newest epoch to write under, and the older ones to read what it already
+ * carries. A grant that handed over only the current key would make every past event unreadable
+ * the moment the partition rotated.
+ */
+export interface WrappedKey {
+  readonly partition: PartitionKey;
+  readonly epoch: number;
+  readonly wrapped: Uint8Array;
 }
 
 /** Grant core map keys, frozen by the grant vectors. */
@@ -33,6 +57,8 @@ const KEY = {
   issuedAt: 5,
   expiresAt: 6,
   claims: 7,
+  /** Additive: a build with no name for this key ignores it and holds no key, which is custody. */
+  keys: 8,
 } as const;
 
 export class MalformedGrant extends TaggedError("MalformedGrant")<{ message: string }> {}
@@ -50,6 +76,11 @@ export interface GrantRequest {
   readonly role?: string;
   readonly partitions: readonly PartitionKey[];
   readonly claims?: Readonly<Record<string, JsonValue>>;
+  /**
+   * Content keys for sealed partitions, already wrapped to `device` with {@link wrapKey}. The
+   * issuer holds the partition's keys; this grant is how one device gets its copies.
+   */
+  readonly keys?: readonly WrappedKey[];
   readonly validFor: Temporal.Duration;
   readonly now: Temporal.Instant;
 }
@@ -65,6 +96,11 @@ export function encodeGrant(grant: Grant): Uint8Array {
     [KEY.claims, jsonToCbor(grant.claims)],
   ]);
   if (grant.role !== undefined) core.set(KEY.role, grant.role);
+  if (grant.keys !== undefined && grant.keys.length > 0)
+    core.set(
+      KEY.keys,
+      grant.keys.map((key): CborValue => [key.partition, key.epoch, key.wrapped]),
+    );
   return encodeCbor(core);
 }
 
@@ -78,6 +114,7 @@ export function issueGrant(issuer: Identity, request: GrantRequest): Uint8Array 
     issuedAt: request.now,
     expiresAt: addToInstant(request.now, request.validFor),
     claims: request.claims ?? {},
+    ...(request.keys !== undefined && { keys: request.keys }),
   };
   const core = encodeGrant(request.role === undefined ? base : { ...base, role: request.role });
   return encodeCbor([core, issuer.sign(core)]);
@@ -182,6 +219,7 @@ function decodeGrantValue(value: CborValue): Result<Grant, MalformedGrant> {
         yield* parsePartitionKey(p).mapError((e) => new MalformedGrant({ message: e.message })),
       );
     }
+    const wrapped = yield* decodeKeys(value.get(KEY.keys));
     const parsedClaims = yield* jsonFromCbor(claims ?? new Map());
     if (parsedClaims === null || Array.isArray(parsedClaims) || !isObject(parsedClaims))
       return malformed("claims is not an object");
@@ -193,8 +231,33 @@ function decodeGrantValue(value: CborValue): Result<Grant, MalformedGrant> {
       issuedAt: Temporal.Instant.fromEpochMilliseconds(issuedAt),
       expiresAt: Temporal.Instant.fromEpochMilliseconds(expiresAt),
       claims: parsedClaims,
+      ...(wrapped.length > 0 && { keys: wrapped }),
     };
     return Result.ok(role === undefined ? base : { ...base, role });
+  });
+}
+
+/** `[[partition, epoch, wrapped], …]`, or nothing — which is what a grant over no seal carries. */
+function decodeKeys(value: CborValue | undefined): Result<WrappedKey[], MalformedGrant> {
+  const keys: WrappedKey[] = [];
+  if (value === undefined) return Result.ok(keys);
+  if (!Array.isArray(value)) return malformed("keys is not a list");
+  return Result.gen(function* () {
+    for (const entry of value) {
+      if (!Array.isArray(entry) || entry.length < 3) return malformed("a key is not a triple");
+      const [partition, epoch, wrapped] = entry;
+      if (!isString(partition)) return malformed("a key's partition is not text");
+      if (!isMs(epoch)) return malformed("a key's epoch is not a count");
+      if (!(wrapped instanceof Uint8Array)) return malformed("a wrapped key is not bytes");
+      keys.push({
+        partition: yield* parsePartitionKey(partition).mapError(
+          (e) => new MalformedGrant({ message: e.message }),
+        ),
+        epoch,
+        wrapped,
+      });
+    }
+    return Result.ok(keys);
   });
 }
 

@@ -1,0 +1,41 @@
+{
+  "name": "@syncmesh/rounds-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite dev --port 5199",
+    "relay": "bun src/server/relay.ts",
+    "smoke": "bun src/__tests__/smoke.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@syncmesh/client": "workspace:*",
+    "@syncmesh/drizzle": "workspace:*",
+    "@syncmesh/examples": "workspace:*",
+    "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/orpc": "workspace:*",
+    "@syncmesh/relay": "workspace:*",
+    "@syncmesh/schema": "workspace:*",
+    "@syncmesh/sqlite-node": "workspace:*",
+    "@syncmesh/temporal": "workspace:*",
+    "@syncmesh/wire": "workspace:*",
+    "@tanstack/react-router": "^1.168.0",
+    "@tanstack/react-start": "^1.168.0",
+    "drizzle-orm": "catalog:",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@syncmesh/config": "workspace:*",
+    "@types/bun": "catalog:",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "playwright": "^1.56.0",
+    "typescript": "catalog:",
+    "vite": "^7.0.0"
+  }
+}

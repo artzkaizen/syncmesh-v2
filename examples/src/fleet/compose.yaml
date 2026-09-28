@@ -1,11 +1,11 @@
-# D09-B: several relays behind one load balancer, Redis as best-effort pub/sub between them.
+# D09-B: several relays behind one load balancer, Postgres LISTEN/NOTIFY between them.
 #
 #   docker compose -f examples/src/fleet/compose.yaml up --build
 #   RELAY_URL=ws://localhost:5198/acme bun run --cwd examples server
 #   RELAY_URL=ws://localhost:5198/acme bun run --cwd examples device alice
 #
 # Not for the actor shape (D09-C): a Durable Object or Rivet actor has every socket for a room
-# routed to one instance, so there is no second instance to gossip with and adding Redis there
+# routed to one instance, so there is no second instance to gossip with and adding a fanout there
 # buys nothing but a dependency.
 name: syncmesh-fleet
 
@@ -14,30 +14,34 @@ x-relay: &relay
     context: ../../..
     dockerfile: examples/src/fleet/Dockerfile
   depends_on:
-    redis:
+    postgres:
       condition: service_healthy
   restart: unless-stopped
 
 x-relay-env: &relay-env
-  REDIS_URL: redis://redis:6379
+  DATABASE_URL: postgres://syncmesh:syncmesh@postgres:5432/syncmesh
   PORT: "5198"
   DATA_DIR: /data
 
 services:
-  redis:
-    image: redis:8-alpine
-    # no persistence: a relay only publishes and subscribes, and never reads back. That is not
-    # the same as a frame being free to lose — nothing re-requests one, because neither instance
-    # knows it existed. A device that holds the event has to land on the starved instance for an
-    # ordinary cursor exchange to put it back. See ./README.md, "Best-effort, and what that costs".
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+  postgres:
+    image: postgres:17-alpine
+    # nothing is stored here: LISTEN/NOTIFY is a wake between sessions and this database holds no
+    # table. That is not the same as a frame being free to lose — nothing re-requests one, because
+    # neither instance knows it existed. A device that holds the event has to land on the starved
+    # instance for an ordinary cursor exchange to put it back. See ./README.md,
+    # "Best-effort, and what that costs".
+    environment:
+      POSTGRES_USER: syncmesh
+      POSTGRES_PASSWORD: syncmesh
+      POSTGRES_DB: syncmesh
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "pg_isready -U syncmesh"]
       interval: 2s
       timeout: 2s
       retries: 15
 
-  # one volume per relay, never shared: each instance keeps its own room log, and Redis is a
+  # one volume per relay, never shared: each instance keeps its own room log, and Postgres is a
   # transport between them rather than the storage under them
   relay-1:
     <<: *relay

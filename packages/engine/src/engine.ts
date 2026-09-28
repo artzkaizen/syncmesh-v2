@@ -1,23 +1,30 @@
-import type { HlcClock, MergeSpec, PeerId, Row, RowKey, State, TableName } from "@syncmesh/kernel";
+import type { PeerId, Row, RowKey, Stamp, State, TableName } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
-import { emptyState, getRecord, mergeRecord, readRow, readRowsIn } from "@syncmesh/kernel";
+import {
+  emptyState,
+  getRecord,
+  isVisible,
+  mergeRecord,
+  readRow,
+  readRowsIn,
+} from "@syncmesh/kernel";
 import { type EventId, type PartitionKey, type Procedure, type SyncEvent } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
-import type { Boot } from "./boot.js";
 import type { Ack, CompactError, CompactOptions, Compaction } from "./compaction.js";
 import type { RepairApi } from "./digest.js";
 import type { FeedApi } from "./feed.js";
 import type { Interest } from "./interest.js";
-import type { Parked, UnknownHandling } from "./quarantine.js";
+import type { AtomicStores, EngineOptions } from "./options.js";
+import type { Parked } from "./quarantine.js";
+import type { EventHeader, RecentEvents } from "./recent.js";
 import type { SnapshotApi } from "./snapshot.js";
-import type { StateStore } from "./state-store.js";
-import type { EventStore, StoredEvent } from "./store.js";
+import type { StoredEvent } from "./store.js";
 import type { StoreFailure } from "./store.js";
 import type { Ahead, Coverage, Cursors } from "./sync.js";
 import type { Tx } from "./tx.js";
-import type { StateLookup, Validator } from "./validate.js";
+import type { StateLookup } from "./validate.js";
 
 import { admit } from "./admit.js";
 import { compactLog } from "./compaction.js";
@@ -34,16 +41,26 @@ import { createFeedPath, trackFeeds } from "./feed.js";
 import { createFoldPath } from "./fold.js";
 import { eventsWanted } from "./interest.js";
 import { createHub, type Unsubscribe } from "./listeners.js";
-import { createQuarantine, retryQuarantined } from "./quarantine.js";
+import { createQuarantine, retryQuarantined, withRetry } from "./quarantine.js";
+import { recentHeaders } from "./recent.js";
 import { createSnapshotPath } from "./snapshot.js";
+import { strandedWrites, type StrandedWrites } from "./stranded.js";
 import { mergeAhead } from "./sync.js";
 import { type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
 import { createRevert, type Undo } from "./undo.js";
 import { createWritePath } from "./writes.js";
 
+export type { AtomicStores, EngineOptions } from "./options.js";
+
 export interface MutateOptions {
   readonly partition?: PartitionKey;
   readonly local?: boolean;
+  /**
+   * Runs inside the same transaction as the append, once the event is built — the operation
+   * record's seat (book ch. 10): record and event land together or neither does. A throw here
+   * rolls the whole write back.
+   */
+  readonly record?: (event: SyncEvent) => Promise<void>;
 }
 
 /** Where a batch came from; `repair` carries no cursors (RFC-0014), `snapshot` adopts them last (RFC-0019). */
@@ -86,6 +103,23 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi {
   readonly state: () => State;
   /** The visible rows of `table` that belong to `partition`. */
   readonly rowsIn: (table: TableName, partition: PartitionKey) => ReadonlyMap<RowKey, Row>;
+  /**
+   * The delete that is currently hiding the row — `undefined` for a row that is visible, and for
+   * one this device has never held.
+   *
+   * The named way to ask a question the row reads cannot answer. A tombstoned record leaves every
+   * read above it — {@link Engine.rowsIn}, `readRow`, and the app's own tables, which the storage
+   * projection hard-deletes from — so *deleted* and *never heard of* arrive at a screen as the
+   * same empty answer, and a detail view has no way to tell them apart. The record itself is kept
+   * regardless, because a concurrent edit has to be able to beat the delete (RFC-0014 §1), so the
+   * fact was always here; what was missing was a name for it.
+   *
+   * The stamp rather than a boolean, because it is what the kernel holds and both halves are real:
+   * the peer is the **device** that deleted the row and the HLC is that device's clock. Neither is
+   * an account and neither is this device's wall time, so what a screen can honestly draw from
+   * this is that the row was deleted — the rest wants the event log to join against.
+   */
+  readonly deletedAt: (table: TableName, key: RowKey) => Stamp | undefined;
   /** Writes the compensating event for one of this engine's last `undoDepth` writes, in that event's partition. */
   readonly revert: (id: EventId) => Promise<Result<SyncEvent, RevertError>>;
   readonly canRevert: (id: EventId) => boolean;
@@ -128,6 +162,16 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi {
   readonly acknowledge: (peer: PeerId, cursors: Cursors, at: Temporal.Instant) => void;
   /** What each peer was last acknowledged as holding. */
   readonly acks: () => ReadonlyMap<PeerId, Cursors>;
+  /**
+   * The same answer with the time it was given, which is the difference between "that peer is
+   * behind" and "that peer has not been heard from since Tuesday". Both readings are diagnoses
+   * and only one of them is about sync.
+   *
+   * {@link Engine.acks} stays as it is because nothing that consumes it — the compaction floor,
+   * the link budget, churn — has any use for the stamp, and a Map they have to unwrap is a cost
+   * paid on every sweep for one reader's benefit.
+   */
+  readonly acksAt: () => ReadonlyMap<PeerId, Ack>;
   /** Fires after `acknowledge` records what a peer holds. */
   readonly onAcknowledge: (listener: (peer: PeerId) => void) => Unsubscribe;
   /** Removes events every counted peer has acked and the state store has persisted; unobservable to peers. See RFC-0015 §2. */
@@ -141,6 +185,22 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi {
     theirs: Cursors,
     interest?: Interest,
   ) => Promise<Result<readonly StoredEvent[], StoreFailure>>;
+  /**
+   * The log's tail as headers, newest first — what a log viewer reads, and the only read here
+   * that shows a write which never left the device.
+   *
+   * {@link Engine.eventsSince} cannot answer this and should not be made to. It is anti-entropy's
+   * question: ordered by author and sequence because that is how a peer walks a run, unbounded
+   * because a peer wants everything it lacks, and confined to the synced half because no peer is
+   * owed a local write. A person asking what this device has been doing wants the opposite of
+   * all three.
+   *
+   * Headers rather than entries, so that reading the shape of the traffic cannot quietly become
+   * reading its contents ({@link EventHeader}).
+   */
+  readonly recentEvents: (
+    options?: RecentEvents,
+  ) => Promise<Result<readonly EventHeader[], StoreFailure>>;
   readonly onFoldBatch: (listener: (batch: FoldBatch) => void) => Unsubscribe;
   /** Fires for every synced event this engine authors, never for `local` ones. */
   readonly onOutbound: (listener: (event: SyncEvent) => void) => Unsubscribe;
@@ -155,42 +215,17 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi {
    */
   readonly retryQuarantined: () => Promise<Result<ReceiveReport, StoreFailure>>;
   readonly onQuarantine: (listener: (q: Quarantined) => void) => Unsubscribe;
+  /**
+   * Every author this device holds writes for that it can never send — empty on a device that
+   * has not rotated its key, which is almost all of them.
+   *
+   * The question a device has to be able to answer about itself. `openEngine` asks it once at
+   * boot and reports what it finds on `onError`; this is the same answer on demand, for a screen
+   * that wants it now rather than a listener that was attached too late. It reads the log rather
+   * than a cache, so a rotation that happens while the process is running is visible to it.
+   */
+  readonly stranded: () => Promise<Result<readonly StrandedWrites[], StoreFailure>>;
   readonly onTelemetry: (listener: TelemetryListener) => Unsubscribe;
-}
-
-export interface EngineOptions {
-  readonly peerId: PeerId;
-  readonly clock: HlcClock;
-  readonly store: EventStore;
-  readonly merge?: MergeSpec;
-  /** How many of this engine's own writes stay revertable. Default 0. */
-  readonly undoDepth?: number;
-  /** Runs on a probe before a local write gets a sequence number, and on every received event before it is stored. */
-  readonly validate?: Validator;
-  /**
-   * How loudly this mesh is told about an event no build here can read (D13). Per mesh, never
-   * per event: all three settings park it and none of them folds it, so a mesh whose devices were
-   * configured by two different people still converges. Default `"warn"`.
-   */
-  readonly unknownHandling?: UnknownHandling;
-  /** Parked events kept per reason before the oldest is dropped — loudly, on `onError`. */
-  readonly quarantineLimit?: number;
-  /** Where folded rows are kept between runs; absent, every boot refolds the log. */
-  readonly stateStore?: StateStore;
-  /** What to start from; `openEngine` builds it. Absent, the engine starts empty. */
-  readonly boot?: Boot;
-  /**
-   * Runs a write's store calls in one transaction: the event appended to the log and its rows
-   * committed to the state store land together or not at all. The callback gets the stores to
-   * use inside; absent, each store commits on its own and the cursor sidecar recovers the gap.
-   */
-  readonly atomic?: <T>(fn: (scoped: AtomicStores) => Promise<T>) => Promise<T>;
-}
-
-/** What a write touches inside `atomic`: the log, and the state store when there is one. */
-export interface AtomicStores {
-  readonly events: EventStore;
-  readonly state?: StateStore;
 }
 
 export function createEngine(options: EngineOptions): Engine {
@@ -214,6 +249,7 @@ export function createEngine(options: EngineOptions): Engine {
   const coverage = trackCoverage(boot?.coverage);
   const undo: Undo[] = [];
   const errors = createHub<EngineError>();
+  if (options.onError !== undefined) errors.subscribe(options.onError);
   const report = (hook: ListenerFailure["hook"]) => (cause: unknown) =>
     errors.emit(new ListenerFailure({ hook, message: `${hook} listener threw`, cause }));
   const folds = createHub<FoldBatch>(report("onFoldBatch"));
@@ -230,7 +266,7 @@ export function createEngine(options: EngineOptions): Engine {
     cursors: () => coverage.current().synced,
   });
 
-  const { stateOf, setState, fold, persist, notify } = createFoldPath({
+  const { getState, setState, fold, persist, notify } = createFoldPath({
     merge,
     coverage,
     feeds,
@@ -243,13 +279,13 @@ export function createEngine(options: EngineOptions): Engine {
   fold(boot?.replay ?? [], "boot");
 
   const before = {
-    row: (table, key) => readRow(stateOf(), table, key),
-    records: (table) => stateOf().get(table),
-    partition: (table, key) => getRecord(stateOf(), table, key)?.partition,
+    row: (table, key) => readRow(getState(), table, key),
+    records: (table) => getState().get(table),
+    partition: (table, key) => getRecord(getState(), table, key)?.partition,
   } satisfies StateLookup;
 
   const snapshotDeps = {
-    stateOf,
+    getState,
     setState,
     coverageOf: coverage.current,
     adopt: coverage.adopt,
@@ -260,8 +296,8 @@ export function createEngine(options: EngineOptions): Engine {
   const snapshots = createSnapshotPath(snapshotDeps);
 
   const repair = createRepairPath({
-    stateOf,
-    mergeInto: (table, key, record) => setState(mergeRecord(stateOf(), table, key, record, merge)),
+    getState,
+    mergeInto: (table, key, record) => setState(mergeRecord(getState(), table, key, record, merge)),
     persist: (batch) => persist(batch, stateStore),
     notify,
   });
@@ -274,7 +310,7 @@ export function createEngine(options: EngineOptions): Engine {
     undoDepth,
     undo,
     atomically,
-    stateOf,
+    getState,
     fold,
     persist,
     notify,
@@ -297,14 +333,22 @@ export function createEngine(options: EngineOptions): Engine {
 
   const chains = createFeedPath({ store, feeds, receiveBatch });
 
+  const receiveAndRetry = withRetry(receiveBatch, parked);
+
   return {
     peerId,
     mutate,
-    receiveBatch,
-    receive: (entry) => receiveBatch([entry]),
+    receiveBatch: receiveAndRetry,
+    receive: (entry) => receiveAndRetry([entry]),
     ...chains,
-    state: stateOf,
-    rowsIn: (table, partition) => readRowsIn(stateOf(), table, partition),
+    state: getState,
+    rowsIn: (table, partition) => readRowsIn(getState(), table, partition),
+    deletedAt: (table, key) => {
+      const record = getRecord(getState(), table, key);
+      // a visible row is not deleted even when it carries a tombstone: an edit stamped above the
+      // delete is the CRDT's answer to a concurrent pair, and `isVisible` is where that is decided
+      return record === undefined || isVisible(record) ? undefined : record.deleteStamp;
+    },
     revert,
     canRevert: (id) => undo.some((u) => u.event.id === id),
     cursors: () => Promise.resolve(Result.ok(coverage.current().synced)),
@@ -317,17 +361,20 @@ export function createEngine(options: EngineOptions): Engine {
       ackHub.emit(peer);
     },
     acks: () => new Map([...acks].map(([peer, ack]) => [peer, ack.cursors])),
+    acksAt: () => new Map(acks),
     onAcknowledge: ackHub.subscribe,
     compact: (options) => compactLog({ store, stateStore, acks }, options),
     ...snapshots,
     eventsSince: (theirs, interest) => eventsWanted(store, theirs, interest),
+    recentEvents: (options = {}) => store.recent?.(options) ?? recentHeaders(store, options),
     ...repair,
     onFoldBatch: folds.subscribe,
     onOutbound: outbound.subscribe,
     onError: errors.subscribe,
     quarantine: parked.list,
-    retryQuarantined: () => retryQuarantined(parked, receiveBatch),
+    retryQuarantined: () => retryQuarantined(parked, receiveAndRetry),
     onQuarantine: quarantine.subscribe,
+    stranded: () => strandedWrites(store, peerId),
     onTelemetry: telemetry.subscribe,
   };
 }
