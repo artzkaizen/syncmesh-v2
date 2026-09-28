@@ -1,0 +1,31 @@
+{
+  "name": "@syncmesh/rn-nearby",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Nearby devices for React Native: AWDL and Wi-Fi Aware behind one Expo module",
+  "license": "Apache-2.0",
+  "files": [
+    "src",
+    "ios",
+    "app.plugin.js",
+    "expo-module.config.json",
+    "*.podspec"
+  ],
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./app.plugin.js": "./app.plugin.js"
+  },
+  "devDependencies": {
+    "@expo/config-plugins": "^55.0.0",
+    "@syncmesh/config": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  },
+  "peerDependencies": {
+    "expo": ">=53",
+    "react-native": ">=0.76"
+  }
+}

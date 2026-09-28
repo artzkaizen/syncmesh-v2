@@ -2,7 +2,18 @@ import { readRow } from "@syncmesh/kernel";
 import { describe, expect, test } from "bun:test";
 
 import { createEngine } from "../engine.js";
-import { CREATE, fakeClock, N1, NOTES, PEER_A, row, setup } from "./fixtures.js";
+import {
+  CREATE,
+  fakeClock,
+  key,
+  N1,
+  NOTES,
+  PEER_A,
+  PEER_B,
+  procedure,
+  row,
+  setup,
+} from "./fixtures.js";
 
 describe("engine.mutate", () => {
   test("records the tx as changes, stamps, numbers from 1, appends, folds", async () => {
@@ -82,5 +93,65 @@ describe("engine.mutate", () => {
       await engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ title: "a" })), { partition })
     ).unwrap();
     expect(event.partition).toBe(partition);
+  });
+});
+
+/**
+ * Telling a row that was deleted from one this device has never held.
+ *
+ * The two are the same empty answer to every read above the record — `readRow` here, and the
+ * app's own SQLite table on a device, which the storage projection hard-deletes the row out of —
+ * so a detail screen watching a peer delete an issue could only report it as never having been
+ * here. Two engines and one delete is the smallest arrangement that has both facts in it at once,
+ * which is what makes the distinction testable rather than merely stated.
+ */
+describe("engine.deletedAt", () => {
+  const REMOVE = procedure("notes.delete");
+  const N2 = key("n2");
+
+  /** One device writes a note and then deletes it; the events are what the other one receives. */
+  const writtenThenDeleted = async () => {
+    const a = setup(PEER_A, 100);
+    const wrote = (
+      await a.engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ title: "a" })))
+    ).unwrap();
+    const deleted = (await a.engine.mutate(REMOVE, (tx) => tx.delete(NOTES, N1))).unwrap();
+    return [wrote, deleted];
+  };
+
+  test("the receiving device tells a deleted row from one it never held", async () => {
+    const b = setup(PEER_B, 500);
+    const events = await writtenThenDeleted();
+    expect((await b.engine.receiveBatch(events.map((event) => ({ event })))).unwrap().folded).toBe(
+      2,
+    );
+
+    // the bug, stated as an assertion: the row read cannot separate the two cases, and neither
+    // can anything built on it
+    expect(readRow(b.engine.state(), NOTES, N1)).toBeUndefined();
+    expect(readRow(b.engine.state(), NOTES, N2)).toBeUndefined();
+
+    // the tombstone can, and it names the device that wrote the delete
+    expect(b.engine.deletedAt(NOTES, N1)?.peer).toBe(PEER_A);
+    expect(b.engine.deletedAt(NOTES, N2)).toBeUndefined();
+  });
+
+  test("a visible row is not deleted, whether or not it carries a tombstone", async () => {
+    const b = setup(PEER_B, 500);
+    const events = await writtenThenDeleted();
+    (await b.engine.receiveBatch(events.map((event) => ({ event })))).unwrap();
+    expect(b.engine.deletedAt(NOTES, N1)).toBeDefined();
+
+    // an edit stamped above the delete is the CRDT's answer to a concurrent pair: the row is back
+    // on screen, so "deleted" is no longer true of it even though the record still holds the stamp
+    (await b.engine.mutate(CREATE, (tx) => tx.update(NOTES, N1, row({ title: "b" })))).unwrap();
+    expect(readRow(b.engine.state(), NOTES, N1)).toEqual(row({ title: "b" }));
+    expect(b.engine.deletedAt(NOTES, N1)).toBeUndefined();
+  });
+
+  test("a row this device wrote and never deleted answers undefined", async () => {
+    const { engine } = setup();
+    (await engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ title: "a" })))).unwrap();
+    expect(engine.deletedAt(NOTES, N1)).toBeUndefined();
   });
 });

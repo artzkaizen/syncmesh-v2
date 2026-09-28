@@ -4,6 +4,12 @@ import type { Temporal } from "@syncmesh/temporal";
 import { panic } from "@syncmesh/result";
 
 import type { AppValue } from "./convert.js";
+import type {
+  DrizzleEntry,
+  DrizzleTableInKind,
+  DrizzleTableOptions,
+  DrizzleTableReserved,
+} from "./drizzle-options.js";
 import type { Columns } from "./table.js";
 
 import {
@@ -260,4 +266,50 @@ function readRuntime(drizzle: DrizzleTableLike): DrizzleRuntime {
   // SAFETY: the drizzle:Name symbol is present, which only a Drizzle table carries; drizzle:Columns comes with it
   // oxlint-disable-next-line anti-slop/no-chained-type-assertions, anti-slop/no-known-value-widening -- reading a foreign object's symbol-keyed runtime fields; there is no parser to run
   return drizzle as unknown as DrizzleRuntime;
+}
+
+/**
+ * A Drizzle table's manifest entry: the derived columns, where its rows live, and who may do what.
+ *
+ * ```ts
+ * products: drizzleTable(products, {
+ *   partition: shop,
+ *   merge: { stock: "counter" },
+ *   allow: ({ role }) => ({ read: role("viewer"), $default: role("editor") }),
+ * }),
+ * ```
+ *
+ * **The wrapper names its ORM, so there is no second declaration to drift from it**, and it is a
+ * function, so it can infer what a manifest's mapped type cannot: the kind `partition` names.
+ * `role()` is typed against that kind's own ladder — `role("viewer")` on a table whose kind has no
+ * `viewer` does not compile — where the spread form (`{ ...drizzleTable(products), partition,
+ * allow }`) checks it against every ladder the manifest declares, or any string under the value
+ * form. A reserved kind (`global`, `user`, `local`) takes no `allow`; a declared kind requires one.
+ *
+ * Called with the derivation options alone it returns `{ columns }`, for an entry that overrides a
+ * derived column by name before spreading it in.
+ */
+export function drizzleTable<const D extends DrizzleTableLike>(
+  drizzle: D,
+  options: DrizzleTableReserved<D>,
+): DrizzleEntry<D> & Pick<DrizzleTableReserved<D>, "partition">;
+export function drizzleTable<const D extends DrizzleTableLike, N extends string, R extends string>(
+  drizzle: D,
+  options: DrizzleTableInKind<D, N, R>,
+): DrizzleEntry<D> & Pick<DrizzleTableInKind<D, N, R>, "partition" | "allow">;
+// the derivation-only form stays last: it is all-optional, so a literal that also names `merge` or
+// `onWarn` survives the first overload pass, and `allow` would be typed by it — as `any` — before
+// the kind form is tried
+export function drizzleTable<const D extends DrizzleTableLike>(
+  drizzle: D,
+  options?: FromDrizzleOptions<D>,
+): DrizzleEntry<D>;
+export function drizzleTable<const D extends DrizzleTableLike>(
+  drizzle: D,
+  options: DrizzleTableOptions<D> = {},
+) {
+  const { partition, allow, ...derive } = options;
+  const columns = fromDrizzle(drizzle, derive);
+  if (partition === undefined) return { columns };
+  return allow === undefined ? { columns, partition } : { columns, partition, allow };
 }

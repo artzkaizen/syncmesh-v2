@@ -190,11 +190,10 @@ An `organization` is a practice; members are `owner | admin | member`; patients 
 belong to the practice; the dental code catalogues are shared by everyone.
 
 ```ts
+const practice = partition("practice", { roles: ladder("owner", "admin", "member") });
+
 export const practiceSchema = () =>
   defineSchema({
-    partitions: { practice: {} },
-    roles: { practice: ["owner", "admin", "member"] },
-
     tables: {
       // no partition: global — the authority writes it, every device reads it
       procedure: { columns: fromDrizzle(drizzle.procedure) },
@@ -202,12 +201,12 @@ export const practiceSchema = () =>
 
       patient: {
         columns: fromDrizzle(drizzle.patient),
-        partition: "practice",
+        partition: practice,
         allow: ({ role }) => ({ $default: role("member"), delete: role("admin") }),
       },
       appointment: {
         columns: fromDrizzle(drizzle.appointment, { merge: { rating: "max" } }),
-        partition: "practice",
+        partition: practice,
         allow: ({ role, owner, any }) => ({
           $default: role("member"),
           update: any(owner("dentistId"), role("admin")),
@@ -215,11 +214,11 @@ export const practiceSchema = () =>
       },
       treatment_plan: {
         columns: fromDrizzle(drizzle.treatmentPlan),
-        partition: "practice",
+        partition: practice,
         allow: ({ role }) => ({ $default: role("member") }),
       },
 
-      preference: { columns: { id: t.text().primaryKey(), locale: t.text() }, partition: "user" },
+      preference: { columns: { id: t.text().primaryKey(), locale: t.text() }, partition: user },
     },
   });
 ```
@@ -340,10 +339,10 @@ framework catalogs with per-org overlays, and a tree of legal entities that narr
 member may see.
 
 ```ts
+const org = partition("org"); // entities are not partitions: see below
+
 export const complianceSchema = () =>
   defineSchema({
-    partitions: { org: {} }, // entities are not partitions: see below
-
     tables: {
       // global catalogs: replicated to every org, written by the platform
       catalog: { columns: fromDrizzle(drizzle.catalog) },
@@ -353,13 +352,13 @@ export const complianceSchema = () =>
       // a per-org overlay on the global catalogs
       catalog_selection: {
         columns: fromDrizzle(drizzle.catalogSelection),
-        partition: "org",
+        partition: org,
         allow: ({ can }) => ({ $default: can("catalogs", "update") }),
       },
 
       control: {
         columns: fromDrizzle(drizzle.control, { merge: { score: "max" } }),
-        partition: "org",
+        partition: org,
         allow: ({ can, claim, any }) => ({
           $default: can("controls", "update"),
           read: claim("entities").has("entityId"), // row.entityId ∈ grant.claims.entities
@@ -370,7 +369,7 @@ export const complianceSchema = () =>
       },
       policy: {
         columns: fromDrizzle(drizzle.policy),
-        partition: "org",
+        partition: org,
         allow: ({ can, claim }) => ({
           $default: can("policies", "update"),
           read: claim("entities").has("entityId"),
@@ -379,7 +378,7 @@ export const complianceSchema = () =>
 
       notification_preference: {
         columns: fromDrizzle(drizzle.notificationPreference),
-        partition: "user",
+        partition: user,
       },
     },
   });
@@ -507,16 +506,15 @@ predicate over the row's own state that changes with time.
 The manifest names a third tier per table:
 
 ```ts
+const clinic = partition("clinic", { roles: ladder("owner", "admin", "doctor", "staff") });
+
 export const clinicSchema = () =>
   defineSchema({
-    partitions: { clinic: {} },
-    roles: { clinic: ["owner", "admin", "doctor", "staff"] },
-
     tables: {
       icd_code: { columns: fromDrizzle(drizzle.icdCode) }, // global
       booking: {
         columns: fromDrizzle(drizzle.booking),
-        partition: "clinic",
+        partition: clinic,
         allow: ({ role, owner, any }) => ({
           $default: role("staff"),
           update: any(owner("userId"), role("admin")),
@@ -524,7 +522,7 @@ export const clinicSchema = () =>
       },
       schedule: {
         columns: fromDrizzle(drizzle.schedule),
-        partition: "clinic",
+        partition: clinic,
         allow: ({ role }) => ({ $default: role("staff") }),
       },
 

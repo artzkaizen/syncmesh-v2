@@ -1,4 +1,4 @@
-import { createApp, createHandler } from "@syncmesh/orpc";
+import { createClient, createHandler, sqlite } from "@syncmesh/orpc";
 import { relayTransport, webSocketDial } from "@syncmesh/relay";
 import { nodeSqliteDriver } from "@syncmesh/sqlite-node";
 import { Temporal } from "@syncmesh/temporal";
@@ -8,17 +8,22 @@ import { mkdirSync } from "node:fs";
 import { PRACTICE, procedures, roundsSchema } from "../rounds.js";
 
 /**
- * The mesh, on the server.
+ * The mesh, on the server — now a choice rather than a constraint.
  *
- * A browser has no SQLite — `sqlite-wasm` over OPFS is unbuilt (E04) — so it cannot hold the
- * ward's partition and cannot run a read locally. This process can: it opens the partition, joins
- * the relay, and answers the browser's calls against it. The browser runs the *same procedures*,
- * one HTTP hop away.
+ * This used to say a browser has no SQLite. It does now: `@syncmesh/sqlite-wasm` holds a
+ * partition over OPFS on the page's own thread, so a browser can run a read locally and this app
+ * *could* be local-first.
  *
- * Which makes the honest description of this app **not local-first**. It is a normal web app on
- * top of a mesh node, and the reason to build it is that the ward's phones are on the same relay:
- * a reading taken on a phone with no signal appears here when it syncs, without this server ever
- * polling anything.
+ * It still is not, and the reason is what this screen is. A ward display is a shared, fixed,
+ * signed-in-once terminal, not somebody's device: giving it a replica of its own would mean a
+ * second copy of the ward's data on a machine in a corridor, an OPFS quota to manage and a
+ * leader election between tabs, to save a hop on a wired connection that is never offline. The
+ * phones are where local-first earns its cost, and they are on the same relay — a reading taken
+ * with no signal appears here when it syncs, without this server polling anything.
+ *
+ * So the honest description is unchanged: **a normal web app on top of a mesh node.** What
+ * changed is that it is now a decision with a reason, and `apps/issues` is where the browser
+ * replica is actually exercised.
  */
 
 const seed = (n: number) => Uint8Array.from({ length: 32 }, (_, i) => n + i);
@@ -32,20 +37,20 @@ const station = createIdentity(seed(200)).unwrap();
 
 mkdirSync(".syncmesh", { recursive: true }); // `bunSqliteDriver` opens a file, it does not make a directory
 
-export const { api, mesh } = await createApp({
+export const client = createClient({
   schema: roundsSchema(),
   procedures,
-  instance: PRACTICE,
   identity: station,
-  issuer: issuer.peerId,
+  trust: { issuer: issuer.peerId },
   // `node:sqlite`, not `bun:sqlite`: Vite's dev server runs this module under Node, and a web
   // app should not be tied to one runtime anyway. Bun implements `node:sqlite` too, so the same
   // driver serves both.
-  driver: nodeSqliteDriver(".syncmesh/rounds-web.db"),
+  storage: sqlite({ driver: nodeSqliteDriver(".syncmesh/rounds-web.db") }),
   transports: [relayTransport({ dial: webSocketDial(RELAY_URL) })],
 });
+await client.$ready;
 
-mesh.grants
+client.$grants
   .register(
     issueGrant(issuer, {
       account: "acct_station",
@@ -60,7 +65,7 @@ mesh.grants
   )
   .unwrap();
 
-await mesh.settled();
+await client.$mesh.settled();
 
 /** One POST, carrying a path and an input. Every browser call arrives here. */
-export const handle = createHandler({ procedures, api });
+export const handle = createHandler({ procedures, api: client });

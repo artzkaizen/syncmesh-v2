@@ -56,7 +56,7 @@ export interface WriteDeps {
   readonly undoDepth: number;
   readonly undo: Undo[];
   readonly atomically: <T>(fn: (scoped: AtomicStores) => Promise<T>) => Promise<T>;
-  readonly stateOf: () => State;
+  readonly getState: () => State;
   readonly fold: (entries: readonly StoredEvent[], source: FoldSource) => FoldBatch;
   readonly persist: (batch: FoldBatch, into: PersistInto) => Promise<void>;
   readonly notify: (batch: FoldBatch) => void;
@@ -80,7 +80,7 @@ export function createWritePath(deps: WriteDeps) {
     undoDepth,
     undo,
     atomically,
-    stateOf,
+    getState,
     fold,
     persist,
     notify,
@@ -99,7 +99,7 @@ export function createWritePath(deps: WriteDeps) {
       }
       const verdict = probeVerdict(validate, probeOf(peerId, changes, mutateOptions), before);
       if (verdict !== undefined) yield* verdict;
-      const inverse = undoDepth > 0 ? invert(stateOf(), changes) : [];
+      const inverse = undoDepth > 0 ? invert(getState(), changes) : [];
       const hlc = clock.tick();
       const scope = mutateOptions.local === true ? "local" : "synced";
       telemetry.emit({ type: "engine.mutate", sizes: { changes: changes.length }, duration });
@@ -117,6 +117,20 @@ export function createWritePath(deps: WriteDeps) {
                 mutateOptions,
               );
               (await scoped.events.append({ event })).unwrap();
+              /**
+               * **The ledger row belongs to the durable half, so it lands with the event.**
+               *
+               * It used to be written after `persist`, which was harmless while one transaction
+               * covered both — and is not, the moment the log and the derived state can commit
+               * separately (RFC-0022). A tear there left a write that happened with no record
+               * that it had been started, which is the one thing the record exists to prevent:
+               * its `id` is minted *before* the commit so an interrupted caller can find it.
+               *
+               * Above `persist` rather than below, and that is the whole ordering rule: whatever
+               * cannot be recomputed goes first, whatever can goes second, and a crash between
+               * them costs a replay rather than a fact.
+               */
+              await mutateOptions.record?.(event);
               const folded = fold([{ event }], "local");
               await persist(folded, scoped);
               return { event, folded };

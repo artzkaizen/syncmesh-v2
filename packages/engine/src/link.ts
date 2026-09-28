@@ -1,6 +1,6 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
-import { Result } from "@syncmesh/result";
+import { Result, TaggedError } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 
 import type { Engine } from "./engine.js";
@@ -20,13 +20,27 @@ export interface LinkOptions {
   readonly now?: () => Temporal.Instant;
 }
 
+/**
+ * `catchUp` was asked of a link that is not carrying anything, so nothing was exchanged.
+ *
+ * Its own error rather than `Result.ok(undefined)`, which is what this used to answer. A success
+ * that did nothing is indistinguishable from a success that did everything, and both sides of
+ * that ambiguity read as "these two engines now agree" — so a test asserting convergence over a
+ * link somebody forgot to bring back up passes, and a caller that drives `catchUp` in a loop
+ * spins forever against a link that will never speak.
+ */
+export class LinkOffline extends TaggedError("LinkOffline")<{ message: string }> {}
+
 export interface Link {
   /** A live-forwarded event could not be stored on the receiving side. */
   readonly onError: (listener: (error: StoreFailure) => void) => Unsubscribe;
   readonly setOnline: (online: boolean) => void;
   readonly online: () => boolean;
-  /** Runs the sync protocol both ways until neither side has anything to send. */
-  readonly catchUp: () => Promise<Result<void, StoreFailure>>;
+  /**
+   * Runs the sync protocol both ways until neither side has anything to send, or
+   * {@link LinkOffline} when the link is down and there was never a chance of it.
+   */
+  readonly catchUp: () => Promise<Result<void, StoreFailure | LinkOffline>>;
   /** Waits for live forwarding already in progress. */
   readonly flush: () => Promise<void>;
   readonly close: () => void;
@@ -83,7 +97,10 @@ export function createLink(a: Engine, b: Engine, options: LinkOptions = {}): Lin
   const catchUp: Link["catchUp"] = () =>
     Result.gen(async function* () {
       await queue;
-      if (!online) return Result.ok(undefined);
+      if (!online)
+        return Result.err(
+          new LinkOffline({ message: "the link is offline: nothing was exchanged" }),
+        );
       for (;;) {
         const ab = yield* Result.await(step(a, b, stateA, stateB));
         stateA = ab.from;

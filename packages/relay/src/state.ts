@@ -3,6 +3,7 @@ import type { PeerId, SyncEvent } from "@syncmesh/kernel";
 import type { BlobStore } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { PresenceStore } from "@syncmesh/transport";
+import type { Identity } from "@syncmesh/wire";
 
 import type { GrantCache } from "./grant-cache.js";
 import type { Budget, RelayLimits } from "./limits.js";
@@ -26,6 +27,8 @@ export interface RoomState {
   readonly maxBacklog: number;
   /** The protocol versions this room accepts; `join` offers, the highest in common wins (D14). */
   readonly versions: readonly number[];
+  /** The key this room opens each sealed link with (D36): what its hello is signed by. */
+  readonly identity: Identity;
   /** What one socket may spend before the relay hangs up on it: frame size and rate. */
   readonly limits: RelayLimits;
   /** Where this room's bytes live (D18); absent, it serves none and says so. */

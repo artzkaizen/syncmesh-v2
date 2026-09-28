@@ -13,8 +13,9 @@ import { createHub, trackCoverage, type Unsubscribe } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { createPresenceStore } from "@syncmesh/transport";
+import { createIdentity, isRelayable, randomBytes, type Identity } from "@syncmesh/wire";
 
-import type { RelayConnection } from "./connection.js";
+import type { ConnectionOptions, RelayConnection } from "./connection.js";
 import type { Fanout } from "./fanout.js";
 import type { GrantCache } from "./grant-cache.js";
 import type { RelayLimits } from "./limits.js";
@@ -24,12 +25,12 @@ import type { Client, RoomState } from "./state.js";
 
 import { createConnection } from "./connection.js";
 import { fanIn } from "./fan-in.js";
-import { RELAY_PROTOCOL_VERSIONS, kaFrame } from "./frames.js";
+import { HANDSHAKE_VERSION, RELAY_PROTOCOL_VERSIONS, kaFrame, speaksHandshake } from "./frames.js";
 import { createGrantCache } from "./grant-cache.js";
 import { DEFAULT_LIMITS } from "./limits.js";
 import { roomRetention } from "./retention.js";
 
-export type { RelayConnection } from "./connection.js";
+export type { ConnectionOptions, RelayConnection } from "./connection.js";
 
 export interface RelayRoomOptions {
   readonly name: string;
@@ -49,6 +50,13 @@ export interface RelayRoomOptions {
    * never a mid-stream decode failure.
    */
   readonly versions?: readonly number[];
+  /**
+   * The key this room signs its link hello with (D36). Absent, a fresh one per open — the link
+   * is then confidential against everyone but the relay itself, which is what it is for, and a
+   * client pins nothing. Given, the room has a name a client could pin one day; a host with a
+   * durable store keeps one beside the epoch for exactly that reason.
+   */
+  readonly identity?: Identity;
   /**
    * Per-socket ceilings; each half defaults from `DEFAULT_LIMITS`. `rates` is all-or-nothing —
    * a partly-overridden rate table is a table where the class nobody thought about is the one
@@ -90,7 +98,7 @@ export interface RelayRoomOptions {
  * relay can drop traffic but cannot forge it.
  */
 export interface RelayRoom {
-  readonly connect: (socket: RelaySocket) => RelayConnection;
+  readonly connect: (socket: RelaySocket, options?: ConnectionOptions) => RelayConnection;
   /**
    * Entries this room's log holds, counted up from what was there when it opened. A retention
    * sweep does not move it back down, so a restart after one starts lower than the number the
@@ -125,6 +133,21 @@ export async function openRelayRoom(
   const { name, store, epoch, keepaliveMs = 15_000, pageSize = 2000 } = options;
   const maxBacklog = options.maxBacklog ?? 1000;
   const now = options.now ?? (() => Temporal.Now.instant());
+  const versions = options.versions ?? RELAY_PROTOCOL_VERSIONS;
+  // a definition mistake, so it throws: a room speaks a hello first or a challenge first, and a
+  // list that mixes 3 with an older version asks one socket to be told both
+  if (speaksHandshake(versions) && versions.some((v) => v !== HANDSHAKE_VERSION))
+    throw new Error(
+      `a relay room lists ${HANDSHAKE_VERSION} alone or leaves it out: the link handshake and the challenge cannot share one socket (got ${versions.join(", ")})`,
+    );
+  const identity =
+    options.identity ??
+    createIdentity(randomBytes(32)).match({
+      ok: (value) => value,
+      err: (failure) => {
+        throw new Error(`the room's identity could not be made: ${failure.message}`);
+      },
+    });
   const boot = await store.all();
   if (boot.isErr()) return boot;
   // read before the log is walked, because it is what the walk starts from: a log already trimmed
@@ -140,7 +163,7 @@ export async function openRelayRoom(
    * from. Any log the relay did not fill itself holds both (`StartRelayOptions.store`).
    */
   const servable = (entry: StoredEvent): boolean =>
-    entry.sig !== undefined && entry.event.local !== true;
+    isRelayable(entry) && entry.event.local !== true;
   // contiguous, and over the same entries: a MAX cursor over a hole is a claim the room cannot
   // take back, because every client asks for what is *above* the number it was given
   const coverage = trackCoverage(trimmed.value);
@@ -202,7 +225,8 @@ export async function openRelayRoom(
     keepaliveMs,
     pageSize,
     maxBacklog,
-    versions: options.versions ?? RELAY_PROTOCOL_VERSIONS,
+    versions,
+    identity,
     limits: { ...DEFAULT_LIMITS, ...options.limits },
     blobs: retention.blobs,
     grants,
@@ -225,8 +249,17 @@ export async function openRelayRoom(
   // subscribed after the state exists, because a fanned-in frame is ingested through it
   const offFan = fan?.onFrame(fanIn(state));
 
+  // said once, at open, and never again: which rooms grow forever is a thing an operator should
+  // learn from a dashboard rather than from a disk alert (gap audit №8)
+  if (retention.unbounded)
+    telemetry.emit({
+      type: "relay.retention.unbounded",
+      sizes: { blobBytes: retention.blobCeiling },
+      duration: Temporal.Duration.from({ seconds: 0 }),
+    });
+
   return Result.ok({
-    connect: (socket) => createConnection(socket, state),
+    connect: (socket, options) => createConnection(socket, state, options),
     offset: () => offset,
     clients: () => clients.size,
     floor: retention.floor,

@@ -67,7 +67,7 @@ export interface PersistInto {
  * three, which is what keeps that order from being re-decided once per caller.
  */
 export interface FoldPath {
-  readonly stateOf: () => State;
+  readonly getState: () => State;
   readonly setState: (next: State) => void;
   /**
    * Folds events into state, advancing each author's cursor and feed chain as they land.
@@ -124,11 +124,11 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
   };
 
   return {
-    stateOf: () => state,
+    getState: () => state,
     setState: (next) => void (state = next),
     fold,
     persist: async (batch, into) => {
-      if (batch.eventCount === 0) return;
+      if (batch.eventCount === 0 || into === undefined) return;
       const report = (written: Result<void, StoreFailure>) => {
         if (written.isOk()) return;
         if (atomic) throw written.error;

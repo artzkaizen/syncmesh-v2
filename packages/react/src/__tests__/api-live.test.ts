@@ -1,8 +1,10 @@
 import "./dom.js";
 import { createMesh } from "@syncmesh/client";
+import { syncOf } from "@syncmesh/drizzle";
 import { parsePeerId, type SeqNum } from "@syncmesh/kernel";
-import { meshApi, mutation, query } from "@syncmesh/orpc";
-import { defineSchema, t } from "@syncmesh/schema";
+import { mutation, query } from "@syncmesh/orpc";
+import { meshApi } from "@syncmesh/orpc/internal";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -15,28 +17,32 @@ import { z } from "zod";
 
 import { useCan } from "../use-can.js";
 import { useLiveQuery } from "../use-live-query.js";
-import { useSyncOf } from "../use-sync-of.js";
 
 const book = sqliteTable("book", { id: text().primaryKey(), title: text().notNull() });
 
-const schema = defineSchema({
-  partitions: { org: {} },
-  roles: { org: ["owner", "member"] },
+const org = partition("org", { roles: ladder("owner", "member") });
+const schema = syncSchema({
   tables: {
     book: {
       columns: { id: t.text().primaryKey(), title: t.text() },
-      partition: "org",
+      partition: org,
       allow: ({ role }) => ({ $default: role("member") }),
     },
   },
 });
 
 const books = {
-  list: query.handler(({ mesh }) => mesh.db.select().from(book).orderBy(asc(book.id))),
+  list: query
+    .input(z.object({ orgId: z.string() }))
+    .handler(({ db }) => db.select().from(book).orderBy(asc(book.id))),
+  reach: query
+    .input(z.object({ orgId: z.string() }))
+    .handler(({ db, self }) => db.select({ id: book.id, sync: syncOf(self, book) }).from(book)),
+
   create: mutation
-    .input(z.object({ id: z.string(), title: z.string().min(1) }))
-    .handler(async ({ input, mesh }) => {
-      await mesh.db.insert(book).values(input);
+    .input(z.object({ orgId: z.string(), id: z.string(), title: z.string().min(1) }))
+    .handler(async ({ input, db }) => {
+      await db.insert(book).values({ id: input.id, title: input.title });
       return { id: input.id };
     }),
 };
@@ -44,7 +50,8 @@ const books = {
 const issuer = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 3 + i)).unwrap();
 const device = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 90 + i)).unwrap();
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
-const ACME = "org:acme";
+const ORG = "acme";
+const ACME = `org:${ORG}`;
 
 const open = async () => {
   const mesh = (
@@ -69,7 +76,7 @@ const open = async () => {
       }),
     )
     .unwrap();
-  return { mesh, api: meshApi(mesh, { books }, { instance: ACME }) };
+  return { mesh, api: meshApi({ ...mesh, self: device.peerId }, { books }) };
 };
 
 const mount = async (element: Parameters<Root["render"]>[0]) => {
@@ -87,58 +94,66 @@ describe("useLiveQuery over api.*", () => {
     const renders: string[] = [];
 
     const List = () => {
-      const { data, isPending, isSettled, error } = useLiveQuery(api.books.list());
+      const { data, isPending, answered, error } = useLiveQuery(api.books.list({ orgId: ORG }));
       renders.push(
         error !== undefined
           ? `err:${error.message}`
-          : `${isPending ? "…" : data.map((b) => b.title).join(",")}|settled=${String(isSettled)}`,
+          : `${isPending ? "…" : data.map((b) => b.title).join(",")}|${answered}`,
       );
       return null;
     };
 
     const { settle } = await mount(createElement(List));
     // no transports: every source has answered, and the list is empty because it is empty
-    expect(renders.at(-1)).toBe("|settled=true");
+    expect(renders.at(-1)).toBe("|settled");
 
     await act(async () => {
-      (await api.books.create({ id: "b1", title: "Dune" })).unwrap();
+      (await api.books.create({ orgId: ORG, id: "b1", title: "Dune" }).committed).unwrap();
     });
     await settle();
-    expect(renders.at(-1)).toBe("Dune|settled=true");
+    expect(renders.at(-1)).toBe("Dune|settled");
 
     const before = renders.length;
     await act(async () => {
-      (await api.books.create({ id: "b2", title: "Ubik" })).unwrap();
+      (await api.books.create({ orgId: ORG, id: "b2", title: "Ubik" }).committed).unwrap();
     });
     await settle();
-    expect(renders.at(-1)).toBe("Dune,Ubik|settled=true");
+    expect(renders.at(-1)).toBe("Dune,Ubik|settled");
     expect(renders.length).toBeGreaterThan(before);
 
     await mesh.stop();
   });
 
-  test("api.$can gates a button without the component naming a mesh or an instance", async () => {
+  test("a rehearsal gates a button without the component naming a mesh or an instance", async () => {
     const { mesh, api } = await open();
     let allowed: boolean | undefined;
     const Button = () => {
-      allowed = useCan(api.$can, "book.insert");
+      allowed = useCan(api.books.create.can({ orgId: ORG, id: "b0", title: "Gate" }));
       return null;
     };
-    await mount(createElement(Button));
+    const { settle } = await mount(createElement(Button));
+    await settle();
     expect(allowed).toBe(true);
+    // rehearsed and rolled back: the row the verdict was about was never written
+    expect(await api.books.list({ orgId: ORG })["~mesh"].run()).toEqual([]);
     await mesh.stop();
   });
 
-  test("a row's receipt updates itself when the acknowledgement lands", async () => {
+  test("a row's reach arrives with the row, and moves when the acknowledgement lands", async () => {
     const { mesh, api } = await open();
     const seen: (string | undefined)[] = [];
-    const Row = ({ id }: { readonly id: string }) => {
-      seen.push(useSyncOf(api.$sync, "book", id));
+    // the reach is a **column**, selected with the row it is about — so it re-renders through the
+    // live query that already re-runs on an acknowledgement, rather than a second subscription
+    // keyed by table name and row id that could answer about a different row than the one drawn
+    const Row = () => {
+      const { data } = useLiveQuery(api.books.reach({ orgId: ORG }));
+      seen.push(data?.[0]?.sync ?? undefined);
       return null;
     };
 
-    (await api.books.create({ id: "b1", title: "Dune" })).unwrap();
-    const { settle } = await mount(createElement(Row, { id: "b1" }));
+    (await api.books.create({ orgId: ORG, id: "b1", title: "Dune" }).committed).unwrap();
+    const { settle } = await mount(createElement(Row, {}));
+    await settle();
     expect(seen.at(-1)).toBe("local");
 
     // a peer says it holds everything this device has authored — no re-render is asked for
@@ -157,10 +172,10 @@ describe("useLiveQuery over api.*", () => {
 
   test("input the schema refuses never reaches the table", async () => {
     const { mesh, api } = await open();
-    const refused = await api.books.create({ id: "b3", title: "" });
+    const refused = await api.books.create({ orgId: ORG, id: "b3", title: "" }).committed;
     expect(refused.isErr()).toBe(true);
 
-    const rows = await api.books.list().run();
+    const rows = await api.books.list({ orgId: ORG })["~mesh"].run();
     expect(rows).toEqual([]);
     await mesh.stop();
   });

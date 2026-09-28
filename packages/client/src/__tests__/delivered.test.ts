@@ -1,6 +1,6 @@
 import { createLink } from "@syncmesh/engine";
 import { eventId } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -10,14 +10,13 @@ import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { createMesh } from "../mesh.js";
 
 const todos = sqliteTable("todos", { id: text().primaryKey(), title: text().notNull() });
+const org = partition("org", { roles: ladder("member") });
 const schema = () =>
-  defineSchema({
-    partitions: { org: {} },
-    roles: { org: ["member"] },
+  syncSchema({
     tables: {
       todos: {
         columns: { id: t.text().primaryKey(), title: t.text() },
-        partition: "org",
+        partition: org,
         allow: ({ role }) => ({ $default: role("member") }),
       },
     },

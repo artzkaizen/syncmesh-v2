@@ -58,7 +58,6 @@ export type TableDigests = ReadonlyMap<TableName, bigint>;
 export function tableDigests(state: State, interest?: Interest): TableDigests {
   const digests = new Map<TableName, bigint>();
   for (const [table, rows] of state) {
-    if (interest?.tables !== undefined && !interest.tables.includes(table)) continue;
     const within = [...rows.values()].filter((record) => rowsIn(record, interest));
     if (within.length === 0) continue;
     digests.set(table, sum(within.map(rowDigest)));
@@ -126,7 +125,7 @@ export interface RepairApi {
 }
 
 export interface RepairDeps {
-  readonly stateOf: () => State;
+  readonly getState: () => State;
   readonly mergeInto: (table: TableName, key: RowKey, record: RowRecord) => void;
   readonly persist: (batch: FoldBatch) => Promise<void>;
   readonly notify: (batch: FoldBatch) => void;
@@ -139,12 +138,12 @@ export interface RepairDeps {
  * never that this peer has seen the events behind it.
  */
 export function createRepairPath(deps: RepairDeps): RepairApi {
-  const { stateOf, mergeInto, persist, notify } = deps;
+  const { getState, mergeInto, persist, notify } = deps;
   return {
-    digest: (interest) => tableDigests(stateOf(), interest),
-    rowDigests: (table, interest) => rowDigests(stateOf(), table, interest),
+    digest: (interest) => tableDigests(getState(), interest),
+    rowDigests: (table, interest) => rowDigests(getState(), table, interest),
     rowRecords: (table: TableName, keys: readonly RowKey[]): readonly RepairRow[] => {
-      const rows = stateOf().get(table);
+      const rows = getState().get(table);
       return keys.flatMap((key) => {
         const record = rows?.get(key);
         return record === undefined ? [] : [{ key, record }];

@@ -69,6 +69,29 @@ export const eventCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
     },
   },
   {
+    /**
+     * The audit `openEngine` runs at every boot. An unsigned entry is this device's own write
+     * until the day the device takes a new key — after which the same row is a write nobody can
+     * sign and nobody will ever receive, and the only thing standing between that and silence is
+     * this statement returning it.
+     */
+    name: "events: stranded() finds the unsigned writes of an author this device is no longer",
+    run: async () => {
+      const store = await open(await openDriver("events-stranded"));
+      const signed = entry(A, 1, 100);
+      const retired = { event: event(A, 2, 101) }; // authored here, before the key changed
+      const mine = { event: event(B, 1, 102) }; // authored here, under the key in hand now
+      const localOnly = { event: event(A, 1, 103, { local: true }) }; // never going anywhere
+      (await store.appendBatch([signed, retired, mine, localOnly])).unwrap();
+
+      // asked as B: A's unsigned write is the one nobody here can sign. The signed entry is
+      // relayable whoever asks, and the local one was never leaving.
+      equal(cores((await store.stranded(B)).unwrap()), cores([retired]), "stranded(B)");
+      // and the predicate really is "unsigned, and not mine", not "unsigned, by A"
+      equal(cores((await store.stranded(A)).unwrap()), cores([mine]), "stranded(A)");
+    },
+  },
+  {
     name: "events: append is idempotent; has() answers per scope",
     run: async () => {
       const store = await open(await openDriver("events-idempotent"));
@@ -136,8 +159,11 @@ export const eventCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
     name: "events: a driver without transactions is still correct",
     run: async () => {
       const full = await openDriver("events-no-tx");
-      const bare = { run: full.run, all: full.all };
-      if (full.dialect !== undefined) Object.assign(bare, { dialect: full.dialect });
+      // everything but the transaction, rather than an allow-list of what to keep: naming the
+      // parts to carry meant the next property added to the port was dropped here in silence,
+      // and `log` was — the store then named `syncmesh.events` at a connection that has one
+      // database, which is a different failure wearing this test's name
+      const { transaction: _withoutIt, ...bare } = full;
       const store = await open(bare);
       (await store.appendBatch([entry(A, 1, 1), entry(A, 2, 2)])).unwrap();
       equal((await store.lastSeq(A, "synced")).unwrap(), seq(2), "lastSeq");

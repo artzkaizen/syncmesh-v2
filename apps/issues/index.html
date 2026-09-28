@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Issues — syncmesh</title>
+    <!--
+      The reset, and nothing else. Every other rule in this app is an inline style computed from
+      `@syncmesh/devtools`' tokens, so the palette has exactly one home; what cannot be expressed
+      that way — the page background behind the app's own root, a scrollbar, a focus ring — is
+      here, and is four rules long on purpose.
+    -->
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #0a0a0a;
+        color: #ededed;
+        -webkit-font-smoothing: antialiased;
+      }
+      ::selection {
+        background: rgba(255, 255, 255, 0.16);
+      }
+      :focus-visible {
+        outline: 1px solid rgba(255, 255, 255, 0.5);
+        outline-offset: 1px;
+      }
+      ::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.09);
+        border: 3px solid #0a0a0a;
+        border-radius: 999px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/app/main.tsx"></script>
+  </body>
+</html>

@@ -1,4 +1,4 @@
-import type { CellValue } from "@syncmesh/kernel";
+import type { CellValue, JsonValue } from "@syncmesh/kernel";
 
 import { Result, TaggedError } from "@syncmesh/result";
 
@@ -34,6 +34,28 @@ const accepts = {
   blob: (v) => v instanceof Uint8Array,
   uuid: (v) => typeof v === "string" && UUID_CANONICAL.test(v),
 } satisfies Readonly<Record<ColumnKind, (v: CellValue) => boolean>>;
+/**
+ * A `counter` column's two wire shapes (book ch. 2): the increment an event carries, and the
+ * per-author totals a snapshot carries. Everything else about the column stays `integer`.
+ */
+const safeTotals = (side: JsonValue | undefined): boolean =>
+  side !== null &&
+  side !== undefined &&
+  typeof side === "object" &&
+  !Array.isArray(side) &&
+  Object.values(side).every((n) => typeof n === "number" && Number.isSafeInteger(n));
+
+const acceptsCounter = (value: CellValue): boolean => {
+  if (value === null || typeof value !== "object" || value instanceof Uint8Array) return false;
+  if (Array.isArray(value)) return false;
+  if ("+" in value) return typeof value["+"] === "number" && Number.isSafeInteger(value["+"]);
+  // SAFETY: a non-array, non-bytes object CellValue is a JSON object, so its values are JsonValues
+  const held = value as Readonly<Record<string, JsonValue>>;
+  return (
+    Object.keys(held).every((k) => k === "p" || k === "n") && Object.values(held).every(safeTotals)
+  );
+};
+
 /** The text of a scalar cell — a string itself, a finite number in decimal — or `undefined` for anything else. */
 export const scalarText = (value: CellValue | undefined): string | undefined => {
   if (typeof value === "string") return value;
@@ -59,6 +81,13 @@ export function checkValue(
           new NullConstraintViolation({
             message: nullable ? "undefined is not null" : "column is not nullable",
           }),
+        );
+  }
+  if (column.def.merge === "counter") {
+    return acceptsCounter(value)
+      ? Result.ok(undefined)
+      : Result.err(
+          new KindMismatch({ expected: kind, message: "expected a counter increment or totals" }),
         );
   }
   if (!accepts[kind](value))

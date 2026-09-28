@@ -103,6 +103,25 @@ export interface BleRadio {
   readonly onCharacteristicValueChanged: (cb: (event: BleValueChanged) => void) => Unsubscribe;
   readonly onCharacteristicWriteRequested: (cb: (event: BleWriteRequested) => void) => Unsubscribe;
   readonly onSubscribersChanged: (cb: (event: BleSubscribers) => void) => Unsubscribe;
+  /**
+   * The adapter itself turning off, on, or being refused — the one event a radio cannot infer.
+   *
+   * **Its absence was a real bug.** Every other event here reports something about a *peer*; none
+   * of them fires when the radio under them is switched off, because from the stack's point of
+   * view nothing happened to any link — the medium simply stopped existing. So a phone whose
+   * Bluetooth was toggled off and on again never recovered: scanning and advertising had been
+   * torn down by the OS and nothing told this transport to start them again. It is the same shape
+   * as a Wi-Fi drop leaving a socket abandoned rather than closed, and it wants the same answer.
+   *
+   * `state` is CoreBluetooth's own vocabulary — `poweredOn`, `poweredOff`, `unauthorized`,
+   * `unsupported`, `resetting`, `unknown` — passed through rather than reduced, because
+   * "unauthorized" and "poweredOff" call for different things from a person and folding them into
+   * a boolean throws away the only part worth acting on.
+   *
+   * Optional because a medium with no such notion (a test double, a virtual air) is not obliged to
+   * invent one; a radio that cannot say is simply one nothing will wake.
+   */
+  readonly onAdapterStateChanged?: (cb: (state: string) => void) => Unsubscribe;
 }
 
 /**

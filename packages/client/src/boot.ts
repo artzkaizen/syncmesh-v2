@@ -1,5 +1,6 @@
 import type {
   Engine,
+  EngineError,
   EngineOptions,
   EventStore,
   StateCorrupt,
@@ -10,18 +11,20 @@ import type {
 } from "@syncmesh/engine";
 import type { MergeSpec, PeerId } from "@syncmesh/kernel";
 import type { Table } from "@syncmesh/schema";
-import type { SqlDriver, Stores } from "@syncmesh/storage";
+import type { OperationStore, RowSync, SqlDriver, StoreLocked, Stores } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { Grant, Identity } from "@syncmesh/wire";
 
 import { createValidator, openEngine } from "@syncmesh/engine";
-import { createHlcClock } from "@syncmesh/kernel";
+import { DEFAULT_MAX_DRIFT, createHlcClock } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
-import { installRls, openStores } from "@syncmesh/storage";
+import { syncedTables } from "@syncmesh/schema";
+import { installRls, openStores, operationStore } from "@syncmesh/storage";
 
 import { NoDefaultStore } from "./errors.js";
+import { deviceIncarnation } from "./identity.js";
 
-export type MeshOpenError = StoreFailure | StateCorrupt | NoDefaultStore;
+export type MeshOpenError = StoreFailure | StateCorrupt | NoDefaultStore | StoreLocked;
 
 export interface BootOptions {
   /** What boot reads off the manifest: the validator's structural view, plus the merge rules. */
@@ -47,6 +50,18 @@ export interface BootOptions {
   /** Install RLS from the read rules on boot; postgres drivers only. */
   readonly rls?: boolean;
   readonly now: () => Temporal.Instant;
+  /**
+   * The most a peer's stamp may lead `now()` and still be folded (D34); default
+   * {@link DEFAULT_MAX_DRIFT}. One bound for two seams — the clock clamps a remote stamp to it,
+   * the ladder parks an event beyond it — so a device never adopts a stamp it would not fold.
+   */
+  readonly clockDrift?: Temporal.Duration;
+  /**
+   * Threaded straight to {@link EngineOptions.onError}, which is the only reason it is on the
+   * options rather than a subscription taken afterwards: the stranded-writes audit runs *inside*
+   * `openEngine`, and a caller cannot subscribe to a call that has not returned.
+   */
+  readonly onError?: (error: EngineError) => void;
   readonly grantFor: (peer: PeerId) => Grant | undefined;
   /** Shipped config, threaded straight through: whether the ladder reads `_links` (D21). */
   readonly accounts?: boolean;
@@ -58,6 +73,16 @@ export interface Booted {
   readonly store: EventStore;
   /** The SQL connection the tables live on; absent for a mesh over a bare event store. */
   readonly driver?: SqlDriver;
+  /** The write ledger's store, on that same connection; present exactly when `driver` is. */
+  readonly operations?: OperationStore;
+  /**
+   * This store's lineage, minted into it on the first boot (D28) — what this device's custody
+   * receipts sign over. Present exactly when `driver` is: a mesh over a bare event store has no
+   * file to name, so it signs for nothing and says so by having nothing to say.
+   */
+  readonly incarnation?: string;
+  /** Where each row's own write got to (book ch. 10); present when the stores hold tables. */
+  readonly rowSync?: RowSync;
   /** The same ladder the engine runs on every write — for judging a captured transaction before it commits (D20). */
   readonly validate: Validator;
   readonly close: () => Promise<void>;
@@ -98,6 +123,8 @@ function validatorFor(options: BootOptions): ValidatorOptions {
     // arms the grace rung, and answers for a local write that has no stamp yet; an event
     // arriving from a peer carries its own, so both sides read it the same way
     now,
+    // the same bound the clock clamps to (D34): what this device will not adopt, it does not fold
+    maxDrift: options.clockDrift ?? DEFAULT_MAX_DRIFT,
   } satisfies ValidatorOptions;
   if (authority !== undefined) Object.assign(validatorOptions, { authority });
   if (options.accounts === true) Object.assign(validatorOptions, { accounts: true });
@@ -115,6 +142,21 @@ function policiesFor(
   return installRls(driver, options.schema);
 }
 
+/**
+ * Which stores this boot runs on: the caller's own log, the set they opened, a connection they
+ * handed over, or the platform's durable default — decided once, here, so the boot below reads
+ * as one path rather than four.
+ */
+function storesFor(
+  options: BootOptions,
+  tables: readonly Table[],
+): Promise<Result<Stores | undefined, MeshOpenError>> {
+  if (options.store !== undefined) return Promise.resolve(Result.ok(undefined));
+  if (options.stores !== undefined) return Promise.resolve(Result.ok(options.stores));
+  if (options.driver !== undefined) return openStores(options.driver, { tables });
+  return defaultStores(options.dataDir, String(options.identity.peerId), tables);
+}
+
 /** Opens the stores the options name (or the platform default) and boots the engine over them (D05). */
 export function openMeshEngine(options: BootOptions): Promise<Result<Booted, MeshOpenError>> {
   const { schema, identity, now } = options;
@@ -125,21 +167,14 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
   if (options.stores !== undefined && (options.store ?? options.driver) !== undefined)
     panic("`stores` is already a log and a connection: pass it alone");
   return Result.gen(async function* () {
-    const tables = schema.entries.map((e) => e.table);
-    const owned =
-      options.store !== undefined
-        ? undefined
-        : options.stores !== undefined
-          ? options.stores
-          : options.driver !== undefined
-            ? yield* Result.await(openStores(options.driver, { tables }))
-            : yield* Result.await(defaultStores(options.dataDir, String(identity.peerId), tables));
+    const tables = syncedTables(schema);
+    const owned = yield* Result.await(storesFor(options, tables));
     // SAFETY: one of the two is defined — `owned` is opened exactly when `store` is absent
     const store = (options.store ?? owned?.events) as EventStore;
     const validate = createValidator(validatorFor(options));
     const engineOptions = {
       peerId: identity.peerId,
-      clock: createHlcClock({ now }),
+      clock: createHlcClock({ now, maxDrift: options.clockDrift ?? DEFAULT_MAX_DRIFT }),
       store,
       merge: schema.merge,
       validate,
@@ -156,11 +191,33 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
       });
     if (options.undoDepth !== undefined)
       Object.assign(engineOptions, { undoDepth: options.undoDepth });
+    if (options.onError !== undefined) Object.assign(engineOptions, { onError: options.onError });
     const engine = yield* Result.await(openEngine(engineOptions));
     const booted = { engine, store, validate };
+    if (owned?.rowSync !== undefined) Object.assign(booted, { rowSync: owned.rowSync });
     const driver = options.driver ?? owned?.driver;
     yield* Result.await(policiesFor(options, driver));
-    if (driver !== undefined) Object.assign(booted, { driver });
+    if (driver !== undefined) {
+      Object.assign(booted, { driver });
+      const operations = yield* Result.await(operationStore(driver));
+      Object.assign(booted, { operations });
+      /*
+       * Beside the device key, in the same table and for the same reason: both are true of this
+       * database and neither may outlive it.
+       *
+       * **A lineage that will not read is not fatal, and the key is.** Without a key this device
+       * has no name to sign events under and there is nothing to open; without a lineage it still
+       * reads, writes, syncs and acknowledges — it just cannot sign for what it holds, so no peer
+       * counts it as a custodian. Refusing to open over that would trade every working thing for
+       * one that only other devices consult.
+       */
+      const lineage = await deviceIncarnation(driver);
+      if (lineage.isOk()) Object.assign(booted, { incarnation: lineage.value });
+      else
+        console.warn(
+          `[syncmesh] this store cannot sign for what it holds: ${lineage.error.message}`,
+        );
+    }
     return Result.ok({
       ...booted,
       // a driver or a set of stores you passed stays yours to close; the default store is ours

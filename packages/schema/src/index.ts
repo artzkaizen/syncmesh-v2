@@ -29,11 +29,6 @@ export {
 } from "./table.js";
 export type {
   Manifest,
-  PartitionKind,
-  PartitionTree,
-  ReservedKind,
-  RoleNames,
-  Roles,
   Schema,
   SchemaEntry,
   ColumnsMap,
@@ -42,8 +37,11 @@ export type {
 } from "./manifest.js";
 export type { AllowFn, Combinators } from "./bind.js";
 export { combinators } from "./bind.js";
-export { defineSchema } from "./manifest.js";
-export type { PresenceBlock, PresenceEntry, PresenceMap, PresenceTopic } from "./manifest.js";
+export { syncSchema, syncedTables } from "./manifest.js";
+export type { RoleSet } from "@syncmesh/policy";
+export type { Partition, ReservedPartition, RolesOf } from "./partition.js";
+export { flat, global, isPartition, ladder, local, partition, user } from "./partition.js";
+export type { PresenceBlock, PresenceEntry, PresenceMap, PresenceTopic } from "./presence.js";
 export {
   RESERVED,
   cdcTable,
@@ -61,7 +59,13 @@ export type {
   DrizzleWarning,
   FromDrizzleOptions,
 } from "./from-drizzle.js";
-export { fromDrizzle, sourceName } from "./from-drizzle.js";
+export { drizzleTable, fromDrizzle, sourceName } from "./from-drizzle.js";
+export type {
+  DrizzleEntry,
+  DrizzleTableInKind,
+  DrizzleTableOptions,
+  DrizzleTableReserved,
+} from "./drizzle-options.js";
 export type { AppValue } from "./convert.js";
 export {
   fromWirePatch,

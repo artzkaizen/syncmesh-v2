@@ -1,6 +1,6 @@
 import type { Interest } from "@syncmesh/engine";
 
-import { createMemoryEventStore, interestText, narrows } from "@syncmesh/engine";
+import { createMemoryEventStore, interestText } from "@syncmesh/engine";
 import { describe, expect, test } from "bun:test";
 
 import type { RelayRoom } from "../room.js";
@@ -15,6 +15,8 @@ import { ACME, GLOBEX, bodyOf, peer, tick, write } from "./fixtures.js";
 const dialTo = (room: RelayRoom) => (): RelayDial => {
   const frames = new Set<(frame: Uint8Array) => void>();
   const closes = new Set<() => void>();
+  /** What the room sent before the transport subscribed — its challenge (D33) — kept as a socket would. */
+  const early: Uint8Array[] = [];
   let open = true;
   const hangUp = (): void => {
     if (!open) return;
@@ -26,7 +28,10 @@ const dialTo = (room: RelayRoom) => (): RelayDial => {
     send: (frame) => {
       if (!open) return "dropped";
       const bytes = Uint8Array.from(frame);
-      queueMicrotask(() => frames.forEach((cb) => cb(bytes)));
+      queueMicrotask(() => {
+        if (frames.size === 0) early.push(bytes);
+        else frames.forEach((cb) => cb(bytes));
+      });
       return "sent";
     },
     close: () => hangUp(),
@@ -39,6 +44,7 @@ const dialTo = (room: RelayRoom) => (): RelayDial => {
     },
     onFrame: (cb) => {
       frames.add(cb);
+      for (const bytes of early.splice(0)) cb(bytes);
       return () => void frames.delete(cb);
     },
     onClose: (cb) => {
@@ -146,30 +152,6 @@ describe("a cursor that asked for less", () => {
     expect(Number(device.engine.coverage().synced.get(author.identity.peerId))).toBe(3);
 
     await wide.stop();
-    await stop();
-    room.close();
-  });
-
-  test("a narrowed interest keeps its cursor, because narrowing costs nothing", async () => {
-    const { room, stop } = await roomWithBoth();
-    const device = peer(80, "acct_b");
-
-    const first = relayTransport({ dial: dialTo(room), reconnectMs: 10, interest: ACME_ONLY });
-    await first.start(device.context);
-    await first.whenReady();
-    await tick(30);
-    await first.stop();
-
-    const tighter: Interest = { partitions: [ACME], tables: [] };
-    const second = relayTransport({ dial: dialTo(room), reconnectMs: 10, interest: tighter });
-    await second.start(device.context);
-    await second.whenReady();
-    await tick(30);
-    // it asked from where it was, so the relay had nothing to re-send
-    expect(narrows(tighter, ACME_ONLY)).toBe(true);
-    expect(Number(device.engine.coverage().synced.size)).toBe(1);
-
-    await second.stop();
     await stop();
     room.close();
   });

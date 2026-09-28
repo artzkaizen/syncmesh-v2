@@ -1,4 +1,4 @@
-import type { EngineOptions } from "@syncmesh/engine";
+import type { Cursors, EngineOptions, Interest } from "@syncmesh/engine";
 import type { TransportContext } from "@syncmesh/transport";
 
 import { createEngine, createMemoryEventStore, createValidator } from "@syncmesh/engine";
@@ -14,7 +14,7 @@ import {
   type TableName,
 } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { defineSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import {
   createGrantRegistry,
@@ -26,19 +26,21 @@ import {
 } from "@syncmesh/wire";
 
 import type { RelayFrame } from "../frames.js";
-import type { RelayRoomOptions } from "../room.js";
+import type { RelayRoom, RelayRoomOptions } from "../room.js";
 import type { RelaySocket, SendOutcome } from "../sender.js";
+import type { RelayDial } from "../transport.js";
 
-import { decodeRelayFrame } from "../frames.js";
+import { decodeRelayFrame, joinCore, joinFrame } from "../frames.js";
+import { proveJoin } from "../proof.js";
 import { openRelayRoom } from "../room.js";
+import { isHello, secureLink } from "../secure.js";
 
-export const schema = defineSchema({
-  partitions: { org: {} },
-  roles: { org: ["member"] },
+const org = partition("org", { roles: ladder("member") });
+export const schema = syncSchema({
   tables: {
     notes: {
       columns: { id: t.text().primaryKey(), body: t.text() },
-      partition: "org",
+      partition: org,
       allow: ({ role }) => ({ $default: role("member") }),
     },
   },
@@ -170,7 +172,11 @@ export const fakeSocket = () => {
   };
 };
 
-/** A room on a fresh memory log; every option a test cares about is an override. */
+/**
+ * A room on a fresh memory log at this build's own protocol — the sealed link (D36) — for every
+ * test that drives it through a real `relayTransport`; every option a test cares about is an
+ * override.
+ */
 export const openRoom = async (overrides: Partial<RelayRoomOptions> = {}) =>
   (
     await openRelayRoom({
@@ -183,5 +189,154 @@ export const openRoom = async (overrides: Partial<RelayRoomOptions> = {}) =>
       ...overrides,
     })
   ).unwrap();
+
+/**
+ * A room left open to v1 and v2 on purpose: most of this suite scripts a bare `joinFrame([1], …)`
+ * at a fake socket to get at a room's behaviour *after* the join, and a handshake or a proof
+ * there would be noise. What a v2 join has to prove is `join-proof.test.ts`'s business, and what
+ * a sealed link has to do is `secure.test.ts`'s.
+ */
+export const scriptedRoom = (overrides: Partial<RelayRoomOptions> = {}) =>
+  openRoom({ versions: [1, 2], ...overrides });
+
+/**
+ * A raw client on a sealed link (D36): answers the room's hello, seals what it sends, opens what
+ * it hears, and keeps every frame the room said, decoded. What a probe of a real socket looks
+ * like now that a room speaks a hello first — `send` and `frames` are in the clear, the wire is not.
+ */
+export const secureProbe = async (
+  dial: () => Promise<RelayDial> | RelayDial,
+  identity: Identity,
+) => {
+  const dialed = await dial();
+  const link = secureLink(identity);
+  const frames: RelayFrame[] = [];
+  const raw: Uint8Array[] = [];
+  let secured = (): void => undefined;
+  const ready = new Promise<void>((resolve) => (secured = resolve));
+  dialed.onFrame((bytes) => {
+    raw.push(bytes);
+    if (link.session() === undefined) {
+      if (!isHello(bytes)) return;
+      link.receive(bytes).unwrap();
+      if (link.hello !== undefined) dialed.send(link.hello);
+      secured();
+      return;
+    }
+    const opened = link.receive(bytes);
+    if (opened.isErr() || opened.value === undefined) return;
+    const decoded = decodeRelayFrame(opened.value);
+    if (decoded.isOk()) frames.push(decoded.value);
+  });
+  await ready;
+  return {
+    dialed,
+    link,
+    frames,
+    /** Every byte the room sent, sealed or not — what a sniffer on the socket would hold. */
+    raw,
+    send: (plain: Uint8Array) => {
+      const sealed = link.seal(plain);
+      if (sealed === undefined) throw new Error("the probe's link is not secured");
+      dialed.send(sealed);
+    },
+    join: (cursors: Cursors = new Map(), interest?: Interest) =>
+      void (() => {
+        const sealed = link.seal(joinFrame([3], identity.peerId, cursors, interest));
+        if (sealed === undefined) throw new Error("the probe's link is not secured");
+        dialed.send(sealed);
+      })(),
+    ofKind: <K extends RelayFrame["kind"]>(kind: K) =>
+      frames.filter((f): f is Extract<RelayFrame, { kind: K }> => f.kind === kind),
+    close: () => dialed.close(),
+  };
+};
+
+/** A v2 join: the identity signs the room's challenge over the join's own body (D33). */
+export const signedJoin = (
+  identity: Identity,
+  nonce: Uint8Array,
+  cursors: Cursors = new Map(),
+  interest?: Interest,
+  versions: readonly number[] = [2],
+): Uint8Array =>
+  joinFrame(
+    versions,
+    identity.peerId,
+    cursors,
+    interest,
+    proveJoin(identity, nonce, joinCore(versions, identity.peerId, cursors, interest)),
+  );
+
+/** The challenge a scripted socket was sent — the room's first frame, or a throw naming its absence. */
+export const challengeOf = (s: ReturnType<typeof fakeSocket>): Uint8Array => {
+  const challenge = s.ofKind("challenge")[0];
+  if (challenge === undefined) throw new Error("the room sent no challenge");
+  return challenge.nonce;
+};
+
+/**
+ * An in-process dial onto a live room: frames both ways, async delivery, a closable end.
+ *
+ * Declared here rather than in each test that wants one, because every property a
+ * `relayTransport` has is a property of it talking to a real room — three copies of this helper is
+ * three chances for one of them to deliver frames synchronously and prove something the wire does
+ * not do.
+ */
+export const dialTo = (room: RelayRoom) => {
+  let dials = 0;
+  const dial = (): RelayDial => {
+    dials += 1;
+    const frames = new Set<(frame: Uint8Array) => void>();
+    const closes = new Set<() => void>();
+    let open = true;
+    const hangUp = (): void => {
+      if (!open) return;
+      open = false;
+      conn.closed();
+      // the close event lands after any frames already in flight, as on a real socket
+      queueMicrotask(() => {
+        for (const cb of closes) cb();
+      });
+    };
+    // what the room sent before anyone was listening waits, as bytes on a real socket do: the
+    // room speaks first now (D33), and a dial's caller subscribes only after `dial()` returns
+    const backlog: Uint8Array[] = [];
+    const socket: RelaySocket = {
+      send: (frame) => {
+        if (!open) return "dropped";
+        // a frame accepted before close still delivers: TCP flushes what send() took
+        const bytes = Uint8Array.from(frame);
+        queueMicrotask(() => {
+          if (frames.size === 0) {
+            backlog.push(bytes);
+            return;
+          }
+          for (const cb of frames) cb(bytes);
+        });
+        return "sent";
+      },
+      close: () => hangUp(),
+    };
+    const conn = room.connect(socket);
+    return {
+      send: (frame) => {
+        if (!open) throw new Error("relay socket is not open");
+        conn.receive(Uint8Array.from(frame));
+      },
+      onFrame: (cb) => {
+        frames.add(cb);
+        for (const bytes of backlog.splice(0)) cb(bytes);
+        return () => void frames.delete(cb);
+      },
+      onClose: (cb) => {
+        closes.add(cb);
+        return () => void closes.delete(cb);
+      },
+      close: () => hangUp(),
+    };
+  };
+  return { dial, dials: () => dials };
+};
 
 export { seed };

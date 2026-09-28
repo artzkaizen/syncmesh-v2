@@ -38,7 +38,7 @@ import {
   parsePeerId,
   readRow,
 } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import {
   bytesToHex,
@@ -93,12 +93,12 @@ const INTRUDER = seeded(200).unwrap();
 const ALICE_ID = String(parseAccountId(String(ALICE.peerId)).unwrap());
 const MALLORY_ID = String(parseAccountId(String(MALLORY.peerId)).unwrap());
 
-const schema = defineSchema({
-  partitions: { org: {} },
+const org = partition("org");
+const schema = syncSchema({
   tables: {
     notes: {
       columns: { id: t.text().primaryKey(), title: t.text(), ownerId: t.text() },
-      partition: "org",
+      partition: org,
       allow: ({ owner }) => ({ $default: owner("ownerId") }),
     },
   },
@@ -202,7 +202,7 @@ const selects = (peer: PeerId) => {
  * `current_setting('syncmesh.account')` and `principalSettings` puts the *grant's* account
  * there — so the text moving is the same event as the verdict moving.
  */
-const RLS_READ_POLICY = `CREATE POLICY "_syncmesh_read" ON "notes" FOR SELECT USING ((COALESCE("ownerId" = NULLIF(current_setting('syncmesh.account', TRUE), ''), FALSE)) AND ((NULLIF(current_setting('syncmesh.partition', TRUE), '') IS NULL OR "_partition" = NULLIF(current_setting('syncmesh.partition', TRUE), ''))))`;
+const RLS_READ_POLICY = `CREATE POLICY "syncmesh_read" ON "notes" FOR SELECT USING ((COALESCE("ownerId" = NULLIF(current_setting('syncmesh.account', TRUE), ''), FALSE)) AND ((NULLIF(current_setting('syncmesh.partition', TRUE), '') IS NULL OR "_partition" = NULLIF(current_setting('syncmesh.partition', TRUE), ''))))`;
 
 const rlsFor = (peer: PeerId) => ({
   ddl: rlsDdl(notes.table, LADDER, notes.allow),

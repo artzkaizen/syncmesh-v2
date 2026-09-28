@@ -6,7 +6,7 @@ import {
   type DocChange,
   type PeerId,
 } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { ladder, local, partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, deriveLineage, issueGrant, verifyGrant, type Grant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -16,9 +16,8 @@ import type { ProbeEvent, StateLookup } from "../validate.js";
 import { createValidator } from "../validate.js";
 import { column, key, row, seq, table } from "./fixtures.js";
 
-const schema = defineSchema({
-  partitions: { workspace: {} },
-  roles: { workspace: ["owner", "editor", "viewer"] },
+const workspace = partition("workspace", { roles: ladder("owner", "editor", "viewer") });
+const schema = syncSchema({
   tables: {
     notes: {
       columns: {
@@ -27,7 +26,7 @@ const schema = defineSchema({
         content: t.blob().nullable(),
         cover: t.blob().nullable(),
       },
-      partition: "workspace",
+      partition: workspace,
       allow: ({ role }) => ({
         $default: role("owner"),
         read: role("viewer"),
@@ -38,7 +37,7 @@ const schema = defineSchema({
     },
     drafts: {
       columns: { id: t.text().primaryKey(), content: t.blob().nullable() },
-      partition: "local",
+      partition: local,
     },
   },
 });

@@ -1,0 +1,40 @@
+{
+  "name": "@syncmesh/transports",
+  "version": "0.0.0",
+  "description": "The adapters: ble, lan, awdl, wifiAware — one import, one per medium",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@syncmesh/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "@syncmesh/source": "./src/testing/index.ts",
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    }
+  },
+  "dependencies": {
+    "@syncmesh/ble": "workspace:*",
+    "@syncmesh/engine": "workspace:*",
+    "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/relay": "workspace:*",
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/transport": "workspace:*",
+    "@syncmesh/wire": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncmesh/config": "workspace:*",
+    "@syncmesh/schema": "workspace:*",
+    "@syncmesh/temporal": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

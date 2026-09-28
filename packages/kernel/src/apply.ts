@@ -110,7 +110,7 @@ function mergeCells(
     const existing = cells.get(column);
     const strategy = cellRules[columnStrategies?.get(column) ?? "lww"];
     // Joining a first arrival with itself is the identity for `lww`, `max` and `min`, and puts a
-    // `counter` or `set` cell into its normal form. Storing it raw instead would leave the shape a
+    // `counter` cell into its normal form. Storing it raw instead would leave the shape a
     // sender happened to send in the state, and two peers would digest the same set differently.
     cells.set(column, strategy(candidate, existing ?? candidate));
   }

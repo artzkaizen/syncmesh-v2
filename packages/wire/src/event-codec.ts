@@ -10,6 +10,8 @@ import {
 import { Result, TaggedError } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 
+import type { EventCrypto } from "./sealing.js";
+
 import { decodeCbor, type MalformedCbor } from "./cbor-decode.js";
 import { isSafeNonNegative, isString } from "./cbor-guards.js";
 import { encodeCbor, type CborKey, type CborValue } from "./cbor.js";
@@ -20,10 +22,10 @@ import { rowFromCbor, rowToCbor } from "./row-codec.js";
 export class MalformedEvent extends TaggedError("MalformedEvent")<{ message: string }> {}
 
 /**
- * Event core map keys, frozen by the vectors (RFC-0002). 4 was never used and stays retired; 8 is
- * `sealed` and 9 `schemaVersion` on the branches that claim them, and neither is reused here.
- * `action` and `undoOf` (RFC-0023 §5.2) drive history and undo only: a build that skips them
- * folds the event identically, which is why neither needs a `v` bump.
+ * Event core map keys, frozen by the vectors (RFC-0002). 4 was never used and stays retired;
+ * 9 is `schemaVersion` on the branch that claims it. `action` and `undoOf` (RFC-0023 §5.2)
+ * drive history and undo only: a build that skips them folds the event identically, which is
+ * why neither needs a `v` bump.
  */
 const KEY = {
   v: 0,
@@ -33,9 +35,25 @@ const KEY = {
   procedure: 5,
   partition: 6,
   changes: 7,
+  /**
+   * The sealed form of `changes`, for a partition declared `sealed` (book ch. 14). Exactly one
+   * of the two is ever present: an event whose content is sealed carries no plaintext changes to
+   * be inconsistent with, and a build with no name for this key reads the event as one with
+   * nothing in it, which is what a carrier does anyway.
+   */
+  sealed: 8,
   action: 10,
   undoOf: 11,
 } as const;
+
+/**
+ * What a sealed payload is bound to: the parts of the envelope that stay in the clear.
+ *
+ * Author, sequence and partition, and nothing else — a payload that authenticates its own place
+ * cannot be lifted out of one event and into another, whatever else is re-encoded around it.
+ */
+const sealingAad = (event: Pick<SyncEvent, "peerId" | "seqNum" | "partition">): Uint8Array =>
+  encodeCbor([hexToBytes(event.peerId).unwrap(), event.seqNum, event.partition ?? ""]);
 
 /** One change's map keys, shared with the cell-change codec so both write the same envelope. */
 export const CHANGE = { kind: 0, table: 1, key: 2, data: 3 } as const;
@@ -53,18 +71,24 @@ export const CHANGE = { kind: 0, table: 1, key: 2, data: 3 } as const;
  */
 const KIND = { insert: 0, update: 1, delete: 2, doc: 6 } as const;
 
-export function encodeEventCore(event: SyncEvent): Uint8Array {
+export function encodeEventCore(event: SyncEvent, crypto?: EventCrypto): Uint8Array {
   const core = new Map<CborKey, CborValue>([
     [KEY.v, event.v],
     [KEY.peerId, hexToBytes(event.peerId).unwrap()],
     [KEY.seq, event.seqNum],
     [KEY.hlc, [event.hlc[0].epochMilliseconds, event.hlc[1]]],
     [KEY.procedure, event.procedure],
-    [KEY.changes, event.changes.map(encodeChange)],
   ]);
   if (event.partition !== undefined) core.set(KEY.partition, event.partition);
   if (event.action !== undefined) core.set(KEY.action, hexToBytes(event.action).unwrap());
   if (event.undoOf !== undefined) core.set(KEY.undoOf, hexToBytes(event.undoOf).unwrap());
+  const changes = event.changes.map(encodeChange);
+  const sealed =
+    event.partition === undefined
+      ? undefined
+      : crypto?.seal?.(event.partition, encodeCbor(changes), sealingAad(event));
+  // exactly one of the two: a sealed event has no plaintext to be inconsistent with
+  core.set(sealed === undefined ? KEY.changes : KEY.sealed, sealed ?? changes);
   return encodeCbor(core);
 }
 
@@ -95,11 +119,15 @@ const malformed = (message: string) => Result.err(new MalformedEvent({ message }
 /** Decodes a core; refuses `v ≠ 1`; ignores unknown keys. Never throws. */
 export function decodeEventCore(
   core: Uint8Array,
+  crypto?: EventCrypto,
 ): Result<SyncEvent, MalformedEvent | MalformedCbor> {
-  return decodeCbor(core).andThen(decodeEventValue);
+  return decodeCbor(core).andThen((value) => decodeEventValue(value, crypto));
 }
 
-function decodeEventValue(value: CborValue): Result<SyncEvent, MalformedEvent> {
+function decodeEventValue(
+  value: CborValue,
+  crypto?: EventCrypto,
+): Result<SyncEvent, MalformedEvent> {
   if (!(value instanceof Map)) return malformed("core is not a map");
   const m = value;
   if (m.get(KEY.v) !== 1) return malformed("unsupported version");
@@ -112,10 +140,10 @@ function decodeEventValue(value: CborValue): Result<SyncEvent, MalformedEvent> {
   const changes = m.get(KEY.changes);
   const action = actionIdOf(m.get(KEY.action));
   const undoOf = actionIdOf(m.get(KEY.undoOf));
+  const under = m.get(KEY.sealed);
+  if (partition !== undefined && !isString(partition)) return malformed("partition is not text");
   if (!Array.isArray(hlc) || hlc.length !== 2) return malformed("hlc is not a pair");
   if (!isString(procedure)) return malformed("procedure is not text");
-  if (partition !== undefined && !isString(partition)) return malformed("partition is not text");
-  if (!Array.isArray(changes)) return malformed("changes is not an array");
   const [ms, logical] = hlc;
   if (!isSafeNonNegative(ms) || !isSafeNonNegative(logical))
     return malformed("hlc components are not integers");
@@ -127,8 +155,12 @@ function decodeEventValue(value: CborValue): Result<SyncEvent, MalformedEvent> {
     const seqNum = yield* parseSeqNum(seq).mapError(
       (e) => new MalformedEvent({ message: e.message }),
     );
-    const decoded: Change[] = [];
-    for (const c of changes) decoded.push(yield* decodeChange(c));
+    const place = {
+      peerId,
+      seqNum,
+      ...(partition !== undefined && { partition: asPartition(partition) }),
+    };
+    const changes = yield* readChanges(m, under, place, crypto);
     const base = {
       v: 1 as const,
       id: eventId(peerId, seqNum),
@@ -136,12 +168,51 @@ function decodeEventValue(value: CborValue): Result<SyncEvent, MalformedEvent> {
       seqNum,
       hlc: [Temporal.Instant.fromEpochMilliseconds(ms), asLogical(logical)] satisfies Hlc,
       procedure: asProcedure(procedure),
-      changes: decoded,
+      changes: changes.changes,
+      ...(changes.sealed === true && { sealed: true as const }),
       ...(partition !== undefined && { partition: asPartition(partition) }),
       ...(action !== undefined && { action }),
       ...(undoOf !== undefined && { undoOf }),
     };
     return Result.ok(base);
+  });
+}
+
+/**
+ * The changes this device can read: the plaintext list, the list behind a seal it holds the key
+ * for, or nothing at all — which is what a carrier gets and is not an error.
+ */
+function readChanges(
+  m: ReadonlyMap<CborKey, CborValue>,
+  under: CborValue | undefined,
+  place: Pick<SyncEvent, "peerId" | "seqNum" | "partition">,
+  crypto: EventCrypto | undefined,
+): Result<{ readonly changes: Change[]; readonly sealed?: true }, MalformedEvent> {
+  if (under !== undefined) {
+    if (!(under instanceof Uint8Array)) return malformed("a sealed payload is not bytes");
+    const opened =
+      place.partition === undefined
+        ? undefined
+        : crypto?.open?.(place.partition, under, sealingAad(place));
+    // no key: the event is carried whole and folds to nothing, which is custody without judgment
+    if (opened === undefined) return Result.ok({ changes: [], sealed: true });
+    return decodeCbor(opened)
+      .mapError((e) => new MalformedEvent({ message: e.message }))
+      .andThen(decodeChangeList);
+  }
+  const changes = m.get(KEY.changes);
+  if (!Array.isArray(changes)) return malformed("changes is not an array");
+  return decodeChangeList(changes);
+}
+
+function decodeChangeList(
+  value: CborValue,
+): Result<{ readonly changes: Change[] }, MalformedEvent> {
+  if (!Array.isArray(value)) return malformed("changes is not an array");
+  return Result.gen(function* () {
+    const decoded: Change[] = [];
+    for (const c of value) decoded.push(yield* decodeChange(c));
+    return Result.ok({ changes: decoded });
   });
 }
 

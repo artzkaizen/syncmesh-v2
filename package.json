@@ -9,6 +9,7 @@
       "native/*",
       "tooling/*",
       "conformance",
+      "crates/*",
       "examples",
       "chaos",
       "bench"

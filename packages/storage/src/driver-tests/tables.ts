@@ -9,7 +9,7 @@ import type { OpenDriver } from "./index.js";
 
 import { captureChanges } from "../capture.js";
 import { openStores } from "../open-stores.js";
-import { A, JOBS, event, sqlText, stamp } from "./fixtures.js";
+import { A, JOBS, event, sqlText, stamp, sqlOf } from "./fixtures.js";
 
 const NONE: Coverage = { synced: new Map(), local: new Map() };
 const ACME = parsePartitionKey("org:acme").unwrap();
@@ -59,7 +59,11 @@ export const tablesCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       );
       equal(row?.[7] instanceof Uint8Array ? row[7] : undefined, Uint8Array.of(1, 2, 255), "bytes");
       equal(String(row?.[8]), "org:acme", "_partition");
-      equal(await count(driver, `SELECT COUNT(*) FROM _syncmesh_changes`), 0, "not captured");
+      equal(
+        await count(driver, `SELECT COUNT(*) FROM ${sqlOf(driver).changes}`),
+        0,
+        "not captured",
+      );
       (await state.commit([write(J1, job("two", 2))], NONE)).unwrap();
       equal(String((await driver.all(`SELECT title FROM jobs`))[0]?.[0]), "two", "upsert by key");
       equal(await count(driver, `SELECT COUNT(*) FROM jobs`), 1, "still one row");
@@ -154,7 +158,7 @@ export const tablesCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       );
       equal(await count(driver, `SELECT COUNT(*) FROM jobs`), 2, "both writers landed");
       equal(
-        await count(driver, `SELECT COUNT(*) FROM _syncmesh_changes`),
+        await count(driver, `SELECT COUNT(*) FROM ${sqlOf(driver).changes}`),
         0,
         "the fold was not captured",
       );

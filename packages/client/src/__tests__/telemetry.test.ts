@@ -1,7 +1,7 @@
 import type { Transport } from "@syncmesh/transport";
 
 import { createHub, type TelemetryEvent } from "@syncmesh/engine";
-import { defineSchema, t } from "@syncmesh/schema";
+import { local, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { memoryBlobStore } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
@@ -35,14 +35,13 @@ describe("observe: what it must not change", () => {
     const [plain, carrier] = seam.observe([
       fake("radio"),
       fake("relay", {
-        putBlob: () => Promise.resolve(),
-        fetchBlob: () => Promise.resolve(undefined),
+        blobs: { upload: () => Promise.resolve(), download: () => Promise.resolve(undefined) },
       }),
     ]);
-    // `withBlobs()` reads exactly this: a wrapper that defined putBlob unconditionally would
+    // `withBlobs()` reads exactly this: a wrapper that defined `blobs` unconditionally would
     // make every medium claim it could carry bytes
-    expect(plain?.putBlob).toBeUndefined();
-    expect(carrier?.putBlob).toBeDefined();
+    expect(plain?.blobs).toBeUndefined();
+    expect(carrier?.blobs).toBeDefined();
     expect(
       runTransports([plain!, carrier!], context)
         .withBlobs()
@@ -165,11 +164,13 @@ describe("mesh.* telemetry (D17)", () => {
     const links = runTransports(
       seam.observe([
         fake("relay", {
-          putBlob: (hash, bytes) => {
-            held.set(hash, bytes);
-            return Promise.resolve();
+          blobs: {
+            upload: (hash, bytes) => {
+              held.set(hash, bytes);
+              return Promise.resolve();
+            },
+            download: (hash) => Promise.resolve(held.get(hash)),
           },
-          fetchBlob: (hash) => Promise.resolve(held.get(hash)),
         }),
       ]),
       context,
@@ -216,12 +217,10 @@ describe("follow: one listener rather than three", () => {
     const mesh = (
       await createMesh({
         driver: bunSqliteDriver(":memory:"),
-        schema: defineSchema({
-          partitions: {},
-          roles: {},
+        schema: syncSchema({
           // a local table: this write never has to travel to be worth measuring
           tables: {
-            notes: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "local" },
+            notes: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: local },
           },
         }),
         identity: device,

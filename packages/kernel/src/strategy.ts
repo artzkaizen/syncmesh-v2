@@ -6,15 +6,18 @@ import type { Cell, CellValue, ColumnName, JsonValue } from "./record.js";
 import { canonicalJson } from "./record.js";
 import { compareStamp } from "./stamp.js";
 
-export type Strategy = (incoming: Cell, current: Cell) => Cell;
+export type Strategy = (incoming: Cell, current: Cell | undefined) => Cell;
 
 /**
- * How a column merges when two devices wrote it while apart (D25). All three pick one of the two
- * cells **whole**, so the value that survives is always a value some author actually wrote.
+ * How a column merges when two devices wrote it while apart (D25). `lww`, `max` and `min` pick
+ * one of the two cells **whole**, so the value that survives is always a value some author
+ * actually wrote. `counter` is the exception the book names (ch. 2): writes are increments,
+ * the cell is per-author totals, and the read is their sum — inventory merges wrong under
+ * `lww`, which is why the schema names it.
  *
  * `lww` is last-writer-wins, by HLC stamp.
  */
-export type StrategyName = "lww" | "max" | "min";
+export type StrategyName = "lww" | "max" | "min" | "counter";
 
 /**
  * Per table, the rule each column's cells join by; absent is `lww`. A doc column's is always the
@@ -72,22 +75,96 @@ export function compareValue(a: CellValue, b: CellValue): Ordering {
 }
 
 const lww: Strategy = (incoming, current) =>
-  compareStamp(incoming.stamp, current.stamp) > 0 ? incoming : current;
+  current === undefined || compareStamp(incoming.stamp, current.stamp) > 0 ? incoming : current;
 
 const byValue =
   (sign: 1 | -1): Strategy =>
   (incoming, current) => {
+    if (current === undefined) return incoming;
     const order = compareValue(incoming.value, current.value) * sign;
     return order > 0 ? incoming : order < 0 ? current : lww(incoming, current);
   };
 
+/** One author's running total; the two sides of a counter cell each hold one per author. */
+type AuthorTotals = Readonly<Record<string, number>>;
+
+/** Per-author running totals, one map up (`p`) and one down (`n`); both only ever grow. */
+interface Contributions {
+  readonly p: AuthorTotals;
+  readonly n: AuthorTotals;
+}
+
+/* oxlint-disable anti-slop/no-runtime-typeof -- CellValue is a closed union; typeof is its discriminant */
+/** `{"+": n}` — the shape an increment travels in (book ch. 2); anything else is normal form. */
+const deltaOf = (value: CellValue): number | undefined =>
+  value !== null &&
+  typeof value === "object" &&
+  !(value instanceof Uint8Array) &&
+  !Array.isArray(value) &&
+  "+" in value &&
+  typeof value["+"] === "number"
+    ? value["+"]
+    : undefined;
+
+const contributionsOf = (value: CellValue): Contributions => {
+  if (value === null || typeof value !== "object" || value instanceof Uint8Array)
+    return { p: {}, n: {} };
+  // SAFETY: a counter cell in normal form was written by `counter` below, as exactly this shape
+  const held = value as { readonly p?: AuthorTotals; readonly n?: AuthorTotals };
+  return { p: held.p ?? {}, n: held.n ?? {} };
+};
+/* oxlint-enable anti-slop/no-runtime-typeof */
+
+const joinTotals = (a: AuthorTotals, b: AuthorTotals): AuthorTotals => {
+  const joined = new Map(Object.entries(a));
+  for (const [author, total] of Object.entries(b))
+    joined.set(author, Math.max(joined.get(author) ?? 0, total));
+  return Object.fromEntries(joined);
+};
+
 /**
- * `lww` picks the newer stamp; `max` and `min` pick by value and fall back to the stamp on
- * an exact tie. All three are lattice joins — commutative, associative and idempotent — which is
- * the whole reason any delivery order lands on one state.
+ * A PN-counter per cell: the value is per-author totals up and down, the read is their sum.
+ *
+ * An arriving **increment** (`{"+": n}`) adds to its author's total — sound because the engine
+ * folds each author's events exactly once and in order (dedup plus holdback). A cell already in
+ * normal form — a snapshot row, a repair record — joins by per-author max, which is a lattice
+ * because each author's totals only ever grow. The read lives in {@link counterValue}.
+ */
+const counter: Strategy = (incoming, current) => {
+  const held = current === undefined ? { p: {}, n: {} } : contributionsOf(current.value);
+  const stamp =
+    current === undefined || compareStamp(incoming.stamp, current.stamp) > 0
+      ? incoming.stamp
+      : current.stamp;
+  const delta = deltaOf(incoming.value);
+  if (delta !== undefined) {
+    const author = String(incoming.stamp.peer);
+    const side = delta >= 0 ? "p" : "n";
+    const grown = { ...held[side], [author]: (held[side][author] ?? 0) + Math.abs(delta) };
+    const value = side === "p" ? { p: grown, n: held.n } : { p: held.p, n: grown };
+    return { value, stamp };
+  }
+  const arrived = contributionsOf(incoming.value);
+  return { value: { p: joinTotals(held.p, arrived.p), n: joinTotals(held.n, arrived.n) }, stamp };
+};
+
+/** What a `counter` cell reads as: every author's ups minus every author's downs. */
+export function counterValue(value: CellValue): number {
+  const { p, n } = contributionsOf(value);
+  const sum = (totals: Readonly<Record<string, number>>) =>
+    Object.values(totals).reduce((held, total) => held + total, 0);
+  return sum(p) - sum(n);
+}
+
+/**
+ * `lww` picks the newer stamp; `max` and `min` pick by value and fall back to the stamp on an
+ * exact tie; `counter` accumulates. All four are lattice joins — commutative, associative and
+ * idempotent over their normal forms — which is the whole reason any delivery order lands on
+ * one state.
  */
 export const strategies = {
   lww,
   max: byValue(1),
   min: byValue(-1),
+  counter,
 } satisfies Readonly<Record<StrategyName, Strategy>>;

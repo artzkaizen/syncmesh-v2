@@ -8,7 +8,7 @@ import {
   type PeerId,
   type SyncEvent,
 } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { partition, syncSchema, t } from "@syncmesh/schema";
 import { deriveLineage } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import * as fc from "fast-check";
@@ -37,12 +37,12 @@ const DOCS = new Map([[NOTES, new Map<ColumnName, typeof LORO>([[CONTENT, LORO]]
 const W1 = parsePartitionKey("workspace:w1").unwrap();
 const EDIT = procedure("notes.edit");
 
-const schema = defineSchema({
-  partitions: { workspace: {} },
+const workspace = partition("workspace");
+const schema = syncSchema({
   tables: {
     notes: {
       columns: { id: t.text().primaryKey(), title: t.text(), content: t.blob().nullable() },
-      partition: "workspace",
+      partition: workspace,
       allow: ({ allow }) => ({ $default: allow }),
     },
   },

@@ -126,6 +126,27 @@ export interface RouteMessage {
 }
 
 /**
+ * How an embedder orders the mediums that could carry a frame.
+ *
+ * **It orders; it never excludes.** Returning a low number moves a medium down the list, and a
+ * medium at the bottom of the list is still asked when nothing above it claimed the addressee.
+ * Reachability — who claimed the peer, who denied it, who said nothing — stays this file's, because
+ * those are the rules that decide whether a frame is delivered at all, and a policy that could
+ * suppress a medium could lose a write. An app tunes preference; the library keeps the guarantee.
+ *
+ * The facts it is handed are the ones a medium can honestly state about itself. Deliberately absent
+ * are signal strength and distance: neither is plumbed through any radio port here, and a field a
+ * policy could read but nobody could populate is worse than no field — the first person to write a
+ * transport would trust it.
+ *
+ * @example
+ * // a fleet whose phones are charging in a rack: prefer the wide link, spend no radio
+ * const policy: RoutePolicy = (candidate, message) =>
+ *   candidate.direct ? scoreRoute(candidate, message) - 500 : scoreRoute(candidate, message);
+ */
+export type RoutePolicy = (candidate: RouteCandidate, message: RouteMessage) => number;
+
+/**
  * Urgency is a threshold on the tag order rather than a second table of its own: everything up
  * to and including an event is someone waiting, and everything after it (presence, a digest, a
  * snapshot page) can afford the cheap path.
@@ -142,15 +163,22 @@ const energyOf = (cls: FrameClass): number => (isUrgent(cls) ? COSTLY_SMALL_URGE
  * says nothing, and a peer no link claims may still be reachable down one that simply does not
  * track it — so an empty claim set falls back to the broadcast this was before. A route narrowed
  * to nothing is a frame nobody sends, and that is divergence rather than routing.
+ *
+ * **A medium has three answers about a peer, and the first version of this read two.** It can
+ * claim the peer, it can *deny* it — enumerate its links and not list it — or it can say nothing,
+ * because it does not track links at all. Only the denial is an answer. Treating a claim as
+ * exclusive let one medium silence every other: a `proven` entry outlives its link by up to the
+ * liveness deadline, and for that whole window the claiming radio was the only medium asked, so
+ * an event handed to a dead link was simply lost. The relay could have carried it and was never
+ * offered it, because it cannot enumerate a room and therefore never claims anybody.
+ *
+ * So: a denial excludes, and nothing else does. A shrug is asked alongside a claim, which costs
+ * the duplicate that inbound dedup already absorbs and buys the path that actually delivers.
  */
-const reaching = (
-  candidates: readonly RouteCandidate[],
-  to: PeerId | undefined,
-): readonly RouteCandidate[] => {
-  if (to === undefined) return candidates;
-  const claiming = candidates.filter((candidate) => candidate.reaches?.has(to) === true);
-  return claiming.length > 0 ? claiming : candidates;
-};
+
+/** Whether this medium positively claims the addressee — evidence, as against a shrug. */
+const claims = (candidate: RouteCandidate, to: PeerId | undefined): boolean =>
+  to !== undefined && candidate.reaches?.has(to) === true;
 
 /** Lexicographic on the id, so the order candidates were discovered in cannot decide a route. */
 const byId = (x: RouteCandidate, y: RouteCandidate): number =>
@@ -182,6 +210,30 @@ export function scoreRoute(candidate: RouteCandidate, message: RouteMessage): nu
 }
 
 /**
+ * One medium's place in the order, with the two things a policy is not allowed to decide.
+ *
+ * An offline medium is unroutable whatever a policy says — that is a fact, not a preference. And a
+ * policy that returns something unusable (a `NaN` from a division nobody guarded, an `Infinity`
+ * from a reciprocal) must not be able to reorder the whole list or, worse, sink a medium below the
+ * threshold that means "cannot carry this": a routing preference that silently drops writes is the
+ * failure mode this seam exists to make impossible. Anything unusable falls back to the built-in
+ * score, so a broken policy costs its preference and never a frame.
+ */
+const ranked = (candidate: RouteCandidate, message: RouteMessage, policy: RoutePolicy): number => {
+  // the library's own refusals run first and are not a policy's to overturn: a medium that is
+  // offline cannot carry anything, and presence must never be the traffic that wakes a radio
+  const own = scoreRoute(candidate, message);
+  if (own <= UNROUTABLE) return UNROUTABLE;
+  if (policy === scoreRoute) return own;
+  const said = policy(candidate, message);
+  // `routable` rather than a clamp: it compresses into `(0, ROUTABLE_FLOOR]` instead of flattening,
+  // so a heavily penalised medium keeps its place in the order rather than tying with every other
+  // penalised one and breaking on the transport's *name* — the bug that put a 2 MB snapshot on a
+  // 24 kbps radio because `"ble"` sorts before `"relay"`
+  return Number.isFinite(said) ? routable(said) : own;
+};
+
+/**
  * The links to send this frame on, best first — one of them, or `redundancy` of them where the
  * frame is worth the duplicate (arriving twice is a no-op: inbound dedup already holds).
  *
@@ -191,10 +243,61 @@ export function scoreRoute(candidate: RouteCandidate, message: RouteMessage): nu
 export function pickRoutes(
   candidates: readonly RouteCandidate[],
   message: RouteMessage,
+  policy: RoutePolicy = scoreRoute,
 ): readonly RouteCandidate[] {
-  const scored = reaching(candidates, message.to)
-    .map((candidate) => ({ candidate, score: scoreRoute(candidate, message) }))
+  const { to } = message;
+  /**
+   * A medium has three answers about a peer, and the first version of this read two.
+   *
+   * It can claim the peer, it can *deny* it — enumerate its links and not list it — or it can say
+   * nothing, because it does not track links at all. Only a denial is an answer, and only a denial
+   * excludes. Reading a shrug as a refusal is what let the relay be narrowed away: it cannot
+   * enumerate a room, so it never claims anybody, so it was never asked.
+   */
+  const notDenying =
+    to === undefined
+      ? candidates
+      : candidates.filter(
+          (candidate) => candidate.reaches === undefined || candidate.reaches.has(to),
+        );
+  /** Every medium that tracks its links denied this peer: nothing here holds it. */
+  const everyoneDenied = to !== undefined && notDenying.length === 0;
+  // a frame nobody sends is divergence rather than routing, so a total denial still offers it
+  const asked = everyoneDenied ? candidates : notDenying;
+  const claimed = asked.some((candidate) => claims(candidate, to));
+
+  const scored = asked
+    .map((candidate) => ({
+      candidate,
+      claimed: claims(candidate, to),
+      score: ranked(candidate, message, policy),
+    }))
     .filter((entry) => entry.score > UNROUTABLE)
-    .sort((x, y) => y.score - x.score || byId(x.candidate, y.candidate));
-  return scored.slice(0, Math.max(message.redundancy ?? 1, 1)).map((entry) => entry.candidate);
+    /**
+     * A claim outranks a shrug before any score is compared.
+     *
+     * Scoring answers "which medium suits this frame", which is the right question only between
+     * mediums that have each said they hold the addressee. Letting `direct` and bandwidth lift a
+     * medium that said *nothing* above one that claimed the peer is how a small event goes to the
+     * radio with the shortest reach instead of the relay that was holding them.
+     */
+    .sort(
+      (x, y) =>
+        Number(y.claimed) - Number(x.claimed) ||
+        y.score - x.score ||
+        byId(x.candidate, y.candidate),
+    );
+
+  /**
+   * Capping to the best few is only honest when somebody claimed the addressee.
+   *
+   * With a claim, the ranking is between mediums that have each said they hold this peer, and
+   * taking the best of them is the decision this function exists to make. With nothing but
+   * shrugs, there is no evidence to rank on — so every medium is asked, and the duplicate that
+   * costs is the one inbound dedup already absorbs. A total denial caps too: offering a frame to
+   * mediums that have all said they cannot reach the peer spends every one of them to no end.
+   */
+  const capped = to === undefined || claimed || everyoneDenied;
+  const picked = capped ? scored.slice(0, Math.max(message.redundancy ?? 1, 1)) : scored;
+  return picked.map((entry) => entry.candidate);
 }

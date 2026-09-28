@@ -74,12 +74,23 @@ const rowsOf = (
  *
  * No `close` either: the storage outlives every object that opens it.
  *
+ * **`log: "inline"`.** A Durable Object's SQL surface permits no `ATTACH`, so the second file the
+ * log lives in on a device is not available here, and `syncmesh.events` would resolve to nothing.
+ * The namespace survives as a prefix instead — `syncmesh_events` beside `syncmesh_state_rows`,
+ * one database — which is the same arrangement Postgres has by way of a schema. The line between
+ * the durable half and the derived one is unaffected: it says which tables a backup must include,
+ * not which file they sit in (RFC-0022).
+ *
+ * The migration ladder moves with it. `PRAGMA` is refused here too, so the position is a row in
+ * `syncmesh_meta` rather than a `user_version`.
+ *
  * @example
  * const store = (await sqliteEventStore(doSqliteDriver(ctx.storage.sql))).unwrap();
  */
 export function doSqliteDriver(sql: DurableSqlStorage): SqliteDriver {
   return {
     dialect: "sqlite",
+    log: "inline",
     // async so a binding this driver refuses arrives as a rejection, which is the port's one
     // failure channel — a synchronous throw would escape the store's `attempt` wrapper
     run: async (statement, params = []) => {

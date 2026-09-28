@@ -1,5 +1,5 @@
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { defineSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { linkTransport, loopbackPair, type LoopbackControl } from "@syncmesh/transport";
@@ -10,14 +10,13 @@ import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { createMesh } from "../mesh.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
+const org = partition("org", { roles: ladder("owner", "member") });
 const schema = () =>
-  defineSchema({
-    partitions: { org: {} },
-    roles: { org: ["owner", "member"] },
+  syncSchema({
     tables: {
       notes: {
         columns: { id: t.text().primaryKey(), body: t.text() },
-        partition: "org",
+        partition: org,
         allow: ({ role }) => ({ $default: role("member") }),
       },
     },
@@ -159,5 +158,41 @@ describe("createMesh over transports", () => {
     const ho = owner.on("org:acme").unwrap();
     expect(await ho.db.select().from(notes)).toHaveLength(0);
     await owner.stop();
+  });
+});
+
+describe("runtime transports (book ch. 8)", () => {
+  test("a radio added mid-life carries the mesh; removing one removes a route, never rows", async () => {
+    const { owner, staff, control } = await room();
+    await owner.ready();
+    await staff.ready();
+    await settle(control);
+
+    const ho = owner.on("org:acme").unwrap();
+    const hs = staff.on("org:acme").unwrap();
+    await hs.db.insert(notes).values({ id: "first", body: "over the original radio" });
+    await settle(control);
+    expect((await ho.db.select().from(notes)).map((r) => r.id)).toEqual(["first"]);
+
+    // a second radio pair appears after construction — the settings-screen toggle
+    const late = loopbackPair();
+    (await owner.transports.add(linkTransport("late:owner", () => late.a))).unwrap();
+    (await staff.transports.add(linkTransport("late:staff", () => late.b))).unwrap();
+    expect(owner.transports.list().map((t) => t.name)).toEqual(["loopback:owner", "late:owner"]);
+
+    // the original goes away: whatever flows now can only be flowing over the late radio
+    expect(await owner.transports.remove("loopback:owner", { drain: true })).toBe(true);
+    expect(await staff.transports.remove("loopback:staff", { drain: true })).toBe(true);
+    expect(await owner.transports.remove("loopback:owner")).toBe(false); // already gone
+    expect(owner.transports.list().map((t) => t.name)).toEqual(["late:owner"]);
+    // a route left, not data
+    expect((await ho.db.select().from(notes)).map((r) => r.id)).toEqual(["first"]);
+
+    await hs.db.insert(notes).values({ id: "second", body: "only the late radio is left" });
+    for (let round = 0; round < 4; round += 1) await settle(late.control);
+    expect((await ho.db.select().from(notes)).map((r) => r.id).sort()).toEqual(["first", "second"]);
+
+    await owner.stop();
+    await staff.stop();
   });
 });

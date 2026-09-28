@@ -88,23 +88,20 @@ export function setPolicy(
 ): Promise<Result<SyncEvent, MutateError>> {
   const version = options.version ?? Date.now();
   const cells = new Map<never, CellValue>([
-    [column("id"), String(partition)],
+    [column("id"), partition],
     // SAFETY: a PolicyDoc is a plain-data AST — exactly what a json column holds
     [column("rules"), doc as JsonValue],
     [column("version"), version],
   ]);
-  // the cell is written only when there is a grace to write: an older build has no such column,
-  // and its schema check refuses a row carrying one — which would cost it every policy update,
-  // not merely this field. An omitted nullable column reads as absent, which is what it means
+  // the cell is written only when there is a grace to write. Not for an older build's sake — its
+  // check drops a column it does not declare (D13's additive rule, `columns.ts`), so the cell
+  // would cost it nothing — but because an omitted nullable column reads as absent, which is
+  // exactly what "no grace" means
   if (options.grace !== undefined)
     cells.set(column("grace"), options.grace.total({ unit: "milliseconds" }));
-  return engine.mutate(
-    SET_POLICY,
-    (tx: Tx) => tx.insert(RESERVED.policy, rowKey(String(partition)), cells),
-    {
-      partition,
-    } satisfies MutateOptions,
-  );
+  return engine.mutate(SET_POLICY, (tx) => tx.insert(RESERVED.policy, rowKey(partition), cells), {
+    partition,
+  } satisfies MutateOptions);
 }
 
 /** What one correction records: the event it overrules, the row it fixes, and why. */
@@ -138,18 +135,18 @@ export function correct(
 ): Promise<Result<SyncEvent, MutateError>> {
   const { event, table, key, reason, detail, partition } = correction;
   const cells = new Map([
-    [column("id"), `${event}:${String(table)}:${String(key)}`],
+    [column("id"), `${event}:${table}:${key}`],
     [column("eventId"), event],
-    [column("table"), String(table)],
-    [column("key"), String(key)],
+    [column("table"), table],
+    [column("key"), key],
     [column("reason"), reason],
     [column("detail"), detail ?? null],
   ]);
   return engine.mutate(
     CORRECT,
-    (tx: Tx) => {
+    (tx) => {
       fix(tx); // the overwrite and its reason are one event: a peer cannot fold one without the other
-      tx.insert(RESERVED.corrections, rowKey(`${event}:${String(table)}:${String(key)}`), cells);
+      tx.insert(RESERVED.corrections, rowKey(`${event}:${table}:${key}`), cells);
     },
     { partition } satisfies MutateOptions,
   );
@@ -161,11 +158,10 @@ export function correct(
  * removed from one org keeps whatever it holds in another.
  */
 export const deviceRowKey = (partition: PartitionKey, device: PeerId): RowKey =>
-  rowKey(`${String(partition)}:${String(device)}`);
+  rowKey(`${partition}:${device}`);
 
 /** The inverse: which instance and which device a key filed by {@link deviceRowKey} names. */
-export function splitDeviceKey(key: RowKey | string) {
-  const filed = String(key);
+export function splitDeviceKey(filed: RowKey | string) {
   const split = filed.lastIndexOf(":");
   return { partition: filed.slice(0, split), device: filed.slice(split + 1) };
 }
@@ -208,7 +204,7 @@ export function revokeDevice(
   const at = revocation.at ?? Temporal.Now.instant();
   const key = revocationKey(partition, device);
   const cells = new Map<never, CellValue>([
-    [column("id"), String(key)],
+    [column("id"), key],
     [column("at"), at.epochMilliseconds],
     [column("reason"), reason],
   ]);

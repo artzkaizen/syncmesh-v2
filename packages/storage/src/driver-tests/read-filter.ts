@@ -1,6 +1,6 @@
 import type { Principal, SuiteCase } from "@syncmesh/engine";
 import type { CellValue, ColumnName } from "@syncmesh/kernel";
-import type { AllowBlock } from "@syncmesh/policy";
+import type { AllowBlock, RoleSet } from "@syncmesh/policy";
 
 import { equal, policyContext } from "@syncmesh/engine";
 import {
@@ -27,7 +27,7 @@ import { installCapture } from "../capture.js";
 import { compileRead } from "../read-filter.js";
 import { JOBS } from "./fixtures.js";
 
-export const LADDER = ["owner", "dispatcher", "tech", "viewer"];
+export const LADDER: RoleSet = { names: ["owner", "dispatcher", "tech", "viewer"], ordered: true };
 const col = JOBS.columnNames;
 
 /** Rows as the app inserted them; `title` doubles as the owner column, `rank` as a site id. */

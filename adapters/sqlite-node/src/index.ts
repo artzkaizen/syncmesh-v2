@@ -1,21 +1,42 @@
 import type { StoreFailure } from "@syncmesh/engine";
 import type { Result } from "@syncmesh/result";
-import type { OpenStoresOptions, SqlRow, SqliteDriver, Stores } from "@syncmesh/storage";
+import type {
+  OpenStoresOptions,
+  SqlRow,
+  SqliteDriver,
+  StoreLocked,
+  Stores,
+} from "@syncmesh/storage";
 
-import { openStores, sqliteDriver } from "@syncmesh/storage";
+import {
+  ATTACHED_LOG,
+  acquireStoreLock,
+  lockPathFor,
+  openStores,
+  schemaNameFor,
+  sqliteDriver,
+  statePathFor,
+} from "@syncmesh/storage";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 /**
- * Opens `path` with `node:sqlite` as a driver for `@syncmesh/storage`. Sets WAL and `synchronous = NORMAL` (RFC-0004).
+ * Opens the store at `logPath` with `node:sqlite` as a driver for `@syncmesh/storage`. Sets WAL and
+ * `synchronous = NORMAL` (RFC-0004).
  *
- * @param path A file path, or `":memory:"` for a database that lives as long as the driver.
+ * @param logPath The **log's** path — the durable half, attached as `syncmesh`. The derived half
+ * hangs off it under a name carrying `schema` and is opened as `main` (RFC-0022). `":memory:"`
+ * gives a pair that lives as long as the driver.
+ * @param schema Names the derived half; pass `schemaNameFor(tables)` so that changing a column
+ * opens an empty file to refold into rather than the previous shape's rows.
  */
-export function nodeSqliteDriver(path: string): SqliteDriver {
-  const db = new DatabaseSync(path);
+export function nodeSqliteDriver(logPath: string, schema = schemaNameFor([])): SqliteDriver {
+  const memory = logPath === ":memory:";
+  const db = new DatabaseSync(memory ? ":memory:" : statePathFor(logPath, schema));
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA synchronous = NORMAL");
+  db.prepare(`ATTACH DATABASE ? AS ${ATTACHED_LOG}`).run(memory ? ":memory:" : logPath);
 
   return sqliteDriver({
     exec: (sql) => db.exec(sql),
@@ -33,18 +54,45 @@ export function nodeSqliteDriver(path: string): SqliteDriver {
 }
 
 export interface DefaultStoreOptions extends OpenStoresOptions {
-  /** Database name; `<dir>/<name>.db` on disk. */
+  /** The store's name; `<dir>/<name>.db` is the log, and the rest of its files hang off that. */
   readonly name: string;
   readonly dir: string;
 }
 
 /**
- * The durable default on Node: event log and persisted state in one SQLite file, the directory created if missing.
+ * The durable default on Node: the event log at `<dir>/<name>.db` with the folded state beside it,
+ * the directory created if missing, both held under one exclusive lock — a second open fails now with `StoreLocked`,
+ * and `close` releases the hold.
  *
  * @example
  * const stores = (await defaultStore({ name: "notes", dir: ".syncmesh" })).unwrap();
  */
-export function defaultStore(options: DefaultStoreOptions): Promise<Result<Stores, StoreFailure>> {
+export async function defaultStore(
+  options: DefaultStoreOptions,
+): Promise<Result<Stores, StoreFailure | StoreLocked>> {
   mkdirSync(options.dir, { recursive: true });
-  return openStores(nodeSqliteDriver(join(options.dir, `${options.name}.db`)), options);
+  const logPath = join(options.dir, `${options.name}.db`);
+  const lockDb = new DatabaseSync(lockPathFor(logPath));
+  // over the store, not the file: every file named after `logPath` is held and released together
+  const lock = acquireStoreLock({
+    path: logPath,
+    run: (sql) => lockDb.exec(sql),
+    close: () => lockDb.close(),
+  });
+  if (lock.isErr()) return lock;
+  // the app's schema names the derived half, so a changed column refolds instead of migrating
+  const driver = nodeSqliteDriver(logPath, schemaNameFor(options.tables ?? []));
+  const stores = await openStores(driver, options);
+  if (stores.isErr()) {
+    lock.value.release();
+    return stores;
+  }
+  const opened = stores.value;
+  return stores.map(() => ({
+    ...opened,
+    close: async () => {
+      await opened.close();
+      lock.value.release();
+    },
+  }));
 }

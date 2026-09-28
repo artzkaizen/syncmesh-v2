@@ -1,5 +1,5 @@
 import { createMemoryEventStore } from "@syncmesh/engine";
-import { defineSchema, t } from "@syncmesh/schema";
+import { syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -12,7 +12,7 @@ import { createMesh } from "../mesh.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
 const schema = () =>
-  defineSchema({
+  syncSchema({
     tables: { notes: { columns: { id: t.text().primaryKey(), body: t.text() } } }, // global
   });
 

@@ -4,7 +4,7 @@ import type { SqlDriver } from "../driver.js";
 
 import { blobCases } from "./blobs.js";
 import { captureCases, captureRuleCases } from "./capture.js";
-import { compactionCases, sqliteMigrationCases } from "./compaction.js";
+import { compactionCases } from "./compaction.js";
 import { docCases } from "./docs.js";
 import { eventCases } from "./events.js";
 import { readFilterCases } from "./read-filter.js";
@@ -54,12 +54,7 @@ export function captureTests(openDriver: OpenDriver): readonly SuiteCase[] {
  * for (const c of driverTests(openDriver)) test(c.name, c.run);
  */
 export function driverTests(openDriver: OpenDriver): readonly SuiteCase[] {
-  return [
-    ...storeTests(openDriver),
-    ...sqliteMigrationCases(openDriver),
-    ...captureTests(openDriver),
-    ...readFilterCases(openDriver),
-  ];
+  return [...storeTests(openDriver), ...captureTests(openDriver), ...readFilterCases(openDriver)];
 }
 
 export { SuiteFailure as DriverTestFailure } from "@syncmesh/engine";

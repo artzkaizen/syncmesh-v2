@@ -35,3 +35,35 @@ const show = (value: Comparable): string =>
 export function equal(actual: Comparable, expected: Comparable, label: string): void {
   check(same(actual, expected), `${label}: expected ${show(expected)}, got ${show(actual)}`);
 }
+
+// SAFETY: a prototype is an object or null; `getPrototypeOf` is merely typed `any`
+const parentOf = <Value extends object>(value: Value) =>
+  Object.getPrototypeOf(value) as object | null;
+
+/** The names a caller can reach on `value` that `{ ...value }` would not carry. */
+const lostInSpread = <Value extends object>(value: Value): readonly string[] => {
+  const copied = new Set(Object.keys(value));
+  const reachable = new Set<string>();
+  for (
+    let link: object | null = value;
+    link !== null && link !== Object.prototype;
+    link = parentOf(link)
+  )
+    for (const name of Object.getOwnPropertyNames(link))
+      if (name !== "constructor") reachable.add(name);
+  return [...reachable].filter((name) => !copied.has(name)).sort();
+};
+
+/**
+ * Asserts every member of a seam value is an own enumerable property, so a wrapper built as
+ * `{ ...value, member }` carries all of it (D29).
+ *
+ * @throws {SuiteFailure} Naming each member a spread would drop.
+ */
+export function spreadable<Value extends object>(value: Value, label: string): void {
+  const lost = lostInSpread(value);
+  check(
+    lost.length === 0,
+    `${label}: a wrapper that spreads this value would drop ${lost.join(", ")} — a member on a prototype, or a non-enumerable property, is not copied by { ...value } (D29)`,
+  );
+}

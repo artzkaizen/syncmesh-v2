@@ -86,7 +86,7 @@ interface Observing {
  * this file has never heard of still reaches the mesh: `Transport` grows, and a wrapper that
  * listed the members it knew would quietly drop each new one — the same silent gap D17 rejected
  * a string-keyed map for. Presence and absence are then preserved member by member, because
- * `withBlobs()` reads `putBlob !== undefined` and settling reads `caughtUp` the same way: a
+ * `withBlobs()` reads `blobs !== undefined` and settling reads `caughtUp` the same way: a
  * wrapper that filled either in would change what the mesh does, not just what it reports.
  */
 function wrap(transport: Transport, watch: Observing): Transport {
@@ -125,21 +125,22 @@ function wrap(transport: Transport, watch: Observing): Transport {
         }
       },
     });
-  if (transport.putBlob !== undefined)
+  if (transport.blobs !== undefined) {
+    const { blobs } = transport;
     add({
-      putBlob: async (hash, bytes) => {
-        const [, duration] = await timed(async () => transport.putBlob?.(hash, bytes));
-        watch.emit({ type: "mesh.blob.put", sizes: { bytes: bytes.length }, duration });
+      blobs: {
+        upload: async (hash, bytes) => {
+          const [, duration] = await timed(async () => blobs.upload(hash, bytes));
+          watch.emit({ type: "mesh.blob.put", sizes: { bytes: bytes.length }, duration });
+        },
+        download: async (hash, options) => {
+          const [answer, duration] = await timed(async () => blobs.download(hash, options));
+          watch.emit({ type: "mesh.blob.fetch", sizes: { bytes: answer?.length ?? 0 }, duration });
+          return answer;
+        },
       },
     });
-  if (transport.fetchBlob !== undefined)
-    add({
-      fetchBlob: async (hash, timeoutMs) => {
-        const [answer, duration] = await timed(async () => transport.fetchBlob?.(hash, timeoutMs));
-        watch.emit({ type: "mesh.blob.fetch", sizes: { bytes: answer?.length ?? 0 }, duration });
-        return answer;
-      },
-    });
+  }
   return observed;
 }
 

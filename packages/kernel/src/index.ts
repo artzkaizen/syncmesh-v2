@@ -1,6 +1,6 @@
 export type { Brand, Ordering } from "./primitives.js";
 export type { Hlc, Logical, HlcClock, HlcClockOptions } from "./hlc.js";
-export { createHlcClock, compareHlc, hlcOf } from "./hlc.js";
+export { DEFAULT_MAX_DRIFT, createHlcClock, compareHlc, hlcOf } from "./hlc.js";
 export type { PeerId } from "./peer-id.js";
 export { InvalidPeerId, PEER_ID_HEX, parsePeerId } from "./peer-id.js";
 export type { AccountId } from "./account-id.js";
@@ -33,7 +33,7 @@ export {
   withDocColumns,
 } from "./doc.js";
 export type { MergeSpec, Strategy, StrategyName } from "./strategy.js";
-export { compareValue, strategies } from "./strategy.js";
+export { compareValue, counterValue, strategies } from "./strategy.js";
 export type { KeyedRecord, State, TableState } from "./state.js";
 export { emptyState, getRecord, readRow } from "./state.js";
 export { applyChange, mergeRecord } from "./apply.js";
@@ -54,5 +54,5 @@ export {
   stampOf,
 } from "./event.js";
 export type { PartitionKey } from "./partition.js";
-export { InvalidPartitionKey, PARTITION_KEY, parsePartitionKey } from "./partition.js";
+export { InvalidPartitionKey, PARTITION_KEY, kindOf, parsePartitionKey } from "./partition.js";
 export { readRows, readRowsIn } from "./state.js";

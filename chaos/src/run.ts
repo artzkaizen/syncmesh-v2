@@ -138,6 +138,18 @@ const main = async () => {
     console.log(text);
     console.log(`\nledger: ${dir}/ledger.jsonl`);
     if (!report.converged) process.exitCode = 1;
+
+    // the epilogue's leak check (book ch. 12): the scenario released everything it took, on
+    // every device — a held observer here is a leak the run just proved, not a maybe
+    for (const device of world.devices) {
+      const handles = device.mesh.inspect.handles();
+      const leaked = Object.entries(handles).filter(
+        ([kind, count]) => kind !== "links" && count > 0,
+      );
+      if (leaked.length === 0) continue;
+      console.log(`${device.name} leaked handles: ${JSON.stringify(Object.fromEntries(leaked))}`);
+      process.exitCode = 1;
+    }
   } finally {
     await world.stop();
   }

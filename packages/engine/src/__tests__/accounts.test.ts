@@ -1,7 +1,7 @@
 import type { PeerId, RowKey, TableName } from "@syncmesh/kernel";
 
 import { parseAccountId, parsePartitionKey, parsePeerId, readRow } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import {
   splitEnvelope,
@@ -51,12 +51,12 @@ const ISSUER = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 50 + i))
 const NOW = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const LATER = NOW.add({ minutes: 1 });
 
-const schema = defineSchema({
-  partitions: { org: {} },
+const org = partition("org");
+const schema = syncSchema({
   tables: {
     notes: {
       columns: { id: t.text().primaryKey(), title: t.text() },
-      partition: "org",
+      partition: org,
       // nothing here is about policy: these tests are the rungs a `_links` row answers to
       allow: (c) => ({ $default: c.allow }),
     },

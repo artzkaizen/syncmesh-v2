@@ -1,7 +1,9 @@
 import type { Engine, Principal, Validator, ValidatorSchema } from "@syncmesh/engine";
 import type { PartitionKey } from "@syncmesh/kernel";
-import type { SqlDialect, SqlDriver } from "@syncmesh/storage";
+import type { OperationStore, SqlDialect, SqlDriver } from "@syncmesh/storage";
+import type { Temporal } from "@syncmesh/temporal";
 
+import { syncedTables } from "@syncmesh/schema";
 import { createWriter } from "@syncmesh/storage";
 import { PgDialect } from "drizzle-orm/pg-core";
 
@@ -10,9 +12,23 @@ import type { FaceDeps } from "./face.js";
 import { postgresFace } from "./postgres.js";
 import { sqliteFace } from "./sqlite.js";
 
-export type { Live, LiveSnapshot, Runnable } from "./live.js";
+export type { Live, LiveListener, LiveQuery, LiveSnapshot, LiveSource, Runnable } from "./live.js";
+export { createLive } from "./live.js";
+export type { LiveChange, Patched } from "./patch.js";
+export { patchWindow } from "./patch.js";
+export type { LiveWindow } from "./window.js";
+export { windowOf } from "./window.js";
+export { compareCells } from "./order.js";
+export { identityOf, tablesOf } from "./tree.js";
+export type { ProxyMethod, ProxyResult, ProxySink, WriteNaming } from "./proxy.js";
+export type { ReadScope } from "./read.js";
+export { readPredicate, readScope } from "./read.js";
+export type { ReadOnlyDb } from "./scoped.js";
+export { readOnly, scopeReads } from "./scoped.js";
+export type { SyncState } from "./sync-of.js";
+export { ROW_SYNC_TABLE, columns, operationOf, syncOf } from "./sync-of.js";
 export { replaceEqualDeep } from "./equal.js";
-export type { CommitHub } from "./face.js";
+export type { CommitHub, Span } from "./face.js";
 export type { SqliteMeshDb } from "./sqlite.js";
 export type { PostgresMeshDb } from "./postgres.js";
 
@@ -44,6 +60,9 @@ export interface MeshDrizzleOptions<D extends SqlDialect = "sqlite"> {
    * write their rules deny is refused before COMMIT. The events stay the device's.
    */
   readonly as?: Principal;
+  /** Writes each synced commit's durable operation record inside the transaction (book ch. 10). */
+  readonly operations?: OperationStore;
+  readonly now?: () => Temporal.Instant;
 }
 
 /** The handle a dialect hands out: `db`, `read` and `live` over that dialect's Drizzle. */
@@ -58,9 +77,12 @@ export function meshDrizzle<D extends SqlDialect = "sqlite">(
   options: MeshDrizzleOptions<D>,
 ): MeshHandle<D> {
   const { engine, validate, driver, schema, partition, as: actor } = options;
-  const tables = schema.entries.map((e) => e.table);
+  const tables = syncedTables(schema);
   const writerDeps = { engine, validate, driver, tables, schema };
   if (actor !== undefined) Object.assign(writerDeps, { actor });
+  if (options.operations !== undefined)
+    Object.assign(writerDeps, { operations: options.operations });
+  if (options.now !== undefined) Object.assign(writerDeps, { now: options.now });
   const deps: FaceDeps = {
     engine,
     schema,
@@ -73,21 +95,3 @@ export function meshDrizzle<D extends SqlDialect = "sqlite">(
   // SAFETY: the driver's dialect is D; each face is the D-typed handle
   return (driver.dialect === "postgres" ? postgresFace(deps) : sqliteFace(deps)) as MeshHandle<D>;
 }
-
-/**
- * The mesh's tagged error inside a rejected statement or transaction — Drizzle wraps proxy
- * failures, so `PolicyDenied` and friends ride the `cause` chain. `undefined` for anything else.
- */
-export const taggedCause = (thrown: Error): (Error & { readonly _tag: string }) | undefined => {
-  let current: unknown = thrown;
-  while (current instanceof Error) {
-    // SAFETY: reading an optional discriminant off an Error; absent on plain errors, the walk continues
-    const tagged = current as Error & { readonly _tag?: string };
-    if (tagged._tag !== undefined) {
-      // SAFETY: _tag was just checked present — restated as required for the caller
-      return tagged as Error & { readonly _tag: string };
-    }
-    current = current.cause;
-  }
-  return undefined;
-};

@@ -2,9 +2,10 @@ import type { RowWrite } from "@syncmesh/engine";
 import type { CellValue } from "@syncmesh/kernel";
 import type { ColumnKind, Table } from "@syncmesh/schema";
 
-import { isVisible } from "@syncmesh/kernel";
+import { counterValue, isVisible } from "@syncmesh/kernel";
 
 import type { SqlDriver, SqlValue } from "./driver.js";
+import type { RowSync } from "./row-sync.js";
 
 import { SQLITE, dialectOf } from "./dialect.js";
 import { columnsOf, quote } from "./identifiers.js";
@@ -19,6 +20,12 @@ export interface Projection {
 }
 
 export interface ProjectionOptions {
+  /**
+   * Keeps the row-sync table in step with every fold, so `syncOf(table)` is a column a query
+   * joins rather than a lookup an app correlates by hand (book ch. 10). Absent, the table is
+   * left alone and a query that selects `syncOf` finds nothing.
+   */
+  readonly rowSync?: RowSync;
   /**
    * The column that receives each row's partition key. Default `_partition` — what `tableDdl`
    * creates on a device. `false` when your table has no such column: the key is then only in
@@ -55,8 +62,11 @@ export function tablesProjection(
       return [String(table.name), { columns, upsert, remove }] as const;
     }),
   );
+  const rowSync = options.rowSync;
   return {
     apply: async (rows) => {
+      // the same commit the rows land in: a query cannot see a row without its sync state
+      await rowSync?.apply(rows);
       for (const { table, key, record } of rows) {
         const plan = statements.get(String(table));
         if (plan === undefined) continue;
@@ -64,14 +74,18 @@ export function tablesProjection(
           await driver.run(plan.remove, [String(key)]);
           continue;
         }
-        const values = plan.columns.map(([, name, column]) =>
-          dialect.cell(column.def.kind, record.cells.get(name)?.value ?? null),
-        );
+        const values = plan.columns.map(([, name, column]) => {
+          const held = record.cells.get(name)?.value ?? null;
+          // a counter cell stores per-author totals; the app's table holds the read — their sum
+          const value = column.def.merge === "counter" && held !== null ? counterValue(held) : held;
+          return dialect.cell(column.def.kind, value);
+        });
         if (partitionColumn !== false) values.push(record.partition ?? null);
         await driver.run(plan.upsert, values);
       }
     },
     clear: async () => {
+      await rowSync?.clear();
       for (const table of byName.values()) await driver.run(`DELETE FROM ${quote(table.name)}`);
     },
   };

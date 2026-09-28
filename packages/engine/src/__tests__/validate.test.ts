@@ -5,7 +5,7 @@ import {
   type PartitionKey,
   type PeerId,
 } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { ladder, local, partition, syncSchema, t, user } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, verifyGrant, type Grant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -16,9 +16,8 @@ import { createMemoryEventStore } from "../store.js";
 import { createValidator } from "../validate.js";
 import { CREATE, fakeClock, key, row, table } from "./fixtures.js";
 
-const schema = defineSchema({
-  partitions: { org: {} },
-  roles: { org: ["admin", "member"] },
+const org = partition("org", { roles: ladder("admin", "member") });
+const schema = syncSchema({
   tables: {
     catalog: { columns: { id: t.text().primaryKey(), code: t.text() } },
     books: {
@@ -28,15 +27,15 @@ const schema = defineSchema({
         pages: t.integer().nullable(),
         createdBy: t.text(),
       },
-      partition: "org",
+      partition: org,
       allow: ({ role, owner, any }) => ({
         $default: role("member"),
         update: any(owner("createdBy"), role("admin")),
         delete: role("admin"),
       }),
     },
-    notes: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "user" },
-    drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: "local" },
+    notes: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: user },
+    drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: local },
     // the third tier: which rows reach which device is the relay's to decide, from data no
     // device holds — so no device has a rule to run, and none of them authors one (D24-A)
     patient: { columns: { id: t.text().primaryKey(), name: t.text() }, visibility: "authority" },

@@ -2,7 +2,7 @@ import type { PeerId } from "@syncmesh/kernel";
 import type { Grant } from "@syncmesh/wire";
 
 import { parsePartitionKey, parsePeerId, readRow } from "@syncmesh/kernel";
-import { defineSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, verifyGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -32,10 +32,10 @@ const ISSUER = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 50 + i))
 const NOW = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const NOTE = table("note");
 
+const org = partition("org", { roles: ladder("admin", "member") });
+
 /** A row belongs to the account that made it, and only that account may write it again. */
-const schema = defineSchema({
-  partitions: { org: {} },
-  roles: { org: ["admin", "member"] },
+const schema = syncSchema({
   tables: {
     note: {
       columns: {
@@ -44,7 +44,7 @@ const schema = defineSchema({
         body: t.text(),
         ownerId: t.text(),
       },
-      partition: "org",
+      partition: org,
       allow: ({ owner, role, any }) => ({
         $default: any(owner("ownerId"), role("admin")),
         read: role("member"),

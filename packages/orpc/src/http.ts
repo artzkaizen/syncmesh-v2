@@ -1,8 +1,26 @@
-import type { Result as ResultType } from "@syncmesh/result";
+import type { Handle } from "@syncmesh/client";
+import type { Result as ResultType, RevivableTagged, TaggedCatalog } from "@syncmesh/result";
 
-import { Result } from "@syncmesh/result";
+import {
+  Result,
+  TaggedError,
+  createTaggedCatalog,
+  isTaggedError,
+  serializeTagged,
+} from "@syncmesh/result";
 
-import type { Api, AuthorityLink, ProcedureDef, Router } from "./api.js";
+import type {
+  Api,
+  AuthorityDef,
+  AuthorityHandlers,
+  AuthorityLink,
+  DeclaredErrors,
+  ProcedureDef,
+  Router,
+} from "./api.js";
+
+import { validate } from "./api.js";
+import { NoBodyBound } from "./errors.js";
 
 /**
  * The same procedures, over HTTP.
@@ -43,7 +61,26 @@ export interface HandlerOptions<R extends Router> {
   readonly procedures: R;
   /** The api this server runs calls against — `createApp`'s, bound to the server's own mesh. */
   readonly api: Api<R>;
+  /**
+   * The gates: the router's `.authority()` leaves mirrored as bodies (book ch. 19), and the
+   * handle they run with. A server whose router declares no gates omits this.
+   */
+  readonly gate?: {
+    readonly handlers: AuthorityHandlers<R>;
+    /** The replica this call is about, from the call's own input — scope is input (ch. 3). */
+    readonly handle: (input: unknown) => Handle;
+  };
 }
+
+/** One thrower per declared error name; a thrown one crosses as its own tag and revives typed. */
+const throwersOf = (declared: DeclaredErrors = {}) =>
+  Object.fromEntries(
+    Object.entries(declared).map(([tag, spec]) => [
+      tag,
+      (over?: { readonly message?: string }) =>
+        new (TaggedError(tag))({ message: over?.message ?? spec.message ?? tag }),
+    ]),
+  );
 
 /**
  * A `fetch` handler for one api. Give it the request; it answers the call.
@@ -53,7 +90,38 @@ export interface HandlerOptions<R extends Router> {
  * promising a freshness this cannot keep.
  */
 export function createHandler<R extends Router>(options: HandlerOptions<R>) {
-  const { procedures, api } = options;
+  const { procedures, api, gate } = options;
+
+  /** A gate's body, run with the parsed input and its declared errors; the mirror is complete by type. */
+  const decide = async (path: string, def: AuthorityDef<never, unknown>, input: unknown) => {
+    const body = gate === undefined ? undefined : leafAt(gate.handlers, path);
+    if (body === undefined || gate === undefined)
+      return Result.err(
+        new NoBodyBound({
+          path,
+          message: `${path} is a gate, and this server binds no body for it`,
+        }),
+      );
+    const parsed = validate<never>(def.schema, input);
+    if (parsed.isErr()) return parsed;
+    // the handle resolves lazily: a gate that reads no tables never opens one
+    const context = {
+      input: parsed.value,
+      errors: throwersOf(def.errors),
+      get db() {
+        return gate.handle(parsed.value).db;
+      },
+      get read() {
+        return gate.handle(parsed.value).read;
+      },
+    };
+    const answered = await Result.tryPromise({
+      try: async () => (body as (c: unknown) => unknown)(context),
+      catch: (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause))),
+    });
+    if (answered.isErr() || def.output === undefined) return answered;
+    return validate<unknown>(def.output, answered.value);
+  };
 
   return async (request: Request): Promise<Response> => {
     const body = await Result.tryPromise({
@@ -66,30 +134,50 @@ export function createHandler<R extends Router>(options: HandlerOptions<R>) {
     const def = findProcedure(procedures, path);
     if (def === undefined) return Response.json({ error: `no procedure ${path}` }, { status: 404 });
 
+    if (def.kind === "authority" && gate !== undefined) {
+      const decided = await decide(path, def, input);
+      return decided.isErr()
+        ? Response.json({ error: wireError(decided.error) }, { status: 422 })
+        : Response.json({ data: decided.value });
+    }
+
     const call = leafAt(api, path);
     if (call === undefined) return Response.json({ error: `no call ${path}` }, { status: 404 });
 
     const ran = await Result.tryPromise({
       try: async () => {
         const made = call(input);
-        return def.kind === "query" && "run" in made ? made.run() : made;
+        // the rows, not the `Result` awaiting the descriptor would give: a query crosses as `{ data }`
+        return def.kind === "query" && "~mesh" in made ? made["~mesh"].run() : made;
       },
       catch: (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause))),
     });
-    if (ran.isErr()) return Response.json({ error: ran.error.message }, { status: 500 });
+    if (ran.isErr()) return Response.json({ error: wireError(ran.error) }, { status: 500 });
 
     // a mutation already hands back a Result; a query hands back rows
     const value = ran.value;
     if (isResult(value))
       return value.isErr()
-        ? Response.json({ error: value.error.message }, { status: 422 })
+        ? Response.json({ error: wireError(value.error) }, { status: 422 })
         : Response.json({ data: value.value });
     return Response.json({ data: value });
   };
 }
 
+/**
+ * The failure as the wire carries it: `{ _tag, message, ...fields }` for a tagged error, so the
+ * caller revives the class it declared (book ch. 5); a bare `Error` crosses as its message under
+ * the one tag nothing should match on.
+ */
+const wireError = (error: Error): Record<string, unknown> =>
+  isTaggedError(error)
+    ? serializeTagged(error)
+    : { _tag: "UnhandledException", message: error.message };
+
 /** What a leaf hands back: rows behind a `run()` for a query, or a `Result` for anything else. */
-type Leaf = (input: unknown) => { readonly run: () => Promise<unknown> } | Promise<unknown>;
+type Leaf = (
+  input: unknown,
+) => { readonly "~mesh": { readonly run: () => Promise<unknown> } } | Promise<unknown>;
 
 const leafAt = (api: object, path: string): Leaf | undefined => {
   let node: unknown = api;
@@ -103,27 +191,46 @@ const leafAt = (api: object, path: string): Leaf | undefined => {
 const isResult = (value: unknown): value is ResultType<unknown, Error> =>
   value !== null && typeof value === "object" && "isErr" in value;
 
+export interface HttpLinkOptions extends RequestInit {
+  /**
+   * The tagged error classes this caller declares: a `{ _tag, ...fields }` failure from the
+   * server revives into the matching class, so `matchError` after a network hop reads like
+   * `matchError` in-process. Tags outside the catalog arrive as `ForeignTagged`.
+   */
+  readonly errors?: readonly RevivableTagged[];
+}
+
 /**
  * Sends a call to a {@link createHandler} endpoint. What a browser hands `createApp`'s `link`,
  * and what makes an `authority` procedure reach the server that implements it.
  */
-export const httpLink =
-  (url: string, init?: RequestInit): AuthorityLink =>
-  async (path, input) => {
+export const httpLink = (url: string, options: HttpLinkOptions = {}): AuthorityLink => {
+  const { errors, ...init } = options;
+  const catalog: TaggedCatalog = createTaggedCatalog(errors ?? []);
+  return async (path, input) => {
     const sent = await Result.tryPromise({
       try: async () => {
         const response = await fetch(url, {
           ...init,
           method: "POST",
-          headers: { "content-type": "application/json", ...init?.headers },
+          headers: { "content-type": "application/json", ...init.headers },
           body: JSON.stringify({ path, input } satisfies CallBody),
         });
-        const payload = (await response.json()) as { data?: unknown; error?: string };
-        if (!response.ok) throw new Error(payload.error ?? `${path} failed: ${response.status}`);
+        const payload = (await response.json()) as { data?: unknown; error?: unknown };
+        if (!response.ok)
+          throw (
+            catalog.revive(payload.error) ??
+            new Error(
+              typeof payload.error === "string"
+                ? payload.error
+                : `${path} failed: ${response.status}`,
+            )
+          );
         return payload.data;
       },
       catch: (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause))),
     });
     return sent;
   };
+};
 /* oxlint-enable anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns, anti-slop/no-unsafe-dictionary-type, anti-slop/no-runtime-typeof, anti-slop/no-object-parameters, anti-slop/require-safety-comment-for-type-assertion */

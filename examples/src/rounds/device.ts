@@ -1,6 +1,6 @@
 import type { Transport } from "@syncmesh/transport";
 
-import { createApp } from "@syncmesh/orpc";
+import { createClient, sqlite } from "@syncmesh/orpc";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createFrameTransport, loopbackPair } from "@syncmesh/transport";
@@ -51,17 +51,18 @@ const grants = Object.entries(staff).map(([name, who]) =>
 );
 
 const device = async (name: keyof typeof staff, transport: Transport) => {
-  const app = await createApp({
+  const app = createClient({
     schema: roundsSchema(),
     procedures,
-    instance: PRACTICE,
     identity: staff[name],
-    issuer: issuer.peerId,
-    driver: bunSqliteDriver(":memory:"), // a demo starts on a fresh ward every run
+    trust: { issuer: issuer.peerId },
+    storage: sqlite({ driver: bunSqliteDriver(":memory:") }), // a fresh ward every run
     transports: [transport],
     now: () => T0,
   });
-  for (const grant of grants) app.mesh.grants.register(grant).unwrap();
+  // a script, not a screen: `$grants` is mesh surface, so it waits for the mesh the api does not
+  await app.$ready;
+  for (const grant of grants) app.$grants.register(grant).unwrap();
   return app;
 };
 
@@ -71,45 +72,46 @@ const raj = await device("raj", links.b);
 const settle = async () => {
   for (let round = 0; round < 12; round += 1) {
     await links.control.flush();
-    await ann.mesh.flush();
-    await raj.mesh.flush();
+    await ann.$mesh.flush();
+    await raj.$mesh.flush();
   }
 };
 
 // Ann admits a patient and takes a reading. Every call is `api.*`; no handle, no SQL.
-(await ann.api.patients.admit({ id: "p1", name: "J. Okonkwo", bed: "4B" })).unwrap();
+(await ann.patients.admit({ id: "p1", name: "J. Okonkwo", bed: "4B" }).committed).unwrap();
 const first = (
-  await ann.api.observations.record({
+  await ann.observations.record({
     patientId: "p1",
     code: "BP",
     value: "128/84",
     takenAt: Date.now(),
     author: "ann",
-  })
+  }).committed
 ).unwrap();
 
 await settle();
 
 // Raj, on the other phone, already has both — nothing was fetched.
-const onRaj = await raj.api.observations.forPatient({ patientId: "p1" }).run();
+const onRaj = (await raj.observations.forPatient({ patientId: "p1" })).unwrap().data;
 console.log("raj sees:", onRaj.map((o) => `${o.code} ${o.value}`).join(", "));
 
 // The radio goes down. Both keep writing.
 links.control.setOnline(false);
 const offline = (
-  await raj.api.observations.record({
+  await raj.observations.record({
     patientId: "p1",
     code: "HR",
     value: "88",
     takenAt: Date.now(),
     author: "raj",
-  })
+  }).committed
 ).unwrap();
 (
-  await ann.api.observations.amend({ amends: first.data.id, value: "126/82", author: "ann" })
+  await ann.observations.amend({ amends: first.data.id, value: "126/82", author: "ann" }).committed
 ).unwrap();
 
-console.log("raj's reading while offline:", raj.mesh.syncOf("observation", offline.data.id));
+const reachOf = async (id: string) => (await raj.observations.reach({ id })).unwrap().data[0]?.sync;
+console.log("raj's reading while offline:", await reachOf(offline.data.id));
 
 // the radio is back. A link that dropped frames while it was down asks from its last
 // contiguous position — the same thing a phone does when it walks back into range.
@@ -123,13 +125,13 @@ for (const [who, side] of [
   ["ann", ann],
   ["raj", raj],
 ] as const) {
-  const rows = await side.api.observations.forPatient({ patientId: "p1" }).run();
+  const rows = (await side.observations.forPatient({ patientId: "p1" })).unwrap().data;
   console.log(
     `${who}:`,
     rows.map((o) => `${o.code}=${o.value}${o.amends === null ? "" : " (amends)"}`).join(" | "),
   );
 }
-console.log("raj's reading after reconnect:", raj.mesh.syncOf("observation", offline.data.id));
+console.log("raj's reading after reconnect:", await reachOf(offline.data.id));
 
-await ann.mesh.stop();
-await raj.mesh.stop();
+await ann.$mesh.stop();
+await raj.$mesh.stop();

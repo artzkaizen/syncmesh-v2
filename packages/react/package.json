@@ -16,12 +16,13 @@
     }
   },
   "dependencies": {
+    "@syncmesh/client": "workspace:*",
     "@syncmesh/drizzle": "workspace:*",
-    "@syncmesh/result": "workspace:*"
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/transport": "workspace:*"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^18.0.1",
-    "@syncmesh/client": "workspace:*",
     "@syncmesh/config": "workspace:*",
     "@syncmesh/engine": "workspace:*",
     "@syncmesh/kernel": "workspace:*",
