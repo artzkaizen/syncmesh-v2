@@ -39,7 +39,7 @@ export const ladder = async (
   // nothing to apply is nothing to write: a launch that migrated nothing should touch no page
   if (applied === steps.length) return;
   for (const step of steps.slice(applied)) {
-    for (const sql of step) await driver.run(sql)
+    for (const sql of step) await driver.run(sql);
   }
   await at.write(driver, steps.length);
 };
