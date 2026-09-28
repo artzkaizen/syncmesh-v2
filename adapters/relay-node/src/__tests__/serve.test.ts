@@ -109,8 +109,14 @@ describe("startRelay on Node — the same host over node:http and ws", () => {
         headers: { upgrade: "websocket", connection: "upgrade" },
       });
       expect(refused.status).toBe(503);
-      // a plain request is not an upgrade, and says so rather than pretending to be refused
-      expect((await fetch(relay.url.replace("ws", "http"))).status).toBe(426);
+      // a plain request is not an upgrade: it is answered with the room described, as JSON
+      const described = await fetch(`${relay.url.replace("ws", "http")}/notes`);
+      expect(described.headers.get("content-type")).toBe("application/json");
+      expect(await described.json()).toMatchObject({
+        room: "notes",
+        relay: relay.peerId,
+        clients: 0,
+      });
 
       first.close();
       await until(() => Promise.resolve(false), 80);

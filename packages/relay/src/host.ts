@@ -85,6 +85,11 @@ export interface RelayHost {
   readonly peerId: PeerId;
   /** Everything that turns a request away before a socket exists, in refusal order. */
   readonly gate: (request: Request, room: string) => Promise<Response | undefined>;
+  /**
+   * The posture alone — origin, announce, `verifyJoin` — without the socket ceiling: what a
+   * request that opens no socket, a describe, has to pass. A full house is a fact about sockets.
+   */
+  readonly admits: (request: Request, room: string) => Promise<Response | undefined>;
   /** A caller-supplied store serves one room whatever the path says; otherwise the path is the room. */
   readonly roomFor: (path: string) => string;
   /**
@@ -106,14 +111,10 @@ export interface RelayHost {
   readonly close: () => Promise<void>;
 }
 
-/** Everything that turns a request away before a socket exists, in refusal order. */
-export const createGate = (
-  access: ReturnType<typeof createRoomAccess>,
-  atCapacity: () => boolean,
-): ((request: Request, room: string) => Promise<Response | undefined>) => {
-  return async (request: Request, room: string): Promise<Response | undefined> => {
-    if (atCapacity())
-      return new Response("syncmesh relay: at capacity, retry shortly", { status: 503 });
+/** The posture's three questions, in the order they get cheaper to fail; `undefined` admits. */
+export const postureGate =
+  (access: ReturnType<typeof createRoomAccess>) =>
+  async (request: Request, room: string): Promise<Response | undefined> => {
     if (!access.admitsOrigin(request.headers.get("origin")))
       return new Response("syncmesh relay: origin not allowed", { status: 403 });
     if (!access.announces(room))
@@ -122,6 +123,17 @@ export const createGate = (
       return new Response("syncmesh relay: join refused", { status: 403 });
     return undefined;
   };
+
+/** Everything that turns a request away before a socket exists, in refusal order. */
+export const createGate = (
+  access: ReturnType<typeof createRoomAccess>,
+  atCapacity: () => boolean,
+): ((request: Request, room: string) => Promise<Response | undefined>) => {
+  const posture = postureGate(access);
+  return (request: Request, room: string): Promise<Response | undefined> =>
+    atCapacity()
+      ? Promise.resolve(new Response("syncmesh relay: at capacity, retry shortly", { status: 503 }))
+      : posture(request, room);
 };
 
 /** The relay's own facts beside the log: its lineage, and the key it signs with. */
@@ -298,6 +310,7 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
   return {
     peerId: identity.peerId,
     gate,
+    admits: postureGate(access),
     roomFor,
     accept,
     acquire: (path) => table.acquire(roomFor(path)),

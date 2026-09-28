@@ -48,8 +48,9 @@ export {
 export { watch } from "./watch.js";
 export type { Write, WriteLedger } from "./write.js";
 export { createWrite } from "./write.js";
-export type { Server, ServerOptions } from "./server.js";
+export type { Server, ServerFetch, ServerOptions } from "./server.js";
 export { createServer } from "./server.js";
+export type { Custody, InlineCustody, Serving, Upgrading } from "./custody.js";
 
 import type { Handle, Mesh } from "@syncmesh/client";
 import type { JsonValue } from "@syncmesh/kernel";
@@ -137,5 +138,3 @@ export function withMesh<D extends SqlDialect = "sqlite">(mesh: Mesh<D>) {
       }
     });
 }
-
-export type { Custody, Serving } from "./custody.js";

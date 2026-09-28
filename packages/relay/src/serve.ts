@@ -12,6 +12,7 @@ import type { RelayPosture } from "./posture.js";
 import type { RelayRetention } from "./retention.js";
 import type { RelaySocket, SendOutcome } from "./sender.js";
 
+import { describeRoom } from "./describe.js";
 import { createRelayHost, durableRoomStore } from "./host.js";
 
 export interface StartRelayOptions {
@@ -62,7 +63,7 @@ export interface SocketData {
 }
 
 /** Bun's log opener: one SQLite file per room under `dataDir`, epoch persisted with the log. */
-const bunRoomStore =
+export const bunRoomStore =
   (dataDir: string, serveBlobs: boolean) =>
   async (name: string): Promise<RoomStore> => {
     const { defaultStore } = await import("@syncmesh/sqlite-bun");
@@ -137,6 +138,14 @@ export async function upgradeRoom(
   return upgraded ? undefined : new Response("syncmesh relay: WebSocket only", { status: 426 });
 }
 
+/** The `websocket` half of a `Bun.serve`, wired to a host; what {@link bunWebSocket} builds. */
+export interface BunWebSocketHandlers {
+  readonly open: (ws: BunSocket) => void;
+  readonly message: (ws: BunSocket, message: string | Uint8Array) => void;
+  readonly drain: (ws: BunSocket) => void;
+  readonly close: (ws: BunSocket) => void;
+}
+
 /** The half of Bun's socket a room drives: what it sends on, and what it hangs up. */
 export interface BunSocket {
   readonly data: SocketData;
@@ -149,7 +158,7 @@ export interface BunSocket {
  * over the socket so a server that mounts procedures and custody on one port can hand these to
  * its own `Bun.serve` without this package naming Bun's types.
  */
-export const bunWebSocket = (host: RelayHost) => ({
+export const bunWebSocket = (host: RelayHost): BunWebSocketHandlers => ({
   open(ws: BunSocket) {
     const socket: RelaySocket = {
       send: (frame): SendOutcome => {
@@ -193,7 +202,11 @@ export async function startRelay(
   // D09-A on purpose: this file IS the Bun mount; the guard above already refused other runtimes
   const server = globalThis.Bun.serve<SocketData>({
     port,
-    fetch: (request, self) => upgradeRoom(host, request, (r, o) => self.upgrade(r, o)),
+    // a socket for a device; a description for anything that asked without upgrading
+    fetch: (request, self) =>
+      asksUpgrade(request)
+        ? upgradeRoom(host, request, (r, o) => self.upgrade(r, o))
+        : describeRoom(host, request),
     websocket: bunWebSocket(host),
   });
 

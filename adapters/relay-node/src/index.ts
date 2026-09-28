@@ -7,12 +7,18 @@ import type {
   SocketSession,
   StartRelayOptions,
 } from "@syncmesh/relay";
-import type { IncomingMessage, Server } from "node:http";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
 import type { WebSocket } from "ws";
 
-import { createRelayHost, durableRoomStore, hostTuning, roomOf } from "@syncmesh/relay";
+import {
+  createRelayHost,
+  describeRoom,
+  durableRoomStore,
+  hostTuning,
+  roomOf,
+} from "@syncmesh/relay";
 import { panic } from "@syncmesh/result";
 import { defaultStore } from "@syncmesh/sqlite-node";
 import { createServer } from "node:http";
@@ -137,6 +143,14 @@ export function attachRelay(server: Server, host: RelayHost): () => void {
   };
 }
 
+/** A fetch `Response` written onto Node's response: status, headers, body. */
+const answer = async (response: Response, into: ServerResponse): Promise<void> => {
+  const headers: Record<string, string> = {};
+  response.headers.forEach((value, name) => void (headers[name] = value));
+  into.writeHead(response.status, headers);
+  into.end(new Uint8Array(await response.arrayBuffer()));
+};
+
 /**
  * D09-A: the embedded host on Node — the relay in the process you already run, one durable
  * SQLite log per room under `dataDir`. Port 0 picks a free port. The same options and the same
@@ -150,9 +164,9 @@ export async function startRelay(
   const host = createRelayHost(
     hostTuning(options, nodeRoomStore(dataDir, options.blobs !== false)),
   );
-  const server = createServer((_request, response) => {
-    response.writeHead(426, { "content-type": "text/plain", upgrade: "websocket" });
-    response.end("syncmesh relay: WebSocket only");
+  // a plain request never reaches the upgrade listener: it gets the room described instead
+  const server = createServer((request, response) => {
+    void describeRoom(host, requestOf(request)).then((described) => answer(described, response));
   });
   const detach = attachRelay(server, host);
   await new Promise<void>((resolve) => server.listen(port, resolve));
