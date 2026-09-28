@@ -195,6 +195,8 @@ fn a_rust_signed_event_round_trips_through_the_envelope() {
             row,
         }],
         sealed: false,
+        action: None,
+        undo_of: None,
     };
     let signed = sign_event(event.clone(), &id);
     let back = decode_and_verify(&signed.wire).unwrap();

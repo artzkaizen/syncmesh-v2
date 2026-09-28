@@ -9,6 +9,8 @@
 
 pub mod apply;
 pub mod cbor;
+pub mod doc;
+pub mod doc_checkpoint;
 pub mod envelope;
 pub mod event;
 pub mod event_codec;
@@ -23,6 +25,11 @@ pub mod strategy;
 
 pub use apply::{apply_change, merge_record};
 pub use cbor::{Key, Value, decode as decode_cbor, encode as encode_cbor};
+pub use doc::{
+    DocBlobRef, DocChange, DocColumns, DocUpdate, Id16, derive_lineage, doc_change_id, lineage_of,
+    lineage_rule, with_doc_columns,
+};
+pub use doc_checkpoint::{DocCheckpoint, decode_doc_checkpoint, sign_doc_checkpoint};
 pub use envelope::{VerifiedEvent, decode_and_verify, sign_event, split_envelope};
 pub use event::{Change, PeerId, SyncEvent, event_id};
 pub use event_codec::{decode_event_core, encode_event_core};

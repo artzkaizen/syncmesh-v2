@@ -13,6 +13,9 @@ pub enum StrategyName {
     Max,
     Min,
     Counter,
+    /// A doc column's lineage cell (RFC-0023 §5.3). Put there by `doc::with_doc_columns`, never
+    /// declared by an app, so `parse` does not know its name.
+    Lineage,
 }
 
 impl StrategyName {
@@ -183,6 +186,7 @@ pub fn join(strategy: StrategyName, incoming: Cell, current: Option<Cell>) -> Ce
         StrategyName::Max => by_value(Ordering::Greater, incoming, current),
         StrategyName::Min => by_value(Ordering::Less, incoming, current),
         StrategyName::Counter => counter(incoming, current),
+        StrategyName::Lineage => crate::doc::lineage_rule(incoming, current),
     }
 }
 

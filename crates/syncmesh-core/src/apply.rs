@@ -39,6 +39,10 @@ fn stamp_all(row: &Row, stamp: &Stamp) -> BTreeMap<String, Cell> {
 /// Folds one change into the state. `insert` and `update` both merge column by column (RFC-0014 §1);
 /// `merge` names the strategy per column, defaulting to `lww`; a row keeps the first partition it saw.
 /// An `unknown` change has no fold (D22-A) and is returned as such, the state untouched.
+///
+/// A `doc` change touches state only as a genesis, and then only its column's lineage cell, joined
+/// by the lineage rule whatever `merge` says (RFC-0023 §5.3). It sets no write stamp: a document
+/// edit neither resurrects a deleted row nor outlives a later delete.
 pub fn apply_change(
     state: &mut State,
     change: &Change,
@@ -70,6 +74,26 @@ pub fn apply_change(
             },
         ),
         Change::Unknown { tag, .. } => return Err(Unfoldable { tag: *tag }),
+        Change::Doc(doc) => {
+            let (true, Some(lineage)) = (doc.genesis, doc.lineage) else {
+                return Ok(());
+            };
+            let mut spec = merge.cloned().unwrap_or_default();
+            spec.entry(doc.table.clone())
+                .or_default()
+                .insert(doc.column.clone(), StrategyName::Lineage);
+            let cell = Cell {
+                value: crate::record::CellValue::Text(crate::doc::lineage_text(&lineage)),
+                stamp: stamp.clone(),
+            };
+            let incoming = RowRecord {
+                cells: BTreeMap::from([(doc.column.clone(), cell)]),
+                partition: partition.map(|p| p.as_str().to_owned()),
+                ..RowRecord::default()
+            };
+            merge_record(state, &doc.table, &doc.key, incoming, Some(&spec));
+            return Ok(());
+        }
     };
     let incoming = RowRecord {
         partition: partition.map(|p| p.as_str().to_owned()),

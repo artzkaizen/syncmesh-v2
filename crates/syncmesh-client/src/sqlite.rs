@@ -549,6 +549,8 @@ mod tests {
                 partition: None,
                 changes: vec![],
                 sealed: false,
+                action: None,
+                undo_of: None,
             },
             core: None,
             sig: None,

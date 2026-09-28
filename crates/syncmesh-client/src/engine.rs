@@ -249,6 +249,8 @@ impl Engine {
             partition,
             changes,
             sealed: false,
+            action: None,
+            undo_of: None,
         };
         let entry = StoredEvent::from_verified(sign_event(event, &self.identity));
         self.store.append(&entry)?;
