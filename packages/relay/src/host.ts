@@ -1,15 +1,17 @@
 import type { EventStore } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
-import type { BlobStore, SqlDriver } from "@syncmesh/storage";
+import type { BlobStore, SqlDriver, Stores } from "@syncmesh/storage";
+import type { Identity } from "@syncmesh/wire";
 
 import { omitUndefined, panic } from "@syncmesh/result";
+import { sqlBlobStore } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
-import { createIdentity, randomBytes } from "@syncmesh/wire";
+import { bytesToHex, createIdentity, hexToBytes, randomBytes } from "@syncmesh/wire";
 
 import type { GrantCache } from "./grant-cache.js";
 import type { RelayPosture } from "./posture.js";
 import type { RelayConnection, RelayRoomOptions } from "./room.js";
-import type { OpenedRoom } from "./rooms.js";
+import type { HeldRoom, OpenedRoom } from "./rooms.js";
 import type { RelaySocket } from "./sender.js";
 
 import { DEFAULT_LIMITS } from "./limits.js";
@@ -39,8 +41,14 @@ export interface RoomStore {
   readonly store: EventStore;
   readonly epoch: string;
   readonly blobs?: BlobStore;
+  /**
+   * The key kept beside this log, for a host where the room is its own process — a Durable
+   * Object — and the name a client pins is the object's rather than a fleet's. Given, it signs
+   * this room's hello in place of the host's key (D36).
+   */
+  readonly identity?: Identity;
   /** Gives back whatever opening took: file handles, and nothing for borrowed stores. */
-  readonly release: () => void;
+  readonly release: () => Promise<void> | void;
 }
 
 export interface RelayHostOptions extends RoomTuning {
@@ -86,6 +94,12 @@ export interface RelayHost {
    * of holding it open for the life of the process.
    */
   readonly accept: (socket: RelaySocket, path: string) => SocketSession;
+  /**
+   * The room itself, for a host that binds its own connections — a hibernating one, which opens
+   * a connection with the resume script it kept and cannot go through {@link accept}. Counted
+   * like a socket: the room stays open until the hold is released.
+   */
+  readonly acquire: (path: string) => Promise<HeldRoom>;
   /** Live sockets across the whole host; the ceiling is enforced by the fetch layer. */
   readonly live: () => number;
   readonly atCapacity: () => boolean;
@@ -110,17 +124,62 @@ export const createGate = (
   };
 };
 
-/** The epoch rides in the log's own file: a new file is honestly a new lineage. */
-export async function epochOf(driver: SqlDriver): Promise<string> {
-  await driver.run(
-    `CREATE TABLE IF NOT EXISTS "_relay_meta" ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL)`,
-  );
-  const held = await driver.all(`SELECT "value" FROM "_relay_meta" WHERE "key" = 'epoch'`);
+/** The relay's own facts beside the log: its lineage, and the key it signs with. */
+const META_DDL = `CREATE TABLE IF NOT EXISTS "_relay_meta" ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL)`;
+
+/** One `_relay_meta` value, or the one `mint` makes and writes when the key was never set. */
+const metaOf = async (driver: SqlDriver, key: string, mint: () => string): Promise<string> => {
+  await driver.run(META_DDL);
+  const held = await driver.all(`SELECT "value" FROM "_relay_meta" WHERE "key" = ?`, [key]);
   const value = held[0]?.[0];
   if (value !== undefined && value !== null) return String(value); // the column is TEXT NOT NULL
-  const fresh = crypto.randomUUID();
-  await driver.run(`INSERT INTO "_relay_meta" ("key", "value") VALUES ('epoch', ?)`, [fresh]);
+  const fresh = mint();
+  await driver.run(`INSERT INTO "_relay_meta" ("key", "value") VALUES (?, ?)`, [key, fresh]);
   return fresh;
+};
+
+/** The epoch rides in the log's own file: a new file is honestly a new lineage. */
+export const epochOf = (driver: SqlDriver): Promise<string> =>
+  metaOf(driver, "epoch", () => crypto.randomUUID());
+
+/**
+ * The key a room signs its link hello with (D36), kept beside the epoch so the room has one name
+ * across restarts, evictions and moves — the name a client pins. Minted on the first open.
+ */
+export async function identityOf(driver: SqlDriver): Promise<Identity> {
+  const seed = await metaOf(driver, "identity-seed", () => bytesToHex(randomBytes(32)));
+  return hexToBytes(seed)
+    .andThen((bytes) => createIdentity(bytes))
+    .match({
+      ok: (value) => value,
+      err: (failure) => panic(`the relay's stored key could not be read: ${failure.message}`),
+    });
+}
+
+/**
+ * A room's log over stores somebody opened on a SQLite file: the epoch persisted beside it, and
+ * the room's own blob store on the same connection — never shared across rooms, because a room
+ * that inherited another room's store would serve and keep another room's bytes under D18.
+ *
+ * What every file-backed mount opens per room; `defaultStore` from the platform's SQLite adapter
+ * is what it is handed.
+ */
+export async function durableRoomStore(
+  stores: Stores,
+  options: { readonly blobs?: boolean } = {},
+): Promise<RoomStore> {
+  const { driver } = stores;
+  let blobs: BlobStore | undefined;
+  if (options.blobs !== false) {
+    const opened = await sqlBlobStore(driver);
+    if (opened.isOk()) blobs = opened.value;
+  }
+  return {
+    store: stores.events,
+    epoch: await epochOf(driver),
+    ...omitUndefined({ blobs }),
+    release: stores.close,
+  };
 }
 
 /**
@@ -174,7 +233,7 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
     const held = await options.openRoomStore(name);
     const room = await openRelayRoom({
       ...roomOptions,
-      ...omitUndefined({ blobs: held.blobs }),
+      ...omitUndefined({ blobs: held.blobs, identity: held.identity }),
       name,
       grants,
       store: held.store,
@@ -241,6 +300,7 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
     gate,
     roomFor,
     accept,
+    acquire: (path) => table.acquire(roomFor(path)),
     live: () => live,
     atCapacity,
     close: () => table.close(),

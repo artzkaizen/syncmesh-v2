@@ -1,11 +1,18 @@
 import type { TelemetryListener } from "@syncmesh/engine";
-import type { LinkSession, RelayConnection, RelayLimits, RelayRoom } from "@syncmesh/relay";
+import type {
+  HeldRoom,
+  LinkSession,
+  RelayConnection,
+  RelayHost,
+  RelayLimits,
+  RelayPosture,
+  RoomStore,
+} from "@syncmesh/relay";
 import type { BlobStore, SqliteDriver } from "@syncmesh/storage";
 
-import { decodeRelayFrame, openRelayRoom } from "@syncmesh/relay";
+import { createRelayHost, decodeRelayFrame, epochOf, identityOf } from "@syncmesh/relay";
 import { omitUndefined, panic } from "@syncmesh/result";
 import { sqlBlobStore, sqliteEventStore } from "@syncmesh/storage";
-import { bytesToHex, createIdentity, hexToBytes, randomBytes, type Identity } from "@syncmesh/wire";
 
 import type { DurableSqlStorage } from "./driver.js";
 import type { DurableWebSocket } from "./socket.js";
@@ -49,51 +56,26 @@ export interface RelayDurableHostOptions {
    * first socket, so this is the only subscription point a host has that is early enough.
    */
   readonly onTelemetry?: TelemetryListener;
+  /**
+   * Who may open a socket onto this object (the same posture every other host takes): origins,
+   * and the last word on one upgrade with the request in hand. Asked by {@link RelayDurableHost.gate}
+   * before a `WebSocketPair` exists, so a refused client costs the object nothing.
+   */
+  readonly posture?: RelayPosture;
 }
 
-/** The three callbacks of a hibernating WebSocket object, already wired to a room. */
+/** The three callbacks of a hibernating WebSocket object, already wired to a room, and the gate before them. */
 export interface RelayDurableHost {
+  /**
+   * Everything that turns an upgrade away before a socket exists, in refusal order: the
+   * connection ceiling, the origin, the room's name, `verifyJoin`. `undefined` admits — the
+   * object then makes its pair and hands the server half to {@link join}.
+   */
+  readonly gate: (request: Request) => Promise<Response | undefined>;
   /** Accepts the socket for hibernation and binds it to the room, whose challenge is its first frame (D33). */
   readonly join: (ws: DurableWebSocket) => void;
   readonly message: (ws: DurableWebSocket, data: ArrayBuffer | string) => Promise<void>;
   readonly leave: (ws: DurableWebSocket) => void;
-}
-
-/**
- * The room's lineage id, kept in the object's own SQLite beside the log it describes. An object
- * evicted, redeployed or moved between regions keeps it, so a visibility token minted before the
- * move still means what it meant; only a reset database is honestly a new room.
- */
-async function epochOf(driver: SqliteDriver): Promise<string> {
-  await driver.run(
-    `CREATE TABLE IF NOT EXISTS "_relay_meta" ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL)`,
-  );
-  const held = await driver.all(`SELECT "value" FROM "_relay_meta" WHERE "key" = 'epoch'`);
-  const value = held[0]?.[0];
-  if (value !== undefined && value !== null) return String(value); // the column is TEXT NOT NULL
-  const fresh = crypto.randomUUID();
-  await driver.run(`INSERT INTO "_relay_meta" ("key", "value") VALUES ('epoch', ?)`, [fresh]);
-  return fresh;
-}
-
-/**
- * The key the room signs its link hello with (D36), kept beside the epoch so the room has one
- * name across evictions and moves — the name a client could pin, once pinning is a thing. A
- * fresh one per wake would work today, and would make every such wake look like a new relay.
- */
-async function identityOf(driver: SqliteDriver): Promise<Identity> {
-  const held = await driver.all(`SELECT "value" FROM "_relay_meta" WHERE "key" = 'identity-seed'`);
-  const value = held[0]?.[0];
-  const seed =
-    value !== undefined && value !== null
-      ? hexToBytes(String(value)).match({ ok: (b) => b, err: () => undefined })
-      : undefined;
-  if (seed !== undefined) return createIdentity(seed).unwrap();
-  const fresh = randomBytes(32);
-  await driver.run(`INSERT INTO "_relay_meta" ("key", "value") VALUES ('identity-seed', ?)`, [
-    bytesToHex(fresh),
-  ]);
-  return createIdentity(fresh).unwrap();
 }
 
 const openBlobs = async (driver: SqliteDriver): Promise<BlobStore | undefined> => {
@@ -119,7 +101,9 @@ const openBlobs = async (driver: SqliteDriver): Promise<BlobStore | undefined> =
  * @example
  * export class Relay extends DurableObject<Env> {
  *   #relay = relayDurableHost(this.ctx);
- *   override fetch(request: Request) {
+ *   override async fetch(request: Request) {
+ *     const refused = await this.#relay.gate(request);
+ *     if (refused !== undefined) return refused;
  *     const { 0: client, 1: server } = new WebSocketPair();
  *     this.#relay.join(server);
  *     return new Response(null, { status: 101, webSocket: client });
@@ -138,37 +122,50 @@ export function relayDurableHost(
 ): RelayDurableHost {
   const live = new Map<DurableWebSocket, RelayConnection>();
   const resume = trackResume();
-  let opening: Promise<RelayRoom> | undefined;
+  const name = options.name ?? "main";
 
-  const open = async (): Promise<RelayRoom> => {
+  /**
+   * The object's SQLite as one room's log: its epoch and its key persisted beside the log, so an
+   * object evicted, redeployed or moved between regions is the same room with the same name —
+   * only a reset database is honestly a new one. The key rides on the store rather than on the
+   * host because it is the object's, not a fleet's: this is the one host where a room is its
+   * own process (D09-C).
+   */
+  const openRoomStore = async (): Promise<RoomStore> => {
     const driver = doSqliteDriver(ctx.storage.sql);
     const store = (await sqliteEventStore(driver)).match({
       ok: (value) => value,
       err: (failure) => panic(`the room's log failed to open: ${failure.message}`),
     });
-    const epoch = await epochOf(driver);
-    const identity = await identityOf(driver);
     const blobs = options.blobs === false ? undefined : await openBlobs(driver);
-    const room = await openRelayRoom(
-      omitUndefined({
-        name: options.name ?? "main",
-        store,
-        epoch,
-        identity,
-        keepaliveMs: options.keepaliveMs,
-        pageSize: options.pageSize,
-        maxBacklog: options.maxBacklog,
-        limits: options.limits,
-        versions: options.versions,
-        onTelemetry: options.onTelemetry,
-        blobs,
-      }),
-    );
-    return room.match({
-      ok: (value) => value,
-      err: (failure) => panic(`the room failed to open: ${failure.message}`),
-    });
+    return {
+      store,
+      epoch: await epochOf(driver),
+      identity: await identityOf(driver),
+      ...omitUndefined({ blobs }),
+      // the object's storage is the platform's to close; nothing was borrowed
+      release: () => undefined,
+    };
   };
+
+  // the same core as every other host: the room table, the posture gate, the socket ceiling.
+  // What differs is below — a hibernating object binds its own connections, so it takes the
+  // room through `acquire` and never through `accept`
+  const host: RelayHost = createRelayHost(
+    omitUndefined({
+      openRoomStore,
+      keepaliveMs: options.keepaliveMs,
+      pageSize: options.pageSize,
+      maxBacklog: options.maxBacklog,
+      limits: options.limits,
+      versions: options.versions,
+      onTelemetry: options.onTelemetry,
+      posture: options.posture,
+    }),
+  );
+  // held for the life of the instance: an object that has woken its sockets is never idle, and
+  // there is no eviction here but the platform's own, which takes the whole instance with it
+  let opening: Promise<HeldRoom> | undefined;
 
   /**
    * Every socket the object holds, bound to the room and handed its script back. The frames a
@@ -180,7 +177,7 @@ export function relayDurableHost(
   const restore = async (
     waking: DurableWebSocket | undefined,
   ): Promise<readonly Uint8Array[] | undefined> => {
-    const room = await (opening ??= open());
+    const { room } = await (opening ??= host.acquire(name));
     let deferred: readonly Uint8Array[] | undefined;
     for (const ws of ctx.getWebSockets()) {
       if (live.has(ws)) continue;
@@ -214,6 +211,10 @@ export function relayDurableHost(
   };
 
   return {
+    // the path is not the room here — the platform already routed this request to the object
+    // that *is* the room — so the posture is asked under this room's own name, never under
+    // whatever name a stranger put in the path
+    gate: (request) => host.gate(request, name),
     // bound at once rather than on the first frame: the room speaks first now, and a socket that
     // is never told the challenge never sends a join the room would accept
     join: (ws) => {

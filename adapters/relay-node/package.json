@@ -1,0 +1,43 @@
+{
+  "name": "@syncmesh/relay-node",
+  "version": "0.0.0",
+  "description": "The relay room over Node's http server and ws: the same host as Bun's startRelay, mounted on the runtime that has no Bun.serve",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@syncmesh/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@syncmesh/relay": "workspace:*",
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/sqlite-node": "workspace:*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@syncmesh/client": "workspace:*",
+    "@syncmesh/config": "workspace:*",
+    "@syncmesh/engine": "workspace:*",
+    "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/schema": "workspace:*",
+    "@syncmesh/sqlite-bun": "workspace:*",
+    "@syncmesh/temporal": "workspace:*",
+    "@syncmesh/wire": "workspace:*",
+    "@types/bun": "catalog:",
+    "@types/node": "catalog:",
+    "@types/ws": "^8.18.1",
+    "drizzle-orm": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}

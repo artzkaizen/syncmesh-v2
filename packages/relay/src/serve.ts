@@ -1,19 +1,18 @@
 import type { EventStore, TelemetryListener } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
-import type { BlobStore } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { Identity } from "@syncmesh/wire";
 
 import { omitUndefined, panic } from "@syncmesh/result";
 
 import type { Fanout } from "./fanout.js";
-import type { RoomStore, RelayHostOptions, SocketSession } from "./host.js";
+import type { RelayHost, RoomStore, RelayHostOptions, SocketSession } from "./host.js";
 import type { RelayLimits } from "./limits.js";
 import type { RelayPosture } from "./posture.js";
 import type { RelayRetention } from "./retention.js";
 import type { RelaySocket, SendOutcome } from "./sender.js";
 
-import { createRelayHost, epochOf } from "./host.js";
+import { createRelayHost, durableRoomStore } from "./host.js";
 
 export interface StartRelayOptions {
   /** Where the durable room logs live, one SQLite file per room. Default `.syncmesh/relay`. */
@@ -56,7 +55,8 @@ export interface RunningRelay {
   readonly stop: () => Promise<void>;
 }
 
-interface SocketData {
+/** What a socket carries between Bun's callbacks: which room it asked for, and its session once bound. */
+export interface SocketData {
   readonly room: string;
   session?: SocketSession;
 }
@@ -70,25 +70,15 @@ const bunRoomStore =
       ok: (value) => value,
       err: (failure) => panic(`the relay's log failed to open: ${failure.message}`),
     });
-    const driver = stores.driver ?? panic("defaultStore always carries its driver");
-    // this room's own blob store, never shared across rooms: a room that inherited
-    // another room's store would serve and keep another room's bytes under D18
-    let blobs: BlobStore | undefined;
-    if (serveBlobs) {
-      const { sqlBlobStore } = await import("@syncmesh/storage");
-      const opened = await sqlBlobStore(driver);
-      if (opened.isOk()) blobs = opened.value;
-    }
-    return {
-      store: stores.events,
-      epoch: await epochOf(driver),
-      ...omitUndefined({ blobs }),
-      release: stores.close,
-    };
+    return durableRoomStore(stores, { blobs: serveBlobs });
   };
 
-/** The host options that pass straight through to every room this host opens, absent keys left absent. */
-const hostTuning = (
+/**
+ * The host options that pass straight through to every room this host opens, absent keys left
+ * absent. Shared by every mount that takes {@link StartRelayOptions} — Bun here, Node in
+ * `@syncmesh/relay-node` — so the two cannot drift on which option reaches a room.
+ */
+export const hostTuning = (
   options: StartRelayOptions,
   openRoomStore: RelayHostOptions["openRoomStore"],
 ): RelayHostOptions =>
@@ -110,6 +100,79 @@ const hostTuning = (
     onTelemetry: options.onTelemetry,
     fanout: options.fanout,
   });
+/** The room a request's path names; `/` is `main`, and a leading slash is not part of the name. */
+export const roomOf = (request: Request): string => {
+  const path = new URL(request.url).pathname.replace(/^\/+/, "");
+  return path === "" ? "main" : path;
+};
+
+/**
+ * Whether a request is asking to become a socket at all. A plain `GET` on a room's path is
+ * something else — a describe, a health check — and answering it with a 426 would be refusing
+ * a question nobody asked.
+ */
+export const asksUpgrade = (request: Request): boolean =>
+  request.headers.get("upgrade")?.toLowerCase() === "websocket";
+
+/**
+ * The gate, then the upgrade: everything a fetch handler does before Bun's socket callbacks
+ * take over. `undefined` means the socket is now the server's and no response is to be sent;
+ * a `Response` is a refusal, or the answer to a request that never asked to upgrade.
+ *
+ * Runtime-neutral in shape — `upgrade` is Bun's `server.upgrade(request, { data })`, which the
+ * single-port mount in `@syncmesh/orpc` hands through from its own fetch — and the reason this
+ * is not inside {@link startRelay}: a server that answers procedures on the same port runs the
+ * same gate and the same upgrade, and a second copy of either is where the two would drift.
+ */
+export async function upgradeRoom(
+  host: RelayHost,
+  request: Request,
+  upgrade: (request: Request, options: { readonly data: SocketData }) => boolean,
+): Promise<Response | undefined> {
+  const room = host.roomFor(roomOf(request));
+  // refused before a socket exists: a client the posture turns away costs the room nothing
+  const refused = await host.gate(request, room);
+  if (refused !== undefined) return refused;
+  const upgraded = upgrade(request, { data: { room } });
+  return upgraded ? undefined : new Response("syncmesh relay: WebSocket only", { status: 426 });
+}
+
+/** The half of Bun's socket a room drives: what it sends on, and what it hangs up. */
+export interface BunSocket {
+  readonly data: SocketData;
+  readonly send: (frame: Uint8Array) => number;
+  readonly close: (code?: number, reason?: string) => void;
+}
+
+/**
+ * Bun's four socket callbacks, wired to a host — the `websocket` half of `Bun.serve`. Structural
+ * over the socket so a server that mounts procedures and custody on one port can hand these to
+ * its own `Bun.serve` without this package naming Bun's types.
+ */
+export const bunWebSocket = (host: RelayHost) => ({
+  open(ws: BunSocket) {
+    const socket: RelaySocket = {
+      send: (frame): SendOutcome => {
+        const sent = ws.send(frame);
+        return sent === -1 ? "buffered" : sent === 0 ? "dropped" : "sent";
+      },
+      close: (reason) => ws.close(1000, reason),
+    };
+    ws.data.session = host.accept(socket, ws.data.room);
+  },
+  message(ws: BunSocket, message: string | Uint8Array) {
+    // the protocol is binary; a text frame is noise
+    if (!(message instanceof Uint8Array)) return;
+    ws.data.session?.receive(message);
+  },
+  drain(ws: BunSocket) {
+    ws.data.session?.drain();
+  },
+  close(ws: BunSocket) {
+    ws.data.session?.closed();
+  },
+});
+
 /**
  * D09-A: the embedded host — Bun's WebSocket server in the process you already run, one
  * durable SQLite log per room under `dataDir`, epoch persisted with the log. The room core
@@ -130,38 +193,8 @@ export async function startRelay(
   // D09-A on purpose: this file IS the Bun mount; the guard above already refused other runtimes
   const server = globalThis.Bun.serve<SocketData>({
     port,
-    async fetch(request, self) {
-      const path = new URL(request.url).pathname.replace(/^\/+/, "");
-      const room = path === "" ? "main" : path;
-      // refused before a socket exists: a client the posture turns away costs the room nothing
-      const refused = await host.gate(request, room);
-      if (refused !== undefined) return refused;
-      const upgraded = self.upgrade(request, { data: { room } });
-      return upgraded ? undefined : new Response("syncmesh relay: WebSocket only", { status: 426 });
-    },
-    websocket: {
-      open(ws) {
-        const socket: RelaySocket = {
-          send: (frame): SendOutcome => {
-            const sent = ws.send(frame);
-            return sent === -1 ? "buffered" : sent === 0 ? "dropped" : "sent";
-          },
-          close: (reason) => ws.close(1000, reason),
-        };
-        ws.data.session = host.accept(socket, ws.data.room);
-      },
-      message(ws, message) {
-        // the protocol is binary; a text frame is noise
-        if (!(message instanceof Uint8Array)) return;
-        ws.data.session?.receive(message);
-      },
-      drain(ws) {
-        ws.data.session?.drain();
-      },
-      close(ws) {
-        ws.data.session?.closed();
-      },
-    },
+    fetch: (request, self) => upgradeRoom(host, request, (r, o) => self.upgrade(r, o)),
+    websocket: bunWebSocket(host),
   });
 
   const boundPort = server.port ?? panic("Bun.serve did not bind a port");

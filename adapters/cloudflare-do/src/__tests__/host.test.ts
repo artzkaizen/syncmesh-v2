@@ -185,3 +185,20 @@ describe("the same room under two hosts (D09, E25)", () => {
     await a.stop();
   }, 30_000);
 });
+
+describe("the gate before the pair", () => {
+  test("a posture refuses a stranger's origin with 403 and admits the listed one, under the object's own name", async () => {
+    const db = new Database(":memory:");
+    const object = durableRelay(db, {
+      name: "issues",
+      posture: { allowedOrigins: ["https://app.example"], rooms: ["issues"], announce: false },
+    });
+    const dial = (origin: string, path = "/issues") =>
+      object.gate(new Request(`https://relay.example${path}`, { headers: { origin } }));
+    expect((await dial("https://evil.example"))?.status).toBe(403);
+    expect(await dial("https://app.example")).toBeUndefined();
+    // the platform routed this request to the object that *is* `issues`; the path is not consulted
+    expect(await dial("https://app.example", "/somebody-elses-room")).toBeUndefined();
+    db.close();
+  });
+});
