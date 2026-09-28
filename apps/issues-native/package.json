@@ -21,7 +21,7 @@
     "@syncmesh/react-native": "workspace:*",
     "@syncmesh/relay": "workspace:*",
     "@syncmesh/result": "workspace:*",
-    "@syncmesh/rn-ble": "file:../../../../../../Developer/playground/syncmesh/rn-ble",
+    "@syncmesh/rn-ble": "^0.2.0",
     "@syncmesh/rn-nearby": "workspace:*",
     "@syncmesh/sqlite-expo": "workspace:*",
     "@syncmesh/temporal": "workspace:*",
