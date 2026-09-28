@@ -17,7 +17,7 @@ import {
   describeRoom,
   durableRoomStore,
   hostTuning,
-  roomOf,
+  requestRoom,
 } from "@syncmesh/relay";
 import { panic } from "@syncmesh/result";
 import { defaultStore } from "@syncmesh/sqlite-node";
@@ -59,7 +59,7 @@ export const nodeRoomStore =
  * Node's upgrade request as the `Request` the posture gate reads: the URL, the `Origin`, the
  * cookies and whatever else `verifyJoin` looks at. Only the head — there is no body on an upgrade.
  */
-export const requestOf = (message: IncomingMessage): Request => {
+export const upgradeRequest = (message: IncomingMessage): Request => {
   const headers = new Headers();
   for (const [name, value] of Object.entries(message.headers)) {
     if (value === undefined) continue;
@@ -127,8 +127,8 @@ export function attachRelay(server: Server, host: RelayHost): () => void {
   const sockets = new WebSocketServer({ noServer: true });
   const onUpgrade = (message: IncomingMessage, socket: Duplex, head: Buffer): void => {
     void (async () => {
-      const request = requestOf(message);
-      const room = host.roomFor(roomOf(request));
+      const request = upgradeRequest(message);
+      const room = requestRoom(request);
       // refused before a socket exists: a client the posture turns away costs the room nothing
       const refused = await host.gate(request, room);
       if (refused !== undefined) return refuse(socket, refused);
@@ -166,7 +166,9 @@ export async function startRelay(
   );
   // a plain request never reaches the upgrade listener: it gets the room described instead
   const server = createServer((request, response) => {
-    void describeRoom(host, requestOf(request)).then((described) => answer(described, response));
+    void describeRoom(host, upgradeRequest(request)).then((described) =>
+      answer(described, response),
+    );
   });
   const detach = attachRelay(server, host);
   await new Promise<void>((resolve) => server.listen(port, resolve));

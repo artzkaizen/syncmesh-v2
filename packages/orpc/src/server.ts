@@ -1,13 +1,13 @@
 import type { BunWebSocketHandlers, RelayHost } from "@syncmesh/relay";
 import type { ColumnsMap, PresenceMap } from "@syncmesh/schema";
 
-import type { Api, AuthorityHandlers, ProcedureDef, Router } from "./api.js";
+import type { Api, AuthorityHandlers, Router } from "./api.js";
 import type { Client } from "./client.js";
 import type { Custody, InlineCustody, Serving, Upgrading } from "./custody.js";
 import type { ClientOptions } from "./options.js";
 
-import { isDef } from "./api.js";
 import { createClient } from "./client.js";
+import { contractJson, openApi } from "./contract.js";
 import { inlineCustody, serveCustody } from "./custody.js";
 import { createHandler } from "./http.js";
 import { replicaFor } from "./scope.js";
@@ -77,20 +77,6 @@ export type Server<R extends Router, PC extends PresenceMap = Record<string, nev
   readonly stop: () => Promise<void>;
 };
 
-/** Every `(path, def)` leaf of the router, walked once. */
-const leaves = (node: Router, prefix = ""): readonly (readonly [string, ProcedureDef])[] =>
-  Object.entries(node).flatMap(([name, child]) => {
-    const path = prefix === "" ? name : `${prefix}.${name}`;
-    return isDef(child) ? [[path, child] as const] : leaves(child, path);
-  });
-
-/** The slice of an OpenAPI operation `.route()` metadata can honestly fill. */
-interface OpenApiOperation {
-  readonly operationId: string;
-  tags?: readonly string[];
-  responses?: Readonly<Record<string, { readonly description: string }>>;
-}
-
 export async function createServer<
   R extends Router,
   C extends ColumnsMap,
@@ -127,24 +113,9 @@ export async function createServer<
   const fetch = ((request: Request, upgrading?: Upgrading) =>
     inline?.take(request, upgrading) ?? procedures(request)) as ServerFetch;
 
-  const openapi = (info: { readonly title: string; readonly version: string }) => {
-    const paths: Record<string, Record<string, OpenApiOperation>> = {};
-    for (const [name, def] of leaves(options.procedures)) {
-      if (def.route?.path === undefined) continue;
-      const method = (def.route.method ?? "POST").toLowerCase();
-      const operation: OpenApiOperation = { operationId: name };
-      if (def.route.tags !== undefined) operation.tags = def.route.tags;
-      if (def.kind === "authority" && def.errors !== undefined)
-        operation.responses = Object.fromEntries(
-          Object.entries(def.errors).map(([tag, spec]) => [
-            "422",
-            { description: spec.message ?? tag },
-          ]),
-        );
-      paths[def.route.path] = { ...paths[def.route.path], [method]: operation };
-    }
-    return { openapi: "3.1.0", info, paths };
-  };
+  // from the contract, so the spec and a contract.json a build writes cannot disagree
+  const openapi = (info: { readonly title: string; readonly version: string }) =>
+    openApi(contractJson(options.procedures), info);
 
   // assigned onto the client rather than spread: the client is a walked tree of callables, and
   // spreading one would copy the leaves off their own group objects

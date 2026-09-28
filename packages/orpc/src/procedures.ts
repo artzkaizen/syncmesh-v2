@@ -141,8 +141,14 @@ export interface AuthorityDef<I, T> {
 export type AuthorityLink = (
   path: string,
   input: unknown,
+  call?: AuthorityCall,
 ) => Promise<ResultType<unknown, CallError>>;
 /* oxlint-enable anti-slop/no-unknown-parameters */
+
+/** What rides beside one call: its id, so a retry after a timeout is answered rather than re-run. */
+export interface AuthorityCall {
+  readonly requestId?: string;
+}
 
 /**
  * The bodiless half of the chain: after `.input()`, `.output(schema)` declares the answer and

@@ -148,7 +148,7 @@ export const fromJson = (json: JsonValue): Result<CborValue, MalformedJson> =>
 export type WireMedia = "application/cbor" | "application/json";
 
 /** How strongly one `Accept` entry asks for a media type; `0` is a refusal. */
-const weightOf = (entry: string) => {
+const acceptWeight = (entry: string) => {
   const [type = "", ...params] = entry.split(";").map((part) => part.trim());
   const q = params.find((param) => param.startsWith("q="))?.slice(2);
   const weight = q === undefined ? 1 : Number(q);
@@ -167,7 +167,7 @@ export function negotiate(accept: string | null | undefined): WireMedia {
   let json = 0;
   let cbor = 0;
   for (const entry of accept.split(",")) {
-    const { type, q } = weightOf(entry);
+    const { type, q } = acceptWeight(entry);
     if (type === "application/json" || type === "application/*") json = Math.max(json, q);
     if (type === "application/cbor" || type === "application/*") cbor = Math.max(cbor, q);
     if (type === "*/*") {

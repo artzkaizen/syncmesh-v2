@@ -32,17 +32,16 @@ interface Answer {
 const call = createServerFn({ method: "POST" })
   .validator((body: { readonly path: string; readonly input?: unknown }) => body)
   .handler(async ({ data }): Promise<Answer> => {
+    // in-process: this function already holds the server, so it asks it rather than posting to itself
     const { handle } = await import("../server/mesh.js");
-    const response = await handle(
-      new Request("http://local/api", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(data),
-      }),
-    );
-    const payload = (await response.json()) as Answer;
-    if (payload.error !== undefined) throw new Error(payload.error);
-    return payload;
+    const answered = await handle.call(data.path, data.input);
+    return answered.match({
+      // SAFETY: what a leaf answers is what its procedure declared, which is JSON-shaped by construction
+      ok: (value): Answer => ({ data: value as JsonValue }),
+      err: (error) => {
+        throw new Error(error.message);
+      },
+    });
   });
 
 /**

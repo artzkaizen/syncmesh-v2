@@ -22,6 +22,7 @@ import { validate } from "./validate.js";
 import { createWrite } from "./write.js";
 
 export type {
+  AuthorityCall,
   AuthorityContext,
   AuthorityDef,
   AuthorityHandlers,
@@ -377,7 +378,9 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
           message: `${path} runs on the authority, and no link was configured`,
         }),
       );
-    const answered = await options.link(path, parsed.value);
+    // one id per call, minted here so a link that retries — or a queue that sends later —
+    // asks the same question under the same name and is answered from what the server kept
+    const answered = await options.link(path, parsed.value, { requestId: crypto.randomUUID() });
     if (answered.isErr() || def.output === undefined) return answered;
     // the trust boundary: the one payload a client consumes straight off the wire (book ch. 7)
     return validate<unknown>(def.output, answered.value);

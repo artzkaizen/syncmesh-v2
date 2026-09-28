@@ -10,7 +10,7 @@ import type {
 } from "@syncmesh/relay";
 import type { BlobStore, SqliteDriver } from "@syncmesh/storage";
 
-import { createRelayHost, decodeRelayFrame, epochOf, identityOf } from "@syncmesh/relay";
+import { createRelayHost, decodeRelayFrame, relayIdentity, relayEpoch } from "@syncmesh/relay";
 import { omitUndefined, panic } from "@syncmesh/result";
 import { sqlBlobStore, sqliteEventStore } from "@syncmesh/storage";
 
@@ -140,8 +140,8 @@ export function relayDurableHost(
     const blobs = options.blobs === false ? undefined : await openBlobs(driver);
     return {
       store,
-      epoch: await epochOf(driver),
-      identity: await identityOf(driver),
+      epoch: await relayEpoch(driver),
+      identity: await relayIdentity(driver),
       ...omitUndefined({ blobs }),
       // the object's storage is the platform's to close; nothing was borrowed
       release: () => undefined,

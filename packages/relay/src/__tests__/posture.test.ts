@@ -19,9 +19,14 @@ const serve = (posture?: RelayPosture) =>
     ...omitUndefined({ posture }),
   });
 
-/** A plain GET: 426 means the posture let it through and only the missing upgrade stopped it. */
+/**
+ * A request that asks to upgrade without a socket handshake behind it: 426 means the posture
+ * let it through and only the missing handshake stopped it. (A plain GET is a describe now.)
+ */
 const knock = (url: string, headers: Record<string, string> = {}) =>
-  fetch(url.replace("ws://", "http://"), { headers });
+  fetch(url.replace("ws://", "http://"), {
+    headers: { upgrade: "websocket", connection: "upgrade", ...headers },
+  });
 
 describe("origins", () => {
   test("no allowlist admits every origin, stated or not", async () => {

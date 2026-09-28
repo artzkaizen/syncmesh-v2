@@ -66,7 +66,7 @@ export {
   bunRoomStore,
   bunWebSocket,
   hostTuning,
-  roomOf,
+  requestRoom,
   startRelay,
   upgradeRoom,
 } from "./serve.js";
@@ -75,8 +75,8 @@ export {
   createGate,
   createRelayHost,
   durableRoomStore,
-  epochOf,
-  identityOf,
+  relayEpoch,
+  relayIdentity,
   postureGate,
 } from "./host.js";
 export { describeRoom } from "./describe.js";

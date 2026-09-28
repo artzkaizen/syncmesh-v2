@@ -151,14 +151,14 @@ const metaOf = async (driver: SqlDriver, key: string, mint: () => string): Promi
 };
 
 /** The epoch rides in the log's own file: a new file is honestly a new lineage. */
-export const epochOf = (driver: SqlDriver): Promise<string> =>
+export const relayEpoch = (driver: SqlDriver): Promise<string> =>
   metaOf(driver, "epoch", () => crypto.randomUUID());
 
 /**
  * The key a room signs its link hello with (D36), kept beside the epoch so the room has one name
  * across restarts, evictions and moves — the name a client pins. Minted on the first open.
  */
-export async function identityOf(driver: SqlDriver): Promise<Identity> {
+export async function relayIdentity(driver: SqlDriver): Promise<Identity> {
   const seed = await metaOf(driver, "identity-seed", () => bytesToHex(randomBytes(32)));
   return hexToBytes(seed)
     .andThen((bytes) => createIdentity(bytes))
@@ -188,7 +188,7 @@ export async function durableRoomStore(
   }
   return {
     store: stores.events,
-    epoch: await epochOf(driver),
+    epoch: await relayEpoch(driver),
     ...omitUndefined({ blobs }),
     release: stores.close,
   };

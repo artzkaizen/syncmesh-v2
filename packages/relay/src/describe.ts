@@ -5,7 +5,7 @@ import { negotiate, serialize } from "@syncmesh/wire";
 import type { RelayHost } from "./host.js";
 
 import { RELAY_PROTOCOL_VERSIONS } from "./frames.js";
-import { roomOf } from "./serve.js";
+import { requestRoom } from "./serve.js";
 
 /**
  * A room described over plain HTTP: what a `curl`, a health check or a person with a browser
@@ -17,7 +17,7 @@ import { roomOf } from "./serve.js";
  * (`negotiate`): a tool that decodes the socket's own bytes reads the same map either way.
  */
 export async function describeRoom(host: RelayHost, request: Request): Promise<Response> {
-  const name = host.roomFor(roomOf(request));
+  const name = requestRoom(request);
   const refused = await host.admits(request, name);
   if (refused !== undefined) return refused;
   const held = await host.acquire(name);

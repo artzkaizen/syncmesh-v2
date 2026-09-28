@@ -102,7 +102,7 @@ export const hostTuning = (
     fanout: options.fanout,
   });
 /** The room a request's path names; `/` is `main`, and a leading slash is not part of the name. */
-export const roomOf = (request: Request): string => {
+export const requestRoom = (request: Request): string => {
   const path = new URL(request.url).pathname.replace(/^\/+/, "");
   return path === "" ? "main" : path;
 };
@@ -130,7 +130,9 @@ export async function upgradeRoom(
   request: Request,
   upgrade: (request: Request, options: { readonly data: SocketData }) => boolean,
 ): Promise<Response | undefined> {
-  const room = host.roomFor(roomOf(request));
+  // the posture judges the name the path carries; a single-log host folds it to its one room
+  // only when the socket is bound, so an unlisted name is refused even where every path is one log
+  const room = requestRoom(request);
   // refused before a socket exists: a client the posture turns away costs the room nothing
   const refused = await host.gate(request, room);
   if (refused !== undefined) return refused;

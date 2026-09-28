@@ -1,5 +1,20 @@
-export type { CallBody, HandlerOptions, HttpLinkOptions } from "./http.js";
+export type { HandlerOptions, HttpLinkOptions, ProcedureHandler } from "./http.js";
 export { createHandler, findProcedure, httpLink } from "./http.js";
+export type { ContractJson, ContractJsonOptions, ContractLeaf, LeafKind } from "./contract.js";
+export {
+  contractJson,
+  kindMeta,
+  leaves,
+  openApi,
+  readLeafKind,
+  readRoute,
+  routeMeta,
+  toContract,
+} from "./contract.js";
+export type { IdempotencyStore, StoredAnswer } from "./idempotency.js";
+export { REQUEST_ID_HEADER, memoryIdempotency } from "./idempotency.js";
+export type { QueuedLink, QueuedLinkOptions, QueuedRequest } from "./queue.js";
+export { AuthorityQueued, queuedLink } from "./queue.js";
 export type { Client } from "./client.js";
 export { createClient } from "./client.js";
 export type { ClientOptions, PostgresStorage, SqliteStorage, Storage, Trust } from "./options.js";
@@ -7,6 +22,7 @@ export { postgres, sqlite } from "./options.js";
 export type {
   Api,
   ApiMesh,
+  AuthorityCall,
   AuthorityContext,
   AuthorityDef,
   AuthorityHandlers,
