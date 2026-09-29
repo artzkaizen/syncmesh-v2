@@ -42,7 +42,8 @@ pub use blobs::{
 };
 pub use coverage::CoverageTracker;
 pub use engine::{
-    Engine, EngineOptions, FoldBatch, FoldSource, MutateError, Mutated, ReceiveReport, Received,
+    Engine, EngineOptions, FoldBatch, FoldSource, MutateError, Mutated, OwnPosition, ReceiveReport,
+    Received,
 };
 pub use grants::{GrantCache, GrantRegistry};
 pub use holdback::Holdback;

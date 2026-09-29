@@ -367,7 +367,7 @@ impl RelayLink {
             deadline_ms: None,
             caught_up: false,
             relay_cursors: Cursors::new(),
-            holdback: Holdback::new(self.identity.peer_id().clone(), self.options.gap_limit),
+            holdback: Holdback::new(self.options.gap_limit),
             closing: false,
         });
         Vec::new()
@@ -554,8 +554,22 @@ impl RelayLink {
                 cursors,
                 ..
             } => {
+                let relay_cursors = cursors_to_map(&cursors);
+                // the room's run of our own author: never number at or below it (G7)
+                if let Some(&own) = relay_cursors.get(self.identity.peer_id()) {
+                    match engine.adopt_own_position(own) {
+                        Ok(position) => {
+                            if let Some(warning) = position.warning() {
+                                out.push(Action::Dropped(warning));
+                            }
+                        }
+                        Err(e) => out.push(Action::Dropped(format!(
+                            "the store could not say what this device last wrote: {e}"
+                        ))),
+                    }
+                }
                 if let Some(live) = self.live.as_mut() {
-                    live.relay_cursors = cursors_to_map(&cursors);
+                    live.relay_cursors = relay_cursors;
                     live.keepalive_ms = Some(keepalive_ms);
                 }
                 self.rearm(now_ms);
