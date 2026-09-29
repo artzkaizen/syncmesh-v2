@@ -9,6 +9,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { createDrafts } from "../drafts.js";
 import { createMesh } from "../mesh.js";
 
 const schema = () =>
@@ -64,6 +65,57 @@ describe("drafts — local-only, with no replication promise (book ch. 8)", () =
     expect((await (second.mesh.drafts ?? panicNoDrafts()).get("form")).unwrap()).toBe("unsent");
     await second.mesh.stop();
     await second.close();
+  });
+
+  test("a ttl makes the row read as absent past its hour, and the sweep counts it", async () => {
+    let at = T0;
+    const drafts = createDrafts(bunSqliteDriver(":memory:"), { now: () => at });
+    const hour = Temporal.Duration.from({ hours: 1 });
+
+    (await drafts.save("session", "token", { ttl: hour })).unwrap();
+    expect((await drafts.get("session")).unwrap()).toBe("token");
+
+    // immortal rows are untouched by time and by the sweep
+    (await drafts.save("forever", "kept")).unwrap();
+    at = Temporal.Instant.fromEpochMilliseconds(T0.epochMilliseconds + 3_600_000);
+    expect((await drafts.get("session")).unwrap()).toBeUndefined();
+    expect((await drafts.get("forever")).unwrap()).toBe("kept");
+    expect((await drafts.sweep()).unwrap()).toBe(0);
+
+    // a fresh ttl row, swept while expired rather than read
+    (await drafts.save("session", "token", { ttl: hour })).unwrap();
+    at = Temporal.Instant.fromEpochMilliseconds(T0.epochMilliseconds + 7_200_000);
+    expect((await drafts.sweep()).unwrap()).toBe(1);
+    expect((await drafts.get("session")).unwrap()).toBeUndefined();
+    expect((await drafts.get("forever")).unwrap()).toBe("kept");
+  });
+
+  test("saves and forgets broadcast the key; expiry is observed on read, not pushed", async () => {
+    const drafts = createDrafts(bunSqliteDriver(":memory:"), { now: () => T0 });
+    const seen: string[] = [];
+    const off = drafts.onChange((key) => void seen.push(key));
+
+    (await drafts.save("a", "1")).unwrap();
+    (await drafts.save("b", "2", { ttl: Temporal.Duration.from({ hours: 1 }) })).unwrap();
+    (await drafts.forget("a")).unwrap();
+    expect(seen).toEqual(["a", "b", "a"]);
+
+    off();
+    (await drafts.save("c", "3")).unwrap();
+    expect(seen).toEqual(["a", "b", "a"]);
+  });
+
+  test("a table from before expiry existed gains the column and keeps its rows", async () => {
+    const driver = bunSqliteDriver(":memory:");
+    await driver.run(`CREATE TABLE syncmesh_drafts (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    await driver.run(`INSERT INTO syncmesh_drafts (key, value) VALUES ('old', 'kept')`);
+
+    const drafts = createDrafts(driver, { now: () => T0 });
+    // old rows have no expiry: they read back and never expire
+    expect((await drafts.get("old")).unwrap()).toBe("kept");
+    // and new rows with a ttl work beside them
+    (await drafts.save("new", "v", { ttl: Temporal.Duration.from({ hours: 1 }) })).unwrap();
+    expect((await drafts.get("new")).unwrap()).toBe("v");
   });
 });
 
