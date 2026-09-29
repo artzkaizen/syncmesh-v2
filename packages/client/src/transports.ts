@@ -19,10 +19,11 @@ import { KIND, ORDINARY_LINK, pickRoutes } from "@syncmesh/transport";
 import type { AdmissionFacts } from "./admission.js";
 import type { ChurnOptions } from "./churn.js";
 import type { ForcedMedium, NoSuchTransport } from "./forced.js";
+import type { StaleOptions } from "./stale.js";
 
 import { boundable, enforceBudget, enforceCeiling } from "./admission.js";
-import { createChurn } from "./churn.js";
 import { createForcing } from "./forced.js";
+import { startKeepers } from "./keepers.js";
 
 /**
  * How this device shapes its part of the mesh (book ch. 17).
@@ -33,6 +34,12 @@ import { createForcing } from "./forced.js";
 export interface MeshShaping {
   /** Periodic random re-peering; `false` turns it off for a fleet that would rather not. */
   readonly churn?: ChurnOptions | false;
+  /**
+   * Reclaim a link whose peer has gone quiet for longer than `after` (E28). Off unless asked
+   * for: the right window is the medium's and the app's to say, and a radio meant to sit silent
+   * must not be dropped for doing so.
+   */
+  readonly stale?: StaleOptions;
   /**
    * How this app would rather order the mediums that could carry a frame.
    *
@@ -254,6 +261,7 @@ const scoreRoutes = (
       online: online.get(t) ?? true,
       ...(t.route?.() ?? ORDINARY_LINK),
     };
+
     /**
      * What this medium claims about peers, for routing: adjacency and transitive reach together.
      *
@@ -406,15 +414,7 @@ export function runTransports(
     },
   });
 
-  /**
-   * The other half of island prevention (book ch. 17). The budget keeps the best links, which is
-   * correct per device and wrong for the room; churn is what stops a saturated room settling into
-   * a clique. It acts only on a medium at its budget, so a small room pays nothing for it.
-   */
-  const churn =
-    shaping.churn === false
-      ? undefined
-      : createChurn(() => active, facts, shaping.churn === undefined ? {} : shaping.churn);
+  const stopKeepers = startKeepers(shaping, () => active, facts, context, linkEvents.emit);
 
   /**
    * Score the candidates and hand back the transports behind the survivors.
@@ -510,7 +510,7 @@ export function runTransports(
       for (const stopWatching of watching.values()) stopWatching();
       watching.clear();
       for (const off of offAdmission) off();
-      churn?.stop();
+      stopKeepers();
       await started.catch(() => undefined);
       await Promise.all(active.map((t) => t.stop()));
     },

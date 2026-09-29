@@ -28,6 +28,7 @@ export type { Auth, AuthStatus, Session, SessionAsk, SessionProvider } from "./a
 export { createAuth } from "./auth.js";
 export type { Drafts } from "./drafts.js";
 export { createDrafts, draftsDdl } from "./drafts.js";
+export type { StaleOptions } from "./stale.js";
 export type { PeerEdge, PeerGraph, Peers } from "./peers.js";
 export { createPeers } from "./peers.js";
 export type { MeshHealth, MeshStatus, SourceStatus, Status } from "./status.js";
