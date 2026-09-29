@@ -570,6 +570,19 @@
         "react-dom": ">=18",
       },
     },
+    "packages/docs": {
+      "name": "@syncmesh/docs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/result": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncmesh/config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+    },
     "packages/drizzle": {
       "name": "@syncmesh/drizzle",
       "version": "0.0.0",
@@ -1614,6 +1627,8 @@
     "@syncmesh/core-rs": ["@syncmesh/core-rs@workspace:crates/syncmesh-core"],
 
     "@syncmesh/devtools": ["@syncmesh/devtools@workspace:packages/devtools"],
+
+    "@syncmesh/docs": ["@syncmesh/docs@workspace:packages/docs"],
 
     "@syncmesh/drizzle": ["@syncmesh/drizzle@workspace:packages/drizzle"],
 

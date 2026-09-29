@@ -1,0 +1,27 @@
+{
+  "name": "@syncmesh/docs",
+  "version": "0.0.0",
+  "description": "CRDT document references: versioned rich-text heads carried as content-addressed blobs",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@syncmesh/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@syncmesh/result": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncmesh/config": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}
