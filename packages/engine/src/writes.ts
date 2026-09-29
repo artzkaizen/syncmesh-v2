@@ -1,4 +1,4 @@
-import type { HlcClock, PeerId, State } from "@syncmesh/kernel";
+import type { HlcClock, PeerId, SeqNum, State } from "@syncmesh/kernel";
 
 import { type Procedure, type SyncEvent } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
@@ -6,6 +6,7 @@ import { Result } from "@syncmesh/result";
 import type { AtomicStores, Engine, FoldBatch, FoldSource, MutateOptions } from "./engine.js";
 import type { ValidationError } from "./errors.js";
 import type { Hub } from "./listeners.js";
+import type { OwnPosition } from "./own-position.js";
 import type { StateStore } from "./state-store.js";
 import type { StoredEvent } from "./store.js";
 import type { TelemetryEvent } from "./telemetry.js";
@@ -14,6 +15,7 @@ import type { ProbeEvent, StateLookup, Validator } from "./validate.js";
 
 import { buildEvent, nextSeq } from "./build-event.js";
 import { EmptyMutation } from "./errors.js";
+import { adoptOwnPosition, createOwnFloor, pastFloor } from "./own-position.js";
 import { StoreFailure } from "./store.js";
 import { timed } from "./telemetry.js";
 import { record } from "./tx.js";
@@ -47,6 +49,16 @@ const probeOf = (
     options.local === true ? { peerId, changes, local: true } : { peerId, changes };
   return options.partition === undefined ? probe : { ...probe, partition: options.partition };
 };
+
+export interface OwnPositionApi {
+  /**
+   * Takes on a room's position for this device's own author — its `hello` cursors — so nothing is
+   * ever numbered at or below it again (RFC 0024 G7). A key that outlives its log would otherwise
+   * number writes the room already holds, and every peer drops those as duplicates without a
+   * word. Says whether this log's own writes were caught in that range ({@link OwnPosition}).
+   */
+  readonly adoptOwnPosition: (room: SeqNum) => Promise<Result<OwnPosition, StoreFailure>>;
+}
 
 export interface WriteDeps {
   readonly peerId: PeerId;
@@ -88,6 +100,8 @@ export function createWritePath(deps: WriteDeps) {
     telemetry,
     admitEntries,
   } = deps;
+  // own sequences known to exist outside this log (G7): numbering never goes at or below it
+  const ownFloor = createOwnFloor();
 
   const mutate: Engine["mutate"] = (procedure: Procedure, fn, mutateOptions = {}) =>
     Result.gen(async function* () {
@@ -108,11 +122,15 @@ export function createWritePath(deps: WriteDeps) {
           try: () =>
             atomically(async (scoped) => {
               const last = (await scoped.events.lastSeq(peerId, scope)).unwrap();
+              // after the log and after anything a room said it holds of ours: a number reused is
+              // a write every peer drops as a duplicate, silently (G7). Local writes never travel,
+              // so their run is this log's alone
+              const floor = scope === "synced" ? ownFloor.get() : 0;
               const event = buildEvent(
                 peerId,
                 procedure,
                 hlc,
-                nextSeq(last),
+                nextSeq(pastFloor(last, floor)),
                 changes,
                 mutateOptions,
               );
@@ -150,7 +168,11 @@ export function createWritePath(deps: WriteDeps) {
   const receiveBatch: Engine["receiveBatch"] = (entries) =>
     Result.gen(async function* () {
       const { fresh, quarantined } = yield* Result.await(admitEntries(entries));
-      for (const { event } of fresh) clock.receive(event.hlc);
+      for (const { event } of fresh) {
+        clock.receive(event.hlc);
+        // an own event taken back (see `admit`): a write this device made, so never numbered over
+        if (event.peerId === peerId) ownFloor.raise(Number(event.seqNum));
+      }
       const batch = yield* Result.await(
         Result.tryPromise({
           try: () =>
@@ -171,5 +193,8 @@ export function createWritePath(deps: WriteDeps) {
       });
     });
 
-  return { mutate, receiveBatch };
+  const adoptOwn: OwnPositionApi["adoptOwnPosition"] = (room) =>
+    atomically((scoped) => adoptOwnPosition(scoped.events, peerId, ownFloor, room));
+
+  return { mutate, receiveBatch, adoptOwnPosition: adoptOwn };
 }

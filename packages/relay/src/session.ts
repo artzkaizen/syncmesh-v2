@@ -2,7 +2,7 @@ import type { Coverage, Cursors, Interest, StoredEvent, Unsubscribe } from "@syn
 import type { PeerId } from "@syncmesh/kernel";
 import type { TransportContext } from "@syncmesh/transport";
 
-import { interestText } from "@syncmesh/engine";
+import { interestText, ownPositionWarning } from "@syncmesh/engine";
 import { Temporal } from "@syncmesh/temporal";
 import { createHoldback, cursorsFrame, eventFrame, grantFrame } from "@syncmesh/transport";
 import { decodeAndVerify, relayEnvelope, signEvent } from "@syncmesh/wire";
@@ -69,7 +69,7 @@ export function wireSession(
 ): readonly Unsubscribe[] {
   const { engine, identity, grants } = context;
   const now = context.now ?? (() => Temporal.Now.instant());
-  const holdback = createHoldback(engine, identity.peerId, 512);
+  const holdback = createHoldback(engine, 512);
   let chain: Promise<unknown> = Promise.resolve();
   let caughtUp = false;
   let relayCursors: Cursors = new Map();
@@ -184,6 +184,27 @@ export function wireSession(
     });
   };
 
+  /**
+   * The room's run of our own author, from its `hello`: never number at or below it (RFC 0024
+   * G7). On the chain, ahead of the pages this hello precedes and the push after them. A write
+   * this log numbered inside that run is said — it reuses a pair the room holds for another event.
+   */
+  const adoptOwn = (cursors: Cursors): void => {
+    const own = cursors.get(identity.peerId);
+    if (own === undefined) return;
+    chain = chain.then(async () => {
+      const position = await engine.adoptOwnPosition(own);
+      if (position.isErr()) {
+        hooks.onDropped(
+          `the store could not say what this device last wrote: ${position.error.message}`,
+        );
+        return;
+      }
+      const warning = ownPositionWarning(position.value);
+      if (warning !== undefined) hooks.onDropped(warning);
+    });
+  };
+
   /** Our contiguous position, for every other peer's `delivered`; the relay passes it on. */
   const sendCursors = (): void =>
     hooks.sendSafe(cursorsFrame(identity.peerId, engine.coverage().synced));
@@ -212,6 +233,7 @@ export function wireSession(
     if (frame.kind === "challenge") hooks.onChallenge(frame.nonce);
     else if (frame.kind === "hello") {
       relayCursors = frame.cursors;
+      adoptOwn(frame.cursors);
       hooks.onHello(frame.keepaliveMs);
     } else if (frame.kind === "page") {
       for (const wire of frame.grants) void grants.register(wire);

@@ -204,7 +204,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
   // the exchange needs — a page ahead of the manifest that names it is a page thrown away
   const join = joinFor(options, (what, bytes) => send(KIND.snapshot, what, bytes));
 
-  const holdback = createHoldback(engine, identity.peerId, gapLimit);
+  const holdback = createHoldback(engine, gapLimit);
   const receiveEvent = (wire: Uint8Array): void => {
     const verified = decodeAndVerify(wire, options.crypto);
     if (verified.isErr()) {

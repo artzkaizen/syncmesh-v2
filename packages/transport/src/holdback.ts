@@ -2,7 +2,7 @@ import type { Engine, StoredEvent } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 
 /** Out-of-order holdback, per author: the gap rule. Max-based cursors would jump a lost frame. */
-export function createHoldback(engine: Engine, self: PeerId, gapLimit: number) {
+export function createHoldback(engine: Engine, gapLimit: number) {
   const held = new Map<PeerId, Map<number, StoredEvent>>();
   /**
    * How far this device **holds** an author's run without a hole: its contiguous cursor, then
@@ -22,10 +22,16 @@ export function createHoldback(engine: Engine, self: PeerId, gapLimit: number) {
   };
 
   return {
-    /** Buffers the entry; `true` when the buffer overflowed and a resync must take over. */
+    /**
+     * Buffers the entry; `true` when the buffer overflowed and a resync must take over.
+     *
+     * Own events take the gap rule like everyone else's (RFC 0024 G7): a device only hears its own
+     * back when its log lost them, and then they are the run it has to rebuild, in order. An
+     * unsigned one cannot have come from a peer, and the engine skips it.
+     */
     put: ({ event, core, sig }: StoredEvent): boolean => {
       const seq = Number(event.seqNum);
-      if (event.peerId === self || seq <= through(event.peerId)) return false;
+      if (seq <= through(event.peerId)) return false;
       const buffer = held.get(event.peerId) ?? new Map<number, StoredEvent>();
       // the three fields a store keeps, and not the envelope they arrived in: a `VerifiedEvent`
       // carries `wire` as well, and holding that would keep every buffered event's bytes twice

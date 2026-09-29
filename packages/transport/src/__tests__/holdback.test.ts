@@ -48,7 +48,7 @@ describe("the holdback's gap rule against a parked event", () => {
     const run = await runFrom(author);
 
     // one event at a time and strictly in order — what a bridge or a relay session delivers
-    const holdback = createHoldback(device.engine, device.identity.peerId, 8);
+    const holdback = createHoldback(device.engine, 8);
     for (const entry of run) {
       expect(holdback.put(entry)).toBe(false); // never overflows into a rejoin
       const ready = holdback.drain(entry.event.peerId);
@@ -77,7 +77,7 @@ describe("the holdback's gap rule against a parked event", () => {
       [43, [3, 2, 1, 0]],
     ] as const) {
       const device = deviceKnowing(n, author);
-      const holdback = createHoldback(device.engine, device.identity.peerId, 8);
+      const holdback = createHoldback(device.engine, 8);
       for (const i of order) {
         // SAFETY: every index in the orders above is within the four-entry run
         const entry = run[i]!;

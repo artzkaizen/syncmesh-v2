@@ -48,7 +48,7 @@ import { strandedWrites, type StrandedWrites } from "./stranded.js";
 import { mergeAhead } from "./sync.js";
 import { type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
 import { createRevert, type Undo } from "./undo.js";
-import { createWritePath } from "./writes.js";
+import { createWritePath, type OwnPositionApi } from "./writes.js";
 
 export type { AtomicStores, EngineOptions } from "./options.js";
 
@@ -76,7 +76,7 @@ export interface FoldBatch {
 
 export interface ReceiveReport {
   readonly folded: number;
-  /** Own events, duplicates within the batch, and events already stored. */
+  /** Unsigned own events, duplicates within the batch, and events already stored. */
   readonly skipped: number;
   /** Refused by validation; parked in the quarantine with the verdict, and never folded. */
   readonly quarantined: number;
@@ -87,7 +87,7 @@ export interface Quarantined {
   readonly reason: ValidationError;
 }
 
-export interface Engine extends FeedApi, RepairApi, SnapshotApi {
+export interface Engine extends FeedApi, RepairApi, SnapshotApi, OwnPositionApi {
   readonly peerId: PeerId;
   /** Records, stamps, numbers, appends, folds, then hands the event to `onOutbound` — a write is real once appended. */
   readonly mutate: (
@@ -95,7 +95,7 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi {
     fn: (tx: Tx) => void,
     options?: MutateOptions,
   ) => Promise<Result<SyncEvent, MutateError>>;
-  /** Folds entries from another peer once each; own and already-stored events are skipped. A relayed event keeps its author's signature — pass it. */
+  /** Folds entries once each; already-stored events are skipped, and an own event only when unsigned (G7: a signed own event the log lacks is a write it lost). A relayed event keeps its author's signature — pass it. */
   readonly receiveBatch: (
     entries: readonly StoredEvent[],
   ) => Promise<Result<ReceiveReport, StoreFailure>>;
@@ -302,7 +302,7 @@ export function createEngine(options: EngineOptions): Engine {
     notify,
   });
 
-  const { mutate, receiveBatch } = createWritePath({
+  const { receiveBatch, ...writes } = createWritePath({
     peerId,
     clock,
     validate,
@@ -329,7 +329,7 @@ export function createEngine(options: EngineOptions): Engine {
       }),
   });
 
-  const revert = createRevert({ undo, undoDepth, mutate });
+  const revert = createRevert({ undo, undoDepth, mutate: writes.mutate });
 
   const chains = createFeedPath({ store, feeds, receiveBatch });
 
@@ -337,7 +337,7 @@ export function createEngine(options: EngineOptions): Engine {
 
   return {
     peerId,
-    mutate,
+    ...writes,
     receiveBatch: receiveAndRetry,
     receive: (entry) => receiveAndRetry([entry]),
     ...chains,
