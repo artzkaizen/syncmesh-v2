@@ -22,7 +22,7 @@ describe("window frame vectors — frozen (D39, E24)", () => {
       const parts = decodeCbor(wire).unwrap();
       expect(Array.isArray(parts) && parts[0]).toBe(v.tag);
       const frame = decodeWindowFrame(wire).unwrap();
-      expect(String(frame?.kind)).toBe(v.kind);
+      expect(frame).toMatchObject({ kind: v.kind });
       // re-encoding a decoded patch lands on the frozen bytes: the codec is canonical
       if (frame?.kind === "rows") expect(rowsFrame(frame)).toEqual(wire);
     });
