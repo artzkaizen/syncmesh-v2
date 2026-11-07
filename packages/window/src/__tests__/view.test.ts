@@ -303,6 +303,17 @@ describe("a window over a row source (E27)", () => {
     expect(ats(client.rows("inbox"))).toEqual(down(103, 5));
   });
 
+  test("an undesire while detached lets go of the window's rows at once", () => {
+    const { client, view } = harness(100);
+    client.desire("a", newest(3));
+    client.desire("b", newest(3, { after: after(50) }));
+    view.close();
+    client.detach();
+    client.undesire("b");
+    expect(client.held()).toBe(3);
+    expect(ats(client.rows("a"))).toEqual(down(100, 3));
+  });
+
   test("a socket holds at most `maxWindows`; a desire past it is refused, a move is not", () => {
     const { client, view } = harness(100, { maxWindows: 2 });
     client.desire("a", newest(3));

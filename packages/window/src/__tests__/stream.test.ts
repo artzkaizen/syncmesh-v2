@@ -107,4 +107,27 @@ describe("versioned row patches (E24)", () => {
     expect(stream.rows("inbox")).toEqual([]);
     expect(decodeWindowFrame(Uint8Array.of(0x81, 0x0b)).unwrap()).toBeUndefined();
   });
+
+  test("a window's rows are the same array until a patch lands, so they can be a snapshot", () => {
+    const stream = createPatchStream();
+    stream.apply(opening);
+    const first = stream.rows("inbox");
+    expect(stream.rows("inbox")).toBe(first);
+    expect(stream.rows("unknown")).toBe(stream.rows("other"));
+    stream.apply(patch({ epoch: "e1", version: 2, puts: [put("a", "hello again")] }));
+    expect(stream.rows("inbox")).not.toBe(first);
+    expect(subjects(stream, "inbox")).toEqual(["invoice", "hello again"]);
+  });
+
+  test("forgetting a window drops the rows no other window holds", () => {
+    const stream = createPatchStream();
+    stream.apply({
+      ...opening,
+      windows: [...opening.windows, { id: "starred", table: MAIL, keys: [key("a")] }],
+    });
+    stream.forget("inbox");
+    expect(stream.held()).toBe(1);
+    expect(subjects(stream, "starred")).toEqual(["hello"]);
+    expect(stream.rows("inbox")).toEqual([]);
+  });
 });
