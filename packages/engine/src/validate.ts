@@ -95,7 +95,6 @@ export interface ValidatorOptions {
    */
   readonly accounts?: boolean;
   /**
-  /**
    * The mesh's document columns and the adapter each declares (RFC-0023 §4.1). Shipped config on
    * every peer, like `authority`: a doc change is judged against it, never against which adapters
    * a device happens to hold, so the verdict is the same with the adapter and without.

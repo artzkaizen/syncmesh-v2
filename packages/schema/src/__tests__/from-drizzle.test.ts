@@ -26,7 +26,12 @@ import {
   text as sqliteText,
 } from "drizzle-orm/sqlite-core";
 
-import { drizzleTable, fromDrizzle, type ColumnsFromDrizzle, type DrizzleWarning } from "../from-drizzle.js";
+import {
+  drizzleTable,
+  fromDrizzle,
+  type ColumnsFromDrizzle,
+  type DrizzleWarning,
+} from "../from-drizzle.js";
 import { syncSchema } from "../manifest.js";
 import { global, ladder, partition } from "../partition.js";
 import { checkRow, table, type Row } from "../table.js";

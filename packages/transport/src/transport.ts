@@ -4,7 +4,7 @@ import type { Result } from "@syncmesh/result";
 import type { EventCrypto, GrantRegistry, Identity } from "@syncmesh/wire";
 
 import { createHub } from "@syncmesh/engine";
-import { TaggedError } from "@syncmesh/result";
+import { TaggedError, omitUndefined } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 
 import type { Bridge, BridgeOptions } from "./bridge.js";
@@ -395,9 +395,11 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
 
   return {
     name,
-    ...(options.kind !== undefined && { kind: options.kind }),
-    ...(options.condition !== undefined && { condition: options.condition }),
-    ...(options.route !== undefined && { route: options.route }),
+    ...omitUndefined({
+      kind: options.kind,
+      condition: options.condition,
+      route: options.route,
+    }),
     start: async (ctx) => {
       // the mesh's clock where there is one, so a link event and the fold beside it agree
       const at = ctx.now ?? (() => Temporal.Now.instant());
@@ -444,7 +446,7 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
         const build = (framed: FrameLink): Bridge => {
           const bridge = bridgeFramedLink(framed, bridgeOptions);
           bridge.onError((error) =>
-            note({ kind: "error", ...(peer !== undefined && { peer }), why: error.message }),
+            note({ kind: "error", ...omitUndefined({ peer }), why: error.message }),
           );
           return bridge;
         };
@@ -457,7 +459,7 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
         const member: SessionLink = {
           id: name,
           link,
-          ...(options.route !== undefined && { route: options.route }),
+          ...omitUndefined({ route: options.route }),
         };
         const leave = ctx.sessions.join(peer, member, build);
         const session = ctx.sessions.get(peer);
@@ -483,7 +485,7 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
           attach: (link, peer) => attach(link, peer),
           // one decision per peer is the door's own property, not this transport's: see
           // `oneSeatPerPeer`, which is what the mesh wraps its gate in
-          ...(ctx.admits !== undefined && { admits: ctx.admits }),
+          ...omitUndefined({ admits: ctx.admits }),
           onDropped: (why) => {
             note({ kind: "dropped", why });
             options.onDropped?.(why);

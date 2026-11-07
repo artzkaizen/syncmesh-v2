@@ -1,4 +1,5 @@
 import { decodeResume, encodeResume } from "@syncmesh/cloudflare-do";
+import { omitUndefined } from "@syncmesh/result";
 import { bytesToHex, hexToBytes } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
@@ -33,10 +34,12 @@ describe("Durable Object resume script vectors — frozen (D33, D36)", () => {
       expect(kept.frames.map(bytesToHex)).toEqual(frames);
       // and writing what was read lands on the same bytes
       const again = encodeResume({
-        ...(kept.nonce !== undefined && { nonce: kept.nonce }),
-        ...(kept.offer !== undefined && { offer: kept.offer }),
-        ...(kept.session !== undefined && { session: kept.session }),
-        ...(v.joinHex !== undefined && { join: hex(v.joinHex) }),
+        ...omitUndefined({
+          nonce: kept.nonce,
+          offer: kept.offer,
+          session: kept.session,
+          join: v.joinHex === undefined ? undefined : hex(v.joinHex),
+        }),
         grants: v.grantsHex.map(hex),
       });
       expect(again && bytesToHex(again)).toBe(v.attachmentHex);

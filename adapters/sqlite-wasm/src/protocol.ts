@@ -7,7 +7,7 @@ import { TaggedError, createTaggedCatalog } from "@syncmesh/result";
 import type { WasmStorage, WhenPoolHeld } from "./vfs.js";
 
 import { SqliteWasmUnavailable } from "./module.js";
-import { OpfsPoolHeld, OpfsUnavailable } from "./vfs.js";
+import { OpfsPoolHeld, OpfsUnavailable } from "./pool.js";
 
 /**
  * The half of `Worker`, `MessagePort` and a dedicated worker's own global scope that this protocol

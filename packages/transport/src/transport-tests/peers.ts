@@ -206,7 +206,7 @@ export const suitePeers = (): readonly [SuitePeer, SuitePeer, SuitePeer] => [
   buildPeer(120, 900),
 ];
 
-export const buildPeer = (n: number, startMs: number): SuitePeer => {
+const buildPeer = (n: number, startMs: number): SuitePeer => {
   const identity = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => n + i)).unwrap();
   const grants = createGrantRegistry({ issuer: issuer.peerId, now: () => T0 });
   grants

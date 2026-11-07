@@ -24,7 +24,6 @@
     "@syncmesh/config": "workspace:*",
     "@syncmesh/kernel": "workspace:*",
     "@syncmesh/temporal": "workspace:*",
-    "@syncmesh/wire": "workspace:*",
     "@types/bun": "catalog:",
     "typescript": "catalog:",
     "vite-plus": "catalog:"

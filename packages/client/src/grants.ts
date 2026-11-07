@@ -139,7 +139,7 @@ export async function restoreGrants(
  * Before boot there is none and both answer "nothing known", which is the honest answer for a
  * mesh that has not opened its log yet — and renewal cannot run before then anyway.
  */
-export const standingOf = (engineOf: () => Engine | undefined): StandingOf => ({
+const standingOf = (engineOf: () => Engine | undefined): StandingOf => ({
   revokedAt: (device, partition) => {
     const engine = engineOf();
     return engine === undefined ? undefined : revokedAt(engine, partition, device);

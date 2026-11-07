@@ -1,4 +1,4 @@
-import type { PeerId, RowKey, Stamp, TableName } from "@syncmesh/kernel";
+import type { PeerId, Stamp } from "@syncmesh/kernel";
 
 /**
  * Everything that happened, in the order it happened, as one file.
@@ -126,6 +126,3 @@ export const stampText = (stamp: Stamp): string => {
 
 /** The short form used everywhere a peer id appears in the log. */
 export const short = (peer: PeerId | string): string => peer.slice(0, 8);
-
-/** `table/key`, the identity a row is followed by across the file. */
-export const rowText = (table: TableName, key: RowKey): string => `${table}/${key}`;

@@ -1,7 +1,7 @@
 import type { PeerId } from "@syncmesh/kernel";
 import type { Transport, Upgraded } from "@syncmesh/transport";
 
-import { Result } from "@syncmesh/result";
+import { Result, omitUndefined } from "@syncmesh/result";
 import { createBackoff, createFrameTransport, createLiveness } from "@syncmesh/transport";
 
 import type { LinkOptions } from "./link.js";
@@ -96,7 +96,7 @@ export const DEFAULT_MTU = 517;
  * and being two orders of magnitude below one is the whole of what keeps a snapshot off the
  * radio without anyone having to name BLE inside the scorer.
  */
-export const BLE_BANDWIDTH_BPS = 24_000;
+const BLE_BANDWIDTH_BPS = 24_000;
 
 /** One peer's link and what the radio needs to find it again. */
 interface Held {
@@ -170,7 +170,7 @@ const linkDeadline = (
   },
 ) =>
   createLiveness<string>({
-    ...(options.keepaliveMs !== undefined && { everyMs: options.keepaliveMs }),
+    ...omitUndefined({ everyMs: options.keepaliveMs }),
     probe: on.probe,
     dead: (hint) => {
       on.drop(`${hint} went quiet and was hung up on`);
@@ -254,7 +254,7 @@ export function bleTransport(options: BleOptions): Transport {
   const transport = createFrameTransport({
     name: options.name ?? "ble",
     kind: "ble",
-    ...(options.onDropped !== undefined && { onDropped: options.onDropped }),
+    ...omitUndefined({ onDropped: options.onDropped }),
     /**
      * Direct — a phone two metres away with no server in the path — and narrow. Not `costly`:
      * low energy is the whole of what BLE is, which is why presence may ride it where an

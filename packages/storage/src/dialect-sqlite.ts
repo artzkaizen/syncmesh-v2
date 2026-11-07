@@ -97,7 +97,6 @@ const userVersion = (schema: string): Rung => ({
   write: (driver, step) => driver.run(`PRAGMA ${schema}.user_version = ${step}`),
 });
 
-
 /**
  * The position as a row, for a runtime whose SQL surface has no `PRAGMA` at all.
  *

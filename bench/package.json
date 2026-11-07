@@ -14,7 +14,6 @@
     "@syncmesh/browser": "workspace:*",
     "@syncmesh/client": "workspace:*",
     "@syncmesh/config": "workspace:*",
-    "@syncmesh/drizzle": "workspace:*",
     "@syncmesh/engine": "workspace:*",
     "@syncmesh/kernel": "workspace:*",
     "@syncmesh/result": "workspace:*",

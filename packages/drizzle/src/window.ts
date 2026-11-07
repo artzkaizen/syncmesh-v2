@@ -7,6 +7,7 @@ import {
   Subquery,
   Table,
   and,
+  getColumnTable,
   getTableName,
   inArray,
   is,
@@ -91,7 +92,7 @@ const singleTableOf = (source: unknown): string | undefined => {
   const named = new Set<string>();
   walkSql(source._.sql, (chunk) => {
     if (is(chunk, Table)) named.add(getTableName(chunk));
-    else if (is(chunk, Column)) named.add(getTableName(chunk.table));
+    else if (is(chunk, Column)) named.add(getTableName(getColumnTable(chunk)));
   });
   const [only] = named;
   return named.size === 1 ? only : undefined;

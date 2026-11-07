@@ -3,10 +3,9 @@ import type { Unsubscribe } from "@syncmesh/transport";
 
 import { Result } from "@syncmesh/result";
 
-import type { Path } from "../native-stream.js";
 import type { LanAddress, LanNetwork } from "./network.js";
 
-import { pathOver } from "../native-stream.js";
+import { createNativePaths } from "../native-paths.js";
 import { DEFAULT_GROUP, LanUnsupported } from "./network.js";
 
 /**
@@ -102,9 +101,6 @@ const listen = <T>(manager: RnLanManager, event: string, cb: (payload: T) => voi
 };
 /* oxlint-enable anti-slop/no-unknown-parameters */
 
-/** How many unclaimed handles may be held while a dial is out. See `early` in `p2p/rn-p2p.ts`. */
-const EARLY_PATHS = 8;
-
 /**
  * The network, or the reason this build has none.
  *
@@ -123,60 +119,19 @@ export function lanFrom(
 
   const group = options.group ?? DEFAULT_GROUP;
   const drop = (why: string): void => options.onDropped?.(why);
-  const paths = new Map<string, Path>();
-  /** What arrived about a socket this side has not built yet — see `p2p/rn-p2p.ts` for the gap. */
-  const early = new Map<string, { chunks: Uint8Array[]; closed: boolean }>();
-  let dialling = 0;
+  const paths = createNativePaths(manager);
   let listening = 0;
-
-  const earlyFor = (handle: string) => {
-    if (dialling === 0 || early.size >= EARLY_PATHS) return undefined;
-    const holding = early.get(handle) ?? { chunks: [], closed: false };
-    early.set(handle, holding);
-    return holding;
-  };
-
-  const forget = (handle: string): void => {
-    const path = paths.get(handle);
-    if (path === undefined) return;
-    paths.delete(handle);
-    path.shut();
-  };
-
-  /** We are ending this socket, so the platform is told as well as this side. */
-  const release = (handle: string): void => {
-    manager.closePath(handle);
-    forget(handle);
-  };
-
-  const open = (handle: string): Path => {
-    // a handle the platform reused: the old object is dead, and leaving it here would route new
-    // bytes into a socket nobody is reading
-    forget(handle);
-    const path = pathOver(handle, {
-      close: () => release(handle),
-      resume: () => manager.resume(handle),
-      send: (bytes) => manager.send(handle, bytes),
-    });
-    paths.set(handle, path);
-    const waiting = early.get(handle);
-    if (waiting === undefined) return path;
-    early.delete(handle);
-    for (const chunk of waiting.chunks) path.accept(chunk);
-    if (waiting.closed) forget(handle);
-    return path;
-  };
 
   listen<RnLanData>(manager, "onLanData", (event) => {
     const held = paths.get(event.path);
     if (held !== undefined) return held.accept(event.bytes);
-    const waiting = earlyFor(event.path);
+    const waiting = paths.early(event.path);
     if (waiting === undefined) return drop(`bytes for a socket nobody opened: ${event.path}`);
     waiting.chunks.push(Uint8Array.from(event.bytes));
   });
   const offClosed = listen<RnLanClosed>(manager, "onLanClosed", (event) => {
-    if (paths.has(event.path)) return forget(event.path);
-    const waiting = earlyFor(event.path);
+    if (paths.has(event.path)) return paths.forget(event.path);
+    const waiting = paths.early(event.path);
     if (waiting !== undefined) waiting.closed = true;
   });
 
@@ -207,21 +162,19 @@ export function lanFrom(
      */
     address: () => ({ host: "", port: listening }),
     dial: async (to) => {
-      dialling += 1;
+      paths.beginDial();
       try {
-        return open(await manager.dial(to.host, to.port)).stream;
+        return paths.open(await manager.dial(to.host, to.port)).stream;
       } finally {
-        dialling -= 1;
-        if (dialling === 0) early.clear();
+        paths.endDial();
       }
     },
     onConnection: (cb) =>
       listen<RnLanConnection>(manager, "onLanConnection", (arrived) => {
-        cb(open(arrived.path).stream);
+        cb(paths.open(arrived.path).stream);
       }),
     close: async () => {
-      for (const handle of paths.keys()) release(handle);
-      early.clear();
+      paths.reset();
       listening = 0;
       await manager.stop();
     },
@@ -240,8 +193,7 @@ export function lanFrom(
   return Result.ok({
     dispose: () => {
       offClosed();
-      for (const handle of paths.keys()) release(handle);
-      early.clear();
+      paths.reset();
       void started;
     },
     network,

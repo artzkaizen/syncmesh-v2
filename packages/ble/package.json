@@ -1,7 +1,6 @@
 {
   "name": "@syncmesh/ble",
   "version": "0.0.0",
-  "private": true,
   "files": [
     "dist"
   ],
@@ -26,7 +25,6 @@
   },
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
-    "@syncmesh/engine": "workspace:*",
     "@syncmesh/transport": "workspace:*",
     "@types/bun": "catalog:",
     "typescript": "catalog:",

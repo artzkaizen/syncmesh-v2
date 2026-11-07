@@ -11,6 +11,7 @@ import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
 import { encodeResume } from "@syncmesh/cloudflare-do";
 import { joinFrame } from "@syncmesh/relay";
+import { omitUndefined } from "@syncmesh/result";
 import { bytesToHex, encodeCbor, hexToBytes, type CborValue } from "@syncmesh/wire";
 
 import { frameVectors } from "./generate-frame-vectors.js";
@@ -59,21 +60,25 @@ export function resumeVectors() {
     head: "[nonce, secret, hello, seal, open, peer], null where empty, trailing nulls omitted; then join, then grants oldest first",
     vectors: cases.map(({ description, resume }) => ({
       description,
-      ...(resume.nonce !== undefined && { nonceHex: bytesToHex(resume.nonce) }),
-      ...(resume.offer !== undefined && {
-        offer: {
-          secretHex: bytesToHex(resume.offer.secret),
-          helloHex: bytesToHex(resume.offer.hello),
-        },
+      ...omitUndefined({
+        nonceHex: resume.nonce === undefined ? undefined : bytesToHex(resume.nonce),
+        offer:
+          resume.offer === undefined
+            ? undefined
+            : {
+                secretHex: bytesToHex(resume.offer.secret),
+                helloHex: bytesToHex(resume.offer.hello),
+              },
+        session:
+          resume.session === undefined
+            ? undefined
+            : {
+                peer: String(resume.session.peer),
+                sealHex: bytesToHex(resume.session.keys.seal),
+                openHex: bytesToHex(resume.session.keys.open),
+              },
+        joinHex: resume.join === undefined ? undefined : bytesToHex(resume.join),
       }),
-      ...(resume.session !== undefined && {
-        session: {
-          peer: String(resume.session.peer),
-          sealHex: bytesToHex(resume.session.keys.seal),
-          openHex: bytesToHex(resume.session.keys.open),
-        },
-      }),
-      ...(resume.join !== undefined && { joinHex: bytesToHex(resume.join) }),
       grantsHex: resume.grants.map((g) => bytesToHex(g)),
       attachmentHex: bytesToHex(encodeResume(resume) ?? new Uint8Array()),
     })),

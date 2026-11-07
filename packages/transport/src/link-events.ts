@@ -1,6 +1,8 @@
 import type { PeerId } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
+import { omitUndefined } from "@syncmesh/result";
+
 import type { Upgrader, UpgradeOptions } from "./upgrade.js";
 
 /**
@@ -88,7 +90,7 @@ const reported = (options: UpgradeOptions, note: (fact: LinkFact) => void): Upgr
       options.onRefused?.(peer);
     },
     onClosed: (why) => {
-      note({ kind: "closed", ...(proven !== undefined && { peer: proven }), why });
+      note({ kind: "closed", ...omitUndefined({ peer: proven }), why });
       options.onClosed?.(why);
     },
   };

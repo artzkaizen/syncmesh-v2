@@ -3,6 +3,7 @@ import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 import type { CustodyReceipt, EventCrypto, GrantRegistry, Identity } from "@syncmesh/wire";
 
 import { createHub, heldAhead, interestKey } from "@syncmesh/engine";
+import { omitUndefined } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { decodeAndVerify, signEvent } from "@syncmesh/wire";
 
@@ -162,7 +163,7 @@ const outboundFor = (
   interest: options.interest,
   scope,
   errors,
-  ...(options.crypto !== undefined && { crypto: options.crypto }),
+  ...omitUndefined({ crypto: options.crypto }),
 });
 
 /**
@@ -203,7 +204,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
   // the exchange needs — a page ahead of the manifest that names it is a page thrown away
   const join = joinFor(options, (what, bytes) => send(KIND.snapshot, what, bytes));
 
-  const holdback = createHoldback(engine, identity.peerId, gapLimit);
+  const holdback = createHoldback(engine, gapLimit);
   const receiveEvent = (wire: Uint8Array): void => {
     const verified = decodeAndVerify(wire, options.crypto);
     if (verified.isErr()) {

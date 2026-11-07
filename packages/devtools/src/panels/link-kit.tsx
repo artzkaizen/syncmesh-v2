@@ -231,7 +231,7 @@ export const useNowMs = () => {
 };
 
 /** A 1px gap over a hairline background is how these grids draw their own gridlines. */
-export const RULED = {
+const RULED = {
   display: "grid",
   gap: 1,
   background: COLOR.hairline,

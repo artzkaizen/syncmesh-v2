@@ -1,5 +1,3 @@
-import type { StoreFailure } from "@syncmesh/engine";
-import type { Result } from "@syncmesh/result";
 import type {
   OpenStoresOptions,
   SqlRow,
@@ -8,6 +6,8 @@ import type {
   Stores,
 } from "@syncmesh/storage";
 
+import { StoreFailure } from "@syncmesh/engine";
+import { Result } from "@syncmesh/result";
 import {
   ATTACHED_LOG,
   acquireStoreLock,
@@ -81,8 +81,18 @@ export async function defaultStore(
   });
   if (lock.isErr()) return lock;
   // the app's schema names the derived half, so a changed column refolds instead of migrating
-  const driver = nodeSqliteDriver(logPath, schemaNameFor(options.tables ?? []));
-  const stores = await openStores(driver, options);
+  // a file that is not a database throws from the driver's own constructor — before any store
+  // has a Result to carry it — and a damaged log has to be refused as a value, never a throw
+  const driver = Result.try({
+    try: () => nodeSqliteDriver(logPath, schemaNameFor(options.tables ?? [])),
+    catch: (cause) =>
+      new StoreFailure({ message: `the store at ${logPath} would not open`, cause }),
+  });
+  if (driver.isErr()) {
+    lock.value.release();
+    return driver;
+  }
+  const stores = await openStores(driver.value, options);
   if (stores.isErr()) {
     lock.value.release();
     return stores;

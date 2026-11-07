@@ -157,11 +157,11 @@ export function correct(
  * it names. `_revocations` and `_links` both key this way, and for the same reason — a device
  * removed from one org keeps whatever it holds in another.
  */
-export const deviceRowKey = (partition: PartitionKey, device: PeerId): RowKey =>
+const deviceRowKey = (partition: PartitionKey, device: PeerId): RowKey =>
   rowKey(`${partition}:${device}`);
 
 /** The inverse: which instance and which device a key filed by {@link deviceRowKey} names. */
-export function splitDeviceKey(filed: RowKey | string) {
+function splitDeviceKey(filed: RowKey | string) {
   const split = filed.lastIndexOf(":");
   return { partition: filed.slice(0, split), device: filed.slice(split + 1) };
 }

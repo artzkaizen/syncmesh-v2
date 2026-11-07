@@ -1,13 +1,14 @@
+import type { BunWebSocketHandlers, RelayHost } from "@syncmesh/relay";
 import type { ColumnsMap, PresenceMap } from "@syncmesh/schema";
 
-import type { Api, AuthorityHandlers, ProcedureDef, Router } from "./api.js";
+import type { Api, AuthorityHandlers, Router } from "./api.js";
 import type { Client } from "./client.js";
-import type { Custody, Serving } from "./custody.js";
+import type { Custody, InlineCustody, Serving, Upgrading } from "./custody.js";
 import type { ClientOptions } from "./options.js";
 
-import { isDef } from "./api.js";
 import { createClient } from "./client.js";
-import { serveCustody } from "./custody.js";
+import { contractJson, openApi } from "./contract.js";
+import { inlineCustody, serveCustody } from "./custody.js";
 import { createHandler } from "./http.js";
 import { replicaFor } from "./scope.js";
 
@@ -36,6 +37,21 @@ export interface ServerOptions<
   readonly watchdogs?: readonly ((api: Api<R>) => () => void)[];
 }
 
+/**
+ * The server's fetch, in its two shapes.
+ *
+ * With one argument it is a standard handler: procedures, and a room described on a plain `GET`
+ * when custody is inline. With Bun's server as the second, it is the single-port recipe — an
+ * upgrade is taken and `undefined` comes back, which is what Bun expects once a socket is its.
+ *
+ * @example
+ * Bun.serve({ port, fetch: (request, bun) => server.fetch(request, bun), websocket: server.websocket });
+ */
+export interface ServerFetch {
+  (request: Request): Promise<Response>;
+  (request: Request, upgrading: Upgrading): Promise<Response | undefined>;
+}
+
 export type Server<R extends Router, PC extends PresenceMap = Record<string, never>> = Client<
   R,
   PC
@@ -44,8 +60,15 @@ export type Server<R extends Router, PC extends PresenceMap = Record<string, nev
   readonly api: Client<R, PC>;
   /** The mesh underneath, for the few facts that are neither a procedure nor `$`-surface. */
   readonly mesh: Client<R, PC>["$mesh"];
-  /** A standard fetch handler — mount it anywhere. */
-  readonly fetch: (request: Request) => Promise<Response>;
+  /** A standard fetch handler — mount it anywhere; see {@link ServerFetch} for the single-port shape. */
+  readonly fetch: ServerFetch;
+  /**
+   * The room host, when custody rides this server's port: what a Node process mounts with
+   * `attachRelay` from `@syncmesh/relay-node`, and the key a device pins is its `peerId`.
+   */
+  readonly custody?: RelayHost;
+  /** Bun's socket callbacks for inline custody — the `websocket` half of the single-port recipe. */
+  readonly websocket?: BunWebSocketHandlers;
   /** From `.route()` metadata: authority calls are plain request/response, so the spec is too. */
   readonly openapi: (info: { readonly title: string; readonly version: string }) => object;
   /** Where peers dial this node, when it serves custody; absent when it only answers HTTP. */
@@ -53,20 +76,6 @@ export type Server<R extends Router, PC extends PresenceMap = Record<string, nev
   /** Stops the watchdogs, the rooms it serves, then the mesh. */
   readonly stop: () => Promise<void>;
 };
-
-/** Every `(path, def)` leaf of the router, walked once. */
-const leaves = (node: Router, prefix = ""): readonly (readonly [string, ProcedureDef])[] =>
-  Object.entries(node).flatMap(([name, child]) => {
-    const path = prefix === "" ? name : `${prefix}.${name}`;
-    return isDef(child) ? [[path, child] as const] : leaves(child, path);
-  });
-
-/** The slice of an OpenAPI operation `.route()` metadata can honestly fill. */
-interface OpenApiOperation {
-  readonly operationId: string;
-  tags?: readonly string[];
-  responses?: Readonly<Record<string, { readonly description: string }>>;
-}
 
 export async function createServer<
   R extends Router,
@@ -88,29 +97,25 @@ export async function createServer<
         handle: replicaFor(client.$schema, (scope) => client.$mesh.on(scope).unwrap()),
       },
     });
-  const fetch = createHandler(handlerOptions);
+  const procedures = createHandler(handlerOptions);
 
   const stops = (watchdogs ?? []).map((start) => start(client));
-  const serving = custody === undefined ? undefined : await serveCustody(custody);
+  // custody on its own port is the relay as it was; custody with none rides this fetch
+  const serving =
+    custody === undefined || custody.port === undefined ? undefined : await serveCustody(custody);
+  const inline: InlineCustody | undefined =
+    custody === undefined || custody.port !== undefined ? undefined : await inlineCustody(custody);
 
-  const openapi = (info: { readonly title: string; readonly version: string }) => {
-    const paths: Record<string, Record<string, OpenApiOperation>> = {};
-    for (const [name, def] of leaves(options.procedures)) {
-      if (def.route?.path === undefined) continue;
-      const method = (def.route.method ?? "POST").toLowerCase();
-      const operation: OpenApiOperation = { operationId: name };
-      if (def.route.tags !== undefined) operation.tags = def.route.tags;
-      if (def.kind === "authority" && def.errors !== undefined)
-        operation.responses = Object.fromEntries(
-          Object.entries(def.errors).map(([tag, spec]) => [
-            "422",
-            { description: spec.message ?? tag },
-          ]),
-        );
-      paths[def.route.path] = { ...paths[def.route.path], [method]: operation };
-    }
-    return { openapi: "3.1.0", info, paths };
-  };
+  // custody first, because an upgrade and a room's GET are the only requests that are not a
+  // procedure call, and both are told apart by the request alone
+  // SAFETY: the two overloads differ only in whether Bun's server is passed, and `take` answers
+  // `undefined` only on the path that took an upgrade, which needs it
+  const fetch = ((request: Request, upgrading?: Upgrading) =>
+    inline?.take(request, upgrading) ?? procedures(request)) as ServerFetch;
+
+  // from the contract, so the spec and a contract.json a build writes cannot disagree
+  const openapi = (info: { readonly title: string; readonly version: string }) =>
+    openApi(contractJson(options.procedures), info);
 
   // assigned onto the client rather than spread: the client is a walked tree of callables, and
   // spreading one would copy the leaves off their own group objects
@@ -122,10 +127,13 @@ export async function createServer<
     stop: async () => {
       for (const stop of stops) stop();
       await serving?.stop();
+      await inline?.stop();
       await client.$close();
     },
   });
   if (serving !== undefined) Object.assign(served, { serving });
+  if (inline !== undefined)
+    Object.assign(served, { custody: inline.host, websocket: inline.websocket });
   // SAFETY: every member `Server` names beyond `Client` is assigned right here
   return served as Server<R, PC>;
 }

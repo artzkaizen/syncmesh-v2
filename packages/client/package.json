@@ -34,7 +34,6 @@
     "@syncmesh/relay": "workspace:*",
     "@types/bun": "catalog:",
     "drizzle-orm": "catalog:",
-    "fast-check": "catalog:",
     "typescript": "catalog:",
     "vite-plus": "catalog:"
   },

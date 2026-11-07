@@ -1,17 +1,15 @@
 import type { RowWrite } from "@syncmesh/engine";
-import type { CellValue } from "@syncmesh/kernel";
-import type { ColumnKind, Table } from "@syncmesh/schema";
+import type { Table } from "@syncmesh/schema";
 
 import { counterValue, isVisible } from "@syncmesh/kernel";
 
-import type { SqlDriver, SqlValue } from "./driver.js";
+import type { SqlDriver } from "./driver.js";
 import type { RowSync } from "./row-sync.js";
 
-import { SQLITE, dialectOf } from "./dialect.js";
+import { dialectOf } from "./dialect.js";
 import { columnsOf, quote } from "./identifiers.js";
 
 /** A cell in the form the column's SQL type holds it on SQLite — what the fold writes and what a compiled rule compares against. */
-export const sqlValueOf = (kind: ColumnKind, cell: CellValue): SqlValue => SQLITE.cell(kind, cell);
 
 /** What the fold writes into the app's tables: the state store's projection, applied inside its own commit. */
 export interface Projection {

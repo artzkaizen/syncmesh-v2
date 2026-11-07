@@ -3,7 +3,7 @@ import { useLiveQuery } from "@syncmesh/react";
 import { useRouter } from "expo-router";
 import { Chip, ListGroup, Spinner } from "heroui-native";
 import { useCallback, useEffect, useState } from "react";
-import { Alert, ScrollView, Text, View } from "react-native";
+import { Alert, ScrollView, Text } from "react-native";
 
 import type { Scale } from "../src/measure";
 
@@ -11,6 +11,7 @@ import { radioAbsence, radioState } from "../src/ble";
 import { mesh, useDevice } from "../src/device";
 import { summary } from "../src/measure";
 import { Avatar } from "../src/people";
+import { Caption, Section } from "../src/section";
 
 /**
  * Everything about *this install* rather than about the workspace: who it is, what it can reach,
@@ -240,34 +241,4 @@ const Detail = ({ label, value }: { readonly label: string; readonly value: stri
       </Text>
     </ListGroup.ItemSuffix>
   </ListGroup.Item>
-);
-
-const Section = ({
-  children,
-  title,
-}: {
-  readonly children: React.ReactNode;
-  readonly title: string;
-}) => (
-  <View className="gap-2">
-    <Text className="px-1 text-[13px] font-medium text-muted-foreground">{title}</Text>
-    {children}
-  </View>
-);
-
-const Caption = ({ children }: { readonly children: React.ReactNode }) => (
-  <Text className="px-1 text-[12px] leading-[17px] text-muted-foreground">{children}</Text>
-);
-
-const Notice = ({
-  children,
-  spinner = true,
-}: {
-  readonly children: React.ReactNode;
-  readonly spinner?: boolean;
-}) => (
-  <View className="flex-1 items-center justify-center gap-3 p-8">
-    {spinner ? <Spinner size="sm" /> : null}
-    <Text className="text-center text-[15px] text-muted-foreground">{children}</Text>
-  </View>
 );

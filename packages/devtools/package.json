@@ -37,8 +37,6 @@
   "devDependencies": {
     "@happy-dom/global-registrator": "^18.0.1",
     "@syncmesh/config": "workspace:*",
-    "@syncmesh/orpc": "workspace:*",
-    "@syncmesh/react": "workspace:*",
     "@syncmesh/schema": "workspace:*",
     "@types/bun": "catalog:",
     "@types/react": "^19.1.0",

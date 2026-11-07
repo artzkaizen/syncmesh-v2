@@ -17,6 +17,7 @@ import {
   since,
 } from "../src/devtools-readings";
 import { meshInstruments } from "../src/open";
+import { Caption, Notice, Section } from "../src/section";
 
 /**
  * What this device is doing about sync, on the device, without a laptop.
@@ -359,34 +360,4 @@ const Counting = () => (
       <Spinner size="sm" />
     </ListGroup.ItemContent>
   </ListGroup.Item>
-);
-
-const Section = ({
-  children,
-  title,
-}: {
-  readonly children: React.ReactNode;
-  readonly title: string;
-}) => (
-  <View className="gap-2">
-    <Text className="px-1 text-[13px] font-medium text-muted-foreground">{title}</Text>
-    {children}
-  </View>
-);
-
-const Caption = ({ children }: { readonly children: React.ReactNode }) => (
-  <Text className="px-1 text-[12px] leading-[17px] text-muted-foreground">{children}</Text>
-);
-
-const Notice = ({
-  children,
-  spinner = true,
-}: {
-  readonly children: React.ReactNode;
-  readonly spinner?: boolean;
-}) => (
-  <View className="flex-1 items-center justify-center gap-3 p-8">
-    {spinner ? <Spinner size="sm" /> : null}
-    <Text className="text-center text-[15px] text-muted-foreground">{children}</Text>
-  </View>
 );

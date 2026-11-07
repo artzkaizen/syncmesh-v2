@@ -1,3 +1,4 @@
+import { omitUndefined } from "@syncmesh/result";
 import { describe, expect, test } from "bun:test";
 
 import type { LinkEvent } from "../link-events.js";
@@ -34,7 +35,7 @@ const room = (admits?: () => Promise<boolean>) => {
       transports.map((transport, i) =>
         transport.start({
           ...peers[i]!.context,
-          ...(admits !== undefined && { admits }),
+          ...omitUndefined({ admits }),
         }),
       ),
     );

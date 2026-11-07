@@ -28,6 +28,7 @@
     "@syncmesh/kernel": "workspace:*",
     "@syncmesh/orpc": "workspace:*",
     "@syncmesh/relay": "workspace:*",
+    "@syncmesh/result": "workspace:*",
     "@syncmesh/schema": "workspace:*",
     "@syncmesh/sqlite-bun": "workspace:*",
     "@syncmesh/storage": "workspace:*",
@@ -39,6 +40,6 @@
     "redis": "^6.2.1",
     "typescript": "catalog:",
     "vite-plus": "catalog:",
-    "zod": "^3.25.76"
+    "zod": "^4.4.3"
   }
 }

@@ -1,5 +1,20 @@
-export type { CallBody, HandlerOptions, HttpLinkOptions } from "./http.js";
+export type { HandlerOptions, HttpLinkOptions, ProcedureHandler } from "./http.js";
 export { createHandler, findProcedure, httpLink } from "./http.js";
+export type { ContractJson, ContractJsonOptions, ContractLeaf, LeafKind } from "./contract.js";
+export {
+  contractJson,
+  kindMeta,
+  leaves,
+  openApi,
+  readLeafKind,
+  readRoute,
+  routeMeta,
+  toContract,
+} from "./contract.js";
+export type { IdempotencyStore, StoredAnswer } from "./idempotency.js";
+export { REQUEST_ID_HEADER, memoryIdempotency } from "./idempotency.js";
+export type { QueuedLink, QueuedLinkOptions, QueuedRequest } from "./queue.js";
+export { AuthorityQueued, queuedLink } from "./queue.js";
 export type { Client } from "./client.js";
 export { createClient } from "./client.js";
 export type { ClientOptions, PostgresStorage, SqliteStorage, Storage, Trust } from "./options.js";
@@ -7,6 +22,7 @@ export { postgres, sqlite } from "./options.js";
 export type {
   Api,
   ApiMesh,
+  AuthorityCall,
   AuthorityContext,
   AuthorityDef,
   AuthorityHandlers,
@@ -14,18 +30,30 @@ export type {
   CallError,
   CanCall,
   DeclaredErrors,
+  HandlerRun,
+  InputChain,
   MutationDef,
+  MutationRun,
+  OutputChain,
+  ProcDef,
+  ProcedureBuilder,
   ProcedureDef,
   QueryCall,
   QueryDef,
+  QueryMethod,
+  QueryRoute,
+  QueryRun,
   ReadAnswer,
+  RoutedChain,
   RouteMeta,
   Router,
+  WriteMethod,
   WriteResult,
+  WriteRoute,
 } from "./api.js";
 // `meshApi` is deliberately absent: it builds a client out of a mesh, which is `createClient`'s
 // job and `connectMesh`'s, not an app's. It lives at `@syncmesh/orpc/internal` for those two.
-export { mutation, query } from "./api.js";
+export { isDef, mutation, procedure, query } from "./api.js";
 export {
   AuthorityUnreachable,
   InputInvalid,
@@ -36,8 +64,9 @@ export {
 export { watch } from "./watch.js";
 export type { Write, WriteLedger } from "./write.js";
 export { createWrite } from "./write.js";
-export type { Server, ServerOptions } from "./server.js";
+export type { Server, ServerFetch, ServerOptions } from "./server.js";
 export { createServer } from "./server.js";
+export type { Custody, InlineCustody, Serving, Upgrading } from "./custody.js";
 
 import type { Handle, Mesh } from "@syncmesh/client";
 import type { JsonValue } from "@syncmesh/kernel";
@@ -125,5 +154,3 @@ export function withMesh<D extends SqlDialect = "sqlite">(mesh: Mesh<D>) {
       }
     });
 }
-
-export type { Custody, Serving } from "./custody.js";

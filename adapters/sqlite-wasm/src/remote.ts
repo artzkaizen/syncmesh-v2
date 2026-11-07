@@ -11,8 +11,8 @@ import type { Answer, Call, OpenCall, Opened, Reply, WirePort } from "./protocol
 import type { PoolFailure } from "./vfs.js";
 
 import { SqliteWasmUnavailable as WasmMissing } from "./module.js";
+import { OpfsPoolHeld, OpfsUnavailable } from "./pool.js";
 import { failures } from "./protocol.js";
-import { OpfsPoolHeld, OpfsUnavailable } from "./vfs.js";
 
 /** A host on the other end of a port, and the databases it will open on this page's behalf. */
 export interface RemoteSqlite {

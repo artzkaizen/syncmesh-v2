@@ -2,6 +2,16 @@ export { InvalidHex, bytesEqual, bytesToHex, hexToBytes } from "./hex.js";
 export type { CborKey, CborValue } from "./cbor.js";
 export { compareKeys, encodeCbor } from "./cbor.js";
 export { MalformedCbor, decodeCbor } from "./cbor-decode.js";
+export type { WireMedia } from "./json.js";
+export {
+  MalformedJson,
+  UnreadableJson,
+  deserialize,
+  fromJson,
+  negotiate,
+  serialize,
+  toJson,
+} from "./json.js";
 export { isBoolean, isNumber, isSafeNonNegative, isString } from "./cbor-guards.js";
 export { MalformedRow, cellFromCbor, cellToCbor, rowFromCbor, rowToCbor } from "./row-codec.js";
 export { MalformedRecord, decodeRecord, encodeRecord } from "./record-codec.js";

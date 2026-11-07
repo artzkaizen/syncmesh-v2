@@ -7,7 +7,7 @@ import {
   type PartitionKey,
   type Procedure,
 } from "@syncmesh/kernel";
-import { Result, TaggedError } from "@syncmesh/result";
+import { Result, TaggedError, omitUndefined } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 
 import type { EventCrypto } from "./sealing.js";
@@ -56,7 +56,7 @@ const sealingAad = (event: Pick<SyncEvent, "peerId" | "seqNum" | "partition">): 
   encodeCbor([hexToBytes(event.peerId).unwrap(), event.seqNum, event.partition ?? ""]);
 
 /** One change's map keys, shared with the cell-change codec so both write the same envelope. */
-export const CHANGE = { kind: 0, table: 1, key: 2, data: 3 } as const;
+const CHANGE = { kind: 0, table: 1, key: 2, data: 3 } as const;
 
 /**
  * The change kinds an encoder here emits. 3, 4 and 5 were the cell lattices D25 deleted and are
@@ -137,7 +137,6 @@ function decodeEventValue(
   const hlc = m.get(KEY.hlc);
   const procedure = m.get(KEY.procedure);
   const partition = m.get(KEY.partition);
-  const changes = m.get(KEY.changes);
   const action = actionIdOf(m.get(KEY.action));
   const undoOf = actionIdOf(m.get(KEY.undoOf));
   const under = m.get(KEY.sealed);
@@ -155,11 +154,11 @@ function decodeEventValue(
     const seqNum = yield* parseSeqNum(seq).mapError(
       (e) => new MalformedEvent({ message: e.message }),
     );
-    const place = {
+    const place = omitUndefined({
       peerId,
       seqNum,
-      ...(partition !== undefined && { partition: asPartition(partition) }),
-    };
+      partition: partition !== undefined ? asPartition(partition) : undefined,
+    });
     const changes = yield* readChanges(m, under, place, crypto);
     const base = {
       v: 1 as const,

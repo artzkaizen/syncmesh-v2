@@ -40,7 +40,7 @@ const projected = (
  * what an operator wants to see is the device that will stop working before they next open this
  * panel. A shorter window hides the problem until it is one.
  */
-export const EXPIRING_WITHIN = Temporal.Duration.from({ hours: 24 });
+const EXPIRING_WITHIN = Temporal.Duration.from({ hours: 24 });
 
 export const grantsOf = (mesh: Mesh, now: () => Temporal.Instant): DevtoolsGrants => {
   const at = now();
