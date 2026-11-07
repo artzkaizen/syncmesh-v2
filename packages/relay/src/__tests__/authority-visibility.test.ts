@@ -19,7 +19,7 @@ import {
   type GatedPeer,
 } from "@syncmesh/transport/test-fixtures";
 import { signEvent } from "@syncmesh/wire";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 
 import type { Entitlement, RelayAdmission } from "../admission.js";
 import type { RelayRoom } from "../room.js";
@@ -209,6 +209,40 @@ describe("visibility: authority — admission at the relay (D24-A)", () => {
     expect((await visibility.visibleAt({ epoch: room.epoch, offset: 2 })).isOk()).toBe(true);
     expect(holds(b, CATALOG, "c3")).toBe(true);
     expect(holds(b, CONSULTS, "secret")).toBe(false);
+    room.close();
+  });
+
+  test("an admits that throws withholds the event from that device and the room carries on", async () => {
+    const throwing = {
+      tables: admission.tables,
+      entitle: ({ peer: asking }) =>
+        asking === AUTHORITY.peerId
+          ? entitlementOf(asking)
+          : {
+              scope: "broken",
+              admits: () => {
+                throw new Error("app bug: a row without a clinic");
+              },
+            },
+    } satisfies RelayAdmission;
+    const warned = spyOn(console, "warn");
+    const room = await gatedRoom({ admission: throwing });
+    const authority = await seeded(room);
+    const b = gatedPeer(43);
+    await attach(b, dialTo(room).dial);
+    // the catch-up scan ran it over x and y, and read both throws as no
+    expect(idsIn(b, CATALOG)).toEqual(["c1", "c2"]);
+    expect(idsIn(b, CONSULTS)).toEqual([]);
+
+    // and live: the gated write is withheld, and the ungated one behind it is still ingested,
+    // acked and fanned out
+    (await writeConsult(authority, "z", "a")).unwrap();
+    await writeCatalog(authority, "c3", "after the throw");
+    expect(await until(() => holds(b, CATALOG, "c3"), 2000)).toBe(true);
+    expect(room.offset()).toBe(6);
+    expect(idsIn(b, CONSULTS)).toEqual([]);
+    expect(warned.mock.calls.length).toBeGreaterThanOrEqual(3);
+    warned.mockRestore();
     room.close();
   });
 
