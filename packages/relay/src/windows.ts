@@ -29,7 +29,10 @@ export interface WindowConnection {
   readonly receive: (bytes: Uint8Array) => boolean;
   /** The socket drained: flush queued patches in order. */
   readonly drain: () => void;
-  /** The socket is gone: the view stops listening and sends nothing more. */
+  /**
+   * The socket is gone: the view stops listening and sends nothing more. A socket the sender
+   * closed at its backlog ceiling has already stopped its view.
+   */
   readonly close: () => void;
   readonly view: ClientView;
   readonly backlog: () => number;
@@ -47,7 +50,14 @@ export interface WindowConnection {
 export function serveWindows(socket: RelaySocket, options: WindowServerOptions): WindowConnection {
   const { maxBacklog = 1000, maxBacklogBytes = DEFAULT_LIMITS.maxBacklogBytes, ...view } = options;
   const sender = createSender(socket, maxBacklog, maxBacklogBytes);
-  const windows = createClientView({ ...view, send: sender.send });
+  const windows = createClientView({
+    ...view,
+    // a socket closed at the backlog ceiling is gone: stop re-reading windows for it
+    send: (frame) => {
+      sender.send(frame);
+      if (!sender.alive()) windows.close();
+    },
+  });
   return {
     receive: (bytes) =>
       sender.alive()

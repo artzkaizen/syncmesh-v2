@@ -255,6 +255,18 @@ describe("a window over a row source (E27)", () => {
     expect(client.status()).toBe("live");
   });
 
+  test("a closed view reads no more desires and sends nothing", () => {
+    const { client, view, frames } = harness(100);
+    client.desire("a", newest(2));
+    view.close();
+    const sent = frames.length;
+    client.desire("b", newest(2, { after: after(50) }));
+    expect(view.held()).toBe(2);
+    client.undesire("a");
+    expect(view.held()).toBe(2);
+    expect(frames.length).toBe(sent);
+  });
+
   test("a window the source cannot serve, or a query that does not parse, is refused", () => {
     const { client, view } = harness(10);
     client.desire("calls", newest(5, { table: CALLS }));

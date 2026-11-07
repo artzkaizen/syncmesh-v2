@@ -57,7 +57,7 @@ export interface ClientView {
   readonly receive: (bytes: Uint8Array) => boolean;
   /** Distinct rows this socket's windows hold: the view's memory, bounded by Σ limit. */
   readonly held: () => number;
-  /** Stops listening to the source. A closed view sends nothing more. */
+  /** Stops listening to the source. A closed view reads nothing more and sends nothing more. */
   readonly close: () => void;
 }
 
@@ -260,6 +260,7 @@ export function createClientView(options: ClientViewOptions): ClientView {
   const unsubscribe = source.subscribe(onChanges);
 
   const desire = (id: string, text: string, since?: StreamPosition): void => {
+    if (closed) return;
     const draft = emptyDraft();
     const query = parseQuery(text);
     if (query.isErr()) {
@@ -278,6 +279,7 @@ export function createClientView(options: ClientViewOptions): ClientView {
   };
 
   const undesire = (id: string): void => {
+    if (closed) return;
     const draft = emptyDraft();
     unplace(draft, id);
     flush(draft);

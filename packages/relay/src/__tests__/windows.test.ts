@@ -133,6 +133,39 @@ describe("serving windows on a socket (E27, D39)", () => {
     expect(client.status()).toBe("live");
   });
 
+  test("a socket closed at the backlog ceiling stops its view re-reading the source", () => {
+    const source = loaded();
+    let reads = 0;
+    const counted = {
+      ...source,
+      window: (...args: Parameters<typeof source.window>) => {
+        reads++;
+        return source.window(...args);
+      },
+    };
+    const stalled = slowSocket(0, () => {});
+    // the host never calls close(): the sender's own close is enough
+    const served = serveWindows(stalled.socket, {
+      source: counted,
+      admits: everyRow,
+      maxBacklogBytes: 4 * BODY_BYTES,
+    });
+    served.receive(desireFrame("box-0", queryText(boxQuery(0))));
+    expect(stalled.closed()).toContain("backlog ceiling");
+    const before = reads;
+    source.write([
+      {
+        table: MAIL,
+        key: keyOf(0, PER_BOX),
+        row: new Map([
+          [BOX, 0],
+          [AT, PER_BOX],
+        ]),
+      },
+    ]);
+    expect(reads).toBe(before);
+  });
+
   test("frames that are not window frames are left for the socket's other reader", () => {
     const served = serveWindows(slowSocket(1, () => {}).socket, {
       source: loaded(),
