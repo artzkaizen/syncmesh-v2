@@ -74,7 +74,7 @@ export function createRefusalReads(deps: {
   const { rows, decodeOp } = deps;
   const refusalsAt = (peer: PeerId, seq: SeqNum) =>
     Result.gen(async function* () {
-      const held = yield* Result.await(rows(deps.selectRefusals, [String(peer), Number(seq)]));
+      const held = yield* Result.await(rows(deps.selectRefusals, [peer, seq]));
       return Result.all(held.map(decodeRefusal));
     });
   /** One decoded row, with whoever refused it. */

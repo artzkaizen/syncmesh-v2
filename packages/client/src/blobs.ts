@@ -111,7 +111,7 @@ export function createBlobs(deps: BlobsDeps): Blobs {
     options.onProgress?.(0, undefined); // the ask left; nobody knows the size yet
     let silent = false;
     for (const transport of carriers) {
-      const answer = await transport.blobs?.download(String(hash), { timeoutMs });
+      const answer = await transport.blobs?.download(hash, { timeoutMs });
       silent ||= answer === undefined;
       if (answer === undefined || answer === BLOB_MISSING) continue;
       const verified = verifyBlob(hash, answer);
@@ -123,11 +123,11 @@ export function createBlobs(deps: BlobsDeps): Blobs {
     return R.err(
       silent
         ? new BlobTimeout({
-            hash: String(hash),
+            hash: hash,
             message: "nobody reachable answered with these bytes in time",
           })
         : new BlobNotFound({
-            hash: String(hash),
+            hash: hash,
             message: "every peer asked said it holds no bytes under that name",
           }),
     );
@@ -141,13 +141,13 @@ export function createBlobs(deps: BlobsDeps): Blobs {
       const carriers = transports();
       if (carriers.length === 0) return noCapability("carry");
       const answers = await Promise.all(
-        carriers.flatMap((t) => t.blobs?.upload(String(hash), bytes, options) ?? []),
+        carriers.flatMap((t) => t.blobs?.upload(hash, bytes, options) ?? []),
       );
       const refused = answers.find((answer) => answer !== undefined);
       if (refused === undefined) return R.ok(hash);
       return R.err(
         new BlobQuotaExceeded({
-          hash: String(hash),
+          hash: hash,
           partition: refused.partition,
           limit: refused.limit,
           used: refused.used,
@@ -169,13 +169,13 @@ export function createBlobs(deps: BlobsDeps): Blobs {
           });
         },
       }),
-    retain: (hash) => void holds.set(String(hash), (holds.get(String(hash)) ?? 0) + 1),
+    retain: (hash) => void holds.set(hash, (holds.get(hash) ?? 0) + 1),
     release: (hash) => {
-      const count = holds.get(String(hash)) ?? 0;
-      if (count <= 1) holds.delete(String(hash));
-      else holds.set(String(hash), count - 1);
+      const count = holds.get(hash) ?? 0;
+      if (count <= 1) holds.delete(hash);
+      else holds.set(hash, count - 1);
     },
-    retained: (hash) => holds.get(String(hash)) ?? 0,
+    retained: (hash) => holds.get(hash) ?? 0,
     has: (hash) => store.has(hash),
   };
 }

@@ -194,7 +194,7 @@ export function openOperations(deps: {
       if (through === undefined) continue;
       void store.acknowledge(holder, self, through, now().epochMilliseconds).then((written) => {
         // a failed receipt is evidence, not silence: the next acknowledgement retries it anyway
-        if (written.isErr()) console.warn(`receipt for ${String(holder)} failed:`, written.error);
+        if (written.isErr()) console.warn(`receipt for ${holder} failed:`, written.error);
         else changed();
       });
     }
@@ -219,8 +219,7 @@ export function openOperations(deps: {
       )
       .then((written) => {
         // evidence, not silence: the holder re-vouches on the next exchange either way
-        if (written.isErr())
-          console.warn(`vouch for ${String(receipt.holder)} failed:`, written.error);
+        if (written.isErr()) console.warn(`vouch for ${receipt.holder} failed:`, written.error);
         else changed();
       });
   };
@@ -240,8 +239,7 @@ export function openOperations(deps: {
       )
       .then((written) => {
         // evidence, not silence: the refuser repeats it on the next exchange while it is parked
-        if (written.isErr())
-          console.warn(`refusal from ${String(refusal.refuser)} failed:`, written.error);
+        if (written.isErr()) console.warn(`refusal from ${refusal.refuser} failed:`, written.error);
         else changed();
       });
   };
@@ -249,7 +247,7 @@ export function openOperations(deps: {
   /** A folded `_corrections` row naming one of this device's writes marks its record superseded. */
   const overruled = (): void => {
     for (const row of corrections(engine)) {
-      if (!row.event.startsWith(`${String(self)}-`)) continue;
+      if (!row.event.startsWith(`${self}-`)) continue;
       const parsed = parseEventId(row.event);
       if (parsed.isErr()) continue;
       // `by` is the `_corrections` row's own id — the record a UI opens for the full story

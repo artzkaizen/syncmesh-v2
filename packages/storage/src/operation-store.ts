@@ -200,8 +200,8 @@ export function operationStore(
         attempt("operation record failed", () =>
           driver.run(sql.insertOp, [
             op.id,
-            String(op.peer),
-            Number(op.seq),
+            op.peer,
+            op.seq,
             op.label,
             op.atMs,
             op.hlcMs ?? 0,
@@ -216,7 +216,7 @@ export function operationStore(
         }),
       byEvent: (peer, seq) =>
         Result.gen(async function* () {
-          const [row] = yield* Result.await(rows(sql.selectOpByEvent, [String(peer), Number(seq)]));
+          const [row] = yield* Result.await(rows(sql.selectOpByEvent, [peer, seq]));
           return Result.ok(row === undefined ? undefined : yield* Result.await(refused(row)));
         }),
       unsettled: () =>
@@ -226,32 +226,23 @@ export function operationStore(
         }),
       acknowledge: (holder, author, throughSeq, atMs) =>
         attempt("receipt insert failed", () =>
-          driver.run(sql.insertReceiptsThrough, [
-            String(holder),
-            atMs,
-            String(author),
-            Number(throughSeq),
-          ]),
+          driver.run(sql.insertReceiptsThrough, [holder, atMs, author, throughSeq]),
         ),
       vouch: (holder, author, throughSeq, incarnation, atMs) =>
         attempt("vouch insert failed", async () => {
-          await driver.run(sql.deleteStaleVouches, [String(holder), incarnation]);
-          await driver.run(sql.deleteCoveredRefusals, [
-            String(holder),
-            String(author),
-            Number(throughSeq),
-          ]);
+          await driver.run(sql.deleteStaleVouches, [holder, incarnation]);
+          await driver.run(sql.deleteCoveredRefusals, [holder, author, throughSeq]);
           await driver.run(sql.insertVouchesThrough, [
-            String(holder),
+            holder,
             incarnation,
             atMs,
-            String(author),
-            Number(throughSeq),
+            author,
+            throughSeq,
           ]);
         }),
       vouchesOf: (peer, seq) =>
         Result.gen(async function* () {
-          const held = yield* Result.await(rows(sql.selectVouches, [String(peer), Number(seq)]));
+          const held = yield* Result.await(rows(sql.selectVouches, [peer, seq]));
           return Result.all(
             held.map(([holder, incarnation, atMs]) => {
               if (typeof holder !== "string" || typeof incarnation !== "string")
@@ -268,20 +259,12 @@ export function operationStore(
         }),
       refuse: (refuser, author, seq, { reason, verdict }, atMs) =>
         attempt("refusal insert failed", () =>
-          driver.run(sql.insertRefusal, [
-            String(refuser),
-            reason,
-            verdict,
-            atMs,
-            String(author),
-            Number(seq),
-            String(refuser),
-          ]),
+          driver.run(sql.insertRefusal, [refuser, reason, verdict, atMs, author, seq, refuser]),
         ),
       refusals: (peer, seq) => refusalsAt(peer, seq),
       receiptsOf: (peer, seq) =>
         Result.gen(async function* () {
-          const held = yield* Result.await(rows(sql.selectReceipts, [String(peer), Number(seq)]));
+          const held = yield* Result.await(rows(sql.selectReceipts, [peer, seq]));
           return Result.all(
             held.map(([holder, atMs]) => {
               if (typeof holder !== "string")
@@ -293,7 +276,7 @@ export function operationStore(
         }),
       correct: (peer, seq, by, reason) =>
         attempt("correction mark failed", () =>
-          driver.run(sql.markCorrected, [by, reason, String(peer), Number(seq)]),
+          driver.run(sql.markCorrected, [by, reason, peer, seq]),
         ),
     };
     return Result.ok(store);

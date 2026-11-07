@@ -171,9 +171,7 @@ describe("refusal receipts — the refusing twin of custody (D32)", () => {
     expect(refusal?.reason).toBe("refused");
     expect(refusal?.verdict).toBe("NoGrant");
     // the same report every time it is repeated: idempotent on (refuser, author, seq, verdict)
-    expect(new Set(link.heard.map((r) => `${r.refuser}/${String(r.seq)}/${r.verdict}`)).size).toBe(
-      1,
-    );
+    expect(new Set(link.heard.map((r) => `${r.refuser}/${r.seq}/${r.verdict}`)).size).toBe(1);
     expect(link.errors).toEqual([]);
     link.close();
   });

@@ -252,9 +252,7 @@ export const blobPutFrame = (
   partition?: PartitionKey,
 ): Uint8Array =>
   encodeCbor(
-    partition === undefined
-      ? [KIND.blobPut, hash, bytes]
-      : [KIND.blobPut, hash, bytes, String(partition)],
+    partition === undefined ? [KIND.blobPut, hash, bytes] : [KIND.blobPut, hash, bytes, partition],
   );
 
 export const blobGetFrame = (hash: string): Uint8Array => encodeCbor([KIND.blobGet, hash]);
@@ -277,7 +275,7 @@ export const blobRefusedFrame = (
   encodeCbor(
     partition === undefined
       ? [KIND.blobRefused, hash, code, limit, used]
-      : [KIND.blobRefused, hash, code, limit, used, String(partition)],
+      : [KIND.blobRefused, hash, code, limit, used, partition],
   );
 
 const asWires = (value: CborValue | undefined): Result<readonly Uint8Array[], MalformedFrame> => {
