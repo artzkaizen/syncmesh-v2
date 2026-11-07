@@ -387,13 +387,15 @@ export function runTransports(
    */
   const forcing = createForcing({
     find: (name) => active.find((t) => t.name === name),
-    open: (transport) => open(transport),
+    // before `start()` a released medium only takes its seat back: `begin` opens it with the rest
+    open: async (transport) => (life.begun() ? open(transport) : Result.ok(undefined)),
     swap: async (out, into) => {
       const at = active.indexOf(out);
       drop(out);
       active.splice(at < 0 ? active.length : at, 0, into);
       watch(into);
-      await out.stop();
+      // a medium that never opened has nothing to close
+      if (life.begun()) await out.stop();
     },
   });
 
