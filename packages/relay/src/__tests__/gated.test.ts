@@ -3,7 +3,7 @@ import type { PartitionKey } from "@syncmesh/kernel";
 import { entitledInterest, interestText } from "@syncmesh/engine";
 import { seed } from "@syncmesh/kernel/test-fixtures";
 import { Temporal } from "@syncmesh/temporal";
-import { grantFrame } from "@syncmesh/transport";
+import { eventFrame, grantFrame } from "@syncmesh/transport";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
@@ -24,6 +24,7 @@ import {
   mintFor,
   openRoom,
   peer,
+  secureProbe,
   signedJoin,
   tick,
   until,
@@ -87,6 +88,50 @@ describe("a grant-gated room (D40)", () => {
     await ta.stop();
     await tr.stop();
     room.close();
+  });
+
+  test("an event the gate skips above a hole is told once the hole fills, before or after the seat", async () => {
+    for (const before of [false, true]) {
+      const room = await gatedRoom();
+      const author = peer(40, "acct_author");
+      // the author's run, carried in by a forwarder in the order it happened to hold them:
+      // globex seq 2 first, so the room's run for the author has a hole under it
+      const [a1, g2, a3] = [
+        await write(author, "a1", "acme one", ACME),
+        await write(author, "g2", "globex", GLOBEX),
+        await write(author, "a3", "acme three", ACME),
+      ];
+      const forwarder = peer(44, "acct_fwd");
+      const probe = await secureProbe(dialTo(room).dial, forwarder.identity);
+      probe.join();
+      probe.send(grantFrame(mintFor(forwarder.identity, "acct_fwd")));
+      probe.send(grantFrame(mintFor(author.identity, "acct_author")));
+      await tick(30);
+
+      const reader = peer(41, "acct_reader", 100, { partitions: [ACME] });
+      const tr = relayTransport({ dial: dialTo(room).dial, reconnectMs: 10 });
+      const seat = async () => {
+        await tr.start(reader.context);
+        await tr.whenReady();
+        await tick(40);
+      };
+      if (!before) await seat();
+      probe.send(eventFrame(g2));
+      await tick(30);
+      if (before) await seat();
+      probe.send(eventFrame(a1));
+      await tick(30);
+      probe.send(eventFrame(a3));
+
+      expect(await until(() => bodyOf(reader, "a3") === "acme three")).toBe(true);
+      expect(bodyOf(reader, "a1")).toBe("acme one");
+      expect(bodyOf(reader, "g2")).toBeUndefined();
+      expect(await holds(reader, GLOBEX)).toBe(false);
+
+      await tr.stop();
+      probe.close();
+      room.close();
+    }
   });
 
   test("a device with no grant is refused as ungranted and is sent no event", async () => {

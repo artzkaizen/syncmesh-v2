@@ -125,7 +125,15 @@ function sitDown(
   const { peerId: peer, cursors: theirs, interest: wanted, selected } = join;
   const { seat, socket, refuse } = held;
   seat.take(wanted, grant);
-  const client = { peer, sender, socket, wants: seat.wants, skipped: seat.skipped, refuse };
+  const client = {
+    peer,
+    sender,
+    socket,
+    wants: seat.wants,
+    skipped: seat.skipped,
+    sent: seat.sent,
+    refuse,
+  };
   const [greeted, duration] = timed(() => {
     // one socket per peer, never a silent room switch: the old socket goes first
     room.clients.get(peer)?.socket.close("superseded by a newer join");

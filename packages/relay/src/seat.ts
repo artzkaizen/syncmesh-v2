@@ -1,5 +1,5 @@
 import type { Interest } from "@syncmesh/engine";
-import type { PeerId, SyncEvent } from "@syncmesh/kernel";
+import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 import type { Grant } from "@syncmesh/wire";
 
 import { entitledInterest, entitles, interestText, matchesInterest } from "@syncmesh/engine";
@@ -48,6 +48,13 @@ export interface Seat {
    * catch-up would tell the client it had caught up when it had not.
    */
   readonly skipped: (event: SyncEvent) => void;
+  /**
+   * An event live fan-out sent. When it filled a hole under events already in the room, the
+   * author's run now reaches past it, and the ones above it this socket was passed over — before
+   * or after its seat — are told as {@link Seat.skipped} tells them: the notice they got capped at
+   * the hole, and nothing else would say it again.
+   */
+  readonly sent: (event: SyncEvent) => void;
   /** This seat's catch-up is on the socket; notices may follow it now. */
   readonly paged: () => void;
   /**
@@ -95,6 +102,21 @@ export function createSeat(
     held = undefined;
   };
 
+  /** One empty last page saying `author`'s run is held up to `at`, within this seat's scope. */
+  const tell = (author: PeerId, at: SeqNum): void => {
+    if (!paged) return;
+    const scope =
+      granted === undefined ? interest : entitledInterest(interest, granted.partitions);
+    if (scope === undefined) return;
+    send(
+      pageFrame([], [], false, room.offset(), {
+        synced: new Map([[author, at]]),
+        local: new Map(),
+        scope: interestText(scope),
+      }),
+    );
+  };
+
   return {
     take: (asked, grant) => {
       release();
@@ -115,19 +137,13 @@ export function createSeat(
       return interest === undefined || matchesInterest(interest, event);
     },
     skipped: (event) => {
-      if (!paged) return;
-      const scope =
-        granted === undefined ? interest : entitledInterest(interest, granted.partitions);
       const reach = room.cursors().get(event.peerId);
-      if (scope === undefined || reach === undefined) return;
-      const at = Number(reach) < Number(event.seqNum) ? reach : event.seqNum;
-      send(
-        pageFrame([], [], false, room.offset(), {
-          synced: new Map([[event.peerId, at]]),
-          local: new Map(),
-          scope: interestText(scope),
-        }),
-      );
+      if (reach === undefined) return;
+      tell(event.peerId, Number(reach) < Number(event.seqNum) ? reach : event.seqNum);
+    },
+    sent: (event) => {
+      const reach = room.cursors().get(event.peerId);
+      if (reach !== undefined && Number(reach) > Number(event.seqNum)) tell(event.peerId, reach);
     },
     paged: () => void (paged = true),
     admit: (peer, seat) => {

@@ -24,6 +24,11 @@ export interface Client {
    * the filter left does not hold everything after it in the client's holdback (D23, D40).
    */
   readonly skipped?: (event: SyncEvent) => void;
+  /**
+   * Live fan-out sent this client an event: when it filled a hole, say how far the author's run
+   * now reaches, so the events above it the filter passed over are accounted for too.
+   */
+  readonly sent?: (event: SyncEvent) => void;
   /** Hangs up on this socket with a typed reason — how a revocation reaches it from elsewhere. */
   readonly refuse: (code: string, message: string) => void;
 }

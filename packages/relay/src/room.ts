@@ -221,6 +221,7 @@ export async function openRelayRoom(
       if (client.peer === except) continue;
       if (client.wants(event)) {
         client.sender.send(frame);
+        client.sent?.(event);
         receivers += 1;
       } else client.skipped?.(event);
     }
