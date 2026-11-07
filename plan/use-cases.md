@@ -616,6 +616,21 @@ The three tiers, side by side:
   a device under its new entitlement, but the gated rows it was admitted to before stay on its
   disk; nothing is sent to take them back. That is the same snapshot rule entity access follows
   (§ *Entity access is a snapshot*), and a purge on narrowing is not built.
+- `reentitle` is a method of one `RelayRoom`, reached through `createRelayHost().acquire()`.
+  `startRelay`'s handle does not offer it, and it closes sockets on the instance it is called on
+  alone: a fleet behind a load balancer broadcasts it to every instance itself.
+- The gate is the relay's, and the relay cannot read the schema. A relay started without
+  `admission` sends a `visibility: "authority"` table's rows to every device that asks — and since
+  an unpinned row now matches every interest, a narrowed device asks too. Nothing warns.
+- A room that lists protocol version 1 accepts a join that proves no key (D33), so a joiner can
+  name any peer and be asked about as that peer. The default list (`[3]`) refuses it; a room given
+  `admission` should never list 1.
+- Rows pinned to no partition match every interest now, but a device's scope text did not change
+  with that rule, so a device narrowed before it keeps cursors that may have skipped such rows and
+  is not re-paged for them; across a link between the two builds, digests of those rows differ.
+  Acceptable before 1.0; a device that must have them re-joins from nothing once.
+- `hello` and cursor frames still carry the authority's whole run, gated events included, to
+  every device. No row leaks, but how many gated writes the authority has made does.
 - The tier gives up the offline *write*, and only that. The use-case table above never promised
   one: it promises reads held offline once the authority has spoken. Optimistic local writes plus
   an authority refusal is the split D24 rejected, and it becomes available only once the
