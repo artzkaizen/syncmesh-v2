@@ -1,10 +1,11 @@
 import type { TransportVisibility, VisibilityToken } from "@syncmesh/transport";
 
 import { Result } from "@syncmesh/result";
+import { Temporal } from "@syncmesh/temporal";
 import { VisibilityLost, VisibilityTimeout } from "@syncmesh/transport";
 
 /** How long `visibleAt` waits when the caller names no deadline (RFC-0020 §3.2). */
-const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_TIMEOUT = Temporal.Duration.from({ seconds: 10 });
 
 type Settled = Result<void, VisibilityLost | VisibilityTimeout>;
 
@@ -53,7 +54,7 @@ export function createVisibility() {
     visibleAt: (token, options = {}) => {
       const now = answer(token);
       if (now !== undefined) return Promise.resolve(now);
-      const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT.total("milliseconds");
       return new Promise<Settled>((resolve) => {
         const timer = setTimeout(() => {
           waiters.delete(waiter);

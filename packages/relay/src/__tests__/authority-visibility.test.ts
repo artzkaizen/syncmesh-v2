@@ -55,10 +55,10 @@ const entitlementOf = (peer: PeerId): Entitlement => {
   };
 };
 
-const admission: RelayAdmission = {
+const admission = {
   tables: authorityTables(gatedSchema),
   entitle: ({ peer }) => entitlementOf(peer),
-};
+} satisfies RelayAdmission;
 
 const running: { stop: () => Promise<void> }[] = [];
 afterEach(async () => {
@@ -68,7 +68,7 @@ afterEach(async () => {
 
 /** A peer joined to a room through a real `relayTransport`, kept for teardown. */
 const attach = async (p: GatedPeer, dial: () => ReturnType<ReturnType<typeof dialTo>["dial"]>) => {
-  const transport: Transport = relayTransport({ dial, reconnectMs: 10, maxReconnectMs: 20 });
+  const transport = relayTransport({ dial, reconnectMs: 10, maxReconnectMs: 20 });
   running.push(transport);
   await transport.start(p.context);
   await transport.caughtUp?.();
@@ -286,7 +286,7 @@ describe("visibility: authority — admission at the relay (D24-A)", () => {
 });
 
 describe("an authority that is slow to answer (D24-A)", () => {
-  const everything: Entitlement = { scope: "everything", admits: () => true };
+  const everything = { scope: "everything", admits: () => true } satisfies Entitlement;
 
   test("one device left waiting for its answer does not stop the room for the others", async () => {
     const [stuck, a, b] = [peer(40, "acct_s"), peer(80, "acct_a"), peer(120, "acct_b")];

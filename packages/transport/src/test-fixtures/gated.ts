@@ -68,11 +68,11 @@ export const gatedPeer = (n: number, believes: PeerId = AUTHORITY.peerId, startM
     store: createMemoryEventStore(),
     validate: createValidator({ schema: gatedSchema, grantFor: null, authority: believes }),
   });
-  const withheld: Withheld = {
+  const withheld = {
     tables: new Set(authorityTables(gatedSchema)),
     author: AUTHORITY.peerId,
-  };
-  const context: TransportContext = { engine, identity, grants, withheld };
+  } satisfies Withheld;
+  const context = { engine, identity, grants, withheld } satisfies TransportContext;
   return { identity, grants, engine, context };
 };
 

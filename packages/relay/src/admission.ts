@@ -1,4 +1,4 @@
-import type { PeerId, SyncEvent } from "@syncmesh/kernel";
+import type { PeerId, SyncEvent, TableName } from "@syncmesh/kernel";
 
 import { Result, TaggedError } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
@@ -38,7 +38,7 @@ export interface EntitlementAsk {
  */
 export interface RelayAdmission {
   /** The authority-visibility tables, as the manifest names them (`authorityTables(schema)`). */
-  readonly tables: readonly string[];
+  readonly tables: readonly TableName[];
   /**
    * One device's entitlement, asked once per join before its catch-up is scanned. Asked off the
    * room's queue, so a slow answer delays this device alone; one that takes longer than
