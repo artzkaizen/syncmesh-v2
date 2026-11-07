@@ -3,7 +3,7 @@
 Benchmarks that back the numbers quoted in the RFCs and decisions. `bun run bench` at the root runs
 `storage`; add one script per benchmark here.
 
-## scale (`src/scale/`) — the one that fails
+## scale (`src/scale/`) — the one that fails the build
 
 Every other benchmark here **reports**. This one **refuses**: `bun run --cwd bench scale` exits
 non-zero when a hot path stops holding the shape it declared.
@@ -27,17 +27,37 @@ diagnosis rather than as two numbers that disagree.
 Adding one is a `path({ name, growth, because, sizes, prepare, run, budget? })` in
 `src/scale/index.ts`. Put everything but the single call under test in `prepare`.
 
-### As of writing, three of four paths fail — all of them real
+### Every path holds, and `bun run ci` runs the gate
 
-| path                   | claim                     | measured                            |                                                                                                                      |
-| ---------------------- | ------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `kernel · applyChange` | constant in live rows     | 2.4 → 21.2 µs (**2.6×, 3.4×**)      | `withRecord` copies the whole table and the whole state per change, so replaying a log is quadratic in its own state |
-| `wire · encodeCbor`    | linear in bytes, ≤ 200 µs | linear, but **3,125 µs** at 256 KiB | the writer pushes into a `number[]` one byte at a time and spreads on top; a preallocated `Uint8Array` is ~30 µs     |
-| `kernel · mergeCells`  | constant in columns       | 0.36 → 1.03 µs (**1.4×, 2.1×**)     | the cell map is rebuilt per change, so wide tables pay the same tax as large ones                                    |
-| `wire · sealPayload`   | linear in bytes           | 3.5×, 3.9× — **holds**              | the control: an AEAD is one pass, and a failure here would mean the harness is measuring noise                       |
+Apple M-series, bun 1.4.4, fastest of five rounds — 2026-11-07. Before is `main` at `638eed6`; the
+growth column is the two consecutive 4× ratios.
 
-**Not wired into `bun run ci` yet**, on purpose: it would fail the build today. Add
-`&& bun run --cwd bench scale` to the root `ci` script once the fold is fixed, and it stays fixed.
+| path                                      | claim                     | before                          | after                         |
+| ----------------------------------------- | ------------------------- | ------------------------------- | ----------------------------- |
+| `kernel · applyChange`                    | constant in live rows     | 4.96 → 58.2 µs (**2.6×, 4.5×**) | 0.45 → 0.53 µs (1.2×, 1.0×)   |
+| `kernel · mergeRecord` (snapshot, repair) | constant in live rows     | 3.17 → 34.0 µs (**3.5×, 3.1×**) | 0.37 → 0.37 µs (1.2×, 0.9×)   |
+| `engine · memory store lastSeq`           | constant in log length    | 4.58 → 69.7 µs (**3.8×, 4.0×**) | 0.01 → 0.01 µs (1.0×, 1.1×)   |
+| `wire · encodeCbor`                       | linear in bytes, ≤ 200 µs | **3,767 µs** at 256 KiB         | 37 µs at 256 KiB (3.3×, 4.2×) |
+| `wire · sealPayload`                      | linear in bytes           | 3.7×, 3.6× — holds              | 3.4×, 3.9× — holds            |
+| `kernel · mergeCells`                     | constant in columns       | 0.39 → 1.19 µs (**1.4×, 2.1×**) | 0.66 → 0.42 µs (0.7×, 1.0×)   |
+
+What fixed them:
+
+- **The fold** writes through `withEntry` (`packages/kernel/src/persistent-map.ts`), a persistent
+  `ReadonlyMap` over one native `Map` per lineage: the newest version reads the `Map` directly,
+  older versions are one-entry diffs that reroot onto it when read. `applyChange` and
+  `mergeRecord` still return a new state and leave the input untouched, iteration order is still
+  a `Map`'s, and a write costs one entry at each level — tables, rows, cells. A plain `Map` (a
+  state loaded at boot) is copied once, on its first write.
+- **The CBOR writer** fills one `Uint8Array` that doubles when full, and copies byte strings and
+  text with `set` instead of spreading them. The bytes are the same; the conformance vectors say so.
+- **The memory event store** keeps the highest sequence per author as it appends, so `lastSeq` —
+  asked on every write — stops walking the log.
+
+`engine · fold`, `installSnapshot` and repair all fold through `applyChange`/`mergeRecord`, so the
+first two paths cover them. `tableDigests` and `snapshotOf` scan the whole state, but once per
+call rather than per change, which is their honest shape. The `localStorage` event store rewrites
+its whole key per append — documented on the store, and bounded by compaction rather than here.
 
 ## storage (`src/storage.ts`)
 
