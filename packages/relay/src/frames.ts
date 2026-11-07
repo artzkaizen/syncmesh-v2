@@ -1,9 +1,10 @@
 import type { Coverage, Cursors, Interest } from "@syncmesh/engine";
-import type { PeerId, SeqNum } from "@syncmesh/kernel";
+import type { PartitionKey, PeerId, SeqNum } from "@syncmesh/kernel";
 import type { Frame, MalformedFrame } from "@syncmesh/transport";
 import type { CborValue } from "@syncmesh/wire";
 
 import { interestFrom, interestText } from "@syncmesh/engine";
+import { parsePartitionKey } from "@syncmesh/kernel";
 import { Result, omitUndefined } from "@syncmesh/result";
 import {
   asPeer,
@@ -32,6 +33,8 @@ const KIND = {
   blob: 17,
   blobMissing: 18,
   challenge: 19,
+  blobStored: 20,
+  blobRefused: 21,
 } as const;
 
 /**
@@ -120,12 +123,35 @@ export type RelayFrame =
       readonly scoped?: Coverage;
     }
   | { readonly kind: "relayed"; readonly wire: Uint8Array; readonly offset: number }
-  /** Bytes offered under their own hash; the relay verifies before it stores (D18). */
-  | { readonly kind: "blob-put"; readonly hash: string; readonly bytes: Uint8Array }
+  /**
+   * Bytes offered under their own hash; the relay verifies before it stores (D18). `partition`
+   * is whose byte budget they are billed to — an additive element, so a relay built before it
+   * reads the two in front and stops, and a put without one shares the unnamed budget.
+   */
+  | {
+      readonly kind: "blob-put";
+      readonly hash: string;
+      readonly bytes: Uint8Array;
+      readonly partition?: PartitionKey;
+    }
   | { readonly kind: "blob-get"; readonly hash: string }
   | { readonly kind: "blob"; readonly hash: string; readonly bytes: Uint8Array }
   /** Nobody here holds them — a value, and recoverable: whoever has the bytes can put them back. */
   | { readonly kind: "blob-missing"; readonly hash: string }
+  /** The relay kept the bytes put under this name: the author may stop being their only holder. */
+  | { readonly kind: "blob-stored"; readonly hash: string }
+  /**
+   * The relay would not keep them, and stored nothing. `code` is the reason, spelled so a later
+   * build can add one an older client ignores; `quota` carries the partition's budget and spend.
+   */
+  | {
+      readonly kind: "blob-refused";
+      readonly hash: string;
+      readonly code: string;
+      readonly limit: number;
+      readonly used: number;
+      readonly partition?: PartitionKey;
+    }
   /** A tag this build does not know; ignored, never an error (D14's additive vector). */
   | { readonly kind: "unknown" };
 
@@ -220,8 +246,16 @@ export const pageFrame = (
 export const relayedFrame = (wire: Uint8Array, offset: number): Uint8Array =>
   encodeCbor([KIND.relayed, wire, offset]);
 
-export const blobPutFrame = (hash: string, bytes: Uint8Array): Uint8Array =>
-  encodeCbor([KIND.blobPut, hash, bytes]);
+export const blobPutFrame = (
+  hash: string,
+  bytes: Uint8Array,
+  partition?: PartitionKey,
+): Uint8Array =>
+  encodeCbor(
+    partition === undefined
+      ? [KIND.blobPut, hash, bytes]
+      : [KIND.blobPut, hash, bytes, String(partition)],
+  );
 
 export const blobGetFrame = (hash: string): Uint8Array => encodeCbor([KIND.blobGet, hash]);
 
@@ -229,6 +263,22 @@ export const blobFrame = (hash: string, bytes: Uint8Array): Uint8Array =>
   encodeCbor([KIND.blob, hash, bytes]);
 
 export const blobMissingFrame = (hash: string): Uint8Array => encodeCbor([KIND.blobMissing, hash]);
+
+export const blobStoredFrame = (hash: string): Uint8Array => encodeCbor([KIND.blobStored, hash]);
+
+/** `[hash, code, limit, used, partition?]` — the partition last, absent for the unnamed budget. */
+export const blobRefusedFrame = (
+  hash: string,
+  code: string,
+  limit: number,
+  used: number,
+  partition?: PartitionKey,
+): Uint8Array =>
+  encodeCbor(
+    partition === undefined
+      ? [KIND.blobRefused, hash, code, limit, used]
+      : [KIND.blobRefused, hash, code, limit, used, String(partition)],
+  );
 
 const asWires = (value: CborValue | undefined): Result<readonly Uint8Array[], MalformedFrame> => {
   if (!Array.isArray(value)) return malformedFrame("wires are not an array");
@@ -314,17 +364,53 @@ const decodePage: ControlDecoder = (a, b, c, d, e) =>
     return Result.ok({ ...page, scoped });
   });
 
-/** `[hash, bytes]` — the two blob frames that carry content. */
-const decodeBlobBytes =
-  (kind: "blob-put" | "blob"): ControlDecoder =>
-  (a, b) =>
-    isString(a) && b instanceof Uint8Array
-      ? Result.ok({ kind, hash: a, bytes: b } as const)
-      : malformedFrame(`${kind} is not [hash, bytes]`);
+/** An optional partition element: absent is the unnamed budget, anything else must parse. */
+const optionalPartition = (
+  value: CborValue | undefined,
+  kind: string,
+): Result<PartitionKey | undefined, MalformedFrame> => {
+  if (value === undefined) return Result.ok(undefined);
+  const parsed = isString(value) ? parsePartitionKey(value) : undefined;
+  return parsed?.isOk() === true
+    ? Result.ok(parsed.value)
+    : malformedFrame(`${kind} partition is not a partition key`);
+};
 
-/** `[hash]` — the two that name one without carrying it. */
+/** `[hash, bytes]` — the blob frame that carries content back. */
+const decodeBlob: ControlDecoder = (a, b) =>
+  isString(a) && b instanceof Uint8Array
+    ? Result.ok({ kind: "blob", hash: a, bytes: b } as const)
+    : malformedFrame("blob is not [hash, bytes]");
+
+/** `[hash, bytes, partition?]` — content offered, and whose budget it is billed to. */
+const decodeBlobPut: ControlDecoder = (a, b, c) =>
+  Result.gen(function* () {
+    if (!isString(a) || !(b instanceof Uint8Array))
+      return malformedFrame("blob-put is not [hash, bytes]");
+    const partition = yield* optionalPartition(c, "blob-put");
+    return Result.ok(omitUndefined({ kind: "blob-put", hash: a, bytes: b, partition } as const));
+  });
+
+const decodeBlobRefused: ControlDecoder = (a, b, c, d, e) =>
+  Result.gen(function* () {
+    if (!isString(a) || !isString(b) || !isSafeNonNegative(c) || !isSafeNonNegative(d))
+      return malformedFrame("blob-refused is not [hash, code, limit, used]");
+    const partition = yield* optionalPartition(e, "blob-refused");
+    return Result.ok(
+      omitUndefined({
+        kind: "blob-refused",
+        hash: a,
+        code: b,
+        limit: c,
+        used: d,
+        partition,
+      } as const),
+    );
+  });
+
+/** `[hash]` — the frames that name one without carrying it. */
 const decodeBlobHash =
-  (kind: "blob-get" | "blob-missing"): ControlDecoder =>
+  (kind: "blob-get" | "blob-missing" | "blob-stored"): ControlDecoder =>
   (a) =>
     isString(a) ? Result.ok({ kind, hash: a } as const) : malformedFrame(`${kind} is not [hash]`);
 
@@ -342,11 +428,13 @@ const CONTROL = new Map<number, ControlDecoder>([
   [KIND.ack, decodeAck],
   [KIND.page, decodePage],
   [KIND.relayed, decodeRelayed],
-  [KIND.blobPut, decodeBlobBytes("blob-put")],
+  [KIND.blobPut, decodeBlobPut],
   [KIND.blobGet, decodeBlobHash("blob-get")],
-  [KIND.blob, decodeBlobBytes("blob")],
+  [KIND.blob, decodeBlob],
   [KIND.blobMissing, decodeBlobHash("blob-missing")],
   [KIND.challenge, decodeChallenge],
+  [KIND.blobStored, decodeBlobHash("blob-stored")],
+  [KIND.blobRefused, decodeBlobRefused],
 ]);
 
 /**

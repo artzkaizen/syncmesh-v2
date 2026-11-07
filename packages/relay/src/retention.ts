@@ -4,7 +4,10 @@ import type { BlobStore } from "@syncmesh/storage";
 import { Result } from "@syncmesh/result";
 import { Temporal, addToInstant, durationMs } from "@syncmesh/temporal";
 
+import type { BlobKeeper } from "./blob-keeper.js";
+
 import { cappedBlobStore } from "./blob-cap.js";
+import { createBlobKeeper } from "./blob-keeper.js";
 
 /**
  * What a room stops keeping, and when. Every field is absent by default, and absent is what
@@ -52,7 +55,33 @@ export interface RelayRetention {
    * `Infinity` says "keep every blob", deliberately and in writing.
    */
   readonly maxBlobBytes?: number;
-  /** How often the log is swept. Default one minute; the sweep costs one delete per author. */
+  /**
+   * How long a blob nothing references is kept, measured from its put or from the trim that took
+   * its last reference away (D18). Absent, no blob is ever swept for being unreferenced — only the
+   * byte ceiling above removes any.
+   *
+   * "References" is every event the room still holds, not every visible row: a relay does not
+   * fold, so it cannot tell a deleted row from a live one. Deleting a row therefore frees its blob
+   * only once `keepEventsFor` trims the events that named it. A room that sees one sealed event
+   * stops sweeping, because a reference it cannot read is still a reference. See `BlobKeeper`.
+   *
+   * A blob swept too soon is a `blob-missing`, recoverable: anyone still holding the bytes puts
+   * them back under the same name.
+   */
+  readonly keepUnreferencedBlobsFor?: Temporal.Duration;
+  /**
+   * The blob bytes one partition may hold here, refused at the put with a typed value — the
+   * putter's `mesh.blobs.put` answers `BlobQuotaExceeded` and nothing is stored. Puts that name no
+   * partition share one budget of the same size. Absent, there is no per-partition limit.
+   *
+   * Counted over bytes admitted since the room opened, like the ceiling, and billed to the
+   * partition the put claims — the relay has seen no row yet, so it is a budget, not a permission.
+   */
+  readonly maxBlobBytesPerPartition?: number;
+  /**
+   * How often the log and the blobs are swept. Default one minute; the log's half costs one
+   * delete per author, the blobs' half one walk of the blobs admitted since open.
+   */
   readonly sweepEvery?: Temporal.Duration;
 }
 
@@ -205,6 +234,11 @@ export interface RoomRetention {
   readonly sweep: () => Promise<void>;
   /** Stops the timer; the room's `close` owes this the way it owes the keepalive one. */
   readonly stop: () => void;
+  /**
+   * The blobs' obligations — quota, references, sweep — or absent for a room with no blob store.
+   * The room feeds it every event it holds; puts go through it.
+   */
+  readonly keeper: BlobKeeper | undefined;
   /** This room keeps its log forever — reported once at open, never enforced. */
   readonly unbounded: boolean;
   /** The blob ceiling actually in force, default included. */
@@ -219,6 +253,7 @@ export interface RoomRetention {
 export function roomRetention(options: RoomRetentionOptions): RoomRetention {
   const { store, policy, ceiling, now, serialize } = options;
   const keepFor = policy?.keepEventsFor;
+  const keepBlobsFor = policy?.keepUnreferencedBlobsFor;
   const bytes = policy?.maxBlobBytes ?? DEFAULT_MAX_BLOB_BYTES;
   let floor = options.booted;
   // what was already on disk is marked as arriving now: no row records when it really did, and
@@ -230,7 +265,7 @@ export function roomRetention(options: RoomRetentionOptions): RoomRetention {
    * A failure leaves the floor where it was: refusing clients from a floor the log did not
    * actually move to would turn away devices this room can still serve in full.
    */
-  const pass = async (): Promise<void> => {
+  const trim = async (): Promise<void> => {
     if (admitted === undefined) return;
     const at = now();
     const due = admitted.due(at);
@@ -239,17 +274,36 @@ export function roomRetention(options: RoomRetentionOptions): RoomRetention {
     const swept = await trimLog(store, due);
     if (swept.isOk()) floor = swept.value;
   };
+  // the log first: a trim is what takes references away, so the blobs are swept against the
+  // floor this same pass moved to rather than the one a pass from now would find
+  const pass = async (): Promise<void> => {
+    await trim();
+    await keeper?.sweep();
+  };
   const sweep = () => serialize(pass);
   const timer =
-    keepFor === undefined
+    keepFor === undefined && keepBlobsFor === undefined
       ? undefined
       : setInterval(() => void sweep(), durationMs(policy?.sweepEvery ?? DEFAULT_SWEEP));
 
+  const blobs =
+    options.blobs === undefined || bytes === Number.POSITIVE_INFINITY
+      ? options.blobs
+      : cappedBlobStore(options.blobs, bytes, (hash) => keeper?.forget(hash));
+  const keeper =
+    blobs === undefined
+      ? undefined
+      : createBlobKeeper({
+          store: blobs,
+          quota: policy?.maxBlobBytesPerPartition,
+          keepUnreferencedFor: keepBlobsFor,
+          floor: () => floor,
+          now,
+        });
+
   return {
-    blobs:
-      options.blobs === undefined || bytes === Number.POSITIVE_INFINITY
-        ? options.blobs
-        : cappedBlobStore(options.blobs, bytes),
+    blobs,
+    keeper,
     /** Whether this room keeps its log forever, for the one telemetry event that says so. */
     unbounded: keepFor === undefined,
     blobCeiling: bytes,

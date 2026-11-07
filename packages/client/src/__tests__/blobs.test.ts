@@ -1,3 +1,4 @@
+import { parsePartitionKey } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
 import { relayTransport, startRelay, webSocketDial } from "@syncmesh/relay";
 import { syncSchema, t } from "@syncmesh/schema";
@@ -47,9 +48,10 @@ describe("a blob through the relay", () => {
       expect(fetched.unwrap()).toEqual(photo);
       expect(await b.blobs.has(hash)).toBe(true); // and now it is cached here
 
-      // a hash nobody holds is a value, and recoverable — not a throw
+      // a hash nobody holds is a value, and recoverable — not a throw. The relay said it holds
+      // none, which is `BlobNotFound`; only silence is a timeout
       const missing = await b.blobs.fetch(hashOf(Uint8Array.of(1, 2, 3)), { timeoutMs: 500 });
-      expect(missing.isErr() && missing.error._tag).toBe("BlobTimeout");
+      expect(missing.isErr() && missing.error._tag).toBe("BlobNotFound");
 
       await a.stop();
       await b.stop();
@@ -64,6 +66,41 @@ describe("a blob through the relay", () => {
       await relay.stop();
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("a put past its partition's quota is BlobQuotaExceeded, and another partition still fits", async () => {
+    const relay = await startRelay(0, {
+      keepaliveMs: 60_000,
+      retention: { maxBlobBytesPerPartition: photo.byteLength + 100 },
+    });
+    try {
+      const a = await device(relay.url, 44);
+      await a.ready();
+      const acme = parsePartitionKey("org:acme").unwrap();
+      const globex = parsePartitionKey("org:globex").unwrap();
+      expect((await a.blobs.put(photo, { partition: acme })).isOk()).toBe(true);
+
+      const second = photo.map((byte) => byte ^ 0xff);
+      const refused = await a.blobs.put(second, { partition: acme });
+      expect(refused.isErr() && refused.error).toMatchObject({
+        _tag: "BlobQuotaExceeded",
+        partition: acme,
+        limit: photo.byteLength + 100,
+        used: photo.byteLength,
+      });
+      // the relay stored nothing: a second device asking for it hears that nobody holds it
+      const b = await device(relay.url, 84);
+      await b.ready();
+      const asked = await b.blobs.fetch(hashOf(second), { timeoutMs: 2000 });
+      expect(asked.isErr() && asked.error._tag).toBe("BlobNotFound");
+
+      expect((await a.blobs.put(second, { partition: globex })).isOk()).toBe(true);
+      expect((await b.blobs.fetch(hashOf(second), { timeoutMs: 2000 })).unwrap()).toEqual(second);
+      await a.stop();
+      await b.stop();
+    } finally {
+      await relay.stop();
     }
   }, 30_000);
 

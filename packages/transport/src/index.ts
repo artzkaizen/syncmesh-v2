@@ -67,8 +67,6 @@ export type {
   TransportCondition,
   TransportContext,
   TransportKind,
-  TransportBlobs,
-  DownloadBlobOptions,
   TransportVisibility,
   VisibilityToken,
 } from "./transport.js";
@@ -78,6 +76,13 @@ export {
   createFrameTransport,
   linkTransport,
 } from "./transport.js";
+export type {
+  BlobRefusal,
+  DownloadBlobOptions,
+  TransportBlobs,
+  UploadBlobOptions,
+} from "./blob-capability.js";
+export { BLOB_MISSING } from "./blob-capability.js";
 export type { DiscoveryOptions, Sighting } from "./discovery.js";
 export { DEFAULT_TTL_MS, createDiscovery, shouldDial } from "./discovery.js";
 export type { Liveness, LivenessOptions } from "./liveness.js";

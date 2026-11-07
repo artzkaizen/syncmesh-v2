@@ -75,8 +75,11 @@ export type { BlobError, BlobHash, BlobStore } from "./blob.js";
 export {
   BlobCorrupt,
   BlobNotFound,
+  BlobQuotaExceeded,
   BlobTimeout,
+  BLOB_HASH_HEX,
   hashOf,
+  isBlobHash,
   memoryBlobStore,
   sqlBlobStore,
   verifyBlob,

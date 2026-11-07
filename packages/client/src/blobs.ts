@@ -1,9 +1,18 @@
+import type { PartitionKey } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
 import type { BlobError, BlobHash, BlobStore } from "@syncmesh/storage";
 import type { Transport } from "@syncmesh/transport";
 
 import { Result as R } from "@syncmesh/result";
-import { BlobNotFound, BlobTimeout, hashOf, memoryBlobStore, verifyBlob } from "@syncmesh/storage";
+import {
+  BlobNotFound,
+  BlobQuotaExceeded,
+  BlobTimeout,
+  hashOf,
+  memoryBlobStore,
+  verifyBlob,
+} from "@syncmesh/storage";
+import { BLOB_MISSING } from "@syncmesh/transport";
 
 import { NoSuchCapability } from "./errors.js";
 import { meterBlobs } from "./inspect.js";
@@ -13,12 +22,21 @@ export interface Blobs {
    * Stores the bytes locally under their own hash and offers them to every transport that can
    * carry them. The hash is what a row then references — put first, write the row second, so a
    * peer that sees the row can already fetch what it names.
+   *
+   * `BlobQuotaExceeded` when a relay refused them because the partition they are billed to is
+   * full: that relay stored nothing, so this device is still their only holder.
    */
-  readonly put: (bytes: Uint8Array) => Promise<Result<BlobHash, BlobError | NoSuchCapability>>;
+  readonly put: (
+    bytes: Uint8Array,
+    options?: PutBlobOptions,
+  ) => Promise<Result<BlobHash, BlobError | BlobQuotaExceeded | NoSuchCapability>>;
   /**
    * The bytes behind a hash: this device's cache first, then whoever can be asked. Verified on
    * arrival — a reference is a proof of content, not a promise about a server — and cached, since
    * a device's copy is an eviction candidate rather than an obligation (D18).
+   *
+   * `BlobNotFound` when every carrier asked said it holds none — a stale reference, recoverable by
+   * anyone who still has the bytes putting them back; `BlobTimeout` when one stayed silent.
    */
   readonly fetch: (
     hash: BlobHash,
@@ -40,6 +58,14 @@ export interface Blobs {
   readonly retained: (hash: BlobHash) => number;
   /** Whether this device already holds the bytes, without asking anyone. */
   readonly has: (hash: BlobHash) => Promise<boolean>;
+}
+
+export interface PutBlobOptions {
+  /**
+   * The partition whose byte budget a relay bills these bytes to — the one the row naming them
+   * will be written in. Absent, they share the relay's budget for puts that named none.
+   */
+  readonly partition?: PartitionKey;
 }
 
 export interface FetchBlobOptions {
@@ -83,9 +109,11 @@ export function createBlobs(deps: BlobsDeps): Blobs {
     if (carriers.length === 0) return noCapability("fetch");
     const timeoutMs = options.timeoutMs ?? 10_000;
     options.onProgress?.(0, undefined); // the ask left; nobody knows the size yet
+    let silent = false;
     for (const transport of carriers) {
       const answer = await transport.blobs?.download(String(hash), { timeoutMs });
-      if (answer === undefined) continue;
+      silent ||= answer === undefined;
+      if (answer === undefined || answer === BLOB_MISSING) continue;
       const verified = verifyBlob(hash, answer);
       if (verified.isErr()) return R.err(verified.error); // junk, whoever served it
       await store.putAt(hash, answer);
@@ -93,22 +121,39 @@ export function createBlobs(deps: BlobsDeps): Blobs {
       return verified;
     }
     return R.err(
-      new BlobTimeout({
-        hash: String(hash),
-        message: "nobody reachable answered with these bytes in time",
-      }),
+      silent
+        ? new BlobTimeout({
+            hash: String(hash),
+            message: "nobody reachable answered with these bytes in time",
+          })
+        : new BlobNotFound({
+            hash: String(hash),
+            message: "every peer asked said it holds no bytes under that name",
+          }),
     );
   };
 
   return {
-    put: async (bytes) => {
+    put: async (bytes, options = {}) => {
       const hash = hashOf(bytes);
       const stored = await store.putAt(hash, bytes);
       if (stored.isErr()) return R.err(stored.error);
       const carriers = transports();
       if (carriers.length === 0) return noCapability("carry");
-      await Promise.all(carriers.flatMap((t) => t.blobs?.upload(String(hash), bytes) ?? []));
-      return R.ok(hash);
+      const answers = await Promise.all(
+        carriers.flatMap((t) => t.blobs?.upload(String(hash), bytes, options) ?? []),
+      );
+      const refused = answers.find((answer) => answer !== undefined);
+      if (refused === undefined) return R.ok(hash);
+      return R.err(
+        new BlobQuotaExceeded({
+          hash: String(hash),
+          partition: refused.partition,
+          limit: refused.limit,
+          used: refused.used,
+          message: `a relay refused these bytes: ${refused.partition ?? "the unnamed budget"} holds ${refused.used} of ${refused.limit} bytes`,
+        }),
+      );
     },
     fetch,
     stream: (hash, options = {}) =>
@@ -135,7 +180,7 @@ export function createBlobs(deps: BlobsDeps): Blobs {
   };
 }
 
-export { BlobNotFound, NoSuchCapability };
+export { BlobNotFound, BlobQuotaExceeded, NoSuchCapability };
 
 /**
  * The blob surface, metered, over whichever transports can carry bytes out of band (D18).

@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use syncmesh_core::event::{PeerId, SeqNum};
+use syncmesh_core::event::{PartitionKey, PeerId, SeqNum};
 use syncmesh_core::frames::{self, Digest, Frame, RouteAd, SnapshotFrame, class_of};
 use syncmesh_core::framing::{self, FrameReader};
 use syncmesh_core::identity::Identity;
@@ -283,8 +283,8 @@ fn relay_control_frames_decode_to_their_kind_and_reencode_byte_for_byte() {
     tags.sort();
     assert_eq!(
         tags,
-        (8..=19).collect::<Vec<u64>>(),
-        "control tags 8–19, no gaps"
+        (8..=21).collect::<Vec<u64>>(),
+        "control tags 8–21, no gaps"
     );
 }
 
@@ -307,6 +307,7 @@ fn relay_control_frames_are_reproduced_from_the_generator_inputs() {
         "b3:0102",
     );
     let nonce: [u8; 32] = std::array::from_fn(|i| i as u8);
+    let acme = PartitionKey::parse("org:acme").expect("partition");
     // indexes follow conformance/src/generate-relay-vectors.ts; 2–3 are the v2 joins from
     // join-vectors.json, checked in their own test below
     let expected: Vec<(usize, Vec<u8>)> = vec![
@@ -361,11 +362,21 @@ fn relay_control_frames_are_reproduced_from_the_generator_inputs() {
             relay_frames::page_frame(&[], &[event.to_vec()], false, 9, None),
         ),
         (15, relay_frames::relayed_frame(&event, 4)),
-        (16, relay_frames::blob_put_frame(hash, &bytes)),
+        (16, relay_frames::blob_put_frame(hash, &bytes, None)),
         (17, relay_frames::blob_get_frame(hash)),
         (18, relay_frames::blob_frame(hash, &bytes)),
         (19, relay_frames::blob_missing_frame(hash)),
         (20, relay_frames::challenge_frame(&nonce)),
+        (21, relay_frames::blob_put_frame(hash, &bytes, Some(&acme))),
+        (22, relay_frames::blob_stored_frame(hash)),
+        (
+            23,
+            relay_frames::blob_refused_frame(hash, "quota", 1024, 1000, Some(&acme)),
+        ),
+        (
+            24,
+            relay_frames::blob_refused_frame(hash, "quota", 1024, 1000, None),
+        ),
     ];
     for (i, b) in expected {
         assert_eq!(to_hex(&b), to_hex(&wires[i]), "vector {i}");

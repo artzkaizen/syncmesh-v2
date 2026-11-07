@@ -1,8 +1,9 @@
 import type { Coverage, Cursors, Interest, StoredEvent, Unsubscribe } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
-import type { TransportContext } from "@syncmesh/transport";
+import type { BlobRefusal, TransportContext } from "@syncmesh/transport";
 
 import { interestText, ownPositionWarning } from "@syncmesh/engine";
+import { omitUndefined } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { createHoldback, cursorsFrame, eventFrame, grantFrame } from "@syncmesh/transport";
 import { decodeAndVerify, relayEnvelope, signEvent } from "@syncmesh/wire";
@@ -32,6 +33,12 @@ export interface SessionHooks {
   readonly onVersionRefused: () => void;
   /** The relay answered a fetch: the bytes, or `undefined` when it holds none under that hash. */
   readonly onBlobAnswer: (hash: string, bytes: Uint8Array | undefined) => void;
+  /**
+   * The relay answered a put: `undefined` when it kept the bytes, the refusal when it would not.
+   * A refusal under a code this build does not know settles as `undefined` too — not kept, but
+   * nothing an older client can name, which is what it heard before the answer existed (D14).
+   */
+  readonly onBlobSettled: (hash: string, refusal: BlobRefusal | undefined) => void;
   /** The last catch-up page has landed: this source has nothing more to hand over right now. */
   readonly onCaughtUp: () => void;
   /**
@@ -60,6 +67,23 @@ export interface SessionHooks {
    */
   readonly repaging?: () => boolean;
 }
+
+/**
+ * What a put's answer means to the upload waiting on it: nothing for `blob-stored`, the budget
+ * for a `quota` refusal — and nothing for a code this build cannot name either (D14), which is
+ * what that upload heard before the answer existed.
+ */
+const uploadRefusal = (
+  frame: Extract<RelayFrame, { kind: "blob-stored" | "blob-refused" }>,
+): BlobRefusal | undefined =>
+  frame.kind === "blob-refused" && frame.code === "quota"
+    ? omitUndefined({
+        reason: "quota",
+        limit: frame.limit,
+        used: frame.used,
+        partition: frame.partition,
+      } as const)
+    : undefined;
 
 /** Everything one session subscribes to; the returned unsubscribes are the session's teardown. */
 export function wireSession(
@@ -252,6 +276,8 @@ export function wireSession(
       }
     } else if (frame.kind === "blob") hooks.onBlobAnswer(frame.hash, frame.bytes);
     else if (frame.kind === "blob-missing") hooks.onBlobAnswer(frame.hash, undefined);
+    else if (frame.kind === "blob-stored" || frame.kind === "blob-refused")
+      hooks.onBlobSettled(frame.hash, uploadRefusal(frame));
     else if (frame.kind === "relayed") fold([frame.wire]);
     else if (frame.kind === "error") {
       if (frame.code === "version") hooks.onVersionRefused();

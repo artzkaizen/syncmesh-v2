@@ -630,7 +630,11 @@ impl RelayLink {
             | RelayFrame::Unknown
             | RelayFrame::Join(_)
             | RelayFrame::BlobPut { .. }
-            | RelayFrame::BlobGet { .. } => {}
+            | RelayFrame::BlobGet { .. }
+            // this client's uploads do not wait on an answer, so a stored or refused put is news
+            // to nobody here; the TypeScript client is the one that surfaces a quota (D18)
+            | RelayFrame::BlobStored { .. }
+            | RelayFrame::BlobRefused { .. } => {}
         }
     }
 

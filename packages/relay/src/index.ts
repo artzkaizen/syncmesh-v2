@@ -10,6 +10,8 @@ export {
   blobGetFrame,
   blobMissingFrame,
   blobPutFrame,
+  blobRefusedFrame,
+  blobStoredFrame,
   challengeFrame,
   decodeRelayFrame,
   errorFrame,

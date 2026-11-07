@@ -7,6 +7,7 @@ import { createHub } from "@syncmesh/engine";
 import { TaggedError, omitUndefined } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 
+import type { TransportBlobs } from "./blob-capability.js";
 import type { Bridge, BridgeOptions } from "./bridge.js";
 import type { AdmissionAsk } from "./gate.js";
 import type { LinkEvent, LinkFact } from "./link-events.js";
@@ -160,26 +161,6 @@ export interface TransportVisibility {
     token: VisibilityToken,
     options?: { readonly timeoutMs?: number },
   ) => Promise<Result<void, VisibilityLost | VisibilityTimeout>>;
-}
-
-export interface DownloadBlobOptions {
-  /** How long to wait for an answer before giving `undefined`. */
-  readonly timeoutMs: number;
-}
-
-/**
- * Bytes crossing this medium out of band, by hash (D18): what a medium with a store on the far
- * side can carry. A capability, not an obligation — a raw radio has nobody to hand bytes to, so
- * it declares none and `mesh.blobs` answers `NoSuchCapability` rather than pretending (D30).
- */
-export interface TransportBlobs {
-  /** Offers bytes under their own hash; the far end verifies before it keeps them. */
-  readonly upload: (hash: string, bytes: Uint8Array) => Promise<void>;
-  /** Asks for bytes by hash; `undefined` when nobody there holds them, or the deadline passed. */
-  readonly download: (
-    hash: string,
-    options: DownloadBlobOptions,
-  ) => Promise<Uint8Array | undefined>;
 }
 
 /**

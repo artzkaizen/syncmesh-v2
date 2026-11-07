@@ -116,7 +116,7 @@ export interface RelayRoom {
   readonly floor: () => Cursors;
   /**
    * One retention pass now, rather than at the room's own cadence. The room sweeps on a timer
-   * whenever `keepEventsFor` is set; this is the same pass, for a host whose scheduler is the
+   * whenever `keepEventsFor` or `keepUnreferencedBlobsFor` is set; this is the same pass, for a host whose scheduler is the
    * platform's (a Durable Object alarm) and for a test that will not wait a minute.
    */
   readonly sweep: () => Promise<void>;
@@ -198,6 +198,9 @@ export async function openRelayRoom(
       return next;
     },
   });
+  // the log as it was at open is what references the blobs at open: a blob put again this run
+  // under a name an old event carries is referenced, not free
+  for (const entry of boot.value) retention.keeper?.note(entry.event);
   // a listener that throws is dropped here and nowhere else: an observer must never be able to
   // stop a relay forwarding bytes, and the relay has no error channel to report it down
   const telemetry = createHub<TelemetryEvent>(() => undefined);
@@ -238,6 +241,7 @@ export async function openRelayRoom(
     limits,
     budget,
     blobs: retention.blobs,
+    keeper: retention.keeper,
     grants,
     presence,
     clients,
@@ -249,6 +253,7 @@ export async function openRelayRoom(
     offset: () => offset,
     appended: (entry) => {
       offset += 1;
+      retention.keeper?.note(entry.event);
       if (servable(entry)) coverage.note(entry.event);
     },
     enqueue: (work) => void (queue = queue.then(work)),

@@ -132,6 +132,9 @@ export const bodyOf = (p: Peer, id: string): CellValue | undefined =>
 /** The relay-side stored entry for a signed wire. */
 export const entryOf = (wire: Uint8Array) => decodeAndVerify(wire).unwrap();
 
+/** `size` bytes all set to `fill`: distinct blobs whose sizes a test can add up by eye. */
+export const filled = (fill: number, size: number) => Uint8Array.from({ length: size }, () => fill);
+
 export const tick = (ms = 10) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Polls until the condition holds or the deadline passes; answers whether it ever did. */

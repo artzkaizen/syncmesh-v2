@@ -2,7 +2,8 @@
  * Regenerates conformance/relay-vectors.json. Run only when a relay control frame deliberately
  * changes (README rule 3): `bun conformance/src/generate-relay-vectors.ts`.
  *
- * D14's tag space above the session frames, tag by tag. The join with a proof comes from the
+ * D14's tag space above the session frames, tag by tag. A vector is only ever appended: the Rust
+ * check in crates/syncmesh-core/tests/frame_vectors.rs reads them by index. The join with a proof comes from the
  * join vectors, so the two files can never disagree about what a v2 join is.
  */
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
@@ -15,6 +16,8 @@ import {
   blobGetFrame,
   blobMissingFrame,
   blobPutFrame,
+  blobRefusedFrame,
+  blobStoredFrame,
   challengeFrame,
   errorFrame,
   helloFrame,
@@ -146,6 +149,31 @@ export function relayVectors() {
       kind: "challenge",
       tag: 19,
       wireHex: bytesToHex(challengeFrame(NONCE)),
+    },
+    {
+      description:
+        "blob-put billed to a partition: one additive element, which a relay built before quotas reads past (D18)",
+      kind: "blob-put",
+      tag: 15,
+      wireHex: bytesToHex(blobPutFrame(HASH, BYTES, ACME)),
+    },
+    {
+      description: "blob-stored, the relay kept a put: the author may stop being the only holder",
+      kind: "blob-stored",
+      tag: 20,
+      wireHex: bytesToHex(blobStoredFrame(HASH)),
+    },
+    {
+      description: "blob-refused, a partition's quota: limit and spend, nothing stored (D18)",
+      kind: "blob-refused",
+      tag: 21,
+      wireHex: bytesToHex(blobRefusedFrame(HASH, "quota", 1024, 1000, ACME)),
+    },
+    {
+      description: "blob-refused, the budget of puts that named no partition",
+      kind: "blob-refused",
+      tag: 21,
+      wireHex: bytesToHex(blobRefusedFrame(HASH, "quota", 1024, 1000)),
     },
   ];
   return { protocolVersions: [...RELAY_PROTOCOL_VERSIONS], vectors: cases };

@@ -109,6 +109,13 @@ version negotiation). What remains:
     the socket; nothing there conflates yet.
 22. E15: blob compaction sweep + per-partition quotas — deliberately unsized until a
     real workload; rounds-web may now be that workload.
+    **2026-11-07: built, opt-in and unsized.** `relay/src/blob-keeper.ts`: the sweep runs
+    on the room's retention pass (`keepUnreferencedBlobsFor`), a `blob-put` past
+    `maxBlobBytesPerPartition` is answered `blob-refused` and surfaces as
+    `BlobQuotaExceeded` from `mesh.blobs.put`; frozen in `relay-vectors.json` (tags 20–21).
+    Limit kept open: "referenced" means any event the room still holds, not a visible
+    row, so a delete frees nothing until log retention trims; sealed rooms never sweep.
+    The numbers are still nobody's until a workload sets them.
 23. E24/E09 contradict each other on `mesh.transports.add/remove` (E24 wants it,
     E09 deliberately marks it absent). Reconcile.
     **2026-11-07: reconciled for E24.** add/remove are built and tested

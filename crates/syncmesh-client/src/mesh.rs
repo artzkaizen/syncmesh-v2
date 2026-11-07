@@ -200,7 +200,7 @@ impl Mesh {
         let hash = lock(&self.blobs).put(bytes)?;
         let _ = self
             .commands
-            .try_send(LinkCommand::RawFrame(blob_put_frame(&hash, bytes)));
+            .try_send(LinkCommand::RawFrame(blob_put_frame(&hash, bytes, None)));
         Ok(hash)
     }
 

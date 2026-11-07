@@ -35,7 +35,10 @@ describe("observe: what it must not change", () => {
     const [plain, carrier] = seam.observe([
       fake("radio"),
       fake("relay", {
-        blobs: { upload: () => Promise.resolve(), download: () => Promise.resolve(undefined) },
+        blobs: {
+          upload: () => Promise.resolve(undefined),
+          download: () => Promise.resolve(undefined),
+        },
       }),
     ]);
     // `withBlobs()` reads exactly this: a wrapper that defined `blobs` unconditionally would
@@ -167,7 +170,7 @@ describe("mesh.* telemetry (D17)", () => {
           blobs: {
             upload: (hash, bytes) => {
               held.set(hash, bytes);
-              return Promise.resolve();
+              return Promise.resolve(undefined);
             },
             download: (hash) => Promise.resolve(held.get(hash)),
           },

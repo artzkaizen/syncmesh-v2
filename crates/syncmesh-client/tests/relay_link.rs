@@ -726,7 +726,7 @@ fn presence_grants_and_blobs_pass_through_the_room() {
     let hash = syncmesh_core::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(&bytes));
     let actions = net.devices[a]
         .link
-        .send_raw_frame(blob_put_frame(&hash, &bytes));
+        .send_raw_frame(blob_put_frame(&hash, &bytes, None));
     net.apply_device(a, actions);
     net.pump();
     assert_eq!(net.room.blob(&hash), Some(bytes.as_slice()));
@@ -757,7 +757,7 @@ fn presence_grants_and_blobs_pass_through_the_room() {
     // up (every error frame does), and a link that is down claims nobody
     let actions = net.devices[a]
         .link
-        .send_raw_frame(blob_put_frame("00ff", &bytes));
+        .send_raw_frame(blob_put_frame("00ff", &bytes, None));
     net.apply_device(a, actions);
     net.pump();
     assert!(net.room.blob("00ff").is_none());

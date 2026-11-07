@@ -10,7 +10,14 @@ import { decodeAndVerify } from "@syncmesh/wire";
 import type { RelayFrame } from "./frames.js";
 import type { Conversation, RoomState } from "./state.js";
 
-import { ackFrame, blobFrame, blobMissingFrame, relayedFrame } from "./frames.js";
+import {
+  ackFrame,
+  blobFrame,
+  blobMissingFrame,
+  blobRefusedFrame,
+  blobStoredFrame,
+  relayedFrame,
+} from "./frames.js";
 
 /** What one event cost the room: nothing at all when it already held it. */
 export interface Absorbed {
@@ -99,9 +106,11 @@ export function ingestEvent(conversation: Conversation, wire: Uint8Array): void 
 }
 
 /**
- * Bytes by name (D18). A put is verified before it is stored, so junk cannot squat a hash; a
- * get answers with the bytes or `blob-missing`, which is a value the fetcher can act on —
- * anyone still holding them can put them back under the same name.
+ * Bytes by name (D18). A put is verified before it is stored, so junk cannot squat a hash, and
+ * answered — `blob-stored`, or `blob-refused` when its partition's quota would pass, which is how
+ * the putter learns it as a value rather than as silence. A get answers with the bytes or
+ * `blob-missing`, which is a value the fetcher can act on — anyone still holding them can put
+ * them back under the same name.
  */
 export function serveBlob(
   conversation: Conversation,
@@ -112,11 +121,22 @@ export function serveBlob(
     // SAFETY: a hash off the wire is opaque here; the store verifies it against the bytes
     const hash = frame.hash as BlobHash;
     if (frame.kind === "blob-put") {
-      const [stored, duration] = await timed(async () => room.blobs?.putAt(hash, frame.bytes));
-      if (stored?.isErr() === true) refuse("blob-corrupt", stored.error.message);
-      // a room with no blob store, or a put it refused, stored nothing and reports nothing
-      else if (stored?.isOk() === true)
+      const [stored, duration] = await timed(async () =>
+        room.keeper?.put(hash, frame.bytes, frame.partition),
+      );
+      // a room with no blob store stored nothing, answers nothing and reports nothing
+      if (stored === undefined) return;
+      if (stored.isOk()) {
+        sender.send(blobStoredFrame(frame.hash));
         room.report({ type: "relay.blob.put", sizes: { bytes: frame.bytes.byteLength }, duration });
+        return;
+      }
+      const failure = stored.error;
+      if (failure._tag === "BlobQuotaExceeded")
+        sender.send(
+          blobRefusedFrame(frame.hash, "quota", failure.limit, failure.used, failure.partition),
+        );
+      else refuse("blob-corrupt", failure.message);
       return;
     }
     const [found, duration] = await timed(async () => room.blobs?.get(hash));
