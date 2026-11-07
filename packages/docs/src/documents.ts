@@ -1,33 +1,23 @@
-import type { DocAddress, FoldBatch, StoreFailure } from "@syncmesh/engine";
-import type {
-  AdapterId,
-  DocColumns,
-  LineageId,
-  PartitionKey,
-  Procedure,
-  SyncEvent,
-} from "@syncmesh/kernel";
+import type { DocAddress, DocAppend, FoldBatch, StoreFailure } from "@syncmesh/engine";
+import type { AdapterId, DocColumns, Procedure, SyncEvent } from "@syncmesh/kernel";
 
 import { docKey } from "@syncmesh/engine";
-import { getRecord, lineageOf } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
-import { bytesEqual } from "@syncmesh/wire";
 
 import type { AnyAdapter, UpdateRejected } from "./adapter.js";
+import type { DocStatus, Entry, FlushError } from "./entry.js";
 import type { AdapterMissing, NotADocColumn } from "./errors.js";
 import type { DocsEngine } from "./materialise.js";
 
 import { columnAdapter } from "./adapter.js";
-import { FlushRefused, HandleInvalidated, UpdateTooLarge } from "./errors.js";
+import { clearTimers, deliver, flush } from "./entry.js";
+import { FlushRefused } from "./errors.js";
 import { load } from "./materialise.js";
 import { replicaId } from "./replica.js";
 
-/** Where an open document stands against the log (RFC-0023 §4.3). */
-export type DocStatus = "current" | "behind" | "invalidated";
-
 export type OpenError = AdapterMissing | NotADocColumn | UpdateRejected | StoreFailure;
-export type FlushError = UpdateTooLarge | FlushRefused | HandleInvalidated;
+export type { DocStatus, FlushError } from "./entry.js";
 
 /**
  * An open document: the library's own document as `value`, edited with the library's own API.
@@ -63,22 +53,8 @@ export interface OpenDeps {
   readonly procedure: Procedure;
   readonly pacing: Pacing;
   readonly nonce: () => Uint8Array;
-}
-
-interface Entry {
-  readonly adapter: AnyAdapter;
-  /** The lineage the replica was loaded on; a genesis that moves it invalidates the handle. */
-  readonly lineage: LineageId | undefined;
-  readonly doc: unknown;
-  refs: number;
-  status: DocStatus;
-  /** The version last exported; what the next flush is `since`. */
-  flushed: Uint8Array;
-  /** Local updates exported ahead of a remote apply, waiting for the next flush. */
-  readonly stash: Uint8Array[];
-  readonly listeners: Set<() => void>;
-  readonly stop: () => void;
-  timers: { idle?: ReturnType<typeof setTimeout>; max?: ReturnType<typeof setTimeout> };
+  /** Where a paced flush that failed goes; the handle's status says it too. */
+  readonly onError?: (error: FlushError) => void;
 }
 
 /** The handle registry one runtime keeps: one replica per document, however many handles. */
@@ -87,47 +63,41 @@ export function createHandles(deps: OpenDeps) {
   const open = new Map<string, Entry>();
   /** Opens still reading their tail: a second open waits for the first, never loads a second replica. */
   const loading = new Map<string, Promise<Result<Entry, OpenError>>>();
-  const arrivals = new Map<string, Uint8Array[]>(); // what folded while those reads ran
+  const arrivals = new Map<string, DocAppend[]>(); // what folded while those reads ran
   const ms = (d: Temporal.Duration) => d.total({ unit: "milliseconds" });
 
-  const flushEntry = (address: DocAddress, entry: Entry) => flush(deps, address, entry);
+  const flushEntry = (address: DocAddress, entry: Entry) =>
+    flush(engine, deps.procedure, address, entry);
 
   const schedule = (address: DocAddress, entry: Entry) => {
     if (entry.timers.idle !== undefined) clearTimeout(entry.timers.idle);
-    const fire = () => void flushEntry(address, entry);
+    const fire = () => {
+      flushEntry(address, entry).then(
+        (flushed) => {
+          if (flushed.isErr()) deps.onError?.(flushed.error);
+        },
+        (cause: unknown) => deps.onError?.(new FlushRefused({ message: "the flush threw", cause })),
+      );
+    };
     entry.timers.idle = setTimeout(fire, ms(deps.pacing.idle));
     entry.timers.max ??= setTimeout(fire, ms(deps.pacing.max));
   };
 
-  const applyRemote = (batch: FoldBatch) => {
-    if (batch.source === "local" || batch.docs === undefined) return;
-    const byDoc = new Map<string, Uint8Array[]>();
-    for (const { entry, update } of batch.docs) {
-      const key = docKey(entry);
+  // local batches too: a genesis or a doc write this device made outside the handle moves the
+  // document as surely as a remote one, and re-importing the handle's own flush changes nothing
+  const applyFolded = (batch: FoldBatch) => {
+    if (batch.docs === undefined) return;
+    const byDoc = new Map<string, DocAppend[]>();
+    for (const append of batch.docs) {
+      const key = docKey(append.entry);
+      byDoc.set(key, [...(byDoc.get(key) ?? []), append]);
+    }
+    for (const [key, appends] of byDoc) {
       const held = open.get(key);
-      if (held === undefined) {
-        // folded after the opening read of the tail: applied once the replica exists
-        if (update.bytes !== undefined) arrivals.get(key)?.push(update.bytes);
-        continue;
-      }
-      const winner = lineageOf(getRecord(engine.state(), entry.table, entry.key), entry.column);
-      if (winner !== held.lineage && held.status !== "invalidated") invalidate(held);
-      if (entry.state === "orphaned" || update.bytes === undefined) continue;
-      byDoc.set(key, [...(byDoc.get(key) ?? []), update.bytes]);
+      // folded after the opening read of the tail: delivered once the replica exists
+      if (held === undefined) arrivals.get(key)?.push(...appends);
+      else deliver(engine, held, appends);
     }
-    for (const [key, updates] of byDoc) {
-      const entry = open.get(key);
-      if (entry !== undefined) applyTo(entry, updates);
-    }
-  };
-
-  const applyTo = (entry: Entry, updates: readonly Uint8Array[]) => {
-    if (entry.status === "invalidated" || updates.length === 0) return;
-    stashLocal(entry);
-    const applied = entry.adapter.apply(entry.doc, updates);
-    // a refused update stays in the log, `failed` at the next materialisation (§10)
-    if (applied.isOk() && applied.value) entry.flushed = entry.adapter.version(entry.doc);
-    notify(entry);
   };
 
   const handle = <D>(address: DocAddress, entry: Entry): OpenDoc<D> => {
@@ -171,7 +141,7 @@ export function createHandles(deps: OpenDeps) {
     loading.set(key, loaded);
     const entry = await loaded;
     loading.delete(key);
-    if (entry.isOk()) applyTo(entry.value, arrivals.get(key) ?? []);
+    if (entry.isOk()) deliver(engine, entry.value, arrivals.get(key) ?? []);
     arrivals.delete(key);
     return entry.map((e) => handle<D>(address, e));
   };
@@ -204,7 +174,7 @@ export function createHandles(deps: OpenDeps) {
       return Result.ok(entry);
     });
 
-  const unfold = engine.onFoldBatch(applyRemote);
+  const unfold = engine.onFoldBatch(applyFolded);
   return {
     open: openDoc,
     stop: () => {
@@ -217,79 +187,3 @@ export function createHandles(deps: OpenDeps) {
     },
   };
 }
-
-const notify = (entry: Entry) => {
-  for (const listener of entry.listeners) listener();
-};
-
-// export what is pending, so a remote apply that follows never rides along in our next flush
-const stashLocal = (entry: Entry) => {
-  if (bytesEqual(entry.adapter.version(entry.doc), entry.flushed)) return;
-  entry.stash.push(entry.adapter.since(entry.doc, entry.flushed).unwrap());
-  entry.flushed = entry.adapter.version(entry.doc);
-};
-
-const invalidate = (entry: Entry) => {
-  entry.status = "invalidated";
-  entry.stop();
-  clearTimers(entry);
-  notify(entry);
-};
-
-/** Sends what the handle committed since its last flush as one event: a doc change per stashed part. */
-async function flush(
-  deps: OpenDeps,
-  address: DocAddress,
-  entry: Entry,
-): Promise<Result<SyncEvent | undefined, FlushError>> {
-  const { engine } = deps;
-  clearTimers(entry);
-  if (entry.status === "invalidated")
-    return Result.err(new HandleInvalidated({ message: "this document handle was invalidated" }));
-  stashLocal(entry);
-  const parts = entry.stash.splice(0);
-  if (parts.length === 0) return Result.ok(undefined);
-  const limit = entry.adapter.limits.maxUpdateBytes;
-  const over = parts.find((p) => p.length > limit);
-  if (over !== undefined) {
-    invalidate(entry);
-    return Result.err(
-      new UpdateTooLarge({
-        size: over.length,
-        limit,
-        message: "the burst is over the inline bound",
-      }),
-    );
-  }
-  const record = getRecord(engine.state(), address.table, address.key);
-  const lineage = lineageOf(record, address.column);
-  const written = await engine.mutate(
-    deps.procedure,
-    (tx) => {
-      for (const bytes of parts)
-        tx.doc(address.table, address.key, {
-          column: address.column,
-          adapter: entry.adapter.id,
-          update: { bytes },
-          ...(lineage !== undefined && { lineage }),
-        });
-    },
-    partitionOf(record?.partition),
-  );
-  if (written.isErr()) {
-    invalidate(entry);
-    return Result.err(
-      new FlushRefused({ message: "the engine refused the flush", cause: written.error }),
-    );
-  }
-  return Result.ok(written.value);
-}
-
-const clearTimers = (entry: Entry) => {
-  if (entry.timers.idle !== undefined) clearTimeout(entry.timers.idle);
-  if (entry.timers.max !== undefined) clearTimeout(entry.timers.max);
-  entry.timers = {};
-};
-
-const partitionOf = (partition: PartitionKey | undefined) =>
-  partition === undefined ? {} : { partition };

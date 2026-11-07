@@ -1,3 +1,5 @@
+import type { BackgroundError } from "@syncmesh/docs";
+
 import { AdapterMissing, DocPending, HandleInvalidated, UpdateTooLarge } from "@syncmesh/docs";
 import { DocCoverStale } from "@syncmesh/engine";
 import { eventId, hlcOf, parseAdapterId, parseLineageId, parseSeqNum } from "@syncmesh/kernel";
@@ -399,6 +401,78 @@ const authored = (replica: bigint, text: string) => {
   type(doc, 0, text);
   return doc;
 };
+
+/** A genesis of the note's content on `n`: a fresh history that replaces whatever was there. */
+const genesis = async (n: ReturnType<typeof node>, text: string) =>
+  (
+    await n.engine.mutate(
+      EDIT,
+      (tx) =>
+        tx.doc(NOTES, N1, {
+          column: CONTENT,
+          adapter: LORO_ID,
+          update: { bytes: authored(5n, text).export({ mode: "snapshot" }) },
+          genesis: true,
+        }),
+      { partition: W1 },
+    )
+  ).unwrap();
+
+describe("loro@1 handles: a new lineage never takes an old replica's edits", () => {
+  test("a genesis written on this device invalidates its open handle, and a later flush says so", async () => {
+    const a = node(60);
+    await insertNote(a);
+    const da = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(da.value, 0, "old lineage text");
+    (await da.flush()).unwrap();
+    await genesis(a, "reset");
+    expect(da.status()).toBe("invalidated");
+    type(da.value, 0, "more ");
+    // the edit is the app's to keep: it is refused, never written onto the new lineage
+    const refused = await da.flush();
+    expect(refused.isErr() && refused.error).toBeInstanceOf(HandleInvalidated);
+    expect(body(da.value)).toBe("more old lineage text");
+    const log = (await a.engine.docLog()).unwrap();
+    expect(log.map((e) => e.state)).toEqual(["orphaned", "tail"]);
+    await da.close();
+    expect(body((await a.documents.open<LoroDoc>(DOC)).unwrap().value)).toBe("reset");
+  });
+
+  test("a genesis that folds while the tail is being read invalidates the opened document", async () => {
+    const a = node(61);
+    const b = node(62);
+    await insertNote(a);
+    const link = await linked(a, b);
+    const da = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(da.value, 0, "the old lineage");
+    (await da.flush()).unwrap();
+    await link.flush();
+    expect(await until(async () => (await b.engine.docLog()).unwrap().length === 1)).toBe(true);
+    const slow = heldTail(b);
+    const opening = slow.documents.open<LoroDoc>(DOC);
+    await genesis(a, "a fresh start");
+    await link.flush();
+    expect(await until(async () => (await b.engine.docLog()).unwrap().length === 2)).toBe(true);
+    slow.release();
+    const db = (await opening).unwrap();
+    expect(db.status()).toBe("invalidated");
+    expect(body(db.value)).toBe("the old lineage");
+    slow.documents.stop();
+    link.close();
+  });
+
+  test("a paced flush that is refused reaches onError, not only the handle's status", async () => {
+    const errors: BackgroundError[] = [];
+    const a = node(63, { limits: { maxUpdateBytes: 160 }, onError: (e) => errors.push(e) });
+    await insertNote(a);
+    const da = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(da.value, 0, "x".repeat(500));
+    expect(await until(() => errors.length > 0)).toBe(true);
+    expect(da.status()).toBe("invalidated");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(UpdateTooLarge);
+  });
+});
 
 describe("loro@1 materialisations never cover what their snapshot lacks", () => {
   test("of two materialisations that overlap, the one built on an older head is refused", async () => {

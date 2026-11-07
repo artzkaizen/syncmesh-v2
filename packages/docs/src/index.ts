@@ -15,5 +15,5 @@ export {
 export type { DocsEngine, Loaded, Materialised, ProducedCheckpoint } from "./materialise.js";
 export { installCheckpoint, load, materialise, produceCheckpoint } from "./materialise.js";
 export { replicaId } from "./replica.js";
-export type { Documents, DocumentsOptions, MaintainError } from "./runtime.js";
+export type { BackgroundError, Documents, DocumentsOptions, MaintainError } from "./runtime.js";
 export { createDocuments } from "./runtime.js";

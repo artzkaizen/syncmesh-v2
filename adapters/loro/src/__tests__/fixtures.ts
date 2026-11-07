@@ -1,4 +1,4 @@
-import type { DocLimits } from "@syncmesh/docs";
+import type { BackgroundError, DocLimits } from "@syncmesh/docs";
 import type { Link } from "@syncmesh/engine";
 import type { LoroDoc } from "loro-crdt";
 
@@ -59,6 +59,7 @@ export const FAST = {
 export interface NodeOptions {
   readonly adapter?: boolean;
   readonly limits?: Partial<DocLimits>;
+  readonly onError?: (error: BackgroundError) => void;
 }
 
 /** An engine of the mesh with the doc column declared, and the document runtime over it. */
@@ -84,6 +85,7 @@ export function node(n: number, options: NodeOptions = {}) {
     procedure: EDIT,
     pacing: FAST,
     now,
+    ...(options.onError !== undefined && { onError: options.onError }),
   });
   return { identity, engine, store, documents, now };
 }

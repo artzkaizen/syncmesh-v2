@@ -7,7 +7,7 @@ import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 
 import type { AnyAdapter } from "./adapter.js";
-import type { OpenDoc, OpenError, Pacing } from "./documents.js";
+import type { FlushError, OpenDoc, OpenError, Pacing } from "./documents.js";
 import type { DocPending, DocTooLarge } from "./errors.js";
 import type { DocsEngine } from "./materialise.js";
 
@@ -18,6 +18,9 @@ import { replicaId } from "./replica.js";
 
 /** What a background materialisation can fail with. */
 export type MaintainError = OpenError | DocTooLarge | DocPending | DocCoverStale | StoreFailure;
+
+/** What the runtime's own work — a materialisation, a paced flush — can fail with. */
+export type BackgroundError = MaintainError | FlushError;
 
 export interface DocumentsOptions {
   readonly engine: DocsEngine;
@@ -33,8 +36,11 @@ export interface DocumentsOptions {
    * (RFC-0023 §8.2), so its log may be trimmed. On by default.
    */
   readonly autoMaterialise?: boolean;
-  /** Where a failed background materialisation goes; absent, it is dropped and retried next time. */
-  readonly onError?: (error: MaintainError) => void;
+  /**
+   * Where a failed background materialisation or paced flush goes. Absent, a materialisation is
+   * retried at the next fold, and a flush's failure shows only as its handle's status.
+   */
+  readonly onError?: (error: BackgroundError) => void;
   readonly now?: () => Temporal.Instant;
   /** A fresh 16-byte nonce per replica; `crypto.getRandomValues` by default. */
   readonly nonce?: () => Uint8Array;
@@ -65,6 +71,7 @@ export function createDocuments(options: DocumentsOptions) {
     procedure: options.procedure,
     pacing: options.pacing ?? DEFAULT_PACING,
     nonce,
+    ...(options.onError !== undefined && { onError: options.onError }),
   });
 
   const adapterAt = (address: DocAddress) => columnAdapter(docs, adapters, address);
