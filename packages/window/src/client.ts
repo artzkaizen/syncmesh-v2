@@ -1,5 +1,6 @@
 import type { StreamPosition, WindowRow } from "./frames.js";
 import type { WindowQuery } from "./query.js";
+import type { PatchStream } from "./stream.js";
 
 import { decodeWindowFrame, desireFrame, undesireFrame } from "./frames.js";
 import { queryText } from "./query.js";
@@ -9,8 +10,8 @@ import { createPatchStream } from "./stream.js";
 const NOWHERE = { epoch: "", version: 0 } as const satisfies StreamPosition;
 
 /**
- * `live` when the last patch applied in order; `resyncing` after a gap, until the reset arrives;
- * `detached` with no socket to speak on.
+ * `live` when the last patch applied in order; `resyncing` after a gap or a reconnect, until the
+ * new stream holds every window; `detached` with no socket to speak on.
  */
 export type WindowStatus = "live" | "resyncing" | "detached";
 
@@ -41,7 +42,8 @@ export interface WindowClient {
   readonly receive: (bytes: Uint8Array) => boolean;
   /**
    * Speaks on a new socket and re-desires every window. A new socket is a new view, so its first
-   * patch is a reset, and what was held before stays on screen until that reset arrives.
+   * patch is a reset. What was held before stays on screen, and is what {@link rows} returns,
+   * until the new view has named or refused every window the client desires.
    */
   readonly attach: (send: (frame: Uint8Array) => void) => void;
   readonly detach: () => void;
@@ -50,23 +52,48 @@ export interface WindowClient {
 }
 
 export function createWindowClient(): WindowClient {
-  const stream = createPatchStream();
+  /** What the screen shows. */
+  let shown = createPatchStream();
+  /**
+   * The stream being rebuilt after a reconnect or a gap, and the windows it has named or refused
+   * so far. It replaces {@link shown} once it accounts for every window the client desires, so a
+   * reset that names only some of them never blanks the rest.
+   */
+  let pending: { readonly stream: PatchStream; readonly settled: Set<string> } | undefined;
   const queries = new Map<string, WindowQuery>();
   const refusals = new Map<string, string>();
   const listeners = new Set<() => void>();
   let send: ((frame: Uint8Array) => void) | undefined;
-  let resyncing = false;
+  /** A resnapshot was asked for and its reset has not arrived. */
+  let asked = false;
+
+  const notify = (): void => {
+    for (const listener of listeners) listener();
+  };
+
+  /** Swaps the rebuilt stream in once every desired window is in it. */
+  const settle = (): void => {
+    if (pending === undefined) return;
+    // a window refused before has nothing to wait for: a server that holds it open names it
+    for (const id of queries.keys()) if (!pending.settled.has(id) && !refusals.has(id)) return;
+    shown = pending.stream;
+    pending = undefined;
+    notify();
+  };
 
   /**
-   * A gap: ask again from where this stream stands, and the server answers with a reset. Before
-   * the first reset there is no position, so the client names {@link NOWHERE}, which no server
-   * stream is at.
+   * A gap: ask again from where the stream that missed a patch stands, and the server answers
+   * with a reset. Before the first reset there is no position, so the client names
+   * {@link NOWHERE}, which no server stream is at. With no window desired there is nothing to
+   * ask for; the next desire's patch is a gap again and asks then.
    */
-  const resync = (): void => {
+  const resync = (missed: PatchStream): void => {
     const first = [...queries][0];
-    if (resyncing || send === undefined || first === undefined) return;
-    resyncing = true;
-    send(desireFrame(first[0], queryText(first[1]), stream.position() ?? NOWHERE));
+    if (asked || send === undefined || first === undefined) return;
+    asked = true;
+    const since = missed.position() ?? NOWHERE;
+    pending ??= { stream: createPatchStream(), settled: new Set() };
+    send(desireFrame(first[0], queryText(first[1]), since));
   };
 
   return {
@@ -77,35 +104,45 @@ export function createWindowClient(): WindowClient {
     },
     undesire: (id) => {
       queries.delete(id);
-      stream.forget(id);
+      shown.forget(id);
+      pending?.stream.forget(id);
       send?.(undesireFrame(id));
+      settle();
     },
-    rows: (id) => stream.rows(id),
+    rows: (id) => shown.rows(id),
     refusal: (id) => refusals.get(id),
-    status: () => (send === undefined ? "detached" : resyncing ? "resyncing" : "live"),
-    held: () => stream.held(),
+    status: () => (send === undefined ? "detached" : pending !== undefined ? "resyncing" : "live"),
+    held: () => shown.held(),
     receive: (bytes) => {
+      const target = pending?.stream ?? shown;
       const decoded = decodeWindowFrame(bytes);
       if (decoded.isErr()) {
         // a frame that says it is a patch and does not read as one is a patch lost
-        resync();
+        resync(target);
         return true;
       }
       const frame = decoded.value;
       if (frame?.kind !== "rows") return frame !== undefined;
-      if (stream.apply(frame) === "gap") {
-        resync();
+      if (target.apply(frame) === "gap") {
+        resync(target);
         return true;
       }
-      if (frame.reset) resyncing = false;
+      if (frame.reset) asked = false;
       for (const { id, reason } of frame.refused) refusals.set(id, reason);
-      for (const listener of listeners) listener();
+      if (pending === undefined) notify();
+      else {
+        for (const { id } of frame.windows) pending.settled.add(id);
+        settle();
+      }
       return true;
     },
     attach: (next) => {
       send = next;
-      resyncing = false;
+      asked = false;
+      // a new socket is a new view: rebuild beside the old screen, which stays until then
+      pending = { stream: createPatchStream(), settled: new Set() };
       for (const [id, query] of queries) next(desireFrame(id, queryText(query)));
+      settle();
     },
     detach: () => {
       send = undefined;

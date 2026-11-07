@@ -155,6 +155,49 @@ describe("a window over a row source (E27)", () => {
     expect(client.status()).toBe("live");
   });
 
+  test("a reconnect keeps every window on screen until the new view has named them all", () => {
+    const { client, source, view } = harness(100);
+    client.desire("a", newest(3));
+    client.desire("b", newest(3, { where: rowIs({ folder: "inbox" }), after: after(50) }));
+    view.close();
+    client.detach();
+    source.write([{ table: MAIL, key: mailKey(101), row: mail(101) }]);
+    const seen: { a: unknown[]; b: unknown[] }[] = [];
+    client.subscribe(() => seen.push({ a: ats(client.rows("a")), b: ats(client.rows("b")) }));
+    const next = createClientView({ source, send: (frame) => client.receive(frame) });
+    client.attach((frame) => next.receive(frame));
+    // one swap, after both windows arrived: never a screen with `b` blank
+    expect(seen).toEqual([{ a: [101, 100, 99], b: [49, 48, 47] }]);
+    expect(client.status()).toBe("live");
+    expect(client.held()).toBe(6);
+  });
+
+  test("a window refused before a gap does not hold the resnapshot back", () => {
+    const { client, source, loseNext } = harness(100);
+    client.desire("calls", newest(5, { table: CALLS }));
+    client.desire("inbox", newest(5));
+    loseNext();
+    source.write([{ table: MAIL, key: mailKey(101), row: mail(101) }]);
+    source.write([{ table: MAIL, key: mailKey(102), row: mail(102) }]);
+    expect(client.status()).toBe("live");
+    expect(ats(client.rows("inbox"))).toEqual(down(102, 5));
+    expect(client.refusal("calls")).toBe("no table calls");
+  });
+
+  test("a patch lost after the last undesire is caught by the next desire", () => {
+    const { client, loseNext } = harness(100);
+    client.desire("a", newest(3));
+    client.desire("b", newest(3));
+    client.undesire("a");
+    loseNext();
+    client.undesire("b");
+    // the `del`s for b were lost, and with no window open nothing else arrives to show the gap
+    client.desire("c", newest(2, { after: after(10) }));
+    expect(client.status()).toBe("live");
+    expect(ats(client.rows("c"))).toEqual([9, 8]);
+    expect(client.held()).toBe(2);
+  });
+
   test("a socket holds at most `maxWindows`; a desire past it is refused, a move is not", () => {
     const { client, view } = harness(100, { maxWindows: 2 });
     client.desire("a", newest(3));
