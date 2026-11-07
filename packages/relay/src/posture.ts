@@ -1,3 +1,5 @@
+import { panic } from "@syncmesh/result";
+
 import type { RoomTrust } from "./trust.js";
 
 /**
@@ -64,7 +66,7 @@ export function hostedPosture(
   own: readonly string[] = [],
 ): RelayPosture {
   if (posture?.trust === undefined && posture?.open !== true)
-    throw new Error(
+    panic(
       `a hosted relay needs posture.trust (the issuers whose grants seat a device) or posture.open: true, and open means ${BEARER_SECRET}`,
     );
   // said once, at start, where an operator reads it: the one posture that gates nothing

@@ -161,7 +161,9 @@ const answer = async (response: Response, into: ServerResponse): Promise<void> =
  *
  * @example
  * ```ts
- * await startRelay(8787, { posture: { trust: { issuers: [authority.peerId] } } });
+ * await startRelay(8787, {
+ *   posture: { trust: { issuers: [authority.peerId] }, rooms: ["acme"] },
+ * });
  * ```
  */
 export async function startRelay(
