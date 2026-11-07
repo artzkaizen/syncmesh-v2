@@ -62,13 +62,14 @@ export interface MeshGrants extends GrantRegistry {
    * Rotates a sealed partition's content key and re-issues every held grant that still names it,
    * each to its current expiry, so the members carry the new epoch (D40). The removal comes
    * first — `issue` the departing device a grant without the partition — and this second: the
-   * departed keeps what it already read and opens nothing written after. Answers the wires to
-   * send; panics unless `createMesh` was given `issuerKey` and `partitionKeys`.
+   * departed keeps what it already read and opens nothing written after. Answers the wires it
+   * minted, each already registered and so on its way to every link as `issue`'s are; panics
+   * unless `createMesh` was given `issuerKey` and `partitionKeys`.
    *
    * @example
    * ```ts
    * mesh.grants.issue({ ...bob, partitions: ["team:acme"] }); // Bob leaves HR
-   * for (const wire of mesh.grants.rekey(hr).unwrap()) mesh.grants.send(wire);
+   * mesh.grants.rekey(hr); // everyone still in HR now carries epoch 2
    * ```
    */
   readonly rekey: (
