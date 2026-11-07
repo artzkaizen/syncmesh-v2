@@ -26,6 +26,7 @@ export interface OperationRefusal {
 
 export interface RefusalRow extends Omit<OperationRefusal, "by"> {
   readonly refuser: PeerId;
+  /** When the refuser signed it, by the refuser's clock (its `issuedAt`), not when it arrived here. */
   readonly atMs: number;
 }
 

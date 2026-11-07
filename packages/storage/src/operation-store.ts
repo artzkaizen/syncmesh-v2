@@ -117,7 +117,8 @@ export interface OperationStore {
   /**
    * Records one peer's signed refusal of one of this device's writes, replacing that peer's
    * earlier verdict on it — idempotent. Skipped for a write with no record, and for one the
-   * refuser has already signed custody of.
+   * refuser has already signed custody of. `atMs` is the refusal's own `issuedAt`, the refuser's
+   * clock, as a vouch's is the receipt's.
    */
   readonly refuse: (
     refuser: PeerId,
