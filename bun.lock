@@ -430,6 +430,7 @@
         "@syncmesh/result": "workspace:*",
         "@syncmesh/temporal": "workspace:*",
         "@syncmesh/transport": "workspace:*",
+        "@syncmesh/window": "workspace:*",
         "@syncmesh/wire": "workspace:*",
         "@types/bun": "catalog:",
         "fast-check": "catalog:",
@@ -666,9 +667,11 @@
         "@syncmesh/result": "workspace:*",
         "@syncmesh/schema": "workspace:*",
         "@syncmesh/storage": "workspace:*",
+        "@syncmesh/window": "workspace:*",
       },
       "devDependencies": {
         "@electric-sql/pglite": "^0.5.7",
+        "@syncmesh/cdc": "workspace:*",
         "@syncmesh/config": "workspace:*",
         "@syncmesh/engine": "workspace:*",
         "@syncmesh/postgres": "workspace:*",
@@ -678,6 +681,7 @@
         "@syncmesh/wire": "workspace:*",
         "@types/bun": "catalog:",
         "drizzle-orm": "catalog:",
+        "postgres": "^3.4.9",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
         "zod": "^3.25.76",
@@ -749,6 +753,7 @@
         "@syncmesh/storage": "workspace:*",
         "@syncmesh/temporal": "workspace:*",
         "@syncmesh/transport": "workspace:*",
+        "@syncmesh/window": "workspace:*",
         "@syncmesh/wire": "workspace:*",
       },
       "devDependencies": {
@@ -883,6 +888,22 @@
       },
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+    },
+    "packages/window": {
+      "name": "@syncmesh/window",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/result": "workspace:*",
+        "@syncmesh/wire": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncmesh/config": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
@@ -1693,6 +1714,8 @@
     "@syncmesh/transport": ["@syncmesh/transport@workspace:packages/transport"],
 
     "@syncmesh/transports": ["@syncmesh/transports@workspace:packages/transports"],
+
+    "@syncmesh/window": ["@syncmesh/window@workspace:packages/window"],
 
     "@syncmesh/wire": ["@syncmesh/wire@workspace:packages/wire"],
 
