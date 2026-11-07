@@ -235,6 +235,41 @@ describe("fan-out is metered per room as well", () => {
     room.close();
   });
 
+  test("one token of credit lets out one held event's fan-out, not the whole queue", async () => {
+    const [a, b, c] = [peer(40, "acct_a"), peer(80, "acct_b"), peer(120, "acct_c")];
+    let clock = T0;
+    const room = await scriptedRoom({
+      now: () => clock,
+      limits: { roomFanout: { burst: 3, every: SECOND } },
+    });
+    const sockets = [fakeSocket(), fakeSocket(), fakeSocket()];
+    const conns = sockets.map((s) => room.connect(s.socket));
+    conns[0]?.receive(join(a.identity.peerId));
+    conns[1]?.receive(join(b.identity.peerId));
+    conns[2]?.receive(join(c.identity.peerId));
+    await tick();
+    // a and b take the room to -1
+    conns[0]?.receive(eventFrame(await write(a, "n1", "one")));
+    await tick();
+    conns[1]?.receive(eventFrame(await write(b, "n2", "two")));
+    await tick();
+    for (let i = 1; i <= 6; i += 1)
+      conns[2]?.receive(eventFrame(await write(c, `c${i}`, `body-${i}`)));
+    await tick(2 * durationMs(ROOM_DEBT_RETRY));
+    expect(room.offset()).toBe(2);
+
+    // two seconds earn the room back to +1: one event of two deliveries, and the room owes again
+    clock = addToInstant(clock, Temporal.Duration.from({ seconds: 2 }));
+    await tick(3 * durationMs(ROOM_DEBT_RETRY));
+    expect(room.offset()).toBe(3);
+
+    clock = addToInstant(clock, Temporal.Duration.from({ seconds: 2 }));
+    await tick(3 * durationMs(ROOM_DEBT_RETRY));
+    expect(room.offset()).toBe(4);
+    expect(sockets.map((s) => s.closedWith)).toEqual([[], [], []]);
+    room.close();
+  });
+
   test("a socket that sends more than its sender may hold while the room owes is hung up", async () => {
     const [a, c] = [peer(40, "acct_a"), peer(120, "acct_c")];
     const room = await scriptedRoom({

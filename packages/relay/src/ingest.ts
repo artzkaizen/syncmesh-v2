@@ -90,20 +90,22 @@ export function eventIntake(
   let heldBytes = 0;
   let waiting: ReturnType<typeof setTimeout> | undefined;
 
-  const release = (): void => {
-    waiting = undefined;
+  // in the room's queue, so each event's charge has landed before the next is let out: one
+  // token of credit releases one event's fan-out, not every event held behind it
+  const drain = async (): Promise<void> => {
+    for (let next = held[0]; next !== undefined && !closed(); next = held[0]) {
+      if (room.budget.owes("fanout")) break;
+      held.shift();
+      heldBytes -= next.byteLength;
+      await absorbAndAck(conversation, next);
+    }
     if (closed()) {
       held.length = 0;
       heldBytes = 0;
-      return;
     }
-    for (let next = held[0]; next !== undefined && !room.budget.owes("fanout"); next = held[0]) {
-      held.shift();
-      heldBytes -= next.byteLength;
-      ingestEvent(conversation, next);
-    }
-    if (held.length > 0) waiting = setTimeout(release, durationMs(ROOM_DEBT_RETRY));
+    waiting = held.length > 0 ? setTimeout(release, durationMs(ROOM_DEBT_RETRY)) : undefined;
   };
+  const release = (): void => room.enqueue(drain);
 
   return (wire) => {
     if (held.length === 0 && !room.budget.owes("fanout")) {
@@ -141,31 +143,34 @@ export function eventIntake(
  * traffic the room absorbed.
  */
 export function ingestEvent(conversation: Conversation, wire: Uint8Array): void {
+  conversation.room.enqueue(() => absorbAndAck(conversation, wire));
+}
+
+/** {@link ingestEvent}'s work, run from inside the room's queue. */
+async function absorbAndAck(conversation: Conversation, wire: Uint8Array): Promise<void> {
   const { room, refuse } = conversation;
-  room.enqueue(async () => {
-    const [outcome, duration] = await timed(() => absorbEvent(room, wire));
-    if (outcome.isErr()) {
-      refuse(outcome.error._tag === "StoreFailure" ? "store" : "bad-event", outcome.error.message);
-      return;
-    }
-    const { id, relayed, receivers } = outcome.value;
-    if (relayed !== undefined) {
-      room.publish(relayed);
-      // the sender pays for the sends it caused (gap audit №7). After the fact, because how many
-      // clients an event reaches is not known until it has reached them — what the charge buys
-      // is the *next* frame from this socket being unaffordable
-      conversation.budget.charge("fanout", receivers);
-      // and the room pays too, whoever sent it: a crowd of sockets each under its own budget is
-      // still one room's sends
-      room.budget.charge("fanout", receivers);
-      room.report({
-        type: "relay.event",
-        sizes: { bytes: wire.byteLength, receivers },
-        duration,
-      });
-    }
-    conversation.sender.send(ackFrame(String(id), room.offset()));
-  });
+  const [outcome, duration] = await timed(() => absorbEvent(room, wire));
+  if (outcome.isErr()) {
+    refuse(outcome.error._tag === "StoreFailure" ? "store" : "bad-event", outcome.error.message);
+    return;
+  }
+  const { id, relayed, receivers } = outcome.value;
+  if (relayed !== undefined) {
+    room.publish(relayed);
+    // the sender pays for the sends it caused (gap audit №7). After the fact, because how many
+    // clients an event reaches is not known until it has reached them — what the charge buys
+    // is the *next* frame from this socket being unaffordable
+    conversation.budget.charge("fanout", receivers);
+    // and the room pays too, whoever sent it: a crowd of sockets each under its own budget is
+    // still one room's sends
+    room.budget.charge("fanout", receivers);
+    room.report({
+      type: "relay.event",
+      sizes: { bytes: wire.byteLength, receivers },
+      duration,
+    });
+  }
+  conversation.sender.send(ackFrame(id, room.offset()));
 }
 
 /**
