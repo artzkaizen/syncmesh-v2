@@ -397,7 +397,7 @@ impl Published {
     }
 
     fn due_ms(&self) -> i64 {
-        self.last_ms + self.interval_ms()
+        self.last_ms.saturating_add(self.interval_ms())
     }
 }
 
@@ -461,7 +461,7 @@ impl PresenceTier {
             session: self.session.clone(),
             count: self.count,
             value,
-            expires_ms: now_ms + ttl_ms,
+            expires_ms: now_ms.saturating_add(ttl_ms),
         };
         let signed = sign_presence(&presence, &self.identity);
         self.store.admit(&signed, now_ms);
@@ -502,16 +502,27 @@ impl PresenceTier {
     /// wires to send. The TypeScript runs one interval per topic; a host here calls this on its
     /// own tick, at or after `next_heartbeat_ms`.
     pub fn heartbeats_due(&mut self, now_ms: i64) -> Vec<Vec<u8>> {
-        let due: Vec<((String, PartitionKey), Row, i64)> = self
+        self.republish(now_ms, |held| held.due_ms() <= now_ms)
+    }
+
+    /// Re-signs every live value at `now_ms` whether or not a heartbeat is due, and restarts each
+    /// heartbeat clock there. For a link that just came up: the far side knows nothing about us.
+    pub fn announce_all(&mut self, now_ms: i64) -> Vec<Vec<u8>> {
+        self.republish(now_ms, |_| true)
+    }
+
+    fn republish(&mut self, now_ms: i64, pick: impl Fn(&Published) -> bool) -> Vec<Vec<u8>> {
+        let picked: Vec<((String, PartitionKey), Row, i64)> = self
             .mine
             .iter_mut()
-            .filter(|(_, held)| held.due_ms() <= now_ms)
+            .filter(|(_, held)| pick(held))
             .map(|(slot, held)| {
                 held.last_ms = now_ms;
                 (slot.clone(), held.value.clone(), held.ttl_ms)
             })
             .collect();
-        due.into_iter()
+        picked
+            .into_iter()
             .map(|((topic, partition), value, ttl_ms)| {
                 self.publish(&topic, &partition, Some(value), ttl_ms, now_ms)
             })
@@ -854,5 +865,19 @@ mod tests {
         assert_eq!(me.next_heartbeat_ms(), None);
         assert!(me.heartbeats_due(NOW + 100_000).is_empty());
         assert!(me.stop(NOW + 100_000).is_empty());
+    }
+
+    #[test]
+    fn a_sentinel_clock_saturates_instead_of_overflowing() {
+        let mut me = PresenceTier::new(seed(21), "s-me".to_owned());
+        me.set("cursor", &acme(), cursor(1.0, 2.0), 30_000, NOW);
+        // before the fix this panicked in debug and wrapped to a negative expiry in release
+        assert_eq!(me.heartbeats_due(i64::MAX).len(), 1);
+        assert_eq!(
+            me.next_heartbeat_ms(),
+            Some(i64::MAX),
+            "saturated, not wrapped"
+        );
+        assert_eq!(me.heartbeats_due(i64::MAX).len(), 1, "nor on the next tick");
     }
 }

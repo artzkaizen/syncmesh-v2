@@ -2,7 +2,10 @@ import type { JsonValue, StrategyName } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
 import type { AppValue } from "./convert.js";
+import type { DocumentAdapter } from "./documents.js";
 import type { Output, StandardSchemaV1 } from "./standard-schema.js";
+
+import { DocColumnConstraint, DocColumnNotBinary, MergeKindMismatch } from "./documents.js";
 
 export type ColumnKind =
   | "text"
@@ -20,9 +23,14 @@ export type ColumnKind =
  * constructor they would have to already know about.
  *
  * Only numbers get `max` and `min`: those pick by value, and a meaningful larger-of-two needs an
- * order the app agrees with. Everything else takes the newest write.
+ * order the app agrees with. Only bytes take a {@link DocumentAdapter}: a document column holds
+ * the adapter's snapshot (RFC-0023). Everything else takes the newest write.
  */
-export type MergeFor<T> = [T] extends [number] ? StrategyName : "lww";
+export type MergeFor<T> = [T] extends [number]
+  ? StrategyName
+  : [T] extends [Uint8Array]
+    ? "lww" | DocumentAdapter
+    : "lww";
 
 /** What the fold merges the column by; absent is {@link StrategyName}'s own default. */
 export const strategyOf = (def: ColumnDef): StrategyName | undefined => def.merge;
@@ -39,6 +47,76 @@ export interface ColumnDef {
   readonly unique: boolean;
   readonly check?: StandardSchemaV1;
   readonly merge?: StrategyName;
+  /** Present on a document column: which adapter's bytes it holds. The fold never reads it. */
+  readonly doc?: { readonly adapter: string };
+}
+
+const ADAPTER_ID = /^[a-z][a-z0-9-]*@\d+$/;
+
+const NUMERIC = new Set<ColumnKind>(["integer", "float"]);
+
+/** Kinds whose storage a developer might mistake for bytes; the rest are never a document. */
+const MISTAKEN_STORAGE = new Set<ColumnKind>(["text", "json"]);
+
+/**
+ * The part of a def one `merge` value sets: a strategy, or the adapter's id. Nothing is refused
+ * here — a builder does not know its column's name yet — so {@link checkMerge} judges the result.
+ */
+export function mergeDef(
+  merge: StrategyName | DocumentAdapter | undefined,
+): Pick<ColumnDef, "merge" | "doc"> {
+  if (merge === undefined) return {};
+  return merge instanceof Object ? { doc: { adapter: String(merge.id) } } : { merge };
+}
+
+/**
+ * Refuses a merge declaration the column cannot carry. `max` and `min` need an order (D25); an
+ * adapter needs a byte column with no constraint a document could break (RFC-0023 §4.1). Runs
+ * wherever a table is built, as the backstop for a def that did not come through the types.
+ *
+ * @throws {MergeKindMismatch | DocColumnNotBinary | DocColumnConstraint}
+ */
+export function checkMerge(column: string, def: ColumnDef): void {
+  if (def.doc === undefined) {
+    if (def.merge !== undefined && def.merge !== "lww" && !NUMERIC.has(def.kind))
+      throw new MergeKindMismatch({
+        column,
+        message: `${column}: merge "${def.merge}" needs a numeric column`,
+      });
+    return;
+  }
+  if (!ADAPTER_ID.test(def.doc.adapter))
+    throw new MergeKindMismatch({
+      column,
+      message: `${column}: merge is neither a rule nor a document adapter ("${def.doc.adapter}" is not name@major)`,
+    });
+  if (def.merge !== undefined && def.merge !== "lww")
+    throw new MergeKindMismatch({
+      column,
+      message: `${column}: merge "${def.merge}" on a document column; its lineage is lww`,
+    });
+  if (MISTAKEN_STORAGE.has(def.kind))
+    throw new DocColumnNotBinary({
+      column,
+      message: `${column}: a document column holds bytes, not ${def.kind}; use bytea() / blob({ mode: "buffer" })`,
+    });
+  if (def.kind !== "blob")
+    throw new MergeKindMismatch({
+      column,
+      message: `${column}: a document adapter needs a byte column, not ${def.kind}`,
+    });
+  const constraint = def.primaryKey
+    ? "primary key"
+    : def.unique
+      ? "unique()"
+      : def.check === undefined
+        ? undefined
+        : "check()";
+  if (constraint !== undefined)
+    throw new DocColumnConstraint({
+      column,
+      message: `${column}: a document column cannot be a ${constraint}`,
+    });
 }
 
 /** A column: `def` is plain data, the methods return new columns. `T` is the app-facing value type. */
@@ -108,8 +186,10 @@ const json: JsonColumn = (schema?: StandardSchemaV1) => {
 };
 
 /** Applies the options every builder shares; absent `merge` leaves the default in place. */
-const withOptions = <T>(def: ColumnDef, options?: ColumnOptions<T>): ColumnDef =>
-  options?.merge === undefined ? def : { ...def, merge: options.merge };
+const withOptions = <T>(def: ColumnDef, options?: ColumnOptions<T>): ColumnDef => ({
+  ...def,
+  ...mergeDef(options?.merge),
+});
 
 /**
  * The column types, and the one option that changes how any of them merges.
@@ -130,6 +210,7 @@ export const t = {
   /** Epoch milliseconds on the wire; a `Temporal.Instant` to the app. */
   timestamp: (options?: ColumnOptions<Temporal.Instant>) =>
     columnFromDef<Temporal.Instant, false, false>(withOptions(base("timestamp"), options)),
+  /** With `merge: adapter`, a document column (RFC-0023): the adapter's snapshot, opened, never read as a value. */
   blob: (options?: ColumnOptions<Uint8Array>) =>
     columnFromDef<Uint8Array, false, false>(withOptions(base("blob"), options)),
   /** Canonical lowercase 8-4-4-4-12 only; never normalised, because rows are keyed by the string. */
