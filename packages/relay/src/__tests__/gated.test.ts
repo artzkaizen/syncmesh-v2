@@ -315,4 +315,33 @@ describe("revocation at the room (D40)", () => {
     await tr.stop();
     room.close();
   });
+
+  test("a grant renewed before it lapses keeps the socket past the old expiry", async () => {
+    let now = T0;
+    const room = await gatedRoom({ now: () => now });
+    const { author, t: ta } = await authorIn(room);
+    const reader = peer(49, "acct_reader");
+    const tr = relayTransport({ dial: dialTo(room).dial, reconnectMs: 5000 });
+    await tr.start(reader.context);
+    await tr.whenReady();
+    await write(author, "a1", "acme one", ACME);
+    expect(await until(() => bodyOf(reader, "a1") === "acme one")).toBe(true);
+
+    // 23 hours on, both renew for a fresh day, naming the same partitions; the reader's travels
+    // to the room on its own socket
+    now = T0.add({ hours: 23 });
+    reader.grants.register(mintFor(reader.identity, "acct_reader", { now })).unwrap();
+    author.grants.register(mintFor(author.identity, "acct_author", { now })).unwrap();
+    await tick(40);
+
+    // past the first grant's expiry: the reconnect delay is longer than the wait below, so a
+    // hang-up would show as a missed write
+    now = T0.add({ hours: 24, minutes: 1 });
+    await write(author, "a2", "acme two", ACME);
+    expect(await until(() => bodyOf(reader, "a2") === "acme two", 400)).toBe(true);
+
+    await ta.stop();
+    await tr.stop();
+    room.close();
+  });
 });

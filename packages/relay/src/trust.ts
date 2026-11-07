@@ -69,7 +69,8 @@ export function lapsed(room: RoomState, grant: Grant): boolean {
   return Temporal.Instant.compare(room.now(), until) > 0;
 }
 
-const sameSet = (a: readonly PartitionKey[], b: readonly PartitionKey[]): boolean =>
+/** Whether two grants name the same partitions, in any order. */
+export const sameSet = (a: readonly PartitionKey[], b: readonly PartitionKey[]): boolean =>
   a.length === b.length && a.every((p) => b.includes(p));
 
 /**

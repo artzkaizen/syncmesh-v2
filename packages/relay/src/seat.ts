@@ -16,6 +16,7 @@ import {
   entitlement,
   grantWait,
   lapsed,
+  sameSet,
 } from "./trust.js";
 
 /**
@@ -32,6 +33,7 @@ export interface Seat {
   /**
    * Whether live fan-out sends this event. A grant that has lapsed since the seat hangs up instead
    * (D40): no event leaves for a socket whose ticket ran out, whether or not a renewal is coming.
+   * A renewal that already reached the room, naming the same partitions, is the ticket from then on.
    */
   readonly wants: (event: SyncEvent) => boolean;
   /**
@@ -59,6 +61,17 @@ export interface Seat {
   /** A grant reached the room: it may be the ticket a held join is waiting on. */
   readonly offered: () => void;
   readonly close: () => void;
+}
+
+/**
+ * The live grant the room holds for a lapsed one's device, when it names the same partitions. A
+ * renewal naming others has already hung the socket up, as `revoked` or `regranted`, on arrival.
+ */
+function renewed(room: RoomState, lapsedGrant: Grant): Grant | undefined {
+  const renewal = entitlement(room, lapsedGrant.device);
+  return renewal !== undefined && sameSet(renewal.partitions, lapsedGrant.partitions)
+    ? renewal
+    : undefined;
 }
 
 /** One socket's seat; `refuse` is the connection's fatal refusal, `send` its outbound queue. */
@@ -92,7 +105,8 @@ export function createSeat(
     granted: () => granted,
     wants: (event) => {
       if (granted !== undefined) {
-        if (lapsed(room, granted)) {
+        if (lapsed(room, granted)) granted = renewed(room, granted);
+        if (granted === undefined) {
           refuse(REVOKED, REVOKED_MESSAGE);
           return false;
         }
