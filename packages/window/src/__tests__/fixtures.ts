@@ -65,7 +65,8 @@ const GARBLED = encodeCbor([WINDOW_TAGS.rows, "garbled"]);
 
 /**
  * `count` mails at 1..count in a memory source, one socket's server windows over it and one thin
- * client, joined by a pipe that can lose or garble the server's next frames on purpose.
+ * client, joined by a pipe that can lose or garble the server's next frames on purpose, and
+ * hold the client's back.
  */
 export function harness(
   count: number,
@@ -94,7 +95,9 @@ export function harness(
     },
     ...serving,
   });
-  client.attach((frame) => server.receive(frame));
+  /** The client's frames not yet read by the server, while {@link queueUp} holds them. */
+  let upstream: Uint8Array[] | undefined;
+  client.attach((frame) => (upstream === undefined ? server.receive(frame) : upstream.push(frame)));
   return {
     source,
     server,
@@ -110,6 +113,16 @@ export function harness(
      */
     spoil: (fault: "lose" | "garble", ...offsets: number[]) => {
       for (const offset of offsets) faults.set(frames.length + offset, fault);
+    },
+    /** The client's next frames wait on the socket until {@link deliver}. */
+    queueUp: () => {
+      upstream ??= [];
+    },
+    /** The server reads every frame the client queued, and later ones as they are sent. */
+    deliver: () => {
+      const queued = upstream ?? [];
+      upstream = undefined;
+      for (const frame of queued) server.receive(frame);
     },
   };
 }

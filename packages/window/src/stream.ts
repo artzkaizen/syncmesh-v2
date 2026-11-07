@@ -27,10 +27,16 @@ export interface PatchStream {
   /** How many distinct rows are held across every window, which is what bounds its memory. */
   readonly held: () => number;
   /**
-   * Forgets one window, and the rows no other window holds. The server's `del`s for them,
-   * when they come, find nothing left to delete.
+   * Forgets one window and keeps its rows. While the server has not read the undesire it still
+   * counts them as held, and may name one in another window without sending it again; its
+   * `del`s for them come in the patch that answers the undesire.
    */
   readonly forget: (id: string) => void;
+  /**
+   * Drops every row no window names. Only for a stream no server is patching: one that is,
+   * may still name them in a patch on the socket.
+   */
+  readonly prune: () => void;
 }
 
 /** One read's row: the same key under two reads is two rows, since each may project it differently. */
@@ -84,17 +90,14 @@ export function createPatchStream(): PatchStream {
     position: () => position,
     held: () => rows.size,
     forget: (id) => {
-      const gone = windows.get(id);
-      if (gone === undefined) return;
       windows.delete(id);
       rendered.delete(id);
+    },
+    prune: () => {
       const kept = new Set<string>();
-      for (const other of windows.values())
-        for (const key of other.keys) kept.add(rowId(other.path, key));
-      for (const key of gone.keys) {
-        const held = rowId(gone.path, key);
-        if (!kept.has(held)) rows.delete(held);
-      }
+      for (const window of windows.values())
+        for (const key of window.keys) kept.add(rowId(window.path, key));
+      for (const id of rows.keys()) if (!kept.has(id)) rows.delete(id);
     },
   };
 }

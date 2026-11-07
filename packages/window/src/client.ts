@@ -128,6 +128,9 @@ export function createWindowClient(): WindowClient {
       requests.delete(id);
       shown.forget(id);
       pending?.stream.forget(id);
+      // with no socket no server counts these rows held, so they can go now; on one, the server
+      // may still name them in another window until it reads the undesire, and its dels follow
+      if (send === undefined) shown.prune();
       send?.(undesireFrame(id));
       settle();
     },
@@ -155,7 +158,11 @@ export function createWindowClient(): WindowClient {
       // every desire sent before the resync was read before it, so its reset holds them all
       const answered = frame.reset && asked !== undefined;
       if (frame.reset) asked = undefined;
-      for (const { id } of frame.windows) refusals.delete(id);
+      for (const { id } of frame.windows) {
+        refusals.delete(id);
+        // a patch the view sent before it read an undesire still names that window
+        if (!requests.has(id)) target.forget(id);
+      }
       for (const { id, reason } of frame.refused) refusals.set(id, reason);
       if (pending === undefined) notify();
       else {

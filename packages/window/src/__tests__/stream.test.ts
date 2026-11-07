@@ -119,15 +119,17 @@ describe("versioned row patches (E24)", () => {
     expect(subjects(stream, "inbox")).toEqual(["invoice", "hello again"]);
   });
 
-  test("forgetting a window drops the rows no other window holds", () => {
+  test("forgetting a window keeps its rows; pruning drops the ones no window names", () => {
     const stream = createPatchStream();
     stream.apply({
       ...opening,
       windows: [...opening.windows, { id: "starred", path: INBOX, keys: [key("a")] }],
     });
     stream.forget("inbox");
+    expect(stream.rows("inbox")).toEqual([]);
+    expect(stream.held()).toBe(2);
+    stream.prune();
     expect(stream.held()).toBe(1);
     expect(subjects(stream, "starred")).toEqual(["hello"]);
-    expect(stream.rows("inbox")).toEqual([]);
   });
 });

@@ -448,4 +448,74 @@ describe("a socket's windows over a page source (E27)", () => {
     expect(frames.length).toBe(sent);
     expect(source.pagesRead()).toBe(reads);
   });
+  test("a row a change moves into an open window shows while a close is in flight", async () => {
+    const { client, source, server, queueUp, deliver } = harness(100);
+    client.open("top", newest(5));
+    client.open("next", newest(5, { after: 96 }));
+    await server.idle();
+    queueUp();
+    client.close("next");
+    // the server still counts 95 held through `next`, so it moves into `top` with no put
+    source.write(MAIL, [{ key: mailKey(98) }]);
+    await server.idle();
+    expect(ats(client.rows("top"))).toEqual([100, 99, 97, 96, 95]);
+    deliver();
+    await server.idle();
+    expect(client.status()).toBe("live");
+    expect(ats(client.rows("top"))).toEqual([100, 99, 97, 96, 95]);
+    expect(client.held()).toBe(server.held());
+  });
+
+  test("a patch that names a window the client has closed does not bring it back", async () => {
+    const { client, source, server, queueUp, deliver } = harness(100);
+    client.open("top", newest(2));
+    client.open("next", newest(5, { after: 96 }));
+    await server.idle();
+    queueUp();
+    client.close("next");
+    source.write(MAIL, [{ key: mailKey(93) }]);
+    await server.idle();
+    expect(client.rows("next")).toEqual([]);
+    deliver();
+    await server.idle();
+    expect(client.rows("next")).toEqual([]);
+    expect(client.held()).toBe(2);
+    expect(client.held()).toBe(server.held());
+  });
+
+  test("an open that moves a window while patches are in flight lands on the moved rows", async () => {
+    const { client, source, server, queueUp, deliver } = harness(100);
+    client.open("inbox", newest(3));
+    await server.idle();
+    queueUp();
+    client.open("inbox", newest(3, { after: 50 }));
+    source.write(MAIL, [{ key: mailKey(101), row: mail(101) }]);
+    await server.idle();
+    expect(ats(client.rows("inbox"))).toEqual(down(101, 3));
+    deliver();
+    await server.idle();
+    expect(client.status()).toBe("live");
+    expect(ats(client.rows("inbox"))).toEqual(down(49, 3));
+    expect(client.held()).toBe(server.held());
+  });
+
+  test("a resync asked while the client's frames queue settles once the server reads them", async () => {
+    const { client, source, server, loseNext, queueUp, deliver } = harness(100);
+    client.open("inbox", newest(5));
+    await server.idle();
+    queueUp();
+    loseNext();
+    source.write(MAIL, [{ key: mailKey(101), row: mail(101) }]);
+    await server.idle();
+    source.write(MAIL, [{ key: mailKey(102), row: mail(102) }]);
+    await server.idle();
+    client.open("inbox", newest(4));
+    expect(client.status()).toBe("resyncing");
+    expect(ats(client.rows("inbox"))).toEqual(down(100, 5));
+    deliver();
+    await server.idle();
+    expect(client.status()).toBe("live");
+    expect(ats(client.rows("inbox"))).toEqual(down(102, 4));
+    expect(client.held()).toBe(server.held());
+  });
 });
