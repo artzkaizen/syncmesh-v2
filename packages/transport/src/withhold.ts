@@ -119,8 +119,9 @@ export interface WithheldIntake {
   readonly engine: Engine;
   /** Absent in an ungranted mesh, which takes no withheld frame at all. */
   readonly gate: ReadGate | undefined;
+  /** The peer the link's handshake proved; `undefined` on a link that runs none. */
+  readonly from: PeerId | undefined;
   readonly drain: (author: PeerId) => readonly StoredEvent[];
-  readonly vouch: (author: PeerId) => void;
 }
 
 /**
@@ -128,16 +129,21 @@ export interface WithheldIntake {
  * over each named sequence it now stands directly below, and folds again — until it stands below
  * one nobody named. Taken only under this device's own entitlement: a frame judged by some other
  * grant is a claim about a slice this device does not hold, and adopting it is how a cursor comes
- * to describe events nobody will send.
+ * to describe events nobody will send. And only about a run its sender may speak for
+ * ({@link ReadGate.attests}): the author's own, or any run from the issuer.
+ *
+ * Nothing is vouched for here. A receipt claims a whole run (D28), and a cursor that stepped over
+ * a withheld sequence stands past an event this device never held.
  */
 export async function takeWithheld(
   intake: WithheldIntake,
   scope: string,
   withheld: Ahead,
 ): Promise<void> {
-  const { engine, gate, drain, vouch } = intake;
+  const { engine, gate, from, drain } = intake;
   if (gate === undefined || scope !== gate.own()) return;
   for (const [author, seqs] of withheld) {
+    if (!gate.attests(from, author)) continue;
     for (;;) {
       const ready = drain(author);
       if (ready.length > 0) {
@@ -149,6 +155,5 @@ export async function takeWithheld(
       if (next === undefined) break;
       engine.adoptCoverage({ synced: new Map([[author, next]]), local: new Map(), scope });
     }
-    vouch(author);
   }
 }

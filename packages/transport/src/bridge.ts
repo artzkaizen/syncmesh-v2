@@ -279,8 +279,8 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
       const intake = {
         engine,
         gate: options.readGate,
+        from: reader(),
         drain: holdback.drain,
-        vouch: custody.vouch,
       };
       queue = queue.then(() => takeWithheld(intake, scope, withheld));
     },

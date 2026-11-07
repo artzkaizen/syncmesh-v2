@@ -37,6 +37,19 @@ export interface ReadGate {
   ) => Interest | undefined;
   /** This device's own entitlement, as that text: the only scope it takes a withheld frame under. */
   readonly own: () => string;
+  /**
+   * Whether a withheld frame from `from` may step this device's cursor over `author`'s run: only
+   * when `from` is that author, naming its own writes, or the issuer, which reads everything.
+   *
+   * A withheld frame carries no proof — the event it names is the one thing it does not send — so
+   * it is taken only from a peer that would know. Anyone else naming another author's sequences
+   * could make this device skip events it may read, for good: once the cursor stands past them, no
+   * honest peer's diff offers them again. A run withheld by a forwarder instead stays a gap, which
+   * the author or the issuer closes when it is next linked.
+   */
+  readonly attests: (from: PeerId | undefined, author: PeerId) => boolean;
+  /** Whether `peer` is the issuer, which reads everything and so may hold every author's run. */
+  readonly whole: (peer: PeerId | undefined) => boolean;
 }
 
 export interface ReadGateOptions {
@@ -54,6 +67,7 @@ export function createReadGate(options: ReadGateOptions): ReadGate {
     (peer === undefined ? undefined : grants.grantFor(peer)?.partitions) ?? [];
   const scope = (peer: PeerId | undefined): string =>
     interestText(entitledInterest(undefined, granted(peer)));
+  const whole = (peer: PeerId | undefined): boolean => peer !== undefined && peer === issuer;
   return {
     withholds: (peer, event) => {
       const partition = event.partition;
@@ -65,5 +79,7 @@ export function createReadGate(options: ReadGateOptions): ReadGate {
     serves: (peer, interest) =>
       peer === undefined || peer === issuer ? interest : entitledInterest(interest, granted(peer)),
     own: () => scope(self),
+    attests: (from, author) => from !== undefined && (from === author || whole(from)),
+    whole,
   };
 }
