@@ -1,8 +1,18 @@
+import type { RetryPolicy } from "@syncmesh/temporal";
+
+import { Result } from "@syncmesh/result";
+import { Temporal } from "@syncmesh/temporal";
 import { describe, expect, test } from "bun:test";
+
+import type { WindowClient } from "../client.js";
+import type { ServerWindowsOptions } from "../server.js";
+import type { FeedState, PageSource } from "../source.js";
 
 import { createWindowClient } from "../client.js";
 import { decodeWindowFrame } from "../frames.js";
+import { readKey } from "../request.js";
 import { createServerWindows } from "../server.js";
+import { ReadFailed, ReadRefused } from "../source.js";
 import {
   AT,
   CALLS,
@@ -11,6 +21,7 @@ import {
   SUBJECT,
   ats,
   down,
+  eventually,
   harness,
   mail,
   mailKey,
@@ -49,30 +60,36 @@ describe("a socket's windows over a page source (E27)", () => {
     expect(client.held()).toBe(5);
   });
 
-  test("a half scroll sends only the rows that are new to the socket", async () => {
+  test("a scroll is another read: its rows travel under it, and the old page's leave", async () => {
     const { client, server, frames } = harness(100);
     client.open("inbox", newest(6));
+    await server.idle();
     client.open("inbox", newest(6, { after: 97 }));
     await server.idle();
     const patch = lastPatch(frames);
-    expect(patch.puts.map((p) => p.row.get(AT))).toEqual([94, 93, 92, 91]);
-    expect(patch.dels.map((d) => d.key)).toEqual([100, 99, 98, 97].map(mailKey));
+    // a row is one read's row, so 96 and 95 are sent again under the page that now shows them
+    expect(patch.puts.map((p) => p.row.get(AT))).toEqual(down(96, 6));
+    expect(patch.dels.map((d) => d.key)).toEqual(down(100, 6).map(mailKey));
     expect(ats(client.rows("inbox"))).toEqual(down(96, 6));
+    expect(server.held()).toBe(6);
   });
 
-  test("rows are refcounted across windows: evicted only when no window holds them", async () => {
+  test("rows are refcounted across windows of one read: evicted only when no window holds them", async () => {
     const { client, server, frames } = harness(100);
-    client.open("wide", newest(10));
-    client.open("narrow", newest(4));
+    client.open("first", newest(4, { folder: "inbox" }));
     await server.idle();
-    // the narrow window's rows were already on the socket: nothing travels but its key list
+    // the same read spelled with its keys the other way round is still the same read
+    client.open("second", { path: "mail.inbox", input: { folder: "inbox", limit: 4 } });
+    await server.idle();
+    // the second window's rows were already on the socket: nothing travels but its key list
     expect(lastPatch(frames).puts).toEqual([]);
-    client.close("wide");
+    expect(ats(client.rows("second"))).toEqual(down(100, 4));
+    client.close("first");
     await server.idle();
-    expect(lastPatch(frames).dels.map((d) => d.key)).toEqual(down(96, 6).map(mailKey));
     expect(server.held()).toBe(4);
-    client.close("narrow");
+    client.close("second");
     await server.idle();
+    expect(lastPatch(frames).dels.map((d) => d.key)).toEqual(down(100, 4).map(mailKey));
     expect(server.held()).toBe(0);
     expect(client.held()).toBe(0);
   });
@@ -517,5 +534,195 @@ describe("a socket's windows over a page source (E27)", () => {
     expect(client.status()).toBe("live");
     expect(ats(client.rows("inbox"))).toEqual(down(102, 4));
     expect(client.held()).toBe(server.held());
+  });
+});
+
+/** A source whose every read is scripted: each call gets the next answer, the last one repeating. */
+const scripted = (...answers: readonly ("ok" | "fail" | "refuse")[]) => {
+  let reads = 0;
+  let commit: (tables: ReadonlySet<string>) => void = () => undefined;
+  let feed: (state: FeedState) => void = () => undefined;
+  const source: PageSource = {
+    readPage: async (request) => {
+      reads++;
+      const answer = answers[Math.min(reads, answers.length) - 1];
+      if (answer === "fail") return Result.err(new ReadFailed({ message: "statement timeout" }));
+      if (answer === "refuse") return Result.err(new ReadRefused({ message: "permission denied" }));
+      // the row carries its read and how many reads came before it, so a test sees which it got
+      const shown = `${readKey(request)} #${reads}`;
+      return Result.ok({
+        rows: [{ key: "a", row: new Map([[SUBJECT, shown]]) }],
+        tables: new Set([MAIL]),
+      });
+    },
+    onCommit: (listener) => {
+      commit = listener;
+      return () => undefined;
+    },
+    onFeed: (listener) => {
+      feed = listener;
+      return () => undefined;
+    },
+  };
+  return {
+    source,
+    reads: () => reads,
+    commit: () => commit(new Set([MAIL])),
+    feed: (state: FeedState) => feed(state),
+  };
+};
+
+/** One client and one server over `source`, the server's options as given. */
+const joined = (source: PageSource, options: Partial<ServerWindowsOptions> = {}) => {
+  const client = createWindowClient();
+  const server = createServerWindows({
+    source,
+    send: (frame) => client.receive(frame),
+    ...options,
+  });
+  client.attach((frame) => server.receive(frame));
+  return { client, server };
+};
+
+const subjectOf = (client: WindowClient, id: string) => client.rows(id)[0]?.row.get(SUBJECT);
+
+/** Long enough that no test sees a retry it did not wait for. */
+const NO_RETRY = {
+  first: Temporal.Duration.from({ minutes: 1 }),
+  most: Temporal.Duration.from({ minutes: 1 }),
+} as const satisfies RetryPolicy;
+
+describe("a window whose read fails (D43)", () => {
+  test("a failed re-read keeps the rows, marks the window failed, and the next commit reads it again", async () => {
+    const { source, commit } = scripted("ok", "fail", "ok");
+    const { client, server } = joined(source, { retry: NO_RETRY });
+    client.open("w", CALLS_READ);
+    await server.idle();
+    expect(subjectOf(client, "w")).toEndWith("#1");
+    commit();
+    await server.idle();
+    expect(client.failure("w")).toBe("statement timeout");
+    expect(subjectOf(client, "w")).toEndWith("#1");
+    commit();
+    await server.idle();
+    expect(client.failure("w")).toBeUndefined();
+    expect(subjectOf(client, "w")).toEndWith("#3");
+    server.stop();
+  });
+
+  test("a failed window is read again after the retry wait, with no commit to prompt it", async () => {
+    const { source, reads } = scripted("fail", "fail", "ok");
+    const retry = {
+      first: Temporal.Duration.from({ milliseconds: 5 }),
+      most: Temporal.Duration.from({ milliseconds: 10 }),
+    } as const satisfies RetryPolicy;
+    const { client, server } = joined(source, { retry });
+    client.open("w", CALLS_READ);
+    await server.idle();
+    // never answered, and not refused: the window is waiting, failed
+    expect(client.arrived("w")).toBe(false);
+    expect(client.failure("w")).toBe("statement timeout");
+    await eventually(() => client.arrived("w"), "the retried read");
+    expect(reads()).toBe(3);
+    expect(client.failure("w")).toBeUndefined();
+    server.stop();
+  });
+
+  test("a refused re-read closes the window, and is not retried", async () => {
+    const { source, reads, commit } = scripted("ok", "refuse");
+    const { client, server } = joined(source, { retry: NO_RETRY });
+    client.open("w", CALLS_READ);
+    await server.idle();
+    commit();
+    await server.idle();
+    expect(client.refusal("w")).toBe("permission denied");
+    expect(client.failure("w")).toBeUndefined();
+    expect(server.held()).toBe(0);
+    commit();
+    await server.idle();
+    expect(reads()).toBe(2);
+  });
+
+  test("a lost feed fails every window, and a resumed one reads them all again", async () => {
+    const { source, reads, feed } = scripted("ok");
+    const { client, server } = joined(source, { retry: NO_RETRY });
+    client.open("one", CALLS_READ);
+    client.open("two", newest(5));
+    await server.idle();
+    feed({ kind: "lost", reason: "the change feed stopped" });
+    await server.idle();
+    expect(client.failure("one")).toBe("the change feed stopped");
+    expect(client.failure("two")).toBe("the change feed stopped");
+    expect(reads()).toBe(2);
+    feed({ kind: "resumed" });
+    await server.idle();
+    expect(reads()).toBe(4);
+    expect(client.failure("one")).toBeUndefined();
+    expect(client.failure("two")).toBeUndefined();
+    server.stop();
+  });
+});
+
+describe("what a socket's frames and commits cost (D43)", () => {
+  test("two thousand desires for one window are one read, not two thousand", async () => {
+    const { source, reads } = scripted("ok");
+    const { client, server } = joined(source);
+    for (let i = 0; i < 2000; i++) client.open("same", CALLS_READ);
+    await server.idle();
+    // the first desire is read at once; every one behind it collapses into the latest
+    expect(reads()).toBeLessThanOrEqual(2);
+    expect(client.arrived("same")).toBe(true);
+  });
+
+  test("a burst of commits is one re-read per window, and windows of one read share it", async () => {
+    const { source, reads, commit } = scripted("ok");
+    const { client, server } = joined(source);
+    client.open("one", CALLS_READ);
+    client.open("two", CALLS_READ);
+    await server.idle();
+    const before = reads();
+    for (let i = 0; i < 50; i++) commit();
+    await server.idle();
+    // the first commit starts a re-read, the other 49 wait behind it as one
+    expect(reads() - before).toBeLessThanOrEqual(2);
+  });
+
+  test("a page past the row ceiling is refused, not sent", async () => {
+    const { client, server } = harness(100, { maxRows: 10 });
+    client.open("inbox", newest(20));
+    await server.idle();
+    expect(client.refusal("inbox")).toContain("at most 10");
+    expect(server.held()).toBe(0);
+  });
+
+  test("two inputs of one read keep their own rows, though both hold key a", async () => {
+    const { source } = scripted("ok");
+    const { client, server } = joined(source);
+    client.open("cat", { path: "search", input: { q: "cat" } });
+    client.open("dog", { path: "search", input: { q: "dog" } });
+    await server.idle();
+    expect(subjectOf(client, "cat")).toStartWith('["search",{"q":"cat"}]');
+    expect(subjectOf(client, "dog")).toStartWith('["search",{"q":"dog"}]');
+  });
+
+  test("a send that throws closes the socket instead of wedging its queue", async () => {
+    const { source, reads } = scripted("ok");
+    const closed: string[] = [];
+    const server = createServerWindows({
+      source,
+      send: () => {
+        throw new Error("socket closed");
+      },
+      close: (reason) => closed.push(reason),
+    });
+    const client = createWindowClient();
+    client.attach((frame) => server.receive(frame));
+    client.open("a", CALLS_READ);
+    await server.idle();
+    expect(closed).toEqual(["socket closed"]);
+    client.open("b", newest(5));
+    await server.idle();
+    // a closed socket reads nothing more
+    expect(reads()).toBe(1);
   });
 });

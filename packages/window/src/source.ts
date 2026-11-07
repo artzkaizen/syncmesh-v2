@@ -12,8 +12,25 @@ export interface Page {
   readonly tables: ReadonlySet<string>;
 }
 
-/** Why a read was not served: no such procedure, an input it refuses, or a table the reader may not read. */
+/**
+ * Why a read is not served, and will not be however often it is asked: no such procedure, an
+ * input it refuses, or a table the reader may not read.
+ */
 export class ReadRefused extends TaggedError("ReadRefused")<{ message: string }> {}
+
+/**
+ * A read that did not run this time: a statement timeout, a lost connection, a database
+ * restarting, a change feed that stopped. The window keeps the rows it had and is read again.
+ */
+export class ReadFailed extends TaggedError("ReadFailed")<{ message: string }> {}
+
+/**
+ * The change feed a source hears commits from: `lost` when it stopped, so no commit is heard
+ * until it is back, and `resumed` when a new one started, which may have missed any number.
+ */
+export type FeedState =
+  | { readonly kind: "lost"; readonly reason: string }
+  | { readonly kind: "resumed" };
 
 /**
  * Whatever runs a window's read on the server (D43): the app's `query` procedures over Postgres,
@@ -22,10 +39,15 @@ export class ReadRefused extends TaggedError("ReadRefused")<{ message: string }>
  */
 export interface PageSource {
   /** Runs the read the request names and returns its page, or why it will not. */
-  readonly readPage: (request: ReadRequest) => Promise<Result<Page, ReadRefused>>;
+  readonly readPage: (request: ReadRequest) => Promise<Result<Page, ReadRefused | ReadFailed>>;
   /**
    * Committed changes, as the tables each transaction touched, in commit order. Returns the
    * unsubscribe.
    */
   readonly onCommit: (listener: (tables: ReadonlySet<string>) => void) => () => void;
+  /**
+   * The feed's comings and goings, for a source whose feed can stop. Without it the feed is
+   * taken never to stop. Returns the unsubscribe.
+   */
+  readonly onFeed?: (listener: (state: FeedState) => void) => () => void;
 }

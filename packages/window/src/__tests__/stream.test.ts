@@ -14,7 +14,7 @@ const INBOX = "mail.inbox";
 const key = (k: string) => k;
 
 const put = (k: string, subject: string) => ({
-  path: INBOX,
+  read: INBOX,
   key: key(k),
   row: new Map([[SUBJECT, subject]]),
 });
@@ -25,6 +25,7 @@ const patch = (over: Partial<RowPatch> & Pick<RowPatch, "epoch" | "version">): R
   dels: [],
   windows: [],
   refused: [],
+  failed: [],
   ...over,
 });
 
@@ -33,7 +34,7 @@ const opening = patch({
   version: 1,
   reset: true,
   puts: [put("a", "hello"), put("b", "invoice")],
-  windows: [{ id: "inbox", path: INBOX, keys: [key("b"), key("a")] }],
+  windows: [{ id: "inbox", read: INBOX, keys: [key("b"), key("a")] }],
 });
 
 const subjects = (stream: ReturnType<typeof createPatchStream>, id: string) =>
@@ -59,8 +60,8 @@ describe("versioned row patches (E24)", () => {
       epoch: "e1",
       version: 2,
       puts: [put("a", "hello again")],
-      dels: [{ path: INBOX, key: key("b") }],
-      windows: [{ id: "inbox", path: INBOX, keys: [key("a")] }],
+      dels: [{ read: INBOX, key: key("b") }],
+      windows: [{ id: "inbox", read: INBOX, keys: [key("a")] }],
     });
     expect(stream.apply(next)).toBe("applied");
     expect(subjects(stream, "inbox")).toEqual(["hello again"]);
@@ -70,7 +71,7 @@ describe("versioned row patches (E24)", () => {
   test("a skipped version is a gap and changes nothing", () => {
     const stream = createPatchStream();
     stream.apply(opening);
-    const skipped = patch({ epoch: "e1", version: 3, dels: [{ path: INBOX, key: key("a") }] });
+    const skipped = patch({ epoch: "e1", version: 3, dels: [{ read: INBOX, key: key("a") }] });
     expect(stream.apply(skipped)).toBe("gap");
     expect(subjects(stream, "inbox")).toEqual(["invoice", "hello"]);
     expect(stream.position()).toEqual({ epoch: "e1", version: 1 });
@@ -91,7 +92,7 @@ describe("versioned row patches (E24)", () => {
       version: 1,
       reset: true,
       puts: [put("c", "contract")],
-      windows: [{ id: "inbox", path: INBOX, keys: [key("c")] }],
+      windows: [{ id: "inbox", read: INBOX, keys: [key("c")] }],
     });
     expect(stream.apply(resnapshot)).toBe("applied");
     expect(subjects(stream, "inbox")).toEqual(["contract"]);
@@ -123,7 +124,7 @@ describe("versioned row patches (E24)", () => {
     const stream = createPatchStream();
     stream.apply({
       ...opening,
-      windows: [...opening.windows, { id: "starred", path: INBOX, keys: [key("a")] }],
+      windows: [...opening.windows, { id: "starred", read: INBOX, keys: [key("a")] }],
     });
     stream.forget("inbox");
     expect(stream.rows("inbox")).toEqual([]);

@@ -7,7 +7,14 @@
  */
 import type { ColumnName } from "@syncmesh/kernel";
 
-import { WINDOW_TAGS, desireFrame, requestText, rowsFrame, undesireFrame } from "@syncmesh/window";
+import {
+  WINDOW_TAGS,
+  desireFrame,
+  readKey,
+  requestText,
+  rowsFrame,
+  undesireFrame,
+} from "@syncmesh/window";
 import { bytesToHex } from "@syncmesh/wire";
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- fixtures: names the schema would own */
@@ -19,6 +26,8 @@ const A = "m-1";
 const B = "m-2";
 
 const QUERY = requestText({ path: INBOX, input: { folder: "inbox", limit: 50 } });
+/** What a row is held under: the read, its input's keys in order. */
+const READ = readKey({ path: INBOX, input: { limit: 50, folder: "inbox" } });
 const SCROLLED = requestText({
   path: INBOX,
   input: { folder: "inbox", limit: 50, after: { at: 150, id: "m-2" } },
@@ -67,12 +76,13 @@ export function windowVectors() {
           version: 1,
           reset: true,
           puts: [
-            { path: INBOX, key: B, row: row("invoice", 150) },
-            { path: INBOX, key: A, row: row("hello", 120) },
+            { read: READ, key: B, row: row("invoice", 150) },
+            { read: READ, key: A, row: row("hello", 120) },
           ],
           dels: [],
-          windows: [{ id: "inbox", path: INBOX, keys: [B, A] }],
+          windows: [{ id: "inbox", read: READ, keys: [B, A] }],
           refused: [],
+          failed: [],
         }),
       ),
     },
@@ -86,9 +96,10 @@ export function windowVectors() {
           version: 2,
           reset: false,
           puts: [],
-          dels: [{ path: INBOX, key: A }],
-          windows: [{ id: "inbox", path: INBOX, keys: [B] }],
+          dels: [{ read: READ, key: A }],
+          windows: [{ id: "inbox", read: READ, keys: [B] }],
           refused: [],
+          failed: [],
         }),
       ),
     },
@@ -105,6 +116,25 @@ export function windowVectors() {
           dels: [],
           windows: [],
           refused: [{ id: "drafts", reason: "no read mail.drafts" }],
+          failed: [],
+        }),
+      ),
+    },
+    {
+      description:
+        "rows, a failure: the window's read did not run this time; it keeps its rows and is read again",
+      kind: "rows",
+      tag: WINDOW_TAGS.rows,
+      wireHex: bytesToHex(
+        rowsFrame({
+          epoch: "e-8",
+          version: 4,
+          reset: false,
+          puts: [],
+          dels: [],
+          windows: [],
+          refused: [],
+          failed: [{ id: "inbox", reason: "canceling statement due to statement timeout" }],
         }),
       ),
     },

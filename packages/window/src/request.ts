@@ -20,7 +20,33 @@ export class MalformedRequest extends TaggedError("MalformedRequest")<{ message:
 export const requestText = (request: ReadRequest): string =>
   JSON.stringify([request.path, request.input]);
 
-/* oxlint-disable anti-slop/no-runtime-typeof -- parsing wire text is the I/O boundary */
+/* oxlint-disable anti-slop/no-runtime-typeof -- a JSON value dispatches on its runtime kind, and parsing wire text is the I/O boundary */
+
+/** The same JSON with every object's keys in order, so two spellings of one input are one text. */
+const canonical = (value: JsonValue): JsonValue => {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(canonical);
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([key, inner]) => [key, canonical(inner)]),
+  );
+};
+
+/**
+ * Which read a row came from: the path and the input, whatever order its keys were written in.
+ *
+ * A row is one read's row. `search({ q: "cat" })` and `search({ q: "dog" })` may both return
+ * mail `a` with a different snippet, so the two are two rows, and two windows asking the same
+ * read are one.
+ *
+ * @example
+ * readKey({ path: "mail.inbox", input: { limit: 50, folder: "inbox" } });
+ * // '["mail.inbox",{"folder":"inbox","limit":50}]'
+ */
+export const readKey = (request: ReadRequest): string =>
+  JSON.stringify([request.path, canonical(request.input)]);
+
 /** Reads a request off the wire. The input stays unparsed: only the procedure knows its shape. */
 export function parseRequest(text: string): Result<ReadRequest, MalformedRequest> {
   return Result.try({

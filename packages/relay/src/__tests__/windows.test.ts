@@ -156,6 +156,27 @@ describe("serving windows on a socket (E27, D43)", () => {
     expect(source.pagesRead()).toBe(before);
   });
 
+  test("a socket that throws on a patch is closed, and its windows read nothing more", async () => {
+    const source = loaded();
+    let closed: string | undefined;
+    const throwing: RelaySocket = {
+      send: () => {
+        throw new Error("the socket is gone");
+      },
+      close: (reason) => {
+        closed = reason;
+      },
+    };
+    const served = serveWindows(throwing, { source });
+    served.receive(desireFrame("box-0", requestText(boxRead(0))));
+    await served.windows.idle();
+    expect(closed).toBe("the socket is gone");
+    const before = source.pagesRead();
+    served.receive(desireFrame("box-1", requestText(boxRead(1))));
+    await served.windows.idle();
+    expect(source.pagesRead()).toBe(before);
+  });
+
   test("frames that are not window frames are left for the socket's other reader", () => {
     const served = serveWindows(slowSocket(1, () => {}).socket, { source: loaded() });
     // `ka`, the relay's keepalive, is tag 11

@@ -12,7 +12,7 @@ import { createSender } from "./sender.js";
  * socket's ceilings. The source is built for the principal the host authenticated, so what it
  * reads is already what that reader may see.
  */
-export interface WindowServerOptions extends Omit<ServerWindowsOptions, "send"> {
+export interface WindowServerOptions extends Omit<ServerWindowsOptions, "send" | "close"> {
   /** Frames queued before the socket is closed as one that cannot keep up. */
   readonly maxBacklog?: number;
   /** Bytes queued before the same; a screen of large rows is bytes before it is frames. */
@@ -60,6 +60,8 @@ export function serveWindows(socket: RelaySocket, options: WindowServerOptions):
       sender.send(frame);
       if (!sender.alive()) windows.stop();
     },
+    // a socket that threw on a patch has dropped it, and a stream with a hole is not resumed
+    close: (reason) => socket.close(reason),
   });
   return {
     receive: (bytes) =>
