@@ -22,7 +22,7 @@ export interface Withheld {
 export const withholds = (withheld: Withheld | undefined, event: SyncEvent): boolean =>
   withheld !== undefined &&
   withheld.tables.size > 0 &&
-  event.changes.some((change) => withheld.tables.has(String(change.table)));
+  event.changes.some((change) => withheld.tables.has(change.table));
 
 /** A table's digest, unless it is gated: two devices admitted different rows are not divergent. */
 export const openDigests = (
@@ -40,7 +40,7 @@ export const openDigests = (
  */
 export const servable = (withheld: Withheld | undefined, snapshot: Snapshot): Snapshot => {
   if (withheld === undefined || withheld.tables.size === 0) return snapshot;
-  const rows = snapshot.rows.filter((row) => !withheld.tables.has(String(row.table)));
+  const rows = snapshot.rows.filter((row) => !withheld.tables.has(row.table));
   const author = withheld.author;
   if (author === undefined) return { ...snapshot, rows };
   const synced = new Map(snapshot.coverage.synced);

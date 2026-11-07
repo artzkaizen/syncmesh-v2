@@ -60,7 +60,7 @@ export function createGate(admission: RelayAdmission, room: string): Gate {
   return {
     // a sealed event reads as no changes at all, so it is not gated: the authority writes gated
     // rows in the clear, since they belong to no partition a key could be issued for
-    gates: (event) => event.changes.some((change) => tables.has(String(change.table))),
+    gates: (event) => event.changes.some((change) => tables.has(change.table)),
     entitle: (peer) =>
       Result.tryPromise({
         try: async () => admission.entitle({ peer, room }),

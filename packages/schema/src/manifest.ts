@@ -116,10 +116,10 @@ export const syncedTables = (schema: {
  */
 export const authorityTables = (schema: {
   readonly entries: readonly Pick<SchemaEntry, "table" | "visibility">[];
-}): readonly string[] =>
+}): readonly TableName[] =>
   schema.entries
     .filter((entry) => entry.visibility === "authority")
-    .map((entry) => String(entry.table.name));
+    .map((entry) => entry.table.name);
 
 /** One manifest for the data model (D06-A). Definition mistakes throw at module load. */
 export function syncSchema<

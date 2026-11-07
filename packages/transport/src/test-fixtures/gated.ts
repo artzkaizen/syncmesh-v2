@@ -123,7 +123,7 @@ export const holds = (p: HasEngine, table: TableName, id: string): boolean =>
 /** The clinics an event's consult rows name, as cells: what an entitlement in these tests admits on. */
 export const clinicsIn = (event: SyncEvent): readonly (CellValue | undefined)[] =>
   event.changes.flatMap((change) =>
-    String(change.table) === "consults" && change.kind === "insert" ? [change.row.get(CLINIC)] : [],
+    change.table === CONSULTS && change.kind === "insert" ? [change.row.get(CLINIC)] : [],
   );
 
 /** Whether every consult an event writes names one of `clinics`. */
