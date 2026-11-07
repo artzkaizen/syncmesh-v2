@@ -57,7 +57,9 @@ export function createWindowClient(): WindowClient {
   /**
    * The stream being rebuilt after a reconnect or a gap, and the windows it has named or refused
    * so far. It replaces {@link shown} once it accounts for every window the client desires, so a
-   * reset that names only some of them never blanks the rest.
+   * reset that names only some of them never blanks the rest. The reset that answers a gap
+   * names every window the view holds open, so it accounts for every desired window: one it
+   * leaves out was refused, perhaps in the very patch that went missing.
    */
   let pending: { readonly stream: PatchStream; readonly settled: Set<string> } | undefined;
   const queries = new Map<string, WindowQuery>();
@@ -74,8 +76,7 @@ export function createWindowClient(): WindowClient {
   /** Swaps the rebuilt stream in once every desired window is in it. */
   const settle = (): void => {
     if (pending === undefined) return;
-    // a window refused before has nothing to wait for: a server that holds it open names it
-    for (const id of queries.keys()) if (!pending.settled.has(id) && !refusals.has(id)) return;
+    for (const id of queries.keys()) if (!pending.settled.has(id)) return;
     shown = pending.stream;
     pending = undefined;
     notify();
@@ -127,11 +128,17 @@ export function createWindowClient(): WindowClient {
         resync(target);
         return true;
       }
+      // every desire sent before the resync was read before it, so its reset holds them all
+      const answered = frame.reset && asked;
       if (frame.reset) asked = false;
+      for (const { id } of frame.windows) refusals.delete(id);
       for (const { id, reason } of frame.refused) refusals.set(id, reason);
       if (pending === undefined) notify();
       else {
-        for (const { id } of frame.windows) pending.settled.add(id);
+        const settled = answered
+          ? queries.keys()
+          : [...frame.windows, ...frame.refused].map((w) => w.id);
+        for (const id of settled) pending.settled.add(id);
         settle();
       }
       return true;

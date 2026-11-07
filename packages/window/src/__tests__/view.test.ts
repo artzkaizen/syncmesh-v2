@@ -184,6 +184,30 @@ describe("a window over a row source (E27)", () => {
     expect(client.refusal("calls")).toBe("no table calls");
   });
 
+  test("a lost refusal does not hold the resnapshot back either", () => {
+    const { client, source, loseNext } = harness(100);
+    client.desire("inbox", newest(5));
+    loseNext();
+    client.desire("calls", newest(5, { table: CALLS }));
+    source.write([{ table: MAIL, key: mailKey(101), row: mail(101) }]);
+    expect(client.status()).toBe("live");
+    source.write([{ table: MAIL, key: mailKey(102), row: mail(102) }]);
+    expect(ats(client.rows("inbox"))).toEqual(down(102, 5));
+    expect(client.rows("calls")).toEqual([]);
+  });
+
+  test("a lost `maxWindows` refusal does not hold the resnapshot back", () => {
+    const { client, source, loseNext } = harness(100, { maxWindows: 1 });
+    client.desire("inbox", newest(5));
+    loseNext();
+    client.desire("extra", newest(5, { after: after(50) }));
+    source.write([{ table: MAIL, key: mailKey(101), row: mail(101) }]);
+    source.write([{ table: MAIL, key: mailKey(102), row: mail(102) }]);
+    expect(client.status()).toBe("live");
+    expect(ats(client.rows("inbox"))).toEqual(down(102, 5));
+    expect(client.rows("extra")).toEqual([]);
+  });
+
   test("a patch lost after the last undesire is caught by the next desire", () => {
     const { client, loseNext } = harness(100);
     client.desire("a", newest(3));
@@ -212,6 +236,23 @@ describe("a window over a row source (E27)", () => {
     client.desire("c", newest(3, { after: after(20) }));
     expect(client.refusal("c")).toBeUndefined();
     expect(ats(client.rows("c"))).toEqual(down(19, 3));
+  });
+
+  test("a window refused on one socket and served on the next is no longer reported refused", () => {
+    const { client, source, view } = harness(100, { maxWindows: 1 });
+    client.desire("a", newest(2));
+    client.desire("b", newest(2, { after: after(50) }));
+    expect(client.refusal("b")).toBe("a socket holds at most 1 windows");
+    view.close();
+    client.detach();
+    const seen: unknown[] = [];
+    client.subscribe(() => seen.push(ats(client.rows("b"))));
+    const next = createClientView({ source, send: (frame) => client.receive(frame) });
+    client.attach((frame) => next.receive(frame));
+    // the swap waited for the new view's answer on `b` rather than trusting the old refusal
+    expect(seen).toEqual([[49, 48]]);
+    expect(client.refusal("b")).toBeUndefined();
+    expect(client.status()).toBe("live");
   });
 
   test("a window the source cannot serve, or a query that does not parse, is refused", () => {
