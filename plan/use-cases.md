@@ -474,7 +474,8 @@ device that lies about its own verdict is quarantined by everyone else.
   (`mesh.on(instance, { as })`, or Postgres RLS), and what a reviewer reads to know who may see a
   row. Narrowing what a device is *sent* is `interest` (RFC-0019, carried by D23's scoped
   cursors) — `relayTransport({ interest })` — and today an interest is what a device asks for, not
-  an entitlement an authority imposes. The imposed version is §4's tier, and it is not built.
+  an entitlement an authority imposes. The imposed version is §4's tier: the relay's admission
+  gate (D24-A).
 - **Entity access is a snapshot.** A member removed from an entity keeps the rows their last
   grant admitted until it is replaced or expires. That is why `validFor` is hours here, and why
   `grants.expiring` / `grants.renew` exist rather than a timer this library owns. Live revocation
@@ -597,6 +598,10 @@ The three tiers, side by side:
   therefore arrive later over Bluetooth than it would have without the tier; it never arrives
   wrong, and it never stalls once the relay has been reached. Writing gated rows under a second
   authority key would remove the wait and is additive if a case needs it.
+- A narrowed entitlement withholds what comes next, not what is already held. `reentitle` re-pages
+  a device under its new entitlement, but the gated rows it was admitted to before stay on its
+  disk; nothing is sent to take them back. That is the same snapshot rule entity access follows
+  (§ *Entity access is a snapshot*), and a purge on narrowing is not built.
 - The tier gives up the offline *write*, and only that. The use-case table above never promised
   one: it promises reads held offline once the authority has spoken. Optimistic local writes plus
   an authority refusal is the split D24 rejected, and it becomes available only once the
