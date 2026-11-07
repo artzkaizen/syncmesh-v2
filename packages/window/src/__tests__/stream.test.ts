@@ -1,4 +1,4 @@
-import type { ColumnName, RowKey, TableName } from "@syncmesh/kernel";
+import type { ColumnName } from "@syncmesh/kernel";
 
 import { describe, expect, test } from "bun:test";
 
@@ -8,13 +8,13 @@ import { decodeWindowFrame, rowsFrame } from "../frames.js";
 import { createPatchStream } from "../stream.js";
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- test fixtures */
-const MAIL = "mail" as TableName;
 const SUBJECT = "subject" as ColumnName;
-const key = (k: string) => k as RowKey;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
+const INBOX = "mail.inbox";
+const key = (k: string) => k;
 
 const put = (k: string, subject: string) => ({
-  table: MAIL,
+  path: INBOX,
   key: key(k),
   row: new Map([[SUBJECT, subject]]),
 });
@@ -33,7 +33,7 @@ const opening = patch({
   version: 1,
   reset: true,
   puts: [put("a", "hello"), put("b", "invoice")],
-  windows: [{ id: "inbox", table: MAIL, keys: [key("b"), key("a")] }],
+  windows: [{ id: "inbox", path: INBOX, keys: [key("b"), key("a")] }],
 });
 
 const subjects = (stream: ReturnType<typeof createPatchStream>, id: string) =>
@@ -59,8 +59,8 @@ describe("versioned row patches (E24)", () => {
       epoch: "e1",
       version: 2,
       puts: [put("a", "hello again")],
-      dels: [{ table: MAIL, key: key("b") }],
-      windows: [{ id: "inbox", table: MAIL, keys: [key("a")] }],
+      dels: [{ path: INBOX, key: key("b") }],
+      windows: [{ id: "inbox", path: INBOX, keys: [key("a")] }],
     });
     expect(stream.apply(next)).toBe("applied");
     expect(subjects(stream, "inbox")).toEqual(["hello again"]);
@@ -70,7 +70,7 @@ describe("versioned row patches (E24)", () => {
   test("a skipped version is a gap and changes nothing", () => {
     const stream = createPatchStream();
     stream.apply(opening);
-    const skipped = patch({ epoch: "e1", version: 3, dels: [{ table: MAIL, key: key("a") }] });
+    const skipped = patch({ epoch: "e1", version: 3, dels: [{ path: INBOX, key: key("a") }] });
     expect(stream.apply(skipped)).toBe("gap");
     expect(subjects(stream, "inbox")).toEqual(["invoice", "hello"]);
     expect(stream.position()).toEqual({ epoch: "e1", version: 1 });
@@ -91,7 +91,7 @@ describe("versioned row patches (E24)", () => {
       version: 1,
       reset: true,
       puts: [put("c", "contract")],
-      windows: [{ id: "inbox", table: MAIL, keys: [key("c")] }],
+      windows: [{ id: "inbox", path: INBOX, keys: [key("c")] }],
     });
     expect(stream.apply(resnapshot)).toBe("applied");
     expect(subjects(stream, "inbox")).toEqual(["contract"]);
@@ -102,7 +102,7 @@ describe("versioned row patches (E24)", () => {
     const stream = createPatchStream();
     stream.apply(opening);
     stream.apply(
-      patch({ epoch: "e1", version: 2, refused: [{ id: "inbox", reason: "unknown table" }] }),
+      patch({ epoch: "e1", version: 2, refused: [{ id: "inbox", reason: "no read mail.inbox" }] }),
     );
     expect(stream.rows("inbox")).toEqual([]);
     expect(decodeWindowFrame(Uint8Array.of(0x81, 0x0b)).unwrap()).toBeUndefined();

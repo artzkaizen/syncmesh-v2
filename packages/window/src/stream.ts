@@ -1,5 +1,3 @@
-import type { RowKey, TableName } from "@syncmesh/kernel";
-
 import type { RowPatch, StreamPosition, WindowKeys, WindowRow } from "./frames.js";
 
 /** What applying one patch did: it landed, or it was not the next one and nothing changed. */
@@ -19,6 +17,8 @@ export interface PatchStream {
   readonly apply: (patch: RowPatch) => Applied;
   /** One window's rows in its order; empty for a window this stream has not been sent. */
   readonly rows: (id: string) => readonly WindowRow[];
+  /** Whether this stream has been sent the window's key list, which an empty page also is. */
+  readonly has: (id: string) => boolean;
   /** The last patch applied, or `undefined` before the first reset. */
   readonly position: () => StreamPosition | undefined;
   /** How many distinct rows are held across every window, which is what bounds its memory. */
@@ -27,7 +27,8 @@ export interface PatchStream {
   readonly forget: (id: string) => void;
 }
 
-const rowId = (table: TableName, key: RowKey): string => `${table}\u0000${key}`;
+/** One read's row: the same key under two reads is two rows, since each may project it differently. */
+export const rowId = (path: string, key: string): string => `${path}\u0000${key}`;
 
 export function createPatchStream(): PatchStream {
   const rows = new Map<string, WindowRow>();
@@ -47,8 +48,8 @@ export function createPatchStream(): PatchStream {
         rows.clear();
         windows.clear();
       }
-      for (const put of patch.puts) rows.set(rowId(put.table, put.key), put);
-      for (const del of patch.dels) rows.delete(rowId(del.table, del.key));
+      for (const put of patch.puts) rows.set(rowId(put.path, put.key), put);
+      for (const del of patch.dels) rows.delete(rowId(del.path, del.key));
       for (const window of patch.windows) windows.set(window.id, window);
       for (const refusal of patch.refused) windows.delete(refusal.id);
       position = { epoch: patch.epoch, version: patch.version };
@@ -59,11 +60,12 @@ export function createPatchStream(): PatchStream {
       if (window === undefined) return [];
       const out: WindowRow[] = [];
       for (const key of window.keys) {
-        const held = rows.get(rowId(window.table, key));
+        const held = rows.get(rowId(window.path, key));
         if (held !== undefined) out.push({ key: held.key, row: held.row });
       }
       return out;
     },
+    has: (id) => windows.has(id),
     position: () => position,
     held: () => rows.size,
     forget: (id) => {

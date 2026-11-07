@@ -1,4 +1,4 @@
-import type { Row, RowKey, TableName } from "@syncmesh/kernel";
+import type { Row } from "@syncmesh/kernel";
 import type { CborValue } from "@syncmesh/wire";
 
 import { Result, TaggedError } from "@syncmesh/result";
@@ -30,28 +30,31 @@ export interface StreamPosition {
   readonly version: number;
 }
 
-/** One row as the thin client holds it. */
+/** One row of a page: its primary key as text, and its cells as the read returned them. */
 export interface WindowRow {
-  readonly key: RowKey;
+  readonly key: string;
   readonly row: Row;
 }
 
-/** A row the view now holds at this value, whether it is new or changed. */
+/**
+ * A row the server now holds at this value, whether it is new or changed. `path` is the read
+ * that returned it: two reads may project one table differently, so a row is one read's row.
+ */
 export interface RowPut extends WindowRow {
-  readonly table: TableName;
+  readonly path: string;
 }
 
 /** A row no window on this socket holds any more. */
 export interface RowRef {
-  readonly table: TableName;
-  readonly key: RowKey;
+  readonly path: string;
+  readonly key: string;
 }
 
-/** A window's contents, in its order: at most `limit` keys into the rows the view holds. */
+/** A window's contents, in its order: the keys of the rows its read returned. */
 export interface WindowKeys {
   readonly id: string;
-  readonly table: TableName;
-  readonly keys: readonly RowKey[];
+  readonly path: string;
+  readonly keys: readonly string[];
 }
 
 /** A window the server would not open, and why. */
@@ -75,15 +78,15 @@ export interface RowPatch extends StreamPosition {
 }
 
 /**
- * Asks for a window, or replaces the one already held under `id` (a scroll). With `since`, the
- * client also says where its stream stands; a server whose stream is anywhere else answers with
- * a reset.
+ * Asks for a window, or replaces the one already held under `id` (the next page). With `since`,
+ * the client also says where its stream stands; a server whose stream is anywhere else answers
+ * with a reset.
  */
 export interface Desire {
   readonly kind: "desire";
   readonly id: string;
-  /** The query as wire text (`queryText`), parsed by whoever serves the window. */
-  readonly query: string;
+  /** The read as wire text (`requestText`), parsed by whoever serves the window. */
+  readonly request: string;
   readonly since?: StreamPosition;
 }
 
@@ -94,11 +97,11 @@ export interface Undesire {
 
 export type WindowFrame = Desire | Undesire | ({ readonly kind: "rows" } & RowPatch);
 
-export const desireFrame = (id: string, query: string, since?: StreamPosition): Uint8Array =>
+export const desireFrame = (id: string, request: string, since?: StreamPosition): Uint8Array =>
   encodeCbor(
     since === undefined
-      ? [WINDOW_TAGS.desire, id, query]
-      : [WINDOW_TAGS.desire, id, query, [since.epoch, since.version]],
+      ? [WINDOW_TAGS.desire, id, request]
+      : [WINDOW_TAGS.desire, id, request, [since.epoch, since.version]],
   );
 
 export const undesireFrame = (id: string): Uint8Array => encodeCbor([WINDOW_TAGS.undesire, id]);
@@ -109,9 +112,9 @@ export const rowsFrame = (patch: RowPatch): Uint8Array =>
     patch.epoch,
     patch.version,
     patch.reset ? 1 : 0,
-    patch.puts.map((put): CborValue => [put.table, put.key, rowToCbor(put.row)]),
-    patch.dels.map((del): CborValue => [del.table, del.key]),
-    patch.windows.map((w): CborValue => [w.id, w.table, [...w.keys]]),
+    patch.puts.map((put): CborValue => [put.path, put.key, rowToCbor(put.row)]),
+    patch.dels.map((del): CborValue => [del.path, del.key]),
+    patch.windows.map((w): CborValue => [w.id, w.path, [...w.keys]]),
     patch.refused.map((r): CborValue => [r.id, r.reason]),
   ]);
 
@@ -131,13 +134,10 @@ const parseList = <T>(
   return Result.ok(out);
 };
 
-/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- table names and row keys are text the schema owns; the codec only requires text */
-const asKey = (key: string) => key as RowKey;
-
-const asRef = ([table, key]: readonly CborValue[]): Result<RowRef, MalformedWindowFrame> =>
-  isString(table) && isString(key)
-    ? Result.ok({ table: table as TableName, key: key as RowKey })
-    : malformed("a row is named by [table, key]");
+const asRef = ([path, key]: readonly CborValue[]): Result<RowRef, MalformedWindowFrame> =>
+  isString(path) && isString(key)
+    ? Result.ok({ path, key })
+    : malformed("a row is named by [path, key]");
 
 const asPut = (entry: readonly CborValue[]): Result<RowPut, MalformedWindowFrame> =>
   Result.gen(function* () {
@@ -148,14 +148,13 @@ const asPut = (entry: readonly CborValue[]): Result<RowPut, MalformedWindowFrame
     return Result.ok({ ...ref, row });
   });
 
-const asWindow = ([id, table, keys]: readonly CborValue[]): Result<
+const asWindow = ([id, path, keys]: readonly CborValue[]): Result<
   WindowKeys,
   MalformedWindowFrame
 > =>
-  isString(id) && isString(table) && Array.isArray(keys) && keys.every((k) => isString(k))
-    ? Result.ok({ id, table: table as TableName, keys: keys.filter(isString).map(asKey) })
-    : malformed("a window is [id, table, keys]");
-/* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
+  isString(id) && isString(path) && Array.isArray(keys) && keys.every((k) => isString(k))
+    ? Result.ok({ id, path, keys: keys.filter(isString) })
+    : malformed("a window is [id, path, keys]");
 
 const asRefusal = ([id, reason]: readonly CborValue[]): Result<
   WindowRefusal,
@@ -182,15 +181,15 @@ const decodeRows = (parts: readonly CborValue[]): Result<WindowFrame, MalformedW
     } as const);
   });
 
-const decodeDesire = ([, id, query, since]: readonly CborValue[]): Result<
+const decodeDesire = ([, id, request, since]: readonly CborValue[]): Result<
   WindowFrame,
   MalformedWindowFrame
 > => {
-  if (!isString(id) || !isString(query)) return malformed("desire is not [id, query]");
-  if (since === undefined) return Result.ok({ kind: "desire", id, query });
+  if (!isString(id) || !isString(request)) return malformed("desire is not [id, request]");
+  if (since === undefined) return Result.ok({ kind: "desire", id, request });
   if (!Array.isArray(since) || !isString(since[0]) || !isSafeNonNegative(since[1]))
     return malformed("desire's since is not [epoch, version]");
-  return Result.ok({ kind: "desire", id, query, since: { epoch: since[0], version: since[1] } });
+  return Result.ok({ kind: "desire", id, request, since: { epoch: since[0], version: since[1] } });
 };
 
 /**
