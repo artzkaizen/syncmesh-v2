@@ -94,13 +94,12 @@ export function createDrafts(driver: SqlDriver, options: DraftStoreOptions = {})
     get: (key) =>
       attempt("draft read failed", async () => {
         const rows = await driver.all(
-          `SELECT value, expires_at FROM ${TABLE} WHERE key = ${mark(1)}`,
-          [key],
+          `SELECT value, CASE WHEN expires_at <= ${mark(1)} THEN 1 ELSE 0 END FROM ${TABLE} WHERE key = ${mark(2)}`,
+          [now().epochMilliseconds, key],
         );
         const held = rows[0];
         if (held === undefined) return undefined;
-        const expires = held[1];
-        if (typeof expires === "number" && expires <= now().epochMilliseconds) {
+        if (held[1] === 1) {
           await driver.run(`DELETE FROM ${TABLE} WHERE key = ${mark(1)}`, [key]);
           return undefined;
         }
@@ -126,16 +125,15 @@ export function createDrafts(driver: SqlDriver, options: DraftStoreOptions = {})
           .catch(() => undefined);
         // RETURNING is absent on older SQLite builds: fall back to select-then-delete.
         if (removed !== undefined) return removed.length;
+        const cutoff = now().epochMilliseconds;
         const due = await driver.all(
           `SELECT key FROM ${TABLE} WHERE expires_at IS NOT NULL AND expires_at <= ${mark(1)}`,
-          [now().epochMilliseconds],
+          [cutoff],
         );
-        for (const row of due) {
-          const key = row[0];
-          await driver.run(`DELETE FROM ${TABLE} WHERE key = ${mark(1)}`, [
-            typeof key === "string" ? key : String(key),
-          ]);
-        }
+        await driver.run(
+          `DELETE FROM ${TABLE} WHERE expires_at IS NOT NULL AND expires_at <= ${mark(1)}`,
+          [cutoff],
+        );
         return due.length;
       }),
   };

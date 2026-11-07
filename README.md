@@ -42,6 +42,7 @@ syncmesh/
 ├── adapters/            one runtime binding each — the only place runtime imports are allowed
 │   ├── sqlite-bun/ sqlite-node/ cloudflare-do/            E04   bindings a runtime ships; closed at three
 │   │                      an installed binding — expo-sqlite, better-sqlite3 — is ~8 lines of your own over SqliteBinding
+│   ├── rivet/             E25   the room in a Rivet actor (structural over rivetkit)
 │   ├── transport-ws/      E12
 │   ├── drizzle/           E17
 │   └── ble-channel/ wifi-aware-channel/                    E22 · E23

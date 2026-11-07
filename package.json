@@ -22,14 +22,15 @@
       "vite-plus": "0.3.0",
       "@types/node": "^24.0.0",
       "temporal-polyfill": "^1.0.4",
-      "drizzle-orm": "1.0.0-rc.4"
+      "drizzle-orm": "1.0.0-rc.4",
+      "zod": "^4.4.3"
     }
   },
   "type": "module",
   "scripts": {
     "bench": "bun run --cwd bench storage",
     "bench:join": "bun run --cwd bench join",
-    "ci": "vp check && vp run -r build && vp run -r typecheck && vp run --concurrency-limit 2 -r test && node tooling/verify-node-consumer/bin/index.ts && bun run --cwd bench scale",
+    "ci": "vp run -r build && vp check && vp run -r typecheck && vp run --concurrency-limit 2 -r test && node tooling/verify-node-consumer/bin/index.ts && bun run --cwd bench scale",
     "explore": "bun plan/tool/explorer.ts",
     "gen": "node tooling/create-package/bin/index.ts",
     "plan": "bun plan/tool/serve.ts",

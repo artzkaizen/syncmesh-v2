@@ -36,7 +36,7 @@ export {
   WORKSPACE_ID,
   identifierOf,
   type ActivityKind,
-  type IssueStatus,
+  IssueStatus,
 } from "./domain.js";
 export {
   ActorUnavailable,

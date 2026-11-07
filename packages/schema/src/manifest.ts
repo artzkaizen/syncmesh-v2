@@ -42,6 +42,12 @@ export type TableEntry<C extends Columns = Columns> =
       readonly allow: AllowFn<C, string>;
       readonly visibility?: undefined;
       readonly derive?: DeriveBlock<C>;
+      /**
+       * `"window"`: the server keeps this table and serves pages of it; devices never replicate it.
+       * Read it through a `query` procedure, and every device shows the page that procedure returns
+       * (D43). Absent, the table replicates.
+       */
+      readonly sync?: "window";
     }
   | {
       readonly columns: Columns;
@@ -50,6 +56,12 @@ export type TableEntry<C extends Columns = Columns> =
       readonly allow?: undefined;
       readonly visibility?: undefined;
       readonly derive?: DeriveBlock<Columns>;
+      /**
+       * `"window"`: the server keeps this table and serves pages of it; devices never replicate it.
+       * Read it through a `query` procedure, and every device shows the page that procedure returns
+       * (D43). Absent, the table replicates.
+       */
+      readonly sync?: "window";
     }
   | {
       readonly columns: C;
@@ -58,6 +70,7 @@ export type TableEntry<C extends Columns = Columns> =
       readonly partition?: undefined;
       readonly allow?: undefined;
       readonly derive?: DeriveBlock<C>;
+      readonly sync?: undefined;
     };
 
 export type ColumnsMap = Readonly<Record<string, Columns>>;
@@ -78,6 +91,8 @@ export interface SchemaEntry {
   readonly allow?: AllowBlock;
   /** The derive functions, keyed by target column; absent when the table declares none. */
   readonly derive?: DeriveBlock<Columns>;
+  /** `"window"` for a table the server serves pages of instead of replicating; absent, it replicates. */
+  readonly sync?: "window";
 }
 
 export type TablesOf<C extends ColumnsMap> = {
@@ -115,6 +130,31 @@ export interface Schema<C extends ColumnsMap, PC extends PresenceMap = Record<st
 export const syncedTables = (schema: {
   readonly entries: readonly Pick<SchemaEntry, "table">[];
 }): readonly Table[] => schema.entries.map((entry) => entry.table);
+
+/**
+ * The tables only the authority writes and only the relay's gate admits (D24) — what a relay's
+ * `admission.tables` names.
+ *
+ * @example
+ * startRelay(port, { admission: { tables: authorityTables(schema), entitle } })
+ */
+export const authorityTables = (schema: {
+  readonly entries: readonly Pick<SchemaEntry, "table" | "visibility">[];
+}): readonly TableName[] =>
+  schema.entries
+    .filter((entry) => entry.visibility === "authority")
+    .map((entry) => entry.table.name);
+
+/**
+ * The names of the tables marked `sync: "window"`: kept by the server and read a page at a time,
+ * never replicated (D43).
+ */
+export const servedTables = (schema: {
+  readonly entries: readonly Pick<SchemaEntry, "table" | "sync">[];
+}): ReadonlySet<string> =>
+  new Set(
+    schema.entries.filter((entry) => entry.sync === "window").map((entry) => entry.table.name),
+  );
 
 /** One manifest for the data model (D06-A). Definition mistakes throw at module load. */
 export function syncSchema<
@@ -156,9 +196,9 @@ export function syncSchema<
       partition,
       visibility: entry.visibility ?? "partition",
     };
-    const withAllow =
-      entry.allow === undefined ? base : { ...base, allow: entry.allow(combinators()) };
-    entries.push(entry.derive === undefined ? withAllow : { ...withAllow, derive: entry.derive });
+    const ruled = entry.allow === undefined ? base : { ...base, allow: entry.allow(combinators()) };
+    const derived = entry.derive === undefined ? ruled : { ...ruled, derive: entry.derive };
+    entries.push(entry.sync === undefined ? derived : { ...derived, sync: entry.sync });
     const rules = mergeRulesFor(name, tbl);
     if (rules.size > 0) merge.set(tbl.name, rules);
     const documents = docColumnEntries(name, tbl, entry.derive ?? {});

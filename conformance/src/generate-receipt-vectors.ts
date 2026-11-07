@@ -12,9 +12,10 @@ import type { SeqNum } from "@syncmesh/kernel";
 import { Temporal } from "@syncmesh/temporal";
 import { bytesToHex, createIdentity, issueReceipt } from "@syncmesh/wire";
 
-const HOLDER_SEED = Uint8Array.from({ length: 32 }, (_, i) => 21 + i);
-const AUTHOR_SEED = Uint8Array.from({ length: 32 }, (_, i) => 121 + i);
-const NOW = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
+/** The custody signer's and the author's seeds, shared with the refusal vectors (D32). */
+export const HOLDER_SEED = Uint8Array.from({ length: 32 }, (_, i) => 21 + i);
+export const AUTHOR_SEED = Uint8Array.from({ length: 32 }, (_, i) => 121 + i);
+export const NOW = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 
 export function receiptVectors() {
   const holder = createIdentity(HOLDER_SEED).unwrap();

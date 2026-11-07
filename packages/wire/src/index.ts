@@ -105,13 +105,24 @@ export {
   issueCheckpoint,
   verifyCheckpoint,
 } from "./checkpoint.js";
-export type { CustodyReceipt, ReceiptError, ReceiptRequest } from "./receipt.js";
+export type {
+  CustodyReceipt,
+  QuarantineReason,
+  ReceiptError,
+  ReceiptRequest,
+  RefusalReceipt,
+  RefusalRequest,
+} from "./receipt.js";
 export {
   BadReceiptSignature,
   MalformedReceipt,
   encodeReceipt,
+  encodeRefusal,
   issueReceipt,
+  issueRefusal,
+  isQuarantineReason,
   verifyReceipt,
+  verifyRefusal,
 } from "./receipt.js";
 export type { ContentKey, EventCrypto, KeyEpoch } from "./sealing.js";
 export {

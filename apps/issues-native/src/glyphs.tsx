@@ -1,5 +1,4 @@
-import type { IssueStatus } from "@syncmesh/issues";
-
+import { IssueStatus } from "@syncmesh/issues";
 import { memo } from "react";
 import { View } from "react-native";
 import Svg, { Circle, Path, Rect } from "react-native-svg";
@@ -48,7 +47,8 @@ export const StatusGlyph = memo(function StatusGlyph({
   readonly status: string;
 }) {
   sawSubtreeRender();
-  const color = STATUS_COLOR[status as IssueStatus] ?? STATUS_COLOR.backlog;
+  const known = IssueStatus.safeParse(status);
+  const color = known.success ? STATUS_COLOR[known.data] : STATUS_COLOR.backlog;
   return (
     <Svg height={size} viewBox={`0 0 ${String(BOX)} ${String(BOX)}`} width={size}>
       {status === "done" ? (

@@ -217,6 +217,82 @@ describe("the write ledger", () => {
     await b.stop();
   });
 
+  test("a peer that parks the write signs a refusal, and its later custody retires it (D32)", async () => {
+    const { a: sideA, b: sideB, control } = loopbackPair();
+    // B's clock is two hours on: A's one-hour grant is fresh where A checks it, and B's registry
+    // will not take it at all — so B's ladder finds no grant for A, and parks A's write
+    const LATER = T0.add({ hours: 2 });
+    const grantFor = (device: typeof deviceA, account: string, now: Temporal.Instant) =>
+      issueGrant(issuer, {
+        account,
+        device: device.peerId,
+        role: "member",
+        // SAFETY: test fixture instances in the documented kind:id form
+        partitions: ["org:acme"] as never,
+        validFor: Temporal.Duration.from({ hours: 1 }),
+        now,
+      });
+    const open = async (
+      device: typeof deviceA,
+      name: string,
+      link: typeof sideA,
+      now: Temporal.Instant,
+    ) =>
+      (
+        await createMesh({
+          driver: bunSqliteDriver(":memory:"),
+          schema: schema(),
+          identity: device,
+          issuer: issuer.peerId,
+          now: () => now,
+          transports: [linkTransport(name, () => link)],
+        })
+      ).unwrap();
+    const a = await open(deviceA, "loopback:a", sideA, T0);
+    const b = await open(deviceB, "loopback:b", sideB, LATER);
+    a.grants.register(grantFor(deviceA, "acct_a", T0)).unwrap();
+    a.grants.register(grantFor(deviceB, "acct_b", LATER)).unwrap();
+    b.grants.register(grantFor(deviceB, "acct_b", LATER)).unwrap();
+    const settle = async () => {
+      for (let round = 0; round < 12; round += 1) {
+        await control.flush();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    };
+
+    await a.on("org:acme").unwrap().db.insert(notes).values({ id: "n1", body: "hello" });
+    await settle();
+
+    const ledger = a.operations ?? panicNoLedger();
+    // SAFETY: this device's first write, so its event is sequence 1 — a branded integer
+    const first = 1 as SeqNum;
+    expect(b.recovery.list().map((issue) => issue.verdict)).toEqual(["NoGrant"]);
+    expect((await ledger.refusals(deviceA.peerId, first)).unwrap()).toEqual([
+      expect.objectContaining({ refuser: deviceB.peerId, reason: "refused", verdict: "NoGrant" }),
+    ]);
+    const refused = (await ledger.byEvent(deviceA.peerId, first)).unwrap();
+    expect(refused?.refusals).toEqual([
+      { by: deviceB.peerId, reason: "refused", verdict: "NoGrant" },
+    ]);
+    // an axis beside the journey, never a state: still applied, still nobody's but ours
+    expect(refused?.status).toBe("applied");
+    expect((await ledger.soleCustody()).unwrap().map((op) => op.id)).toEqual([refused?.id ?? "?"]);
+
+    // the grant renewed where B can see it, the parked write folds, and B's next vouch covers it
+    b.grants.register(grantFor(deviceA, "acct_a", LATER)).unwrap();
+    (await b.recovery.run()).unwrap();
+    await a.on("org:acme").unwrap().db.insert(notes).values({ id: "n2", body: "again" });
+    await settle();
+
+    expect((await ledger.refusals(deviceA.peerId, first)).unwrap()).toEqual([]);
+    expect((await ledger.byEvent(deviceA.peerId, first)).unwrap()?.refusals).toBeUndefined();
+    expect((await ledger.vouchesOf(deviceA.peerId, first)).unwrap().map((v) => v.holder)).toEqual([
+      deviceB.peerId,
+    ]);
+    await a.stop();
+    await b.stop();
+  });
+
   test("a local commit notifies the ledger, once per write", async () => {
     const mesh = await soloMesh();
     const handle = mesh.on("org:acme").unwrap();

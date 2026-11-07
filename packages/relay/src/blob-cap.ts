@@ -11,8 +11,15 @@ import type { BlobHash, BlobStore } from "@syncmesh/storage";
  * A put larger than the whole cap is kept: evicting the bytes a client just handed over would
  * make `putAt` answer `ok` for bytes that are already gone. `maxFrameBytes` is where a blob too
  * big for this room is turned away, before it is ever decoded.
+ *
+ * `onEvict` hears every hash the cap drops on its own — not a caller's `delete` — so whatever
+ * bills or tracks those bytes elsewhere can stop.
  */
-export function cappedBlobStore(inner: BlobStore, maxBytes: number): BlobStore {
+export function cappedBlobStore(
+  inner: BlobStore,
+  maxBytes: number,
+  onEvict?: (hash: BlobHash) => void,
+): BlobStore {
   /** Hash to byte length, in touch order: a `Map` iterates oldest first, which is the eviction order. */
   const held = new Map<BlobHash, number>();
   let total = 0;
@@ -53,6 +60,7 @@ export function cappedBlobStore(inner: BlobStore, maxBytes: number): BlobStore {
       held.delete(hash);
       dropping.add(hash);
       dropped.push(hash);
+      onEvict?.(hash);
     }
     for (const hash of dropped) {
       await inner.delete(hash);

@@ -29,7 +29,7 @@ export function syncOf(
   dialect: "sqlite" | "postgres" = "sqlite",
 ): SQL<SyncState | null> {
   const name = getTableName(table);
-  const primary = primaryKeyOf(table);
+  const primary = tablePrimaryKey(table);
   const correlated = sql.raw(
     syncOfSql(self, name, `${quoteIdent(name)}.${quoteIdent(primary)}`, dialect),
   );
@@ -68,7 +68,12 @@ export function operationOf(
   // a schema on Postgres, an attached database on SQLite (RFC-0022)
   const ledger = "syncmesh.operations";
   const correlated = sql.raw(
-    operationOfSql(name, `${quoteIdent(name)}.${quoteIdent(primaryKeyOf(table))}`, ledger, dialect),
+    operationOfSql(
+      name,
+      `${quoteIdent(name)}.${quoteIdent(tablePrimaryKey(table))}`,
+      ledger,
+      dialect,
+    ),
   );
   // SAFETY: the subquery selects the ledger's own text id, or NULL where the row has no record —
   // a peer's write, or one made before this device kept a ledger
@@ -82,7 +87,7 @@ const quoteIdent = (name: string): string => `"${name.replaceAll('"', '""')}"`;
  * this reads it back rather than being told — the handler already named the table, and naming
  * its key again is the string coordinate this whole column exists to delete.
  */
-function primaryKeyOf(table: PgTable | SQLiteTable): string {
+function tablePrimaryKey(table: PgTable | SQLiteTable): string {
   for (const [, column] of Object.entries(getColumns(table))) {
     if (column.primary) return column.name;
   }

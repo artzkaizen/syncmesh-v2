@@ -168,7 +168,7 @@ impl BlobChannel {
     /// The `blob-put` frame to send. The relay verifies before it stores; an upload that cannot
     /// leave is the caller's to retry, so nothing is remembered here.
     pub fn upload(&self, hash: &str, bytes: &[u8]) -> Vec<u8> {
-        blob_put_frame(hash, bytes)
+        blob_put_frame(hash, bytes, None)
     }
 
     /// Records the wait and returns the `blob-get` frame to send. Asking again for a hash already
@@ -292,7 +292,7 @@ mod tests {
         let mut channel = BlobChannel::new();
         let hash = hash_of(b"photo");
         match decode_relay_frame(&channel.upload(&hash, b"photo")).unwrap() {
-            RelayFrame::BlobPut { hash: h, bytes } => {
+            RelayFrame::BlobPut { hash: h, bytes, .. } => {
                 assert_eq!(h, hash);
                 assert_eq!(bytes, b"photo");
             }

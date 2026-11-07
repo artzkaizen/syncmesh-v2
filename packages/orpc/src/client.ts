@@ -132,9 +132,14 @@ export function createClient<
   const watching = new Set<() => void>();
 
   const opening = (async (): Promise<void> => {
-    // `procedures` and `link` are the client's own and pass through `flatten` unchanged, so the
-    // api above was built from them already; what `createMesh` takes is everything else
-    const { procedures: _procedures, link: _link, ...meshOptions } = flatten(await named(options));
+    // `procedures`, `link` and `windows` are the client's own and pass through `flatten`
+    // unchanged, so the api above was built from them already; `createMesh` takes the rest
+    const {
+      procedures: _procedures,
+      link: _link,
+      windows: _windows,
+      ...meshOptions
+    } = flatten(await named(options));
     const opened = await createMesh(meshOptions);
     // the tagged error travels as the cause, so a caller who does want to branch — "storage
     // damaged, rejoin?" — still can, without every other caller unwrapping to reach it
@@ -169,6 +174,7 @@ export function createClient<
 
   const carries = {};
   if (options.link !== undefined) Object.assign(carries, { link: options.link });
+  if (options.windows !== undefined) Object.assign(carries, { windows: options.windows });
   const api = meshApi<R, PC>(
     { current: () => bound, ready, schema: options.schema },
     options.procedures,

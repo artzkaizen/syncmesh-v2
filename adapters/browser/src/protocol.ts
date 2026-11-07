@@ -5,7 +5,7 @@ import type { ProxyMethod, ProxyResult } from "@syncmesh/drizzle";
 import type { Principal } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 import type { WirePort } from "@syncmesh/sqlite-wasm";
-import type { OperationRow, ReceiptRow, SqlRow } from "@syncmesh/storage";
+import type { OperationRow, ReceiptRow, RefusalRow, SqlRow } from "@syncmesh/storage";
 import type { LinkEvent, Route, TransportKind } from "@syncmesh/transport";
 
 import {
@@ -85,7 +85,8 @@ export type LedgerPath =
   | "unsettled"
   | "soleCustody"
   | "receiptsOf"
-  | "vouchesOf";
+  | "vouchesOf"
+  | "refusals";
 
 /** A serialized tagged error as {@link failures} revives it: a field bag with no shape until then. */
 export type WireFailure = Record<string, unknown>;
@@ -258,6 +259,7 @@ export type LedgerAnswer =
   | OperationRow
   | readonly OperationRow[]
   | readonly ReceiptRow[]
+  | readonly RefusalRow[]
   | undefined;
 
 /**
