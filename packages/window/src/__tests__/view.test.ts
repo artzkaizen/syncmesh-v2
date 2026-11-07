@@ -314,6 +314,33 @@ describe("a window over a row source (E27)", () => {
     expect(ats(client.rows("a"))).toEqual(down(100, 3));
   });
 
+  test("NaN orders after every number, so the order stays total", () => {
+    const source = createMemoryRowSource();
+    source.load(MAIL, [
+      { key: mailKey(1), row: new Map([[AT, Number.NaN]]) },
+      { key: mailKey(2), row: new Map([[AT, 5]]) },
+      { key: mailKey(3), row: new Map([[AT, Number.NaN]]) },
+      { key: mailKey(4), row: new Map([[AT, 7]]) },
+    ]);
+    const read = source.window({ table: MAIL, order: [[AT, "asc"]], limit: 10 }, () => true);
+    expect(read.unwrap().map((r) => r.key)).toEqual([
+      mailKey(2),
+      mailKey(4),
+      mailKey(1),
+      mailKey(3),
+    ]);
+    const tail = source.window(
+      {
+        table: MAIL,
+        order: [[AT, "asc"]],
+        limit: 10,
+        after: { cells: [Number.NaN], key: mailKey(1) },
+      },
+      () => true,
+    );
+    expect(tail.unwrap().map((r) => r.key)).toEqual([mailKey(3)]);
+  });
+
   test("a socket holds at most `maxWindows`; a desire past it is refused, a move is not", () => {
     const { client, view } = harness(100, { maxWindows: 2 });
     client.desire("a", newest(3));

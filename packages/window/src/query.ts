@@ -118,8 +118,9 @@ export function parseQuery(text: string): Result<WindowQuery, MalformedQuery> {
 const rank = (v: OrderCell): number => {
   if (v === null) return 0;
   if (typeof v === "boolean") return 1;
-  if (typeof v === "number") return 2;
-  return 3;
+  // NaN compares unequal to everything, so it gets a rank of its own, after every number
+  if (typeof v === "number") return Number.isNaN(v) ? 3 : 2;
+  return 4;
 };
 
 /** A cell as the order reads it; bytes, arrays, objects and absent cells order as null. */
@@ -128,13 +129,14 @@ const orderCell = (v: CellValue | undefined): OrderCell =>
 /* oxlint-enable anti-slop/no-runtime-typeof */
 
 /**
- * One total order over scalars: null, then booleans, then numbers, then strings by UTF-16 code
- * unit. A Postgres source must order the same way, which for text means `COLLATE "C"`.
+ * One total order over scalars: null, then booleans, then numbers, then NaN, then strings by
+ * UTF-16 code unit. A Postgres source must order the same way, which for text means
+ * `COLLATE "C"` (Postgres already puts NaN after every number).
  */
 export function compareCells(a: OrderCell, b: OrderCell): number {
   const byKind = rank(a) - rank(b);
   if (byKind !== 0) return byKind;
-  // SAFETY: same rank, so both are null, both booleans, both numbers or both strings
+  // SAFETY: same rank, so both are null, both booleans, both numbers, both NaN or both strings
   const [x, y] = [a, b] as [string, string];
   return x < y ? -1 : x > y ? 1 : 0;
 }
