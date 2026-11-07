@@ -23,56 +23,81 @@ export function compareKeys(a: CborKey, b: CborKey): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+/** Bytes a fresh writer reserves; most events fit, and growth doubles from here. */
+const INITIAL_CAPACITY = 256;
+
 /**
- * Bytes appended into one buffer that doubles when full. A `number[]` grown by spreading every
- * byte in managed about 3 MB/s, which stalls any frame the size of a screen of rows or a blob.
+ * Writes into one preallocated `Uint8Array`, doubling it when full, so encoding is a single pass
+ * over the payload with amortised O(1) per byte. Byte strings and text are copied with `set`, never
+ * spread, which is also what keeps a large blob from overflowing the call stack.
  */
 class Writer {
-  private buffer = new Uint8Array(256);
+  private buffer = new Uint8Array(INITIAL_CAPACITY);
+  private view = new DataView(this.buffer.buffer);
   private length = 0;
 
   bytes(): Uint8Array {
     return this.buffer.slice(0, this.length);
   }
 
-  private reserve(n: number): void {
-    if (this.length + n <= this.buffer.length) return;
-    let size = this.buffer.length * 2;
-    while (size < this.length + n) size *= 2;
-    const grown = new Uint8Array(size);
-    grown.set(this.buffer.subarray(0, this.length));
-    this.buffer = grown;
+  private reserve(count: number): number {
+    const at = this.length;
+    const needed = at + count;
+    if (needed > this.buffer.length) {
+      let capacity = this.buffer.length * 2;
+      while (capacity < needed) capacity *= 2;
+      const grown = new Uint8Array(capacity);
+      grown.set(this.buffer.subarray(0, at));
+      this.buffer = grown;
+      this.view = new DataView(grown.buffer);
+    }
+    this.length = needed;
+    return at;
   }
 
-  private push(...bytes: number[]): void {
-    this.reserve(bytes.length);
-    for (const b of bytes) this.buffer[this.length++] = b;
+  private byte(b: number): void {
+    const at = this.reserve(1);
+    this.buffer[at] = b;
   }
 
-  private append(bytes: Uint8Array): void {
-    this.reserve(bytes.length);
-    this.buffer.set(bytes, this.length);
-    this.length += bytes.length;
+  private raw(chunk: Uint8Array): void {
+    const at = this.reserve(chunk.length);
+    this.buffer.set(chunk, at);
   }
 
   head(major: number, length: number): void {
     const type = major << 5;
-    if (length < 24) this.push(type | length);
-    else if (length < 0x100) this.push(type | 24, length);
-    else if (length < 0x10000) this.push(type | 25, length >>> 8, length & 0xff);
-    else if (length < 0x100000000) this.push(type | 26, ...be(length, 4));
-    else this.push(type | 27, ...be(length, 8));
+    if (length < 24) this.byte(type | length);
+    else if (length < 0x100) {
+      const at = this.reserve(2);
+      this.buffer[at] = type | 24;
+      this.buffer[at + 1] = length;
+    } else if (length < 0x10000) {
+      const at = this.reserve(3);
+      this.buffer[at] = type | 25;
+      this.view.setUint16(at + 1, length);
+    } else if (length < 0x100000000) {
+      const at = this.reserve(5);
+      this.buffer[at] = type | 26;
+      this.view.setUint32(at + 1, length);
+    } else {
+      const at = this.reserve(9);
+      this.buffer[at] = type | 27;
+      // a safe integer has at most 53 bits, so the high word is exact as a float division
+      this.view.setUint32(at + 1, Math.floor(length / 0x100000000));
+      this.view.setUint32(at + 5, length % 0x100000000);
+    }
   }
 
   value(v: CborValue): void {
-    if (v === null) this.push(SIMPLE.null);
-    else if (v === true) this.push(SIMPLE.true);
-    else if (v === false) this.push(SIMPLE.false);
+    if (v === null) this.byte(SIMPLE.null);
+    else if (v === true) this.byte(SIMPLE.true);
+    else if (v === false) this.byte(SIMPLE.false);
     else if (typeof v === "number") this.number(v);
     else if (typeof v === "string") this.text(v);
     else if (v instanceof Uint8Array) {
       this.head(MAJOR.bytes, v.length);
-      this.append(v);
+      this.raw(v);
     } else if (Array.isArray(v)) {
       this.head(MAJOR.array, v.length);
       for (const item of v) this.value(item);
@@ -88,16 +113,15 @@ class Writer {
       else this.head(MAJOR.nint, -1 - n);
       return;
     }
-    const view = new DataView(new ArrayBuffer(8));
-    view.setFloat64(0, n);
-    this.push(SIMPLE.f64);
-    this.append(new Uint8Array(view.buffer));
+    const at = this.reserve(9);
+    this.buffer[at] = SIMPLE.f64;
+    this.view.setFloat64(at + 1, n);
   }
 
   private text(s: string): void {
     const encoded = utf8.encode(s);
     this.head(MAJOR.text, encoded.length);
-    this.append(encoded);
+    this.raw(encoded);
   }
 
   private map(m: ReadonlyMap<CborKey, CborValue>): void {
@@ -113,16 +137,6 @@ class Writer {
 }
 
 /* oxlint-enable anti-slop/no-runtime-typeof */
-
-const be = (n: number, width: number): number[] => {
-  const out: number[] = [];
-  let rest = n;
-  for (let i = 0; i < width; i++) {
-    out.unshift(rest % 256);
-    rest = Math.floor(rest / 256);
-  }
-  return out;
-};
 
 /** Canonical CBOR: shortest heads, sorted keys, safe integers as integers, everything else f64. Absent optionals are simply not in the map. */
 export function encodeCbor(value: CborValue): Uint8Array {
