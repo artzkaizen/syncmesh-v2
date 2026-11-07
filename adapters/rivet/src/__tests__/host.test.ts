@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { relayRivetActor } from "../host.js";
+import { closeReason } from "../socket.js";
 import { rivetActor } from "./actor.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
@@ -207,5 +208,39 @@ describe("the room in a Rivet actor (D09-C, E25)", () => {
     // 1013, not the posture's 1008: a seat may be free on the next dial
     expect(actor.closeCodes).toEqual([1013]);
     first.close();
+  });
+
+  test("a room that cannot open closes its socket, and the failure still surfaces", async () => {
+    const codes: (number | undefined)[] = [];
+    const broken = new Error("disk gone");
+    const opening = relayRivetActor({}).onWebSocket(
+      {
+        actorId: "actor-broken",
+        key: ["acme"],
+        db: { execute: () => Promise.reject(broken), transaction: () => Promise.reject(broken) },
+        abortSignal: new AbortController().signal,
+      },
+      {
+        readyState: 1,
+        send: () => {},
+        close: (code) => void codes.push(code),
+        addEventListener: () => {},
+      },
+    );
+    const failure = await opening.then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+    expect(failure).toBe(broken);
+    expect(codes).toEqual([1011]);
+  });
+});
+
+describe("closeReason", () => {
+  test("cuts on a whole character within the close frame's 123 bytes", () => {
+    const reason = closeReason("é".repeat(100));
+    expect(new TextEncoder().encode(reason).byteLength).toBeLessThanOrEqual(123);
+    expect(reason).toBe("é".repeat(61));
+    expect(closeReason("short")).toBe("short");
   });
 });

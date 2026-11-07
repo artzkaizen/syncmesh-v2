@@ -15,7 +15,7 @@ import type { RivetDatabase } from "./driver.js";
 import type { RivetWebSocket } from "./socket.js";
 
 import { rivetSqlDriver } from "./driver.js";
-import { bytesIn, rivetRelaySocket } from "./socket.js";
+import { bytesIn, closeReason, rivetRelaySocket } from "./socket.js";
 
 /**
  * The slice of a Rivet actor's context the room reads: which actor this is, its database, the
@@ -62,6 +62,9 @@ const POLICY_VIOLATION = 1008;
 
 /** WebSocket close code for a capacity cap: try again later, since the seat may be free by then. */
 const TRY_AGAIN_LATER = 1013;
+
+/** WebSocket close code for a room that could not open: the server hit an unexpected condition. */
+const INTERNAL_ERROR = 1011;
 
 /** The room's name, from the actor's key: the platform has already routed this socket to the actor that *is* the room. */
 const roomName = (key: readonly string[]): string => (key.length === 0 ? "main" : key.join("/"));
@@ -155,7 +158,7 @@ export function relayRivetActor(options: RelayRivetActorOptions = {}): RelayRive
       if (refused === undefined) return undefined;
       // the gate's 503 is a full room or host, which a later dial may find free
       const code = refused.status === 503 ? TRY_AGAIN_LATER : POLICY_VIOLATION;
-      return { code, reason: (await refused.text()).slice(0, 120) };
+      return { code, reason: closeReason(await refused.text()) };
     }
     if (options.posture !== undefined)
       return { code: POLICY_VIOLATION, reason: "syncmesh relay: no upgrade request to check" };
@@ -178,7 +181,11 @@ export function relayRivetActor(options: RelayRivetActorOptions = {}): RelayRive
 
   return {
     onWebSocket: async (c, ws) => {
-      const host = await hostFor(c);
+      // a room that cannot open still answers its socket, then lets the runtime see the failure
+      const host = await hostFor(c).catch((cause: unknown) => {
+        ws.close(INTERNAL_ERROR, "syncmesh relay: the room failed to open");
+        throw cause;
+      });
       const name = roomName(c.key);
       const refused = await admit(host, c.request, name);
       if (refused !== undefined) {

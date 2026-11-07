@@ -4,7 +4,24 @@ import type { RelaySocket, SendOutcome } from "@syncmesh/relay";
 const OPEN = 1;
 
 /** A close reason travels in the frame's 123-byte tail, and an over-long one throws instead of closing. */
-const REASON_LIMIT = 120;
+const REASON_BYTES = 123;
+
+const utf8 = new TextEncoder();
+
+/**
+ * `text` cut to what a close frame can carry: at most 123 UTF-8 bytes, ending on a whole
+ * character, so a multibyte reason cannot make `close()` throw.
+ */
+export const closeReason = (text: string): string => {
+  let out = "";
+  let bytes = 0;
+  for (const char of text) {
+    bytes += utf8.encode(char).byteLength;
+    if (bytes > REASON_BYTES) break;
+    out += char;
+  }
+  return out;
+};
 
 /** What a message event carries with `binaryType = "arraybuffer"`: bytes, or text. */
 export type RivetMessageData = string | ArrayBuffer | Uint8Array;
@@ -35,7 +52,7 @@ export function rivetRelaySocket(ws: RivetWebSocket): RelaySocket {
       ws.send(frame);
       return "sent";
     },
-    close: (reason) => ws.close(1000, reason?.slice(0, REASON_LIMIT)),
+    close: (reason) => ws.close(1000, reason === undefined ? undefined : closeReason(reason)),
   };
 }
 
