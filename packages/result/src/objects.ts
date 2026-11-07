@@ -10,11 +10,10 @@
 export type Defined<T extends object> = {
   [K in keyof T as undefined extends T[K] ? never : K]: T[K];
 } & {
-  [K in keyof T as T[K] extends undefined
-    ? never
-    : undefined extends T[K]
-      ? K
-      : never]?: Exclude<T[K], undefined>;
+  [K in keyof T as T[K] extends undefined ? never : undefined extends T[K] ? K : never]?: Exclude<
+    T[K],
+    undefined
+  >;
 };
 
 export function omitUndefined<T extends object>(value: T): Defined<T> {

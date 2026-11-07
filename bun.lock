@@ -27,6 +27,7 @@
         "@syncmesh/sqlite-wasm": "workspace:*",
         "@syncmesh/storage": "workspace:*",
         "@syncmesh/temporal": "workspace:*",
+        "@syncmesh/transport": "workspace:*",
       },
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
