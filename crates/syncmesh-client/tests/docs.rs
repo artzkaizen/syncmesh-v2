@@ -301,9 +301,23 @@ fn a_forged_genesis_and_a_row_write_to_a_doc_column_are_refused() {
         undo_of: None,
     };
     let entry = StoredEvent::from_verified(syncmesh_core::sign_event(forged, &forger));
-    let report = a.receive(entry).unwrap().report;
+    let report = a.receive(entry.clone()).unwrap().report;
     assert_eq!(report.quarantined, 1);
     assert!(a.doc_log().unwrap().is_empty());
+
+    // and an engine that declares no doc columns, as a `Mesh` does, parks it too: the lineage
+    // rungs need no declaration, so a TypeScript peer and this one reach the same verdict
+    let mut undeclared = Engine::open(
+        Identity::from_seed(&[2; 32]),
+        Box::new(MemoryEventStore::new()),
+        None,
+        EngineOptions::default(),
+    )
+    .unwrap();
+    let report = undeclared.receive(entry).unwrap().report;
+    assert_eq!(report.quarantined, 1);
+    assert!(undeclared.doc_log().unwrap().is_empty());
+    assert_eq!(undeclared.state().record("notes", "n1"), None);
 }
 
 #[test]
