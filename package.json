@@ -22,7 +22,8 @@
       "vite-plus": "0.3.0",
       "@types/node": "^24.0.0",
       "temporal-polyfill": "^1.0.4",
-      "drizzle-orm": "1.0.0-rc.4"
+      "drizzle-orm": "1.0.0-rc.4",
+      "zod": "^4.4.3"
     }
   },
   "type": "module",

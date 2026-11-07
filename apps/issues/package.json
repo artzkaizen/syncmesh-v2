@@ -34,7 +34,7 @@
     "drizzle-orm": "catalog:",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "zod": "^4.1.13"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.7",

@@ -94,7 +94,7 @@ export const schemaFor = (mail: string, open: string) =>
   });
 
 /** A page's cursor: the last row shown, by the two columns the page is ordered on. */
-const After = z.object({ received: z.string().datetime({ offset: true }), id: z.string() });
+const After = z.object({ received: z.iso.datetime({ offset: true }), id: z.string() });
 
 /**
  * `mail.inbox`, written as any other read in the repo: a handler that returns the Drizzle query.
