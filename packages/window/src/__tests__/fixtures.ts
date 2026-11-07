@@ -44,7 +44,7 @@ const GARBLED = encodeCbor([WINDOW_TAGS.rows, "garbled"]);
 
 /**
  * `count` mails at 1..count in a memory source, one view over it and one thin client, joined by
- * a pipe that can lose the view's next frames on purpose.
+ * a pipe that can lose the view's next frames on purpose, and hold the client's back.
  */
 export function harness(count: number, options: Partial<ClientViewOptions> = {}) {
   const source = createMemoryRowSource();
@@ -66,12 +66,24 @@ export function harness(count: number, options: Partial<ClientViewOptions> = {})
     },
     ...options,
   });
-  client.attach((frame) => view.receive(frame));
+  /** The client's frames not yet read by the view, while {@link queueUp} holds them. */
+  let upstream: Uint8Array[] | undefined;
+  client.attach((frame) => (upstream === undefined ? view.receive(frame) : upstream.push(frame)));
   return {
     source,
     view,
     client,
     frames,
+    /** The client's next frames wait on the socket until {@link deliver}. */
+    queueUp: () => {
+      upstream ??= [];
+    },
+    /** The view reads every frame the client queued, and later ones as they are sent. */
+    deliver: () => {
+      const queued = upstream ?? [];
+      upstream = undefined;
+      for (const frame of queued) view.receive(frame);
+    },
     /** The view's next `n` frames never reach the client. */
     loseNext: (n = 1) => {
       for (let i = 0; i < n; i++) faults.set(frames.length + i, "lose");

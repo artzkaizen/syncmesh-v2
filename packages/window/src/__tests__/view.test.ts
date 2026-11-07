@@ -320,6 +320,64 @@ describe("a window over a row source (E27)", () => {
     expect(ats(client.rows("a"))).toEqual(down(100, 3));
   });
 
+  test("a row a change moves into an open window shows while an undesire is in flight", () => {
+    const { client, source, view, queueUp, deliver } = harness(100);
+    client.desire("top", newest(5));
+    client.desire("next", newest(5, { after: after(96) }));
+    queueUp();
+    client.undesire("next");
+    // the view still counts 95 held through `next`, so it moves into `top` with no put
+    source.write([{ table: MAIL, key: mailKey(98) }]);
+    expect(ats(client.rows("top"))).toEqual([100, 99, 97, 96, 95]);
+    deliver();
+    expect(client.status()).toBe("live");
+    expect(ats(client.rows("top"))).toEqual([100, 99, 97, 96, 95]);
+    expect(client.held()).toBe(view.held());
+  });
+
+  test("a patch that names a window the client has undesired does not bring it back", () => {
+    const { client, source, view, queueUp, deliver } = harness(100);
+    client.desire("top", newest(2));
+    client.desire("next", newest(5, { after: after(96) }));
+    queueUp();
+    client.undesire("next");
+    source.write([{ table: MAIL, key: mailKey(93) }]);
+    expect(client.rows("next")).toEqual([]);
+    deliver();
+    expect(client.rows("next")).toEqual([]);
+    expect(client.held()).toBe(2);
+    expect(client.held()).toBe(view.held());
+  });
+
+  test("a desire that moves a window while patches are in flight lands on the moved rows", () => {
+    const { client, source, view, queueUp, deliver } = harness(100);
+    client.desire("inbox", newest(3));
+    queueUp();
+    client.desire("inbox", newest(3, { after: after(50) }));
+    source.write([{ table: MAIL, key: mailKey(101), row: mail(101) }]);
+    expect(ats(client.rows("inbox"))).toEqual(down(101, 3));
+    deliver();
+    expect(client.status()).toBe("live");
+    expect(ats(client.rows("inbox"))).toEqual(down(49, 3));
+    expect(client.held()).toBe(view.held());
+  });
+
+  test("a resync asked while the client's frames queue settles once the view reads them", () => {
+    const { client, source, view, loseNext, queueUp, deliver } = harness(100);
+    client.desire("inbox", newest(5));
+    queueUp();
+    loseNext();
+    source.write([{ table: MAIL, key: mailKey(101), row: mail(101) }]);
+    source.write([{ table: MAIL, key: mailKey(102), row: mail(102) }]);
+    client.desire("inbox", newest(4));
+    expect(client.status()).toBe("resyncing");
+    expect(ats(client.rows("inbox"))).toEqual(down(100, 5));
+    deliver();
+    expect(client.status()).toBe("live");
+    expect(ats(client.rows("inbox"))).toEqual(down(102, 4));
+    expect(client.held()).toBe(view.held());
+  });
+
   test("NaN orders after every number, so the order stays total", () => {
     const source = createMemoryRowSource();
     source.load(MAIL, [
