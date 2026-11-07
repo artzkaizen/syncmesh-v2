@@ -67,6 +67,11 @@ export interface JoinDeps {
    * honest state of an ungranted mesh.
    */
   readonly trust?: PeerId;
+  /**
+   * What a request is served under: what it asked for, cut to what the asker may read (D40).
+   * Absent, it is served what it asked for — an ungranted mesh.
+   */
+  readonly serves?: (asked: Interest | undefined) => Interest | undefined;
 }
 
 /** A join in progress: what was promised, and the pages that have arrived so far. */
@@ -228,7 +233,7 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
     dispatch: async (frame) => {
       switch (frame.kind) {
         case "snap-req":
-          return serve(frame.interest);
+          return serve(deps.serves === undefined ? frame.interest : deps.serves(frame.interest));
         case "snap-manifest":
           return onManifest(frame);
         case "snap-chunk":

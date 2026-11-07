@@ -5,13 +5,14 @@ import type { CustodyReceipt, EventCrypto, GrantRegistry, Identity } from "@sync
 import { createHub, heldAhead, interestKey } from "@syncmesh/engine";
 import { omitUndefined } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
-import { decodeAndVerify, signEvent } from "@syncmesh/wire";
+import { decodeAndVerify } from "@syncmesh/wire";
 
 import type { Divergence } from "./divergence.js";
 import type { FrameClass } from "./frame-parts.js";
 import type { JoinDeps, JoinExchange, SnapshotInstalled } from "./join.js";
 import type { FrameLink } from "./link.js";
 import type { BridgeError, OutboundDeps } from "./outbound.js";
+import type { ReadGate } from "./read-gate.js";
 import type { RouteTable } from "./routes.js";
 import type { SnapshotFrame } from "./snap-frame.js";
 
@@ -19,11 +20,12 @@ import { controlFrames, custodyFor } from "./custody.js";
 import { createDispatch } from "./dispatch.js";
 import { answerDigest } from "./divergence.js";
 import { KIND } from "./frame-parts.js";
-import { decodeFrame, eventFrame, grantFrame, grantRequestFrame, presenceFrame } from "./frame.js";
+import { decodeFrame, grantFrame, grantRequestFrame, presenceFrame } from "./frame.js";
 import { createHoldback } from "./holdback.js";
 import { createJoinExchange } from "./join.js";
 import { createOutbound } from "./outbound.js";
 import { createRouteExchange } from "./route-exchange.js";
+import { offerEvent, sendOwed, takeWithheld } from "./withhold.js";
 
 export type { BridgeError } from "./outbound.js";
 export { SendFailed, Unsendable } from "./outbound.js";
@@ -89,6 +91,10 @@ export interface BridgeOptions {
    * whole, folds nothing out of it, and cannot read a value in it.
    */
   readonly crypto?: EventCrypto;
+  /** What each peer may be sent (D40); absent, this link carries everything. */
+  readonly readGate?: ReadGate;
+  /** The peer the link's handshake proved, which is who the read gate judges (D40). */
+  readonly peer?: PeerId;
   /** Whose checkpoint this device will believe; absent, every snapshot install stays provisional. */
   readonly trust?: PeerId;
   /**
@@ -123,31 +129,22 @@ export interface Bridge {
 /** The four sub-kinds of the join exchange, which the bridge hands on whole rather than case by case. */
 
 /** The join exchange for one session, carrying only the options the caller actually set. */
-const joinFor = (options: BridgeOptions, send: JoinDeps["send"]): JoinExchange => {
-  const { engine, identity, rowsPerChunk, onSnapshot, certificate, trust } = options;
-  const base = { engine, send, idPrefix: identity.peerId.slice(0, 8) };
+const joinFor = (
+  options: BridgeOptions,
+  send: JoinDeps["send"],
+  reader: () => PeerId | undefined,
+): JoinExchange => {
+  const { engine, identity, rowsPerChunk, onSnapshot, certificate, trust, readGate } = options;
+  // a snapshot is rows in the clear: served only under what the asker may read (D40)
+  const gated =
+    readGate === undefined
+      ? {}
+      : { serves: (asked?: Interest) => readGate.serves(reader(), asked) };
+  const base = { engine, send, idPrefix: identity.peerId.slice(0, 8), ...gated };
   const paged = rowsPerChunk === undefined ? base : { ...base, rowsPerChunk };
   const reported = onSnapshot === undefined ? paged : { ...paged, onSnapshot };
   const vouching = certificate === undefined ? reported : { ...reported, certificate };
   return createJoinExchange(trust === undefined ? vouching : { ...vouching, trust });
-};
-
-/**
- * Signs the event and offers it to this link, unless routing put it on another one (E28).
- *
- * The size weighed is the **frame's**, not the event's: what occupies a medium is what goes on it.
- * An absent `carries` emits — a link with no routing behind it carries everything, which is what
- * every link did before link admission and what one whose peer is unknown must keep doing.
- */
-const offerEvent = (
-  event: SyncEvent,
-  identity: Identity,
-  carries: BridgeOptions["carries"],
-  emit: (frame: Uint8Array) => void,
-  crypto?: EventCrypto,
-): void => {
-  const frame = eventFrame(signEvent(event, identity, crypto).wire);
-  if (carries?.({ cls: KIND.event, bytes: frame.length }) !== false) emit(frame);
 };
 
 /** What the outbound half needs, assembled so an absent capability stays absent (D12-A). */
@@ -181,7 +178,7 @@ const isBehind = (engine: Engine, self: PeerId, theirs: ReadonlyMap<PeerId, SeqN
 
 export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridge {
   const { engine, identity, grants, onPresence, gapLimit = 512, routes } = options;
-  const { interest, onDivergence, carries } = options;
+  const { interest, onDivergence } = options;
   const scope = interestKey(interest ?? {});
   const now = options.now ?? (() => Temporal.Now.instant());
   const errors = createHub<BridgeError>();
@@ -193,6 +190,11 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
   let closed = false;
   /** Whose link this is, learned from the cursors they send; `undefined` until they speak. */
   let farSide: PeerId | undefined;
+  /**
+   * Who the read gate judges (D40): the peer the handshake proved — never the name a frame gives,
+   * which anyone on the link can write. A link with no handshake has none, and is carried whole.
+   */
+  const reader = (): PeerId | undefined => options.peer;
   let sentCursors = false;
 
   const routing = createRouteExchange({ farSide: () => farSide, routes });
@@ -202,7 +204,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
 
   // every frame of the exchange travels under the one snapshot tag, so they stay in the order
   // the exchange needs — a page ahead of the manifest that names it is a page thrown away
-  const join = joinFor(options, (what, bytes) => send(KIND.snapshot, what, bytes));
+  const join = joinFor(options, (what, bytes) => send(KIND.snapshot, what, bytes), reader);
 
   const holdback = createHoldback(engine, gapLimit);
   const receiveEvent = (wire: Uint8Array): void => {
@@ -247,10 +249,8 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
       // an event they said they already hold above their cursor is not sent again: without that,
       // a peer parking one event it cannot read (D13) is sent the whole tail above the hole on
       // every exchange, and answers with the same cursor every time
-      for (const entry of entries.value.filter((e) => !heldAhead(theirAhead, e))) {
-        const wire = envelopeOf(entry);
-        if (wire !== undefined) send(KIND.event, "event", eventFrame(wire));
-      }
+      const owed = entries.value.filter((e) => !heldAhead(theirAhead, e));
+      sendOwed(owed, { gate: options.readGate, peer: reader(), envelopeOf, send });
       sendDigest();
       if (!sentCursors || isBehind(engine, identity.peerId, theirs)) {
         sentCursors = true;
@@ -275,6 +275,15 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     onEvent: receiveEvent,
     onDigest,
     onSnapshot: (frame: SnapshotFrame) => join.dispatch(frame),
+    onWithheld: (scope: string, withheld: Ahead) => {
+      const intake = {
+        engine,
+        gate: options.readGate,
+        drain: holdback.drain,
+        vouch: custody.vouch,
+      };
+      queue = queue.then(() => takeWithheld(intake, scope, withheld));
+    },
     routing,
     control,
   };
@@ -293,13 +302,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     send(KIND.grant, "grant", grantFrame(wire)),
   );
   const offOutbound = engine.onOutbound((event: SyncEvent) =>
-    offerEvent(
-      event,
-      identity,
-      carries,
-      (frame) => send(KIND.event, "event", frame),
-      options.crypto,
-    ),
+    offerEvent(event, options, reader(), send),
   );
   /** A remote fold means this engine now holds more than its other neighbors may: announce, so they request. */
   const offFolds = engine.onFoldBatch((batch) => {

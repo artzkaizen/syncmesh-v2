@@ -149,6 +149,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     onSnapshot: (installed) => snapshots.emit(installed),
     servesAuthority: options.authority === identity.peerId,
     keys,
+    sealedKinds: schema.sealedKinds,
     // our own partitions, which is what the door's grant-derived default compares against
     partitions: () => (grants.grantFor(identity.peerId)?.partitions ?? []).map(String),
     ...omitUndefined({
@@ -158,6 +159,8 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
       // the certificate over it is the only thing that can make it more than provisional
       trust: options.issuer,
       certificate: options.certificate,
+      // a granted mesh gates reads on every link (D40)
+      issuer: options.issuer,
     }),
   });
   const { routes } = transportContext;

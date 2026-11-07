@@ -24,6 +24,8 @@ export interface FrameHandlers {
     ahead: Ahead | undefined,
   ) => void;
   readonly onSnapshot: (frame: SnapshotFrame) => Promise<void>;
+  /** Sequences the far side may not send us, which our holdback must stop waiting for (D40). */
+  readonly onWithheld: (scope: string, withheld: Ahead) => void;
   readonly routing: RouteExchange;
   /** Grants, the ask for one, and custody — the frames that carry credentials, not data. */
   readonly control: (frame: Frame) => void;
@@ -48,6 +50,8 @@ export function createDispatch(handlers: FrameHandlers): (frame: Frame) => void 
         return handlers.onDigest(frame.scope, frame.at, frame.digests, frame.ahead);
       case "routes":
         return handlers.routing.learn(frame.ads);
+      case "withheld":
+        return handlers.onWithheld(frame.scope, frame.withheld);
       default:
         return handlers.control(frame);
     }

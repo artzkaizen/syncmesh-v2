@@ -29,6 +29,11 @@ export const KIND = {
   receipt: 7,
   /** What this peer can reach, and how far away it is (book ch. 17); additive like the rest. */
   routes: 8,
+  /**
+   * Events the sender may not send this peer, named by sequence (D40): what its grant does not
+   * cover. Above `event`, so it leaves after the events of the same exchange; additive.
+   */
+  withheld: 9,
 } as const;
 
 /**

@@ -13,6 +13,7 @@ import type { LinkEvent, LinkFact } from "./link-events.js";
 import type { FrameLink } from "./link.js";
 import type { TransportCondition, TransportKind } from "./medium.js";
 import type { PeerSessions, SessionLink } from "./peer-session.js";
+import type { ReadGate } from "./read-gate.js";
 import type { RouteMessage } from "./route-scorer.js";
 import type { RouteProfile } from "./route-scorer.js";
 import type { RouteTable } from "./routes.js";
@@ -92,6 +93,8 @@ export interface TransportContext {
    * what a relay does for a partition it holds no key for.
    */
   readonly crypto?: EventCrypto;
+  /** What each peer may be sent (D40); absent, every link carries everything — an ungranted mesh. */
+  readonly readGate?: ReadGate;
   /**
    * Whether a link to this peer may stand at all (book ch. 14) — the door, as against the budget,
    * which decides which of the links that did form are worth keeping.
@@ -436,11 +439,11 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
           Object.assign(bridgeOptions, { onSnapshot: ctx.onSnapshot });
         if (ctx.certificate !== undefined)
           Object.assign(bridgeOptions, { certificate: ctx.certificate });
-        if (ctx.trust !== undefined) Object.assign(bridgeOptions, { trust: ctx.trust });
-        // one table, every link: a route learned here is one every other link may advertise
-        if (ctx.routes !== undefined) Object.assign(bridgeOptions, { routes: ctx.routes });
-        // the same key ring on every link: what a device can read does not depend on the medium
-        if (ctx.crypto !== undefined) Object.assign(bridgeOptions, { crypto: ctx.crypto });
+        // one route table, key ring and read gate on every link: a route learned here is one every
+        // other link may advertise, and what a device may read or be sent does not depend on the
+        // medium — the gate judges the peer the handshake proved, never one a frame names (D40)
+        const { trust, routes, crypto, readGate } = ctx;
+        Object.assign(bridgeOptions, omitUndefined({ trust, routes, crypto, readGate, peer }));
         // once per peer, because a session builds its bridge once: subscribing where the bridge
         // is made is what keeps three media reaching one laptop from reporting its errors thrice
         const build = (framed: FrameLink): Bridge => {

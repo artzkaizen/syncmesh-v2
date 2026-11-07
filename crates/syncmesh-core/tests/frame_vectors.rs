@@ -49,7 +49,7 @@ fn session_frames_decode_to_their_kind_and_reencode_byte_for_byte() {
     assert_eq!(doc["otherId"].as_str(), Some(other.peer_id().as_str()));
 
     let list = doc["vectors"].as_array().unwrap();
-    assert_eq!(list.len(), 18);
+    assert_eq!(list.len(), 19);
     let mut tags: Vec<u8> = Vec::new();
     for v in list {
         let what = v["description"].as_str().unwrap();
@@ -150,6 +150,11 @@ fn session_frames_are_reproduced_from_the_generator_inputs() {
                 hops: 2,
                 expires_at_ms: now + 60_000.0,
             }]),
+        ),
+        // what a peer's grant kept back, named by sequence (D40)
+        (
+            18,
+            frames::withheld_frame(r#"{"partitions":["org:acme"]}"#, &ahead),
         ),
     ];
     for (i, bytes) in expected {

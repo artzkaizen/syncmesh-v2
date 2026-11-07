@@ -657,9 +657,11 @@ impl RelayLink {
             Frame::Event { wire } => {
                 self.fold(engine, std::slice::from_ref(&wire), false, out);
             }
+            // withheld is a peer link's (D40): a relay narrows by its own scoped page instead
             Frame::Digest { .. }
             | Frame::Receipt { .. }
             | Frame::Routes { .. }
+            | Frame::Withheld { .. }
             | Frame::Snapshot(_)
             | Frame::Unknown => {}
         }

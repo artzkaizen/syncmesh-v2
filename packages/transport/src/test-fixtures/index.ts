@@ -9,7 +9,7 @@
 import type { EngineOptions } from "@syncmesh/engine";
 
 import { createEngine, createMemoryEventStore, createValidator } from "@syncmesh/engine";
-import { createHlcClock, parsePartitionKey } from "@syncmesh/kernel";
+import { createHlcClock, parsePartitionKey, type PartitionKey } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
 import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
@@ -33,17 +33,26 @@ export const ACME = parsePartitionKey("org:acme").unwrap();
 export const GLOBEX = parsePartitionKey("org:globex").unwrap();
 export const ISSUER = createIdentity(seed(1)).unwrap();
 
-export const mintFor = (device: Identity, account: string) =>
+/** Overrides for a re-mint: a later `now` is what makes one grant supersede another. */
+interface MintOptions {
+  readonly now?: Temporal.Instant;
+  readonly partitions?: readonly PartitionKey[];
+}
+
+export const mintFor = (
+  device: Identity,
+  account: string,
+  { now = T0, partitions = [ACME, GLOBEX] }: MintOptions = {},
+) =>
   issueGrant(ISSUER, {
     account,
     device: device.peerId,
     role: "member",
-    partitions: [ACME, GLOBEX],
+    partitions,
     validFor: Temporal.Duration.from({ days: 1 }),
-    now: T0,
+    now,
   });
 
-/** One granted peer: engine with a real validator, registry seeded with its own grant. */
 export const peer = (n: number, account: string, startMs = 100) => {
   const identity = createIdentity(seed(n)).unwrap();
   const grants = createGrantRegistry({ issuer: ISSUER.peerId, now: () => T0 });
