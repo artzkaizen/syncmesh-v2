@@ -17,18 +17,23 @@ export interface DrizzleTableInKind<
 > extends FromDrizzleOptions<D> {
   readonly partition: Partition<N, R>;
   readonly allow: AllowFn<ColumnsFromDrizzle<D>, R>;
+  /** `"window"`: served a page at a time by the server, never replicated (D39). */
+  readonly sync?: "window";
 }
 
 /** A table in `global`, `user` or `local`: what the kind is *is* its rule, so it takes no `allow`. */
 export interface DrizzleTableReserved<D extends DrizzleTableLike> extends FromDrizzleOptions<D> {
   readonly partition: ReservedPartition;
   readonly allow?: undefined;
+  /** `"window"`: served a page at a time by the server, never replicated (D39). */
+  readonly sync?: "window";
 }
 
 /** Every option `drizzleTable` reads, as the implementation sees them; the overloads narrow this per form. */
 export interface DrizzleTableOptions<D extends DrizzleTableLike> extends FromDrizzleOptions<D> {
   readonly partition?: Partition;
   readonly allow?: AllowFn<ColumnsFromDrizzle<D>, string> | undefined;
+  readonly sync?: "window";
 }
 
 /** The derived half every form of `drizzleTable` returns. */
