@@ -7,6 +7,7 @@ import { omitUndefined } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { decodeAndVerify, signEvent } from "@syncmesh/wire";
 
+import type { CustodyDeps } from "./custody.js";
 import type { Divergence } from "./divergence.js";
 import type { FrameClass } from "./frame-parts.js";
 import type { JoinDeps, JoinExchange, SnapshotInstalled } from "./join.js";
@@ -15,7 +16,7 @@ import type { BridgeError, OutboundDeps } from "./outbound.js";
 import type { RouteTable } from "./routes.js";
 import type { SnapshotFrame } from "./snap-frame.js";
 
-import { controlFrames, custodyFor } from "./custody.js";
+import { controlFrames, createBridgeCustody } from "./custody.js";
 import { createDispatch } from "./dispatch.js";
 import { answerDigest } from "./divergence.js";
 import { KIND } from "./frame-parts.js";
@@ -23,6 +24,7 @@ import { decodeFrame, eventFrame, grantFrame, grantRequestFrame, presenceFrame }
 import { createHoldback } from "./holdback.js";
 import { createJoinExchange } from "./join.js";
 import { createOutbound } from "./outbound.js";
+import { presenceSlot } from "./presence.js";
 import { createRouteExchange } from "./route-exchange.js";
 import { withholds, type Withheld } from "./withheld.js";
 
@@ -81,6 +83,11 @@ export interface BridgeOptions {
   /** A verified receipt arrived for one of this device's own writes. */
   readonly onReceipt?: (receipt: CustodyReceipt) => void;
   /**
+   * A verified refusal arrived for one of this device's own writes (D32): the far side parked it
+   * and said why. Information only — direct links carry it; a relay does not, as with receipts.
+   */
+  readonly onRefusal?: CustodyDeps["onRefusal"];
+  /**
    * This device's routing table (book ch. 17). Given one, the bridge advertises what this
    * device can reach when the session opens, learns what the far side can, and forgets every
    * route through that peer when the link closes. Absent, nothing routes beyond one hop.
@@ -129,7 +136,7 @@ export interface Bridge {
 /** The four sub-kinds of the join exchange, which the bridge hands on whole rather than case by case. */
 
 /** The join exchange for one session, carrying only the options the caller actually set. */
-const joinFor = (options: BridgeOptions, send: JoinDeps["send"]): JoinExchange => {
+const createJoin = (options: BridgeOptions, send: JoinDeps["send"]): JoinExchange => {
   const { engine, identity, rowsPerChunk, onSnapshot, certificate, trust, withheld } = options;
   const base = { engine, send, idPrefix: identity.peerId.slice(0, 8) };
   const gated = withheld === undefined ? base : { ...base, withheld };
@@ -158,7 +165,7 @@ const offerEvent = (
 };
 
 /** What the outbound half needs, assembled so an absent capability stays absent (D12-A). */
-const outboundFor = (
+const outboundDeps = (
   link: FrameLink,
   options: BridgeOptions,
   scope: string,
@@ -192,10 +199,9 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
   const scope = interestKey(interest ?? {});
   const now = options.now ?? (() => Temporal.Now.instant());
   const errors = createHub<BridgeError>();
-  const reportError = (error: BridgeError): void => errors.emit(error);
-  const sendReceipt = (frame: Uint8Array): void => send(KIND.receipt, "receipt", frame);
-  const custody = custodyFor(options, { now, send: sendReceipt, errors: reportError });
-  const control = controlFrames(options, { custody, errors: reportError });
+  const sendControl: CustodyDeps["send"] = (cls, what, frame) => send(cls, what, frame);
+  const custody = createBridgeCustody(options, { now, send: sendControl, errors: errors.emit });
+  const control = controlFrames(options, { custody, errors: errors.emit });
   let queue: Promise<unknown> = Promise.resolve();
   let closed = false;
   /** Whose link this is, learned from the cursors they send; `undefined` until they speak. */
@@ -203,13 +209,13 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
   let sentCursors = false;
 
   const routing = createRouteExchange({ farSide: () => farSide, routes });
-  const out = createOutbound(outboundFor(link, options, scope, errors));
+  const out = createOutbound(outboundDeps(link, options, scope, errors));
   const { send, drain, envelopeOf, sendDigest, cursorsAfter } = out;
   const sendCursors = (): void => void (queue = cursorsAfter(queue));
 
   // every frame of the exchange travels under the one snapshot tag, so they stay in the order
   // the exchange needs — a page ahead of the manifest that names it is a page thrown away
-  const join = joinFor(options, (what, bytes) => send(KIND.snapshot, what, bytes));
+  const join = createJoin(options, (what, bytes) => send(KIND.snapshot, what, bytes));
 
   const holdback = createHoldback(engine, gapLimit);
   const receiveEvent = (wire: Uint8Array): void => {
@@ -234,6 +240,8 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
       }
       // durable now, so the claim can be signed: a cursor says this and proves none of it
       custody.vouch(author);
+      // and what this batch parked, said back to whoever offered it (D32)
+      custody.refuse(ready);
     });
   };
 
@@ -261,6 +269,9 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
         if (wire !== undefined) send(KIND.event, "event", eventFrame(wire));
       }
       sendDigest();
+      // still parked, said again: a peer told we hold it above our cursor never re-offers it,
+      // so the cursor exchange is the only moment left to repeat the refusal to its author
+      custody.repeat(from);
       if (!sentCursors || isBehind(engine, identity.peerId, theirs)) {
         sentCursors = true;
         sendCursors();
@@ -350,7 +361,9 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     sendGrant: (wire) => send(KIND.grant, "grant", grantFrame(wire)),
     // ordered after the events, and its failure swallowed rather than reported: on a full radio
     // a dropped ephemeral is the correct outcome, not an error (D16)
-    sendPresence: (wire) => send(KIND.presence, "presence", presenceFrame(wire)),
+    // and slotted: a radio that backs up keeps this author's newest value per topic, not a queue
+    sendPresence: (wire) =>
+      send(KIND.presence, "presence", presenceFrame(wire), presenceSlot(wire)),
     onError: errors.subscribe,
     flush: async () => {
       drain();

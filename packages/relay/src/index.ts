@@ -10,6 +10,8 @@ export {
   blobGetFrame,
   blobMissingFrame,
   blobPutFrame,
+  blobRefusedFrame,
+  blobStoredFrame,
   challengeFrame,
   decodeRelayFrame,
   errorFrame,
@@ -44,7 +46,7 @@ export {
 } from "./retention.js";
 export { cappedBlobStore } from "./blob-cap.js";
 export type { HeldRoom, OpenedRoom, RoomTable, RoomTableOptions } from "./rooms.js";
-export { createRoomTable } from "./rooms.js";
+export { DEFAULT_IDLE_AFTER, createRoomTable } from "./rooms.js";
 export type { RelayPosture, RoomAccess } from "./posture.js";
 export { createRoomAccess } from "./posture.js";
 export type { RelayTelemetry } from "./telemetry.js";
@@ -74,6 +76,7 @@ export {
 export { requestRoom } from "./describe.js";
 export type { RelayHost, RelayHostOptions, RoomStore, RoomTuning, SocketSession } from "./host.js";
 export {
+  capacityRefusal,
   createGate,
   createRelayHost,
   durableRoomStore,

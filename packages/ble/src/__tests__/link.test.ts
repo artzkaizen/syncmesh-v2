@@ -171,6 +171,42 @@ describe("a BLE link", () => {
     expect(a.writes.length).toBeLessThan(narrow);
     expect(a.writes).toHaveLength(1);
   });
+
+  test("a frame sent while the pump is winding down still goes out", async () => {
+    // the outbox drains on microtasks, so a send can land in any microtask after the pump found
+    // its queues empty; each gap here is one such moment, and no frame may be left in line
+    const stranded: number[] = [];
+    for (let gap = 0; gap < 12; gap += 1) {
+      const writes: string[] = [];
+      const pending: (() => void)[] = [];
+      const radio = {
+        write: (_connection, _service, _characteristic, value) => {
+          writes.push(value);
+          return new Promise<void>((resolve) => void pending.push(resolve));
+        },
+        setCharacteristicValue: () => Promise.resolve(),
+        disconnect: () => Promise.resolve(),
+      } satisfies LinkOptions["radio"];
+      const link = bleLink({
+        radio,
+        serviceUuid: SERVICE,
+        characteristicUuid: CHAR,
+        peer: "b",
+        connectionId: "conn-1",
+        limit: () => 185,
+      });
+      link.send(bytes(3));
+      await settle();
+      pending.shift()?.();
+      for (let tick = 0; tick < gap; tick += 1) await Promise.resolve();
+      link.send(bytes(4));
+      await settle();
+      pending.shift()?.();
+      await settle();
+      if (writes.length !== 2) stranded.push(gap);
+    }
+    expect(stranded).toEqual([]);
+  });
 });
 
 describe("what one packet may carry", () => {

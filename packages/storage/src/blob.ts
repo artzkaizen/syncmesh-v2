@@ -1,4 +1,4 @@
-import type { Brand } from "@syncmesh/kernel";
+import type { Brand, PartitionKey } from "@syncmesh/kernel";
 
 import { sha256 } from "@noble/hashes/sha2.js";
 import { Result, TaggedError } from "@syncmesh/result";
@@ -36,6 +36,31 @@ export class BlobNotFound extends TaggedError("BlobNotFound")<{
 export class BlobTimeout extends TaggedError("BlobTimeout")<{ hash: string; message: string }> {}
 
 export type BlobError = BlobCorrupt | BlobNotFound | BlobTimeout;
+
+/**
+ * A put the far end would not keep: the partition it was billed to already holds `used` bytes of
+ * a `limit` it may not pass. Nothing was stored, so the bytes are still only the author's — an
+ * app tells the person their upload did not fit, or frees room and puts again (D18).
+ *
+ * `partition` is absent for a put that named none; those share one budget of their own.
+ */
+export class BlobQuotaExceeded extends TaggedError("BlobQuotaExceeded")<{
+  hash: string;
+  partition: PartitionKey | undefined;
+  limit: number;
+  used: number;
+  message: string;
+}> {}
+
+/** A blob name as the wire spells it: 64 lowercase hex digits, the length of a sha-256. */
+export const BLOB_HASH_HEX = /^[0-9a-f]{64}$/;
+
+/**
+ * Whether a value is spelled like a blob name. Spelling is all it checks — a row cell that reads
+ * this way may name bytes nobody ever put, which is why a reference is only ever a reason to
+ * keep, never a reason to fetch.
+ */
+export const isBlobHash = (value: string): value is BlobHash => BLOB_HASH_HEX.test(value);
 
 /** The sha-256 of the bytes, in the wire's lowercase hex — the blob's whole identity. */
 export const hashOf = (bytes: Uint8Array): BlobHash =>

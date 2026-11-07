@@ -214,7 +214,7 @@ describe("the vector is additive", () => {
   });
 
   test("a tag this build does not know decodes as `unknown`, never as an error", () => {
-    for (const tag of [20, 21, 99, 4096]) {
+    for (const tag of [22, 23, 99, 4096]) {
       const decoded = decodeRelayFrame(encodeCbor([tag, "whatever a v2 puts here", 7]));
       expect(decoded.unwrap().kind).toBe("unknown");
     }

@@ -20,7 +20,7 @@ import {
   selectVersion,
   speaksHandshake,
 } from "./frames.js";
-import { ingestEvent, serveBlob } from "./ingest.js";
+import { eventIntake, serveBlob } from "./ingest.js";
 import { createBudget } from "./limits.js";
 import { createViewer } from "./passover.js";
 import { newChallenge, verifyJoinProof } from "./proof.js";
@@ -137,6 +137,7 @@ export function createConnection(
     budget: createBudget(room.limits, room.now),
     refuse,
   };
+  const ingest = eventIntake(conversation, () => closed);
 
   const onJoin = (frame: Extract<RelayFrame, { kind: "join" }>): void => {
     const { versions, peerId: peer, cursors: theirs, interest: wanted } = frame;
@@ -236,7 +237,7 @@ export function createConnection(
   };
 
   const onSession = (bytes: Uint8Array, frame: Extract<RelayFrame, { kind: "session" }>): void => {
-    if (frame.frame.kind === "event") ingestEvent(conversation, frame.frame.wire);
+    if (frame.frame.kind === "event") ingest(frame.frame.wire);
     else if (frame.frame.kind === "grant") onGrant(bytes, frame.frame.wire);
     else if (frame.frame.kind === "presence") onPresence(bytes, frame.frame.wire);
     else if (frame.frame.kind === "grant-request" || frame.frame.kind === "cursors")

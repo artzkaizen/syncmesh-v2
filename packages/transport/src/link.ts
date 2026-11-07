@@ -8,6 +8,13 @@ import type { Unsubscribe } from "@syncmesh/engine";
  */
 export interface FrameLink {
   readonly send: (frame: Uint8Array) => void;
+  /**
+   * `send`, for a frame that supersedes any frame still waiting under the same `slot`: a link that
+   * can back up holds the newest value per slot rather than a queue of them (D16), and lets every
+   * ordinary frame go first. Absent on a link that never holds a frame back — the caller uses
+   * `send`, and a wrapper passes it through only when what it wraps declares it.
+   */
+  readonly sendLatest?: (slot: string, frame: Uint8Array) => void;
   readonly onFrame: (cb: (frame: Uint8Array) => void) => Unsubscribe;
   readonly close?: () => void;
 }

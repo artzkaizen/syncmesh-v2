@@ -386,6 +386,7 @@ class RelayLink {
       },
       onDropped: this.report.dropped,
       onBlobAnswer: this.blobChannel.answer,
+      onBlobSettled: this.blobChannel.settle,
       onPeerHeard: (peer) => void this.heard.set(peer, Date.now()),
       onCaughtUp: () => {
         this.repaging = false;

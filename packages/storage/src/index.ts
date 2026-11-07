@@ -12,9 +12,11 @@ export { sqlEventStore, sqliteEventStore, type SqlEventStoreOptions } from "./ev
 export { LogCorrupt } from "./local-log.js";
 export type {
   OperationOutcome,
+  OperationRefusal,
   OperationRow,
   OperationStore,
   ReceiptRow,
+  RefusalRow,
   VouchRow,
 } from "./operation-store.js";
 export { operationStore } from "./operation-store.js";
@@ -75,8 +77,11 @@ export type { BlobError, BlobHash, BlobStore } from "./blob.js";
 export {
   BlobCorrupt,
   BlobNotFound,
+  BlobQuotaExceeded,
   BlobTimeout,
+  BLOB_HASH_HEX,
   hashOf,
+  isBlobHash,
   memoryBlobStore,
   sqlBlobStore,
   verifyBlob,

@@ -7,6 +7,7 @@ import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 
+import { MeshStopped } from "../errors.js";
 import { createMesh } from "../mesh.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
@@ -32,7 +33,8 @@ const settle = async (control: LoopbackControl) => {
 };
 
 /** Two meshes joined by one loopback radio; the owner holds the issuer key. */
-const room = async (options?: { readonly grantStaff?: boolean }) => {
+const room = async (options?: { readonly grantStaff?: boolean; readonly start?: boolean }) => {
+  const start = options?.start ?? true;
   const ownerId = createIdentity(seed(7)).unwrap();
   const staffId = createIdentity(seed(160)).unwrap();
   const { a, b, control } = loopbackPair();
@@ -46,6 +48,7 @@ const room = async (options?: { readonly grantStaff?: boolean }) => {
       issuerKey: ownerId,
       now: () => T0,
       transports: [linkTransport("loopback:owner", () => a)],
+      start,
       onGrantRequest: ({ peerId, invite }) => {
         if (invite !== "inv-42") return; // Q1: the invite token is the account proof
         owner.grants
@@ -78,6 +81,7 @@ const room = async (options?: { readonly grantStaff?: boolean }) => {
       issuer: ownerId.peerId,
       now: () => T0,
       transports: [linkTransport("loopback:staff", () => b)],
+      start,
     })
   ).unwrap();
   if (options?.grantStaff !== false) {
@@ -192,6 +196,99 @@ describe("runtime transports (book ch. 8)", () => {
     for (let round = 0; round < 4; round += 1) await settle(late.control);
     expect((await ho.db.select().from(notes)).map((r) => r.id).sort()).toEqual(["first", "second"]);
 
+    await owner.stop();
+    await staff.stop();
+  });
+});
+
+describe("start() symmetric with stop() (E24)", () => {
+  test("a mesh created with start: false opens no link until start()", async () => {
+    const { owner, staff, control } = await room({ start: false });
+    expect(owner.running()).toBe(false);
+    // ready() waits for start(), rather than answering for links nobody has opened
+    let readied = false;
+    void owner.ready().then(() => void (readied = true));
+
+    const hs = staff.on("org:acme").unwrap();
+    await hs.db.insert(notes).values({ id: "early", body: "written before any link" });
+    await settle(control);
+    const ho = owner.on("org:acme").unwrap();
+    expect(await ho.db.select().from(notes)).toHaveLength(0);
+    expect(readied).toBe(false);
+
+    owner.start().unwrap();
+    staff.start().unwrap();
+    expect(owner.running()).toBe(true);
+    await Promise.all([owner.ready(), staff.ready()]);
+    expect(readied).toBe(true);
+    await settle(control);
+    // the write made before the link existed crosses once there is one
+    expect((await ho.db.select().from(notes)).map((r) => r.id)).toEqual(["early"]);
+
+    await hs.db.insert(notes).values({ id: "late", body: "written over the open link" });
+    await settle(control);
+    expect((await ho.db.select().from(notes)).map((r) => r.id).sort()).toEqual(["early", "late"]);
+    await owner.stop();
+    await staff.stop();
+  });
+
+  test("start() is idempotent, on a deferred mesh and on an eager one", async () => {
+    const { owner, staff, control } = await room({ start: false });
+    expect(owner.start().isOk()).toBe(true);
+    expect(owner.start().isOk()).toBe(true); // the second call opens nothing more
+    expect(staff.start().isOk()).toBe(true);
+    await Promise.all([owner.ready(), staff.ready()]);
+    await settle(control);
+    const hs = staff.on("org:acme").unwrap();
+    await hs.db.insert(notes).values({ id: "n1", body: "once" });
+    await settle(control);
+    const ho = owner.on("org:acme").unwrap();
+    expect((await ho.db.select().from(notes)).map((r) => r.id)).toEqual(["n1"]);
+    await owner.stop();
+    await staff.stop();
+
+    const eager = await room();
+    expect(eager.owner.running()).toBe(true);
+    expect(eager.owner.start().isOk()).toBe(true);
+    expect(eager.owner.transports.list().map((t) => t.name)).toEqual(["loopback:owner"]);
+    await eager.owner.stop();
+    await eager.staff.stop();
+  });
+
+  test("start() after stop() is MeshStopped, as a value", async () => {
+    const { owner, staff } = await room({ start: false });
+    await owner.stop(); // stopped before it ever started: nothing was opened, nothing to close
+    await owner.ready(); // and ready() does not wait for a start that can never come
+    const again = owner.start();
+    expect(again.isErr() && MeshStopped.is(again.error)).toBe(true);
+    expect(owner.running()).toBe(false);
+
+    staff.start().unwrap();
+    await staff.stop();
+    const restarted = staff.start();
+    expect(restarted.isErr() && MeshStopped.is(restarted.error)).toBe(true);
+  });
+
+  test("transports.add before start() queues the medium to open with the rest", async () => {
+    const { owner, staff } = await room({ start: false });
+    const late = loopbackPair();
+    const added = await owner.transports.add(linkTransport("late:owner", () => late.a));
+    expect(added.isOk()).toBe(true);
+    (await staff.transports.add(linkTransport("late:staff", () => late.b))).unwrap();
+    expect(owner.transports.list().map((t) => t.name)).toEqual(["loopback:owner", "late:owner"]);
+    // removing a medium that never opened is a set edit, and the original pair goes with it
+    expect(await owner.transports.remove("loopback:owner")).toBe(true);
+    expect(await staff.transports.remove("loopback:staff")).toBe(true);
+
+    owner.start().unwrap();
+    staff.start().unwrap();
+    await Promise.all([owner.ready(), staff.ready()]);
+    for (let round = 0; round < 4; round += 1) await settle(late.control);
+    const hs = staff.on("org:acme").unwrap();
+    await hs.db.insert(notes).values({ id: "queued", body: "over the queued radio" });
+    for (let round = 0; round < 4; round += 1) await settle(late.control);
+    const ho = owner.on("org:acme").unwrap();
+    expect((await ho.db.select().from(notes)).map((r) => r.id)).toEqual(["queued"]);
     await owner.stop();
     await staff.stop();
   });
