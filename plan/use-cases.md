@@ -563,13 +563,16 @@ honest answer on a device that was never given a network. On the server the same
 implemented over `withMesh(mesh)`, acting as the caller your own auth established, so the schema
 stays the only permission model.
 
-**What is not built.** The relay-side half — the gate that decides, from the app's own database,
-which gated rows reach which device — does not exist. E08 records the attempt and its rejection;
-D24 decides the framing (admission, not validation) and settles what an admitted subset costs on
-the wire: a scoped cursor whose scope names the *entitlement*, or a device whose entitlement
-widens keeps a cursor that silently skips what it was not allowed to see when it was narrower.
-Until that lands, a `visibility: "authority"` table declares its intent, refuses device writes,
-and is replicated like any other authority-written table.
+**The relay-side half.** The gate that decides, from the app's own database, which gated rows
+reach which device is `startRelay(port, { admission: { tables: authorityTables(schema), entitle }
+})`. `entitle({ peer, room })` is the authority's answer, asked once per join — an `Entitlement {
+scope, admits(event) }` — and it filters catch-up and every live fan-out alike. What an admitted
+subset costs on the wire is D24's scoped cursor: the coverage a device adopts names the
+entitlement as well as the interest, and a device whose entitlement's name has changed re-pages
+from nothing instead of keeping a cursor that skips what it was refused before. When the
+authority's database changes under a connected device, `room.reentitle([peer])` sends it round
+again. A withheld event never stalls the authority's stream: the relay tells the device it passed
+over it, in the same frame a filtered catch-up ends with.
 
 The three tiers, side by side:
 
@@ -581,10 +584,19 @@ The three tiers, side by side:
 
 **What the design does not do, said plainly**
 
-- An authority-visibility row cannot be obtained peer-to-peer (over BLE, say) from a device that
-  has it unless the authority admitted the receiver first. That is correct: a clinic phone must
-  not be able to pull a patient's record from another clinic's phone because the two happened to
-  meet.
+- An authority-visibility row cannot be obtained peer-to-peer (over BLE, say) at all — not from
+  the authority's own device, and not from a phone that was admitted to it. That is correct: a
+  clinic phone must not be able to pull a patient's record from another clinic's phone because the
+  two happened to meet, and no device can tell whether the far side was admitted; only the
+  authority can, and it answers through the relay. A direct link carries none of the events,
+  serves none of the rows in a snapshot, and leaves the tables out of the digest it compares.
+  *Unless the authority admitted the receiver first* would need the authority to vouch for an
+  entitlement in a form a peer can check offline — a grant claim — and nothing asks for it yet.
+- Over a radio alone, the authority's events after a gated one wait behind it until the device
+  next reaches the relay, whose scoped coverage releases them. A `global` catalog update can
+  therefore arrive later over Bluetooth than it would have without the tier; it never arrives
+  wrong, and it never stalls once the relay has been reached. Writing gated rows under a second
+  authority key would remove the wait and is additive if a case needs it.
 - The tier gives up the offline *write*, and only that. The use-case table above never promised
   one: it promises reads held offline once the authority has spoken. Optimistic local writes plus
   an authority refusal is the split D24 rejected, and it becomes available only once the
