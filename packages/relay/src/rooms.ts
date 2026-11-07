@@ -65,6 +65,13 @@ export interface RoomTable {
    */
   readonly acquire: (name: string) => Promise<HeldRoom>;
   readonly count: () => number;
+  /** Rooms with at least one socket on them: the ones {@link evictIdlest} cannot close. */
+  readonly occupied: () => number;
+  /**
+   * Closes the room that has gone longest with no socket on it, so a cap on open rooms counts the
+   * rooms people are on rather than every name ever opened. `false` when every room has a socket.
+   */
+  readonly evictIdlest: () => boolean;
   /**
    * Sockets holding that room, counted the way {@link acquire} counts them — from before the
    * open — or `undefined` when the table does not hold it open at all.
@@ -86,11 +93,11 @@ export function createRoomTable(options: RoomTableOptions): RoomTable {
   const grants = new Map<string, GrantCache>();
   /**
    * Evictions in order, and every open behind them: a re-open of a name cannot race the close of
-   * the object it replaces, because `entryFor` chains onto this rather than calling `open` at once.
+   * the object it replaces, because `ensureEntry` chains onto this rather than calling `open` at once.
    */
   let closing: Promise<unknown> = Promise.resolve();
 
-  const entryFor = (name: string): Entry => {
+  const ensureEntry = (name: string): Entry => {
     const held = entries.get(name);
     if (held !== undefined) return held;
     const cache = grants.get(name) ?? createGrantCache();
@@ -142,7 +149,7 @@ export function createRoomTable(options: RoomTableOptions): RoomTable {
 
   return {
     acquire: async (name) => {
-      const entry = entryFor(name);
+      const entry = ensureEntry(name);
       entry.sockets += 1;
       entry.idleSince = undefined;
       const { room } = await entry.opened;
@@ -153,10 +160,23 @@ export function createRoomTable(options: RoomTableOptions): RoomTable {
           if (done) return;
           done = true;
           entry.sockets -= 1;
+          if (entry.sockets === 0) entry.idleSince = options.now();
         },
       };
     },
     count: () => entries.size,
+    occupied: () => [...entries.values()].filter((entry) => entry.sockets > 0).length,
+    evictIdlest: () => {
+      let idlest: [string, Entry, Temporal.Instant] | undefined;
+      for (const [name, entry] of entries) {
+        if (entry.sockets > 0 || entry.idleSince === undefined) continue;
+        if (idlest === undefined || Temporal.Instant.compare(entry.idleSince, idlest[2]) < 0)
+          idlest = [name, entry, entry.idleSince];
+      }
+      if (idlest === undefined) return false;
+      evict(idlest[0], idlest[1]);
+      return true;
+    },
     sockets: (name) => entries.get(name)?.sockets,
     close: async () => {
       if (timer !== undefined) clearInterval(timer);

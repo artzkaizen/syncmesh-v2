@@ -60,8 +60,9 @@ export interface RelayLimits {
   readonly maxRoomConnections: number;
   /**
    * Rooms the host holds open at once. A socket for a room that is already open is unaffected;
-   * one that would open another past the cap is refused at upgrade with 503 — every open room is
-   * a log handle and a client table, and a name is free to make up.
+   * one that would open another past the cap first closes the room that has gone longest with no
+   * socket on it, and is refused at upgrade with 503 only when every open room has a socket —
+   * every open room is a log handle and a client table, and a name is free to make up.
    */
   readonly maxRooms: number;
   readonly rates: Readonly<Record<TrafficClass, RateLimit>>;
@@ -70,7 +71,10 @@ export interface RelayLimits {
    * socket on it. While the room owes, events from every one of them are held in order until it
    * can afford them again, never refused: the debt is the crowd's, not the next sender's.
    * Without it, a hundred sockets each under its own fan-out budget amplify together (gap
-   * audit №7).
+   * audit №7). Each socket may hold up to {@link maxBacklogBytes} of events while it waits, so a
+   * room in debt can hold `maxBacklogBytes × maxRoomConnections` of them at once — the same
+   * order as the room's outgoing backlog, about 62 GiB at the defaults, so lower one or the other
+   * on a host that cannot spare it.
    */
   readonly roomFanout: RateLimit;
 }

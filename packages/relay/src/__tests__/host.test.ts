@@ -27,4 +27,21 @@ describe("the open-room cap", () => {
     expect(await host.gate(dialRequest("jobs"), "jobs")).toBeUndefined();
     await host.close();
   });
+
+  /** Without this, a host that never idles rooms out is 503 for good once `maxRooms` names were ever opened. */
+  test("a room whose last socket left gives its seat to a new name", async () => {
+    const host = memoryHost({ limits: { maxRooms: 1 } });
+    const jobs = host.accept(fakeSocket().socket, "jobs");
+    await tick();
+    jobs.closed();
+    await tick();
+
+    expect(await host.gate(dialRequest("notes"), "notes")).toBeUndefined();
+    const notes = host.accept(fakeSocket().socket, "notes");
+    await tick();
+    // the seat is the new name's now, and it has a socket on it
+    expect((await host.gate(dialRequest("jobs"), "jobs"))?.status).toBe(503);
+    notes.closed();
+    await host.close();
+  });
 });

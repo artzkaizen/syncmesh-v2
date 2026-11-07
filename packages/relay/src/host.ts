@@ -109,7 +109,8 @@ export interface RelayHost {
   readonly live: () => number;
   /**
    * Whether a socket for that room would be turned away for capacity: the host is full, the
-   * room is, or the room is not open and the table already holds `maxRooms`.
+   * room is, or the room is not open and the table already holds `maxRooms` rooms that each have
+   * a socket on them. Below that, `accept` closes the room longest without a socket to seat it.
    */
   readonly atCapacity: (room: string) => boolean;
   readonly close: () => Promise<void>;
@@ -149,7 +150,7 @@ export const createGate = (
 const META_DDL = `CREATE TABLE IF NOT EXISTS "_relay_meta" ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL)`;
 
 /** One `_relay_meta` value, or the one `mint` makes and writes when the key was never set. */
-const metaOf = async (driver: SqlDriver, key: string, mint: () => string): Promise<string> => {
+const readMeta = async (driver: SqlDriver, key: string, mint: () => string): Promise<string> => {
   await driver.run(META_DDL);
   const held = await driver.all(`SELECT "value" FROM "_relay_meta" WHERE "key" = ?`, [key]);
   const value = held[0]?.[0];
@@ -161,14 +162,14 @@ const metaOf = async (driver: SqlDriver, key: string, mint: () => string): Promi
 
 /** The epoch rides in the log's own file: a new file is honestly a new lineage. */
 export const relayEpoch = (driver: SqlDriver): Promise<string> =>
-  metaOf(driver, "epoch", () => crypto.randomUUID());
+  readMeta(driver, "epoch", () => crypto.randomUUID());
 
 /**
  * The key a room signs its link hello with (D36), kept beside the epoch so the room has one name
  * across restarts, evictions and moves — the name a client pins. Minted on the first open.
  */
 export async function relayIdentity(driver: SqlDriver): Promise<Identity> {
-  const seed = await metaOf(driver, "identity-seed", () => bytesToHex(randomBytes(32)));
+  const seed = await readMeta(driver, "identity-seed", () => bytesToHex(randomBytes(32)));
   return hexToBytes(seed)
     .andThen((bytes) => createIdentity(bytes))
     .match({
@@ -283,9 +284,9 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
     if (live >= limits.maxConnections) return true;
     const name = roomFor(room);
     const sockets = table.sockets(name);
-    return sockets === undefined
-      ? table.count() >= limits.maxRooms
-      : sockets >= limits.maxRoomConnections;
+    if (sockets !== undefined) return sockets >= limits.maxRoomConnections;
+    // a room nobody is on is not counted: `accept` closes one to seat the new name
+    return table.occupied() >= limits.maxRooms;
   };
   const gate = createGate(access, atCapacity);
 
@@ -295,7 +296,10 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
     let pending: Uint8Array[] | undefined = [];
     let release: (() => void) | undefined;
     let gone = false;
-    void table.acquire(roomFor(path)).then((held) => {
+    const name = roomFor(path);
+    // only an admitted socket closes an idle room, so a dial the posture refuses evicts nothing
+    if (table.sockets(name) === undefined && table.count() >= limits.maxRooms) table.evictIdlest();
+    void table.acquire(name).then((held) => {
       if (gone) {
         // a socket closed while this was awaiting its room has already had its
         // `closed`, so nothing else will ever hand the room back and it would be
