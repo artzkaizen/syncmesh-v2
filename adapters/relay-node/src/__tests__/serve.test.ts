@@ -28,6 +28,8 @@ const schema = () =>
   });
 
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
+/** These tests are about the Node mount, not the gate: open, and announcing, on purpose (D40). */
+const OPEN = { open: true, announce: true } as const;
 const tick = (ms = 40) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const until = async (check: () => Promise<boolean>, ms = 5000): Promise<boolean> => {
@@ -55,7 +57,7 @@ describe("startRelay on Node — the same host over node:http and ws", () => {
   test("two devices through the Node mount converge on one room; a restart keeps the log", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "syncmesh-relay-node-"));
     try {
-      const relay = await startRelay(0, { dataDir, keepaliveMs: 60_000 });
+      const relay = await startRelay(0, { dataDir, keepaliveMs: 60_000, posture: OPEN });
       const url = `${relay.url}/notes`;
       const a = await device(url, 7);
       const b = await device(url, 160);
@@ -81,7 +83,7 @@ describe("startRelay on Node — the same host over node:http and ws", () => {
       await relay.stop();
 
       // the same directory, a fresh process: the log and the room's key are both on disk
-      const revived = await startRelay(0, { dataDir, keepaliveMs: 60_000 });
+      const revived = await startRelay(0, { dataDir, keepaliveMs: 60_000, posture: OPEN });
       const c = await device(`${revived.url}/notes`, 200);
       await c.ready();
       const hc = c.on("org:acme").unwrap();
@@ -100,6 +102,7 @@ describe("startRelay on Node — the same host over node:http and ws", () => {
       const relay = await startRelay(0, {
         dataDir,
         keepaliveMs: 60_000,
+        posture: OPEN,
         limits: { maxConnections: 1 },
       });
       const first = new WebSocket(relay.url);
@@ -139,7 +142,7 @@ describe("startRelay on Node — the same host over node:http and ws", () => {
       const relay = await startRelay(0, {
         dataDir,
         keepaliveMs: 60_000,
-        posture: { allowedOrigins: ["https://app.example"] },
+        posture: { ...OPEN, allowedOrigins: ["https://app.example"] },
       });
       const refused = await fetch(relay.url.replace("ws", "http"), {
         headers: { upgrade: "websocket", connection: "upgrade", origin: "https://evil.example" },
@@ -150,4 +153,33 @@ describe("startRelay on Node — the same host over node:http and ws", () => {
       rmSync(dataDir, { recursive: true, force: true });
     }
   }, 20_000);
+});
+
+describe("the hosted preset's posture (D40)", () => {
+  test("refuses to start without trust or an explicit open", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "syncmesh-relay-node-"));
+    try {
+      await expect(startRelay(0, { dataDir })).rejects.toThrow("a room name is a bearer secret");
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("announce defaults to off: a name nobody listed is not opened", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "syncmesh-relay-node-"));
+    const issuer = createIdentity(seed(1)).unwrap();
+    const relay = await startRelay(0, {
+      dataDir,
+      posture: { trust: { issuers: [issuer.peerId] }, rooms: ["acme"] },
+    });
+    try {
+      // a describe passes the same posture an upgrade does, without a socket to tear down
+      const describe = (path: string) => fetch(`${relay.url.replace("ws", "http")}${path}`);
+      expect((await describe("/acme")).status).toBe(200);
+      expect((await describe("/anything-else")).status).toBe(404);
+    } finally {
+      await relay.stop();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
 });

@@ -201,4 +201,23 @@ describe("the gate before the pair", () => {
     expect(await dial("https://app.example", "/somebody-elses-room")).toBeUndefined();
     db.close();
   });
+
+  test("a hosted object states who reads it: no trust and no open is a definition error (D40)", () => {
+    const db = new Database(":memory:");
+    expect(() => durableRelay(db, { posture: { open: false } })).toThrow(
+      "a room name is a bearer secret",
+    );
+    db.close();
+  });
+
+  test("with trust and announce left at its hosted default of off, the object still serves its own name", async () => {
+    const db = new Database(":memory:");
+    const issuer = createIdentity(seed(1)).unwrap();
+    const object = durableRelay(db, {
+      name: "acme",
+      posture: { open: false, trust: { issuers: [issuer.peerId] } },
+    });
+    expect(await object.gate(new Request("https://relay.example/acme"))).toBeUndefined();
+    db.close();
+  });
 });

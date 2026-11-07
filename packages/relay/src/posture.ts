@@ -55,15 +55,22 @@ export const BEARER_SECRET = "a room name is a bearer secret";
 /**
  * The hosted presets' posture check (D40): a definition mistake, so it throws. A relay that will
  * face the internet states who reads it — `trust`, or `open: true` — rather than inheriting
- * "everyone" from a default nobody chose. `announce` defaults to off on the same presets.
+ * "everyone" from a default nobody chose. `announce` defaults to off on the same presets, so a
+ * name nobody listed in `rooms` is not opened on a stranger's say-so; `own` lists the rooms a host
+ * serves by construction — a Durable Object's own name.
  */
-export function hostedPosture(posture: RelayPosture | undefined): RelayPosture {
+export function hostedPosture(
+  posture: RelayPosture | undefined,
+  own: readonly string[] = [],
+): RelayPosture {
   if (posture?.trust === undefined && posture?.open !== true)
     throw new Error(
-      "a hosted relay needs posture.trust (the issuers whose grants seat a device) or posture.open: true — " +
-        "and open means a room name is a bearer secret",
+      `a hosted relay needs posture.trust (the issuers whose grants seat a device) or posture.open: true, and open means ${BEARER_SECRET}`,
     );
-  return { announce: false, ...posture };
+  // said once, at start, where an operator reads it: the one posture that gates nothing
+  if (posture.trust === undefined)
+    console.warn(`syncmesh relay: posture is open — ${BEARER_SECRET}`);
+  return { announce: false, ...posture, rooms: [...(posture.rooms ?? []), ...own] };
 }
 
 /** The posture as the questions one upgrade has to pass, in the order they get cheaper to fail. */

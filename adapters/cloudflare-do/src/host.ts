@@ -10,7 +10,13 @@ import type {
 } from "@syncmesh/relay";
 import type { BlobStore, SqliteDriver } from "@syncmesh/storage";
 
-import { createRelayHost, decodeRelayFrame, relayIdentity, relayEpoch } from "@syncmesh/relay";
+import {
+  createRelayHost,
+  decodeRelayFrame,
+  hostedPosture,
+  relayIdentity,
+  relayEpoch,
+} from "@syncmesh/relay";
 import { omitUndefined, panic } from "@syncmesh/result";
 import { sqlBlobStore, sqliteEventStore } from "@syncmesh/storage";
 
@@ -60,6 +66,9 @@ export interface RelayDurableHostOptions {
    * Who may open a socket onto this object (the same posture every other host takes): origins,
    * and the last word on one upgrade with the request in hand. Asked by {@link RelayDurableHost.gate}
    * before a `WebSocketPair` exists, so a refused client costs the object nothing.
+   *
+   * Required in substance (D40): without `trust` or an explicit `open: true` the host throws, and
+   * `announce` defaults to off — an object on the internet states who reads it.
    */
   readonly posture?: RelayPosture;
 }
@@ -100,7 +109,7 @@ const openBlobs = async (driver: SqliteDriver): Promise<BlobStore | undefined> =
  *
  * @example
  * export class Relay extends DurableObject<Env> {
- *   #relay = relayDurableHost(this.ctx);
+ *   #relay = relayDurableHost(this.ctx, { posture: { trust: { issuers: [ISSUER] } } });
  *   override async fetch(request: Request) {
  *     const refused = await this.#relay.gate(request);
  *     if (refused !== undefined) return refused;
@@ -160,7 +169,8 @@ export function relayDurableHost(
       limits: options.limits,
       versions: options.versions,
       onTelemetry: options.onTelemetry,
-      posture: options.posture,
+      // an object that faces the internet states who reads it (D40): trust, or open on purpose
+      posture: hostedPosture(options.posture, [name]),
     }),
   );
   // held for the life of the instance: an object that has woken its sockets is never idle, and
