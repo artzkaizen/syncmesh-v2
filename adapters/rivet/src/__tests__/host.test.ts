@@ -148,4 +148,37 @@ describe("the room in a Rivet actor (D09-C, E25)", () => {
     expect(await until(() => Promise.resolve(spoke))).toBe(true);
     admitted.close();
   });
+
+  test("a socket handed over without its upgrade request is refused when a posture is set", async () => {
+    const actor = rivetActor(
+      new Database(":memory:"),
+      relayRivetActor({ posture: { verifyJoin: () => true } }),
+      ["acme"],
+    );
+    let closed = false;
+    let spoke = false;
+    const bare = actor.dial();
+    bare.onClose(() => void (closed = true));
+    bare.onFrame(() => void (spoke = true));
+    expect(await until(() => Promise.resolve(closed))).toBe(true);
+    expect(spoke).toBe(false);
+  });
+
+  test("the room's socket cap holds with or without the upgrade request", async () => {
+    const actor = rivetActor(
+      new Database(":memory:"),
+      relayRivetActor({ limits: { maxRoomConnections: 1 } }),
+      ["acme"],
+    );
+    let spoke = false;
+    const first = actor.dial();
+    first.onFrame(() => void (spoke = true));
+    expect(await until(() => Promise.resolve(spoke))).toBe(true);
+
+    let closed = false;
+    const second = actor.dial();
+    second.onClose(() => void (closed = true));
+    expect(await until(() => Promise.resolve(closed))).toBe(true);
+    first.close();
+  });
 });

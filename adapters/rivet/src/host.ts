@@ -27,6 +27,7 @@ export interface RivetRelayContext {
   /** The actor's key; joined with `/` it is the room's name, which is what a posture is asked about. */
   readonly key: readonly string[];
   readonly db: RivetDatabase;
+  /** Absent when the runtime gives none; a posture then refuses the socket outright. */
   readonly request?: Request;
   readonly abortSignal: AbortSignal;
 }
@@ -47,7 +48,10 @@ export interface RelayRivetActorOptions {
 
 /** The two raw hooks of a Rivet actor definition, already wired to a room. */
 export interface RelayRivetActor {
-  /** `onWebSocket`: the posture first when the upgrade request is in hand, then the room. */
+  /**
+   * `onWebSocket`: the posture and capacity caps first, then the room. A socket that arrives
+   * without its upgrade request is refused when a posture is set, since there is nothing to check.
+   */
   readonly onWebSocket: (c: RivetRelayContext, ws: RivetWebSocket) => Promise<void>;
   /** `onRequest`: a plain `GET` describes the room; nothing here upgrades. */
   readonly onRequest: (c: RivetRelayContext, request: Request) => Promise<Response>;
@@ -55,6 +59,9 @@ export interface RelayRivetActor {
 
 /** WebSocket close code for a refusal the posture made: policy violation. */
 const POLICY_VIOLATION = 1008;
+
+/** WebSocket close code for a capacity cap: try again later, since the seat may be free by then. */
+const TRY_AGAIN_LATER = 1013;
 
 /** The room's name, from the actor's key: the platform has already routed this socket to the actor that *is* the room. */
 const roomName = (key: readonly string[]): string => (key.length === 0 ? "main" : key.join("/"));
@@ -133,6 +140,29 @@ export function relayRivetActor(options: RelayRivetActorOptions = {}): RelayRive
     return host;
   };
 
+  /**
+   * Why a socket is turned away, or `undefined` to admit it. The posture is enforced only at the
+   * upgrade, so a socket the runtime hands over without its request cannot be checked against
+   * one and is refused whenever a posture is set; the capacity caps need no request and always run.
+   */
+  const admit = async (
+    host: RelayHost,
+    request: Request | undefined,
+    name: string,
+  ): Promise<{ readonly code: number; readonly reason: string } | undefined> => {
+    if (request !== undefined) {
+      const refused = await host.gate(request, name);
+      return refused === undefined
+        ? undefined
+        : { code: POLICY_VIOLATION, reason: (await refused.text()).slice(0, 120) };
+    }
+    if (options.posture !== undefined)
+      return { code: POLICY_VIOLATION, reason: "syncmesh relay: no upgrade request to check" };
+    if (host.atCapacity(name))
+      return { code: TRY_AGAIN_LATER, reason: "syncmesh relay: at capacity, retry shortly" };
+    return undefined;
+  };
+
   const hostFor = (c: RivetRelayContext): Promise<RelayHost> => {
     const held = hosts.get(c.actorId) ?? open(c);
     hosts.set(c.actorId, held);
@@ -143,12 +173,10 @@ export function relayRivetActor(options: RelayRivetActorOptions = {}): RelayRive
     onWebSocket: async (c, ws) => {
       const host = await hostFor(c);
       const name = roomName(c.key);
-      if (c.request !== undefined) {
-        const refused = await host.gate(c.request, name);
-        if (refused !== undefined) {
-          ws.close(POLICY_VIOLATION, (await refused.text()).slice(0, 120));
-          return;
-        }
+      const refused = await admit(host, c.request, name);
+      if (refused !== undefined) {
+        ws.close(refused.code, refused.reason);
+        return;
       }
       ws.binaryType = "arraybuffer";
       const session = host.accept(rivetRelaySocket(ws), name);
