@@ -71,7 +71,7 @@ export function mergeDef(
 
 /**
  * Refuses a merge declaration the column cannot carry. `max` and `min` need an order (D25); an
- * adapter needs a byte column with no constraint a document could break (RFC-0023 §4.1). Runs
+ * adapter needs a nullable byte column with no constraint a document could break (RFC-0023 §4.1). Runs
  * wherever a table is built, as the backstop for a def that did not come through the types.
  *
  * @throws {MergeKindMismatch | DocColumnNotBinary | DocColumnConstraint}
@@ -116,6 +116,11 @@ export function checkMerge(column: string, def: ColumnDef): void {
     throw new DocColumnConstraint({
       column,
       message: `${column}: a document column cannot be a ${constraint}`,
+    });
+  if (!def.nullable)
+    throw new DocColumnConstraint({
+      column,
+      message: `${column}: a document column must be nullable; a row write never carries it, so a new row holds none`,
     });
 }
 

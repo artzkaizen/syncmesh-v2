@@ -157,6 +157,19 @@ describe("construction refuses — RFC-0023 §4.1's error table", () => {
     );
   });
 
+  test("DocColumnConstraint: a column that is not nullable", () => {
+    // A row write never carries a document column, so a new row always holds none.
+    expect(() =>
+      table("notes", { id: t.uuid().primaryKey(), content: t.blob({ merge: loro }) }),
+    ).toThrow("notes.content: a document column must be nullable");
+    const required = pgTable("notes", { id: uuid().primaryKey(), content: bytea().notNull() });
+    expect(() => table("notes", fromDrizzle(required, { merge: { content: loro } }))).toThrow(
+      DocColumnConstraint,
+    );
+    const optional = pgTable("notes", { id: uuid().primaryKey(), content: bytea() });
+    expect(() => table("notes", fromDrizzle(optional, { merge: { content: loro } }))).not.toThrow();
+  });
+
   test("MergeKindMismatch: max/min on a document column, an adapter on a non-document kind", () => {
     const both = columnFromDef({
       kind: "blob",

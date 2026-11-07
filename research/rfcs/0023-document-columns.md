@@ -144,7 +144,7 @@ when:
 | Mistake | Error |
 |---|---|
 | adapter on a non-binary column (`text`, `json`, or SQLite `blob()` without `mode: "buffer"`, which Drizzle 1.0 maps to JSON) | `DocColumnNotBinary` — "use `bytea()` / `blob({ mode: \"buffer\" })`" |
-| adapter on the primary key, a `unique()` column, a `check`, or an `immutable` column | `DocColumnConstraint` |
+| adapter on the primary key, a `unique()` column, a `check`, an `immutable` column, or a column that is not nullable (a row write never carries a doc column, so a new row holds none) | `DocColumnConstraint` |
 | `max`/`min`/`counter` named on a doc column, or an adapter on a non-doc column type | `MergeKindMismatch` (D25's runtime backstop, extended) |
 | `derive` target that is the key, a doc column, missing, or also written by `merge` rules the app writes | `InvalidDerive` |
 | `derive` source that is not a doc column of the same table | `InvalidDerive` |
