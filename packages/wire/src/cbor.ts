@@ -23,31 +23,56 @@ export function compareKeys(a: CborKey, b: CborKey): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+/**
+ * Bytes appended into one buffer that doubles when full. A `number[]` grown by spreading every
+ * byte in managed about 3 MB/s, which stalls any frame the size of a screen of rows or a blob.
+ */
 class Writer {
-  private chunks: number[] = [];
+  private buffer = new Uint8Array(256);
+  private length = 0;
 
   bytes(): Uint8Array {
-    return Uint8Array.from(this.chunks);
+    return this.buffer.slice(0, this.length);
+  }
+
+  private reserve(n: number): void {
+    if (this.length + n <= this.buffer.length) return;
+    let size = this.buffer.length * 2;
+    while (size < this.length + n) size *= 2;
+    const grown = new Uint8Array(size);
+    grown.set(this.buffer.subarray(0, this.length));
+    this.buffer = grown;
+  }
+
+  private push(...bytes: number[]): void {
+    this.reserve(bytes.length);
+    for (const b of bytes) this.buffer[this.length++] = b;
+  }
+
+  private append(bytes: Uint8Array): void {
+    this.reserve(bytes.length);
+    this.buffer.set(bytes, this.length);
+    this.length += bytes.length;
   }
 
   head(major: number, length: number): void {
     const type = major << 5;
-    if (length < 24) this.chunks.push(type | length);
-    else if (length < 0x100) this.chunks.push(type | 24, length);
-    else if (length < 0x10000) this.chunks.push(type | 25, length >>> 8, length & 0xff);
-    else if (length < 0x100000000) this.chunks.push(type | 26, ...be(length, 4));
-    else this.chunks.push(type | 27, ...be(length, 8));
+    if (length < 24) this.push(type | length);
+    else if (length < 0x100) this.push(type | 24, length);
+    else if (length < 0x10000) this.push(type | 25, length >>> 8, length & 0xff);
+    else if (length < 0x100000000) this.push(type | 26, ...be(length, 4));
+    else this.push(type | 27, ...be(length, 8));
   }
 
   value(v: CborValue): void {
-    if (v === null) this.chunks.push(SIMPLE.null);
-    else if (v === true) this.chunks.push(SIMPLE.true);
-    else if (v === false) this.chunks.push(SIMPLE.false);
+    if (v === null) this.push(SIMPLE.null);
+    else if (v === true) this.push(SIMPLE.true);
+    else if (v === false) this.push(SIMPLE.false);
     else if (typeof v === "number") this.number(v);
     else if (typeof v === "string") this.text(v);
     else if (v instanceof Uint8Array) {
       this.head(MAJOR.bytes, v.length);
-      this.chunks.push(...v);
+      this.append(v);
     } else if (Array.isArray(v)) {
       this.head(MAJOR.array, v.length);
       for (const item of v) this.value(item);
@@ -65,13 +90,14 @@ class Writer {
     }
     const view = new DataView(new ArrayBuffer(8));
     view.setFloat64(0, n);
-    this.chunks.push(SIMPLE.f64, ...new Uint8Array(view.buffer));
+    this.push(SIMPLE.f64);
+    this.append(new Uint8Array(view.buffer));
   }
 
   private text(s: string): void {
     const encoded = utf8.encode(s);
     this.head(MAJOR.text, encoded.length);
-    this.chunks.push(...encoded);
+    this.append(encoded);
   }
 
   private map(m: ReadonlyMap<CborKey, CborValue>): void {
