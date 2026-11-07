@@ -60,7 +60,7 @@ export function decodeVersion(bytes: Uint8Array): Result<VersionVector, UpdateRe
  * (`conformance/loro-vectors.json`).
  *
  * @example
- * const docs = createDocuments({ engine, adapters: [loro()], docs: DOCS, peer });
+ * const documents = createDocuments({ engine, adapters: [loro()], docs: DOCS, procedure });
  */
 export function loro(limits: Partial<DocLimits> = {}): DocumentAdapter<LoroDoc> {
   const bounds = { ...DEFAULT_LIMITS, ...limits };

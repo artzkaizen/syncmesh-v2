@@ -76,7 +76,7 @@ export const pgDocHeads = pgTable(
   (t) => [pgPrimaryKey({ columns: [t.tbl, t.key, t.col] })],
 );
 
-/** The doc log on a device: the same shape as {@link pgDocLog}, in SQLite's types. */
+/** The column snapshots in the app's Postgres: one per document, of the lineage it was taken on. */
 export const pgDocSnapshots = pgTable(
   "_syncmesh_doc_snapshots",
   {
@@ -89,6 +89,7 @@ export const pgDocSnapshots = pgTable(
   (t) => [pgPrimaryKey({ columns: [t.tbl, t.key, t.col] })],
 );
 
+/** The doc log on a device: the same shape as {@link pgDocLog}, in SQLite's types. */
 export const sqliteDocLog = sqliteTable(
   "doc_log",
   {
@@ -132,6 +133,7 @@ export const sqliteDocHeads = sqliteTable(
   (t) => [sqlitePrimaryKey({ columns: [t.tbl, t.key, t.col] })],
 );
 
+/** The column snapshots on a device: the same shape as {@link pgDocSnapshots}, in SQLite's types. */
 export const sqliteDocSnapshots = sqliteTable(
   "doc_snapshots",
   {
