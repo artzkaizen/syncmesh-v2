@@ -60,7 +60,7 @@ export const PickerSheet = memo(function PickerSheet({
   readonly warm?: boolean;
 }) {
   const isPicked = (key: string) =>
-    typeof selected === "string" ? selected === key : (selected?.has(key) ?? false);
+    selected === key || (selected instanceof Set && selected.has(key));
 
   // the closing edge, in the commit phase: an effect would fire after paint and fold the span
   // being measured — the gap before the first frame — into nothing

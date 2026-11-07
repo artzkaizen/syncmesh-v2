@@ -7,6 +7,7 @@ import {
   Subquery,
   Table,
   and,
+  getColumnTable,
   getTableName,
   inArray,
   is,
@@ -91,7 +92,7 @@ const singleTableOf = (source: unknown): string | undefined => {
   const named = new Set<string>();
   walkSql(source._.sql, (chunk) => {
     if (is(chunk, Table)) named.add(getTableName(chunk));
-    else if (is(chunk, Column)) named.add(getTableName(chunk.table));
+    else if (is(chunk, Column)) named.add(getTableName(getColumnTable(chunk)));
   });
   const [only] = named;
   return named.size === 1 ? only : undefined;
@@ -244,6 +245,39 @@ export const keyOfRows = <T>(query: Runnable<T>): ((row: T) => string) | undefin
   const keyField = keyFieldOf(config.fields);
   if (keyField === undefined || singleTableOf(config.table) === undefined) return undefined;
   return (row) => String(cellOf(row, keyField));
+};
+
+/**
+ * A row of this query as its columns' driver values, and back: what a row is on the wire.
+ *
+ * Drizzle hands back mapped values — a `Date` for a timestamp, a parsed object for JSON — and a
+ * column knows how to turn each into what the database stores and back again. A field that is
+ * not a plain column (a computed `sql` expression) crosses as the value the query returned.
+ */
+export const driverValues = (query: SQLWrapper) => {
+  const fields = configOf(query)?.fields ?? {};
+  const column = (field: string) => {
+    const found = fields[field];
+    return is(found, Column) ? found : undefined;
+  };
+  return {
+    /** The row's fields as the database stores them. */
+    toDriver: (row: Readonly<Record<string, unknown>>): Record<string, unknown> =>
+      Object.fromEntries(
+        Object.entries(row).map(([field, value]) => {
+          const at = column(field);
+          return [field, at === undefined || value === null ? value : at.mapToDriverValue(value)];
+        }),
+      ),
+    /** The same row as the query would have handed it back. */
+    fromDriver: (row: Readonly<Record<string, unknown>>): Record<string, unknown> =>
+      Object.fromEntries(
+        Object.entries(row).map(([field, value]) => {
+          const at = column(field);
+          return [field, at === undefined || value === null ? value : at.mapFromDriverValue(value)];
+        }),
+      ),
+  };
 };
 
 /**

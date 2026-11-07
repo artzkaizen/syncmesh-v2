@@ -82,3 +82,5 @@ export {
   postureGate,
 } from "./host.js";
 export { describeRoom } from "./describe.js";
+export type { WindowConnection, WindowServerOptions } from "./windows.js";
+export { serveWindows } from "./windows.js";

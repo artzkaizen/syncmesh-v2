@@ -5,9 +5,11 @@ import { NO_ROLES } from "@syncmesh/policy";
 import { panic } from "@syncmesh/result";
 
 import type { AllowFn } from "./bind.js";
+import type { DeriveBlock, DocColumnEntry } from "./documents.js";
 
 import { combinators } from "./bind.js";
 import { strategyOf } from "./column.js";
+import { docColumnsOf } from "./documents.js";
 import { sourceName } from "./from-drizzle.js";
 import {
   RESERVED,
@@ -39,6 +41,13 @@ export type TableEntry<C extends Columns = Columns> =
       readonly partition: Partition;
       readonly allow: AllowFn<C, string>;
       readonly visibility?: undefined;
+      readonly derive?: DeriveBlock<C>;
+      /**
+       * `"window"`: the server keeps this table and serves pages of it; devices never replicate it.
+       * Read it through a `query` procedure, and every device shows the page that procedure returns
+       * (D43). Absent, the table replicates.
+       */
+      readonly sync?: "window";
     }
   | {
       readonly columns: Columns;
@@ -46,6 +55,13 @@ export type TableEntry<C extends Columns = Columns> =
       readonly partition?: ReservedPartition;
       readonly allow?: undefined;
       readonly visibility?: undefined;
+      readonly derive?: DeriveBlock<Columns>;
+      /**
+       * `"window"`: the server keeps this table and serves pages of it; devices never replicate it.
+       * Read it through a `query` procedure, and every device shows the page that procedure returns
+       * (D43). Absent, the table replicates.
+       */
+      readonly sync?: "window";
     }
   | {
       readonly columns: C;
@@ -53,6 +69,8 @@ export type TableEntry<C extends Columns = Columns> =
       readonly visibility: "authority";
       readonly partition?: undefined;
       readonly allow?: undefined;
+      readonly derive?: DeriveBlock<C>;
+      readonly sync?: undefined;
     };
 
 export type ColumnsMap = Readonly<Record<string, Columns>>;
@@ -71,6 +89,10 @@ export interface SchemaEntry {
   readonly visibility: "partition" | "authority";
   /** The rules, as data — what the `_policy` row will carry. Absent for user, local and global tables. */
   readonly allow?: AllowBlock;
+  /** The derive functions, keyed by target column; absent when the table declares none. */
+  readonly derive?: DeriveBlock<Columns>;
+  /** `"window"` for a table the server serves pages of instead of replicating; absent, it replicates. */
+  readonly sync?: "window";
 }
 
 export type TablesOf<C extends ColumnsMap> = {
@@ -86,6 +108,8 @@ export interface Schema<C extends ColumnsMap, PC extends PresenceMap = Record<st
   readonly entries: readonly SchemaEntry[];
   readonly reserved: readonly Table[];
   readonly merge: MergeSpec;
+  /** Document columns per table, in column order; a table without one is absent. */
+  readonly docs: ReadonlyMap<TableName, readonly DocColumnEntry[]>;
   /** Every declared kind, in the order the tables and topics first reference them; never a reserved one. */
   readonly kinds: readonly string[];
   /** The kinds whose content is sealed; empty for a manifest that declares none. */
@@ -121,6 +145,17 @@ export const authorityTables = (schema: {
     .filter((entry) => entry.visibility === "authority")
     .map((entry) => entry.table.name);
 
+/**
+ * The names of the tables marked `sync: "window"`: kept by the server and read a page at a time,
+ * never replicated (D43).
+ */
+export const servedTables = (schema: {
+  readonly entries: readonly Pick<SchemaEntry, "table" | "sync">[];
+}): ReadonlySet<string> =>
+  new Set(
+    schema.entries.filter((entry) => entry.sync === "window").map((entry) => entry.table.name),
+  );
+
 /** One manifest for the data model (D06-A). Definition mistakes throw at module load. */
 export function syncSchema<
   const C extends ColumnsMap,
@@ -129,6 +164,7 @@ export function syncSchema<
   const built: Record<string, Table> = {};
   const entries: SchemaEntry[] = [];
   const merge = new Map<TableName, Map<ColumnName, StrategyName>>();
+  const docs = new Map<TableName, readonly DocColumnEntry[]>();
   const tables: Readonly<Record<string, TableEntry>> = manifest.tables;
   /**
    * The kinds, collected from what references them (§2.1).
@@ -160,9 +196,13 @@ export function syncSchema<
       partition,
       visibility: entry.visibility ?? "partition",
     };
-    entries.push(entry.allow === undefined ? base : { ...base, allow: entry.allow(combinators()) });
+    const ruled = entry.allow === undefined ? base : { ...base, allow: entry.allow(combinators()) };
+    const derived = entry.derive === undefined ? ruled : { ...ruled, derive: entry.derive };
+    entries.push(entry.sync === undefined ? derived : { ...derived, sync: entry.sync });
     const rules = mergeRulesFor(name, tbl);
     if (rules.size > 0) merge.set(tbl.name, rules);
+    const documents = docColumnsOf(name, tbl, entry.derive ?? {});
+    if (documents.length > 0) docs.set(tbl.name, documents);
   }
   const presence = presenceTopics<PC>(manifest.presence, declare);
   return {
@@ -174,6 +214,7 @@ export function syncSchema<
     entries,
     reserved: reservedTables,
     merge,
+    docs,
     kinds: [...declared.keys()],
     sealedKinds: new Set([...declared.values()].filter((p) => p.sealed).map((p) => p.name)),
     rolesFor: (kind) => declared.get(kind)?.roles ?? NO_ROLES,

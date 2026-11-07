@@ -28,10 +28,10 @@
     "fast-check": "catalog:",
     "typescript": "catalog:",
     "vite-plus": "catalog:",
-    "zod": "^4.4.3"
+    "zod": "catalog:"
   },
   "peerDependencies": {
-    "drizzle-orm": ">=0.45.0"
+    "drizzle-orm": "^1.0.0-rc.4"
   },
   "peerDependenciesMeta": {
     "drizzle-orm": {

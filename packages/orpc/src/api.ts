@@ -5,9 +5,11 @@ import type { EventId, PeerId } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
 import type { PresenceMap } from "@syncmesh/schema";
 import type { TxReceipt } from "@syncmesh/storage";
+import type { WindowClient } from "@syncmesh/window";
 
 import { readOnly, scopeReads } from "@syncmesh/drizzle";
 import { Result } from "@syncmesh/result";
+import { servedTables } from "@syncmesh/schema";
 
 import type { LazyApiMesh } from "./deferred.js";
 import type { AuthorityDef, AuthorityLink, MutationDef, QueryDef, Router } from "./procedures.js";
@@ -18,6 +20,7 @@ import { AuthorityUnreachable, NothingWritten, asError } from "./errors.js";
 import { isDef } from "./procedures.js";
 import { readOf } from "./read.js";
 import { scopeKinds, scopeOf } from "./scope.js";
+import { servedLives } from "./served-live.js";
 import { validate } from "./validate.js";
 import { createWrite } from "./write.js";
 
@@ -242,6 +245,11 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
      * configured, and a great deal better than a call that silently does nothing.
      */
     readonly link?: AuthorityLink;
+    /**
+     * Carries the reads of `sync: "window"` tables, which the server serves a page at a time
+     * (D43). Absent, such a read fails naming itself rather than showing an empty table.
+     */
+    readonly windows?: WindowClient;
   } = {},
 ): Api<R> {
   const lazy = lazyOf(source);
@@ -284,6 +292,8 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     running: (def: QueryDef<never, unknown>, parsed: never, input: unknown) =>
       def.run(reading(parsed, handle(input))),
     settled: () => mesh().settled(),
+    served: servedTables(lazy.schema),
+    windows: options.windows === undefined ? undefined : servedLives(options.windows),
   };
   const read = (path: string, def: QueryDef<never, unknown>, input: unknown) =>
     readOf(reads, path, def, input);

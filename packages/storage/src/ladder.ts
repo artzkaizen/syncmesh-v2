@@ -1,5 +1,7 @@
 import type { SqlDriver } from "./driver.js";
 
+import { inTransaction } from "./sql.js";
+
 /**
  * Walking a schema forward, and refusing to walk one backward.
  *
@@ -24,6 +26,9 @@ export interface Rung {
  * are all in `main` under other names. Both of those read as "current" under a plain `>=`, and
  * the migration is then skipped in silence; the first query for a table that was never created
  * fails a long way from the cause, with `no such table: syncmesh.scope` at a commit.
+ *
+ * Each step runs in one transaction with the write of its own position, so an open killed
+ * mid-climb resumes from the last step that committed rather than re-running one that landed.
  */
 export const ladder = async (
   driver: SqlDriver,
@@ -38,8 +43,12 @@ export const ladder = async (
   }
   // nothing to apply is nothing to write: a launch that migrated nothing should touch no page
   if (applied === steps.length) return;
-  for (const step of steps.slice(applied)) {
-    for (const sql of step) await driver.run(sql);
+  // each step commits with its own position, so a climb killed part-way stands on the last step
+  // it finished: re-running a step that had landed is an error the moment one is not idempotent
+  for (const [index, step] of steps.slice(applied).entries()) {
+    await inTransaction(driver, async () => {
+      for (const sql of step) await driver.run(sql);
+      await at.write(driver, applied + index + 1);
+    });
   }
-  await at.write(driver, steps.length);
 };
