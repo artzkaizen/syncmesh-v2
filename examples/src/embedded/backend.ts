@@ -1,5 +1,3 @@
-import type { RunningRelay } from "@syncmesh/relay";
-
 import { createMesh } from "@syncmesh/client";
 import { relayTransport, startRelay, webSocketDial } from "@syncmesh/relay";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
@@ -51,7 +49,7 @@ export async function openBackend(options: BackendOptions) {
 
   // 1 · the relay, in this process. Its room log is its own SQLite under dataDir — the relay is
   // a peer, and this is its copy.
-  const relay: RunningRelay | undefined =
+  const relay =
     options.relayUrl === undefined
       ? await startRelay(options.relayPort ?? 0, { dataDir: `${dataDir}/relay` })
       : undefined;
