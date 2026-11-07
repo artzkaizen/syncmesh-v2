@@ -1,9 +1,12 @@
-import type { WindowRow } from "./frames.js";
+import type { StreamPosition, WindowRow } from "./frames.js";
 import type { WindowQuery } from "./query.js";
 
 import { decodeWindowFrame, desireFrame, undesireFrame } from "./frames.js";
 import { queryText } from "./query.js";
 import { createPatchStream } from "./stream.js";
+
+/** A position no view is ever at: a view's versions start at 1. */
+const NOWHERE = { epoch: "", version: 0 } as const satisfies StreamPosition;
 
 /**
  * `live` when the last patch applied in order; `resyncing` after a gap, until the reset arrives;
@@ -54,12 +57,16 @@ export function createWindowClient(): WindowClient {
   let send: ((frame: Uint8Array) => void) | undefined;
   let resyncing = false;
 
-  /** A gap: ask again from where this stream stands, and the server answers with a reset. */
+  /**
+   * A gap: ask again from where this stream stands, and the server answers with a reset. Before
+   * the first reset there is no position, so the client names {@link NOWHERE}, which no server
+   * stream is at.
+   */
   const resync = (): void => {
     const first = [...queries][0];
     if (resyncing || send === undefined || first === undefined) return;
     resyncing = true;
-    send(desireFrame(first[0], queryText(first[1]), stream.position()));
+    send(desireFrame(first[0], queryText(first[1]), stream.position() ?? NOWHERE));
   };
 
   return {

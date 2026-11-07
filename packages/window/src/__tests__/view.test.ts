@@ -129,6 +129,17 @@ describe("a window over a row source (E27)", () => {
     expect(ats(client.rows("inbox"))).toEqual(down(102, 5));
   });
 
+  test("a gap before the first reset still asks for one, though the client has no position", () => {
+    const { client, source, loseNext, frames } = harness(100);
+    // the opening reset never arrives, so the next patch is a gap with nothing to resume from
+    loseNext();
+    client.desire("inbox", newest(5));
+    source.write([{ table: MAIL, key: mailKey(101), row: mail(101) }]);
+    expect(lastPatch(frames)).toMatchObject({ reset: true });
+    expect(client.status()).toBe("live");
+    expect(ats(client.rows("inbox"))).toEqual(down(101, 5));
+  });
+
   test("a client on a new socket re-desires and the new view resnapshots it", () => {
     const { client, source, view } = harness(100);
     client.desire("inbox", newest(5));
