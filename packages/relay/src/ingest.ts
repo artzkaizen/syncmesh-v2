@@ -121,11 +121,15 @@ export function serveBlob(
     // SAFETY: a hash off the wire is opaque here; the store verifies it against the bytes
     const hash = frame.hash as BlobHash;
     if (frame.kind === "blob-put") {
-      const [stored, duration] = await timed(async () =>
-        room.keeper?.put(hash, frame.bytes, frame.partition),
-      );
-      // a room with no blob store stored nothing, answers nothing and reports nothing
-      if (stored === undefined) return;
+      // a room with no blob store keeps nothing, and says so at once: an upload waits for an
+      // answer, and silence would cost every put the whole wait. `no-store` is a code no client
+      // reads as a quota, so the putter stays the holder and its put succeeds, as it always has
+      const { keeper } = room;
+      if (keeper === undefined) {
+        sender.send(blobRefusedFrame(frame.hash, "no-store", 0, 0));
+        return;
+      }
+      const [stored, duration] = await timed(() => keeper.put(hash, frame.bytes, frame.partition));
       if (stored.isOk()) {
         sender.send(blobStoredFrame(frame.hash));
         room.report({ type: "relay.blob.put", sizes: { bytes: frame.bytes.byteLength }, duration });

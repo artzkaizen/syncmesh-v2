@@ -182,6 +182,25 @@ describe("the blob sweep (D18)", () => {
   });
 });
 
+describe("a room that keeps no blobs", () => {
+  test("answers a put with `no-store` at once, rather than leaving the putter to wait", async () => {
+    const room = await scriptedRoom();
+    const s = fakeSocket();
+    const conn = room.connect(s.socket);
+    conn.receive(joinFrame([1], peer(43, "acct_d").identity.peerId, new Map()));
+    await tick();
+    const photo = filled(8, 16);
+    conn.receive(blobPutFrame(hashOf(photo), photo, ACME));
+    await tick();
+    expect(s.ofKind("blob-refused")).toEqual([
+      { kind: "blob-refused", hash: hashOf(photo), code: "no-store", limit: 0, used: 0 },
+    ]);
+    expect(s.ofKind("blob-stored")).toEqual([]);
+    expect(s.closedWith).toEqual([]);
+    room.close();
+  });
+});
+
 describe("per-partition blob quotas (D18)", () => {
   test("a put past its partition's quota is refused as a value and stores nothing", async () => {
     const r = await blobRoom({ maxBlobBytesPerPartition: 40 });

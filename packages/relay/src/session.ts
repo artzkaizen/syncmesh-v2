@@ -70,8 +70,9 @@ export interface SessionHooks {
 
 /**
  * What a put's answer means to the upload waiting on it: nothing for `blob-stored`, the budget
- * for a `quota` refusal — and nothing for a code this build cannot name either (D14), which is
- * what that upload heard before the answer existed.
+ * for a `quota` refusal — and nothing for any other code, `no-store` from a room that keeps no
+ * blobs or one this build cannot name (D14), which is what that upload heard before the answer
+ * existed.
  */
 const uploadRefusal = (
   frame: Extract<RelayFrame, { kind: "blob-stored" | "blob-refused" }>,

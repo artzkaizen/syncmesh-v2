@@ -142,7 +142,8 @@ export type RelayFrame =
   | { readonly kind: "blob-stored"; readonly hash: string }
   /**
    * The relay would not keep them, and stored nothing. `code` is the reason, spelled so a later
-   * build can add one an older client ignores; `quota` carries the partition's budget and spend.
+   * build can add one an older client ignores; `quota` carries the partition's budget and spend,
+   * and `no-store` (limit and used both 0) says the room keeps no blobs at all.
    */
   | {
       readonly kind: "blob-refused";

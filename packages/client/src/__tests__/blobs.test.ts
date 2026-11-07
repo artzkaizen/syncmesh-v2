@@ -108,6 +108,25 @@ describe("a blob through the relay", () => {
     }
   }, 30_000);
 
+  test("a put against a relay that keeps no blobs answers at once, and succeeds", async () => {
+    // a log-only room has nowhere to keep bytes; it must say so, or every put waits out the
+    // whole BLOB_ANSWER_WAIT on it
+    const relay = await startRelay(0, { blobs: false, keepaliveMs: 60_000 });
+    try {
+      const a = await device(relay.url, 45);
+      await a.ready();
+      const started = Temporal.Now.instant();
+      expect((await a.blobs.put(photo)).isOk()).toBe(true);
+      const took = started.until(Temporal.Now.instant());
+      expect(Temporal.Duration.compare(took, { seconds: 2 })).toBe(-1);
+      // and the putter is still the holder
+      expect(await a.blobs.has(hashOf(photo))).toBe(true);
+      await a.stop();
+    } finally {
+      await relay.stop();
+    }
+  }, 30_000);
+
   test("a mesh with no transport that carries bytes says so, rather than pretending", async () => {
     const alone = (
       await createMesh({
