@@ -75,7 +75,7 @@ export const key = (k: string) => k as RowKey;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 
 /** One row into one peer's log — the write every bridge test syncs. */
-export const write = (p: Peer, id: string, body: string, partition = ACME) =>
+export const write = (p: Pick<Peer, "engine">, id: string, body: string, partition = ACME) =>
   p.engine.mutate(
     CREATE,
     (tx) =>

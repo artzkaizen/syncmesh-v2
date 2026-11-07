@@ -5,8 +5,10 @@ import { StoreFailure } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
 
 import type { SqlDriver, SqlRow } from "./driver.js";
+import type { OperationRefusal, RefusalRow } from "./operation-refusals.js";
 
 import { dialectOf, namespaceDdl } from "./dialect.js";
+import { createRefusalReads } from "./operation-refusals.js";
 import { attempt } from "./sql.js";
 
 /* oxlint-disable anti-slop/no-runtime-typeof -- decoding SQL rows *is* this file's I/O boundary: the driver hands back positional SqlValues, and the checks here are the parse that restores the row's contract */
@@ -34,7 +36,15 @@ export interface OperationRow {
   readonly status: OperationOutcome;
   /** Set when an authority overwrote this write's values, and why (ch. 20). */
   readonly correction?: { readonly by: string; readonly reason: string };
+  /**
+   * Peers that parked this write and signed for saying so (D32), absent when none has. An axis
+   * beside `status`, never a state: a write can be held by three peers and refused by one.
+   * Information only — nothing may gate on it, and a peer can sign one for any event it has seen.
+   */
+  readonly refusals?: readonly OperationRefusal[];
 }
+
+export type { OperationRefusal, RefusalRow } from "./operation-refusals.js";
 
 export interface ReceiptRow {
   readonly holder: PeerId;
@@ -60,7 +70,7 @@ export interface OperationStore {
    * it inside the engine's `atomic` puts the record in the same transaction as the append.
    */
   readonly record: (
-    op: Omit<OperationRow, "status" | "correction">,
+    op: Omit<OperationRow, "status" | "correction" | "refusals">,
   ) => Promise<ResultType<void, StoreFailure>>;
   readonly get: (id: string) => Promise<ResultType<OperationRow | undefined, StoreFailure>>;
   readonly byEvent: (
@@ -86,7 +96,8 @@ export interface OperationStore {
   ) => Promise<ResultType<readonly ReceiptRow[], StoreFailure>>;
   /**
    * Records signed custody through `throughSeq`, and **forgets every vouch this holder made
-   * under a different incarnation first**.
+   * under a different incarnation first**. Every refusal this holder made at or below
+   * `throughSeq` is deleted with it: the positive fact retires the negative, same key (D32 §5).
    *
    * The order is the whole of it: a peer that lost its store and rebuilt arrives with a new
    * lineage, and the vouches it made with the store it lost have to stop counting before the new
@@ -103,6 +114,23 @@ export interface OperationStore {
     peer: PeerId,
     seq: SeqNum,
   ) => Promise<ResultType<readonly VouchRow[], StoreFailure>>;
+  /**
+   * Records one peer's signed refusal of one of this device's writes, replacing that peer's
+   * earlier verdict on it — idempotent. Skipped for a write with no record, and for one the
+   * refuser has already signed custody of.
+   */
+  readonly refuse: (
+    refuser: PeerId,
+    author: PeerId,
+    seq: SeqNum,
+    refusal: Pick<OperationRefusal, "reason" | "verdict">,
+    atMs: number,
+  ) => Promise<ResultType<void, StoreFailure>>;
+  /** Who refused the event, why, and when (D32). Information, never a gate. */
+  readonly refusals: (
+    peer: PeerId,
+    seq: SeqNum,
+  ) => Promise<ResultType<readonly RefusalRow[], StoreFailure>>;
   /**
    * Every write of this device **nobody has signed for**, oldest first (D28).
    *
@@ -161,6 +189,12 @@ export function operationStore(
     );
     const rows = (query: string, params: readonly (string | number)[]) =>
       attempt("operation store read failed", () => driver.all(query, params));
+    const { refusalsAt, refused, allRefused } = createRefusalReads({
+      rows,
+      decodeOp,
+      selectRefusals: sql.selectRefusals,
+      selectAllRefusals: sql.selectAllRefusals,
+    });
     const store: OperationStore = {
       record: (op) =>
         attempt("operation record failed", () =>
@@ -178,17 +212,17 @@ export function operationStore(
       get: (id) =>
         Result.gen(async function* () {
           const [row] = yield* Result.await(rows(sql.selectOp, [id]));
-          return row === undefined ? Result.ok(undefined) : decodeOp(row);
+          return Result.ok(row === undefined ? undefined : yield* Result.await(refused(row)));
         }),
       byEvent: (peer, seq) =>
         Result.gen(async function* () {
           const [row] = yield* Result.await(rows(sql.selectOpByEvent, [String(peer), Number(seq)]));
-          return row === undefined ? Result.ok(undefined) : decodeOp(row);
+          return Result.ok(row === undefined ? undefined : yield* Result.await(refused(row)));
         }),
       unsettled: () =>
         Result.gen(async function* () {
           const held = yield* Result.await(rows(sql.selectUnsettled, []));
-          return Result.all(held.map(decodeOp));
+          return Result.ok(yield* Result.await(allRefused(held)));
         }),
       acknowledge: (holder, author, throughSeq, atMs) =>
         attempt("receipt insert failed", () =>
@@ -202,6 +236,11 @@ export function operationStore(
       vouch: (holder, author, throughSeq, incarnation, atMs) =>
         attempt("vouch insert failed", async () => {
           await driver.run(sql.deleteStaleVouches, [String(holder), incarnation]);
+          await driver.run(sql.deleteCoveredRefusals, [
+            String(holder),
+            String(author),
+            Number(throughSeq),
+          ]);
           await driver.run(sql.insertVouchesThrough, [
             String(holder),
             incarnation,
@@ -225,8 +264,21 @@ export function operationStore(
       soleCustody: () =>
         Result.gen(async function* () {
           const held = yield* Result.await(rows(sql.selectSoleCustody, []));
-          return Result.all(held.map(decodeOp));
+          return Result.ok(yield* Result.await(allRefused(held)));
         }),
+      refuse: (refuser, author, seq, { reason, verdict }, atMs) =>
+        attempt("refusal insert failed", () =>
+          driver.run(sql.insertRefusal, [
+            String(refuser),
+            reason,
+            verdict,
+            atMs,
+            String(author),
+            Number(seq),
+            String(refuser),
+          ]),
+        ),
+      refusals: (peer, seq) => refusalsAt(peer, seq),
       receiptsOf: (peer, seq) =>
         Result.gen(async function* () {
           const held = yield* Result.await(rows(sql.selectReceipts, [String(peer), Number(seq)]));

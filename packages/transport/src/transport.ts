@@ -48,6 +48,11 @@ export interface TransportContext {
    */
   readonly onReceipt?: BridgeOptions["onReceipt"];
   /**
+   * A verified refusal of one of **this device's own** writes (D32): a peer parked it and said
+   * why. Absent, refusals are still checked on arrival and then dropped.
+   */
+  readonly onRefusal?: BridgeOptions["onRefusal"];
+  /**
    * A join completed on some link (RFC-0019): state arrived instead of history. What
    * `$recovery.rebuild` listens to, and what tells it whether anything vouched for the rows.
    */
@@ -390,6 +395,19 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
           engine: ctx.engine,
           identity: ctx.identity,
           grants: ctx.grants,
+          ...omitUndefined({
+            now: ctx.now,
+            onGrantRequest: ctx.onGrantRequest,
+            onPresence: ctx.onPresence,
+            // signed custody: what this device can vouch for, where a peer's vouch for us lands,
+            // and where its refusal does (D32). None is required; any subset is coherent
+            incarnation: ctx.incarnation,
+            onReceipt: ctx.onReceipt,
+            onRefusal: ctx.onRefusal,
+            onSnapshot: ctx.onSnapshot,
+            certificate: ctx.certificate,
+            trust: ctx.trust,
+          }),
         };
         /**
          * Only once both halves are known. A link whose peer has not been named yet carries
@@ -403,21 +421,6 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
             carries: (message: RouteMessage) => carries(name, { ...message, to: peer }),
           });
         }
-        if (ctx.now !== undefined) Object.assign(bridgeOptions, { now: ctx.now });
-        if (ctx.onGrantRequest !== undefined)
-          Object.assign(bridgeOptions, { onGrantRequest: ctx.onGrantRequest });
-        if (ctx.onPresence !== undefined)
-          Object.assign(bridgeOptions, { onPresence: ctx.onPresence });
-        // the two halves of signed custody: what this device can vouch for, and where a peer's
-        // vouch for us lands. Neither is required, and a link with only one of them is coherent
-        if (ctx.incarnation !== undefined)
-          Object.assign(bridgeOptions, { incarnation: ctx.incarnation });
-        if (ctx.onReceipt !== undefined) Object.assign(bridgeOptions, { onReceipt: ctx.onReceipt });
-        if (ctx.onSnapshot !== undefined)
-          Object.assign(bridgeOptions, { onSnapshot: ctx.onSnapshot });
-        if (ctx.certificate !== undefined)
-          Object.assign(bridgeOptions, { certificate: ctx.certificate });
-        if (ctx.trust !== undefined) Object.assign(bridgeOptions, { trust: ctx.trust });
         // one table, every link: a route learned here is one every other link may advertise
         if (ctx.routes !== undefined) Object.assign(bridgeOptions, { routes: ctx.routes });
         // the same key ring on every link: what a device can read does not depend on the medium

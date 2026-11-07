@@ -19,6 +19,7 @@ export {
   grantRequestFrame,
   presenceFrame,
   receiptFrame,
+  refusalFrame,
   routesFrame,
 } from "./frame.js";
 export type {
@@ -54,7 +55,7 @@ export { createRouteTable } from "./routes.js";
 export type { RouteExchange, RouteExchangeDeps } from "./route-exchange.js";
 export { createRouteExchange } from "./route-exchange.js";
 export type { Custody, CustodyDeps } from "./custody.js";
-export { controlFrames, createCustody, custodyFor } from "./custody.js";
+export { controlFrames, createBridgeCustody, createCustody } from "./custody.js";
 export type { Divergence } from "./divergence.js";
 export { answerDigest } from "./divergence.js";
 export type { FrameHandlers } from "./dispatch.js";

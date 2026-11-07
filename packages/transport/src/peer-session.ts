@@ -7,7 +7,7 @@ import type { Bridge } from "./bridge.js";
 import type { FrameLink } from "./link.js";
 import type { RouteCandidate, RouteProfile } from "./route-scorer.js";
 
-import { classOf, KIND } from "./frame-parts.js";
+import { frameClass, KIND } from "./frame-parts.js";
 import { ORDINARY_LINK, pickRoutes } from "./route-scorer.js";
 
 /**
@@ -101,7 +101,7 @@ export function createPeerSessions(): PeerSessions {
       if (live.length === 0)
         throw new Error(`no link to ${peer.slice(0, 8)} — the frame did not leave`);
       const message = {
-        cls: classOf(frame) ?? KIND.event,
+        cls: frameClass(frame) ?? KIND.event,
         bytes: frame.length,
         to: peer,
       };

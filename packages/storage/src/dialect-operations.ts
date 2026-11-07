@@ -49,6 +49,17 @@ export const sqliteOperations = (log: LogPlacement): OperationSql => {
       PRIMARY KEY (peer, seq, holder)
     )`,
       indexDdl("vouches_holder", "vouches", "(holder, incarnation)"),
+      // a peer's signed refusal, its own table for the same reason vouches are (D32 §4): the
+      // strongest negative fact must not be a footnote on the weakest positive one
+      `CREATE TABLE IF NOT EXISTS ${t("refusals")} (
+      peer TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      refuser TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      verdict TEXT NOT NULL,
+      at_ms INTEGER NOT NULL,
+      PRIMARY KEY (peer, seq, refuser)
+    )`,
     ],
     insertOp: `INSERT INTO ${t("operations")} (id, peer, seq, label, at_ms, hlc_ms, hlc_logical, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -72,6 +83,16 @@ export const sqliteOperations = (log: LogPlacement): OperationSql => {
     SELECT peer, seq, ?, ?, ? FROM ${t("operations")} WHERE peer = ? AND seq <= ?`,
     selectVouches: `SELECT holder, incarnation, at_ms FROM ${t("vouches")} WHERE peer = ? AND seq = ?
     ORDER BY at_ms, holder`,
+    insertRefusal: `INSERT OR REPLACE INTO ${t("refusals")} (peer, seq, refuser, reason, verdict, at_ms)
+    SELECT o.peer, o.seq, ?, ?, ?, ? FROM ${t("operations")} o
+    WHERE o.peer = ? AND o.seq = ? AND NOT EXISTS (
+      SELECT 1 FROM ${t("vouches")} v WHERE v.peer = o.peer AND v.seq = o.seq AND v.holder = ?
+    )`,
+    deleteCoveredRefusals: `DELETE FROM ${t("refusals")} WHERE refuser = ? AND peer = ? AND seq <= ?`,
+    selectRefusals: `SELECT refuser, reason, verdict, at_ms FROM ${t("refusals")} WHERE peer = ? AND seq = ?
+    ORDER BY at_ms, refuser`,
+    selectAllRefusals: `SELECT peer, seq, refuser, reason, verdict, at_ms FROM ${t("refusals")}
+    ORDER BY at_ms, refuser`,
   };
 };
 
@@ -106,6 +127,15 @@ export const POSTGRES_OPERATIONS: OperationSql = {
       PRIMARY KEY (peer, seq, holder)
     )`,
     `CREATE INDEX IF NOT EXISTS vouches_holder ON syncmesh.vouches (holder, incarnation)`,
+    `CREATE TABLE IF NOT EXISTS syncmesh.refusals (
+      peer TEXT NOT NULL,
+      seq BIGINT NOT NULL,
+      refuser TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      verdict TEXT NOT NULL,
+      at_ms BIGINT NOT NULL,
+      PRIMARY KEY (peer, seq, refuser)
+    )`,
   ],
   insertOp: `INSERT INTO syncmesh.operations (id, peer, seq, label, at_ms, hlc_ms, hlc_logical, status)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
@@ -134,4 +164,15 @@ export const POSTGRES_OPERATIONS: OperationSql = {
     ON CONFLICT (peer, seq, holder) DO UPDATE SET incarnation = EXCLUDED.incarnation, at_ms = EXCLUDED.at_ms`,
   selectVouches: `SELECT holder, incarnation, at_ms FROM syncmesh.vouches WHERE peer = $1 AND seq = $2
     ORDER BY at_ms, holder`,
+  insertRefusal: `INSERT INTO syncmesh.refusals (peer, seq, refuser, reason, verdict, at_ms)
+    SELECT o.peer, o.seq, $1, $2, $3, $4 FROM syncmesh.operations o
+    WHERE o.peer = $5 AND o.seq = $6 AND NOT EXISTS (
+      SELECT 1 FROM syncmesh.vouches v WHERE v.peer = o.peer AND v.seq = o.seq AND v.holder = $7
+    )
+    ON CONFLICT (peer, seq, refuser) DO UPDATE SET reason = EXCLUDED.reason, verdict = EXCLUDED.verdict, at_ms = EXCLUDED.at_ms`,
+  deleteCoveredRefusals: `DELETE FROM syncmesh.refusals WHERE refuser = $1 AND peer = $2 AND seq <= $3`,
+  selectRefusals: `SELECT refuser, reason, verdict, at_ms FROM syncmesh.refusals WHERE peer = $1 AND seq = $2
+    ORDER BY at_ms, refuser`,
+  selectAllRefusals: `SELECT peer, seq, refuser, reason, verdict, at_ms FROM syncmesh.refusals
+    ORDER BY at_ms, refuser`,
 };
