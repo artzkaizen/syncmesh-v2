@@ -8,7 +8,7 @@ import { signCheckpoint } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import { LoroDoc } from "loro-crdt";
 
-import { LORO_ID } from "../index.js";
+import { LORO_ID, encodeVersion } from "../index.js";
 import {
   CONTENT,
   DOC,
@@ -323,6 +323,49 @@ describe("loro@1 checkpoints never move a snapshot back", () => {
     expect(body((await c.documents.open<LoroDoc>(DOC)).unwrap().value)).toBe("good");
     link.close();
   });
+
+  test("a valid update a shallow snapshot cannot take is not failed: the checkpoint over it is refused", async () => {
+    const a = node(73);
+    const c = node(74);
+    await insertNote(a);
+    const da = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(da.value, 0, "one ");
+    (await da.flush()).unwrap();
+    const made = (await a.documents.checkpoint(DOC, a.identity, hlcOf(Date.now(), 0))).unwrap();
+    type(da.value, 4, "two");
+    (await da.flush()).unwrap();
+    // a snapshot that lacks "two" and has trimmed the history "two" depends on
+    const trimmed = new LoroDoc();
+    trimmed.import(made.snapshot);
+    trimmed.setPeerId(777n);
+    trimmed.getMap("other").set("k", 1);
+    trimmed.commit();
+    const shallow = trimmed.export({
+      mode: "shallow-snapshot",
+      frontiers: trimmed.oplogFrontiers(),
+    });
+    const reread = new LoroDoc();
+    reread.import(shallow);
+    const link = await linked(a, c);
+    const last = Math.max(...(await c.engine.docLog()).unwrap().map((e) => e.seq));
+    const forged = signCheckpoint(
+      {
+        ...made.signed.checkpoint,
+        covers: new Map([[a.engine.peerId, parseSeqNum(last).unwrap()]]),
+        version: encodeVersion(reread.oplogVersion()),
+        snapshot: {
+          hash: new Bun.CryptoHasher("sha256").update(shallow).digest("hex"),
+          size: shallow.length,
+        },
+      },
+      a.identity,
+    );
+    const refused = await c.documents.install(forged.wire, a.identity.peerId, shallow, DOC);
+    expect(refused.isErr() && refused.error.message).toContain("lacks updates");
+    expect((await c.engine.docLog()).unwrap().map((e) => e.state)).toEqual(["tail", "tail"]);
+    expect(body((await c.documents.open<LoroDoc>(DOC)).unwrap().value)).toBe("one two");
+    link.close();
+  });
 });
 
 describe("loro@1 refusals and bounds", () => {
@@ -500,9 +543,19 @@ describe("loro@1 handles: a new lineage never takes an old replica's edits", () 
     await first.close();
     const again = (await a.documents.open<LoroDoc>(DOC)).unwrap();
     expect([again.status(), body(again.value)]).toEqual(["current", "reset"]);
-    // the old replica's last close lets it go, not the document reopened after it
     await second.close();
+    expect(second.status()).toBe("invalidated");
+  });
+
+  test("the invalidated replica's last close leaves the document reopened after it open", async () => {
+    const a = node(75);
+    await insertNote(a);
+    const stale = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    await genesis(a, "reset");
+    const again = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    await stale.close();
     const third = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    expect(third.value).toBe(again.value);
     type(third.value, 5, "!");
     expect(body(again.value)).toBe("reset!");
   });

@@ -134,7 +134,8 @@ export function createHandles(deps: OpenDeps) {
   const openDoc = async <D>(address: DocAddress): Promise<Result<OpenDoc<D>, OpenError>> => {
     const key = docKey(address);
     const held = open.get(key);
-    // reopening is what an invalidated handle asks for: a fresh replica, not the dead one
+    // reopening is what an invalidated handle asks for: a fresh replica, not the dead one. Dropping
+    // it from `open` is safe only because invalidation already stopped it and cleared its timers
     if (held?.status === "invalidated") open.delete(key);
     else if (held !== undefined) return Result.ok(share<D>(address, held));
     const pending = loading.get(key);
