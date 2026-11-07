@@ -109,10 +109,10 @@ function mergeCells(
   for (const [column, candidate] of incoming) {
     const existing = cells.get(column);
     const strategy = cellRules[columnStrategies?.get(column) ?? "lww"];
-    // Joining a first arrival with itself is the identity for `lww`, `max` and `min`, and puts a
-    // `counter` cell into its normal form. Storing it raw instead would leave the shape a
-    // sender happened to send in the state, and two peers would digest the same set differently.
-    cells.set(column, strategy(candidate, existing ?? candidate));
+    // A first arrival passes `undefined` so `counter` can tell an increment landing on nothing
+    // from one landing on totals; storing the sender's raw shape instead would leave two peers
+    // digesting the same cell differently.
+    cells.set(column, strategy(candidate, existing));
   }
   return cells;
 }
