@@ -98,24 +98,44 @@ describe("the blob sweep (D18)", () => {
     r.room.close();
   });
 
-  test("a reference holds until the log trims the event that made it, then the window starts", async () => {
+  test("a reference outlives the log trimming the event that made it: the row is still live", async () => {
+    // a row inserted once and never written again exists on every device after its event is
+    // trimmed, and the relay is its blob's durable home (D18), so the trim must free nothing
     const r = await blobRoom({ keepEventsFor: HOUR, keepUnreferencedBlobsFor: DAY });
     const photo = filled(5, 16);
     await r.put(photo);
     await r.reference(photo, "n1");
 
-    // a full window of blob age passes with the event still in the log: referenced, kept
     r.later(HOUR);
     await r.room.sweep(); // samples the ceiling the event sits under
     r.later(DAY);
-    await r.room.sweep(); // trims that event, and the blob's window begins now
+    await r.room.sweep(); // trims that event
     expect(Number(r.room.floor().get(r.author.identity.peerId))).toBe(1);
-    expect(await r.blobs.has(hashOf(photo))).toBe(true);
 
     r.later(DAY);
     await r.room.sweep();
-    expect(await r.blobs.has(hashOf(photo))).toBe(false);
+    r.later(DAY);
+    await r.room.sweep();
+    expect(await r.blobs.has(hashOf(photo))).toBe(true);
     r.room.close();
+  });
+
+  test("bytes put again that an earlier run left on disk are kept and cost no budget", async () => {
+    let clock = T0;
+    const store = memoryBlobStore();
+    const photo = filled(6, 32);
+    // an earlier run stored these, and the event that named them is no longer in the log
+    (await store.putAt(hashOf(photo), photo)).unwrap();
+    const keeper = createBlobKeeper({
+      store,
+      quota: 16,
+      keepUnreferencedFor: DAY,
+      now: () => clock,
+    });
+    (await keeper.put(hashOf(photo), photo, ACME)).unwrap();
+    clock = addToInstant(clock, DAY);
+    expect(await keeper.sweep()).toBe(0);
+    expect(await store.has(hashOf(photo))).toBe(true);
   });
 
   test("a room that has seen a sealed event sweeps nothing: a reference it cannot read is still one", async () => {
@@ -125,7 +145,6 @@ describe("the blob sweep (D18)", () => {
       store,
       quota: undefined,
       keepUnreferencedFor: DAY,
-      floor: () => new Map(),
       now: () => clock,
     });
     const photo = filled(9, 8);
@@ -144,7 +163,6 @@ describe("the blob sweep (D18)", () => {
       store,
       quota: undefined,
       keepUnreferencedFor: DAY,
-      floor: () => new Map(),
       now: () => clock,
     });
     const photo = filled(4, 8);

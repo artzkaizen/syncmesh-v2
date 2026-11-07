@@ -113,8 +113,9 @@ version negotiation). What remains:
     on the room's retention pass (`keepUnreferencedBlobsFor`), a `blob-put` past
     `maxBlobBytesPerPartition` is answered `blob-refused` and surfaces as
     `BlobQuotaExceeded` from `mesh.blobs.put`; frozen in `relay-vectors.json` (tags 20–21).
-    Limit kept open: "referenced" means any event the room still holds, not a visible
-    row, so a delete frees nothing until log retention trims; sealed rooms never sweep.
+    Limit kept open: "referenced" means any event this instance has seen, kept through
+    log trims (a trimmed insert is still a live row), so a delete frees nothing and only
+    uploads no row ever named are swept; sealed rooms never sweep.
     The numbers are still nobody's until a workload sets them.
 23. E24/E09 contradict each other on `mesh.transports.add/remove` (E24 wants it,
     E09 deliberately marks it absent). Reconcile.

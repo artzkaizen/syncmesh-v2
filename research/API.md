@@ -1969,13 +1969,14 @@ storing, so junk cannot squat a hash, and the client verifies on fetch. Neither
 has to trust the other. A raw radio has no blob channel, and `NoSuchCapability`
 is a fact about the medium rather than a missing feature.
 
-A relay may sweep blobs nothing has referenced for `keepUnreferencedBlobsFor`, and
+A relay may sweep blobs no event has ever referenced for `keepUnreferencedBlobsFor`, and
 refuse a put past `maxBlobBytesPerPartition`: `mesh.blobs.put(bytes, { partition })`
 then answers `BlobQuotaExceeded { partition, limit, used }` and the relay stored nothing.
 A swept hash fetches as `BlobNotFound` — put the bytes back and it works again.
 
-**Not built:** range fetch, and GC over *visible* rows — a relay cannot fold, so it
-counts any event it still holds as a reference. RFC-0015 has the open
+**Not built:** range fetch, and GC over *visible* rows — a relay cannot fold, so a
+reference it has seen holds for the life of the instance, through log trims, and
+deleting a row frees nothing. RFC-0015 has the open
 questions — chiefly *who is obliged to keep a blob*, and what happens when a
 delete races an offline reference.
 

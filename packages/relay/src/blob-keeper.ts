@@ -1,5 +1,4 @@
-import type { Cursors } from "@syncmesh/engine";
-import type { PartitionKey, PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
+import type { PartitionKey, SyncEvent } from "@syncmesh/kernel";
 import type { BlobError, BlobHash, BlobStore } from "@syncmesh/storage";
 
 import { Result } from "@syncmesh/result";
@@ -14,8 +13,6 @@ export interface BlobKeeperOptions {
   readonly quota: number | undefined;
   /** How long a blob nothing references is kept; absent, the sweep removes nothing. */
   readonly keepUnreferencedFor: Temporal.Duration | undefined;
-  /** Per author, the highest sequence the log has trimmed: references at or below it are gone. */
-  readonly floor: () => Cursors;
   readonly now: () => Temporal.Instant;
 }
 
@@ -26,21 +23,25 @@ export interface BlobKeeperOptions {
  *
  * **What "references" means here, and why it is not "a visible row".** A relay does not fold, so
  * it cannot know whether the row that named a hash still exists. What it can see is every event
- * it holds: a string cell, at any depth of a value, spelled like a blob name, is a reference by
- * that event's author at that event's sequence. A blob is referenced while **any event this room
- * still holds** names it — a superset of the visible rows, which is the direction that keeps too
- * much rather than too little. The cost is that deleting a row frees nothing until log retention
- * (`keepEventsFor`) trims the events that named it; a room that keeps its whole log sweeps only
- * blobs nobody ever referenced.
+ * it ingests: a string cell, at any depth of a value, spelled like a blob name, is a reference.
+ * **Once seen, a reference is kept for the life of this instance**, through any trim of the log:
+ * a row inserted once and never written again still exists on every device after its event is
+ * trimmed, and the relay is that blob's durable home (D18). So the sweep frees only blobs no
+ * event has ever named — an upload whose row never arrived — and deleting a row frees nothing.
+ * Telling a deleted row from a live one would take a fold the relay does not run.
  *
- * Three more limits, each in the keeping direction or recoverable:
+ * Four more limits, each in the keeping direction or recoverable:
  * - **A sealed event names nothing the relay can read.** The first one this room sees makes the
  *   sweep stand down for good, because "no reference I can see" is no longer "no reference".
  * - **Only bytes put since the room opened are swept or billed.** The `BlobStore` port cannot
- *   enumerate what an earlier run left on disk, so those blobs are kept and cost no budget.
+ *   enumerate what an earlier run left on disk, so those blobs are kept and cost no budget — and
+ *   so are bytes put again that were already on disk, whose referencing event may have been
+ *   trimmed before this instance booted.
  * - **References are the ones this instance ingested or booted with.** Another instance's event
  *   that never fanned in here is invisible — a blob swept under it answers `blob-missing`, which
  *   is recoverable by anyone still holding the bytes, because the name is the content.
+ * - **The set of names seen only grows.** One entry per distinct hash ever referenced, held or
+ *   not, for as long as the instance runs.
  *
  * The partition a put is billed to is the putter's claim (a `blob-put` carries it): the relay has
  * seen no row yet and cannot check it, so this is a budget, not access control.
@@ -64,11 +65,10 @@ export interface BlobKeeper {
   readonly sweep: () => Promise<number>;
 }
 
-/** One blob this room admitted: its size, whose budget it is on, and when it was last wanted. */
+/** One blob this room admitted: its size, whose budget it is on, and when it was last put. */
 interface Held {
   readonly bytes: number;
   readonly partition: PartitionKey | undefined;
-  /** Put, or the moment its last reference was trimmed away — whichever is later. */
   since: Temporal.Instant;
 }
 
@@ -100,12 +100,12 @@ const written = (event: SyncEvent): unknown[] =>
   });
 
 export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
-  const { store, quota, keepUnreferencedFor, floor, now } = options;
+  const { store, quota, keepUnreferencedFor, now } = options;
   const held = new Map<BlobHash, Held>();
   /** Per partition (absent is its own budget), the bytes billed to it. */
   const used = new Map<PartitionKey | undefined, number>();
-  /** Per blob name, the highest sequence each author referenced it at. */
-  const references = new Map<BlobHash, Map<PeerId, SeqNum>>();
+  /** Every blob name an event this instance ingested or booted with has referenced. */
+  const references = new Set<BlobHash>();
   /** A sealed event arrived: some references are unreadable here, so nothing is provably free. */
   let blind = false;
 
@@ -116,27 +116,15 @@ export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
     used.set(entry.partition, (used.get(entry.partition) ?? 0) - entry.bytes);
   };
 
-  /**
-   * Drops every reference the log no longer holds, and starts the window for a blob that has
-   * just lost its last one — from now, since nothing recorded when the trim really happened.
-   */
-  const release = (at: Temporal.Instant): void => {
-    const trimmed = floor();
-    for (const [hash, by] of references) {
-      for (const [author, seq] of by) if (seq <= (trimmed.get(author) ?? 0)) by.delete(author);
-      if (by.size > 0) continue;
-      references.delete(hash);
-      const entry = held.get(hash);
-      if (entry !== undefined) entry.since = at;
-    }
-  };
-
   return {
     put: async (hash, bytes, partition) => {
       const at = now();
       const known = held.get(hash);
+      // bytes already on disk that this instance never admitted are an earlier run's: kept, and
+      // costing no budget, since the event that named them may have been trimmed before this boot
+      const fresh = known === undefined && !(await store.has(hash));
       const spent = used.get(partition) ?? 0;
-      if (known === undefined && quota !== undefined && spent + bytes.byteLength > quota)
+      if (fresh && quota !== undefined && spent + bytes.byteLength > quota)
         return Result.err(
           new BlobQuotaExceeded({
             hash,
@@ -149,27 +137,20 @@ export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
       const stored = await store.putAt(hash, bytes);
       if (stored.isErr()) return stored;
       if (known !== undefined) known.since = at;
-      else {
+      else if (fresh) {
         held.set(hash, { bytes: bytes.byteLength, partition, since: at });
-        used.set(partition, spent + bytes.byteLength);
+        used.set(partition, (used.get(partition) ?? 0) + bytes.byteLength);
       }
       return stored;
     },
     note: (event) => {
       if (event.sealed === true) blind = true;
-      for (const value of strings(written(event))) {
-        if (!isBlobHash(value)) continue;
-        const by = references.get(value) ?? new Map<PeerId, SeqNum>();
-        if ((by.get(event.peerId) ?? 0) < event.seqNum) by.set(event.peerId, event.seqNum);
-        references.set(value, by);
-      }
+      for (const value of strings(written(event))) if (isBlobHash(value)) references.add(value);
     },
     forget: unbill,
     sweep: async () => {
       if (keepUnreferencedFor === undefined || blind) return 0;
-      const at = now();
-      release(at);
-      const cut = addToInstant(at, keepUnreferencedFor.negated());
+      const cut = addToInstant(now(), keepUnreferencedFor.negated());
       // chosen in one synchronous pass, then deleted: the room's queue runs this, but a delete
       // that yields must not find the set it is walking changed under it
       const due = [...held]

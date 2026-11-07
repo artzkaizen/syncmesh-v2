@@ -56,14 +56,15 @@ export interface RelayRetention {
    */
   readonly maxBlobBytes?: number;
   /**
-   * How long a blob nothing references is kept, measured from its put or from the trim that took
-   * its last reference away (D18). Absent, no blob is ever swept for being unreferenced — only the
-   * byte ceiling above removes any.
+   * How long a blob no event has referenced is kept, measured from its put (D18). Absent, no blob
+   * is ever swept for being unreferenced — only the byte ceiling above removes any.
    *
-   * "References" is every event the room still holds, not every visible row: a relay does not
-   * fold, so it cannot tell a deleted row from a live one. Deleting a row therefore frees its blob
-   * only once `keepEventsFor` trims the events that named it. A room that sees one sealed event
-   * stops sweeping, because a reference it cannot read is still a reference. See `BlobKeeper`.
+   * "References" is every event this instance has ingested or booted with, not every visible row,
+   * and a reference outlives `keepEventsFor` trimming its event: a relay does not fold, so it
+   * cannot tell a deleted row from a live one, and the live row's blob has its durable home here.
+   * The sweep therefore frees only uploads no row ever named; deleting a row frees nothing. A room
+   * that sees one sealed event stops sweeping, because a reference it cannot read is still a
+   * reference. See `BlobKeeper`.
    *
    * A blob swept too soon is a `blob-missing`, recoverable: anyone still holding the bytes puts
    * them back under the same name.
@@ -286,8 +287,7 @@ export function roomRetention(options: RoomRetentionOptions): RoomRetention {
     const swept = await trimLog(store, due);
     if (swept.isOk()) floor = swept.value;
   };
-  // the log first: a trim is what takes references away, so the blobs are swept against the
-  // floor this same pass moved to rather than the one a pass from now would find
+  // one pass on the room's queue for both halves; a trim takes no reference away (see `BlobKeeper`)
   const pass = async (): Promise<void> => {
     await trim();
     await keeper?.sweep();
@@ -309,7 +309,6 @@ export function roomRetention(options: RoomRetentionOptions): RoomRetention {
           store: blobs,
           quota: policy?.maxBlobBytesPerPartition,
           keepUnreferencedFor: keepBlobsFor,
-          floor: () => floor,
           now,
         });
 
