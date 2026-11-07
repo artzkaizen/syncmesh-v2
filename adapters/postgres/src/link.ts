@@ -106,7 +106,8 @@ export class Link {
     for (;;) {
       const connected = await this.connect();
       if (connected.isOk()) {
-        this.startTimers();
+        // a reconnect that lands after stop() must not leave timers reading the slot
+        if (!this.stopped) this.startTimers();
         return connected;
       }
       this.attempts += 1;
@@ -223,6 +224,8 @@ export class Link {
 
   private async next(): Promise<Uint8Array | undefined> {
     for (;;) {
+      // frames buffered past a stop are dropped: what they held is resent on the next start
+      if (this.stopped) return undefined;
       const frame = this.frames.shift();
       if (frame !== undefined) {
         if (this.paused && this.frames.length < LOW_WATER) {
@@ -232,7 +235,6 @@ export class Link {
         return frame;
       }
       if (this.failure !== undefined) throw this.failure;
-      if (this.stopped) return undefined;
       await new Promise<void>((resolve) => (this.waiting = resolve));
     }
   }

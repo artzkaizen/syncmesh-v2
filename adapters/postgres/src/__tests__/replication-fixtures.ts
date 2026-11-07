@@ -121,8 +121,15 @@ export async function take(
   }
 }
 
-export const commits = (n: number) => (seen: readonly ChangeMessage[]) =>
-  seen.filter((m) => m.t === "commit").length >= n;
+/** Enough once `n` commits arrived; counts each message once, so a 50k-row take stays linear. */
+export const commits = (n: number) => {
+  let counted = 0;
+  let found = 0;
+  return (seen: readonly ChangeMessage[]) => {
+    for (; counted < seen.length; counted += 1) if (seen[counted]?.t === "commit") found += 1;
+    return found >= n;
+  };
+};
 
 export const iterate = (stream: ChangeStream) => stream.changes[Symbol.asyncIterator]();
 

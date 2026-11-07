@@ -199,7 +199,7 @@ function relation(reader: Reader): Relation {
       typmod: reader.int32(),
     });
   }
-  return { oid, schema, table: table, identity, columns };
+  return { oid, schema, table, identity, columns };
 }
 
 function oldTuple(reader: Reader, marker: string): OldTuple {
