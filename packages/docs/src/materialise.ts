@@ -1,0 +1,247 @@
+import type {
+  DocAddress,
+  DocEntryRef,
+  DocTail,
+  Engine,
+  StoreFailure,
+  TailUpdate,
+} from "@syncmesh/engine";
+import type { Hlc, PeerId, SeqNum } from "@syncmesh/kernel";
+
+import { sha256 } from "@noble/hashes/sha2.js";
+import { getRecord, lineageOf } from "@syncmesh/kernel";
+import { Result } from "@syncmesh/result";
+import {
+  bytesEqual,
+  bytesToHex,
+  decodeCheckpoint,
+  signCheckpoint,
+  type Identity,
+  type SignedCheckpoint,
+} from "@syncmesh/wire";
+
+import type { DocumentAdapter, UpdateRejected } from "./adapter.js";
+
+import { CheckpointRefused, DocTooLarge } from "./errors.js";
+
+/** What the runtime asks of an engine: the write path, the fold feed and the doc log. */
+export type DocsEngine = Pick<
+  Engine,
+  "peerId" | "mutate" | "onFoldBatch" | "docTail" | "coverDoc" | "docHeads" | "state"
+>;
+
+/** A document rebuilt from its snapshot and tail, and which tail updates it could import. */
+export interface Loaded<D> {
+  readonly doc: D;
+  readonly applied: readonly TailUpdate[];
+  /** Updates the adapter refused (RFC-0023 §10): the document stays at its last good version. */
+  readonly failed: readonly TailUpdate[];
+  /** Blob-carried updates whose bytes this runtime does not hold yet. */
+  readonly missing: readonly TailUpdate[];
+}
+
+/**
+ * Rebuilds a document on a fresh replica: the snapshot, then the tail in one batch, then — only
+ * if the batch was refused — update by update, so one bad update costs only itself.
+ */
+export function load<D>(
+  adapter: DocumentAdapter<D>,
+  tail: DocTail,
+  replica: bigint,
+): Result<Loaded<D>, UpdateRejected> {
+  const doc = adapter.create(replica);
+  if (tail.snapshot !== undefined) {
+    const base = adapter.apply(doc, [tail.snapshot.bytes]);
+    if (base.isErr()) return Result.err(base.error);
+  }
+  const inline = tail.updates.filter((u) => u.bytes !== undefined);
+  const missing = tail.updates.filter((u) => u.bytes === undefined);
+  if (
+    adapter
+      .apply(
+        doc,
+        inline.map((u) => u.bytes ?? new Uint8Array()),
+      )
+      .isOk()
+  )
+    return Result.ok({ doc, applied: inline, failed: [], missing });
+  const applied: TailUpdate[] = [];
+  const failed: TailUpdate[] = [];
+  for (const u of inline)
+    (adapter.apply(doc, [u.bytes ?? new Uint8Array()]).isOk() ? applied : failed).push(u);
+  return Result.ok({ doc, applied, failed, missing });
+}
+
+const ref = ({ entry }: TailUpdate): DocEntryRef => ({
+  author: entry.author,
+  seq: entry.seq,
+  index: entry.index,
+});
+
+/**
+ * The floor a snapshot can claim: per author, the highest sequence below which every one of their
+ * updates to this document is in it — never past an update whose bytes are still missing.
+ */
+function floorOf(tail: DocTail, settled: readonly TailUpdate[]): Map<PeerId, SeqNum> {
+  const floor = new Map(tail.head?.covers ?? []);
+  const done = new Set(settled.map((u) => `${u.entry.author} ${String(u.entry.seq)}`));
+  const stopped = new Set<PeerId>();
+  for (const { entry } of tail.updates) {
+    if (stopped.has(entry.author)) continue;
+    if (!done.has(`${entry.author} ${String(entry.seq)}`)) {
+      stopped.add(entry.author);
+      continue;
+    }
+    if ((floor.get(entry.author) ?? 0) < entry.seq) floor.set(entry.author, entry.seq);
+  }
+  return floor;
+}
+
+/** What a materialisation took into the snapshot. */
+export interface Materialised {
+  readonly covered: number;
+  readonly failed: number;
+  readonly snapshotBytes: number;
+}
+
+/**
+ * Writes a document's snapshot and marks the tail it holds `covered` (RFC-0023 §6.3, §8.2), so
+ * compaction may take those events. Always from a fresh replica — never from an open handle,
+ * whose unflushed edits must not reach a snapshot the log never carried.
+ */
+export async function materialise<D>(
+  engine: DocsEngine,
+  adapter: DocumentAdapter<D>,
+  address: DocAddress,
+  replica: bigint,
+  at: number,
+): Promise<Result<Materialised, UpdateRejected | DocTooLarge | StoreFailure>> {
+  return Result.gen(async function* () {
+    const tail = yield* Result.await(engine.docTail(address));
+    const loaded = yield* load(adapter, tail, replica);
+    const snapshot = adapter.snapshot(loaded.doc);
+    const limit = adapter.limits.maxSnapshotBytes;
+    if (snapshot.length > limit)
+      return Result.err(
+        new DocTooLarge({
+          size: snapshot.length,
+          limit,
+          message: `the document's snapshot is ${String(snapshot.length)} bytes`,
+        }),
+      );
+    const settled = [...loaded.applied, ...loaded.failed];
+    yield* Result.await(
+      engine.coverDoc(address, {
+        adapter: adapter.id,
+        covers: floorOf(tail, settled),
+        version: adapter.version(loaded.doc),
+        snapshot,
+        mode: "materialised",
+        at,
+        covered: loaded.applied.map(ref),
+        failed: loaded.failed.map(ref),
+        ...(tail.lineage !== undefined && { lineage: tail.lineage }),
+      }),
+    );
+    return Result.ok({
+      covered: loaded.applied.length,
+      failed: loaded.failed.length,
+      snapshotBytes: snapshot.length,
+    });
+  });
+}
+
+const hashOf = (bytes: Uint8Array) => bytesToHex(sha256(bytes));
+
+/** A signed checkpoint and the snapshot bytes it names by hash (RFC-0023 §5.5). */
+export interface ProducedCheckpoint {
+  readonly signed: SignedCheckpoint;
+  readonly snapshot: Uint8Array;
+}
+
+/** Materialises, then signs what the snapshot is: the record a joiner below the floor installs. */
+export async function produceCheckpoint<D>(
+  engine: DocsEngine,
+  adapter: DocumentAdapter<D>,
+  address: DocAddress,
+  producer: Identity,
+  replica: bigint,
+  at: Hlc,
+) {
+  return Result.gen(async function* () {
+    yield* Result.await(materialise(engine, adapter, address, replica, at[0].epochMilliseconds));
+    const tail = yield* Result.await(engine.docTail(address));
+    const snapshot = tail.snapshot?.bytes ?? adapter.snapshot(adapter.create(replica));
+    const signed = signCheckpoint(
+      {
+        ...address,
+        adapter: adapter.id,
+        covers: tail.head?.covers ?? new Map(),
+        version: tail.head?.version ?? adapter.version(adapter.create(replica)),
+        snapshot: { hash: hashOf(snapshot), size: snapshot.length },
+        derived: new Map(),
+        at,
+        ...(tail.lineage !== undefined && { lineage: tail.lineage }),
+      },
+      producer,
+    );
+    return Result.ok<ProducedCheckpoint>({ signed, snapshot });
+  });
+}
+
+const refuse = (message: string, cause?: unknown) =>
+  Result.err(new CheckpointRefused({ message, ...(cause !== undefined && { cause }) }));
+
+/**
+ * Installs a checkpoint in place of history this device never held (RFC-0023 §8.4): verified
+ * against the producer's key, the snapshot's hash, the column's adapter and winning lineage, and
+ * by re-deriving the version from the bytes — a snapshot that does not reproduce the version it
+ * claims is refused, whoever signed it. Trust in the producer is the caller's question (§7.3).
+ */
+export async function installCheckpoint<D>(
+  engine: DocsEngine,
+  adapter: DocumentAdapter<D>,
+  wire: Uint8Array,
+  producer: PeerId,
+  snapshot: Uint8Array,
+  replica: bigint,
+  at: number,
+) {
+  return Result.gen(async function* () {
+    const decoded = decodeCheckpoint(wire, producer);
+    if (decoded.isErr()) return refuse("not a checkpoint signed by that producer", decoded.error);
+    const { checkpoint } = decoded.value;
+    if (checkpoint.adapter !== adapter.id) return refuse(`merged by ${checkpoint.adapter}`);
+    if (
+      checkpoint.snapshot.size !== snapshot.length ||
+      checkpoint.snapshot.hash !== hashOf(snapshot)
+    )
+      return refuse("the snapshot bytes are not the ones the checkpoint names");
+    const address = { table: checkpoint.table, key: checkpoint.key, column: checkpoint.column };
+    const winner = lineageOf(getRecord(engine.state(), address.table, address.key), address.column);
+    if (winner !== checkpoint.lineage)
+      return refuse("the checkpoint is of a lineage that does not win here");
+    const doc = adapter.create(replica);
+    const parsed = adapter.apply(doc, [snapshot]);
+    if (parsed.isErr()) return refuse("the adapter cannot read the snapshot", parsed.error);
+    if (!bytesEqual(adapter.version(doc), checkpoint.version))
+      return refuse("the snapshot does not reproduce the version the checkpoint claims");
+    const tail = yield* Result.await(engine.docTail(address));
+    const below = tail.updates.filter(
+      ({ entry }) => entry.seq <= (checkpoint.covers.get(entry.author) ?? 0),
+    );
+    yield* Result.await(
+      engine.coverDoc(address, {
+        adapter: adapter.id,
+        covers: checkpoint.covers,
+        version: checkpoint.version,
+        snapshot,
+        mode: "checkpoint",
+        at,
+        covered: below.map(ref),
+        ...(checkpoint.lineage !== undefined && { lineage: checkpoint.lineage }),
+      }),
+    );
+    return Result.ok(checkpoint);
+  });
+}
