@@ -192,10 +192,9 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
   const scope = interestKey(interest ?? {});
   const now = options.now ?? (() => Temporal.Now.instant());
   const errors = createHub<BridgeError>();
-  const reportError = (error: BridgeError): void => errors.emit(error);
   const sendControl: CustodyDeps["send"] = (cls, what, frame) => send(cls, what, frame);
-  const custody = createBridgeCustody(options, { now, send: sendControl, errors: reportError });
-  const control = controlFrames(options, { custody, errors: reportError });
+  const custody = createBridgeCustody(options, { now, send: sendControl, errors: errors.emit });
+  const control = controlFrames(options, { custody, errors: errors.emit });
   let queue: Promise<unknown> = Promise.resolve();
   let closed = false;
   /** Whose link this is, learned from the cursors they send; `undefined` until they speak. */
