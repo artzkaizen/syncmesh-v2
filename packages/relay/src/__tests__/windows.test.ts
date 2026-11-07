@@ -41,6 +41,9 @@ const loaded = () => {
   return source;
 };
 
+/** Every row is readable to these sockets; the read policy itself is the view's tests. */
+const everyRow = () => true;
+
 const boxQuery = (box: number): WindowQuery => ({
   table: MAIL,
   where: rowIs({ box }),
@@ -80,7 +83,7 @@ describe("serving windows on a socket (E27, D39)", () => {
     const source = loaded();
     const client = createWindowClient();
     const wire = slowSocket(8, (frame) => client.receive(frame));
-    const served = serveWindows(wire.socket, { source });
+    const served = serveWindows(wire.socket, { source, admits: everyRow });
     client.attach((frame) => served.receive(frame));
     for (let box = 0; box < BOXES; box++) client.desire(`box-${box}`, boxQuery(box));
     // the burst outran the socket: most of it is queued, none of it dropped
@@ -105,7 +108,11 @@ describe("serving windows on a socket (E27, D39)", () => {
     const source = loaded();
     const client = createWindowClient();
     const stalled = slowSocket(0, (frame) => client.receive(frame));
-    const first = serveWindows(stalled.socket, { source, maxBacklogBytes: 4 * BODY_BYTES });
+    const first = serveWindows(stalled.socket, {
+      source,
+      admits: everyRow,
+      maxBacklogBytes: 4 * BODY_BYTES,
+    });
     client.attach((frame) => first.receive(frame));
     client.desire("box-0", boxQuery(0));
     expect(stalled.closed()).toContain("backlog ceiling");
@@ -114,7 +121,7 @@ describe("serving windows on a socket (E27, D39)", () => {
     expect(client.rows("box-0")).toEqual([]);
 
     const fresh = slowSocket(Number.MAX_SAFE_INTEGER, (frame) => client.receive(frame));
-    const second = serveWindows(fresh.socket, { source });
+    const second = serveWindows(fresh.socket, { source, admits: everyRow });
     client.attach((frame) => second.receive(frame));
     fresh.flush();
     expect(client.rows("box-0").length).toBe(PER_BOX);
@@ -122,7 +129,10 @@ describe("serving windows on a socket (E27, D39)", () => {
   });
 
   test("frames that are not window frames are left for the socket's other reader", () => {
-    const served = serveWindows(slowSocket(1, () => {}).socket, { source: loaded() });
+    const served = serveWindows(slowSocket(1, () => {}).socket, {
+      source: loaded(),
+      admits: everyRow,
+    });
     // `ka`, the relay's keepalive, is tag 11
     expect(served.receive(Uint8Array.of(0x81, 0x0b))).toBe(false);
   });

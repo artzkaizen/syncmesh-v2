@@ -8,7 +8,12 @@ import { DEFAULT_LIMITS } from "./limits.js";
 import { createSender } from "./sender.js";
 
 /** What a host hands {@link serveWindows}: the rows, and who is reading them. */
-export interface WindowServerOptions extends Omit<ClientViewOptions, "send"> {
+export interface WindowServerOptions extends Omit<ClientViewOptions, "send" | "admits"> {
+  /**
+   * The reader's read policy, applied to every row before any `where` (D39, E13). Required on a
+   * socket: a host that wants every row readable says `() => true`.
+   */
+  readonly admits: NonNullable<ClientViewOptions["admits"]>;
   /** Frames queued before the socket is closed as one that cannot keep up. */
   readonly maxBacklog?: number;
   /** Bytes queued before the same; a screen of large rows is bytes before it is frames. */
