@@ -1,6 +1,16 @@
 import type { SQLChunk, SQLWrapper } from "drizzle-orm";
 
-import { Column, Param, SQL, StringChunk, Subquery, Table, getTableName, is } from "drizzle-orm";
+import {
+  Column,
+  Param,
+  SQL,
+  StringChunk,
+  Subquery,
+  Table,
+  getColumnTable,
+  getTableName,
+  is,
+} from "drizzle-orm";
 
 /**
  * Drizzle's own chunk tree, walked — the shape a built query is, before it is text.
@@ -23,7 +33,7 @@ export const tablesOf = (query: SQLWrapper): ReadonlySet<string> => {
   const names = new Set<string>();
   walkSql(query.getSQL(), (chunk) => {
     if (is(chunk, Table)) names.add(getTableName(chunk));
-    else if (is(chunk, Column)) names.add(getTableName(chunk.table));
+    else if (is(chunk, Column)) names.add(getTableName(getColumnTable(chunk)));
   });
   return names;
 };
@@ -42,7 +52,8 @@ export const identityOf = (query: SQLWrapper): string => {
   const parts: string[] = [];
   walkSql(query.getSQL(), (chunk) => {
     if (is(chunk, Table)) parts.push(`t:${getTableName(chunk)}`);
-    else if (is(chunk, Column)) parts.push(`c:${getTableName(chunk.table)}.${chunk.name}`);
+    else if (is(chunk, Column))
+      parts.push(`c:${getTableName(getColumnTable(chunk))}.${chunk.name}`);
     else if (is(chunk, Param)) parts.push(`p:${JSON.stringify(chunk.value) ?? "?"}`);
     else if (is(chunk, StringChunk)) parts.push(`s:${chunk.value.join("")}`);
     // a chunk kind this build does not name: never shared, always safe

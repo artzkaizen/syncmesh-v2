@@ -94,7 +94,7 @@ export const schemaFor = (mail: string, open: string) =>
   });
 
 /** A page's cursor: the last row shown, by the two columns the page is ordered on. */
-const After = z.object({ received: z.string().datetime({ offset: true }), id: z.string() });
+const After = z.object({ received: z.iso.datetime({ offset: true }), id: z.string() });
 
 /**
  * `mail.inbox`, written as any other read in the repo: a handler that returns the Drizzle query.
@@ -177,7 +177,8 @@ export async function served(
   await options.seed?.(pg, names.mail);
   await pg.unsafe(`ANALYZE ${names.mail}`);
   const statements: Statement[] = [];
-  const db = drizzle(pg, {
+  const db = drizzle({
+    client: pg,
     logger: { logQuery: (text, params) => void statements.push({ sql: text, params }) },
   });
   const source = postgresChangeSource({
