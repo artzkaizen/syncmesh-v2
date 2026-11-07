@@ -79,6 +79,9 @@ export const ROOM_DEBT_RETRY = Temporal.Duration.from({ milliseconds: 50 });
  * `limits.maxBacklogBytes`; past it the socket is refused with `rate` and hung up, which loses
  * nothing, because its reconnect re-sends from the relay's cursors.
  *
+ * Only events are held. The same socket's other frames — blob puts, presence, grants, cursors —
+ * go straight through, so one sent after an event can be handled before that event lands.
+ *
  * @param closed - Whether the conversation has ended; held events are then dropped, unsent.
  */
 export function eventIntake(

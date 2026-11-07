@@ -17,7 +17,7 @@ import { join } from "node:path";
 
 import { relayRivetActor } from "../host.js";
 import { closeReason } from "../socket.js";
-import { rivetActor } from "./actor.js";
+import { rivetActor, rivetDbOver } from "./actor.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
 const org = partition("org", { roles: ladder("member") });
@@ -208,6 +208,50 @@ describe("the room in a Rivet actor (D09-C, E25)", () => {
     // 1013, not the posture's 1008: a seat may be free on the next dial
     expect(actor.closeCodes).toEqual([1013]);
     first.close();
+  });
+
+  test("a socket that closes while its room is opening holds no seat", async () => {
+    const actor = rivetActor(
+      new Database(":memory:"),
+      relayRivetActor({ limits: { maxRoomConnections: 1 } }),
+      ["acme"],
+    );
+    actor.dial().close(); // gone before the cold actor has opened its SQLite
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    let spoke = false;
+    const next = actor.dial();
+    next.onFrame(() => void (spoke = true));
+    expect(await until(() => Promise.resolve(spoke))).toBe(true);
+    expect(actor.closeCodes).toEqual([]);
+    next.close();
+  });
+
+  test("an instance that sleeps while its room is opening does not stay cached", async () => {
+    const relay = relayRivetActor({});
+    const base = rivetDbOver(new Database(":memory:"));
+    let queries = 0;
+    const db = {
+      ...base,
+      execute: (...args: Parameters<typeof base.execute>) => {
+        queries += 1;
+        return base.execute(...args);
+      },
+    };
+    const ask = (abortSignal: AbortSignal) =>
+      relay.onRequest(
+        { actorId: "actor-1", key: ["acme"], db, abortSignal },
+        new Request("http://rivet.local/"),
+      );
+    const asleep = new AbortController();
+    const opening = ask(asleep.signal);
+    asleep.abort(); // the instance sleeps before the open it started has finished
+    expect((await opening).status).toBe(200);
+
+    // woken under the same id, it opens its room again from SQLite instead of reusing the old one
+    queries = 0;
+    expect((await ask(new AbortController().signal)).status).toBe(200);
+    expect(queries).toBeGreaterThan(0);
   });
 
   test("a room that cannot open closes its socket, and the failure still surfaces", async () => {

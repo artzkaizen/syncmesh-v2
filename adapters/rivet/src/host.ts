@@ -5,6 +5,7 @@ import type {
   RelayPosture,
   RelayRetention,
   RoomStore,
+  SocketSession,
 } from "@syncmesh/relay";
 
 import { createRelayHost, describeRoom, relayEpoch, relayIdentity } from "@syncmesh/relay";
@@ -15,7 +16,7 @@ import type { RivetDatabase } from "./driver.js";
 import type { RivetWebSocket } from "./socket.js";
 
 import { rivetSqlDriver } from "./driver.js";
-import { bytesIn, closeReason, rivetRelaySocket } from "./socket.js";
+import { OPEN, bytesIn, closeReason, rivetRelaySocket } from "./socket.js";
 
 /**
  * The slice of a Rivet actor's context the room reads: which actor this is, its database, the
@@ -131,15 +132,6 @@ export function relayRivetActor(options: RelayRivetActorOptions = {}): RelayRive
         onTelemetry: options.onTelemetry,
       }),
     );
-    // asleep or destroyed, the instance's memory goes; its room is reopened from SQLite on wake
-    c.abortSignal.addEventListener(
-      "abort",
-      () => {
-        hosts.delete(c.actorId);
-        void host.close();
-      },
-      { once: true },
-    );
     return host;
   };
 
@@ -167,44 +159,65 @@ export function relayRivetActor(options: RelayRivetActorOptions = {}): RelayRive
     return undefined;
   };
 
-  const hostFor = (c: RivetRelayContext): Promise<RelayHost> => {
+  const ensureHost = (c: RivetRelayContext): Promise<RelayHost> => {
     const known = hosts.get(c.actorId);
     if (known !== undefined) return known;
     const held = open(c);
     hosts.set(c.actorId, held);
-    // a room that failed to open is not cached: the next socket tries again
-    void held.catch(() => {
+    const forget = (): void => {
       if (hosts.get(c.actorId) === held) hosts.delete(c.actorId);
-    });
+    };
+    // a room that failed to open is not cached: the next socket tries again
+    void held.catch(forget);
+    // asleep or destroyed, the instance's memory goes; its room is reopened from SQLite on wake.
+    // Taken from before the open is awaited, so an instance that sleeps mid-open still closes it
+    const retire = (): void => {
+      forget();
+      void held.then(
+        (host) => host.close(),
+        () => undefined,
+      );
+    };
+    if (c.abortSignal.aborted) retire();
+    else c.abortSignal.addEventListener("abort", retire, { once: true });
     return held;
   };
 
   return {
     onWebSocket: async (c, ws) => {
+      // listened for before anything is awaited: a socket that closes while its room opens or
+      // its posture is asked must never be accepted, or its seat is held until the actor sleeps
+      let session: SocketSession | undefined;
+      let gone = false;
+      ws.addEventListener("close", () => {
+        gone = true;
+        session?.closed();
+      });
       // a room that cannot open still answers its socket, then lets the runtime see the failure
-      const host = await hostFor(c).catch((cause: unknown) => {
+      const host = await ensureHost(c).catch((cause: unknown) => {
         ws.close(INTERNAL_ERROR, "syncmesh relay: the room failed to open");
         throw cause;
       });
       const name = roomName(c.key);
       const refused = await admit(host, c.request, name);
+      if (gone || ws.readyState !== OPEN) return;
       if (refused !== undefined) {
         ws.close(refused.code, refused.reason);
         return;
       }
       ws.binaryType = "arraybuffer";
-      const session = host.accept(rivetRelaySocket(ws), name);
+      const accepted = host.accept(rivetRelaySocket(ws), name);
+      session = accepted;
       ws.addEventListener("message", (event) => {
         const bytes = bytesIn(event.data);
-        if (bytes !== undefined) session.receive(bytes);
+        if (bytes !== undefined) accepted.receive(bytes);
       });
-      ws.addEventListener("close", () => session.closed());
     },
     // described under the actor's own name: Rivet's path is `/actors/<name>/http/…`, which is
     // routing, not a room
     onRequest: async (c, request) =>
       describeRoom(
-        await hostFor(c),
+        await ensureHost(c),
         new Request(new URL(`/${roomName(c.key)}`, request.url).href, {
           method: request.method,
           headers: request.headers,

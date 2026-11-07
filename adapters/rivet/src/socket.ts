@@ -1,7 +1,7 @@
 import type { RelaySocket, SendOutcome } from "@syncmesh/relay";
 
 /** `WebSocket.OPEN`; named here so nothing in this package imports the platform. */
-const OPEN = 1;
+export const OPEN = 1;
 
 /** A close reason travels in the frame's 123-byte tail, and an over-long one throws instead of closing. */
 const REASON_BYTES = 123;
