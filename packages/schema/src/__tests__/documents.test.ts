@@ -175,6 +175,10 @@ describe("construction refuses — RFC-0023 §4.1's error table", () => {
     expect(() =>
       table("notes", { id: t.uuid().primaryKey(), c: t.blob({ merge: cast({ id: "loro" }) }) }),
     ).toThrow("neither a rule nor a document adapter");
+    // the kernel's AdapterId: a major starts at 1, or no doc change could ever name the column
+    expect(() =>
+      table("notes", { id: t.uuid().primaryKey(), c: t.blob({ merge: cast({ id: "loro@0" }) }) }),
+    ).toThrow("neither a rule nor a document adapter");
     // D25's backstop is the same error now
     expect(() =>
       table("notes", { id: t.uuid().primaryKey(), s: t.text({ merge: cast("max") }) }),

@@ -9,7 +9,7 @@ import type { DeriveBlock, DocColumnEntry } from "./documents.js";
 
 import { combinators } from "./bind.js";
 import { strategyOf } from "./column.js";
-import { docColumnsOf } from "./documents.js";
+import { docColumnEntries } from "./documents.js";
 import { sourceName } from "./from-drizzle.js";
 import {
   RESERVED,
@@ -161,7 +161,7 @@ export function syncSchema<
     entries.push(entry.derive === undefined ? withAllow : { ...withAllow, derive: entry.derive });
     const rules = mergeRulesFor(name, tbl);
     if (rules.size > 0) merge.set(tbl.name, rules);
-    const documents = docColumnsOf(name, tbl, entry.derive ?? {});
+    const documents = docColumnEntries(name, tbl, entry.derive ?? {});
     if (documents.length > 0) docs.set(tbl.name, documents);
   }
   const presence = presenceTopics<PC>(manifest.presence, declare);

@@ -93,7 +93,7 @@ export interface DocColumnEntry {
  *
  * @throws {InvalidDerive}
  */
-export function docColumnsOf(
+export function docColumnEntries(
   name: string,
   tbl: Table,
   derive: DeriveBlock<Columns>,
