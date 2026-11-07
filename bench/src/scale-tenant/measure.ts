@@ -133,7 +133,7 @@ async function resetPostgres(options: TenantOptions): Promise<void> {
 }
 
 const engineOn = async (opened: Opened, peerId: typeof AUTHORITY) => {
-  const stores: Stores = (await openStores(opened.driver, { tables: TABLES })).unwrap();
+  const stores = (await openStores(opened.driver, { tables: TABLES })).unwrap();
   const engine = (
     await openEngine({
       peerId,

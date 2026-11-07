@@ -1,3 +1,4 @@
+import { Temporal } from "@syncmesh/temporal";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -70,7 +71,11 @@ const summarize = (out: string) => ({
 async function runOne(
   seed: number,
   switches: SwitchSet,
-  options: { readonly devices: number; readonly ticks: number; readonly timeoutMs: number },
+  options: {
+    readonly devices: number;
+    readonly ticks: number;
+    readonly timeout: Temporal.Duration;
+  },
 ): Promise<Row> {
   const started = performance.now();
   const ran = Bun.spawn(
@@ -87,7 +92,7 @@ async function runOne(
     ],
     { cwd: ROOT, stdout: "pipe", stderr: "pipe" },
   );
-  const timer = setTimeout(() => ran.kill(), options.timeoutMs);
+  const timer = setTimeout(() => ran.kill(), options.timeout.total("milliseconds"));
   const [code, out, err] = await Promise.all([
     ran.exited,
     new Response(ran.stdout).text(),
@@ -151,7 +156,7 @@ const main = async () => {
   const options = {
     devices: number("devices", 6),
     ticks: number("ticks", 25),
-    timeoutMs: number("timeout", 300) * 1000,
+    timeout: Temporal.Duration.from({ seconds: number("timeout", 300) }),
   };
   const jobs = number("jobs", 1);
 

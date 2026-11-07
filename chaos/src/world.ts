@@ -14,6 +14,7 @@ import { createIdentity, issueGrant } from "@syncmesh/wire";
 import type { Ledger } from "./ledger.js";
 
 import { short } from "./ledger.js";
+import { chance } from "./random.js";
 import { chaosSchema, NOTE, WORKSPACE } from "./schema.js";
 
 /**
@@ -254,7 +255,9 @@ export async function createWorld(options: WorldOptions) {
   // under `grants: "fault"`, some devices other than the issuer start with no grant anywhere —
   // not even their own — and are granted mid-run by `grant` below
   const late =
-    switches.grants === "fault" ? built.filter((device) => device.index > 0 && random() < 0.4) : [];
+    switches.grants === "fault"
+      ? built.filter((device) => device.index > 0 && chance(random, 0.4))
+      : [];
   const fallback = built.at(-1);
   if (switches.grants === "fault" && late.length === 0 && fallback !== undefined)
     late.push(fallback);
