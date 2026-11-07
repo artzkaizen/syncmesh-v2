@@ -8,8 +8,10 @@
     "@syncmesh/ble": "workspace:*",
     "@syncmesh/cloudflare-do": "workspace:*",
     "@syncmesh/config": "workspace:*",
+    "@syncmesh/docs": "workspace:*",
     "@syncmesh/engine": "workspace:*",
     "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/loro": "workspace:*",
     "@syncmesh/relay": "workspace:*",
     "@syncmesh/result": "workspace:*",
     "@syncmesh/temporal": "workspace:*",
@@ -17,6 +19,7 @@
     "@syncmesh/wire": "workspace:*",
     "@types/bun": "catalog:",
     "fast-check": "catalog:",
+    "loro-crdt": "1.17.1",
     "typescript": "catalog:",
     "vite-plus": "catalog:"
   }
