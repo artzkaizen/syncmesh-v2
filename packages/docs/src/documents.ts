@@ -107,9 +107,10 @@ export function createHandles(deps: OpenDeps) {
       released = true;
       const flushed = await flushEntry(address, entry);
       entry.refs -= 1;
+      // an invalidated entry may already have given its place to the document reopened after it
       if (entry.refs === 0) {
         entry.stop();
-        open.delete(docKey(address));
+        if (open.get(docKey(address)) === entry) open.delete(docKey(address));
       }
       return flushed;
     };
@@ -133,7 +134,9 @@ export function createHandles(deps: OpenDeps) {
   const openDoc = async <D>(address: DocAddress): Promise<Result<OpenDoc<D>, OpenError>> => {
     const key = docKey(address);
     const held = open.get(key);
-    if (held !== undefined) return Result.ok(share<D>(address, held));
+    // reopening is what an invalidated handle asks for: a fresh replica, not the dead one
+    if (held?.status === "invalidated") open.delete(key);
+    else if (held !== undefined) return Result.ok(share<D>(address, held));
     const pending = loading.get(key);
     if (pending !== undefined) return (await pending).map((entry) => share<D>(address, entry));
     arrivals.set(key, []);

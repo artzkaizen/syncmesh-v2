@@ -489,6 +489,24 @@ describe("loro@1 handles: a new lineage never takes an old replica's edits", () 
     expect(body((await a.documents.open<LoroDoc>(DOC)).unwrap().value)).toBe("reset");
   });
 
+  test("reopening while another handle still holds the invalidated replica opens the new lineage", async () => {
+    const a = node(68);
+    await insertNote(a);
+    const first = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    const second = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(first.value, 0, "old");
+    (await first.flush()).unwrap();
+    await genesis(a, "reset");
+    await first.close();
+    const again = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    expect([again.status(), body(again.value)]).toEqual(["current", "reset"]);
+    // the old replica's last close lets it go, not the document reopened after it
+    await second.close();
+    const third = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(third.value, 5, "!");
+    expect(body(again.value)).toBe("reset!");
+  });
+
   test("a genesis that folds while the tail is being read invalidates the opened document", async () => {
     const a = node(61);
     const b = node(62);
