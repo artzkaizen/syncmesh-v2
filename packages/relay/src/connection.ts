@@ -202,7 +202,7 @@ export function createConnection(
         closed: () => closed,
         refuse,
       });
-      room.clients.set(peer, { peer, sender, socket, offer: view.offer, settle: view.settle });
+      room.clients.set(peer, { peer, sender, socket, offer: view.offer });
       sender.send(helloFrame(selected, room.keepaliveMs, room.epoch, room.cursors(), room.floor()));
       // who is here now — never how they got here: presence has no history to page through
       const here = room.presence.all();

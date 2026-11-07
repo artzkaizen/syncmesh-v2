@@ -22,7 +22,7 @@ import type { GrantCache } from "./grant-cache.js";
 import type { RelayLimits } from "./limits.js";
 import type { RelayRetention } from "./retention.js";
 import type { RelaySocket } from "./sender.js";
-import type { Client, RoomState } from "./state.js";
+import type { Client, Fanned, RoomState } from "./state.js";
 
 import { createGate } from "./admission.js";
 import { createConnection } from "./connection.js";
@@ -222,14 +222,16 @@ export async function openRelayRoom(
       if (client.peer !== except) client.sender.send(frame);
     }
   };
-  const toInterested = (frame: Uint8Array, event: SyncEvent, except?: PeerId): number => {
+  const toInterested = (frame: Uint8Array, event: SyncEvent, except?: PeerId): Fanned => {
     let receivers = 0;
-    const reach = () => coverage.current().synced.get(event.peerId);
+    let frames = 0;
     for (const client of clients.values()) {
-      if (client.peer !== except && client.offer(frame, event)) receivers += 1;
-      client.settle(event.peerId, reach);
+      if (client.peer === except) continue;
+      const offered = client.offer(frame, event);
+      if (offered.sent) receivers += 1;
+      frames += offered.frames;
     }
-    return receivers;
+    return { receivers, frames };
   };
   const fan = options.fanout?.connect(name);
   const keepalive = setInterval(() => toClients(kaFrame()), keepaliveMs);

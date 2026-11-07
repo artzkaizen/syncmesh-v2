@@ -6,7 +6,7 @@ import { matchesInterest, scopeText } from "@syncmesh/engine";
 import type { Entitlement } from "./admission.js";
 import type { CatchUpViewer } from "./catchup.js";
 import type { Sender } from "./sender.js";
-import type { RoomState } from "./state.js";
+import type { Offered, RoomState } from "./state.js";
 
 import { admitted } from "./admission.js";
 import { pageFrame } from "./frames.js";
@@ -37,6 +37,38 @@ export function createViewer(room: RoomState, sender: Sender, viewing: Viewing) 
   let paged = false;
   /** Per author, the highest sequence withheld from this socket since it was last told so. */
   const withheld = new Map<PeerId, SeqNum>();
+  /** A pass-over is waiting on the room's queue, so a run of withheld events costs one frame. */
+  let queued = false;
+
+  /**
+   * An empty last page with a coverage scoped to this socket's interest and entitlement: *"for
+   * your slice, you hold everything of these authors' below N"*. The same frame a filtered
+   * catch-up ends with, so a device reads it with the code that already adopts one (D23).
+   *
+   * Claimed only up to the room's contiguous run, and only where that run has reached what was
+   * withheld. Everything below it was paged to this socket, sent live, or withheld — and a claim
+   * above it would cover an event the room has not heard yet, which the device would then drop as
+   * already held when it arrived. An author whose run still stops below a hole stays owed, and the
+   * event that fills the hole is offered here like any other, which asks again.
+   */
+  const passOver = (): number => {
+    const named = scope();
+    // nothing is withheld from a socket that filters nothing, so this is always a scope
+    if (named === undefined) return 0;
+    const cursors = room.cursors();
+    const synced = new Map<PeerId, SeqNum>();
+    for (const [author, owed] of withheld) {
+      const run = cursors.get(author);
+      if (run === undefined || run < owed) continue;
+      withheld.delete(author);
+      synced.set(author, run);
+    }
+    if (synced.size === 0) return 0;
+    sender.send(
+      pageFrame([], [], false, room.offset(), { synced, local: new Map(), scope: named }),
+    );
+    return 1;
+  };
 
   /** Live fan-out obeys the same interest and the same gate the catch-up did. */
   const wants = (event: SyncEvent): boolean =>
@@ -71,41 +103,33 @@ export function createViewer(room: RoomState, sender: Sender, viewing: Viewing) 
 
   return {
     catchUp,
-    /** One live event: sent when wanted, otherwise withheld and remembered. `true` when sent. */
-    offer: (frame: Uint8Array, event: SyncEvent): boolean => {
+    /**
+     * One live event: sent when wanted, otherwise withheld and remembered. Returns what it put on
+     * this socket, so the sender can be charged for the frames its write caused (gap audit №7).
+     *
+     * A withheld event is not answered at once. The pass-over waits on the room's queue, so a burst
+     * of events this socket does not want costs it one frame rather than one each — and a wanted
+     * event of an owed author sends it straight away, behind itself, so that event never waits in
+     * the device's holdback for the queue to drain.
+     */
+    offer: (frame: Uint8Array, event: SyncEvent): Offered => {
       if (wants(event)) {
         sender.send(frame);
-        return true;
+        return { sent: true, frames: 1 + (withheld.has(event.peerId) ? passOver() : 0) };
       }
       // before the catch-up the scan covers it, and its coverage says so; a pass-over sent then
       // could land ahead of the pages and claim events they have not delivered yet
-      if (!paged) return false;
+      if (!paged) return { sent: false, frames: 0 };
       const before = withheld.get(event.peerId);
       if (before === undefined || event.seqNum > before) withheld.set(event.peerId, event.seqNum);
-      return false;
-    },
-    /**
-     * An empty last page with a coverage scoped to this socket's interest and entitlement: *"for
-     * your slice, you hold everything of this author's below N"*. The same frame a filtered
-     * catch-up ends with, so a device reads it with the code that already adopts one (D23).
-     *
-     * Claimed only up to the room's contiguous run. Everything below it was paged to this socket,
-     * sent live, or withheld — and a claim above it would cover an event the room has not heard
-     * yet, which the device would then drop as already held when it arrived.
-     */
-    settle: (author: PeerId, reach: () => SeqNum | undefined): void => {
-      const owed = withheld.get(author);
-      if (owed === undefined) return;
-      const run = reach();
-      if (run === undefined || run < owed) return;
-      withheld.delete(author);
-      // nothing is withheld from a socket that filters nothing, so this is always a scope
-      const named = scope();
-      if (named === undefined) return;
-      const synced = new Map([[author, run]]);
-      sender.send(
-        pageFrame([], [], false, room.offset(), { synced, local: new Map(), scope: named }),
-      );
+      if (queued) return { sent: false, frames: 0 };
+      queued = true;
+      room.enqueue(async () => {
+        queued = false;
+        if (!viewing.closed()) passOver();
+      });
+      // charged now, for the frame the queue will send: by then the write that caused it is gone
+      return { sent: false, frames: 1 };
     },
   };
 }

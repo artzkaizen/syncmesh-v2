@@ -1,5 +1,5 @@
 import type { Cursors, EventStore, StoredEvent } from "@syncmesh/engine";
-import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
+import type { PeerId, SyncEvent } from "@syncmesh/kernel";
 import type { BlobStore } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { PresenceStore } from "@syncmesh/transport";
@@ -17,16 +17,25 @@ export interface Client {
   readonly socket: RelaySocket;
   /**
    * One live event: sent when this client asked for it and is admitted to it, withheld otherwise
-   * — and a withheld one remembered, so {@link settle} can say the relay passed over it. `true`
-   * when the frame was sent.
-   */
-  readonly offer: (frame: Uint8Array, event: SyncEvent) => boolean;
-  /**
-   * After an append by `author`: if this client was withheld anything of that author's at or
-   * below `reach` — the room's contiguous run — it is told the relay passed over it, so the
+   * — and a withheld one remembered, so the client is told the relay passed over it and the
    * author's later events are not held behind a hole nothing will fill (D23, D24).
    */
-  readonly settle: (author: PeerId, reach: () => SeqNum | undefined) => void;
+  readonly offer: (frame: Uint8Array, event: SyncEvent) => Offered;
+}
+
+/** What one live event cost one socket. */
+export interface Offered {
+  /** The event itself went out. */
+  readonly sent: boolean;
+  /** Frames it put on the socket, or queued for it: the event, a pass-over, both, or none. */
+  readonly frames: number;
+}
+
+/** What one live event cost the room: who received it, and every frame it caused. */
+export interface Fanned {
+  readonly receivers: number;
+  /** The events sent plus the pass-overs they caused — what the sender is charged (gap audit №7). */
+  readonly frames: number;
 }
 
 /** The room as one connection sees it: shared state, and the three ways to reach the others. */
@@ -63,8 +72,8 @@ export interface RoomState {
   readonly floor: () => Cursors;
   /** Every client but one — the author, who already has what it sent. */
   readonly toClients: (frame: Uint8Array, except?: PeerId) => void;
-  /** The same, minus every client whose interest excludes this event; counts who got it. */
-  readonly toInterested: (frame: Uint8Array, event: SyncEvent, except?: PeerId) => number;
+  /** The same, minus every client whose interest or entitlement excludes this event. */
+  readonly toInterested: (frame: Uint8Array, event: SyncEvent, except?: PeerId) => Fanned;
   /** The same frame to the other instances serving this room; best-effort by design (D09-B). */
   readonly publish: (frame: Uint8Array) => void;
   readonly offset: () => number;

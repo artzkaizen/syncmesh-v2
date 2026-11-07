@@ -19,6 +19,8 @@ export interface Absorbed {
   /** The frame this room sent its own clients, or absent when the event was a duplicate. */
   readonly relayed?: Uint8Array;
   readonly receivers: number;
+  /** Every frame it put on a socket: the sends, and the pass-overs they caused. */
+  readonly frames: number;
 }
 
 /**
@@ -42,16 +44,12 @@ export const absorbEvent = async (
   const id = entry.event.id;
   const held = await room.store.has(id);
   if (held.isErr()) return Result.err(held.error);
-  if (held.value) return Result.ok({ id, receivers: 0 });
+  if (held.value) return Result.ok({ id, receivers: 0, frames: 0 });
   const stored = await room.store.append(entry);
   if (stored.isErr()) return Result.err(stored.error);
   room.appended(entry);
   const relayed = relayedFrame(wire, room.offset());
-  return Result.ok({
-    id,
-    relayed,
-    receivers: room.toInterested(relayed, entry.event, entry.event.peerId),
-  });
+  return Result.ok({ id, relayed, ...room.toInterested(relayed, entry.event, entry.event.peerId) });
 };
 
 /**
@@ -71,13 +69,14 @@ export function ingestEvent(conversation: Conversation, wire: Uint8Array): void 
       refuse(outcome.error._tag === "StoreFailure" ? "store" : "bad-event", outcome.error.message);
       return;
     }
-    const { id, relayed, receivers } = outcome.value;
+    const { id, relayed, receivers, frames } = outcome.value;
     if (relayed !== undefined) {
       room.publish(relayed);
       // the sender pays for the sends it caused (gap audit №7). After the fact, because how many
       // clients an event reaches is not known until it has reached them — what the charge buys
-      // is the *next* frame from this socket being unaffordable
-      conversation.budget.charge("fanout", receivers);
+      // is the *next* frame from this socket being unaffordable. Frames, not receivers: a pass-over
+      // this write caused costs a socket a send just as the event does
+      conversation.budget.charge("fanout", frames);
       room.report({
         type: "relay.event",
         sizes: { bytes: wire.byteLength, receivers },
