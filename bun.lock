@@ -511,10 +511,10 @@
         "@syncmesh/policy": "workspace:*",
         "@syncmesh/result": "workspace:*",
         "@syncmesh/schema": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
       },
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
-        "@syncmesh/temporal": "workspace:*",
         "@syncmesh/wire": "workspace:*",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
@@ -899,11 +899,11 @@
       "dependencies": {
         "@syncmesh/kernel": "workspace:*",
         "@syncmesh/result": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
         "@syncmesh/wire": "workspace:*",
       },
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
-        "@syncmesh/temporal": "workspace:*",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
         "vite-plus": "catalog:",

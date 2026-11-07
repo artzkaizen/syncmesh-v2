@@ -31,5 +31,5 @@ export type { ManualChangeSource, ManualOptions, ManualTx } from "./manual.js";
 export { manualChangeSource } from "./manual.js";
 export type { CdcRules } from "./rules.js";
 export { cdcAllow } from "./rules.js";
-export type { CommitFeed } from "./commits.js";
-export { commitFeed } from "./commits.js";
+export type { CommitFeed, FeedState, ResumableCommitFeed } from "./commits.js";
+export { FEED_RETRY, commitFeed, resumableCommitFeed } from "./commits.js";
