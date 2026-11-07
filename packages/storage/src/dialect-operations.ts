@@ -90,9 +90,9 @@ export const sqliteOperations = (log: LogPlacement): OperationSql => {
     )`,
     deleteCoveredRefusals: `DELETE FROM ${t("refusals")} WHERE refuser = ? AND peer = ? AND seq <= ?`,
     selectRefusals: `SELECT refuser, reason, verdict, at_ms FROM ${t("refusals")} WHERE peer = ? AND seq = ?
-    ORDER BY at_ms, refuser`,
+    ORDER BY refuser`,
     selectAllRefusals: `SELECT peer, seq, refuser, reason, verdict, at_ms FROM ${t("refusals")}
-    ORDER BY at_ms, refuser`,
+    ORDER BY refuser`,
   };
 };
 
@@ -172,7 +172,7 @@ export const POSTGRES_OPERATIONS: OperationSql = {
     ON CONFLICT (peer, seq, refuser) DO UPDATE SET reason = EXCLUDED.reason, verdict = EXCLUDED.verdict, at_ms = EXCLUDED.at_ms`,
   deleteCoveredRefusals: `DELETE FROM syncmesh.refusals WHERE refuser = $1 AND peer = $2 AND seq <= $3`,
   selectRefusals: `SELECT refuser, reason, verdict, at_ms FROM syncmesh.refusals WHERE peer = $1 AND seq = $2
-    ORDER BY at_ms, refuser`,
+    ORDER BY refuser`,
   selectAllRefusals: `SELECT peer, seq, refuser, reason, verdict, at_ms FROM syncmesh.refusals
-    ORDER BY at_ms, refuser`,
+    ORDER BY refuser`,
 };

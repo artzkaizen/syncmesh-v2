@@ -135,6 +135,19 @@ describe("operationStore — refusals (D32)", () => {
     expect((await store.soleCustody()).unwrap().map((op) => op.id)).toEqual(["op-1"]);
   });
 
+  test("two refusers read in the same order however often each repeats", async () => {
+    // a repeat re-stamps its row, so an order by time would flip and fire every ref watching it
+    const { store } = await open();
+    (await store.record({ id: "op-1", peer: A, seq: seq(1), label: "l", atMs: 1 })).unwrap();
+    (await store.refuse(C, A, seq(1), STALE, 10)).unwrap();
+    (await store.refuse(B, A, seq(1), STALE, 20)).unwrap();
+    const before = (await store.get("op-1")).unwrap()?.refusals;
+    (await store.refuse(C, A, seq(1), STALE, 30)).unwrap();
+    expect((await store.get("op-1")).unwrap()?.refusals).toEqual(before);
+    expect((await store.unsettled()).unwrap()[0]?.refusals).toEqual(before);
+    expect(before?.map((refusal) => refusal.by)).toEqual([B, C]);
+  });
+
   test("a later verdict from the same refuser replaces its earlier one", async () => {
     const { store } = await open();
     (await store.record({ id: "op-1", peer: A, seq: seq(1), label: "l", atMs: 1 })).unwrap();
