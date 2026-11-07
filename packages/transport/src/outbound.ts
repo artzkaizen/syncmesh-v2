@@ -49,9 +49,15 @@ export function createOutbound(deps: OutboundDeps) {
   const { link, engine, identity, interest, scope, errors } = deps;
 
   /** The one place a failed send becomes a value — and presence, the one class allowed to vanish. */
-  const deliver = (cls: FrameClass, what: string, frame: Uint8Array): void => {
+  const deliver = (
+    cls: FrameClass,
+    what: string,
+    frame: Uint8Array,
+    slot: string | undefined,
+  ): void => {
     try {
-      link.send(frame);
+      if (slot !== undefined && link.sendLatest !== undefined) link.sendLatest(slot, frame);
+      else link.send(frame);
     } catch (cause) {
       if (cls !== KIND.presence)
         errors.emit(new SendFailed({ message: `${what} did not leave`, cause }));

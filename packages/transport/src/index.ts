@@ -27,7 +27,7 @@ export type {
   PresenceStoreOptions,
   PresenceTouch,
 } from "./presence.js";
-export { createPresenceStore } from "./presence.js";
+export { createPresenceStore, presenceSlot } from "./presence.js";
 export type { JoinDeps, JoinExchange, SnapshotInstalled } from "./join.js";
 export { createJoinExchange } from "./join.js";
 export type { SnapshotFrame } from "./snap-frame.js";

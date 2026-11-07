@@ -23,6 +23,7 @@ import { decodeFrame, eventFrame, grantFrame, grantRequestFrame, presenceFrame }
 import { createHoldback } from "./holdback.js";
 import { createJoinExchange } from "./join.js";
 import { createOutbound } from "./outbound.js";
+import { presenceSlot } from "./presence.js";
 import { createRouteExchange } from "./route-exchange.js";
 
 export type { BridgeError } from "./outbound.js";
@@ -346,7 +347,9 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     sendGrant: (wire) => send(KIND.grant, "grant", grantFrame(wire)),
     // ordered after the events, and its failure swallowed rather than reported: on a full radio
     // a dropped ephemeral is the correct outcome, not an error (D16)
-    sendPresence: (wire) => send(KIND.presence, "presence", presenceFrame(wire)),
+    // and slotted: a radio that backs up keeps this author's newest value per topic, not a queue
+    sendPresence: (wire) =>
+      send(KIND.presence, "presence", presenceFrame(wire), presenceSlot(wire)),
     onError: errors.subscribe,
     flush: async () => {
       drain();

@@ -101,10 +101,20 @@ version negotiation). What remains:
 19. E14: the snapshot window is not yet a field of `Interest`.
 20. E16: mixed-version-fleet correction mismatch (RFC-0013 G18) has no mitigation.
 21. E19: the 60 Hz presence burst test and BLE-shaped drop test are unwritten.
+    **2026-11-07: written and passing** (`packages/ble/src/__tests__/presence.test.ts`). Writing
+    them showed the claim was false: the BLE link queued every frame in order, so a 60 Hz cursor
+    on a slow radio became a 150-frame backlog with events stuck behind it. Fixed by
+    `FrameLink.sendLatest` (newest frame per presence slot, ordinary frames first), passed through
+    the sealed, held and multiplexed links. A stalled relay WebSocket still buffers presence in
+    the socket; nothing there conflates yet.
 22. E15: blob compaction sweep + per-partition quotas — deliberately unsized until a
     real workload; rounds-web may now be that workload.
 23. E24/E09 contradict each other on `mesh.transports.add/remove` (E24 wants it,
     E09 deliberately marks it absent). Reconcile.
+    **2026-11-07: reconciled for E24.** add/remove are built and tested
+    (`client/mesh-transport.test.ts`), and `createMesh({ start: false })` + `mesh.start()` is
+    the matching start for `stop()`. E09.md:39 now points at E24 rather than calling them
+    deliberately absent.
 
 ## P4 — observability and DX debt
 

@@ -96,36 +96,41 @@ export function createPeerSessions(): PeerSessions {
      * is. A frame whose class we cannot read is scored as an event: the ordinary case, and the
      * one that is never refused.
      */
-    const mux: FrameLink = {
-      send: (frame) => {
-        const live = [...members.keys()];
-        if (live.length === 0)
-          throw new Error(`no link to ${peer.slice(0, 8)} — the frame did not leave`);
-        const message = {
-          cls: classOf(frame) ?? KIND.event,
-          bytes: frame.length,
-          to: peer,
-        };
-        const best = pickRoutes(
-          live.map((member) => candidateFor(member, peer)),
-          message,
-        );
-        const order = best
-          .map((candidate) => live.find((member) => member.id === candidate.id))
-          .filter((member): member is SessionLink => member !== undefined);
-        // every link, in the scorer's order, before giving up: a frame nobody sends is
-        // divergence, and a link that threw is one this session is about to lose anyway
-        let failure: unknown;
-        for (const member of [...order, ...live.filter((m) => !order.includes(m))]) {
-          try {
-            member.link.send(frame);
-            return;
-          } catch (cause) {
-            failure = cause;
-          }
+    const put = (frame: Uint8Array, slot?: string): void => {
+      const live = [...members.keys()];
+      if (live.length === 0)
+        throw new Error(`no link to ${peer.slice(0, 8)} — the frame did not leave`);
+      const message = {
+        cls: classOf(frame) ?? KIND.event,
+        bytes: frame.length,
+        to: peer,
+      };
+      const best = pickRoutes(
+        live.map((member) => candidateFor(member, peer)),
+        message,
+      );
+      const order = best
+        .map((candidate) => live.find((member) => member.id === candidate.id))
+        .filter((member): member is SessionLink => member !== undefined);
+      // every link, in the scorer's order, before giving up: a frame nobody sends is
+      // divergence, and a link that threw is one this session is about to lose anyway
+      let failure: unknown;
+      for (const member of [...order, ...live.filter((m) => !order.includes(m))]) {
+        try {
+          const { sendLatest } = member.link;
+          if (slot !== undefined && sendLatest !== undefined) sendLatest(slot, frame);
+          else member.link.send(frame);
+          return;
+        } catch (cause) {
+          failure = cause;
         }
-        throw failure ?? new Error(`no link to ${peer.slice(0, 8)} would carry the frame`);
-      },
+      }
+      throw failure ?? new Error(`no link to ${peer.slice(0, 8)} would carry the frame`);
+    };
+    /** Always slotted: the links under it change, and each one decides whether it keeps a slot. */
+    const mux: FrameLink = {
+      send: (frame) => put(frame),
+      sendLatest: (slot, frame) => put(frame, slot),
       onFrame: (cb) => frames.subscribe(cb),
       close: () => {
         for (const member of members.keys()) member.link.close?.();

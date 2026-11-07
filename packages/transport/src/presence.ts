@@ -3,6 +3,7 @@ import type { VerifiedPresence } from "@syncmesh/wire";
 
 import { createHub, type Unsubscribe } from "@syncmesh/engine";
 import { Temporal } from "@syncmesh/temporal";
+import { decodeCbor, decodePresenceCore } from "@syncmesh/wire";
 
 /** One peer's current value for a topic, as a reader sees it. */
 export interface PresenceEntry {
@@ -49,6 +50,19 @@ export interface PresenceStoreOptions {
 
 const slot = (topic: string, partition: PartitionKey, peer: PeerId): string =>
   `${topic} ${String(partition)} ${String(peer)}`;
+
+/**
+ * The `(topic, instance, peer)` a signed value is the latest of — what a newer value from the same
+ * author supersedes. Read without verifying: it only ever chooses which of this device's own
+ * outgoing frames to keep. `undefined` for bytes that are not a presence value.
+ */
+export const presenceSlot = (wire: Uint8Array): string | undefined => {
+  const outer = decodeCbor(wire).unwrapOr(undefined);
+  if (!Array.isArray(outer) || !(outer[0] instanceof Uint8Array)) return undefined;
+  return decodePresenceCore(outer[0])
+    .map((presence) => slot(presence.topic, presence.partition, presence.peerId))
+    .unwrapOr(undefined);
+};
 
 /**
  * The ephemeral tier's one data structure, used at every hop (D16): last value per
