@@ -70,10 +70,27 @@ export function createViewer(room: RoomState, sender: Sender, viewing: Viewing) 
     return 1;
   };
 
-  /** Live fan-out obeys the same interest and the same gate the catch-up did. */
+  /**
+   * Live fan-out obeys the same interest and the same gate the catch-up did. An `admits` that
+   * throws refuses the socket, so nothing after it — no page, no pass-over — claims the event as
+   * held, and the join that follows asks again from the device's cursor. A socket already refused
+   * wants nothing, so a broken `admits` costs one warning per join and not one per event.
+   */
   const wants = (event: SyncEvent): boolean =>
+    !viewing.closed() &&
     (interest === undefined || matchesInterest(interest, event)) &&
-    admitted(room.gate, entitlement, event);
+    admitted(room.gate, entitlement, event).match({
+      ok: (yes) => yes,
+      err: (error) => {
+        // oxlint-disable-next-line no-console -- an app bug the room survives; the device's own error frame does not reach the operator
+        console.warn(
+          `admits threw on ${event.id}; refusing ${peer} until it joins again:`,
+          error.cause,
+        );
+        viewing.refuse("admission", error.message, true);
+        return false;
+      },
+    });
 
   const scope = (): string | undefined =>
     interest === undefined && entitlement === undefined
@@ -99,6 +116,7 @@ export function createViewer(room: RoomState, sender: Sender, viewing: Viewing) 
     // to compute the same number
     scope,
     paged: () => void (paged = true),
+    closed: viewing.closed,
   };
 
   return {
@@ -118,8 +136,9 @@ export function createViewer(room: RoomState, sender: Sender, viewing: Viewing) 
         return { sent: true, frames: 1 + (withheld.has(event.peerId) ? passOver() : 0) };
       }
       // before the catch-up the scan covers it, and its coverage says so; a pass-over sent then
-      // could land ahead of the pages and claim events they have not delivered yet
-      if (!paged) return { sent: false, frames: 0 };
+      // could land ahead of the pages and claim events they have not delivered yet. A refused
+      // socket is owed nothing: its next join is paged from its own cursor
+      if (!paged || viewing.closed()) return { sent: false, frames: 0 };
       const before = withheld.get(event.peerId);
       if (before === undefined || event.seqNum > before) withheld.set(event.peerId, event.seqNum);
       if (queued) return { sent: false, frames: 0 };

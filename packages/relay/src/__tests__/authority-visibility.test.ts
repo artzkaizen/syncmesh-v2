@@ -212,36 +212,83 @@ describe("visibility: authority — admission at the relay (D24-A)", () => {
     room.close();
   });
 
-  test("an admits that throws withholds the event from that device and the room carries on", async () => {
+  test("an admits that throws refuses that device alone, once per join, and the room carries on", async () => {
+    const b = gatedPeer(43);
     const throwing = {
       tables: admission.tables,
       entitle: ({ peer: asking }) =>
-        asking === AUTHORITY.peerId
-          ? entitlementOf(asking)
-          : {
+        asking === b.identity.peerId
+          ? {
               scope: "broken",
               admits: () => {
                 throw new Error("app bug: a row without a clinic");
               },
-            },
+            }
+          : entitlementOf(asking),
     } satisfies RelayAdmission;
     const warned = spyOn(console, "warn");
     const room = await gatedRoom({ admission: throwing });
     const authority = await seeded(room);
-    const b = gatedPeer(43);
-    await attach(b, dialTo(room).dial);
-    // the catch-up scan ran it over x and y, and read both throws as no
-    expect(idsIn(b, CATALOG)).toEqual(["c1", "c2"]);
-    expect(idsIn(b, CONSULTS)).toEqual([]);
+    const c = gatedPeer(44);
+    clinics.set(c.identity.peerId, ["a"]);
+    await attach(c, dialTo(room).dial);
+    const { dial, dials } = dialTo(room);
+    const broken = relayTransport({ dial, reconnectMs: 10, maxReconnectMs: 20 });
+    running.push(broken);
+    // not awaited to its catch-up: a join whose scan threw is refused before it is paged
+    await broken.start(b.context);
 
-    // and live: the gated write is withheld, and the ungated one behind it is still ingested,
-    // acked and fanned out
+    // the gated write is ingested, acked and fanned out to the device that can read it, and the
+    // ungated one behind it as well
     (await writeConsult(authority, "z", "a")).unwrap();
     await writeCatalog(authority, "c3", "after the throw");
-    expect(await until(() => holds(b, CATALOG, "c3"), 2000)).toBe(true);
+    expect(await until(() => holds(c, CATALOG, "c3") && holds(c, CONSULTS, "z"), 2000)).toBe(true);
     expect(room.offset()).toBe(6);
+    // the broken device was paged nothing: no page claims an event nobody answered for
+    expect(await until(() => dials() >= 2, 2000)).toBe(true);
     expect(idsIn(b, CONSULTS)).toEqual([]);
-    expect(warned.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(idsIn(b, CATALOG)).toEqual([]);
+    // one warning per refused join, not one per event per socket
+    expect(warned.mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(warned.mock.calls.length).toBeLessThanOrEqual(dials());
+    warned.mockRestore();
+    room.close();
+  });
+
+  test("a device refused by a throwing admits recovers every row it is entitled to once it stops", async () => {
+    let broken = false;
+    const flaky = {
+      tables: admission.tables,
+      entitle: ({ peer: asking }) => {
+        const entitlement = entitlementOf(asking);
+        return {
+          scope: entitlement.scope,
+          admits: (event) => {
+            if (broken && asking !== AUTHORITY.peerId) throw new Error("the clinic lookup is down");
+            return entitlement.admits(event);
+          },
+        };
+      },
+    } satisfies RelayAdmission;
+    const warned = spyOn(console, "warn");
+    const room = await gatedRoom({ admission: flaky });
+    const authority = await seeded(room);
+    const b = gatedPeer(43);
+    clinics.set(b.identity.peerId, ["a"]);
+    await attach(b, dialTo(room).dial);
+    expect(idsIn(b, CONSULTS)).toEqual(["x"]);
+
+    // live: the throw lands on z's fan-out; the rejoins that follow throw in their scans
+    broken = true;
+    (await writeConsult(authority, "z", "a")).unwrap();
+    await writeCatalog(authority, "c3", "during the fault");
+    expect(await until(() => warned.mock.calls.length >= 2, 2000)).toBe(true);
+    expect(holds(b, CONSULTS, "z")).toBe(false);
+
+    // the same scope as before, so only the cursor decides what it is paged: it must stand below z
+    broken = false;
+    expect(await until(() => holds(b, CONSULTS, "z") && holds(b, CATALOG, "c3"), 3000)).toBe(true);
+    expect(idsIn(b, CONSULTS)).toEqual(["x", "z"]);
     warned.mockRestore();
     room.close();
   });

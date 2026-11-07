@@ -612,6 +612,12 @@ The three tiers, side by side:
 - The authority has `ENTITLE_DEADLINE` (10 seconds) to answer a join. The question is asked off
   the room's queue, so a slow answer delays only the device that asked; one that never comes is
   refused as `EntitlementFailed`, and the device reconnects on its backoff and asks again.
+- An `admits` that throws is not read as a no. A no is withheld and passed over, and a pass-over
+  claims the device holds everything below it, so a throw read that way would skip the row on that
+  device for good. Instead that device's join is refused with code `admission` and the relay warns
+  once, naming the event; its next join is paged from its own cursor and asks again. The room
+  carries on for everyone else. An `admits` that always throws on some row keeps that one device
+  reconnecting on its backoff, and the warning repeats once per join, until the app is fixed.
 - A narrowed entitlement withholds what comes next, not what is already held. `reentitle` re-pages
   a device under its new entitlement, but the gated rows it was admitted to before stay on its
   disk; nothing is sent to take them back. That is the same snapshot rule entity access follows

@@ -22,8 +22,9 @@ export interface Entitlement {
    * what was loaded at join, never from a clock or from the order rows reached the relay — that is
    * the divergence class this repo has shipped seven times, and here it would be invisible.
    *
-   * A throw is read as `false`: the event is withheld from this device, a warning names it, and
-   * the room carries on.
+   * A throw is not an answer. The device is refused for this join with code `"admission"` and a
+   * warning naming the event; nothing it was not sent is claimed as held, so its next join asks
+   * again from where its cursor stands. The room carries on for every other device.
    */
   readonly admits: (event: SyncEvent) => boolean;
 }
@@ -107,31 +108,37 @@ export function createGate(
   };
 }
 
-/**
- * The authority's `admits`, with a throw read as no. It is app code run on the room's queue, so a
- * throw that escaped would stop every ingest, ack and catch-up behind it, for every device.
- */
-const admits = (entitlement: Entitlement, event: SyncEvent): boolean =>
-  Result.try(() => entitlement.admits(event)).match({
-    ok: (yes) => yes,
-    err: (cause) => {
-      // oxlint-disable-next-line no-console -- an app bug the room survives; withholding silently would hide it
-      console.warn(`admits threw on ${event.id}; the event is withheld from this device:`, cause);
-      return false;
-    },
-  });
+/** The authority's `admits` threw: it did not answer for this event, so the join is refused. */
+export class AdmitsFailed extends TaggedError("AdmitsFailed")<{
+  message: string;
+  cause: unknown;
+}> {}
 
 /**
  * Whether the device holding `entitlement` receives `event`: an ungated event always, a gated one
  * only once the authority has spoken and said yes. Before it has spoken the answer is no — the
- * catch-up that follows the answer pages what was withheld while it was being asked. An `admits`
- * that throws is a no as well (fail closed), said in a warning.
+ * catch-up that follows the answer pages what was withheld while it was being asked.
+ *
+ * An `admits` that throws is {@link AdmitsFailed}, not a no. A no is withheld *and passed over*,
+ * and a pass-over is a claim the device holds everything below it; made for an event nobody
+ * answered for, it would skip that event on this device for good.
  */
 export const admitted = (
   gate: Gate | undefined,
   entitlement: Entitlement | undefined,
   event: SyncEvent,
-): boolean =>
-  gate === undefined ||
-  !gate.gates(event) ||
-  (entitlement !== undefined && admits(entitlement, event));
+): Result<boolean, AdmitsFailed> =>
+  gate === undefined || !gate.gates(event)
+    ? Result.ok(true)
+    : entitlement === undefined
+      ? Result.ok(false)
+      : Result.try({
+          try: () => entitlement.admits(event),
+          catch: (cause) =>
+            new AdmitsFailed({
+              // the cause stays on the relay: app code's error text may quote a row this device
+              // is not entitled to, and the message is what goes to the device
+              message: `the authority could not say whether this device may read ${event.id}`,
+              cause,
+            }),
+        });

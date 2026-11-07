@@ -45,6 +45,8 @@ export interface CatchUpViewer {
   readonly scope: () => string | undefined;
   /** The pages are on the socket: from here a pass-over can no longer outrun them. */
   readonly paged: () => void;
+  /** The socket was refused, possibly by {@link wants} itself, so nothing scanned may be sent. */
+  readonly closed: () => boolean;
 }
 
 /**
@@ -134,6 +136,9 @@ export function sendCatchUp(
       const scope = viewer.scope();
       const admitted =
         scope === undefined ? found : found.filter((entry) => viewer.wants(entry.event));
+      // an `admits` that threw refused the socket: its coverage would claim the event it did not
+      // answer for, and pages without that coverage would be a run the device cannot place
+      if (viewer.closed()) return undefined;
       // and said so, naming the entitlement as well as the interest (D24)
       const scoped = scope === undefined ? undefined : scannedCoverage(found, theirs, scope);
       const { pages, unsendable } = paged(
