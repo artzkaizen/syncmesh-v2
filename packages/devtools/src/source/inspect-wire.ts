@@ -131,7 +131,7 @@ export const SNAPSHOT_READERS = {
 } satisfies Record<SnapshotName, (source: DevtoolsSource) => unknown>;
 
 /** Which channels a cached reader answers for, so a window can re-announce a change it caught up to. */
-export const SNAPSHOT_CHANNELS = {
+const SNAPSHOT_CHANNELS = {
   identity: ["auth", "grant"],
   overview: ["link", "fold", "quarantine"],
   sync: ["fold", "ack", "quarantine"],

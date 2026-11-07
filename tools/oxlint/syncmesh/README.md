@@ -57,3 +57,24 @@ Eleven is correct for `cases.ts`: ten "should report" statements, with the comma
 twice because both of its operands are discarded. `shadowing.ts` is the other half of the contract —
 a name the rule matches on is redeclared in a nested scope, so it forgets that name for the whole
 file and stays quiet rather than reporting the local one.
+
+## `syncmesh/no-server-import-in-app`
+
+Reports a runtime import of a server-only module from a file under `app/`: a module under a
+`server/` directory, or a `*.server.ts` file under any of the extensions an import spells
+(`.server`, `.server.js`, `.server.ts`, …). An authority body imported into a screen ships to the
+client bundle; the shared part belongs in the contract, and the call behind the authority link.
+Type-only imports are left alone, because the mirror type is meant to be shared.
+
+### Checking the rule
+
+`fixture/app/imports.ts` is the case file; it sits under `app/` because the rule keys on the file's
+own path, and imports from `fixture/server/` and a `*.server.ts` sibling:
+
+```
+cd tools/oxlint/syncmesh/fixture
+../../../../node_modules/.bin/oxlint --config .oxlintrc.json app/imports.ts   # 3 diagnostics
+```
+
+Three is correct: the named import, the namespace import and the `.server.js` import each report
+once; the `import type` and the sibling under `app/` do not.

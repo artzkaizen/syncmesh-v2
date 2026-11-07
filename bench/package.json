@@ -8,15 +8,18 @@
     "browser": "bun run src/browser-mesh.ts",
     "join": "bun run src/join.ts",
     "scale": "bun run src/scale/index.ts",
-    "storage": "bun run src/storage.ts"
+    "scale-tenant": "bun run src/scale-tenant/index.ts",
+    "storage": "bun run src/storage.ts",
+    "test": "bun test"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.7",
     "@syncmesh/browser": "workspace:*",
     "@syncmesh/client": "workspace:*",
     "@syncmesh/config": "workspace:*",
-    "@syncmesh/drizzle": "workspace:*",
     "@syncmesh/engine": "workspace:*",
     "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/postgres": "workspace:*",
     "@syncmesh/result": "workspace:*",
     "@syncmesh/schema": "workspace:*",
     "@syncmesh/sqlite-bun": "workspace:*",
@@ -27,6 +30,7 @@
     "@types/bun": "catalog:",
     "drizzle-orm": "catalog:",
     "mitata": "1.0.34",
+    "postgres": "^3.4.9",
     "typescript": "catalog:",
     "vite-plus": "catalog:"
   }

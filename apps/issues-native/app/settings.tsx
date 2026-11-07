@@ -3,7 +3,7 @@ import { useLiveQuery } from "@syncmesh/react";
 import { useRouter } from "expo-router";
 import { Chip, ListGroup, Spinner } from "heroui-native";
 import { useCallback, useEffect, useState } from "react";
-import { Alert, ScrollView, Text, View } from "react-native";
+import { Alert, ScrollView, Text } from "react-native";
 
 import type { Scale } from "../src/measure";
 
@@ -11,6 +11,7 @@ import { radioAbsence, radioState } from "../src/ble";
 import { mesh, useDevice } from "../src/device";
 import { summary } from "../src/measure";
 import { Avatar } from "../src/people";
+import { Caption, Section } from "../src/section";
 
 /**
  * Everything about *this install* rather than about the workspace: who it is, what it can reach,
@@ -30,16 +31,6 @@ export default function SettingsScreen() {
   const router = useRouter();
   const people = useLiveQuery(mesh.api.members.list({ workspaceId: WORKSPACE_ID }));
   const me = people.data.find((person) => person.id === device.actor.account);
-
-  /**
-   * What this device is holding, read once when the screen opens.
-   *
-   * Deliberately not live: it is three `count(*)`s over the whole log, which is a real cost and a
-   * number nobody watches tick. A pull-to-refresh would be the honest affordance if it ever needs
-   * to move.
-   */
-  const [scale, setScale] = useState<Scale>();
-  useEffect(() => void device.scale().then(setScale), [device]);
 
   const confirm = useCallback(
     (title: string, message: string, go: () => void) =>
@@ -150,24 +141,7 @@ export default function SettingsScreen() {
         </Caption>
       </Section>
 
-      <Section title="This device is holding">
-        <ListGroup>
-          {scale === undefined ? (
-            <ListGroup.Item>
-              <ListGroup.ItemContent>
-                <Spinner size="sm" />
-              </ListGroup.ItemContent>
-            </ListGroup.Item>
-          ) : (
-            <>
-              <Detail label="Events" value={scale.events.toLocaleString()} />
-              <Detail label="State rows" value={scale.rows.toLocaleString()} />
-              <Detail label="Log size" value={`${(scale.bytes / 1024).toFixed(0)} KB`} />
-            </>
-          )}
-          <Detail label="Last join" value={summary() || "not measured this launch"} />
-        </ListGroup>
-      </Section>
+      <Holding />
 
       <Section title="Danger">
         <ListGroup>
@@ -195,20 +169,53 @@ export default function SettingsScreen() {
 }
 
 /**
+ * What this device is holding, read once when the screen opens.
+ *
+ * Deliberately not live: it is three `count(*)`s over the whole log, which is a real cost and a
+ * number nobody watches tick. A pull-to-refresh would be the honest affordance if it ever needs
+ * to move.
+ */
+function Holding() {
+  const device = useDevice();
+  const [scale, setScale] = useState<Scale>();
+  useEffect(() => void device.scale().then(setScale), [device]);
+  return (
+    <Section title="This device is holding">
+      <ListGroup>
+        {scale === undefined ? (
+          <ListGroup.Item>
+            <ListGroup.ItemContent>
+              <Spinner size="sm" />
+            </ListGroup.ItemContent>
+          </ListGroup.Item>
+        ) : (
+          <>
+            <Detail label="Events" value={scale.events.toLocaleString()} />
+            <Detail label="State rows" value={scale.rows.toLocaleString()} />
+            <Detail label="Log size" value={`${(scale.bytes / 1024).toFixed(0)} KB`} />
+          </>
+        )}
+        <Detail label="Last join" value={summary() || "not measured this launch"} />
+      </ListGroup>
+    </Section>
+  );
+}
+
+/**
  * What the radio is doing, in the words of whichever thing is actually stopping it.
  *
  * Each of these sends a person somewhere different: to `app.json`, to a rebuild, to iOS Settings,
  * or to Control Centre. Collapsing them into "Bluetooth radio present" — which was true even when
  * the permission had been refused — is what made this unanswerable on the device.
  */
-const RADIO = {
-  poweredOn: "on — scanning and advertising",
-  poweredOff: "Bluetooth is off in Control Centre",
-  unauthorized: "permission refused — allow it in iOS Settings",
-  unsupported: "this device has no Bluetooth radio",
-  resetting: "the radio is restarting",
-  unknown: "starting up…",
-} as const;
+const RADIO = new Map([
+  ["poweredOn", "on — scanning and advertising"],
+  ["poweredOff", "Bluetooth is off in Control Centre"],
+  ["unauthorized", "permission refused — allow it in iOS Settings"],
+  ["unsupported", "this device has no Bluetooth radio"],
+  ["resetting", "the radio is restarting"],
+  ["unknown", "starting up…"],
+]);
 
 const overTheAir = (running: boolean): string => {
   if (!running) {
@@ -218,9 +225,7 @@ const overTheAir = (running: boolean): string => {
     return "not started";
   }
   const state = radioState();
-  return state === undefined
-    ? "starting up…"
-    : (RADIO[state as keyof typeof RADIO] ?? `adapter says "${state}"`);
+  return state === undefined ? "starting up…" : (RADIO.get(state) ?? `adapter says "${state}"`);
 };
 
 /** A read-only row: a name on the left, the value on the right, selectable because URLs get pasted. */
@@ -240,34 +245,4 @@ const Detail = ({ label, value }: { readonly label: string; readonly value: stri
       </Text>
     </ListGroup.ItemSuffix>
   </ListGroup.Item>
-);
-
-const Section = ({
-  children,
-  title,
-}: {
-  readonly children: React.ReactNode;
-  readonly title: string;
-}) => (
-  <View className="gap-2">
-    <Text className="px-1 text-[13px] font-medium text-muted-foreground">{title}</Text>
-    {children}
-  </View>
-);
-
-const Caption = ({ children }: { readonly children: React.ReactNode }) => (
-  <Text className="px-1 text-[12px] leading-[17px] text-muted-foreground">{children}</Text>
-);
-
-const Notice = ({
-  children,
-  spinner = true,
-}: {
-  readonly children: React.ReactNode;
-  readonly spinner?: boolean;
-}) => (
-  <View className="flex-1 items-center justify-center gap-3 p-8">
-    {spinner ? <Spinner size="sm" /> : null}
-    <Text className="text-center text-[15px] text-muted-foreground">{children}</Text>
-  </View>
 );

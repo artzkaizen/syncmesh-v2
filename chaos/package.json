@@ -6,19 +6,18 @@
   "type": "module",
   "scripts": {
     "run": "bun run src/run.ts",
+    "soak": "bun run src/soak.ts",
     "test": "bun test"
   },
   "devDependencies": {
     "@syncmesh/ble": "workspace:*",
     "@syncmesh/client": "workspace:*",
     "@syncmesh/config": "workspace:*",
-    "@syncmesh/engine": "workspace:*",
     "@syncmesh/kernel": "workspace:*",
     "@syncmesh/relay": "workspace:*",
     "@syncmesh/result": "workspace:*",
     "@syncmesh/schema": "workspace:*",
     "@syncmesh/sqlite-bun": "workspace:*",
-    "@syncmesh/storage": "workspace:*",
     "@syncmesh/temporal": "workspace:*",
     "@syncmesh/transport": "workspace:*",
     "@syncmesh/wire": "workspace:*",

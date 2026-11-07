@@ -98,7 +98,7 @@ const peerOf = <V>(entry: PresenceEntry): Peer<V> => {
  * last value alive with a heartbeat at a third of its TTL, so a peer that stops moving stays
  * present and a peer that stops existing disappears on its own.
  */
-export function createPresence(deps: PresenceDeps) {
+function createPresence(deps: PresenceDeps) {
   const { identity, store, send, now } = deps;
   const byName = new Map(deps.topics.map((topic) => [topic.name, topic]));
   const session = crypto.randomUUID();

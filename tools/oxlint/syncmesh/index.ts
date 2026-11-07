@@ -2,7 +2,9 @@ import { eslintCompatPlugin } from "@oxlint/plugins";
 
 import { noFloatingResultRule } from "./rules/no-floating-result.ts";
 import { noLengthAgainstLimitRule } from "./rules/no-length-against-limit.ts";
+import { noOfForSuffixRule } from "./rules/no-of-for-suffix.ts";
 import { noRenderedLengthRule } from "./rules/no-rendered-length.ts";
+import { noServerImportInAppRule } from "./rules/no-server-import-in-app.ts";
 
 /** Oxlint rules for the conventions this repository decided on, alongside the generic anti-slop set. */
 const syncmeshPlugin = eslintCompatPlugin({
@@ -10,7 +12,9 @@ const syncmeshPlugin = eslintCompatPlugin({
 	rules: {
 		"no-floating-result": noFloatingResultRule,
 		"no-length-against-limit": noLengthAgainstLimitRule,
+		"no-of-for-suffix": noOfForSuffixRule,
 		"no-rendered-length": noRenderedLengthRule,
+		"no-server-import-in-app": noServerImportInAppRule,
 	},
 });
 

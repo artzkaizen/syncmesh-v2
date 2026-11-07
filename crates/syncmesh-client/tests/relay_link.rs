@@ -267,6 +267,19 @@ impl Net {
         entry
     }
 
+    /// The device loses its log and comes back under the same key: a fresh engine and link, as
+    /// after deleting the database of an app whose key lives somewhere else (a keychain, a file
+    /// beside it). The old socket hangs up first.
+    fn lose_log(&mut self, i: usize, n: u8) {
+        if let Some(socket) = self.devices[i].socket.take() {
+            self.room.closed(socket);
+        }
+        self.devices[i].link = RelayLink::new(identity(n), RelayOptions::default());
+        self.devices[i].engine = engine(n);
+        self.devices[i].redial_at = None;
+        self.devices[i].facts.clear();
+    }
+
     /// Bytes straight into a device's link, as a room would have sent them.
     fn feed(&mut self, i: usize, bytes: &[u8]) {
         let d = &mut self.devices[i];
@@ -943,4 +956,80 @@ fn junk_from_the_room_is_dropped_and_said_and_a_bad_event_is_refused_by_the_room
     net.feed(a, &receipt);
     assert!(net.take_facts(a).is_empty());
     let _ = PeerId::parse(&"a".repeat(64)).unwrap();
+}
+
+#[test]
+fn a_device_that_lost_its_log_resumes_numbering_after_what_the_room_holds() {
+    let mut net = Net::new(room_with(vec![3], 15_000));
+    let a = net.add(1, RelayOptions::default());
+    let b = net.add(2, RelayOptions::default());
+    net.dial(a);
+    net.dial(b);
+    for (key, body) in [("n1", "one"), ("n2", "two"), ("n3", "three")] {
+        net.write(a, key, body, None);
+    }
+    assert_eq!(
+        body_of(&net.devices[b].engine, "n3").as_deref(),
+        Some("three")
+    );
+
+    // the log is gone, the key is not: the same author rejoins with nothing
+    net.lose_log(a, 1);
+    net.dial(a);
+    // its own history comes back from the room and is its own again
+    assert_eq!(
+        body_of(&net.devices[a].engine, "n1").as_deref(),
+        Some("one")
+    );
+    assert_eq!(
+        net.devices[a].engine.cursors()[identity(1).peer_id()].get(),
+        3
+    );
+    let facts = net.take_facts(a);
+    assert!(
+        !facts.iter().any(|f| matches!(f, Action::Dropped(_))),
+        "a fresh log that wrote nothing lost nothing: {facts:?}"
+    );
+
+    // and its next write is numbered after it, so the room takes it and B receives it
+    let next = net.write(a, "n4", "four", None);
+    assert_eq!(next.event.seq_num.get(), 4);
+    assert_eq!(
+        body_of(&net.devices[b].engine, "n4").as_deref(),
+        Some("four")
+    );
+}
+
+#[test]
+fn a_lost_log_that_wrote_before_rejoining_is_told_and_numbers_after_the_room() {
+    let mut net = Net::new(room_with(vec![3], 15_000));
+    let a = net.add(1, RelayOptions::default());
+    let b = net.add(2, RelayOptions::default());
+    net.dial(a);
+    net.dial(b);
+    for (key, body) in [("n1", "one"), ("n2", "two"), ("n3", "three")] {
+        net.write(a, key, body, None);
+    }
+
+    // log lost; one write lands in the fresh log while offline, as seq 1 — a number the room
+    // already holds for a different event
+    net.lose_log(a, 1);
+    let offline = write(&mut net.devices[a].engine, "x1", "offline", None);
+    assert_eq!(offline.event.seq_num.get(), 1);
+    net.dial(a);
+    let facts = net.take_facts(a);
+    assert!(
+        facts.iter().any(
+            |f| matches!(f, Action::Dropped(why) if why.contains("holds writes by this device"))
+        ),
+        "the collision is said, not swallowed: {facts:?}"
+    );
+
+    // what comes after is numbered past the room's run, and arrives
+    let next = net.write(a, "n4", "four", None);
+    assert_eq!(next.event.seq_num.get(), 4);
+    assert_eq!(
+        body_of(&net.devices[b].engine, "n4").as_deref(),
+        Some("four")
+    );
 }

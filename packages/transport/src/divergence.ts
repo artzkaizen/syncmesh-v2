@@ -3,6 +3,7 @@ import type { PeerId, SeqNum, TableName } from "@syncmesh/kernel";
 import type { Identity } from "@syncmesh/wire";
 
 import { sameAhead } from "@syncmesh/engine";
+import { omitUndefined } from "@syncmesh/result";
 
 /** What a digest exchange found: the tables that differ, and the slice both sides counted. */
 export interface Divergence {
@@ -89,7 +90,7 @@ export function answerDigest(deps: {
   return (scopeThere, at, digests, ahead) => {
     if (onDivergence === undefined) return;
     queued(() => {
-      const theirs = { scope: scopeThere, at, digests, ...(ahead !== undefined && { ahead }) };
+      const theirs = omitUndefined({ scope: scopeThere, at, digests, ahead });
       const tables = divergenceAgainst(engine, interest, scope, theirs);
       if (tables !== undefined && tables.length > 0)
         onDivergence({ peer: identity.peerId, scope, tables });

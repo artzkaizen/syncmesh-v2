@@ -29,7 +29,7 @@
   "scripts": {
     "bench": "bun run --cwd bench storage",
     "bench:join": "bun run --cwd bench join",
-    "ci": "vp check && vp run -r build && vp run -r typecheck && vp run --concurrency-limit 2 -r test && node tooling/verify-node-consumer/bin/index.ts",
+    "ci": "vp run -r build && vp check && vp run -r typecheck && vp run --concurrency-limit 2 -r test && node tooling/verify-node-consumer/bin/index.ts && bun run --cwd bench scale",
     "explore": "bun plan/tool/explorer.ts",
     "gen": "node tooling/create-package/bin/index.ts",
     "plan": "bun plan/tool/serve.ts",

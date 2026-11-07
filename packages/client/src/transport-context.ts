@@ -2,6 +2,7 @@ import type { Temporal } from "@syncmesh/temporal";
 import type { AdmissionAsk, RouteTable, TransportContext } from "@syncmesh/transport";
 import type { KeyRing } from "@syncmesh/wire";
 
+import { omitUndefined } from "@syncmesh/result";
 import {
   createAdmissionGate,
   createPeerSessions,
@@ -66,8 +67,7 @@ export function transportContextFor(base: {
   const gate = createAdmissionGate({
     grants: base.grants,
     partitions: base.partitions,
-    ...(base.shaping?.group !== undefined && { group: base.shaping.group }),
-    ...(base.shaping?.admit !== undefined && { handler: base.shaping.admit }),
+    ...omitUndefined({ group: base.shaping?.group, handler: base.shaping?.admit }),
   });
   const sessions = createPeerSessions();
   const context = {

@@ -297,11 +297,11 @@ function readRuntime(drizzle: DrizzleTableLike): DrizzleRuntime {
 export function drizzleTable<const D extends DrizzleTableLike>(
   drizzle: D,
   options: DrizzleTableReserved<D>,
-): DrizzleEntry<D> & Pick<DrizzleTableReserved<D>, "partition">;
+): DrizzleEntry<D> & Pick<DrizzleTableReserved<D>, "partition" | "sync">;
 export function drizzleTable<const D extends DrizzleTableLike, N extends string, R extends string>(
   drizzle: D,
   options: DrizzleTableInKind<D, N, R>,
-): DrizzleEntry<D> & Pick<DrizzleTableInKind<D, N, R>, "partition" | "allow">;
+): DrizzleEntry<D> & Pick<DrizzleTableInKind<D, N, R>, "partition" | "allow" | "sync">;
 // the derivation-only form stays last: it is all-optional, so a literal that also names `merge` or
 // `onWarn` survives the first overload pass, and `allow` would be typed by it — as `any` — before
 // the kind form is tried
@@ -313,8 +313,9 @@ export function drizzleTable<const D extends DrizzleTableLike>(
   drizzle: D,
   options: DrizzleTableOptions<D> = {},
 ) {
-  const { partition, allow, ...derive } = options;
+  const { partition, allow, sync, ...derive } = options;
   const columns = fromDrizzle(drizzle, derive);
   if (partition === undefined) return { columns };
-  return allow === undefined ? { columns, partition } : { columns, partition, allow };
+  const entry = allow === undefined ? { columns, partition } : { columns, partition, allow };
+  return sync === undefined ? entry : { ...entry, sync };
 }

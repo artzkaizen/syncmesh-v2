@@ -6,9 +6,9 @@ import type { SqlValue } from "./driver.js";
 import type { Rung } from "./ladder.js";
 
 import { POSTGRES_OPERATIONS } from "./dialect-operations.js";
-import { namespaceDdl } from "./dialect.js";
 import { columnsOf, literal, quote } from "./identifiers.js";
 import { ladder } from "./ladder.js";
+import { namespaceDdl } from "./namespace.js";
 
 const CHANGES = "syncmesh.changes";
 

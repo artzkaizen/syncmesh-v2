@@ -79,7 +79,7 @@ export interface ProxyDeps {
 const isWrite = (statement: string): boolean => /^\s*(insert|update|delete)\b/i.test(statement);
 
 /** The label an event carries when nobody named it: what the transaction turned out to do. */
-export const derivedLabel = (changes: readonly Change[]): string =>
+const derivedLabel = (changes: readonly Change[]): string =>
   changes.length === 0
     ? "sql.write"
     : [...new Set(changes.map((c) => `${String(c.table)}.${c.kind}`))].join("+");

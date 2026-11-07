@@ -11,18 +11,12 @@ import type { Database, Sqlite3Static } from "@sqlite.org/sqlite-wasm";
 import { Result } from "@syncmesh/result";
 import { ATTACHED_LOG, statePathFor } from "@syncmesh/storage";
 
-import type {
-  HeldPool,
-  OpenedDatabase,
-  OptionalVfs,
-  PoolFailure,
-  VfsOptions,
-  WasmStorage,
-} from "./vfs.js";
+import type { HeldPool, PoolFailure } from "./pool.js";
+import type { OpenedDatabase, OptionalVfs, VfsOptions, WasmStorage } from "./vfs.js";
 
-import { OpfsUnavailable, dropLease, holdPool } from "./vfs.js";
+import { OpfsUnavailable, dropLease, holdPool } from "./pool.js";
 
-const fileOf = (name: string) => `${encodeURIComponent(name)}.db`;
+const dbFile = (name: string) => `${encodeURIComponent(name)}.db`;
 
 /**
  * Attaches this database's log beside it, under the name its tables are written against.
@@ -113,7 +107,7 @@ const walTaken = (db: Database): boolean =>
   }).unwrapOr(false);
 
 export const memoryDatabase = (sqlite3: Sqlite3Static, options: VfsOptions): OpenedDatabase => {
-  const log = `/${fileOf(options.name)}`;
+  const log = `/${dbFile(options.name)}`;
   const logUri = `file:${log}?vfs=memdb`;
   // the derived half is a second memory database, kept open for the same reason the log is
   const stateUri = `file:${statePathFor(log, options.schema)}?vfs=memdb`;
@@ -163,7 +157,7 @@ export const sahPoolDatabase = async (
   const held = await holdPool(install, directory, options);
   if (held.isErr()) return held;
   const pool = held.value;
-  const log = `/${fileOf(options.name)}`;
+  const log = `/${dbFile(options.name)}`;
   const release = releaseOnce(pool, directory);
   const opened = Result.try({
     try: () => ({
@@ -190,7 +184,7 @@ export const opfsDatabaseIn = (
   OpfsDb: NonNullable<OptionalVfs["oo1"]["OpfsDb"]>,
   options: VfsOptions,
 ): Result<OpenedDatabase, OpfsUnavailable> => {
-  const log = `${options.directory}/db/${fileOf(options.name)}`;
+  const log = `${options.directory}/db/${dbFile(options.name)}`;
   return Result.try({
     try: () => ({
       db: attached(

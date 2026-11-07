@@ -1,7 +1,7 @@
 import type { PeerId } from "@syncmesh/kernel";
 import type { Transport, TransportCondition, Upgraded } from "@syncmesh/transport";
 
-import { Result, panic } from "@syncmesh/result";
+import { Result, omitUndefined, panic } from "@syncmesh/result";
 import {
   createBackoff,
   createDiscovery,
@@ -109,7 +109,7 @@ export function lan(options: LanOptions): Transport {
     name: options.name ?? "lan",
     kind: "lan",
     condition: () => condition,
-    ...(options.onDropped !== undefined && { onDropped: options.onDropped }),
+    ...omitUndefined({ onDropped: options.onDropped }),
     /**
      * Direct and wide: a device across the room with no server in the path. Not `costly` — the
      * Wi-Fi radio is already up for everything else the device is doing.
@@ -147,7 +147,7 @@ export function lan(options: LanOptions): Transport {
        * hang up on and re-dial rather than hold.
        */
       const alive = createLiveness<number>({
-        ...(options.keepaliveMs !== undefined && { everyMs: options.keepaliveMs }),
+        ...omitUndefined({ everyMs: options.keepaliveMs }),
         // the far side answers cursors with a digest, always: a re-request is this protocol's
         // keepalive, and the one frame both ends already know how to handle
         probe: () => transport.resync?.(),
@@ -204,8 +204,7 @@ export function lan(options: LanOptions): Transport {
         // watched before it is upgraded, so the deadline is re-armed by anything that arrives —
         // including the peer's hello, which is the first evidence this connection carries at all
         const link = upgrade.bytes(alive.watch(id, stream), {
-          ...(claimed !== undefined && { claimed }),
-          ...(options.maxFrameBytes !== undefined && { maxFrameBytes: options.maxFrameBytes }),
+          ...omitUndefined({ claimed, maxFrameBytes: options.maxFrameBytes }),
           onProven: (peer) => void proven.set(id, peer),
           // a refused peer keeps announcing; without this its next beat buys another handshake
           onRefused: (peer) => backoff.failed(peer),
@@ -214,7 +213,7 @@ export function lan(options: LanOptions): Transport {
             closeLink(id);
           },
         });
-        held.set(id, { link, ...(claimed !== undefined && { claimed }) });
+        held.set(id, { link, ...omitUndefined({ claimed }) });
       };
 
       const dial = async (peer: PeerId, address: LanAddress): Promise<void> => {

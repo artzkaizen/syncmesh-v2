@@ -19,15 +19,13 @@ use crate::store::StoredEvent;
 
 #[derive(Debug)]
 pub struct Holdback {
-    self_peer: PeerId,
     gap_limit: usize,
     held: BTreeMap<PeerId, BTreeMap<u64, StoredEvent>>,
 }
 
 impl Holdback {
-    pub fn new(self_peer: PeerId, gap_limit: usize) -> Holdback {
+    pub fn new(gap_limit: usize) -> Holdback {
         Holdback {
-            self_peer,
             gap_limit,
             held: BTreeMap::new(),
         }
@@ -55,13 +53,17 @@ impl Holdback {
         at
     }
 
-    /// Buffers the entry; `true` when the buffer overflowed and a resync must take over. An own
-    /// event, or one at or below what the engine already holds, is not buffered: the engine's
-    /// dedup is the right place for it and the holdback would only stall behind it.
+    /// Buffers the entry; `true` when the buffer overflowed and a resync must take over. One at
+    /// or below what the engine already holds is not buffered: the engine's dedup is the right
+    /// place for it and the holdback would only stall behind it.
+    ///
+    /// Own events take the gap rule like everyone else's (G7). A device only ever hears its own
+    /// events back when its log lost them, and then they are the run it has to rebuild, in
+    /// order, before its cursor for itself can say it holds them.
     pub fn put(&mut self, entry: StoredEvent, engine: &Engine) -> bool {
         let author = entry.event.peer_id.clone();
         let seq = entry.event.seq_num.get();
-        if author == self.self_peer || seq <= self.through(&author, engine) {
+        if seq <= self.through(&author, engine) {
             return false;
         }
         let buffer = self.held.entry(author.clone()).or_default();
@@ -162,7 +164,7 @@ mod tests {
         let e1 = write(&mut a, "1");
         let e2 = write(&mut a, "2");
         let e3 = write(&mut a, "3");
-        let mut hold = Holdback::new(b.peer_id().clone(), 8);
+        let mut hold = Holdback::new(8);
         assert!(!hold.put(e3.clone(), &b));
         assert!(!hold.put(e2.clone(), &b));
         assert!(hold.drain(a.peer_id(), &b).is_empty());
@@ -195,7 +197,7 @@ mod tests {
         let e3 = write(&mut a, "3");
         let e4 = write(&mut a, "4");
         let e5 = write(&mut a, "5");
-        let mut hold = Holdback::new(b.peer_id().clone(), 2);
+        let mut hold = Holdback::new(2);
         assert!(!hold.put(e2.clone(), &b));
         assert!(!hold.put(e4.clone(), &b));
         assert!(hold.put(e5.clone(), &b));

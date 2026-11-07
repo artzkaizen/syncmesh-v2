@@ -27,7 +27,7 @@ export type Growth =
   | "linear";
 
 /** Each size is this many times the one before it, so a ratio has one expected value per class. */
-export const FACTOR = 4;
+const FACTOR = 4;
 
 /**
  * How far past the expected ratio a path may drift before it is called a regression.

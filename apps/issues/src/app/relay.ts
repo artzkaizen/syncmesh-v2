@@ -1,6 +1,7 @@
 import type { PeerId } from "@syncmesh/kernel";
 import type { Transport, TransportCondition } from "@syncmesh/transport";
 
+import { omitUndefined } from "@syncmesh/result";
 import { webSocket } from "@syncmesh/transports";
 
 import type { Reaching } from "./reach.js";
@@ -77,7 +78,7 @@ export function dialRelay(device: PeerId): readonly Transport[] {
   announce({ state: "reaching", device, url });
   transport.onLinkEvent?.((event) => {
     const state = reachingOf(transport.condition?.());
-    announce({ state, device, url, ...(event.why !== undefined && { why: event.why }) });
+    announce({ state, device, url, ...omitUndefined({ why: event.why }) });
   });
   return [transport];
 }

@@ -54,7 +54,7 @@ export const seqOf = (value: SqlValue | undefined): Result<SeqNum | undefined, S
     : parseSeqNum(Number(value)).mapError(failure("stored sequence number is invalid"));
 
 /** A `(peer, local, seq)` row of a cursor table; damage is `StateCorrupt`. */
-export function decodeCursor(
+function decodeCursor(
   row: SqlRow,
 ): Result<readonly [PeerId, boolean, SeqNum], StateCorrupt | StoreFailure> {
   const [peer, local, seq] = row;

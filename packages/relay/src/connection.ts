@@ -2,6 +2,7 @@ import type { Interest } from "@syncmesh/engine";
 import type { PeerId, SyncEvent } from "@syncmesh/kernel";
 
 import { matchesInterest, timed } from "@syncmesh/engine";
+import { omitUndefined } from "@syncmesh/result";
 import { SEAL_OVERHEAD, cursorsFrame, presenceFrame } from "@syncmesh/transport";
 import { decodeAndVerifyPresence } from "@syncmesh/wire";
 
@@ -105,10 +106,7 @@ export function createConnection(
    * make the first thing the far end says about itself checkable.
    */
   const link = speaksHandshake(room.versions)
-    ? secureLink(room.identity, {
-        ...(options.offer !== undefined && { offer: options.offer }),
-        ...(options.session !== undefined && { session: options.session }),
-      })
+    ? secureLink(room.identity, omitUndefined({ offer: options.offer, session: options.session }))
     : undefined;
   const socket = link === undefined ? raw : sealing(raw, link);
   const sender = createSender(socket, room.maxBacklog, room.limits.maxBacklogBytes);

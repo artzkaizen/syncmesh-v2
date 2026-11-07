@@ -3,11 +3,13 @@ import type { Procedure, TableName } from "@syncmesh/kernel";
 import { stampOf } from "@syncmesh/kernel";
 
 import type { Ledger } from "./ledger.js";
-import type { Device, World } from "./world.js";
+import type { Outcome, SwitchState } from "./switches.js";
+import type { Device, Switches, World } from "./world.js";
 
 import { key as rowKey, row } from "./cells.js";
 import { stampText } from "./ledger.js";
 import { between, chance, pick } from "./random.js";
+import { advertises, attach, beforeHeal, chooseSleeper, duringTick } from "./switches.js";
 
 /**
  * The run itself: writes, and the faults that happen while they are being made.
@@ -50,12 +52,13 @@ const WRITE = "chaos.write" as Procedure;
 /** Rows have one owner for the whole run: two peers taking turns is a refusal, not a lost write. */
 const ownerOf = (row: number, size: number) => row % size;
 
-interface State {
+interface State extends SwitchState {
   /** Rows that exist, and the title last written to each — the schedule's own memory, not a claim. */
   readonly rows: Map<number, string>;
   /** Devices currently dark on every link. */
   readonly dark: Set<string>;
   readonly relayUp: Map<string, boolean>;
+  readonly switches: Switches;
 }
 
 const setRelay = (device: Device, up: boolean, why: string, ledger: Ledger, state: State) => {
@@ -113,17 +116,22 @@ function faults(
 
   if (!chance(random, plan.darkFlip)) return;
   const device = pick(random, world.devices);
-  if (device === undefined) return;
+  // the sleeper's darkness is the schedule's, not the dice's: it wakes at heal and not before
+  if (device === undefined || device.name === state.sleeper) return;
   if (state.dark.has(device.name)) {
     state.dark.delete(device.name);
     if (device.wiring.relay) setRelay(device, true, "came back", ledger, state);
     setReach(world, device, undefined, "came back", ledger);
     return;
   }
-  state.dark.add(device.name);
-  setRelay(device, false, "went dark", ledger, state);
-  setReach(world, device, [], "went dark", ledger);
+  goDark(world, device, "went dark", ledger, state);
 }
+
+const goDark = (world: World, device: Device, why: string, ledger: Ledger, state: State) => {
+  state.dark.add(device.name);
+  setRelay(device, false, why, ledger, state);
+  setReach(world, device, [], why, ledger);
+};
 
 /**
  * One write by the device that owns the row it lands on.
@@ -145,9 +153,13 @@ async function writeOnce(
   const device = world.devices[ownerOf(rowNumber, size)];
   if (device === undefined) return;
   const id = rowKey(`n${rowNumber}`);
-  const title = `t${tick}-${n}`;
   const held = state.rows.get(rowNumber);
   const op = held === undefined ? "insert" : chance(random, 0.15) ? "delete" : "update";
+  const blob =
+    state.switches.blobs && op !== "delete" && chance(random, 0.35)
+      ? await attach(device, random, ledger, state.blobs)
+      : undefined;
+  const title = blob ?? `t${tick}-${n}`;
   const ownerId = `acct_${device.name}`;
 
   const written = await device.mesh.engine.mutate(
@@ -181,25 +193,70 @@ async function writeOnce(
     values: op === "delete" ? {} : op === "insert" ? { id, title, ownerId } : { title },
     stamp: stampText(stampOf(written.value)),
     eventId: written.value.id,
+    author: written.value.peerId,
+    seqNum: written.value.seqNum,
   });
 }
 
-/** Runs the plan. Returns nothing: everything worth knowing is in the ledger. */
+/** The state a run starts from, with the sleeper already dark when there is one. */
+function prepare(
+  world: World,
+  plan: Plan,
+  random: () => number,
+  ledger: Ledger,
+  switches: Switches,
+) {
+  const sleeper = chooseSleeper(world, switches, random, ledger);
+  const state: State = {
+    rows: new Map(),
+    dark: new Set(),
+    relayUp: new Map(),
+    switches,
+    sleeper,
+    granted: new Set(),
+    blobs: new Map(),
+  };
+  for (const device of world.devices) state.relayUp.set(device.name, device.wiring.relay);
+  world.air.setLoss(plan.loss);
+  const sleeping = world.devices.find((device) => device.name === sleeper);
+  if (sleeping !== undefined) goDark(world, sleeping, "sleeps past the floor", ledger, state);
+  return state;
+}
+
+/** Everything back up, and long enough to finish: what is missing after this is missing. */
+async function heal(world: World, ledger: Ledger, state: State): Promise<void> {
+  ledger.write({ kind: "note", text: "healing" });
+  world.air.setLoss(0);
+  for (const device of world.devices) {
+    state.dark.delete(device.name);
+    setRelay(device, true, "heal", ledger, state);
+    setReach(world, device, undefined, "heal", ledger);
+  }
+  for (let round = 0; round < 12; round += 1) {
+    if (advertises(state.switches)) world.air.readvertise();
+    await settle(world, 250);
+  }
+}
+
+/**
+ * Runs the plan. Everything worth knowing is in the ledger; what comes back is only what a ledger
+ * line cannot hold — the bytes of each blob, for the read-back after heal.
+ */
 export async function runPlan(
   world: World,
   plan: Plan,
   random: () => number,
   ledger: Ledger,
   table: TableName,
-): Promise<void> {
-  const state: State = { rows: new Map(), dark: new Set(), relayUp: new Map() };
-  for (const device of world.devices) state.relayUp.set(device.name, device.wiring.relay);
-  world.air.setLoss(plan.loss);
+  switches: Switches,
+): Promise<Outcome> {
+  const state = prepare(world, plan, random, ledger, switches);
 
   for (let tick = 0; tick < plan.ticks; tick += 1) {
     ledger.write({ kind: "note", text: `tick ${tick}` });
 
     faults(world, plan, random, ledger, state);
+    await duringTick(world, { tick, ticks: plan.ticks }, random, ledger, state);
 
     // a dark device keeps writing: that is the whole point of it being dark
     for (let n = 0; n < plan.writesPerTick; n += 1)
@@ -208,15 +265,9 @@ export async function runPlan(
     await settle(world, 40);
   }
 
-  // everything back up, and long enough to finish: what is missing after this is missing
-  ledger.write({ kind: "note", text: "healing" });
-  world.air.setLoss(0);
-  for (const device of world.devices) {
-    state.dark.delete(device.name);
-    setRelay(device, true, "heal", ledger, state);
-    setReach(world, device, undefined, "heal", ledger);
-  }
-  for (let round = 0; round < 12; round += 1) await settle(world, 250);
+  if (await beforeHeal(world, ledger, state)) await settle(world, 500);
+  await heal(world, ledger, state);
+  return { blobs: state.blobs };
 }
 
 const settle = async (world: World, ms: number) => {

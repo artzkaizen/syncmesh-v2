@@ -20,7 +20,7 @@ const open = async (driver: SqlDriver) => (await sqlEventStore(driver)).unwrap()
  * bytes an author signed come back as they arrived, and an own write's column is its own encoding.
  * Its own seam because the two questions fail for different reasons and read as different suites.
  */
-export const coreCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
+const coreCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   {
     name: "events: the core the author signed comes back verbatim, unknown keys and all",
     run: async () => {

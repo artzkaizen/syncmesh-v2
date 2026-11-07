@@ -98,6 +98,8 @@ export interface RelayRoomOptions {
  * relay can drop traffic but cannot forge it.
  */
 export interface RelayRoom {
+  /** The log's lineage id, as every `hello` announces it; a describe over HTTP reports the same one. */
+  readonly epoch: string;
   readonly connect: (socket: RelaySocket, options?: ConnectionOptions) => RelayConnection;
   /**
    * Entries this room's log holds, counted up from what was there when it opened. A retention
@@ -259,6 +261,7 @@ export async function openRelayRoom(
     });
 
   return Result.ok({
+    epoch,
     connect: (socket, options) => createConnection(socket, state, options),
     offset: () => offset,
     clients: () => clients.size,

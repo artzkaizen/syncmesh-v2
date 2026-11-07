@@ -42,14 +42,6 @@ export const DETAIL_WIDTH = 420;
 /** One border, everywhere. Written once so no view invents a slightly different one. */
 export const HAIRLINE = `1px solid ${COLOR.hairline}`;
 
-export const PANE = {
-  display: "flex",
-  flexDirection: "column",
-  minWidth: 0,
-  minHeight: 0,
-  overflow: "hidden",
-} satisfies CSSProperties;
-
 /** The caption above a number or a group. Uppercase, wide, half-lit — the inspector's `micro`. */
 export const CAPTION = { ...TEXT.micro, color: COLOR.textDim } satisfies CSSProperties;
 

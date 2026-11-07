@@ -7,7 +7,7 @@ import type { Transport } from "@syncmesh/transport";
  * relay never reaches it; a mesh with a transport per tenant does, and unbounded is how a flush
  * that was supposed to make a shutdown safe becomes the thing that fails it.
  */
-export const FLUSH_CONCURRENCY = 20;
+const FLUSH_CONCURRENCY = 20;
 
 /**
  * Runs every job with at most `cap` in flight and **settles regardless** — a job that rejects is

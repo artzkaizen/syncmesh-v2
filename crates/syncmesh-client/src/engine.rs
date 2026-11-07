@@ -162,6 +162,45 @@ pub struct Engine {
     acks: BTreeMap<PeerId, Ack>,
     parked: Vec<StoredEvent>,
     quarantine_limit: usize,
+    /// The highest sequence of this device's own author known to exist outside this log — what a
+    /// room said it holds (G7). Numbering never goes at or below it, whatever the log holds.
+    own_floor: u64,
+}
+
+/// What a room's position for this device's own author meant for this log (G7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OwnPosition {
+    /// The room holds nothing of ours this log lacks: the normal case.
+    Known,
+    /// The room holds writes of ours this log never had, and this log wrote none of its own: it
+    /// was lost and rebuilt under a key that outlived it. Numbering now resumes after the room.
+    Resumed { room: SeqNum },
+    /// As `Resumed`, but this log had already numbered writes of its own in the range the room
+    /// holds. Unless they are the very events the room holds (a log restored from an older
+    /// copy), they carry `(author, seq)` pairs the room already has for other events, and a room
+    /// drops those as duplicates: they can never be delivered. Said, not repaired: re-signing
+    /// under new numbers would re-author them (`engine/src/stranded.ts` on why).
+    Collided { room: SeqNum, held: SeqNum },
+}
+
+impl OwnPosition {
+    /// What a host should say, if anything: `None` unless writes were lost.
+    pub fn warning(&self) -> Option<String> {
+        match self {
+            OwnPosition::Collided { room, held } => {
+                let (room, held) = (room.get(), held.get());
+                Some(format!(
+                    "the room holds writes by this device up to {room} that this log never had \
+                     (it holds up to {held}): the log was lost, restored from an older copy, or \
+                     its key signs another log too. Any write this log numbered up to {held} \
+                     that the room does not already hold byte for byte reuses a number the room \
+                     has for another event and will not be delivered; new writes resume after \
+                     {room}"
+                ))
+            }
+            OwnPosition::Known | OwnPosition::Resumed { .. } => None,
+        }
+    }
 }
 
 impl Engine {
@@ -196,6 +235,7 @@ impl Engine {
             acks: BTreeMap::new(),
             parked: Vec::new(),
             quarantine_limit: options.quarantine_limit,
+            own_floor: 0,
         };
         let replay = engine.store.all_since(&coverage.synced)?;
         let batch = engine.fold(&replay, FoldSource::Boot);
@@ -239,7 +279,10 @@ impl Engine {
         }
         let hlc = self.clock.tick(self.now_ms());
         let last = self.store.last_seq(self.identity.peer_id())?;
-        let seq_num = SeqNum::parse(last.map(|s| s.get()).unwrap_or(0) + 1)
+        // after the log and after anything a room said it holds of ours: a number reused is a
+        // write a room drops as a duplicate, silently (G7)
+        let after = last.map(|s| s.get()).unwrap_or(0).max(self.own_floor);
+        let seq_num = SeqNum::parse(after + 1)
             .ok_or_else(|| StoreError::new("the sequence space is exhausted"))?;
         let event = SyncEvent {
             peer_id: self.identity.peer_id().clone(),
@@ -257,8 +300,13 @@ impl Engine {
         Ok(Mutated { entry, batch })
     }
 
-    /// Folds entries from other peers once each; own and already-stored events are skipped, and
-    /// events this build has no fold for are parked with the author's cursor stopped below them.
+    /// Folds entries once each; already-stored events are skipped, and events this build has no
+    /// fold for are parked with the author's cursor stopped below them.
+    ///
+    /// An event of this device's own author that the log does not hold is taken like anyone
+    /// else's (G7): it verified under this device's key, so it is a write this device made and
+    /// then lost — a log deleted and rebuilt under a key that outlived it. Skipping it would
+    /// leave the device without its own history and numbering its next write over it.
     pub fn receive_batch(&mut self, entries: Vec<StoredEvent>) -> Result<Received, StoreError> {
         let total = entries.len();
         let mut fresh: Vec<StoredEvent> = Vec::new();
@@ -266,11 +314,18 @@ impl Engine {
         let mut quarantined = 0;
         for entry in entries {
             let id = entry.id();
-            if &entry.event.peer_id == self.identity.peer_id() || !seen.insert(id.clone()) {
+            if !seen.insert(id.clone()) {
                 continue;
             }
             if self.store.has(&id)? {
                 continue;
+            }
+            if &entry.event.peer_id == self.identity.peer_id() {
+                if entry.sig.is_none() {
+                    // an own event nobody signed cannot be one this device wrote and sent
+                    continue;
+                }
+                self.own_floor = self.own_floor.max(entry.event.seq_num.get());
             }
             if entry
                 .event
@@ -420,6 +475,33 @@ impl Engine {
             // costs a re-page, not a row
             let _ = store.commit(&[], &self.coverage.current());
         }
+    }
+
+    /// Takes on a room's position for this device's own author (its `hello` cursors): nothing
+    /// is ever numbered at or below it again (G7). A key that outlives its log — a database
+    /// deleted, restored from an older copy, or a key shared by two logs — would otherwise
+    /// number writes the room already holds, and the room drops those as duplicates without a
+    /// word. Says whether this log's own writes were caught in that range.
+    pub fn adopt_own_position(&mut self, room: SeqNum) -> Result<OwnPosition, StoreError> {
+        let held = self
+            .store
+            .last_seq(self.identity.peer_id())?
+            .map(|s| s.get())
+            .unwrap_or(0);
+        if room.get() <= held || room.get() <= self.own_floor {
+            self.own_floor = self.own_floor.max(room.get());
+            return Ok(OwnPosition::Known);
+        }
+        self.own_floor = room.get();
+        Ok(match SeqNum::parse(held) {
+            Some(held) => OwnPosition::Collided { room, held },
+            None => OwnPosition::Resumed { room },
+        })
+    }
+
+    /// The highest own sequence known to exist outside this log (0 when none was reported).
+    pub fn own_floor(&self) -> u64 {
+        self.own_floor
     }
 
     /// Records what `peer` holds, as of `at_ms`; links call it on every cursor exchange.
@@ -634,5 +716,71 @@ mod tests {
         // D34: the remote stamp is believed only up to the drift bound, and the write lands above it
         assert!(mine.event.hlc.ms <= 1_700_000_000_000 + DEFAULT_MAX_DRIFT_MS);
         assert!(mine.event.hlc.ms >= 1_700_000_000_000);
+    }
+
+    #[test]
+    fn a_log_rebuilt_under_the_same_key_takes_its_own_writes_back_and_numbers_after_them() {
+        let mut a = engine(1);
+        let e1 = a.mutate("t", vec![insert("1", "x")], None).unwrap().entry;
+        let e2 = a.mutate("t", vec![insert("2", "y")], None).unwrap().entry;
+        // the log is gone; the key is not (G7)
+        let mut reborn = engine(1);
+        let back = reborn.receive_batch(vec![e1, e2]).unwrap();
+        assert_eq!(back.report.folded, 2);
+        assert!(reborn.state().read_row("notes", "2").is_some());
+        assert_eq!(reborn.cursors()[reborn.peer_id()].get(), 2);
+        let next = reborn.mutate("t", vec![insert("3", "z")], None).unwrap();
+        assert_eq!(next.entry.event.seq_num.get(), 3);
+        // an own event nobody signed is not one this device sent
+        let mut unsigned = next.entry.clone();
+        unsigned.event.seq_num = SeqNum::parse(9).unwrap();
+        unsigned.sig = None;
+        unsigned.core = None;
+        assert_eq!(reborn.receive(unsigned).unwrap().report.folded, 0);
+    }
+
+    #[test]
+    fn a_room_ahead_of_the_log_moves_numbering_past_it_and_says_what_collided() {
+        let room = SeqNum::parse(5).unwrap();
+        let mut fresh = engine(1);
+        assert_eq!(
+            fresh.adopt_own_position(room).unwrap(),
+            OwnPosition::Resumed { room }
+        );
+        assert!(OwnPosition::Resumed { room }.warning().is_none());
+        let w = fresh.mutate("t", vec![insert("1", "x")], None).unwrap();
+        assert_eq!(w.entry.event.seq_num.get(), 6);
+        // said once: the same position again is known
+        assert_eq!(fresh.adopt_own_position(room).unwrap(), OwnPosition::Known);
+
+        let mut wrote_offline = engine(2);
+        wrote_offline
+            .mutate("t", vec![insert("1", "x")], None)
+            .unwrap();
+        let position = wrote_offline.adopt_own_position(room).unwrap();
+        assert_eq!(
+            position,
+            OwnPosition::Collided {
+                room,
+                held: SeqNum::parse(1).unwrap()
+            }
+        );
+        assert!(position.warning().unwrap().contains("up to 5"));
+        let w = wrote_offline
+            .mutate("t", vec![insert("2", "y")], None)
+            .unwrap();
+        assert_eq!(w.entry.event.seq_num.get(), 6);
+
+        // a room behind the log is the ordinary case: unsent writes
+        let mut ahead = engine(3);
+        for k in ["1", "2", "3"] {
+            ahead.mutate("t", vec![insert(k, "x")], None).unwrap();
+        }
+        assert_eq!(
+            ahead.adopt_own_position(SeqNum::parse(1).unwrap()).unwrap(),
+            OwnPosition::Known
+        );
+        let w = ahead.mutate("t", vec![insert("4", "x")], None).unwrap();
+        assert_eq!(w.entry.event.seq_num.get(), 4);
     }
 }

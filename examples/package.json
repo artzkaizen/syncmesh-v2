@@ -28,6 +28,7 @@
     "@syncmesh/kernel": "workspace:*",
     "@syncmesh/orpc": "workspace:*",
     "@syncmesh/relay": "workspace:*",
+    "@syncmesh/result": "workspace:*",
     "@syncmesh/schema": "workspace:*",
     "@syncmesh/sqlite-bun": "workspace:*",
     "@syncmesh/storage": "workspace:*",
@@ -36,7 +37,6 @@
     "@syncmesh/wire": "workspace:*",
     "@types/bun": "catalog:",
     "drizzle-orm": "catalog:",
-    "redis": "^6.2.1",
     "typescript": "catalog:",
     "vite-plus": "catalog:",
     "zod": "^3.25.76"

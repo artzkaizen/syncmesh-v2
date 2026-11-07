@@ -17,10 +17,11 @@ import { decodeRecord } from "@syncmesh/wire";
  * sees is an ordinary `ReadonlyMap`: `size`, `has` and `keys` are answered from the bytes without
  * decoding anything, and iteration decodes as it goes.
  *
- * **Iterating is not free, and one caller does it on purpose.** `withRecord` copies a table with
- * `new Map(table)` before writing a row, which decodes that table in full. That is the intended
- * shape rather than a leak: the first write to a table pays for that table, once, away from boot,
- * and a table this session never writes is never decoded at all.
+ * **Iterating is not free, and one caller does it on purpose.** The fold's first write to a table
+ * copies it into the kernel's persistent map, which decodes that table in full. That is the
+ * intended shape rather than a leak: the first write to a table pays for that table, once, away
+ * from boot, every later write costs one row, and a table this session never writes is never
+ * decoded at all.
  */
 export function lazyTable(bytes: ReadonlyMap<RowKey, Uint8Array>): TableState {
   const decoded = new Map<RowKey, RowRecord>();

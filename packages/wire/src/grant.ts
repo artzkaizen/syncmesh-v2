@@ -1,7 +1,7 @@
 import type { JsonValue, PartitionKey, PeerId } from "@syncmesh/kernel";
 
 import { parsePartitionKey, parsePeerId } from "@syncmesh/kernel";
-import { Result, TaggedError } from "@syncmesh/result";
+import { Result, TaggedError, omitUndefined } from "@syncmesh/result";
 import { Temporal, addToInstant } from "@syncmesh/temporal";
 
 import { decodeCbor, type MalformedCbor } from "./cbor-decode.js";
@@ -106,7 +106,7 @@ export function encodeGrant(grant: Grant): Uint8Array {
 
 /** Mints a signed grant as wire bytes: `[core, sig]`, the same envelope events use. */
 export function issueGrant(issuer: Identity, request: GrantRequest): Uint8Array {
-  const base = {
+  const base = omitUndefined({
     v: 1 as const,
     account: request.account,
     device: request.device,
@@ -114,8 +114,8 @@ export function issueGrant(issuer: Identity, request: GrantRequest): Uint8Array 
     issuedAt: request.now,
     expiresAt: addToInstant(request.now, request.validFor),
     claims: request.claims ?? {},
-    ...(request.keys !== undefined && { keys: request.keys }),
-  };
+    keys: request.keys,
+  });
   const core = encodeGrant(request.role === undefined ? base : { ...base, role: request.role });
   return encodeCbor([core, issuer.sign(core)]);
 }

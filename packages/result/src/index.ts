@@ -40,3 +40,6 @@ import { panic } from "better-result";
 export function unreachable(value: never, what = "case"): never {
   return panic(`unhandled ${what}: ${JSON.stringify(value)}`);
 }
+
+export type { Defined } from "./objects.js";
+export { omitUndefined } from "./objects.js";

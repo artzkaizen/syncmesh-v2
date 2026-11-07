@@ -23,11 +23,11 @@
     "@syncmesh/storage": "workspace:*",
     "@syncmesh/temporal": "workspace:*",
     "@syncmesh/transport": "workspace:*",
+    "@syncmesh/window": "workspace:*",
     "@syncmesh/wire": "workspace:*"
   },
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
-    "@syncmesh/policy": "workspace:*",
     "@syncmesh/schema": "workspace:*",
     "@types/bun": "catalog:",
     "typescript": "catalog:",

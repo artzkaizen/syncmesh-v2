@@ -112,8 +112,13 @@ const createOverlay = (
 };
 
 /**
- * Drops own, duplicate and already-stored entries; parks what fails, and returns the rest in
- * order.
+ * Drops duplicate and already-stored entries; parks what fails, and returns the rest in order.
+ *
+ * An own event the log does not hold is taken like anyone else's (RFC 0024 G7). It verified under
+ * this device's key, so it is a write this device made and then lost — a log rebuilt under a key
+ * that outlived it. Skipping it would leave the device without its own history and numbering its
+ * next write over it. One with no signature cannot have come from anywhere but here, and is
+ * still skipped.
  *
  * Parking is not folding and not storing: the event goes to the quarantine with the verdict this
  * build reached, and the author's cursor stops **below** it (D13). Advancing past a parked event
@@ -132,7 +137,8 @@ export const admit = (entries: readonly StoredEvent[], deps: AdmitDeps) =>
     let quarantined = 0;
     for (const entry of entries) {
       const { event } = entry;
-      if (event.peerId === deps.peerId || seen.has(event.id)) continue;
+      const own = event.peerId === deps.peerId;
+      if ((own && entry.sig === undefined) || seen.has(event.id)) continue;
       seen.add(event.id);
       if (yield* Result.await(deps.store.has(event.id))) continue;
       const verdict = unfoldable(event) ?? refusal(deps, event, overlay);

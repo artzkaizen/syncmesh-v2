@@ -4,7 +4,7 @@ import type { RelayDial } from "@syncmesh/relay";
 import type { Transport } from "@syncmesh/transport";
 
 import { relayTransport, webSocketDial } from "@syncmesh/relay";
-import { TaggedError } from "@syncmesh/result";
+import { TaggedError, omitUndefined } from "@syncmesh/result";
 
 /**
  * WebSockets, both directions, as one adapter (book ch. 16, ch. 30).
@@ -75,13 +75,15 @@ export function webSocket(options: WebSocketOptions): Transport {
         "webSocket() with no `bootstrap` is the accepting side, which a server builds with createServer()",
     });
 
-  return relayTransport({
-    name: options.name ?? `ws:${options.id}`,
-    dial: dialing(bootstrap),
-    ...(options.reconnectMs !== undefined && { reconnectMs: options.reconnectMs }),
-    ...(options.maxReconnectMs !== undefined && { maxReconnectMs: options.maxReconnectMs }),
-    ...(options.interest !== undefined && { interest: options.interest }),
-    ...(options.priority !== undefined && { priority: options.priority }),
-    ...(options.relayKey !== undefined && { relayKey: options.relayKey }),
-  });
+  return relayTransport(
+    omitUndefined({
+      name: options.name ?? `ws:${options.id}`,
+      dial: dialing(bootstrap),
+      reconnectMs: options.reconnectMs,
+      maxReconnectMs: options.maxReconnectMs,
+      interest: options.interest,
+      priority: options.priority,
+      relayKey: options.relayKey,
+    }),
+  );
 }

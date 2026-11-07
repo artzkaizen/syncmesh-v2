@@ -25,7 +25,7 @@ export interface PersonRow {
  * reader expects. A single-word name falls back to its first letter rather than borrowing one from
  * nowhere, and an empty name draws a dash rather than an empty circle that looks like a bug.
  */
-export const initialsOf = (name: string): string => {
+const initialsOf = (name: string): string => {
   const words = name.trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return "—";
   const [first, ...rest] = words;

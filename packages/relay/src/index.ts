@@ -54,5 +54,31 @@ export { openRelayRoom } from "./room.js";
 export type { RelayDial, RelayTransportOptions } from "./transport.js";
 export { relayTransport } from "./transport.js";
 export { webSocketDial } from "./dial.js";
-export type { RunningRelay, StartRelayOptions } from "./serve.js";
-export { startRelay } from "./serve.js";
+export type {
+  BunSocket,
+  BunWebSocketHandlers,
+  RunningRelay,
+  SocketData,
+  StartRelayOptions,
+} from "./serve.js";
+export {
+  asksUpgrade,
+  bunRoomStore,
+  bunWebSocket,
+  hostTuning,
+  startRelay,
+  upgradeRoom,
+} from "./serve.js";
+export { requestRoom } from "./describe.js";
+export type { RelayHost, RelayHostOptions, RoomStore, RoomTuning, SocketSession } from "./host.js";
+export {
+  createGate,
+  createRelayHost,
+  durableRoomStore,
+  relayEpoch,
+  relayIdentity,
+  postureGate,
+} from "./host.js";
+export { describeRoom } from "./describe.js";
+export type { WindowConnection, WindowServerOptions } from "./windows.js";
+export { serveWindows } from "./windows.js";

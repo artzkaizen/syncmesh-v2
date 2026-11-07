@@ -1,4 +1,5 @@
 import { createHlcClock, parsePartitionKey, readRow } from "@syncmesh/kernel";
+import { omitUndefined } from "@syncmesh/result";
 import { syncSchema, t, user } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { describe, expect, test } from "bun:test";
@@ -28,7 +29,9 @@ const insertAt = (ms?: number): ProbeEvent => ({
   peerId: PEER_B,
   partition: ACCT_B,
   changes: [{ kind: "insert", table: NOTES, key: N1, row: row({ id: "n1", body: "late" }) }],
-  ...(ms !== undefined && { hlc: createHlcClock({ now: () => at(ms) }).tick() }),
+  ...omitUndefined({
+    hlc: ms === undefined ? undefined : createHlcClock({ now: () => at(ms) }).tick(),
+  }),
 });
 
 describe("the clock rung (D34)", () => {

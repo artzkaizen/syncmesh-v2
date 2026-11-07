@@ -1,4 +1,5 @@
 import { createMemoryEventStore } from "@syncmesh/engine";
+import { omitUndefined } from "@syncmesh/result";
 import { describe, expect, test } from "bun:test";
 
 import type { RelayPosture } from "../posture.js";
@@ -15,12 +16,17 @@ const serve = (posture?: RelayPosture) =>
     keepaliveMs: 60_000,
     store: createMemoryEventStore(),
     epoch: "epoch-1",
-    ...(posture !== undefined && { posture }),
+    ...omitUndefined({ posture }),
   });
 
-/** A plain GET: 426 means the posture let it through and only the missing upgrade stopped it. */
+/**
+ * A request that asks to upgrade without a socket handshake behind it: 426 means the posture
+ * let it through and only the missing handshake stopped it. (A plain GET is a describe now.)
+ */
 const knock = (url: string, headers: Record<string, string> = {}) =>
-  fetch(url.replace("ws://", "http://"), { headers });
+  fetch(url.replace("ws://", "http://"), {
+    headers: { upgrade: "websocket", connection: "upgrade", ...headers },
+  });
 
 describe("origins", () => {
   test("no allowlist admits every origin, stated or not", async () => {
