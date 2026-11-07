@@ -2,7 +2,12 @@ import type { ColumnName, Row, RowKey, TableName } from "@syncmesh/kernel";
 import type { WindowQuery } from "@syncmesh/window";
 
 import { rowIs } from "@syncmesh/policy";
-import { createMemoryRowSource, createWindowClient } from "@syncmesh/window";
+import {
+  createMemoryRowSource,
+  createWindowClient,
+  desireFrame,
+  queryText,
+} from "@syncmesh/window";
 import { describe, expect, test } from "bun:test";
 
 import type { RelaySocket, SendOutcome } from "../sender.js";
@@ -134,6 +139,20 @@ describe("serving windows on a socket (E27, D39)", () => {
       admits: everyRow,
     });
     // `ka`, the relay's keepalive, is tag 11
+    expect(served.receive(Uint8Array.of(0x81, 0x0b))).toBe(false);
+  });
+
+  test("a window frame on a socket already closed is consumed, not passed on", () => {
+    const source = loaded();
+    const stalled = slowSocket(0, () => {});
+    const served = serveWindows(stalled.socket, {
+      source,
+      admits: everyRow,
+      maxBacklogBytes: 4 * BODY_BYTES,
+    });
+    served.receive(desireFrame("box-0", queryText(boxQuery(0))));
+    expect(stalled.closed()).toContain("backlog ceiling");
+    expect(served.receive(desireFrame("box-1", queryText(boxQuery(1))))).toBe(true);
     expect(served.receive(Uint8Array.of(0x81, 0x0b))).toBe(false);
   });
 });

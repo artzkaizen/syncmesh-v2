@@ -1,6 +1,6 @@
 import type { ClientView, ClientViewOptions } from "@syncmesh/window";
 
-import { createClientView } from "@syncmesh/window";
+import { createClientView, decodeWindowFrame } from "@syncmesh/window";
 
 import type { RelaySocket } from "./sender.js";
 
@@ -22,7 +22,10 @@ export interface WindowServerOptions extends Omit<ClientViewOptions, "send" | "a
 
 /** One socket's windows, as the host drives them. */
 export interface WindowConnection {
-  /** A frame off the socket. `false` when it is not a window frame, for the host's other reader. */
+  /**
+   * A frame off the socket. `false` when it is not a window frame, for the host's other reader.
+   * A window frame on a socket already closed is consumed and changes nothing.
+   */
   readonly receive: (bytes: Uint8Array) => boolean;
   /** The socket drained: flush queued patches in order. */
   readonly drain: () => void;
@@ -46,7 +49,10 @@ export function serveWindows(socket: RelaySocket, options: WindowServerOptions):
   const sender = createSender(socket, maxBacklog, maxBacklogBytes);
   const windows = createClientView({ ...view, send: sender.send });
   return {
-    receive: (bytes) => sender.alive() && windows.receive(bytes),
+    receive: (bytes) =>
+      sender.alive()
+        ? windows.receive(bytes)
+        : decodeWindowFrame(bytes).match({ ok: (frame) => frame !== undefined, err: () => true }),
     drain: sender.drain,
     close: windows.close,
     view: windows,
