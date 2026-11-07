@@ -37,6 +37,7 @@ import { createSyncStates } from "./sync-state.js";
 import { followTelemetry } from "./telemetry.js";
 import { keyRingFor, transportContextFor } from "./transport-context.js";
 import { runTransports } from "./transports.js";
+import { createMeshVisibility, gatedFor } from "./visibility.js";
 
 export type { MeshOptions } from "./options.js";
 export type { Handle, OnOptions } from "./handles.js";
@@ -148,6 +149,8 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     ...omitUndefined({ incarnation: booted.incarnation, onReceipt: wired.vouched }),
     onSnapshot: (installed) => snapshots.emit(installed),
     servesAuthority: options.authority === identity.peerId,
+    // the gated tables, which reach a device only through the authority's gate (D24)
+    ...gatedFor(schema, options.authority),
     keys,
     // our own partitions, which is what the door's grant-derived default compares against
     partitions: () => (grants.grantFor(identity.peerId)?.partitions ?? []).map(String),
@@ -187,6 +190,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
       return presence.at<PC>(partition.value);
     },
     blobs,
+    visibility: createMeshVisibility(() => links.list()),
     accounts,
     corrections: internal.corrections,
     can: createCan({
