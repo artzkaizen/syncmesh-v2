@@ -18,11 +18,13 @@ import {
   ISSUER,
   T0,
   bodyOf,
+  challengeOf,
   dialTo,
   fakeSocket,
   mintFor,
   openRoom,
   peer,
+  signedJoin,
   tick,
   until,
   write,
@@ -106,11 +108,11 @@ describe("a grant-gated room (D40)", () => {
   });
 
   test("the refusal is the typed `ungranted`, sent before the socket closes, and no page comes first", async () => {
-    const room = await gatedRoom({ versions: [1] });
+    const room = await gatedRoom({ versions: [2] });
     const socket = fakeSocket();
     const conn = room.connect(socket.socket);
     const stranger = createIdentity(seed(43)).unwrap();
-    conn.receive(joinFrame([1], stranger.peerId, new Map()));
+    conn.receive(signedJoin(stranger, challengeOf(socket)));
     await tick(120);
     expect(socket.ofKind("hello")).toHaveLength(0);
     expect(socket.ofKind("page")).toHaveLength(0);
@@ -120,7 +122,7 @@ describe("a grant-gated room (D40)", () => {
   });
 
   test("a grant from an issuer the room does not trust seats nobody", async () => {
-    const room = await gatedRoom({ versions: [1] });
+    const room = await gatedRoom({ versions: [2] });
     const rogue = createIdentity(seed(99)).unwrap();
     const device = createIdentity(seed(44)).unwrap();
     const forged = issueGrant(rogue, {
@@ -132,11 +134,32 @@ describe("a grant-gated room (D40)", () => {
     });
     const socket = fakeSocket();
     const conn = room.connect(socket.socket);
-    conn.receive(joinFrame([1], device.peerId, new Map()));
+    conn.receive(signedJoin(device, challengeOf(socket)));
     conn.receive(grantFrame(forged));
     await tick(120);
     expect(socket.ofKind("hello")).toHaveLength(0);
     expect(socket.ofKind("error").map((f) => f.code)).toEqual([UNGRANTED]);
+    room.close();
+  });
+
+  test("a bare join naming a granted device is refused unproven, never seated under its grant", async () => {
+    // an operator listing 1 takes a bare join on trust in an open room; a gated room cannot,
+    // because the seat is the grant the room holds for whichever key the join names
+    const room = await gatedRoom({ versions: [1] });
+    const device = createIdentity(seed(50)).unwrap();
+    const owner = fakeSocket();
+    const own = room.connect(owner.socket);
+    own.receive(signedJoin(device, challengeOf(owner), new Map(), undefined, [1, 2]));
+    own.receive(grantFrame(mintFor(device, "acct_d")));
+    await tick(20);
+    expect(owner.ofKind("hello")).toHaveLength(1);
+
+    const impostor = fakeSocket();
+    room.connect(impostor.socket).receive(joinFrame([1], device.peerId, new Map()));
+    await tick(20);
+    expect(impostor.ofKind("hello")).toHaveLength(0);
+    expect(impostor.ofKind("page")).toHaveLength(0);
+    expect(impostor.ofKind("error").map((f) => f.code)).toEqual(["unproven"]);
     room.close();
   });
 
@@ -220,12 +243,12 @@ describe("revocation at the room (D40)", () => {
   });
 
   test("the socket is told why: revoked for a narrower grant, regranted for a wider one", async () => {
-    const room = await gatedRoom({ versions: [1] });
+    const room = await gatedRoom({ versions: [2] });
     const device = createIdentity(seed(47)).unwrap();
 
     const first = fakeSocket();
     const one = room.connect(first.socket);
-    one.receive(joinFrame([1], device.peerId, new Map()));
+    one.receive(signedJoin(device, challengeOf(first)));
     one.receive(grantFrame(mintFor(device, "acct_d", { partitions: [ACME, GLOBEX] })));
     await tick(20);
     expect(first.ofKind("hello")).toHaveLength(1);
@@ -234,7 +257,7 @@ describe("revocation at the room (D40)", () => {
 
     const second = fakeSocket();
     const two = room.connect(second.socket);
-    two.receive(joinFrame([1], device.peerId, new Map()));
+    two.receive(signedJoin(device, challengeOf(second)));
     await tick(20);
     // seated straight away under the grant the room already holds
     expect(second.ofKind("hello")).toHaveLength(1);

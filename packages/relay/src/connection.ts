@@ -203,12 +203,18 @@ export function createConnection(
       frame.proof === undefined || challenge === undefined
         ? undefined
         : verifyJoinProof(peer, challenge, frame.core, frame.proof);
-    if (proven === false || (proven === undefined && selected === 2)) {
+    // a gated room seats under the grant for the key a join names (D40), so the bare v1 join an
+    // operator may otherwise take on trust is refused there: it would let anyone who has seen a
+    // device's public key read what that device's cached grant names
+    const bare = link === undefined && proven === undefined;
+    if (proven === false || (bare && (selected === 2 || room.trust !== undefined))) {
       refuse(
         "unproven",
         proven === false
           ? "the join was not signed by the key it names"
-          : "a v2 join signs the room's challenge with the key it names",
+          : selected === 2
+            ? "a v2 join signs the room's challenge with the key it names"
+            : "a grant-gated room seats only a key the join proves",
         true,
       );
       return;
