@@ -484,4 +484,14 @@ describe("the additive rule (D13)", () => {
     expect(digestOf(older)).toEqual(digestOf(newer));
     expect(older.quarantine()).toEqual([]);
   });
+
+  test("a column named like an inherited property is a column this build does not name", () => {
+    const event = {
+      peerId: PEER_A,
+      partition: USER,
+      changes: [{ kind: "update", table: NOTES, key: N1, patch: row({ constructor: "x" }) }],
+    } satisfies ProbeEvent;
+    const held = { row: () => row({ id: "n1", body: "one" }), partition: () => USER };
+    expect(validatorFor(oldSchema).validate(event, held).isOk()).toBe(true);
+  });
 });

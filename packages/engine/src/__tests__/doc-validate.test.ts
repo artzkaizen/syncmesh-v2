@@ -132,6 +132,9 @@ describe("a doc change against the schema (RFC-0023 §10)", () => {
 
   test("a column the table does not declare at all is let through, like a newer build's cell", () => {
     expect(verdict([doc({ column: column("addedLater") })])).toBe("ok");
+    // a name the columns object inherits is still not a column the table declares
+    expect(verdict([doc({ column: column("constructor") })])).toBe("ok");
+    expect(verdict([doc({ column: column("toString") })])).toBe("ok");
   });
 
   test("a genesis must name the lineage derived from its place in the log", () => {

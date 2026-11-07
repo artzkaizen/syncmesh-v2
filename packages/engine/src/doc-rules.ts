@@ -13,9 +13,9 @@ import { DocChangeRefused, type DocRung, type ValidationError } from "./errors.j
 const refuse = (change: DocChange, rung: DocRung, message: string) =>
   Result.err(
     new DocChangeRefused({
-      table: String(change.table),
-      key: String(change.key),
-      column: String(change.column),
+      table: change.table,
+      key: change.key,
+      column: change.column,
       rung,
       message,
     }),
@@ -43,13 +43,13 @@ export function checkDoc(
   if (event.local === true)
     return refuse(change, "local", "a document lives on a synced row, never in a local write");
   const declaredAdapter = docs.get(change.column);
-  if (declaredAdapter === undefined && String(change.column) in table.columns)
-    return refuse(change, "column", `${String(change.column)} is not a document column`);
+  if (declaredAdapter === undefined && Object.hasOwn(table.columns, change.column))
+    return refuse(change, "column", `${change.column} is not a document column`);
   if (declaredAdapter !== undefined && declaredAdapter !== change.adapter)
     return refuse(
       change,
       "adapter",
-      `${String(change.column)} is merged by ${declaredAdapter}, not ${change.adapter}`,
+      `${change.column} is merged by ${declaredAdapter}, not ${change.adapter}`,
     );
   if (change.genesis !== true) return Result.ok(undefined);
   const twice = event.changes.some(
@@ -70,7 +70,7 @@ export function checkDoc(
     : refuse(change, "lineage", "the genesis names a lineage its place in the log does not derive");
 }
 
-const rowId = (change: Change): string => `${String(change.table)}\u0000${String(change.key)}`;
+const rowId = (change: Change): string => `${change.table}\u0000${change.key}`;
 
 /**
  * A change's cells against its table (`checkColumns`), and a doc change against the rules only
@@ -115,8 +115,8 @@ export const refuseReservedDoc = (table: string, change: DocChange) =>
   Result.err(
     new DocChangeRefused({
       table,
-      key: String(change.key),
-      column: String(change.column),
+      key: change.key,
+      column: change.column,
       rung: "column",
       message: `${table} has no document columns`,
     }),
