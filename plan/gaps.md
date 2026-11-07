@@ -87,6 +87,7 @@
 | U16 | **main's CI has failed on every push since 2026-09-28.** This branch fixes the formatting, the undeclared `@syncmesh/transport` in `adapters/browser`, and the private `@syncmesh/ble` the node-consumer check could not install (`3bfa67a`), but `vp check` still reports 183 lint errors that predate it (main has 188) — 164 in `apps/issues-native`, the rest file-size and complexity caps in `packages/*` and `conformance/` | `vp lint`; `.github/workflows/ci.yml` | open |
 | U17 | Refusals and receipts are not carried by the relay (D32 limit: direct links only); React `refused-by` rendering (`plan/react-api.md` G12) unbuilt | `relay/src/session.ts` | open |
 | U18 | Blob sweep limits: a room that has seen a sealed event stops sweeping; only blobs put since the room opened are swept or billed; no telemetry on a sweep; the Rust client ignores the put answer | `relay/src/blob-keeper.ts` | open |
+| U19 | A stalled relay WebSocket still buffers presence inside the socket; conflation stops at the link (`FrameLink.sendLatest` covers BLE, not the relay) | `relay/src/sender.ts`, `relay/src/transport.ts` | open |
 | U15 | The fleet `compose.yaml` is never run by CI (the shape is proved in-process by `fleet.test.ts`) | `examples/src/fleet/compose.yaml` | open |
 
 ## Hardware — listed, not built here
