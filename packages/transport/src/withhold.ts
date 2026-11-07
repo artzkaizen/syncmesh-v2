@@ -2,6 +2,7 @@ import type { Ahead, Engine, StoredEvent } from "@syncmesh/engine";
 import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 import type { EventCrypto, Identity } from "@syncmesh/wire";
 
+import { interestFrom, narrows } from "@syncmesh/engine";
 import { signEvent } from "@syncmesh/wire";
 
 import type { FrameClass } from "./frame-parts.js";
@@ -142,6 +143,12 @@ export async function takeWithheld(
 ): Promise<void> {
   const { engine, gate, from, drain } = intake;
   if (gate === undefined || scope !== gate.own()) return;
+  // cursors still scoped to a narrower grant keep that scope: a sequence the wider grant withholds
+  // the narrower one did too, and relabelling would claim the runs the wider grant lets in, which
+  // only a re-page delivers (repage.ts)
+  const held = engine.coverage().scope;
+  const label =
+    held !== undefined && !narrows(interestFrom(scope), interestFrom(held)) ? held : scope;
   for (const [author, seqs] of withheld) {
     if (!gate.attests(from, author)) continue;
     for (;;) {
@@ -153,7 +160,7 @@ export async function takeWithheld(
       const at = Number(engine.coverage().synced.get(author) ?? 0);
       const next = seqs.find((seq) => Number(seq) === at + 1);
       if (next === undefined) break;
-      engine.adoptCoverage({ synced: new Map([[author, next]]), local: new Map(), scope });
+      engine.adoptCoverage({ synced: new Map([[author, next]]), local: new Map(), scope: label });
     }
   }
 }

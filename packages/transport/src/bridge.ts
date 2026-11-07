@@ -25,6 +25,7 @@ import { createHoldback } from "./holdback.js";
 import { createJoinExchange } from "./join.js";
 import { createOutbound } from "./outbound.js";
 import { createRouteExchange } from "./route-exchange.js";
+import { createRepage } from "./repage.js";
 import { offerEvent, sendOwed, takeWithheld } from "./withhold.js";
 
 export type { BridgeError } from "./outbound.js";
@@ -196,11 +197,12 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
    */
   const reader = (): PeerId | undefined => options.peer;
   let sentCursors = false;
+  const repage = createRepage({ engine, gate: options.readGate, interest, peer: reader });
 
   const routing = createRouteExchange({ farSide: () => farSide, routes });
   const out = createOutbound(outboundFor(link, options, scope, errors));
   const { send, drain, envelopeOf, sendDigest, cursorsAfter } = out;
-  const sendCursors = (): void => void (queue = cursorsAfter(queue));
+  const sendCursors = (): void => void (queue = cursorsAfter(queue, repage.asks));
 
   // every frame of the exchange travels under the one snapshot tag, so they stay in the order
   // the exchange needs — a page ahead of the manifest that names it is a page thrown away
@@ -211,6 +213,14 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     const verified = decodeAndVerify(wire, options.crypto);
     if (verified.isErr()) {
       errors.emit(verified.error);
+      return;
+    }
+    // a re-page's answer below the cursor: the holdback would drop it as already held (D40)
+    if (repage.direct(verified.value.event)) {
+      queue = queue.then(async () => {
+        const r = await engine.receiveBatch([verified.value]);
+        if (r.isErr()) errors.emit(r.error);
+      });
       return;
     }
     const overflow = holdback.put(verified.value);
@@ -273,7 +283,10 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     queued: (run: () => Promise<void> | void) => void (queue = queue.then(run)),
     onCursors,
     onEvent: receiveEvent,
-    onDigest,
+    onDigest: (...digest: Parameters<typeof onDigest>) => {
+      onDigest(...digest);
+      queue = queue.then(repage.answered);
+    },
     onSnapshot: (frame: SnapshotFrame) => join.dispatch(frame),
     onWithheld: (scope: string, withheld: Ahead) => {
       const intake = {
@@ -298,9 +311,11 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
   });
 
   /** A newly learned grant propagates live — including the answer to a grant-request. */
-  const offRegistered = grants.onRegistered((_grant, wire) =>
-    send(KIND.grant, "grant", grantFrame(wire)),
-  );
+  const offRegistered = grants.onRegistered((grant, wire) => {
+    send(KIND.grant, "grant", grantFrame(wire));
+    // our own grant widened past what our cursors describe: ask this link again, from nothing
+    if (grant.device === identity.peerId && repage.stale()) resync();
+  });
   const offOutbound = engine.onOutbound((event: SyncEvent) =>
     offerEvent(event, options, reader(), send),
   );

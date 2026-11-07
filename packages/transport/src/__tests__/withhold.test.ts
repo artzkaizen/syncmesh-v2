@@ -109,4 +109,47 @@ describe("withheld frames on peer links (D40)", () => {
     expect(link.kept.filter((r) => Number(r.throughSeq) >= 2)).toEqual([]);
     link.close();
   });
+
+  test("a partition granted later is re-paged over the link, history included", async () => {
+    const author = peer(40, "acct_author");
+    const reader = peer(43, "acct_reader");
+    everywhere([reader, author], regrant(reader, [ACME], 1));
+    const link = gatedLink(author, reader);
+    (await write(author, "g1", "globex before", GLOBEX)).unwrap();
+    (await write(author, "a1", "acme", ACME)).unwrap();
+    await link.settle();
+    expect(bodyOf(reader, "g1")).toBeUndefined();
+    expect(Number(reader.engine.coverage().synced.get(author.identity.peerId))).toBe(2);
+
+    everywhere([author, reader], regrant(reader, [ACME, GLOBEX], 2));
+    (await write(author, "g2", "globex after", GLOBEX)).unwrap();
+    await link.settle();
+
+    expect(bodyOf(reader, "g2")).toBe("globex after");
+    // stepped over while it was withheld, and still delivered once the grant names it
+    expect(bodyOf(reader, "g1")).toBe("globex before");
+    link.close();
+  });
+
+  test("the issuer's answer to a re-page re-scopes the cursors to the wider grant", async () => {
+    // seed 1 is the fixtures' issuer: an authority device that reads everything
+    const issuer = peer(1, "acct_issuer");
+    const reader = peer(43, "acct_reader");
+    everywhere([reader, issuer], regrant(reader, [ACME], 1));
+    const link = gatedLink(issuer, reader);
+    (await write(issuer, "g1", "globex before", GLOBEX)).unwrap();
+    (await write(issuer, "a1", "acme", ACME)).unwrap();
+    await link.settle();
+    const narrow = reader.engine.coverage().scope;
+    expect(narrow).toBe(gateOf(reader).own());
+
+    everywhere([issuer, reader], regrant(reader, [ACME, GLOBEX], 2));
+    await link.settle();
+
+    expect(bodyOf(reader, "g1")).toBe("globex before");
+    const wide = reader.engine.coverage().scope;
+    expect(wide).toBe(gateOf(reader).own());
+    expect(wide).not.toBe(narrow);
+    link.close();
+  });
 });
