@@ -11,7 +11,7 @@ import type {
 } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { Transport, TransportContext } from "@syncmesh/transport";
-import type { Identity } from "@syncmesh/wire";
+import type { Identity, PartitionKeys } from "@syncmesh/wire";
 
 import type { SessionProvider } from "./auth.js";
 import type { Knock, MeshShaping } from "./transports.js";
@@ -116,6 +116,12 @@ export interface MeshOptions<
   readonly rls?: boolean;
   /** The issuer's private half. Only the org's root of trust holds this; it unlocks `grants.issue`. */
   readonly issuerKey?: Identity;
+  /**
+   * The issuer's content keys for sealed partitions (D40). Given, every grant `grants.issue` and
+   * `grants.renew` mint carries the keys for the sealed partitions it names, wrapped to its
+   * device, and `grants.rekey` rotates one. Persist its `held()`: it is the only copy.
+   */
+  readonly partitionKeys?: PartitionKeys;
   /**
    * Read `_links` rows where no grant is held, so `owner()` answers across a person's devices in
    * the two rungs that have no issuer (D21). Shipped config, set identically on every peer like

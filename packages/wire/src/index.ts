@@ -106,6 +106,8 @@ export {
 } from "./sealing.js";
 export type { KeyRing } from "./keyring.js";
 export { createKeyRing } from "./keyring.js";
+export type { HeldKey, PartitionKeys, PartitionKeysOptions } from "./partition-keys.js";
+export { createPartitionKeys } from "./partition-keys.js";
 
 export type { Entropy } from "./entropy.js";
 export { NoSecureRandomness, randomBytes, supplyEntropy } from "./entropy.js";

@@ -68,6 +68,8 @@ export async function createMesh<
   const registry = createGrantRegistry({ issuer: issuer ?? identity.peerId, now });
   const grantsOptions = { now } satisfies MeshGrantsOptions;
   if (issuerKey !== undefined) Object.assign(grantsOptions, { issuerKey });
+  if (options.partitionKeys !== undefined)
+    Object.assign(grantsOptions, { partitionKeys: options.partitionKeys });
   const { grants, bind } = openGrants(registry, grantsOptions);
   // plain await, not Result.gen: a definition-time panic in `assemble` must reach the caller as itself
   const booted = await openMeshEngine({
