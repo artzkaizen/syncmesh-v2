@@ -1,17 +1,25 @@
 import type { ColumnName } from "@syncmesh/kernel";
 import type { WindowRow } from "@syncmesh/window";
 
-import { createServerWindows, decodeWindowFrame } from "@syncmesh/window";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { ReadRefused, createServerWindows, decodeWindowFrame } from "@syncmesh/window";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { alias, pgSchema, text } from "drizzle-orm/pg-core";
+import { z } from "zod";
 
+import { query } from "../index.js";
+import { servedReads } from "../served.js";
 import {
   ALICE,
   BOB,
   POSTGRES_URL,
+  READER,
+  SERVER,
   after,
   eventually,
   mailId,
   pipe,
+  runId,
   seedMailbox,
   served,
 } from "./served-fixtures.js";
@@ -73,7 +81,7 @@ suite("served reads over a real Postgres and its logical replication (D43, E27)"
     expect(ids(bob.client.rows("inbox"))).toEqual(["b-5", "b-4", "b-3", "b-2", "b-1"]);
   });
 
-  test("the next page is the input's `after`; a half page sends only the rows new to the socket", async () => {
+  test("the next page is the input's `after`; its rows travel under it, the old page's leave", async () => {
     const { client, server, frames } = pipe(fx.sourceFor(ALICE));
     client.open("inbox", inbox(6));
     await server.idle();
@@ -82,8 +90,9 @@ suite("served reads over a real Postgres and its logical replication (D43, E27)"
     expect(ids(client.rows("inbox"))).toEqual(down(96, 6));
     const half = decodeWindowFrame(frames.at(-1) ?? new Uint8Array()).unwrap();
     if (half?.kind !== "rows") throw new Error("expected a rows frame");
-    expect(half.puts.map((p) => p.key)).toEqual(down(94, 4));
-    expect(half.dels.map((d) => d.key)).toEqual(down(100, 4));
+    // a row is one read's row: 96 and 95 travel again under the input that now shows them
+    expect(half.puts.map((p) => p.key)).toEqual(down(96, 6));
+    expect(half.dels.map((d) => d.key)).toEqual(down(100, 6));
     client.open("inbox", inbox(6, 91));
     await server.idle();
     expect(ids(client.rows("inbox"))).toEqual(down(90, 6));
@@ -188,6 +197,24 @@ suite("served reads over a real Postgres and its logical replication (D43, E27)"
     expect(ids(client.rows("ok"))).toEqual(down(100, 2));
   });
 
+  test("a change feed that dies fails every window; restarted, it reads them again and is live", async () => {
+    const { client, server } = pipe(fx.sourceFor(ALICE));
+    client.open("inbox", inbox(5));
+    await server.idle();
+    await fx.cutFeed();
+    await eventually(() => client.failure("inbox") !== undefined, "the window to fail");
+    // the rows it had stay on screen while it is failed
+    expect(ids(client.rows("inbox"))).toEqual(down(100, 5));
+    // a commit made while no feed was reading reaches the window only through the re-read
+    await fx.insert(101);
+    fx.restoreFeed();
+    await eventually(() => client.failure("inbox") === undefined, "the restarted feed");
+    expect(ids(client.rows("inbox"))).toEqual(down(101, 5));
+    await fx.insert(102);
+    await eventually(() => client.rows("inbox")[0]?.key === mailId(102), "a live insert after it");
+    server.stop();
+  });
+
   test("a lost patch is a gap: the client asks again and the server resnapshots it", async () => {
     const { client, server, loseNext, frames } = pipe(fx.sourceFor(ALICE));
     client.open("inbox", inbox(5));
@@ -221,5 +248,190 @@ suite("served reads over a real Postgres and its logical replication (D43, E27)"
     expect(client.status()).toBe("live");
     expect(client.held()).toBe(6);
     next.stop();
+  });
+});
+
+/** A table no manifest names, which a served read must never reach, however it is spelled. */
+const PRIVATE = `private_${runId()}`;
+
+suite("what a served handler cannot reach, however it asks (D43, E13)", () => {
+  let fx: Fixture;
+  beforeAll(async () => {
+    fx = await served({
+      seed: async (pg, mail) => {
+        await seedMailbox(3)(pg, mail);
+        await pg.unsafe(`INSERT INTO ${mail} VALUES ('b-1', 'bob', 'inbox', now(), 'BOB SECRET')`);
+      },
+    });
+    await fx.pg.unsafe(
+      `INSERT INTO ${fx.names.open} VALUES ('o-1', 'alice', 'inbox', now(), 'NO RULE')`,
+    );
+    await fx.pg.unsafe(`CREATE TABLE ${PRIVATE} (id text PRIMARY KEY, secret text)`);
+    await fx.pg.unsafe(`INSERT INTO ${PRIVATE} VALUES ('s', 'NOT IN THE MANIFEST')`);
+  });
+  afterAll(async () => {
+    await fx.pg.unsafe(`DROP TABLE IF EXISTS ${PRIVATE}`);
+    await fx.close();
+  });
+
+  /* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-explicit-any, typescript/no-explicit-any, typescript/no-unsafe-return, typescript/no-unsafe-call, typescript/no-unsafe-member-access -- each handler here is written as an attacker would, against the Drizzle the server hands it */
+  /** Serves one handler to alice, as the read `r`, and says what came back. */
+  const read = async (
+    handler: (context: { readonly db: any }) => any,
+    options: { readonly readRole?: string } = {},
+  ) => {
+    // SAFETY: the handler is written against the Drizzle `servedReads` hands it
+    const router = { r: query.input(z.object({})).handler(handler as never) };
+    const source = servedReads({
+      router,
+      schema: fx.schema,
+      db: fx.db,
+      principal: ALICE,
+      self: SERVER,
+      onCommit: () => () => undefined,
+      readRole: options.readRole ?? READER,
+    });
+    const page = await source.readPage({ path: "r", input: {} });
+    return page.map((p) => p.rows.map((r) => Object.fromEntries(r.row)));
+  };
+  /* oxlint-enable anti-slop/no-unknown-parameters, anti-slop/no-explicit-any, typescript/no-explicit-any, typescript/no-unsafe-return, typescript/no-unsafe-call, typescript/no-unsafe-member-access */
+
+  /** Whether bob's subject reached alice anywhere in what came back. */
+  const leaks = (rows: readonly object[]) => JSON.stringify(rows).includes("BOB SECRET");
+
+  test("the ruled table named inside a sql fragment is filtered by Postgres, not read whole", async () => {
+    const m = fx.mail;
+    const rows = await read(({ db }) =>
+      db
+        .select({ id: m.id, all: sql<string>`(select string_agg(subject, '|') from ${m})` })
+        .from(m)
+        .orderBy(m.id)
+        .limit(1),
+    );
+    expect(rows.isOk()).toBe(true);
+    expect(leaks(rows.unwrap())).toBe(false);
+    expect(rows.unwrap()[0]?.["all"]).toBe("subject 1|subject 2|subject 3");
+  });
+
+  test("a table with no rule, or none in the manifest, named in a fragment is refused by Postgres", async () => {
+    const m = fx.mail;
+    for (const named of [sql`${fx.open}`, sql.raw(PRIVATE)]) {
+      const rows = await read(({ db }) =>
+        db
+          .select({ id: m.id, peek: sql<string>`(select count(*) from ${named})` })
+          .from(m)
+          .orderBy(m.id)
+          .limit(1),
+      );
+      expect(rows.isErr() && ReadRefused.is(rows.error)).toBe(true);
+      expect(rows.isErr() && rows.error.message).toStartWith("permission denied for table");
+    }
+  });
+
+  test("a join chained after where or $dynamic, in a subquery, sees only the reader's rows", async () => {
+    const m = fx.mail;
+    const other = alias(m, "other");
+    const rows = await read(({ db }) => {
+      const afterWhere = db
+        .select({ s: sql<string>`string_agg(other.subject, '|')` })
+        .from(m)
+        .where(sql`true`)
+        .innerJoin(other, sql`true`);
+      const afterDynamic = db
+        .select({ s: sql<string>`max(other.subject)` })
+        .from(m)
+        .$dynamic()
+        .leftJoin(other, eq(other.owner, "bob"));
+      return db
+        .select({
+          id: m.id,
+          one: sql<string>`(${afterWhere})`,
+          two: sql<string>`(${afterDynamic})`,
+        })
+        .from(m)
+        .orderBy(m.id)
+        .limit(1);
+    });
+    expect(rows.isOk()).toBe(true);
+    expect(leaks(rows.unwrap())).toBe(false);
+  });
+
+  test("a subquery answers no yes-or-no question about another reader's rows", async () => {
+    const m = fx.mail;
+    const other = alias(m, "other");
+    const rows = await read(({ db }) =>
+      db
+        .select()
+        .from(m)
+        .where(
+          inArray(
+            m.id,
+            db
+              .select({ id: m.id })
+              .from(m)
+              .where(sql`true`)
+              .innerJoin(other, and(eq(other.owner, "bob"), sql`other.subject like 'BOB S%'`)),
+          ),
+        )
+        .orderBy(m.id)
+        .limit(10),
+    );
+    expect(rows.unwrap()).toEqual([]);
+  });
+
+  test("an alias of a table with no rule, named as the ruled table, does not borrow its rule", async () => {
+    const borrowed = alias(fx.open, fx.names.mail);
+    const rows = await read(({ db }) => db.select().from(borrowed).orderBy(borrowed.id).limit(10));
+    expect(rows.isErr() && rows.error.message).toContain("has no read rule");
+  });
+
+  test("a table of the same name in another schema is not the served table, and is refused", async () => {
+    const elsewhere = pgSchema("crm").table(fx.names.mail, { id: text().primaryKey() });
+    const rows = await read(({ db }) => db.select().from(elsewhere).orderBy(elsewhere.id).limit(1));
+    expect(rows.isErr() && rows.error.message).toBe(
+      `crm.${fx.names.mail} is not served: only a sync: "window" table is read on the server`,
+    );
+  });
+
+  test("a write hidden in a fragment is refused by the read-only transaction and the role", async () => {
+    const m = fx.mail;
+    const rows = await read(({ db }) =>
+      db
+        .select({
+          id: m.id,
+          gone: sql<number>`(with gone as (delete from ${m} returning 1) select count(*) from gone)`,
+        })
+        .from(m)
+        .orderBy(m.id)
+        .limit(1),
+    );
+    expect(rows.isErr() && ReadRefused.is(rows.error)).toBe(true);
+    const [left] = await fx.pg.unsafe(`SELECT count(*)::int AS count FROM ${fx.names.mail}`);
+    expect(left?.["count"]).toBe(4);
+  });
+
+  test("a server with no read role serves nothing", async () => {
+    const m = fx.mail;
+    const rows = await read(({ db }) => db.select().from(m).orderBy(m.id).limit(10), {
+      readRole: "",
+    });
+    expect(rows.isErr() && rows.error.message).toContain("no readRole");
+  });
+
+  test("a read with no limit is refused before it runs", async () => {
+    const m = fx.mail;
+    const before = fx.statements.length;
+    const rows = await read(({ db }) => db.select().from(m).orderBy(m.id));
+    expect(rows.isErr() && rows.error.message).toContain("must .limit()");
+    // the role and the reader's settings, then nothing: the query never ran
+    expect(fx.statements.slice(before).some((s) => s.sql.includes("order by"))).toBe(false);
+  });
+
+  test("a path naming something every object has is no read, and does not throw", async () => {
+    const source = fx.sourceFor(ALICE);
+    for (const path of ["constructor", "constructor.name.x", "__proto__", "toString"]) {
+      const page = await source.readPage({ path, input: {} });
+      expect(page.isErr() && page.error.message).toBe(`no read ${path}`);
+    }
   });
 });

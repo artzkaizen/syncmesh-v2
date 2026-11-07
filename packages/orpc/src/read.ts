@@ -74,12 +74,9 @@ export function readOf<PC extends PresenceMap>(
         await lazy.ready;
         const query = running(def, parsed.value, input);
         if (!isServed(query)) return { data: await query, coverage: coverage() };
-        const live = servedLive(query);
-        try {
-          return { data: await live.ready, coverage: coverage() };
-        } finally {
-          live.release();
-        }
+        if (windows === undefined)
+          return { data: await servedLive(query).ready, coverage: coverage() };
+        return { data: await windows.once(path, input, query), coverage: coverage() };
       },
       catch: asError,
     });

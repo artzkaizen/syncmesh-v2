@@ -1,9 +1,10 @@
 import type { PeerId } from "@syncmesh/kernel";
 import type { PageSource } from "@syncmesh/window";
 
-import { commitFeed } from "@syncmesh/cdc";
+import { resumableCommitFeed } from "@syncmesh/cdc";
 import { postgresChangeSource } from "@syncmesh/postgres";
 import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
+import { servedReadDdl } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { createServerWindows, createWindowClient } from "@syncmesh/window";
 import { and, desc, eq, sql } from "drizzle-orm";
@@ -35,8 +36,8 @@ if (POSTGRES_URL === undefined) {
 /** A name no other run of this suite uses, so runs never read each other's tables or slots. */
 export const runId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
-const replication = () =>
-  postgres(POSTGRES_URL ?? "", {
+const replication = (url = POSTGRES_URL ?? "") =>
+  postgres(url, {
     max: 1,
     fetch_types: false,
     max_lifetime: null,
@@ -155,6 +156,12 @@ export const BOB = { account: "bob", role: "owner", claims: {} } as const;
 /* oxlint-disable-next-line anti-slop/require-safety-comment-for-type-assertion -- a test peer id */
 export const SERVER = "server-peer" as PeerId;
 
+/**
+ * The role served reads run as. Roles are the cluster's, not one database's, so every run
+ * shares it; its grants and policies are per table, and every run's tables are its own.
+ */
+export const READER = "syncmesh_served_reader";
+
 /** Every statement the server's Drizzle sent, so a test can explain what a page read cost. */
 export interface Statement {
   readonly sql: string;
@@ -176,27 +183,59 @@ export async function served(
   await pg.unsafe(MAIL_DDL(names.open));
   await options.seed?.(pg, names.mail);
   await pg.unsafe(`ANALYZE ${names.mail}`);
+  const schema = schemaFor(names.mail, names.open);
+  for (const statement of servedReadDdl(schema, READER)) await pg.unsafe(statement);
   const statements: Statement[] = [];
   const db = drizzle({
     client: pg,
     logger: { logQuery: (text, params) => void statements.push({ sql: text, params }) },
   });
+  /** While set, the replication connection cannot be made: the database is unreachable. */
+  let cut = false;
   const source = postgresChangeSource({
     sql: pg,
-    connect: replication,
+    // port 1 refuses at once, as a database that is down does
+    connect: () => (cut ? replication("postgres://postgres@127.0.0.1:1/postgres") : replication()),
     slot: `slot_${id}`,
     publication: `pub_${id}`,
     status: Temporal.Duration.from({ milliseconds: 50 }),
+    // one try, so an outage ends the stream instead of being ridden out
+    reconnect: { attempts: 0, delay: Temporal.Duration.from({ milliseconds: 10 }) },
   });
   (await source.publish([names.mail, names.open])).unwrap();
-  const feed = commitFeed(await source.start({ after: null }), "postgres");
+  // restarted when it fails, so a test can kill the walsender and watch the windows come back
+  const reading = Promise.withResolvers<void>();
+  const feed = resumableCommitFeed(
+    async () => {
+      const stream = await source.start({ after: null });
+      reading.resolve();
+      return stream;
+    },
+    {
+      source: "postgres",
+      retry: {
+        first: Temporal.Duration.from({ milliseconds: 50 }),
+        most: Temporal.Duration.from({ milliseconds: 200 }),
+      },
+    },
+  );
+  // a test that writes before the slot is read would race it
+  await reading.promise;
   const mail = mailTable(names.mail);
   const open = mailTable(names.open);
-  const schema = schemaFor(names.mail, names.open);
   const router = proceduresFor(mail, open);
   /** The page source for one principal's socket. */
   const sourceFor = (principal: typeof ALICE | typeof BOB): PageSource =>
-    servedReads({ router, schema, db, principal, self: SERVER, onCommit: feed.onCommit });
+    servedReads({
+      router,
+      schema,
+      db,
+      principal,
+      self: SERVER,
+      onCommit: feed.onCommit,
+      onFeed: feed.onFeed,
+      readRole: READER,
+    });
   return {
     pg,
     db,
@@ -207,6 +246,18 @@ export async function served(
     router,
     statements,
     sourceFor,
+    /** Ends the walsender reading this run's slot, and refuses the reconnect: an outage. */
+    cutFeed: async () => {
+      cut = true;
+      await pg.unsafe(
+        `SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots WHERE slot_name = $1 AND active_pid IS NOT NULL`,
+        [`slot_${id}`],
+      );
+    },
+    /** The database is reachable again; the feed's next start reads the slot. */
+    restoreFeed: () => {
+      cut = false;
+    },
     insert: (n: number, owner = "alice", folder = "inbox") =>
       pg.unsafe(
         `INSERT INTO ${names.mail} (id, owner, folder, received, subject) VALUES ($1, $2, $3, $4, $5)`,

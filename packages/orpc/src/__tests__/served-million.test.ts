@@ -62,6 +62,11 @@ const rowsRead = async (fx: Fixture, statement: Statement) => {
   };
 };
 
+/** How many page reads the server's Drizzle has sent for the mail table. */
+const pageReads = (fx: Fixture) =>
+  fx.statements.filter((s) => s.sql.includes("from (select") && s.sql.includes(fx.names.mail))
+    .length;
+
 /** The last page read the server's Drizzle sent for the mail table. */
 const lastPageRead = (fx: Fixture) => {
   const found = [...fx.statements]
@@ -98,10 +103,11 @@ suite(`a million rows in Postgres, read a page at a time (D43)`, () => {
 
     client.open("inbox", { path: "mail.inbox", input: { folder: "inbox", limit: LIMIT } });
     await server.idle();
-    const before = fx.statements.length;
+    const before = pageReads(fx);
     await fx.insert(ROWS + 1);
     await eventually(() => client.rows("inbox")[0]?.key === mailId(ROWS + 1), "the live insert");
-    expect(fx.statements.length).toBe(before + 1);
+    // one read of the page; the role and the reader's settings that open its transaction are not reads
+    expect(pageReads(fx)).toBe(before + 1);
     const live = await rowsRead(fx, lastPageRead(fx));
 
     console.log("rows read per page from 1M:", { opened, deep, live });
