@@ -49,7 +49,7 @@ export interface PresenceStoreOptions {
 }
 
 const slot = (topic: string, partition: PartitionKey, peer: PeerId): string =>
-  `${topic} ${String(partition)} ${String(peer)}`;
+  `${topic} ${partition} ${peer}`;
 
 /**
  * The `(topic, instance, peer)` a signed value is the latest of — what a newer value from the same
@@ -131,7 +131,7 @@ export function createPresenceStore(options: PresenceStoreOptions = {}): Presenc
     },
     peers: (topic, partition) => {
       prune(now().epochMilliseconds);
-      const prefix = `${topic} ${String(partition)} `;
+      const prefix = `${topic} ${partition} `;
       return [...held]
         .filter(([key]) => key.startsWith(prefix))
         .map(([key, entry]) => resolved(key, entry));
