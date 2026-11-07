@@ -1,0 +1,111 @@
+# Gaps to the graduation bar
+
+> Swept 2026-11-07 on `gap/sweep` (base `638eed6`). Sources: every epic's open and `[~]` boxes,
+> the "still open" clauses inside ticked ones, every decision still `draft`,
+> `research/gap-audit.md` (P0–P4 + addendum), `plan/api-gaps.md` §3, and the **code** (stubs,
+> unimplemented interfaces, `test.todo`, "not started" / "follow-on" comments). Where the plan
+> and the code disagreed, the code won and the row says so.
+>
+> **Owner** is who closes it. `S1`–`S7` are the sibling threads in this sweep: S1 scale · S2
+> Postgres CDC source · S3 gated/authority visibility (E08/E12) · S4 read permissions, room
+> tickets, E06 `fields:`, confidentiality posture · S5 windowed row path (E24 row patches + E27) ·
+> S6 Loro + doc branch merge · S7 proof (10M test, chaos in CI, durability, threat model). **This**
+> is this thread. **Unowned** is nobody in the sweep. **Hardware** needs devices in hand.
+>
+> **Status**: `open` · `decision` (needs the owner; a decision file exists or is named) ·
+> `built` (on this branch, with its test) · `done` (was already built; the plan said otherwise) ·
+> `hardware`.
+
+## Decisions
+
+| # | Gap | Where | Owner | Status |
+|---|---|---|---|---|
+| D1 | **D31** schema evolution across a mixed-version fleet: `retired` state, `schemaVersion` stamp, additive lint; also gap-audit №20 (correction mismatch across versions) and E16 | `plan/decisions/D31.md` (`status: draft`), `engine/src/quarantine.ts`, `engine/src/validate.ts:118` | Unowned | decision |
+| D2 | **D38** a CRDT inside a cell | `plan/decisions/D38.md` (`status: draft`) | S6 | decision |
+| D3 | **D32** quarantine report on the wire | `plan/decisions/D32.md` — **decided C by the owner 2026-11-07** in this thread | This | built (see B9) |
+| D4 | Relay durability `ack` as a mesh-level `synced()` — needs a way to name the relay in `engine.acknowledge` (gap-audit P0 №4) | `plan/epics/E12.md:37` | Unowned | decision (no file yet) |
+| D5 | A returning device does not rejoin from state on its own — needs a compaction floor on the wire (D31's "pin D15's floor for every peer") | `transport/src/__tests__/resurrection.test.ts:272` (`test.todo`), `transport/src/outbound.ts` `cursorsAfter`, `api-gaps.md` §3.6 | Unowned | decision |
+| D6 | One constructor: `createMesh` and `createClient` both exist with callers | `client/src/mesh.ts:55`, `orpc/src/client.ts`, `api-gaps.md` §3.1 | Unowned | decision (sequencing) |
+| D7 | Confidentiality posture written into RFC-0017 ("a room name is a bearer secret" or `verifyJoin` + per-partition encryption) — gap-audit P0 №2 | `plan/epics/E24.md:21`, `relay/src/posture.ts` (default admits every join) | S4 | decision |
+| D8 | E27 thin client: supported shape or demo — gap-audit P0 №3 | `plan/epics/E27.md:27` | S5 | decision |
+| D9 | D17: may relay telemetry variants carry peer identity | `plan/epics/E24.md:22` | Unowned | decision |
+
+## Built on this branch
+
+| # | Gap | Where | Status |
+|---|---|---|---|
+| B1 | Relay fan-out metered **per room**, not only per socket (gap-audit №7) | `relay/src/limits.ts`, `ingest.ts`, `connection.ts` | built — see the PR |
+| B2 | Per-room socket cap and open-room cap, refused with 503 before upgrade (gap-audit №5 — the process-wide cap already existed) | `relay/src/host.ts`, `rooms.ts` | built — see the PR |
+| B3 | Production eviction default: durable hosts evict an idle room after 15 min; the log stays unbounded unless `DURABLE_RETENTION` is opted into (owner's call, 2026-11-07; gap-audit №8) | `relay/src/serve.ts`, `adapters/relay-node` | built — see the PR |
+| B4 | E24 `mesh.start()` symmetric with `stop()`: `createMesh({ start: false })`, idempotent `start()`, typed `Err` after `stop()` (owner's call, 2026-11-07) | `client/src/mesh.ts`, `transports.ts`, `options.ts` | built — see the PR |
+| B5 | E15 blob sweep + per-partition quotas refused at the put as a typed value (gap-audit №22) | `relay/src/blob-cap.ts`, `retention.ts`, `client/src/blobs.ts` | built — see the PR |
+| B6 | E19 60 Hz presence burst as a load test, and a BLE-shaped drop test (gap-audit №21) | `client/src/__tests__/` | built — see the PR |
+| B7 | E25 embedded example had no test — and **did not work**: its Drizzle opened the log file, not the state file the rows live in | `examples/src/embedded/backend.ts`, `__tests__/embedded.test.ts` | built (`ad3f465`) |
+| B8 | E25 Rivet actor | `adapters/rivet` (`@syncmesh/rivet`) | built (`130dd48`) |
+| B9 | D32 refusal receipt: wire core + vectors, frame kind 9, ledger table, reader on `$operations` | `wire/`, `transport/`, `storage/operation-store.ts`, `client/operations.ts`, `conformance/` | built — see the PR |
+
+## Owned by a sibling
+
+| # | Gap | Where | Owner | Status |
+|---|---|---|---|---|
+| O1 | Scale: whole replica in memory, table map copied per write, tombstones never collected (gap-audit addendum №3) | `engine/`, `kernel/` | S1 | open |
+| O2 | **E20 is ticked done but Postgres logical replication is not built** — `manualChangeSource` is the only source | `cdc/src/source.ts:19-20` ("deliberately not started"), `cdc/src/manual.ts:41`, `plan/epics/E20.md:20` | S2 | open (plan is wrong) |
+| O3 | External-writer story (table classes, staged-changes sweeper) wants an RFC (gap-audit №31) | `research/gap-audit.md` | S2 | open |
+| O4 | E08 `visibility: "authority"` tier (blocked on D24's reframing) | `plan/epics/E08.md:25` | S3 | open |
+| O5 | E09 `mesh.visibility` | `plan/epics/E09.md:35` | S3 | open |
+| O6 | E12 `token()` / `visibleAt()` / `VisibilityLost`, and the `Relay` transport class declaring `visibility` + `blobs` | `plan/epics/E12.md:31-32` | S3 | open |
+| O7 | A withheld event stalls its author's whole stream; the gated tier needs its own sequence (gap-audit №16) | `engine/src/admit.ts`, `transport/src/holdback.ts` | S3 | open |
+| O8 | E06 `fields: { column: rule }` read restriction at the relay (gap-audit №17) | `plan/epics/E06.md:27` | S4 | open |
+| O9 | Interest is a request, not a permission — the relay must filter by policy first (gap-audit №18) | `plan/epics/E13.md:50`, `relay/src/catchup.ts` | S4 | open |
+| O10 | Room tickets / read permissions on the relay | `relay/src/posture.ts`, RFC-0024 | S4 | open |
+| O11 | E24 versioned row patches (`epoch` + monotone id, resnapshot-on-gap) | `plan/epics/E24.md:24` | S5 | open |
+| O12 | E27 `ClientView`, `desire / undesire / rows` frames, engine-less patch client | `plan/epics/E27.md:31-37` | S5 | open |
+| O13 | E14 snapshot window is not a field of `Interest` (gap-audit №19); E13 an interest change leaves a permanent gap | `plan/epics/E14.md:43`, `plan/epics/E13.md:53` | S5 | open |
+| O14 | Collaborative text / doc branch merge (D04's open door, D38) | `research/crdt-cells.md` | S6 | open |
+| O15 | Chaos in CI on a small seed; grant propagation under fault; blobs and retention-floor refusals in the schedule (gap-audit №10–12) | `chaos/`, `.github/workflows/ci.yml` | S7 | open |
+| O16 | Crash safety and format migration: `kill -9` mid-fold / mid-append, torn writes, `_syncmesh_meta` upgrades (gap-audit №13) | `storage/` | S7 | open |
+| O17 | 10M-event test; threat model (RFC-0017) | — | S7 | open |
+
+## Unowned — not hardware
+
+| # | Gap | Where | Status |
+|---|---|---|---|
+| U1 | Dedup below the compaction floor: `receiveBatch` re-admits a compacted event below the floor (state stays right only because the merge is a max-join) | `engine/src/admit.ts` (`store.has(event.id)`), `api-gaps.md` §3.7 | open |
+| U2 | Telemetry has no consumer: no inspector, no storage taps; a policy verdict is a bare boolean with no "why" (gap-audit №24) | `plan/epics/E24.md:22`, `engine/src/telemetry.ts` | open |
+| U3 | Rust client (D37) has no policy ladder, no local scope, no radios | `crates/syncmesh-client`, `plan/epics/E24.md:32` | open |
+| U4 | Device seed stored in plaintext SQLite; no platform keystore seam (gap-audit addendum №3) | `client/src/identity.ts:82` | open |
+| U5 | Strict capture mode: an unarmed write to a synced table should raise, not diverge silently (gap-audit №30) | `storage/src/capture.ts` | open |
+| U6 | rounds-web's only test is a manual Playwright smoke script no runner picks up (gap-audit №25) | `apps/rounds-web/package.json:10` | open |
+| U7 | `verify-node-consumer` never imports `@syncmesh/sqlite-bun`; sqlite-node's durable path only indirectly covered (gap-audit №26) | `tooling/verify-node-consumer/bin/` | open |
+| U8 | Effect anti-slop oxlint variant not enabled; one benchmark total (`bench/storage`) (gap-audit №27) | `vite.config.ts`, `bench/` | open |
+| U9 | E06: ungranted mode does not enforce `deny` — documented, pinned by no test | `plan/epics/E06.md:34`, `engine/src/validate.ts` | open |
+| U10 | E06: named rules by convention (`const isOwner = owner("createdBy")`) — a doc, no feature | `plan/epics/E06.md:28` | open |
+| U11 | Browser: two tabs cannot share one database; a second tab is refused `OpfsPoolHeld` | `plan/epics/E04.md:41`, `adapters/sqlite-wasm` | open |
+| U12 | `@syncmesh/docs` is a scaffold whose only test is the template's `test.todo` | `packages/docs/src/__tests__/index.test.ts:4` | open |
+| U13 | `describeRoom` reports the host's key, not the room's when a `RoomStore` supplies its own identity (the Durable Object host does, and mounts no describe yet); the Rivet host sidesteps it by opening its host over the stored key | `relay/src/describe.ts` (`host.peerId`), `relay/src/host.ts` (`RoomStore.identity`) | open (latent) |
+| U14 | D31's two "now" fixes: split `unknown-table` from the retired-table case sharing its 128-slot bucket; pin D15's compaction floor for every peer | `engine/src/quarantine.ts` | open (waits on D1) |
+| U15 | The fleet `compose.yaml` is never run by CI (the shape is proved in-process by `fleet.test.ts`) | `examples/src/fleet/compose.yaml` | open |
+
+## Hardware — listed, not built here
+
+| # | Gap | Where | Status |
+|---|---|---|---|
+| H1 | BLE has never touched a radio: the manual device checklist is every box unchecked; the donor's per-fragment ack and 140-byte frame sizing were replaced in `packages/ble`, but nothing has proved the replacement on air (gap-audit №9) | `plan/epics/E22.md:20` | hardware |
+| H2 | Wi-Fi Aware (E23): `class WifiAware extends FrameTransport`, route preference for bulk, `maxLinks`, `costly` / `dormant` declared | `plan/epics/E23.md:19-29` | hardware |
+| H3 | iOS Wi-Fi Aware engine: accept and browse loops deliberately not started until `pair()` produces a paired device | `native/rn-nearby/ios/WifiAwareEngine.swift:78` | hardware |
+| H4 | No Android radio module in `native/rn-nearby` (no `android/`) | `native/rn-nearby/` | hardware |
+
+## Plan said open, code says done
+
+| Gap | Evidence |
+|---|---|
+| gap-audit №5 process-wide connection cap | `RelayLimits.maxConnections`, 503 at `createGate` (`relay/src/host.ts`) |
+| gap-audit №6 backlog bounded in bytes | `RelayLimits.maxBacklogBytes`, `relay/src/sender.ts:42` |
+| gap-audit №7 per-socket fan-out | `fanout` traffic class, `relay/src/ingest.ts:80`, `connection.ts:288` (per-room is B1) |
+| gap-audit №8 blob half | `DEFAULT_MAX_BLOB_BYTES`, `relay.retention.unbounded`, `__tests__/retention-defaults.test.ts` |
+| gap-audit №14 stale-link detection | `client/src/stale.ts`, opt-in `mesh.stale` (E28.md:42) |
+| gap-audit №15 E17 loose ends | every E17 box ticked with its test; no "still open" clause left |
+| gap-audit №23 `mesh.transports.add/remove` | `client/src/transports.ts:481-500`, `api-gaps.md` §4 |
+| E25 docker compose | `examples/src/fleet/compose.yaml` (Postgres `LISTEN/NOTIFY` replaced Redis, `df56207`) |
+| E25 "async driver port" blocker for Rivet | D05 decided B; `SqlDriver` and `StateStore` are async |
+| gap-audit №28 doc rot in E24 | retention and eviction exist (`retention.ts`, `rooms.ts`) |
