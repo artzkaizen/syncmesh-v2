@@ -34,15 +34,15 @@
 
 | # | Gap | Where | Status |
 |---|---|---|---|
-| B1 | Relay fan-out metered **per room**, not only per socket (gap-audit №7) | `relay/src/limits.ts`, `ingest.ts`, `connection.ts` | built — see the PR |
-| B2 | Per-room socket cap and open-room cap, refused with 503 before upgrade (gap-audit №5 — the process-wide cap already existed) | `relay/src/host.ts`, `rooms.ts` | built — see the PR |
-| B3 | Production eviction default: durable hosts evict an idle room after 15 min; the log stays unbounded unless `DURABLE_RETENTION` is opted into (owner's call, 2026-11-07; gap-audit №8) | `relay/src/serve.ts`, `adapters/relay-node` | built — see the PR |
-| B4 | E24 `mesh.start()` symmetric with `stop()`: `createMesh({ start: false })`, idempotent `start()`, typed `Err` after `stop()` (owner's call, 2026-11-07) | `client/src/mesh.ts`, `transports.ts`, `options.ts` | built — see the PR |
-| B5 | E15 blob sweep + per-partition quotas refused at the put as a typed value (gap-audit №22) | `relay/src/blob-cap.ts`, `retention.ts`, `client/src/blobs.ts` | built — see the PR |
-| B6 | E19 60 Hz presence burst as a load test, and a BLE-shaped drop test (gap-audit №21) | `client/src/__tests__/` | built — see the PR |
-| B7 | E25 embedded example had no test — and **did not work**: its Drizzle opened the log file, not the state file the rows live in | `examples/src/embedded/backend.ts`, `__tests__/embedded.test.ts` | built (`ad3f465`) |
-| B8 | E25 Rivet actor | `adapters/rivet` (`@syncmesh/rivet`) | built (`130dd48`) |
-| B9 | D32 refusal receipt: wire core + vectors, frame kind 9, ledger table, reader on `$operations` | `wire/`, `transport/`, `storage/operation-store.ts`, `client/operations.ts`, `conformance/` | built — see the PR |
+| B1 | Relay fan-out metered **per room**, not only per socket (gap-audit №7) | `relay/src/limits.ts`, `ingest.ts`; `__tests__/limits.test.ts` | built (`b41e230`) |
+| B2 | Per-room socket cap and open-room cap, refused with 503 before upgrade (gap-audit №5 — the process-wide cap already existed) | `relay/src/host.ts`, `rooms.ts`, `adapters/cloudflare-do/src/host.ts`; `relay/src/__tests__/host.test.ts` | built (`b41e230`) |
+| B3 | Production eviction default: durable hosts evict an idle room after 15 min; the log stays unbounded unless `DURABLE_RETENTION` is opted into (owner's call, 2026-11-07; gap-audit №8) | `DEFAULT_IDLE_AFTER` in `relay/src/rooms.ts`, applied by `hostTuning`; `__tests__/serve.test.ts` | built (`b41e230`) |
+| B4 | E24 `mesh.start()` symmetric with `stop()`: `createMesh({ start: false })`, idempotent `start()`, typed `Err` after `stop()` (owner's call, 2026-11-07) | `client/src/lifecycle.ts`, `transports.ts`, `options.ts` | built (`702bf88`) |
+| B5 | E15 blob sweep + per-partition quotas refused at the put as a typed value (gap-audit №22) | `relay/src/blob-keeper.ts`, `blob-cap.ts`, `client/src/blobs.ts`; relay tags 20–21 + vectors; `__tests__/blob-keeper.test.ts` | built (`d37adf7`) |
+| B6 | E19 60 Hz presence burst as a load test, and a BLE-shaped drop test (gap-audit №21) | `ble/src/__tests__/presence.test.ts` — writing it found BLE queueing every stale cursor; fixed with `FrameLink.sendLatest` | built (`e8dc1e2`) |
+| B7 | E25 embedded example had no test — and **did not work**: its Drizzle opened the log file, not the state file the rows live in | `examples/src/embedded/backend.ts`, `__tests__/embedded.test.ts` | built (`afafea2`) |
+| B8 | E25 Rivet actor | `adapters/rivet` (`@syncmesh/rivet`) | built (`68602c5`) |
+| B9 | D32 refusal receipt: wire core + vectors, frame kind 9, ledger table, reader on `$operations` | `wire/src/receipt.ts`, `transport/src/custody.ts`, `storage/src/operation-refusals.ts`, `conformance/refusal-vectors.json`, `crates/syncmesh-core` | built (`695bf98`, `6926d8d`) |
 
 ## Owned by a sibling
 
@@ -84,6 +84,9 @@
 | U12 | `@syncmesh/docs` is a scaffold whose only test is the template's `test.todo` | `packages/docs/src/__tests__/index.test.ts:4` | open |
 | U13 | `describeRoom` reports the host's key, not the room's when a `RoomStore` supplies its own identity (the Durable Object host does, and mounts no describe yet); the Rivet host sidesteps it by opening its host over the stored key | `relay/src/describe.ts` (`host.peerId`), `relay/src/host.ts` (`RoomStore.identity`) | open (latent) |
 | U14 | D31's two "now" fixes: split `unknown-table` from the retired-table case sharing its 128-slot bucket; pin D15's compaction floor for every peer | `engine/src/quarantine.ts` | open (waits on D1) |
+| U16 | **main's CI has failed on every push since 2026-09-28.** This branch fixes the formatting, the undeclared `@syncmesh/transport` in `adapters/browser`, and the private `@syncmesh/ble` the node-consumer check could not install (`3bfa67a`), but `vp check` still reports 183 lint errors that predate it (main has 188) — 164 in `apps/issues-native`, the rest file-size and complexity caps in `packages/*` and `conformance/` | `vp lint`; `.github/workflows/ci.yml` | open |
+| U17 | Refusals and receipts are not carried by the relay (D32 limit: direct links only); React `refused-by` rendering (`plan/react-api.md` G12) unbuilt | `relay/src/session.ts` | open |
+| U18 | Blob sweep limits: a room that has seen a sealed event stops sweeping; only blobs put since the room opened are swept or billed; no telemetry on a sweep; the Rust client ignores the put answer | `relay/src/blob-keeper.ts` | open |
 | U15 | The fleet `compose.yaml` is never run by CI (the shape is proved in-process by `fleet.test.ts`) | `examples/src/fleet/compose.yaml` | open |
 
 ## Hardware — listed, not built here
