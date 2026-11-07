@@ -77,6 +77,9 @@ export interface RelayRetention {
    *
    * Counted over bytes admitted since the room opened, like the ceiling, and billed to the
    * partition the put claims — the relay has seen no row yet, so it is a budget, not a permission.
+   * Any socket in the room can therefore spend another partition's budget by naming it; without
+   * `keepUnreferencedBlobsFor` those bytes are never swept, and that partition's puts are refused
+   * until the room reopens.
    */
   readonly maxBlobBytesPerPartition?: number;
   /**
