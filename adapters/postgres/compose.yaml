@@ -1,0 +1,16 @@
+# A Postgres with logical replication for the replication suite (PGlite has none):
+#   vp run pg:up
+#   SYNCMESH_PG_REPLICATION_URL=postgres://postgres:postgres@localhost:54329/postgres vp run test
+services:
+  postgres:
+    image: postgres:17
+    command: ["postgres", "-c", "wal_level=logical"]
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "54329:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
