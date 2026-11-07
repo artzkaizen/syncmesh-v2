@@ -31,6 +31,11 @@ export interface RoomState {
   readonly identity: Identity;
   /** What one socket may spend before the relay hangs up on it: frame size and rate. */
   readonly limits: RelayLimits;
+  /**
+   * What the room as a whole may spend, of which only `fanout` is drawn: every socket's event
+   * is charged here as well as to its own budget, at `limits.roomFanout`.
+   */
+  readonly budget: Budget;
   /** Where this room's bytes live (D18); absent, it serves none and says so. */
   readonly blobs: BlobStore | undefined;
   /** One grant per device, the room's newest mint for each; a joiner gets these first. */

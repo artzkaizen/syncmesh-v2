@@ -107,7 +107,11 @@ export interface RelayHost {
   readonly acquire: (path: string) => Promise<HeldRoom>;
   /** Live sockets across the whole host; the ceiling is enforced by the fetch layer. */
   readonly live: () => number;
-  readonly atCapacity: () => boolean;
+  /**
+   * Whether a socket for that room would be turned away for capacity: the host is full, the
+   * room is, or the room is not open and the table already holds `maxRooms`.
+   */
+  readonly atCapacity: (room: string) => boolean;
   readonly close: () => Promise<void>;
 }
 
@@ -124,16 +128,21 @@ export const postureGate =
     return undefined;
   };
 
+/**
+ * The answer to an upgrade that a capacity cap turned away: 503, because a reconnect retries and
+ * the seat may be free by then. Shared by every host so a client sees one refusal for all caps.
+ */
+export const capacityRefusal = (): Response =>
+  new Response("syncmesh relay: at capacity, retry shortly", { status: 503 });
+
 /** Everything that turns a request away before a socket exists, in refusal order. */
 export const createGate = (
   access: ReturnType<typeof createRoomAccess>,
-  atCapacity: () => boolean,
+  atCapacity: (room: string) => boolean,
 ): ((request: Request, room: string) => Promise<Response | undefined>) => {
   const posture = postureGate(access);
   return (request: Request, room: string): Promise<Response | undefined> =>
-    atCapacity()
-      ? Promise.resolve(new Response("syncmesh relay: at capacity, retry shortly", { status: 503 }))
-      : posture(request, room);
+    atCapacity(room) ? Promise.resolve(capacityRefusal()) : posture(request, room);
 };
 
 /** The relay's own facts beside the log: its lineage, and the key it signs with. */
@@ -265,10 +274,19 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
   // a caller-supplied store is one log: it serves one room whatever the path says
   const roomFor = (path: string): string => (options.singleRoom === undefined ? path : "main");
 
-  // the whole host's socket ceiling (gap audit №5); approximate under races, refused at fetch
-  const cap = options.limits?.maxConnections ?? DEFAULT_LIMITS.maxConnections;
+  // the host's, one room's, and the table's ceilings (gap audit №5); all three are approximate
+  // under races — they count sockets already accepted, not upgrades still in flight — and all
+  // three are refused at fetch, before a socket exists
+  const limits = { ...DEFAULT_LIMITS, ...options.limits };
   let live = 0;
-  const atCapacity = (): boolean => live >= cap;
+  const atCapacity = (room: string): boolean => {
+    if (live >= limits.maxConnections) return true;
+    const name = roomFor(room);
+    const sockets = table.sockets(name);
+    return sockets === undefined
+      ? table.count() >= limits.maxRooms
+      : sockets >= limits.maxRoomConnections;
+  };
   const gate = createGate(access, atCapacity);
 
   const accept = (socket: RelaySocket, path: string): SocketSession => {

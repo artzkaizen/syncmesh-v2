@@ -1,6 +1,4 @@
-import type { Temporal } from "@syncmesh/temporal";
-
-import { durationMs } from "@syncmesh/temporal";
+import { Temporal, durationMs } from "@syncmesh/temporal";
 
 import type { GrantCache } from "./grant-cache.js";
 import type { RelayRoom } from "./room.js";
@@ -43,6 +41,14 @@ export interface RoomTableOptions {
   readonly now: () => Temporal.Instant;
 }
 
+/**
+ * How long a durable host keeps a room nobody is on, when its caller did not say: `startRelay`
+ * on Bun and Node both default to it over their own `dataDir`. A caller-supplied store keeps
+ * the old default of never — its room borrows no handle, so an eviction would reclaim nothing
+ * and re-read the whole log on the next join.
+ */
+export const DEFAULT_IDLE_AFTER = Temporal.Duration.from({ minutes: 15 });
+
 /** One room, held open for as long as the socket that asked for it is on it. */
 export interface HeldRoom {
   readonly room: RelayRoom;
@@ -59,6 +65,11 @@ export interface RoomTable {
    */
   readonly acquire: (name: string) => Promise<HeldRoom>;
   readonly count: () => number;
+  /**
+   * Sockets holding that room, counted the way {@link acquire} counts them — from before the
+   * open — or `undefined` when the table does not hold it open at all.
+   */
+  readonly sockets: (name: string) => number | undefined;
   readonly close: () => Promise<void>;
 }
 
@@ -146,6 +157,7 @@ export function createRoomTable(options: RoomTableOptions): RoomTable {
       };
     },
     count: () => entries.size,
+    sockets: (name) => entries.get(name)?.sockets,
     close: async () => {
       if (timer !== undefined) clearInterval(timer);
       for (const [name, entry] of entries) evict(name, entry);

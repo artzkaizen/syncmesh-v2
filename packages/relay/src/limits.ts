@@ -32,7 +32,7 @@ export interface RateLimit {
   readonly every: Temporal.Duration;
 }
 
-/** What one socket may spend. Nothing here is negotiated: the relay states it and enforces it. */
+/** What a socket, a room and the host may spend. Nothing here is negotiated: the relay states it and enforces it. */
 export interface RelayLimits {
   /**
    * The largest frame the relay will decode. It is a blob cap in disguise — `blob-put` is the
@@ -52,13 +52,36 @@ export interface RelayLimits {
    * which is the OOM the ceiling exists to prevent (gap audit №6).
    */
   readonly maxBacklogBytes: number;
+  /**
+   * Live sockets on one room; the one past it is refused at upgrade with 503, like
+   * {@link maxConnections}. A crowd is what turns one write into a thousand sends, so the
+   * crowd itself is capped, not only what each member of it may push (gap audit №5).
+   */
+  readonly maxRoomConnections: number;
+  /**
+   * Rooms the host holds open at once. A socket for a room that is already open is unaffected;
+   * one that would open another past the cap is refused at upgrade with 503 — every open room is
+   * a log handle and a client table, and a name is free to make up.
+   */
+  readonly maxRooms: number;
   readonly rates: Readonly<Record<TrafficClass, RateLimit>>;
+  /**
+   * Deliveries the whole room may make, whoever caused them: `rates.fanout` priced across every
+   * socket on it. While the room owes, an event frame from any of them is refused with `rate`.
+   * Without it, a hundred sockets each under its own fan-out budget amplify together (gap
+   * audit №7).
+   */
+  readonly roomFanout: RateLimit;
 }
 
 export const DEFAULT_LIMITS = {
   maxFrameBytes: 8 * 1024 * 1024,
   maxConnections: 10_000,
   maxBacklogBytes: 64 * 1024 * 1024,
+  /** Nominal, like the fan-out rate: a large shared document's crowd, not a measured one. */
+  maxRoomConnections: 1000,
+  /** Nominal: a tenth of `maxConnections`, so a process full of rooms still has room to share them. */
+  maxRooms: 1000,
   rates: {
     event: { burst: 4096, every: Temporal.Duration.from({ milliseconds: 1 }) },
     blob: { burst: 64, every: Temporal.Duration.from({ milliseconds: 100 }) },
@@ -71,6 +94,12 @@ export const DEFAULT_LIMITS = {
      */
     fanout: { burst: 100_000, every: Temporal.Duration.from({ microseconds: 50 }) },
   },
+  /**
+   * Nominal, and for the same reason: five sockets' worth of the per-socket fan-out, so an
+   * ordinary busy room never meets it and a swarm of sockets each under its own budget does —
+   * half a million deliveries back to back, then a hundred thousand a second.
+   */
+  roomFanout: { burst: 500_000, every: Temporal.Duration.from({ microseconds: 10 }) },
 } satisfies RelayLimits;
 
 /** One socket's allowance, drawn down per frame. */

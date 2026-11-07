@@ -37,14 +37,32 @@ version negotiation). What remains:
 5. **No connection cap of any kind** — no per-IP, per-room, or per-process socket
    count anywhere in `packages/relay` or the DO adapter; `room.clients` is unbounded.
    The only A1 item still fully open, and E24's task list doesn't even name it.
+   **Fixed 2026-11-07:** three caps, all refused at upgrade with 503 before a socket
+   exists — `RelayLimits.maxConnections` per process, `maxRoomConnections` per room
+   (counted from the room table; on the Durable Object, from the object's own
+   sockets), and `maxRooms` for rooms not already open. Per-IP is still unbuilt: the
+   host sees no address it can trust behind a proxy. Tests: `relay/…/host.test.ts`,
+   `serve.test.ts`, `cloudflare-do/…/host.test.ts`.
 6. **The send backlog is bounded in frames, not bytes** (`maxBacklog = 1000`,
    room.ts:126): a thousand near-8 MiB blob frames is ~8 GB of retained buffers. The
    ceiling needs a byte semantic (reflectdb's `maxBufferedBytes`).
+   **Fixed 2026-11-07:** `RelayLimits.maxBacklogBytes` (default 64 MiB) bounds it in
+   bytes beside the frame count (`sender.ts`).
 7. **Rate limiting meters ingress only.** Fan-out — the amplification vector
    reflectdb documents — is unmetered per room.
+   **Fixed 2026-11-07:** every delivery is charged twice, to the sending socket's
+   `rates.fanout` and to the room's `RelayLimits.roomFanout`; while either owes, an
+   event frame is refused with `rate`. N sockets each under its own budget no longer
+   amplify together. Defaults are nominal. Test: `limits.test.ts`.
 8. **Every retention/eviction knob defaults to off**, so an unconfigured relay
    still grows forever. Choose production defaults (or make the hosted presets set
    them) rather than shipping infinite-growth-by-default.
+   **Fixed 2026-11-07 (as far as the owner chose):** durable hosts (`startRelay` on
+   Bun and Node over `dataDir`) evict idle rooms after `DEFAULT_IDLE_AFTER`
+   (15 minutes); a caller-supplied store keeps no eviction. The blob store has a
+   default byte ceiling and `relay.retention.unbounded` reports any room whose log
+   is unbounded. The room **log** stays unbounded unless `DURABLE_RETENTION` is
+   opted into — deliberately, since trimming history is the operator's call.
 9. **BLE has never touched hardware.** The manual device checklist has every box
    unchecked, and two donor mechanisms are recorded as wrong (E22.md:20): silent
    data loss on multi-fragment ack, and `maxFrameBytes = 140` (~350 bytes on air)
@@ -105,6 +123,7 @@ version negotiation). What remains:
 
 28. **E24.md:18 is now false** — it still says "nothing in the relay caps or evicts
     anything"; retention.ts / blob-cap.ts / rooms.ts exist. Update the epic.
+    **Fixed 2026-11-07:** E24 now names every cap and its default.
 29. codebase-map.md is pinned to `29dac35` and calls `packages/drizzle` untracked
     WIP with a `test.todo`; it is committed, built, and its suite passes.
 

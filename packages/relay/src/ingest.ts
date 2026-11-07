@@ -65,6 +65,13 @@ export const absorbEvent = async (
  */
 export function ingestEvent(conversation: Conversation, wire: Uint8Array): void {
   const { room, refuse } = conversation;
+  // the room's own meter, charged by every socket on it: a socket that has caused nothing is
+  // still refused while a crowd it belongs to owes. Only an event can add to that debt, so only
+  // an event is refused for it — a join or a grant from an honest device costs the room no sends
+  if (room.budget.owes("fanout")) {
+    refuse("rate", "this room is over its fanout rate", true);
+    return;
+  }
   room.enqueue(async () => {
     const [outcome, duration] = await timed(() => absorbEvent(room, wire));
     if (outcome.isErr()) {
@@ -78,6 +85,9 @@ export function ingestEvent(conversation: Conversation, wire: Uint8Array): void 
       // clients an event reaches is not known until it has reached them — what the charge buys
       // is the *next* frame from this socket being unaffordable
       conversation.budget.charge("fanout", receivers);
+      // and the room pays too, whoever sent it: a crowd of sockets each under its own budget is
+      // still one room's sends
+      room.budget.charge("fanout", receivers);
       room.report({
         type: "relay.event",
         sizes: { bytes: wire.byteLength, receivers },

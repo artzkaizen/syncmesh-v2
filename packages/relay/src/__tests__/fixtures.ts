@@ -26,11 +26,13 @@ import {
 } from "@syncmesh/wire";
 
 import type { RelayFrame } from "../frames.js";
+import type { RelayHostOptions } from "../host.js";
 import type { RelayRoom, RelayRoomOptions } from "../room.js";
 import type { RelaySocket, SendOutcome } from "../sender.js";
 import type { RelayDial } from "../transport.js";
 
 import { decodeRelayFrame, joinCore, joinFrame } from "../frames.js";
+import { createRelayHost } from "../host.js";
 import { proveJoin } from "../proof.js";
 import { openRelayRoom } from "../room.js";
 import { isHello, secureLink } from "../secure.js";
@@ -340,3 +342,24 @@ export const dialTo = (room: RelayRoom) => {
 };
 
 export { seed };
+
+/**
+ * A host over one fresh memory log per room, driven by `accept` and `gate` with no server under
+ * it — for what the host decides before a socket exists. Every option is an override.
+ */
+export const memoryHost = (overrides: Partial<RelayHostOptions> = {}) =>
+  createRelayHost({
+    openRoomStore: async () => ({
+      store: createMemoryEventStore(),
+      epoch: "epoch-1",
+      release: () => undefined,
+    }),
+    keepaliveMs: 60_000,
+    ...overrides,
+  });
+
+/** An upgrade request for one room, as a client's dial would send it. */
+export const dialRequest = (room: string) =>
+  new Request(`http://relay.example/${room}`, {
+    headers: { upgrade: "websocket", connection: "upgrade" },
+  });

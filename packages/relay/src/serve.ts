@@ -14,6 +14,7 @@ import type { RelaySocket, SendOutcome } from "./sender.js";
 
 import { describeRoom, requestRoom } from "./describe.js";
 import { createRelayHost, durableRoomStore } from "./host.js";
+import { DEFAULT_IDLE_AFTER } from "./rooms.js";
 
 export interface StartRelayOptions {
   /** Where the durable room logs live, one SQLite file per room. Default `.syncmesh/relay`. */
@@ -35,8 +36,9 @@ export interface StartRelayOptions {
   readonly retention?: RelayRetention;
   /**
    * How long a room with no socket on it is kept open before it is closed and its log handle
-   * released. Absent, a room opened once is held for the life of the process. Its grant cache
-   * outlives the eviction either way — see `createRoomTable` for why that one cannot be rebuilt.
+   * released. Absent, `DEFAULT_IDLE_AFTER` over `dataDir`, and never with your own `store`. Its
+   * grant cache outlives the eviction either way — see `createRoomTable` for why that one
+   * cannot be rebuilt.
    */
   readonly idleAfter?: Temporal.Duration;
   /** Who may open a socket, and onto which rooms: announce apart from access. */
@@ -96,7 +98,8 @@ export const hostTuning = (
     identity: options.identity,
     limits: options.limits,
     retention: options.retention,
-    idleAfter: options.idleAfter,
+    // a room over its own file is a handle worth giving back; a caller's store lends none
+    idleAfter: options.idleAfter ?? (options.store === undefined ? DEFAULT_IDLE_AFTER : undefined),
     posture: options.posture,
     onTelemetry: options.onTelemetry,
     fanout: options.fanout,

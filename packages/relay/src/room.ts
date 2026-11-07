@@ -27,7 +27,7 @@ import { createConnection } from "./connection.js";
 import { fanIn } from "./fan-in.js";
 import { HANDSHAKE_VERSION, RELAY_PROTOCOL_VERSIONS, kaFrame, speaksHandshake } from "./frames.js";
 import { createGrantCache } from "./grant-cache.js";
-import { DEFAULT_LIMITS } from "./limits.js";
+import { DEFAULT_LIMITS, createBudget } from "./limits.js";
 import { roomRetention } from "./retention.js";
 
 export type { ConnectionOptions, RelayConnection } from "./connection.js";
@@ -219,6 +219,12 @@ export async function openRelayRoom(
     return receivers;
   };
   const fan = options.fanout?.connect(name);
+  const limits = { ...DEFAULT_LIMITS, ...options.limits };
+  // the same bucket a socket spends from, priced at the room's rate rather than one socket's
+  const budget = createBudget(
+    { ...limits, rates: { ...limits.rates, fanout: limits.roomFanout } },
+    now,
+  );
   const keepalive = setInterval(() => toClients(kaFrame()), keepaliveMs);
 
   const state: RoomState = {
@@ -229,7 +235,8 @@ export async function openRelayRoom(
     maxBacklog,
     versions,
     identity,
-    limits: { ...DEFAULT_LIMITS, ...options.limits },
+    limits,
+    budget,
     blobs: retention.blobs,
     grants,
     presence,
