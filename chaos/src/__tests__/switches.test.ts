@@ -80,7 +80,13 @@ describe("--blobs", () => {
   }, 60_000);
 });
 
-describe("--retention", () => {
+/**
+ * Wall-clock bound: the relay keeps events 400 ms, so whether the sleeper is refused depends on
+ * how fast the rest of the run goes. Passes alone; under `vp run -r test`'s parallel load it
+ * misses the refusal (measured 2026-11-07). So it runs where nothing shares the CPU: the nightly
+ * job sets `SYNCMESH_CHAOS_TIMING=1`.
+ */
+describe.if(process.env.SYNCMESH_CHAOS_TIMING === "1")("--retention", () => {
   test("a device below the relay's floor is refused as a value, and the invariant still holds", async () => {
     const { code, out, entries } = await runChaos(small(11, "--retention"));
     const refusals = entries.filter((entry) => entry.kind === "refused");

@@ -33,7 +33,13 @@ jobs:
           node-version: 24
       - run: bun install --frozen-lockfile
       - run: bunx vp run -r build
+      - name: timing-bound chaos cases
+        run: bun test
+        working-directory: chaos
+        env:
+          SYNCMESH_CHAOS_TIMING: "1"
       - name: soak
+        if: always()
         run: bun run --cwd chaos soak -- --seeds 1..30 --switches none,grants,blobs,retention --devices 6 --ticks 25 --timeout 300
       - uses: actions/upload-artifact@v4
         if: always()
