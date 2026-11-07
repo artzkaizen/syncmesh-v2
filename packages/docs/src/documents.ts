@@ -191,7 +191,7 @@ export function createHandles(deps: OpenDeps) {
         lineage: tail.lineage,
         doc: loaded.doc,
         refs: 1,
-        status: loaded.missing.length > 0 ? "behind" : "current",
+        status: loaded.missing.length > 0 || loaded.pending ? "behind" : "current",
         flushed: adapter.version(loaded.doc),
         stash: [],
         listeners: new Set(),

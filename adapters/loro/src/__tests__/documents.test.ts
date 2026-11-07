@@ -1,33 +1,28 @@
-import type { LoroDoc } from "loro-crdt";
-
-import { AdapterMissing, HandleInvalidated, UpdateTooLarge, createDocuments } from "@syncmesh/docs";
+import { AdapterMissing, DocPending, HandleInvalidated, UpdateTooLarge } from "@syncmesh/docs";
+import { DocCoverStale } from "@syncmesh/engine";
 import { eventId, hlcOf, parseAdapterId, parseLineageId, parseSeqNum } from "@syncmesh/kernel";
 import { Temporal } from "@syncmesh/temporal";
 import { signCheckpoint } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
+import { LoroDoc } from "loro-crdt";
 
-import { loro } from "../index.js";
+import { LORO_ID } from "../index.js";
 import {
   CONTENT,
   DOC,
-  DOCS,
   EDIT,
-  FAST,
   N1,
   N2,
   NOTES,
   W1,
+  body,
+  heldTail,
   insertNote,
   linked,
   node,
+  type,
   until,
 } from "./fixtures.js";
-
-const body = (doc: LoroDoc) => doc.getText("body").toString();
-const type = (doc: LoroDoc, at: number, text: string) => {
-  doc.getText("body").insert(at, text);
-  doc.commit();
-};
 
 describe("loro@1 through the engine: open, flush, fold, converge", () => {
   test("two devices editing one document concurrently converge on one text and one version", async () => {
@@ -117,35 +112,17 @@ describe("loro@1 handles: opens that race a read of the log", () => {
     const b = node(52);
     await insertNote(a);
     const link = await linked(a, b);
-    let release = () => {};
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const slow = createDocuments({
-      engine: {
-        ...b.engine,
-        docTail: async (doc) => {
-          const tail = await b.engine.docTail(doc);
-          await held;
-          return tail;
-        },
-      },
-      adapters: [loro()],
-      docs: DOCS,
-      procedure: EDIT,
-      pacing: FAST,
-      autoMaterialise: false,
-    });
-    const opening = slow.open<LoroDoc>(DOC);
+    const slow = heldTail(b);
+    const opening = slow.documents.open<LoroDoc>(DOC);
     const da = (await a.documents.open<LoroDoc>(DOC)).unwrap();
     type(da.value, 0, "typed while b was opening");
     (await da.flush()).unwrap();
     await link.flush();
     expect(await until(async () => (await b.engine.docLog()).unwrap().length === 1)).toBe(true);
-    release();
+    slow.release();
     const db = (await opening).unwrap();
     expect(body(db.value)).toBe("typed while b was opening");
-    slow.stop();
+    slow.documents.stop();
     link.close();
   });
 });
@@ -273,6 +250,30 @@ describe("loro@1 checkpoints never move a snapshot back", () => {
     (await da.close()).unwrap();
     expect(body((await a.documents.open<LoroDoc>(DOC)).unwrap().value)).toBe("one two");
   });
+
+  test("a signed checkpoint whose floor claims updates its snapshot lacks is refused", async () => {
+    const a = node(66);
+    const c = node(67);
+    await insertNote(a);
+    const da = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(da.value, 0, "one ");
+    (await da.flush()).unwrap();
+    const made = (await a.documents.checkpoint(DOC, a.identity, hlcOf(Date.now(), 0))).unwrap();
+    type(da.value, 4, "two");
+    (await da.flush()).unwrap();
+    const link = await linked(a, c);
+    const last = Math.max(...(await c.engine.docLog()).unwrap().map((e) => e.seq));
+    const { checkpoint } = made.signed;
+    const inflated = signCheckpoint(
+      { ...checkpoint, covers: new Map([[a.engine.peerId, parseSeqNum(last).unwrap()]]) },
+      a.identity,
+    );
+    const refused = await c.documents.install(inflated.wire, a.identity.peerId, made.snapshot, DOC);
+    expect(refused.isErr() && refused.error.message).toContain("lacks updates");
+    expect((await c.engine.docLog()).unwrap().map((e) => e.state)).toEqual(["tail", "tail"]);
+    expect(body((await c.documents.open<LoroDoc>(DOC)).unwrap().value)).toBe("one two");
+    link.close();
+  });
 });
 
 describe("loro@1 refusals and bounds", () => {
@@ -388,5 +389,63 @@ describe("loro@1 refusals and bounds", () => {
     expect(body(dc.value)).toBe("carried by a device that cannot read it");
     ar.close();
     rc.close();
+  });
+});
+
+/** A Loro document holding `text`, written by `replica` and apart from any handle. */
+const authored = (replica: bigint, text: string) => {
+  const doc = new LoroDoc();
+  doc.setPeerId(replica);
+  type(doc, 0, text);
+  return doc;
+};
+
+describe("loro@1 materialisations never cover what their snapshot lacks", () => {
+  test("of two materialisations that overlap, the one built on an older head is refused", async () => {
+    const a = node(64);
+    await insertNote(a);
+    const da = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(da.value, 0, "one ");
+    (await da.flush()).unwrap();
+    const slow = heldTail(a);
+    const first = slow.documents.materialise(DOC); // has read a tail of "one " only
+    type(da.value, 4, "two");
+    (await da.flush()).unwrap();
+    (await a.documents.materialise(DOC)).unwrap();
+    slow.release();
+    const stale = await first;
+    expect(stale.isErr() && stale.error).toBeInstanceOf(DocCoverStale);
+    expect((await a.engine.docLog()).unwrap().map((e) => e.state)).toEqual(["covered", "covered"]);
+    await da.close();
+    expect(body((await a.documents.open<LoroDoc>(DOC)).unwrap().value)).toBe("one two");
+    slow.documents.stop();
+  });
+
+  test("an update waiting on a blob not yet held keeps the document from materialising", async () => {
+    const a = node(65);
+    await insertNote(a);
+    const x = authored(1n, "first ");
+    const u1 = x.export({ mode: "update" });
+    const y = new LoroDoc();
+    y.setPeerId(2n);
+    y.import(u1);
+    type(y, 6, "second");
+    const u2 = y.export({ mode: "update", from: x.oplogVersion() });
+    // u1 travels as a blob this device has not fetched, u2 inline: Loro holds u2 pending
+    for (const update of [{ blob: { hash: "ab".repeat(32), size: u1.length } }, { bytes: u2 }])
+      (
+        await a.engine.mutate(
+          EDIT,
+          (tx) => tx.doc(NOTES, N1, { column: CONTENT, adapter: LORO_ID, update }),
+          { partition: W1 },
+        )
+      ).unwrap();
+    const pending = await a.documents.materialise(DOC);
+    expect(pending.isErr() && pending.error).toBeInstanceOf(DocPending);
+    expect((await a.engine.docLog()).unwrap().map((e) => e.state)).toEqual([
+      "bytes-missing",
+      "tail",
+    ]);
+    expect((await a.documents.open<LoroDoc>(DOC)).unwrap().status()).toBe("behind");
   });
 });

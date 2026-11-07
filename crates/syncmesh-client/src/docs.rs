@@ -67,6 +67,9 @@ pub trait DocumentAdapter {
     /// Imports updates or snapshots, in any order and any number of times. `true` when it changed
     /// the document.
     fn apply(&self, doc: &Self::Doc, updates: &[&[u8]]) -> Result<bool, UpdateRejected>;
+    /// Whether imported operations wait on others the document has not seen. A snapshot leaves
+    /// them out, so a document with any is never materialised.
+    fn pending(&self, doc: &Self::Doc) -> bool;
     /// The whole document as one importable snapshot.
     fn snapshot(&self, doc: &Self::Doc) -> Vec<u8>;
     /// The document's version, in the adapter's canonical encoding; what `since` reads back.

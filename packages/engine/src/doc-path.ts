@@ -11,6 +11,7 @@ import type {
 
 import { getRecord, lineageOf, withDocColumns } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
+import { bytesEqual } from "@syncmesh/wire";
 
 import type {
   DocAddress,
@@ -26,7 +27,7 @@ import type { Cursors } from "./sync.js";
 import type { Undo } from "./undo.js";
 
 import { createMemoryDocStore } from "./doc-log-memory.js";
-import { docKey } from "./doc-log.js";
+import { DocCoverStale, docKey } from "./doc-log.js";
 
 /** How an engine is told about documents. */
 export interface DocEngineOptions {
@@ -74,7 +75,10 @@ export interface DocApi {
    * Commits a materialised snapshot or an installed checkpoint, in the write transaction when the
    * engine has one (RFC-0023 §6.3). The entries it covers become compactable (§8.3).
    */
-  readonly coverDoc: (doc: DocAddress, cover: DocCover) => Promise<Result<void, StoreFailure>>;
+  readonly coverDoc: (
+    doc: DocAddress,
+    cover: DocCover,
+  ) => Promise<Result<void, StoreFailure | DocCoverStale>>;
 }
 
 /** What the doc path reads once the engine has built it: state, coverage, the transaction. */
@@ -120,6 +124,7 @@ export function createDocPath(
   const { docs, docAdapters, docStore = createMemoryDocStore() } = options;
   let bound: DocBindings | undefined;
   const bindings = () => bound ?? panicUnbound();
+  let covering = Promise.resolve();
   const hold = (): Cursors => {
     const oldest = undo.find(
       (u) => u.event.local !== true && u.event.changes.some((c) => c.kind === "doc"),
@@ -137,8 +142,16 @@ export function createDocPath(
       docLog: docStore.entries,
       docHeads: docStore.heads,
       docTail: (doc) => readTail(options.store, docStore, bindings(), doc),
-      coverDoc: (doc, cover) =>
-        bindings().atomically((scoped) => (scoped.docs ?? docStore).cover(doc, cover)),
+      coverDoc: (doc, cover) => {
+        // one at a time, so no cover reads a head another is about to move
+        const next = covering.then(() =>
+          bindings().atomically((scoped) =>
+            coverIfCurrent(scoped.docs ?? docStore, bindings(), doc, cover),
+          ),
+        );
+        covering = next.then(settled, settled);
+        return next;
+      },
     },
     bind: (next) => {
       bound = next;
@@ -150,6 +163,36 @@ export function createDocPath(
     compaction: { docs: docStore, held: hold },
   };
 }
+
+/** Commits `cover` unless the head it was built on has moved, or its lineage no longer wins. */
+function coverIfCurrent(
+  docStore: DocStore,
+  { getState }: DocBindings,
+  doc: DocAddress,
+  cover: DocCover,
+): Promise<Result<void, StoreFailure | DocCoverStale>> {
+  return Result.gen(async function* () {
+    const heads = yield* Result.await(docStore.heads());
+    const held = heads.find((h) => docKey(h) === docKey(doc))?.version;
+    const winner = lineageOf(getRecord(getState(), doc.table, doc.key), doc.column);
+    const moved =
+      held === undefined || cover.base === undefined
+        ? held !== cover.base
+        : !bytesEqual(held, cover.base);
+    if (moved || winner !== cover.lineage)
+      return Result.err(
+        new DocCoverStale({
+          ...doc,
+          message: moved
+            ? "another snapshot was committed after this one was built"
+            : "the snapshot is of a lineage that no longer wins",
+        }),
+      );
+    return Result.ok(yield* Result.await(docStore.cover(doc, cover)));
+  });
+}
+
+const settled = () => {};
 
 const panicUnbound = (): never => panic("the doc path was read before the engine bound it");
 

@@ -143,6 +143,11 @@ impl DocumentAdapter for LoroAdapter {
         Ok(doc.oplog_vv() != before)
     }
 
+    fn pending(&self, doc: &LoroDoc) -> bool {
+        // an export that fails is read as pending: the snapshot is then not taken, never short
+        !matches!(doc.export_pending_updates(), Ok(None))
+    }
+
     fn snapshot(&self, doc: &LoroDoc) -> Vec<u8> {
         doc.export(ExportMode::Snapshot)
             .expect("a snapshot of a whole document always encodes")
@@ -215,6 +220,25 @@ mod tests {
         );
         assert_eq!(adapter.version(&a), adapter.version(&b));
         assert_eq!(adapter.apply(&a, &[]), Ok(false));
+    }
+
+    #[test]
+    fn an_update_missing_its_dependency_is_pending_until_it_lands() {
+        let adapter = LoroAdapter::default();
+        let empty = adapter.version(&adapter.create(9));
+        let a = edited(&adapter, 1, "first ");
+        let first = adapter.since(&a, &empty).unwrap();
+        let b = adapter.create(2);
+        adapter.apply(&b, &[&first]).unwrap();
+        b.get_text("body").insert(6, "second").unwrap();
+        b.commit();
+        let second = adapter.since(&b, &adapter.version(&a)).unwrap();
+        let target = adapter.create(3);
+        adapter.apply(&target, &[&second]).unwrap();
+        assert!(adapter.pending(&target));
+        adapter.apply(&target, &[&first]).unwrap();
+        assert!(!adapter.pending(&target));
+        assert_eq!(target.get_text("body").to_string(), "first second");
     }
 
     #[test]

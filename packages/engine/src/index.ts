@@ -16,6 +16,7 @@ export type {
 } from "./doc-log.js";
 export { createMemoryDocStore } from "./doc-log-memory.js";
 export {
+  DocCoverStale,
   LIVE_STATES,
   docAppends,
   docChangeDigest,

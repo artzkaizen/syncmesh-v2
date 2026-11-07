@@ -1,4 +1,4 @@
-import type { DocAddress, FoldBatch, StoreFailure } from "@syncmesh/engine";
+import type { DocAddress, DocCoverStale, FoldBatch, StoreFailure } from "@syncmesh/engine";
 import type { DocColumns, Hlc, PeerId, Procedure } from "@syncmesh/kernel";
 import type { Identity } from "@syncmesh/wire";
 
@@ -8,7 +8,7 @@ import { Temporal } from "@syncmesh/temporal";
 
 import type { AnyAdapter } from "./adapter.js";
 import type { OpenDoc, OpenError, Pacing } from "./documents.js";
-import type { DocTooLarge } from "./errors.js";
+import type { DocPending, DocTooLarge } from "./errors.js";
 import type { DocsEngine } from "./materialise.js";
 
 import { columnAdapter } from "./adapter.js";
@@ -17,7 +17,7 @@ import { installCheckpoint, materialise, produceCheckpoint } from "./materialise
 import { replicaId } from "./replica.js";
 
 /** What a background materialisation can fail with. */
-export type MaintainError = OpenError | DocTooLarge | StoreFailure;
+export type MaintainError = OpenError | DocTooLarge | DocPending | DocCoverStale | StoreFailure;
 
 export interface DocumentsOptions {
   readonly engine: DocsEngine;

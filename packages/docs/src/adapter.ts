@@ -52,6 +52,11 @@ export interface DocumentAdapter<D> {
   readonly create: (replica: bigint) => D;
   /** Imports updates or snapshots, in any order and any number of times. `true` when it changed the document. */
   readonly apply: (doc: D, updates: readonly Uint8Array[]) => Result<boolean, UpdateRejected>;
+  /**
+   * Whether imported operations wait on others the document has not seen. A snapshot leaves them
+   * out, so a document with any is never materialised.
+   */
+  readonly pending: (doc: D) => boolean;
   /** The whole document as one importable snapshot. */
   readonly snapshot: (doc: D) => Uint8Array;
   /** The document's version, in the adapter's own encoding; what `since` reads back. */

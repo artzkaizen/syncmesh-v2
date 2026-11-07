@@ -1,5 +1,6 @@
 import type { DocLimits } from "@syncmesh/docs";
 import type { Link } from "@syncmesh/engine";
+import type { LoroDoc } from "loro-crdt";
 
 import { createDocuments } from "@syncmesh/docs";
 import {
@@ -122,4 +123,40 @@ export async function until(check: () => boolean | Promise<boolean>, ms = 3000):
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   return check();
+}
+
+/** The text a test types into: the document's `body`. */
+export const body = (doc: LoroDoc) => doc.getText("body").toString();
+
+/** Types `text` at `at` and commits it, as an editor would. */
+export const type = (doc: LoroDoc, at: number, text: string) => {
+  doc.getText("body").insert(at, text);
+  doc.commit();
+};
+
+/**
+ * A second document runtime over `n`'s engine whose every read of a tail is held after it is
+ * taken, until `release`: what lands meanwhile lands between that read and what is built on it.
+ */
+export function heldTail(n: Node) {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const documents = createDocuments({
+    engine: {
+      ...n.engine,
+      docTail: async (doc) => {
+        const tail = await n.engine.docTail(doc);
+        await held;
+        return tail;
+      },
+    },
+    adapters: [loro()],
+    docs: DOCS,
+    procedure: EDIT,
+    pacing: FAST,
+    autoMaterialise: false,
+  });
+  return { documents, release: () => release() };
 }

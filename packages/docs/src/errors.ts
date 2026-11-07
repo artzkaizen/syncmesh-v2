@@ -27,6 +27,15 @@ export class DocTooLarge extends TaggedError("DocTooLarge")<{
   message: string;
 }> {}
 
+/**
+ * The document holds operations that wait on others this device does not have yet — a blob not
+ * fetched, an event not received — so a snapshot of it would leave them out. It is materialised
+ * once they land.
+ */
+export class DocPending extends TaggedError("DocPending")<{
+  message: string;
+}> {}
+
 /** The engine refused the flush — policy, validation or the store; the handle is invalidated. */
 export class FlushRefused extends TaggedError("FlushRefused")<{
   message: string;

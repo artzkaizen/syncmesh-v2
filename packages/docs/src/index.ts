@@ -5,6 +5,7 @@ export { DEFAULT_PACING } from "./documents.js";
 export {
   AdapterMissing,
   CheckpointRefused,
+  DocPending,
   DocTooLarge,
   FlushRefused,
   HandleInvalidated,

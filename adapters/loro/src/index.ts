@@ -90,6 +90,8 @@ export function loro(limits: Partial<DocLimits> = {}): DocumentAdapter<LoroDoc> 
         catch: (cause) => reject("loro could not import the update", cause),
       });
     },
+    // an export that throws is read as pending: the snapshot is then not taken, never short
+    pending: (doc) => Result.try(() => doc.exportPendingUpdates() !== undefined).unwrapOr(true),
     snapshot: (doc) => doc.export({ mode: "snapshot" }),
     version: (doc) => encodeVersion(doc.oplogVersion()),
     since: (doc, version) =>

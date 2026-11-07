@@ -14,7 +14,7 @@ import type {
 } from "@syncmesh/kernel";
 
 import { sha256 } from "@noble/hashes/sha2.js";
-import { Result } from "@syncmesh/result";
+import { Result, TaggedError } from "@syncmesh/result";
 import { docChangeId } from "@syncmesh/wire";
 
 import type { StoreFailure } from "./store.js";
@@ -115,6 +115,11 @@ export interface DocCover {
   readonly version: Uint8Array;
   readonly snapshot: Uint8Array;
   readonly mode: Exclude<DocHeadMode, "none">;
+  /**
+   * The head's `version` the snapshot was built on, as the tail read returned it; absent when it
+   * was built on none. A head that has moved since refuses the cover ({@link DocCoverStale}).
+   */
+  readonly base?: Uint8Array;
   /** Epoch milliseconds, as `DocHead.materialisedAt` reads it back. */
   readonly at: number;
   /** Entries the snapshot includes; they become `covered`, and compaction may take them. */
@@ -122,6 +127,18 @@ export interface DocCover {
   /** Entries the adapter refused; they become `failed`, and the document stays at its last good version. */
   readonly failed?: readonly DocEntryRef[];
 }
+
+/**
+ * A cover built on a head that has moved since it was read: another snapshot was committed, or
+ * another lineage won. Committing it would put an older snapshot over a newer one whose entries
+ * are already `covered`, and lose them.
+ */
+export class DocCoverStale extends TaggedError("DocCoverStale")<{
+  table: string;
+  key: string;
+  column: string;
+  message: string;
+}> {}
 
 /**
  * The state a live entry takes on this device — the one decision `adapter-missing` rests on. A

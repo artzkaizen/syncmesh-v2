@@ -1,5 +1,6 @@
 import type {
   DocAddress,
+  DocCoverStale,
   DocEntryRef,
   DocTail,
   Engine,
@@ -23,7 +24,7 @@ import {
 
 import type { DocumentAdapter, UpdateRejected } from "./adapter.js";
 
-import { CheckpointRefused, DocTooLarge } from "./errors.js";
+import { CheckpointRefused, DocPending, DocTooLarge } from "./errors.js";
 
 /** What the runtime asks of an engine: the write path, the fold feed and the doc log. */
 export type DocsEngine = Pick<
@@ -39,6 +40,8 @@ export interface Loaded<D> {
   readonly failed: readonly TailUpdate[];
   /** Blob-carried updates whose bytes this runtime does not hold yet. */
   readonly missing: readonly TailUpdate[];
+  /** Whether imported operations wait on ones the tail lacks (see {@link DocumentAdapter.pending}). */
+  readonly pending: boolean;
 }
 
 /**
@@ -57,20 +60,14 @@ export function load<D>(
   }
   const inline = tail.updates.filter((u) => u.bytes !== undefined);
   const missing = tail.updates.filter((u) => u.bytes === undefined);
-  if (
-    adapter
-      .apply(
-        doc,
-        inline.map((u) => u.bytes ?? new Uint8Array()),
-      )
-      .isOk()
-  )
-    return Result.ok({ doc, applied: inline, failed: [], missing });
+  const bytes = inline.map((u) => u.bytes ?? new Uint8Array());
+  if (adapter.apply(doc, bytes).isOk())
+    return Result.ok({ doc, applied: inline, failed: [], missing, pending: adapter.pending(doc) });
   const applied: TailUpdate[] = [];
   const failed: TailUpdate[] = [];
   for (const u of inline)
     (adapter.apply(doc, [u.bytes ?? new Uint8Array()]).isOk() ? applied : failed).push(u);
-  return Result.ok({ doc, applied, failed, missing });
+  return Result.ok({ doc, applied, failed, missing, pending: adapter.pending(doc) });
 }
 
 const ref = ({ entry }: TailUpdate): DocEntryRef => ({
@@ -109,7 +106,9 @@ export interface Materialised {
 /**
  * Writes a document's snapshot and marks the tail it holds `covered` (RFC-0023 §6.3, §8.2), so
  * compaction may take those events. Always from a fresh replica — never from an open handle,
- * whose unflushed edits must not reach a snapshot the log never carried.
+ * whose unflushed edits must not reach a snapshot the log never carried. A document whose
+ * operations wait on ones not held yet is refused ({@link DocPending}), and so is one whose head
+ * another materialisation moved meanwhile (`DocCoverStale`).
  */
 export async function materialise<D>(
   engine: DocsEngine,
@@ -117,10 +116,17 @@ export async function materialise<D>(
   address: DocAddress,
   replica: bigint,
   at: number,
-): Promise<Result<Materialised, UpdateRejected | DocTooLarge | StoreFailure>> {
+): Promise<
+  Result<Materialised, UpdateRejected | DocTooLarge | DocPending | StoreFailure | DocCoverStale>
+> {
   return Result.gen(async function* () {
     const tail = yield* Result.await(engine.docTail(address));
     const loaded = yield* load(adapter, tail, replica);
+    // the snapshot would leave those operations out, and covering their updates would lose them
+    if (loaded.pending)
+      return Result.err(
+        new DocPending({ message: "operations in the tail wait on ones this device lacks" }),
+      );
     const snapshot = adapter.snapshot(loaded.doc);
     const limit = adapter.limits.maxSnapshotBytes;
     if (snapshot.length > limit)
@@ -139,6 +145,7 @@ export async function materialise<D>(
         version: adapter.version(loaded.doc),
         snapshot,
         mode: "materialised",
+        ...(tail.head?.version !== undefined && { base: tail.head.version }),
         at,
         covered: loaded.applied.map(ref),
         failed: loaded.failed.map(ref),
@@ -194,13 +201,42 @@ export async function produceCheckpoint<D>(
 const refuse = (message: string, cause?: unknown) =>
   Result.err(new CheckpointRefused({ message, ...(cause !== undefined && { cause }) }));
 
+/** What a checkpoint is checked against before the log is: its signature, bytes and version. */
+function verified<D>(
+  engine: DocsEngine,
+  adapter: DocumentAdapter<D>,
+  address: DocAddress,
+  wire: Uint8Array,
+  producer: PeerId,
+  snapshot: Uint8Array,
+  replica: bigint,
+) {
+  const decoded = decodeCheckpoint(wire, producer);
+  if (decoded.isErr()) return refuse("not a checkpoint signed by that producer", decoded.error);
+  const { checkpoint } = decoded.value;
+  if (checkpoint.adapter !== adapter.id) return refuse(`merged by ${checkpoint.adapter}`);
+  if (checkpoint.snapshot.size !== snapshot.length || checkpoint.snapshot.hash !== hashOf(snapshot))
+    return refuse("the snapshot bytes are not the ones the checkpoint names");
+  if (docKey(checkpoint) !== docKey(address))
+    return refuse("the checkpoint is of another document");
+  const winner = lineageOf(getRecord(engine.state(), address.table, address.key), address.column);
+  if (winner !== checkpoint.lineage)
+    return refuse("the checkpoint is of a lineage that does not win here");
+  const doc = adapter.create(replica);
+  const parsed = adapter.apply(doc, [snapshot]);
+  if (parsed.isErr()) return refuse("the adapter cannot read the snapshot", parsed.error);
+  if (!bytesEqual(adapter.version(doc), checkpoint.version))
+    return refuse("the snapshot does not reproduce the version the checkpoint claims");
+  return Result.ok({ checkpoint, doc });
+}
+
 /**
  * Installs a checkpoint in place of history this device never held (RFC-0023 §8.4): verified
  * against the producer's key, the snapshot's hash, the column's adapter and winning lineage, and
  * by re-deriving the version from the bytes — a snapshot that does not reproduce the version it
- * claims is refused, whoever signed it. A checkpoint of another document than `address`, or one
- * behind the snapshot this device already holds, is refused too. Trust in the producer is the
- * caller's question (§7.3).
+ * claims is refused, whoever signed it. A checkpoint of another document than `address`, one
+ * behind the snapshot this device already holds, or one whose floor claims tail updates the
+ * snapshot does not hold, is refused too. Trust in the producer is the caller's question (§7.3).
  */
 export async function installCheckpoint<D>(
   engine: DocsEngine,
@@ -213,25 +249,15 @@ export async function installCheckpoint<D>(
   at: number,
 ) {
   return Result.gen(async function* () {
-    const decoded = decodeCheckpoint(wire, producer);
-    if (decoded.isErr()) return refuse("not a checkpoint signed by that producer", decoded.error);
-    const { checkpoint } = decoded.value;
-    if (checkpoint.adapter !== adapter.id) return refuse(`merged by ${checkpoint.adapter}`);
-    if (
-      checkpoint.snapshot.size !== snapshot.length ||
-      checkpoint.snapshot.hash !== hashOf(snapshot)
-    )
-      return refuse("the snapshot bytes are not the ones the checkpoint names");
-    if (docKey(checkpoint) !== docKey(address))
-      return refuse("the checkpoint is of another document");
-    const winner = lineageOf(getRecord(engine.state(), address.table, address.key), address.column);
-    if (winner !== checkpoint.lineage)
-      return refuse("the checkpoint is of a lineage that does not win here");
-    const doc = adapter.create(replica);
-    const parsed = adapter.apply(doc, [snapshot]);
-    if (parsed.isErr()) return refuse("the adapter cannot read the snapshot", parsed.error);
-    if (!bytesEqual(adapter.version(doc), checkpoint.version))
-      return refuse("the snapshot does not reproduce the version the checkpoint claims");
+    const { checkpoint, doc } = yield* verified(
+      engine,
+      adapter,
+      address,
+      wire,
+      producer,
+      snapshot,
+      replica,
+    );
     const tail = yield* Result.await(engine.docTail(address));
     // a snapshot this device already holds may hold what the checkpoint does not, and the
     // entries behind it may be compacted away: installing over it would lose them
@@ -243,6 +269,10 @@ export async function installCheckpoint<D>(
     const below = tail.updates.filter(
       ({ entry }) => entry.seq <= (checkpoint.covers.get(entry.author) ?? 0),
     );
+    // what the floor claims, the snapshot must hold: re-importing it may not move the document
+    const claimed = below.flatMap((u) => (u.bytes === undefined ? [] : [u.bytes]));
+    if (adapter.apply(doc, claimed).unwrapOr(false) || adapter.pending(doc))
+      return refuse("the snapshot lacks updates the checkpoint's floor claims");
     yield* Result.await(
       engine.coverDoc(address, {
         adapter: adapter.id,
@@ -250,6 +280,7 @@ export async function installCheckpoint<D>(
         version: checkpoint.version,
         snapshot,
         mode: "checkpoint",
+        ...(tail.head?.version !== undefined && { base: tail.head.version }),
         at,
         covered: below.map(ref),
         ...(checkpoint.lineage !== undefined && { lineage: checkpoint.lineage }),
