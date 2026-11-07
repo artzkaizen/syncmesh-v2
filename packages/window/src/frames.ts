@@ -14,7 +14,7 @@ import {
 /**
  * The window frames' tags in the relay's control space (D14). They sit well above the tags
  * 8–19 the relay already uses, so a build that does not know them reads `unknown` and ignores
- * them (D39).
+ * them (D43).
  */
 export const WINDOW_TAGS = { desire: 32, undesire: 33, rows: 34 } as const;
 

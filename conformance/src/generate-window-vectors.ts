@@ -2,7 +2,7 @@
  * Regenerates conformance/window-vectors.json. Run only when a window frame deliberately
  * changes (README rule 3): `bun conformance/src/generate-window-vectors.ts`.
  *
- * The three frames D39 adds above the relay's control tags: `desire` 32, `undesire` 33 and
+ * The three frames D43 adds above the relay's control tags: `desire` 32, `undesire` 33 and
  * `rows` 34, the last carrying E24's versioned patch.
  */
 import type { ColumnName } from "@syncmesh/kernel";

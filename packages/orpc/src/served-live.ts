@@ -36,7 +36,7 @@ interface Shared {
 
 /**
  * The reads of `sync: "window"` tables, as live queries over the socket the server serves pages
- * on (D39). Each distinct call is one window, shared by every subscriber holding the same call,
+ * on (D43). Each distinct call is one window, shared by every subscriber holding the same call,
  * and closed when the last of them lets go.
  *
  * The rows are the handler's own: the server runs the same procedure against Postgres and

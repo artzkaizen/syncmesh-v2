@@ -34,7 +34,7 @@ const relaySocket = (ws: ServerWebSocket<unknown>): RelaySocket => ({
   close: (reason) => ws.close(1000, reason),
 });
 
-suite("useLiveQuery's read of a served table, over a real socket, from Postgres (D39)", () => {
+suite("useLiveQuery's read of a served table, over a real socket, from Postgres (D43)", () => {
   let fx: Fixture;
   let server: ReturnType<typeof Bun.serve>;
   const connections = new Map<ServerWebSocket<unknown>, WindowConnection>();

@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test";
 import raw from "../../window-vectors.json" with { type: "json" };
 import { windowVectors } from "../generate-window-vectors.js";
 
-describe("window frame vectors — frozen (D39, E24)", () => {
+describe("window frame vectors — frozen (D43, E24)", () => {
   test("the generator still produces the frozen file byte-for-byte (change the wire, change the vectors — deliberately)", () => {
     expect(JSON.parse(JSON.stringify(windowVectors()))).toEqual(raw);
   });

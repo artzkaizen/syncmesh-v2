@@ -96,7 +96,7 @@ export interface ClientOptions<R extends Router, C extends ColumnsMap, PC extend
   readonly link?: AuthorityLink;
   /**
    * Carries the reads of `sync: "window"` tables, which the server serves a page at a time
-   * (D39): `createWindowClient()`, attached to the socket the server's `serveWindows` answers on.
+   * (D43): `createWindowClient()`, attached to the socket the server's `serveWindows` answers on.
    * Absent, such a read fails naming itself rather than showing an empty table.
    */
   readonly windows?: WindowClient;

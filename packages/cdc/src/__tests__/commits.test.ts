@@ -7,7 +7,7 @@ const until = async (check: () => boolean) => {
   for (let i = 0; i < 100 && !check(); i++) await new Promise((resolve) => setTimeout(resolve, 1));
 };
 
-describe("commitFeed: the tables each commit touched (D39)", () => {
+describe("commitFeed: the tables each commit touched (D43)", () => {
   test("one call per commit, naming every table it touched, and each commit acked", async () => {
     const source = manualChangeSource({ name: "db" });
     const feed = commitFeed(await source.start({ after: null }));

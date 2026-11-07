@@ -247,7 +247,7 @@ export function meshApi<R extends Router, PC extends PresenceMap = Record<string
     readonly link?: AuthorityLink;
     /**
      * Carries the reads of `sync: "window"` tables, which the server serves a page at a time
-     * (D39). Absent, such a read fails naming itself rather than showing an empty table.
+     * (D43). Absent, such a read fails naming itself rather than showing an empty table.
      */
     readonly windows?: WindowClient;
   } = {},

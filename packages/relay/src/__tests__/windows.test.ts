@@ -85,7 +85,7 @@ const slowSocket = (room: number, deliver: (frame: Uint8Array) => void) => {
   };
 };
 
-describe("serving windows on a socket (E27, D39)", () => {
+describe("serving windows on a socket (E27, D43)", () => {
   test("100 disjoint windows over 16 KB rows, a 32 MB burst, arrive whole through backpressure", async () => {
     const source = loaded();
     const client = createWindowClient();

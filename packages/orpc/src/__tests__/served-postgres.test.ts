@@ -41,7 +41,7 @@ const putSince = (frames: readonly Uint8Array[], from: number) =>
     return frame?.kind === "rows" ? frame.puts.map((p) => p.key) : [];
   });
 
-suite("served reads over a real Postgres and its logical replication (D39, E27)", () => {
+suite("served reads over a real Postgres and its logical replication (D43, E27)", () => {
   let fx: Fixture;
   beforeEach(async () => {
     fx = await served({

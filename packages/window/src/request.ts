@@ -3,7 +3,7 @@ import type { JsonValue } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
 
 /**
- * What a window asks the server for (D39): a `query` procedure by its path, and the input the app
+ * What a window asks the server for (D43): a `query` procedure by its path, and the input the app
  * called it with. The procedure's handler is the whole query — its `where`, its `orderBy`, its
  * `limit` and its keyset `after` — so the wire carries no query language of its own.
  */

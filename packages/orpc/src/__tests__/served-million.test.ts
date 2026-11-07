@@ -71,7 +71,7 @@ const lastPageRead = (fx: Fixture) => {
   return found;
 };
 
-suite(`a million rows in Postgres, read a page at a time (D39)`, () => {
+suite(`a million rows in Postgres, read a page at a time (D43)`, () => {
   let fx: Fixture;
   beforeAll(async () => {
     fx = await served({ seed: seedMailbox(ROWS) });

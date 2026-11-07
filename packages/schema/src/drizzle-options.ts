@@ -17,7 +17,7 @@ export interface DrizzleTableInKind<
 > extends FromDrizzleOptions<D> {
   readonly partition: Partition<N, R>;
   readonly allow: AllowFn<ColumnsFromDrizzle<D>, R>;
-  /** `"window"`: served a page at a time by the server, never replicated (D39). */
+  /** `"window"`: served a page at a time by the server, never replicated (D43). */
   readonly sync?: "window";
 }
 
@@ -25,7 +25,7 @@ export interface DrizzleTableInKind<
 export interface DrizzleTableReserved<D extends DrizzleTableLike> extends FromDrizzleOptions<D> {
   readonly partition: ReservedPartition;
   readonly allow?: undefined;
-  /** `"window"`: served a page at a time by the server, never replicated (D39). */
+  /** `"window"`: served a page at a time by the server, never replicated (D43). */
   readonly sync?: "window";
 }
 

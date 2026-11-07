@@ -6,7 +6,7 @@ import { SourceFailed } from "./errors.js";
 
 /**
  * A change stream as the tables each committed transaction touched, and nothing more: what a
- * server that serves pages straight from the database needs to know to read a page again (D39).
+ * server that serves pages straight from the database needs to know to read a page again (D43).
  */
 export interface CommitFeed {
   /** Called once per commit with every table it touched, in commit order. Returns the unsubscribe. */

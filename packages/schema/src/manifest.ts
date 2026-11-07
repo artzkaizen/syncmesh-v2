@@ -42,7 +42,7 @@ export type TableEntry<C extends Columns = Columns> =
       /**
        * `"window"`: the server keeps this table and serves pages of it; devices never replicate it.
        * Read it through a `query` procedure, and every device shows the page that procedure returns
-       * (D39). Absent, the table replicates.
+       * (D43). Absent, the table replicates.
        */
       readonly sync?: "window";
     }
@@ -55,7 +55,7 @@ export type TableEntry<C extends Columns = Columns> =
       /**
        * `"window"`: the server keeps this table and serves pages of it; devices never replicate it.
        * Read it through a `query` procedure, and every device shows the page that procedure returns
-       * (D39). Absent, the table replicates.
+       * (D43). Absent, the table replicates.
        */
       readonly sync?: "window";
     }
@@ -124,7 +124,7 @@ export const syncedTables = (schema: {
 
 /**
  * The names of the tables marked `sync: "window"`: kept by the server and read a page at a time,
- * never replicated (D39).
+ * never replicated (D43).
  */
 export const servedTables = (schema: {
   readonly entries: readonly Pick<SchemaEntry, "table" | "sync">[];

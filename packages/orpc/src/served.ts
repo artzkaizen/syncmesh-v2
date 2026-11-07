@@ -74,7 +74,7 @@ const toRow = (record: Record<string, unknown>): Result<Row, ReadRefused> => {
 
 /**
  * The app's `query` procedures, served a page at a time from Postgres to one principal's socket
- * (D39). A window names a procedure and its input; this runs that procedure's handler on the
+ * (D43). A window names a procedure and its input; this runs that procedure's handler on the
  * server, exactly as it would run on a device, and returns its rows.
  *
  * **Permission is the read rule, applied before the handler's `where`** (E13). Every table the

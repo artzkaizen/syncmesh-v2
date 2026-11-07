@@ -52,7 +52,7 @@ export function readOf<PC extends PresenceMap>(
   /** Whether the handler's query reads a table the server keeps rather than this device. */
   const isServed = (query: Runnable<unknown>) =>
     served.size > 0 && [...tablesOf(query)].some((table) => served.has(table));
-  /** The same rows, read a page at a time from the server (D39). */
+  /** The same rows, read a page at a time from the server (D43). */
   const servedLive = (query: Runnable<unknown>) =>
     windows?.live(path, input, query) ??
     failedLive<unknown>(

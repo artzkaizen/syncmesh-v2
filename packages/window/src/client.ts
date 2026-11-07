@@ -16,7 +16,7 @@ const NOWHERE = { epoch: "", version: 0 } as const satisfies StreamPosition;
 export type WindowStatus = "live" | "resyncing" | "detached";
 
 /**
- * The device's end of the windows a socket carries (E27, D39): it holds the rows its windows
+ * The device's end of the windows a socket carries (E27, D43): it holds the rows its windows
  * show and nothing else. It folds nothing, keeps no cursor and checks no signature. It trusts the
  * server for what a row says, as a REST client trusts its API.
  *

@@ -16,7 +16,7 @@ export interface Page {
 export class ReadRefused extends TaggedError("ReadRefused")<{ message: string }> {}
 
 /**
- * Whatever runs a window's read on the server (D39): the app's `query` procedures over Postgres,
+ * Whatever runs a window's read on the server (D43): the app's `query` procedures over Postgres,
  * or memory in a test. It is built for one reader, so every page it returns is already what that
  * reader may see.
  */

@@ -38,7 +38,7 @@ export interface WindowConnection {
 }
 
 /**
- * Serves `desire / undesire / rows` on one socket from a server that holds the rows (D39). A
+ * Serves `desire / undesire / rows` on one socket from a server that holds the rows (D43). A
  * relay room holds a log and no rows, so it does not call this. A host beside a database does.
  *
  * Every patch goes through E12's sender, never raw to the socket. A full buffer queues the
