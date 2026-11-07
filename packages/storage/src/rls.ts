@@ -43,7 +43,7 @@ const GUC = {
 /** A setting's value, absent-or-empty normalised to SQL NULL. */
 const setting = (name: string): string => `NULLIF(current_setting('${name}', TRUE), '')`;
 
-const str = (value: string): string => `'${value.replaceAll("'", "''")}'`;
+export const str = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
 /** The column as `evaluate` compares it: numbers as numbers, timestamps as their epoch milliseconds. */
 const columnExpr = (kind: ColumnKind, name: string): string => {
@@ -82,7 +82,7 @@ type Handlers = {
 };
 
 /** One compiler per node, mirroring `evaluate`'s handler table, so the two cannot drift apart silently. */
-function policyPredicate(table: Table, roles: RoleSet, allow: AllowBlock): string {
+export function policyPredicate(table: Table, roles: RoleSet, allow: AllowBlock): string {
   const columns = new Map(
     columnsOf(table).map(([key, name, column]) => [key, { name: quote(name), column }]),
   );
@@ -247,6 +247,18 @@ export interface PrincipalStatement {
   readonly params: readonly SqlValue[];
 }
 
+/** The settings that make a transaction the principal's, as `[setting, value]`. */
+export const principalValues = (
+  principal: Principal | undefined,
+  partition: PartitionKey | undefined,
+): readonly (readonly [string, string])[] => [
+  // an empty value reads back as NULL through the policies' NULLIF: no principal is nobody, not somebody blank
+  [GUC.account, principal?.account ?? ""],
+  [GUC.role, principal?.role ?? ""],
+  [GUC.claims, principal === undefined ? "" : JSON.stringify(principal.claims)],
+  [GUC.partition, partition === undefined ? "" : String(partition)],
+];
+
 /**
  * The statements that make a transaction the principal's: `set_config(…, true)` is transaction-
  * local, so the settings die with COMMIT or ROLLBACK and the pooled connection carries nothing
@@ -256,15 +268,8 @@ export function principalSettings(
   principal: Principal | undefined,
   options: { readonly partition?: PartitionKey } = {},
 ): readonly PrincipalStatement[] {
-  const set = (name: string, value: string): PrincipalStatement => ({
+  return principalValues(principal, options.partition).map(([name, value]) => ({
     sql: `SELECT set_config('${name}', $1, TRUE)`,
     params: [value],
-  });
-  // an empty value reads back as NULL through the policies' NULLIF: no principal is nobody, not somebody blank
-  return [
-    set(GUC.account, principal?.account ?? ""),
-    set(GUC.role, principal?.role ?? ""),
-    set(GUC.claims, principal === undefined ? "" : JSON.stringify(principal.claims)),
-    set(GUC.partition, options.partition === undefined ? "" : String(options.partition)),
-  ];
+  }));
 }

@@ -85,6 +85,8 @@ export type { Compiled, CompileOptions } from "./read-filter.js";
 export { columnScalarKind } from "./read-filter.js";
 export type { PrincipalStatement, RlsOptions } from "./rls.js";
 export { installRls, principalSettings, rlsDdl } from "./rls.js";
+export type { ServedManifest } from "./served-rls.js";
+export { servedReadDdl, servedReadSettings } from "./served-rls.js";
 export { inTransaction, onConnection } from "./sql.js";
 export { compileRead } from "./read-filter.js";
 export type {
