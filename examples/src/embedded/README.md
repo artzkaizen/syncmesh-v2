@@ -12,7 +12,8 @@ curl localhost:5199
 ```
 
 `bob` catches up `alice`'s note through the relay, and both rows come back out of the backend's
-own SQLite file over plain Drizzle — `db.select().from(notes)`, no mesh API in the query path.
+own SQLite file over plain Drizzle. `src/__tests__/embedded.test.ts` runs the same composition
+(`openBackend` in `backend.ts`) end to end — `db.select().from(notes)`, no mesh API in the query path.
 
 ## What it demonstrates
 
@@ -21,7 +22,9 @@ SQLite file per room under `dataDir`, with the room's epoch persisted beside it.
 and start it again: devices reconnect on their own and only what is missing crosses.
 
 **`stateStore` is where "your database" is said out loud.** `server.ts` opens one
-`bunSqliteDriver` on the app's own file and builds both stores over it — `sqlEventStore` for the
+`bunSqliteDriver` on the app's own file and builds both stores over it. The driver keeps the log in
+`app.db` and the rows in the state file beside it (`app.db.state@<schema>`), so the app's Drizzle
+opens that file — `backend.ts` names it with `statePathFor` — `sqlEventStore` for the
 log, `sqlStateStore` with a `tablesProjection` for the rows. Every fold UPSERTs the changed rows
 into `notes` and deletes tombstones, in one transaction with the sidecar that holds their stamps.
 Restart the server and the API answers immediately: boot reads the state back rather than
@@ -45,9 +48,9 @@ through the relay — flow A, over a socket, not a fixture.
   the app's API on 5199. To serve both from one port, mount `openRelayRoom` on the server you
   already have — the room core is host-agnostic, and `startRelay` is only its first mount.
   Nothing here needs one port, so nothing here does it.
-- **Postgres.** The `StateStore` port is synchronous, so the rows land in SQLite. Postgres needs
-  the async state port (D05); until then this shape holds your tables in a SQLite file your
-  tooling can read, not in your production database.
+- **Postgres.** This shape holds your tables in SQLite so the example needs no server. The ports
+  are async (D05), so the same composition over `postgresDriver(sql)` from `@syncmesh/postgres`
+  folds into your production database instead (E17); it is not wired here.
 - **Everything an operator would add**: a `posture` deciding who may open a socket and onto which
   rooms, TLS, `limits` tuned for the traffic, retention, telemetry, and an approval screen where
   `onGrantRequest` currently compares one hard-coded invite string.

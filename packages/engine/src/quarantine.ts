@@ -1,7 +1,7 @@
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
 import { Result, TaggedError } from "@syncmesh/result";
-import { decodeEventCore } from "@syncmesh/wire";
+import { decodeEventCore, type QuarantineReason } from "@syncmesh/wire";
 
 import type { ReceiveReport } from "./engine.js";
 import type { ValidationError } from "./errors.js";
@@ -9,24 +9,12 @@ import type { StoreFailure, StoredEvent } from "./store.js";
 import type { Cursors } from "./sync.js";
 
 /**
- * Why a build could not take an event, in the three buckets a *later* build can act on (D13).
- * Coarse on purpose: the bound is per reason, so a reason has to name a class of parked event
- * whose cap means something. A hundred rows of one forged author must not be able to push out
- * the one event from a newer app version that this device is holding for its next upgrade.
+ * Why a build could not take an event (D13), declared on the wire because a refusal receipt
+ * carries it (D32). `unknown-kind` is reached today only by a change built in this process:
+ * `decodeChange` refuses an unknown kind and both transports drop the event as a wire error
+ * before `admit` ever sees it.
  */
-export type QuarantineReason =
-  /** A table this build has no definition for — the shape a newer peer's new table arrives in. */
-  | "unknown-table"
-  /**
-   * A change kind this build cannot apply; the kernel would not know what to fold. Reached today
-   * only by a change built in this process: `decodeChange` refuses an unknown kind and both
-   * transports drop the event as a wire error before `admit` ever sees it, so a newer build's
-   * kind does not yet arrive as something to park. Closing that needs the codec to carry a kind
-   * it cannot name, which is a wire decision D13 did not make.
-   */
-  | "unknown-kind"
-  /** The ladder refused it: grant, device, partition, schema or policy. An upgrade rarely helps. */
-  | "refused";
+export type { QuarantineReason };
 
 /**
  * What a mesh does about an event no build here can read (D13) — **per mesh, never per event**,

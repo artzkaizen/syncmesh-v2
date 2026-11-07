@@ -9,6 +9,7 @@ import { openPair } from "./pair.js";
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- test fixtures */
 const A = "a".repeat(64) as PeerId;
 const B = "b".repeat(64) as PeerId;
+const C = "c".repeat(64) as PeerId;
 const seq = (n: number) => n as SeqNum;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 
@@ -110,5 +111,97 @@ describe("operationStore", () => {
     );
     expect(failed).toBe("rolled back");
     expect((await store.get("op-1")).unwrap()).toBeUndefined();
+  });
+});
+
+describe("operationStore — refusals (D32)", () => {
+  const STALE = { reason: "refused", verdict: "GrantStale" } as const;
+
+  test("a refusal lands beside the write, by the refuser, and repeating it is one row", async () => {
+    const { store } = await open();
+    (await store.record({ id: "op-1", peer: A, seq: seq(1), label: "l", atMs: 1 })).unwrap();
+
+    (await store.refuse(B, A, seq(1), STALE, 10)).unwrap();
+    (await store.refuse(B, A, seq(1), STALE, 11)).unwrap();
+
+    expect((await store.refusals(A, seq(1))).unwrap()).toEqual([
+      { refuser: B, reason: "refused", verdict: "GrantStale", atMs: 11 },
+    ]);
+    const row = (await store.get("op-1")).unwrap();
+    expect(row?.refusals).toEqual([{ by: B, reason: "refused", verdict: "GrantStale" }]);
+    // an axis, never a state: the write is still applied, still unsettled, still sole custody
+    expect(row?.status).toBe("applied");
+    expect((await store.unsettled()).unwrap()[0]?.refusals).toEqual(row?.refusals);
+    expect((await store.soleCustody()).unwrap().map((op) => op.id)).toEqual(["op-1"]);
+  });
+
+  test("two refusers read in the same order however often each repeats", async () => {
+    // a repeat re-stamps its row, so an order by time would flip and fire every ref watching it
+    const { store } = await open();
+    (await store.record({ id: "op-1", peer: A, seq: seq(1), label: "l", atMs: 1 })).unwrap();
+    (await store.refuse(C, A, seq(1), STALE, 10)).unwrap();
+    (await store.refuse(B, A, seq(1), STALE, 20)).unwrap();
+    const before = (await store.get("op-1")).unwrap()?.refusals;
+    (await store.refuse(C, A, seq(1), STALE, 30)).unwrap();
+    expect((await store.get("op-1")).unwrap()?.refusals).toEqual(before);
+    expect((await store.unsettled()).unwrap()[0]?.refusals).toEqual(before);
+    expect(before?.map((refusal) => refusal.by)).toEqual([B, C]);
+  });
+
+  test("a later verdict from the same refuser replaces its earlier one", async () => {
+    const { store } = await open();
+    (await store.record({ id: "op-1", peer: A, seq: seq(1), label: "l", atMs: 1 })).unwrap();
+    (await store.refuse(B, A, seq(1), STALE, 10)).unwrap();
+    (await store.refuse(B, A, seq(1), { reason: "refused", verdict: "GrantRevoked" }, 12)).unwrap();
+    expect((await store.byEvent(A, seq(1))).unwrap()?.refusals).toEqual([
+      { by: B, reason: "refused", verdict: "GrantRevoked" },
+    ]);
+  });
+
+  test("custody from the same holder covering the seq deletes the refusal; a lower one does not", async () => {
+    const { store } = await open();
+    (await store.record({ id: "op-1", peer: A, seq: seq(1), label: "l", atMs: 1 })).unwrap();
+    (await store.record({ id: "op-2", peer: A, seq: seq(2), label: "l", atMs: 2 })).unwrap();
+    (await store.refuse(B, A, seq(2), STALE, 10)).unwrap();
+
+    (await store.vouch(B, A, seq(1), "inc-1", 20)).unwrap();
+    expect((await store.refusals(A, seq(2))).unwrap()).toHaveLength(1);
+
+    (await store.vouch(B, A, seq(2), "inc-1", 30)).unwrap();
+    expect((await store.refusals(A, seq(2))).unwrap()).toEqual([]);
+    expect((await store.get("op-2")).unwrap()?.refusals).toBeUndefined();
+  });
+
+  test("custody from another holder retires nothing: weigh by refuser, never by count", async () => {
+    const { store } = await open();
+    (await store.record({ id: "op-1", peer: A, seq: seq(1), label: "l", atMs: 1 })).unwrap();
+    (await store.refuse(B, A, seq(1), STALE, 10)).unwrap();
+    (await store.vouch(C, A, seq(1), "inc-1", 20)).unwrap();
+    expect((await store.refusals(A, seq(1))).unwrap().map((r) => r.refuser)).toEqual([B]);
+  });
+
+  test("a refusal arriving after the refuser signed for the write is not recorded", async () => {
+    const { store } = await open();
+    (await store.record({ id: "op-1", peer: A, seq: seq(1), label: "l", atMs: 1 })).unwrap();
+    (await store.vouch(B, A, seq(1), "inc-1", 20)).unwrap();
+    (await store.refuse(B, A, seq(1), STALE, 10)).unwrap();
+    expect((await store.refusals(A, seq(1))).unwrap()).toEqual([]);
+  });
+
+  test("a refusal of a write this ledger has no record of is not recorded", async () => {
+    const { store } = await open();
+    (await store.refuse(B, A, seq(9), STALE, 10)).unwrap();
+    expect((await store.refusals(A, seq(9))).unwrap()).toEqual([]);
+  });
+
+  test("an older-build bucket keeps its reason", async () => {
+    const { store } = await open();
+    (await store.record({ id: "op-1", peer: A, seq: seq(1), label: "l", atMs: 1 })).unwrap();
+    (
+      await store.refuse(B, A, seq(1), { reason: "unknown-table", verdict: "UnknownTable" }, 10)
+    ).unwrap();
+    expect((await store.get("op-1")).unwrap()?.refusals).toEqual([
+      { by: B, reason: "unknown-table", verdict: "UnknownTable" },
+    ]);
   });
 });

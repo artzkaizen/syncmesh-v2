@@ -141,6 +141,17 @@ export interface OperationSql {
   readonly insertVouchesThrough: string;
   /** `holder, incarnation, at_ms` per vouch of one event — `peer, seq`. */
   readonly selectVouches: string;
+  /**
+   * `refuser, reason, verdict, at_ms, author, seq, refuser`: one refusal of one op (D32),
+   * replacing that refuser's earlier verdict, and skipped once the refuser has signed for it.
+   */
+  readonly insertRefusal: string;
+  /** `holder, author, through_seq`: a holder's custody retires its own refusals at or below it. */
+  readonly deleteCoveredRefusals: string;
+  /** `refuser, reason, verdict, at_ms` per refusal of one event — `peer, seq`. */
+  readonly selectRefusals: string;
+  /** `peer, seq, refuser, reason, verdict, at_ms` for every refusal held. */
+  readonly selectAllRefusals: string;
 }
 
 export interface Dialect {

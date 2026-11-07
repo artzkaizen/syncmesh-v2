@@ -6,6 +6,7 @@ import type { PresenceStore } from "@syncmesh/transport";
 import type { Identity } from "@syncmesh/wire";
 
 import type { Gate } from "./admission.js";
+import type { BlobKeeper } from "./blob-keeper.js";
 import type { GrantCache } from "./grant-cache.js";
 import type { Budget, RelayLimits } from "./limits.js";
 import type { RelaySocket, Sender } from "./sender.js";
@@ -51,8 +52,15 @@ export interface RoomState {
   readonly identity: Identity;
   /** What one socket may spend before the relay hangs up on it: frame size and rate. */
   readonly limits: RelayLimits;
+  /**
+   * What the room as a whole may spend, of which only `fanout` is drawn: every socket's event
+   * is charged here as well as to its own budget, at `limits.roomFanout`.
+   */
+  readonly budget: Budget;
   /** Where this room's bytes live (D18); absent, it serves none and says so. */
   readonly blobs: BlobStore | undefined;
+  /** What `blobs` owes (D18): every put goes through it, and every held event is noted to it. */
+  readonly keeper: BlobKeeper | undefined;
   /** One grant per device, the room's newest mint for each; a joiner gets these first. */
   readonly grants: GrantCache;
   readonly presence: PresenceStore;

@@ -108,7 +108,12 @@ export interface RelayHost {
   readonly acquire: (path: string) => Promise<HeldRoom>;
   /** Live sockets across the whole host; the ceiling is enforced by the fetch layer. */
   readonly live: () => number;
-  readonly atCapacity: () => boolean;
+  /**
+   * Whether a socket for that room would be turned away for capacity: the host is full, the
+   * room is, or the room is not open and the table already holds `maxRooms` rooms that each have
+   * a socket on them. Below that, `accept` closes the room longest without a socket to seat it.
+   */
+  readonly atCapacity: (room: string) => boolean;
   readonly close: () => Promise<void>;
 }
 
@@ -125,23 +130,28 @@ export const postureGate =
     return undefined;
   };
 
+/**
+ * The answer to an upgrade that a capacity cap turned away: 503, because a reconnect retries and
+ * the seat may be free by then. Shared by every host so a client sees one refusal for all caps.
+ */
+export const capacityRefusal = (): Response =>
+  new Response("syncmesh relay: at capacity, retry shortly", { status: 503 });
+
 /** Everything that turns a request away before a socket exists, in refusal order. */
 export const createGate = (
   access: ReturnType<typeof createRoomAccess>,
-  atCapacity: () => boolean,
+  atCapacity: (room: string) => boolean,
 ): ((request: Request, room: string) => Promise<Response | undefined>) => {
   const posture = postureGate(access);
   return (request: Request, room: string): Promise<Response | undefined> =>
-    atCapacity()
-      ? Promise.resolve(new Response("syncmesh relay: at capacity, retry shortly", { status: 503 }))
-      : posture(request, room);
+    atCapacity(room) ? Promise.resolve(capacityRefusal()) : posture(request, room);
 };
 
 /** The relay's own facts beside the log: its lineage, and the key it signs with. */
 const META_DDL = `CREATE TABLE IF NOT EXISTS "_relay_meta" ("key" TEXT PRIMARY KEY, "value" TEXT NOT NULL)`;
 
 /** One `_relay_meta` value, or the one `mint` makes and writes when the key was never set. */
-const metaOf = async (driver: SqlDriver, key: string, mint: () => string): Promise<string> => {
+const readMeta = async (driver: SqlDriver, key: string, mint: () => string): Promise<string> => {
   await driver.run(META_DDL);
   const held = await driver.all(`SELECT "value" FROM "_relay_meta" WHERE "key" = ?`, [key]);
   const value = held[0]?.[0];
@@ -153,14 +163,14 @@ const metaOf = async (driver: SqlDriver, key: string, mint: () => string): Promi
 
 /** The epoch rides in the log's own file: a new file is honestly a new lineage. */
 export const relayEpoch = (driver: SqlDriver): Promise<string> =>
-  metaOf(driver, "epoch", () => crypto.randomUUID());
+  readMeta(driver, "epoch", () => crypto.randomUUID());
 
 /**
  * The key a room signs its link hello with (D36), kept beside the epoch so the room has one name
  * across restarts, evictions and moves — the name a client pins. Minted on the first open.
  */
 export async function relayIdentity(driver: SqlDriver): Promise<Identity> {
-  const seed = await metaOf(driver, "identity-seed", () => bytesToHex(randomBytes(32)));
+  const seed = await readMeta(driver, "identity-seed", () => bytesToHex(randomBytes(32)));
   return hexToBytes(seed)
     .andThen((bytes) => createIdentity(bytes))
     .match({
@@ -267,10 +277,19 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
   // a caller-supplied store is one log: it serves one room whatever the path says
   const roomFor = (path: string): string => (options.singleRoom === undefined ? path : "main");
 
-  // the whole host's socket ceiling (gap audit №5); approximate under races, refused at fetch
-  const cap = options.limits?.maxConnections ?? DEFAULT_LIMITS.maxConnections;
+  // the host's, one room's, and the table's ceilings (gap audit №5); all three are approximate
+  // under races — they count sockets already accepted, not upgrades still in flight — and all
+  // three are refused at fetch, before a socket exists
+  const limits = { ...DEFAULT_LIMITS, ...options.limits };
   let live = 0;
-  const atCapacity = (): boolean => live >= cap;
+  const atCapacity = (room: string): boolean => {
+    if (live >= limits.maxConnections) return true;
+    const name = roomFor(room);
+    const sockets = table.sockets(name);
+    if (sockets !== undefined) return sockets >= limits.maxRoomConnections;
+    // a room nobody is on is not counted: `accept` closes one to seat the new name
+    return table.occupied() >= limits.maxRooms;
+  };
   const gate = createGate(access, atCapacity);
 
   const accept = (socket: RelaySocket, path: string): SocketSession => {
@@ -279,7 +298,10 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
     let pending: Uint8Array[] | undefined = [];
     let release: (() => void) | undefined;
     let gone = false;
-    void table.acquire(roomFor(path)).then((held) => {
+    const name = roomFor(path);
+    // only an admitted socket closes an idle room, so a dial the posture refuses evicts nothing
+    if (table.sockets(name) === undefined && table.count() >= limits.maxRooms) table.evictIdlest();
+    void table.acquire(name).then((held) => {
       if (gone) {
         // a socket closed while this was awaiting its room has already had its
         // `closed`, so nothing else will ever hand the room back and it would be

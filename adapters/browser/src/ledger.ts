@@ -4,7 +4,7 @@ import type { OperationsView } from "@syncmesh/client";
 import type { StoreFailure } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
-import type { OperationRow, ReceiptRow, VouchRow } from "@syncmesh/storage";
+import type { OperationRow, ReceiptRow, RefusalRow, VouchRow } from "@syncmesh/storage";
 
 import { operationRefs } from "@syncmesh/client";
 import { Result } from "@syncmesh/result";
@@ -55,6 +55,11 @@ export interface RemoteOperations {
     peer: PeerId,
     seq: SeqNum,
   ) => Promise<ResultType<readonly VouchRow[], LedgerFailure>>;
+  /** Who parked the write and signed for saying so (D32) — information, never a gate. */
+  readonly refusals: (
+    peer: PeerId,
+    seq: SeqNum,
+  ) => Promise<ResultType<readonly RefusalRow[], LedgerFailure>>;
   /** Fires after the origin's ledger changed, in every tab that is watching it. */
   readonly onChange: (listener: () => void) => () => void;
 }
@@ -91,7 +96,9 @@ export const answerLedger = async (
             ? view.byEvent(...event())
             : path === "vouchesOf"
               ? view.vouchesOf(...event())
-              : view.receiptsOf(...event());
+              : path === "refusals"
+                ? view.refusals(...event())
+                : view.receiptsOf(...event());
   const outcome = await read;
   if (outcome.isErr()) throw outcome.error;
   return outcome.value;
@@ -127,6 +134,7 @@ export const remoteLedger = (wire: MeshWire): RemoteOperations => {
     soleCustody: () => askLedger<readonly OperationRow[]>(wire, "soleCustody", []),
     receiptsOf: (peer, seq) => askLedger<readonly ReceiptRow[]>(wire, "receiptsOf", [peer, seq]),
     vouchesOf,
+    refusals: (peer, seq) => askLedger<readonly RefusalRow[]>(wire, "refusals", [peer, seq]),
     onChange,
   };
 };

@@ -26,8 +26,8 @@ use syncmesh_core::identity::{Identity, verify};
 use syncmesh_core::join_proof::verify_join_proof;
 use syncmesh_core::relay_frames::{
     HANDSHAKE_VERSION, Join, PageScope, RELAY_PROTOCOL_VERSIONS, RelayFrame, ack_frame, blob_frame,
-    blob_missing_frame, challenge_frame, decode_relay_frame, error_frame, hello_frame, ka_frame,
-    page_frame, relayed_frame, select_version,
+    blob_missing_frame, blob_stored_frame, challenge_frame, decode_relay_frame, error_frame,
+    hello_frame, ka_frame, page_frame, relayed_frame, select_version,
 };
 
 use crate::coverage::CoverageTracker;
@@ -487,7 +487,7 @@ impl Room {
             return;
         }
         match frame {
-            RelayFrame::BlobPut { hash, bytes } => {
+            RelayFrame::BlobPut { hash, bytes, .. } => {
                 let actual = syncmesh_core::to_hex(&Sha256::digest(&bytes));
                 if actual != hash {
                     self.refuse(
@@ -499,6 +499,9 @@ impl Room {
                     );
                     return;
                 }
+                // answered, because a putter waits on it; this room keeps no quota, so it never
+                // refuses one (the TypeScript relay's `BlobKeeper` does)
+                self.send(socket, blob_stored_frame(&hash), out);
                 self.blobs.insert(hash, bytes);
             }
             RelayFrame::BlobGet { hash } => {

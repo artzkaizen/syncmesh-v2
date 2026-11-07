@@ -2,11 +2,11 @@ export type { AccountWriteError, AccountsConfig, AccountsDeps, MeshAccounts } fr
 export { openAccounts } from "./accounts.js";
 export type { Booted, MeshOpenError } from "./boot.js";
 export { openMeshEngine } from "./boot.js";
-export { NoDefaultStore } from "./errors.js";
+export { MeshStopped, NoDefaultStore } from "./errors.js";
 export type { Revision } from "./history.js";
-export type { Blobs } from "./blobs.js";
+export type { Blobs, FetchBlobOptions, PutBlobOptions } from "./blobs.js";
 export type { MeshVisibility } from "./visibility.js";
-export { NoSuchCapability } from "./blobs.js";
+export { BlobQuotaExceeded, NoSuchCapability } from "./blobs.js";
 export type { Peer, Topic, Topics, ValueOf } from "./presence.js";
 export { rowHistory } from "./history.js";
 export type { DeliveredOptions, ReceivedOptions } from "./delivered.js";

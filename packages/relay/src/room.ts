@@ -29,7 +29,7 @@ import { createConnection } from "./connection.js";
 import { fanIn } from "./fan-in.js";
 import { HANDSHAKE_VERSION, RELAY_PROTOCOL_VERSIONS, kaFrame, speaksHandshake } from "./frames.js";
 import { createGrantCache } from "./grant-cache.js";
-import { DEFAULT_LIMITS } from "./limits.js";
+import { DEFAULT_LIMITS, createBudget } from "./limits.js";
 import { roomRetention } from "./retention.js";
 
 export type { ConnectionOptions, RelayConnection } from "./connection.js";
@@ -124,7 +124,7 @@ export interface RelayRoom {
   readonly floor: () => Cursors;
   /**
    * One retention pass now, rather than at the room's own cadence. The room sweeps on a timer
-   * whenever `keepEventsFor` is set; this is the same pass, for a host whose scheduler is the
+   * whenever `keepEventsFor` or `keepUnreferencedBlobsFor` is set; this is the same pass, for a host whose scheduler is the
    * platform's (a Durable Object alarm) and for a test that will not wait a minute.
    */
   readonly sweep: () => Promise<void>;
@@ -203,6 +203,7 @@ export async function openRelayRoom(
     blobs: options.blobs,
     ceiling: () => coverage.current().synced,
     booted: trimmed.value.synced,
+    held: boot.value,
     now,
     // caught rather than left on the queue: a rejected `queue` is a room that silently stops
     // appending, and a retention pass must never be able to do that to the traffic beside it
@@ -234,6 +235,12 @@ export async function openRelayRoom(
     return { receivers, frames };
   };
   const fan = options.fanout?.connect(name);
+  const limits = { ...DEFAULT_LIMITS, ...options.limits };
+  // the same bucket a socket spends from, priced at the room's rate rather than one socket's
+  const budget = createBudget(
+    { ...limits, rates: { ...limits.rates, fanout: limits.roomFanout } },
+    now,
+  );
   const keepalive = setInterval(() => toClients(kaFrame()), keepaliveMs);
 
   const state: RoomState = {
@@ -244,8 +251,10 @@ export async function openRelayRoom(
     maxBacklog,
     versions,
     identity,
-    limits: { ...DEFAULT_LIMITS, ...options.limits },
+    limits,
+    budget,
     blobs: retention.blobs,
+    keeper: retention.keeper,
     grants,
     presence,
     clients,
@@ -257,6 +266,7 @@ export async function openRelayRoom(
     offset: () => offset,
     appended: (entry) => {
       offset += 1;
+      retention.keeper?.note(entry.event);
       if (servable(entry)) coverage.note(entry.event);
     },
     enqueue: (work) => void (queue = queue.then(work)),

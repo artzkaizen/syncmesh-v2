@@ -1,10 +1,13 @@
 import { scopeFrom } from "@syncmesh/engine";
+import { parsePartitionKey } from "@syncmesh/kernel";
 import { RELAY_PROTOCOL_VERSIONS, decodeRelayFrame } from "@syncmesh/relay";
 import { decodeCbor, hexToBytes } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import raw from "../../relay-vectors.json" with { type: "json" };
 import { relayVectors } from "../generate-relay-vectors.js";
+
+const ACME = parsePartitionKey("org:acme").unwrap();
 
 describe("relay control frame vectors — frozen (D14, D33)", () => {
   test("the generator still produces the frozen file byte-for-byte (change the wire, change the vectors — deliberately)", () => {
@@ -15,9 +18,34 @@ describe("relay control frame vectors — frozen (D14, D33)", () => {
     expect([...RELAY_PROTOCOL_VERSIONS]).toEqual(raw.protocolVersions);
   });
 
-  test("the control tags run 8 through 19 with no gaps, above the session tags", () => {
+  test("the control tags run 8 through 21 with no gaps, above the session tags", () => {
     const tags = [...new Set(raw.vectors.map((v) => v.tag))].sort((a, b) => a - b);
-    expect(tags).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+    expect(tags).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
+  });
+
+  test("a blob-put without a partition decodes as before, and with one carries it (D18)", () => {
+    const puts = raw.vectors
+      .filter((v) => v.kind === "blob-put")
+      .map((v) => decodeRelayFrame(hexToBytes(v.wireHex).unwrap()).unwrap());
+    const partitions = puts.map((f) => (f.kind === "blob-put" ? f.partition : undefined));
+    expect(partitions).toEqual([undefined, ACME]);
+  });
+
+  test("a blob-refused names its code, the limit, the spend, and the partition when there is one", () => {
+    const refusals = raw.vectors
+      .filter((v) => v.kind === "blob-refused")
+      .map((v) => decodeRelayFrame(hexToBytes(v.wireHex).unwrap()).unwrap());
+    expect(refusals).toEqual([
+      {
+        kind: "blob-refused",
+        hash: "b3:0102",
+        code: "quota",
+        limit: 1024,
+        used: 1000,
+        partition: ACME,
+      },
+      { kind: "blob-refused", hash: "b3:0102", code: "quota", limit: 1024, used: 1000 },
+    ]);
   });
 
   test("a gated catch-up's scope reads back as the interest and the entitlement it names (D24)", () => {
