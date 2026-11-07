@@ -403,7 +403,9 @@ double their content when merged. Syncmesh answers it once:
   headroom. Blob-carried updates follow D18: the author holds the bytes until a relay
   acknowledges them, the relay holds them while any retained log entry references the hash, and
   BLE refuses bulk by default. A change whose bytes have not arrived still **folds**. Its log
-  entry is `bytes-missing` and the doc's status is `"behind"` until the blob lands.
+  entry is `bytes-missing` and the doc's status is `"behind"` until the blob lands. The
+  threshold is the authoring flush's choice (P3). Until §16.7 settles the number, neither the
+  decoder nor the validator refuses an inline update by size.
 - **Catch-up** uses RFC-0002's hash-chained chunks unchanged. Doc changes are ordinary events,
   so a 10k-update backlog costs one signature check per author and compresses with the rest.
   Receivers import each doc's backlog with one `apply(&[..])` batch.
@@ -644,8 +646,11 @@ decompression cap and a time budget, and exceeding them is a `failed` update, ne
   inserted in the same event is judged as part of the `insert`.
 - **Read** follows custody: doc changes travel only inside the row's partition, like its row
   events. There is no separate document ACL, and nothing narrower than a partition (v3 §4).
-- A doc change on a row that does not exist (and is not inserted in the same event) is parked
-  `missing-dependency`, as any update of an unknown row is today.
+- A doc change on a row that does not exist (and is not inserted in the same event) folds the
+  way any update of an unknown row does today: the record gains cells but no write stamp, so
+  the row stays invisible until its insert arrives, and the doc log keeps the entry meanwhile.
+  Nothing is parked. A row the device already holds is never "inserted in the same event", so
+  an event that repeats a held row's insert does not make its doc change an insert.
 - `DocCheckpoint`s are accepted only from the authority or from a device whose grant allows
   `update` on the row. Blob fetches of doc bytes require custody of the partition (D30's blob
   capability).

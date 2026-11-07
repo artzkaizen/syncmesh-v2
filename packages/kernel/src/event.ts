@@ -28,7 +28,6 @@ export interface SyncEvent {
   readonly partition?: PartitionKey;
   readonly changes: readonly Change[];
   /**
-  /**
    * The action this event belongs to (event key 10); absent, the event is its own action. Drives
    * history and undo only — an old build that skips it folds the event identically (RFC-0023 §5.2).
    */
