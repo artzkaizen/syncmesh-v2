@@ -66,8 +66,12 @@ export function createWindowClient(): WindowClient {
   const refusals = new Map<string, string>();
   const listeners = new Set<() => void>();
   let send: ((frame: Uint8Array) => void) | undefined;
-  /** A resnapshot was asked for and its reset has not arrived. */
-  let asked = false;
+  /**
+   * A resnapshot was asked for and its reset has not arrived. `before` is the epoch of the patches
+   * the view sent before it read the ask, when the client knows it. Every reset starts a new
+   * epoch, so a patch in any other epoch proves the answering reset was lost.
+   */
+  let asked: { readonly before: string | undefined } | undefined;
 
   const notify = (): void => {
     for (const listener of listeners) listener();
@@ -86,13 +90,14 @@ export function createWindowClient(): WindowClient {
    * A gap: ask again from where the stream that missed a patch stands, and the server answers
    * with a reset. Before the first reset there is no position, so the client names
    * {@link NOWHERE}, which no server stream is at. With no window desired there is nothing to
-   * ask for; the next desire's patch is a gap again and asks then.
+   * ask for; the next desire's patch is a gap again and asks then. `seen` is the epoch of the
+   * patch that showed the gap, which the stale patches still on the socket share.
    */
-  const resync = (missed: PatchStream): void => {
+  const resync = (missed: PatchStream, seen?: string): void => {
     const first = [...queries][0];
-    if (asked || send === undefined || first === undefined) return;
-    asked = true;
+    if (asked !== undefined || send === undefined || first === undefined) return;
     const since = missed.position() ?? NOWHERE;
+    asked = { before: missed.position()?.epoch ?? seen };
     pending ??= { stream: createPatchStream(), settled: new Set() };
     send(desireFrame(first[0], queryText(first[1]), since));
   };
@@ -118,19 +123,26 @@ export function createWindowClient(): WindowClient {
       const target = pending?.stream ?? shown;
       const decoded = decodeWindowFrame(bytes);
       if (decoded.isErr()) {
-        // a frame that says it is a patch and does not read as one is a patch lost
+        // a frame that says it is a patch and does not read as one is a patch lost, and it may
+        // be the reset an earlier ask was waiting for, so ask again
+        asked = undefined;
         resync(target);
         return true;
       }
       const frame = decoded.value;
       if (frame?.kind !== "rows") return frame !== undefined;
       if (target.apply(frame) === "gap") {
-        resync(target);
+        if (asked !== undefined) {
+          if (asked.before === undefined) asked = { before: frame.epoch };
+          // the view moved to an epoch whose reset never arrived: the answer was lost
+          else if (asked.before !== frame.epoch) asked = undefined;
+        }
+        resync(target, frame.epoch);
         return true;
       }
       // every desire sent before the resync was read before it, so its reset holds them all
-      const answered = frame.reset && asked;
-      if (frame.reset) asked = false;
+      const answered = frame.reset && asked !== undefined;
+      if (frame.reset) asked = undefined;
       for (const { id } of frame.windows) refusals.delete(id);
       for (const { id, reason } of frame.refused) refusals.set(id, reason);
       if (pending === undefined) notify();
@@ -145,7 +157,7 @@ export function createWindowClient(): WindowClient {
     },
     attach: (next) => {
       send = next;
-      asked = false;
+      asked = undefined;
       // a new socket is a new view: rebuild beside the old screen, which stays until then
       pending = { stream: createPatchStream(), settled: new Set() };
       for (const [id, query] of queries) next(desireFrame(id, queryText(query)));

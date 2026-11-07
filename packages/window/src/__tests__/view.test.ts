@@ -3,6 +3,7 @@ import type { ColumnName } from "@syncmesh/kernel";
 import { rowIs } from "@syncmesh/policy";
 import { describe, expect, test } from "bun:test";
 
+import { createWindowClient } from "../client.js";
 import { decodeWindowFrame } from "../frames.js";
 import { MAX_ORDER, queryText } from "../query.js";
 import { createMemoryRowSource } from "../source.js";
@@ -224,6 +225,82 @@ describe("a window over a row source (E27)", () => {
     expect(client.status()).toBe("live");
     expect(ats(client.rows("c"))).toEqual([9, 8]);
     expect(client.held()).toBe(2);
+  });
+
+  test("a lost reset that answered a gap is caught by the next patch, which asks again", () => {
+    const { client, source, spoil, frames } = harness(100);
+    client.desire("inbox", newest(5));
+    // v2 is lost, v3 shows the gap, and the reset that answers it is lost too
+    spoil("lose", 0, 2);
+    source.write([{ table: MAIL, key: mailKey(101), row: mail(101) }]);
+    source.write([{ table: MAIL, key: mailKey(102), row: mail(102) }]);
+    expect(client.status()).toBe("resyncing");
+    // the view's next patch is in the epoch whose reset never arrived
+    source.write([{ table: MAIL, key: mailKey(103), row: mail(103) }]);
+    expect(lastPatch(frames)).toMatchObject({ reset: true, version: 1 });
+    expect(client.status()).toBe("live");
+    expect(ats(client.rows("inbox"))).toEqual(down(103, 5));
+  });
+
+  test("a desire after a lost answer asks again, and its window shows", () => {
+    const { client, source, spoil } = harness(100);
+    client.desire("inbox", newest(5));
+    spoil("lose", 0, 2);
+    source.write([{ table: MAIL, key: mailKey(101), row: mail(101) }]);
+    source.write([{ table: MAIL, key: mailKey(102), row: mail(102) }]);
+    client.desire("other", newest(2, { after: after(50) }));
+    expect(client.status()).toBe("live");
+    expect(ats(client.rows("inbox"))).toEqual(down(102, 5));
+    expect(ats(client.rows("other"))).toEqual([49, 48]);
+  });
+
+  test("a garbled answer to a gap asks again at once", () => {
+    const { client, source, spoil, frames } = harness(100);
+    client.desire("inbox", newest(5));
+    spoil("lose", 0);
+    spoil("garble", 2);
+    source.write([{ table: MAIL, key: mailKey(101), row: mail(101) }]);
+    source.write([{ table: MAIL, key: mailKey(102), row: mail(102) }]);
+    expect(lastPatch(frames)).toMatchObject({ reset: true });
+    expect(client.status()).toBe("live");
+    expect(ats(client.rows("inbox"))).toEqual(down(102, 5));
+  });
+
+  test("patches already on the socket when the client asks do not ask again", () => {
+    const source = createMemoryRowSource();
+    source.load(
+      MAIL,
+      Array.from({ length: 100 }, (_, i) => ({ key: mailKey(i + 1), row: mail(i + 1) })),
+    );
+    const client = createWindowClient();
+    const queue: Uint8Array[] = [];
+    let resets = 0;
+    const view = createClientView({
+      source,
+      send: (frame) => {
+        if (lastPatch([frame]).reset) resets++;
+        queue.push(frame);
+      },
+    });
+    const deliver = () => {
+      const frame = queue.shift();
+      if (frame !== undefined) client.receive(frame);
+    };
+    client.attach((frame) => view.receive(frame));
+    client.desire("inbox", newest(5));
+    deliver();
+    source.write([{ table: MAIL, key: mailKey(101), row: mail(101) }]);
+    queue.shift();
+    source.write([{ table: MAIL, key: mailKey(102), row: mail(102) }]);
+    source.write([{ table: MAIL, key: mailKey(103), row: mail(103) }]);
+    // v3 shows the gap and the client asks; v4 was sent before the view read the ask
+    deliver();
+    deliver();
+    expect(client.status()).toBe("resyncing");
+    deliver();
+    expect(resets).toBe(2);
+    expect(client.status()).toBe("live");
+    expect(ats(client.rows("inbox"))).toEqual(down(103, 5));
   });
 
   test("a socket holds at most `maxWindows`; a desire past it is refused, a move is not", () => {
