@@ -36,7 +36,12 @@ export interface PostgresChangeSourceOptions {
   readonly name?: string;
   /** How often the confirmed position is reported when nothing else prompts it. Default 10 seconds. */
   readonly status?: Temporal.Duration;
-  /** Reconnects after the replication connection drops. Default 5 attempts, 1 second apart. */
+  /**
+   * Reconnects after the replication connection drops. Default 5 attempts, 1 second apart. A
+   * walsender cut off by a network partition, rather than ended by the server, holds the slot
+   * until `wal_sender_timeout` (60 seconds by default), and every attempt until then is
+   * `SlotBusy`: allow `attempts × delay` past that timeout to ride one out.
+   */
   readonly reconnect?: { readonly attempts: number; readonly delay: Temporal.Duration };
   readonly lag?: LagAlarm;
 }

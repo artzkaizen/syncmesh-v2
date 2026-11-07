@@ -16,7 +16,9 @@ const TIMESTAMP =
  * read as UTC); `bytea` becomes bytes; `json` and `jsonb` are parsed. Everything else stays
  * text, and so does any value that would lose something converted — an `int8` beyond 2⁵³, a
  * `NaN`, an `infinity` timestamp — so the collection's own column check refuses it loudly
- * rather than this storing a rounded one.
+ * rather than this storing a rounded one. The text forms are the server defaults, `DateStyle`
+ * `ISO` and `bytea_output` `hex`; under another setting those values stay text, and are refused
+ * the same way.
  */
 export function cellValue(type: number, text: string): CellValue {
   const read = READERS.get(type);

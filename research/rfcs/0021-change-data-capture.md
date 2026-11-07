@@ -200,10 +200,13 @@ the thing that makes a phone's partition-scoped replica affordable.
 `postgresChangeSource` (`adapters/postgres/src/`) is the port over a logical
 replication slot, with nothing above the port changed.
 
-- **Slot and publication.** The slot (`pgoutput`) is created on first `start`, or
-  by `read.watermark()` when a backfill goes first, and resumed after that. A slot
-  for another plugin or database is `SlotMismatch`. One whose WAL the server dropped
-  (`wal_status = lost`) is `SlotLost`. One read by another connection is `SlotBusy`:
+- **Slot and publication.** The slot (`pgoutput`) is created by a `start` from
+  `null`, or by `read.watermark()` when a backfill goes first, and resumed after that.
+  A slot for another plugin or database is `SlotMismatch`. One whose WAL the server
+  dropped (`wal_status = lost`) is `SlotLost`, and so is a `start` from a stored
+  watermark that finds no slot (dropped, or lost to a restore or failover): a fresh
+  slot begins at the current WAL position, so resuming on one would skip every change
+  in between without a word. Recovery is to forget the stored position and backfill. One read by another connection is `SlotBusy`:
   a slot has one reader, and that is how "one authority per slot" is enforced.
   `publish(tables)` creates or sets the publication. `drop()` waits for this source's
   own streams to close, then drops the slot.
@@ -223,7 +226,12 @@ replication slot, with nothing above the port changed.
   composite one, is `UnkeyedChange`. A changed key is a delete of the old row plus an
   insert of the new one. Under `DEFAULT`, an update that leaves a TOASTed column alone
   does not carry it, so `after` leaves that column out (an update is a patch, so the
-  mesh keeps its value). `FULL` fills it from the old row.
+  mesh keeps its value). `FULL` fills it from the old row. An insert cannot leave a
+  column out, and under `DEFAULT` the old row carries only the key, so a key change
+  that did not resend a TOASTed value ends the stream with `PartialKeyChange` rather
+  than inserting the row without it. A table whose key can change and that holds
+  out-of-line values needs `FULL`; one already in that state needs `FULL`, a dropped
+  slot and a backfill.
 - **Watermark.** The commit's end LSN as sixteen upper-case hex digits.
   Lexicographic order is LSN order; Postgres's own `X/Y` text does not have that
   property (`9/0` sorts after `10/0`). A restart passes it as the
@@ -238,7 +246,11 @@ replication slot, with nothing above the port changed.
   the position, on a keepalive that asks for a reply, and every `status` interval
   (default 10 s), so `wal_sender_timeout` never fires.
 - **Reconnect.** A dropped connection is reopened (default 5 attempts, 1 s apart)
-  from the end of the last transaction delivered. Frames not yet decoded are
+  from the end of the last transaction delivered. After a network partition, as
+  opposed to a server-side termination, the old walsender holds the slot until
+  `wal_sender_timeout` (60 s by default) and every attempt until then is `SlotBusy`,
+  so the default policy gives up first; `reconnect` must span that timeout to ride
+  one out. Frames not yet decoded are
   discarded, because the server sends them again, and a transaction cut off half-way
   is resent from its `begin`. A slow bridge pauses the socket instead of buffering
   without bound.
@@ -253,8 +265,9 @@ replication slot, with nothing above the port changed.
 - **Backfill.** `read.watermark()` returns the slot's position (making the slot if
   needed), and `read.rows(table)` pages the table in key order (the replica identity
   index, else the primary key). An update keeps a row's key wherever on disk it puts
-  the row, and a key change is a delete and an insert in the stream, so paging outside
-  one snapshot loses nothing. Paging by `ctid` would not: an update that moves a row to
+  the row, and a key change is a delete and a whole-row insert in the stream (or the
+  stream's `PartialKeyChange` failure when the row cannot be sent whole), so paging
+  outside one snapshot loses nothing silently. Paging by `ctid` would not: an update that moves a row to
   a page the read has passed hides it from the read, and the stream's update for it
   leaves out any unchanged TOAST value. The stream replays the overlap, which
   converges.
@@ -264,9 +277,10 @@ Tested against a real Postgres 17 (PGlite has no logical replication). CI runs a
 `adapters/postgres` starts one. The suite covers transaction framing; nothing acked
 before the bridge acks; a consumer dying mid-transaction; a connection cut
 mid-transaction and resent from its `begin`; restart from a checkpoint with no skip
-and no repeat; `FULL` identity, TOAST and key changes; the schema alarm; type
+and no repeat; `FULL` identity, TOAST and key changes; a `DEFAULT`-identity key
+change that could not resend a TOAST value; the schema alarm; type
 parity between stream and backfill; a backfill that misses no row an update moves
-behind the read; slot create, resume, busy and drop; a missing
+behind the read; slot create, resume, busy and drop; a resume whose slot is gone; a missing
 publication; the lag alarm; and backfill → stream → stop → writes while stopped →
 restart through `startCapture`, ending with the mesh equal to the table.
 
