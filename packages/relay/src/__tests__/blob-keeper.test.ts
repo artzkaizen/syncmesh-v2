@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { RelayRetention } from "../retention.js";
 
+import { cappedBlobStore } from "../blob-cap.js";
 import { createBlobKeeper } from "../blob-keeper.js";
 import { blobGetFrame, blobPutFrame, joinFrame } from "../frames.js";
 import {
@@ -234,6 +235,23 @@ describe("per-partition blob quotas (D18)", () => {
       hashOf(first),
     ]);
     r.room.close();
+  });
+
+  test("a blob the byte ceiling evicts mid-put gives its partition its bytes back", async () => {
+    // the ceiling unbills through `forget` while the put that pushed it over is still awaiting the
+    // store; the put must add its own bytes to what is billed now, not to what it read before
+    let clock = T0;
+    const keeper = createBlobKeeper({
+      store: cappedBlobStore(memoryBlobStore(), 5, (hash) => keeper.forget(hash)),
+      quota: 8,
+      keepUnreferencedFor: undefined,
+      now: () => clock,
+    });
+    const [a, b, c] = [filled(1, 4), filled(2, 4), filled(3, 4)];
+    (await keeper.put(hashOf(a), a, ACME)).unwrap();
+    (await keeper.put(hashOf(b), b, ACME)).unwrap(); // evicts a: only b's 4 bytes are held
+    clock = addToInstant(clock, HOUR);
+    expect((await keeper.put(hashOf(c), c, ACME)).isOk()).toBe(true);
   });
 
   test("a swept blob gives its partition its bytes back", async () => {

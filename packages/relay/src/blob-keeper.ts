@@ -139,6 +139,7 @@ export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
       if (known !== undefined) known.since = at;
       else if (fresh) {
         held.set(hash, { bytes: bytes.byteLength, partition, since: at });
+        // read again, not `spent`: the ceiling may have evicted, and unbilled, during the put
         used.set(partition, (used.get(partition) ?? 0) + bytes.byteLength);
       }
       return stored;
