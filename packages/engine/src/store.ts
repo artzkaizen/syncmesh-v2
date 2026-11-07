@@ -100,15 +100,29 @@ const inScope = (event: SyncEvent, scope: SeqScope) =>
 export function createMemoryEventStore(): EventStore {
   const events = new Map<EventId, StoredEvent>();
   const floors = { synced: new Map<PeerId, Floor>(), local: new Map<PeerId, Floor>() };
+  /**
+   * The highest sequence ever appended, per scope and author, so `lastSeq` — asked on every
+   * write — answers without walking the log. Never lowered: the only removal is compaction, and
+   * it records what it removed as a floor at least this high.
+   */
+  const heads = { synced: new Map<PeerId, SeqNum>(), local: new Map<PeerId, SeqNum>() };
   const ok = <T>(value: T) => Promise.resolve(Result.ok(value));
+  const add = (entry: StoredEvent) => {
+    const { event } = entry;
+    if (events.has(event.id)) return;
+    events.set(event.id, entry);
+    const head = heads[event.local === true ? "local" : "synced"];
+    const known = head.get(event.peerId);
+    if (known === undefined || event.seqNum > known) head.set(event.peerId, event.seqNum);
+  };
 
   return {
     append: (entry) => {
-      if (!events.has(entry.event.id)) events.set(entry.event.id, entry);
+      add(entry);
       return ok(undefined);
     },
     appendBatch: (batch) => {
-      for (const entry of batch) if (!events.has(entry.event.id)) events.set(entry.event.id, entry);
+      for (const entry of batch) add(entry);
       return ok(undefined);
     },
     has: (id) => ok(events.has(id)),
@@ -123,16 +137,9 @@ export function createMemoryEventStore(): EventStore {
           ),
       ),
     lastSeq: (peer, scope) => {
-      let last = floors[scope].get(peer)?.seq;
-      for (const { event } of events.values()) {
-        if (
-          event.peerId === peer &&
-          inScope(event, scope) &&
-          (last === undefined || event.seqNum > last)
-        )
-          last = event.seqNum;
-      }
-      return ok(last);
+      const floor = floors[scope].get(peer)?.seq;
+      const head = heads[scope].get(peer);
+      return ok(floor === undefined || (head !== undefined && head > floor) ? head : floor);
     },
     compactBelow: (floor, scope, olderThan) => {
       let removed = 0;

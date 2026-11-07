@@ -8,21 +8,21 @@
  * `bun run --cwd bench scale`. Non-zero exit on a regression, so it can be a CI step.
  */
 import type {
-  Cell,
   CellValue,
   ColumnName,
   Logical,
   Procedure,
   Row,
   RowKey,
-  RowRecord,
   State,
   TableName,
 } from "@syncmesh/kernel";
 
+import { createMemoryEventStore } from "@syncmesh/engine";
 import {
   applyChange,
   emptyState,
+  mergeRecord,
   stampOf,
   eventId,
   parseSeqNum,
@@ -90,6 +90,49 @@ await runScale([
   }),
 
   path({
+    name: "kernel · mergeRecord (snapshot install, repair)",
+    growth: "constant",
+    because:
+      "Installing a snapshot or healing a divergence merges one whole record per row through the same join as the fold. Cost that tracks the rows already installed means each row copies the table, so a 30,000-row join is quadratic before the first frame is drawn.",
+    sizes: [1_000, 4_000, 16_000],
+    prepare: (rows) => {
+      let state: State = emptyState();
+      for (let seq = 1; seq <= rows; seq += 1) {
+        const e = event(seq, rows);
+        for (const change of e.changes)
+          state = applyChange(state, change, stampOf(e), undefined, undefined);
+      }
+      const next = event(rows + 1, rows);
+      const record = applyChange(
+        emptyState(),
+        next.changes[0]!,
+        stampOf(next),
+        undefined,
+        undefined,
+      )
+        .get(NOTES)!
+        .get(next.changes[0]!.key)!;
+      return { state, key: next.changes[0]!.key, record };
+    },
+    run: ({ state, key: k, record }) => mergeRecord(state, NOTES, k, record),
+  }),
+
+  path({
+    name: "engine · memory store lastSeq",
+    growth: "constant",
+    because:
+      "Every write asks the store for this author's last sequence number before it numbers the next event. Cost that tracks the log means the store walks every event it holds per write, which makes a session's writes quadratic in its own history.",
+    sizes: [1_000, 4_000, 16_000],
+    prepare: async (events) => {
+      const store = createMemoryEventStore();
+      const entries = Array.from({ length: events }, (_, i) => ({ event: event(i + 1, events) }));
+      (await store.appendBatch(entries)).unwrap();
+      return store;
+    },
+    run: (store) => void store.lastSeq(PEER, "synced"),
+  }),
+
+  path({
     name: "wire · encodeCbor (bytes)",
     growth: "linear",
     because:
@@ -126,14 +169,19 @@ await runScale([
     because:
       "Merging one cell reads that column and writes it back. Cost that tracks the row's other columns means the join is rebuilding the whole cell map per change, which is the same copy-per-write shape as the fold and shows up on tables with many columns rather than many rows.",
     sizes: [8, 32, 128],
+    // built through the fold, as every row the engine holds is: a hand-made plain `Map` would be
+    // copied on its first write — once per row loaded at boot, not once per change
     prepare: (columns) => {
-      const cells = new Map<ColumnName, Cell>();
-      const e = event(1, 1);
-      const stamp = stampOf(e);
-      for (let i = 0; i < columns; i += 1) cells.set(column(`c${i}`), { value: i, stamp });
-      const record: RowRecord = { cells, writeStamp: stamp };
-      const table = new Map<RowKey, RowRecord>([[key(1), record]]);
-      const state: State = new Map([[NOTES, table]]);
+      const stamp = stampOf(event(1, 1));
+      const wide = new Map<ColumnName, CellValue>();
+      for (let i = 0; i < columns; i += 1) wide.set(column(`c${i}`), i);
+      const state = applyChange(
+        emptyState(),
+        { kind: "insert", table: NOTES, key: key(1), row: wide },
+        stamp,
+        undefined,
+        undefined,
+      );
       return {
         state,
         change: {
