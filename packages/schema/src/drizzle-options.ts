@@ -1,4 +1,4 @@
-import type { AllowFn } from "./bind.js";
+import type { AllowFn, FieldsFn } from "./bind.js";
 import type { ColumnsFromDrizzle, DrizzleTableLike, FromDrizzleOptions } from "./from-drizzle.js";
 import type { Partition, ReservedPartition } from "./partition.js";
 
@@ -17,6 +17,8 @@ export interface DrizzleTableInKind<
 > extends FromDrizzleOptions<D> {
   readonly partition: Partition<N, R>;
   readonly allow: AllowFn<ColumnsFromDrizzle<D>, R>;
+  /** Field-level read rules, honoured where an authority serves rows (E06, D40). */
+  readonly fields?: FieldsFn<ColumnsFromDrizzle<D>, R>;
 }
 
 /** A table in `global`, `user` or `local`: what the kind is *is* its rule, so it takes no `allow`. */
@@ -29,6 +31,7 @@ export interface DrizzleTableReserved<D extends DrizzleTableLike> extends FromDr
 export interface DrizzleTableOptions<D extends DrizzleTableLike> extends FromDrizzleOptions<D> {
   readonly partition?: Partition;
   readonly allow?: AllowFn<ColumnsFromDrizzle<D>, string> | undefined;
+  readonly fields?: FieldsFn<ColumnsFromDrizzle<D>, string> | undefined;
 }
 
 /** The derived half every form of `drizzleTable` returns. */

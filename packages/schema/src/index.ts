@@ -35,7 +35,7 @@ export type {
   TableEntry,
   TablesOf,
 } from "./manifest.js";
-export type { AllowFn, Combinators } from "./bind.js";
+export type { AllowFn, Combinators, FieldsFn } from "./bind.js";
 export { combinators } from "./bind.js";
 export { syncSchema, syncedTables } from "./manifest.js";
 export type { RoleSet } from "@syncmesh/policy";

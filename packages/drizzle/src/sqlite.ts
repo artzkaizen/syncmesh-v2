@@ -9,7 +9,7 @@ import type { FaceDeps, Span } from "./face.js";
 import { commitHub } from "./face.js";
 import { createLive } from "./live.js";
 import { createProxy } from "./proxy.js";
-import { readPredicate, readScope } from "./read.js";
+import { readColumns, readPredicate, readScope } from "./read.js";
 
 export type SqliteMeshDb = SqliteRemoteDatabase<Record<string, never>>;
 
@@ -44,7 +44,11 @@ export function sqliteFace(deps: FaceDeps) {
   /** The table as this principal may read it: a subquery with the `read` rule (and the pin) compiled in. */
   const read = <T extends SQLiteTable>(table: T) => {
     const name = getTableName(table);
-    return db.select().from(table).where(readPredicate(name, reading)).as(name);
+    const columns = readColumns(name, table, reading);
+    // SAFETY: `columns` is the table's own column map with ruled entries swapped for aliased
+    // expressions of the same name and decoder, which is a selection Drizzle accepts as-is
+    const selecting = columns === undefined ? db.select() : db.select(columns as never);
+    return selecting.from(table).where(readPredicate(name, reading)).as(name);
   };
   return {
     db,

@@ -67,13 +67,35 @@ export function compileRead(
   principal: Principal,
   options: CompileOptions = {},
 ): Compiled {
+  // a table with no rules is readable by anyone who holds it — what can() says for "read"
+  if (allow === undefined) return always(options);
+  return compileRule(table, roles, resolveAllow(allow, "read"), principal, options);
+}
+
+/**
+ * One field rule (E06, D40) as the `WHERE` it would be: what a scoped source puts behind
+ * `CASE WHEN … THEN column ELSE NULL END`, so a caller the rule refuses reads `null` there.
+ */
+export const compileField = compileRule;
+
+const always = (options: CompileOptions): Compiled => ({
+  sql: options.dialect === "postgres" ? "TRUE" : "1",
+  params: [],
+});
+
+/** One policy node for one principal, as SQL over the table's columns. */
+function compileRule(
+  table: Table,
+  roles: RoleSet,
+  rule: PolicyNode,
+  principal: Principal,
+  options: CompileOptions = {},
+): Compiled {
   const dialect = options.dialect === "postgres" ? POSTGRES : SQLITE;
   const OPERATORS = { ne: "<>", lt: "<", lte: "<=", gt: ">", gte: ">=" } as const;
 
-  const ALWAYS: Compiled = { sql: dialect.name === "postgres" ? "TRUE" : "1", params: [] };
+  const ALWAYS = always(options);
   const NEVER: Compiled = { sql: dialect.name === "postgres" ? "FALSE" : "0", params: [] };
-  // a table with no rules is readable by anyone who holds it — what can() says for "read"
-  if (allow === undefined) return ALWAYS;
   const columns = new Map(columnsOf(table).map(([key, name, column]) => [key, { name, column }]));
 
   /** `column = value` as evaluate() would compare it, or a constant when it never could. */
@@ -150,5 +172,5 @@ export function compileRead(
     },
   };
 
-  return compile(resolveAllow(allow, "read"));
+  return compile(rule);
 }

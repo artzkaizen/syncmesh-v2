@@ -86,7 +86,7 @@ export { columnScalarKind } from "./read-filter.js";
 export type { PrincipalStatement, RlsOptions } from "./rls.js";
 export { installRls, principalSettings, rlsDdl } from "./rls.js";
 export { inTransaction, onConnection } from "./sql.js";
-export { compileRead } from "./read-filter.js";
+export { compileField, compileRead } from "./read-filter.js";
 export type {
   TxReceipt,
   Write,
