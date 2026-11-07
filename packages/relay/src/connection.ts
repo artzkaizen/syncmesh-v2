@@ -1,7 +1,6 @@
-import type { Interest } from "@syncmesh/engine";
-import type { PeerId, SyncEvent } from "@syncmesh/kernel";
+import type { PeerId } from "@syncmesh/kernel";
 
-import { matchesInterest, timed } from "@syncmesh/engine";
+import { timed } from "@syncmesh/engine";
 import { omitUndefined } from "@syncmesh/result";
 import { SEAL_OVERHEAD, cursorsFrame, presenceFrame } from "@syncmesh/transport";
 import { decodeAndVerifyPresence } from "@syncmesh/wire";
@@ -23,6 +22,7 @@ import {
 } from "./frames.js";
 import { ingestEvent, serveBlob } from "./ingest.js";
 import { createBudget } from "./limits.js";
+import { createViewer } from "./passover.js";
 import { newChallenge, verifyJoinProof } from "./proof.js";
 import { BELOW_FLOOR, belowFloor } from "./retention.js";
 import { secureLink } from "./secure.js";
@@ -122,8 +122,6 @@ export function createConnection(
    * N+1 without N — a hole every later joiner is paged and no author ever re-sends.
    */
   let closed = false;
-  /** What this socket asked for; absent wants everything the policy already allows. */
-  let interest: Interest | undefined;
 
   const refuse = (code: string, message: string, fatal = false): void => {
     sender.send(errorFrame(code, message));
@@ -139,10 +137,6 @@ export function createConnection(
     budget: createBudget(room.limits, room.now),
     refuse,
   };
-
-  /** Live fan-out obeys the same interest the catch-up did, so the two never disagree. */
-  const wants = (event: SyncEvent): boolean =>
-    interest === undefined || matchesInterest(interest, event);
 
   const onJoin = (frame: Extract<RelayFrame, { kind: "join" }>): void => {
     const { versions, peerId: peer, cursors: theirs, interest: wanted } = frame;
@@ -202,13 +196,18 @@ export function createConnection(
       room.clients.get(peer)?.socket.close("superseded by a newer join");
       room.clients.delete(peer);
       me = peer;
-      interest = wanted;
-      room.clients.set(peer, { peer, sender, socket, wants });
+      const view = createViewer(room, sender, {
+        peer,
+        interest: wanted,
+        closed: () => closed,
+        refuse,
+      });
+      room.clients.set(peer, { peer, sender, socket, offer: view.offer });
       sender.send(helloFrame(selected, room.keepaliveMs, room.epoch, room.cursors(), room.floor()));
       // who is here now — never how they got here: presence has no history to page through
       const here = room.presence.all();
       for (const entry of here) sender.send(presenceFrame(entry.wire));
-      sendCatchUp(conversation, theirs, wanted);
+      sendCatchUp(conversation, theirs, view.catchUp);
       // what the joiner holds, in its own words, for everyone else's `delivered`
       room.toClients(cursorsFrame(peer, theirs), peer);
       return here.length;

@@ -33,6 +33,7 @@ export type RoomTuning = Partial<
     | "fanout"
     | "blobs"
     | "onTelemetry"
+    | "admission"
   >
 >;
 
@@ -217,6 +218,7 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
     retention: options.retention,
     onTelemetry: options.onTelemetry,
     fanout: options.fanout,
+    admission: options.admission,
     identity,
   });
 

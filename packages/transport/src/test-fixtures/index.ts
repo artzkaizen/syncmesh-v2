@@ -64,3 +64,5 @@ export const peer = (n: number, account: string, startMs = 100) => {
 };
 
 export type Peer = ReturnType<typeof peer>;
+
+export * from "./gated.js";

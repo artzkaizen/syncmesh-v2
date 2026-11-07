@@ -7,6 +7,7 @@
  */
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
+import { scopeText } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import {
   RELAY_PROTOCOL_VERSIONS,
@@ -146,6 +147,32 @@ export function relayVectors() {
       kind: "challenge",
       tag: 19,
       wireHex: bytesToHex(challengeFrame(NONCE)),
+    },
+    {
+      description:
+        "page, the last of a gated catch-up: its coverage scoped to the interest and to the entitlement the relay admitted under (D24)",
+      kind: "page",
+      tag: 13,
+      wireHex: bytesToHex(
+        pageFrame([], [EVENT], false, 9, {
+          synced: CURSORS,
+          local: new Map(),
+          scope: scopeText({ partitions: [ACME] }, "clinics:a"),
+        }),
+      ),
+    },
+    {
+      description:
+        "page, a pass-over: no events, the last, and a coverage for one author — the relay withheld what this device may not read and says how far it passed (D24)",
+      kind: "page",
+      tag: 13,
+      wireHex: bytesToHex(
+        pageFrame([], [], false, 12, {
+          synced: CURSORS,
+          local: new Map(),
+          scope: scopeText(undefined, "clinics:a"),
+        }),
+      ),
     },
   ];
   return { protocolVersions: [...RELAY_PROTOCOL_VERSIONS], vectors: cases };

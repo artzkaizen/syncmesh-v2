@@ -91,5 +91,25 @@ describe("the holdback's gap rule against a parked event", () => {
   });
 });
 
+describe("the holdback's emptiness", () => {
+  test("an entry another route already delivered does not keep it from being empty", async () => {
+    const author = peer(40, "acct_a");
+    const device = deviceKnowing(41, author);
+    const events: StoredEvent[] = [];
+    for (const n of [1, 2, 3])
+      events.push({ event: (await write(author, `n${n}`, `b${n}`)).unwrap() });
+    const holdback = createHoldback(device.engine, 8);
+
+    // seq 3 arrives here ahead of its hole, and is held
+    // SAFETY: the loop above pushed three entries
+    expect(holdback.put(events[2]!)).toBe(false);
+    expect(holdback.empty()).toBe(false);
+    // then the whole run reaches the engine some other way, a second transport
+    (await device.engine.receiveBatch(events)).unwrap();
+    expect(holdback.drain(author.identity.peerId)).toEqual([]);
+    expect(holdback.empty()).toBe(true);
+  });
+});
+
 const readBody = (p: Peer, id: string) =>
   p.engine.state().get(NOTES)?.get(key(id))?.cells.get(BODY)?.value;

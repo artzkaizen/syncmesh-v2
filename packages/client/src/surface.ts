@@ -24,6 +24,7 @@ import type { RecoveryView } from "./recovery.js";
 import type { Status } from "./status.js";
 import type { MeshTelemetrySeam } from "./telemetry.js";
 import type { RunningTransports } from "./transports.js";
+import type { MeshVisibility } from "./visibility.js";
 
 /** One table as anything outside the app's own generics reads it: the entry the manifest built. */
 export type MeshSchemaEntry = SchemaEntry;
@@ -103,6 +104,12 @@ export interface Mesh<
   readonly corrections: MeshInternal["corrections"];
   /** Bytes that never enter the log: content-addressed, verified at both ends (D18). */
   readonly blobs: Blobs;
+  /**
+   * Reading back what was just written (RFC-0020 §3.2): `token()` names how far this device has
+   * been told the log runs, and `visibleAt(token)` waits to fold that far — `NoSuchCapability` on
+   * a mesh whose transports keep no ordered log.
+   */
+  readonly visibility: MeshVisibility;
   /**
    * Which devices an account has vouched for (D21), and where a link and a grant name different
    * accounts for one device. A link is an ordinary row, so there is nothing here to synchronise

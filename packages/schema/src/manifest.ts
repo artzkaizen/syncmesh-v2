@@ -132,6 +132,20 @@ export const syncedTables = (schema: {
 }): readonly Table[] => schema.entries.map((entry) => entry.table);
 
 /**
+ * The tables only the authority writes and only the relay's gate admits (D24) — what a relay's
+ * `admission.tables` names.
+ *
+ * @example
+ * startRelay(port, { admission: { tables: authorityTables(schema), entitle } })
+ */
+export const authorityTables = (schema: {
+  readonly entries: readonly Pick<SchemaEntry, "table" | "visibility">[];
+}): readonly TableName[] =>
+  schema.entries
+    .filter((entry) => entry.visibility === "authority")
+    .map((entry) => entry.table.name);
+
+/**
  * The names of the tables marked `sync: "window"`: kept by the server and read a page at a time,
  * never replicated (D43).
  */

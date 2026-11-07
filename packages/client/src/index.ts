@@ -5,6 +5,7 @@ export { openMeshEngine } from "./boot.js";
 export { NoDefaultStore } from "./errors.js";
 export type { Revision } from "./history.js";
 export type { Blobs } from "./blobs.js";
+export type { MeshVisibility } from "./visibility.js";
 export { NoSuchCapability } from "./blobs.js";
 export type { Peer, Topic, Topics, ValueOf } from "./presence.js";
 export { rowHistory } from "./history.js";
