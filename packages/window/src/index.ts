@@ -24,6 +24,7 @@ export type { Direction, KeysetBound, OrderCell, Reader, SortKey, WindowQuery } 
 export {
   ANONYMOUS,
   MAX_LIMIT,
+  MAX_ORDER,
   MalformedQuery,
   compareCells,
   compareSortKeys,
@@ -32,8 +33,8 @@ export {
   queryText,
   sortKey,
 } from "./query.js";
-export type { MemoryRowSource, RowChange, RowSource } from "./source.js";
-export { UnknownTable, createMemoryRowSource } from "./source.js";
+export type { MemoryRowSource, MemoryRowSourceOptions, RowChange, RowSource } from "./source.js";
+export { MAX_INDEXES, UnknownTable, createMemoryRowSource } from "./source.js";
 export type { ClientView, ClientViewOptions } from "./view.js";
 export { MAX_WINDOWS, createClientView } from "./view.js";
 export type { WindowClient, WindowStatus } from "./client.js";

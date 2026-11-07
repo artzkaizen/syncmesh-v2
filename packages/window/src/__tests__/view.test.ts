@@ -1,7 +1,11 @@
+import type { ColumnName } from "@syncmesh/kernel";
+
 import { rowIs } from "@syncmesh/policy";
 import { describe, expect, test } from "bun:test";
 
 import { decodeWindowFrame } from "../frames.js";
+import { MAX_ORDER, queryText } from "../query.js";
+import { createMemoryRowSource } from "../source.js";
 import { createClientView } from "../view.js";
 import {
   AT,
@@ -265,6 +269,31 @@ describe("a window over a row source (E27)", () => {
     client.undesire("a");
     expect(view.held()).toBe(2);
     expect(frames.length).toBe(sent);
+  });
+
+  test("however many orders clients name, a table keeps at most `maxIndexes` sorted indexes", () => {
+    const source = createMemoryRowSource({ maxIndexes: 2 });
+    source.load(
+      MAIL,
+      Array.from({ length: 50 }, (_, i) => ({ key: mailKey(i + 1), row: mail(i + 1) })),
+    );
+    const view = createClientView({ source, send: () => {} });
+    for (let i = 0; i < 20; i++)
+      // oxlint-disable-next-line anti-slop/require-safety-comment-for-type-assertion -- a column no row holds
+      view.desire("w", queryText(newest(1, { order: [[`x${i}` as ColumnName, "asc"]] })));
+    expect(source.indexed()).toBe(2);
+    // an order whose index was dropped is rebuilt, current with every write since
+    source.write([{ table: MAIL, key: mailKey(51), row: mail(51) }]);
+    const read = source.window(newest(3), () => true).unwrap();
+    expect(read.map((r) => r.row.get(AT))).toEqual(down(51, 3));
+    expect(source.indexed()).toBe(2);
+  });
+
+  test("an order of more than `MAX_ORDER` terms is refused", () => {
+    const { client } = harness(10);
+    const order = Array.from({ length: MAX_ORDER + 1 }, () => [AT, "asc"] as const);
+    client.desire("wide", newest(5, { order }));
+    expect(client.refusal("wide")).toBe(`order names at most ${MAX_ORDER} columns`);
   });
 
   test("a window the source cannot serve, or a query that does not parse, is refused", () => {

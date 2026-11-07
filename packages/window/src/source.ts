@@ -39,7 +39,24 @@ export interface RowSource {
   readonly subscribe: (listener: (changes: readonly RowChange[]) => void) => () => void;
 }
 
-/** A memory source: a table is a map, and every order a window asks for is a sorted index. */
+export interface MemoryRowSourceOptions {
+  /**
+   * Sorted indexes one table keeps, each one entry per row. An order past it drops the index
+   * used least recently, and the next window over that order rebuilds it in O(n log n). The
+   * source's memory is therefore at most `maxIndexes` entries per row, whatever orders clients
+   * name.
+   * @default 8
+   */
+  readonly maxIndexes?: number;
+}
+
+/** The {@link MemoryRowSourceOptions.maxIndexes} a memory source takes when none is given. */
+export const MAX_INDEXES = 8;
+
+/**
+ * A memory source: a table is a map, and every order a window asks for is a sorted index, of
+ * which a table keeps at most `maxIndexes`.
+ */
 export interface MemoryRowSource extends RowSource {
   /** Applies changes in one batch and tells every subscriber once. */
   readonly write: (changes: readonly RowChange[]) => void;
@@ -47,6 +64,8 @@ export interface MemoryRowSource extends RowSource {
   readonly load: (table: TableName, rows: Iterable<WindowRow>) => void;
   /** How many rows the last `window` call looked at, which is what bounds its time. */
   readonly scanned: () => number;
+  /** Sorted indexes held across every table, which with the rows is what bounds its memory. */
+  readonly indexed: () => number;
 }
 
 interface Entry {
@@ -88,9 +107,13 @@ const lowerBound = (index: Index, at: SortKey): number => {
   return lo;
 };
 
-export function createMemoryRowSource(): MemoryRowSource {
+export function createMemoryRowSource(options: MemoryRowSourceOptions = {}): MemoryRowSource {
+  const { maxIndexes = MAX_INDEXES } = options;
   const tables = new Map<TableName, Map<RowKey, Row>>();
-  /** Per table, per order (as JSON), the sorted index a window over that order reads. */
+  /**
+   * Per table, per order (as JSON), the sorted index a window over that order reads, least
+   * recently used first.
+   */
   const indexes = new Map<TableName, Map<string, Index>>();
   const listeners = new Set<(changes: readonly RowChange[]) => void>();
   let scanned = 0;
@@ -116,7 +139,15 @@ export function createMemoryRowSource(): MemoryRowSource {
     indexes.set(table, byOrder);
     const name = JSON.stringify(order);
     const found = byOrder.get(name);
-    if (found !== undefined) return found;
+    byOrder.delete(name);
+    if (found !== undefined) {
+      byOrder.set(name, found);
+      return found;
+    }
+    for (const stale of byOrder.keys()) {
+      if (byOrder.size < maxIndexes) break;
+      byOrder.delete(stale);
+    }
     const built = build(tableRows(table), order);
     byOrder.set(name, built);
     return built;
@@ -179,5 +210,6 @@ export function createMemoryRowSource(): MemoryRowSource {
       for (const [name, index] of byOrder ?? []) byOrder?.set(name, build(held, index.order));
     },
     scanned: () => scanned,
+    indexed: () => [...indexes.values()].reduce((sum, byOrder) => sum + byOrder.size, 0),
   };
 }

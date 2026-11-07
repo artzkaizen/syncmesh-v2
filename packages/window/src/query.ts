@@ -18,7 +18,9 @@ export interface KeysetBound {
 /**
  * What a window asks for (D39): E13's predicate grammar, plus an order and a limit. It is not a
  * new language. The row key is always the final tiebreak, so the order is total and `after` is
- * a keyset bound. Moving a window costs the same at row ten million as at row ten.
+ * a keyset bound. Moving a window seeks to `after` rather than counting an offset, so it costs
+ * the same at row ten million as at row ten when the read policy and `where` accept most rows.
+ * When they accept few, the source scans past the rows they reject, up to the end of the table.
  */
 export interface WindowQuery {
   readonly table: TableName;
@@ -35,6 +37,9 @@ export class MalformedQuery extends TaggedError("MalformedQuery")<{ message: str
 /** The largest window a query may ask for; a window is a screen, not an export. */
 export const MAX_LIMIT = 1000;
 
+/** The most order terms a query may name; a source keeps one cell per term for every row. */
+export const MAX_ORDER = 4;
+
 const malformed = (message: string) => Result.err(new MalformedQuery({ message }));
 
 /** A query as wire text: JSON, because it is a policy node and some scalars. */
@@ -49,11 +54,12 @@ const isText = (v: JsonValue | undefined): v is string => typeof v === "string";
 
 const parseOrder = (json: JsonValue | undefined): Result<WindowQuery["order"], MalformedQuery> => {
   if (!Array.isArray(json)) return malformed("order is not a list");
+  if (json.length > MAX_ORDER) return malformed(`order names at most ${MAX_ORDER} columns`);
   const order: (readonly [ColumnName, Direction])[] = [];
   for (const term of json) {
     if (!Array.isArray(term) || !isText(term[0]) || (term[1] !== "asc" && term[1] !== "desc"))
       return malformed('an order term is [column, "asc" | "desc"]');
-    // SAFETY: column names are the schema's; the source refuses one its table does not have
+    // SAFETY: column names are the schema's; one no row holds orders as null, as an absent cell does
     order.push([term[0] as ColumnName, term[1]]);
   }
   return Result.ok(order);
