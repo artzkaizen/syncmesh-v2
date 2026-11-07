@@ -201,6 +201,19 @@ export function openOperations(deps: {
   };
 
   /**
+   * Vouches and refusals touch the same rows — a vouch deletes the refusals it covers — so they
+   * are written one after another, in arrival order: an async driver must not land a refusal
+   * between a vouch's delete and its insert.
+   */
+  let custodyWrites = Promise.resolve();
+  const inOrder = (write: () => Promise<void>): void => {
+    // a write that throws is logged and does not stop the ones queued behind it
+    custodyWrites = custodyWrites
+      .then(write)
+      .catch((cause: unknown) => console.warn("custody ledger write failed:", cause));
+  };
+
+  /**
    * One arriving vouch, made durable.
    *
    * The transport has already verified the signature and already dropped anything that was not
@@ -209,19 +222,21 @@ export function openOperations(deps: {
    * the new one, which is how a peer that rebuilt stops counting for what it lost.
    */
   const vouched = (receipt: CustodyReceipt): void => {
-    void store
-      .vouch(
-        receipt.holder,
-        receipt.author,
-        receipt.throughSeq,
-        receipt.incarnation,
-        receipt.issuedAt.epochMilliseconds,
-      )
-      .then((written) => {
-        // evidence, not silence: the holder re-vouches on the next exchange either way
-        if (written.isErr()) console.warn(`vouch for ${receipt.holder} failed:`, written.error);
-        else changed();
-      });
+    inOrder(() =>
+      store
+        .vouch(
+          receipt.holder,
+          receipt.author,
+          receipt.throughSeq,
+          receipt.incarnation,
+          receipt.issuedAt.epochMilliseconds,
+        )
+        .then((written) => {
+          // evidence, not silence: the holder re-vouches on the next exchange either way
+          if (written.isErr()) console.warn(`vouch for ${receipt.holder} failed:`, written.error);
+          else changed();
+        }),
+    );
   };
 
   /**
@@ -229,19 +244,22 @@ export function openOperations(deps: {
    * the transport; nothing here acts on it beyond the ledger row a screen reads.
    */
   const refused = (refusal: RefusalReceipt): void => {
-    void store
-      .refuse(
-        refusal.refuser,
-        refusal.author,
-        refusal.seq,
-        { reason: refusal.reason, verdict: refusal.verdict },
-        refusal.issuedAt.epochMilliseconds,
-      )
-      .then((written) => {
-        // evidence, not silence: the refuser repeats it on the next exchange while it is parked
-        if (written.isErr()) console.warn(`refusal from ${refusal.refuser} failed:`, written.error);
-        else changed();
-      });
+    inOrder(() =>
+      store
+        .refuse(
+          refusal.refuser,
+          refusal.author,
+          refusal.seq,
+          { reason: refusal.reason, verdict: refusal.verdict },
+          refusal.issuedAt.epochMilliseconds,
+        )
+        .then((written) => {
+          // evidence, not silence: the refuser repeats it on the next exchange while it is parked
+          if (written.isErr())
+            console.warn(`refusal from ${refusal.refuser} failed:`, written.error);
+          else changed();
+        }),
+    );
   };
 
   /** A folded `_corrections` row naming one of this device's writes marks its record superseded. */
