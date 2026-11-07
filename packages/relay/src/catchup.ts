@@ -34,8 +34,11 @@ function scannedCoverage(
 
 /** What a catch-up needs of the socket it serves: what it may send, and what that slice is called. */
 export interface CatchUpViewer {
-  /** Asks the authority what this socket may read (D24); `false` when the join was refused for it. */
-  readonly entitle: () => Promise<boolean>;
+  /**
+   * Asks the authority what this socket may read (D24); `false` when the join was refused for it.
+   * `true` at once, rather than a promise of it, when the room gates nothing.
+   */
+  readonly entitle: () => true | Promise<boolean>;
   /** The live filter, asked of history: the interest, then the gate. */
   readonly wants: (event: SyncEvent) => boolean;
   /** The slice the scan is true for — interest and entitlement — or `undefined` when nothing was filtered. */
@@ -101,6 +104,12 @@ export function paged(
  * the floor from before it, is greeted, and would then be paged the run the sweep had just taken
  * the bottom out of. Asked again at the head of the queue, the sweep has either finished or has
  * not started, and there is no third state.
+ *
+ * **The entitlement is asked off the queue**, and the scan queued once it is answered. The answer
+ * comes from the authority's database, which the room does not own: asked on the queue, one slow
+ * answer would hold every other socket's ingest, acks and fan-out behind it, and one that never
+ * came would stop the room for good. Nothing is lost by asking first — until the answer, every
+ * gated event is withheld live and not remembered, and the scan reads everything above `theirs`.
  */
 export function sendCatchUp(
   conversation: Conversation,
@@ -108,14 +117,11 @@ export function sendCatchUp(
   viewer: CatchUpViewer,
 ): void {
   const { room, sender, refuse } = conversation;
-  room.enqueue(async () => {
+  const scan = async (): Promise<void> => {
     if (belowFloor(theirs, room.floor())) {
       refuse("retention", BELOW_FLOOR, true);
       return;
     }
-    // on the queue and ahead of the scan, so nothing is appended between the answer and the run
-    // it is applied to — an event withheld live before the answer is in this scan
-    if (!(await viewer.entitle())) return;
     const [sizes, duration] = await timed(async () => {
       const entries = await room.store.allSince(theirs);
       if (entries.isErr()) {
@@ -142,5 +148,9 @@ export function sendCatchUp(
       return { found: found.length, admitted: admitted.length, unsendable, pages: pages.length };
     });
     if (sizes !== undefined) room.report({ type: "relay.catchup", sizes, duration });
-  });
+  };
+  const entitled = viewer.entitle();
+  // an ungated room queues the scan where the join stood, exactly as it did before there was a gate
+  if (entitled === true) room.enqueue(scan);
+  else void entitled.then((admitted) => admitted && room.enqueue(scan));
 }

@@ -49,16 +49,18 @@ export function createViewer(room: RoomState, sender: Sender, viewing: Viewing) 
       : scopeText(interest, entitlement?.scope);
 
   const catchUp: CatchUpViewer = {
-    entitle: async () => {
-      if (room.gate === undefined) return true;
-      const answer = await room.gate.entitle(peer);
-      if (viewing.closed()) return false;
-      if (answer.isErr()) {
-        viewing.refuse("admission", answer.error.message, true);
-        return false;
-      }
-      entitlement = answer.value;
-      return true;
+    entitle: () => {
+      const gate = room.gate;
+      if (gate === undefined) return true;
+      return gate.entitle(peer).then((answer) => {
+        if (viewing.closed()) return false;
+        if (answer.isErr()) {
+          viewing.refuse("admission", answer.error.message, true);
+          return false;
+        }
+        entitlement = answer.value;
+        return true;
+      });
     },
     wants,
     // only a filtered run needs the coverage: an unfiltered one leaves the joiner's own fold able

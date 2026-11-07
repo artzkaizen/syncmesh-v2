@@ -1,6 +1,7 @@
 import type { PeerId, SyncEvent } from "@syncmesh/kernel";
 
 import { Result, TaggedError } from "@syncmesh/result";
+import { Temporal } from "@syncmesh/temporal";
 
 /**
  * What one device is admitted to read of the authority-visibility tables (D24): computed by the
@@ -38,7 +39,11 @@ export interface EntitlementAsk {
 export interface RelayAdmission {
   /** The authority-visibility tables, as the manifest names them (`authorityTables(schema)`). */
   readonly tables: readonly string[];
-  /** One device's entitlement, asked on the room's queue before its catch-up is scanned. */
+  /**
+   * One device's entitlement, asked once per join before its catch-up is scanned. Asked off the
+   * room's queue, so a slow answer delays this device alone; one that takes longer than
+   * {@link ENTITLE_DEADLINE} refuses the join as {@link EntitlementFailed}.
+   */
   readonly entitle: (ask: EntitlementAsk) => Promise<Entitlement> | Entitlement;
 }
 
@@ -55,7 +60,29 @@ export interface Gate {
   readonly entitle: (peer: PeerId) => Promise<Result<Entitlement, EntitlementFailed>>;
 }
 
-export function createGate(admission: RelayAdmission, room: string): Gate {
+/**
+ * How long the authority has to answer one join. Past it the join is refused rather than left
+ * waiting: a device with no answer has no catch-up, and nothing else would ever tell it so.
+ */
+export const ENTITLE_DEADLINE = Temporal.Duration.from({ seconds: 10 });
+
+/** `work`, or a rejection once `deadline` has passed without it. */
+const within = <T>(work: Promise<T>, deadline: Temporal.Duration): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`no answer within ${deadline.toString()}`)),
+      deadline.total("milliseconds"),
+    );
+  });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
+};
+
+export function createGate(
+  admission: RelayAdmission,
+  room: string,
+  deadline = ENTITLE_DEADLINE,
+): Gate {
   const tables = new Set(admission.tables);
   return {
     // a sealed event reads as no changes at all, so it is not gated: the authority writes gated
@@ -63,7 +90,11 @@ export function createGate(admission: RelayAdmission, room: string): Gate {
     gates: (event) => event.changes.some((change) => tables.has(change.table)),
     entitle: (peer) =>
       Result.tryPromise({
-        try: async () => admission.entitle({ peer, room }),
+        try: () =>
+          within(
+            Promise.resolve().then(() => admission.entitle({ peer, room })),
+            deadline,
+          ),
         catch: (cause) =>
           new EntitlementFailed({
             message: `the authority could not say what this device may read: ${String(cause)}`,

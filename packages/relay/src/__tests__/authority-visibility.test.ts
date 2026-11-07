@@ -3,6 +3,8 @@ import type { Transport } from "@syncmesh/transport";
 
 import { createMemoryEventStore } from "@syncmesh/engine";
 import { authorityTables } from "@syncmesh/schema";
+import { Temporal } from "@syncmesh/temporal";
+import { eventFrame } from "@syncmesh/transport";
 import {
   AUTHORITY,
   CATALOG,
@@ -22,10 +24,21 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { Entitlement, RelayAdmission } from "../admission.js";
 import type { RelayRoom } from "../room.js";
 
+import { createGate } from "../admission.js";
 import { memoryFanout } from "../fanout.js";
+import { joinFrame } from "../frames.js";
 import { hostTuning } from "../serve.js";
 import { relayTransport } from "../transport.js";
-import { dialTo, openRoom, tick, until } from "./fixtures.js";
+import {
+  dialTo,
+  fakeSocket,
+  openRoom,
+  peer,
+  scriptedRoom,
+  tick,
+  until,
+  write,
+} from "./fixtures.js";
 
 /**
  * The authority's own database, as far as these tests need one: which clinics each device belongs
@@ -229,5 +242,50 @@ describe("visibility: authority — admission at the relay (D24-A)", () => {
   test("startRelay hands the gate to every room it opens", () => {
     const tuned = hostTuning({ admission }, () => Promise.reject(new Error("unused")));
     expect(tuned.admission).toBe(admission);
+  });
+});
+
+describe("an authority that is slow to answer (D24-A)", () => {
+  const everything: Entitlement = { scope: "everything", admits: () => true };
+
+  test("one device left waiting for its answer does not stop the room for the others", async () => {
+    const [stuck, a, b] = [peer(40, "acct_s"), peer(80, "acct_a"), peer(120, "acct_b")];
+    const room = await scriptedRoom({
+      pageSize: 100,
+      admission: {
+        tables: [],
+        // an answer that never comes, for one device only
+        entitle: ({ peer: asking }) =>
+          asking === stuck.identity.peerId ? new Promise<Entitlement>(() => {}) : everything,
+      },
+    });
+    const join = (p: typeof a) => joinFrame([1], p.identity.peerId, new Map());
+    const waiting = fakeSocket();
+    room.connect(waiting.socket).receive(join(stuck));
+    const author = fakeSocket();
+    const ca = room.connect(author.socket);
+    ca.receive(join(a));
+    const reader = fakeSocket();
+    room.connect(reader.socket).receive(join(b));
+    await tick();
+
+    ca.receive(eventFrame(await write(a, "n1", "one")));
+    await tick(50);
+    expect(room.offset()).toBe(1);
+    expect(author.ofKind("ack")).toHaveLength(1);
+    expect(reader.events()).toBe(1);
+    // and the device still waiting has been paged nothing: no catch-up without an answer
+    expect(waiting.ofKind("page")).toHaveLength(0);
+    room.close();
+  });
+
+  test("an answer that does not come in time refuses the join instead of leaving it waiting", async () => {
+    const gate = createGate(
+      { tables: [], entitle: () => new Promise<Entitlement>(() => {}) },
+      "main",
+      Temporal.Duration.from({ milliseconds: 20 }),
+    );
+    const answer = await gate.entitle(peer(40, "acct_s").identity.peerId);
+    expect(answer.isErr() ? answer.error._tag : "answered").toBe("EntitlementFailed");
   });
 });
