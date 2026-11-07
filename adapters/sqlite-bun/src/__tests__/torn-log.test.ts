@@ -1,5 +1,5 @@
 import { openStores } from "@syncmesh/storage";
-import { CRASH_SCHEMA, CRASH_TABLES } from "@syncmesh/storage/driver-tests";
+import { CRASH_AUTHOR, CRASH_SCHEMA, CRASH_TABLES, linesOf } from "@syncmesh/storage/driver-tests";
 import { afterAll, describe, expect, test } from "bun:test";
 import {
   closeSync,
@@ -20,25 +20,24 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 const PAGE = 4096;
 
-/** Writes `atLeast` events into `<name>.db` from the crash child, then kills it; the count it committed. */
+/**
+ * Writes at least `atLeast` events into `<name>.db` from the crash child, kills it, and answers
+ * how many the log holds: the child runs on past `atLeast` before the kill lands, by more under
+ * load, so the reference is what the untorn file reads back rather than what was asked for.
+ */
 const fill = async (name: string, atLeast: number): Promise<number> => {
   const child = Bun.spawn(["bun", join(import.meta.dir, "crash-child.ts"), dir, name, "append"], {
     stdout: "pipe",
     stderr: "inherit",
   });
-  let committed = 0;
-  let pending = "";
-  const decoder = new TextDecoder();
-  for await (const chunk of child.stdout) {
-    pending += decoder.decode(chunk, { stream: true });
-    const lines = pending.split("\n");
-    pending = lines.pop() ?? "";
-    for (const line of lines) committed = Math.max(committed, Number(line));
-    if (committed >= atLeast) break;
-  }
+  for await (const line of linesOf(child.stdout)) if (Number(line) >= atLeast) break;
   child.kill("SIGKILL");
   await child.exited;
-  return committed;
+  const driver = bunSqliteDriver(join(dir, `${name}.db`), CRASH_SCHEMA);
+  const stores = (await openStores(driver, { tables: CRASH_TABLES })).unwrap();
+  const held = (await stores.events.allSince(new Map(), "synced")).unwrap().length;
+  await driver.close?.();
+  return held;
 };
 
 /** Half a page of zeros at `offset`: what a power cut leaves of a page the disk was writing. */
@@ -61,7 +60,7 @@ describe("a torn page in the log", () => {
   test.failing(
     "is refused as a value, never read around",
     async () => {
-      const committed = await fill("torn-base", 10_000);
+      const whole = await fill("torn-base", 10_000);
       const base = join(dir, "torn-base.db");
       const pages = statSync(base).size / PAGE;
       // eight positions through the file: measured 2026-11-07, 29 tears of 40 like these read
@@ -77,9 +76,9 @@ describe("a torn page in the log", () => {
         const held = opened.isOk()
           ? await opened.value.events.allSince(new Map(), "synced")
           : opened;
-        // either the damage is a value, or every committed event is still there — never a subset
-        if (held.isOk() && held.value.length < committed)
-          short.push(`page ${page}: ${held.value.length} of ${committed}`);
+        // either the damage is a value, or every event is still there — never a subset
+        if (held.isOk() && held.value.length < whole)
+          short.push(`page ${page}: ${held.value.length} of ${whole}`);
         await driver.close?.();
       }
       expect(short).toEqual([]);
@@ -87,17 +86,18 @@ describe("a torn page in the log", () => {
     60_000,
   );
 
-  test("the reads that do notice it say so as values, not throws", async () => {
+  test("a torn tail: `lastSeq` refuses it as a value, and no read throws", async () => {
     await fill("torn-tail", 2_000);
     const log = join(dir, "torn-tail.db");
     tear(log, statSync(log).size - PAGE / 2);
     const driver = bunSqliteDriver(log, CRASH_SCHEMA);
-    const opened = await openStores(driver, { tables: CRASH_TABLES });
-    // whatever the store says about a damaged log, it says it as a Result
-    if (opened.isOk()) {
-      const all = await opened.value.events.all();
-      expect(all.isErr() || all.isOk()).toBe(true);
-    } else expect(opened.error._tag).toBe("StoreFailure");
+    const stores = (await openStores(driver, { tables: CRASH_TABLES })).unwrap();
+    // `all` and `allSince` read around this tear today (D39); what is pinned is that they answer
+    // rather than throw, so a throw from either fails the case
+    await stores.events.all();
+    await stores.events.allSince(new Map(), "synced");
+    const last = await stores.events.lastSeq(CRASH_AUTHOR, "synced");
+    expect(last.isErr() && last.error._tag).toBe("StoreFailure");
     await driver.close?.();
   }, 60_000);
 });

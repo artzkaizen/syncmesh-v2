@@ -44,6 +44,23 @@ export interface CrashHarness {
   readonly openDriver: OpenDriver;
 }
 
+/**
+ * Each line of a child's output, as it arrives: what a harness builds {@link CrashChild.lines} from.
+ *
+ * @example
+ * lines: linesOf(Bun.spawn(command, { stdout: "pipe" }).stdout)
+ */
+export async function* linesOf(stream: AsyncIterable<Uint8Array>): AsyncIterable<string> {
+  const decoder = new TextDecoder();
+  let pending = "";
+  for await (const chunk of stream) {
+    pending += decoder.decode(chunk, { stream: true });
+    const lines = pending.split("\n");
+    pending = lines.pop() ?? "";
+    yield* lines;
+  }
+}
+
 /** Events per batch: a batch is one transaction, so a count that is not a multiple of it is a torn batch. */
 export const CRASH_BATCH = 20;
 
@@ -61,8 +78,9 @@ export const CRASH_TABLES = [table("notes", { id: t.text().primaryKey(), body: t
 /** The name the derived half is opened under: pass it to the driver both sides construct. */
 export const CRASH_SCHEMA = schemaNameFor(CRASH_TABLES);
 
-/** The foreign author whose events the `fold` child receives, and the device it receives them as. */
-const AUTHOR = parsePeerId("c".repeat(64)).unwrap();
+/** The foreign author of every event the child writes: whose run a reopened store is asked about. */
+export const CRASH_AUTHOR = parsePeerId("c".repeat(64)).unwrap();
+/** The device the `fold` child receives them as. */
 const DEVICE = parsePeerId("d".repeat(64)).unwrap();
 
 /** Event `n` inserts row `r<n>`: one new row per event, so the row count is the event count. */
@@ -71,8 +89,8 @@ const crashEvent = (n: number): StoredEvent => {
   return {
     event: {
       v: 1,
-      id: eventId(AUTHOR, seqNum),
-      peerId: AUTHOR,
+      id: eventId(CRASH_AUTHOR, seqNum),
+      peerId: CRASH_AUTHOR,
       seqNum,
       hlc: [Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000 + n), ZERO],
       procedure: PROCEDURE,
@@ -117,14 +135,14 @@ export async function crashChild(
   if (mode === "append") {
     const stores = (await openStores(driver, { tables: CRASH_TABLES })).unwrap();
     // a child started over a killed one's store carries on from what that one left
-    const resume = Number((await stores.events.lastSeq(AUTHOR, "synced")).unwrap() ?? 0);
+    const resume = Number((await stores.events.lastSeq(CRASH_AUTHOR, "synced")).unwrap() ?? 0);
     for (let first = resume + 1; ; first += CRASH_BATCH) {
       (await stores.events.appendBatch(batchFrom(first))).unwrap();
       committed(first + CRASH_BATCH - 1);
     }
   }
   const { engine } = await engineOver(driver, true);
-  const resume = Number((await engine.cursors()).unwrap().get(AUTHOR) ?? 0);
+  const resume = Number((await engine.cursors()).unwrap().get(CRASH_AUTHOR) ?? 0);
   for (let first = resume + 1; ; first += CRASH_BATCH) {
     (await engine.receiveBatch(batchFrom(first))).unwrap();
     committed(first + CRASH_BATCH - 1);
@@ -163,10 +181,10 @@ const killRounds = async (harness: CrashHarness, name: string, mode: CrashMode) 
 const countRows = async (driver: SqlDriver) =>
   Number((await driver.all(`SELECT COUNT(*) FROM notes`, []))[0]?.[0] ?? 0);
 
-/** How far the log holds `AUTHOR`, and whether it holds every number below that. */
+/** How far the log holds `CRASH_AUTHOR`, and whether it holds every number below that. */
 const logExtent = async (driver: SqlDriver) => {
   const stores = (await openStores(driver, { tables: CRASH_TABLES })).unwrap();
-  const last = Number((await stores.events.lastSeq(AUTHOR, "synced")).unwrap() ?? 0);
+  const last = Number((await stores.events.lastSeq(CRASH_AUTHOR, "synced")).unwrap() ?? 0);
   const held = (await stores.events.allSince(new Map<PeerId, never>(), "synced")).unwrap();
   return { last, count: held.length };
 };
@@ -206,7 +224,7 @@ export function crashTests(harness: CrashHarness): readonly SuiteCase[] {
 
         // boot repairs whatever the state half was behind by: after it, everything agrees
         const { engine } = await engineOver(driver, true);
-        const cursor = Number((await engine.cursors()).unwrap().get(AUTHOR) ?? 0);
+        const cursor = Number((await engine.cursors()).unwrap().get(CRASH_AUTHOR) ?? 0);
         equal(cursor, last, "the cursor after boot is the log's extent");
         equal(await countRows(driver), last, "rows in the app's table against the log's extent");
         const persisted = engine.digest().get(NOTES);
