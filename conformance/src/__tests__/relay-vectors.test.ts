@@ -1,3 +1,4 @@
+import { scopeFrom } from "@syncmesh/engine";
 import { RELAY_PROTOCOL_VERSIONS, decodeRelayFrame } from "@syncmesh/relay";
 import { decodeCbor, hexToBytes } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -17,6 +18,20 @@ describe("relay control frame vectors — frozen (D14, D33)", () => {
   test("the control tags run 8 through 19 with no gaps, above the session tags", () => {
     const tags = [...new Set(raw.vectors.map((v) => v.tag))].sort((a, b) => a - b);
     expect(tags).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+  });
+
+  test("a gated catch-up's scope reads back as the interest and the entitlement it names (D24)", () => {
+    const scoped = raw.vectors
+      .filter((v) => v.description.includes("(D24)"))
+      .map((v) => decodeRelayFrame(hexToBytes(v.wireHex).unwrap()).unwrap())
+      .map((frame) => (frame.kind === "page" ? scopeFrom(frame.scoped?.scope) : undefined));
+    // compared as text: a partition key is a brand, and the vector file holds plain strings
+    expect(JSON.stringify(scoped)).toBe(
+      JSON.stringify([
+        { interest: { partitions: ["org:acme"] }, entitlement: "clinics:a" },
+        { entitlement: "clinics:a" },
+      ]),
+    );
   });
 
   for (const v of raw.vectors) {

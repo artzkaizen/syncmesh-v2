@@ -1,10 +1,11 @@
 import type { Cursors, EventStore, StoredEvent } from "@syncmesh/engine";
-import type { PeerId, SyncEvent } from "@syncmesh/kernel";
+import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 import type { BlobStore } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { PresenceStore } from "@syncmesh/transport";
 import type { Identity } from "@syncmesh/wire";
 
+import type { Gate } from "./admission.js";
 import type { GrantCache } from "./grant-cache.js";
 import type { Budget, RelayLimits } from "./limits.js";
 import type { RelaySocket, Sender } from "./sender.js";
@@ -14,8 +15,18 @@ export interface Client {
   readonly peer: PeerId;
   readonly sender: Sender;
   readonly socket: RelaySocket;
-  /** Whether this client asked for that event; a client with no interest wants them all. */
-  readonly wants: (event: SyncEvent) => boolean;
+  /**
+   * One live event: sent when this client asked for it and is admitted to it, withheld otherwise
+   * — and a withheld one remembered, so {@link settle} can say the relay passed over it. `true`
+   * when the frame was sent.
+   */
+  readonly offer: (frame: Uint8Array, event: SyncEvent) => boolean;
+  /**
+   * After an append by `author`: if this client was withheld anything of that author's at or
+   * below `reach` — the room's contiguous run — it is told the relay passed over it, so the
+   * author's later events are not held behind a hole nothing will fill (D23, D24).
+   */
+  readonly settle: (author: PeerId, reach: () => SeqNum | undefined) => void;
 }
 
 /** The room as one connection sees it: shared state, and the three ways to reach the others. */
@@ -63,6 +74,8 @@ export interface RoomState {
   readonly enqueue: (work: () => Promise<void>) => void;
   /** The room's clock, injectable so a rate limit can be tested without waiting for one. */
   readonly now: () => Temporal.Instant;
+  /** The authority-visibility gate (D24); absent, the room withholds nothing it was not asked to. */
+  readonly gate: Gate | undefined;
   /** Emitted after the work it describes; a listener can never change what the room did (D17). */
   readonly report: (event: RelayTelemetry) => void;
 }

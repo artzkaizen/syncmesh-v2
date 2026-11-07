@@ -1,7 +1,7 @@
-import type { Coverage, Interest, StoredEvent } from "@syncmesh/engine";
-import type { PeerId, SeqNum } from "@syncmesh/kernel";
+import type { Coverage, StoredEvent } from "@syncmesh/engine";
+import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 
-import { interestText, matchesInterest, timed, trackCoverage } from "@syncmesh/engine";
+import { timed, trackCoverage } from "@syncmesh/engine";
 import { relayEnvelope } from "@syncmesh/wire";
 
 import type { Conversation } from "./state.js";
@@ -25,11 +25,23 @@ import { BELOW_FLOOR, belowFloor } from "./retention.js";
 function scannedCoverage(
   entries: readonly StoredEvent[],
   theirs: ReadonlyMap<PeerId, SeqNum>,
-  interest: Interest,
+  scope: string,
 ): Coverage {
   const tracker = trackCoverage({ synced: new Map(theirs), local: new Map() });
   for (const entry of entries) tracker.note(entry.event);
-  return { ...tracker.current(), scope: interestText(interest) };
+  return { ...tracker.current(), scope };
+}
+
+/** What a catch-up needs of the socket it serves: what it may send, and what that slice is called. */
+export interface CatchUpViewer {
+  /** Asks the authority what this socket may read (D24); `false` when the join was refused for it. */
+  readonly entitle: () => Promise<boolean>;
+  /** The live filter, asked of history: the interest, then the gate. */
+  readonly wants: (event: SyncEvent) => boolean;
+  /** The slice the scan is true for — interest and entitlement — or `undefined` when nothing was filtered. */
+  readonly scope: () => string | undefined;
+  /** The pages are on the socket: from here a pass-over can no longer outrun them. */
+  readonly paged: () => void;
 }
 
 /**
@@ -93,7 +105,7 @@ export function paged(
 export function sendCatchUp(
   conversation: Conversation,
   theirs: ReadonlyMap<PeerId, SeqNum>,
-  interest: Interest | undefined,
+  viewer: CatchUpViewer,
 ): void {
   const { room, sender, refuse } = conversation;
   room.enqueue(async () => {
@@ -101,6 +113,9 @@ export function sendCatchUp(
       refuse("retention", BELOW_FLOOR, true);
       return;
     }
+    // on the queue and ahead of the scan, so nothing is appended between the answer and the run
+    // it is applied to — an event withheld live before the answer is in this scan
+    if (!(await viewer.entitle())) return;
     const [sizes, duration] = await timed(async () => {
       const entries = await room.store.allSince(theirs);
       if (entries.isErr()) {
@@ -108,14 +123,13 @@ export function sendCatchUp(
         return undefined;
       }
       const found = entries.value;
-      // narrowed at the sender: an event this device did not ask for never becomes a page
+      // narrowed at the sender: an event this device did not ask for, or was not admitted to,
+      // never becomes a page
+      const scope = viewer.scope();
       const admitted =
-        interest === undefined
-          ? found
-          : found.filter((entry) => matchesInterest(interest, entry.event));
-      // and said so: only a filtered run needs the coverage, since an unfiltered one leaves the
-      // joiner's own fold able to compute the same number
-      const scoped = interest === undefined ? undefined : scannedCoverage(found, theirs, interest);
+        scope === undefined ? found : found.filter((entry) => viewer.wants(entry.event));
+      // and said so, naming the entitlement as well as the interest (D24)
+      const scoped = scope === undefined ? undefined : scannedCoverage(found, theirs, scope);
       const { pages, unsendable } = paged(
         admitted,
         room.grants.all(),
@@ -124,6 +138,7 @@ export function sendCatchUp(
         scoped,
       );
       for (const page of pages) sender.send(page);
+      viewer.paged();
       return { found: found.length, admitted: admitted.length, unsendable, pages: pages.length };
     });
     if (sizes !== undefined) room.report({ type: "relay.catchup", sizes, duration });

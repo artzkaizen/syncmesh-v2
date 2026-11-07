@@ -5,6 +5,7 @@ import type { Identity } from "@syncmesh/wire";
 
 import { omitUndefined, panic } from "@syncmesh/result";
 
+import type { RelayAdmission } from "./admission.js";
 import type { Fanout } from "./fanout.js";
 import type { RelayHost, RoomStore, RelayHostOptions, SocketSession } from "./host.js";
 import type { RelayLimits } from "./limits.js";
@@ -46,6 +47,11 @@ export interface StartRelayOptions {
   readonly fanout?: Fanout;
   /** Serve blobs from the room's own database (D18). Default true; `false` for a log-only relay. */
   readonly blobs?: boolean;
+  /**
+   * The authority-visibility gate every room here applies (D24): catch-up and fan-out alike, so no
+   * path into a device's log walks around it. Absent, no table is gated.
+   */
+  readonly admission?: RelayAdmission;
 }
 
 export interface RunningRelay {
@@ -100,6 +106,7 @@ export const hostTuning = (
     posture: options.posture,
     onTelemetry: options.onTelemetry,
     fanout: options.fanout,
+    admission: options.admission,
   });
 /**
  * Whether a request is asking to become a socket at all. A plain `GET` on a room's path is
