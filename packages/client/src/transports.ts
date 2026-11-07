@@ -3,7 +3,6 @@ import type { Result as ResultType } from "@syncmesh/result";
 import type {
   AdmissionHandler,
   LinkEvent,
-  RouteCandidate,
   RouteMessage,
   RoutePolicy,
   Transport,
@@ -14,16 +13,19 @@ import type {
 
 import { createHub } from "@syncmesh/engine";
 import { Result, TaggedError } from "@syncmesh/result";
-import { KIND, ORDINARY_LINK, pickRoutes } from "@syncmesh/transport";
+import { KIND } from "@syncmesh/transport";
 
 import type { AdmissionFacts } from "./admission.js";
 import type { ChurnOptions } from "./churn.js";
+import type { MeshStopped } from "./errors.js";
 import type { ForcedMedium, NoSuchTransport } from "./forced.js";
 import type { StaleOptions } from "./stale.js";
 
 import { boundable, enforceBudget, enforceCeiling } from "./admission.js";
 import { createForcing } from "./forced.js";
 import { startKeepers } from "./keepers.js";
+import { createLifecycle } from "./lifecycle.js";
+import { scoreRoutes } from "./scoring.js";
 
 /**
  * How this device shapes its part of the mesh (book ch. 17).
@@ -125,6 +127,12 @@ export class TransportAddFailed extends TaggedError("TransportAddFailed")<{
 
 /** The running half of the mesh: every configured transport, started once, stopped together. */
 export interface RunningTransports {
+  /**
+   * Opens every medium in the set, once. A second call, or a call on a set that started at
+   * construction, does nothing; a set that has stopped stays stopped.
+   */
+  readonly start: () => ResultType<void, MeshStopped>;
+  /** Waits for `start()` first; resolves at once on a set stopped before it ever started. */
   readonly ready: () => Promise<void>;
   /**
    * Every source that could still fill a scope has finished its first pass — the question an app
@@ -132,7 +140,7 @@ export interface RunningTransports {
    * a radio holding nothing never resolves ahead of the relay that holds everything.
    *
    * The device's own storage is not among them: boot replays the log before a mesh exists, so by
-   * the time this can be called it has already answered.
+   * the time this can be called it has already answered. Like `ready`, it waits for `start()`.
    */
   readonly settled: () => Promise<void>;
   readonly running: () => boolean;
@@ -163,7 +171,13 @@ export interface RunningTransports {
    * A medium that cannot say anything about its links is simply absent from the feed.
    */
   readonly onLinkEvent: (listener: (event: LinkEvent) => void) => Unsubscribe;
-  /** Starts one more medium mid-life — a settings toggle, a diagnostic pane (book ch. 8, 16). */
+  /**
+   * Starts one more medium mid-life — a settings toggle, a diagnostic pane (book ch. 8, 16).
+   *
+   * Before `start()` the medium joins the set and opens with the rest of it, so this answers
+   * `Ok` without opening anything; a failure to open then surfaces through `ready()`, as it does
+   * for a medium passed at construction.
+   */
   readonly add: (transport: Transport) => Promise<ResultType<void, TransportAddFailed>>;
   /**
    * Stops one medium by name and takes its route away; `drain` flushes its queue first.
@@ -237,51 +251,24 @@ const wakeEvery = (transports: readonly Transport[]): void => {
   for (const transport of transports) transport.wake?.();
 };
 
-/**
- * Score the candidates and hand back the transports behind the survivors (RFC-0012 §2).
- *
- * Candidates are matched to their transport by identity rather than by name, so two mediums
- * configured under one name cannot collapse into each other — the name is the scorer's tie-break,
- * and a tie-break is not an identifier.
- *
- * A medium nothing has said anything about is treated as up. A send that turns out to be wrong
- * fails loudly and resyncs, where assuming down would keep a working link idle until it happened
- * to announce itself.
- */
-const scoreRoutes = (
-  among: readonly Transport[],
-  online: ReadonlyMap<Transport, boolean>,
-  message: RouteMessage,
-  policy: RoutePolicy | undefined,
-): readonly Transport[] => {
-  const owners = new Map<RouteCandidate, Transport>();
-  const candidates = among.map((t) => {
-    const candidate = {
-      id: t.name,
-      online: online.get(t) ?? true,
-      ...(t.route?.() ?? ORDINARY_LINK),
-    };
+/** Every start the set made has run its course, then every medium says it is ready. */
+const readyAcross = async (
+  started: Promise<unknown>,
+  starts: Iterable<Promise<void>>,
+  active: readonly Transport[],
+): Promise<void> => {
+  await started;
+  await Promise.all([...starts].map((p) => p.catch(() => undefined)));
+  await Promise.all(active.map((t) => t.whenReady()));
+};
 
-    /**
-     * What this medium claims about peers, for routing: adjacency and transitive reach together.
-     *
-     * `reaches` is the links it holds and `delivers` is what it can carry to through them — a
-     * relay's one socket and the room behind it. Routing wants both, because the question a frame
-     * asks is "can you get this to P", not "is P on the other end of a cable". They stay separate
-     * on the transport itself because `churn` counts `reaches` against `maxLinks` before closing
-     * something, and a relay answering forty there would be told to hang up links it never had.
-     *
-     * Absent from both stays absent: a medium that tracks neither says nothing, which `pickRoutes`
-     * reads as a shrug rather than a refusal.
-     */
-    const adjacency = t.reaches?.();
-    const transitive = t.delivers?.();
-    if (adjacency !== undefined || transitive !== undefined)
-      Object.assign(candidate, { reaches: new Set([...(adjacency ?? []), ...(transitive ?? [])]) });
-    owners.set(candidate, t);
-    return candidate;
-  });
-  return pickRoutes(candidates, message, policy).flatMap((c) => owners.get(c) ?? []);
+/** Every source's first pass, nearest first (RFC-0019). */
+const settleNearestFirst = async (active: readonly Transport[]): Promise<void> => {
+  await Promise.all(active.map((t) => t.whenReady()));
+  const nearestFirst = [...active].sort((x, y) => (x.priority ?? 1) - (y.priority ?? 1));
+  // sequentially, and in that order: waiting on them together would let the furthest source
+  // decide when the answer is ready, which is exactly the race this exists to lose
+  for (const transport of nearestFirst) await transport.caughtUp?.();
 };
 
 export function runTransports(
@@ -289,6 +276,7 @@ export function runTransports(
   context: TransportContext,
   shaping: MeshShaping = {},
   knocks: readonly Knock[] = [],
+  lifecycle: { readonly start?: boolean } = {},
 ): RunningTransports {
   /**
    * Whether each medium is up, from the one place that says so. A transport that has not spoken
@@ -320,13 +308,8 @@ export function runTransports(
     ...context,
     carries: (name, message) => carries(name, message),
   };
-  const starts = new Map<Transport, Promise<void>>(active.map((t) => [t, t.start(routed)]));
-  const started = Promise.all(starts.values());
-  let running = true;
-
-  // guarded on `running` because a knock is a subscription on somebody else's event source, and a
-  // signal arriving after `stop()` let go would redial a socket the mesh has already finished with
-  const answered = knocks.map((knock) => knock(() => void (running && wakeEvery(active))));
+  const starts = new Map<Transport, Promise<void>>();
+  let started: Promise<unknown> = Promise.resolve();
 
   /**
    * Holds each radio to the links it says it sustains (E28).
@@ -337,7 +320,7 @@ export function runTransports(
    */
   const facts = factsFrom(context);
   const sweep = (): void => {
-    if (!running) return;
+    if (!life.running()) return;
     const now = facts();
     // each medium to what it sustains, then the device to what it sustains: a radio's limit is
     // about the radio, and the ceiling is about the process holding all of them at once
@@ -414,7 +397,18 @@ export function runTransports(
     },
   });
 
-  const stopKeepers = startKeepers(shaping, () => active, facts, context, linkEvents.emit);
+  /** Every medium opened, then everything that only makes sense over open links. */
+  const life = createLifecycle(() => {
+    for (const t of active) starts.set(t, t.start(routed));
+    started = Promise.all(starts.values());
+    return [
+      // guarded on `running` because a knock is a subscription on somebody else's event source,
+      // and a signal arriving after `stop()` would redial a socket the mesh has finished with
+      ...knocks.map((knock) => knock(() => void (life.running() && wakeEvery(active)))),
+      startKeepers(shaping, () => active, facts, context, linkEvents.emit),
+    ];
+  });
+  if (lifecycle.start !== false) life.start();
 
   /**
    * Score the candidates and hand back the transports behind the survivors.
@@ -453,25 +447,20 @@ export function runTransports(
 
   return {
     route,
-    ready: async () => {
-      await started;
-      await Promise.all([...starts.values()].map((p) => p.catch(() => undefined)));
-      await Promise.all(active.map((t) => t.whenReady()));
-    },
-    running: () => running,
-    settled: async () => {
-      await Promise.all(active.map((t) => t.whenReady()));
-      const nearestFirst = [...active].sort((x, y) => (x.priority ?? 1) - (y.priority ?? 1));
-      // sequentially, and in that order: waiting on them together would let the furthest source
-      // decide when the answer is ready, which is exactly the race this exists to lose
-      for (const transport of nearestFirst) await transport.caughtUp?.();
-    },
+    start: life.start,
+    ready: life.whenOpen(() => readyAcross(started, starts.values(), active)),
+    running: life.running,
+    settled: life.whenOpen(() => settleNearestFirst(active)),
     requestGrant: (invite) => {
       // every link that is up, not the best one: this is the ask that gets a device admitted at
       // all, and whoever can answer it may be reachable on only one of them
+      if (!life.begun()) return;
       for (const t of every({ cls: KIND.grantRequest, bytes: 0 })) t.requestGrant?.(invite);
     },
     sendPresence: (wire) => {
+      // nothing is open to carry it; the sender's store keeps the value, and its heartbeat
+      // puts it on the links once they are
+      if (!life.begun()) return;
       for (const t of every({ cls: KIND.presence, bytes: wire.length })) t.sendPresence?.(wire);
     },
     withBlobs: () => active.filter((t) => t.blobs !== undefined),
@@ -479,12 +468,14 @@ export function runTransports(
     online: (transport) => online.get(transport),
     onLinkEvent: linkEvents.subscribe,
     add: async (transport) => {
-      if (!running)
+      if (life.stopped())
         return Result.err(
           new TransportAddFailed({ transport: transport.name, message: "the mesh has stopped" }),
         );
       watch(transport);
       active.push(transport);
+      // queued: `begin` opens it with the rest
+      if (!life.begun()) return Result.ok(undefined);
       return open(transport);
     },
     remove: async (name, options = {}) => {
@@ -494,6 +485,8 @@ export function runTransports(
       drop(held);
       // the instance behind a held name goes with it — it was already stopped when it was held
       forcing.forget(name);
+      // a medium that never opened has nothing to flush and nothing to close
+      if (!life.begun()) return true;
       if (options.drain === true) await held.flush?.().catch(() => undefined);
       await held.stop();
       return true;
@@ -502,15 +495,14 @@ export function runTransports(
     release: forcing.release,
     forced: forcing.list,
     stop: async () => {
-      running = false;
-      forcing.clear();
       // the platform's listeners first: they are the only subscriptions here that outlive the
       // process this mesh runs in, and one left behind holds every transport it captured with it
-      for (const off of answered) off();
+      const begun = life.stop();
+      forcing.clear();
       for (const stopWatching of watching.values()) stopWatching();
       watching.clear();
       for (const off of offAdmission) off();
-      stopKeepers();
+      if (!begun) return;
       await started.catch(() => undefined);
       await Promise.all(active.map((t) => t.stop()));
     },

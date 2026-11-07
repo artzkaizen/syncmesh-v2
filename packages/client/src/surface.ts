@@ -10,7 +10,7 @@ import type { Auth } from "./auth.js";
 import type { Blobs } from "./blobs.js";
 import type { DeliveredOptions, ReceivedOptions } from "./delivered.js";
 import type { Drafts } from "./drafts.js";
-import type { PartitionSealed } from "./errors.js";
+import type { MeshStopped, PartitionSealed } from "./errors.js";
 import type { MeshGrants } from "./grants.js";
 import type { Handle, OnOptions } from "./handles.js";
 import type { HistoryViewOptions, RevisionView } from "./history-view.js";
@@ -189,7 +189,10 @@ export interface Mesh<
   readonly flush: () => Promise<void>;
   /** One listener for `engine.*` and `mesh.*` alike (D17); a thrower never decides a write. */
   readonly onTelemetry: (listener: Parameters<MeshTelemetrySeam["onTelemetry"]>[0]) => Teardown;
-  /** Every transport ready (or force-ready); rejects if one failed to start. */
+  /**
+   * Every transport ready (or force-ready); rejects if one failed to start. On a mesh created
+   * with `start: false` it waits for {@link Mesh.start}.
+   */
   readonly ready: () => Promise<void>;
   /**
    * Every source that could still fill a scope has finished its first pass — what to await
@@ -202,7 +205,18 @@ export interface Mesh<
    * ch. 9) — `settled()`'s per-source completions kept instead of collapsed into one promise.
    */
   readonly coverage: ReadCoverageView;
+  /** `true` between the transports opening and `stop()`; `false` on a mesh not yet started. */
   readonly running: () => boolean;
+  /**
+   * Opens the transports of a mesh created with `start: false`. Idempotent: a second call, or a
+   * call on a mesh that started at construction, does nothing. After `stop()` it is `MeshStopped`.
+   *
+   * @example
+   * const mesh = (await createMesh({ ...options, start: false })).unwrap();
+   * mesh.start().unwrap();
+   * await mesh.ready();
+   */
+  readonly start: () => Result<void, MeshStopped>;
   /** Asks every connected peer for a grant for this device (flow A). */
   readonly requestGrant: (invite?: string) => void;
   /** Stops every transport, then closes what the mesh opened; a store or driver you passed stays yours. */

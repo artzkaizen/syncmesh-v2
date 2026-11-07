@@ -3,6 +3,9 @@ import { TaggedError } from "@syncmesh/result";
 /** `createMesh` was given no `store` on a platform that has no durable default yet. */
 export class NoDefaultStore extends TaggedError("NoDefaultStore")<{ message: string }> {}
 
+/** `start()` on a mesh that has stopped: a stopped mesh has closed what it opened, for good. */
+export class MeshStopped extends TaggedError("MeshStopped")<{ message: string }> {}
+
 /**
  * No transport here has the capability the call needs — carrying bytes out of band (D18), naming
  * a position in an ordered log (RFC-0020 §3.2). A fact about the medium, not a bug (D12): a raw

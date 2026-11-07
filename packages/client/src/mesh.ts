@@ -166,6 +166,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     transportContext,
     options.mesh ?? {},
     options.knocks ?? [],
+    omitUndefined({ start: options.start }),
   );
   // a device holding nothing asks for state instead of history; one that holds coverage does not
   void joinIfEmpty(engine, { ready: links.ready, list: links.list });
@@ -223,6 +224,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
       now,
     }),
     running: links.running,
+    start: links.start,
     requestGrant: (invite) => {
       swept.asked();
       links.requestGrant(invite);

@@ -2047,6 +2047,9 @@ Also absent: `mesh.start()`. Engines and their transports start eagerly at
 construction, so there is a `stop()` with no matching `start()`. Asymmetric, and
 worth fixing at the same time.
 
+> Built (2026-11-07): `mesh.transports.add/remove`, and `createMesh({ start: false })`
+> with `mesh.start()` — idempotent, `MeshStopped` as a value after `stop()`.
+
 ## 25 · Not built yet
 
 Everything above that is untagged runs. These do not:
