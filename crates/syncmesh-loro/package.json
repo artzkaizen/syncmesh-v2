@@ -1,0 +1,11 @@
+{
+  "name": "@syncmesh/loro-rs",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The loro@1 document adapter in Rust (RFC-0023 §2.8), byte for byte with @syncmesh/loro",
+  "scripts": {
+    "build": "cargo build -p syncmesh-loro --all-features",
+    "test": "cargo test -p syncmesh-loro --all-features",
+    "typecheck": "cargo check -p syncmesh-loro --all-features --tests"
+  }
+}
