@@ -134,6 +134,43 @@ describe("a grant-gated room (D40)", () => {
     }
   });
 
+  test("a hole filled by an event the gate also skips tells the reach above it", async () => {
+    const room = await gatedRoom();
+    const author = peer(40, "acct_author");
+    const [a1, g2, g3, a4] = [
+      await write(author, "a1", "acme one", ACME),
+      await write(author, "g2", "globex two", GLOBEX),
+      await write(author, "g3", "globex three", GLOBEX),
+      await write(author, "a4", "acme four", ACME),
+    ];
+    const forwarder = peer(44, "acct_fwd");
+    const probe = await secureProbe(dialTo(room).dial, forwarder.identity);
+    probe.join();
+    probe.send(grantFrame(mintFor(forwarder.identity, "acct_fwd")));
+    probe.send(grantFrame(mintFor(author.identity, "acct_author")));
+    await tick(30);
+
+    const reader = peer(41, "acct_reader", 100, { partitions: [ACME] });
+    const tr = relayTransport({ dial: dialTo(room).dial, reconnectMs: 10 });
+    await tr.start(reader.context);
+    await tr.whenReady();
+    await tick(40);
+    // g3 lands above a hole; a1 is sent; g2 fills the hole and is passed over itself
+    for (const event of [g3, a1, g2, a4]) {
+      probe.send(eventFrame(event));
+      await tick(30);
+    }
+
+    expect(await until(() => bodyOf(reader, "a4") === "acme four")).toBe(true);
+    expect(bodyOf(reader, "a1")).toBe("acme one");
+    expect(bodyOf(reader, "g2")).toBeUndefined();
+    expect(bodyOf(reader, "g3")).toBeUndefined();
+
+    await tr.stop();
+    probe.close();
+    room.close();
+  });
+
   test("a held join is seated by its ticket arriving on another socket, before the wait is up", async () => {
     const room = await gatedRoom({
       trust: { issuers: [ISSUER.peerId], wait: Temporal.Duration.from({ seconds: 5 }) },

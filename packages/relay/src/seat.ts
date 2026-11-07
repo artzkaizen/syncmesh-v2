@@ -42,16 +42,18 @@ export interface Seat {
    * Without it the filter's hole sits under every later event of that author in the client's
    * holdback until it overflows into a re-join — a stall for every device a gate narrows.
    *
-   * The claim is the room's own contiguous cursor for the author, capped at the event: true of
-   * everything this socket may read, because all of it was sent, in order, by this connection.
-   * Nothing before the seat's own last page: a notice is a last page too, and one ahead of the
-   * catch-up would tell the client it had caught up when it had not.
+   * The claim is the room's own contiguous cursor for the author, which may stand below the event
+   * or past it: true of everything this socket may read, because all of it was sent by this
+   * connection. A passed-over event that fills a hole tells the reach above it, as
+   * {@link Seat.sent} does for one that is sent. Nothing before the seat's own last page: a notice
+   * is a last page too, and one ahead of the catch-up would tell the client it had caught up when
+   * it had not.
    */
   readonly skipped: (event: SyncEvent) => void;
   /**
    * An event live fan-out sent. When it filled a hole under events already in the room, the
    * author's run now reaches past it, and the ones above it this socket was passed over — before
-   * or after its seat — are told as {@link Seat.skipped} tells them: the notice they got capped at
+   * or after its seat — are told as {@link Seat.skipped} tells them: the notice they got stopped at
    * the hole, and nothing else would say it again.
    */
   readonly sent: (event: SyncEvent) => void;
@@ -149,7 +151,7 @@ export function createSeat(
     skipped: (event) => {
       const reach = room.cursors().get(event.peerId);
       if (reach === undefined) return;
-      tell(event.peerId, Number(reach) < Number(event.seqNum) ? reach : event.seqNum);
+      tell(event.peerId, reach);
     },
     sent: (event) => {
       const reach = room.cursors().get(event.peerId);
