@@ -102,6 +102,19 @@ export function createWindowClient(): WindowClient {
     send(desireFrame(first[0], queryText(first[1]), since));
   };
 
+  /**
+   * A patch in `epoch` did not land. While an ask is out, one in the epoch the ask was sent from
+   * was already on the socket and asks nothing; one in any other epoch comes after a reset this
+   * client never saw, so the answer was lost and the client asks again.
+   */
+  const gap = (target: PatchStream, epoch: string): void => {
+    if (asked !== undefined) {
+      if (asked.before === undefined) asked = { before: epoch };
+      else if (asked.before !== epoch) asked = undefined;
+    }
+    resync(target, epoch);
+  };
+
   return {
     desire: (id, query) => {
       queries.set(id, query);
@@ -132,12 +145,7 @@ export function createWindowClient(): WindowClient {
       const frame = decoded.value;
       if (frame?.kind !== "rows") return frame !== undefined;
       if (target.apply(frame) === "gap") {
-        if (asked !== undefined) {
-          if (asked.before === undefined) asked = { before: frame.epoch };
-          // the view moved to an epoch whose reset never arrived: the answer was lost
-          else if (asked.before !== frame.epoch) asked = undefined;
-        }
-        resync(target, frame.epoch);
+        gap(target, frame.epoch);
         return true;
       }
       // every desire sent before the resync was read before it, so its reset holds them all
