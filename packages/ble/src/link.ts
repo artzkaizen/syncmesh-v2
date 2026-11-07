@@ -105,9 +105,17 @@ export function bleLink(options: LinkOptions): FrameLink & {
 
   // serialised per link: a radio is one pipe, and letting two frames race their packets onto it
   // only invites the stack to reorder them under load
+  // `pumping` is cleared in the same synchronous step that finds the queues empty, so a frame
+  // enqueued at any later moment either sees the flag down and starts a pump, or is found by this one
   const pump = async (): Promise<void> => {
-    for (let packets = next(); packets !== undefined; packets = next())
-      for (const packet of packets) await put(packet);
+    try {
+      for (let packets = next(); packets !== undefined; packets = next())
+        for (const packet of packets) await put(packet);
+    } catch (cause) {
+      fail(cause);
+    } finally {
+      pumping = false;
+    }
   };
 
   const fail = (cause: unknown): void => {
@@ -130,13 +138,7 @@ export function bleLink(options: LinkOptions): FrameLink & {
     hold(packets.value);
     if (pumping) return;
     pumping = true;
-    void pump().then(
-      () => void (pumping = false),
-      (cause: unknown) => {
-        pumping = false;
-        fail(cause);
-      },
-    );
+    void pump();
   };
 
   return {
