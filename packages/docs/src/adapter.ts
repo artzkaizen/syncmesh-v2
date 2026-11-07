@@ -1,7 +1,9 @@
-import type { AdapterId } from "@syncmesh/kernel";
-import type { Result } from "@syncmesh/result";
+import type { DocAddress } from "@syncmesh/engine";
+import type { AdapterId, DocColumns } from "@syncmesh/kernel";
 
-import { TaggedError } from "@syncmesh/result";
+import { Result, TaggedError } from "@syncmesh/result";
+
+import { AdapterMissing, NotADocColumn } from "./errors.js";
 
 /**
  * The bounds an adapter holds every document to (RFC-0023 §5.4, §8.2, §10). Exceeding one is a
@@ -63,3 +65,24 @@ export interface DocumentAdapter<D> {
 /** A document adapter of any library, as a registry holds it. */
 // oxlint-disable-next-line typescript/no-explicit-any -- the registry is heterogeneous by design; each open() names its D
 export type AnyAdapter = DocumentAdapter<any>;
+
+/** The adapter a document column declares, as this runtime holds it. */
+export function columnAdapter(
+  docs: DocColumns,
+  adapters: ReadonlyMap<AdapterId, AnyAdapter>,
+  address: DocAddress,
+): Result<AnyAdapter, NotADocColumn | AdapterMissing> {
+  const id = docs.get(address.table)?.get(address.column);
+  if (id === undefined)
+    return Result.err(
+      new NotADocColumn({
+        table: address.table,
+        column: address.column,
+        message: "the mesh declares no document column there",
+      }),
+    );
+  const adapter = adapters.get(id);
+  return adapter === undefined
+    ? Result.err(new AdapterMissing({ adapter: id, message: `no adapter for ${id}` }))
+    : Result.ok(adapter);
+}

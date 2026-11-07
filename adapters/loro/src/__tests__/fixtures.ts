@@ -28,6 +28,7 @@ import { LORO_ID, loro } from "../index.js";
 export const NOTES = "notes" as TableName;
 export const CONTENT = "content" as ColumnName;
 export const N1 = "n1" as RowKey;
+export const N2 = "n2" as RowKey;
 export const EDIT = "notes.edit" as Procedure;
 const ID = "id" as ColumnName;
 const TITLE = "title" as ColumnName;

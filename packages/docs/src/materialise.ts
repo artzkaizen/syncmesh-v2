@@ -9,6 +9,7 @@ import type {
 import type { Hlc, PeerId, SeqNum } from "@syncmesh/kernel";
 
 import { sha256 } from "@noble/hashes/sha2.js";
+import { docKey } from "@syncmesh/engine";
 import { getRecord, lineageOf } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import {
@@ -84,11 +85,12 @@ const ref = ({ entry }: TailUpdate): DocEntryRef => ({
  */
 function floorOf(tail: DocTail, settled: readonly TailUpdate[]): Map<PeerId, SeqNum> {
   const floor = new Map(tail.head?.covers ?? []);
-  const done = new Set(settled.map((u) => `${u.entry.author} ${String(u.entry.seq)}`));
+  const done = new Set(settled.map((u) => u.entry));
   const stopped = new Set<PeerId>();
+  // by change, not by event: one unsettled change holds its whole event, and its author, back
   for (const { entry } of tail.updates) {
     if (stopped.has(entry.author)) continue;
-    if (!done.has(`${entry.author} ${String(entry.seq)}`)) {
+    if (!done.has(entry)) {
       stopped.add(entry.author);
       continue;
     }
@@ -196,11 +198,14 @@ const refuse = (message: string, cause?: unknown) =>
  * Installs a checkpoint in place of history this device never held (RFC-0023 §8.4): verified
  * against the producer's key, the snapshot's hash, the column's adapter and winning lineage, and
  * by re-deriving the version from the bytes — a snapshot that does not reproduce the version it
- * claims is refused, whoever signed it. Trust in the producer is the caller's question (§7.3).
+ * claims is refused, whoever signed it. A checkpoint of another document than `address`, or one
+ * behind the snapshot this device already holds, is refused too. Trust in the producer is the
+ * caller's question (§7.3).
  */
 export async function installCheckpoint<D>(
   engine: DocsEngine,
   adapter: DocumentAdapter<D>,
+  address: DocAddress,
   wire: Uint8Array,
   producer: PeerId,
   snapshot: Uint8Array,
@@ -217,7 +222,8 @@ export async function installCheckpoint<D>(
       checkpoint.snapshot.hash !== hashOf(snapshot)
     )
       return refuse("the snapshot bytes are not the ones the checkpoint names");
-    const address = { table: checkpoint.table, key: checkpoint.key, column: checkpoint.column };
+    if (docKey(checkpoint) !== docKey(address))
+      return refuse("the checkpoint is of another document");
     const winner = lineageOf(getRecord(engine.state(), address.table, address.key), address.column);
     if (winner !== checkpoint.lineage)
       return refuse("the checkpoint is of a lineage that does not win here");
@@ -227,6 +233,13 @@ export async function installCheckpoint<D>(
     if (!bytesEqual(adapter.version(doc), checkpoint.version))
       return refuse("the snapshot does not reproduce the version the checkpoint claims");
     const tail = yield* Result.await(engine.docTail(address));
+    // a snapshot this device already holds may hold what the checkpoint does not, and the
+    // entries behind it may be compacted away: installing over it would lose them
+    const held = tail.snapshot === undefined ? new Map<PeerId, SeqNum>() : tail.head?.covers;
+    const behind = [...(held ?? [])].some(
+      ([author, seq]) => (checkpoint.covers.get(author) ?? 0) < seq,
+    );
+    if (behind) return refuse("the checkpoint is behind the snapshot this device holds");
     const below = tail.updates.filter(
       ({ entry }) => entry.seq <= (checkpoint.covers.get(entry.author) ?? 0),
     );

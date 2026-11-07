@@ -1,12 +1,27 @@
 import type { LoroDoc } from "loro-crdt";
 
-import { AdapterMissing, HandleInvalidated, UpdateTooLarge } from "@syncmesh/docs";
+import { AdapterMissing, HandleInvalidated, UpdateTooLarge, createDocuments } from "@syncmesh/docs";
 import { eventId, hlcOf, parseAdapterId, parseLineageId, parseSeqNum } from "@syncmesh/kernel";
 import { Temporal } from "@syncmesh/temporal";
 import { signCheckpoint } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
-import { CONTENT, DOC, EDIT, N1, NOTES, W1, insertNote, linked, node, until } from "./fixtures.js";
+import { loro } from "../index.js";
+import {
+  CONTENT,
+  DOC,
+  DOCS,
+  EDIT,
+  FAST,
+  N1,
+  N2,
+  NOTES,
+  W1,
+  insertNote,
+  linked,
+  node,
+  until,
+} from "./fixtures.js";
 
 const body = (doc: LoroDoc) => doc.getText("body").toString();
 const type = (doc: LoroDoc, at: number, text: string) => {
@@ -80,6 +95,58 @@ describe("loro@1 through the engine: open, flush, fold, converge", () => {
     // two opens share one replica
     const twin = (await a.documents.open<LoroDoc>(DOC)).unwrap();
     expect(twin.value).toBe(again.value);
+  });
+});
+
+describe("loro@1 handles: opens that race a read of the log", () => {
+  test("two opens issued together share one replica, and both see what the other types", async () => {
+    const a = node(50);
+    await insertNote(a);
+    const [x, y] = await Promise.all([
+      a.documents.open<LoroDoc>(DOC),
+      a.documents.open<LoroDoc>(DOC),
+    ]);
+    expect(x.unwrap().value).toBe(y.unwrap().value);
+    type(x.unwrap().value, 0, "once");
+    (await y.unwrap().flush()).unwrap();
+    expect((await a.engine.docLog()).unwrap().length).toBe(1);
+  });
+
+  test("a remote update that folds while the tail is being read reaches the opened document", async () => {
+    const a = node(51);
+    const b = node(52);
+    await insertNote(a);
+    const link = await linked(a, b);
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const slow = createDocuments({
+      engine: {
+        ...b.engine,
+        docTail: async (doc) => {
+          const tail = await b.engine.docTail(doc);
+          await held;
+          return tail;
+        },
+      },
+      adapters: [loro()],
+      docs: DOCS,
+      procedure: EDIT,
+      pacing: FAST,
+      autoMaterialise: false,
+    });
+    const opening = slow.open<LoroDoc>(DOC);
+    const da = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(da.value, 0, "typed while b was opening");
+    (await da.flush()).unwrap();
+    await link.flush();
+    expect(await until(async () => (await b.engine.docLog()).unwrap().length === 1)).toBe(true);
+    release();
+    const db = (await opening).unwrap();
+    expect(body(db.value)).toBe("typed while b was opening");
+    slow.stop();
+    link.close();
   });
 });
 
@@ -167,6 +234,17 @@ describe("loro@1 history: materialise, compact, then a late joiner", () => {
     const mismatch = await c.documents.install(lying.wire, a.identity.peerId, made.snapshot, DOC);
     expect(mismatch.isErr() && mismatch.error.message).toContain("does not reproduce");
 
+    const elsewhere = await c.documents.install(
+      made.signed.wire,
+      a.identity.peerId,
+      made.snapshot,
+      {
+        ...DOC,
+        key: N2,
+      },
+    );
+    expect(elsewhere.isErr() && elsewhere.error.message).toContain("another document");
+
     const honest = await c.documents.install(
       made.signed.wire,
       a.identity.peerId,
@@ -175,6 +253,25 @@ describe("loro@1 history: materialise, compact, then a late joiner", () => {
     );
     expect(honest.isOk()).toBe(true);
     expect(body((await c.documents.open<LoroDoc>(DOC)).unwrap().value)).toBe("the real text");
+  });
+});
+
+describe("loro@1 checkpoints never move a snapshot back", () => {
+  test("a checkpoint older than the snapshot this device holds is refused, and nothing typed is lost", async () => {
+    const a = node(53);
+    await insertNote(a);
+    const da = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(da.value, 0, "one ");
+    (await da.flush()).unwrap();
+    const old = (await a.documents.checkpoint(DOC, a.identity, hlcOf(Date.now(), 0))).unwrap();
+    type(da.value, 4, "two");
+    (await da.flush()).unwrap();
+    (await a.documents.materialise(DOC)).unwrap();
+
+    const stale = await a.documents.install(old.signed.wire, a.identity.peerId, old.snapshot, DOC);
+    expect(stale.isErr() && stale.error.message).toContain("behind the snapshot");
+    (await da.close()).unwrap();
+    expect(body((await a.documents.open<LoroDoc>(DOC)).unwrap().value)).toBe("one two");
   });
 });
 

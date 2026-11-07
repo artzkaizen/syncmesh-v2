@@ -1,5 +1,12 @@
 import type { DocAddress, FoldBatch, StoreFailure } from "@syncmesh/engine";
-import type { DocColumns, LineageId, PartitionKey, Procedure, SyncEvent } from "@syncmesh/kernel";
+import type {
+  AdapterId,
+  DocColumns,
+  LineageId,
+  PartitionKey,
+  Procedure,
+  SyncEvent,
+} from "@syncmesh/kernel";
 
 import { docKey } from "@syncmesh/engine";
 import { getRecord, lineageOf } from "@syncmesh/kernel";
@@ -7,16 +14,12 @@ import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { bytesEqual } from "@syncmesh/wire";
 
-import type { AnyAdapter, DocumentAdapter, UpdateRejected } from "./adapter.js";
+import type { AnyAdapter, UpdateRejected } from "./adapter.js";
+import type { AdapterMissing, NotADocColumn } from "./errors.js";
 import type { DocsEngine } from "./materialise.js";
 
-import {
-  AdapterMissing,
-  FlushRefused,
-  HandleInvalidated,
-  NotADocColumn,
-  UpdateTooLarge,
-} from "./errors.js";
+import { columnAdapter } from "./adapter.js";
+import { FlushRefused, HandleInvalidated, UpdateTooLarge } from "./errors.js";
 import { load } from "./materialise.js";
 import { replicaId } from "./replica.js";
 
@@ -56,7 +59,7 @@ export const DEFAULT_PACING = {
 export interface OpenDeps {
   readonly engine: DocsEngine;
   readonly docs: DocColumns;
-  readonly adapters: ReadonlyMap<string, AnyAdapter>;
+  readonly adapters: ReadonlyMap<AdapterId, AnyAdapter>;
   readonly procedure: Procedure;
   readonly pacing: Pacing;
   readonly nonce: () => Uint8Array;
@@ -82,6 +85,9 @@ interface Entry {
 export function createHandles(deps: OpenDeps) {
   const { engine, adapters } = deps;
   const open = new Map<string, Entry>();
+  /** Opens still reading their tail: a second open waits for the first, never loads a second replica. */
+  const loading = new Map<string, Promise<Result<Entry, OpenError>>>();
+  const arrivals = new Map<string, Uint8Array[]>(); // what folded while those reads ran
   const ms = (d: Temporal.Duration) => d.total({ unit: "milliseconds" });
 
   const flushEntry = (address: DocAddress, entry: Entry) => flush(deps, address, entry);
@@ -99,7 +105,11 @@ export function createHandles(deps: OpenDeps) {
     for (const { entry, update } of batch.docs) {
       const key = docKey(entry);
       const held = open.get(key);
-      if (held === undefined) continue;
+      if (held === undefined) {
+        // folded after the opening read of the tail: applied once the replica exists
+        if (update.bytes !== undefined) arrivals.get(key)?.push(update.bytes);
+        continue;
+      }
       const winner = lineageOf(getRecord(engine.state(), entry.table, entry.key), entry.column);
       if (winner !== held.lineage && held.status !== "invalidated") invalidate(held);
       if (entry.state === "orphaned" || update.bytes === undefined) continue;
@@ -107,13 +117,17 @@ export function createHandles(deps: OpenDeps) {
     }
     for (const [key, updates] of byDoc) {
       const entry = open.get(key);
-      if (entry === undefined || entry.status === "invalidated") continue;
-      stashLocal(entry);
-      const applied = entry.adapter.apply(entry.doc, updates);
-      // a refused update stays in the log, `failed` at the next materialisation (§10)
-      if (applied.isOk() && applied.value) entry.flushed = entry.adapter.version(entry.doc);
-      notify(entry);
+      if (entry !== undefined) applyTo(entry, updates);
     }
+  };
+
+  const applyTo = (entry: Entry, updates: readonly Uint8Array[]) => {
+    if (entry.status === "invalidated" || updates.length === 0) return;
+    stashLocal(entry);
+    const applied = entry.adapter.apply(entry.doc, updates);
+    // a refused update stays in the log, `failed` at the next materialisation (§10)
+    if (applied.isOk() && applied.value) entry.flushed = entry.adapter.version(entry.doc);
+    notify(entry);
   };
 
   const handle = <D>(address: DocAddress, entry: Entry): OpenDoc<D> => {
@@ -146,25 +160,30 @@ export function createHandles(deps: OpenDeps) {
     };
   };
 
-  const openDoc = <D>(address: DocAddress): Promise<Result<OpenDoc<D>, OpenError>> =>
+  const openDoc = async <D>(address: DocAddress): Promise<Result<OpenDoc<D>, OpenError>> => {
+    const key = docKey(address);
+    const held = open.get(key);
+    if (held !== undefined) return Result.ok(share<D>(address, held));
+    const pending = loading.get(key);
+    if (pending !== undefined) return (await pending).map((entry) => share<D>(address, entry));
+    arrivals.set(key, []);
+    const loaded = loadEntry(address);
+    loading.set(key, loaded);
+    const entry = await loaded;
+    loading.delete(key);
+    if (entry.isOk()) applyTo(entry.value, arrivals.get(key) ?? []);
+    arrivals.delete(key);
+    return entry.map((e) => handle<D>(address, e));
+  };
+
+  const share = <D>(address: DocAddress, entry: Entry) => {
+    entry.refs += 1;
+    return handle<D>(address, entry);
+  };
+
+  const loadEntry = (address: DocAddress): Promise<Result<Entry, OpenError>> =>
     Result.gen(async function* () {
-      const held = open.get(docKey(address));
-      if (held !== undefined) {
-        held.refs += 1;
-        return Result.ok(handle<D>(address, held));
-      }
-      const id = deps.docs.get(address.table)?.get(address.column);
-      if (id === undefined)
-        return Result.err(
-          new NotADocColumn({
-            table: String(address.table),
-            column: String(address.column),
-            message: "the mesh declares no document column there",
-          }),
-        );
-      const adapter: DocumentAdapter<D> | undefined = adapters.get(id);
-      if (adapter === undefined)
-        return Result.err(new AdapterMissing({ adapter: id, message: `no adapter for ${id}` }));
+      const adapter = yield* columnAdapter(deps.docs, adapters, address);
       const tail = yield* Result.await(engine.docTail(address));
       const loaded = yield* load(adapter, tail, replicaId(engine.peerId, deps.nonce()));
       const entry: Entry = {
@@ -182,7 +201,7 @@ export function createHandles(deps: OpenDeps) {
       const unwatch = adapter.watchLocal(loaded.doc, () => schedule(address, entry));
       Object.assign(entry, { stop: unwatch });
       open.set(docKey(address), entry);
-      return Result.ok(handle<D>(address, entry));
+      return Result.ok(entry);
     });
 
   const unfold = engine.onFoldBatch(applyRemote);

@@ -8,10 +8,11 @@ import { Temporal } from "@syncmesh/temporal";
 
 import type { AnyAdapter } from "./adapter.js";
 import type { OpenDoc, OpenError, Pacing } from "./documents.js";
+import type { DocTooLarge } from "./errors.js";
 import type { DocsEngine } from "./materialise.js";
 
+import { columnAdapter } from "./adapter.js";
 import { DEFAULT_PACING, createHandles } from "./documents.js";
-import { AdapterMissing, NotADocColumn, type DocTooLarge } from "./errors.js";
 import { installCheckpoint, materialise, produceCheckpoint } from "./materialise.js";
 import { replicaId } from "./replica.js";
 
@@ -53,7 +54,7 @@ export interface DocumentsOptions {
  */
 export function createDocuments(options: DocumentsOptions) {
   const { engine, docs } = options;
-  const adapters = new Map(options.adapters.map((a) => [String(a.id), a]));
+  const adapters = new Map(options.adapters.map((a) => [a.id, a]));
   const now = options.now ?? (() => Temporal.Now.instant());
   const nonce = options.nonce ?? (() => crypto.getRandomValues(new Uint8Array(16)));
   const fresh = () => replicaId(engine.peerId, nonce());
@@ -66,21 +67,7 @@ export function createDocuments(options: DocumentsOptions) {
     nonce,
   });
 
-  const adapterAt = (address: DocAddress): Result<AnyAdapter, OpenError> => {
-    const id = docs.get(address.table)?.get(address.column);
-    if (id === undefined)
-      return Result.err(
-        new NotADocColumn({
-          table: String(address.table),
-          column: String(address.column),
-          message: "the mesh declares no document column there",
-        }),
-      );
-    const adapter = adapters.get(id);
-    return adapter === undefined
-      ? Result.err(new AdapterMissing({ adapter: id, message: `no adapter for ${id}` }))
-      : Result.ok(adapter);
-  };
+  const adapterAt = (address: DocAddress) => columnAdapter(docs, adapters, address);
 
   const materialiseAt = (address: DocAddress) =>
     Result.gen(async function* () {
@@ -137,6 +124,7 @@ export function createDocuments(options: DocumentsOptions) {
             installCheckpoint(
               engine,
               adapter,
+              address,
               wire,
               producer,
               snapshot,
