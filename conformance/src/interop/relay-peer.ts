@@ -12,13 +12,22 @@
  * on one side and refuses on the other would be testing the ladder, not the wire.
  */
 import type { FoldBatch } from "@syncmesh/engine";
-import type { ColumnName, Procedure, RowKey, TableName } from "@syncmesh/kernel";
+import type {
+  CellValue,
+  ColumnName,
+  EventId,
+  PeerId,
+  Procedure,
+  RowKey,
+  TableName,
+} from "@syncmesh/kernel";
 import type { TransportContext } from "@syncmesh/transport";
 
 import { createEngine, createMemoryEventStore } from "@syncmesh/engine";
 import { createHlcClock, readRow } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
 import { relayTransport, startRelay, webSocketDial } from "@syncmesh/relay";
+import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { createGrantRegistry, createIdentity } from "@syncmesh/wire";
 import { mkdtempSync } from "node:fs";
@@ -31,7 +40,17 @@ const BODY = "body" as ColumnName;
 const CREATE = "notes.create" as Procedure;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 
-const print = (line: unknown): void => {
+/** One folded row as the Rust test reads it: table, key, and the row's cells or `null`. */
+type FoldedRow = readonly [TableName, RowKey, Readonly<Record<string, CellValue>> | null];
+
+/** Every line this process prints on stdout. */
+type Said =
+  | { readonly ready: true; readonly url: string; readonly peerId: PeerId; readonly tsPeer: PeerId }
+  | { readonly folded: readonly FoldedRow[] }
+  | { readonly wrote: EventId }
+  | { readonly error: string };
+
+const print = (line: Said): void => {
   console.log(JSON.stringify(line));
 };
 
@@ -54,7 +73,7 @@ const context: TransportContext = { engine, identity, grants, now };
 
 engine.onFoldBatch((batch: FoldBatch) => {
   if (batch.source !== "remote") return;
-  const rows: unknown[] = [];
+  const rows: FoldedRow[] = [];
   for (const [table, keys] of batch.writeKeys) {
     for (const key of keys) {
       const row = readRow(engine.state(), table, key);
@@ -74,16 +93,20 @@ interface Command {
 
 for await (const line of console) {
   if (line.trim() === "") continue;
-  let command: Command;
-  try {
-    command = JSON.parse(line) as Command;
-  } catch {
+  const parsed = Result.try(
+    // SAFETY: stdin is written only by crates/syncmesh-client/tests/interop.rs, which sends the
+    // two `Command` shapes and nothing else
+    () => JSON.parse(line) as Command,
+  );
+  if (parsed.isErr()) {
     print({ error: `not json: ${line}` });
     continue;
   }
+  const command = parsed.value;
   if (command.write !== undefined) {
     const { key, body } = command.write;
     const written = await engine.mutate(CREATE, (tx) =>
+      // SAFETY: a row key is any string the writer names, and this one is the Rust test's
       tx.insert(NOTES, key as RowKey, new Map([[BODY, body]])),
     );
     written.match({
