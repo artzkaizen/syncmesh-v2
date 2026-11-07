@@ -109,3 +109,6 @@ export type { Upgraded, Upgrader, UpgradeOptions, UpgraderDeps } from "./upgrade
 export { createUpgrader } from "./upgrade.js";
 export type { LinkEvent, LinkEventKind, LinkFact } from "./link-events.js";
 export { reportingUpgrader } from "./link-events.js";
+
+export type { Withheld } from "./withheld.js";
+export { openDigests, servable, withholds } from "./withheld.js";
