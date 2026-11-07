@@ -11,6 +11,7 @@ import type {
   SyncEvent,
   TableName,
 } from "@syncmesh/kernel";
+import type { Temporal } from "@syncmesh/temporal";
 
 import { sha256 } from "@noble/hashes/sha2.js";
 import { Result } from "@syncmesh/result";
@@ -83,7 +84,8 @@ export interface DocHead extends DocAddress {
   readonly tailCount: number;
   readonly tailBytes: number;
   readonly mode: DocHeadMode;
-  readonly materialisedAt?: number;
+  /** When this device last wrote the column's snapshot; absent until it has. */
+  readonly materialisedAt?: Temporal.Instant;
 }
 
 /** What a fold appends for one doc change: the entry, and the adapter its change named. */
@@ -200,7 +202,7 @@ function entryOf(
 
 /** A document's address as one string, for maps: the three names joined by NUL. */
 export const docKey = ({ table, key, column }: DocAddress): string =>
-  `${String(table)}\u0000${String(key)}\u0000${String(column)}`;
+  `${table}\u0000${key}\u0000${column}`;
 
 const MOD = 1n << 64n;
 

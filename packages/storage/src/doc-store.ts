@@ -24,6 +24,7 @@ import {
   type TableName,
 } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
+import { Temporal } from "@syncmesh/temporal";
 import { bytesToHex, hexToBytes } from "@syncmesh/wire";
 
 import type { SqlDriver, SqlRow, SqlValue } from "./driver.js";
@@ -69,6 +70,15 @@ const idOf = <T>(value: SqlValue | undefined, parse: (hex: string) => Result<T, 
   if (!(value instanceof Uint8Array)) return Result.err(corrupt("an id column is not bytes"));
   return parse(bytesToHex(value)).mapError(() => corrupt("an id column is not 16 bytes"));
 };
+
+/** `materialised_at`, kept as epoch milliseconds; absent while the column has no snapshot. */
+const instantOf = (value: SqlValue | undefined) =>
+  value === null || value === undefined
+    ? Result.ok(undefined)
+    : Result.try({
+        try: () => Temporal.Instant.fromEpochMilliseconds(Number(value)),
+        catch: () => corrupt("materialised_at is not an instant"),
+      });
 
 const count = (value: SqlValue | undefined): Result<number, StoreFailure> => {
   const n = Number(value);
@@ -126,6 +136,7 @@ function decodeHead(row: SqlRow): Result<DocHead, StoreFailure> {
     const adapterId = yield* parseAdapterId(String(adapter)).mapError(() => corrupt("adapter"));
     const lineageId = yield* idOf(lineage, parseLineageId);
     const floor = yield* coversOf(covers);
+    const materialisedAt = yield* instantOf(at);
     if (!MODES.has(String(mode))) return Result.err(corrupt(`unknown mode ${String(mode)}`));
     const head: DocHead = {
       ...address(tbl, key, col),
@@ -140,7 +151,7 @@ function decodeHead(row: SqlRow): Result<DocHead, StoreFailure> {
       ...head,
       ...(lineageId !== undefined && { lineage: lineageId }),
       ...(version instanceof Uint8Array && { version }),
-      ...(at !== null && at !== undefined && { materialisedAt: Number(at) }),
+      ...(materialisedAt !== undefined && { materialisedAt }),
     });
   });
 }
