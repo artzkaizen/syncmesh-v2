@@ -24,3 +24,6 @@ apps/*/.syncmesh/
 
 # cargo
 /target
+
+# scale-tenant results, rewritten per run
+.bench/
