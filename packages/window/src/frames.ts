@@ -132,6 +132,8 @@ const listOf = <T>(
 };
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- table names and row keys are text the schema owns; the codec only requires text */
+const asKey = (key: string) => key as RowKey;
+
 const asRef = ([table, key]: readonly CborValue[]): Result<RowRef, MalformedWindowFrame> =>
   isString(table) && isString(key)
     ? Result.ok({ table: table as TableName, key: key as RowKey })
@@ -151,7 +153,7 @@ const asWindow = ([id, table, keys]: readonly CborValue[]): Result<
   MalformedWindowFrame
 > =>
   isString(id) && isString(table) && Array.isArray(keys) && keys.every((k) => isString(k))
-    ? Result.ok({ id, table: table as TableName, keys: keys as readonly RowKey[] })
+    ? Result.ok({ id, table: table as TableName, keys: keys.filter(isString).map(asKey) })
     : malformed("a window is [id, table, keys]");
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 

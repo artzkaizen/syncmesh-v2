@@ -23,6 +23,7 @@
   },
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
+    "@syncmesh/temporal": "workspace:*",
     "@types/bun": "catalog:",
     "typescript": "catalog:",
     "vite-plus": "catalog:"
