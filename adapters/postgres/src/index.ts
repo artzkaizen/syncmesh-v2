@@ -126,6 +126,7 @@ export type { ReplicationClient, ReplicationStream } from "./link.js";
 export type { SlotStatus } from "./slot.js";
 export type { PostgresSourceError } from "./replication-errors.js";
 export {
+  PartialKeyChange,
   PublicationMissing,
   ReplicationFailed,
   SlotBusy,

@@ -3,7 +3,7 @@ import type { CellValue } from "@syncmesh/kernel";
 
 import type { PgOutputMessage, Relation, Tuple, TupleCell } from "./pgoutput.js";
 
-import { UnkeyedChange } from "./replication-errors.js";
+import { PartialKeyChange, UnkeyedChange } from "./replication-errors.js";
 import { tableName } from "./slot.js";
 import { cellValue } from "./values.js";
 
@@ -17,7 +17,8 @@ type RowChange = Extract<PgOutputMessage, { t: "insert" | "update" | "delete" | 
 
 /**
  * One decoded row change as the port's messages. Throws {@link UnkeyedChange} for a change it
- * cannot key, which ends the stream it is read from — the stream's failure channel is its throw.
+ * cannot key, and {@link PartialKeyChange} for a key change it cannot send whole; either ends the
+ * stream it is read from — the stream's failure channel is its throw.
  */
 export function portChanges(
   message: RowChange,
@@ -45,20 +46,29 @@ export function portChanges(
   }
   const key = (tuple: Tuple) => rowKey(known, tuple);
   if (message.t === "delete") return [{ t: "delete", table, key: key(message.old.tuple) }];
-  const after = sourceRow(
-    relation,
-    message.tuple,
-    message.old?.kind === "full" ? message.old.tuple : undefined,
-  );
+  const full = message.old?.kind === "full" ? message.old.tuple : undefined;
+  const after = sourceRow(relation, message.tuple, full);
   const now = key(message.tuple);
   const was = message.old === undefined ? now : key(message.old.tuple);
-  // a changed key is a different row: the old one goes, the new one arrives whole
-  return was === now
-    ? [{ t: "update", table, key: now, after }]
-    : [
-        { t: "delete", table, key: was },
-        { t: "insert", table, row: after },
-      ];
+  if (was === now) return [{ t: "update", table, key: now, after }];
+  // a changed key is a different row: the old one goes and the new one arrives, which is only
+  // sound when it arrives whole — an update can leave a column out, an insert cannot
+  const unsent = relation.columns.flatMap((column, i) =>
+    column.name in after || message.tuple[i]?.kind !== "unchanged" ? [] : [column.name],
+  );
+  if (unsent.length > 0) {
+    throw new PartialKeyChange({
+      table,
+      columns: unsent,
+      message:
+        `${table}: ${was} became ${now} without its unchanged TOAST value of ` +
+        `${unsent.join(", ")}; the table needs REPLICA IDENTITY FULL`,
+    });
+  }
+  return [
+    { t: "delete", table, key: was },
+    { t: "insert", table, row: after },
+  ];
 }
 
 function rowKey(known: KnownRelation, tuple: Tuple): string {

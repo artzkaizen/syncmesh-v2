@@ -217,7 +217,8 @@ async function* backfillRows(
   const key = quoteIdent(name);
   const select = columns.map(([column]) => `${quoteIdent(column ?? "")}::text`).join(", ");
   // a row keeps its key when it is updated, wherever on disk the update puts it, so paging by
-  // key outside one snapshot loses nothing; a key change is a delete and an insert in the stream
+  // key outside one snapshot loses nothing; a key change is a delete and a whole-row insert in
+  // the stream, or, when the row's unchanged TOAST values were not sent, the stream's failure
   let after: string | undefined;
   for (;;) {
     const read = await query(

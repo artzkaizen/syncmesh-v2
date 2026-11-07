@@ -74,7 +74,10 @@ const NAME = /^[a-z0-9_]{1,63}$/;
  * under `REPLICA IDENTITY DEFAULT`, or the primary key looked up when it is `FULL`. Under
  * `DEFAULT`, an update that leaves a TOASTed column alone does not carry it, and the update the
  * bridge receives leaves that column out: an update is a patch, so the mesh keeps the value it
- * holds. `FULL` fills it from the old row instead.
+ * holds. `FULL` fills it from the old row instead. A key change is a delete and an insert, and an
+ * insert cannot leave a column out, so under `DEFAULT` a key change that did not resend a TOASTed
+ * value ends the stream with `PartialKeyChange` rather than inserting the row without it: a table
+ * whose key can change and that holds out-of-line values needs `FULL`.
  *
  * A dropped connection reconnects from the end of the last transaction delivered, so a
  * transaction cut off half-way is sent again from its `begin` — which is the port's rule that a

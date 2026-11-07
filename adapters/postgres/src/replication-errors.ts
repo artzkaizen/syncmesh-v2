@@ -38,6 +38,19 @@ export class UnkeyedChange extends TaggedError("UnkeyedChange")<{
   message: string;
 }> {}
 
+/**
+ * A row's key changed under `REPLICA IDENTITY DEFAULT` while it held a TOASTed value the update
+ * left alone. Postgres sends that value as "unchanged" and the old row carries only the key, so
+ * the row cannot be inserted under its new key whole. `REPLICA IDENTITY FULL` sends the old row
+ * in full; changes already in the slot stay unreadable, so set it, drop the slot and backfill.
+ */
+export class PartialKeyChange extends TaggedError("PartialKeyChange")<{
+  table: string;
+  /** The columns the change did not carry. */
+  columns: readonly string[];
+  message: string;
+}> {}
+
 /** A query or the replication connection failed, after every reconnect it was allowed. */
 export class ReplicationFailed extends TaggedError("ReplicationFailed")<{
   slot: string;
@@ -51,4 +64,5 @@ export type PostgresSourceError =
   | SlotLost
   | SlotMismatch
   | UnkeyedChange
+  | PartialKeyChange
   | ReplicationFailed;

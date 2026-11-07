@@ -6,7 +6,7 @@ import { afterAll, afterEach, describe, expect, setDefaultTimeout, test } from "
 
 import type { SlotStatus } from "../index.js";
 
-import { lsnWatermark, parseLsn, parseLsnWatermark } from "../index.js";
+import { PartialKeyChange, lsnWatermark, parseLsn, parseLsnWatermark } from "../index.js";
 import {
   ACME,
   POSTGRES_URL,
@@ -219,6 +219,39 @@ describe.skipIf(POSTGRES_URL === undefined)("Postgres logical replication", () =
     ]);
     expect(full[3]).toEqual({ t: "delete", table, key: "t2" });
     stream.stop();
+    await cleanup();
+  });
+
+  test("REPLICA IDENTITY DEFAULT: a key change that did not resend a TOAST value ends the stream", async () => {
+    const { table, source, cleanup } = await scratch(
+      db,
+      "id text PRIMARY KEY, org_id text, body text",
+    );
+    await db.unsafe(`ALTER TABLE ${table} ALTER COLUMN body SET STORAGE EXTERNAL`);
+    const body = "x".repeat(20_000);
+    await db.unsafe(`INSERT INTO ${table} VALUES ('t1', 'acme', $1), ('s1', 'acme', 'short')`, [
+      body,
+    ]);
+    const stream = await source.start({ after: null });
+    const changes = iterate(stream);
+
+    // an inline value is always sent: the new row arrives whole
+    await db.unsafe(`UPDATE ${table} SET id = 's2' WHERE id = 's1'`);
+    const inline = changesOnly(await take(changes, commits(1), "the inline key change"));
+    expect(inline).toEqual([
+      { t: "delete", table, key: "s1" },
+      { t: "insert", table, row: { id: "s2", org_id: "acme", body: "short" } },
+    ]);
+
+    // an out-of-line value is not, and the old row holds only the key: an insert without it
+    // would lose it for good, so the stream fails instead
+    await db.unsafe(`UPDATE ${table} SET id = 't2' WHERE id = 't1'`);
+    const failed = await take(changes, commits(1), "the TOAST key change").then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+    expect(failed).toBeInstanceOf(PartialKeyChange);
+    expect(failed).toMatchObject({ table, columns: ["body"] });
     await cleanup();
   });
 
