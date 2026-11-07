@@ -1,12 +1,13 @@
 import type { PeerId } from "@syncmesh/kernel";
 
 import { createMemoryEventStore, tableDigests } from "@syncmesh/engine";
-import { Temporal } from "@syncmesh/temporal";
+import { Temporal, addToInstant, durationMs } from "@syncmesh/temporal";
 import { eventFrame } from "@syncmesh/transport";
 import { describe, expect, test } from "bun:test";
 
 import { webSocketDial } from "../dial.js";
 import { blobGetFrame, joinFrame } from "../frames.js";
+import { ROOM_DEBT_RETRY } from "../ingest.js";
 import { DEFAULT_LIMITS, createBudget } from "../limits.js";
 import { startRelay } from "../serve.js";
 import { relayTransport } from "../transport.js";
@@ -196,11 +197,12 @@ describe("fan-out is metered too (gap audit №7)", () => {
 });
 
 describe("fan-out is metered per room as well", () => {
-  test("sockets each within their own budget are refused once together they exceed the room's", async () => {
+  test("once sockets together exceed the room's budget, every event waits and none is lost", async () => {
     const [a, b, c] = [peer(40, "acct_a"), peer(80, "acct_b"), peer(120, "acct_c")];
+    let clock = T0;
     // every socket's own meter is the default; the room's holds three deliveries
     const room = await scriptedRoom({
-      now: () => T0,
+      now: () => clock,
       limits: { roomFanout: { burst: 3, every: SECOND } },
     });
     const sockets = [fakeSocket(), fakeSocket(), fakeSocket()];
@@ -216,14 +218,46 @@ describe("fan-out is metered per room as well", () => {
     conns[1]?.receive(eventFrame(await write(b, "n2", "two")));
     await tick();
     expect(room.offset()).toBe(2);
-    expect(sockets.map((s) => s.closedWith)).toEqual([[], [], []]);
 
-    // c has caused nothing at all, and is still refused: the debt is the room's
+    // c has caused nothing at all: the debt is the room's, so c waits rather than being hung up
     conns[2]?.receive(eventFrame(await write(c, "n3", "three")));
+    conns[2]?.receive(eventFrame(await write(c, "n4", "four")));
+    await tick(2 * durationMs(ROOM_DEBT_RETRY));
+    expect(room.offset()).toBe(2);
+    expect(sockets.map((s) => s.closedWith)).toEqual([[], [], []]);
+    expect(sockets[2]?.ofKind("error")).toEqual([]);
+
+    // the room earns its tokens back, and c's events land in the order c sent them
+    clock = addToInstant(clock, Temporal.Duration.from({ seconds: 10 }));
+    expect(await until(() => room.offset() === 4)).toBe(true);
+    expect(sockets[2]?.ofKind("ack").length).toBe(2);
+    expect(sockets.map((s) => s.closedWith)).toEqual([[], [], []]);
+    room.close();
+  });
+
+  test("a socket that sends more than its sender may hold while the room owes is hung up", async () => {
+    const [a, c] = [peer(40, "acct_a"), peer(120, "acct_c")];
+    const room = await scriptedRoom({
+      now: () => T0,
+      maxBacklog: 2,
+      limits: { roomFanout: { burst: 1, every: SECOND } },
+    });
+    const sockets = [fakeSocket(), fakeSocket(), fakeSocket()];
+    const conns = sockets.map((s) => room.connect(s.socket));
+    conns[0]?.receive(join(a.identity.peerId));
+    conns[1]?.receive(join(peer(80, "acct_b").identity.peerId));
+    conns[2]?.receive(join(c.identity.peerId));
+    await tick();
+    conns[0]?.receive(eventFrame(await write(a, "n1", "one")));
+    await tick();
+
+    for (let i = 1; i <= 3; i += 1)
+      conns[2]?.receive(eventFrame(await write(c, `c${i}`, `body-${i}`)));
     await tick();
     expect(sockets[2]?.ofKind("error")[0]?.code).toBe("rate");
     expect(sockets[2]?.closedWith).toEqual(["rate"]);
-    expect(room.offset()).toBe(2);
+    expect(sockets[0]?.closedWith).toEqual([]);
+    expect(room.offset()).toBe(1);
     room.close();
   });
 });

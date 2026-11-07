@@ -67,7 +67,8 @@ export interface RelayLimits {
   readonly rates: Readonly<Record<TrafficClass, RateLimit>>;
   /**
    * Deliveries the whole room may make, whoever caused them: `rates.fanout` priced across every
-   * socket on it. While the room owes, an event frame from any of them is refused with `rate`.
+   * socket on it. While the room owes, events from every one of them are held in order until it
+   * can afford them again, never refused: the debt is the crowd's, not the next sender's.
    * Without it, a hundred sockets each under its own fan-out budget amplify together (gap
    * audit №7).
    */

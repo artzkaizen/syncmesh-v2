@@ -51,9 +51,12 @@ version negotiation). What remains:
 7. **Rate limiting meters ingress only.** Fan-out — the amplification vector
    reflectdb documents — is unmetered per room.
    **Fixed 2026-11-07:** every delivery is charged twice, to the sending socket's
-   `rates.fanout` and to the room's `RelayLimits.roomFanout`; while either owes, an
-   event frame is refused with `rate`. N sockets each under its own budget no longer
-   amplify together. Defaults are nominal. Test: `limits.test.ts`.
+   `rates.fanout` and to the room's `RelayLimits.roomFanout`. While the socket's own
+   budget owes, its event frame is refused with `rate` and it is hung up; while the
+   room's owes, every socket's events are held in order until the room can afford
+   them (`eventIntake`, `ingest.ts`), since refusing whoever sent next would let a few
+   sockets get every honest writer in the room hung up. N sockets each under its own
+   budget no longer amplify together. Defaults are nominal. Test: `limits.test.ts`.
 8. **Every retention/eviction knob defaults to off**, so an unconfigured relay
    still grows forever. Choose production defaults (or make the hosted presets set
    them) rather than shipping infinite-growth-by-default.

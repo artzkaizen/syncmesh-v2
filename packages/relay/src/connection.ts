@@ -21,7 +21,7 @@ import {
   selectVersion,
   speaksHandshake,
 } from "./frames.js";
-import { ingestEvent, serveBlob } from "./ingest.js";
+import { eventIntake, serveBlob } from "./ingest.js";
 import { createBudget } from "./limits.js";
 import { newChallenge, verifyJoinProof } from "./proof.js";
 import { BELOW_FLOOR, belowFloor } from "./retention.js";
@@ -139,6 +139,7 @@ export function createConnection(
     budget: createBudget(room.limits, room.now),
     refuse,
   };
+  const ingest = eventIntake(conversation, () => closed);
 
   /** Live fan-out obeys the same interest the catch-up did, so the two never disagree. */
   const wants = (event: SyncEvent): boolean =>
@@ -237,7 +238,7 @@ export function createConnection(
   };
 
   const onSession = (bytes: Uint8Array, frame: Extract<RelayFrame, { kind: "session" }>): void => {
-    if (frame.frame.kind === "event") ingestEvent(conversation, frame.frame.wire);
+    if (frame.frame.kind === "event") ingest(frame.frame.wire);
     else if (frame.frame.kind === "grant") onGrant(bytes, frame.frame.wire);
     else if (frame.frame.kind === "presence") onPresence(bytes, frame.frame.wire);
     else if (frame.frame.kind === "grant-request" || frame.frame.kind === "cursors")

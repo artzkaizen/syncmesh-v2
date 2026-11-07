@@ -5,6 +5,7 @@ import type { WireError } from "@syncmesh/wire";
 
 import { timed } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
+import { Temporal, durationMs } from "@syncmesh/temporal";
 import { decodeAndVerify } from "@syncmesh/wire";
 
 import type { RelayFrame } from "./frames.js";
@@ -61,6 +62,75 @@ export const absorbEvent = async (
   });
 };
 
+/** How long events held for the room's fan-out debt wait before the room is asked again. */
+export const ROOM_DEBT_RETRY = Temporal.Duration.from({ milliseconds: 50 });
+
+/**
+ * Where a socket's events enter the room: straight to {@link ingestEvent} while the room can
+ * afford their fan-out, and held in arrival order while it owes (`RelayLimits.roomFanout`).
+ *
+ * The room's debt is every socket's doing, so it is never a hang-up: refusing whoever sent next
+ * would let a few sockets keep a room in debt and disconnect every honest writer in it, again on
+ * each reconnect. Holding is backpressure instead — the crowd that ran the debt up waits with
+ * everyone else, so the room's sends stay at its rate. Dropping the event without a hang-up is
+ * not an option either: the socket's next event would land after it and leave a hole in the log.
+ *
+ * What one socket may have held is its sender's ceiling, `maxBacklog` frames and
+ * `limits.maxBacklogBytes`; past it the socket is refused with `rate` and hung up, which loses
+ * nothing, because its reconnect re-sends from the relay's cursors.
+ *
+ * @param closed - Whether the conversation has ended; held events are then dropped, unsent.
+ */
+export function eventIntake(
+  conversation: Conversation,
+  closed: () => boolean,
+): (wire: Uint8Array) => void {
+  const { room, refuse } = conversation;
+  const held: Uint8Array[] = [];
+  let heldBytes = 0;
+  let waiting: ReturnType<typeof setTimeout> | undefined;
+
+  const release = (): void => {
+    waiting = undefined;
+    if (closed()) {
+      held.length = 0;
+      heldBytes = 0;
+      return;
+    }
+    for (let next = held[0]; next !== undefined && !room.budget.owes("fanout"); next = held[0]) {
+      held.shift();
+      heldBytes -= next.byteLength;
+      ingestEvent(conversation, next);
+    }
+    if (held.length > 0) waiting = setTimeout(release, durationMs(ROOM_DEBT_RETRY));
+  };
+
+  return (wire) => {
+    if (held.length === 0 && !room.budget.owes("fanout")) {
+      ingestEvent(conversation, wire);
+      return;
+    }
+    if (
+      held.length >= room.maxBacklog ||
+      heldBytes + wire.byteLength > room.limits.maxBacklogBytes
+    ) {
+      clearTimeout(waiting);
+      waiting = undefined;
+      held.length = 0;
+      heldBytes = 0;
+      refuse(
+        "rate",
+        "this socket sent more than it may hold while the room is over its fanout rate",
+        true,
+      );
+      return;
+    }
+    held.push(wire);
+    heldBytes += wire.byteLength;
+    waiting ??= setTimeout(release, durationMs(ROOM_DEBT_RETRY));
+  };
+}
+
 /**
  * One event: verify, dedup by id, append, fan out to whoever asked for it, ack. The ack is sent
  * for a duplicate too — it is the durability answer a write handle's `synced()` counts, and a
@@ -72,13 +142,6 @@ export const absorbEvent = async (
  */
 export function ingestEvent(conversation: Conversation, wire: Uint8Array): void {
   const { room, refuse } = conversation;
-  // the room's own meter, charged by every socket on it: a socket that has caused nothing is
-  // still refused while a crowd it belongs to owes. Only an event can add to that debt, so only
-  // an event is refused for it — a join or a grant from an honest device costs the room no sends
-  if (room.budget.owes("fanout")) {
-    refuse("rate", "this room is over its fanout rate", true);
-    return;
-  }
   room.enqueue(async () => {
     const [outcome, duration] = await timed(() => absorbEvent(room, wire));
     if (outcome.isErr()) {
