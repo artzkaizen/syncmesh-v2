@@ -42,7 +42,7 @@ const linked = (x: GatedPeer, y: GatedPeer) => {
 };
 
 describe("authority-visibility rows never travel peer to peer (D24)", () => {
-  test("a direct link carries the authority's global rows and none of its gated ones", async () => {
+  test("a direct link carries the authority's global rows written before a gated one, and none of the gated ones", async () => {
     const authority = gatedPeer(7);
     await writeCatalog(authority, "c1", "aspirin");
     (await writeConsult(authority, "x", "a")).unwrap();
@@ -56,6 +56,29 @@ describe("authority-visibility rows never travel peer to peer (D24)", () => {
     (await writeConsult(authority, "y", "a")).unwrap();
     await settle();
     expect(idsIn(phone, CONSULTS)).toEqual([]);
+    bx.close();
+    by.close();
+  });
+
+  test("a global row written after a gated one waits behind it, peer to peer (use-cases §4)", async () => {
+    // the stated cost: the authority's run has a hole only its relay can account for, so over a
+    // direct link alone what follows the hole stays in the phone's holdback
+    const authority = gatedPeer(7);
+    await writeCatalog(authority, "c1", "aspirin");
+    const beforeHole = authority.engine.coverage().synced.get(AUTHORITY.peerId);
+    (await writeConsult(authority, "x", "a")).unwrap();
+    await writeCatalog(authority, "c2", "ibuprofen");
+    const phone = gatedPeer(41);
+    const { bx, by, settle } = linked(authority, phone);
+    await settle();
+    expect(holds(phone, CATALOG, "c1")).toBe(true);
+    expect(holds(phone, CATALOG, "c2")).toBe(false);
+    expect(phone.engine.coverage().synced.get(AUTHORITY.peerId)).toBe(beforeHole);
+
+    // live as well
+    await writeCatalog(authority, "c3", "paracetamol");
+    await settle();
+    expect(holds(phone, CATALOG, "c3")).toBe(false);
     bx.close();
     by.close();
   });

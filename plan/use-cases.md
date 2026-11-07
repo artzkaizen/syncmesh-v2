@@ -597,7 +597,21 @@ The three tiers, side by side:
   next reaches the relay, whose scoped coverage releases them. A `global` catalog update can
   therefore arrive later over Bluetooth than it would have without the tier; it never arrives
   wrong, and it never stalls once the relay has been reached. Writing gated rows under a second
-  authority key would remove the wait and is additive if a case needs it.
+  authority key would remove the wait and is additive if a case needs it. Memory stays bounded
+  while it waits: a link holds at most `gapLimit` (512) events per author behind a hole, and past
+  that it drops them and asks again from its cursor — which re-sends the same run and still cannot
+  fill the hole, so the cost of a long radio-only stretch is bytes sent twice, not a growing buffer.
+- A narrowed socket is sent a pass-over for what it was withheld: one empty last page per burst of
+  withheld events (queued on the room, so ten events arriving together cost one frame), and one
+  straight after a wanted event of an author it was owed a pass-over for. This is the price of not
+  stalling an author's stream — interest-only rooms pay it too, since D23's live path had the same
+  stall — and the writer is charged for it like any other send it caused (gap audit №7).
+- A device whose cursors were earned under one entitlement re-pages from nothing the first time it
+  joins a relay that names another one — or that gates nothing at all. That is correct, since the
+  old cursors may skip what the old gate withheld, and it costs a full catch-up once per change.
+- The authority has `ENTITLE_DEADLINE` (10 seconds) to answer a join. The question is asked off
+  the room's queue, so a slow answer delays only the device that asked; one that never comes is
+  refused as `EntitlementFailed`, and the device reconnects on its backoff and asks again.
 - A narrowed entitlement withholds what comes next, not what is already held. `reentitle` re-pages
   a device under its new entitlement, but the gated rows it was admitted to before stay on its
   disk; nothing is sent to take them back. That is the same snapshot rule entity access follows
