@@ -141,6 +141,7 @@ describe("the room in a Rivet actor (D09-C, E25)", () => {
     const refused = actor.dial(from("https://evil.example"));
     refused.onClose(() => void (closed = true));
     expect(await until(() => Promise.resolve(closed))).toBe(true);
+    expect(actor.closeCodes).toEqual([1008]);
 
     let spoke = false;
     const admitted = actor.dial(from("https://app.example"));
@@ -179,6 +180,32 @@ describe("the room in a Rivet actor (D09-C, E25)", () => {
     const second = actor.dial();
     second.onClose(() => void (closed = true));
     expect(await until(() => Promise.resolve(closed))).toBe(true);
+    first.close();
+  });
+
+  test("a full room closes a socket with try-again-later, with its request or without", async () => {
+    const actor = rivetActor(
+      new Database(":memory:"),
+      relayRivetActor({
+        posture: { allowedOrigins: ["https://app.example"] },
+        limits: { maxRoomConnections: 1 },
+      }),
+      ["acme"],
+    );
+    const upgrade = new Request("http://rivet.local/actors/room/websocket/", {
+      headers: { origin: "https://app.example" },
+    });
+    let spoke = false;
+    const first = actor.dial(upgrade);
+    first.onFrame(() => void (spoke = true));
+    expect(await until(() => Promise.resolve(spoke))).toBe(true);
+
+    let closed = false;
+    const second = actor.dial(upgrade);
+    second.onClose(() => void (closed = true));
+    expect(await until(() => Promise.resolve(closed))).toBe(true);
+    // 1013, not the posture's 1008: a seat may be free on the next dial
+    expect(actor.closeCodes).toEqual([1013]);
     first.close();
   });
 });

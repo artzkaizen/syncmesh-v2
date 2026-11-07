@@ -46,7 +46,10 @@ export function rivetDbOver(db: Database): RivetDatabase {
 }
 
 /** One socket as both ends see it: the actor's raw WebSocket, and a client's dial. */
-function socketPair(onOpen: (ws: RivetWebSocket) => void): RelayDial {
+function socketPair(
+  onOpen: (ws: RivetWebSocket) => void,
+  codes: (number | undefined)[],
+): RelayDial {
   const toClient = new Set<(frame: Uint8Array) => void>();
   const closes = new Set<() => void>();
   type Listener = Parameters<RivetWebSocket["addEventListener"]>[1];
@@ -70,7 +73,10 @@ function socketPair(onOpen: (ws: RivetWebSocket) => void): RelayDial {
       if (toClient.size === 0) backlog.push(data);
       else for (const cb of toClient) cb(data);
     },
-    close: () => shut(),
+    close: (code) => {
+      if (state !== CLOSED) codes.push(code);
+      shut();
+    },
     addEventListener: (type, listener) => {
       (type === "message" ? messageListeners : closeListeners).push(listener);
     },
@@ -111,9 +117,12 @@ export function rivetActor(db: Database, relay: RelayRivetActor, key: readonly s
     abortSignal: abort.signal,
     ...omitUndefined({ request }),
   });
+  /** The code of every socket the actor closed, in order; `undefined` for one closed without. */
+  const closeCodes: (number | undefined)[] = [];
   return {
+    closeCodes,
     dial: (request?: Request): RelayDial =>
-      socketPair((ws) => void relay.onWebSocket(context(request), ws)),
+      socketPair((ws) => void relay.onWebSocket(context(request), ws), closeCodes),
     describe: (request: Request) => relay.onRequest(context(), request),
     /** The actor goes to sleep: its memory and its sockets go, its SQLite stays. */
     sleep: () => {

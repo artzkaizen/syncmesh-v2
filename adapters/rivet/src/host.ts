@@ -152,9 +152,10 @@ export function relayRivetActor(options: RelayRivetActorOptions = {}): RelayRive
   ): Promise<{ readonly code: number; readonly reason: string } | undefined> => {
     if (request !== undefined) {
       const refused = await host.gate(request, name);
-      return refused === undefined
-        ? undefined
-        : { code: POLICY_VIOLATION, reason: (await refused.text()).slice(0, 120) };
+      if (refused === undefined) return undefined;
+      // the gate's 503 is a full room or host, which a later dial may find free
+      const code = refused.status === 503 ? TRY_AGAIN_LATER : POLICY_VIOLATION;
+      return { code, reason: (await refused.text()).slice(0, 120) };
     }
     if (options.posture !== undefined)
       return { code: POLICY_VIOLATION, reason: "syncmesh relay: no upgrade request to check" };
@@ -164,8 +165,14 @@ export function relayRivetActor(options: RelayRivetActorOptions = {}): RelayRive
   };
 
   const hostFor = (c: RivetRelayContext): Promise<RelayHost> => {
-    const held = hosts.get(c.actorId) ?? open(c);
+    const known = hosts.get(c.actorId);
+    if (known !== undefined) return known;
+    const held = open(c);
     hosts.set(c.actorId, held);
+    // a room that failed to open is not cached: the next socket tries again
+    void held.catch(() => {
+      if (hosts.get(c.actorId) === held) hosts.delete(c.actorId);
+    });
     return held;
   };
 
