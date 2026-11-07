@@ -232,17 +232,20 @@ function verified<D>(
 
 /**
  * The updates under a checkpoint's floor its snapshot holds, re-imported one by one; `undefined`
- * if one moves the document or leaves it pending. A refused one is `failed`; a missing one, neither.
+ * if one moves the document, leaves it pending, or is readable on its own yet refused by the
+ * snapshot. One unreadable on its own is `failed`; a missing one, neither. Costs one import per
+ * update under the floor, and two for each the snapshot refuses.
  */
-function heldBy<D>(adapter: DocumentAdapter<D>, doc: D, below: readonly TailUpdate[]) {
+function heldBy<D>(adapter: DocumentAdapter<D>, doc: D, below: TailUpdate[], replica: bigint) {
   const covered: TailUpdate[] = [];
   const failed: TailUpdate[] = [];
   for (const u of below) {
     if (u.bytes === undefined) continue;
     const moved = adapter.apply(doc, [u.bytes]);
-    if (moved.isErr()) failed.push(u);
-    else if (moved.value) return undefined;
-    else covered.push(u);
+    // held if it moves nothing; if refused, unreadable only when a fresh replica refuses it too
+    if (moved.isOk() ? moved.value : adapter.apply(adapter.create(replica), [u.bytes]).isOk())
+      return undefined;
+    (moved.isOk() ? covered : failed).push(u);
   }
   return adapter.pending(doc) ? undefined : { covered: covered.map(ref), failed: failed.map(ref) };
 }
@@ -286,7 +289,7 @@ export async function installCheckpoint<D>(
     const below = tail.updates.filter(
       ({ entry }) => entry.seq <= (checkpoint.covers.get(entry.author) ?? 0),
     );
-    const holds = heldBy(adapter, doc, below);
+    const holds = heldBy(adapter, doc, below, replica);
     if (holds === undefined)
       return refuse("the snapshot lacks updates the checkpoint's floor claims");
     yield* Result.await(
