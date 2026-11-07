@@ -37,7 +37,7 @@ export type {
 } from "./manifest.js";
 export type { AllowFn, Combinators } from "./bind.js";
 export { combinators } from "./bind.js";
-export { syncSchema, syncedTables } from "./manifest.js";
+export { authorityTables, syncSchema, syncedTables } from "./manifest.js";
 export type { RoleSet } from "@syncmesh/policy";
 export type { Partition, ReservedPartition, RolesOf } from "./partition.js";
 export { flat, global, isPartition, ladder, local, partition, user } from "./partition.js";
