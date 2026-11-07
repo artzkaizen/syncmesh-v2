@@ -43,8 +43,10 @@ const fromRivet = (value: RivetSqlValue | ArrayBuffer): SqlValue =>
  *
  * `transaction` is the actor's own, when `c.db` has one: every statement the callback runs goes
  * through the transaction's handle, so an append and the rows it materialises land together or
- * not at all. The stores take their own lock around a transaction, so nothing else on this
- * driver runs inside it.
+ * not at all. While it is open, *any* statement on this driver goes through that handle, so a
+ * caller that shares the driver with a store must not run statements during the store's
+ * transaction. Within a relay room that holds because the room serialises its appends and blob
+ * puts; a second, unserialised user of the same driver would land inside the open transaction.
  *
  * No `close`: the actor's storage is the platform's, and outlives every instance that opens it.
  *
