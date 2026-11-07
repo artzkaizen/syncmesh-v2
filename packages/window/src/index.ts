@@ -35,6 +35,6 @@ export {
 export type { MemoryRowSource, RowChange, RowSource } from "./source.js";
 export { UnknownTable, createMemoryRowSource } from "./source.js";
 export type { ClientView, ClientViewOptions } from "./view.js";
-export { createClientView } from "./view.js";
+export { MAX_WINDOWS, createClientView } from "./view.js";
 export type { WindowClient, WindowStatus } from "./client.js";
 export { createWindowClient } from "./client.js";

@@ -83,7 +83,7 @@ describe("serving windows on a socket (E27, D39)", () => {
     const source = loaded();
     const client = createWindowClient();
     const wire = slowSocket(8, (frame) => client.receive(frame));
-    const served = serveWindows(wire.socket, { source, admits: everyRow });
+    const served = serveWindows(wire.socket, { source, admits: everyRow, maxWindows: BOXES });
     client.attach((frame) => served.receive(frame));
     for (let box = 0; box < BOXES; box++) client.desire(`box-${box}`, boxQuery(box));
     // the burst outran the socket: most of it is queued, none of it dropped

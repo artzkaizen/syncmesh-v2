@@ -155,6 +155,22 @@ describe("a window over a row source (E27)", () => {
     expect(client.status()).toBe("live");
   });
 
+  test("a socket holds at most `maxWindows`; a desire past it is refused, a move is not", () => {
+    const { client, view } = harness(100, { maxWindows: 2 });
+    client.desire("a", newest(3));
+    client.desire("b", newest(3, { after: after(50) }));
+    client.desire("c", newest(3, { after: after(20) }));
+    expect(client.refusal("c")).toBe("a socket holds at most 2 windows");
+    expect(client.rows("c")).toEqual([]);
+    expect(view.held()).toBe(6);
+    client.desire("a", newest(3, { after: after(80) }));
+    expect(ats(client.rows("a"))).toEqual(down(79, 3));
+    client.undesire("b");
+    client.desire("c", newest(3, { after: after(20) }));
+    expect(client.refusal("c")).toBeUndefined();
+    expect(ats(client.rows("c"))).toEqual(down(19, 3));
+  });
+
   test("a window the source cannot serve, or a query that does not parse, is refused", () => {
     const { client, view } = harness(10);
     client.desire("calls", newest(5, { table: CALLS }));

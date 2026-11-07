@@ -30,7 +30,16 @@ export interface ClientViewOptions {
   readonly admits?: (table: TableName, row: Row) => boolean;
   /** A fresh epoch name. Each reset starts a new epoch, so a stale patch can never land. */
   readonly epoch?: () => string;
+  /**
+   * Windows one socket may hold at once. A desire for a new id past it is refused, so the view's
+   * memory stays at most `maxWindows × limit` keys whatever the client sends.
+   * @default 64
+   */
+  readonly maxWindows?: number;
 }
+
+/** The {@link ClientViewOptions.maxWindows} a view takes when none is given. */
+export const MAX_WINDOWS = 64;
 
 /**
  * One socket's windows over a row source (E27). A row reaches the client once, however many of
@@ -139,7 +148,14 @@ const touches = (window: Open, change: RowChange, accepts: (row: Row) => boolean
 };
 
 export function createClientView(options: ClientViewOptions): ClientView {
-  const { source, send, reader = ANONYMOUS, admits, epoch: nextEpoch = freshEpoch } = options;
+  const {
+    source,
+    send,
+    reader = ANONYMOUS,
+    admits,
+    epoch: nextEpoch = freshEpoch,
+    maxWindows = MAX_WINDOWS,
+  } = options;
   const open = new Map<string, Open>();
   const held = new Map<string, Held>();
   let position: StreamPosition | undefined;
@@ -249,7 +265,9 @@ export function createClientView(options: ClientViewOptions): ClientView {
     if (query.isErr()) {
       unplace(draft, id);
       draft.refused.push({ id, reason: query.error.message });
-    } else place(draft, id, query.value, new Set());
+    } else if (!open.has(id) && open.size >= maxWindows)
+      draft.refused.push({ id, reason: `a socket holds at most ${maxWindows} windows` });
+    else place(draft, id, query.value, new Set());
     // a client that names a position this stream is not at missed a patch: resnapshot
     draft.reset =
       since !== undefined &&
