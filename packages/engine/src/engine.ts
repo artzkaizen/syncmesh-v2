@@ -271,6 +271,7 @@ export function createEngine(options: EngineOptions): Engine {
     initial: boot?.state ?? emptyState(),
     hasAdapter,
   });
+  docPath.bind({ getState, synced: () => coverage.current().synced, atomically });
   fold(boot?.replay ?? [], "boot");
 
   const before = {

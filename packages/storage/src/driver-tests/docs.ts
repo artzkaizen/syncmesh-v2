@@ -59,6 +59,42 @@ const flat = (e: DocLogEntry) => [
 
 const open = async (driver: SqlDriver): Promise<DocStore> => (await sqlDocStore(driver)).unwrap();
 
+/** A materialisation's one commit: the snapshot, the head and the entries it covers (RFC-0023 §6.3). */
+const coverCase = (openDriver: OpenDriver): SuiteCase => ({
+  name: "docs: cover commits the snapshot, the head's floor and version, and covered/failed states together",
+  run: async () => {
+    const docs = await open(await openDriver("docs-cover"));
+    (await docs.append([entry(A, 1), entry(A, 2), entry(B, 3)])).unwrap();
+    check((await docs.snapshotOf(DOC)).unwrap() === undefined, "no snapshot before a cover");
+    const snapshot = Uint8Array.of(9, 8, 7);
+    const cover = {
+      adapter: LORO,
+      covers: new Map([[A, seq(1)]]),
+      version: Uint8Array.of(1, 2),
+      snapshot,
+      mode: "materialised",
+      at: 1234,
+      covered: [entry(A, 1)],
+      failed: [entry(A, 2)],
+    } as const;
+    (await docs.cover(DOC, cover)).unwrap();
+    const states = (await docs.entriesOf(DOC)).unwrap().map((e) => e.state);
+    equal(states, ["covered", "failed", "adapter-missing"], "entry states");
+    const [head] = (await docs.heads()).unwrap();
+    equal(
+      [head?.mode, head?.materialisedAt, head?.covers.get(A), head?.tailCount, head?.tailBytes],
+      ["materialised", 1234, seq(1), 1, 3],
+      "head",
+    );
+    equal([...(head?.version ?? [])], [1, 2], "version");
+    equal([...((await docs.snapshotOf(DOC)).unwrap()?.bytes ?? [])], [9, 8, 7], "snapshot");
+    // a later cover of another lineage replaces the snapshot and names it
+    (await docs.cover(DOC, { ...cover, lineage: L1, covered: [], failed: [] })).unwrap();
+    equal((await docs.snapshotOf(DOC)).unwrap()?.lineage ?? null, L1, "lineage");
+    equal((await docs.uncoveredFloor()).unwrap().get(A) ?? null, seq(1), "floor past covered");
+  },
+});
+
 export const docCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   ddlCase(openDriver),
   {
@@ -119,6 +155,7 @@ export const docCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       equal((await docs.heads()).unwrap().length, 1, "one head per document");
     },
   },
+  coverCase(openDriver),
   {
     name: "docs: uncoveredFloor stops each author below its lowest entry no snapshot covers",
     run: async () => {

@@ -47,6 +47,21 @@ export const SQLITE_DOC_TABLES: readonly string[] = [
   ) WITHOUT ROWID`,
 ];
 
+/**
+ * The column snapshots (RFC-0023 §6.1), a step of their own after the log and heads: a database
+ * migrated before materialisation existed gains the table and keeps everything else.
+ */
+export const SQLITE_DOC_SNAPSHOTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS doc_snapshots (
+    tbl TEXT NOT NULL,
+    key TEXT NOT NULL,
+    col TEXT NOT NULL,
+    lineage BLOB,
+    bytes BLOB NOT NULL,
+    PRIMARY KEY (tbl, key, col)
+  ) WITHOUT ROWID`,
+];
+
 export const SQLITE_DOCS: DocSql = {
   insertEntry: `INSERT OR IGNORE INTO doc_log (${ENTRY}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   selectEntries: `SELECT ${ENTRY} FROM doc_log ORDER BY author, seq, idx`,
@@ -60,6 +75,15 @@ export const SQLITE_DOCS: DocSql = {
       tail_bytes = excluded.tail_bytes`,
   selectHeads: `SELECT ${HEAD} FROM doc_heads ORDER BY tbl, key, col`,
   selectUncovered: `SELECT author, MIN(seq) FROM doc_log WHERE state <> 'covered' GROUP BY author`,
+  coverHead: `INSERT INTO doc_heads (${HEAD})
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+    ON CONFLICT (tbl, key, col) DO UPDATE SET adapter = excluded.adapter,
+      lineage = excluded.lineage, covers = excluded.covers, version = excluded.version,
+      mode = excluded.mode, materialised_at = excluded.materialised_at`,
+  countTail: `UPDATE doc_heads SET tail_count = ?, tail_bytes = ? WHERE tbl = ? AND key = ? AND col = ?`,
+  upsertSnapshot: `INSERT INTO doc_snapshots (tbl, key, col, lineage, bytes) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT (tbl, key, col) DO UPDATE SET lineage = excluded.lineage, bytes = excluded.bytes`,
+  selectSnapshot: `SELECT lineage, bytes FROM doc_snapshots WHERE tbl = ? AND key = ? AND col = ?`,
 };
 
 /** The Postgres migration step that creates `_syncmesh_doc_log` and `_syncmesh_doc_heads`. */
@@ -98,6 +122,17 @@ export const POSTGRES_DOC_TABLES: readonly string[] = [
   )`,
 ];
 
+export const POSTGRES_DOC_SNAPSHOTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS _syncmesh_doc_snapshots (
+    tbl TEXT NOT NULL,
+    key TEXT NOT NULL,
+    col TEXT NOT NULL,
+    lineage BYTEA,
+    bytes BYTEA NOT NULL,
+    PRIMARY KEY (tbl, key, col)
+  )`,
+];
+
 export const POSTGRES_DOCS: DocSql = {
   insertEntry: `INSERT INTO _syncmesh_doc_log (${ENTRY})
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
@@ -114,4 +149,16 @@ export const POSTGRES_DOCS: DocSql = {
   selectHeads: `SELECT ${HEAD} FROM _syncmesh_doc_heads ORDER BY tbl, key, col`,
   selectUncovered: `SELECT author, MIN(seq) FROM _syncmesh_doc_log WHERE state <> 'covered'
     GROUP BY author`,
+  coverHead: `INSERT INTO _syncmesh_doc_heads (${HEAD})
+    VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 0, $8, $9)
+    ON CONFLICT (tbl, key, col) DO UPDATE SET adapter = excluded.adapter,
+      lineage = excluded.lineage, covers = excluded.covers, version = excluded.version,
+      mode = excluded.mode, materialised_at = excluded.materialised_at`,
+  countTail: `UPDATE _syncmesh_doc_heads SET tail_count = $1, tail_bytes = $2
+    WHERE tbl = $3 AND key = $4 AND col = $5`,
+  upsertSnapshot: `INSERT INTO _syncmesh_doc_snapshots (tbl, key, col, lineage, bytes)
+    VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT (tbl, key, col) DO UPDATE SET lineage = excluded.lineage, bytes = excluded.bytes`,
+  selectSnapshot: `SELECT lineage, bytes FROM _syncmesh_doc_snapshots
+    WHERE tbl = $1 AND key = $2 AND col = $3`,
 };

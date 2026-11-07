@@ -5,7 +5,8 @@ import { describe, expect, test } from "bun:test";
 import type { DocWrite } from "../tx.js";
 
 import { tableDigests } from "../digest.js";
-import { createMemoryDocStore, docDigests, type DocStore } from "../doc-log.js";
+import { createMemoryDocStore } from "../doc-log-memory.js";
+import { docDigests, type DocStore } from "../doc-log.js";
 import { createLink } from "../link.js";
 import { createMemoryStateStore } from "../state-store.js";
 import { CREATE, N1, NOTES, PEER_A, PEER_B, column, key, row, seq, setup } from "./fixtures.js";

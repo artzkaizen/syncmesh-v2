@@ -77,6 +77,18 @@ export const pgDocHeads = pgTable(
 );
 
 /** The doc log on a device: the same shape as {@link pgDocLog}, in SQLite's types. */
+export const pgDocSnapshots = pgTable(
+  "_syncmesh_doc_snapshots",
+  {
+    tbl: pgText("tbl").notNull(),
+    key: pgText("key").notNull(),
+    col: pgText("col").notNull(),
+    lineage: bytea("lineage"),
+    bytes: bytea("bytes").notNull(),
+  },
+  (t) => [pgPrimaryKey({ columns: [t.tbl, t.key, t.col] })],
+);
+
 export const sqliteDocLog = sqliteTable(
   "doc_log",
   {
@@ -116,6 +128,18 @@ export const sqliteDocHeads = sqliteTable(
     tailBytes: sqliteInteger("tail_bytes", { mode: "number" }).notNull(),
     mode: sqliteText("mode").notNull(),
     materialisedAt: sqliteInteger("materialised_at", { mode: "number" }),
+  },
+  (t) => [sqlitePrimaryKey({ columns: [t.tbl, t.key, t.col] })],
+);
+
+export const sqliteDocSnapshots = sqliteTable(
+  "doc_snapshots",
+  {
+    tbl: sqliteText("tbl").notNull(),
+    key: sqliteText("key").notNull(),
+    col: sqliteText("col").notNull(),
+    lineage: blob("lineage", { mode: "buffer" }),
+    bytes: blob("bytes", { mode: "buffer" }).notNull(),
   },
   (t) => [sqlitePrimaryKey({ columns: [t.tbl, t.key, t.col] })],
 );

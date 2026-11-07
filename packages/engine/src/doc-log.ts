@@ -3,6 +3,7 @@ import type {
   AdapterId,
   ColumnName,
   DocChange,
+  DocUpdate,
   Hlc,
   LineageId,
   PeerId,
@@ -86,10 +87,40 @@ export interface DocHead extends DocAddress {
   readonly materialisedAt?: number;
 }
 
-/** What a fold appends for one doc change: the entry, and the adapter its change named. */
+/** What a fold appends for one doc change: the entry, the adapter its change named, and its bytes. */
 export interface DocAppend {
   readonly entry: DocLogEntry;
   readonly adapter: AdapterId;
+  /** The update as the event carried it; never stored twice (the event core holds it). */
+  readonly update: DocUpdate;
+}
+
+/** One doc-log entry by its place: author, sequence and the change's index in the event. */
+export type DocEntryRef = Pick<DocLogEntry, "author" | "seq" | "index">;
+
+/** A document's last persisted snapshot, of the lineage it was taken on. */
+export interface DocSnapshot {
+  readonly lineage?: LineageId;
+  readonly bytes: Uint8Array;
+}
+
+/**
+ * What a materialisation or a checkpoint install commits in one step (RFC-0023 §6.3): the
+ * snapshot, the head's floor and version, and the entries the snapshot now holds.
+ */
+export interface DocCover {
+  readonly adapter: AdapterId;
+  readonly lineage?: LineageId;
+  readonly covers: Cursors;
+  readonly version: Uint8Array;
+  readonly snapshot: Uint8Array;
+  readonly mode: Exclude<DocHeadMode, "none">;
+  /** Epoch milliseconds, as `DocHead.materialisedAt` reads it back. */
+  readonly at: number;
+  /** Entries the snapshot includes; they become `covered`, and compaction may take them. */
+  readonly covered: readonly DocEntryRef[];
+  /** Entries the adapter refused; they become `failed`, and the document stays at its last good version. */
+  readonly failed?: readonly DocEntryRef[];
 }
 
 /**
@@ -144,6 +175,11 @@ export interface DocStore {
     lineage: LineageId | undefined,
   ) => Promise<Result<void, StoreFailure>>;
   readonly heads: () => Promise<Result<readonly DocHead[], StoreFailure>>;
+  /** One document's entries, by author, sequence and index. */
+  readonly entriesOf: (doc: DocAddress) => Promise<Result<readonly DocLogEntry[], StoreFailure>>;
+  /** Commits a {@link DocCover}: snapshot, head and entry states together. */
+  readonly cover: (doc: DocAddress, cover: DocCover) => Promise<Result<void, StoreFailure>>;
+  readonly snapshotOf: (doc: DocAddress) => Promise<Result<DocSnapshot | undefined, StoreFailure>>;
   /**
    * Per author, the highest sequence below every entry of theirs that is not `covered` — the
    * floor compaction may not pass (§8.3). An author with no such entry is absent: nothing here
@@ -164,7 +200,11 @@ export function docAppends(
     if (event.local === true) continue;
     event.changes.forEach((change, index) => {
       if (change.kind !== "doc") return;
-      appends.push({ entry: entryOf(event, change, index, hasAdapter), adapter: change.adapter });
+      appends.push({
+        entry: entryOf(event, change, index, hasAdapter),
+        adapter: change.adapter,
+        update: change.update,
+      });
     });
   }
   return appends;
@@ -224,64 +264,6 @@ export function docDigests(entries: Iterable<DocLogEntry>): ReadonlyMap<string, 
     digests.set(key, ((digests.get(key) ?? 0n) + docChangeDigest(entry)) % MOD);
   }
   return digests;
-}
-
-const entryId = (e: Pick<DocLogEntry, "author" | "seq" | "index">) =>
-  `${e.author}\u0000${String(e.seq)}\u0000${String(e.index)}`;
-
-const byPosition = (a: DocLogEntry, b: DocLogEntry): number =>
-  a.author < b.author ? -1 : a.author > b.author ? 1 : a.seq - b.seq || a.index - b.index;
-
-/** The doc log in memory: what an engine with no database keeps, and what the SQL stores are held to. */
-export function createMemoryDocStore(): DocStore {
-  const log = new Map<string, DocLogEntry>();
-  const heads = new Map<string, DocHead>();
-  const ok = <T>(value: T) => Promise.resolve(Result.ok(value));
-  const ofDoc = (doc: DocAddress) => [...log.values()].filter((e) => docKey(e) === docKey(doc));
-
-  return {
-    append: (entries) => {
-      for (const entry of entries) if (!log.has(entryId(entry))) log.set(entryId(entry), entry);
-      return ok(undefined);
-    },
-    entries: () => ok([...log.values()].sort(byPosition)),
-    relineage: (doc, winner, live) => {
-      for (const entry of ofDoc(doc)) {
-        const next = nextState(entry, winner, live);
-        if (next !== entry.state) log.set(entryId(entry), { ...entry, state: next });
-      }
-      return ok(undefined);
-    },
-    refreshHead: (doc, adapter, lineage) => {
-      const held = heads.get(docKey(doc));
-      const tail = ofDoc(doc).filter((e) => e.lineage === lineage && inTail(e.state));
-      const head: DocHead = {
-        ...doc,
-        adapter,
-        covers: held?.covers ?? new Map(),
-        tailCount: tail.length,
-        tailBytes: tail.reduce((n, e) => n + e.size, 0),
-        mode: held?.mode ?? "none",
-        ...(lineage !== undefined && { lineage }),
-        ...(held?.version !== undefined && { version: held.version }),
-        ...(held?.materialisedAt !== undefined && { materialisedAt: held.materialisedAt }),
-      };
-      heads.set(docKey(doc), head);
-      return ok(undefined);
-    },
-    heads: () => ok([...heads.values()]),
-    uncoveredFloor: () => {
-      const floor = new Map<PeerId, SeqNum>();
-      for (const entry of log.values()) {
-        if (entry.state === "covered") continue;
-        // SAFETY: one below a positive sequence; 0 is the floor that holds the author back entirely
-        const below = (entry.seq - 1) as SeqNum;
-        const held = floor.get(entry.author);
-        if (held === undefined || below < held) floor.set(entry.author, below);
-      }
-      return ok(floor);
-    },
-  };
 }
 
 /** The state an entry moves to when `winner` is the lineage that wins. */

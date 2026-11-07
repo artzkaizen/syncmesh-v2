@@ -5,7 +5,7 @@ import type { CaptureSql, Dialect } from "./dialect.js";
 import type { LogPlacement, SqlValue } from "./driver.js";
 import type { Rung } from "./ladder.js";
 
-import { SQLITE_DOCS, SQLITE_DOC_TABLES } from "./dialect-docs.js";
+import { SQLITE_DOCS, SQLITE_DOC_SNAPSHOTS, SQLITE_DOC_TABLES } from "./dialect-docs.js";
 import { sqliteOperations } from "./dialect-operations.js";
 import { columnsOf, literal, quote } from "./identifiers.js";
 import { ladder } from "./ladder.js";
@@ -218,6 +218,7 @@ const sqliteDialect = (log: LogPlacement): Dialect => {
     ],
     // The doc log and heads (RFC-0023 §6.2): one step, after the state tables.
     SQLITE_DOC_TABLES,
+    SQLITE_DOC_SNAPSHOTS,
   ];
 
   return {

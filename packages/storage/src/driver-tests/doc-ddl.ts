@@ -67,16 +67,18 @@ async function describe(driver: SqlDriver, table: string) {
 }
 
 /** The same three facts, read off a Drizzle table declaration. */
-async function declared(dialect: SqlDriver["dialect"], which: "log" | "heads") {
+async function declared(dialect: SqlDriver["dialect"], which: "log" | "heads" | "snapshots") {
   const tables = await import("../doc-tables.js");
+  const pg = { log: tables.pgDocLog, heads: tables.pgDocHeads, snapshots: tables.pgDocSnapshots };
+  const lite = {
+    log: tables.sqliteDocLog,
+    heads: tables.sqliteDocHeads,
+    snapshots: tables.sqliteDocSnapshots,
+  };
   const config =
     dialect === "postgres"
-      ? (await import("drizzle-orm/pg-core")).getTableConfig(
-          which === "log" ? tables.pgDocLog : tables.pgDocHeads,
-        )
-      : (await import("drizzle-orm/sqlite-core")).getTableConfig(
-          which === "log" ? tables.sqliteDocLog : tables.sqliteDocHeads,
-        );
+      ? (await import("drizzle-orm/pg-core")).getTableConfig(pg[which])
+      : (await import("drizzle-orm/sqlite-core")).getTableConfig(lite[which]);
   return {
     name: config.name,
     columns: config.columns.map((c): Described => [c.name, c.getSQLType(), c.notNull]),
@@ -95,11 +97,11 @@ async function declared(dialect: SqlDriver["dialect"], which: "log" | "heads") {
  * `drizzle-orm` installed fails this one case and no other.
  */
 export const ddlCase = (openDriver: OpenDriver): SuiteCase => ({
-  name: "docs: the migrated doc_log and doc_heads are exactly their Drizzle 1.0 declarations",
+  name: "docs: the migrated doc_log, doc_heads and doc_snapshots are exactly their Drizzle 1.0 declarations",
   run: async () => {
     const driver = await openDriver("docs-ddl");
     (await sqlDocStore(driver)).unwrap();
-    for (const which of ["log", "heads"] as const) {
+    for (const which of ["log", "heads", "snapshots"] as const) {
       const want = await declared(driver.dialect, which);
       const have = await describe(driver, want.name);
       for (const part of ["columns", "pk", "indexes"] as const)
