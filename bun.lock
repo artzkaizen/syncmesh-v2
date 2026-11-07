@@ -172,6 +172,29 @@
         "vite-plus": "catalog:",
       },
     },
+    "adapters/rivet": {
+      "name": "@syncmesh/rivet",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/engine": "workspace:*",
+        "@syncmesh/relay": "workspace:*",
+        "@syncmesh/result": "workspace:*",
+        "@syncmesh/storage": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncmesh/client": "workspace:*",
+        "@syncmesh/config": "workspace:*",
+        "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/schema": "workspace:*",
+        "@syncmesh/sqlite-bun": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
+        "@syncmesh/wire": "workspace:*",
+        "@types/bun": "catalog:",
+        "drizzle-orm": "catalog:",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+    },
     "adapters/sqlite-bun": {
       "name": "@syncmesh/sqlite-bun",
       "version": "0.0.0",
@@ -1659,6 +1682,8 @@
     "@syncmesh/relay-node": ["@syncmesh/relay-node@workspace:adapters/relay-node"],
 
     "@syncmesh/result": ["@syncmesh/result@workspace:packages/result"],
+
+    "@syncmesh/rivet": ["@syncmesh/rivet@workspace:adapters/rivet"],
 
     "@syncmesh/rn-ble": ["@syncmesh/rn-ble@0.2.0", "", { "peerDependencies": { "expo": ">=52.0.0", "react": ">=18.3.0", "react-native": ">=0.76.0" } }, "sha512-n8ZrIPjQ7+IgwUfuP8xcX8chcjFylRGZKD/POHlP8zNXjVc+W0N3jMVu+LHO766dfigfayLLcuS8sHvK+bkRYg=="],
 
