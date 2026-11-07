@@ -343,3 +343,46 @@ describe("global is authored by the authority, verified by authorship", () => {
     }
   });
 });
+
+describe("ungranted mode (E06)", () => {
+  // a table nobody may write, in every op: the strictest rule the language has
+  const locked = syncSchema({
+    tables: {
+      vault: {
+        columns: { id: t.text().primaryKey(), body: t.text() },
+        partition: org,
+        allow: ({ deny }) => ({ $default: deny }),
+      },
+    },
+  });
+  const VAULT = table("vault");
+  const write = (v: ReturnType<typeof createValidator>) =>
+    v.validate(
+      {
+        peerId: device.peerId,
+        partition: ACME,
+        changes: [{ kind: "insert", table: VAULT, key: B1, row: row({ id: "b1", body: "x" }) }],
+      },
+      NONE,
+    );
+
+  test("a deny rule is not enforced: with no grants there is nobody to deny", () => {
+    const granted = createValidator({ schema: locked, grantFor: (peer) => grants.get(peer) });
+    expect(tag(write(granted))).toBe("PolicyDenied");
+    const ungranted = createValidator({ schema: locked, grantFor: null });
+    expect(tag(write(ungranted))).toBe("ok");
+  });
+
+  test("and the schema still is: deny skipped is not validation skipped", () => {
+    const ungranted = createValidator({ schema: locked, grantFor: null });
+    const bad = ungranted.validate(
+      {
+        peerId: device.peerId,
+        partition: ACME,
+        changes: [{ kind: "insert", table: VAULT, key: B1, row: row({ id: "b1", body: 7 }) }],
+      },
+      NONE,
+    );
+    expect(tag(bad)).toBe("SchemaViolation");
+  });
+});
