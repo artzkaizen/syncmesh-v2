@@ -6,6 +6,7 @@ import type { PeerId } from "@syncmesh/kernel";
 import type { ColumnsMap, PresenceMap, Schema } from "@syncmesh/schema";
 import type { BlobStore, SqlDriver, Stores } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
+import type { WindowClient } from "@syncmesh/window";
 import type { Entropy, Identity } from "@syncmesh/wire";
 
 import { deviceIdentity } from "@syncmesh/client";
@@ -93,6 +94,12 @@ export interface ClientOptions<R extends Router, C extends ColumnsMap, PC extend
   readonly identity?: Identity;
   /** Carries `authority` calls. Absent, one fails naming itself rather than pretending. */
   readonly link?: AuthorityLink;
+  /**
+   * Carries the reads of `sync: "window"` tables, which the server serves a page at a time
+   * (D39): `createWindowClient()`, attached to the socket the server's `serveWindows` answers on.
+   * Absent, such a read fails naming itself rather than showing an empty table.
+   */
+  readonly windows?: WindowClient;
   /** Everything the engine reports, from before there is a client to report it on. */
   readonly onError?: MeshOptions<C, "sqlite", PC>["onError"];
   readonly now?: () => Temporal.Instant;
@@ -281,7 +288,7 @@ export const flatten = <R extends Router, C extends ColumnsMap, PC extends Prese
 };
 
 /**
- * What {@link flatten} builds: the mesh's own options, plus the two the client keeps.
+ * What {@link flatten} builds: the mesh's own options, plus the three the client keeps.
  *
  * Declared here rather than beside `createClient` because this is the shape the flattening
  * produces, and a type that describes one function's output belongs with that function.
@@ -293,6 +300,7 @@ export interface AppOptions<
 > extends MeshOptions<C, "sqlite", PC> {
   readonly procedures: R;
   readonly link?: AuthorityLink;
+  readonly windows?: WindowClient;
 }
 
 /**

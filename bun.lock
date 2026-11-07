@@ -664,9 +664,11 @@
         "@syncmesh/result": "workspace:*",
         "@syncmesh/schema": "workspace:*",
         "@syncmesh/storage": "workspace:*",
+        "@syncmesh/window": "workspace:*",
       },
       "devDependencies": {
         "@electric-sql/pglite": "^0.5.7",
+        "@syncmesh/cdc": "workspace:*",
         "@syncmesh/config": "workspace:*",
         "@syncmesh/engine": "workspace:*",
         "@syncmesh/postgres": "workspace:*",
@@ -676,6 +678,7 @@
         "@syncmesh/wire": "workspace:*",
         "@types/bun": "catalog:",
         "drizzle-orm": "catalog:",
+        "postgres": "^3.4.9",
         "typescript": "catalog:",
         "vite-plus": "catalog:",
         "zod": "^3.25.76",
@@ -752,7 +755,6 @@
       },
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
-        "@syncmesh/policy": "workspace:*",
         "@syncmesh/schema": "workspace:*",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
@@ -893,7 +895,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@syncmesh/kernel": "workspace:*",
-        "@syncmesh/policy": "workspace:*",
         "@syncmesh/result": "workspace:*",
         "@syncmesh/wire": "workspace:*",
       },
