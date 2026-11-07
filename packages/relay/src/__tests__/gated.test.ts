@@ -134,6 +134,35 @@ describe("a grant-gated room (D40)", () => {
     }
   });
 
+  test("a held join is seated by its ticket arriving on another socket, before the wait is up", async () => {
+    const room = await gatedRoom({
+      trust: { issuers: [ISSUER.peerId], wait: Temporal.Duration.from({ seconds: 5 }) },
+    });
+    const { author, t: ta } = await authorIn(room);
+    await write(author, "a1", "acme one", ACME);
+    await tick(20);
+
+    // the reader holds no grant of its own to send: its join waits on a ticket from elsewhere
+    const reader = peer(41, "acct_reader", 100, { granted: false });
+    // it re-joins once seated, when its own grant arrives and changes what it may read
+    const tr = relayTransport({ dial: dialTo(room).dial, reconnectMs: 10 });
+    await tr.start(reader.context);
+    await tick(40);
+    expect(bodyOf(reader, "a1")).toBeUndefined();
+
+    const forwarder = peer(44, "acct_fwd");
+    const probe = await secureProbe(dialTo(room).dial, forwarder.identity);
+    probe.join();
+    probe.send(grantFrame(mintFor(forwarder.identity, "acct_fwd")));
+    probe.send(grantFrame(mintFor(reader.identity, "acct_reader", { partitions: [ACME] })));
+    expect(await until(() => bodyOf(reader, "a1") === "acme one", 1000)).toBe(true);
+
+    await ta.stop();
+    await tr.stop();
+    probe.close();
+    room.close();
+  });
+
   test("a device with no grant is refused as ungranted and is sent no event", async () => {
     const room = await gatedRoom();
     const { author, t: ta } = await authorIn(room);

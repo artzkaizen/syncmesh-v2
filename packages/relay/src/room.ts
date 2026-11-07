@@ -244,6 +244,7 @@ export async function openRelayRoom(
     trust: options.trust,
     presence,
     clients,
+    held: new Set(),
     cursors,
     floor: retention.floor,
     toClients,

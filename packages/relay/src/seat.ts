@@ -60,13 +60,12 @@ export interface Seat {
   /**
    * Seats now under the grant the room already holds for `peer`, or holds the join until one
    * arrives — the device sends its grants straight after its join — and refuses it `ungranted`
-   * once the room's `wait` is up. An open room seats at once.
+   * once the room's `wait` is up. An open room seats at once. A held join is in the room's `held`
+   * set, so a grant the room admits from any socket or instance seats it.
    */
   readonly admit: (peer: PeerId, seat: (grant: Grant | undefined) => void) => void;
   /** Whether a join is waiting on its ticket: the socket's other frames are not acted on meanwhile. */
   readonly waiting: () => boolean;
-  /** A grant reached the room: it may be the ticket a held join is waiting on. */
-  readonly offered: () => void;
   readonly close: () => void;
 }
 
@@ -97,10 +96,19 @@ export function createSeat(
         readonly timer: ReturnType<typeof setTimeout>;
       }
     | undefined;
+  /** A grant reached the room: it may be the ticket the held join is waiting on. */
+  const offered = (): void => {
+    if (held === undefined) return;
+    const grant = entitlement(room, held.peer);
+    if (grant !== undefined) held.seat(grant);
+  };
   const release = (): void => {
     if (held !== undefined) clearTimeout(held.timer);
     held = undefined;
+    room.held.delete(offered);
   };
+  /** Set once the seat has hung up on a lapsed ticket: later fan-out passes it over, quietly. */
+  let lapsedOut = false;
 
   /** One empty last page saying `author`'s run is held up to `at`, within this seat's scope. */
   const tell = (author: PeerId, at: SeqNum): void => {
@@ -123,12 +131,15 @@ export function createSeat(
       interest = asked;
       granted = grant;
       paged = false;
+      lapsedOut = false;
     },
     granted: () => granted,
     wants: (event) => {
+      if (lapsedOut) return false;
       if (granted !== undefined) {
         if (lapsed(room, granted)) granted = renewed(room, granted);
         if (granted === undefined) {
+          lapsedOut = true;
           refuse(REVOKED, REVOKED_MESSAGE);
           return false;
         }
@@ -164,13 +175,9 @@ export function createSeat(
         durationMs(grantWait(room.trust)),
       );
       held = { peer, seat, timer };
+      room.held.add(offered);
     },
     waiting: () => held !== undefined,
-    offered: () => {
-      if (held === undefined) return;
-      const grant = entitlement(room, held.peer);
-      if (grant !== undefined) held.seat(grant);
-    },
     close: release,
   };
 }

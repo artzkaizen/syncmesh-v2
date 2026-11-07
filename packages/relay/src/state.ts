@@ -55,6 +55,11 @@ export interface RoomState {
   readonly presence: PresenceStore;
   readonly clients: Map<PeerId, Client>;
   /**
+   * Joins held for their ticket (D40), each as the seat's own `offered`: a grant the room admits,
+   * from any socket or instance, is offered to every one of them.
+   */
+  readonly held: Set<() => void>;
+  /**
    * Per author, the highest sequence below which the room holds **every** entry it could serve
    * (D13). Contiguous rather than the highest seen, and counted over the entries catch-up can
    * actually send: `hello` carries this, and every client decides what to push from it, so a

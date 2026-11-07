@@ -278,7 +278,6 @@ export function createConnection(
     // the received frame bytes, untouched: grants forward byte-identical, never re-encoded
     if (admitted) room.toClients(bytes, me);
     if (admitted) room.publish(bytes);
-    seat.offered(); // a join waiting on its ticket: this grant may be it
   };
 
   const onSession = (bytes: Uint8Array, frame: Extract<RelayFrame, { kind: "session" }>): void => {

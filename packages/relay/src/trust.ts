@@ -94,7 +94,8 @@ export function reconsider(room: RoomState, device: PeerId): void {
 }
 
 /**
- * One grant arriving at the room, from a socket or another instance: whether to pass it on.
+ * One grant arriving at the room, from a socket or another instance: whether to pass it on. One
+ * it admits is offered to every held join, so a device is seated the moment its ticket arrives.
  *
  * A gated room caches only grants that verify against its issuers. The cache keeps one grant per
  * device, newest mint wins, and reads the mint time without a signature check — so an ungated
@@ -107,5 +108,7 @@ export function admitGrant(room: RoomState, wire: Uint8Array): boolean {
   const grant = verified(room, wire);
   if (grant === undefined || !room.grants.admit(wire)) return false;
   reconsider(room, grant.device);
+  // a join waiting on its ticket: this grant may be it, whichever socket or instance carried it
+  for (const offer of room.held) offer();
   return true;
 }
