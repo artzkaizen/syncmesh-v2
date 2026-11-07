@@ -303,6 +303,12 @@ describe("a window over a row source (E27)", () => {
     expect(ats(client.rows("inbox"))).toEqual(down(103, 5));
   });
 
+  test("a socket with no window open is sent nothing when the source changes", () => {
+    const { source, frames } = harness(100);
+    source.write([{ table: MAIL, key: mailKey(101), row: mail(101) }]);
+    expect(frames).toEqual([]);
+  });
+
   test("an undesire while detached lets go of the window's rows at once", () => {
     const { client, view } = harness(100);
     client.desire("a", newest(3));

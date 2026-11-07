@@ -247,6 +247,8 @@ export function createClientView(options: ClientViewOptions): ClientView {
   };
 
   const onChanges = (changes: readonly RowChange[]): void => {
+    // with no window open no change can move one, and an idle socket is sent nothing
+    if (open.size === 0) return;
     const draft = emptyDraft();
     const named = new Set(changes.map((c) => rowId(c.table, c.key)));
     for (const [id, window] of open) {
