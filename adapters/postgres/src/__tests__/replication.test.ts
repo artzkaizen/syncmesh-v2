@@ -6,7 +6,7 @@ import { afterAll, afterEach, describe, expect, setDefaultTimeout, test } from "
 
 import type { SlotStatus } from "../index.js";
 
-import { PartialKeyChange, lsnWatermark, parseLsn, parseLsnWatermark } from "../index.js";
+import { PartialKeyChange, SlotLost, lsnWatermark, parseLsn, parseLsnWatermark } from "../index.js";
 import {
   ACME,
   POSTGRES_URL,
@@ -252,6 +252,28 @@ describe.skipIf(POSTGRES_URL === undefined)("Postgres logical replication", () =
     );
     expect(failed).toBeInstanceOf(PartialKeyChange);
     expect(failed).toMatchObject({ table, columns: ["body"] });
+    await cleanup();
+  });
+
+  test("a resume from a stored position whose slot is gone is SlotLost, not a silent gap", async () => {
+    const { table, options, source, cleanup } = await scratch(db);
+    const first = await source.start({ after: null });
+    await db.unsafe(`INSERT INTO ${table} VALUES ('a', 'acme', '1')`);
+    const end = lsnWatermark(commitOf(await take(iterate(first), commits(1), "a")));
+    first.ack(end);
+    first.stop();
+    expect((await source.drop()).unwrap()).toBe(true);
+    await db.unsafe(`INSERT INTO ${table} VALUES ('lost', 'acme', '2')`);
+
+    const resumed = await tracked(options)
+      .start({ after: end })
+      .then(
+        () => undefined,
+        (cause: unknown) => cause,
+      );
+    expect(resumed).toBeInstanceOf(SlotLost);
+    // refused without making a slot, so nothing pretends to hold the gap
+    expect((await source.status()).unwrap()).toBeNull();
     await cleanup();
   });
 

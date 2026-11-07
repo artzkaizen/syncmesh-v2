@@ -17,9 +17,10 @@ export class SlotBusy extends TaggedError("SlotBusy")<{
 }> {}
 
 /**
- * The server discarded WAL the slot still needed (`wal_status = lost`, usually
- * `max_slot_wal_keep_size`). What it held is gone and nothing can replay it: drop the slot and
- * backfill again.
+ * The slot cannot replay what a resume asks for: the server discarded WAL it still needed
+ * (`wal_status = lost`, usually `max_slot_wal_keep_size`), or a start from a stored position
+ * found no slot at all (dropped, or a restore or failover that did not carry it). What it held is
+ * gone: drop the slot, forget the stored position and backfill again.
  */
 export class SlotLost extends TaggedError("SlotLost")<{ slot: string; message: string }> {}
 

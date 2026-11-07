@@ -25,7 +25,10 @@ export interface PostgresChangeSourceOptions {
   readonly sql: PostgresQuerier;
   /** Opens a replication-mode connection; called once per stream and once per reconnect. */
   readonly connect: () => ReplicationClient;
-  /** `[a-z0-9_]{1,63}`, as Postgres requires of a slot. Created on first start if absent. */
+  /**
+   * `[a-z0-9_]{1,63}`, as Postgres requires of a slot. Created by a backfill's watermark or a
+   * start from `null` if absent; a start from a stored watermark without it is `SlotLost`.
+   */
   readonly slot: string;
   /** Same alphabet as `slot`. Must exist before `start`; `publish()` makes it. */
   readonly publication: string;
@@ -45,7 +48,8 @@ export interface PostgresChangeSource extends ChangeSource {
   readonly status: () => Promise<Result<SlotStatus | null, PostgresSourceError>>;
   /**
    * Drops the slot, after any stream this source opened has closed. Releases the WAL it held,
-   * and forgets every position: the next start creates a fresh slot, which needs a backfill.
+   * and forgets every position: a start from a stored watermark then fails with `SlotLost`, and
+   * only a start from `null` — a backfill, for a bridge given a reader — creates a fresh slot.
    * `false` when there was no slot.
    */
   readonly drop: () => Promise<Result<boolean, PostgresSourceError>>;
@@ -106,7 +110,7 @@ export function postgresChangeSource(options: PostgresChangeSourceOptions): Post
   return {
     name: options.name ?? slot,
     read: {
-      watermark: async () => lsnWatermark(thrown(await queries.ensure())),
+      watermark: async () => lsnWatermark(thrown(await queries.ensure({ create: true }))),
       rows: (table) => queries.rows(table),
     },
     status: queries.status,
@@ -118,7 +122,8 @@ export function postgresChangeSource(options: PostgresChangeSourceOptions): Post
     start: async ({ after }) => {
       await settled();
       thrown(await queries.requirePublication());
-      const at = thrown(await queries.ensure());
+      // only a start from the beginning may make the slot; a resume needs the one it left
+      const at = thrown(await queries.ensure({ create: after === null }));
       const start =
         after === null
           ? at

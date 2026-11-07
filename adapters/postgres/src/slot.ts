@@ -104,8 +104,12 @@ export function createSlot(sql: PostgresQuerier, slot: string, publication: stri
         };
       }),
 
-    /** The slot, made if absent; where it stands is where a stream from it begins. */
-    ensure: async (): Promise<Result<Lsn, PostgresSourceError>> => {
+    /**
+     * The slot's position, which is where a stream from it begins. An absent slot is made when
+     * `create` allows it; otherwise it is {@link SlotLost}, because a fresh slot starts at the
+     * current WAL position and every change before it was never decoded.
+     */
+    ensure: async ({ create }: { create: boolean }): Promise<Result<Lsn, PostgresSourceError>> => {
       const found = await query(
         `SELECT plugin::text, (database = current_database())::text,
                 coalesce(wal_status, '')::text, confirmed_flush_lsn::text
@@ -115,6 +119,14 @@ export function createSlot(sql: PostgresQuerier, slot: string, publication: stri
       if (found.isErr()) return Result.err(found.error);
       const row = found.value[0];
       if (row === undefined) {
+        if (!create) {
+          return Result.err(
+            new SlotLost({
+              slot,
+              message: `${slot} is gone, and with it every change since the stored position`,
+            }),
+          );
+        }
         const made = await query(
           `SELECT lsn::text FROM pg_create_logical_replication_slot($1, 'pgoutput')`,
           [slot],
