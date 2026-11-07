@@ -70,7 +70,10 @@ describe("a blob through the relay", () => {
   }, 30_000);
 
   test("a put past its partition's quota is BlobQuotaExceeded, and another partition still fits", async () => {
+    // its own directory: under the default one, a blob a previous run put is still there
+    const dataDir = mkdtempSync(join(tmpdir(), "syncmesh-quota-"));
     const relay = await startRelay(0, {
+      dataDir,
       keepaliveMs: 60_000,
       retention: { maxBlobBytesPerPartition: photo.byteLength + 100 },
     });
@@ -101,6 +104,7 @@ describe("a blob through the relay", () => {
       await b.stop();
     } finally {
       await relay.stop();
+      rmSync(dataDir, { recursive: true, force: true });
     }
   }, 30_000);
 
