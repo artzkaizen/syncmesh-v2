@@ -75,13 +75,16 @@ export function createRepage(deps: RepageDeps): Repage {
     answered: () => {
       digests += 1;
       // the far side answers every cursors frame with exactly one digest, in order, so the
-      // digest counted at `askedAt` closes the answer to the ask; a lost frame only delays this
+      // digest counted at `askedAt` closes the answer to the ask. A lost digest only delays
+      // this. A lost cursors frame does not: if the ask itself never arrives, the digest
+      // answering the next, ordinary cursors frame is counted as its answer, and the cursors
+      // are re-scoped over history that was never sent — the same limit as an event lost in
+      // transit inside a re-page, which pairing a digest with its ask would close
       if (gate === undefined || askedAt === undefined || digests < askedAt) return;
       askedAt = undefined;
       if (!gate.whole(peer()) || !stale()) return;
       const { synced, local } = engine.coverage();
-      const own = gate.own();
-      engine.adoptCoverage(own === "" ? { synced, local } : { synced, local, scope: own });
+      engine.adoptCoverage({ synced, local, scope: gate.own() });
     },
   };
 }
