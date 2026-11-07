@@ -105,3 +105,31 @@ export function pgliteDriver(db: PgliteClient): PostgresDriver {
     close: () => db.close?.() ?? Promise.resolve(),
   };
 }
+
+export type { Lsn } from "./lsn.js";
+export { InvalidLsn, lsnText, lsnWatermark, parseLsn, parseLsnWatermark } from "./lsn.js";
+export type {
+  OldTuple,
+  PgOutputMessage,
+  Relation,
+  RelationColumn,
+  ReplicaIdentity,
+  ServerFrame,
+  Tuple,
+  TupleCell,
+} from "./pgoutput.js";
+export { MalformedMessage, decodePgOutput, parseServerFrame, standbyStatus } from "./pgoutput.js";
+export { cellValue } from "./values.js";
+export type { LagAlarm, PostgresChangeSource, PostgresChangeSourceOptions } from "./replication.js";
+export { postgresChangeSource } from "./replication.js";
+export type { ReplicationClient, ReplicationStream } from "./link.js";
+export type { SlotStatus } from "./slot.js";
+export type { PostgresSourceError } from "./replication-errors.js";
+export {
+  PublicationMissing,
+  ReplicationFailed,
+  SlotBusy,
+  SlotLost,
+  SlotMismatch,
+  UnkeyedChange,
+} from "./replication-errors.js";
