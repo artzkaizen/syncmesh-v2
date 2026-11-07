@@ -25,7 +25,9 @@ export interface ReadGate {
    * `peer` is the one a handshake proved. `undefined` is a link that runs none — a pipe the app
    * built and hands the mesh as already its own (a worker port, a tab, a test loopback) — and is
    * carried whole: the gate judges readers it can name, and every medium that faces strangers
-   * names them by handshake. `linkTransport` takes the name when the app wants it judged.
+   * names them by handshake. A `linkTransport` link is one of these: it attaches with no peer, so
+   * an app that wants a pipe judged builds it with `createFrameTransport` and attaches it under
+   * the peer its own handshake proved.
    */
   readonly withholds: (peer: PeerId | undefined, event: SyncEvent) => boolean;
   /** The entitlement `peer` is judged by, as the scope text a withheld frame carries. */
