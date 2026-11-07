@@ -58,8 +58,15 @@ export interface DocPath {
    * and its writes would be two different logs.
    */
   readonly within: (scoped: AtomicStores) => AtomicStores;
-  /** What compaction is clamped by: the doc log's uncovered entries, and {@link DocPath.hold}. */
-  readonly compaction: { readonly docs: DocStore; readonly held: () => Cursors };
+  /**
+   * What compaction is clamped by: the doc log's uncovered entries, and {@link DocPath.hold}.
+   * `docsPersist` is false for the in-memory doc log an engine keeps when given none.
+   */
+  readonly compaction: {
+    readonly docs: DocStore;
+    readonly docsPersist: boolean;
+    readonly held: () => Cursors;
+  };
 }
 
 export function createDocPath(options: DocOptions, peerId: PeerId, undo: readonly Undo[]): DocPath {
@@ -82,6 +89,6 @@ export function createDocPath(options: DocOptions, peerId: PeerId, undo: readonl
       options.docStore !== undefined && scoped.docs !== undefined
         ? scoped
         : { ...scoped, docs: docStore },
-    compaction: { docs: docStore, held: hold },
+    compaction: { docs: docStore, docsPersist: options.docStore !== undefined, held: hold },
   };
 }

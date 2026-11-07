@@ -587,6 +587,11 @@ is compactable only when all of these hold:
    `clampToPersisted`).
 3. It is not among this principal's last `undoDepth` actions. Undo needs those updates (§9).
 
+Clause 2 reads the doc log. An engine given no `docStore` keeps that log in memory, and after a
+restart over a persisted state it starts empty, so the clamp then reads the doc changes from the
+events themselves and treats every one as uncovered. Until P3 nothing marks an entry `covered`,
+so in P2 each author's log stops below their first doc change on every node, relays included.
+
 Snapshots on a device are **shallow at the stable floor**: the doc version that every known
 writer of the partition has acknowledged, computed from the same ack maps compaction uses. Below
 it, no concurrent update can still arrive from a known peer. A **forgotten** peer (D15) that
