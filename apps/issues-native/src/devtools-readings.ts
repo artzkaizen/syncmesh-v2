@@ -3,6 +3,7 @@ import type { LinkEvent, LinkEventKind, TransportCondition } from "@syncmesh/tra
 import type { ChipColor } from "heroui-native";
 
 import Constants from "expo-constants";
+import { z } from "zod";
 
 import type { Instruments } from "./mesh";
 
@@ -250,12 +251,14 @@ const EXTRA_KEYS = ["relayUrl", "authorityUrl", "bluetooth"] as const;
  * device, not assumed — so a row reading `{}` is a key that was written as `null`, and a screen
  * that said "not printable" would have hidden exactly that.
  */
-const declared = (value: unknown): string => {
-  if (value === undefined) return "not declared";
-  if (typeof value === "string") return value === "" ? "an empty string" : value;
-  if (typeof value === "boolean" || typeof value === "number") return String(value);
-  return JSON.stringify(value) ?? "not printable";
-};
+const Declared = z.union([
+  z.literal("").transform(() => "an empty string"),
+  z.string(),
+  z.json().transform((value) => JSON.stringify(value)),
+]);
+
+/** `extra` as declared values; anything that is not a record reads as nothing declared. */
+const Extra = z.record(z.string(), Declared).catch({});
 
 /** One declared build flag, and what this build read out of it. */
 export interface Flag {
@@ -274,10 +277,8 @@ export interface Flag {
  * against each other at a glance.
  */
 export function buildFlags(): readonly Flag[] {
-  // Expo's config arrives through a native runtime typed `any`, so it is narrowed where it lands
+  // Expo's config arrives through a native runtime typed `any`, so it is parsed where it lands
   // rather than trusted — the same rule `./mesh` follows with its `Address` schema
-  const extra: unknown = Constants.expoConfig?.extra;
-  const held =
-    typeof extra === "object" && extra !== null ? (extra as Record<string, unknown>) : {};
-  return EXTRA_KEYS.map((key) => ({ key, value: declared(held[key]) }));
+  const held = Extra.parse(Constants.expoConfig?.extra);
+  return EXTRA_KEYS.map((key) => ({ key, value: held[key] ?? "not declared" }));
 }

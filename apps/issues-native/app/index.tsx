@@ -1,7 +1,5 @@
-import type { IssueStatus } from "@syncmesh/issues";
-
 import { LegendList } from "@legendapp/list/react-native";
-import { ISSUE_STATUS, WORKSPACE_ID } from "@syncmesh/issues";
+import { IssueStatus, WORKSPACE_ID } from "@syncmesh/issues";
 import { useLiveQuery } from "@syncmesh/react";
 import { Redirect, useLocalSearchParams, useRouter } from "expo-router";
 import { SearchField, Spinner } from "heroui-native";
@@ -38,6 +36,12 @@ const STATUS_LABEL = {
   canceled: "Canceled",
 } as const satisfies Record<IssueStatus, string>;
 
+/** A status's heading, or the status itself when this build has never heard of it. */
+const labelOf = (status: string) => {
+  const known = IssueStatus.safeParse(status);
+  return known.success ? STATUS_LABEL[known.data] : status;
+};
+
 /** What the list actually holds: an issue with the two ids the row resolves against. */
 type ListIssue = RowIssue & { readonly teamId: string; readonly assigneeId: string | null };
 
@@ -52,6 +56,40 @@ type Line =
   | { readonly kind: "issue"; readonly key: string; readonly issue: ListIssue };
 
 const HEADER_HEIGHT = 34;
+
+/**
+ * Grouped by status, because a flat list of forty issues answers no question a person has.
+ *
+ * "What is in flight" and "what is parked" are the two things anybody opens a tracker to see,
+ * and a header every few rows is what makes them readable without sorting anything. The headers
+ * and the rows are flattened into one array rather than nested, because a virtualized list
+ * scrolls one array — and `getFixedItemSize` still answers exactly for both kinds, so nothing
+ * has to be measured.
+ */
+function linesOf(addressable: readonly ListIssue[]): readonly Line[] {
+  const byStatus = new Map<string, ListIssue[]>();
+  for (const row of addressable) {
+    const held = byStatus.get(row.status);
+    if (held === undefined) byStatus.set(row.status, [row]);
+    else held.push(row);
+  }
+  const out: Line[] = [];
+  const push = (status: string, rows: readonly ListIssue[]) => {
+    out.push({ kind: "header", key: `h:${status}`, status, count: rows.length });
+    for (const row of rows) out.push({ kind: "issue", key: row.id, issue: row });
+  };
+  // a status nobody is using draws no header at all, rather than an empty section
+  for (const status of BOARD_ORDER) {
+    const rows = byStatus.get(status);
+    if (rows !== undefined && rows.length > 0) push(status, rows);
+  }
+  // a status this build has never heard of still gets drawn, under its own name — the database
+  // is the authority on what is in it, and a UI that silently dropped rows would be lying
+  for (const [status, rows] of byStatus) {
+    if (!IssueStatus.safeParse(status).success) push(status, rows);
+  }
+  return out;
+}
 
 export default function IssuesScreen() {
   /**
@@ -153,39 +191,7 @@ function Issues() {
     [issues.data],
   );
 
-  /**
-   * Grouped by status, because a flat list of forty issues answers no question a person has.
-   *
-   * "What is in flight" and "what is parked" are the two things anybody opens a tracker to see,
-   * and a header every few rows is what makes them readable without sorting anything. The headers
-   * and the rows are flattened into one array rather than nested, because a virtualized list
-   * scrolls one array — and `getFixedItemSize` still answers exactly for both kinds, so nothing
-   * has to be measured.
-   */
-  const lines = useMemo(() => {
-    const byStatus = new Map<string, ListIssue[]>();
-    for (const row of addressable) {
-      const held = byStatus.get(row.status);
-      if (held === undefined) byStatus.set(row.status, [row]);
-      else held.push(row);
-    }
-    const out: Line[] = [];
-    const push = (status: string, rows: readonly ListIssue[]) => {
-      out.push({ kind: "header", key: `h:${status}`, status, count: rows.length });
-      for (const row of rows) out.push({ kind: "issue", key: row.id, issue: row });
-    };
-    // a status nobody is using draws no header at all, rather than an empty section
-    for (const status of BOARD_ORDER) {
-      const rows = byStatus.get(status);
-      if (rows !== undefined && rows.length > 0) push(status, rows);
-    }
-    // a status this build has never heard of still gets drawn, under its own name — the database
-    // is the authority on what is in it, and a UI that silently dropped rows would be lying
-    for (const [status, rows] of byStatus) {
-      if (!(ISSUE_STATUS as readonly string[]).includes(status)) push(status, rows);
-    }
-    return out;
-  }, [addressable]);
+  const lines = useMemo(() => linesOf(addressable), [addressable]);
 
   /**
    * The cold-join timeline, recorded as it happens rather than reconstructed after.
@@ -212,9 +218,7 @@ function Issues() {
       item.kind === "header" ? (
         <View className="flex-row items-center gap-2" style={{ height: HEADER_HEIGHT }}>
           <StatusGlyph size={14} status={item.status} />
-          <Text className="text-[13px] font-medium text-foreground">
-            {STATUS_LABEL[item.status as IssueStatus] ?? item.status}
-          </Text>
+          <Text className="text-[13px] font-medium text-foreground">{labelOf(item.status)}</Text>
           <Text className="text-[13px] text-muted-foreground">{String(item.count)}</Text>
         </View>
       ) : (
