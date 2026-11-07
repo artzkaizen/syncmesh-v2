@@ -62,6 +62,23 @@ export const scopeReads = <Db extends object>(db: Db, read: (table: never) => un
       const value = Reflect.get(target, property, receiver);
       if (typeof value !== "function" || !READS.has(String(property))) return value;
       const method = value.bind(target);
+      // `$count(table)` names its source directly, with no `from` to intercept
+      if (property === "$count")
+        return (source: unknown, ...rest: readonly unknown[]) => method(scope(source), ...rest);
+      // `$with(alias).as(qb => …)` hands the callback a fresh builder of Drizzle's own
+      if (property === "$with")
+        return (...args: readonly unknown[]) => {
+          const cte = method(...args) as { as: (qb: unknown) => unknown };
+          return {
+            as: (qb: unknown) =>
+              cte.as(
+                typeof qb === "function" ? (fresh: Builder) => qb(scopeReads(fresh, read)) : qb,
+              ),
+          };
+        };
+      // `with(cte)` answers the read verbs again, which build from a source like `select` does
+      if (property === "with")
+        return (...args: readonly unknown[]) => scopeReads(method(...args) as Builder, read);
       return (...args: readonly unknown[]) => wrap(method(...args), scope);
     },
   }) as Db;

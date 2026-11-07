@@ -125,6 +125,17 @@ export const proceduresFor = (mail: MailTable, open: MailTable) => ({
           .orderBy(desc(mail.received), desc(mail.id))
           .limit(input.limit),
       ),
+    /** The reader's mail, only while `db.$count` agrees there are `total` of it: a count is a read too. */
+    tallied: query
+      .input(z.object({ total: z.number().int(), limit: z.number().int().min(1) }))
+      .handler(({ input, db }) =>
+        db
+          .select()
+          .from(mail)
+          .where(eq(db.$count(mail), input.total))
+          .orderBy(desc(mail.id))
+          .limit(input.limit),
+      ),
     everyone: query
       .input(z.object({ limit: z.number().int() }))
       .handler(({ input, db }) => db.select().from(open).orderBy(desc(open.id)).limit(input.limit)),

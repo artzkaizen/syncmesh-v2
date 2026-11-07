@@ -80,7 +80,9 @@ const toRow = (record: Record<string, unknown>): Result<Row, ReadRefused> => {
  * **Permission is the read rule, applied before the handler's `where`** (E13). Every table the
  * handler selects from is replaced by the table as this principal may read it, as on a device,
  * so the handler's own filter only ever narrows. It fails closed: a table that is not
- * `sync: "window"`, or that has no rule to apply, is refused rather than read.
+ * `sync: "window"`, or that has no rule to apply, is refused rather than read. The tables a raw
+ * `sql` fragment names are not rewritten: a handler reads other tables through `db`, never
+ * inside `sql`.
  *
  * A served read selects one table's rows with its primary key, as a live query does; the key
  * is how a page names its rows to the client.

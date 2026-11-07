@@ -156,6 +156,24 @@ suite("served reads over a real Postgres and its logical replication (D43, E27)"
     expect(putSince(frames, mark)).toEqual([mailId(104)]);
   });
 
+  test("a count inside the handler counts what the reader may read, not the table", async () => {
+    const count = async (where: string) =>
+      (
+        await fx.pg.unsafe<{ n: number }[]>(
+          `SELECT count(*)::int AS n FROM ${fx.names.mail} ${where}`,
+        )
+      )[0]?.n ?? -1;
+    const mine = await count("WHERE owner = 'alice'");
+    const all = await count("");
+    expect(mine).toBeLessThan(all);
+    const { client, server } = pipe(fx.sourceFor(ALICE));
+    client.open("mine", { path: "mail.tallied", input: { total: mine, limit: 1 } });
+    client.open("all", { path: "mail.tallied", input: { total: all, limit: 1 } });
+    await server.idle();
+    expect(client.rows("mine")).toHaveLength(1);
+    expect(client.rows("all")).toEqual([]);
+  });
+
   test("refused, failing closed: a served table with no read rule, an unknown read, a refused input", async () => {
     const { client, server } = pipe(fx.sourceFor(ALICE));
     client.open("open", { path: "mail.everyone", input: { limit: 5 } });
