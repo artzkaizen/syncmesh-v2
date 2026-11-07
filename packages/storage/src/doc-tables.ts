@@ -3,8 +3,9 @@
  * the shape a query layer types its statements against, and the shape each dialect's migration
  * must create — `driver-tests/docs.ts` compares the two, so neither can drift from the other.
  *
- * Names follow the rest of the mesh's own tables: `_syncmesh_*` in the app's Postgres, bare on a
- * device's SQLite, snake_case columns in both. Byte columns are `bytea` on Postgres and
+ * Named as derived tables by `namespace.ts`: `syncmesh.doc_log` and `syncmesh.doc_heads` in the
+ * app's Postgres, `syncmesh_doc_log` and `syncmesh_doc_heads` beside the app's tables on a
+ * device, snake_case columns in both. Byte columns are `bytea` on Postgres and
  * `blob({ mode: "buffer" })` on SQLite — in Drizzle 1.0 a `blob()` without a mode stores JSON.
  *
  * @module
@@ -14,7 +15,7 @@ import {
   bytea,
   index as pgIndex,
   integer as pgInteger,
-  pgTable,
+  pgSchema,
   primaryKey as pgPrimaryKey,
   text as pgText,
 } from "drizzle-orm/pg-core";
@@ -27,9 +28,14 @@ import {
   text as sqliteText,
 } from "drizzle-orm/sqlite-core";
 
+import { ATTACHED_LOG, stateTable } from "./namespace.js";
+
+/** The `syncmesh` schema the app's Postgres keeps the mesh's tables in. */
+const pgMesh = pgSchema(ATTACHED_LOG);
+
 /** The doc log in the app's Postgres: one row per doc change, the update itself by reference. */
-export const pgDocLog = pgTable(
-  "_syncmesh_doc_log",
+export const pgDocLog = pgMesh.table(
+  "doc_log",
   {
     author: pgText("author").notNull(),
     seq: bigint("seq", { mode: "number" }).notNull(),
@@ -51,13 +57,13 @@ export const pgDocLog = pgTable(
   },
   (t) => [
     pgPrimaryKey({ columns: [t.author, t.seq, t.idx] }),
-    pgIndex("_syncmesh_doc_log_doc").on(t.tbl, t.key, t.col, t.state),
+    pgIndex("doc_log_doc").on(t.tbl, t.key, t.col, t.state),
   ],
 );
 
 /** The doc heads in the app's Postgres: where each document's column snapshot stands. */
-export const pgDocHeads = pgTable(
-  "_syncmesh_doc_heads",
+export const pgDocHeads = pgMesh.table(
+  "doc_heads",
   {
     tbl: pgText("tbl").notNull(),
     key: pgText("key").notNull(),
@@ -78,7 +84,7 @@ export const pgDocHeads = pgTable(
 
 /** The doc log on a device: the same shape as {@link pgDocLog}, in SQLite's types. */
 export const sqliteDocLog = sqliteTable(
-  "doc_log",
+  stateTable("doc_log"),
   {
     author: sqliteText("author").notNull(),
     seq: sqliteInteger("seq", { mode: "number" }).notNull(),
@@ -97,13 +103,13 @@ export const sqliteDocLog = sqliteTable(
   },
   (t) => [
     sqlitePrimaryKey({ columns: [t.author, t.seq, t.idx] }),
-    sqliteIndex("doc_log_doc").on(t.tbl, t.key, t.col, t.state),
+    sqliteIndex("syncmesh_doc_log_doc").on(t.tbl, t.key, t.col, t.state),
   ],
 );
 
 /** The doc heads on a device: the same shape as {@link pgDocHeads}, in SQLite's types. */
 export const sqliteDocHeads = sqliteTable(
-  "doc_heads",
+  stateTable("doc_heads"),
   {
     tbl: sqliteText("tbl").notNull(),
     key: sqliteText("key").notNull(),

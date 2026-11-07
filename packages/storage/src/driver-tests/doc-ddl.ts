@@ -14,20 +14,22 @@ type Described = readonly [string, string, boolean];
  * The migrated table as the database itself describes it: its columns in order, its primary key,
  * and its secondary indexes with their columns. What the Drizzle declaration is compared against.
  */
-async function describe(driver: SqlDriver, table: string) {
+async function describe(driver: SqlDriver, table: string, schema: string | undefined) {
   if (driver.dialect === "postgres") {
     const columns = await driver.all(
       `SELECT column_name, data_type, is_nullable FROM information_schema.columns
-        WHERE table_name = $1 AND table_schema = current_schema() ORDER BY ordinal_position`,
-      [table],
+        WHERE table_name = $1 AND table_schema = COALESCE($2::text, current_schema())
+        ORDER BY ordinal_position`,
+      [table, schema ?? null],
     );
     const keyed = await driver.all(
       `SELECT i.relname, ix.indisprimary, a.attname FROM pg_class t
         JOIN pg_index ix ON t.oid = ix.indrelid JOIN pg_class i ON i.oid = ix.indexrelid
         JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey)
-        WHERE t.relname = $1 AND t.relnamespace = to_regnamespace(current_schema())
+        WHERE t.relname = $1
+          AND t.relnamespace = to_regnamespace(COALESCE($2::text, current_schema()))
         ORDER BY i.relname, array_position(ix.indkey::int2[], a.attnum)`,
-      [table],
+      [table, schema ?? null],
     );
     const pk = keyed.filter(([, primary]) => primary === true).map(([, , name]) => String(name));
     const indexes = new Map<string, string[]>();
@@ -79,6 +81,7 @@ async function declared(dialect: SqlDriver["dialect"], which: "log" | "heads") {
         );
   return {
     name: config.name,
+    schema: "schema" in config ? config.schema : undefined,
     columns: config.columns.map((c): Described => [c.name, c.getSQLType(), c.notNull]),
     pk: config.primaryKeys.flatMap((k) => k.columns.map((c) => c.name)),
     indexes: config.indexes.map((i): [string, string[]] => [
@@ -95,13 +98,16 @@ async function declared(dialect: SqlDriver["dialect"], which: "log" | "heads") {
  * `drizzle-orm` installed fails this one case and no other.
  */
 export const ddlCase = (openDriver: OpenDriver): SuiteCase => ({
-  name: "docs: the migrated doc_log and doc_heads are exactly their Drizzle 1.0 declarations",
+  name: "docs: the migrated doc log and heads are exactly their Drizzle 1.0 declarations",
   run: async () => {
     const driver = await openDriver("docs-ddl");
+    // an app may name its own tables doc_log and doc_heads; the migration must not reach them
+    for (const name of ["doc_log", "doc_heads"])
+      await driver.run(`CREATE TABLE ${name} (id TEXT PRIMARY KEY)`);
     (await sqlDocStore(driver)).unwrap();
     for (const which of ["log", "heads"] as const) {
       const want = await declared(driver.dialect, which);
-      const have = await describe(driver, want.name);
+      const have = await describe(driver, want.name, want.schema);
       for (const part of ["columns", "pk", "indexes"] as const)
         equal(JSON.stringify(have[part]), JSON.stringify(want[part]), `${want.name} ${part}`);
     }

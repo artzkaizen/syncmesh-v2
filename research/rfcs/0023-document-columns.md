@@ -452,13 +452,18 @@ lands in the tail. §7.3 covers who is trusted to sign one.
 ### 6.2 Engine tables, declared once in Drizzle 1.0
 
 Two new tables per dialect, declared as Drizzle 1.0 table objects in `packages/storage`
-(`doc-tables.ts`: `pgTable` + `sqliteTable`, used for typed statements). They are created by one
-new step in each dialect's migration list. A test compares the migration DDL with the Drizzle
-declarations, so the two cannot drift. Names follow today's convention (`_syncmesh_*` on
-Postgres, bare on the device, `sm_*` in the Rust device) until RFC-0022's namespace lands.
+(`doc-tables.ts`: `pgSchema("syncmesh").table` + `sqliteTable`, used for typed statements). They
+are created by one new step in each dialect's migration list. A test compares the migration DDL
+with the Drizzle declarations, so the two cannot drift. Names follow RFC-0022's namespace
+(`namespace.ts`): `syncmesh.doc_log` and `syncmesh.doc_heads` in Postgres's own schema,
+`syncmesh_doc_log` and `syncmesh_doc_heads` beside the app's tables in a device's `main`, and
+`sm_*` in the Rust device, whose own tables all take that prefix. On a device both sit in the
+derived half (`STATE_TABLES`), not the attached log: an entry's `state` moves in the same
+transaction as its head and the column snapshot, which live in `main`, and a rebuild of that half
+starts all three over together.
 
 ```ts
-export const docLog = pgTable("_syncmesh_doc_log", {          // the LOG half (RFC-0022)
+export const docLog = pgSchema("syncmesh").table("doc_log", {   // indexes the LOG (RFC-0022)
   author: text().notNull(), seq: bigint({ mode: "number" }).notNull(), idx: integer().notNull(),
   tbl: text().notNull(), key: text().notNull(), col: text().notNull(),
   lineage: bytea(),                                  // NULL = root
@@ -470,7 +475,7 @@ export const docLog = pgTable("_syncmesh_doc_log", {          // the LOG half (R
 }, (t) => [primaryKey({ columns: [t.author, t.seq, t.idx] }),
            index().on(t.tbl, t.key, t.col, t.state)]);
 
-export const docHeads = pgTable("_syncmesh_doc_heads", {      // the STATE half
+export const docHeads = pgSchema("syncmesh").table("doc_heads", { // the STATE half
   tbl: text().notNull(), key: text().notNull(), col: text().notNull(),
   adapter: text().notNull(), lineage: bytea(),
   covers: text().notNull(),         // cursor map JSON: the snapshot's floor
