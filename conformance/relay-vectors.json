@@ -126,6 +126,30 @@
       "kind": "challenge",
       "tag": 19,
       "wireHex": "82135820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    },
+    {
+      "description": "error, the typed gate refusal: a gated room holds no grant from an issuer it trusts for this key (D40)",
+      "kind": "error",
+      "tag": 10,
+      "wireHex": "830a69756e6772616e746564783a6e6f206772616e742066726f6d20616e20697373756572207468697320726f6f6d20747275737473206e616d6573207468697320646576696365"
+    },
+    {
+      "description": "error, a newer grant narrowed what this socket may read, or its grant lapsed: re-join (D40)",
+      "kind": "error",
+      "tag": 10,
+      "wireHex": "830a677265766f6b6564783774686973206465766963652773206772616e74206e6f206c6f6e67657220636f7665727320776861742069742077617320736572766564"
+    },
+    {
+      "description": "error, a newer grant widened what this socket may read: re-join (D40)",
+      "kind": "error",
+      "tag": 10,
+      "wireHex": "830a6972656772616e7465647838746869732064657669636520776173206772616e746564206d6f72653b206a6f696e20616761696e20746f20626520736572766564206974"
+    },
+    {
+      "description": "page, empty and last, carrying only a scoped coverage: live fan-out passed an event over, and the author's run is held up to it (D23, D40)",
+      "kind": "page",
+      "tag": 13,
+      "wireHex": "860d808000098281825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f07781b7b22706172746974696f6e73223a5b226f72673a61636d65225d7d"
     }
   ]
 }

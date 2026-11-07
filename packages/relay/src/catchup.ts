@@ -1,7 +1,14 @@
 import type { Coverage, Interest, StoredEvent } from "@syncmesh/engine";
-import type { PeerId, SeqNum } from "@syncmesh/kernel";
+import type { PartitionKey, PeerId, SeqNum } from "@syncmesh/kernel";
 
-import { interestText, matchesInterest, timed, trackCoverage } from "@syncmesh/engine";
+import {
+  entitledInterest,
+  entitles,
+  interestText,
+  matchesInterest,
+  timed,
+  trackCoverage,
+} from "@syncmesh/engine";
 import { relayEnvelope } from "@syncmesh/wire";
 
 import type { Conversation } from "./state.js";
@@ -89,11 +96,20 @@ export function paged(
  * the floor from before it, is greeted, and would then be paged the run the sweep had just taken
  * the bottom out of. Asked again at the head of the queue, the sweep has either finished or has
  * not started, and there is no third state.
+ *
+ * In a gated room `granted` is the partitions the joiner's grant names (D40), and the run is cut
+ * to them as well as to the interest. The coverage then names the entitlement rather than the
+ * interest — `entitledInterest`, which the device computes from the same grant — so a device
+ * granted more later sees a wider scope than its cursor's and re-pages, instead of keeping a
+ * cursor that silently skips everything it was not allowed to see while it was narrower.
+ * `onPaged` runs once the last page is on the socket, which is when live notices may follow it.
  */
 export function sendCatchUp(
   conversation: Conversation,
   theirs: ReadonlyMap<PeerId, SeqNum>,
   interest: Interest | undefined,
+  granted?: readonly PartitionKey[],
+  onPaged?: () => void,
 ): void {
   const { room, sender, refuse } = conversation;
   room.enqueue(async () => {
@@ -108,14 +124,20 @@ export function sendCatchUp(
         return undefined;
       }
       const found = entries.value;
-      // narrowed at the sender: an event this device did not ask for never becomes a page
+      // narrowed at the sender: an event this device did not ask for, or may not read, never
+      // becomes a page
       const admitted =
-        interest === undefined
+        interest === undefined && granted === undefined
           ? found
-          : found.filter((entry) => matchesInterest(interest, entry.event));
+          : found.filter(
+              (entry) =>
+                (granted === undefined || entitles(granted, entry.event)) &&
+                (interest === undefined || matchesInterest(interest, entry.event)),
+            );
       // and said so: only a filtered run needs the coverage, since an unfiltered one leaves the
       // joiner's own fold able to compute the same number
-      const scoped = interest === undefined ? undefined : scannedCoverage(found, theirs, interest);
+      const scope = granted === undefined ? interest : entitledInterest(interest, granted);
+      const scoped = scope === undefined ? undefined : scannedCoverage(found, theirs, scope);
       const { pages, unsendable } = paged(
         admitted,
         room.grants.all(),
@@ -124,6 +146,7 @@ export function sendCatchUp(
         scoped,
       );
       for (const page of pages) sender.send(page);
+      onPaged?.();
       return { found: found.length, admitted: admitted.length, unsendable, pages: pages.length };
     });
     if (sizes !== undefined) room.report({ type: "relay.catchup", sizes, duration });

@@ -217,6 +217,7 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
     retention: options.retention,
     onTelemetry: options.onTelemetry,
     fanout: options.fanout,
+    trust: options.posture?.trust,
     identity,
   });
 

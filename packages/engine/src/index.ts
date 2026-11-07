@@ -107,6 +107,8 @@ export { chunkSince, createFeedPath, receiveChunk, trackFeeds } from "./feed.js"
 export type { Interest } from "./interest.js";
 export {
   EVERYTHING,
+  entitledInterest,
+  entitles,
   interestFrom,
   interestKey,
   interestText,

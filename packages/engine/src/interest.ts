@@ -147,3 +147,35 @@ export async function eventsWanted(
   if (interest === undefined || entries.isErr()) return entries;
   return entries.map((all) => all.filter((entry) => matchesInterest(interest, entry.event)));
 }
+
+/**
+ * What a device may be sent once its grant has had its say (D40): the partitions it asked for,
+ * cut to the ones its grant names — or the grant's partitions whole when it asked for everything.
+ *
+ * The sender and the asker both compute this, from the same signed grant, so the scope a relay
+ * stamps on a filtered catch-up is the scope the device joined with, byte for byte. Sorted, so a
+ * cut applied twice — a join already cut to an older grant, cut again by the room's newer one —
+ * spells the same text as one cut, which `interestText` compares.
+ *
+ * @example
+ * ```ts
+ * entitledInterest({ partitions: ["project:a", "project:b"] }, ["project:a"]);
+ * // { partitions: ["project:a"] }
+ * ```
+ */
+export function entitledInterest(
+  interest: Interest | undefined,
+  granted: readonly PartitionKey[],
+): Interest {
+  const asked = interest?.partitions;
+  const kept = asked === undefined ? [...granted] : asked.filter((p) => granted.includes(p));
+  return { partitions: [...new Set(kept)].sort() };
+}
+
+/**
+ * Whether a grant lets its device read this event (D40): every event its partitions name, and
+ * every unpinned one — an unpinned event is about the mesh rather than an instance, so no
+ * partition list can be what keeps it out (D24).
+ */
+export const entitles = (granted: readonly PartitionKey[], event: SyncEvent): boolean =>
+  event.partition === undefined || granted.includes(event.partition);

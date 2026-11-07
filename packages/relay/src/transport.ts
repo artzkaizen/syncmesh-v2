@@ -2,14 +2,14 @@ import type { Cursors, Interest, Unsubscribe } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 import type { Transport, TransportContext } from "@syncmesh/transport";
 
-import { createHub, interestFrom, narrows } from "@syncmesh/engine";
+import { createHub, interestFrom, interestText } from "@syncmesh/engine";
 import { omitUndefined } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { grantFrame, grantRequestFrame, presenceFrame } from "@syncmesh/transport";
 
 import type { LinkReport } from "./link-report.js";
 import type { Redial } from "./redial.js";
-import type { SessionHooks } from "./session.js";
+import type { JoinedScope, SessionHooks } from "./session.js";
 
 import { createBlobChannel } from "./blob-channel.js";
 import { RELAY_PROTOCOL_VERSIONS, joinCore, joinFrame, speaksHandshake } from "./frames.js";
@@ -17,7 +17,7 @@ import { createLinkReport } from "./link-report.js";
 import { proveJoin } from "./proof.js";
 import { createRedial } from "./redial.js";
 import { isHello, secureLink, type SecureLink } from "./secure.js";
-import { wireSession } from "./session.js";
+import { covers, entitledScope, wireSession } from "./session.js";
 
 /** Why a socket this file hung up hung up, said once here and read by the close that follows. */
 /**
@@ -71,7 +71,8 @@ export interface RelayTransportOptions {
   readonly forceReadyAfter?: number;
   /**
    * What this device wants from the room. It narrows: a relay applies it after the read
-   * policy, so an interest can make a device see less and never more.
+   * policy, so an interest can make a device see less and never more. A device holding a grant
+   * joins with this cut to the grant's partitions (D40), which is what a gated room serves it.
    */
   readonly interest?: Interest;
   /** How near this source is (RFC-0019); a relay sits between local storage and a radio. Default 1. */
@@ -110,6 +111,8 @@ class RelayLink {
   private fatal = false;
   /** This join asked from nothing because the interest outgrew what our cursors describe (D23). */
   private repaging = false;
+  /** What the last join on this session may be served (D23, D40). */
+  private joined: JoinedScope = { sent: undefined, entitled: undefined };
   private online = false;
   /** This session's challenge from the room; a v2 join is sent once it has arrived, never before (D33). */
   private nonce: Uint8Array | undefined;
@@ -209,7 +212,7 @@ class RelayLink {
    */
   private askFrom(context: TransportContext): Cursors {
     const coverage = context.engine.coverage();
-    this.repaging = !narrows(this.options.interest, interestFrom(coverage.scope));
+    this.repaging = !covers(context, this.options.interest, interestFrom(coverage.scope));
     return this.repaging ? new Map() : coverage.synced;
   }
 
@@ -224,20 +227,23 @@ class RelayLink {
   join(): void {
     if (this.ctx === undefined) return;
     const { identity, grants } = this.ctx;
+    const wanted = this.options.interest;
     if (this.link !== undefined) {
       if (this.link.session() === undefined) return;
       const cursors = this.askFrom(this.ctx);
-      this.sendSafe(joinFrame(this.versions, identity.peerId, cursors, this.options.interest));
+      this.joined = { sent: wanted, entitled: entitledScope(this.ctx, this.options.interest) };
+      this.sendSafe(joinFrame(this.versions, identity.peerId, cursors, wanted));
     } else {
       if (this.nonce === undefined) return;
       const cursors = this.askFrom(this.ctx);
-      const core = joinCore(this.versions, identity.peerId, cursors, this.options.interest);
+      const core = joinCore(this.versions, identity.peerId, cursors, wanted);
+      this.joined = { sent: wanted, entitled: entitledScope(this.ctx, this.options.interest) };
       this.sendSafe(
         joinFrame(
           this.versions,
           identity.peerId,
           cursors,
-          this.options.interest,
+          wanted,
           proveJoin(identity, this.nonce, core),
         ),
       );
@@ -349,6 +355,11 @@ class RelayLink {
       sendSafe: (frame) => this.sendSafe(frame),
       rearm: () => this.rearm(),
       rejoin: () => this.join(),
+      joined: () => this.joined,
+      regranted: () =>
+        this.ctx !== undefined &&
+        interestText(entitledScope(this.ctx, this.options.interest)) !==
+          interestText(this.joined.entitled),
       onChallenge: (nonce) => {
         // a challenge is a v2 room; a build offering only the sealed link has nothing to sign it with
         if (!this.versions.includes(2)) {
@@ -380,8 +391,6 @@ class RelayLink {
       },
     };
     // what a scoped coverage on the last page has to match before this device adopts it
-    if (this.options.interest !== undefined)
-      Object.assign(hooks, { interest: this.options.interest });
     Object.assign(hooks, { repaging: () => this.repaging });
     const offs = wireSession(this.ctx, this.plain(dialed), hooks);
     const offClose = dialed.onClose(() => {

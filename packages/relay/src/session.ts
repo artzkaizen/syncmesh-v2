@@ -1,8 +1,9 @@
 import type { Coverage, Cursors, Interest, StoredEvent, Unsubscribe } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 import type { TransportContext } from "@syncmesh/transport";
+import type { Grant } from "@syncmesh/wire";
 
-import { interestText, ownPositionWarning } from "@syncmesh/engine";
+import { entitledInterest, interestText, narrows, ownPositionWarning } from "@syncmesh/engine";
 import { Temporal } from "@syncmesh/temporal";
 import { createHoldback, cursorsFrame, eventFrame, grantFrame } from "@syncmesh/transport";
 import { decodeAndVerify, relayEnvelope, signEvent } from "@syncmesh/wire";
@@ -17,6 +18,60 @@ const envelopeOf = (entry: StoredEvent, ctx: TransportContext): Uint8Array | und
   entry.event.peerId === ctx.identity.peerId
     ? signEvent(entry.event, ctx.identity).wire
     : relayEnvelope(entry);
+
+/**
+ * What one join may be served, as the scopes a coverage for it can name (D23): the interest it
+ * sent, and that interest cut to this device's own grant — which is what a gated room serves and
+ * stamps instead (D40).
+ */
+export interface JoinedScope {
+  readonly sent: Interest | undefined;
+  readonly entitled: Interest | undefined;
+}
+
+/**
+ * The interest cut to this device's own grant, when it holds one (D40): what a gated room serves
+ * it and the scope that room stamps on its coverage. `undefined` for a device with no grant,
+ * which no gated room seats.
+ */
+export const entitledScope = (
+  context: TransportContext,
+  interest: Interest | undefined,
+): Interest | undefined => {
+  const own = context.grants.grantFor(context.identity.peerId);
+  return own === undefined ? undefined : entitledInterest(interest, own.partitions);
+};
+
+/**
+ * Whether cursors scoped to `scope` still cover what a join asking `interest` may be served. A
+ * scope that names the entitlement is held to the entitlement: a device granted more since then
+ * is asking for more, and re-pages (D23, D40).
+ */
+export const covers = (
+  context: TransportContext,
+  interest: Interest | undefined,
+  scope: Interest | undefined,
+): boolean => {
+  if (narrows(interest, scope)) return true;
+  const entitled = entitledScope(context, interest);
+  return entitled !== undefined && narrows(entitled, scope);
+};
+
+/** Whether a scoped coverage answers this join: it names the interest sent, or the entitlement. */
+const answers = (scoped: Coverage, asked: JoinedScope): boolean =>
+  scoped.scope === interestText(asked.sent) ||
+  (asked.entitled !== undefined && scoped.scope === interestText(asked.entitled));
+
+/**
+ * A grant this device registered goes to the room; when it is our own and changes what we may
+ * read, the session re-joins so the room serves the new slice (D40).
+ */
+const passOn =
+  (hooks: SessionHooks, self: PeerId) =>
+  (grant: Grant, wire: Uint8Array): void => {
+    hooks.sendSafe(grantFrame(wire));
+    if (grant.device === self && hooks.regranted()) hooks.rejoin();
+  };
 
 /** What one wired session may ask of the transport shell around it. */
 export interface SessionHooks {
@@ -52,8 +107,10 @@ export interface SessionHooks {
    * protocol, or one forwarding a peer's forgery, is silent without this.
    */
   readonly onDropped: (why: string) => void;
-  /** What this session joined with, so a coverage scoped to something else is not adopted. */
-  readonly interest?: Interest;
+  /** What this session last joined with, so a coverage scoped to anything else is not adopted. */
+  readonly joined: () => JoinedScope;
+  /** This device's own grant changed what it may read since the last join (D40). */
+  readonly regranted: () => boolean;
   /**
    * This join asked from nothing because the interest widened past what our cursors describe
    * (D23). The pages coming back are a repair, not a tail.
@@ -125,10 +182,12 @@ export function wireSession(
    *
    * A coverage scoped to something other than what we asked with is dropped rather than adopted.
    * It would be a claim about a slice this device did not request, and adopting it is precisely
-   * how a cursor comes to describe events nobody will ever send again.
+   * how a cursor comes to describe events nobody will ever send again. `asked` is read before the
+   * page's own grants are registered: one of them can be ours, re-join us under a wider grant,
+   * and make a coverage the room built for the old join look like an answer to the new one.
    */
-  const adoptScoped = (scoped: Coverage): void => {
-    if (scoped.scope !== interestText(hooks.interest)) return;
+  const adoptScoped = (scoped: Coverage, asked: JoinedScope): void => {
+    if (!answers(scoped, asked)) return;
     chain = chain.then(async () => {
       // fold what the coverage is about to claim *before* claiming it — the order
       // `installSnapshot` keeps for its rows, and for the same reason. These are events the pages
@@ -151,7 +210,7 @@ export function wireSession(
   const rescope = (): void => {
     chain = chain.then(() => {
       const { synced, local } = engine.coverage();
-      const scope = interestText(hooks.interest);
+      const scope = interestText(hooks.joined().sent);
       // rebuilt rather than spread, so an interest that widened all the way back to everything
       // drops the old scope instead of carrying it forward
       engine.adoptCoverage(scope === "" ? { synced, local } : { synced, local, scope });
@@ -236,11 +295,12 @@ export function wireSession(
       adoptOwn(frame.cursors);
       hooks.onHello(frame.keepaliveMs);
     } else if (frame.kind === "page") {
+      const asked = hooks.joined();
       for (const wire of frame.grants) void grants.register(wire);
       const repaging = hooks.repaging?.() === true;
       fold(frame.events, repaging);
       if (!frame.more) {
-        if (frame.scoped !== undefined) adoptScoped(frame.scoped);
+        if (frame.scoped !== undefined) adoptScoped(frame.scoped, asked);
         else if (repaging) rescope();
         caughtUp = true;
         pushOutstanding();
@@ -264,7 +324,7 @@ export function wireSession(
     // pre-catch-up writes are already in the store; the push after the last page covers them
     if (caughtUp) hooks.sendSafe(eventFrame(signEvent(event, identity).wire));
   });
-  const offRegistered = grants.onRegistered((_grant, wire) => hooks.sendSafe(grantFrame(wire)));
+  const offRegistered = grants.onRegistered(passOn(hooks, identity.peerId));
   /**
    * A fold of peers' events moved our position: say so, and hand over what moved it.
    *

@@ -9,7 +9,13 @@ import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
 import { parsePartitionKey } from "@syncmesh/kernel";
 import {
+  REGRANTED,
+  REGRANTED_MESSAGE,
   RELAY_PROTOCOL_VERSIONS,
+  REVOKED,
+  REVOKED_MESSAGE,
+  UNGRANTED,
+  UNGRANTED_MESSAGE,
   ackFrame,
   blobFrame,
   blobGetFrame,
@@ -146,6 +152,39 @@ export function relayVectors() {
       kind: "challenge",
       tag: 19,
       wireHex: bytesToHex(challengeFrame(NONCE)),
+    },
+    {
+      description:
+        "error, the typed gate refusal: a gated room holds no grant from an issuer it trusts for this key (D40)",
+      kind: "error",
+      tag: 10,
+      wireHex: bytesToHex(errorFrame(UNGRANTED, UNGRANTED_MESSAGE)),
+    },
+    {
+      description:
+        "error, a newer grant narrowed what this socket may read, or its grant lapsed: re-join (D40)",
+      kind: "error",
+      tag: 10,
+      wireHex: bytesToHex(errorFrame(REVOKED, REVOKED_MESSAGE)),
+    },
+    {
+      description: "error, a newer grant widened what this socket may read: re-join (D40)",
+      kind: "error",
+      tag: 10,
+      wireHex: bytesToHex(errorFrame(REGRANTED, REGRANTED_MESSAGE)),
+    },
+    {
+      description:
+        "page, empty and last, carrying only a scoped coverage: live fan-out passed an event over, and the author's run is held up to it (D23, D40)",
+      kind: "page",
+      tag: 13,
+      wireHex: bytesToHex(
+        pageFrame([], [], false, 9, {
+          synced: CURSORS,
+          local: new Map(),
+          scope: '{"partitions":["org:acme"]}',
+        }),
+      ),
     },
   ];
   return { protocolVersions: [...RELAY_PROTOCOL_VERSIONS], vectors: cases };

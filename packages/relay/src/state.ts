@@ -3,12 +3,13 @@ import type { PeerId, SyncEvent } from "@syncmesh/kernel";
 import type { BlobStore } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { PresenceStore } from "@syncmesh/transport";
-import type { Identity } from "@syncmesh/wire";
+import type { Grant, Identity } from "@syncmesh/wire";
 
 import type { GrantCache } from "./grant-cache.js";
 import type { Budget, RelayLimits } from "./limits.js";
 import type { RelaySocket, Sender } from "./sender.js";
 import type { RelayTelemetry } from "./telemetry.js";
+import type { RoomTrust } from "./trust.js";
 
 export interface Client {
   readonly peer: PeerId;
@@ -16,6 +17,15 @@ export interface Client {
   readonly socket: RelaySocket;
   /** Whether this client asked for that event; a client with no interest wants them all. */
   readonly wants: (event: SyncEvent) => boolean;
+  /** The grant this socket was seated under, in a gated room (D40); absent in an open one. */
+  readonly granted?: Grant;
+  /**
+   * Live fan-out passed this client over: say how far the author's run now reaches, so the hole
+   * the filter left does not hold everything after it in the client's holdback (D23, D40).
+   */
+  readonly skipped?: (event: SyncEvent) => void;
+  /** Hangs up on this socket with a typed reason — how a revocation reaches it from elsewhere. */
+  readonly refuse: (code: string, message: string) => void;
 }
 
 /** The room as one connection sees it: shared state, and the three ways to reach the others. */
@@ -35,6 +45,8 @@ export interface RoomState {
   readonly blobs: BlobStore | undefined;
   /** One grant per device, the room's newest mint for each; a joiner gets these first. */
   readonly grants: GrantCache;
+  /** The issuers whose grants admit a device (D40); absent, the room is open. */
+  readonly trust: RoomTrust | undefined;
   readonly presence: PresenceStore;
   readonly clients: Map<PeerId, Client>;
   /**

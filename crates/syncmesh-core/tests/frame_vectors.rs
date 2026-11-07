@@ -8,7 +8,9 @@ use syncmesh_core::frames::{self, Digest, Frame, RouteAd, SnapshotFrame, class_o
 use syncmesh_core::framing::{self, FrameReader};
 use syncmesh_core::identity::Identity;
 use syncmesh_core::join_proof::{prove_join, verify_join_proof};
-use syncmesh_core::relay_frames::{self, RELAY_PROTOCOL_VERSIONS, RelayFrame, decode_relay_frame};
+use syncmesh_core::relay_frames::{
+    self, PageScope, RELAY_PROTOCOL_VERSIONS, RelayFrame, decode_relay_frame,
+};
 use syncmesh_core::{from_hex, to_hex};
 
 fn vectors(name: &str) -> serde_json::Value {
@@ -366,6 +368,41 @@ fn relay_control_frames_are_reproduced_from_the_generator_inputs() {
         (18, relay_frames::blob_frame(hash, &bytes)),
         (19, relay_frames::blob_missing_frame(hash)),
         (20, relay_frames::challenge_frame(&nonce)),
+        // the grant-gated room's refusals and its live skip notice (D40)
+        (
+            21,
+            relay_frames::error_frame(
+                "ungranted",
+                "no grant from an issuer this room trusts names this device",
+            ),
+        ),
+        (
+            22,
+            relay_frames::error_frame(
+                "revoked",
+                "this device's grant no longer covers what it was served",
+            ),
+        ),
+        (
+            23,
+            relay_frames::error_frame(
+                "regranted",
+                "this device was granted more; join again to be served it",
+            ),
+        ),
+        (
+            24,
+            relay_frames::page_frame(
+                &[],
+                &[],
+                false,
+                9,
+                Some(&PageScope {
+                    synced: cursors.clone(),
+                    scope: r#"{"partitions":["org:acme"]}"#.to_owned(),
+                }),
+            ),
+        ),
     ];
     for (i, b) in expected {
         assert_eq!(to_hex(&b), to_hex(&wires[i]), "vector {i}");
