@@ -231,6 +231,23 @@ function verified<D>(
 }
 
 /**
+ * The updates under a checkpoint's floor its snapshot holds, re-imported one by one; `undefined`
+ * if one moves the document or leaves it pending. A refused one is `failed`; a missing one, neither.
+ */
+function heldBy<D>(adapter: DocumentAdapter<D>, doc: D, below: readonly TailUpdate[]) {
+  const covered: TailUpdate[] = [];
+  const failed: TailUpdate[] = [];
+  for (const u of below) {
+    if (u.bytes === undefined) continue;
+    const moved = adapter.apply(doc, [u.bytes]);
+    if (moved.isErr()) failed.push(u);
+    else if (moved.value) return undefined;
+    else covered.push(u);
+  }
+  return adapter.pending(doc) ? undefined : { covered: covered.map(ref), failed: failed.map(ref) };
+}
+
+/**
  * Installs a checkpoint in place of history this device never held (RFC-0023 §8.4): verified
  * against the producer's key, the snapshot's hash, the column's adapter and winning lineage, and
  * by re-deriving the version from the bytes — a snapshot that does not reproduce the version it
@@ -269,9 +286,8 @@ export async function installCheckpoint<D>(
     const below = tail.updates.filter(
       ({ entry }) => entry.seq <= (checkpoint.covers.get(entry.author) ?? 0),
     );
-    // what the floor claims, the snapshot must hold: re-importing it may not move the document
-    const claimed = below.flatMap((u) => (u.bytes === undefined ? [] : [u.bytes]));
-    if (adapter.apply(doc, claimed).unwrapOr(false) || adapter.pending(doc))
+    const holds = heldBy(adapter, doc, below);
+    if (holds === undefined)
       return refuse("the snapshot lacks updates the checkpoint's floor claims");
     yield* Result.await(
       engine.coverDoc(address, {
@@ -282,7 +298,7 @@ export async function installCheckpoint<D>(
         mode: "checkpoint",
         ...(tail.head?.version !== undefined && { base: tail.head.version }),
         at,
-        covered: below.map(ref),
+        ...holds,
         ...(checkpoint.lineage !== undefined && { lineage: checkpoint.lineage }),
       }),
     );

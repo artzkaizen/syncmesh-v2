@@ -164,7 +164,11 @@ export function createDocPath(
   };
 }
 
-/** Commits `cover` unless the head it was built on has moved, or its lineage no longer wins. */
+/**
+ * Commits `cover` unless the head it was built on has moved, or its lineage no longer wins. The
+ * check holds within one engine, whose covers run one at a time; a doc store shared by two
+ * engines is not guarded by it.
+ */
 function coverIfCurrent(
   docStore: DocStore,
   { getState }: DocBindings,

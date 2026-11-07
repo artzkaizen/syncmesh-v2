@@ -276,6 +276,53 @@ describe("loro@1 checkpoints never move a snapshot back", () => {
     expect(body((await c.documents.open<LoroDoc>(DOC)).unwrap().value)).toBe("one two");
     link.close();
   });
+
+  test("an update the adapter refuses never counts as held: an inflated floor over one is still refused", async () => {
+    const a = node(69);
+    const c = node(70);
+    await insertNote(a);
+    const da = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(da.value, 0, "one ");
+    (await da.flush()).unwrap();
+    const made = (await a.documents.checkpoint(DOC, a.identity, hlcOf(Date.now(), 0))).unwrap();
+    type(da.value, 4, "two");
+    (await da.flush()).unwrap();
+    await unreadable(a);
+    const link = await linked(a, c);
+    const last = Math.max(...(await c.engine.docLog()).unwrap().map((e) => e.seq));
+    const inflated = signCheckpoint(
+      {
+        ...made.signed.checkpoint,
+        covers: new Map([[a.engine.peerId, parseSeqNum(last).unwrap()]]),
+      },
+      a.identity,
+    );
+    const refused = await c.documents.install(inflated.wire, a.identity.peerId, made.snapshot, DOC);
+    expect(refused.isErr() && refused.error.message).toContain("lacks updates");
+    expect((await c.engine.docLog()).unwrap().map((e) => e.state)).toEqual([
+      "tail",
+      "tail",
+      "tail",
+    ]);
+    expect(body((await c.documents.open<LoroDoc>(DOC)).unwrap().value)).toBe("one two");
+    link.close();
+  });
+
+  test("a joiner installing a checkpoint marks the unreadable update under its floor failed, not covered", async () => {
+    const a = node(71);
+    const c = node(72);
+    await insertNote(a);
+    const da = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(da.value, 0, "good");
+    (await da.flush()).unwrap();
+    await unreadable(a);
+    const made = (await a.documents.checkpoint(DOC, a.identity, hlcOf(Date.now(), 0))).unwrap();
+    const link = await linked(a, c);
+    (await c.documents.install(made.signed.wire, a.identity.peerId, made.snapshot, DOC)).unwrap();
+    expect((await c.engine.docLog()).unwrap().map((e) => e.state)).toEqual(["covered", "failed"]);
+    expect(body((await c.documents.open<LoroDoc>(DOC)).unwrap().value)).toBe("good");
+    link.close();
+  });
 });
 
 describe("loro@1 refusals and bounds", () => {
@@ -351,18 +398,7 @@ describe("loro@1 refusals and bounds", () => {
     const da = (await a.documents.open<LoroDoc>(DOC)).unwrap();
     type(da.value, 0, "good");
     (await da.flush()).unwrap();
-    (
-      await a.engine.mutate(
-        EDIT,
-        (tx) =>
-          tx.doc(NOTES, N1, {
-            column: CONTENT,
-            adapter: parseAdapterId("loro@1").unwrap(),
-            update: { bytes: Uint8Array.of(0xde, 0xad, 0xbe, 0xef) },
-          }),
-        { partition: W1 },
-      )
-    ).unwrap();
+    await unreadable(a);
     const done = (await a.documents.materialise(DOC)).unwrap();
     expect([done.covered, done.failed]).toEqual([1, 1]);
     expect((await a.engine.docLog()).unwrap().map((e) => e.state)).toEqual(["covered", "failed"]);
@@ -401,6 +437,21 @@ const authored = (replica: bigint, text: string) => {
   type(doc, 0, text);
   return doc;
 };
+
+/** A doc change on `n` whose bytes no Loro document can import. */
+const unreadable = async (n: ReturnType<typeof node>) =>
+  (
+    await n.engine.mutate(
+      EDIT,
+      (tx) =>
+        tx.doc(NOTES, N1, {
+          column: CONTENT,
+          adapter: LORO_ID,
+          update: { bytes: Uint8Array.of(0xde, 0xad, 0xbe, 0xef) },
+        }),
+      { partition: W1 },
+    )
+  ).unwrap();
 
 /** A genesis of the note's content on `n`: a fresh history that replaces whatever was there. */
 const genesis = async (n: ReturnType<typeof node>, text: string) =>
