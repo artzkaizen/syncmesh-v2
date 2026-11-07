@@ -1,7 +1,7 @@
 {
   "name": "@syncmesh/postgres",
   "version": "0.0.0",
-  "description": "Postgres as the mesh's log and state: drivers over postgres.js and PGlite for @syncmesh/storage",
+  "description": "Postgres as the mesh's log, its state, and a change source: drivers over postgres.js and PGlite, and logical replication through pgoutput",
   "license": "MIT",
   "files": [
     "dist"
@@ -15,16 +15,24 @@
       "default": "./dist/index.js"
     }
   },
+  "scripts": {
+    "pg:down": "docker compose -f compose.yaml down",
+    "pg:up": "docker compose -f compose.yaml up -d --wait"
+  },
   "dependencies": {
+    "@syncmesh/cdc": "workspace:*",
     "@syncmesh/engine": "workspace:*",
-    "@syncmesh/storage": "workspace:*"
+    "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/storage": "workspace:*",
+    "@syncmesh/temporal": "workspace:*"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.7",
     "@syncmesh/config": "workspace:*",
-    "@syncmesh/kernel": "workspace:*",
     "@syncmesh/policy": "workspace:*",
     "@syncmesh/schema": "workspace:*",
+    "@syncmesh/wire": "workspace:*",
     "@types/bun": "catalog:",
     "postgres": "^3.4.9",
     "typescript": "catalog:",
