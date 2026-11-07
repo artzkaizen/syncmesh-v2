@@ -1,3 +1,4 @@
+import type { PartitionKey } from "@syncmesh/kernel";
 import type { BlobRefusal, TransportBlobs } from "@syncmesh/transport";
 
 import { Temporal, durationMs } from "@syncmesh/temporal";
@@ -15,6 +16,12 @@ export const BLOB_ANSWER_WAIT = Temporal.Duration.from({ seconds: 10 });
 /** What a relay said about one download: the bytes, or that it holds none. */
 type Answer = Uint8Array | typeof BLOB_MISSING;
 
+/** One upload waiting on its answer, and the partition its bytes are billed to. */
+interface Upload {
+  readonly partition: PartitionKey | undefined;
+  readonly settle: (refusal: BlobRefusal | undefined) => void;
+}
+
 /**
  * The blob capability over one relay connection (D18): an upload offers bytes under their own
  * hash and waits for `blob-stored` or `blob-refused`; a download asks for them and waits for the
@@ -28,23 +35,34 @@ type Answer = Uint8Array | typeof BLOB_MISSING;
 export function createBlobChannel(send: (frame: Uint8Array) => void) {
   /** Downloads in flight, by hash; the relay answers each exactly once. */
   const waiting = new Map<string, (answer: Answer | undefined) => void>();
-  /** Uploads in flight, by hash: two puts of one photo are two waits on one answer. */
-  const uploading = new Map<string, ((refusal: BlobRefusal | undefined) => void)[]>();
+  /**
+   * Uploads in flight, by hash: two puts of one photo are two waits on one answer — unless the
+   * answer is a refusal, which is about the budget of the one partition it names.
+   */
+  const uploading = new Map<string, Upload[]>();
+
+  /** Keeps only the uploads of this hash that `still` holds, and forgets the hash when none are left. */
+  const keep = (hash: string, still: (upload: Upload) => boolean): void => {
+    const rest = (uploading.get(hash) ?? []).filter(still);
+    if (rest.length === 0) uploading.delete(hash);
+    else uploading.set(hash, rest);
+  };
 
   const capability: TransportBlobs = {
     upload: (hash, bytes, options = {}) =>
       new Promise((resolve) => {
         const timer = setTimeout(() => {
-          const rest = (uploading.get(hash) ?? []).filter((wait) => wait !== settle);
-          if (rest.length === 0) uploading.delete(hash);
-          else uploading.set(hash, rest);
+          keep(hash, (upload) => upload !== mine);
           resolve(undefined);
         }, durationMs(BLOB_ANSWER_WAIT));
-        const settle = (refusal: BlobRefusal | undefined): void => {
-          clearTimeout(timer);
-          resolve(refusal);
-        };
-        uploading.set(hash, [...(uploading.get(hash) ?? []), settle]);
+        const mine = {
+          partition: options.partition,
+          settle: (refusal: BlobRefusal | undefined) => {
+            clearTimeout(timer);
+            resolve(refusal);
+          },
+        } satisfies Upload;
+        uploading.set(hash, [...(uploading.get(hash) ?? []), mine]);
         // the relay verifies before it stores; an upload that cannot leave is the caller's to retry
         send(blobPutFrame(hash, bytes, options.partition));
       }),
@@ -69,11 +87,16 @@ export function createBlobChannel(send: (frame: Uint8Array) => void) {
       waiting.delete(hash);
       settle?.(bytes ?? BLOB_MISSING);
     },
-    /** A `blob-stored` (no refusal) or `blob-refused` arrived for every upload of this hash. */
+    /**
+     * A `blob-stored` (no refusal) arrived for every upload of this hash, or a `blob-refused` for
+     * the uploads billed to the partition it names; the others wait on their own answer.
+     */
     settle: (hash: string, refusal: BlobRefusal | undefined): void => {
-      const waits = uploading.get(hash) ?? [];
-      uploading.delete(hash);
-      for (const wait of waits) wait(refusal);
+      const answered = (upload: Upload): boolean =>
+        refusal === undefined || upload.partition === refusal.partition;
+      const waits = (uploading.get(hash) ?? []).filter(answered);
+      keep(hash, (upload) => !answered(upload));
+      for (const wait of waits) wait.settle(refusal);
     },
   };
 }
