@@ -47,7 +47,7 @@ fn session_frames_decode_to_their_kind_and_reencode_byte_for_byte() {
     assert_eq!(doc["otherId"].as_str(), Some(other.peer_id().as_str()));
 
     let list = doc["vectors"].as_array().unwrap();
-    assert_eq!(list.len(), 18);
+    assert_eq!(list.len(), 19);
     let mut tags: Vec<u8> = Vec::new();
     for v in list {
         let what = v["description"].as_str().unwrap();
@@ -100,6 +100,7 @@ fn session_frames_are_reproduced_from_the_generator_inputs() {
         syncmesh_core::envelope::envelope(&hex(event, "coreHex"), &hex(event, "sigHex"));
     let grant_wire = hex(&vectors("grant-vectors.json")["vectors"][0], "wireHex");
     let receipt_wire = hex(&vectors("receipt-vectors.json")["vectors"][0], "wireHex");
+    let refusal_wire = hex(&vectors("refusal-vectors.json")["vectors"][0], "wireHex");
 
     let expected: Vec<(usize, Vec<u8>)> = vec![
         (0, frames::grant_frame(&grant_wire)),
@@ -149,6 +150,7 @@ fn session_frames_are_reproduced_from_the_generator_inputs() {
                 expires_at_ms: now + 60_000.0,
             }]),
         ),
+        (18, frames::refusal_frame(&refusal_wire)),
     ];
     for (i, bytes) in expected {
         assert_eq!(to_hex(&bytes), to_hex(&wires[i]), "vector {i}");

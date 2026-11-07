@@ -21,6 +21,7 @@ import {
   grantRequestFrame,
   presenceFrame,
   receiptFrame,
+  refusalFrame,
   routesFrame,
   snapAckFrame,
   snapChunkFrame,
@@ -31,6 +32,7 @@ import { bytesToHex, createIdentity, encodeCbor, hexToBytes, signPresence } from
 
 import { grantVectors } from "./generate-grant-vectors.js";
 import { receiptVectors } from "./generate-receipt-vectors.js";
+import { refusalVectors } from "./generate-refusal-vectors.js";
 import { wireVectors } from "./vectors.js";
 
 const DEVICE_SEED = Uint8Array.from({ length: 32 }, (_, i) => 200 + i);
@@ -72,6 +74,7 @@ export function frameVectors() {
   ]);
   const grantWire = hexToBytes(grantVectors().vectors[0]?.wireHex ?? "").unwrap();
   const receiptWire = hexToBytes(receiptVectors().vectors[0]?.wireHex ?? "").unwrap();
+  const refusalWire = hexToBytes(refusalVectors().vectors[0]?.wireHex ?? "").unwrap();
   const presence = signPresence(
     {
       v: 1,
@@ -199,6 +202,12 @@ export function frameVectors() {
       kind: "routes",
       tag: 8,
       wire: routesFrame(ads),
+    },
+    {
+      description: "refusal, carrying a frozen refusal receipt (D32)",
+      kind: "refusal",
+      tag: 9,
+      wire: refusalFrame(refusalWire),
     },
   ];
 

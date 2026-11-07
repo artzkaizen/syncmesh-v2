@@ -663,6 +663,7 @@ impl RelayLink {
             }
             Frame::Digest { .. }
             | Frame::Receipt { .. }
+            | Frame::Refusal { .. }
             | Frame::Routes { .. }
             | Frame::Snapshot(_)
             | Frame::Unknown => {}
