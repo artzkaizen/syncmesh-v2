@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "run": "bun run src/run.ts",
+    "soak": "bun run src/soak.ts",
     "test": "bun test"
   },
   "devDependencies": {

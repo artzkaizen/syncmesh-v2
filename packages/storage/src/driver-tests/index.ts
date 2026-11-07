@@ -12,6 +12,18 @@ import { readFilterCases } from "./read-filter.js";
 
 export { LADDER, PRINCIPALS, ROWS, RULES, asCells } from "./read-filter.js";
 export { COUNTERS, JOBS } from "./fixtures.js";
+export {
+  CRASH_AUTHOR,
+  CRASH_BATCH,
+  CRASH_SCHEMA,
+  CRASH_TABLES,
+  crashChild,
+  crashTests,
+  linesOf,
+  type CrashChild,
+  type CrashHarness,
+  type CrashMode,
+} from "./crash.js";
 import { stateCases } from "./state.js";
 import { tablesCases } from "./tables.js";
 
