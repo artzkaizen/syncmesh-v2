@@ -189,6 +189,7 @@ export async function openRelayRoom(
     blobs: options.blobs,
     ceiling: () => coverage.current().synced,
     booted: trimmed.value.synced,
+    held: boot.value,
     now,
     // caught rather than left on the queue: a rejected `queue` is a room that silently stops
     // appending, and a retention pass must never be able to do that to the traffic beside it
@@ -198,9 +199,6 @@ export async function openRelayRoom(
       return next;
     },
   });
-  // the log as it was at open is what references the blobs at open: a blob put again this run
-  // under a name an old event carries is referenced, not free
-  for (const entry of boot.value) retention.keeper?.note(entry.event);
   // a listener that throws is dropped here and nowhere else: an observer must never be able to
   // stop a relay forwarding bytes, and the relay has no error channel to report it down
   const telemetry = createHub<TelemetryEvent>(() => undefined);

@@ -1,10 +1,10 @@
-import type { Cursors, EventStore, StoreFailure } from "@syncmesh/engine";
+import type { Cursors, EventStore, StoreFailure, StoredEvent } from "@syncmesh/engine";
 import type { BlobStore } from "@syncmesh/storage";
 
 import { Result } from "@syncmesh/result";
 import { Temporal, addToInstant, durationMs } from "@syncmesh/temporal";
 
-import type { BlobKeeper } from "./blob-keeper.js";
+import type { BlobKeeper, BlobKeeperOptions } from "./blob-keeper.js";
 
 import { cappedBlobStore } from "./blob-cap.js";
 import { createBlobKeeper } from "./blob-keeper.js";
@@ -211,6 +211,13 @@ export function belowFloor(theirs: Cursors, floor: Cursors): boolean {
   return false;
 }
 
+/** A room's blob obligations, told every reference the log already held when it opened. */
+const openKeeper = (held: readonly StoredEvent[], options: BlobKeeperOptions): BlobKeeper => {
+  const keeper = createBlobKeeper(options);
+  for (const entry of held) keeper.note(entry.event);
+  return keeper;
+};
+
 /** What a room lends its retention: the log, the bytes, where its ceiling is, and its clock. */
 export interface RoomRetentionOptions {
   readonly store: EventStore;
@@ -221,6 +228,11 @@ export interface RoomRetentionOptions {
   readonly ceiling: () => Cursors;
   /** The floor the store booted with, before this room has swept anything. */
   readonly booted: Cursors;
+  /**
+   * The log as it was at open: what references the blobs at open, so a blob put again this run
+   * under a name an old event carries is referenced, not free.
+   */
+  readonly held: readonly StoredEvent[];
   readonly now: () => Temporal.Instant;
   /** Runs the pass on the room's own queue, so the ceiling cannot move under it. */
   readonly serialize: (work: () => Promise<void>) => Promise<void>;
@@ -293,7 +305,7 @@ export function roomRetention(options: RoomRetentionOptions): RoomRetention {
   const keeper =
     blobs === undefined
       ? undefined
-      : createBlobKeeper({
+      : openKeeper(options.held, {
           store: blobs,
           quota: policy?.maxBlobBytesPerPartition,
           keepUnreferencedFor: keepBlobsFor,

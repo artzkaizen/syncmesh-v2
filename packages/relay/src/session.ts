@@ -85,6 +85,28 @@ const uploadRefusal = (
       } as const)
     : undefined;
 
+/** The four frames that answer a blob fetch or put (D18). */
+type BlobAnswer = Extract<
+  RelayFrame,
+  { kind: "blob" | "blob-missing" | "blob-stored" | "blob-refused" }
+>;
+
+const BLOB_ANSWERS = new Set<RelayFrame["kind"]>([
+  "blob",
+  "blob-missing",
+  "blob-stored",
+  "blob-refused",
+]);
+
+const isBlobAnswer = (frame: RelayFrame): frame is BlobAnswer => BLOB_ANSWERS.has(frame.kind);
+
+/** The relay answered a fetch or a put: handed to the hook that waits on that hash. */
+const answerBlob = (hooks: SessionHooks, frame: BlobAnswer): void => {
+  if (frame.kind === "blob") hooks.onBlobAnswer(frame.hash, frame.bytes);
+  else if (frame.kind === "blob-missing") hooks.onBlobAnswer(frame.hash, undefined);
+  else hooks.onBlobSettled(frame.hash, uploadRefusal(frame));
+};
+
 /** Everything one session subscribes to; the returned unsubscribes are the session's teardown. */
 export function wireSession(
   context: TransportContext,
@@ -274,10 +296,7 @@ export function wireSession(
         // becomes true is the moment this chain drains
         chain = chain.then(() => hooks.onCaughtUp());
       }
-    } else if (frame.kind === "blob") hooks.onBlobAnswer(frame.hash, frame.bytes);
-    else if (frame.kind === "blob-missing") hooks.onBlobAnswer(frame.hash, undefined);
-    else if (frame.kind === "blob-stored" || frame.kind === "blob-refused")
-      hooks.onBlobSettled(frame.hash, uploadRefusal(frame));
+    } else if (isBlobAnswer(frame)) answerBlob(hooks, frame);
     else if (frame.kind === "relayed") fold([frame.wire]);
     else if (frame.kind === "error") {
       if (frame.code === "version") hooks.onVersionRefused();
