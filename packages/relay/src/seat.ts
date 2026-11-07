@@ -113,8 +113,7 @@ export function createSeat(
   /** One empty last page saying `author`'s run is held up to `at`, within this seat's scope. */
   const tell = (author: PeerId, at: SeqNum): void => {
     if (!paged) return;
-    const scope =
-      granted === undefined ? interest : entitledInterest(interest, granted.partitions);
+    const scope = granted === undefined ? interest : entitledInterest(interest, granted.partitions);
     if (scope === undefined) return;
     send(
       pageFrame([], [], false, room.offset(), {
