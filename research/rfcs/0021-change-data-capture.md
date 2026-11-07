@@ -1,9 +1,9 @@
 ---
 rfc: 0021
 title: Change Data Capture — syncing an existing database
-package: syncmesh (src/cdc) — design
+package: "@syncmesh/cdc (port, bridge) · @syncmesh/postgres (postgresChangeSource)"
 layer: 3
-status: proposed
+status: implemented
 standalone: true
 deps: ["0002", "0003", "0008", "0010", "0013"]
 ---
@@ -49,29 +49,37 @@ event. This is the closest fit between our model and anyone else's we have found
 
 ## The port
 
+As shipped in `packages/cdc/src/source.ts`:
+
 ```ts
-export type Watermark = string;   // opaque, lexicographically ordered
+export type Watermark = Brand<string, "Watermark">;   // opaque, non-empty, lexicographically ordered
 
 export interface ChangeSource {
-  readonly name: string;
-  /** Resume after this watermark, or from a full backfill when null. */
-  start(opts: { after: Watermark | null }): Promise<ChangeStream>;
+  readonly name: string;   // the `_cdc` row the watermark is filed under
+  /** Resume after this watermark, or from the source's own beginning when null. */
+  readonly start: (options: { readonly after: Watermark | null }) => Promise<ChangeStream>;
 }
 
 export interface ChangeStream {
-  changes: AsyncIterable<ChangeMessage>;
-  /** Called only once the derived event is DURABLE. See "Acks", below. */
-  ack(watermark: Watermark): void;
-  stop(): void;
+  readonly changes: AsyncIterable<ChangeMessage>;
+  /** Called only once the derived events are DURABLE. See "Acks", below. */
+  readonly ack: (watermark: Watermark) => void;
+  readonly stop: () => void;
 }
 
 export type ChangeMessage =
-  | { t: "begin" }
-  | { t: "insert";   table: string; row: Row }
-  | { t: "update";   table: string; key: string; after: Row }
+  | { t: "begin" }                                   // discards anything since the last commit
+  | { t: "insert";   table: string; row: SourceRow }
+  | { t: "update";   table: string; key: string; after: SourceRow }
   | { t: "delete";   table: string; key: string }
   | { t: "truncate"; table: string }
+  | { t: "schema";   table: string; detail: string } // an alarm, never an instruction
   | { t: "commit";   watermark: Watermark };
+
+export interface TableRead {                         // the backfill reader
+  readonly watermark: () => Promise<Watermark>;      // read BEFORE the first row
+  readonly rows: (table: string) => AsyncIterable<SourceRow>;
+}
 ```
 
 Same two-type seam, same reason: a source stays short. A Postgres source is
@@ -79,25 +87,40 @@ logical replication. A SQLite source is triggers writing an outbox table. A
 "manual" source is a function your app calls when it writes — the escape hatch
 for anyone whose database cannot stream.
 
+A `begin` discards whatever arrived since the last `commit`. That one rule is what
+lets a source that lost its connection mid-transaction resend it from the start
+rather than splice two halves together.
+
 ## The bridge
 
 ```ts
-new SyncmeshServer({
-  identity, collections, store, ops, context,
-  changeSources: [
-    postgresChangeSource({ connectionString, publication: "syncmesh" }),
-  ],
-  changeMapping: {
-    // which DB table feeds which collection, and how a row finds its partition
-    tasks: { collection: "tasks", partition: (row) => `org:${row.org_id}` },
-    sites: { collection: "sites", partition: (row) => `org:${row.org_id}` },
-  },
+import { startCapture } from "@syncmesh/cdc"
+import { postgresChangeSource } from "@syncmesh/postgres"
+
+const source = postgresChangeSource({
+  sql,                                   // an ordinary postgres.js client
+  connect: () => postgres(url, { max: 1, fetch_types: false, max_lifetime: null,
+                                 connection: { replication: "database" } }),
+  slot: "syncmesh",
+  publication: "syncmesh",
 })
+;(await source.publish(["tasks", "sites"])).unwrap()
+
+const running = (await startCapture({
+  engine,                                // the authority's
+  source,
+  backfill: source.read,
+  // which DB table feeds which collection, and how a row finds its partition
+  mappings: {
+    tasks: { collection: schema.tables.tasks, partition: (row) => `org:${row.org_id}` },
+    sites: { collection: schema.tables.sites, partition: (row) => `org:${row.org_id}` },
+  },
+})).unwrap()
 ```
 
 Between `begin` and `commit`, changes accumulate. On `commit`, the authority
 folds them into **one signed event per partition touched** (one event is one
-partition, M6), commits it, and only then acks the watermark.
+partition, M6), commits them, writes the watermark, and only then acks it.
 
 ## Direction is fixed, and that is the whole design
 
@@ -143,8 +166,10 @@ dropped frame (RFC-0005). Zero has a `Storer` between the stream and the ack for
 exactly this reason.
 
 **The watermark is our state, not theirs.** Persist it in a reserved `_cdc` table
-keyed by source name, written in the same commit as the event it describes.
-Anything else can skip or replay across a restart.
+keyed by source name, on its own unpinned event written **after** the events it
+covers (E20 records why not the same commit: a reserved row riding whichever
+partition went last gets a partition that depends on fold order). Anything else
+can skip or replay across a restart.
 
 **Replay is safe but not free.** Re-reading from an older watermark produces new
 events with new seqNums carrying the same values. Field-level LWW converges
@@ -170,24 +195,97 @@ stream at the watermark captured *before* the read.
 fine — it is the archive (RFC-0015 §5). It is worth saying out loud because it is
 the thing that makes a phone's partition-scoped replica affordable.
 
+## The Postgres source, as built
+
+`postgresChangeSource` (`adapters/postgres/src/`) is the port over a logical
+replication slot, with nothing above the port changed.
+
+- **Slot and publication.** The slot (`pgoutput`) is created on first `start`, or
+  by `read.watermark()` when a backfill goes first, and resumed after that. A slot
+  for another plugin or database is `SlotMismatch`. One whose WAL the server dropped
+  (`wal_status = lost`) is `SlotLost`. One read by another connection is `SlotBusy`:
+  a slot has one reader, and that is how "one authority per slot" is enforced.
+  `publish(tables)` creates or sets the publication. `drop()` waits for this source's
+  own streams to close, then drops the slot.
+- **Decoder.** `pgoutput` protocol version 1: Begin, Relation, Insert, Update,
+  Delete, Truncate and Commit, with Origin, Type and Message read past. Every frame
+  is parsed into a value, and a short or unknown frame is `MalformedMessage`, never
+  a throw. Values come through their text form and the relation's type OIDs: ints,
+  floats and bools become numbers and booleans, `timestamp[tz]` becomes epoch ms,
+  `bytea` becomes bytes, `json[b]` is parsed, and the rest stays text. So does any
+  value that would lose something (an `int8` past 2⁵³, `NaN`, `infinity`), so the
+  collection's column check refuses it rather than storing a rounded value. The
+  backfill reads `::text` through the same conversion, so a row reads the same
+  whichever path brought it.
+- **Replica identity.** A row's key is its single identity column: the primary key
+  under `DEFAULT`, the index under `USING INDEX`, and the primary key looked up from
+  `pg_index` under `FULL`, because `FULL` flags every column. No identity, or a
+  composite one, is `UnkeyedChange`. A changed key is a delete of the old row plus an
+  insert of the new one. Under `DEFAULT`, an update that leaves a TOASTed column alone
+  does not carry it, so `after` leaves that column out (an update is a patch, so the
+  mesh keeps its value). `FULL` fills it from the old row.
+- **Watermark.** The commit's end LSN as sixteen upper-case hex digits.
+  Lexicographic order is LSN order; Postgres's own `X/Y` text does not have that
+  property (`9/0` sorts after `10/0`). A restart passes it as the
+  `START_REPLICATION` point, and the source also skips any transaction whose commit
+  record precedes it, rather than relying on the server alone.
+- **Acks.** The slot's `confirmed_flush_lsn` moves only through a standby status
+  update, and the update carries the newest position that is either (a) the end of a
+  transaction delivered whole and acked by the bridge, or (b) a keepalive position
+  received while no transaction was open and nothing delivered was unacked. A
+  keepalive behind an unacked transaction waits for that ack. An ack past what was
+  decoded releases only what was decoded. Status goes out on every ack that moves
+  the position, on a keepalive that asks for a reply, and every `status` interval
+  (default 10 s), so `wal_sender_timeout` never fires.
+- **Reconnect.** A dropped connection is reopened (default 5 attempts, 1 s apart)
+  from the end of the last transaction delivered. Frames not yet decoded are
+  discarded, because the server sends them again, and a transaction cut off half-way
+  is resent from its `begin`. A slow bridge pauses the socket instead of buffering
+  without bound.
+- **Schema alarm.** A Relation message for a known relation with different columns
+  becomes a `schema` message, and the bridge stops on it without acking. Caveat: the
+  comparison is per session. A column added while no stream was open is first seen
+  by the next session and raises nothing; `meshCells` drops the extra column, and the
+  collection's check refuses a row that lacks a required one.
+- **Lag alarm.** With `lag: { bytes, every, alarm }`, the slot is read while a stream
+  is open, and the alarm fires when unacked WAL passes `bytes` or `wal_status` is
+  `unreserved`.
+- **Backfill.** `read.watermark()` returns the slot's position (making the slot if
+  needed), and `read.rows(table)` pages the table by `ctid`. A row changed after that
+  position is in the stream whatever page it moved to, and an untouched row keeps its
+  ctid, so paging outside one snapshot loses nothing. The stream replays the overlap,
+  which converges.
+
+Tested against a real Postgres 17 (PGlite has no logical replication). CI runs a
+`postgres:17` service with `wal_level = logical`; locally, `vp run pg:up` in
+`adapters/postgres` starts one. The suite covers transaction framing; nothing acked
+before the bridge acks; a consumer dying mid-transaction; a connection cut
+mid-transaction and resent from its `begin`; restart from a checkpoint with no skip
+and no repeat; `FULL` identity, TOAST and key changes; the schema alarm; type
+parity between stream and backfill; slot create, resume, busy and drop; a missing
+publication; the lag alarm; and backfill → stream → stop → writes while stopped →
+restart through `startCapture`, ending with the mesh equal to the table.
+
 ## Current state → work
 
 | Piece | State |
 |---|---|
-| `ChangeSource` / `ChangeStream` port | **proposed** — this document |
-| `postgresChangeSource` (logical replication) | proposed |
+| `ChangeSource` / `ChangeStream` port | **implemented** — `packages/cdc/src/source.ts` |
+| `postgresChangeSource` (logical replication) | **implemented** — `adapters/postgres/src/replication.ts` |
 | `sqliteChangeSource` (triggers + outbox) | proposed |
-| `manualChangeSource` (app calls us) | proposed — smallest useful first step |
-| transaction → one signed event per partition | proposed; the fold already exists |
-| durable watermark in `_cdc` | proposed |
-| backfill via table read | proposed; reuses RFC-0019 |
-| schema-change alarm | proposed |
+| `manualChangeSource` (app calls us) | **implemented** — `packages/cdc/src/manual.ts` |
+| transaction → one signed event per partition | **implemented** — `plan.ts`, `apply.ts` |
+| durable watermark in `_cdc` | **implemented** — its own unpinned event, last |
+| backfill via table read | **implemented** — `backfill.ts`; Postgres reader pages by `ctid` |
+| schema-change alarm | **implemented** — per session (see caveat above) |
+| slot lag alarm | **implemented** — `lag` option |
 
 **Tests to pin:** a transaction spanning three rows becomes exactly one event per
 partition; a crash between event-commit and ack replays without divergence; a
 device write to a CDC-backed table is denied locally and quarantines remotely; a
 watermark surviving restart neither skips nor duplicates; `truncate` over the cap
-refuses rather than emitting a million tombstones.
+refuses rather than emitting a million tombstones; nothing is acked to Postgres
+before the bridge has applied it.
 
 ## Open questions
 
@@ -195,7 +293,9 @@ refuses rather than emitting a million tombstones.
   Config is simpler; a column is auditable and survives a config typo.
 - Row deletes give us a key but no row. Policy predicates that read row fields
   (`rowIs`) cannot be evaluated on a delete — do we require `REPLICA IDENTITY
-  FULL`, or accept that delete policy is key-only?
+  FULL`, or accept that delete policy is key-only? *(As built: the Postgres source
+  reads either identity, but the port's `delete` carries only the key, so delete
+  policy is key-only today whichever one a table uses.)*
 - One authority per database, or many? Two authorities on one replication slot
   double-sign every change. A slot is single-consumer, so this is a deployment
   constraint we must state rather than a thing we can prevent.
