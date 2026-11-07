@@ -92,3 +92,5 @@ export const write = (p: Pick<Peer, "engine">, id: string, body: string, partiti
 
 /** What a peer's state says that row's body is, or `undefined` where the row never arrived. */
 export const bodyOf = (p: Peer, id: string) => readRow(p.engine.state(), NOTES, key(id))?.get(BODY);
+
+export * from "./gated.js";

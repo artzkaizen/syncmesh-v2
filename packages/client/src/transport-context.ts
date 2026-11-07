@@ -58,6 +58,8 @@ export function transportContextFor(base: {
   readonly partitions: () => readonly string[];
   /** How this device shapes its part of the mesh, including who may form a link at all. */
   readonly shaping?: MeshShaping;
+  /** The authority-visibility tables (D24), which no peer-to-peer link here carries. */
+  readonly withheld?: TransportContext["withheld"];
 }): TransportContext & { readonly routes: RouteTable } {
   const routes = createRouteTable({ self: base.identity.peerId, now: base.now });
   if (base.servesAuthority) routes.serve("authority");
@@ -95,5 +97,6 @@ export function transportContextFor(base: {
   if (base.incarnation !== undefined) Object.assign(context, { incarnation: base.incarnation });
   if (base.onReceipt !== undefined) Object.assign(context, { onReceipt: base.onReceipt });
   if (base.onRefusal !== undefined) Object.assign(context, { onRefusal: base.onRefusal });
+  if (base.withheld !== undefined) Object.assign(context, { withheld: base.withheld });
   return context;
 }

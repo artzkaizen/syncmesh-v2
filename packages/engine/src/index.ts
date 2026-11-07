@@ -104,7 +104,7 @@ export type { Installed, Snapshot, SnapshotOptions, SnapshotRow } from "./snapsh
 export { installSnapshot, partitionsIn, snapshotOf } from "./snapshot.js";
 export type { ChunkDeps, FeedApi, FeedState, FeedTracker } from "./feed.js";
 export { chunkSince, createFeedPath, receiveChunk, trackFeeds } from "./feed.js";
-export type { Interest } from "./interest.js";
+export type { Interest, Scope } from "./interest.js";
 export {
   EVERYTHING,
   interestFrom,
@@ -113,6 +113,9 @@ export {
   matchesInterest,
   narrows,
   rowsIn,
+  sameInterest,
+  scopeFrom,
+  scopeText,
 } from "./interest.js";
 export type { AccountLink, Dispute, LinkRow } from "./accounts.js";
 export { disputes, linkDevice, linkKey, linkedAuthor, links, unlinkDevice } from "./accounts.js";

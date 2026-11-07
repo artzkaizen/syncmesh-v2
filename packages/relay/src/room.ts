@@ -15,14 +15,16 @@ import { Temporal } from "@syncmesh/temporal";
 import { createPresenceStore } from "@syncmesh/transport";
 import { createIdentity, isRelayable, randomBytes, type Identity } from "@syncmesh/wire";
 
+import type { RelayAdmission } from "./admission.js";
 import type { ConnectionOptions, RelayConnection } from "./connection.js";
 import type { Fanout } from "./fanout.js";
 import type { GrantCache } from "./grant-cache.js";
 import type { RelayLimits } from "./limits.js";
 import type { RelayRetention } from "./retention.js";
 import type { RelaySocket } from "./sender.js";
-import type { Client, RoomState } from "./state.js";
+import type { Client, Fanned, RoomState } from "./state.js";
 
+import { createGate } from "./admission.js";
 import { createConnection } from "./connection.js";
 import { fanIn } from "./fan-in.js";
 import { HANDSHAKE_VERSION, RELAY_PROTOCOL_VERSIONS, kaFrame, speaksHandshake } from "./frames.js";
@@ -85,6 +87,12 @@ export interface RelayRoomOptions {
   /** The room's clock, for rate limiting and presence expiry. Default the wall clock. */
   readonly now?: () => Temporal.Instant;
   /**
+   * The authority-visibility gate (D24-A): which tables are gated and what each device is
+   * entitled to read of them. Applied to catch-up and to every live fan-out, the one from another
+   * instance included. Absent, the room withholds nothing a device did not narrow away itself.
+   */
+  readonly admission?: RelayAdmission;
+  /**
    * A telemetry listener from the first frame on. `onTelemetry` on the room subscribes just as
    * well, but a host that opens rooms lazily has no handle to subscribe through before the first
    * socket has already been served (D17).
@@ -126,6 +134,12 @@ export interface RelayRoom {
    * peer id, a room name or a byte of payload.
    */
   readonly onTelemetry: (listener: TelemetryListener) => Unsubscribe;
+  /**
+   * The authority's answer for these devices has changed — a clinic membership, a consult window
+   * (D24). Their sockets are closed, and the join each makes next is asked again; a device whose
+   * entitlement's name moved re-pages from nothing, so nothing it was refused before stays skipped.
+   */
+  readonly reentitle: (peers: readonly PeerId[]) => void;
   readonly close: () => void;
 }
 
@@ -209,15 +223,16 @@ export async function openRelayRoom(
       if (client.peer !== except) client.sender.send(frame);
     }
   };
-  const toInterested = (frame: Uint8Array, event: SyncEvent, except?: PeerId): number => {
+  const toInterested = (frame: Uint8Array, event: SyncEvent, except?: PeerId): Fanned => {
     let receivers = 0;
+    let frames = 0;
     for (const client of clients.values()) {
-      if (client.peer !== except && client.wants(event)) {
-        client.sender.send(frame);
-        receivers += 1;
-      }
+      if (client.peer === except) continue;
+      const offered = client.offer(frame, event);
+      if (offered.sent) receivers += 1;
+      frames += offered.frames;
     }
-    return receivers;
+    return { receivers, frames };
   };
   const fan = options.fanout?.connect(name);
   const limits = { ...DEFAULT_LIMITS, ...options.limits };
@@ -257,6 +272,7 @@ export async function openRelayRoom(
     enqueue: (work) => void (queue = queue.then(work)),
     now,
     report: telemetry.emit,
+    gate: options.admission === undefined ? undefined : createGate(options.admission, name),
   };
   // subscribed after the state exists, because a fanned-in frame is ingested through it
   const offFan = fan?.onFrame(fanIn(state));
@@ -278,6 +294,9 @@ export async function openRelayRoom(
     floor: retention.floor,
     sweep: retention.sweep,
     onTelemetry: telemetry.subscribe,
+    reentitle: (peers) => {
+      for (const peer of peers) clients.get(peer)?.socket.close("entitlement changed");
+    },
     close: () => {
       clearInterval(keepalive);
       retention.stop();

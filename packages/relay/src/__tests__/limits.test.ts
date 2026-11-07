@@ -11,7 +11,17 @@ import { ROOM_DEBT_RETRY } from "../ingest.js";
 import { DEFAULT_LIMITS, createBudget } from "../limits.js";
 import { startRelay } from "../serve.js";
 import { relayTransport } from "../transport.js";
-import { T0, bodyOf, fakeSocket, scriptedRoom, peer, tick, until, write } from "./fixtures.js";
+import {
+  GLOBEX,
+  T0,
+  bodyOf,
+  fakeSocket,
+  scriptedRoom,
+  peer,
+  tick,
+  until,
+  write,
+} from "./fixtures.js";
 
 const join = (peerId: PeerId) => joinFrame([1], peerId, new Map());
 const SECOND = Temporal.Duration.from({ seconds: 1 });
@@ -170,6 +180,36 @@ describe("fan-out is metered too (gap audit №7)", () => {
     // and the clients it was amplifying to are untouched: one socket's debt is its own
     expect(sockets[1]?.closedWith).toEqual([]);
     expect(sockets[2]?.closedWith).toEqual([]);
+    room.close();
+  });
+
+  test("a pass-over is a send the writer caused, and it pays for it like one", async () => {
+    const a = peer(40, "acct_a");
+    // two clients that want none of what is written: every event reaches nobody, and is passed
+    // over to both of them
+    const room = await scriptedRoom({ now: () => T0, limits: amplified(3) });
+    const writer = fakeSocket();
+    const conn = room.connect(writer.socket);
+    conn.receive(join(a.identity.peerId));
+    for (const n of [80, 120])
+      room
+        .connect(fakeSocket().socket)
+        .receive(
+          joinFrame([1], peer(n, `acct_${n}`).identity.peerId, new Map(), { partitions: [GLOBEX] }),
+        );
+    await tick();
+
+    for (const [id, body] of [
+      ["n1", "one"],
+      ["n2", "two"],
+      ["n3", "three"],
+    ] as const) {
+      conn.receive(eventFrame(await write(a, id, body)));
+      await tick();
+    }
+    // two pass-overs per write against three tokens: the third write's frame is what pays
+    expect(writer.ofKind("error")[0]?.code).toBe("rate");
+    expect(writer.closedWith).toEqual(["rate"]);
     room.close();
   });
 

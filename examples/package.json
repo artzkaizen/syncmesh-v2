@@ -39,6 +39,6 @@
     "drizzle-orm": "catalog:",
     "typescript": "catalog:",
     "vite-plus": "catalog:",
-    "zod": "^3.25.76"
+    "zod": "catalog:"
   }
 }

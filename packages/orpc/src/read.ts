@@ -3,14 +3,17 @@ import type { Runnable } from "@syncmesh/drizzle";
 import type { PresenceMap } from "@syncmesh/schema";
 
 import { LOCAL_ONLY } from "@syncmesh/client";
+import { tablesOf } from "@syncmesh/drizzle";
 import { Result } from "@syncmesh/result";
 
 import type { QueryCall, ReadAnswer } from "./api.js";
 import type { LazyApiMesh } from "./deferred.js";
 import type { QueryDef } from "./procedures.js";
+import type { servedLives } from "./served-live.js";
 
 import { deferredLive, deferredRunnable, deferredSubscribe } from "./deferred.js";
-import { asError } from "./errors.js";
+import { AuthorityUnreachable, asError } from "./errors.js";
+import { failedLive } from "./served-live.js";
 import { validate } from "./validate.js";
 
 /* oxlint-disable anti-slop/no-unknown-parameters -- `input` here is the call's own argument on its way to `validate`, which is the parser: the surface above (`Api<R>`) is typed per procedure, and parsing before the procedure that owns the schema has been chosen would be parsing twice */
@@ -26,11 +29,15 @@ interface ReadDeps<PC extends PresenceMap> {
     input: unknown,
   ) => Runnable<unknown>;
   readonly settled: () => Promise<void>;
+  /** The `sync: "window"` tables, which the server serves; a read of one goes to it. */
+  readonly served: ReadonlySet<string>;
+  /** The window channel those reads travel over, when the app configured one. */
+  readonly windows: ReturnType<typeof servedLives> | undefined;
 }
 
 /** One read descriptor: `then` in front, the adapter surface under `~mesh` ({@link QueryCall}). */
 export function readOf<PC extends PresenceMap>(
-  { lazy, handle, running, settled }: ReadDeps<PC>,
+  { lazy, handle, running, settled, served, windows }: ReadDeps<PC>,
   path: string,
   def: QueryDef<never, unknown>,
   input: unknown,
@@ -42,6 +49,18 @@ export function readOf<PC extends PresenceMap>(
   // made before the mesh exists gets the wrapper, and that one has nothing to maintain from
   const run = () =>
     lazy.current() === undefined ? deferredRunnable(lazy.ready, runnable) : runnable();
+  /** Whether the handler's query reads a table the server keeps rather than this device. */
+  const isServed = (query: Runnable<unknown>) =>
+    served.size > 0 && [...tablesOf(query)].some((table) => served.has(table));
+  /** The same rows, read a page at a time from the server (D43). */
+  const servedLive = (query: Runnable<unknown>) =>
+    windows?.live(path, input, query) ??
+    failedLive<unknown>(
+      new AuthorityUnreachable({
+        path,
+        message: `${path} reads a sync: "window" table, which the server serves, and no windows were configured`,
+      }),
+    );
   // one shared object, never a literal: a mesh reached over a port has no coverage yet, and a
   // fresh `{ kind }` per call here is exactly the snapshot loop React refuses
   const coverage = () => lazy.current()?.coverage?.get() ?? LOCAL_ONLY;
@@ -53,7 +72,14 @@ export function readOf<PC extends PresenceMap>(
     return Result.tryPromise({
       try: async (): Promise<ReadAnswer<unknown>> => {
         await lazy.ready;
-        return { data: await running(def, parsed.value, input), coverage: coverage() };
+        const query = running(def, parsed.value, input);
+        if (!isServed(query)) return { data: await query, coverage: coverage() };
+        const live = servedLive(query);
+        try {
+          return { data: await live.ready, coverage: coverage() };
+        } finally {
+          live.release();
+        }
       },
       catch: asError,
     });
@@ -66,7 +92,11 @@ export function readOf<PC extends PresenceMap>(
       // TEMPORARY, for a bisect: one built query rather than the *way to build* it, which is what
       // turns incremental maintenance off — `createLive` only patches a query it can ask again.
       // Restore the factory (`runnable`) once the assignee stall is attributed.
-      live: () => deferredLive(lazy, () => handle(input).live(runnable())),
+      live: () =>
+        deferredLive(lazy, () => {
+          const query = runnable();
+          return isServed(query) ? servedLive(query) : handle(input).live(query);
+        }),
       settled: () => lazy.ready.then(settled),
       coverage,
       onCoverage: (listener) =>

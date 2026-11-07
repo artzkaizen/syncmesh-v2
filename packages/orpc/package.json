@@ -29,10 +29,12 @@
     "@syncmesh/kernel": "workspace:*",
     "@syncmesh/result": "workspace:*",
     "@syncmesh/schema": "workspace:*",
-    "@syncmesh/storage": "workspace:*"
+    "@syncmesh/storage": "workspace:*",
+    "@syncmesh/window": "workspace:*"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.7",
+    "@syncmesh/cdc": "workspace:*",
     "@syncmesh/config": "workspace:*",
     "@syncmesh/engine": "workspace:*",
     "@syncmesh/postgres": "workspace:*",
@@ -42,13 +44,14 @@
     "@syncmesh/wire": "workspace:*",
     "@types/bun": "catalog:",
     "drizzle-orm": "catalog:",
+    "postgres": "^3.4.9",
     "typescript": "catalog:",
     "vite-plus": "catalog:",
-    "zod": "^3.25.76"
+    "zod": "catalog:"
   },
   "peerDependencies": {
     "@syncmesh/relay": "workspace:*",
-    "drizzle-orm": ">=0.44"
+    "drizzle-orm": "^1.0.0-rc.4"
   },
   "peerDependenciesMeta": {
     "@syncmesh/relay": {

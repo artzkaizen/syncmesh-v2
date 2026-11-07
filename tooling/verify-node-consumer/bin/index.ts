@@ -124,7 +124,7 @@ function main(): number {
           private: true,
           type: "module",
           // the peers an app supplies: drizzle-orm for the client, react for the hooks
-          dependencies: { ...specs, "drizzle-orm": "latest", react: "^19", "react-dom": "^19" },
+          dependencies: { ...specs, "drizzle-orm": "1.0.0-rc.4", react: "^19", "react-dom": "^19" },
           overrides: specs,
         },
         null,

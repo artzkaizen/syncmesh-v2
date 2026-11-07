@@ -1,3 +1,4 @@
+import { scopeFrom } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { RELAY_PROTOCOL_VERSIONS, decodeRelayFrame } from "@syncmesh/relay";
 import { decodeCbor, hexToBytes } from "@syncmesh/wire";
@@ -45,6 +46,20 @@ describe("relay control frame vectors — frozen (D14, D33)", () => {
       },
       { kind: "blob-refused", hash: "b3:0102", code: "quota", limit: 1024, used: 1000 },
     ]);
+  });
+
+  test("a gated catch-up's scope reads back as the interest and the entitlement it names (D24)", () => {
+    const scoped = raw.vectors
+      .filter((v) => v.description.includes("(D24)"))
+      .map((v) => decodeRelayFrame(hexToBytes(v.wireHex).unwrap()).unwrap())
+      .map((frame) => (frame.kind === "page" ? scopeFrom(frame.scoped?.scope) : undefined));
+    // compared as text: a partition key is a brand, and the vector file holds plain strings
+    expect(JSON.stringify(scoped)).toBe(
+      JSON.stringify([
+        { interest: { partitions: ["org:acme"] }, entitlement: "clinics:a" },
+        { entitlement: "clinics:a" },
+      ]),
+    );
   });
 
   for (const v of raw.vectors) {

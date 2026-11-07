@@ -53,6 +53,8 @@ export type { RelayTelemetry } from "./telemetry.js";
 export type { GrantCache } from "./grant-cache.js";
 export { createGrantCache } from "./grant-cache.js";
 export { openRelayRoom } from "./room.js";
+export type { Entitlement, EntitlementAsk, RelayAdmission } from "./admission.js";
+export { EntitlementFailed } from "./admission.js";
 export type { RelayDial, RelayTransportOptions } from "./transport.js";
 export { relayTransport } from "./transport.js";
 export { webSocketDial } from "./dial.js";
@@ -83,3 +85,5 @@ export {
   postureGate,
 } from "./host.js";
 export { describeRoom } from "./describe.js";
+export type { WindowConnection, WindowServerOptions } from "./windows.js";
+export { serveWindows } from "./windows.js";

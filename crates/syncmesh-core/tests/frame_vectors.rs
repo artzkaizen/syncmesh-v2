@@ -369,14 +369,15 @@ fn relay_control_frames_are_reproduced_from_the_generator_inputs() {
         (18, relay_frames::blob_frame(hash, &bytes)),
         (19, relay_frames::blob_missing_frame(hash)),
         (20, relay_frames::challenge_frame(&nonce)),
-        (21, relay_frames::blob_put_frame(hash, &bytes, Some(&acme))),
-        (22, relay_frames::blob_stored_frame(hash)),
+        // 21–22 are main's gated pages (D24), scoped through `scopeText`; checked by decode above
+        (23, relay_frames::blob_put_frame(hash, &bytes, Some(&acme))),
+        (24, relay_frames::blob_stored_frame(hash)),
         (
-            23,
+            25,
             relay_frames::blob_refused_frame(hash, "quota", 1024, 1000, Some(&acme)),
         ),
         (
-            24,
+            26,
             relay_frames::blob_refused_frame(hash, "quota", 1024, 1000, None),
         ),
     ];

@@ -26,6 +26,7 @@ import { createJoinExchange } from "./join.js";
 import { createOutbound } from "./outbound.js";
 import { presenceSlot } from "./presence.js";
 import { createRouteExchange } from "./route-exchange.js";
+import { withholds, type Withheld } from "./withheld.js";
 
 export type { BridgeError } from "./outbound.js";
 export { SendFailed, Unsendable } from "./outbound.js";
@@ -51,6 +52,11 @@ export interface BridgeOptions {
   readonly carries?: (message: { readonly cls: FrameClass; readonly bytes: number }) => boolean;
   /** Out-of-order events held per author before a resync is forced. Default 512. */
   readonly gapLimit?: number;
+  /**
+   * The authority-visibility tables (D24): this link carries none of their events, serves none of
+   * their rows in a snapshot, and leaves them out of the digests it compares.
+   */
+  readonly withheld?: Withheld;
   /** An ephemeral value arrived (D16): the store decides whether it is news. Never stored here. */
   readonly onPresence?: (wire: Uint8Array) => void;
   /**
@@ -131,16 +137,18 @@ export interface Bridge {
 
 /** The join exchange for one session, carrying only the options the caller actually set. */
 const createJoin = (options: BridgeOptions, send: JoinDeps["send"]): JoinExchange => {
-  const { engine, identity, rowsPerChunk, onSnapshot, certificate, trust } = options;
+  const { engine, identity, rowsPerChunk, onSnapshot, certificate, trust, withheld } = options;
   const base = { engine, send, idPrefix: identity.peerId.slice(0, 8) };
-  const paged = rowsPerChunk === undefined ? base : { ...base, rowsPerChunk };
+  const gated = withheld === undefined ? base : { ...base, withheld };
+  const paged = rowsPerChunk === undefined ? gated : { ...gated, rowsPerChunk };
   const reported = onSnapshot === undefined ? paged : { ...paged, onSnapshot };
   const vouching = certificate === undefined ? reported : { ...reported, certificate };
   return createJoinExchange(trust === undefined ? vouching : { ...vouching, trust });
 };
 
 /**
- * Signs the event and offers it to this link, unless routing put it on another one (E28).
+ * Signs the event and offers it to this link, unless routing put it on another one (E28) or it
+ * writes a table only the authority's gate may hand out (D24).
  *
  * The size weighed is the **frame's**, not the event's: what occupies a medium is what goes on it.
  * An absent `carries` emits — a link with no routing behind it carries everything, which is what
@@ -148,13 +156,12 @@ const createJoin = (options: BridgeOptions, send: JoinDeps["send"]): JoinExchang
  */
 const offerEvent = (
   event: SyncEvent,
-  identity: Identity,
-  carries: BridgeOptions["carries"],
+  options: BridgeOptions,
   emit: (frame: Uint8Array) => void,
-  crypto?: EventCrypto,
 ): void => {
-  const frame = eventFrame(signEvent(event, identity, crypto).wire);
-  if (carries?.({ cls: KIND.event, bytes: frame.length }) !== false) emit(frame);
+  if (withholds(options.withheld, event)) return;
+  const frame = eventFrame(signEvent(event, options.identity, options.crypto).wire);
+  if (options.carries?.({ cls: KIND.event, bytes: frame.length }) !== false) emit(frame);
 };
 
 /** What the outbound half needs, assembled so an absent capability stays absent (D12-A). */
@@ -170,7 +177,7 @@ const outboundDeps = (
   interest: options.interest,
   scope,
   errors,
-  ...omitUndefined({ crypto: options.crypto }),
+  ...omitUndefined({ crypto: options.crypto, withheld: options.withheld }),
 });
 
 /**
@@ -188,7 +195,7 @@ const isBehind = (engine: Engine, self: PeerId, theirs: ReadonlyMap<PeerId, SeqN
 
 export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridge {
   const { engine, identity, grants, onPresence, gapLimit = 512, routes } = options;
-  const { interest, onDivergence, carries } = options;
+  const { interest, onDivergence, withheld } = options;
   const scope = interestKey(interest ?? {});
   const now = options.now ?? (() => Temporal.Now.instant());
   const errors = createHub<BridgeError>();
@@ -256,6 +263,8 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
       // a peer parking one event it cannot read (D13) is sent the whole tail above the hole on
       // every exchange, and answers with the same cursor every time
       for (const entry of entries.value.filter((e) => !heldAhead(theirAhead, e))) {
+        // and a gated row is never one of them: only the authority's gate decides who reads it
+        if (withholds(withheld, entry.event)) continue;
         const wire = envelopeOf(entry);
         if (wire !== undefined) send(KIND.event, "event", eventFrame(wire));
       }
@@ -275,6 +284,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     identity,
     interest,
     scope,
+    ...omitUndefined({ withheld }),
     queued: (run: () => void) => void (queue = queue.then(run)),
   };
   if (onDivergence !== undefined) Object.assign(digestDeps, { onDivergence });
@@ -304,13 +314,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     send(KIND.grant, "grant", grantFrame(wire)),
   );
   const offOutbound = engine.onOutbound((event: SyncEvent) =>
-    offerEvent(
-      event,
-      identity,
-      carries,
-      (frame) => send(KIND.event, "event", frame),
-      options.crypto,
-    ),
+    offerEvent(event, options, (frame) => send(KIND.event, "event", frame)),
   );
   /** A remote fold means this engine now holds more than its other neighbors may: announce, so they request. */
   const offFolds = engine.onFoldBatch((batch) => {

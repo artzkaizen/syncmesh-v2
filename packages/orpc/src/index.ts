@@ -154,3 +154,5 @@ export function withMesh<D extends SqlDialect = "sqlite">(mesh: Mesh<D>) {
       }
     });
 }
+export type { ServedReadsOptions } from "./served.js";
+export { servedReads } from "./served.js";

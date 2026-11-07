@@ -108,6 +108,11 @@ export interface TransportContext {
    * before there was a door.
    */
   readonly admits?: (ask: AdmissionAsk) => Promise<boolean>;
+  /**
+   * The authority-visibility tables (D24), which no peer-to-peer link carries: their rows reach a
+   * device only through the authority's gate. `createMesh` fills it from the manifest.
+   */
+  readonly withheld?: BridgeOptions["withheld"];
 }
 
 /**
@@ -407,6 +412,10 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
             onSnapshot: ctx.onSnapshot,
             certificate: ctx.certificate,
             trust: ctx.trust,
+            // the same key ring and the same gate on every link: what a device can read, and what
+            // it may hand on, do not depend on the medium (book ch. 14, D24)
+            crypto: ctx.crypto,
+            withheld: ctx.withheld,
           }),
         };
         /**
@@ -423,8 +432,6 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
         }
         // one table, every link: a route learned here is one every other link may advertise
         if (ctx.routes !== undefined) Object.assign(bridgeOptions, { routes: ctx.routes });
-        // the same key ring on every link: what a device can read does not depend on the medium
-        if (ctx.crypto !== undefined) Object.assign(bridgeOptions, { crypto: ctx.crypto });
         // once per peer, because a session builds its bridge once: subscribing where the bridge
         // is made is what keeps three media reaching one laptop from reporting its errors thrice
         const build = (framed: FrameLink): Bridge => {

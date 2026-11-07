@@ -11,8 +11,35 @@ concurrency:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    # a real Postgres for @syncmesh/postgres's logical-replication suite: PGlite has no
+    # replication. A service cannot be given server flags, so wal_level is set and the
+    # container restarted in the first step.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --name syncmesh-postgres
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      SYNCMESH_PG_REPLICATION_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
+      - name: Turn on logical replication
+        run: |
+          docker exec syncmesh-postgres psql -U postgres -c "ALTER SYSTEM SET wal_level = logical"
+          docker restart syncmesh-postgres
+          for _ in $(seq 60); do
+            docker exec syncmesh-postgres pg_isready -U postgres && break
+            sleep 1
+          done
+          test "$(docker exec syncmesh-postgres psql -U postgres -tAc 'SHOW wal_level')" = logical
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:

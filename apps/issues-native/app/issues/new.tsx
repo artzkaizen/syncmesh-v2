@@ -1,7 +1,6 @@
 import { ISSUE_STATUS, PRIORITY_NAME, WORKSPACE_ID } from "@syncmesh/issues";
 import { useLiveQuery } from "@syncmesh/react";
 import { Stack, useRouter } from "expo-router";
-import { Spinner } from "heroui-native";
 import { useState } from "react";
 import {
   Alert,
@@ -90,46 +89,17 @@ export default function NewIssueScreen() {
     >
       <Stack.Screen
         options={{
-          headerRight: () => (
-            <Pressable
-              accessibilityLabel="Create issue"
-              accessibilityRole="button"
-              disabled={!ready || filing}
-              onPress={file}
-            >
-              <Text
-                className={
-                  ready && !filing
-                    ? "text-[16px] font-medium text-accent"
-                    : "text-[16px] font-medium text-muted-foreground opacity-40"
-                }
-              >
-                {filing ? "Filing…" : "Create"}
-              </Text>
-            </Pressable>
-          ),
+          headerRight: () => <CreateButton filing={filing} onPress={file} ready={ready} />,
           title: "New issue",
         }}
       />
 
-      <ScrollView className="flex-1" contentContainerStyle={{ gap: 16, padding: 16 }}>
-        <TextInput
-          autoFocus
-          className="text-[22px] font-semibold text-foreground"
-          multiline
-          onChangeText={setTitle}
-          placeholder="Issue title"
-          value={title}
-        />
-        <TextInput
-          className="min-h-32 text-[15px] leading-[22px] text-foreground"
-          multiline
-          onChangeText={setDescription}
-          placeholder="Add a description…"
-          textAlignVertical="top"
-          value={description}
-        />
-      </ScrollView>
+      <Fields
+        description={description}
+        onDescription={setDescription}
+        onTitle={setTitle}
+        title={title}
+      />
 
       {/* the same pills the detail screen uses, so filing and editing are one vocabulary */}
       <View className="border-t border-border px-4 pb-8 pt-3">
@@ -208,5 +178,69 @@ export default function NewIssueScreen() {
         title="Team"
       />
     </KeyboardAvoidingView>
+  );
+}
+
+/** The header's Create, dimmed until there is a title and a team, and while it files. */
+function CreateButton({
+  filing,
+  onPress,
+  ready,
+}: {
+  readonly filing: boolean;
+  readonly onPress: () => void;
+  readonly ready: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityLabel="Create issue"
+      accessibilityRole="button"
+      disabled={!ready || filing}
+      onPress={onPress}
+    >
+      <Text
+        className={
+          ready && !filing
+            ? "text-[16px] font-medium text-accent"
+            : "text-[16px] font-medium text-muted-foreground opacity-40"
+        }
+      >
+        {filing ? "Filing…" : "Create"}
+      </Text>
+    </Pressable>
+  );
+}
+
+/** The title and the description, the two things typed rather than picked. */
+function Fields({
+  description,
+  onDescription,
+  onTitle,
+  title,
+}: {
+  readonly description: string;
+  readonly onDescription: (text: string) => void;
+  readonly onTitle: (text: string) => void;
+  readonly title: string;
+}) {
+  return (
+    <ScrollView className="flex-1" contentContainerStyle={{ gap: 16, padding: 16 }}>
+      <TextInput
+        autoFocus
+        className="text-[22px] font-semibold text-foreground"
+        multiline
+        onChangeText={onTitle}
+        placeholder="Issue title"
+        value={title}
+      />
+      <TextInput
+        className="min-h-32 text-[15px] leading-[22px] text-foreground"
+        multiline
+        onChangeText={onDescription}
+        placeholder="Add a description…"
+        textAlignVertical="top"
+        value={description}
+      />
+    </ScrollView>
   );
 }

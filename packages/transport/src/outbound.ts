@@ -6,11 +6,13 @@ import { relayEnvelope, signEvent } from "@syncmesh/wire";
 
 import type { FrameClass } from "./frame-parts.js";
 import type { FrameLink } from "./link.js";
+import type { Withheld } from "./withheld.js";
 
 import { tableNames } from "./divergence.js";
 import { KIND } from "./frame-parts.js";
 import { cursorsFrame, digestFrame } from "./frame.js";
 import { createOutbox } from "./outbox.js";
+import { openDigests } from "./withheld.js";
 
 /**
  * The sending half of a session, and the two ways it can fail. Kept out of the bridge because
@@ -38,6 +40,8 @@ export interface OutboundDeps {
   readonly errors: Hub<BridgeError>;
   /** What this device seals its own events with (book ch. 14); absent, they leave in the clear. */
   readonly crypto?: EventCrypto;
+  /** The gated tables (D24), left out of the digest: devices admitted different rows agree. */
+  readonly withheld?: Withheld;
 }
 
 /**
@@ -93,7 +97,7 @@ export function createOutbound(deps: OutboundDeps) {
       digestFrame(
         scope,
         engine.coverage().synced,
-        tableNames(engine.digest(interest)),
+        openDigests(deps.withheld, tableNames(engine.digest(interest))),
         engine.ahead(),
       ),
     );

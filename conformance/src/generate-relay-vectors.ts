@@ -8,6 +8,7 @@
  */
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
+import { scopeText } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import {
   RELAY_PROTOCOL_VERSIONS,
@@ -42,9 +43,46 @@ const BYTES = Uint8Array.of(0xde, 0xad, 0xbe, 0xef);
 const HASH = "b3:0102";
 const NONCE = Uint8Array.from({ length: 32 }, (_, i) => i);
 
+/** One frozen control frame: what it shows, its kind and tag, and its bytes. */
+interface RelayVector {
+  readonly description: string;
+  readonly kind: string;
+  readonly tag: number;
+  readonly wireHex: string;
+}
+
+/** D18's per-partition quota: a put billed to a partition, and the two answers to a put. */
+const blobQuotaVectors = () => [
+  {
+    description:
+      "blob-put billed to a partition: one additive element, which a relay built before quotas reads past (D18)",
+    kind: "blob-put",
+    tag: 15,
+    wireHex: bytesToHex(blobPutFrame(HASH, BYTES, ACME)),
+  },
+  {
+    description: "blob-stored, the relay kept a put: the author may stop being the only holder",
+    kind: "blob-stored",
+    tag: 20,
+    wireHex: bytesToHex(blobStoredFrame(HASH)),
+  },
+  {
+    description: "blob-refused, a partition's quota: limit and spend, nothing stored (D18)",
+    kind: "blob-refused",
+    tag: 21,
+    wireHex: bytesToHex(blobRefusedFrame(HASH, "quota", 1024, 1000, ACME)),
+  },
+  {
+    description: "blob-refused, the budget of puts that named no partition",
+    kind: "blob-refused",
+    tag: 21,
+    wireHex: bytesToHex(blobRefusedFrame(HASH, "quota", 1024, 1000)),
+  },
+];
+
 export function relayVectors() {
   const signed = joinVectors();
-  const cases: readonly { description: string; kind: string; tag: number; wireHex: string }[] = [
+  const cases: readonly RelayVector[] = [
     {
       description: "join, v1: one version, one cursor, no interest, no proof",
       kind: "join",
@@ -152,29 +190,31 @@ export function relayVectors() {
     },
     {
       description:
-        "blob-put billed to a partition: one additive element, which a relay built before quotas reads past (D18)",
-      kind: "blob-put",
-      tag: 15,
-      wireHex: bytesToHex(blobPutFrame(HASH, BYTES, ACME)),
+        "page, the last of a gated catch-up: its coverage scoped to the interest and to the entitlement the relay admitted under (D24)",
+      kind: "page",
+      tag: 13,
+      wireHex: bytesToHex(
+        pageFrame([], [EVENT], false, 9, {
+          synced: CURSORS,
+          local: new Map(),
+          scope: scopeText({ partitions: [ACME] }, "clinics:a"),
+        }),
+      ),
     },
     {
-      description: "blob-stored, the relay kept a put: the author may stop being the only holder",
-      kind: "blob-stored",
-      tag: 20,
-      wireHex: bytesToHex(blobStoredFrame(HASH)),
+      description:
+        "page, a pass-over: no events, the last, and a coverage for one author — the relay withheld what this device may not read and says how far it passed (D24)",
+      kind: "page",
+      tag: 13,
+      wireHex: bytesToHex(
+        pageFrame([], [], false, 12, {
+          synced: CURSORS,
+          local: new Map(),
+          scope: scopeText(undefined, "clinics:a"),
+        }),
+      ),
     },
-    {
-      description: "blob-refused, a partition's quota: limit and spend, nothing stored (D18)",
-      kind: "blob-refused",
-      tag: 21,
-      wireHex: bytesToHex(blobRefusedFrame(HASH, "quota", 1024, 1000, ACME)),
-    },
-    {
-      description: "blob-refused, the budget of puts that named no partition",
-      kind: "blob-refused",
-      tag: 21,
-      wireHex: bytesToHex(blobRefusedFrame(HASH, "quota", 1024, 1000)),
-    },
+    ...blobQuotaVectors(),
   ];
   return { protocolVersions: [...RELAY_PROTOCOL_VERSIONS], vectors: cases };
 }
