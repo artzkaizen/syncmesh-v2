@@ -65,6 +65,8 @@ export function createHoldback(engine: Engine, gapLimit: number) {
       if (buffer.size === 0) held.delete(author);
       return ready;
     },
+    /** Whether nothing is buffered, for any author: no event this device was sent waits behind a hole. */
+    empty: (): boolean => [...held.values()].every((buffer) => buffer.size === 0),
     /** The contiguous run above what the engine holds, in order. */
     drain: (author: PeerId): readonly StoredEvent[] => {
       const buffer = held.get(author);

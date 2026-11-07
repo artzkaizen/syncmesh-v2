@@ -172,6 +172,46 @@ describe("visibility: authority — admission at the relay (D24-A)", () => {
     room.close();
   });
 
+  test("a wait on a write burst behind a withheld one settles only once the row is folded", async () => {
+    // a store slow enough to append that the second write's ingest queues ahead of the first
+    // one's pass-over, so b is sent c3 before it is told the relay passed over `secret`
+    const memory = createMemoryEventStore();
+    const store = {
+      ...memory,
+      append: async (...args: Parameters<typeof memory.append>) => {
+        await tick(100);
+        return memory.append(...args);
+      },
+    } satisfies typeof memory;
+    const room = await gatedRoom({ store });
+    const b = gatedPeer(43);
+    clinics.set(b.identity.peerId, ["b"]);
+    // and a device that folds as slowly as a real driver, so the pass-over lands mid-fold
+    const slow = {
+      ...b.engine,
+      receiveBatch: async (...args: Parameters<typeof b.engine.receiveBatch>) => {
+        await tick(30);
+        return b.engine.receiveBatch(...args);
+      },
+    } satisfies typeof b.engine;
+    const reader = relayTransport({ dial: dialTo(room).dial, reconnectMs: 10 });
+    running.push(reader);
+    await reader.start({ ...b.context, engine: slow });
+    await reader.caughtUp?.();
+    const authority = gatedPeer(7);
+    await attach(authority, dialTo(room).dial);
+
+    (await writeConsult(authority, "secret", "a")).unwrap();
+    await writeCatalog(authority, "c3", "after the hole");
+    expect(await until(() => room.offset() >= 2)).toBe(true);
+    const visibility = reader.visibility;
+    if (visibility === undefined) throw new Error("a relay transport declares visibility");
+    expect((await visibility.visibleAt({ epoch: room.epoch, offset: 2 })).isOk()).toBe(true);
+    expect(holds(b, CATALOG, "c3")).toBe(true);
+    expect(holds(b, CONSULTS, "secret")).toBe(false);
+    room.close();
+  });
+
   test("an entitlement that changes re-pages the device, so nothing refused before stays skipped", async () => {
     const room = await gatedRoom();
     await seeded(room);

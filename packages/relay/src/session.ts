@@ -1,5 +1,5 @@
 import type { Cursors, Interest, StoredEvent, Unsubscribe } from "@syncmesh/engine";
-import type { PeerId } from "@syncmesh/kernel";
+import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import type { TransportContext } from "@syncmesh/transport";
 
 import { ownPositionWarning } from "@syncmesh/engine";
@@ -32,7 +32,8 @@ export interface SessionHooks {
   readonly onHello: (keepaliveMs: number, epoch: string) => void;
   /**
    * The room's log runs at least to `offset`, and everything this device was sent below it has
-   * been folded — what `visibleAt` settles on. Called behind the fold chain, never beside it.
+   * been folded into rows — what `visibleAt` settles on. Called behind the fold chain, never beside
+   * it, and held back while the holdback keeps any event behind a hole.
    */
   readonly onPosition?: (offset: number) => void;
   /**
@@ -73,6 +74,51 @@ export interface SessionHooks {
    */
   readonly repaging?: () => boolean;
 }
+
+/**
+ * The furthest offset a session's frames have carried, said only once the holdback keeps nothing
+ * back. Behind the fold chain alone is not enough: an event folded into the holdback was sent but
+ * is not a row yet, and a wanted event that a burst puts ahead of its author's pass-over is
+ * exactly that until the pass-over lands (D24).
+ */
+const heldPosition = (
+  holdback: ReturnType<typeof createHoldback>,
+  say: ((offset: number) => void) | undefined,
+) => {
+  let unsaid: number | undefined;
+  return {
+    /** A frame carried `offset`, and everything sent below it has been through the fold chain. */
+    reached: (offset: number): void => {
+      if (unsaid === undefined || offset > unsaid) unsaid = offset;
+    },
+    /** Says what was reached, once the holdback has let go of every event it was handed. */
+    flush: (): void => {
+      if (unsaid === undefined || !holdback.empty()) return;
+      const offset = unsaid;
+      unsaid = undefined;
+      say?.(offset);
+    },
+  };
+};
+
+/**
+ * The room's run of our own author, from its `hello`: never number at or below it (RFC 0024 G7).
+ * A write this log numbered inside that run is said — it reuses a pair the room holds for another
+ * event.
+ */
+const adoptOwnRun = async (
+  engine: TransportContext["engine"],
+  own: SeqNum,
+  dropped: (why: string) => void,
+): Promise<void> => {
+  const position = await engine.adoptOwnPosition(own);
+  if (position.isErr()) {
+    dropped(`the store could not say what this device last wrote: ${position.error.message}`);
+    return;
+  }
+  const warning = ownPositionWarning(position.value);
+  if (warning !== undefined) dropped(warning);
+};
 
 /** Everything one session subscribes to; the returned unsubscribes are the session's teardown. */
 export function wireSession(
@@ -130,15 +176,23 @@ export function wireSession(
       }
       if (straight.length > 0) await engine.receiveBatch(straight);
       await release(authors);
+      // a fold that emptied the holdback can be what lets a position held back earlier be said
+      if (!abandoned) positions.flush();
     });
   };
 
+  const positions = heldPosition(holdback, hooks.onPosition);
+
   /** Behind the fold chain, and not at all once this session is abandoned. */
   const after = (work: () => Promise<void> | void): void => {
-    chain = chain.then(() => (abandoned ? undefined : work()));
+    chain = chain.then(async () => {
+      if (abandoned) return;
+      await work();
+      positions.flush();
+    });
   };
-  /** Behind the fold chain: everything sent below `offset` has been folded by the time it is said. */
-  const position = (offset: number): void => after(() => hooks.onPosition?.(offset));
+  /** Behind the fold chain: everything sent below `offset` is a row by the time it is said. */
+  const position = (offset: number): void => after(() => positions.reached(offset));
   const lastPage = scopedCoverage({
     engine,
     holdback,
@@ -177,25 +231,10 @@ export function wireSession(
     });
   };
 
-  /**
-   * The room's run of our own author, from its `hello`: never number at or below it (RFC 0024
-   * G7). On the chain, ahead of the pages this hello precedes and the push after them. A write
-   * this log numbered inside that run is said — it reuses a pair the room holds for another event.
-   */
+  /** The room's run of our own author, on the chain ahead of the pages its hello precedes. */
   const adoptOwn = (cursors: Cursors): void => {
     const own = cursors.get(identity.peerId);
-    if (own === undefined) return;
-    chain = chain.then(async () => {
-      const position = await engine.adoptOwnPosition(own);
-      if (position.isErr()) {
-        hooks.onDropped(
-          `the store could not say what this device last wrote: ${position.error.message}`,
-        );
-        return;
-      }
-      const warning = ownPositionWarning(position.value);
-      if (warning !== undefined) hooks.onDropped(warning);
-    });
+    if (own !== undefined) chain = chain.then(() => adoptOwnRun(engine, own, hooks.onDropped));
   };
 
   /** Our contiguous position, for every other peer's `delivered`; the relay passes it on. */
