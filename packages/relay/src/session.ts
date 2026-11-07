@@ -235,6 +235,7 @@ export function wireSession(
       fold(frame.events, repaging);
       if (!frame.more) {
         lastPage(frame.scoped, repaging);
+        // only here: every page carries the room's tail, and only the last has delivered up to it
         position(frame.offset);
         // a pass-over (an empty last page after the first) moves a cursor and nothing else
         if (caughtUp && frame.events.length === 0 && frame.grants.length === 0) return;
@@ -245,7 +246,7 @@ export function wireSession(
         // page. What the hook means is "nothing more to hand over right now", and the moment that
         // becomes true is the moment this chain drains
         after(() => hooks.onCaughtUp());
-      } else position(frame.offset);
+      }
     } else if (frame.kind === "blob") hooks.onBlobAnswer(frame.hash, frame.bytes);
     else if (frame.kind === "blob-missing") hooks.onBlobAnswer(frame.hash, undefined);
     else if (frame.kind === "relayed") {

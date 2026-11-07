@@ -135,6 +135,30 @@ describe("visibility: authority — admission at the relay (D24-A)", () => {
     room.close();
   });
 
+  test("a wait on a write behind a withheld one settles on a row that can be read", async () => {
+    const room = await gatedRoom();
+    const authority = gatedPeer(7);
+    const writer = await attach(authority, dialTo(room).dial);
+    const b = gatedPeer(43);
+    clinics.set(b.identity.peerId, ["b"]);
+    const reader = await attach(b, dialTo(room).dial);
+    const visibility = (t: Transport) => {
+      if (t.visibility === undefined) throw new Error("a relay transport declares visibility");
+      return t.visibility;
+    };
+
+    (await writeConsult(authority, "secret", "a")).unwrap();
+    await writeCatalog(authority, "c3", "after the hole");
+    expect(await until(() => (visibility(writer).token()?.offset ?? 0) >= 2)).toBe(true);
+    const token = visibility(writer).token();
+    if (token === undefined) throw new Error("no token after an ack");
+    // c3 must be folded the moment the wait ends, not parked behind `secret` until a pass-over
+    expect((await visibility(reader).visibleAt(token)).isOk()).toBe(true);
+    expect(holds(b, CATALOG, "c3")).toBe(true);
+    expect(holds(b, CONSULTS, "secret")).toBe(false);
+    room.close();
+  });
+
   test("an entitlement that changes re-pages the device, so nothing refused before stays skipped", async () => {
     const room = await gatedRoom();
     await seeded(room);

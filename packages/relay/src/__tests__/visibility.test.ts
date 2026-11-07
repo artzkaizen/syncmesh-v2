@@ -68,6 +68,25 @@ describe("visibility over a relay (RFC-0020 §3.2)", () => {
     room.close();
   });
 
+  test("a catch-up over several pages settles a wait only once its last page is folded", async () => {
+    const room = await openRoom({ pageSize: 2 });
+    const writer = gatedPeer(7);
+    await attach(writer, dialTo(room).dial);
+    for (let i = 0; i < 9; i += 1) await writeCatalog(writer, `c${i}`, "row");
+    expect(await until(() => room.offset() === 9)).toBe(true);
+
+    // every page carries the room's tail, so a wait that settled on the first would claim rows
+    // the later pages have not delivered yet
+    const reader = gatedPeer(41);
+    const transport = relayTransport({ dial: dialTo(room).dial, reconnectMs: 10 });
+    running.push(transport);
+    const waited = visibilityOf(transport).visibleAt({ epoch: room.epoch, offset: 9 });
+    await transport.start(reader.context);
+    expect((await waited).isOk()).toBe(true);
+    expect(holds(reader, CATALOG, "c8")).toBe(true);
+    room.close();
+  });
+
   test("a lineage change while a waiter is pending settles it Lost, naming both logs", async () => {
     const first = await openRoom({ epoch: "epoch-1" });
     const reader = gatedPeer(41);
