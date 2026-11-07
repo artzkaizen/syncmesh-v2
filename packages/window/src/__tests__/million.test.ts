@@ -8,8 +8,11 @@ import { AT, MAIL, after, ats, down, mail, mailKey, newest } from "./fixtures.js
 
 const ROWS = 1_000_000;
 const LIMIT = 50;
-/** Generous for a CI box; what is actually bounded is `scanned`, which is exact. */
-const BUDGET = Temporal.Duration.from({ milliseconds: 100 });
+/**
+ * Tens of times what a run takes alone (under 10 ms), so a GC pause on a loaded CI box does not
+ * fail it; what is actually bounded is `scanned`, which is exact.
+ */
+const BUDGET = Temporal.Duration.from({ milliseconds: 500 });
 
 const elapsed = (work: () => void): Temporal.Duration => {
   const start = performance.now();
