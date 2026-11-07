@@ -55,7 +55,7 @@ export interface ServerWindows {
   readonly held: () => number;
   /** Resolves once every frame received and every commit seen so far has been answered. */
   readonly idle: () => Promise<void>;
-  /** Stops listening for commits. A stopped socket sends nothing more. */
+  /** Stops listening for commits. A stopped socket reads nothing more and sends nothing more. */
   readonly stop: () => void;
 }
 
@@ -236,13 +236,18 @@ export function createServerWindows(options: ServerWindowsOptions): ServerWindow
     rereading = false;
     const tables = new Set(dirty);
     dirty.clear();
+    if (stopped) return;
+    const touched = [...open].filter(([, window]) => touches(window, tables));
+    // a commit that touches no open window sends nothing, so an idle socket is sent nothing
+    if (touched.length === 0) return;
     const draft = emptyDraft();
-    for (const [id, window] of open)
-      if (touches(window, tables)) await place(draft, id, window.request);
+    for (const [id, window] of touched) await place(draft, id, window.request);
     flush(draft);
   };
 
   const unsubscribe = source.onCommit((tables) => {
+    // queued even with no window open: a desire whose read is in flight may have read before
+    // this commit, and the re-read behind it is what catches that
     for (const table of tables) dirty.add(table);
     if (rereading || stopped) return;
     rereading = true;
@@ -250,6 +255,7 @@ export function createServerWindows(options: ServerWindowsOptions): ServerWindow
   });
 
   const desire = async (id: string, text: string, since?: StreamPosition): Promise<void> => {
+    if (stopped) return;
     const draft = emptyDraft();
     const request = parseRequest(text);
     if (request.isErr()) {
@@ -268,6 +274,7 @@ export function createServerWindows(options: ServerWindowsOptions): ServerWindow
   };
 
   const undesire = async (id: string): Promise<void> => {
+    if (stopped) return;
     const draft = emptyDraft();
     unplace(draft, id);
     flush(draft);

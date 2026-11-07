@@ -134,6 +134,28 @@ describe("serving windows on a socket (E27, D39)", () => {
     expect(client.status()).toBe("live");
   });
 
+  test("a socket closed at the backlog ceiling stops its windows reading the source", async () => {
+    const source = loaded();
+    const stalled = slowSocket(0, () => {});
+    // the host never calls close(): the sender's own close is enough
+    const served = serveWindows(stalled.socket, { source, maxBacklogBytes: 4 * BODY_BYTES });
+    served.receive(desireFrame("box-0", requestText(boxRead(0))));
+    await served.windows.idle();
+    expect(stalled.closed()).toContain("backlog ceiling");
+    const before = source.pagesRead();
+    source.write(MAIL, [
+      {
+        key: keyOf(0, PER_BOX),
+        row: new Map<ColumnName, number>([
+          [BOX, 0],
+          [AT, PER_BOX],
+        ]),
+      },
+    ]);
+    await served.windows.idle();
+    expect(source.pagesRead()).toBe(before);
+  });
+
   test("frames that are not window frames are left for the socket's other reader", () => {
     const served = serveWindows(slowSocket(1, () => {}).socket, { source: loaded() });
     // `ka`, the relay's keepalive, is tag 11
