@@ -251,10 +251,13 @@ replication slot, with nothing above the port changed.
   is open, and the alarm fires when unacked WAL passes `bytes` or `wal_status` is
   `unreserved`.
 - **Backfill.** `read.watermark()` returns the slot's position (making the slot if
-  needed), and `read.rows(table)` pages the table by `ctid`. A row changed after that
-  position is in the stream whatever page it moved to, and an untouched row keeps its
-  ctid, so paging outside one snapshot loses nothing. The stream replays the overlap,
-  which converges.
+  needed), and `read.rows(table)` pages the table in key order (the replica identity
+  index, else the primary key). An update keeps a row's key wherever on disk it puts
+  the row, and a key change is a delete and an insert in the stream, so paging outside
+  one snapshot loses nothing. Paging by `ctid` would not: an update that moves a row to
+  a page the read has passed hides it from the read, and the stream's update for it
+  leaves out any unchanged TOAST value. The stream replays the overlap, which
+  converges.
 
 Tested against a real Postgres 17 (PGlite has no logical replication). CI runs a
 `postgres:17` service with `wal_level = logical`; locally, `vp run pg:up` in
@@ -262,7 +265,8 @@ Tested against a real Postgres 17 (PGlite has no logical replication). CI runs a
 before the bridge acks; a consumer dying mid-transaction; a connection cut
 mid-transaction and resent from its `begin`; restart from a checkpoint with no skip
 and no repeat; `FULL` identity, TOAST and key changes; the schema alarm; type
-parity between stream and backfill; slot create, resume, busy and drop; a missing
+parity between stream and backfill; a backfill that misses no row an update moves
+behind the read; slot create, resume, busy and drop; a missing
 publication; the lag alarm; and backfill → stream → stop → writes while stopped →
 restart through `startCapture`, ending with the mesh equal to the table.
 
@@ -276,7 +280,7 @@ restart through `startCapture`, ending with the mesh equal to the table.
 | `manualChangeSource` (app calls us) | **implemented** — `packages/cdc/src/manual.ts` |
 | transaction → one signed event per partition | **implemented** — `plan.ts`, `apply.ts` |
 | durable watermark in `_cdc` | **implemented** — its own unpinned event, last |
-| backfill via table read | **implemented** — `backfill.ts`; Postgres reader pages by `ctid` |
+| backfill via table read | **implemented** — `backfill.ts`; Postgres reader pages by key |
 | schema-change alarm | **implemented** — per session (see caveat above) |
 | slot lag alarm | **implemented** — `lag` option |
 

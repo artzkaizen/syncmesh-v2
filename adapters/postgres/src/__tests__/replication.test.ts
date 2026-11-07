@@ -264,6 +264,40 @@ describe.skipIf(POSTGRES_URL === undefined)("Postgres logical replication", () =
     await cleanup();
   });
 
+  test("a backfill misses no row that an update moves behind where the read has reached", async () => {
+    const { table, source, cleanup } = await scratch(
+      db,
+      "id text PRIMARY KEY, org_id text, title text) WITH (fillfactor = 100, autovacuum_enabled = false",
+    );
+    // full pages, ordered by key and position alike, so an update cannot stay on its own page
+    await db.unsafe(
+      `INSERT INTO ${table} SELECT 'r' || lpad(g::text, 4, '0'), 'acme', repeat('x', 200)
+         FROM generate_series(1, 1200) g`,
+    );
+    const block = async (id: string) =>
+      Number(
+        (await db.unsafe(`SELECT (ctid::text::point)[0] AS b FROM ${table} WHERE id = $1`, [id]))[0]
+          ?.b,
+      );
+    const rows = source.read.rows(table)[Symbol.asyncIterator]();
+    const first = await rows.next(); // one page read: the read is part-way through the table
+    expect(first.done).toBe(false);
+
+    // room on the first page, then an update far ahead of the read that lands in it
+    await db.unsafe(`DELETE FROM ${table} WHERE id <= 'r0100'`);
+    await db.unsafe(`VACUUM ${table}`);
+    const was = await block("r1100");
+    await db.unsafe(`UPDATE ${table} SET title = repeat('y', 400) WHERE id = 'r1100'`);
+    expect(await block("r1100")).toBeLessThan(was);
+
+    const ids = [first.value.id];
+    for (let next = await rows.next(); next.done !== true; next = await rows.next()) {
+      ids.push(next.value.id);
+    }
+    expect(ids).toContain("r1100");
+    await cleanup();
+  });
+
   test("the slot: created on first start, resumed after, busy while read, then dropped", async () => {
     const { options, source, cleanup } = await scratch(db);
     expect((await source.status()).unwrap()).toBeNull();

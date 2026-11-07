@@ -29,7 +29,10 @@ export class SlotMismatch extends TaggedError("SlotMismatch")<{
   message: string;
 }> {}
 
-/** A change this source cannot key: no replica identity, or one spanning several columns. */
+/**
+ * A change or a backfilled table this source cannot key: no replica identity or primary key, or
+ * one spanning several columns.
+ */
 export class UnkeyedChange extends TaggedError("UnkeyedChange")<{
   table: string;
   message: string;

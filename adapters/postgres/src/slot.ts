@@ -15,6 +15,7 @@ import {
   SlotBusy,
   SlotLost,
   SlotMismatch,
+  UnkeyedChange,
 } from "./replication-errors.js";
 import { cellValue } from "./values.js";
 
@@ -181,7 +182,10 @@ export function createSlot(sql: PostgresQuerier, slot: string, publication: stri
   };
 }
 
-/** One table, page by page in `ctid` order, every value through the same text conversion. */
+/**
+ * One table, page by page in key order, every value through the same text conversion. The key
+ * is the one the stream keys a row by: the replica identity index, else the primary key.
+ */
 async function* backfillRows(
   query: (text: string, params?: unknown[]) => Promise<Result<TextRows, PostgresSourceError>>,
   table: string,
@@ -195,25 +199,42 @@ async function* backfillRows(
   );
   if (described.isErr()) throw described.error;
   const columns = described.value;
-  const select = columns.map(([name]) => `${quoteIdent(name ?? "")}::text`).join(", ");
-  // a row changed after the watermark is in the stream whichever page it moved to, and a row
-  // left alone keeps its ctid, so paging by ctid outside one snapshot loses nothing
-  let cursor = "(0,0)";
+  const keyed = await query(
+    `SELECT a.attname::text, format_type(a.atttypid, a.atttypmod)::text, i.indnkeyatts::text
+       FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
+      WHERE i.indrelid = $1::regclass AND (i.indisreplident OR i.indisprimary)
+      ORDER BY i.indisreplident DESC LIMIT 1`,
+    [qualified],
+  );
+  if (keyed.isErr()) throw keyed.error;
+  const [name, type, width] = keyed.value[0] ?? [];
+  if (name === null || name === undefined || width !== "1") {
+    throw new UnkeyedChange({
+      table,
+      message: `${table} needs a one-column primary key or replica identity index to be read`,
+    });
+  }
+  const key = quoteIdent(name);
+  const select = columns.map(([column]) => `${quoteIdent(column ?? "")}::text`).join(", ");
+  // a row keeps its key when it is updated, wherever on disk the update puts it, so paging by
+  // key outside one snapshot loses nothing; a key change is a delete and an insert in the stream
+  let after: string | undefined;
   for (;;) {
     const read = await query(
-      `SELECT ctid::text, ${select} FROM ${qualified}
-        WHERE ctid > $1::tid ORDER BY ctid LIMIT ${BACKFILL_PAGE}`,
-      [cursor],
+      `SELECT ${key}::text, ${select} FROM ${qualified}
+        ${after === undefined ? "" : `WHERE ${key} > CAST($1::text AS ${type ?? "text"})`}
+        ORDER BY ${key} LIMIT ${BACKFILL_PAGE}`,
+      after === undefined ? [] : [after],
     );
     if (read.isErr()) throw read.error;
     const page = read.value;
-    for (const [ctid, ...values] of page) {
-      cursor = ctid ?? cursor;
+    for (const [last, ...values] of page) {
+      after = last ?? after;
       const row: Record<string, CellValue> = {};
-      columns.forEach(([name, type], i) => {
+      columns.forEach(([column, oid], i) => {
         const value = values[i];
-        row[name ?? ""] =
-          value === null || value === undefined ? null : cellValue(Number(type), value);
+        row[column ?? ""] =
+          value === null || value === undefined ? null : cellValue(Number(oid), value);
       });
       yield row;
     }
