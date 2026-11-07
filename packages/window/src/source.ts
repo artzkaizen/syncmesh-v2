@@ -75,7 +75,7 @@ const firstAfter = (index: Index, bound: SortKey): number => {
 };
 
 /** Where an entry with exactly this sort key is, or would go. */
-const positionOf = (index: Index, at: SortKey): number => {
+const lowerBound = (index: Index, at: SortKey): number => {
   let lo = 0;
   let hi = index.entries.length;
   while (lo < hi) {
@@ -95,7 +95,7 @@ export function createMemoryRowSource(): MemoryRowSource {
   const listeners = new Set<(changes: readonly RowChange[]) => void>();
   let scanned = 0;
 
-  const tableOf = (table: TableName): Map<RowKey, Row> => {
+  const tableRows = (table: TableName): Map<RowKey, Row> => {
     let rows = tables.get(table);
     if (rows === undefined) {
       rows = new Map();
@@ -111,20 +111,20 @@ export function createMemoryRowSource(): MemoryRowSource {
     return { order, entries };
   };
 
-  const indexFor = (table: TableName, order: WindowQuery["order"]): Index => {
+  const orderIndex = (table: TableName, order: WindowQuery["order"]): Index => {
     const byOrder = indexes.get(table) ?? new Map<string, Index>();
     indexes.set(table, byOrder);
     const name = JSON.stringify(order);
     const found = byOrder.get(name);
     if (found !== undefined) return found;
-    const built = build(tableOf(table), order);
+    const built = build(tableRows(table), order);
     byOrder.set(name, built);
     return built;
   };
 
   const unindex = (table: TableName, key: RowKey, row: Row): void => {
     for (const index of indexes.get(table)?.values() ?? []) {
-      const at = positionOf(index, sortKey(index.order, key, row));
+      const at = lowerBound(index, sortKey(index.order, key, row));
       if (index.entries[at]?.sort.key === key) index.entries.splice(at, 1);
     }
   };
@@ -132,7 +132,7 @@ export function createMemoryRowSource(): MemoryRowSource {
   const reindex = (table: TableName, key: RowKey, row: Row): void => {
     for (const index of indexes.get(table)?.values() ?? []) {
       const sort = sortKey(index.order, key, row);
-      index.entries.splice(positionOf(index, sort), 0, { sort, row });
+      index.entries.splice(lowerBound(index, sort), 0, { sort, row });
     }
   };
 
@@ -143,7 +143,7 @@ export function createMemoryRowSource(): MemoryRowSource {
         return Result.err(
           new UnknownTable({ table: query.table, message: `no table ${query.table}` }),
         );
-      const index = indexFor(query.table, query.order);
+      const index = orderIndex(query.table, query.order);
       const start = query.after === undefined ? 0 : firstAfter(index, query.after);
       const out: WindowRow[] = [];
       scanned = 0;
@@ -161,7 +161,7 @@ export function createMemoryRowSource(): MemoryRowSource {
     },
     write: (changes) => {
       for (const change of changes) {
-        const rows = tableOf(change.table);
+        const rows = tableRows(change.table);
         const before = rows.get(change.key);
         if (before !== undefined) unindex(change.table, change.key, before);
         if (change.row === undefined) rows.delete(change.key);
@@ -173,7 +173,7 @@ export function createMemoryRowSource(): MemoryRowSource {
       for (const listener of listeners) listener(changes);
     },
     load: (table, rows) => {
-      const held = tableOf(table);
+      const held = tableRows(table);
       for (const { key, row } of rows) held.set(key, row);
       const byOrder = indexes.get(table);
       for (const [name, index] of byOrder ?? []) byOrder?.set(name, build(held, index.order));

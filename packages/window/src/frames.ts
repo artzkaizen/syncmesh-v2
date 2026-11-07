@@ -115,7 +115,7 @@ export const rowsFrame = (patch: RowPatch): Uint8Array =>
     patch.refused.map((r): CborValue => [r.id, r.reason]),
   ]);
 
-const listOf = <T>(
+const parseList = <T>(
   value: CborValue | undefined,
   what: string,
   item: (entry: readonly CborValue[]) => Result<T, MalformedWindowFrame>,
@@ -175,10 +175,10 @@ const decodeRows = (parts: readonly CborValue[]): Result<WindowFrame, MalformedW
       epoch,
       version,
       reset: reset === 1,
-      puts: yield* listOf(puts, "puts", asPut),
-      dels: yield* listOf(dels, "dels", asRef),
-      windows: yield* listOf(windows, "windows", asWindow),
-      refused: yield* listOf(refused, "refused", asRefusal),
+      puts: yield* parseList(puts, "puts", asPut),
+      dels: yield* parseList(dels, "dels", asRef),
+      windows: yield* parseList(windows, "windows", asWindow),
+      refused: yield* parseList(refused, "refused", asRefusal),
     } as const);
   });
 
