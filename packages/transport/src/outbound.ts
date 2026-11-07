@@ -1,9 +1,10 @@
 import type { Engine, Hub, Interest, StoredEvent } from "@syncmesh/engine";
 import type { EventCrypto, Identity } from "@syncmesh/wire";
 
-import { TaggedError } from "@syncmesh/result";
+import { TaggedError, omitUndefined } from "@syncmesh/result";
 import { relayEnvelope, signEvent } from "@syncmesh/wire";
 
+import type { BridgeOptions } from "./bridge.js";
 import type { FrameClass } from "./frame-parts.js";
 import type { FrameLink } from "./link.js";
 
@@ -39,6 +40,22 @@ export interface OutboundDeps {
   /** What this device seals its own events with (book ch. 14); absent, they leave in the clear. */
   readonly crypto?: EventCrypto;
 }
+
+/** What the outbound half needs, assembled so an absent capability stays absent (D12-A). */
+export const outboundFor = (
+  link: FrameLink,
+  options: BridgeOptions,
+  scope: string,
+  errors: OutboundDeps["errors"],
+): OutboundDeps => ({
+  link,
+  engine: options.engine,
+  identity: options.identity,
+  interest: options.interest,
+  scope,
+  errors,
+  ...omitUndefined({ crypto: options.crypto }),
+});
 
 /**
  * Everything one link sends, offered to the outbox under the class each frame already is. A

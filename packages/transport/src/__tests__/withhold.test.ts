@@ -70,7 +70,9 @@ describe("withheld frames on peer links (D40)", () => {
     const reader = peer(43, "acct_reader");
     const stranger = peer(46, "acct_stranger");
     const gate = gateOf(reader);
-    const named = new Map([[author.identity.peerId, [1, 2, 3].map((n) => parseSeqNum(n).unwrap())]]);
+    const named = new Map([
+      [author.identity.peerId, [1, 2, 3].map((n) => parseSeqNum(n).unwrap())],
+    ]);
     const intake = (from: Peer) => ({
       engine: reader.engine,
       gate,

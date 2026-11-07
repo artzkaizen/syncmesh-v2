@@ -1,9 +1,8 @@
-import type { Ahead, Engine, Interest, Unsubscribe } from "@syncmesh/engine";
+import type { Ahead, Engine, Interest, StoredEvent, Unsubscribe } from "@syncmesh/engine";
 import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 import type { CustodyReceipt, EventCrypto, GrantRegistry, Identity } from "@syncmesh/wire";
 
 import { createHub, heldAhead, interestKey } from "@syncmesh/engine";
-import { omitUndefined } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { decodeAndVerify } from "@syncmesh/wire";
 
@@ -11,7 +10,7 @@ import type { Divergence } from "./divergence.js";
 import type { FrameClass } from "./frame-parts.js";
 import type { JoinDeps, JoinExchange, SnapshotInstalled } from "./join.js";
 import type { FrameLink } from "./link.js";
-import type { BridgeError, OutboundDeps } from "./outbound.js";
+import type { BridgeError } from "./outbound.js";
 import type { ReadGate } from "./read-gate.js";
 import type { RouteTable } from "./routes.js";
 import type { SnapshotFrame } from "./snap-frame.js";
@@ -23,9 +22,9 @@ import { KIND } from "./frame-parts.js";
 import { decodeFrame, grantFrame, grantRequestFrame, presenceFrame } from "./frame.js";
 import { createHoldback } from "./holdback.js";
 import { createJoinExchange } from "./join.js";
-import { createOutbound } from "./outbound.js";
-import { createRouteExchange } from "./route-exchange.js";
+import { createOutbound, outboundFor } from "./outbound.js";
 import { createRepage } from "./repage.js";
+import { createRouteExchange } from "./route-exchange.js";
 import { offerEvent, sendOwed, takeWithheld } from "./withhold.js";
 
 export type { BridgeError } from "./outbound.js";
@@ -127,8 +126,6 @@ export interface Bridge {
   readonly close: () => void;
 }
 
-/** The four sub-kinds of the join exchange, which the bridge hands on whole rather than case by case. */
-
 /** The join exchange for one session, carrying only the options the caller actually set. */
 const joinFor = (
   options: BridgeOptions,
@@ -148,21 +145,14 @@ const joinFor = (
   return createJoinExchange(trust === undefined ? vouching : { ...vouching, trust });
 };
 
-/** What the outbound half needs, assembled so an absent capability stays absent (D12-A). */
-const outboundFor = (
-  link: FrameLink,
-  options: BridgeOptions,
-  scope: string,
-  errors: OutboundDeps["errors"],
-): OutboundDeps => ({
-  link,
-  engine: options.engine,
-  identity: options.identity,
-  interest: options.interest,
-  scope,
-  errors,
-  ...omitUndefined({ crypto: options.crypto }),
-});
+/** Folds one batch, reporting a failure: whether it is durable now. */
+const foldInto =
+  (engine: Engine, report: (error: BridgeError) => void) =>
+  async (batch: readonly StoredEvent[]): Promise<boolean> => {
+    const folded = await engine.receiveBatch(batch);
+    if (folded.isErr()) report(folded.error);
+    return folded.isOk();
+  };
 
 /**
  * They hold an author ahead of us: answering with our cursors is the request for the diff.
@@ -209,6 +199,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
   const join = joinFor(options, (what, bytes) => send(KIND.snapshot, what, bytes), reader);
 
   const holdback = createHoldback(engine, gapLimit);
+  const fold = foldInto(engine, reportError);
   const receiveEvent = (wire: Uint8Array): void => {
     const verified = decodeAndVerify(wire, options.crypto);
     if (verified.isErr()) {
@@ -217,10 +208,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     }
     // a re-page's answer below the cursor: the holdback would drop it as already held (D40)
     if (repage.direct(verified.value.event)) {
-      queue = queue.then(async () => {
-        const r = await engine.receiveBatch([verified.value]);
-        if (r.isErr()) errors.emit(r.error);
-      });
+      queue = queue.then(() => fold([verified.value]));
       return;
     }
     const overflow = holdback.put(verified.value);
@@ -231,14 +219,8 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     queue = queue.then(async () => {
       const author = verified.value.event.peerId;
       const ready = holdback.drain(author);
-      if (ready.length === 0) return;
-      const r = await engine.receiveBatch(ready);
-      if (r.isErr()) {
-        errors.emit(r.error);
-        return;
-      }
       // durable now, so the claim can be signed: a cursor says this and proves none of it
-      custody.vouch(author);
+      if (ready.length > 0 && (await fold(ready))) custody.vouch(author);
     });
   };
 
@@ -289,12 +271,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     },
     onSnapshot: (frame: SnapshotFrame) => join.dispatch(frame),
     onWithheld: (scope: string, withheld: Ahead) => {
-      const intake = {
-        engine,
-        gate: options.readGate,
-        from: reader(),
-        drain: holdback.drain,
-      };
+      const intake = { engine, gate: options.readGate, from: reader(), drain: holdback.drain };
       queue = queue.then(() => takeWithheld(intake, scope, withheld));
     },
     routing,
