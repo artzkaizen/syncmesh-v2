@@ -28,12 +28,40 @@ export const walkSql = (chunk: SQLChunk, visit: (node: SQLChunk) => void): void 
   else if (is(chunk, SQL)) for (const inner of chunk.queryChunks) walkSql(inner, visit);
 };
 
+/** Drizzle's own keys for a table's source name and schema, which an alias forwards to its source. */
+// SAFETY: a unique symbol type can only be declared, so the registered symbol is asserted onto it
+const ORIGINAL_NAME: unique symbol = Symbol.for("drizzle:OriginalName") as never;
+// SAFETY: as above
+const SCHEMA: unique symbol = Symbol.for("drizzle:Schema") as never;
+
+/**
+ * The table a source **is**, as the manifest and the change feed name it: `mail`, or
+ * `crm.mail` outside Postgres's `public` schema.
+ *
+ * Not `getTableName`, which answers the name the query calls it by. `alias(mail, "m2")` is
+ * called `m2`, and a read rule looked up under `m2` is no rule at all; a commit to `mail` is a
+ * commit to `m2` too. Two tables named `mail` in two schemas are two tables.
+ *
+ * @example
+ * tableIdentity(alias(mail, "m2")); // "mail"
+ * tableIdentity(pgSchema("crm").table("mail", { … })); // "crm.mail"
+ */
+export const tableIdentity = (table: Table): string => {
+  const original = ORIGINAL_NAME in table ? table[ORIGINAL_NAME] : undefined;
+  const schema = SCHEMA in table ? table[SCHEMA] : undefined;
+  /* oxlint-disable-next-line anti-slop/no-runtime-typeof -- a symbol Drizzle keeps holds whatever Drizzle put there: this is the parse */
+  const name = typeof original === "string" ? original : getTableName(table);
+  /* oxlint-disable-next-line anti-slop/no-runtime-typeof -- as above */
+  if (typeof schema !== "string" || schema === "public") return name;
+  return `${schema}.${name}`;
+};
+
 /** Every table a query's SQL mentions, through columns, subqueries and nested fragments. */
 export const tablesOf = (query: SQLWrapper): ReadonlySet<string> => {
   const names = new Set<string>();
   walkSql(query.getSQL(), (chunk) => {
-    if (is(chunk, Table)) names.add(getTableName(chunk));
-    else if (is(chunk, Column)) names.add(getTableName(getColumnTable(chunk)));
+    if (is(chunk, Table)) names.add(tableIdentity(chunk));
+    else if (is(chunk, Column)) names.add(tableIdentity(getColumnTable(chunk)));
   });
   return names;
 };

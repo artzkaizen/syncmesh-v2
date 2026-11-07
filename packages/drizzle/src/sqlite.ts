@@ -11,6 +11,7 @@ import { commitHub } from "./face.js";
 import { createLive } from "./live.js";
 import { createProxy } from "./proxy.js";
 import { readPredicate, readScope } from "./read.js";
+import { tableIdentity } from "./tree.js";
 
 export type SqliteMeshDb = SqliteRemoteDatabase<EmptyRelations>;
 
@@ -44,8 +45,9 @@ export function sqliteFace(deps: FaceDeps) {
   const reading = readScope("sqlite", deps);
   /** The table as this principal may read it: a subquery with the `read` rule (and the pin) compiled in. */
   const read = <T extends SQLiteTable>(table: T) => {
-    const name = getTableName(table);
-    return db.select().from(table).where(readPredicate(name, reading)).as(name);
+    // the rule is the table's own, an alias of it included; the subquery keeps the name the query calls it by
+    const rule = readPredicate(tableIdentity(table), reading);
+    return db.select().from(table).where(rule).as(getTableName(table));
   };
   return {
     db,

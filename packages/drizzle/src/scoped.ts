@@ -1,11 +1,21 @@
 import { is, Table } from "drizzle-orm";
 
 /**
- * The builder methods that take a source and can therefore introduce an unscoped table. Joins
- * are wrapped recursively because a chain names one table per call, and `from` is the first of
- * them rather than a different kind of thing.
+ * The builder methods that take a source and can therefore introduce an unscoped table. `from`
+ * is the first of them rather than a different kind of thing; the lateral joins take a subquery,
+ * which was built through a scoped `db` too, and are listed so a table handed to one is caught.
  */
-const SOURCES = new Set(["from", "innerJoin", "leftJoin", "rightJoin", "fullJoin", "crossJoin"]);
+const SOURCES = new Set([
+  "from",
+  "innerJoin",
+  "leftJoin",
+  "rightJoin",
+  "fullJoin",
+  "crossJoin",
+  "innerJoinLateral",
+  "leftJoinLateral",
+  "crossJoinLateral",
+]);
 
 /** The read verbs a query handler keeps; everything absent from this set is a write (§2.4). */
 const READS = new Set(["select", "selectDistinct", "with", "$with", "$count", "$dynamic"]);
@@ -15,24 +25,36 @@ const READS = new Set(["select", "selectDistinct", "with", "$with", "$count", "$
 type Builder = Record<string | symbol, unknown>;
 
 /**
- * Wraps one builder so every source it is handed goes through `scope` first.
+ * Wraps one builder so every source it is handed goes through `scope` first, **whatever was
+ * chained before it**.
  *
  * A `Proxy` rather than a rebuilt object: a select builder carries internal symbol state that
  * Drizzle reads back on execution, it is a `PromiseLike` that runs on `await`, and `live()`
  * calls `toSQL()` on it — so anything that copies properties instead of forwarding them loses a
  * capability nobody would notice until a query ran.
+ *
+ * Drizzle's chain methods (`where`, `$dynamic`, `orderBy`, each join) mutate the builder and
+ * return it, so a call that hands back the target hands back this proxy instead. Without that a
+ * join chained after `where` reached the bare builder, and its table was read unscoped.
  */
-const wrap = <B>(builder: B, scope: (source: unknown) => unknown): B =>
-  new Proxy(builder as Builder, {
+const wrap = <B>(builder: B, scope: (source: unknown) => unknown): B => {
+  const proxy: B = new Proxy(builder as Builder, {
     get(target, property, receiver) {
       const value = Reflect.get(target, property, receiver);
       if (typeof value !== "function") return value;
       const method = value.bind(target);
-      if (!SOURCES.has(String(property))) return method;
-      return (source: unknown, ...rest: readonly unknown[]) =>
-        wrap(method(scope(source), ...rest), scope);
+      const sources = SOURCES.has(String(property));
+      return (...args: readonly unknown[]) => {
+        const [source, ...rest] = args;
+        const result = sources ? method(scope(source), ...rest) : method(...args);
+        if (result === target) return proxy;
+        // `from` answers a new builder rather than itself: that one is chained on too
+        return sources ? wrap(result, scope) : result;
+      };
     },
   }) as B;
+  return proxy;
+};
 
 /**
  * The app's `db`, with every table it selects from replaced by the table **as this caller may

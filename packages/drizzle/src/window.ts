@@ -248,6 +248,15 @@ export const keyOfRows = <T>(query: Runnable<T>): ((row: T) => string) | undefin
 };
 
 /**
+ * The query's `LIMIT` when the build knows it as a number, and `undefined` for a query with none
+ * or one bound at execution: how many rows a run can hand back at most.
+ */
+export const limitOfRows = (query: SQLWrapper): number | undefined => {
+  const limit = configOf(query)?.limit;
+  return typeof limit === "number" ? limit : undefined;
+};
+
+/**
  * A row of this query as its columns' driver values, and back: what a row is on the wire.
  *
  * Drizzle hands back mapped values — a `Date` for a timestamp, a parsed object for JSON — and a

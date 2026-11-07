@@ -13,6 +13,7 @@ import { commitHub } from "./face.js";
 import { createLive } from "./live.js";
 import { createProxy } from "./proxy.js";
 import { readPredicate, readScope } from "./read.js";
+import { tableIdentity } from "./tree.js";
 
 export type PostgresMeshDb = PgRemoteDatabase<EmptyRelations>;
 
@@ -102,10 +103,11 @@ export function postgresFace(deps: FaceDeps) {
   const scope = readScope("postgres", deps);
   /** The table as this principal may read it: a subquery with the `read` rule (and the pin) compiled in. */
   const read = <T extends PgTable>(table: T): Source<T> => {
-    const name = getTableName(table);
+    // the rule is the table's own, an alias of it included; the subquery keeps the name the query calls it by
+    const rule = readPredicate(tableIdentity(table), scope);
     // SAFETY: pg-core's `from` refuses only a returning-less write subquery, a shape a table can never have; its guard is a conditional type that does not reduce on a type parameter, so the table goes in as its base class
     const source = table as PgTable;
-    const aliased = db.select().from(source).where(readPredicate(name, scope)).as(name);
+    const aliased = db.select().from(source).where(rule).as(getTableName(table));
     // SAFETY: the alias wraps exactly the table's columns — what `.as()` would have typed had `from` taken T
     return aliased as Source<T>;
   };
