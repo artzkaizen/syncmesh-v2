@@ -1,0 +1,30 @@
+{
+  "name": "@syncmesh/window",
+  "version": "0.0.0",
+  "description": "Windowed rows for a store-less client: the query, versioned row patches, the per-socket view and the thin client",
+  "license": "MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@syncmesh/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/policy": "workspace:*",
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/wire": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncmesh/config": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

@@ -14,6 +14,7 @@
     "@syncmesh/result": "workspace:*",
     "@syncmesh/temporal": "workspace:*",
     "@syncmesh/transport": "workspace:*",
+    "@syncmesh/window": "workspace:*",
     "@syncmesh/wire": "workspace:*",
     "@types/bun": "catalog:",
     "fast-check": "catalog:",

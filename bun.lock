@@ -422,6 +422,7 @@
         "@syncmesh/result": "workspace:*",
         "@syncmesh/temporal": "workspace:*",
         "@syncmesh/transport": "workspace:*",
+        "@syncmesh/window": "workspace:*",
         "@syncmesh/wire": "workspace:*",
         "@types/bun": "catalog:",
         "fast-check": "catalog:",
@@ -871,6 +872,22 @@
         "@syncmesh/relay": "workspace:*",
         "@syncmesh/result": "workspace:*",
         "@syncmesh/transport": "workspace:*",
+        "@syncmesh/wire": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncmesh/config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+        "vite-plus": "catalog:",
+      },
+    },
+    "packages/window": {
+      "name": "@syncmesh/window",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/policy": "workspace:*",
+        "@syncmesh/result": "workspace:*",
         "@syncmesh/wire": "workspace:*",
       },
       "devDependencies": {
@@ -1685,6 +1702,8 @@
     "@syncmesh/transport": ["@syncmesh/transport@workspace:packages/transport"],
 
     "@syncmesh/transports": ["@syncmesh/transports@workspace:packages/transports"],
+
+    "@syncmesh/window": ["@syncmesh/window@workspace:packages/window"],
 
     "@syncmesh/wire": ["@syncmesh/wire@workspace:packages/wire"],
 

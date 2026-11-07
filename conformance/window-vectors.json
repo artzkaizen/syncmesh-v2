@@ -1,0 +1,51 @@
+{
+  "tags": {
+    "desire": 32,
+    "undesire": 33,
+    "rows": 34
+  },
+  "vectors": [
+    {
+      "description": "desire: a window id and its query, E13's predicate grammar plus order and limit",
+      "kind": "desire",
+      "tag": 32,
+      "wireHex": "83182065696e626f7878737b227461626c65223a226d61696c222c227768657265223a7b226b696e64223a22636f6d70617265222c22636f6c756d6e223a226174222c226f70223a22677465222c2276616c7565223a3130307d2c226f72646572223a5b5b226174222c2264657363225d5d2c226c696d6974223a35307d"
+    },
+    {
+      "description": "desire, a scroll: the same id, a keyset bound after the last row shown",
+      "kind": "desire",
+      "tag": 32,
+      "wireHex": "83182065696e626f7878577b227461626c65223a226d61696c222c226f72646572223a5b5b226174222c2264657363225d5d2c226c696d6974223a35302c226166746572223a7b2263656c6c73223a5b3135305d2c226b6579223a226d2d32227d7d"
+    },
+    {
+      "description": "desire with since: a client after a gap, asking from where its stream stands",
+      "kind": "desire",
+      "tag": 32,
+      "wireHex": "84182065696e626f7878737b227461626c65223a226d61696c222c227768657265223a7b226b696e64223a22636f6d70617265222c22636f6c756d6e223a226174222c226f70223a22677465222c2276616c7565223a3130307d2c226f72646572223a5b5b226174222c2264657363225d5d2c226c696d6974223a35307d8263652d370c"
+    },
+    {
+      "description": "undesire",
+      "kind": "undesire",
+      "tag": 33,
+      "wireHex": "82182165696e626f78"
+    },
+    {
+      "description": "rows, a reset: a new epoch at version 1 carrying the whole view",
+      "kind": "rows",
+      "tag": 34,
+      "wireHex": "88182263652d3801018283646d61696c636d2d32a26261741896677375626a65637467696e766f69636583646d61696c636d2d31a26261741878677375626a6563746568656c6c6f80818365696e626f78646d61696c82636d2d32636d2d3180"
+    },
+    {
+      "description": "rows, a patch: version + 1, one row evicted, the window's new key list",
+      "kind": "rows",
+      "tag": 34,
+      "wireHex": "88182263652d380200808182646d61696c636d2d31818365696e626f78646d61696c81636d2d3280"
+    },
+    {
+      "description": "rows, a refusal: the window was not opened, and why",
+      "kind": "rows",
+      "tag": 34,
+      "wireHex": "88182263652d3803008080808182666472616674736f6e6f207461626c6520647261667473"
+    }
+  ]
+}

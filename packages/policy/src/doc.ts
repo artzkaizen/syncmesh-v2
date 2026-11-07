@@ -93,6 +93,13 @@ const parsers = {
     parseNode(j.of ?? null, `${p}.of`).map((of) => ({ kind: "not", of })),
 } satisfies Readonly<Record<PolicyNode["kind"], Parser>>;
 
+/**
+ * Parses one rule on its own. A window's `where` (D39) is this grammar and no other, so it is
+ * read by the same parser a `_policy` row is.
+ */
+export const parsePolicyNode = (json: JsonValue): Result<PolicyNode, MalformedPolicy> =>
+  parseNode(json, "where");
+
 function parseNode(json: JsonValue, path: string): Result<PolicyNode, MalformedPolicy> {
   if (!isRecord(json) || !isString(json.kind)) return malformed(path, "a rule needs a kind");
   // SAFETY: hasOwn just established json.kind is one of the parser keys
