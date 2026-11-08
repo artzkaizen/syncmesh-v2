@@ -207,7 +207,8 @@ doc.value.subscribe((e) => …);     // Loro-level fine-grained events, untouche
   committed, and `syncOf` tracks it.
 - **Errors are values.** `OpenError = AdapterMissing | DocDeleted | PolicyDenied |
   StoreFailure`. Opening without `update` permission returns a `"read-only"` handle. A local
-  edit on such a handle, or a flush the fold refuses, **invalidates** the handle: its
+  edit on such a handle, a flush the fold refuses, or a D45 purge rewriting its row (§16.4),
+  **invalidates** the handle: its
   un-committed local ops must never be exported later. The app reopens. That is the price of not
   wrapping the editing API. Syncmesh cannot stop an edit, only refuse to publish it.
 - React: `useDoc(note.content)` returns `{ doc, status }` and disposes on unmount.
@@ -727,11 +728,11 @@ snapshot install came with coverage and no events, and the install raised the fl
 the cursors (D46). So when the state cannot be read — a refused persisted cell or a row that does
 not decode — and its cursors carry a floor, boot refuses with `StateCorrupt` ("rejoin from a peer")
 instead of rebuilding without them, as it refuses over a compacted log; nothing is cleared (gaps
-U22, built). Rust takes no snapshots and never compacts, so its log always holds what its state
+U22, partly built). Rust takes no snapshots and never compacts, so its log always holds what its state
 stood for, and it rebuilds. Two ways round it remain: cursors that cannot be read either, where the
 floor is unknown and the state is rebuilt as before, and a state file that is not read at all — a
 schema change opening a new one (RFC-0022), an operator deleting it — whose floor goes with it
-(gaps U33).
+(gaps U33). Until U33 closes, U22 holds only where the cursors are read.
 
 The boot check reads only tables that declare a doc column. The state cache decodes a row when it is
 first read, so the other tables stay undecoded until a fold writes them; a doc table is decoded in
@@ -761,7 +762,8 @@ decompression cap and a time budget, and exceeding them is a `failed` update, ne
   row, so grant, partitions, revocation and the `update` rule judge it as they judge an edit, and
   the authority the validator names always passes — and refuses the checkpoint whole before key 8
   is read, a sealed checkpoint with no key 8 included. An engine built with no validator has no
-  ladder to run, so every producer passes there. A device's `install` re-derives the version from the bytes, so whom it trusts stays
+  ladder to run, so every producer passes there. The probe carries no stamp, so the producer is
+  judged as of now: one revoked after it produced a valid checkpoint is refused. A device's `install` re-derives the version from the bytes, so whom it trusts stays
   the caller's question (§7.3).
 - **Sealed partitions:** doc bytes are inside the sealed core, the authority is structurally
   opaque (§7.2), and a checkpoint's snapshot blob is sealed to the partition key (not built yet).
@@ -1081,7 +1083,10 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
      alone, so an empty document writes nothing. The start pass keeps no record of what a row
      held before it, so it writes every derived row once, changed or not. An open replica is
      read as it stands, unflushed local edits included: a crash before the flush leaves the row
-     ahead of the log until the next start pass recomputes it.
+     ahead of the log until the next start pass recomputes it. A D45 purge invalidates every
+     replica open on a row it rewrites, since the replica still holds the content the purge
+     dropped; the row is then derived from the document log the purge kept, and the app reopens
+     the handle, losing what the replica had not flushed.
    - Producer (U26): §11 above.
    - Rules (U27): schema construction refuses an `insert`, `update`, `delete` or `replace` rule
      (as `resolveAllow` resolves each, so `write` and `$default` count) that reads a derived
@@ -1096,7 +1101,7 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
      derive `UPDATE` publishes nothing of them. An `UPDATE` touching only derived columns still
      reaches the WAL as an update and is published as one re-stating the row's other columns,
      as every CDC update re-states the whole row.
-   - Boot (U22): §10 above.
+   - Boot (U22, partly built): §10 above; the rest is gaps U33.
 
 5. **Device snapshots — decided 2026-11-08 by Jace: full device snapshots**, as D41 built.
    Shallow-at-the-stable-floor (§8.3) stays available as a future option with its forgotten-peer
