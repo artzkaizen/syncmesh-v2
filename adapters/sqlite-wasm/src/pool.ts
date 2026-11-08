@@ -70,6 +70,12 @@ export class OpfsUnavailable extends TaggedError("OpfsUnavailable")<{
  *
  * It clears by itself: closing every driver in the holding context hands the access handles back
  * (`pauseVfs`), and so does closing that tab. Nothing here polls on the waiter's behalf.
+ *
+ * **Two tabs share one database by not both opening it.** `@syncmesh/browser` elects one tab's
+ * dedicated worker to hold the database and the mesh over it, and serves every other tab over a
+ * port, so no tab of an origin built that way meets this (U11). A tab that opens a database of
+ * its own beside such an origin still does, by design: two engines over one log under one device
+ * identity is the corruption the election exists to prevent.
  */
 export class OpfsPoolHeld extends TaggedError("OpfsPoolHeld")<{
   /** The pool directory that is taken, which is the granularity of the exclusion. */
@@ -170,7 +176,8 @@ const leases = new Map<string, PoolLease>();
 
 const HELD_ELSEWHERE =
   "another browsing context of this origin holds the OPFS access-handle pool; one context at a " +
-  "time may have it, and it is released when that one closes its stores or its tab";
+  "time may have it, and it is released when that one closes its stores or its tab. Tabs that " +
+  "share one database share the mesh in the elected tab's worker (@syncmesh/browser)";
 
 const leaseOn = (
   directory: string,

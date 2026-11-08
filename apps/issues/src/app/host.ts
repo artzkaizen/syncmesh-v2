@@ -3,7 +3,7 @@ import type { EngineError } from "@syncmesh/engine";
 import type { Client } from "@syncmesh/orpc";
 import type { SqlDriver } from "@syncmesh/storage";
 
-import { MeshCallFailed, serveMesh } from "@syncmesh/browser";
+import { MeshCallFailed, createTabPhases, serveMesh } from "@syncmesh/browser";
 import { deviceIdentity } from "@syncmesh/client";
 import { createInspectorHost } from "@syncmesh/devtools";
 import { createClient, httpLink, sqlite } from "@syncmesh/orpc";
@@ -62,10 +62,10 @@ const DATABASE = "issues";
  * The tag stands in where a message is empty, so an error can be silent in its sentence but never
  * silent on screen.
  */
-const reasonOf = (cause: unknown): string => {
+const causeReason = (cause: unknown): string => {
   if (!(cause instanceof Error)) return String(cause);
   const said = cause.message === "" ? cause.name : cause.message;
-  return cause.cause === undefined ? said : `${said} — ${reasonOf(cause.cause)}`;
+  return cause.cause === undefined ? said : `${said} — ${causeReason(cause.cause)}`;
 };
 
 /**
@@ -76,7 +76,7 @@ const reasonOf = (cause: unknown): string => {
  * so: the page is waiting on a port, not on a promise in its own thread.
  */
 const refused = (what: string) => (cause: unknown) =>
-  new MeshCallFailed({ path: "open", message: `${what}: ${reasonOf(cause)}` });
+  new MeshCallFailed({ path: "open", message: `${what}: ${causeReason(cause)}` });
 
 /**
  * Fills the workspace on the first run and never again — **once per origin, not once per tab.**
@@ -188,7 +188,7 @@ const wipe = async (close: () => Promise<void>, driver: SqlDriver): Promise<void
       const root = await navigator.storage.getDirectory();
       await root.removeEntry(ROOT, { recursive: true });
     },
-    catch: reasonOf,
+    catch: causeReason,
   });
   // a reset that silently did nothing is the worst outcome here: the app comes back looking
   // identical, and the person who asked for a cold join has no way to tell they did not get one
@@ -228,6 +228,9 @@ const buildHost = (): Promise<Result<MeshHost, MeshCallFailed>> =>
     const device = yield* (await deviceIdentity(driver)).mapError(
       refused("this install's device key would not open"),
     );
+    // this worker has no page of its own: every window says when it is hidden, and the mesh is in
+    // the background only while all of them are, which is when its session is marked clean (D39)
+    const phases = createTabPhases();
     const app = yield* await Result.tryPromise({
       try: async () => {
         const opened = createClient({
@@ -240,6 +243,7 @@ const buildHost = (): Promise<Result<MeshHost, MeshCallFailed>> =>
           transports: dialRelay(device.peerId),
           link: httpLink(AUTHORITY_URL),
           onError: report,
+          knocks: [phases.knock],
         });
         await opened.$ready;
         return opened;
@@ -261,7 +265,7 @@ const buildHost = (): Promise<Result<MeshHost, MeshCallFailed>> =>
     // the inspector is an argument and not a flag: a build that dropped this line serves an origin
     // whose windows can read their own data and learn nothing about the device carrying it, and
     // nothing here subscribes to anything until some tab actually opens the panel
-    return Result.ok(serveMesh(app.$mesh, { inspector: createInspectorHost(app.$mesh) }));
+    return Result.ok(serveMesh(app.$mesh, { inspector: createInspectorHost(app.$mesh), phases }));
   });
 
 /** Answers every call on this port with the reason there is no mesh behind it, and nothing else. */

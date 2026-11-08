@@ -10,13 +10,13 @@ import { Result, serializeTagged } from "@syncmesh/result";
 import type { DeviceSource } from "./device.js";
 import type { ServedHandle } from "./host-handle.js";
 import type { MeshInspector } from "./inspect.js";
+import type { TabPhases } from "./phases.js";
 import type {
   Answered,
+  Ask,
   ClientMessage,
   EnterBody,
   HostMessage,
-  InspectAnswer,
-  InspectBody,
   LeaveBody,
   OpenHandleBody,
   SqlBody,
@@ -27,8 +27,10 @@ import type {
 import { deviceFeed } from "./device.js";
 import { answer } from "./host-calls.js";
 import { serveHandle } from "./host-handle.js";
+import { answerInspect } from "./inspect.js";
 import { answerLedger } from "./ledger.js";
-import { MeshCallFailed, NoInspector, NoSuchMeshHandle } from "./protocol.js";
+import { createWindowCount } from "./phases.js";
+import { MeshCallFailed, NoSuchMeshHandle } from "./protocol.js";
 
 /** Everything a host reads off the mesh, and no more; {@link DeviceSource} is what windows are *told*. */
 export type HostMesh = Pick<
@@ -67,6 +69,13 @@ export interface ServeOptions {
    * leaves behind without waiting five seconds to do it.
    */
   readonly spanLimit?: number | undefined;
+  /**
+   * Where the origin's phase goes: `background` once no window this host serves is shown, and
+   * `foreground` when one is again (D39, U32). A window that has not said counts as shown, and a
+   * window that leaves stops counting at all. Pass the same {@link TabPhases} whose `knock` the
+   * mesh was built with; without it the mesh in a worker hears no lifecycle.
+   */
+  readonly phases?: TabPhases | undefined;
 }
 
 /** What the host is holding for its clients. A subscription left behind after a tab closes shows here. */
@@ -121,7 +130,7 @@ interface FeedDeps {
  * `DevtoolsSource` takes several engine hooks and one telemetry listener — so they are opened
  * here and released by the same refcount that releases `fold`.
  */
-const feedFor = (deps: FeedDeps, topic: Topic): Unsubscribe => {
+const openFeed = (deps: FeedDeps, topic: Topic): Unsubscribe => {
   const { mesh, inspector, emit } = deps;
   if (topic === "fold") return mesh.engine.onFoldBatch(emit);
   if (topic === "ack") return mesh.engine.onAcknowledge(emit);
@@ -134,25 +143,6 @@ const feedFor = (deps: FeedDeps, topic: Topic): Unsubscribe => {
   // the device's facts, whole, on any of the feeds that move one of them; and each link event
   if (topic === "device" || topic === "links") return deviceFeed(mesh, topic, emit);
   return inspector?.onForced(emit) ?? nothing;
-};
-
-/**
- * A named read of the device, or the reason there is nothing to read.
- *
- * The answer is wrapped rather than returned bare because this file never opens it: what is
- * inside is the inspector's vocabulary and the tab's to decode, and an envelope keeps
- * {@link Answered} a closed union instead of the `unknown` that would swallow it.
- */
-const inspect = async (
-  inspector: MeshInspector | undefined,
-  body: InspectBody,
-): Promise<InspectAnswer> => {
-  if (inspector === undefined)
-    throw new NoInspector({
-      read: body.read,
-      message: "this origin's host was built without an inspector, so it serves no readings",
-    });
-  return { inspected: await inspector.read(body.read, body.args) };
 };
 
 /**
@@ -170,16 +160,21 @@ const inspect = async (
  * wrote. Standing interests are refcounted, so the last tab closing releases the host's own
  * subscription on the mesh rather than leaving it fed by nobody.
  *
+ * **The host hears every window's phase**, which the mesh cannot: a worker has no `document`. Pass
+ * `phases` (see {@link TabPhases}) and the mesh goes to the background once no window is shown —
+ * marking its log's session clean (D39) — and back with the first one shown, waking its media.
+ *
  * @example
  * // worker.ts, inside the elected tab's dedicated worker
- * const client = createClient({ schema, storage });
+ * const phases = createTabPhases();
+ * const client = createClient({ schema, storage, knocks: [phases.knock] });
  * await client.$ready; // `$mesh` throws until the mesh has opened
- * const host = serveMesh(client.$mesh);
+ * const host = serveMesh(client.$mesh, { phases });
  * host.accept(self);                          // this tab
  * onconnect = (e) => host.accept(e.ports[0]); // every other tab, via the rendezvous
  */
 /** What the tab already knew about the write it is opening: its id, and the procedure it is in. */
-const namingOf = (message: EnterBody): WriteNaming => ({
+const writeNaming = (message: EnterBody): WriteNaming => ({
   id: message.operationId,
   label: message.label,
 });
@@ -200,7 +195,7 @@ const onHandle = async <Owner>(
   if (message.kind === "sql")
     return served.sql(owner, message.statement, message.params, message.method, message.span);
   if (message.kind === "enter")
-    return served.enter(owner, message.mode, message.span, namingOf(message));
+    return served.enter(owner, message.mode, message.span, writeNaming(message));
   const verdict = await served.leave(owner);
   if (verdict === undefined || verdict.isOk()) return null;
   return { refused: serializeTagged(verdict.error) };
@@ -209,6 +204,7 @@ const onHandle = async <Owner>(
 export function serveMesh(mesh: HostMesh, options: ServeOptions = {}): MeshHost {
   const { inspector, spanLimit } = options;
   const clients = new Set<Client>();
+  const windows = createWindowCount<Client>(options.phases);
   const served = new Map<string, ServedHandle<Client>>();
   const feeds = new Map<Topic, { readonly off: Unsubscribe; count: number }>();
 
@@ -220,7 +216,7 @@ export function serveMesh(mesh: HostMesh, options: ServeOptions = {}): MeshHost 
   };
 
   const open = (topic: Topic): Unsubscribe =>
-    feedFor({ mesh, inspector, emit: (payload) => broadcast(topic, payload) }, topic);
+    openFeed({ mesh, inspector, emit: (payload) => broadcast(topic, payload) }, topic);
 
   const subscribe = (client: Client, topic: Topic): void => {
     if (client.topics.has(topic)) return;
@@ -288,11 +284,10 @@ export function serveMesh(mesh: HostMesh, options: ServeOptions = {}): MeshHost 
     return found;
   };
 
-  const dispatch = async (client: Client, message: ClientMessage): Promise<Answered> => {
-    if (message.kind === "bye") return null;
+  const dispatch = async (client: Client, message: Ask): Promise<Answered> => {
     if (message.kind === "call") return answer(mesh, message.path, message.args);
     if (message.kind === "ledger") return answerLedger(mesh.operations, message.path, message.args);
-    if (message.kind === "inspect") return inspect(inspector, message);
+    if (message.kind === "inspect") return answerInspect(inspector, message);
     if (message.kind === "handle") return declare(client, message);
     if (message.kind === "sql" || message.kind === "enter" || message.kind === "leave")
       return onHandle(handle(client, message.handle), client, message);
@@ -323,6 +318,7 @@ export function serveMesh(mesh: HostMesh, options: ServeOptions = {}): MeshHost 
     client.numbers.clear();
     client.refused.clear();
     client.port.onmessage = null;
+    windows.leave(client);
   };
 
   const accept = (port: WirePort): (() => void) => {
@@ -334,11 +330,16 @@ export function serveMesh(mesh: HostMesh, options: ServeOptions = {}): MeshHost 
       refused: new Map(),
     };
     clients.add(client);
+    windows.arrive(client);
     port.onmessage = (event) => {
       // SAFETY: the only sender is `connectMesh`, whose every post is a `ClientMessage`
       const message = event.data as ClientMessage;
       if (message.kind === "bye") {
         disconnect(client);
+        return;
+      }
+      if (message.kind === "phase") {
+        windows.say(client, message.phase);
         return;
       }
       const { id } = message;
@@ -366,6 +367,7 @@ export function serveMesh(mesh: HostMesh, options: ServeOptions = {}): MeshHost 
       inspecting: feeds.has("inspect"),
     }),
     stop: () => {
+      windows.stop();
       for (const client of Array.from(clients)) disconnect(client);
       for (const entry of served.values()) entry.stop();
       served.clear();
