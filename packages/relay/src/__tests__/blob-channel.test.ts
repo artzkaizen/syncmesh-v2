@@ -64,6 +64,29 @@ describe("the relay's blob channel", () => {
     expect(sent).toHaveLength(4);
   });
 
+  test("two downloads of one hash both wait, and one answer settles both", async () => {
+    const channel = createBlobChannel(() => true);
+    channel.seated();
+    const both = [
+      channel.capability.download(HASH, { timeoutMs: 5000 }),
+      channel.capability.download(HASH, { timeoutMs: 5000 }),
+    ];
+    channel.answer(HASH, bytes);
+    expect(await Promise.all(both)).toEqual([bytes, bytes]);
+  });
+
+  test("an earlier download timing out leaves a later one of the same hash waiting", async () => {
+    const channel = createBlobChannel(() => true);
+    channel.seated();
+    const early = channel.capability.download(HASH, { timeoutMs: 10 });
+    const late = channel.capability.download(HASH, { timeoutMs: 5000 });
+    expect(await early).toBeUndefined();
+    channel.answer(HASH, bytes);
+    const unanswered = Symbol("unanswered");
+    const settled = await Promise.race([late, Bun.sleep(50).then(() => unanswered)]);
+    expect(settled).toEqual(bytes);
+  });
+
   test("a frame that did not leave is sent on the next seat, not taken as asked", () => {
     let up = false;
     const sent: string[] = [];

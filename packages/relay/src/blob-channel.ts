@@ -56,8 +56,11 @@ interface Upload extends Asked {
  * business.
  */
 export function createBlobChannel(send: (frame: Uint8Array) => boolean) {
-  /** Downloads in flight, by hash; the relay answers each exactly once. */
-  const waiting = new Map<string, Download>();
+  /**
+   * Downloads in flight, by hash: two fetches of one photo are two waits, and the first answer
+   * that names the hash settles both.
+   */
+  const waiting = new Map<string, Download[]>();
   /**
    * Uploads in flight, by hash: two puts of one photo are two waits on one answer — unless the
    * answer is a refusal, which is about the budget of the one partition it names.
@@ -72,18 +75,18 @@ export function createBlobChannel(send: (frame: Uint8Array) => boolean) {
     if (seated && send(asked.frame)) asked.sentIn = session;
   };
 
-  /** Keeps only the uploads of this hash that `still` holds, and forgets the hash when none are left. */
-  const keep = (hash: string, still: (upload: Upload) => boolean): void => {
-    const rest = (uploading.get(hash) ?? []).filter(still);
-    if (rest.length === 0) uploading.delete(hash);
-    else uploading.set(hash, rest);
+  /** Keeps only the waits of this hash that `still` holds, and forgets the hash when none are left. */
+  const keep = <W>(waits: Map<string, W[]>, hash: string, still: (wait: W) => boolean): void => {
+    const rest = (waits.get(hash) ?? []).filter(still);
+    if (rest.length === 0) waits.delete(hash);
+    else waits.set(hash, rest);
   };
 
   const capability: TransportBlobs = {
     upload: (hash, bytes, options = {}) =>
       new Promise((resolve) => {
         const timer = setTimeout(() => {
-          keep(hash, (upload) => upload !== mine);
+          keep(uploading, hash, (upload) => upload !== mine);
           resolve(undefined);
         }, durationMs(BLOB_ANSWER_WAIT));
         const mine: Upload = {
@@ -102,7 +105,7 @@ export function createBlobChannel(send: (frame: Uint8Array) => boolean) {
     download: (hash, { timeoutMs }) =>
       new Promise((resolve) => {
         const timer = setTimeout(() => {
-          waiting.delete(hash);
+          keep(waiting, hash, (download) => download !== mine);
           resolve(undefined);
         }, timeoutMs);
         const mine: Download = {
@@ -113,7 +116,7 @@ export function createBlobChannel(send: (frame: Uint8Array) => boolean) {
             resolve(answer);
           },
         };
-        waiting.set(hash, mine);
+        waiting.set(hash, [...(waiting.get(hash) ?? []), mine]);
         offer(mine);
       }),
   };
@@ -125,7 +128,7 @@ export function createBlobChannel(send: (frame: Uint8Array) => boolean) {
      */
     seated: (): void => {
       seated = true;
-      const pending: Asked[] = [...waiting.values(), ...[...uploading.values()].flat()];
+      const pending: Asked[] = [...[...waiting.values()].flat(), ...[...uploading.values()].flat()];
       for (const asked of pending) if (asked.sentIn !== session) offer(asked);
     },
     /** The socket closed: what was asked on it and not answered goes again on the next seat. */
@@ -133,11 +136,14 @@ export function createBlobChannel(send: (frame: Uint8Array) => boolean) {
       seated = false;
       session += 1;
     },
-    /** A `blob` or `blob-missing` arrived: the bytes, or `undefined` for none held there. */
+    /**
+     * A `blob` or `blob-missing` arrived: the bytes, or `undefined` for none held there. It settles
+     * every download of this hash, so the answer to a second fetch finds none left to settle.
+     */
     answer: (hash: string, bytes: Uint8Array | undefined): void => {
-      const download = waiting.get(hash);
+      const downloads = waiting.get(hash) ?? [];
       waiting.delete(hash);
-      download?.settle(bytes ?? BLOB_MISSING);
+      for (const download of downloads) download.settle(bytes ?? BLOB_MISSING);
     },
     /**
      * A `blob-stored` (no refusal) arrived for every upload of this hash, or a `blob-refused` for
@@ -147,7 +153,7 @@ export function createBlobChannel(send: (frame: Uint8Array) => boolean) {
       const answered = (upload: Upload): boolean =>
         refusal === undefined || upload.partition === refusal.partition;
       const waits = (uploading.get(hash) ?? []).filter(answered);
-      keep(hash, (upload) => !answered(upload));
+      keep(uploading, hash, (upload) => !answered(upload));
       for (const wait of waits) wait.settle(refusal);
     },
   };
