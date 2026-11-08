@@ -134,4 +134,18 @@ export const compactionCases = (openDriver: OpenDriver): readonly SuiteCase[] =>
       equal([installed.get(A), installed.get(B)], [seq(5), seq(2)], "raised, never lowered");
     },
   },
+  {
+    name: "compaction: two installs at once both raise the installed floor (gaps U33)",
+    run: async () => {
+      const driver = await openDriver("compaction-installed-race");
+      const store = (await sqlEventStore(driver)).unwrap();
+      const raised = await Promise.all([
+        store.recordInstalled(new Map([[A, seq(5)]])),
+        store.recordInstalled(new Map([[B, seq(4)]])),
+      ]);
+      for (const outcome of raised) outcome.unwrap();
+      const installed = (await store.installedBelow()).unwrap();
+      equal([installed.get(A), installed.get(B)], [seq(5), seq(4)], "neither raise lost");
+    },
+  },
 ];

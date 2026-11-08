@@ -79,6 +79,11 @@ export interface GapSql {
   /** Writes that list whole. Binds `(json)`. */
   readonly upsertInstalled: string;
   /**
+   * Holds the installed floor until the transaction ends, so two installs raise it one after the
+   * other. Only where two connections can write the log at once (Postgres), like {@link lock}.
+   */
+  readonly lockInstalled?: string;
+  /**
    * Holds one author's run in one scope until the transaction ends: binds `(peer, local)`. Only
    * where two connections can append to the same log at once (Postgres); SQLite appends take the
    * driver's turn one at a time, and a second connection that read a stale head is refused at

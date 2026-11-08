@@ -84,6 +84,7 @@ export const POSTGRES_GAPS: GapSql = {
   selectInstalled: `SELECT value FROM syncmesh.meta WHERE key = 'installed'`,
   upsertInstalled: `INSERT INTO syncmesh.meta (key, value) VALUES ('installed', $1)
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+  lockInstalled: `SELECT pg_advisory_xact_lock(hashtext('syncmesh.meta:installed'))`,
   // a read that found a hole looks again with the entries and the gaps from one snapshot
   snapshot: "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
   // two writers that both read an author's head before either commits would each record a gap

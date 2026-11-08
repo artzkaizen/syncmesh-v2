@@ -339,7 +339,7 @@ export function sqlEventStore(
       query("compactedBelow failed", SQL.selectFloors).then((rows) =>
         rows.andThen(parseCoverage).mapError(asStoreFailure),
       ),
-    ...createFloorReads({ driver, events: SQL, gaps: GAPS }, () => store.compactedBelow()),
+    ...createFloorReads(driver, transaction, () => store.compactedBelow()),
     maxHlc: () =>
       query("maxHlc failed", SQL.selectMaxHlc).then((rows) => rows.andThen((r) => hlcRow(r[0]))),
     evict: (ids) => evictEvents(driver, { events: SQL, gaps: GAPS }, transaction, ids),

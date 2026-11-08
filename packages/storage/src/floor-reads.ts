@@ -4,9 +4,9 @@ import { StoreFailure, higherFloor } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
 import { isSafeNonNegative, isString } from "@syncmesh/wire";
 
-import type { EventSql, GapSql } from "./dialect.js";
 import type { SqlDriver, SqlRow, SqlValue } from "./driver.js";
 
+import { driverDialect } from "./dialect.js";
 import { attempt, failure, parseCoverage } from "./sql.js";
 
 /** The `installed` value in `meta`: a JSON list of `[peer, seq]` pairs, or no row at all. */
@@ -43,10 +43,11 @@ const parseInstalled = (value: SqlValue | undefined): Result<Cursors, StoreFailu
  * author's floor that the log does not hold and no gap covers is one compaction took.
  */
 export function createFloorReads(
-  sql: { readonly driver: SqlDriver; readonly events: EventSql; readonly gaps: GapSql },
+  driver: SqlDriver,
+  transaction: <T>(fn: () => Promise<T>) => Promise<T>,
   floors: () => Promise<Result<Coverage, StoreFailure>>,
 ): Pick<EventStore, "compacted" | "installedBelow" | "recordInstalled"> {
-  const { driver, events, gaps } = sql;
+  const { events, gaps } = driverDialect(driver);
   const query = (message: string, statement: string, values: readonly SqlValue[] = []) =>
     attempt(message, () => driver.all(statement, values));
   const installedBelow = () =>
@@ -70,17 +71,22 @@ export function createFloorReads(
         return Result.ok(gap === undefined || Number(gap[1]) < event.seqNum);
       }),
     installedBelow,
+    // read, raised and written in one transaction under the dialect's lock: two installs at once
+    // would otherwise both read the old floor, and the second write would drop the first's raise
     recordInstalled: (floor) =>
-      Result.gen(async function* () {
-        const held = yield* Result.await(installedBelow());
-        const raised = higherFloor(held, floor);
-        if (raised.size === held.size && [...raised].every(([peer, seq]) => held.get(peer) === seq))
+      attempt("recordInstalled failed", () =>
+        transaction(async () => {
+          if (gaps.lockInstalled !== undefined) await driver.run(gaps.lockInstalled, []);
+          const rows = await driver.all(gaps.selectInstalled, []);
+          const held = parseInstalled(rows[0]?.[0]);
+          if (held.isErr()) return Result.err(held.error);
+          const raised = higherFloor(held.value, floor);
+          const same =
+            raised.size === held.value.size &&
+            [...raised].every(([peer, seq]) => held.value.get(peer) === seq);
+          if (!same) await driver.run(gaps.upsertInstalled, [JSON.stringify([...raised])]);
           return Result.ok(undefined);
-        const json = JSON.stringify([...raised]);
-        yield* Result.await(
-          attempt("recordInstalled failed", () => driver.run(gaps.upsertInstalled, [json])),
-        );
-        return Result.ok(undefined);
-      }),
+        }),
+      ).then((outcome) => outcome.andThen((parsed) => parsed)),
   };
 }
