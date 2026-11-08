@@ -68,7 +68,10 @@ export function createRederive(deps: RederiveDeps) {
    * they were computed, until the fold of the write they rode on says it committed.
    */
   const flushing = new Map<string, { readonly values?: Row; readonly seen: ReadonlySet<string> }>();
-  /** Per document, how many local batches have named it: a write they overtook is not the row's last. */
+  /**
+   * Per document whose recomputation is being written, how many local batches have named it
+   * since: a write they overtook is not the row's last. Only the write in flight is counted.
+   */
   const localFolds = new Map<string, number>();
   const idle: (() => void)[] = [];
   let draining = false;
@@ -124,10 +127,12 @@ export function createRederive(deps: RederiveDeps) {
       const last = written.get(key);
       if (last !== undefined && sameValues(last, made.values)) return Result.ok(undefined);
       const row = { table: address.table, key: address.key, values: made.values };
-      const folds = localFolds.get(key);
-      const wrote = yield* Result.await(engine.writeDerived(row, made.from));
+      localFolds.set(key, 0);
+      const wrote = await engine.writeDerived(row, made.from);
+      const overtaken = (localFolds.get(key) ?? 0) > 0;
+      localFolds.delete(key);
       // a local write that folded meanwhile may have committed its own values after these
-      if (wrote && localFolds.get(key) === folds) written.set(key, made.values);
+      if ((yield* wrote) && !overtaken) written.set(key, made.values);
       return Result.ok(undefined);
     });
   };
@@ -175,8 +180,11 @@ export function createRederive(deps: RederiveDeps) {
    * with the batch from a replica that has since been given nothing new. Counts the local batch.
    */
   const afterFlush = (batch: FoldBatch, key: string, address: DocAddress, own: Set<string>) => {
-    if (batch.source === "local") localFolds.set(key, (localFolds.get(key) ?? 0) + 1);
-    const flushed = batch.source === "local" ? flushing.get(key) : undefined;
+    if (batch.source !== "local") return true;
+    const inFlight = localFolds.get(key);
+    if (inFlight !== undefined) localFolds.set(key, inFlight + 1);
+    const flushed = flushing.get(key);
+    // only the local batch the flush rode on settles it: a remote one landing first leaves it be
     flushing.delete(key);
     if (flushed === undefined) return true;
     if (flushed.values !== undefined) written.set(key, flushed.values);
