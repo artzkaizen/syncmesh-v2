@@ -58,8 +58,27 @@ const WRITES = new Set<string>(["insert", "update", "delete"]);
  * own resolves exactly as `update` does.
  */
 export function resolveAllow(block: AllowBlock, op: Operation): PolicyNode {
-  if (op === "replace") return block.replace ?? resolveAllow(block, "update");
-  return block[op] ?? (WRITES.has(op) ? block.write : undefined) ?? block.$default;
+  return allowEntry(block, op).node;
+}
+
+/** Which entry of an allow block answers for an operation, and the rule it holds. */
+export interface AllowEntry {
+  /** The key the rule was found under: the operation's own, `write`, `update` or `$default`. */
+  readonly key: string;
+  readonly node: PolicyNode;
+}
+
+/** {@link resolveAllow}, naming the entry the rule came from — the "which rule" of a verdict's why. */
+export function allowEntry(block: AllowBlock, op: Operation): AllowEntry {
+  if (op === "replace") {
+    return block.replace === undefined
+      ? allowEntry(block, "update")
+      : { key: "replace", node: block.replace };
+  }
+  const own = block[op];
+  if (own !== undefined) return { key: op, node: own };
+  if (WRITES.has(op) && block.write !== undefined) return { key: "write", node: block.write };
+  return { key: "$default", node: block.$default };
 }
 
 export const allow: PolicyNode = { kind: "allow" };

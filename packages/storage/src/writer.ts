@@ -10,7 +10,7 @@ import type {
 import type { Change, EventId, PartitionKey, Procedure, SyncEvent } from "@syncmesh/kernel";
 import type { Table } from "@syncmesh/schema";
 
-import { PolicyDenied, can } from "@syncmesh/engine";
+import { createPolicyDenied, can, why, type PolicyDenied } from "@syncmesh/engine";
 import { getRecord, readRow } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
@@ -128,14 +128,11 @@ export function createWriter(deps: WriterDeps): Write {
     const patch =
       change.kind === "insert" ? change.row : change.kind === "update" ? change.patch : undefined;
     const source = partition === undefined ? undefined : { partition, rows: before.row };
-    if (can(schema, actor, `${String(change.table)}.${change.kind}`, row, patch, source))
-      return undefined;
-    return new PolicyDenied({
-      table: String(change.table),
-      key: String(change.key),
-      op: change.kind,
-      message: `${change.kind} on ${String(change.table)} denied`,
-    });
+    const what = `${change.table}.${change.kind}` as const;
+    if (can(schema, actor, what, row, patch, source)) return undefined;
+    // the same why the receivers would give, asked only now that the answer is no
+    const answer = why(schema, actor, what, row, patch, source);
+    return createPolicyDenied(change.table, change.key, change.kind, answer);
   };
   /**
    * Locality is the schema's, decided from what the transaction turned out to touch: wholly on

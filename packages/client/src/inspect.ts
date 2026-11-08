@@ -4,17 +4,26 @@
  * reference stays in the count instead of silently dying — the chaos epilogue asserts zeros.
  */
 import type { Live, LiveQuery } from "@syncmesh/drizzle";
-import type { Engine, SchemaReading, StoreFailure } from "@syncmesh/engine";
-import type { PeerId } from "@syncmesh/kernel";
+import type {
+  Engine,
+  Inspector,
+  InspectorOptions,
+  PolicyWhy,
+  SchemaReading,
+  StoreFailure,
+} from "@syncmesh/engine";
+import type { PeerId, Row } from "@syncmesh/kernel";
 import type { SqlDialect, SqlDriver } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { Transport } from "@syncmesh/transport";
 
+import { createInspector } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
 import { verifyLog } from "@syncmesh/storage";
 
 import type { Blobs } from "./blobs.js";
 import type { Handle, OpenHandle } from "./handles.js";
+import type { MeshTelemetrySeam } from "./telemetry.js";
 
 import { NoSuchCapability } from "./errors.js";
 
@@ -51,6 +60,44 @@ export interface Inspect {
   readonly verify: () => Promise<Result<void, StoreFailure | NoSuchCapability>>;
   /** What this device can say about the builds around it ({@link Fleet}). */
   readonly fleet: Fleet;
+  /**
+   * `mesh.can`, with its reasons (U2): the same verdict, and the rung that gave it — on the policy
+   * rung, which rule (the allow-block entry, and whether the instance's synced `_policy` doc or
+   * the bundled manifest held it) and the leaves of it that decided. A reading: asking it changes
+   * nothing and writes nothing.
+   *
+   * @example
+   * const answer = mesh.inspect.why("notes.delete", row, "org:acme");
+   * if (answer.rung === "policy" && !answer.allowed)
+   *   console.log(answer.rule.entry, answer.because.map((step) => ruleText(step.node)));
+   */
+  readonly why: (what: `${string}.${string}`, row?: Row, instance?: string) => PolicyWhy;
+  /**
+   * The consumer the telemetry union was missing (D17, U2): one listener on this mesh's seam,
+   * counting and timing every `engine.*` and `mesh.*` event by type, read back when asked.
+   *
+   * A tap, not a stream: it holds one subscription however often it is read, so a panel polls
+   * `stats()` rather than adding a listener to the write path per repaint. It is counted under
+   * `handles().subscriptions` until closed, and `using` closes it.
+   *
+   * @example
+   * using tap = mesh.inspect.telemetry();
+   * await doWork();
+   * console.log(tap.report());
+   */
+  readonly telemetry: (options?: InspectorOptions) => TelemetryTap;
+}
+
+/** An {@link Inspector} fed by one mesh, holding one subscription until it is closed. */
+export interface TelemetryTap extends Disposable {
+  /** Everything seen since the tap opened or was last reset, busiest first. */
+  readonly stats: Inspector["stats"];
+  readonly of: Inspector["of"];
+  readonly reset: Inspector["reset"];
+  /** A few lines a person can read in a log or paste into an issue. */
+  readonly report: Inspector["report"];
+  /** Gives the subscription back; a second call is a no-op. */
+  readonly close: () => void;
 }
 
 /**
@@ -210,24 +257,43 @@ async function verifyStore(
 /** What `mesh.inspect` reads: the tally, the radios, the log's connection and the engine. */
 export interface InspectDeps {
   readonly tally: HandleTally;
-  readonly transports: () => readonly Transport[];
-  readonly driver: SqlDriver | undefined;
+  /** The radios, as the mesh runs them. */
+  readonly links: { readonly list: () => readonly Transport[] };
+  /** Where the log lives; `driver` is absent over a bare event store. */
+  readonly booted: { readonly driver?: SqlDriver };
   readonly engine: Pick<Engine, "oldestSchema">;
   readonly now: () => Temporal.Instant;
+  /** `mesh.can`'s question with its reasons, resolved the way `mesh.can` resolves it. */
+  readonly why: Inspect["why"];
+  /** The mesh's one telemetry seam, `engine.*` and `mesh.*` alike. */
+  readonly telemetry: MeshTelemetrySeam["onTelemetry"];
 }
 
+/** One inspector on the mesh's seam, its subscription seated in the tally until closed. */
+const openTap = (deps: InspectDeps, options: InspectorOptions | undefined): TelemetryTap => {
+  const inspector = createInspector(options);
+  const close = deps.tally.wrap("subscriptions", deps.telemetry(inspector.note));
+  return {
+    stats: inspector.stats,
+    of: inspector.of,
+    reset: inspector.reset,
+    report: inspector.report,
+    close,
+    [Symbol.dispose]: close,
+  };
+};
+
 /** `mesh.inspect`; a fleet window is judged against the mesh's own clock. */
-export const createInspect = ({
-  tally,
-  transports,
-  driver,
-  engine,
-  now,
-}: InspectDeps): Inspect => ({
-  handles: () => tally.counts(linksAcross(transports())),
-  verify: () => verifyStore(driver),
-  fleet: {
-    oldestSchema: ({ within } = {}) =>
-      engine.oldestSchema(within === undefined ? undefined : { now: now(), within }),
-  },
-});
+export const createInspect = (deps: InspectDeps): Inspect => {
+  const { tally, links, booted, engine, now } = deps;
+  return {
+    handles: () => tally.counts(linksAcross(links.list())),
+    verify: () => verifyStore(booted.driver),
+    fleet: {
+      oldestSchema: ({ within } = {}) =>
+        engine.oldestSchema(within === undefined ? undefined : { now: now(), within }),
+    },
+    why: deps.why,
+    telemetry: (options) => openTap(deps, options),
+  };
+};

@@ -2,14 +2,14 @@ import type { PeerId } from "@syncmesh/kernel";
 import type { Grant } from "@syncmesh/wire";
 
 import { parsePartitionKey, readRow } from "@syncmesh/kernel";
-import { allow, deny, role } from "@syncmesh/policy";
+import { NO_ROLES, allow, deny, role } from "@syncmesh/policy";
 import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, verifyGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import { setPolicy } from "../authority.js";
-import { can } from "../can.js";
+import { can, why } from "../can.js";
 import { createEngine } from "../engine.js";
 import { createMemoryEventStore } from "../store.js";
 import { createValidator } from "../validate.js";
@@ -133,5 +133,84 @@ describe("can, against a synced policy doc", () => {
     expect(asks(device, "notes.update")).toBe(false);
     // no partition, no `_policy` row to prefer: the manifest stands, as documented
     expect(can(schema, MEMBER, "notes.update")).toBe(true);
+  });
+});
+
+/** `asks`, with its why. */
+const asksWhy = (device: ReturnType<typeof peerAt>, what: `${string}.${string}`) =>
+  why(schema, MEMBER, what, undefined, undefined, {
+    partition: ACME,
+    rows: (table, key) => readRow(device.state(), table, key),
+  });
+
+describe("why — the verdict, the rung and the rule (U2)", () => {
+  test("the bundle's rule, named by its entry, and the leaf that failed", () => {
+    const device = peerAt(PEER_A, 100);
+    expect(asksWhy(device, "notes.delete")).toEqual({
+      allowed: false,
+      rung: "policy",
+      rule: { op: "delete", entry: "delete", source: "manifest" },
+      because: [{ node: role("admin"), path: [], held: false }],
+    });
+    expect(asksWhy(device, "notes.update")).toMatchObject({
+      allowed: true,
+      rule: { op: "update", entry: "$default", source: "manifest" },
+    });
+  });
+
+  test("a synced doc is named as the source, and the refusal the write gets carries the same why", async () => {
+    const device = peerAt(PEER_A, 100);
+    const server = peerAt(PEER_B, 200);
+    (
+      await device.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "first" })), {
+        partition: ACME,
+      })
+    ).unwrap();
+    (await setPolicy(server, ACME, { notes: { $default: role("admin") } })).unwrap();
+    await sync(server, device);
+
+    const answer = asksWhy(device, "notes.update");
+    expect(answer).toEqual({
+      allowed: false,
+      rung: "policy",
+      rule: { op: "update", entry: "$default", source: "policy-doc" },
+      because: [{ node: role("admin"), path: [], held: false }],
+    });
+    const denied = await device.mutate(UPDATE, (tx) => tx.update(NOTES, N1, row({ title: "x" })), {
+      partition: ACME,
+    });
+    const error = denied.isErr() ? denied.error : undefined;
+    expect(error?._tag).toBe("PolicyDenied");
+    expect(error).toMatchObject({
+      rule: { op: "update", entry: "$default", source: "policy-doc" },
+      because: [{ node: role("admin"), path: [], held: false }],
+    });
+    expect(error?.message).toBe(
+      'update on notes denied by the $default rule (policy-doc): role("admin")',
+    );
+  });
+
+  test("the rungs before a rule: no table, no principal, and a kind with no rules", () => {
+    expect(why(schema, MEMBER, "ghosts.insert")).toEqual({ allowed: false, rung: "table" });
+    expect(why(schema, undefined, "notes.insert")).toEqual({ allowed: false, rung: "principal" });
+    // a manifest entry with no rules: what a `user` or `local` table, or a hand-built one, is
+    const bare = {
+      entries: [{ table: schema.tables.notes, partition: "org", visibility: "partition" as const }],
+      rolesFor: () => NO_ROLES,
+    };
+    expect(why(bare, MEMBER, "notes.read")).toEqual({ allowed: true, rung: "kind" });
+    expect(why(bare, MEMBER, "notes.insert")).toEqual({ allowed: false, rung: "kind" });
+  });
+
+  test("always the answer can gives", () => {
+    const device = peerAt(PEER_A, 100);
+    for (const what of [
+      "notes.insert",
+      "notes.update",
+      "notes.delete",
+      "notes.read",
+      "x.y",
+    ] as const)
+      expect(asksWhy(device, what).allowed).toBe(asks(device, what));
   });
 });
