@@ -303,6 +303,7 @@ export function createEngine(options: EngineOptions): Engine {
     undoDepth,
     undo,
     atomically,
+    atomic: atomic !== undefined,
     getState,
     fold,
     persist,

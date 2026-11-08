@@ -7,7 +7,6 @@ import { Result } from "@syncmesh/result";
 import type { AtomicStores, Engine, FoldBatch, FoldSource, MutateOptions } from "./engine.js";
 import type { MutateError, ValidationError } from "./errors.js";
 import type { FoldPath, PersistInto } from "./fold.js";
-import type { OuterTransaction } from "./gate.js";
 import type { Hub } from "./listeners.js";
 import type { OwnPosition } from "./own-position.js";
 import type { StoredEvent } from "./store.js";
@@ -48,11 +47,11 @@ export interface CapturedWrite {
 /** How `mutateCaptured` runs. */
 export interface CaptureSettings {
   /**
-   * The transaction to run in when the engine's stores have no `atomic` of their own — the
-   * connection the capture's statements run on. Ignored when they have one: the capture then runs
-   * inside it, so it must be on that same connection.
+   * A transaction on the capture's connection, for an engine whose stores have no `atomic`: the
+   * statements commit in it, and the event after it. Ignored with `atomic`, where the capture runs
+   * inside the engine's own transaction — so on the connection `atomic` runs on.
    */
-  readonly around?: OuterTransaction;
+  readonly around?: <T>(fn: () => Promise<T>) => Promise<T>;
 }
 
 /** `Engine.mutateCaptured`. */
@@ -104,10 +103,9 @@ export interface WriteDeps {
   readonly before: StateLookup;
   readonly undoDepth: number;
   readonly undo: Undo[];
-  readonly atomically: <T>(
-    fn: (scoped: AtomicStores) => Promise<T>,
-    outer?: OuterTransaction,
-  ) => Promise<T>;
+  readonly atomically: <T>(fn: (scoped: AtomicStores) => Promise<T>) => Promise<T>;
+  /** Whether `atomically` is one transaction over the engine's stores (`EngineOptions.atomic`). */
+  readonly atomic: boolean;
   readonly getState: () => State;
   readonly fold: (entries: readonly StoredEvent[], source: FoldSource) => FoldBatch;
   readonly persist: (batch: FoldBatch, into: PersistInto) => Promise<void>;
@@ -134,6 +132,7 @@ export function createWritePath(deps: WriteDeps) {
     undoDepth,
     undo,
     atomically,
+    atomic,
     getState,
     fold,
     persist,
@@ -227,6 +226,21 @@ export function createWritePath(deps: WriteDeps) {
       return Result.ok(built.event);
     });
 
+  /**
+   * The capture, judged and stamped: `undefined` for statements that changed no synced row, which
+   * are no event and still commit — a write to a table nothing syncs is the app's own business.
+   * A refusal is thrown as a {@link Declined}, so the transaction around it rolls back.
+   */
+  const captureInside = async <E>(capture: () => Promise<Result<CapturedWrite, E>>) => {
+    const [captured, duration] = await timed(capture);
+    if (captured.isErr()) throw new Declined(captured.error);
+    const { procedure, changes, options = {} } = captured.value;
+    if (changes.length === 0) return { procedure, prepared: undefined };
+    const prepared = prepare(procedure, changes, options, duration);
+    if (prepared.isErr()) throw new Declined(prepared.error);
+    return { procedure, prepared: prepared.value };
+  };
+
   const mutateCaptured: MutateCaptured = <E>(
     capture: () => Promise<Result<CapturedWrite, E>>,
     settings: CaptureSettings = {},
@@ -234,27 +248,27 @@ export function createWritePath(deps: WriteDeps) {
     Result.gen(async function* () {
       const written = yield* Result.await(
         Result.tryPromise({
-          try: () =>
-            atomically(async (scoped) => {
-              const [captured, duration] = await timed(capture);
-              if (captured.isErr()) throw new Declined(captured.error);
-              const { procedure, changes, options = {} } = captured.value;
-              // statements that changed no synced row are no event, and still commit: a write to
-              // a table nothing syncs is the app's own business
-              if (changes.length === 0) return { procedure, built: undefined };
-              const prepared = prepare(procedure, changes, options, duration);
-              // refused here, the statements the capture ran roll back with the transaction
-              if (prepared.isErr()) throw new Declined(prepared.error);
-              const built = await commit(scoped, prepared.value);
-              return { procedure, built: { ...built, image: prepared.value.image } };
-            }, settings.around),
+          try: async () => {
+            if (atomic || settings.around === undefined)
+              return atomically(async (scoped) => {
+                const { procedure, prepared } = await captureInside(capture);
+                if (prepared === undefined) return { procedure, built: undefined };
+                return { procedure, built: { ...(await commit(scoped, prepared)), prepared } };
+              });
+            // no transaction spans the engine's stores here, so the statements commit in
+            // `around` first and the event after them, each store on its own (`EngineOptions.atomic`)
+            const { procedure, prepared } = await settings.around(() => captureInside(capture));
+            if (prepared === undefined) return { procedure, built: undefined };
+            const built = await atomically((scoped) => commit(scoped, prepared));
+            return { procedure, built: { ...built, prepared } };
+          },
           catch: (cause) =>
             // SAFETY: a Declined is thrown above with the capture's own error or a MutateError
             cause instanceof Declined ? (cause.error as E | MutateError) : asStoreFailure(cause),
         }),
       );
       if (written.built === undefined) return Result.err(nothingChanged(written.procedure));
-      publish(written.built, written.built.image);
+      publish(written.built, written.built.prepared.image);
       return Result.ok(written.built.event);
     });
 

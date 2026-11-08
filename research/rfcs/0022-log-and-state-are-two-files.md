@@ -184,7 +184,10 @@ cannot commit second. What shipped keeps one transaction and makes its split rec
 1. **Row and event in one transaction, everywhere.** `createWriter` hands `captureWithin` to
    `Engine.mutateCaptured`, which runs it first inside `atomic`, then numbers, appends, records
    and persists. A refusal from the capture or the ladder rolls the app's statements back with
-   the rest; statements that changed no synced row still commit, as no event. On Postgres, PGlite
+   the rest; statements that changed no synced row still commit, as no event. An engine built
+   without `atomic` (a memory log, or stores opened by hand and not joined) has no transaction to
+   run the capture in: there the statements still commit first and the event second, as before,
+   so durable stores should always pass `atomic` — `createMesh` does. On Postgres, PGlite
    and an inline (Durable Object, Rivet) log that one transaction is the whole answer: one
    database, one commit.
 2. **The split inside `COMMIT`, journaled.** On a device's SQLite (`bun:sqlite`, `node:sqlite`,

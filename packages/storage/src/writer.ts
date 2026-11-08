@@ -236,7 +236,7 @@ export function createWriter(deps: WriterDeps): Write {
               }
               return Result.ok({ procedure: procedure(name), changes, options: mutateOptions });
             },
-            // an engine whose log is not on this connection has no transaction of its own here
+            // for an engine with no `atomic`: the statements commit here, the event after them
             { around: (body) => inTransaction(driver, body) },
           ),
         );

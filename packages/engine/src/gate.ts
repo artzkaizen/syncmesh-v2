@@ -49,15 +49,6 @@ export function createGate(): Gate {
 /** A transaction over the engine's stores: what the `atomic` option is, and what a turn runs. */
 type Transaction = NonNullable<EngineOptions["atomic"]>;
 
-/** A transaction on a connection the engine does not own: what a captured write runs in without `atomic`. */
-export type OuterTransaction = <T>(fn: () => Promise<T>) => Promise<T>;
-
-/** {@link Transaction}, run inside `outer` when the engine has no `atomic` of its own. */
-type SharedTransaction = <T>(
-  fn: (scoped: AtomicStores) => Promise<T>,
-  outer?: OuterTransaction,
-) => Promise<T>;
-
 /**
  * The engine's transaction behind one {@link Gate}: `shared` for writes, `exclusive` for a purge,
  * so no fold lands inside a purge's rebuild (D45). Without `atomic`, each runs on the plain stores.
@@ -70,13 +61,13 @@ export function gatedTransactions(
   within: (scoped: AtomicStores) => AtomicStores,
 ) {
   const gate = createGate();
-  const transaction = ((fn, outer?) => {
-    if (atomic !== undefined) return atomic((scoped) => fn(within(scoped)));
-    return outer === undefined ? fn(plain) : outer(() => fn(plain));
-  }) satisfies SharedTransaction;
+  const transaction = ((fn) =>
+    atomic === undefined
+      ? fn(plain)
+      : atomic((scoped) => fn(within(scoped)))) satisfies Transaction;
   return {
     turn: gate.shared,
-    shared: ((fn, outer?) => gate.shared(() => transaction(fn, outer))) satisfies SharedTransaction,
+    shared: ((fn) => gate.shared(() => transaction(fn))) satisfies Transaction,
     exclusive: ((fn) => gate.exclusive(() => transaction(fn))) satisfies Transaction,
   };
 }
