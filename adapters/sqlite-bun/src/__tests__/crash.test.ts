@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { bunSqliteDriver } from "../index.js";
 
 const dir = mkdtempSync(join(tmpdir(), "syncmesh-crash-bun-"));
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+// tens of megabytes of copies: under load the removal outlasts the default five seconds
+afterAll(() => rmSync(dir, { recursive: true, force: true }), 60_000);
 
 describe("@syncmesh/sqlite-bun survives kill -9", () => {
   const cases = crashTests({
