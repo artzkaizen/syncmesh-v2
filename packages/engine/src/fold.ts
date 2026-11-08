@@ -4,8 +4,7 @@ import type { Result } from "@syncmesh/result";
 import { applyChange, getRecord, docLineage, stampOf } from "@syncmesh/kernel";
 
 import type { CoverageTracker } from "./coverage.js";
-import type { DocStore } from "./doc-log.js";
-import type { DocAppend } from "./doc-log.js";
+import type { DocAddress, DocAppend, DocStore, LineageMove } from "./doc-log.js";
 import type { EngineError } from "./errors.js";
 import type { FeedTracker } from "./feed.js";
 import type { Hub } from "./listeners.js";
@@ -15,6 +14,7 @@ import type { TelemetryEvent } from "./telemetry.js";
 
 import { foldable } from "./columns.js";
 import { docAppends, recordDocs } from "./doc-log.js";
+import { relabelMoved } from "./lineage-moves.js";
 import { rowWrites, eventWriteKeys } from "./state-store.js";
 import { timed } from "./telemetry.js";
 
@@ -36,6 +36,12 @@ export interface FoldBatch {
    * none. A document handle watches these for remote updates — a doc edit moves no `writeKeys`.
    */
   readonly docs?: readonly DocAppend[];
+  /**
+   * The documents whose winning lineage a snapshot or repair moved by joining their lineage
+   * cells, with no doc change behind it; absent when there were none. Their doc log is relabelled
+   * in the batch's persist step (RFC-0023 §5.3).
+   */
+  readonly lineageMoves?: readonly LineageMove[];
 }
 
 export interface FoldDeps {
@@ -162,15 +168,12 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
       if (batch.eventCount === 0 || into === undefined) return;
       if (into.state !== undefined)
         report(await into.state.commit(rowWrites(state, batch.writeKeys), coverage.current()));
+      const docWinner = (doc: DocAddress) =>
+        docLineage(getRecord(state, doc.table, doc.key), doc.column);
       if (into.docs !== undefined && batch.docs !== undefined)
-        report(
-          await recordDocs(
-            into.docs,
-            batch.docs,
-            (doc) => docLineage(getRecord(state, doc.table, doc.key), doc.column),
-            hasAdapter,
-          ),
-        );
+        report(await recordDocs(into.docs, batch.docs, docWinner, hasAdapter));
+      if (into.docs !== undefined && batch.lineageMoves !== undefined)
+        report(await relabelMoved(into.docs, batch.lineageMoves, docWinner, hasAdapter));
     },
     notify: (batch) => {
       if (batch.eventCount > 0) folds.emit(batch);

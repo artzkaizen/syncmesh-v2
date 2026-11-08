@@ -5,10 +5,12 @@ import type { DocChange, LineageId } from "../doc.js";
 
 import { applyChange, mergeRecord } from "../apply.js";
 import {
+  GENESIS_RULE,
   cellGeneses,
   docLineage,
   parseActionId,
   parseAdapterId,
+  parseLineageCells,
   parseLineageId,
   withDocColumns,
 } from "../doc.js";
@@ -83,10 +85,13 @@ describe("applyChange — a doc change", () => {
       genesis(lineage("b"), stamp(3, 0, PEER_A), lineage("a")),
     ]);
     const record = getRecord(state, NOTES, N1);
-    expect(record?.cells.get(CONTENT)?.value).toEqual({
-      [lineage("a")]: [null, 2, 0, PEER_B],
-      [lineage("b")]: [lineage("a"), 3, 0, PEER_A],
-    });
+    expect(record?.cells.get(CONTENT)?.value).toEqual([
+      GENESIS_RULE,
+      {
+        [lineage("a")]: [null, 2, 0, PEER_B],
+        [lineage("b")]: [lineage("a"), 3, 0, PEER_A],
+      },
+    ]);
     expect(record?.cells.get(CONTENT)?.stamp).toEqual(stamp(3, 0, PEER_A));
     expect(cellGeneses(record?.cells.get(CONTENT)?.value)).toEqual([
       { lineage: lineage("a"), parent: undefined, stamp: at },
@@ -196,7 +201,7 @@ describe("lineage — the first genesis wins, as a tree (RFC-0023 §16.1)", () =
       [lineage("c")]: [null, -1, 0, PEER_A],
       "not a lineage": [null, 1, 0, PEER_A],
     };
-    expect(cellGeneses(mangled).map((g) => g.lineage)).toEqual([lineage("a")]);
+    expect(cellGeneses([GENESIS_RULE, mangled]).map((g) => g.lineage)).toEqual([lineage("a")]);
     expect(cellGeneses(lineage("a"))).toEqual([]);
   });
 
@@ -264,5 +269,46 @@ describe("lineage — the first genesis wins, as a tree (RFC-0023 §16.1)", () =
       spec,
     );
     expect(docLineage(getRecord(joined, NOTES, N1), CONTENT)).toBe(lineage("f"));
+  });
+});
+
+describe("a lineage cell kept outside events carries its rule's version (RFC-0023 §16.1)", () => {
+  const DOCS = new Map([[NOTES, new Map([[CONTENT, LORO]])]]);
+  const held = getRecord(applyAll([genesis(lineage("a"), stamp(1, 0, PEER_A))]), NOTES, N1);
+  const withCell = (value: Parameters<typeof cellGeneses>[0] & {}) => ({
+    table: NOTES,
+    key: N1,
+    record: { cells: new Map([[CONTENT, { value, stamp: stamp(1, 0, PEER_A) }]]) },
+  });
+  const geneses = { [lineage("a")]: [null, 1, 0, PEER_A] };
+
+  test("a cell this rule wrote passes, and so does a row with no cell", () => {
+    expect(
+      held === undefined
+        ? undefined
+        : parseLineageCells([{ table: NOTES, key: N1, record: held }], DOCS).isOk(),
+    ).toBe(true);
+    const plain = getRecord(applyAll([insert({ title: "t" }, stamp(1, 0, PEER_A))]), NOTES, N1);
+    expect(
+      plain === undefined
+        ? undefined
+        : parseLineageCells([{ table: NOTES, key: N1, record: plain }], DOCS).isOk(),
+    ).toBe(true);
+  });
+
+  test("an untagged cell, the LWW rule's id or another version is refused, never read as the root", () => {
+    for (const [value, version] of [
+      [geneses, null],
+      [lineage("a"), null],
+      [[2, geneses], 2],
+    ] as const) {
+      const refused = parseLineageCells([withCell(value)], DOCS);
+      expect(refused.isErr() && refused.error.version).toBe(version);
+      expect(cellGeneses(value)).toEqual([]);
+    }
+  });
+
+  test("a column that is not a doc column is not checked", () => {
+    expect(parseLineageCells([withCell(geneses)], new Map()).isOk()).toBe(true);
   });
 });

@@ -36,7 +36,8 @@ impl Default for DocLimits {
     }
 }
 
-/// The adapter could not take these bytes: malformed, oversized, or from another library.
+/// The adapter refused: bytes it could not take — malformed, oversized, or from another library —
+/// or a document it could not export.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateRejected {
     pub adapter: String,
@@ -73,8 +74,9 @@ pub trait DocumentAdapter {
     /// Whether imported operations wait on others the document has not seen. A snapshot leaves
     /// them out, so a document with any is never materialised.
     fn pending(&self, doc: &Self::Doc) -> bool;
-    /// The whole document as one importable snapshot.
-    fn snapshot(&self, doc: &Self::Doc) -> Vec<u8>;
+    /// The whole document as one importable snapshot; a library that cannot encode it answers
+    /// [`UpdateRejected`], never a panic.
+    fn snapshot(&self, doc: &Self::Doc) -> Result<Vec<u8>, UpdateRejected>;
     /// The document's version, in the adapter's canonical encoding; what `since` reads back.
     fn version(&self, doc: &Self::Doc) -> Vec<u8>;
     /// One update holding every operation the document has past `version`.

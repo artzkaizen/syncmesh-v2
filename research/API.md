@@ -1165,7 +1165,9 @@ const tables = mesh.engine.divergentTables(theirs, { partition: "site:s1" })
 for (const table of tables) {
   const keys = mesh.engine.divergentRows(table, await peer.rowDigests(table))
   // repair SYMMETRICALLY — each side folds the other's records
-  mesh.engine.repairRows(table, await peer.rowRecords(table, keys))
+  // → Result: LineageCellRefused when a record carries a lineage cell of another rule's version
+  const repaired = await mesh.engine.repairRows(table, await peer.rowRecords(table, keys))
+  if (repaired.isErr()) return repaired
 }
 ```
 
@@ -1802,7 +1804,7 @@ its scope, or the missing rows are missing forever.
 
 ```ts
 engine.snapshot()                  // → { tables, cursors } — everything
-engine.installSnapshot(snap)
+engine.installSnapshot(snap)       // → Result<Installed, LineageCellRefused>, refused whole
 ```
 
 ### Chunks

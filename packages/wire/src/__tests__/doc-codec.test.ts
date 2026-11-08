@@ -1,4 +1,5 @@
 import {
+  GENESIS_RULE,
   parseActionId,
   parseAdapterId,
   parseLineageId,
@@ -12,7 +13,7 @@ import type { CborKey, CborValue } from "../cbor.js";
 
 import { decodeCbor } from "../cbor-decode.js";
 import { encodeCbor } from "../cbor.js";
-import { deriveLineage, docChangeId, DOC, GENESIS_RULE, id16 } from "../doc-codec.js";
+import { deriveLineage, docChangeId, DOC, id16 } from "../doc-codec.js";
 import { decodeEventCore, encodeEventCore } from "../event-codec.js";
 import { bytesEqual, bytesToHex } from "../hex.js";
 import { IDENTITY_A, IDENTITY_B, column, event, key, table } from "./fixtures.js";

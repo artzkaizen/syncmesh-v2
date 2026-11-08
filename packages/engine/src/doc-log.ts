@@ -316,23 +316,53 @@ export const inTail = (state: DocEntryState): boolean =>
 
 /**
  * Appends a fold's doc entries and brings each touched document's labels and head up to date —
- * the doc log's half of a fold's persist step, and the one place it is written from. Re-running
- * it is harmless: the append is idempotent and the rest is recomputed from what is held.
+ * the doc log's half of a fold's persist step. Re-running it is harmless: the append is
+ * idempotent and the rest is recomputed from what is held.
  */
 export function recordDocs(
   store: DocStore,
   appends: readonly DocAppend[],
-  winnerOf: (doc: DocAddress) => LineageId | undefined,
+  docWinner: (doc: DocAddress) => LineageId | undefined,
   hasAdapter: (adapter: AdapterId) => boolean,
 ): Promise<Result<void, StoreFailure>> {
   return Result.gen(async function* () {
     if (appends.length === 0) return Result.ok(undefined);
     yield* Result.await(store.append(appends.map((a) => a.entry)));
-    const touched = new Map<string, DocAppend>();
-    for (const append of appends) touched.set(docKey(append.entry), append);
-    for (const { entry, adapter } of touched.values()) {
-      const doc = { table: entry.table, key: entry.key, column: entry.column };
-      const winner = winnerOf(doc);
+    const touched = new Map<string, LineageMove>();
+    for (const { entry, adapter } of appends)
+      touched.set(docKey(entry), {
+        table: entry.table,
+        key: entry.key,
+        column: entry.column,
+        adapter,
+      });
+    return Result.ok(
+      yield* Result.await(relabelDocs(store, [...touched.values()], docWinner, hasAdapter)),
+    );
+  });
+}
+
+/**
+ * A document whose lineage cell joined without a doc change behind it — from a snapshot page or a
+ * repair record — and whose winning lineage moved; with the adapter its column is declared with.
+ */
+export interface LineageMove extends DocAddress {
+  readonly adapter: AdapterId;
+}
+
+/**
+ * Relabels each document's entries against the lineage that now wins, and refreshes its head —
+ * the one place the doc log follows a winner, whether a doc change or a joined cell moved it.
+ */
+export function relabelDocs(
+  store: DocStore,
+  docs: readonly LineageMove[],
+  docWinner: (doc: DocAddress) => LineageId | undefined,
+  hasAdapter: (adapter: AdapterId) => boolean,
+): Promise<Result<void, StoreFailure>> {
+  return Result.gen(async function* () {
+    for (const { adapter, ...doc } of docs) {
+      const winner = docWinner(doc);
       yield* Result.await(store.relineage(doc, winner, liveStates(hasAdapter(adapter))));
       yield* Result.await(store.refreshHead(doc, adapter, winner));
     }

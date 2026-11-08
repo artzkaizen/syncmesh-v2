@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use proptest::prelude::*;
 use syncmesh_core::cbor::{Key, Value};
-use syncmesh_core::doc::{DocChange, DocUpdate, Id16, lineage_text};
+use syncmesh_core::doc::{DocChange, DocUpdate, GENESIS_RULE, Id16, lineage_text};
 use syncmesh_core::envelope::envelope;
 use syncmesh_core::record::CellValue;
 use syncmesh_core::record::{JsonValue, RowRecord};
@@ -84,16 +84,20 @@ fn a_genesis_adds_only_itself_to_the_lineage_cell_and_never_the_write_stamp() {
     let state = fold(&[insert(&written), (doc(Some([9; 16]), true), at.clone())]);
     let record = state.record("notes", "n1").unwrap();
     let cell = record.cells.get("content").unwrap();
-    // the set as the TypeScript holds it: lineage hex → [parent | null, ms, logical, peer]
+    // the set as the TypeScript holds it: [1, lineage hex → [parent | null, ms, logical, peer]]
     let entry = JsonValue::Array(vec![
         JsonValue::Null,
         JsonValue::Number(3.0),
         JsonValue::Number(0.0),
         JsonValue::Text(peer(2).as_str().to_owned()),
     ]);
+    // tagged with the rule's version, as a snapshot page, a repair or persisted state keeps it
     assert_eq!(
         cell.value,
-        CellValue::Object(BTreeMap::from([(lineage_text(&[9; 16]), entry)]))
+        CellValue::Array(vec![
+            JsonValue::Number(GENESIS_RULE as f64),
+            JsonValue::Object(BTreeMap::from([(lineage_text(&[9; 16]), entry)])),
+        ])
     );
     assert_eq!(cell.stamp, at);
     assert_eq!(record.write_stamp, Some(written));

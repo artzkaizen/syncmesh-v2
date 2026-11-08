@@ -28,7 +28,7 @@ pub const LORO_ID: &str = "loro@1";
 /// let doc = adapter.create(1);
 /// doc.get_text("body").insert(0, "hi").unwrap();
 /// doc.commit();
-/// assert!(adapter.snapshot(&doc).starts_with(b"loro"));
+/// assert!(adapter.snapshot(&doc).unwrap().starts_with(b"loro"));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LoroAdapter {
@@ -148,9 +148,10 @@ impl DocumentAdapter for LoroAdapter {
         !matches!(doc.export_pending_updates(), Ok(None))
     }
 
-    fn snapshot(&self, doc: &LoroDoc) -> Vec<u8> {
-        doc.export(ExportMode::Snapshot)
-            .expect("a snapshot of a whole document always encodes")
+    fn snapshot(&self, doc: &LoroDoc) -> Result<Vec<u8>, UpdateRejected> {
+        guarded("loro could not export a snapshot", || {
+            doc.export(ExportMode::Snapshot)
+        })
     }
 
     fn version(&self, doc: &LoroDoc) -> Vec<u8> {
@@ -194,7 +195,7 @@ mod tests {
             ..DocLimits::DEFAULT
         });
         let source = edited(&small, 1, &"x".repeat(256));
-        let update = small.snapshot(&source);
+        let update = small.snapshot(&source).unwrap();
         assert!(update.len() > 32);
         let target = small.create(2);
         let refused = small.apply(&target, &[&update]).unwrap_err();
@@ -304,6 +305,35 @@ mod tests {
             let _ = adapter.apply(&target, &[&bytes]);
             let _ = adapter.since(&target, &bytes);
             let _ = adapter.version(&target);
+            let _ = adapter.snapshot(&target);
+        }
+    }
+
+    #[test]
+    fn a_snapshot_is_a_value_in_every_state_a_document_can_be_in() {
+        let adapter = LoroAdapter::default();
+        let source = edited(&adapter, 1, "hello");
+        let full = adapter.snapshot(&source).unwrap();
+        // a document waiting on operations it has not seen, one checked out at an old version,
+        // and one with an edit not yet committed: each still answers a snapshot, as a value
+        let waiting = adapter.create(2);
+        let later = edited(&adapter, 3, " world");
+        later.import(&full).unwrap();
+        later.get_text("body").insert(0, ">").unwrap();
+        later.commit();
+        let tail = adapter.since(&later, &adapter.version(&source)).unwrap();
+        adapter.apply(&waiting, &[&tail]).unwrap();
+        assert!(adapter.pending(&waiting));
+        let detached = edited(&adapter, 4, "abc");
+        detached.checkout(&Default::default()).unwrap();
+        let open = adapter.create(5);
+        open.get_text("body").insert(0, "uncommitted").unwrap();
+        for doc in [&source, &waiting, &detached, &open] {
+            let bytes = adapter.snapshot(doc).expect("a snapshot, as a value");
+            assert_eq!(
+                adapter.apply(&adapter.create(9), &[&bytes]).map(|_| ()),
+                Ok(())
+            );
         }
     }
 }

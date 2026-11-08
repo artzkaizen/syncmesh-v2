@@ -28,7 +28,7 @@ import {
 } from "@syncmesh/wire";
 
 import { CONTENT, LORO, N1, NOTES, T0 } from "./doc-names.js";
-import { lineageTreeVectors } from "./lineage-trees.js";
+import { lineageCellVectors, lineageTreeVectors } from "./lineage-trees.js";
 import { wireVectors } from "./vectors.js";
 
 const AUTHOR_SEED = Uint8Array.from({ length: 32 }, (_, i) => 0x40 + i);
@@ -144,6 +144,7 @@ export function docVectors() {
   );
 
   const lineageTrees = lineageTreeVectors(author.peerId, producer.peerId);
+  const lineageCells = lineageCellVectors(author.peerId, producer.peerId);
 
   const frozen = wireVectors.vectors[0];
   return {
@@ -155,6 +156,7 @@ export function docVectors() {
     }),
     lineages,
     lineageTrees,
+    lineageCells,
     checkpoint: {
       description: "a checkpoint of the genesis lineage, covering both writers",
       coreHex: bytesToHex(checkpoint.core),
