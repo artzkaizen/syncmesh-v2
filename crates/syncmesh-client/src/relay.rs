@@ -676,7 +676,9 @@ impl RelayLink {
                 bytes: Some(bytes),
             }),
             RelayFrame::BlobMissing { hash } => out.push(Action::BlobAnswer { hash, bytes: None }),
-            RelayFrame::Error { code, message } => {
+            // a `retention` refusal's floor has nowhere to go here: this client keeps no recovery
+            // record (gaps U31), so it hangs up and redials on its backoff as before
+            RelayFrame::Error { code, message, .. } => {
                 if code == "version" {
                     self.fatal = true;
                     out.push(Action::Refused {

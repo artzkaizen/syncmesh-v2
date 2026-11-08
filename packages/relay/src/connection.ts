@@ -1,3 +1,4 @@
+import type { Cursors } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 import type { Grant } from "@syncmesh/wire";
 
@@ -25,7 +26,7 @@ import { eventIntake, isBlobFrame, serveBlob } from "./ingest.js";
 import { createBudget } from "./limits.js";
 import { createViewer } from "./passover.js";
 import { newChallenge, verifyJoinProof } from "./proof.js";
-import { BELOW_FLOOR, belowFloor } from "./retention.js";
+import { refusedBelowFloor } from "./retention.js";
 import { createSeat, type Seat } from "./seat.js";
 import { secureLink } from "./secure.js";
 import { createSender } from "./sender.js";
@@ -201,8 +202,8 @@ export function createConnection(
    * N+1 without N — a hole every later joiner is paged and no author ever re-sends.
    */
   let closed = false;
-  const refuse = (code: string, message: string, fatal = false): void => {
-    sender.send(errorFrame(code, message));
+  const refuse = (code: string, message: string, fatal = false, floor?: Cursors): void => {
+    sender.send(errorFrame(code, message, floor));
     if (fatal) {
       closed = true;
       socket.close(code);
@@ -251,22 +252,25 @@ export function createConnection(
      * its holdback until that overflowed into a re-join, which re-requests the same missing run
      * from the same room, forever.
      *
-     * Not permanent the way a version refusal is: the socket closes, the client reconnects on its
-     * backoff, and the join after it succeeds the moment the gap has been filled from a peer that
-     * still holds it. This room simply is not where that history lives any more.
+     * Not permanent the way a version refusal is: the socket closes and the refusal names the
+     * floor, so the client raises `BelowRelayFloor` and holds off its redial until its next join
+     * would be at or above that floor, or it is woken (gaps U30). The join after that succeeds.
+     * This room simply is not where that history lives any more.
      *
      * This is the cheap half — before hello, before registration, before any page — and it reads
      * the floor as it stands right now. A sweep already on the room's queue has not moved it yet,
      * so `sendCatchUp` asks the same question again from inside that queue, where the answer is
      * final.
+     *
+     * It runs inside the seat, never before it: the refusal names the floor, which lists every
+     * author in the room, and a gated room tells that only to a key its grant seats — the same
+     * thing the hello would have told it (D40). An open room seats at once, so there it is still
+     * the first thing the join is answered with.
      */
-    if (belowFloor(theirs, room.floor())) {
-      refuse("retention", BELOW_FLOOR, true);
-      return;
-    }
     // a gated room seats a proven key only under a grant for it (D40): the one already cached
     // from an earlier visit, or the one the device is about to send
     seat.admit(peer, (grant) => {
+      if (refusedBelowFloor(refuse, theirs, room.floor())) return;
       me = peer;
       const held = { socket, seat, refuse: hangUp, closed: () => closed };
       sitDown(conversation, { ...frame, selected }, held, grant);

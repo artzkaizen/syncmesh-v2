@@ -458,6 +458,15 @@ fn relay_control_frames_are_reproduced_from_the_generator_inputs() {
                 }),
             ),
         ),
+        // the retention refusal names the floor it was below (gaps U30)
+        (
+            31,
+            relay_frames::retention_error_frame(
+                "retention",
+                "this room no longer holds the history below the cursors you sent",
+                &floor,
+            ),
+        ),
     ];
     for (i, b) in expected {
         assert_eq!(to_hex(&b), to_hex(&wires[i]), "vector {i}");
@@ -506,6 +515,17 @@ fn relay_control_frames_are_reproduced_from_the_generator_inputs() {
             assert_eq!(scoped, None);
         }
         f => panic!("expected page, got {}", f.kind()),
+    }
+    match decode_relay_frame(&wires[31]).unwrap() {
+        RelayFrame::Error { code, floor: f, .. } => {
+            assert_eq!(code, "retention");
+            assert_eq!(f, Some(floor.clone()));
+        }
+        f => panic!("expected error, got {}", f.kind()),
+    }
+    match decode_relay_frame(&wires[7]).unwrap() {
+        RelayFrame::Error { floor: f, .. } => assert_eq!(f, None),
+        f => panic!("expected error, got {}", f.kind()),
     }
 }
 

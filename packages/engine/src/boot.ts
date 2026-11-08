@@ -48,8 +48,9 @@ interface Cached {
  * Boots an engine over its stores: opens persisted state when there is one, folds only the log above
  * its coverage, and moves the clock past the highest stored stamp before any write is numbered.
  * A corrupt or absent state store is rebuilt from the whole log — unless the log has been compacted,
- * or the state it cannot read took rows from a snapshot install (its cursors carry a floor), in
- * which case boot fails with `StateCorrupt` rather than open a partial state.
+ * or the state took rows from a snapshot install (its cursors carry a floor, and the log records
+ * it as `installedBelow`), in which case boot fails with `StateCorrupt` rather than open a partial
+ * state.
  *
  * **It also audits the log for writes this device can never send** ({@link StrandedWrites}) and
  * reports them on `options.onError`. Boot is the moment that matters: opening a log under a key
@@ -124,6 +125,14 @@ function load(
      */
     const floors = yield* Result.await(store.compactedBelow());
     const partial = floors.synced.size > 0 || floors.local.size > 0;
+    /**
+     * Rows a snapshot install brought have no events behind them (D46's floor). The state's cursors
+     * carry that floor, and so does the log (`installedBelow`): the log's copy is the one left
+     * when the cursors cannot be read or the state is not read at all (gaps U33).
+     */
+    const installed = yield* Result.await(store.installedBelow());
+    const UNHELD =
+      "it holds rows installed from a snapshot, which the log has no events for — rejoin from a peer";
 
     /**
      * **An absent state store is checked too, and this used to return before it was.**
@@ -143,6 +152,12 @@ function load(
               "there is no folded state and the log is compacted below what would rebuild it — rejoin from a peer",
           }),
         );
+      if (installed.size > 0)
+        return Result.err(
+          new StateCorrupt({
+            message: `there is no folded state, and the state this log was folded into ${UNHELD}`,
+          }),
+        );
       return Result.ok(undefined);
     }
     // a lineage cell another rule wrote is not this rule's state: it is refused, never read as a
@@ -156,7 +171,12 @@ function load(
         : parseLineageCells(keyedRecords(docTables(state, docs)), docs)
       ).map(() => ({ state, coverage })),
     );
-    if (loaded.isOk()) return Result.ok(loaded.value);
+    if (loaded.isOk()) {
+      // a state whose install came before the log kept the floor too: the log takes it now
+      const floor = loaded.value.coverage.floor;
+      if (floor !== undefined) yield* Result.await(store.recordInstalled(floor));
+      return Result.ok(loaded.value);
+    }
     if (loaded.error._tag === "StoreFailure") return Result.err(loaded.error);
     if (loaded.error._tag === "LineageCellRefused") onError?.(loaded.error);
     if (partial) {
@@ -168,16 +188,13 @@ function load(
     }
     /**
      * **Rows a snapshot install brought have no events behind them** (D46's floor, persisted with
-     * the cursors), so the log rebuilds the state without them and the device would report itself
-     * healthy two snapshots short (gaps U22). Refused like a compacted log, for the same reason.
+     * the cursors and in the log), so the log rebuilds the state without them and the device would
+     * report itself healthy two snapshots short (gaps U22, U33). Refused like a compacted log, for
+     * the same reason, whether or not the cursors could be read.
      */
-    const unheld = cursors.isOk() ? cursors.value.floor : undefined;
-    if (unheld !== undefined && unheld.size > 0) {
-      return Result.err(
-        new StateCorrupt({
-          message: `${loaded.error.message}; it holds rows installed from a snapshot, which the log has no events for — rejoin from a peer`,
-        }),
-      );
+    const unheld = cursors.isOk() ? (cursors.value.floor ?? new Map()) : new Map();
+    if (unheld.size > 0 || installed.size > 0) {
+      return Result.err(new StateCorrupt({ message: `${loaded.error.message}; ${UNHELD}` }));
     }
     yield* Result.await(stateStore.clear());
     return Result.ok(undefined);

@@ -21,6 +21,7 @@ const writes = {
   "events.compactBelow": (stores) =>
     stores.events.compactBelow(new Map(), "synced", Temporal.Now.instant()),
   "events.evict": (stores) => stores.events.evict([]),
+  "events.recordInstalled": (stores) => stores.events.recordInstalled(new Map([[A, ONE]])),
   "state.commit": (stores) => stores.state.commit([], EMPTY_COVERAGE),
   "state.clear": (stores) => stores.state.clear(),
   "state.remove": (stores) => stores.state.remove(new Map()),

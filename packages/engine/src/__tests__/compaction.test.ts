@@ -14,6 +14,7 @@ import { refoldable } from "../compaction.js";
 import { unheldBelow } from "../coverage.js";
 import { createLink } from "../link.js";
 import { StateCorrupt, createMemoryStateStore, type StateStore } from "../state-store.js";
+import { StoreFailure, createMemoryEventStore } from "../store.js";
 import {
   CREATE,
   NOTES,
@@ -351,5 +352,154 @@ describe("the size trigger — D05, automerge's rule", () => {
     const { engine } = setup(PEER_A);
     const r = await engine.compact({ now: T0, sizes: { incrementalBytes: 0, snapshotBytes: 0 } });
     expect(r.isErr() && r.error._tag).toBe("CompactionRefused");
+  });
+});
+
+describe("below the floor (gaps U1, U33)", () => {
+  /** Three of A's events at b: the first and third held, the second withheld and passed over. */
+  const withheld = async () => {
+    const { a, b, link, stateB } = pair();
+    (await write(a.engine, "n1", "n1")).unwrap();
+    (await link.catchUp()).unwrap();
+    link.close();
+    for (const k of ["n2", "n3"]) (await write(a.engine, k, k)).unwrap();
+    // A:2 was withheld from b and passed over (D24, D40); A:3 reached it
+    b.engine.adoptCoverage({ synced: cursors([[PEER_A, seq(2)]]), local: new Map() });
+    const [first, second, third] = (await a.store.all()).unwrap();
+    if (first === undefined || second === undefined || third === undefined)
+      throw new Error("a holds three events");
+    (await b.engine.receiveBatch([third])).unwrap();
+    b.engine.acknowledge(PEER_A, a.engine.coverage().synced, T0);
+    return { a, b, stateB, first, second, third };
+  };
+
+  test("an event compaction removed is skipped, not taken again below the floor (U1)", async () => {
+    const { b, first, second, third } = await withheld();
+    expect((await b.engine.compact({ now: T0 })).unwrap().removed).toBe(2);
+    expect(await count(b.store)).toBe(0);
+
+    // a relay hop, or a peer whose cursors went back, offers all three again
+    const report = (await b.engine.receiveBatch([first, second, third])).unwrap();
+    // the two compaction took stay out of the log; the withheld one is history b never folded
+    expect(report.folded).toBe(1);
+    expect((await b.store.all()).unwrap().map(({ event }) => event.seqNum)).toEqual([seq(2)]);
+    expect(new Set(bodies(b.engine))).toEqual(new Set(["n1", "n2", "n3"]));
+  });
+
+  test("an event evicted below the floor is taken again when it comes back (U1)", async () => {
+    const { b, first, third } = await withheld();
+    (await b.engine.compact({ now: T0 })).unwrap();
+    // A:3 is put back and then evicted by a purge (D45): a later widening brings it again
+    (await b.store.append(third)).unwrap();
+    (await b.store.evict([third.event.id])).unwrap();
+    expect((await b.store.compacted(third.event)).unwrap()).toBe(false);
+    expect((await b.store.compacted(first.event)).unwrap()).toBe(true);
+    expect((await b.engine.receiveBatch([first, third])).unwrap().folded).toBe(1);
+  });
+
+  test("a state that is not read at all does not rebuild without the rows a snapshot installed (U33)", async () => {
+    const { a, b } = pair();
+    for (const k of ["n1", "n2", "n3"]) (await write(a.engine, k, k)).unwrap();
+    (await b.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    expect((await b.store.installedBelow()).unwrap()).toEqual(cursors([[PEER_A, seq(3)]]));
+    expect((await refoldable(b.store)).unwrap()).toBe(false);
+    // a schema change that opens a new state file, or an operator deleting it
+    const fresh = await openEngine({
+      peerId: PEER_B,
+      clock: fakeClock(1),
+      store: b.store,
+      stateStore: createMemoryStateStore(),
+    });
+    expect(fresh.isErr() && fresh.error).toBeInstanceOf(StateCorrupt);
+    expect(fresh.isErr() && fresh.error.message).toContain("installed from a snapshot");
+  });
+
+  test("a state whose rows and cursors both cannot be read is refused, not rebuilt from the log (U33)", async () => {
+    const { a, b, stateB } = pair();
+    for (const k of ["n1", "n2"]) (await write(a.engine, k, k)).unwrap();
+    (await b.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    const unreadable = () =>
+      Promise.resolve(Result.err(new StateCorrupt({ message: "the cache does not decode" })));
+    const broken: StateStore = { ...stateB, loadAll: unreadable, loadCursors: unreadable };
+    const booted = await openEngine({
+      peerId: PEER_B,
+      clock: fakeClock(1),
+      store: b.store,
+      stateStore: broken,
+    });
+    expect(booted.isErr() && booted.error.message).toContain("installed from a snapshot");
+    // nothing was cleared: the rows are still where a rejoin can find them
+    expect((await stateB.loadAll()).unwrap().get(NOTES)?.size).toBe(2);
+  });
+
+  test("a crash between an install's rows and its cursors still reopens (U33)", async () => {
+    const a = setup(PEER_A, 100, { stateStore: createMemoryStateStore() });
+    for (const k of ["n1", "n2"]) (await write(a.engine, k, k)).unwrap();
+    const real = createMemoryStateStore();
+    let commits = 0;
+    const { promise: died, resolve: die } = Promise.withResolvers<void>();
+    // the process dies once the rows land: the next commit never returns, and nothing after it runs
+    const dying: StateStore = {
+      ...real,
+      commit: (rows, coverage) => {
+        commits += 1;
+        if (commits === 1) return real.commit(rows, coverage);
+        die();
+        return new Promise(() => undefined);
+      },
+    };
+    const b = setup(PEER_B, 100, { stateStore: dying });
+    const installing = b.engine.installSnapshot(a.engine.snapshot());
+    await died;
+    expect((await real.isEmpty()).unwrap()).toBe(true);
+    // no cursors claim the install, so the log is folded again and the snapshot asked for again
+    const reopened = await openEngine({
+      peerId: PEER_B,
+      clock: fakeClock(1),
+      store: b.store,
+      stateStore: real,
+    });
+    expect(reopened.isOk()).toBe(true);
+    expect(installing).toBeInstanceOf(Promise);
+  });
+
+  test("an install whose state commits fail leaves no floor in the log (U33)", async () => {
+    const a = setup(PEER_A, 100, { stateStore: createMemoryStateStore() });
+    for (const k of ["n1", "n2"]) (await write(a.engine, k, k)).unwrap();
+    const real = createMemoryStateStore();
+    let commits = 0;
+    // the disk fills once the engine has opened: every commit after the first is refused
+    const full: StateStore = {
+      ...real,
+      commit: (rows, coverage) => {
+        commits += 1;
+        return commits === 1
+          ? real.commit(rows, coverage)
+          : Promise.resolve(Result.err(new StoreFailure({ message: "disk full" })));
+      },
+    };
+    const b = setup(PEER_B, 100, { stateStore: full });
+    (await b.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    expect((await real.isEmpty()).unwrap()).toBe(true);
+    expect((await b.store.installedBelow()).unwrap().size).toBe(0);
+    // no state holds the rows, so the log is folded again and the snapshot asked for again
+    const reopened = await openEngine({
+      peerId: PEER_B,
+      clock: fakeClock(1),
+      store: b.store,
+      stateStore: real,
+    });
+    expect(reopened.isOk()).toBe(true);
+  });
+
+  test("a state installed before the log kept the floor gives it to the log at boot (U33)", async () => {
+    const { a, b, stateB } = pair();
+    (await write(a.engine, "n1", "n1")).unwrap();
+    (await b.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    // the same log as a build that kept the floor only with the state's cursors left it
+    const store = createMemoryEventStore();
+    (await store.appendBatch((await b.store.all()).unwrap())).unwrap();
+    (await openEngine({ peerId: PEER_B, clock: fakeClock(1), store, stateStore: stateB })).unwrap();
+    expect((await store.installedBelow()).unwrap()).toEqual(cursors([[PEER_A, seq(1)]]));
   });
 });

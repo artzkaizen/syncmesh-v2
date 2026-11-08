@@ -114,8 +114,9 @@ export const schemaName = (tables: readonly Table[], dialect: SqlDialect = "sqli
  * lives in the log, which is shared; the file it is comparing against is the derived half, which
  * `schemaName` gives a different name to for every shape. So changing a column normally opens
  * an empty file and refolds into it, and the previous shape's file is an orphan nobody reads.
- * Once the log has been compacted that stops being true — the old file holds rows no fold can
- * produce again — and the open refuses rather than silently presenting an empty database.
+ * Once the log has been compacted, or has taken rows from a snapshot install (gaps U33), that
+ * stops being true — the old file holds rows no fold can produce again — and the open refuses
+ * rather than silently presenting an empty database.
  */
 const installed = (
   driver: SqlDriver,
@@ -138,7 +139,7 @@ const installed = (
       return Result.err(
         new StoreFailure({
           message:
-            "the app's tables changed shape and this log has been compacted — the rows below the floor exist only in the state file the previous shape wrote, so there is nothing left to refold them from. Keep the previous schema, or rejoin from a peer.",
+            "the app's tables changed shape and this log cannot rebuild every row — it has been compacted, or rows came from a snapshot install with no events behind them, and those exist only in the state file the previous shape wrote, so there is nothing left to refold them from. Keep the previous schema, or rejoin from a peer.",
         }),
       );
     }
@@ -310,6 +311,7 @@ export function openStores(
         appendBatch: opensFirst(events.appendBatch),
         compactBelow: opensFirst(events.compactBelow),
         evict: opensFirst(events.evict),
+        recordInstalled: opensFirst(events.recordInstalled),
       } satisfies EventStore,
       state:
         state.derive === undefined

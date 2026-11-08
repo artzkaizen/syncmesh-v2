@@ -1,6 +1,8 @@
 import type { PeerId } from "@syncmesh/kernel";
 import type { Identity } from "@syncmesh/wire";
 
+import type { RelayDial } from "./transport.js";
+
 import { speaksHandshake } from "./frames.js";
 import { isHello, secureLink, type SecureLink } from "./secure.js";
 
@@ -106,3 +108,22 @@ export function createLinkSeal(options: LinkSealOptions): LinkSeal {
     },
   };
 }
+
+/**
+ * The dial as the session sees it: frames already opened by `seal`, hellos already answered.
+ * `identity` is read per frame; a frame that arrives before there is one is dropped.
+ */
+export const openedDial = (
+  dialed: RelayDial,
+  seal: LinkSeal,
+  identity: () => Identity | undefined,
+): RelayDial => ({
+  send: dialed.send,
+  onFrame: (cb) =>
+    dialed.onFrame((raw) => {
+      const self = identity();
+      if (self !== undefined) seal.open(self, raw, cb);
+    }),
+  onClose: dialed.onClose,
+  close: dialed.close,
+});
