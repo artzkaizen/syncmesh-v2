@@ -141,10 +141,11 @@ export interface Bridge {
 }
 
 /** The join exchange for one session, carrying only the options the caller actually set. */
-const joinFor = (
+const createSessionJoin = (
   options: BridgeOptions,
   send: JoinDeps["send"],
   reader: () => PeerId | undefined,
+  onRefused: NonNullable<JoinDeps["onRefused"]>,
 ): JoinExchange => {
   const { engine, identity, rowsPerChunk, onSnapshot, certificate, trust } = options;
   const { readGate, withheld } = options;
@@ -153,7 +154,7 @@ const joinFor = (
     readGate === undefined
       ? {}
       : { serves: (asked?: Interest) => readGate.serves(reader(), asked) };
-  const base = { engine, send, idPrefix: identity.peerId.slice(0, 8), ...served };
+  const base = { engine, send, onRefused, idPrefix: identity.peerId.slice(0, 8), ...served };
   const gated = withheld === undefined ? base : { ...base, withheld };
   const paged = rowsPerChunk === undefined ? gated : { ...gated, rowsPerChunk };
   const reported = onSnapshot === undefined ? paged : { ...paged, onSnapshot };
@@ -211,7 +212,8 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
 
   // every frame of the exchange travels under the one snapshot tag, so they stay in the order
   // the exchange needs — a page ahead of the manifest that names it is a page thrown away
-  const join = joinFor(options, (what, bytes) => send(KIND.snapshot, what, bytes), reader);
+  const sendSnapshot = (what: string, bytes: Uint8Array) => send(KIND.snapshot, what, bytes);
+  const join = createSessionJoin(options, sendSnapshot, reader, errors.emit);
 
   const holdback = createHoldback(engine, gapLimit);
   const fold = foldInto(engine, errors.emit);

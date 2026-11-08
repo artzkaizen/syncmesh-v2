@@ -1,4 +1,11 @@
-import { getRecord, docLineage, parseLineageId, parsePeerId, parseSeqNum } from "@syncmesh/kernel";
+import {
+  getRecord,
+  docLineage,
+  parseLineageCells,
+  parseLineageId,
+  parsePeerId,
+  parseSeqNum,
+} from "@syncmesh/kernel";
 import {
   bytesToHex,
   decodeCheckpoint,
@@ -8,6 +15,7 @@ import {
   encodeCbor,
   encodeCheckpointCore,
   encodeEventCore,
+  decodeRecord,
   encodeRecord,
   hexToBytes,
   verify,
@@ -15,13 +23,15 @@ import {
 import { describe, expect, test } from "bun:test";
 
 import raw from "../../doc-vectors.json" with { type: "json" };
-import { CONTENT, N1, NOTES } from "../doc-names.js";
+import { CONTENT, DOCS, N1, NOTES } from "../doc-names.js";
 import { docVectors } from "../generate-doc-vectors.js";
 import { foldGeneses } from "../lineage-trees.js";
 import { wireVectors } from "../vectors.js";
 
 const bytes = (hex: string) => hexToBytes(hex).unwrap();
 const author = bytes(raw.authorId);
+const lineageOrRoot = (hex: string | null) =>
+  hex === null ? undefined : parseLineageId(hex).unwrap();
 
 describe("doc vectors — frozen (RFC-0023 §13)", () => {
   test("the generator still produces the frozen file byte-for-byte (change the wire, change the vectors — deliberately)", () => {
@@ -68,12 +78,23 @@ describe("doc vectors — frozen (RFC-0023 §13)", () => {
         logical: g.logical,
         peer: parsePeerId(g.peer).unwrap(),
       }));
-      const winner = tree.winner === null ? undefined : parseLineageId(tree.winner).unwrap();
+      const winner = lineageOrRoot(tree.winner);
       for (const order of permutations(geneses)) {
         const record = getRecord(foldGeneses(order), NOTES, N1);
         expect(record === undefined ? "" : bytesToHex(encodeRecord(record))).toBe(tree.recordHex);
         expect(docLineage(record, CONTENT)).toBe(winner);
       }
+    });
+  }
+
+  for (const cell of raw.lineageCells) {
+    test(`lineage cell: ${cell.description}`, () => {
+      const record = decodeRecord(bytes(cell.recordHex)).unwrap();
+      expect(bytesToHex(encodeRecord(record))).toBe(cell.recordHex);
+      const parsed = parseLineageCells([{ table: NOTES, key: N1, record }], DOCS);
+      expect(parsed.isErr()).toBe(cell.refused);
+      if (parsed.isErr()) expect(parsed.error.version).toBe(cell.version);
+      else expect(docLineage(record, CONTENT)).toBe(lineageOrRoot(cell.winner));
     });
   }
 

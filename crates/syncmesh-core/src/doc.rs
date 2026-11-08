@@ -25,10 +25,12 @@ const DOC_BLOB: i64 = 4;
 const DOC_GENESIS: i64 = 5;
 const DOC_PARENT: i64 = 6;
 
-/// What key 5 holds on a genesis: the version of the lineage rule it was written under, `1` for the
-/// first-genesis tree (RFC-0023 §16.1). The last-writer-wins rule before it wrote `true`; a build
-/// from then refuses anything else, and this one refuses `true` at admission — it decodes one as
-/// [`DocChange::legacy`], so a stored log holding it still reads — as the TypeScript's `GENESIS_RULE`.
+/// The version of the lineage rule, `1` for the first-genesis tree (RFC-0023 §16.1), as the
+/// TypeScript's `GENESIS_RULE`. A genesis carries it in key 5 — the last-writer-wins rule before it
+/// wrote `true`, which this build decodes as [`DocChange::legacy`] and refuses at admission — and a
+/// lineage cell carries it as its tag wherever the cell is kept outside events (snapshot pages,
+/// repair records, persisted state), so a build meets another rule's cell as a version it does
+/// not run ([`LineageCellRefused`]), never as the root.
 pub const GENESIS_RULE: i64 = 1;
 
 /// A lineage or an action: 16 bytes on the wire, 32 lowercase hex characters wherever it is text.
@@ -319,15 +321,101 @@ fn genesis_of(lineage: &str, entry: &JsonValue) -> Option<Genesis> {
     })
 }
 
-/// Every genesis a lineage cell holds, by lineage id. Anything not in the cell's shape is skipped
-/// entry by entry, on every peer alike, as the TypeScript's `genesesOf`.
+/// The version a lineage cell is tagged with: the head of `[version, geneses]`, or `None` for a
+/// cell with no tag — one written before cells were versioned, the lineage id the last-writer-wins
+/// rule kept, or a value that is no cell at all.
+fn cell_version(value: &CellValue) -> Option<i64> {
+    let CellValue::Array(items) = value else {
+        return None;
+    };
+    count(items.first()?, MAX_SAFE_INTEGER as f64).map(|n| n as i64)
+}
+
+/// The geneses half of a cell tagged [`GENESIS_RULE`], or `None` for any other value.
+fn rule_geneses(value: &CellValue) -> Option<&BTreeMap<String, JsonValue>> {
+    match value {
+        CellValue::Array(items)
+            if items.len() == 2 && cell_version(value) == Some(GENESIS_RULE) =>
+        {
+            match &items[1] {
+                JsonValue::Object(held) => Some(held),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Every genesis a lineage cell holds, by lineage id, as the TypeScript's `cellGeneses`. Within a
+/// cell of this rule's version an entry not in the rule's shape is skipped entry by entry, on every
+/// peer alike; a cell of another version holds nothing this rule reads, and
+/// [`parse_lineage_cells`] refuses it where it enters.
 pub fn geneses_of(value: Option<&CellValue>) -> Vec<Genesis> {
-    let Some(CellValue::Object(held)) = value else {
+    let Some(held) = value.and_then(rule_geneses) else {
         return Vec::new();
     };
     held.iter()
         .filter_map(|(lineage, entry)| genesis_of(lineage, entry))
         .collect()
+}
+
+/// A lineage cell that arrived outside an event — a snapshot page, a repair record, persisted state
+/// — tagged with a version of the lineage rule this build does not run (RFC-0023 §16.1), as the
+/// TypeScript's `LineageCellRefused`. `version` is `None` for a cell with no tag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineageCellRefused {
+    pub table: String,
+    pub key: String,
+    pub column: String,
+    pub version: Option<i64>,
+}
+
+impl std::fmt::Display for LineageCellRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let found = match self.version {
+            None => "a lineage cell with no version".to_owned(),
+            Some(GENESIS_RULE) => {
+                format!("a lineage cell tagged {GENESIS_RULE} in a shape that version never writes")
+            }
+            Some(v) => format!("a lineage cell of version {v}"),
+        };
+        write!(
+            f,
+            "{}/{}.{}: {found}; this build runs version {GENESIS_RULE}",
+            self.table, self.key, self.column
+        )
+    }
+}
+
+impl std::error::Error for LineageCellRefused {}
+
+/// Checks every declared doc column's cell in `rows` against the lineage rule this build runs, as
+/// the TypeScript's `parseLineageCells`: the first cell not tagged [`GENESIS_RULE`] is refused, so
+/// a caller joins none of the rows rather than read it as the root or merge it by another rule. A
+/// column absent from a record is the root and passes.
+pub fn parse_lineage_cells<'a>(
+    rows: impl IntoIterator<Item = (&'a str, &'a str, &'a RowRecord)>,
+    docs: &DocColumns,
+) -> Result<(), LineageCellRefused> {
+    for (table, key, record) in rows {
+        let Some(columns) = docs.get(table) else {
+            continue;
+        };
+        for column in columns.keys() {
+            let Some(cell) = record.cells.get(column) else {
+                continue;
+            };
+            if rule_geneses(&cell.value).is_none() {
+                return Err(LineageCellRefused {
+                    table: table.to_owned(),
+                    key: key.to_owned(),
+                    column: column.clone(),
+                    version: cell_version(&cell.value),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The lineage a set of geneses settles on — **the one place the lineage rule lives** (RFC-0023
@@ -377,20 +465,28 @@ pub fn lineage_rule(incoming: Cell, current: Option<Cell>) -> Cell {
         Some(c) if incoming.stamp <= c.stamp => c.stamp,
         _ => incoming.stamp,
     };
-    let value = held
+    let geneses = held
         .values()
         .map(|g| (lineage_text(&g.lineage), g.entry()))
         .collect();
     Cell {
-        value: CellValue::Object(value),
+        value: tagged(geneses),
         stamp,
     }
+}
+
+/// A cell's value: `[GENESIS_RULE, { lineage → [parent | null, ms, logical, peer] }]`.
+fn tagged(geneses: BTreeMap<String, JsonValue>) -> CellValue {
+    CellValue::Array(vec![
+        JsonValue::Number(GENESIS_RULE as f64),
+        JsonValue::Object(geneses),
+    ])
 }
 
 /// The lineage cell a genesis writes: the one genesis, stamped with it.
 pub fn lineage_cell(genesis: &Genesis) -> Cell {
     Cell {
-        value: CellValue::Object(BTreeMap::from([(
+        value: tagged(BTreeMap::from([(
             lineage_text(&genesis.lineage),
             genesis.entry(),
         )])),
@@ -439,6 +535,51 @@ mod tests {
         ] {
             assert!(!is_adapter_id(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_cell_of_another_rules_version_is_refused_never_read_as_the_root() {
+        let docs = DocColumns::from([(
+            "notes".to_owned(),
+            BTreeMap::from([("content".to_owned(), "loro@1".to_owned())]),
+        )]);
+        let peer = PeerId::parse(&"ab".repeat(32)).unwrap();
+        let held = lineage_cell(&Genesis {
+            lineage: [0xa1; 16],
+            parent: None,
+            stamp: Stamp::new(Hlc::new(1, 0), peer),
+        });
+        let CellValue::Array(tagged) = &held.value else {
+            panic!("a lineage cell is tagged with its rule's version");
+        };
+        let geneses = CellValue::from(tagged[1].clone());
+        let version_two = CellValue::Array(vec![JsonValue::Number(2.0), tagged[1].clone()]);
+        let with = |value: CellValue| RowRecord {
+            cells: BTreeMap::from([(
+                "content".to_owned(),
+                Cell {
+                    value,
+                    stamp: held.stamp.clone(),
+                },
+            )]),
+            ..RowRecord::default()
+        };
+        let verdict = |value: CellValue| {
+            let record = with(value);
+            parse_lineage_cells([("notes", "n1", &record)], &docs).map_err(|e| e.version)
+        };
+        assert_eq!(verdict(held.value.clone()), Ok(()));
+        assert_eq!(geneses_of(Some(&held.value)).len(), 1);
+        for (value, version) in [
+            (geneses, None),
+            (CellValue::text(&lineage_text(&[0xa1; 16])), None),
+            (version_two, Some(2)),
+        ] {
+            assert!(geneses_of(Some(&value)).is_empty());
+            assert_eq!(verdict(value), Err(version));
+        }
+        let record = with(CellValue::Null);
+        assert!(parse_lineage_cells([("other", "n1", &record)], &docs).is_ok());
     }
 
     #[test]

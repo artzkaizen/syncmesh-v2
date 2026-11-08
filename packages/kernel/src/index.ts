@@ -23,7 +23,9 @@ export type {
   LineageId,
 } from "./doc.js";
 export {
+  GENESIS_RULE,
   InvalidDocId,
+  LineageCellRefused,
   cellRules,
   cellGeneses,
   lineageCell,
@@ -31,6 +33,7 @@ export {
   lineageRule,
   parseActionId,
   parseAdapterId,
+  parseLineageCells,
   parseLineageId,
   winningLineage,
   withDocColumns,
@@ -38,7 +41,7 @@ export {
 export type { MergeSpec, Strategy, StrategyName } from "./strategy.js";
 export { compareValue, counterDelta, counterValue, strategies } from "./strategy.js";
 export type { KeyedRecord, State, TableState } from "./state.js";
-export { emptyState, getRecord, readRow } from "./state.js";
+export { emptyState, getRecord, keyedRecords, readRow } from "./state.js";
 export { applyChange, mergeRecord } from "./apply.js";
 export type {
   EventId,

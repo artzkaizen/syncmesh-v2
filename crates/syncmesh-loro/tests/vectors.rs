@@ -173,7 +173,7 @@ fn histories_reproduce() {
                     doc.commit();
                     None
                 }
-                "snapshot" => Some(adapter.snapshot(doc)),
+                "snapshot" => Some(adapter.snapshot(doc).expect("snapshot")),
                 "version" => Some(adapter.version(doc)),
                 "since" => {
                     let from = &outputs[str_of(step, "from")];
@@ -221,7 +221,7 @@ fn histories_reproduce() {
         for (name, doc) in &docs {
             let expected = &finals[name];
             for (label, actual) in [
-                ("snapshot", adapter.snapshot(doc)),
+                ("snapshot", adapter.snapshot(doc).expect("snapshot")),
                 ("version", adapter.version(doc)),
             ] {
                 let frozen = from_hex(str_of(expected, label)).expect("hex");

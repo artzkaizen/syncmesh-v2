@@ -6,13 +6,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use syncmesh_client::doc_log::{DocEntryState, DocStore, doc_digests};
-use syncmesh_client::{Engine, EngineOptions, MemoryEventStore, MutateError, StoredEvent};
+use syncmesh_client::{
+    Engine, EngineOptions, MemoryEventStore, MemoryStateStore, MutateError, RowWrite, StateStore,
+    StoreError, StoredEvent,
+};
 use syncmesh_core::doc::{
     DocBlobRef, DocChange, DocColumns, DocUpdate, Id16, derive_lineage, lineage_of,
 };
 use syncmesh_core::event::{Change, PartitionKey, SeqNum, SyncEvent};
 use syncmesh_core::identity::Identity;
-use syncmesh_core::record::CellValue;
+use syncmesh_core::record::{CellValue, JsonValue};
 
 fn docs() -> DocColumns {
     BTreeMap::from([(
@@ -512,4 +515,64 @@ fn a_legacy_genesis_reads_back_from_the_wire_and_is_quarantined_at_admission() {
     let parked: Vec<String> = b.quarantine().iter().map(StoredEvent::id).collect();
     assert_eq!(parked, [old.id()]);
     assert_eq!(b.state().record("notes", "n1"), None);
+}
+
+/// A state store holding n1's record with its lineage cell as `value`, beside the log it came from.
+fn persisted_with(value: impl FnOnce(CellValue) -> CellValue) -> MemoryStateStore {
+    let mut a = engine(1, true);
+    write(&mut a, vec![insert(), replace(1)]);
+    let mut record = a.state().record("notes", "n1").unwrap().clone();
+    let cell = record.cells.get_mut("content").unwrap();
+    cell.value = value(cell.value.clone());
+    let mut store = MemoryStateStore::new();
+    let row = RowWrite {
+        table: "notes".into(),
+        key: "n1".into(),
+        record,
+    };
+    store.commit(&[row], &a.coverage()).unwrap();
+    store
+}
+
+fn open_over(store: MemoryStateStore) -> Result<Engine, StoreError> {
+    Engine::open(
+        Identity::from_seed(&[1; 32]),
+        Box::new(MemoryEventStore::new()),
+        Some(Box::new(store)),
+        EngineOptions {
+            docs: Some(docs()),
+            ..EngineOptions::default()
+        },
+    )
+}
+
+#[test]
+fn persisted_state_holding_another_rules_lineage_cell_is_refused_at_open() {
+    let opened = open_over(persisted_with(|tagged| tagged)).unwrap();
+    assert_eq!(
+        lineage(&opened),
+        Some(derive_lineage(
+            opened.peer_id(),
+            SeqNum::parse(1).unwrap(),
+            1
+        ))
+    );
+
+    let untag = |tagged: CellValue| match tagged {
+        CellValue::Array(items) => CellValue::from(items[1].clone()),
+        other => other,
+    };
+    let retag = |tagged: CellValue| match tagged {
+        CellValue::Array(items) => CellValue::Array(vec![JsonValue::Number(2.0), items[1].clone()]),
+        other => other,
+    };
+    for (store, found) in [
+        (persisted_with(untag), "a lineage cell with no version"),
+        (persisted_with(retag), "a lineage cell of version 2"),
+    ] {
+        let refused = open_over(store)
+            .err()
+            .expect("refused, never read as the root");
+        assert!(refused.message.contains(found), "{}", refused.message);
+    }
 }

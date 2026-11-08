@@ -2,6 +2,7 @@ import { Result, TaggedError } from "@syncmesh/result";
 
 import type { RowKey, TableName } from "./change.js";
 import type { Brand, Ordering } from "./primitives.js";
+import type { KeyedRecord } from "./state.js";
 import type { MergeSpec, Strategy } from "./strategy.js";
 
 import { hlcOf } from "./hlc.js";
@@ -138,6 +139,14 @@ const genesisEntry = ({ parent, stamp }: Genesis): JsonValue => [
 const isCount = (n: JsonValue | undefined, max = Number.MAX_SAFE_INTEGER): n is number =>
   Number.isSafeInteger(n) && Number(n) >= 0 && Number(n) <= max;
 
+/**
+ * The version of the lineage rule (RFC-0023 §16.1): `1` is the first-genesis tree. A genesis
+ * carries it in key 5, and a lineage cell carries it as its tag wherever the cell is kept outside
+ * events — snapshot pages, repair records, persisted state — so a build meets another rule's
+ * geneses as a version it does not run, never as a root or a value to merge by LWW.
+ */
+export const GENESIS_RULE = 1;
+
 /** The largest logical counter an HLC holds on the wire, a u32. */
 const LOGICAL_MAX = 0xff_ff_ff_ff;
 
@@ -160,16 +169,87 @@ function entryGenesis(lineage: string, entry: JsonValue | undefined): Genesis | 
 }
 
 /**
- * Every genesis a lineage cell holds, by lineage id. A value that is not the cell's shape — a row
- * write that reached a doc column before the ladder refused those, an entry a peer mangled — is
- * skipped entry by entry, so every peer reads the same foreign value the same way.
+ * The version a lineage cell is tagged with: the head of `[version, geneses]`, or `null` for a
+ * cell with no tag — one written before cells were versioned (an object of geneses, or the
+ * lineage id the last-writer-wins rule kept), or a value that is no cell at all.
+ */
+function cellVersion(value: CellValue | undefined): number | null {
+  if (!isJsonArray(value)) return null;
+  const [version] = value;
+  return isCount(version) ? version : null;
+}
+
+/** The geneses half of a cell tagged {@link GENESIS_RULE}, or `undefined` for any other value. */
+const ruleGeneses = (value: CellValue | undefined) =>
+  isJsonArray(value) && value.length === 2 && cellVersion(value) === GENESIS_RULE
+    ? jsonObject(value[1])
+    : undefined;
+
+/**
+ * Every genesis a lineage cell holds, by lineage id. Within a cell of this rule's version, an
+ * entry that is not the shape the rule writes — one a peer mangled — is skipped entry by entry,
+ * so every peer reads the same foreign value the same way. A cell of another version holds
+ * nothing this rule can read: {@link parseLineageCells} refuses it where it enters.
  */
 export function cellGeneses(value: CellValue | undefined): readonly Genesis[] {
-  const held = jsonObject(value);
+  const held = ruleGeneses(value);
   if (held === undefined) return [];
   return Object.keys(held)
     .sort()
     .flatMap((lineage) => entryGenesis(lineage, held[lineage]) ?? []);
+}
+
+/**
+ * A lineage cell that arrived outside an event — in a snapshot page, a repair record or persisted
+ * state — tagged with a version of the lineage rule this build does not run (RFC-0023 §16.1).
+ * `version` is `null` for a cell with no tag, written before cells were versioned.
+ */
+export class LineageCellRefused extends TaggedError("LineageCellRefused")<{
+  table: string;
+  key: string;
+  column: string;
+  version: number | null;
+  message: string;
+}> {}
+
+/**
+ * Checks every doc column's cell in `rows` against the lineage rule this build runs, and hands the
+ * rows back when each one is a cell of {@link GENESIS_RULE}. The first that is not is refused, so
+ * a caller joins none of the rows rather than read that cell as the root or merge it by another
+ * rule. A column absent from a record is the root and passes.
+ *
+ * @example
+ * parseLineageCells(snapshot.rows, docs).isErr(); // true when a page carries another rule's cell
+ */
+export function parseLineageCells(
+  rows: Iterable<KeyedRecord>,
+  docs: DocColumns,
+): Result<readonly KeyedRecord[], LineageCellRefused> {
+  const checked: KeyedRecord[] = [];
+  for (const row of rows) {
+    for (const column of docs.get(row.table)?.keys() ?? []) {
+      const cell = row.record.cells.get(column);
+      if (cell === undefined || ruleGeneses(cell.value) !== undefined) continue;
+      const version = cellVersion(cell.value);
+      const found =
+        version === null
+          ? "a lineage cell with no version"
+          : version === GENESIS_RULE
+            ? `a lineage cell tagged ${version} in a shape that version never writes`
+            : `a lineage cell of version ${version}`;
+      return Result.err(
+        new LineageCellRefused({
+          table: row.table,
+          key: row.key,
+          column,
+          version,
+          message: `${row.table}/${row.key}.${column}: ${found}; this build runs version ${GENESIS_RULE}`,
+        }),
+      );
+    }
+    checked.push(row);
+  }
+  return Result.ok(checked);
 }
 
 /** Which of two geneses goes first: the smaller stamp, then the smaller lineage, then the root parent. */
@@ -216,7 +296,8 @@ export function winningLineage(geneses: readonly Genesis[]): LineageId | undefin
 }
 
 /**
- * How two lineage cells join: the union of their geneses, by lineage id. A lattice join —
+ * How two lineage cells join: the union of their geneses, by lineage id, tagged
+ * `[GENESIS_RULE, { lineage → [parent | null, ms, logical, peer] }]`. A lattice join —
  * commutative, associative, idempotent — so peers folding the same geneses in any order hold the
  * same cell, and the winner is read from it by {@link winningLineage}, never stored. Two entries
  * for one lineage only come from an author who signed two events at one sequence; the first by
@@ -232,14 +313,14 @@ export const lineageRule: Strategy = (incoming, current) => {
     current === undefined || compareStamp(incoming.stamp, current.stamp) > 0
       ? incoming.stamp
       : current.stamp;
-  const value = Object.fromEntries(
+  const geneses = Object.fromEntries(
     [...held.keys()].sort().map((lineage) => {
       // SAFETY: every key came from `held`, so the lookup is always there
       const genesis = held.get(lineage) as Genesis;
       return [lineage, genesisEntry(genesis)];
     }),
   );
-  return { value, stamp };
+  return { value: [GENESIS_RULE, geneses], stamp };
 };
 
 /**
@@ -273,7 +354,7 @@ export function withDocColumns(merge: MergeSpec | undefined, docs: DocColumns): 
 
 /** The lineage cell a genesis writes: the one genesis, stamped with it. */
 export const lineageCell = (genesis: Genesis): Cell => ({
-  value: { [genesis.lineage]: genesisEntry(genesis) },
+  value: [GENESIS_RULE, { [genesis.lineage]: genesisEntry(genesis) }],
   stamp: genesis.stamp,
 });
 

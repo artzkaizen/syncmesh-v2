@@ -71,7 +71,7 @@ describe("installSnapshot", () => {
     for (let i = 1; i <= 20; i += 1) (await write(a, `n${i}`, `title ${i}`)).unwrap();
 
     const b = setup(PEER_B, 200);
-    const installed = await b.engine.installSnapshot(a.engine.snapshot());
+    const installed = (await b.engine.installSnapshot(a.engine.snapshot())).unwrap();
     expect(installed.rows).toBe(20);
     expect(readRow(b.engine.state(), NOTES, key("n7"))?.get(TITLE)).toBe("title 7");
 
@@ -152,7 +152,7 @@ describe("installSnapshot", () => {
     const b = setup(PEER_B, 200);
     let notified = 0;
     b.engine.onFoldBatch(() => void (notified += 1));
-    const installed = await b.engine.installSnapshot(a.engine.snapshot());
+    const installed = (await b.engine.installSnapshot(a.engine.snapshot())).unwrap();
     expect(installed.rows).toBe(0);
     expect(notified).toBe(0);
   });
