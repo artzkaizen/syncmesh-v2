@@ -1,11 +1,15 @@
 import {
   getRecord,
   docLineage,
+  isJsonArray,
   parseAdapterId,
   parsePartitionKey,
+  type CellValue,
   type ColumnName,
   type LineageId,
   type PeerId,
+  type RowKey,
+  type RowRecord,
   type SyncEvent,
 } from "@syncmesh/kernel";
 import { partition, syncSchema, t } from "@syncmesh/schema";
@@ -13,10 +17,13 @@ import { deriveLineage } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import * as fc from "fast-check";
 
+import type { EngineError } from "../errors.js";
 import type { DocWrite } from "../tx.js";
 
+import { openEngine } from "../boot.js";
 import { tableDigests } from "../digest.js";
 import { docDigests } from "../doc-log.js";
+import { createMemoryStateStore } from "../state-store.js";
 import { createValidator } from "../validate.js";
 import {
   N1,
@@ -25,15 +32,18 @@ import {
   PEER_B,
   PEER_C,
   column,
+  fakeClock,
   procedure,
   row,
   seq,
   setup,
+  table,
 } from "./fixtures.js";
 
 const CONTENT = column("content");
 const LORO = parseAdapterId("loro@1").unwrap();
 const DOCS = new Map([[NOTES, new Map<ColumnName, typeof LORO>([[CONTENT, LORO]])]]);
+const PLAIN = table("plain");
 const W1 = parsePartitionKey("workspace:w1").unwrap();
 const EDIT = procedure("notes.edit");
 
@@ -332,5 +342,156 @@ describe("the fold is adapter-independent (RFC-0023 §6.4, §13)", () => {
     expect(tableDigests(b.engine.state())).toEqual(tableDigests(a.engine.state()));
     await write(a, (tx) => tx.doc(NOTES, N1, replace(1)));
     expect(tableDigests(b.engine.state())).not.toEqual(tableDigests(a.engine.state()));
+  });
+});
+
+describe("a lineage cell that joins outside an event (RFC-0023 §5.3, §16.1)", () => {
+  /**
+   * B replaces A's lineage and edits on it; R holds B's two events but not A's genesis, so B's
+   * replace hangs off nothing and both its entries are orphaned. A's record then reaches R with no
+   * event — a snapshot page or a repair record — carrying A's genesis in its lineage cell.
+   */
+  const scenario = async () => {
+    const a = node(PEER_A, 100, true);
+    const b = node(PEER_B, 200, true);
+    const created = await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+    const g1 = await write(a, (tx) => tx.doc(NOTES, N1, replace(1)));
+    for (const event of [created, g1]) (await b.engine.receive({ event })).unwrap();
+    const g2 = await write(b, (tx) => tx.doc(NOTES, N1, replace(2)));
+    const e2 = await write(b, (tx) => tx.doc(NOTES, N1, edit(3, lineageAt(b))));
+    const r = node(PEER_C, 50, true);
+    (await r.engine.receiveBatch([g2, e2].map((event) => ({ event })))).unwrap();
+    expect(lineageAt(r)).toBeUndefined();
+    expect((await log(r)).map((e) => e.state)).toEqual(["orphaned", "orphaned"]);
+    return { a, r, winner: deriveLineage(PEER_B, seq(1), 0) };
+  };
+
+  const relabelled = async (r: Node, winner: LineageId) => {
+    expect(lineageAt(r)).toBe(winner);
+    expect((await log(r)).map((e) => e.state)).toEqual(["tail", "tail"]);
+    const [head] = (await r.engine.docHeads()).unwrap();
+    expect(head).toMatchObject({ lineage: winner, tailCount: 2 });
+  };
+
+  test("a parent that lands in a snapshot relabels the doc log at once, not at the next append", async () => {
+    const { a, r, winner } = await scenario();
+    (await r.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    await relabelled(r, winner);
+  });
+
+  test("a parent that lands in a repair record relabels the doc log at once", async () => {
+    const { a, r, winner } = await scenario();
+    (await r.engine.repairRows(NOTES, a.engine.rowRecords(NOTES, [N1]))).unwrap();
+    await relabelled(r, winner);
+  });
+
+  test("a snapshot whose documents have no doc-log entries here adds no heads", async () => {
+    const { a } = await scenario();
+    const fresh = node(PEER_C, 50, true);
+    (await fresh.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    expect(lineageAt(fresh)).toBe(lineageAt(a));
+    expect((await fresh.engine.docHeads()).unwrap()).toEqual([]);
+  });
+
+  /** A's record with its lineage cell rewritten as another build would keep it. */
+  const foreign = (a: Node, value: CellValue) => {
+    const record = getRecord(a.engine.state(), NOTES, N1);
+    const cell = record?.cells.get(CONTENT);
+    if (record === undefined || cell === undefined) throw new Error("A holds no lineage cell");
+    const cells = new Map(record.cells).set(CONTENT, { ...cell, value });
+    return { table: NOTES, key: N1, record: { ...record, cells } };
+  };
+  const untagged = (a: Node) => {
+    const cell = getRecord(a.engine.state(), NOTES, N1)?.cells.get(CONTENT)?.value;
+    return isJsonArray(cell) ? (cell[1] ?? null) : null;
+  };
+
+  test("a snapshot holding a cell of another rule's version is refused whole: nothing joins, nothing is adopted", async () => {
+    const { a, r } = await scenario();
+    for (const [value, version] of [
+      [[2, untagged(a)], 2],
+      [untagged(a), null],
+      [deriveLineage(PEER_A, seq(2), 0), null],
+    ] as const) {
+      const before = r.engine.state();
+      const snapshot = { rows: [foreign(a, value)], coverage: a.engine.coverage() };
+      const refused = await r.engine.installSnapshot(snapshot);
+      expect(refused.isErr() && refused.error).toMatchObject({
+        _tag: "LineageCellRefused",
+        version,
+      });
+      expect(r.engine.state()).toBe(before);
+      expect(r.engine.coverage().synced.get(PEER_A)).toBeUndefined();
+      expect(lineageAt(r)).toBeUndefined();
+    }
+  });
+
+  test("a repair record holding a cell of another rule's version is refused before it joins", async () => {
+    const { a, r } = await scenario();
+    const before = r.engine.state();
+    const refused = await r.engine.repairRows(NOTES, [foreign(a, [2, untagged(a)])]);
+    expect(refused.isErr() && refused.error.version).toBe(2);
+    expect(r.engine.state()).toBe(before);
+  });
+
+  test("the boot check reads only tables with a doc column, so the rest stay undecoded", async () => {
+    const stateStore = createMemoryStateStore();
+    const a = setup(PEER_A, 100, { docs: DOCS, validate, stateStore });
+    await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+    /** A table of the cache that has not been decoded: reading any row of it fails the test. */
+    class Undecoded extends Map<RowKey, RowRecord> {
+      override get(): never {
+        throw new Error("a table with no doc column was decoded at boot");
+      }
+      override [Symbol.iterator](): never {
+        return this.get();
+      }
+      override entries(): never {
+        return this.get();
+      }
+    }
+    const lazy: typeof stateStore = {
+      ...stateStore,
+      loadAll: async () =>
+        (await stateStore.loadAll()).map((state) => new Map([...state, [PLAIN, new Undecoded()]])),
+    };
+    const booted = await openEngine({
+      peerId: PEER_A,
+      clock: fakeClock(500),
+      store: a.store,
+      stateStore: lazy,
+      docs: DOCS,
+      validate,
+    });
+    expect(booted.isOk()).toBe(true);
+  });
+
+  test("persisted state holding another rule's cell is refused, said, and rebuilt from the log", async () => {
+    const stateStore = createMemoryStateStore();
+    const a = setup(PEER_A, 100, { docs: DOCS, validate, stateStore });
+    await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+    await write(a, (tx) => tx.doc(NOTES, N1, replace(1)));
+    const held = foreign(a, untagged(a));
+    (await stateStore.commit([held], a.engine.coverage())).unwrap();
+    const errors: EngineError[] = [];
+    const booted = (
+      await openEngine({
+        peerId: PEER_A,
+        clock: fakeClock(500),
+        store: a.store,
+        stateStore,
+        docs: DOCS,
+        validate,
+        onError: (e) => void errors.push(e),
+      })
+    ).unwrap();
+    expect(errors.map((e) => e._tag)).toEqual(["LineageCellRefused"]);
+    expect(docLineage(getRecord(booted.state(), NOTES, N1), CONTENT)).toBe(
+      deriveLineage(PEER_A, seq(2), 0),
+    );
+    const cached = (await stateStore.loadAll()).unwrap();
+    expect(cached.get(NOTES)?.get(N1)?.cells.get(CONTENT)?.value).toEqual(
+      getRecord(a.engine.state(), NOTES, N1)?.cells.get(CONTENT)?.value,
+    );
   });
 });

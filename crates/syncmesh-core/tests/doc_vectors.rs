@@ -5,12 +5,13 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use syncmesh_core::doc::{DocBlobRef, DocChange, DocUpdate, Id16};
+use syncmesh_core::doc::{DocBlobRef, DocChange, DocColumns, DocUpdate, Id16, parse_lineage_cells};
 use syncmesh_core::doc_checkpoint::{DocCheckpoint, encode_doc_checkpoint_core};
 use syncmesh_core::envelope::envelope;
 use syncmesh_core::event::{PartitionKey, SeqNum};
 use syncmesh_core::event_codec::encode_event_core;
 use syncmesh_core::record::CellValue;
+use syncmesh_core::record_codec::{decode_record, encode_record};
 use syncmesh_core::*;
 
 fn vectors(name: &str) -> serde_json::Value {
@@ -262,6 +263,37 @@ fn every_frozen_lineage_derives_the_same() {
             to_hex(&derive_lineage(&peer, seq, index)),
             l["lineageHex"].as_str().unwrap()
         );
+    }
+}
+
+#[test]
+fn every_frozen_lineage_cell_reaches_the_typescripts_verdict() {
+    let file = vectors("doc-vectors.json");
+    let cells = file["lineageCells"].as_array().unwrap();
+    assert_eq!(cells.len(), 4);
+    let docs = DocColumns::from([(
+        "notes".to_owned(),
+        BTreeMap::from([("content".to_owned(), "loro@1".to_owned())]),
+    )]);
+    for cell in cells {
+        let what = cell["description"].as_str().unwrap();
+        let bytes = hex(cell, "recordHex");
+        let record = decode_record(&bytes).unwrap_or_else(|e| panic!("{what}: {e:?}"));
+        assert_eq!(encode_record(&record), bytes, "re-encoded: {what}");
+        let parsed = parse_lineage_cells([("notes", "n1", &record)], &docs);
+        assert_eq!(
+            parsed.is_err(),
+            cell["refused"].as_bool().unwrap(),
+            "verdict: {what}"
+        );
+        match parsed {
+            Err(refused) => assert_eq!(refused.version, cell["version"].as_i64(), "{what}"),
+            Ok(()) => assert_eq!(
+                lineage_of(Some(&record), "content"),
+                cell["winner"].as_str().map(id16),
+                "winner: {what}"
+            ),
+        }
     }
 }
 

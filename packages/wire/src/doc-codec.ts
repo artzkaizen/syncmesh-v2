@@ -11,7 +11,7 @@ import type {
 } from "@syncmesh/kernel";
 
 import { sha256 } from "@noble/hashes/sha2.js";
-import { parseActionId, parseAdapterId, parseLineageId } from "@syncmesh/kernel";
+import { GENESIS_RULE, parseActionId, parseAdapterId, parseLineageId } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
 
 import type { CborKey, CborValue } from "./cbor.js";
@@ -33,15 +33,6 @@ export const DOC = {
   genesis: 5,
   parent: 6,
 } as const;
-
-/**
- * What key 5 holds on a genesis: the version of the lineage rule it was written under. `1` is the
- * first-genesis tree (RFC-0023 §16.1). The rule before it, last-writer-wins, wrote `true`; a build
- * from then refuses anything else, so it quarantines a genesis it would have folded by the old
- * rule, and this build refuses `true` at admission for the same reason the other way round — it
- * decodes one as `legacy`, so a stored log holding it still reads.
- */
-export const GENESIS_RULE = 1;
 
 /** Both 16-byte ids — lineage, action — are this long on the wire. */
 export const ID16_LENGTH = 16;
