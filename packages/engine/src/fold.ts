@@ -1,7 +1,7 @@
 import type { AdapterId, MergeSpec, RowKey, State, TableName } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
 
-import { applyChange, getRecord, docLineage, isVisible, stampOf } from "@syncmesh/kernel";
+import { applyChange, getRecord, docLineage, eventStamp, isVisible } from "@syncmesh/kernel";
 
 import type { CoverageTracker } from "./coverage.js";
 import type { DocAddress, DocAppend, DocStore, LineageMove } from "./doc-log.js";
@@ -161,7 +161,7 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
         const { event } = entry;
         coverage.note(event);
         feeds.note(entry);
-        const stamp = stampOf(event);
+        const stamp = eventStamp(event);
         // `admit` parked anything this build cannot fold before it reached here (D22-A); the
         // guard is what narrows the type, and reaching it at all would be that ladder failing
         for (const change of event.changes)

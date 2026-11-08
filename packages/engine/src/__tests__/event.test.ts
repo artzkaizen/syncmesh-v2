@@ -4,7 +4,7 @@ import {
   parseEventId,
   parsePartitionKey,
   parseSeqNum,
-  stampOf,
+  eventStamp,
   type SyncEvent,
 } from "@syncmesh/kernel";
 import { describe, expect, test } from "bun:test";
@@ -82,7 +82,7 @@ describe("eventId", () => {
   });
 });
 
-describe("stampOf", () => {
+describe("eventStamp", () => {
   test("is the event's hlc and author", () => {
     const event: SyncEvent = {
       v: 1,
@@ -93,7 +93,7 @@ describe("stampOf", () => {
       procedure: procedure("notes.create"),
       changes: [],
     };
-    expect(stampOf(event)).toEqual({ hlc: event.hlc, peer: PEER_A });
+    expect(eventStamp(event)).toEqual({ hlc: event.hlc, peer: PEER_A });
   });
 });
 

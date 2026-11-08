@@ -46,7 +46,7 @@ export interface OutboundDeps {
 }
 
 /** What the outbound half needs, assembled so an absent capability stays absent (D12-A). */
-export const outboundFor = (
+export const outboundDeps = (
   link: FrameLink,
   options: BridgeOptions,
   scope: string,
@@ -137,6 +137,7 @@ export function createOutbound(deps: OutboundDeps) {
         at,
         engine.ahead(),
         floor.size === 0 ? undefined : floor,
+        engine.schemaVersion,
       );
       send(KIND.cursors, "cursors", frame);
     });

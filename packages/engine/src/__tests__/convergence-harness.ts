@@ -1,7 +1,7 @@
 import type { PeerId, RowKey, TableName } from "@syncmesh/kernel";
 import type { Stamp } from "@syncmesh/kernel";
 
-import { compareStamp, parsePeerId, readRow, stampOf } from "@syncmesh/kernel";
+import { compareStamp, parsePeerId, readRow, eventStamp } from "@syncmesh/kernel";
 
 import type { Engine } from "../engine.js";
 import type { Link } from "../link.js";
@@ -107,13 +107,13 @@ export function mesh(topology: Topology, size = topology === "pair" ? 2 : 3) {
       const event = (
         await device.engine.mutate(CREATE, (tx) => tx.update(table, key, row(values)))
       ).unwrap();
-      history.push({ by: name, stamp: stampOf(event), table, key, values });
+      history.push({ by: name, stamp: eventStamp(event), table, key, values });
     },
     remove: async (name: string, at: number, table: TableName, key: RowKey) => {
       const device = deviceNamed(name);
       device.clock.set(at);
       const event = (await device.engine.mutate(CREATE, (tx) => tx.delete(table, key))).unwrap();
-      history.push({ by: name, stamp: stampOf(event), table, key, values: {}, deleted: true });
+      history.push({ by: name, stamp: eventStamp(event), table, key, values: {}, deleted: true });
     },
   };
 }

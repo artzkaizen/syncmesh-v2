@@ -19,15 +19,20 @@ import { createGrantRegistry, createIdentity, issueGrant, type Identity } from "
 import type { TransportContext } from "../transport.js";
 
 const org = partition("org", { roles: ladder("member") });
-export const schema = syncSchema({
-  tables: {
-    notes: {
-      columns: { id: t.text().primaryKey(), body: t.text() },
-      partition: org,
-      allow: ({ role }) => ({ $default: role("member") }),
+
+/** The one table every bridge test syncs; `dropped` names tables this build contracted (D31). */
+export const fixtureSchema = (dropped: readonly string[] = []) =>
+  syncSchema({
+    dropped,
+    tables: {
+      notes: {
+        columns: { id: t.text().primaryKey(), body: t.text() },
+        partition: org,
+        allow: ({ role }) => ({ $default: role("member") }),
+      },
     },
-  },
-});
+  });
+export const schema = fixtureSchema();
 
 export const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 export const ACME = parsePartitionKey("org:acme").unwrap();
@@ -54,7 +59,12 @@ export const mintFor = (
     now,
   });
 
-export const peer = (n: number, account: string, startMs = 100) => {
+export const peer = (
+  n: number,
+  account: string,
+  startMs = 100,
+  extra: Partial<EngineOptions> = {},
+) => {
   const identity = createIdentity(seed(n)).unwrap();
   const grants = createGrantRegistry({ issuer: ISSUER.peerId, now: () => T0 });
   grants.register(mintFor(identity, account)).unwrap();
@@ -65,6 +75,7 @@ export const peer = (n: number, account: string, startMs = 100) => {
     clock,
     store: createMemoryEventStore(),
     validate: createValidator({ schema, grantFor: (p) => grants.grantFor(p) }),
+    ...extra,
   };
   const engine = createEngine(options);
   // the context a mesh hands a transport; every transport's tests need one and none of them

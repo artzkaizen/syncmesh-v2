@@ -1,5 +1,5 @@
 import { createLink } from "@syncmesh/engine";
-import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
+import { ladder, partition, syncSchema, t, type ColumnsMap, type Schema } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -15,6 +15,20 @@ const schema = () =>
   syncSchema({
     tables: {
       notes: {
+        columns: { id: t.text().primaryKey(), body: t.text() },
+        partition: org,
+        allow: ({ role }) => ({ $default: role("member") }),
+      },
+    },
+  });
+
+/** The build after `schema`'s: it dropped `notes` (D31), so the older build's writes to it park. */
+const contracted = () =>
+  syncSchema({
+    schemaVersion: 3,
+    dropped: ["notes"],
+    tables: {
+      memos: {
         columns: { id: t.text().primaryKey(), body: t.text() },
         partition: org,
         allow: ({ role }) => ({ $default: role("member") }),
@@ -38,10 +52,10 @@ const grantFor = (device: typeof deviceA) =>
     now: T0,
   });
 
-const open = async (device: typeof deviceA) =>
+const open = async <C extends ColumnsMap>(device: typeof deviceA, built: Schema<C>) =>
   (
     await createMesh({
-      schema: schema(),
+      schema: built,
       identity: device,
       now: () => T0,
       storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
@@ -51,8 +65,8 @@ const open = async (device: typeof deviceA) =>
 
 describe("recovery — stuck is a stable cause, not a spinner", () => {
   test("an ungranted author parks as missing-capability; the grant plus run folds it", async () => {
-    const a = await open(deviceA);
-    const b = await open(deviceB);
+    const a = await open(deviceA, schema());
+    const b = await open(deviceB, schema());
     a.grants.register(grantFor(deviceA)).unwrap();
     b.grants.register(grantFor(deviceB)).unwrap();
     // b deliberately never learns a's grant, so a's event cannot be admitted there
@@ -86,6 +100,28 @@ describe("recovery — stuck is a stable cause, not a spinner", () => {
     const hb = b.on("org:acme").unwrap();
     expect(await hb.db.select().from(notes)).toHaveLength(1);
 
+    link.close();
+    await a.stop();
+    await b.stop();
+  });
+
+  test("a write to a table this build dropped names the remedy: upgrade the author (D31)", async () => {
+    const a = await open(deviceA, schema());
+    const b = await open(deviceB, contracted());
+    for (const mesh of [a, b]) {
+      mesh.grants.register(grantFor(deviceA)).unwrap();
+      mesh.grants.register(grantFor(deviceB)).unwrap();
+    }
+    await a.on("org:acme").unwrap().db.insert(notes).values({ id: "n1", body: "old build" });
+    const link = createLink(a.engine, b.engine, { now: () => T0 });
+    (await link.catchUp()).unwrap();
+
+    const [stuck] = b.recovery.list();
+    expect(stuck?.verdict).toBe("TableDropped");
+    expect(b.engine.quarantine().map((p) => p.reason)).toEqual(["dropped-table"]);
+    const plan = stuck === undefined ? undefined : b.recovery.explain(stuck.event);
+    expect(plan?.next).toContain("upgrade");
+    expect(plan?.retryWorthwhile).toBe(false);
     link.close();
     await a.stop();
     await b.stop();

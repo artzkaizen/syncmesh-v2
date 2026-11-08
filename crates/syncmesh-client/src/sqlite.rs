@@ -870,6 +870,7 @@ mod tests {
                 sealed: false,
                 action: None,
                 undo_of: None,
+                schema_version: None,
             },
             core: None,
             sig: None,

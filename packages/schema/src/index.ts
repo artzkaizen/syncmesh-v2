@@ -46,6 +46,15 @@ export type {
   TableEntry,
   TablesOf,
 } from "./manifest.js";
+export type { EvolutionIssue, EvolutionRule } from "./evolution.js";
+export { SchemaNotAdditive, checkEvolution } from "./evolution.js";
+export type { EvolvingSchema, ShippedColumn, ShippedSchema, ShippedTable } from "./shipped.js";
+export {
+  ShippedSchemaUnreadable,
+  formatShippedSchema,
+  parseShippedSchema,
+  shippedSchema,
+} from "./shipped.js";
 export type { AllowFn, Combinators, FieldsFn } from "./bind.js";
 export { combinators } from "./bind.js";
 export { authorityTables, servedTables, syncSchema, syncedTables } from "./manifest.js";

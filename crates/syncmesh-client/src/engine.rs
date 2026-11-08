@@ -21,7 +21,9 @@ use syncmesh_core::doc::{
     with_doc_columns,
 };
 use syncmesh_core::envelope::sign_event;
-use syncmesh_core::event::{Change, PartitionKey, PeerId, RowKey, SeqNum, SyncEvent, TableName};
+use syncmesh_core::event::{
+    Change, PartitionKey, PeerId, RowKey, SchemaVersion, SeqNum, SyncEvent, TableName,
+};
 use syncmesh_core::hlc::{DEFAULT_MAX_DRIFT_MS, HlcClock};
 use syncmesh_core::identity::Identity;
 use syncmesh_core::stamp::Stamp;
@@ -204,6 +206,9 @@ pub struct EngineOptions {
     pub doc_store: Option<Box<dyn DocStore + Send>>,
     /// How many of this engine's own writes stay revertable. Default 0.
     pub undo_depth: usize,
+    /// The app schema this build declares (D31): stamped on every event it writes, under key 9.
+    /// A reading for the fleet, never a gate; `None` stamps nothing.
+    pub schema_version: Option<SchemaVersion>,
 }
 
 impl Default for EngineOptions {
@@ -218,6 +223,7 @@ impl Default for EngineOptions {
             doc_adapters: BTreeSet::new(),
             doc_store: None,
             undo_depth: 0,
+            schema_version: None,
         }
     }
 }
@@ -254,6 +260,8 @@ pub struct Engine {
     undo: VecDeque<Undo>,
     /// The persisted lineage cell that made `open` rebuild the state from the log.
     refused_at_open: Option<LineageCellRefused>,
+    /// Stamped on each own event (D31); `None`, nothing is.
+    schema_version: Option<SchemaVersion>,
 }
 
 /// What a room's position for this device's own author meant for this log (G7).
@@ -358,6 +366,7 @@ impl Engine {
             undo_depth: options.undo_depth,
             undo: VecDeque::new(),
             refused_at_open: refused,
+            schema_version: options.schema_version,
         };
         let replay = engine.store.all_since(&coverage.synced)?;
         let batch = engine.fold(&replay, FoldSource::Boot);
@@ -452,6 +461,7 @@ impl Engine {
             sealed: false,
             action,
             undo_of,
+            schema_version: self.schema_version,
         };
         if let Some(reason) =
             doc_refusal(&event, &self.docs).or_else(|| derived_refusal(&event, &self.derived))
@@ -759,6 +769,11 @@ impl Engine {
     /// Records what `peer` holds, as of `at_ms`; links call it on every cursor exchange.
     pub fn acknowledge(&mut self, peer: PeerId, cursors: Cursors, at_ms: i64) {
         self.acks.insert(peer, Ack { cursors, at_ms });
+    }
+
+    /// What this build declares (D31): stamped on its own events and sent on its cursors frames.
+    pub fn schema_version(&self) -> Option<SchemaVersion> {
+        self.schema_version
     }
 
     pub fn acks(&self) -> &BTreeMap<PeerId, Ack> {

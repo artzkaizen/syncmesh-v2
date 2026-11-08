@@ -343,6 +343,7 @@ fn a_forged_genesis_and_a_row_write_to_a_doc_column_are_refused() {
         sealed: false,
         action: None,
         undo_of: None,
+        schema_version: None,
     };
     let entry = StoredEvent::from_verified(syncmesh_core::sign_event(forged, &forger));
     let report = a.receive(entry.clone()).unwrap().report;

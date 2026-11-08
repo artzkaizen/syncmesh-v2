@@ -96,6 +96,26 @@ impl SeqNum {
     }
 }
 
+/// Which app schema an event was written against (D31; event key 9): a positive integer the
+/// manifest declares. A reading, never a gate; an event without one reads as `1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SchemaVersion(u64);
+
+impl SchemaVersion {
+    /// What an author that declared nothing is read as.
+    pub const UNDECLARED: SchemaVersion = SchemaVersion(1);
+
+    pub fn parse(n: u64) -> Option<SchemaVersion> {
+        (1..=crate::cbor::MAX_SAFE_INTEGER as u64)
+            .contains(&n)
+            .then_some(SchemaVersion(n))
+    }
+
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
 /// `kind:id` — the one form a partition instance takes (D07): `^[a-z][a-z0-9_]{0,63}:[^\s:]{1,255}$`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PartitionKey(String);
@@ -200,6 +220,9 @@ pub struct SyncEvent {
     pub action: Option<crate::doc::Id16>,
     /// The action this event compensates (key 11): an undo, and a redo is the undo of an undo.
     pub undo_of: Option<crate::doc::Id16>,
+    /// The app schema the author's build declared (key 9, D31); `None` from a build that declared
+    /// none. A reading: nothing refuses an event for it.
+    pub schema_version: Option<SchemaVersion>,
 }
 
 impl SyncEvent {
@@ -211,6 +234,11 @@ impl SyncEvent {
 
     pub fn stamp(&self) -> Stamp {
         Stamp::new(self.hlc, self.peer_id.clone())
+    }
+
+    /// What the author declared, `1` for one that declared nothing (D31).
+    pub fn declared_schema(&self) -> SchemaVersion {
+        self.schema_version.unwrap_or(SchemaVersion::UNDECLARED)
     }
 }
 

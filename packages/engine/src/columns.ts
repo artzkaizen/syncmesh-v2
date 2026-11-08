@@ -9,6 +9,7 @@ import {
   UnknownChangeKind,
   type ValidationError,
 } from "./errors.js";
+import { retiredWrite } from "./retired.js";
 
 /** The change kinds this build can fold. A kernel that grows one grows this set with it. */
 const FOLDABLE = new Set(["insert", "update", "delete", "doc"]);
@@ -49,11 +50,39 @@ const derivation = (table: Table, column: ColumnName) =>
   Object.hasOwn(table.columns, column) ? table.columns[column]?.def.derived : undefined;
 
 /**
+ * The document or derived column a row write names, if it names one: a derived column only on a
+ * probe, since a numbered event's derived cell is dropped from the check instead.
+ */
+function docWrite(
+  table: Table,
+  key: FoldableChange["key"],
+  cells: Row,
+  docs: TableDocs,
+  probe: boolean,
+): DocColumnWrite | undefined {
+  for (const column of cells.keys()) {
+    const derived = probe ? derivation(table, column) : undefined;
+    if (!docs.has(column) && derived === undefined) continue;
+    return new DocColumnWrite({
+      table: table.name,
+      key,
+      column,
+      message:
+        derived === undefined
+          ? `${table.name}.${column} is a document: it is opened and edited, never written as a value`
+          : `${table.name}.${column} is derived from ${derived.from}: every replica computes it, nothing writes it`,
+    });
+  }
+  return undefined;
+}
+
+/**
  * A change against the table it names: a kind this build can fold, cells that pass the columns it
  * knows about, and no row write to a document column. A doc change's own rules are `checkDoc`'s,
  * since they need the event it sits in.
  *
- * A derived column is refused only on a `probe` — this device's own write, before it is numbered.
+ * A derived column and a retired one (D31) are refused only on a `probe` — this device's own
+ * write, before it is numbered.
  * On a numbered event the cell is dropped from the check the way an undeclared one is: history
  * written before the column was derived, or by a build that does not derive it, still folds, and
  * the projection never copies the cell into the row (RFC-0023 §12).
@@ -74,23 +103,12 @@ export function checkColumns(
       }),
     );
   }
+  const retired = probe ? retiredWrite(table, change) : undefined;
+  if (retired !== undefined) return Result.err(retired);
   if (change.kind === "delete" || change.kind === "doc") return Result.ok(undefined);
   const cells = change.kind === "insert" ? change.row : change.patch;
-  for (const column of cells.keys()) {
-    const derived = probe ? derivation(table, column) : undefined;
-    if (!docs.has(column) && derived === undefined) continue;
-    return Result.err(
-      new DocColumnWrite({
-        table: table.name,
-        key: change.key,
-        column,
-        message:
-          derived === undefined
-            ? `${table.name}.${column} is a document: it is opened and edited, never written as a value`
-            : `${table.name}.${column} is derived from ${derived.from}: every replica computes it, nothing writes it`,
-      }),
-    );
-  }
+  const written = docWrite(table, change.key, cells, docs, probe);
+  if (written !== undefined) return Result.err(written);
   const checked = new Map([...cells].filter(([name]) => derivation(table, name) === undefined));
   const r = checkRow(table, declared(table, checked), change.kind);
   return r.isErr()

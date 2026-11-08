@@ -89,7 +89,7 @@ export function createLink(a: Engine, b: Engine, options: LinkOptions = {}): Lin
       if (message === undefined)
         return Result.ok({ from: nextFrom, to: { ...toState, inFlight: false }, sent: false });
       const [nextTo, events] = receiveSyncMessage(toState, message);
-      to.acknowledge(from.peerId, message.cursors, now());
+      to.acknowledge(from.peerId, message.cursors, now(), from.schemaVersion);
       yield* Result.await(to.receiveBatch(events));
       return Result.ok({ from: nextFrom, to: nextTo, sent: true });
     });

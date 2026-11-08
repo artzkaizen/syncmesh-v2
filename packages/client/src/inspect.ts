@@ -4,8 +4,10 @@
  * reference stays in the count instead of silently dying — the chaos epilogue asserts zeros.
  */
 import type { Live, LiveQuery } from "@syncmesh/drizzle";
-import type { StoreFailure } from "@syncmesh/engine";
+import type { Engine, SchemaReading, StoreFailure } from "@syncmesh/engine";
+import type { PeerId } from "@syncmesh/kernel";
 import type { SqlDialect, SqlDriver } from "@syncmesh/storage";
+import type { Temporal } from "@syncmesh/temporal";
 import type { Transport } from "@syncmesh/transport";
 
 import { Result } from "@syncmesh/result";
@@ -47,6 +49,30 @@ export interface Inspect {
    * if (verified.isErr()) console.error(verified.error.message);
    */
   readonly verify: () => Promise<Result<void, StoreFailure | NoSuchCapability>>;
+  /** What this device can say about the builds around it ({@link Fleet}). */
+  readonly fleet: Fleet;
+}
+
+/**
+ * The fleet as this device has seen it since boot (D31): which app schemas are still writing.
+ * Never a gate — nothing refuses an event for its schema — but the number D31's rule waits on.
+ */
+export interface Fleet {
+  /**
+   * Per author, the lowest `schemaVersion` it was seen writing under (an event without one reads
+   * as `1`) or announcing on its cursors frame, and when — within `within` of now, or since boot.
+   *
+   * Retire a table or column only once every author here reads at or above the version that
+   * stopped writing it; an authority correcting a column added in version *n* reads here which
+   * devices will fold the reason and not the value.
+   *
+   * @example
+   * const below = [...mesh.inspect.fleet.oldestSchema({ within: Temporal.Duration.from({ days: 30 }) })]
+   *   .filter(([, reading]) => reading.version < 4);
+   */
+  readonly oldestSchema: (options?: {
+    readonly within?: Temporal.Duration;
+  }) => ReadonlyMap<PeerId, SchemaReading>;
 }
 
 /** A teardown that is also `Disposable`: call it, or `using` it — a second call is a no-op. */
@@ -160,7 +186,7 @@ export function meterBlobs(tally: HandleTally, blobs: Blobs): Blobs {
 }
 
 /** Reachable `(transport, peer)` pairs right now — read live from the radios, never tracked. */
-export function linksAcross(transports: readonly Transport[]): number {
+function linksAcross(transports: readonly Transport[]): number {
   return transports.reduce((n, t) => n + (t.reaches?.().size ?? 0), 0);
 }
 
@@ -168,7 +194,7 @@ export function linksAcross(transports: readonly Transport[]): number {
  * `mesh.inspect.verify()` over the connection the log lives on: the storage check, with a log
  * that offers none answered as the capability it lacks.
  */
-export async function verifyStore(
+async function verifyStore(
   driver: SqlDriver | undefined,
 ): Promise<Result<void, StoreFailure | NoSuchCapability>> {
   const unavailable = (message: string) =>
@@ -180,3 +206,28 @@ export async function verifyStore(
   const { error } = verified;
   return error._tag === "StoreFailure" ? Result.err(error) : unavailable(error.message);
 }
+
+/** What `mesh.inspect` reads: the tally, the radios, the log's connection and the engine. */
+export interface InspectDeps {
+  readonly tally: HandleTally;
+  readonly transports: () => readonly Transport[];
+  readonly driver: SqlDriver | undefined;
+  readonly engine: Pick<Engine, "oldestSchema">;
+  readonly now: () => Temporal.Instant;
+}
+
+/** `mesh.inspect`; a fleet window is judged against the mesh's own clock. */
+export const createInspect = ({
+  tally,
+  transports,
+  driver,
+  engine,
+  now,
+}: InspectDeps): Inspect => ({
+  handles: () => tally.counts(linksAcross(transports())),
+  verify: () => verifyStore(driver),
+  fleet: {
+    oldestSchema: ({ within } = {}) =>
+      engine.oldestSchema(within === undefined ? undefined : { now: now(), within }),
+  },
+});

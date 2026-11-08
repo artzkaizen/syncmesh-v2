@@ -4,6 +4,7 @@ import type {
   LineageId,
   PeerId,
   Procedure,
+  SchemaVersion,
   SeqNum,
   SyncEvent,
 } from "@syncmesh/kernel";
@@ -18,8 +19,9 @@ export const nextSeq = (last: SeqNum | undefined): SeqNum => {
   return ((last ?? 0) + 1) as SeqNum;
 };
 
+/** The event `author` writes, stamped with its `schemaVersion` when it declares one (D31). */
 export function buildEvent(
-  peerId: PeerId,
+  author: { readonly peerId: PeerId; readonly schemaVersion?: SchemaVersion | undefined },
   procedure: Procedure,
   hlc: SyncEvent["hlc"],
   seqNum: SeqNum,
@@ -27,6 +29,7 @@ export function buildEvent(
   { partition, local, action, undoOf }: MutateOptions,
   winner: Winner,
 ): SyncEvent {
+  const { peerId, schemaVersion } = author;
   const base = {
     v: 1 as const,
     id: eventId(peerId, seqNum, local === true),
@@ -37,6 +40,7 @@ export function buildEvent(
     changes: changes.map((change, index) => withLineage(change, peerId, seqNum, index, winner)),
     ...(action !== undefined && { action }),
     ...(undoOf !== undefined && { undoOf }),
+    ...(schemaVersion !== undefined && { schemaVersion }),
   };
   if (partition !== undefined && local === true) return { ...base, partition, local };
   if (partition !== undefined) return { ...base, partition };

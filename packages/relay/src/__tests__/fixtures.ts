@@ -11,6 +11,7 @@ import {
   type PartitionKey,
   type Procedure,
   type RowKey,
+  type SchemaVersion,
   type TableName,
 } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
@@ -85,7 +86,8 @@ export const mintFor = (
 
 /**
  * One granted peer: engine with a real validator, registry seeded with its own grant. `partitions`
- * narrows that grant; `granted: false` leaves the registry empty, a device nobody admitted.
+ * narrows that grant; `granted: false` leaves the registry empty, a device nobody admitted;
+ * `schemaVersion` is the one its build declares (D31).
  */
 export const peer = (
   n: number,
@@ -94,7 +96,12 @@ export const peer = (
   {
     partitions,
     granted = true,
-  }: { readonly partitions?: readonly PartitionKey[]; readonly granted?: boolean } = {},
+    schemaVersion,
+  }: {
+    readonly partitions?: readonly PartitionKey[];
+    readonly granted?: boolean;
+    readonly schemaVersion?: SchemaVersion;
+  } = {},
 ) => {
   const identity = createIdentity(seed(n)).unwrap();
   const grants = createGrantRegistry({ issuer: ISSUER.peerId, now: () => T0 });
@@ -106,6 +113,7 @@ export const peer = (
     clock,
     store: createMemoryEventStore(),
     validate: createValidator({ schema, grantFor: (p) => grants.grantFor(p) }),
+    ...omitUndefined({ schemaVersion }),
   };
   const engine = createEngine(options);
   const context: TransportContext = { engine, identity, grants, now: () => T0 };
