@@ -977,9 +977,20 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
      `.default("")` as in §4.1, takes an `INSERT` that leaves them out. A row deleted and
      inserted again in one captured transaction is judged the same way, as an insert.
    - A cover writes its derived values only when no `tail` entry of its lineage is left on the
-     document once it commits. One left was folded after the snapshot was read: a flush that
-     already wrote newer values, or an edit the next materialisation covers. Without this, a
-     materialisation that read its tail before a flush put the older title back.
+     document once it commits, other than ones the values were computed with. One left was
+     folded after the tail was read: a flush that already wrote newer values, or an edit the
+     next materialisation covers. Without this, a materialisation that read its tail before a
+     flush put the older title back. A checkpoint install derives from the snapshot and the
+     tail above its floor this device holds, which stays `tail`, and names those entries on the
+     cover (`DocCover.derivedIncludes`), so a joiner that already holds newer edits gets values
+     that include them instead of none.
+   - A flush computes its derived values from the open document before the write is awaited, so
+     a remote entry delivered in between is not in them; it waits like any remote edit (gaps.md
+     U23). Capture evaluates a column's SQL `DEFAULT` again to judge an insert, so a volatile
+     default such as `now()` on a derived or document column differs from the stored value and
+     refuses the insert. CDC's `meshCells` copies every declared column, derived ones included,
+     so a CDC-published table with derived columns builds changes the validator refuses
+     (gaps.md U26).
    - Window and patch clients read kernel cells. A current TypeScript writer puts no derived
      value there, but a numbered event from an older build, a Rust app (its validator has no
      derived refusal) or a hand-made client can, and that cell is what they, and an `allow` rule
