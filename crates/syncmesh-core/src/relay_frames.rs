@@ -508,10 +508,12 @@ fn decode_control(t: u64, p: &[Option<&Value>; 5]) -> Option<Result<RelayFrame, 
             let (Some(code), Some(message)) = (text(a), text(b)) else {
                 return shape("error is not [code, message]");
             };
-            // a `retention` refusal names its floor; absent from any other refusal
+            // only a `retention` refusal's third element is its floor: another code's is a later
+            // additive element read past, and a floor that does not decode leaves the refusal
+            // standing without one
             let floor = match c {
-                None => None,
-                Some(_) => Some(decode_cursor_pairs(c)?),
+                Some(_) if code == "retention" => decode_cursor_pairs(c).ok(),
+                _ => None,
             };
             Ok(RelayFrame::Error {
                 code,
@@ -686,6 +688,44 @@ mod tests {
         assert_eq!(
             decode_relay_frame(&bytes),
             Err(MalformedFrame::Shape("join proof is not bytes"))
+        );
+    }
+
+    #[test]
+    fn only_a_retention_refusal_reads_a_floor() {
+        // another code's third element is a later additive one, read past (gaps U30)
+        let other = tagged(
+            tag::ERROR,
+            vec![
+                Value::text("version"),
+                Value::text("speaks 1"),
+                Value::text("hint"),
+            ],
+        );
+        assert_eq!(
+            decode_relay_frame(&other),
+            Ok(RelayFrame::Error {
+                code: "version".to_owned(),
+                message: "speaks 1".to_owned(),
+                floor: None,
+            })
+        );
+        // a floor that does not decode leaves the refusal standing, without one
+        let odd = tagged(
+            tag::ERROR,
+            vec![
+                Value::text("retention"),
+                Value::text("below"),
+                Value::text("x"),
+            ],
+        );
+        assert_eq!(
+            decode_relay_frame(&odd),
+            Ok(RelayFrame::Error {
+                code: "retention".to_owned(),
+                message: "below".to_owned(),
+                floor: None,
+            })
         );
     }
 

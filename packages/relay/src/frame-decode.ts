@@ -72,14 +72,15 @@ const decodeHello: ControlDecoder = (a, b, c, d, e, f) =>
     } as const);
   });
 
-const decodeError: ControlDecoder = (a, b, c) =>
-  Result.gen(function* () {
-    if (!isString(a) || !isString(b)) return malformedFrame("error is not [code, message]");
-    const error = { kind: "error", code: a, message: b } as const;
-    // a `retention` refusal names the floor it was below (gaps U30); absent from any other, and
-    // from a relay built before it, which an older client reads past (D14's additive vector)
-    return Result.ok(c === undefined ? error : { ...error, floor: yield* decodeCursorPairs(c) });
-  });
+const decodeError: ControlDecoder = (a, b, c) => {
+  if (!isString(a) || !isString(b)) return malformedFrame("error is not [code, message]");
+  const error = { kind: "error", code: a, message: b } as const;
+  // a `retention` refusal names the floor it was below (gaps U30), and only that code's third
+  // element is read: another code's is a later additive element this build reads past, and a
+  // floor that does not decode leaves the refusal standing without one (D14's additive vector)
+  const floor = a === "retention" && c !== undefined ? decodeCursorPairs(c) : undefined;
+  return Result.ok(floor?.isOk() === true ? { ...error, floor: floor.value } : error);
+};
 
 const decodeAck: ControlDecoder = (a, b) =>
   isString(a) && isSafeNonNegative(b)
