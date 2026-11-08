@@ -16,7 +16,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use syncmesh_core::apply::apply_change;
-use syncmesh_core::doc::{DocColumns, Id16, derive_lineage, lineage_of, with_doc_columns};
+use syncmesh_core::doc::{
+    DocColumns, Id16, derive_lineage, lineage_of, parse_lineage_cells, with_doc_columns,
+};
 use syncmesh_core::envelope::sign_event;
 use syncmesh_core::event::{Change, PartitionKey, PeerId, RowKey, SeqNum, SyncEvent, TableName};
 use syncmesh_core::hlc::{DEFAULT_MAX_DRIFT_MS, HlcClock};
@@ -283,7 +285,8 @@ impl OwnPosition {
 impl Engine {
     /// Opens the engine over its stores: loads the materialised rows where there are any, replays
     /// the log above them, and moves the clock past every stored stamp so a write numbered now
-    /// sorts after everything already held (D05).
+    /// sorts after everything already held (D05). Rows holding a lineage cell of a rule this build
+    /// does not run are refused, as rows that do not decode are.
     pub fn open(
         identity: Identity,
         store: Box<dyn EventStore + Send>,
@@ -294,6 +297,20 @@ impl Engine {
             Some(s) if !s.is_empty()? => (s.load_all()?, s.load_coverage()?),
             _ => (State::new(), Coverage::default()),
         };
+        // a lineage cell another rule wrote is state this build cannot read: refused like any
+        // other (RFC-0023 §16.1), never read as the root or merged by another rule
+        if let Some(docs) = &options.docs {
+            let rows = state.tables.iter().flat_map(|(table, records)| {
+                records
+                    .iter()
+                    .map(move |(key, record)| (table.as_str(), key.as_str(), record))
+            });
+            parse_lineage_cells(rows, docs).map_err(|refused| {
+                StoreError::new(format!(
+                    "the state store holds {refused}; clear it to rebuild it from the log"
+                ))
+            })?;
+        }
         let mut clock = HlcClock::new(options.max_drift_ms);
         let now_ms = options.now_ms.unwrap_or_else(|| Box::new(system_now_ms));
         if let Some(max) = store.max_hlc()? {

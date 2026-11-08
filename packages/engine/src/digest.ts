@@ -1,11 +1,21 @@
-import type { RowKey, RowRecord, State, TableName } from "@syncmesh/kernel";
+import type {
+  DocColumns,
+  LineageCellRefused,
+  RowKey,
+  RowRecord,
+  State,
+  TableName,
+} from "@syncmesh/kernel";
 
 import { sha256 } from "@noble/hashes/sha2.js";
+import { parseLineageCells } from "@syncmesh/kernel";
+import { Result } from "@syncmesh/result";
 import { encodeRecord } from "@syncmesh/wire";
 
 import type { FoldBatch } from "./engine.js";
 import type { Interest } from "./interest.js";
 
+import { lineageMoves } from "./doc-log.js";
 import { rowsIn } from "./interest.js";
 
 /**
@@ -119,9 +129,14 @@ export interface RepairApi {
   /**
    * Heals divergence by merging the other side's records — the ordinary field-level merge, so it
    * is commutative and safe to run in both directions. Adopts **no** cursors: a repaired row says
-   * what it is, never that this peer has seen the events behind it.
+   * what it is, never that this peer has seen the events behind it. A record holding a lineage
+   * cell of a rule this build does not run refuses the whole repair before any record joins
+   * (RFC-0023 §16.1); a document whose winner the records move is relabelled at once.
    */
-  readonly repairRows: (table: TableName, records: readonly RepairRow[]) => Promise<void>;
+  readonly repairRows: (
+    table: TableName,
+    records: readonly RepairRow[],
+  ) => Promise<Result<void, LineageCellRefused>>;
 }
 
 export interface RepairDeps {
@@ -129,6 +144,8 @@ export interface RepairDeps {
   readonly mergeInto: (table: TableName, key: RowKey, record: RowRecord) => void;
   readonly persist: (batch: FoldBatch) => Promise<void>;
   readonly notify: (batch: FoldBatch) => void;
+  /** The mesh's doc columns: their cells are checked before anything joins, and their moves relabelled. */
+  readonly docs?: DocColumns | undefined;
 }
 
 /**
@@ -138,7 +155,7 @@ export interface RepairDeps {
  * never that this peer has seen the events behind it.
  */
 export function createRepairPath(deps: RepairDeps): RepairApi {
-  const { getState, mergeInto, persist, notify } = deps;
+  const { getState, mergeInto, persist, notify, docs } = deps;
   return {
     digest: (interest) => tableDigests(getState(), interest),
     rowDigests: (table, interest) => rowDigests(getState(), table, interest),
@@ -149,17 +166,25 @@ export function createRepairPath(deps: RepairDeps): RepairApi {
         return record === undefined ? [] : [{ key, record }];
       });
     },
-    repairRows: async (table: TableName, records: readonly RepairRow[]): Promise<void> => {
-      if (records.length === 0) return; // nothing to heal is not an event
+    repairRows: async (table, records) => {
+      if (records.length === 0) return Result.ok(undefined); // nothing to heal is not an event
+      const rows = records.map(({ key, record }) => ({ table, key, record }));
+      // a record holding another rule's lineage cell refuses the whole repair, before any joins
+      const checked = docs === undefined ? undefined : parseLineageCells(rows, docs);
+      if (checked?.isErr() === true) return Result.err(checked.error);
+      const before = getState();
       for (const { key, record } of records) mergeInto(table, key, record);
+      const moves = docs === undefined ? [] : lineageMoves(before, getState(), rows, docs);
       const batch: FoldBatch = {
         source: "repair",
         eventCount: records.length,
         writeTables: new Set([table]),
         writeKeys: new Map([[table, new Set(records.map((r) => r.key))]]),
+        ...(moves.length > 0 && { lineageMoves: moves }),
       };
       await persist(batch);
       notify(batch);
+      return Result.ok(undefined);
     },
   };
 }

@@ -1,11 +1,12 @@
 import type { Interest } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 
-import { readRow } from "@syncmesh/kernel";
+import { LineageCellRefused, readRow } from "@syncmesh/kernel";
+import { Result } from "@syncmesh/result";
 import { checkpointHash, createIdentity, encodeRecord, issueCheckpoint } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
-import type { BridgeOptions } from "../bridge.js";
+import type { BridgeError, BridgeOptions } from "../bridge.js";
 import type { SnapshotInstalled } from "../join.js";
 import type { Peer } from "./fixtures.js";
 
@@ -65,6 +66,8 @@ const connect = (holder: Peer, joiner: Peer, options: JoinOptions = {}) => {
   };
   if (options.trust !== undefined) Object.assign(believing, { trust: options.trust });
   const joined = side(joiner, b, believing);
+  const errors: BridgeError[] = [];
+  joined.onError((error) => void errors.push(error));
   const settle = async () => {
     for (let round = 0; round < 8; round += 1) {
       await control.flush();
@@ -74,6 +77,7 @@ const connect = (holder: Peer, joiner: Peer, options: JoinOptions = {}) => {
   };
   return {
     installed,
+    errors,
     settle,
     request: (interest?: Interest, adoptUnvouched?: boolean) =>
       joined.requestSnapshot(interest, adoptUnvouched),
@@ -281,6 +285,34 @@ describe("who vouches for a snapshot (book ch. 4)", () => {
     link.request();
     await link.settle();
     expect(link.installed).toEqual([{ rows: 1, provisional: true }]);
+    link.close();
+  });
+
+  test("a snapshot the engine refuses is closed, adopts nothing, and is said on onError", async () => {
+    const holder = peer(40, "acct_x");
+    const joiner = peer(80, "acct_y");
+    (await write(holder, "n1", "body 1")).unwrap();
+    const refusal = new LineageCellRefused({
+      table: "notes",
+      key: "n1",
+      column: "content",
+      version: 2,
+      message: "notes/n1.content: a lineage cell of version 2; this build runs version 1",
+    });
+    const refusing = {
+      ...joiner,
+      engine: {
+        ...joiner.engine,
+        installSnapshot: () => Promise.resolve(Result.err(refusal)),
+      },
+    };
+    const link = connect(holder, refusing, { rowsPerChunk: 1 });
+    link.request();
+    await link.settle();
+    expect(link.installed).toEqual([]);
+    expect(link.errors).toEqual([refusal]);
+    expect(joiner.engine.coverage().synced.size).toBe(0);
+    expect(link.chunkCount()).toBe(1); // the ack closed the exchange: no page was sent again
     link.close();
   });
 });

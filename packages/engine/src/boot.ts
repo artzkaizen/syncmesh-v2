@@ -1,6 +1,12 @@
 import type { State } from "@syncmesh/kernel";
 
-import { emptyState, getRecord, docLineage } from "@syncmesh/kernel";
+import {
+  docLineage,
+  emptyState,
+  getRecord,
+  keyedRecords,
+  parseLineageCells,
+} from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
 import type { Engine, EngineOptions } from "./engine.js";
@@ -48,7 +54,7 @@ export function openEngine(
     for (const report of yield* Result.await(strandedWrites(store, options.peerId)))
       options.onError?.(report);
     const cached =
-      stateStore === undefined ? undefined : yield* Result.await(load(store, stateStore));
+      stateStore === undefined ? undefined : yield* Result.await(load(store, stateStore, options));
     const state = cached?.state ?? emptyState();
     const coverage = cached?.coverage ?? EMPTY_COVERAGE;
     const synced = yield* Result.await(store.allSince(coverage.synced, "synced"));
@@ -91,6 +97,7 @@ export function openEngine(
 function load(
   store: EventStore,
   stateStore: StateStore,
+  { docs, onError }: Pick<EngineOptions, "docs" | "onError">,
 ): Promise<Result<Cached | undefined, StoreFailure | StateCorrupt>> {
   return Result.gen(async function* () {
     /**
@@ -125,12 +132,17 @@ function load(
         );
       return Result.ok(undefined);
     }
-    const loaded = Result.all([await stateStore.loadAll(), await stateStore.loadCursors()]);
-    if (loaded.isOk()) {
-      const [state, coverage] = loaded.value;
-      return Result.ok({ state, coverage });
-    }
+    // a lineage cell another rule wrote is not this rule's state: it is refused, never read as a
+    // root, and the state is rebuilt from the log like any other state that cannot be read
+    const loaded = Result.all([await stateStore.loadAll(), await stateStore.loadCursors()]).andThen(
+      ([state, coverage]) =>
+        (docs === undefined ? Result.ok([]) : parseLineageCells(keyedRecords(state), docs)).map(
+          () => ({ state, coverage }),
+        ),
+    );
+    if (loaded.isOk()) return Result.ok(loaded.value);
     if (loaded.error._tag === "StoreFailure") return Result.err(loaded.error);
+    if (loaded.error._tag === "LineageCellRefused") onError?.(loaded.error);
     if (partial) {
       return Result.err(
         new StateCorrupt({

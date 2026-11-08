@@ -280,22 +280,23 @@ export function createEngine(options: EngineOptions): Engine {
     partition: (table, key) => getRecord(getState(), table, key)?.partition,
   } satisfies StateLookup;
 
-  const snapshotDeps = {
+  const snapshots = createSnapshotPath({
     getState,
     setState,
     coverageOf: coverage.current,
     adopt: coverage.adopt,
     persist: (batch: FoldBatch) => persist(batch, plain),
     notify,
-  };
-  if (merge !== undefined) Object.assign(snapshotDeps, { merge });
-  const snapshots = createSnapshotPath(snapshotDeps);
+    merge,
+    docs: options.docs,
+  });
 
   const repair = createRepairPath({
     getState,
     mergeInto: (table, key, record) => setState(mergeRecord(getState(), table, key, record, merge)),
-    persist: (batch) => persist(batch, { state: stateStore }),
+    persist: (batch) => persist(batch, plain),
     notify,
+    docs: options.docs,
   });
 
   const { receiveBatch, ...writes } = createWritePath({

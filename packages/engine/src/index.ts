@@ -12,6 +12,7 @@ export type {
   DocLogEntry,
   DocSnapshot,
   DocStore,
+  LineageMove,
   LiveStates,
 } from "./doc-log.js";
 export { createMemoryDocStore } from "./doc-log-memory.js";
@@ -23,9 +24,11 @@ export {
   docDigests,
   docKey,
   inTail,
+  lineageMoves,
   liveStates,
   nextState,
   recordDocs,
+  relabelDocs,
 } from "./doc-log.js";
 export type { DocApi, DocEngineOptions, DocTail, TailUpdate } from "./doc-path.js";
 export type { EventHeader, RecentEvents } from "./recent.js";
@@ -141,7 +144,7 @@ export type { Author } from "./validate.js";
 export type { PolicySource } from "./can.js";
 export { can } from "./can.js";
 export type { Installed, Snapshot, SnapshotOptions, SnapshotRow } from "./snapshot.js";
-export { installSnapshot, partitionsIn, snapshotOf } from "./snapshot.js";
+export { installSnapshot, partitionsIn, stateSnapshot } from "./snapshot.js";
 export type { ChunkDeps, FeedApi, FeedState, FeedTracker } from "./feed.js";
 export { chunkSince, createFeedPath, receiveChunk, trackFeeds } from "./feed.js";
 export type { Interest, Scope } from "./interest.js";

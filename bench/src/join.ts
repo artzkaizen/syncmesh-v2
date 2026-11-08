@@ -12,7 +12,7 @@ import type {
 import type { Procedure } from "@syncmesh/kernel";
 import type { FeedChunk } from "@syncmesh/wire";
 
-import { createEngine, createMemoryEventStore, snapshotOf } from "@syncmesh/engine";
+import { createEngine, createMemoryEventStore, stateSnapshot } from "@syncmesh/engine";
 import { createHlcClock, eventId, parsePartitionKey, parseSeqNum } from "@syncmesh/kernel";
 import { panic } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
@@ -216,8 +216,8 @@ for (let from = 0; from < events.length; from += 5_000)
 
 const state = holder.state();
 const coverage = holder.coverage();
-const full = snapshotOf(state, coverage);
-const scoped = snapshotOf(state, coverage, { interest: { partitions: mine } });
+const full = stateSnapshot(state, coverage);
+const scoped = stateSnapshot(state, coverage, { interest: { partitions: mine } });
 // a window is not yet a field of `Interest`; taking the newest rows here measures what one would
 // cost, which is the point of the row — O(your screen) rather than O(the workspace)
 const windowed: Snapshot = { ...scoped, rows: scoped.rows.slice(-WINDOW) };
