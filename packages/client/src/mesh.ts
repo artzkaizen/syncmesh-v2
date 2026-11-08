@@ -35,6 +35,7 @@ import { openRecovery, recoveryDeps } from "./recovery.js";
 import { createStatus } from "./status.js";
 import { sweepFor } from "./sweep.js";
 import { createSyncStates } from "./sync-state.js";
+import { createSynced } from "./synced.js";
 import { followTelemetry } from "./telemetry.js";
 import { keyRingFor, transportContextFor } from "./transport-context.js";
 import { runTransports } from "./transports.js";
@@ -113,7 +114,9 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
   const { schema, identity } = options;
   const { grants, now, booted } = deps;
   const { engine } = booted;
-  const entryOf = new Map(schema.entries.map((e) => [String(e.table.name), e]));
+  const entriesByTable = new Map<string, (typeof schema.entries)[number]>(
+    schema.entries.map((e) => [e.table.name, e]),
+  );
 
   const tally = createHandleTally();
   const auth = openAuth(options.auth, now, async () => {
@@ -219,10 +222,11 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
       schema,
       engine,
       author,
-      kindOf: (table) => entryOf.get(table)?.partition,
+      kindOf: (table) => entriesByTable.get(table)?.partition,
     }),
     delivered: createDelivered(engine, identity.peerId),
     received: createReceived(engine),
+    synced: createSynced(() => links.list()),
     revert: (id) => engine.revert(id),
     canRevert: (id) => engine.canRevert(id),
     internal,

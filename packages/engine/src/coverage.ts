@@ -14,7 +14,7 @@ interface Chain {
   readonly ahead: Map<number, SeqNum>;
 }
 
-const chainOf = (chains: Map<PeerId, Chain>, peer: PeerId): Chain => {
+const authorChain = (chains: Map<PeerId, Chain>, peer: PeerId): Chain => {
   const held = chains.get(peer);
   if (held !== undefined) return held;
   const fresh: Chain = { contiguous: undefined, ahead: new Map() };
@@ -35,7 +35,7 @@ const close = (chain: Chain): void => {
 
 export interface CoverageTracker {
   /** Records the event in the author's chain; the cursor stops below a gap rather than jumping it. */
-  readonly note: (event: SyncEvent) => void;
+  readonly note: (event: Pick<SyncEvent, "peerId" | "seqNum" | "local">) => void;
   /**
    * Takes on what a snapshot stood for (RFC-0019), raising each author's cursor and never
    * lowering one — a snapshot older than what this device already holds must not un-hold it.
@@ -62,14 +62,14 @@ export function trackCoverage(initial: Coverage = EMPTY_COVERAGE): CoverageTrack
   seed(scopes.local, initial.local);
 
   const raise = (chains: Map<PeerId, Chain>, peer: PeerId, seq: SeqNum): void => {
-    const chain = chainOf(chains, peer);
+    const chain = authorChain(chains, peer);
     if (Number(chain.contiguous ?? 0) >= Number(seq)) return;
     chain.contiguous = seq;
     for (const at of [...chain.ahead.keys()]) if (at <= Number(seq)) chain.ahead.delete(at);
     close(chain);
   };
 
-  const cursorsOf = (chains: Map<PeerId, Chain>): Coverage["synced"] => {
+  const contiguousCursors = (chains: Map<PeerId, Chain>): Coverage["synced"] => {
     const cursors = new Map<PeerId, SeqNum>();
     for (const [peer, chain] of chains)
       if (chain.contiguous !== undefined) cursors.set(peer, chain.contiguous);
@@ -78,7 +78,7 @@ export function trackCoverage(initial: Coverage = EMPTY_COVERAGE): CoverageTrack
 
   return {
     note: (event) => {
-      const chain = chainOf(event.local === true ? scopes.local : scopes.synced, event.peerId);
+      const chain = authorChain(event.local === true ? scopes.local : scopes.synced, event.peerId);
       const at = Number(event.seqNum);
       if (at <= Number(chain.contiguous ?? 0)) return;
       chain.ahead.set(at, event.seqNum);
@@ -90,7 +90,10 @@ export function trackCoverage(initial: Coverage = EMPTY_COVERAGE): CoverageTrack
       scope = adopted.scope;
     },
     current: () => {
-      const coverage = { synced: cursorsOf(scopes.synced), local: cursorsOf(scopes.local) };
+      const coverage = {
+        synced: contiguousCursors(scopes.synced),
+        local: contiguousCursors(scopes.local),
+      };
       return scope === undefined ? coverage : { ...coverage, scope };
     },
     ahead: () => {

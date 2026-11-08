@@ -983,11 +983,11 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    materialisation. A row whose insert has not arrived gets no derived value until one of those
    runs after it. Rebuilt rows (a fresh or repaired state file, a snapshot adoption, a row deleted
    and inserted again) and a closed document that receives remote edits get theirs back the
-   same way (gaps.md U22). The Rust device has no document runtime or app tables yet, so its
+   same way (gaps.md U23). The Rust device has no document runtime or app tables yet, so its
    `Derive` computes values and nothing in the crate writes them; it checks names against the
    manifest but not kinds, which the manifest entry does not carry, and `compute` does not
    require `check` to have run. `installProvisional` checks the producer's signature, not
-   whether the producer may update the row (gaps.md U23).
+   whether the producer may update the row (gaps.md U24).
 5. **Device snapshots — decided 2026-11-08 by Jace: full device snapshots**, as D41 built.
    Shallow-at-the-stable-floor (§8.3) stays available as a future option with its forgotten-peer
    edge; it is not the default.

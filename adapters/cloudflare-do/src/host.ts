@@ -154,6 +154,8 @@ export function relayDurableHost(
     return {
       store,
       epoch: await relayEpoch(driver),
+      // the platform's own database, which outlives every eviction (D42)
+      durable: true,
       identity: await relayIdentity(driver),
       ...omitUndefined({ blobs }),
       // the object's storage is the platform's to close; nothing was borrowed

@@ -14,6 +14,7 @@ import type { SessionHooks } from "./session.js";
 import type { RelayDial, RelayTransportOptions } from "./transport.js";
 
 import { createBlobChannel } from "./blob-channel.js";
+import { createDurability } from "./durability.js";
 import { RELAY_PROTOCOL_VERSIONS, joinCore, joinFrame } from "./frames.js";
 import { createHeard } from "./heard.js";
 import { createLinkReady } from "./link-ready.js";
@@ -73,6 +74,8 @@ export class RelayLink {
   private reentitled = false;
   /** Where this device has been told the room's log runs, and in which lineage (RFC-0020 §3.2). */
   readonly visibility = createVisibility();
+  /** What a room whose log outlives it has said it holds, in the lineage it said it under (D42). */
+  readonly durability = createDurability();
   private online = false;
   /**
    * This session's sealing: the sealed link (D36) from the room's hello on, or the room's challenge
@@ -241,8 +244,9 @@ export class RelayLink {
         this.sealing.challenged(nonce);
         this.join();
       },
-      onHello: (announcedMs, epoch) => {
+      onHello: ({ keepaliveMs: announcedMs, epoch, durable, cursors }) => {
         this.visibility.lineage(epoch);
+        this.durability.hello(epoch, durable, cursors);
         this.report.proven();
         this.liveness.announce(Temporal.Duration.from({ milliseconds: announcedMs }));
         this.redial.settled();
@@ -264,6 +268,7 @@ export class RelayLink {
         this.readiness.lastPage();
       },
       onPosition: (offset) => this.visibility.reached(offset),
+      onAck: (id) => this.durability.acked(id),
       onReentitled: () => {
         this.reentitled = true;
         this.hangUp(REENTITLED);

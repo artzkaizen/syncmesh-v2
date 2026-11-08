@@ -146,7 +146,8 @@ function sitDown(
     room.clients.get(peer)?.socket.close("superseded by a newer join");
     room.clients.delete(peer);
     room.clients.set(peer, grant === undefined ? client : { ...client, granted: grant });
-    sender.send(helloFrame(selected, room.keepaliveMs, room.epoch, room.cursors(), room.floor()));
+    const { keepaliveMs, epoch, durable } = room;
+    sender.send(helloFrame(selected, keepaliveMs, epoch, room.cursors(), room.floor(), durable));
     // who is here now — never how they got here: presence has no history to page through
     const here = room.presence.all();
     for (const entry of here) sender.send(presenceFrame(entry.wire));

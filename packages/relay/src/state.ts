@@ -48,6 +48,8 @@ export interface Fanned {
 export interface RoomState {
   readonly store: EventStore;
   readonly epoch: string;
+  /** Whether the log outlives this process; every `hello` says so (D42). */
+  readonly durable: boolean;
   readonly keepaliveMs: number;
   readonly pageSize: number;
   readonly maxBacklog: number;
