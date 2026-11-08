@@ -13,10 +13,36 @@
 //! change on an undeclared column is let through here as there (D13's additive rule). This crate
 //! writes no local events, so the `local` rung is the validator's alone too.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use syncmesh_core::doc::{DocChange, DocColumns, derive_lineage};
 use syncmesh_core::event::{Change, PeerId, SeqNum, SyncEvent};
 
 use crate::validate::{ValidationError, unfoldable};
+
+/// Per table, the columns its schema derives from a document column (RFC-0023 §16.4): every
+/// replica computes them, so no write carries them. Built from the manifest's doc column entries
+/// with [`crate::docs::derived_columns`].
+pub type DerivedColumns = BTreeMap<String, BTreeSet<String>>;
+
+/// Why this device's own write is refused for naming a derived column, or `None`. Asked of a local
+/// write only, as the TypeScript's probe asks it: a numbered event naming one — written before the
+/// column was derived, or by a build that does not derive it — still folds (RFC-0023 §12).
+pub fn derived_refusal(event: &SyncEvent, derived: &DerivedColumns) -> Option<&'static str> {
+    event
+        .changes
+        .iter()
+        .any(|change| match change {
+            Change::Insert { table, row, .. }
+            | Change::Update {
+                table, patch: row, ..
+            } => derived
+                .get(table)
+                .is_some_and(|columns| row.keys().any(|c| columns.contains(c))),
+            Change::Doc(_) | Change::Delete { .. } | Change::Unknown { .. } => false,
+        })
+        .then_some("a derived column is computed by every replica, never written")
+}
 
 /// Which rule a refused doc change broke — the TypeScript's `DocRung`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -466,6 +466,33 @@ describe("a lineage cell that joins outside an event (RFC-0023 §5.3, §16.1)", 
     expect(booted.isOk()).toBe(true);
   });
 
+  test("unreadable state holding rows a snapshot installed is refused, not rebuilt without them (U22)", async () => {
+    const a = setup(PEER_A, 100, { docs: DOCS, validate });
+    await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+    await write(a, (tx) => tx.doc(NOTES, N1, replace(1)));
+    const stateStore = createMemoryStateStore();
+    const r = setup(PEER_B, 200, { docs: DOCS, validate, stateStore });
+    (await r.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    // the rows came as state: r's log holds none of the events behind them
+    expect(r.engine.coverage().floor?.get(PEER_A)).toBe(seq(2));
+    (await stateStore.commit([foreign(a, untagged(a))], r.engine.coverage())).unwrap();
+    const errors: EngineError[] = [];
+    const booted = await openEngine({
+      peerId: PEER_B,
+      clock: fakeClock(500),
+      store: r.store,
+      stateStore,
+      docs: DOCS,
+      validate,
+      onError: (e) => void errors.push(e),
+    });
+    expect(booted.isErr() && booted.error._tag).toBe("StateCorrupt");
+    expect(booted.isErr() && booted.error.message).toContain("installed from a snapshot");
+    expect(errors.map((e) => e._tag)).toEqual(["LineageCellRefused"]);
+    // nothing was cleared: a rebuild from this log would have emptied the table without a word
+    expect((await stateStore.loadAll()).unwrap().get(NOTES)?.has(N1)).toBe(true);
+  });
+
   test("persisted state holding another rule's cell is refused, said, and rebuilt from the log", async () => {
     const stateStore = createMemoryStateStore();
     const a = setup(PEER_A, 100, { docs: DOCS, validate, stateStore });

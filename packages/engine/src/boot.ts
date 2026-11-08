@@ -48,7 +48,8 @@ interface Cached {
  * Boots an engine over its stores: opens persisted state when there is one, folds only the log above
  * its coverage, and moves the clock past the highest stored stamp before any write is numbered.
  * A corrupt or absent state store is rebuilt from the whole log — unless the log has been compacted,
- * in which case boot fails with `StateCorrupt` rather than open a partial state.
+ * or the state it cannot read took rows from a snapshot install (its cursors carry a floor), in
+ * which case boot fails with `StateCorrupt` rather than open a partial state.
  *
  * **It also audits the log for writes this device can never send** ({@link StrandedWrites}) and
  * reports them on `options.onError`. Boot is the moment that matters: opening a log under a key
@@ -148,12 +149,12 @@ function load(
     // root, and the state is rebuilt from the log like any other state that cannot be read.
     // Only tables with a doc column are walked: the state cache decodes a row when it is first
     // read, and a table with no lineage cell stays undecoded until a fold writes it
-    const loaded = Result.all([await stateStore.loadAll(), await stateStore.loadCursors()]).andThen(
-      ([state, coverage]) =>
-        (docs === undefined
-          ? Result.ok([])
-          : parseLineageCells(keyedRecords(docTables(state, docs)), docs)
-        ).map(() => ({ state, coverage })),
+    const cursors = await stateStore.loadCursors();
+    const loaded = Result.all([await stateStore.loadAll(), cursors]).andThen(([state, coverage]) =>
+      (docs === undefined
+        ? Result.ok([])
+        : parseLineageCells(keyedRecords(docTables(state, docs)), docs)
+      ).map(() => ({ state, coverage })),
     );
     if (loaded.isOk()) return Result.ok(loaded.value);
     if (loaded.error._tag === "StoreFailure") return Result.err(loaded.error);
@@ -162,6 +163,19 @@ function load(
       return Result.err(
         new StateCorrupt({
           message: `${loaded.error.message}; the log is compacted below it — rejoin from a peer`,
+        }),
+      );
+    }
+    /**
+     * **Rows a snapshot install brought have no events behind them** (D46's floor, persisted with
+     * the cursors), so the log rebuilds the state without them and the device would report itself
+     * healthy two snapshots short (gaps U22). Refused like a compacted log, for the same reason.
+     */
+    const unheld = cursors.isOk() ? cursors.value.floor : undefined;
+    if (unheld !== undefined && unheld.size > 0) {
+      return Result.err(
+        new StateCorrupt({
+          message: `${loaded.error.message}; it holds rows installed from a snapshot, which the log has no events for — rejoin from a peer`,
         }),
       );
     }

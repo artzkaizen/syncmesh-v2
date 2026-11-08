@@ -38,13 +38,17 @@ export type ChangeMappings = Readonly<Record<string, ChangeMapping>>;
  * shape change is meant to be heard. A column the manifest declares and the row lacks is left
  * absent, which the schema check refuses on insert if it was not nullable.
  *
- * A retired column (D31) is left out too: the database still holds it until the contract step
+ * Document and derived columns are left out too (RFC-0023 §16.4): a document travels as doc
+ * changes, never as a value, and a derived one is computed by every replica, so the
+ * authority's own derive `UPDATE` reaching the WAL publishes nothing of it.
+ * A retired column (D31) is left out as well: the database still holds it until the contract step
  * drops it, and every logical-replication row carries it, but nothing on this build writes it.
  */
 export function meshCells(collection: Table, row: SourceRow): Row {
   const cells = new Map<ColumnName, CellValue>();
   for (const [key, name] of Object.entries(collection.columnNames)) {
-    if (collection.columns[key]?.def.retired === true) continue;
+    const def = collection.columns[key]?.def;
+    if (def?.doc !== undefined || def?.derived !== undefined || def?.retired === true) continue;
     const value = row[key];
     if (value !== undefined) cells.set(name, value);
   }

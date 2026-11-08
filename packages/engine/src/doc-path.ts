@@ -13,6 +13,7 @@ import { getRecord, docLineage, withDocColumns } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
 import { bytesEqual } from "@syncmesh/wire";
 
+import type { DocEditorApi } from "./doc-editor.js";
 import type {
   DocAddress,
   DocCover,
@@ -23,12 +24,14 @@ import type {
 } from "./doc-log.js";
 import type { AtomicStores } from "./engine.js";
 import type { FoldPath } from "./fold.js";
+import type { DerivedRow } from "./state-store.js";
 import type { EventStore } from "./store.js";
 import type { Cursors } from "./sync.js";
 import type { Undo } from "./undo.js";
 
+import { coversTail, writeDerived, type DerivedFrom } from "./doc-derived.js";
 import { createMemoryDocStore } from "./doc-log-memory.js";
-import { DocCoverStale, docEntryId, docKey } from "./doc-log.js";
+import { DocCoverStale, docKey } from "./doc-log.js";
 import { StoreFailure, orThrow } from "./store.js";
 
 /** How an engine is told about documents. */
@@ -66,7 +69,7 @@ export interface DocTail {
 }
 
 /** What an engine answers about its documents. */
-export interface DocApi {
+export interface DocApi extends DocEditorApi {
   /**
    * Whether the schema declares any document column. A snapshot carries rows and not the doc
    * snapshots behind them, so state taken from a peer below its floor cannot stand in for the doc
@@ -88,6 +91,20 @@ export interface DocApi {
     doc: DocAddress,
     cover: DocCover,
   ) => Promise<Result<void, StoreFailure | DocCoverStale>>;
+  /**
+   * Writes one document's derived values into its row outside any write or cover — what a
+   * replica does when a remote edit, a row's late insert, a rebuild or a new derive function
+   * leaves them behind the document (RFC-0023 §16.4, gaps U25). In the write transaction when the
+   * engine has one, one at a time with covers, and named in a `derive` fold batch.
+   *
+   * Written only while `from` still describes the document: its lineage still wins and no `tail`
+   * entry of it is left that the values were not computed with. `false` when it no longer does
+   * and nothing was written: whatever moved it is newer, and computes its own.
+   */
+  readonly writeDerived: (
+    row: DerivedRow,
+    from: DerivedFrom,
+  ) => Promise<Result<boolean, StoreFailure>>;
 }
 
 /** What the doc path reads once the engine has built it: state, coverage, the transaction. */
@@ -114,7 +131,7 @@ export interface DocPath {
    * updates back and only the log still has them (RFC-0023 §8.3).
    */
   readonly hold: () => Cursors;
-  readonly api: DocApi;
+  readonly api: Omit<DocApi, keyof DocEditorApi>;
   /** Hands the path what exists only after the fold path is built. Called once, at construction. */
   readonly bind: (bindings: DocBindings) => void;
   /**
@@ -177,7 +194,9 @@ export function createDocPath(
                   const done = await coverIfCurrent(store, bindings(), doc, cover);
                   if (done.isErr()) return Result.err(done.error);
                   // a tail entry folded since the snapshot was read is newer than its values
-                  const whole = orThrow(await coversTail(store, doc, cover));
+                  const whole = orThrow(
+                    await coversTail(store, doc, cover.lineage, cover.derivedIncludes),
+                  );
                   const written = whole ? derived : [];
                   await bindings().derive(written, scoped);
                   return Result.ok(written);
@@ -194,6 +213,11 @@ export function createDocPath(
             if (covered.isOk()) bindings().notifyDerived(covered.value);
             return covered.map(() => {});
           });
+        covering = next.then(settled, settled);
+        return next;
+      },
+      writeDerived: (row, from) => {
+        const next = covering.then(() => writeDerived(bindings(), docStore, row, from));
         covering = next.then(settled, settled);
         return next;
       },
@@ -239,29 +263,6 @@ function coverIfCurrent(
       );
     return Result.ok(yield* Result.await(docStore.cover(doc, cover)));
   });
-}
-
-/**
- * Whether `cover`, now committed, leaves no `tail` entry of its lineage on `doc` that its derived
- * values were not computed with. One left was folded after the tail was read — a flush that wrote
- * newer derived values, or an edit the next materialisation covers — so the cover's own values
- * would be older than the document.
- */
-function coversTail(
-  docStore: DocStore,
-  doc: DocAddress,
-  cover: DocCover,
-): Promise<Result<boolean, StoreFailure>> {
-  const included = new Set(cover.derivedIncludes?.map(docEntryId));
-  return docStore
-    .entriesOf(doc)
-    .then((read) =>
-      read.map((entries) =>
-        entries.every(
-          (e) => e.state !== "tail" || e.lineage !== cover.lineage || included.has(docEntryId(e)),
-        ),
-      ),
-    );
 }
 
 const settled = () => {};

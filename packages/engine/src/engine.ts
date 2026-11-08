@@ -31,6 +31,7 @@ import { createCompaction } from "./compaction.js";
 import { type CoverageApi, createCoveragePath } from "./coverage-path.js";
 import { trackCoverage } from "./coverage.js";
 import { createRepairPath } from "./digest.js";
+import { createDocEditor } from "./doc-editor.js";
 import { createDocPath } from "./doc-path.js";
 import {
   ListenerFailure,
@@ -314,6 +315,7 @@ export function createEngine(options: EngineOptions): Engine {
 
   return {
     peerId,
+    ...createDocEditor({ validate, docs: options.docs, getState, before }),
     ...writes,
     receiveBatch: receiveAndRetry,
     receive: (entry) => receiveAndRetry([entry]),

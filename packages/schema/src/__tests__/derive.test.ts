@@ -4,6 +4,8 @@ import { Temporal } from "@syncmesh/temporal";
 import { describe, expect, test } from "bun:test";
 import { bytea, integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
+import type { AllowFn } from "../bind.js";
+
 import { createDerivers } from "../derive.js";
 import { InvalidDerive, from, type DeriveBlock, type DocumentAdapter } from "../documents.js";
 import { drizzleTable, type ColumnsFromDrizzle } from "../from-drizzle.js";
@@ -83,6 +85,38 @@ describe("drizzleTable(t, { merge, derive }) — RFC-0023 §4.1", () => {
     expect(() => build({ title: from("title", () => "x") })).toThrow(
       'reads "title", which is not a document column of notes',
     );
+  });
+
+  test("a write rule reading a derived column is refused; a read rule may read one (U27)", () => {
+    const ruled = (allow: AllowFn<ColumnsFromDrizzle<typeof notes>, "editor">) =>
+      syncSchema({
+        tables: {
+          notes: drizzleTable(notes, {
+            partition: workspace,
+            merge: { content: loro },
+            derive: { title: from("content", (d: FakeDoc) => d.title) },
+            allow,
+          }),
+        },
+      });
+    // derived values are each replica's own: a verdict on one could differ between peers
+    expect(() =>
+      ruled(({ rowIs, role }) => ({ $default: role("editor"), update: rowIs({ title: "open" }) })),
+    ).toThrow('notes.title: the "update" rule reads a derived column');
+    // `$default` judges every write the block names no rule for
+    expect(() => ruled(({ owner }) => ({ $default: owner("title") }))).toThrow(InvalidDerive);
+    expect(() =>
+      ruled(({ any, not, rowIs, role }) => ({
+        $default: role("editor"),
+        write: any(role("editor"), not(rowIs({ title: "locked" }))),
+      })),
+    ).toThrow('the "insert" rule reads a derived column');
+    // the authority evaluates `read` where it serves rows, over the row's derived value
+    const served = ruled(({ rowIs, role }) => ({
+      $default: role("editor"),
+      read: rowIs({ title: "public" }),
+    }));
+    expect(served.entries[0]?.allow?.read).toEqual({ kind: "rowIs", where: { title: "public" } });
   });
 
   test("derive keys are typed against the table's columns", () => {

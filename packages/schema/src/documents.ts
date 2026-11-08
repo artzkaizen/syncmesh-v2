@@ -1,5 +1,7 @@
 import type { ColumnName } from "@syncmesh/kernel";
+import type { AllowBlock, PolicyNode } from "@syncmesh/policy";
 
+import { resolveAllow } from "@syncmesh/policy";
 import { TaggedError, panic } from "@syncmesh/result";
 
 import type { Columns, Table } from "./table.js";
@@ -138,4 +140,58 @@ export function docColumnEntries(
           },
         ],
   );
+}
+
+/** The columns a rule reads the row's value of. `patchOnly` names columns a write touches, not values. */
+function columnsRead(node: PolicyNode): readonly string[] {
+  switch (node.kind) {
+    case "owner":
+    case "claimHas":
+    case "claimEquals":
+    case "compare":
+    case "isIn":
+      return [node.column];
+    case "rowIs":
+      return Object.keys(node.where);
+    case "any":
+    case "all":
+      return node.of.flatMap(columnsRead);
+    case "not":
+      return columnsRead(node.of);
+    case "allow":
+    case "deny":
+    case "role":
+    case "claimIncludes":
+    case "patchOnly":
+      return [];
+  }
+}
+
+/** The operations the fold judges on every peer; `read` is served, and a custom one is the app's. */
+const FOLDED_OPS = ["insert", "update", "delete", "replace"] as const;
+
+/**
+ * Refuses a write rule that reads a derived column (RFC-0023 §16.4, gaps U27): each replica
+ * computes its own value and a numbered event's cell is kept as it arrived, so a verdict on one
+ * could differ from peer to peer. A `read` rule, which the authority evaluates where it serves
+ * rows, may read one.
+ *
+ * @throws {InvalidDerive}
+ */
+export function checkDerivedRules(
+  name: string,
+  tbl: Table,
+  derive: DeriveBlock<Columns>,
+  allow: AllowBlock,
+): void {
+  const derived = new Set(Object.keys(derive).flatMap((key) => [key, tbl.columnNames[key] ?? key]));
+  for (const op of FOLDED_OPS) {
+    const read = columnsRead(resolveAllow(allow, op)).find((column) => derived.has(column));
+    if (read === undefined) continue;
+    const column = `${name}.${read}`;
+    throw new InvalidDerive({
+      column,
+      message: `${column}: the "${op}" rule reads a derived column, which every replica computes for itself — a verdict on it could differ between peers`,
+    });
+  }
 }

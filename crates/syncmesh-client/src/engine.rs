@@ -20,7 +20,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use syncmesh_core::apply::apply_change;
 use syncmesh_core::doc::{
-    DocColumns, Id16, derive_lineage, lineage_of, parse_lineage_cells, with_doc_columns,
+    DocColumns, Id16, LineageCellRefused, derive_lineage, lineage_of, parse_lineage_cells,
+    with_doc_columns,
 };
 use syncmesh_core::envelope::sign_event;
 use syncmesh_core::event::{
@@ -36,7 +37,7 @@ use crate::coverage::CoverageTracker;
 use crate::doc_log::{
     DocAppend, DocHead, DocLogEntry, DocStore, MemoryDocStore, doc_appends, record_docs,
 };
-use crate::doc_rules::{doc_refusal, doc_verdict};
+use crate::doc_rules::{DerivedColumns, derived_refusal, doc_refusal, doc_verdict};
 use crate::interest::{Interest, matches_interest};
 use crate::quarantine::{Parked, Quarantine};
 use crate::store::{
@@ -148,8 +149,8 @@ pub enum MutateError {
     Unfoldable {
         procedure: String,
     },
-    /// A doc change the declared doc columns refuse (RFC-0023 §10), or a row write naming one —
-    /// what an engine with no validator still refuses.
+    /// A doc change the declared doc columns refuse (RFC-0023 §10), or a row write naming a
+    /// document column or a derived one (§16.4) — what an engine with no validator still refuses.
     DocRefused {
         procedure: String,
         reason: &'static str,
@@ -211,6 +212,10 @@ pub struct EngineOptions {
     /// rungs that need no declaration still run: a genesis must name the lineage its place in the
     /// log derives, once per document per event, so every peer parks the same forged one.
     pub docs: Option<DocColumns>,
+    /// Per table, the columns derived from a document column (RFC-0023 §16.4), from
+    /// [`crate::docs::derived_columns`]: this device's own write naming one is refused, as the
+    /// TypeScript validator refuses it. Empty derives nothing.
+    pub derived: DerivedColumns,
     /// The adapters this device can materialise, by id. Empty is the `adapter-missing` mode: doc
     /// changes fold, are kept and forwarded exactly as with one, and are only labelled differently.
     pub doc_adapters: BTreeSet<String>,
@@ -234,6 +239,7 @@ impl Default for EngineOptions {
             now_ms: None,
             quarantine_limit: 128,
             docs: None,
+            derived: DerivedColumns::new(),
             doc_adapters: BTreeSet::new(),
             doc_store: None,
             undo_depth: 0,
@@ -265,6 +271,7 @@ pub struct Engine {
     max_drift_ms: Option<i64>,
     /// Empty when none were declared: the genesis rungs still run, as they do in TypeScript.
     docs: DocColumns,
+    derived: DerivedColumns,
     doc_adapters: BTreeSet<String>,
     doc_store: Box<dyn DocStore + Send>,
     /// The highest sequence of this device's own author known to exist outside this log — what a
@@ -273,6 +280,8 @@ pub struct Engine {
     undo_depth: usize,
     /// The last `undo_depth` own writes and the rows they touched as they read before.
     undo: VecDeque<Undo>,
+    /// The persisted lineage cell that made `open` rebuild the state from the log.
+    refused_at_open: Option<LineageCellRefused>,
     /// Stamped on each own event (D31); `None`, nothing is.
     schema_version: Option<SchemaVersion>,
 }
@@ -317,14 +326,17 @@ impl Engine {
     /// Opens the engine over its stores: loads the materialised rows where there are any, replays
     /// the log above them, and moves the clock past every stored stamp so a write numbered now
     /// sorts after everything already held (D05). Rows holding a lineage cell of a rule this build
-    /// does not run are refused, as rows that do not decode are.
+    /// does not run are state it cannot read: the state store is cleared and rebuilt from the
+    /// whole log, as the TypeScript's `openEngine` does, and the refused cell is kept for
+    /// [`Engine::refused_at_open`]. This crate never compacts its log or installs a snapshot, so
+    /// the log holds every event the state stood for.
     pub fn open(
         identity: Identity,
         store: Box<dyn EventStore + Send>,
-        state_store: Option<Box<dyn StateStore + Send>>,
+        mut state_store: Option<Box<dyn StateStore + Send>>,
         options: EngineOptions,
     ) -> Result<Engine, StoreError> {
-        let (state, coverage) = match &state_store {
+        let (mut state, mut coverage) = match &state_store {
             Some(s) if !s.is_empty()? => (s.load_all()?, s.load_coverage()?),
             _ => (State::new(), Coverage::default()),
         };
@@ -339,19 +351,22 @@ impl Engine {
         let merge = options
             .merge
             .or_else(|| validator.as_ref().map(|v| v.manifest().merge()));
-        // a lineage cell another rule wrote is state this build cannot read: refused like any
-        // other (RFC-0023 §16.1), never read as the root or merged by another rule
-        if let Some(docs) = &docs {
+        // a lineage cell another rule wrote is state this build cannot read (RFC-0023 §16.1): never
+        // read as the root or merged by another rule, and rebuilt from the log instead
+        let refused = docs.as_ref().and_then(|docs| {
             let rows = state.tables.iter().flat_map(|(table, records)| {
                 records
                     .iter()
                     .map(move |(key, record)| (table.as_str(), key.as_str(), record))
             });
-            parse_lineage_cells(rows, docs).map_err(|refused| {
-                StoreError::new(format!(
-                    "the state store holds {refused}; clear it to rebuild it from the log"
-                ))
-            })?;
+            parse_lineage_cells(rows, docs).err()
+        });
+        if refused.is_some() {
+            if let Some(s) = state_store.as_mut() {
+                s.clear()?;
+            }
+            state = State::new();
+            coverage = Coverage::default();
         }
         let mut clock = HlcClock::new(options.max_drift_ms);
         let now_ms = options.now_ms.unwrap_or_else(|| Box::new(system_now_ms));
@@ -376,6 +391,7 @@ impl Engine {
             validator,
             max_drift_ms: options.max_drift_ms,
             docs: docs.unwrap_or_default(),
+            derived: options.derived,
             doc_adapters: options.doc_adapters,
             doc_store: options
                 .doc_store
@@ -383,12 +399,20 @@ impl Engine {
             own_floor: 0,
             undo_depth: options.undo_depth,
             undo: VecDeque::new(),
+            refused_at_open: refused,
             schema_version: options.schema_version,
         };
         let replay = engine.store.all_since(&coverage.synced)?;
         let batch = engine.fold(&replay, FoldSource::Boot);
         engine.persist(&batch)?;
         Ok(engine)
+    }
+
+    /// The persisted lineage cell `open` refused, after which it rebuilt the state from the log;
+    /// `None` when the state it loaded was read as it was. The TypeScript reports the same refusal
+    /// on `onError`; a host shows it the same way.
+    pub fn refused_at_open(&self) -> Option<&LineageCellRefused> {
+        self.refused_at_open.as_ref()
     }
 
     pub fn peer_id(&self) -> &PeerId {
@@ -489,7 +513,9 @@ impl Engine {
             undo_of,
             schema_version: self.schema_version,
         };
-        if let Some(reason) = doc_refusal(&event, &self.docs) {
+        if let Some(reason) =
+            doc_refusal(&event, &self.docs).or_else(|| derived_refusal(&event, &self.derived))
+        {
             return Err(MutateError::DocRefused {
                 procedure: procedure.to_owned(),
                 reason,

@@ -26,3 +26,4 @@ export { installProvisional } from "./checkpoint.js";
 export { replicaId } from "./replica.js";
 export type { BackgroundError, Documents, DocumentsOptions, MaintainError } from "./runtime.js";
 export { createDocuments } from "./runtime.js";
+export type { RederiveError } from "./rederive.js";
