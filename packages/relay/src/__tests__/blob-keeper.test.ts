@@ -1,6 +1,6 @@
 import type { SyncEvent } from "@syncmesh/kernel";
 
-import { hashOf, memoryBlobStore } from "@syncmesh/storage";
+import { hashOf, memoryBlobHomes, memoryBlobStore } from "@syncmesh/storage";
 import { Temporal, addToInstant } from "@syncmesh/temporal";
 import { eventFrame } from "@syncmesh/transport";
 import { describe, expect, test } from "bun:test";
@@ -128,6 +128,7 @@ describe("the blob sweep (D18)", () => {
     // an earlier run stored these, and the event that named them is no longer in the log
     (await store.putAt(hashOf(photo), photo)).unwrap();
     const keeper = createBlobKeeper({
+      homes: memoryBlobHomes(),
       store,
       quota: 16,
       keepUnreferencedFor: DAY,
@@ -143,6 +144,7 @@ describe("the blob sweep (D18)", () => {
     let clock = T0;
     const store = memoryBlobStore();
     const keeper = createBlobKeeper({
+      homes: memoryBlobHomes(),
       store,
       quota: undefined,
       keepUnreferencedFor: DAY,
@@ -161,6 +163,7 @@ describe("the blob sweep (D18)", () => {
     let clock = T0;
     const store = memoryBlobStore();
     const keeper = createBlobKeeper({
+      homes: memoryBlobHomes(),
       store,
       quota: undefined,
       keepUnreferencedFor: DAY,
@@ -242,6 +245,7 @@ describe("per-partition blob quotas (D18)", () => {
     // store; the put must add its own bytes to what is billed now, not to what it read before
     let clock = T0;
     const keeper = createBlobKeeper({
+      homes: memoryBlobHomes(),
       store: cappedBlobStore(memoryBlobStore(), 5, (hash) => keeper.forget(hash)),
       quota: 8,
       keepUnreferencedFor: undefined,

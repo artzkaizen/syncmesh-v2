@@ -1,10 +1,10 @@
 import type { EventStore } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
-import type { BlobStore, SqlDriver, Stores } from "@syncmesh/storage";
+import type { BlobHomes, BlobStore, SqlDriver, Stores } from "@syncmesh/storage";
 import type { Identity } from "@syncmesh/wire";
 
 import { omitUndefined, panic } from "@syncmesh/result";
-import { sqlBlobStore } from "@syncmesh/storage";
+import { sqlBlobHomes, sqlBlobStore } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { bytesToHex, createIdentity, hexToBytes, randomBytes } from "@syncmesh/wire";
 
@@ -42,6 +42,8 @@ export interface RoomStore {
   readonly store: EventStore;
   readonly epoch: string;
   readonly blobs?: BlobStore;
+  /** Where each of those blobs may be read (D44), kept beside them so a reopened room still knows. */
+  readonly blobHomes?: BlobHomes;
   /**
    * The key kept beside this log, for a host where the room is its own process — a Durable
    * Object — and the name a client pins is the object's rather than a fleet's. Given, it signs
@@ -193,14 +195,17 @@ export async function durableRoomStore(
 ): Promise<RoomStore> {
   const { driver } = stores;
   let blobs: BlobStore | undefined;
+  let blobHomes: BlobHomes | undefined;
   if (options.blobs !== false) {
     const opened = await sqlBlobStore(driver);
     if (opened.isOk()) blobs = opened.value;
+    const homes = await sqlBlobHomes(driver);
+    if (homes.isOk()) blobHomes = homes.value;
   }
   return {
     store: stores.events,
     epoch: await relayEpoch(driver),
-    ...omitUndefined({ blobs }),
+    ...omitUndefined({ blobs, blobHomes }),
     release: stores.close,
   };
 }
@@ -258,7 +263,11 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
     const held = await options.openRoomStore(name);
     const room = await openRelayRoom({
       ...roomOptions,
-      ...omitUndefined({ blobs: held.blobs, identity: held.identity }),
+      ...omitUndefined({
+        blobs: held.blobs,
+        blobHomes: held.blobHomes,
+        identity: held.identity,
+      }),
       name,
       grants,
       store: held.store,

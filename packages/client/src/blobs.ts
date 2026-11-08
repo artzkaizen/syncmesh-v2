@@ -6,6 +6,7 @@ import type { Transport } from "@syncmesh/transport";
 import { Result as R } from "@syncmesh/result";
 import {
   BlobNotFound,
+  BlobNotGranted,
   BlobQuotaExceeded,
   BlobTimeout,
   hashOf,
@@ -24,12 +25,14 @@ export interface Blobs {
    * peer that sees the row can already fetch what it names.
    *
    * `BlobQuotaExceeded` when a relay refused them because the partition they are billed to is
-   * full: that relay stored nothing, so this device is still their only holder.
+   * full, and `BlobNotGranted` when a grant-gated relay refused them because this device's grant
+   * does not name that partition (D44): either way that relay stored nothing, so this device is
+   * still their only holder.
    */
   readonly put: (
     bytes: Uint8Array,
     options?: PutBlobOptions,
-  ) => Promise<Result<BlobHash, BlobError | BlobQuotaExceeded | NoSuchCapability>>;
+  ) => Promise<Result<BlobHash, BlobError | BlobQuotaExceeded | BlobNotGranted | NoSuchCapability>>;
   /**
    * The bytes behind a hash: this device's cache first, then whoever can be asked. Verified on
    * arrival — a reference is a proof of content, not a promise about a server — and cached, since
@@ -64,6 +67,10 @@ export interface PutBlobOptions {
   /**
    * The partition whose byte budget a relay bills these bytes to — the one the row naming them
    * will be written in. Absent, they share the relay's budget for puts that named none.
+   *
+   * In a grant-gated room it is also who may fetch them (D44): devices whose grant names this
+   * partition. Bytes put with none are readable by every device seated in the room, as an
+   * unpinned row is.
    */
   readonly partition?: PartitionKey;
 }
@@ -145,6 +152,14 @@ export function createBlobs(deps: BlobsDeps): Blobs {
       );
       const refused = answers.find((answer) => answer !== undefined);
       if (refused === undefined) return R.ok(hash);
+      if (refused.reason === "ungranted")
+        return R.err(
+          new BlobNotGranted({
+            hash: hash,
+            partition: refused.partition,
+            message: `a grant-gated relay refused these bytes: this device's grant does not name ${refused.partition}`,
+          }),
+        );
       return R.err(
         new BlobQuotaExceeded({
           hash: hash,
@@ -180,7 +195,7 @@ export function createBlobs(deps: BlobsDeps): Blobs {
   };
 }
 
-export { BlobNotFound, BlobQuotaExceeded, NoSuchCapability };
+export { BlobNotFound, BlobNotGranted, BlobQuotaExceeded, NoSuchCapability };
 
 /**
  * The blob surface, metered, over whichever transports can carry bytes out of band (D18).

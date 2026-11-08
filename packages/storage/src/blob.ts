@@ -52,6 +52,16 @@ export class BlobQuotaExceeded extends TaggedError("BlobQuotaExceeded")<{
   message: string;
 }> {}
 
+/**
+ * A put a grant-gated room would not keep (D44): this device's grant does not name the partition
+ * the bytes were billed to. Nothing was stored there, so the bytes are still only the author's.
+ */
+export class BlobNotGranted extends TaggedError("BlobNotGranted")<{
+  hash: string;
+  partition: PartitionKey;
+  message: string;
+}> {}
+
 /** A blob name as the wire spells it: 64 lowercase hex digits, the length of a sha-256. */
 export const BLOB_HASH_HEX = /^[0-9a-f]{64}$/;
 
@@ -61,6 +71,27 @@ export const BLOB_HASH_HEX = /^[0-9a-f]{64}$/;
  * keep, never a reason to fetch.
  */
 export const isBlobHash = (value: string): value is BlobHash => BLOB_HASH_HEX.test(value);
+
+/**
+ * Every blob name a value spells, however deep: a cell holds JSON, an opaque change whatever CBOR
+ * read. A reference is defined by spelling alone ({@link isBlobHash}), so this is what both a
+ * relay keeping blobs and a device purging them read a row with. Walked with a stack rather than
+ * recursion, because the depth is the sender's choice.
+ */
+/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof -- a reference is defined over whatever a cell holds, an opaque change's CBOR included, which no schema here describes: the walk reads spelling, never meaning, and `isBlobHash` is the parse it hands each string to */
+export function* blobNamesIn(value: unknown): Generator<BlobHash> {
+  const stack = [value];
+  while (stack.length > 0) {
+    const next = stack.pop();
+    if (typeof next === "string") {
+      if (isBlobHash(next)) yield next;
+    } else if (Array.isArray(next) || next instanceof Map)
+      for (const item of next.values()) stack.push(item);
+    else if (typeof next === "object" && next !== null && !(next instanceof Uint8Array))
+      for (const item of Object.values(next)) stack.push(item);
+  }
+}
+/* oxlint-enable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof */
 
 /** The sha-256 of the bytes, in the wire's lowercase hex — the blob's whole identity. */
 export const hashOf = (bytes: Uint8Array): BlobHash =>

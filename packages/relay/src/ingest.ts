@@ -1,5 +1,5 @@
 import type { StoreFailure } from "@syncmesh/engine";
-import type { EventId } from "@syncmesh/kernel";
+import type { EventId, PartitionKey } from "@syncmesh/kernel";
 import type { BlobHash } from "@syncmesh/storage";
 import type { WireError } from "@syncmesh/wire";
 
@@ -19,6 +19,7 @@ import {
   blobStoredFrame,
   relayedFrame,
 } from "./frames.js";
+import { UNGRANTED } from "./trust.js";
 
 /** What one event cost the room: nothing at all when it already held it. */
 export interface Absorbed {
@@ -181,10 +182,21 @@ async function absorbAndAck(conversation: Conversation, wire: Uint8Array): Promi
  * the putter learns it as a value rather than as silence. A get answers with the bytes or
  * `blob-missing`, which is a value the fetcher can act on — anyone still holding them can put
  * them back under the same name.
+ *
+ * In a grant-gated room both are checked against the socket's grant (D44). A put billed to a
+ * partition the grant does not name is refused `ungranted` and nothing is stored. A get is served
+ * only when a put billed the bytes to a partition the grant names, or to none — the homes the
+ * keeper recorded — and is otherwise answered `blob-missing`, exactly as for bytes the room never
+ * held, so a refusal does not tell the asker the hash exists. A row naming the hash authorises
+ * nothing: any socket can write a hash it has seen into a row of its own.
+ *
+ * @param partitions - What the socket's grant names; `undefined` in an open room, which checks
+ *   neither half.
  */
 export function serveBlob(
   conversation: Conversation,
   frame: Extract<RelayFrame, { kind: "blob-put" | "blob-get" }>,
+  partitions: readonly PartitionKey[] | undefined,
 ): void {
   const { room, sender, refuse } = conversation;
   room.enqueue(async () => {
@@ -199,7 +211,12 @@ export function serveBlob(
         sender.send(blobRefusedFrame(frame.hash, "no-store", 0, 0));
         return;
       }
-      const [stored, duration] = await timed(() => keeper.put(hash, frame.bytes, frame.partition));
+      const billed = frame.partition;
+      if (partitions !== undefined && billed !== undefined && !partitions.includes(billed)) {
+        sender.send(blobRefusedFrame(frame.hash, UNGRANTED, 0, 0, billed));
+        return;
+      }
+      const [stored, duration] = await timed(() => keeper.put(hash, frame.bytes, billed));
       if (stored.isOk()) {
         sender.send(blobStoredFrame(frame.hash));
         room.report({ type: "relay.blob.put", sizes: { bytes: frame.bytes.byteLength }, duration });
@@ -210,10 +227,18 @@ export function serveBlob(
         sender.send(
           blobRefusedFrame(frame.hash, "quota", failure.limit, failure.used, failure.partition),
         );
+      else if (failure._tag === "StoreFailure") refuse("store", failure.message);
       else refuse("blob-corrupt", failure.message);
       return;
     }
-    const [found, duration] = await timed(async () => room.blobs?.get(hash));
+    const [found, duration] = await timed(async () => {
+      if (partitions !== undefined) {
+        const readable = await room.keeper?.readable(hash, partitions);
+        // no keeper, a store failure, or no home this grant names: the same answer as absent
+        if (readable === undefined || !readable.isOk() || !readable.value) return undefined;
+      }
+      return room.blobs?.get(hash);
+    });
     const bytes = found === undefined || found.isErr() ? undefined : found.value;
     if (bytes === undefined) sender.send(blobMissingFrame(frame.hash));
     else sender.send(blobFrame(frame.hash, bytes));

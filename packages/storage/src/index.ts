@@ -75,12 +75,16 @@ export { captureChanges, captureDdl, installCapture, tableDdl } from "./capture.
 export type { Projection, ProjectionOptions } from "./projection.js";
 export { tablesProjection } from "./projection.js";
 export type { BlobError, BlobHash, BlobStore } from "./blob.js";
+export type { BlobHome, BlobHomes } from "./blob-homes.js";
+export { memoryBlobHomes, sqlBlobHomes } from "./blob-homes.js";
 export {
   BlobCorrupt,
   BlobNotFound,
+  BlobNotGranted,
   BlobQuotaExceeded,
   BlobTimeout,
   BLOB_HASH_HEX,
+  blobNamesIn,
   hashOf,
   isBlobHash,
   memoryBlobStore,

@@ -1,7 +1,8 @@
 import type { Cursors, EventStore, StoreFailure, StoredEvent } from "@syncmesh/engine";
-import type { BlobStore } from "@syncmesh/storage";
+import type { BlobHomes, BlobStore } from "@syncmesh/storage";
 
 import { Result } from "@syncmesh/result";
+import { memoryBlobHomes } from "@syncmesh/storage";
 import { Temporal, addToInstant, durationMs } from "@syncmesh/temporal";
 
 import type { BlobKeeper, BlobKeeperOptions } from "./blob-keeper.js";
@@ -228,6 +229,8 @@ export interface RoomRetentionOptions {
   readonly policy: RelayRetention | undefined;
   /** The room's blob store, returned capped when there is a byte ceiling to apply to it. */
   readonly blobs: BlobStore | undefined;
+  /** Where each blob may be read (D44), kept beside the bytes; absent, for this process only. */
+  readonly homes: BlobHomes | undefined;
   /** What the room can serve right now; a sweep never trims above where this was a window ago. */
   readonly ceiling: () => Cursors;
   /** The floor the store booted with, before this room has swept anything. */
@@ -310,6 +313,7 @@ export function roomRetention(options: RoomRetentionOptions): RoomRetention {
       ? undefined
       : openKeeper(options.held, {
           store: blobs,
+          homes: options.homes ?? memoryBlobHomes(),
           quota: policy?.maxBlobBytesPerPartition,
           keepUnreferencedFor: keepBlobsFor,
           now,

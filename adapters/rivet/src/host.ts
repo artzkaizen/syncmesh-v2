@@ -10,7 +10,7 @@ import type {
 
 import { createRelayHost, describeRoom, relayEpoch, relayIdentity } from "@syncmesh/relay";
 import { omitUndefined, panic } from "@syncmesh/result";
-import { sqlBlobStore, sqliteEventStore } from "@syncmesh/storage";
+import { sqlBlobHomes, sqlBlobStore, sqliteEventStore } from "@syncmesh/storage";
 
 import type { RivetDatabase } from "./driver.js";
 import type { RivetWebSocket } from "./socket.js";
@@ -110,10 +110,14 @@ export function relayRivetActor(options: RelayRivetActorOptions = {}): RelayRive
         options.blobs === false
           ? undefined
           : (await sqlBlobStore(driver)).match({ ok: (value) => value, err: () => undefined });
+      const blobHomes =
+        options.blobs === false
+          ? undefined
+          : (await sqlBlobHomes(driver)).match({ ok: (value) => value, err: () => undefined });
       return {
         store,
         epoch: await relayEpoch(driver),
-        ...omitUndefined({ blobs }),
+        ...omitUndefined({ blobs, blobHomes }),
         // the actor's storage is the platform's to close; nothing was borrowed
         release: () => undefined,
       };

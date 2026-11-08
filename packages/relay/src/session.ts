@@ -4,7 +4,6 @@ import type { BlobRefusal, TransportContext } from "@syncmesh/transport";
 import type { Grant } from "@syncmesh/wire";
 
 import { ownPositionWarning } from "@syncmesh/engine";
-import { omitUndefined } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { createHoldback, cursorsFrame, eventFrame, grantFrame } from "@syncmesh/transport";
 import { decodeAndVerify, relayEnvelope, signEvent } from "@syncmesh/wire";
@@ -13,6 +12,7 @@ import type { RelayFrame } from "./frames.js";
 import type { JoinedScope } from "./scoped.js";
 import type { RelayDial } from "./transport.js";
 
+import { uploadRefusal } from "./blob-channel.js";
 import { decodeRelayFrame } from "./frame-decode.js";
 import { scopedCoverage } from "./scoped.js";
 
@@ -96,24 +96,6 @@ export interface SessionHooks {
    */
   readonly repaging?: () => boolean;
 }
-
-/**
- * What a put's answer means to the upload waiting on it: nothing for `blob-stored`, the budget
- * for a `quota` refusal — and nothing for any other code, `no-store` from a room that keeps no
- * blobs or one this build cannot name (D14), which is what that upload heard before the answer
- * existed.
- */
-const uploadRefusal = (
-  frame: Extract<RelayFrame, { kind: "blob-stored" | "blob-refused" }>,
-): BlobRefusal | undefined =>
-  frame.kind === "blob-refused" && frame.code === "quota"
-    ? omitUndefined({
-        reason: "quota",
-        limit: frame.limit,
-        used: frame.used,
-        partition: frame.partition,
-      } as const)
-    : undefined;
 
 /** The four frames that answer a blob fetch or put (D18). */
 type BlobAnswer = Extract<

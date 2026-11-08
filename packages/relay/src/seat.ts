@@ -1,5 +1,5 @@
 import type { Interest } from "@syncmesh/engine";
-import type { PeerId, SyncEvent } from "@syncmesh/kernel";
+import type { PartitionKey, PeerId, SyncEvent } from "@syncmesh/kernel";
 import type { Grant } from "@syncmesh/wire";
 
 import { entitles, matchesInterest } from "@syncmesh/engine";
@@ -36,6 +36,12 @@ export interface Seat {
    * A renewal that already reached the room, naming the same partitions, is the ticket from then on.
    */
   readonly wants: (event: SyncEvent) => boolean;
+  /**
+   * The partitions this socket may put blobs into and be served them from (D44): the ones its
+   * grant names, and none once that grant has lapsed (which hangs up, as {@link Seat.wants} does).
+   * `undefined` in an open room, which checks neither.
+   */
+  readonly blobPartitions: () => readonly PartitionKey[] | undefined;
   /**
    * Seats now under the grant the room already holds for `peer`, or holds the join until one
    * arrives — the device sends its grants straight after its join — and refuses it `ungranted`
@@ -83,6 +89,19 @@ export function createSeat(room: RoomState, refuse: (code: string, message: stri
   };
   /** Set once the seat has hung up on a lapsed ticket: later fan-out passes it over, quietly. */
   let lapsedOut = false;
+  /**
+   * The grant this seat may still be served under: the one it sat down with, or its renewal once
+   * that lapses. `undefined` once neither holds — hung up, once, and quietly after that.
+   */
+  const ticket = (seated: Grant): Grant | undefined => {
+    if (lapsedOut) return undefined;
+    if (lapsed(room, seated)) granted = renewed(room, seated);
+    if (granted === undefined) {
+      lapsedOut = true;
+      refuse(REVOKED, REVOKED_MESSAGE);
+    }
+    return granted;
+  };
 
   return {
     take: (asked, grant) => {
@@ -95,15 +114,15 @@ export function createSeat(room: RoomState, refuse: (code: string, message: stri
     wants: (event) => {
       if (lapsedOut) return false;
       if (granted !== undefined) {
-        if (lapsed(room, granted)) granted = renewed(room, granted);
-        if (granted === undefined) {
-          lapsedOut = true;
-          refuse(REVOKED, REVOKED_MESSAGE);
-          return false;
-        }
-        if (!entitles(granted.partitions, event)) return false;
+        const live = ticket(granted);
+        if (live === undefined || !entitles(live.partitions, event)) return false;
       }
       return interest === undefined || matchesInterest(interest, event);
+    },
+    blobPartitions: () => {
+      if (room.trust === undefined) return undefined;
+      if (granted === undefined) return [];
+      return ticket(granted)?.partitions ?? [];
     },
     admit: (peer, seat) => {
       if (room.trust === undefined) {

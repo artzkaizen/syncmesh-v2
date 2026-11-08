@@ -352,7 +352,8 @@ export function createConnection(
         onGrant(bytes, frame.frame.wire);
       return;
     }
-    if (frame.kind === "blob-put" || frame.kind === "blob-get") serveBlob(conversation, frame);
+    if (frame.kind === "blob-put" || frame.kind === "blob-get")
+      serveBlob(conversation, frame, seat.blobPartitions());
     // anything else control-shaped is one the relay did not ask for, and ignores
     else if (frame.kind === "session") onSession(bytes, frame);
   };
