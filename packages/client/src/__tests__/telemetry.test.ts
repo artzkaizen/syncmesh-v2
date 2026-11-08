@@ -239,8 +239,14 @@ describe("follow: one listener rather than three", () => {
     const handle = mesh.on().unwrap();
     await handle.db.insert(notes).values({ id: "n1", body: "one" });
 
-    expect(seen.map((e) => e.type)).toEqual(["engine.mutate", "engine.fold"]);
+    expect(seen.map((e) => e.type)).toEqual([
+      "engine.mutate",
+      "engine.fold",
+      "engine.store.commit",
+    ]);
     expect(seen[0]?.sizes).toEqual({ changes: 1 });
+    // the storage tap: the write's transaction over SQLite, its own statements inside it (U2)
+    expect(seen[2]?.sizes).toEqual({ events: 1 });
     for (const event of seen)
       expect(event.duration.total({ unit: "milliseconds" })).toBeGreaterThanOrEqual(0);
     await mesh.stop();

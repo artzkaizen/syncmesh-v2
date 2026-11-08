@@ -3,7 +3,6 @@ import type { BlobHomes } from "@syncmesh/storage";
 
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { hashOf, memoryBlobHomes, memoryBlobStore, sqlBlobHomes } from "@syncmesh/storage";
-import { Temporal } from "@syncmesh/temporal";
 import { eventFrame, grantFrame } from "@syncmesh/transport";
 import { describe, expect, test } from "bun:test";
 
@@ -14,9 +13,9 @@ import { UNGRANTED } from "../trust.js";
 import {
   ACME,
   GLOBEX,
-  ISSUER,
   T0,
   dialTo,
+  gatedRoom,
   mintFor,
   openRoom,
   peer,
@@ -27,13 +26,7 @@ import {
 
 /** A grant-gated room (D40) that keeps blobs, on a clock the test owns. */
 const gatedBlobRoom = (overrides: Partial<RelayRoomOptions> = {}) =>
-  openRoom({
-    pageSize: 100,
-    now: () => T0,
-    trust: { issuers: [ISSUER.peerId], wait: Temporal.Duration.from({ milliseconds: 60 }) },
-    blobs: memoryBlobStore(),
-    ...overrides,
-  });
+  gatedRoom({ blobs: memoryBlobStore(), ...overrides });
 
 /** One device seated in the room under a grant naming `partitions`, speaking raw frames. */
 const seated = async (

@@ -27,6 +27,12 @@ export const KIND = {
   challenge: 19,
   blobStored: 20,
   blobRefused: 21,
+  /**
+   * A signed refusal of one event, on its way to the author (D32). The session tag for it, 9, is
+   * `hello` here, so across a relay it travels under a control tag of its own; additive, so a
+   * relay or a client built before it ignores the frame.
+   */
+  refusal: 22,
 } as const;
 
 /**
@@ -157,6 +163,12 @@ export type RelayFrame =
       readonly used: number;
       readonly partition?: PartitionKey;
     }
+  /**
+   * A refusal receipt (D32), the signed wire unchanged: from the refuser to the room, and from the
+   * room to the author it names and nobody else. A custody receipt needs no tag of its own — its
+   * session tag, 7, is below the relay's — and passes as a `session` frame.
+   */
+  | { readonly kind: "refusal"; readonly wire: Uint8Array }
   /** A tag this build does not know; ignored, never an error (D14's additive vector). */
   | { readonly kind: "unknown" };
 
@@ -278,6 +290,9 @@ export const blobFrame = (hash: string, bytes: Uint8Array): Uint8Array =>
 export const blobMissingFrame = (hash: string): Uint8Array => encodeCbor([KIND.blobMissing, hash]);
 
 export const blobStoredFrame = (hash: string): Uint8Array => encodeCbor([KIND.blobStored, hash]);
+
+/** `[wire]` — a refusal receipt across a relay, under the control tag its session tag collides with. */
+export const roomRefusalFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.refusal, wire]);
 
 /** `[hash, code, limit, used, partition?]` — the partition last, absent for the unnamed budget. */
 export const blobRefusedFrame = (

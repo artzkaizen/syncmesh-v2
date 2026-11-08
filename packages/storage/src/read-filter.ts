@@ -3,7 +3,7 @@ import type { CellValue, JsonValue } from "@syncmesh/kernel";
 import type { AllowBlock, PolicyNode, RoleSet, ScalarKind } from "@syncmesh/policy";
 import type { ColumnKind, Table } from "@syncmesh/schema";
 
-import { claimAt, resolveAllow, roleAtLeast, scalarKindOf } from "@syncmesh/policy";
+import { claimAt, resolveAllow, roleAtLeast, scalarKind } from "@syncmesh/policy";
 
 import type { SqlDialect, SqlValue } from "./driver.js";
 
@@ -46,7 +46,7 @@ export const columnScalarKind = (kind: ColumnKind): ScalarKind | undefined => {
 
 /** Whether `evaluate`'s strict `===` between the column's cell and `value` could ever hold — the same kind, or both null. */
 const comparable = (kind: ColumnKind, value: JsonValue | CellValue | undefined): boolean => {
-  const scalar = scalarKindOf(value);
+  const scalar = scalarKind(value);
   return scalar !== undefined && (scalar === "null" || scalar === columnScalarKind(kind));
 };
 

@@ -192,8 +192,9 @@ export function createMeshTelemetry(): MeshTelemetrySeam {
 
 /**
  * The mesh's seam over one open engine: `engine.*` re-emitted here, so an app wires one listener
- * rather than one per layer (D17). The relay's half of the union is not carried yet — its
- * variants would name peers, and D17 left that a privacy question rather than a design one.
+ * rather than one per layer (D17). The relay's half of the union is the relay host's own — a room
+ * reports to whoever runs it (`room.onTelemetry`, `startRelay({ onTelemetry })`), anonymously
+ * (D48) — and never reaches a device's mesh.
  */
 export function followTelemetry(
   engine: Pick<Engine, "onTelemetry">,

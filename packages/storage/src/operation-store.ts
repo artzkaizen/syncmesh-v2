@@ -98,6 +98,11 @@ export interface OperationStore {
    * Records signed custody through `throughSeq`, and **forgets every vouch this holder made
    * under a different incarnation first**. Every refusal this holder made at or below
    * `throughSeq` is deleted with it: the positive fact retires the negative, same key (D32 §5).
+   * So is every vouch of this holder for `author` above `throughSeq` signed at or before `atMs`:
+   * a holder's latest receipt is its whole claim, and one that signs for less — after a purge
+   * (D45) or a torn log (D39) — withdraws what it signed before. A receipt that arrives after a
+   * newer one from the same holder for the same author is not written at all: it neither
+   * withdraws what the newer one signed nor puts back what the newer one withdrew.
    *
    * The order is the whole of it: a peer that lost its store and rebuilt arrives with a new
    * lineage, and the vouches it made with the store it lost have to stop counting before the new
@@ -249,7 +254,10 @@ export function operationStore(
         ),
       vouch: (holder, author, throughSeq, incarnation, atMs) =>
         write("vouch insert failed", async () => {
+          const newer = await driver.all(sql.selectNewerVouch, [holder, author, atMs]);
+          if (newer.length > 0) return;
           await driver.run(sql.deleteStaleVouches, [holder, incarnation]);
+          await driver.run(sql.deleteWithdrawnVouches, [holder, author, throughSeq, atMs]);
           await driver.run(sql.deleteCoveredRefusals, [holder, author, throughSeq]);
           await driver.run(sql.insertVouchesThrough, [
             holder,

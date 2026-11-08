@@ -46,8 +46,8 @@ export interface OperationsView {
    * this (GrantStale)*, or for `unknown-table`/`unknown-kind`, *3f2a… is on an older build and
    * cannot read this yet* — never "refused". A `refused` row with the verdict `TableDropped` is
    * the opposite case (D31): *3f2a… is on a newer build that dropped this table*, and upgrading
-   * this device is the remedy. Learned over direct links only: a relay does not carry refusals,
-   * as it does not carry receipts.
+   * this device is the remedy. Learned over a direct link and through a relay room alike: the
+   * room hands a refusal, as it hands a receipt, to the author it names (U17).
    */
   readonly unsettled: () => Promise<Result<readonly OperationRow[], StoreFailure>>;
   /**
@@ -300,14 +300,14 @@ export function openOperations(deps: {
     listeners.add(listener);
     return () => void listeners.delete(listener);
   };
-  const refOf = operationRefs({ get: store.get, vouchesOf: store.vouchesOf, onChange });
+  const openRef = operationRefs({ get: store.get, vouchesOf: store.vouchesOf, onChange });
 
   return {
     store: recording,
     vouched,
     refused,
     view: {
-      get: refOf,
+      get: openRef,
       byEvent: (peer, seq) => store.byEvent(peer, seq),
       unsettled: () => store.unsettled(),
       soleCustody: () => store.soleCustody(),

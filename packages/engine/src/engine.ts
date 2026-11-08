@@ -257,6 +257,7 @@ export function createEngine(options: EngineOptions): Engine {
 
   // what the snapshot install and the purge both read and replace, and revert reads
   const held = { getState, setState, coverageOf: coverage.current, merge };
+  const purging = { ...held, unhold: coverage.evict, peerId, parked, folds, hasAdapter };
   const compactDeps = { store, stateStore, acks: fleet.acks, ...docPath.compaction };
   const compaction = createCompaction(compactDeps, coverage, boot?.compacted);
   const snapshots = createSnapshotPath({
@@ -348,7 +349,7 @@ export function createEngine(options: EngineOptions): Engine {
     retryQuarantined: () => retryQuarantined(parked, receiveAndRetry),
     onQuarantine: quarantine.subscribe,
     stranded: () => strandedWrites(store, peerId),
-    purge: createPurge({ ...held, peerId, parked, folds, hasAdapter, exclusive }),
+    purge: createPurge({ ...purging, exclusive }),
     onTelemetry: telemetry.subscribe,
     ...docPath.api,
   };

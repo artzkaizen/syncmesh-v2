@@ -243,6 +243,18 @@ export interface OperationSql {
    * incarnation at all — without it a wiped relay goes on counting as a holder forever.
    */
   readonly deleteStaleVouches: string;
+  /**
+   * `holder, author, at_ms`: a row when this holder already vouched for `author` after `at_ms`.
+   * Every receipt re-stamps each vouch up to its `throughSeq`, so any such row is a newer receipt,
+   * and the older one arriving late is not written (D32).
+   */
+  readonly selectNewerVouch: string;
+  /**
+   * `holder, author, through_seq, at_ms`: the vouches a later receipt from the same holder no
+   * longer reaches — signed before it, above its `throughSeq` — because the holder's run went down
+   * (a purge, D45; a torn log, D39) and it signs for less than it did (D32).
+   */
+  readonly deleteWithdrawnVouches: string;
   /** `holder, incarnation, at_ms, author, through_seq`: one vouch per op the signature covers. */
   readonly insertVouchesThrough: string;
   /** `holder, incarnation, at_ms` per vouch of one event — `peer, seq`. */

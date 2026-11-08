@@ -27,7 +27,7 @@ export type {
 // reads them directly is `createMesh`, at `@syncmesh/client/internal` (D47)
 export type { MeshOptions, PostgresStorage, SqliteStorage, Storage, Trust } from "./options.js";
 export { postgres, sqlite } from "./options.js";
-export type { Fleet, HandleCounts, Inspect, Teardown } from "./inspect.js";
+export type { Fleet, HandleCounts, Inspect, Teardown, TelemetryTap } from "./inspect.js";
 export type { OperationsView } from "./operations.js";
 export { openOperations, operationRefs, wireOperations } from "./operations.js";
 export type { RecoveryIssue, RecoveryView } from "./recovery.js";

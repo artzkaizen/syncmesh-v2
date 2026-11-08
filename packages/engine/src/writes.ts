@@ -19,7 +19,7 @@ import { EmptyMutation } from "./errors.js";
 import { withDerivedKeys } from "./fold.js";
 import { adoptOwnPosition, createOwnFloor, pastFloor } from "./own-position.js";
 import { StoreFailure, orThrow } from "./store.js";
-import { timed } from "./telemetry.js";
+import { reportCommits, timed } from "./telemetry.js";
 import { record } from "./tx.js";
 import { rowsBefore } from "./undo.js";
 
@@ -141,6 +141,11 @@ export interface WriteDeps {
   ) => Promise<Result<{ fresh: readonly StoredEvent[]; quarantined: number }, StoreFailure>>;
 }
 
+/** How many events a transaction made durable: one write, a captured write if it made one, a batch. */
+const oneEvent = () => 1;
+const builtCount = (outcome: { readonly built: unknown }) => (outcome.built === undefined ? 0 : 1);
+const foldedCount = (folded: FoldBatch) => folded.eventCount;
+
 /**
  * The paths a write takes into the engine — its own `mutate` and `mutateCaptured`, a peer's
  * `receiveBatch` — with one shape: append and state commit inside `atomically`, the fold
@@ -154,7 +159,6 @@ export function createWritePath(deps: WriteDeps) {
     before,
     undoDepth,
     undo,
-    atomically,
     atomic,
     getState,
     fold,
@@ -165,6 +169,7 @@ export function createWritePath(deps: WriteDeps) {
     telemetry,
     admitEntries,
   } = deps;
+  const durably = reportCommits(deps.atomically, telemetry);
   // own sequences known to exist outside this log (G7): numbering never goes at or below it
   const ownFloor = createOwnFloor();
 
@@ -241,7 +246,7 @@ export function createWritePath(deps: WriteDeps) {
       const prepared = yield* prepare(procedure, changes, mutateOptions, duration);
       const built = yield* Result.await(
         Result.tryPromise({
-          try: () => atomically((scoped) => commit(scoped, prepared)),
+          try: () => durably((scoped) => commit(scoped, prepared), oneEvent),
           catch: (cause) => asStoreFailure(cause),
         }),
       );
@@ -274,16 +279,16 @@ export function createWritePath(deps: WriteDeps) {
         Result.tryPromise({
           try: async () => {
             if (atomic || around === undefined)
-              return atomically(async (scoped) => {
+              return durably(async (scoped) => {
                 const { procedure, prepared } = await captureInside(capture);
                 if (prepared === undefined) return { procedure, built: undefined };
                 return { procedure, built: { ...(await commit(scoped, prepared)), prepared } };
-              });
+              }, builtCount);
             // no transaction spans the engine's stores here, so the statements commit in
             // `around` first and the event after them, each store on its own (`EngineOptions.atomic`)
             const { procedure, prepared } = await around(() => captureInside(capture));
             if (prepared === undefined) return { procedure, built: undefined };
-            const built = await atomically((scoped) => commit(scoped, prepared));
+            const built = await durably((scoped) => commit(scoped, prepared), oneEvent);
             return { procedure, built: { ...built, prepared } };
           },
           catch: (cause) =>
@@ -308,12 +313,12 @@ export function createWritePath(deps: WriteDeps) {
       const batch = yield* Result.await(
         Result.tryPromise({
           try: () =>
-            atomically(async (scoped) => {
+            durably(async (scoped) => {
               orThrow(await scoped.events.appendBatch(fresh));
               const folded = fold(fresh, "remote");
               await persist(folded, scoped);
               return folded;
-            }),
+            }, foldedCount),
           catch: (cause) => asStoreFailure(cause),
         }),
       );
@@ -326,7 +331,7 @@ export function createWritePath(deps: WriteDeps) {
     });
 
   const adoptOwn: OwnPositionApi["adoptOwnPosition"] = (room) =>
-    atomically((scoped) => adoptOwnPosition(scoped.events, peerId, ownFloor, room));
+    deps.atomically((scoped) => adoptOwnPosition(scoped.events, peerId, ownFloor, room));
 
   return { mutate, mutateCaptured, receiveBatch, adoptOwnPosition: adoptOwn };
 }

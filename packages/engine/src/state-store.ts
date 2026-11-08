@@ -116,6 +116,8 @@ export function createMemoryStateStore(): StateStore {
         synced: new Map(next.synced),
         local: new Map(next.local),
         ...(next.floor !== undefined && { floor: new Map(next.floor) }),
+        ...(next.scope !== undefined && { scope: next.scope }),
+        ...(next.held !== undefined && { held: new Map(next.held) }),
       };
       return ok(undefined);
     },

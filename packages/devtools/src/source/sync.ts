@@ -2,6 +2,8 @@ import type { Mesh } from "@syncmesh/client";
 import type { Cursors } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 
+import { ruleText } from "@syncmesh/policy";
+
 import type { DevtoolsAck, DevtoolsAuthor, DevtoolsParked, DevtoolsSync } from "../contract.js";
 
 /**
@@ -19,7 +21,7 @@ import type { DevtoolsAck, DevtoolsAuthor, DevtoolsParked, DevtoolsSync } from "
  */
 
 /** D13's pair per author, plus the parked events sitting below a gap that `holding` counts too. */
-const authorsOf = (mesh: Mesh, synced: Cursors): readonly DevtoolsAuthor[] => {
+const authorRows = (mesh: Mesh, synced: Cursors): readonly DevtoolsAuthor[] => {
   const ahead = mesh.engine.ahead();
   const holding = mesh.engine.holding();
   const peers = new Set<PeerId>([...synced.keys(), ...ahead.keys(), ...holding.keys()]);
@@ -38,7 +40,7 @@ const authorsOf = (mesh: Mesh, synced: Cursors): readonly DevtoolsAuthor[] => {
  * for one — so this reads `acksAt()`, which is the only surface that can tell "that peer is
  * behind" from "that peer has not been heard from since Tuesday".
  */
-const acksOf = (mesh: Mesh): readonly DevtoolsAck[] =>
+const ackRows = (mesh: Mesh): readonly DevtoolsAck[] =>
   [...mesh.engine.acksAt()].map(([peer, ack]) => ({
     peer,
     at: ack.at,
@@ -54,10 +56,10 @@ const acksOf = (mesh: Mesh): readonly DevtoolsAck[] =>
  * alternative is this file deriving `next` itself, which would be a second copy of the one
  * mapping from verdict to advice, and the copy would be the stale one.
  */
-const parkedOf = (mesh: Mesh): readonly DevtoolsParked[] =>
+const parkedRows = (mesh: Mesh): readonly DevtoolsParked[] =>
   mesh.recovery.list().map((issue) => {
     const plan = mesh.recovery.explain(issue.event);
-    return {
+    const parked = {
       event: issue.event,
       author: issue.author,
       kind: issue.kind,
@@ -66,16 +68,24 @@ const parkedOf = (mesh: Mesh): readonly DevtoolsParked[] =>
       next: plan?.next ?? "",
       retryWorthwhile: plan?.retryWorthwhile ?? false,
     };
+    if (issue.policy === undefined) return parked;
+    const { rule, because } = issue.policy;
+    // plain text, not nodes: a snapshot is plain data that crosses a port as it is
+    const why = {
+      rule: `${rule.entry} rule (${rule.source})`,
+      because: because.map((step) => ruleText(step.node)),
+    };
+    return { ...parked, why };
   });
 
-export const syncOf = (mesh: Mesh): DevtoolsSync => {
+export const syncSnapshot = (mesh: Mesh): DevtoolsSync => {
   // one reading: `coverage()` is cheap but two calls are two moments, and the scope is the claim
   // that makes these particular numbers true
   const coverage = mesh.engine.coverage();
   return {
-    authors: authorsOf(mesh, coverage.synced),
+    authors: authorRows(mesh, coverage.synced),
     scope: coverage.scope,
-    acks: acksOf(mesh),
-    parked: parkedOf(mesh),
+    acks: ackRows(mesh),
+    parked: parkedRows(mesh),
   };
 };
