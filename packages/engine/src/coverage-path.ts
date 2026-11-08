@@ -73,8 +73,8 @@ const idsIn = ({ peer, local, from, to }: TornRun) =>
  */
 export function createCoveragePath(
   deps: CoveragePathDeps,
-  /** Writes the coverage as it stands to the state store, where there is one. */
-  persistCoverage: () => Promise<void>,
+  /** Writes the coverage as it stands to the state store, where there is one; whether it committed. */
+  persistCoverage: () => Promise<boolean>,
 ) {
   const { coverage, store, errors } = deps;
   const adopted = createHub<Coverage>((cause) =>
@@ -129,14 +129,18 @@ export function createCoveragePath(
  * (gaps U33). In that order a crash between the two leaves cursors the next readable boot copies
  * into the log; the other way round it left a floor over a state that reads as empty, which no
  * boot could ever open again.
+ *
+ * The floor goes into the log only when the state committed the cursors. A commit that failed
+ * (disk full, quota) or a log with no state store leaves no state holding the rows, so the log
+ * keeps no floor either, and the next boot folds the log again and asks for the snapshot again.
  */
 export async function persistInstall(
   store: EventStore,
   coverage: CoverageTracker,
   errors: Hub<EngineError>,
-  persistCoverage: () => Promise<void>,
+  persistCoverage: () => Promise<boolean>,
 ): Promise<void> {
-  await persistCoverage();
+  if (!(await persistCoverage())) return;
   const recorded = await store.recordInstalled(coverage.current().floor ?? new Map());
   if (recorded.isErr()) errors.emit(recorded.error);
 }

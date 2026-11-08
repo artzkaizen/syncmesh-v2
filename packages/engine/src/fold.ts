@@ -103,9 +103,9 @@ export interface FoldPath {
   /**
    * Writes the coverage alone, with no rows: what a snapshot install does once it has adopted, so
    * the cursors and the floor it raised outlive a restart without waiting for the next fold (D46).
-   * Reported as `persist` reports.
+   * Reported as `persist` reports, and resolves `true` only when a state store committed it.
    */
-  readonly persistCoverage: (into: PersistInto) => Promise<void>;
+  readonly persistCoverage: (into: PersistInto) => Promise<boolean>;
   /** After the transaction, so a listener that re-reads the tables (D20) sees committed rows. */
   readonly notify: (batch: FoldBatch) => void;
   /**
@@ -205,7 +205,10 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
         report(await relabelMoved(into.docs, batch.lineageMoves, docWinner, hasAdapter));
     },
     persistCoverage: async (into) => {
-      if (into.state !== undefined) report(await into.state.commit([], coverage.current()));
+      if (into.state === undefined) return false;
+      const committed = await into.state.commit([], coverage.current());
+      report(committed);
+      return committed.isOk();
     },
     notify: (batch) => {
       if (batch.eventCount > 0) folds.emit(batch);

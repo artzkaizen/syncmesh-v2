@@ -14,7 +14,7 @@ import { refoldable } from "../compaction.js";
 import { unheldBelow } from "../coverage.js";
 import { createLink } from "../link.js";
 import { StateCorrupt, createMemoryStateStore, type StateStore } from "../state-store.js";
-import { createMemoryEventStore } from "../store.js";
+import { StoreFailure, createMemoryEventStore } from "../store.js";
 import {
   CREATE,
   NOTES,
@@ -461,6 +461,35 @@ describe("below the floor (gaps U1, U33)", () => {
     });
     expect(reopened.isOk()).toBe(true);
     expect(installing).toBeInstanceOf(Promise);
+  });
+
+  test("an install whose state commits fail leaves no floor in the log (U33)", async () => {
+    const a = setup(PEER_A, 100, { stateStore: createMemoryStateStore() });
+    for (const k of ["n1", "n2"]) (await write(a.engine, k, k)).unwrap();
+    const real = createMemoryStateStore();
+    let commits = 0;
+    // the disk fills once the engine has opened: every commit after the first is refused
+    const full: StateStore = {
+      ...real,
+      commit: (rows, coverage) => {
+        commits += 1;
+        return commits === 1
+          ? real.commit(rows, coverage)
+          : Promise.resolve(Result.err(new StoreFailure({ message: "disk full" })));
+      },
+    };
+    const b = setup(PEER_B, 100, { stateStore: full });
+    (await b.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    expect((await real.isEmpty()).unwrap()).toBe(true);
+    expect((await b.store.installedBelow()).unwrap().size).toBe(0);
+    // no state holds the rows, so the log is folded again and the snapshot asked for again
+    const reopened = await openEngine({
+      peerId: PEER_B,
+      clock: fakeClock(1),
+      store: b.store,
+      stateStore: real,
+    });
+    expect(reopened.isOk()).toBe(true);
   });
 
   test("a state installed before the log kept the floor gives it to the log at boot (U33)", async () => {
