@@ -142,9 +142,22 @@ fn presence_sender(wire: &[u8]) -> Option<PeerId> {
     verify(&core, &sig, key).then_some(peer)
 }
 
+/// What a scan may stand above, as `passable` in `relay/src/catchup.ts`: every entry the interest
+/// dropped on purpose, and every one it kept that can leave. A kept entry with no signature stored
+/// is a hole nothing will fill from here, so the coverage stops below it (D45).
+fn passable<'a>(
+    found: &'a [StoredEvent],
+    interest: &'a Interest,
+) -> impl Iterator<Item = &'a StoredEvent> {
+    found
+        .iter()
+        .filter(|e| !matches_interest(Some(interest), &e.event) || e.sig.is_some())
+}
+
 /// What a filtered catch-up hands over at its end (D23): per author, how far the *unfiltered*
 /// run ran contiguously above where the joiner asked from. Measured with the joiner's own
-/// tracker, so relay and client apply one rule and cannot disagree about it.
+/// tracker, so relay and client apply one rule and cannot disagree about it. Only the entries
+/// [`passable`] keeps are measured, as the TypeScript room does.
 pub fn scanned_coverage(
     entries: &[StoredEvent],
     theirs: &Cursors,
@@ -155,7 +168,7 @@ pub fn scanned_coverage(
         local: Cursors::new(),
         scope: None,
     });
-    for entry in entries {
+    for entry in passable(entries, interest) {
         tracker.note(&entry.event);
     }
     PageScope {
@@ -618,7 +631,8 @@ impl Room {
                 .collect(),
         };
         // and said so: only a filtered run needs the coverage, since an unfiltered one leaves the
-        // joiner's own fold able to compute the same number
+        // joiner's own fold able to compute the same number. An entry it asked for that can never
+        // leave is a hole, not a refusal: the coverage stops below it (D45)
         let scoped = interest.map(|i| scanned_coverage(&found, &theirs, i));
         let pages = paged(
             &admitted,
@@ -721,6 +735,7 @@ mod tests {
     use super::*;
     use crate::relay::is_hello;
     use crate::store::MemoryEventStore;
+    use syncmesh_core::event::PartitionKey;
 
     fn identity(n: u8) -> Identity {
         Identity::from_seed(&[n; 32])
@@ -736,6 +751,42 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    fn stored(seq: u64, partition: &str, sig: Option<Vec<u8>>) -> StoredEvent {
+        StoredEvent {
+            event: SyncEvent {
+                peer_id: identity(1).peer_id().clone(),
+                seq_num: SeqNum::parse(seq).unwrap(),
+                hlc: syncmesh_core::hlc::Hlc::new(1, 0),
+                procedure: "t".into(),
+                partition: Some(PartitionKey::parse(partition).unwrap()),
+                changes: vec![],
+                sealed: false,
+                action: None,
+                undo_of: None,
+            },
+            core: None,
+            sig,
+        }
+    }
+
+    #[test]
+    fn scanned_coverage_stops_below_an_asked_for_entry_that_cannot_leave() {
+        let acme = Interest::partitions([PartitionKey::parse("org:acme").unwrap()]);
+        let found = vec![
+            stored(1, "org:acme", Some(vec![1])),
+            // filtered out on purpose: the coverage passes it
+            stored(2, "org:globex", None),
+            stored(3, "org:acme", Some(vec![3])),
+            // asked for, but no signature is stored: a hole the coverage stops below
+            stored(4, "org:acme", None),
+            stored(5, "org:acme", Some(vec![5])),
+        ];
+        let scope = scanned_coverage(&found, &Cursors::new(), &acme);
+        let author = identity(1).peer_id().clone();
+        let reached = scope.synced.iter().find(|(peer, _)| *peer == author);
+        assert_eq!(reached.map(|(_, seq)| seq.get()), Some(3));
     }
 
     #[test]
