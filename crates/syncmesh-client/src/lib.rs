@@ -24,12 +24,15 @@ pub mod engine;
 pub mod grants;
 pub mod holdback;
 pub mod interest;
+pub mod manifest;
 pub mod presence;
+pub mod quarantine;
 pub mod random;
 pub mod relay;
 pub mod room;
 pub mod store;
 pub mod undo;
+pub mod validate;
 
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
@@ -56,11 +59,13 @@ pub use engine::{
 pub use grants::{GrantCache, GrantRegistry};
 pub use holdback::Holdback;
 pub use interest::{Interest, interest_from, interest_text, matches_interest, narrows};
+pub use manifest::{ColumnDef, ColumnKind, Manifest, ManifestUnreadable, TableDef, Visibility};
 pub use presence::{
     MalformedPresence, Presence, PresenceEntry, PresenceStore, PresenceTier, PresenceTouch,
     VerifiedPresence, decode_and_verify_presence, decode_presence_core, encode_presence_core,
     sign_presence,
 };
+pub use quarantine::{ParkReason, Parked};
 pub use relay::{Action, RelayLink, RelayOptions};
 pub use room::{Room, RoomAction, RoomOptions, SocketId};
 pub use store::{
@@ -68,3 +73,7 @@ pub use store::{
     StoreError, StoredEvent,
 };
 pub use undo::{SkipReason, Skipped};
+pub use validate::{
+    GrantSource, LinkRung, Probe, StateLookup, ValidationClock, ValidationError, Validator,
+    ValidatorOptions,
+};

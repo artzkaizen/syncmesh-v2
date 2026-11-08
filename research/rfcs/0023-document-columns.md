@@ -761,16 +761,17 @@ decompression cap and a time budget, and exceeding them is a `failed` update, ne
   operation that can set others' work aside. Absent, a genesis is judged by the row's `update`
   rule exactly as any doc change (`resolveAllow("replace")` falls back to `update`, then `write`,
   then `$default`). The rule is data in the manifest's allow block, so a port reads it as it reads
-  the others. The device validator and the authority share one ladder in TypeScript. The Rust
-  device does not enforce it, and enforcing it alone would be a half validator: the Rust engine
-  has no `allow` ladder at all (`crates/syncmesh-client/src/engine.rs`: "No validator yet"). A
-  `replace` rule is a policy AST (`role`, `owner`, claims and row comparisons) evaluated against
-  the author's grant, the partition kind's roles and the row before the write, and its absence
-  falls back to `update`, then `write`, then `$default`. Checking `replace` exactly where the
-  TypeScript does therefore needs the manifest's allow blocks, the rule evaluator and the author
-  resolution `checkAuthor` does — the whole policy port (gap U3). Built alone, a Rust device
-  would refuse a genesis by `replace` while folding the plain doc edits and row updates the same
-  `update` rule denies. It takes the rule with the policy port.
+  the others. A `replace` rule is a policy AST (`role`, `owner`, claims and row comparisons)
+  evaluated against the author's grant, the partition kind's roles and the row before the write,
+  so checking it where the TypeScript does needs the manifest's allow blocks, the rule evaluator
+  and the author resolution `checkAuthor` does: the whole policy port, never the `replace` check
+  alone, which would refuse a genesis by `replace` while folding the plain doc edits and row
+  updates the same `update` rule denies. **Built with that port (gap U3, decided 2026-11-08,
+  Jace delegated the call):** the Rust device runs the shared ladder over the manifest as data
+  (`portableSchema` in `@syncmesh/schema`, read by `syncmesh_client::Manifest`), the evaluator in
+  `syncmesh_core::policy`, and `syncmesh_client::validate`, so device and authority in both
+  runtimes enforce `replace` the same way. `conformance/policy-vectors.json` freezes the verdicts,
+  a genesis refused as `replace` under its own rule and under `update`'s among them.
 
 ## 12 · Schema evolution (RFC-0013)
 
@@ -955,8 +956,13 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
 2. **`replace()` permission — decided 2026-11-08 by Jace: an optional `replace` rule, defaulting
    to `update`.** `AllowBlock.replace` beside the other operations; absent, a genesis is judged by
    the row's `update` rule exactly as before (§11). Enforced by the shared validator (device and
-   authority); carried in the manifest for ports. Not enforced by the Rust device, which has no
-   policy ladder; §11 says why a `replace`-only check would be a half validator.
+   authority) in both runtimes, and carried in the manifest for ports: the Rust device runs the
+   whole ladder (gap U3, decided 2026-11-08, Jace delegated the call), so it refuses what the
+   TypeScript refuses and never a `replace` alone. The ladder's verdicts are frozen in
+   `conformance/policy-vectors.json`, which both runtimes replay. **Built** where it departs: a
+   column's `check()` schema is a JavaScript function and is not ported (the manifest flags the
+   columns that carry one), and the Rust device writes no local events, so its `local` rung is
+   always `LocalOnly`.
 3. **Row undo semantics — decided 2026-11-08 by Jace: compensate only cells that still hold the
    action's stamp.** Built for `revert(eventId)` in TypeScript and Rust (§9): restore each cell
    whose stamp is still the write's (a `counter` by the increment that cancels the write's), report

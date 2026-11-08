@@ -288,7 +288,7 @@ fn an_engine_with_the_adapter_and_one_without_agree_in_every_order() {
             "doc digests, order {order:?}"
         );
         let parked =
-            |e: &Engine| -> Vec<String> { e.quarantine().iter().map(|p| p.id()).collect() };
+            |e: &Engine| -> Vec<String> { e.quarantine().iter().map(|p| p.entry.id()).collect() };
         assert_eq!(
             parked(&holding),
             parked(&missing),
@@ -513,7 +513,7 @@ fn a_legacy_genesis_reads_back_from_the_wire_and_is_quarantined_at_admission() {
 
     let mut b = engine(2, true);
     b.receive(old.clone()).unwrap();
-    let parked: Vec<String> = b.quarantine().iter().map(StoredEvent::id).collect();
+    let parked: Vec<String> = b.quarantine().iter().map(|p| p.entry.id()).collect();
     assert_eq!(parked, [old.id()]);
     assert_eq!(b.state().record("notes", "n1"), None);
 }

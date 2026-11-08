@@ -150,11 +150,13 @@ fn restore_cell(
 }
 
 /// The changes that take `undo`'s write back as far as it still stands in `state`, and what they
-/// leave alone; `merge` names the column rules of the engine the write was made on.
+/// leave alone; `merge` names the column rules of the engine the write was made on, and `retired`
+/// the columns (D31) a row brought back leaves out.
 pub fn compensate(
     state: &State,
     undo: &Undo,
     merge: Option<&MergeSpec>,
+    retired: impl Fn(&str, &str) -> bool,
 ) -> (Vec<Change>, Vec<Skipped>) {
     let event = &undo.event;
     let mine = event.stamp();
@@ -214,11 +216,14 @@ pub fn compensate(
                     && !live
                     && holds(now.and_then(|r| r.delete_stamp.as_ref()), &mine) =>
             {
-                // a document column is opened and edited, never written as a value: its lineage
-                // cell outlived the delete and comes back with the row
+                // a document column is opened and edited, never written as a value, and a retired
+                // one is written by nothing here (D31): either cell outlived the delete and comes
+                // back with the row
                 let values = row
                     .iter()
-                    .filter(|(column, _)| rule(column) != StrategyName::Lineage)
+                    .filter(|(column, _)| {
+                        rule(column) != StrategyName::Lineage && !retired(table, column)
+                    })
                     .map(|(column, value)| (column.clone(), value.clone()))
                     .collect();
                 changes.push(Change::Insert {

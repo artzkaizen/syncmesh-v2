@@ -1,0 +1,2935 @@
+{
+  "issuer": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+  "authority": "e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0",
+  "device": "adc14011f82d1c56d956aa4f9d73d8858361a606048525e0d08c638dc75dd8c7",
+  "nowMs": 1700000000000,
+  "maxDriftMs": 300000,
+  "grants": [
+    "825872a80001016e616363745f617574686f72697479025820e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0036561646d696e0483686f72673a61636d65686f72673a626574616a6f72673a737472696374051b0000018bcfdc4040061b0000018bd0132ec007a058407a137f3d1ced1ee9c0ba4fc0c89b7b310643c3eded6bc2500a38244499e83861bc6f4e64cf2820e4bb2b0716cc540f4cd3a3394bfb1ac52c8c69bee0803d6800",
+    "82586da80001016a616363745f61646d696e025820882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd036561646d696e0483686f72673a61636d65686f72673a62657461696f72673a67616d6d61051b0000018bcfdc4040061b0000018bd0132ec007a0584043cee02b0efb0d43840ad2ba22399f7ec85c88b8b1af0a82cbb01c7ee7d12059596c6195af35c967ccf92d20073b87095207e965bb05bd027672134434b42400",
+    "82586fa80001016b616363745f6d656d626572025820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2903666d656d6265720483686f72673a61636d656a6f72673a737472696374677465616d3a7431051b0000018bcfdc4040061b0000018bd0132ec007a05840e931036b18f5cbbb8776735975ba97fb542ddea83b91641db0bca00fae9cac7a4bb1b04d7687220c1362ee2da5796b5f7dc979f81354eec3670a853a18ed4707",
+    "8258a4a80001016b616363745f7669657765720258200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d204103667669657765720483686f72673a61636d65686f72673a62657461696f72673a67616d6d61051b0000018bcfdc4040061b0000018bd0132ec007a36b7065726d697373696f6e73a1657461736b73816772656c6162656c6870726f6a6563747382627031627032647465616d6372656458402d74fc2887364f5433a3c135daadcf5a4adc62981396411ab51d8efbbf6bb2a656b606a31a92bf30be37653897f44cc9798ed873631a0638f3086ee4495ddb0e",
+    "82585da80001016d616363745f6f757473696465720258206c8d14b047593d7117dc445957d8bdd6772c303d064297fdc8e329927d370bda036561646d696e0481686f72673a62657461051b0000018bcfdc4040061b0000018bd0132ec007a0584006742bab23b786bbc4fc2413d890620a083e2e58e53c74d4384facdddb133393f98c9437b8aad1df6cb75cef40191fcfc288cfbf7df9ce177600278c12576d01",
+    "82585da80001016c616363745f7265766f6b6564025820ed54a59fb1ac3a51239351362941b868e85a60e3d7b2485d828821dc7a69c27903666d656d6265720481686f72673a61636d65051b0000018bcfdc4040061b0000018bd0132ec007a0584004fa9dbdd7a6cc78d2d83d6574db16fefb4996cd8218500bbeaa66089e2509ae83a1f6992e646a8320e566b11d07387fd80e40cc932fbe653c9e59b8b41dbe05",
+    "825857a800010169616363745f6c6561640258206c28fd058c18c88c6cce2af981d2d11c851b123ed5b69b7876773ed099ea3f8303646c6561640481677465616d3a7431051b0000018bcfdc4040061b0000018bd0132ec007a05840b9c7e2510ae447a3374c46f083d8eec8340d915aa852b29e3bf61b4c5d469138e8fa7a3f4c7ab2e7f1b80e3b4fdef18fcfdcdf93f27a7cf52c8163c655f5500e"
+  ],
+  "schema": {
+    "v": 1,
+    "schemaVersion": 1,
+    "tables": {
+      "notes": {
+        "partition": "org",
+        "visibility": "partition",
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "title": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "body": {
+            "kind": "text",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false
+          },
+          "ownerId": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "content": {
+            "kind": "blob",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false,
+            "doc": "loro@1"
+          },
+          "summary": {
+            "kind": "text",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false,
+            "derived": "content"
+          },
+          "legacy": {
+            "kind": "text",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false,
+            "retired": true
+          }
+        },
+        "allow": {
+          "$default": {
+            "kind": "role",
+            "role": "admin"
+          },
+          "read": {
+            "kind": "role",
+            "role": "viewer"
+          },
+          "insert": {
+            "kind": "role",
+            "role": "member"
+          },
+          "update": {
+            "kind": "any",
+            "of": [
+              {
+                "kind": "owner",
+                "column": "ownerId"
+              },
+              {
+                "kind": "role",
+                "role": "admin"
+              }
+            ]
+          },
+          "replace": {
+            "kind": "role",
+            "role": "admin"
+          }
+        }
+      },
+      "boards": {
+        "partition": "org",
+        "visibility": "partition",
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "title": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "content": {
+            "kind": "blob",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false,
+            "doc": "loro@1"
+          }
+        },
+        "allow": {
+          "$default": {
+            "kind": "role",
+            "role": "admin"
+          },
+          "insert": {
+            "kind": "role",
+            "role": "member"
+          },
+          "update": {
+            "kind": "role",
+            "role": "member"
+          }
+        }
+      },
+      "tasks": {
+        "partition": "org",
+        "visibility": "partition",
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "title": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "done": {
+            "kind": "boolean",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "points": {
+            "kind": "integer",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false
+          },
+          "weight": {
+            "kind": "float",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false
+          },
+          "due": {
+            "kind": "timestamp",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false
+          },
+          "label": {
+            "kind": "text",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false
+          },
+          "projectId": {
+            "kind": "text",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false
+          },
+          "archived": {
+            "kind": "boolean",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false
+          },
+          "ref": {
+            "kind": "uuid",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false
+          },
+          "meta": {
+            "kind": "json",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false
+          },
+          "votes": {
+            "kind": "integer",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false,
+            "merge": "counter"
+          }
+        },
+        "allow": {
+          "$default": {
+            "kind": "deny"
+          },
+          "insert": {
+            "kind": "any",
+            "of": [
+              {
+                "kind": "role",
+                "role": "member"
+              },
+              {
+                "kind": "claimHas",
+                "claim": "projects",
+                "column": "projectId"
+              },
+              {
+                "kind": "claimEquals",
+                "claim": "team",
+                "column": "label"
+              }
+            ]
+          },
+          "update": {
+            "kind": "any",
+            "of": [
+              {
+                "kind": "role",
+                "role": "admin"
+              },
+              {
+                "kind": "all",
+                "of": [
+                  {
+                    "kind": "patchOnly",
+                    "columns": ["done", "points", "votes"]
+                  },
+                  {
+                    "kind": "not",
+                    "of": {
+                      "kind": "rowIs",
+                      "where": {
+                        "archived": true
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "kind": "all",
+                "of": [
+                  {
+                    "kind": "patchOnly",
+                    "columns": ["label"]
+                  },
+                  {
+                    "kind": "claimIncludes",
+                    "claim": "permissions.tasks",
+                    "value": "relabel"
+                  }
+                ]
+              }
+            ]
+          },
+          "delete": {
+            "kind": "all",
+            "of": [
+              {
+                "kind": "role",
+                "role": "member"
+              },
+              {
+                "kind": "isIn",
+                "column": "label",
+                "values": ["junk", "dup"]
+              },
+              {
+                "kind": "compare",
+                "column": "points",
+                "op": "lt",
+                "value": 3
+              }
+            ]
+          },
+          "archive": {
+            "kind": "role",
+            "role": "admin"
+          }
+        }
+      },
+      "ranks": {
+        "partition": "org",
+        "visibility": "partition",
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "title": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "score": {
+            "kind": "integer",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false
+          }
+        },
+        "allow": {
+          "$default": {
+            "kind": "role",
+            "role": "admin"
+          },
+          "insert": {
+            "kind": "any",
+            "of": [
+              {
+                "kind": "compare",
+                "column": "score",
+                "op": "gte",
+                "value": 10
+              },
+              {
+                "kind": "all",
+                "of": [
+                  {
+                    "kind": "compare",
+                    "column": "title",
+                    "op": "gt",
+                    "value": "m"
+                  },
+                  {
+                    "kind": "compare",
+                    "column": "title",
+                    "op": "lt",
+                    "value": "＀"
+                  }
+                ]
+              }
+            ]
+          },
+          "update": {
+            "kind": "compare",
+            "column": "title",
+            "op": "ne",
+            "value": "locked"
+          }
+        }
+      },
+      "shifts": {
+        "partition": "team",
+        "visibility": "partition",
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "title": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          }
+        },
+        "allow": {
+          "$default": {
+            "kind": "role",
+            "role": "lead"
+          },
+          "insert": {
+            "kind": "role",
+            "role": "ops"
+          }
+        }
+      },
+      "archive": {
+        "partition": "org",
+        "visibility": "partition",
+        "retired": true,
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "title": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          }
+        },
+        "allow": {
+          "$default": {
+            "kind": "allow"
+          }
+        }
+      },
+      "settings": {
+        "partition": "global",
+        "visibility": "partition",
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "value": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          }
+        }
+      },
+      "profiles": {
+        "partition": "user",
+        "visibility": "partition",
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "name": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          }
+        }
+      },
+      "drafts": {
+        "partition": "local",
+        "visibility": "partition",
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "body": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          }
+        }
+      },
+      "feed": {
+        "partition": "global",
+        "visibility": "authority",
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "line": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          }
+        }
+      }
+    },
+    "reserved": {
+      "_policy": {
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "rules": {
+            "kind": "json",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "version": {
+            "kind": "integer",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "grace": {
+            "kind": "integer",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false
+          }
+        }
+      },
+      "_corrections": {
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "eventId": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "table": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "key": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "reason": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "detail": {
+            "kind": "json",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false
+          }
+        }
+      },
+      "_revocations": {
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "at": {
+            "kind": "integer",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "reason": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          }
+        }
+      },
+      "_links": {
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "account": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "kind": {
+            "kind": "integer",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "at": {
+            "kind": "integer",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "wire": {
+            "kind": "blob",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          }
+        }
+      },
+      "_cdc": {
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "watermark": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          }
+        }
+      }
+    },
+    "roles": {
+      "org": {
+        "names": ["admin", "member", "viewer"],
+        "ordered": true
+      },
+      "team": {
+        "names": ["lead", "ops"],
+        "ordered": false
+      }
+    },
+    "dropped": ["oldnotes"]
+  },
+  "meshes": [
+    {
+      "description": "granted: an issuer vouches for every author",
+      "granted": true,
+      "accounts": false,
+      "steps": [
+        {
+          "description": "the authority publishes rules for org:beta, garbage for org:gamma, a grace window for org:strict, and revokes one device",
+          "events": [
+            "8258b1a70001015820e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0020103821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a626574610781a4000001675f706f6c69637902686f72673a6265746103a4656772616365f6626964686f72673a626574616572756c6573a1656e6f746573a1682464656661756c74a2646b696e6464726f6c6564726f6c65667669657765726776657273696f6e015840482542806fa6a4ee890828488d67639b32a784d791e0b872df398ad703ec066204813788896dcb578a7124ef8b1c6885fc14f0bbf9314ed4315c4f447d6f950d",
+            "82588da70001015820882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd020103821b0000018bcfe47da000056d706f6c6963792e766563746f7206696f72673a67616d6d610781a4000001675f706f6c69637902696f72673a67616d6d6103a4656772616365f6626964696f72673a67616d6d616572756c6573a06776657273696f6e015840e044f72ce9e90e14c1e048cd458d73ba1d8a7464f68be20596f651e6a0ddd7be055f97f5b29205766a558b400a19edf5c4485c4f23928a7a8af0353b67b93107",
+            "825894a70001015820e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0020203821b0000018bcfe47da000056d706f6c6963792e766563746f7206696f72673a67616d6d610781a4000001675f706f6c69637902696f72673a67616d6d6103a4656772616365f6626964696f72673a67616d6d616572756c6573a1656e6f746573a06776657273696f6e01584065430bd0a63e57acdf47cc88753f03c11c51f6168748be6449f5ce2d4f059976dca22a943310a73b21ddf0cf125e20711a2e232206358f069f1a8d547abec907",
+            "825894a70001015820e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0020303821b0000018bcfe47da000056d706f6c6963792e766563746f72066a6f72673a7374726963740781a4000001675f706f6c696379026a6f72673a73747269637403a46567726163651a00325aa06269646a6f72673a7374726963746572756c6573a06776657273696f6e015840785afc09de6ac96aab4bbfbc0f55a6ea99954485b81b61e06a098b03b4d0521f5a0ffb4457c770f8c3dcc65a1fa31297d24d0126b5490489933911cfa5f50e04",
+            "82590114a70001015820e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0020403821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a40000016c5f7265766f636174696f6e730278496f72673a61636d653a6564353461353966623161633361353132333933353133363239343162383638653835613630653364376232343835643832383832316463376136396332373903a36261741b0000018bcfe3934062696478496f72673a61636d653a6564353461353966623161633361353132333933353133363239343162383638653835613630653364376232343835643832383832316463376136396332373966726561736f6e646c6f73745840545d7cc0a7dc9b2d4136cb4338afd2edfcf299f13b4b8ed0bcc617fdc971e27efa79a2c79aa15b8e74cad0b43929fe1e667b0ebb9e6d9fec3e0db3716481a008",
+            "825872a70001015820e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0020503821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001645f6364630262706703a26269646270676977617465726d61726b63302f315840b8c61502717fc6b26a66bb64e90346b56c550e959e259d3831b196c313cdf53229fa8d972d4ccd479982acdbd9c25086d8e7a6b6a22ff2166294bd60c7791b0a",
+            "825868a60001015820e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0020603821b0000018bcfe47da000056d706f6c6963792e766563746f720781a4000001645f6364630262706703a26269646270676977617465726d61726b63302f3158408cdf5e1a7dc679f00abdbedbd4d6ce0a51ad997dbd53805f272d8e20fc3eb21eb6b27a0e6e6e3f6848f6ed831b82f92aa6778e39ddc8263d442694e8b64d9f01",
+            "82589aa70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020103821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a40000016c5f636f7272656374696f6e730262633103a66664657461696cf6676576656e7449646165626964626331636b6579626e3166726561736f6e6172657461626c65656e6f746573584045673ad10c1ce33e48dc81d4d2d708013571bcc18833e098cbfcdd3a011d5eb981b7330b06fadb07afa4c76c9a531a7b02d75d5a3c98cd4c899850409bcea807"
+          ],
+          "report": {
+            "folded": 5,
+            "skipped": 0,
+            "quarantined": 3
+          },
+          "parked": [
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            }
+          ]
+        },
+        {
+          "description": "who may write at all",
+          "events": [
+            "825883a700010158207529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c020103821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001656e6f7465730262733103a3626964627331676f776e657249646d616363745f737472616e676572657469746c65617858405b54a1c9f2ea43f72f6acac39fe8ec0e1c3820cdc51b1c3e354eba29e28031c42f65bac833f3780a2904793a608bdf127630d8794d49c5fd8fe47c5f485ef204",
+            "825883a700010158206c8d14b047593d7117dc445957d8bdd6772c303d064297fdc8e329927d370bda020103821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001656e6f74657302626f3103a3626964626f31676f776e657249646d616363745f6f75747369646572657469746c6561785840d38152dd14422a613237f2d652bdb78937eb7c97da590124e2ede5141d902e9e621f0d301f344cec809173c405831779ffda467515d1edb3c374e933e911160c",
+            "825887a70001015820ed54a59fb1ac3a51239351362941b868e85a60e3d7b2485d828821dc7a69c279020103821b0000018bcfe2a8e000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001656e6f7465730262723103a3626964627231676f776e657249646c616363745f7265766f6b6564657469746c65666265666f72655840814a77b452a18a9d0786a2abd7ed15b040e89dd53220e37e9457fddc1fb45f5533943b600445561bcc8048ef84f1254b17583c27abc913f9fef0d525fa9d230d",
+            "825886a70001015820ed54a59fb1ac3a51239351362941b868e85a60e3d7b2485d828821dc7a69c279020203821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001656e6f7465730262723203a3626964627232676f776e657249646c616363745f7265766f6b6564657469746c656561667465725840f8d3a2a40a863b8eb07998b91fbaf872410b7ddb9f68851e238d1599156587553e45b5f1deae711501c5f90eb22d489582f4ef88d22a33f831277f404bf2fb00",
+            "825887a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020203821b0000018bcfe47da000056d706f6c6963792e766563746f72066a6f72673a7374726963740781a4000001656e6f7465730262673103a3626964626731676f776e657249646b616363745f6d656d626572657469746c65657374616c655840d210ccd8a93c55fb91b6a758c6a669f8128a7a4aae39b693bbbfecb1a34a7cd358c88f039b3c4a5a9f6bde47b78b8a571c70dc1e7efa78941c2f124c7127ab07",
+            "82588ba70001015820e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0020703821b0000018bcfe47da000056d706f6c6963792e766563746f72066a6f72673a7374726963740781a4000001656e6f7465730262673203a3626964626732676f776e657249646e616363745f617574686f72697479657469746c65666578656d70745840d8a65ef67dac8eef8163b14f59a7ef967f71b33dc8cfc143778fbe64dabb4e1a494058a63c5ede3253195d419f7b9a955029ac74514dc7a16dbaae980c0c030e",
+            "825885a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020303821b0000018bcfeae64000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001656e6f7465730262633103a3626964626331676f776e657249646b616363745f6d656d626572657469746c65656168656164584081729fd83e0b082c44b0c9668bda47a968054ded64e82a6dd87cab023cbe693068ddc2034c38cb506325c838ac93d9f4cfad85526a24fe68d9e8209aa98b660e",
+            "825885a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020403821b0000018bcfe9118000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001656e6f7465730262633203a3626964626332676f776e657249646b616363745f6d656d626572657469746c656564726966745840082a67debee3b9de848b3a80e0ed51bb4409d359dda404b741ebddffa2f10c0dad36fa77d28c85864b22ffe362babd49f495bddc83a34539252aae884f203807"
+          ],
+          "report": {
+            "folded": 3,
+            "skipped": 0,
+            "quarantined": 5
+          },
+          "parked": [
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "7529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c-1",
+              "reason": "refused",
+              "verdict": "NoGrant"
+            },
+            {
+              "id": "6c8d14b047593d7117dc445957d8bdd6772c303d064297fdc8e329927d370bda-1",
+              "reason": "refused",
+              "verdict": "PartitionNotGranted"
+            },
+            {
+              "id": "ed54a59fb1ac3a51239351362941b868e85a60e3d7b2485d828821dc7a69c279-2",
+              "reason": "refused",
+              "verdict": "GrantRevoked"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-2",
+              "reason": "refused",
+              "verdict": "GrantStale"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-3",
+              "reason": "refused",
+              "verdict": "ClockAhead"
+            }
+          ]
+        },
+        {
+          "description": "where a row may live",
+          "events": [
+            "825880a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020503821b0000018bcfe47da000056d706f6c6963792e766563746f7206677465616d3a74310781a4000001656e6f7465730262773103a3626964627731676f776e657249646b616363745f6d656d626572657469746c6561785840700bc25e51cad7492f42cc5a94b4e441820902d0b8e299c83a9dbf61244d79890344528d4406188364eb2a966a9fa255dff9ebf9d04bbf118bbf7c62fc5d8b00",
+            "825877a60001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020603821b0000018bcfe47da000056d706f6c6963792e766563746f720781a4000001656e6f7465730262773203a3626964627732676f776e657249646b616363745f6d656d626572657469746c6561785840021a2bce0f82b292c156b8c57a9bfb0ad713fb20cc7ea3bdb531ec00c3c9487aff9af5ef548c9c8392efa60e120abee2715f77f037608698aba4bedf4085ab08",
+            "82586fa60001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020703821b0000018bcfe47da000056d706f6c6963792e766563746f720781a40000016873657474696e677302657468656d6503a2626964657468656d656576616c7565646461726b5840b98e91245082348016b7f02acf6f1b9fe42f1d913b093166295ae3028501e9f25b37f64483ce12f1d798986e8ee35ff2d0d7fa7bc91050b55c6191aa0d915904",
+            "82586fa60001015820e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0020803821b0000018bcfe47da000056d706f6c6963792e766563746f720781a40000016873657474696e677302657468656d6503a2626964657468656d656576616c7565646461726b58403a1a37ae4ee978d9bdad4ded9f3cbbdcf80a5bbaaab0a323d8aef14207f4b6f34909c6725c361b3cc12dd586a668324eafbd6da5be6f9c16e249d31d61abd008",
+            "825861a60001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020803821b0000018bcfe47da000056d706f6c6963792e766563746f720781a400000164666565640262663103a2626964626631646c696e65617858401d0cc7690188e470e10b328640d0afc5aa0d12b73f7686fdf1aeecc223891e22bc2658598919f032a777961f73a5fb407a42439bb67b093cf454c275b9cdda01",
+            "825861a60001015820e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0020903821b0000018bcfe47da000056d706f6c6963792e766563746f720781a400000164666565640262663103a2626964626631646c696e6561785840dc3517b033d14f86e346a379dbe7ba786789549b13f27df9769a1dbaf963c18e607ba40bb7ebc080788e9318682a7bd7a796a2cd4868dcd789a116fa57613209",
+            "825877a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020903821b0000018bcfe47da000056d706f6c6963792e766563746f720670757365723a616363745f6d656d6265720781a40000016870726f66696c657302626d6503a2626964626d65646e616d65616d58409e24f8a7bdfbec2f4dc5a52fa9d7ea662bac4305131a4dc427460040b4bfefa402fbbb241be39ea13b5773f336b9bfb880d52f777e69f1e8210e59f4b2af020b",
+            "825879a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020a03821b0000018bcfe47da000056d706f6c6963792e766563746f720670757365723a616363745f7669657765720781a40000016870726f66696c65730263796f7503a262696463796f75646e616d65616d5840d30387793beaa68dbc360326929035c43115a65c4d39249acccf79ffdf2d41b7c9c956a100696e9a099c258b6617a2a9be8ef5b11742cf244e657f345053e601",
+            "825863a60001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020b03821b0000018bcfe47da000056d706f6c6963792e766563746f720781a4000001666472616674730262643103a264626f6479617862696462643158407539699e14a39640587854db61001bcab41633ca92db97d6d645dbf15a2391f1bddaf38f1fb377eb04a3586d286386203fd08afb041a3b97caa62e0940a59f02",
+            "82586da700010158206c28fd058c18c88c6cce2af981d2d11c851b123ed5b69b7876773ed099ea3f83020103821b0000018bcfe47da000056d706f6c6963792e766563746f7206677465616d3a74310781a4000001667368696674730262733103a2626964627331657469746c6561785840e0a4d483ee97551ef883ec949cb9979bfac2ae9dcd8002f20542b71fca27260c83488ac87e2e945b3b62c59de45eb0c9cbb91a1a4fb5f25722de697ad483f70e",
+            "82586da70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020c03821b0000018bcfe47da000056d706f6c6963792e766563746f7206677465616d3a74310781a4000001667368696674730262733203a2626964627332657469746c6561785840197a48cb37ce456d5091d14c239f5038a2e4bc7d8bccc1a5a507b792350237bac58fc0afecaad8b26bc17b0c00390f3f1022e1826331e8cf687ac0903639c407",
+            "82585fa700010158206c28fd058c18c88c6cce2af981d2d11c851b123ed5b69b7876773ed099ea3f83020203821b0000018bcfe47da000056d706f6c6963792e766563746f7206677465616d3a74310781a4000201667368696674730262733903f658408745223206ec688da978bcac99a961c36c144fc749985811e2d4e52dc4f4d178a7247252bc8eb20c488e8430ea0ea8ac223fdcc968a73e42c95da3da64746d05",
+            "82586ba70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020d03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a40000016567686f737402617803a26269646178657469746c6561785840253401c7d8e05fda7adc543d4f8815db12aa8b74308457603dfc256606217eb4b969a18cd0b498f5f2935570ff06a0794446079d046d0f20940bb5e84dbeca07",
+            "82586ea70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020e03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001686f6c646e6f74657302617803a26269646178657469746c65617858403e0cdc30455f1d9c7724d83c3bc7bdaec49843e7603e5332c373a936d36266817d2f342fa2dafe7dbc56bbe535d778c3715c19bf9c0df0b770c442f13096840f",
+            "82588da70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020f03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400000167617263686976650262613103a2626964626131657469746c65781e616e206f6c646572206275696c64207374696c6c2077726974657320697458407fff5059645b5666ecaca7bb06122462786e67c2625dde4bbc1301ea66b935c609f3ccf2b4061b286255bfb3159fc2d37a09d8682246412238a9e83ae834dd0d",
+            "82585fa70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29021003821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000901656e6f7465730262753103015840d85a0e49c720feaf6fdc877cec9d7ee0f660ed542e4018e8e2b8e19edd356ac189e8cc2e7192e3c3c3c3fbd0f555e49a2639851aeb65b60c52a27224732f3f08"
+          ],
+          "report": {
+            "folded": 5,
+            "skipped": 0,
+            "quarantined": 11
+          },
+          "parked": [
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-13",
+              "reason": "unknown-table",
+              "verdict": "UnknownTable"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-14",
+              "reason": "dropped-table",
+              "verdict": "TableDropped"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-16",
+              "reason": "unknown-kind",
+              "verdict": "UnknownChangeKind"
+            },
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "7529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c-1",
+              "reason": "refused",
+              "verdict": "NoGrant"
+            },
+            {
+              "id": "6c8d14b047593d7117dc445957d8bdd6772c303d064297fdc8e329927d370bda-1",
+              "reason": "refused",
+              "verdict": "PartitionNotGranted"
+            },
+            {
+              "id": "ed54a59fb1ac3a51239351362941b868e85a60e3d7b2485d828821dc7a69c279-2",
+              "reason": "refused",
+              "verdict": "GrantRevoked"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-2",
+              "reason": "refused",
+              "verdict": "GrantStale"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-3",
+              "reason": "refused",
+              "verdict": "ClockAhead"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-6",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-7",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-8",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-10",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-11",
+              "reason": "refused",
+              "verdict": "LocalOnly"
+            },
+            {
+              "id": "6c28fd058c18c88c6cce2af981d2d11c851b123ed5b69b7876773ed099ea3f83-1",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-12",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            }
+          ]
+        },
+        {
+          "description": "cells against their columns",
+          "events": [
+            "825897a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29021103821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001656e6f74657302626e3103a564626f6479f6626964626e31666c6567616379656f6c646572676f776e657249646b616363745f6d656d626572657469746c65646d696e6558407a48a1bc6a452d5b100c1adf730555128e6766c92fd8eb155bd03ddac7049072ce465bf46b8849b7874c1d7f51c26c5b34fa5fa9992dd796679bf5968f407a08",
+            "825884a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29021203821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001656e6f74657302646261643103a36269646462616431676f776e657249646b616363745f6d656d626572657469746c65075840cba517b1e1834f420911af8349e3bdbd4ee77386065b1c1b57e5a9b0dff0e2c0c85828e8ad63b90484fc5fd681e26628471dbbddb3dc212cab7a29392d003803",
+            "82587da70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29021303821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001656e6f74657302646261643203a26269646462616432676f776e657249646b616363745f6d656d62657258400258ef1b7aae38acd496d66548ebc636b4b4f83cc46c89ceb337c781868e5ed2c0b85141d0501e468d544d78a2c275690513abbfd32f27cfebb3900c0dd57f06",
+            "82588fa70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29021403821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001656e6f74657302646261643303a467636f6e74656e7441016269646462616433676f776e657249646b616363745f6d656d626572657469746c65617858402beda2f1bc2d9d41fc15c4bb90521d47f980264d7387cc11ff0cba2edd8ec64794f78cee38d4f306fcbe9c1a1c045d6a6750e6d034c6767f52c4f2421090c802",
+            "8258afa70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29021503821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001656e6f746573026364763103a5656578747261656e6577657262696463647631676f776e657249646b616363745f6d656d6265726773756d6d61727977616e206f6c646572206275696c642077726f7465206974657469746c6561785840471c1793d6b4f5b69f945b3f4a547657f2677925a9de62b668cbb4186ff236bf5b37595afb04ff01be7c3928b00d75763715474120ddef0488aad2b5fba94e0b",
+            "8258e1a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29021603821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001657461736b730262743103aa64646f6e65f4636475651b0000018bcfe56800626964627431656c6162656c646a756e6b646d657461a16161810166706f696e74730263726566782431323365343536372d653839622d313264332d613435362d343236363134313734303030657469746c65617865766f746573a1612b0166776569676874fb3fe000000000000058401e6c1fe5c5e83e8174b0230a09bdcea71ff984780c586a24f4a286d62473daeb83e5011461f078da46fe2cf2bb20c5e554209354e3a8cc33a165fe64b2119509",
+            "825875a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29021703821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001657461736b730262743203a364646f6e65626e6f626964627432657469746c65617858403d7b2efe0b8288452ebedd8e16cc118613d1e913224e47b94a6fc51c31189c074e7b9fc1220162974325e8e5a931bc46215e40ec2c43aa98f86e62ea00addc08",
+            "825884a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902181803821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001657461736b730262743303a464646f6e65f462696462743366706f696e7473fb3ff8000000000000657469746c6561785840fa35b52dcdb364ac29ebff656902773eda164d1fdefa02dcdc4fe5744438f5d2dc803838ab208acfb7ed441b2d15d37335099632c5533a1ab85eb1c7c0773103",
+            "82589ea70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902181903821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001657461736b730262743403a464646f6e65f462696462743463726566782431323345343536372d453839422d313244332d413435362d343236363134313734303030657469746c6561785840f4f2220ad108d94c65911fc073c9f62ba63ea9053d9254add2e405da453f96bcaac60d1e27db016041a8a98950e23ecb5a0986ee48cdbe0f1dec1e83cc31ae08",
+            "82587ba70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902181a03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001657461736b730262743503a464646f6e65f4626964627435657469746c65617865766f7465730358405872cdb73f5ed9334a4c5932572367444a1d2d05828077264624d0e58a437a50d936aa28e9c69b7933da4be9f6f8334f6ddec45fd656902412b6d0621ff6720c",
+            "825884a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902181b03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001657461736b730262743603a464646f6e65f4626964627436657469746c65617865766f746573a2616ea06170a16161015840fbee2cbd93c7c0dd28937a22a340aa9fb786c7973f6d63e7b9fb384f92474b6b14df864712f91e7a37934d4ea30e027ff50c20734574db23ea2400c62a986c0e",
+            "82588aa70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902181c03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001657461736b730262743703a564646f6e65f4626964627437646d657461f6657469746c65617866776569676874fb7e37e43c8800759c58409bd0ca26f5e2a21b37b12a1baad61cf2020000181d13fe733a1acc00df29d0efb40e247f0de1511232eb9e68ead021d5412242f03cc56620f03dc1e73d750d0f",
+            "82587da70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902181d03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001657461736b730262743803a464646f6e65f46364756564736f6f6e626964627438657469746c65617858408035dab8f20e8e33f606381145df9696fb5b00d03333ce64e315d9d91398cc9fa63d46de20a8a910e2ba466c102638b44ecbaf1173c5d805ad908dc4802bc305",
+            "82587ba70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902181e03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001657461736b730262743903a464646f6e65f4626964627439646d6574614101657469746c6561785840ead5682c1beac00bc0b1e5003677e84bcc56e4575f5fd07c37b57069c3bca93e394649a00aa33ede1d09998a03ed5c5ce0af3ea5202b8141b924072817bb2600"
+          ],
+          "report": {
+            "folded": 5,
+            "skipped": 0,
+            "quarantined": 9
+          },
+          "parked": [
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-13",
+              "reason": "unknown-table",
+              "verdict": "UnknownTable"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-14",
+              "reason": "dropped-table",
+              "verdict": "TableDropped"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-16",
+              "reason": "unknown-kind",
+              "verdict": "UnknownChangeKind"
+            },
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "7529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c-1",
+              "reason": "refused",
+              "verdict": "NoGrant"
+            },
+            {
+              "id": "6c8d14b047593d7117dc445957d8bdd6772c303d064297fdc8e329927d370bda-1",
+              "reason": "refused",
+              "verdict": "PartitionNotGranted"
+            },
+            {
+              "id": "ed54a59fb1ac3a51239351362941b868e85a60e3d7b2485d828821dc7a69c279-2",
+              "reason": "refused",
+              "verdict": "GrantRevoked"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-2",
+              "reason": "refused",
+              "verdict": "GrantStale"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-3",
+              "reason": "refused",
+              "verdict": "ClockAhead"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-6",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-7",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-8",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-10",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-11",
+              "reason": "refused",
+              "verdict": "LocalOnly"
+            },
+            {
+              "id": "6c28fd058c18c88c6cce2af981d2d11c851b123ed5b69b7876773ed099ea3f83-1",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-12",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-18",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-19",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-20",
+              "reason": "refused",
+              "verdict": "DocColumnWrite"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-23",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-24",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-25",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-26",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-29",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-30",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            }
+          ]
+        },
+        {
+          "description": "documents: the schema's rungs, then the policy's",
+          "events": [
+            "825875a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902181f03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000601656e6f74657302626e3103a300657469746c6501666c6f726f403103446c6f726f58407b25dde9ac24229f80d5cb5f9670be547b58cca067db088ec01193a59b990cfe04927fea825cc90a69926f83cebed54c5b3b7b346e7ddd9de4cd6f604cc86c0e",
+            "82587ca70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902182003821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000601656e6f74657302626e3103a30067636f6e74656e74016b6175746f6d65726765403303446c6f726f58401940d9f238f2f87594ea7e6de90ade5b51ce19b4d0950aae02e65494a6963d33c1092b7393ad7255c8f07796d41e7a4c6dfc8e8e05cf406affeec62172e5cf00",
+            "82588ba70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902182103821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000601656e6f74657302626e3103a50067636f6e74656e7401666c6f726f403102500a31cf10ec0fe0297622fbefc24b472303446c6f726f05f5584007f8890f04c830408784a7d64874091ce337358b2d2ae94fd177983909e8f3cec1a9a58b7bd44b6e339608230cf16b03af1601a1cc4b604a97bee56ea236620b",
+            "82588ba70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902182203821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000601656e6f74657302626e3103a50067636f6e74656e7401666c6f726f4031025075f312a2c5a5c179e6eda83b677e9d9d03446c6f726f050158405836619f29609f338ecf632660f7f57ed38640e929eaa7768c35490e322342ee54075c998728f5e61906a146baf05d63b11570c363090ce015f5c69564dcfc06",
+            "8258c6a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902182303821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650782a4000601656e6f74657302626e3103a50067636f6e74656e7401666c6f726f403102508082987055a64b65cc475a2f723a79ba03446c6f726f0501a4000601656e6f74657302626e3103a50067636f6e74656e7401666c6f726f403102504a33c061ba56d786ad333573b38ca10e03446c6f726f050158404b6ae4831e58d25b89457854c6ce16d5af1dda52281f92954c15c07459a57bf81f9bff025f4000bbb63c07095e2f583c64f75b70f09da03293c831d1aa92b60c",
+            "825877a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902182403821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000601656e6f74657302626e3103a30067636f6e74656e7401666c6f726f403103446c6f726f5840f4ffbd929ac444001130d9c731b1401bd3b2654129371d7781d8c374bd4c7b1e09773e18945e011105e0f05a0f0e2a0061e75e9f4be8bf7b21be9007523da301",
+            "825876a700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041020103821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000601656e6f74657302626e3103a30067636f6e74656e7401666c6f726f403103446c6f726f5840da06528f0225fa540b93922382b4e5de439df6b8db18df21f9f4cd0c8a6bffaa6134207a93c823edcaa7a4c0cd07b64a4adfab527d71ce41b13fa4174aff330a",
+            "82588ba70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902182503821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000601656e6f74657302626e3103a50067636f6e74656e7401666c6f726f40310250da0f05f6551cff173af08164ff9c068303446c6f726f050158409d1985b5f1e70cb06d11f9e5a4aae7271619e38cea056b17a2bdd5a59d5edc5ca22e35b26ac82325915c1a20d834db4a9d7fcf987df8227aad877f105582730e",
+            "82588aa70001015820882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd020203821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000601656e6f74657302626e3103a50067636f6e74656e7401666c6f726f40310250a514058daeed26bb0fa462eb444a856103446c6f726f05015840bc89ac97335b26784e6b077297bb143ff423a5bde4c49e98f73b9b4b3016af1456c017d5a1536112da11be3102a279add16795345fc16c35091dd2601a17b30e",
+            "825877a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902182603821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000601656e6f74657302627a7a03a30067636f6e74656e7401666c6f726f403103446c6f726f584036280a3013da2380ae4ee75e56ec5248d345364c7a6e27b19be5b37e4ff476de18ff843fc275ed792ead31273a9073dfd8d335df1761db8a39d35deb2e408a08",
+            "82587aa70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902182703821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a40006016867686f7374646f6302626e3103a30067636f6e74656e7401666c6f726f403103446c6f726f58402499a993bb8ae98da3ff54486ca41931a46b9719be763410eced912f9cd4170d71f9582a4420a32ab9030a95a9c7394e8a6eeee1337b59f547799f4a10ad1903",
+            "8258aba70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902182803821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650782a400000166626f617264730262623103a2626964626231657469746c656178a400060166626f617264730262623103a50067636f6e74656e7401666c6f726f40310250c365f68aba9727210c557ebab003217903446c6f726f05015840a41c18cd550dc413a5758cc0ff522c1e201b4460ed09dd3c4e96f7894265fe779d5b49d4a3aa4426a96bc05b1a040ad63480986e73465e8e60439454af1a8f0c",
+            "82588ca70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902182903821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400060166626f617264730262623103a50067636f6e74656e7401666c6f726f40310250259e1d6c7f4eaf8a5fb8a23f0a010c8d03446c6f726f05015840f054b1e24c2c0fd90186595fbe0818bbc6b17d4f85e0b68934037574af1743ec61b4259dab13492a76a73761945a26e13a28b11af23134c30133958383b3b905",
+            "82588ba700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041020203821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400060166626f617264730262623103a50067636f6e74656e7401666c6f726f4031025032737104dce3c9441b7f6993c95cafd303446c6f726f05015840255e7e8d2d5d02d1a177c3480689d0d907bb57a840585dac4ccc98aff11bd708745ebca2866d3dd2780d8160c97ae0ffbfe407e6af14ac56a73605e76601140e",
+            "825896a700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041020303821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650782a400000166626f617264730262623203a2626964626232657469746c656178a400060166626f617264730262623203a30067636f6e74656e7401666c6f726f403103446c6f726f5840b9e821fb022fcfc2fb50076d50aa64743d68e8f9d6a5fedbf0db04c1d4c9db5468ed60537b2667752c3071bc5ed72b8877bf87fc0604ddfd9fa272a06e47090e"
+          ],
+          "report": {
+            "folded": 4,
+            "skipped": 0,
+            "quarantined": 11
+          },
+          "parked": [
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-13",
+              "reason": "unknown-table",
+              "verdict": "UnknownTable"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-39",
+              "reason": "unknown-table",
+              "verdict": "UnknownTable"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-14",
+              "reason": "dropped-table",
+              "verdict": "TableDropped"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-16",
+              "reason": "unknown-kind",
+              "verdict": "UnknownChangeKind"
+            },
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "7529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c-1",
+              "reason": "refused",
+              "verdict": "NoGrant"
+            },
+            {
+              "id": "6c8d14b047593d7117dc445957d8bdd6772c303d064297fdc8e329927d370bda-1",
+              "reason": "refused",
+              "verdict": "PartitionNotGranted"
+            },
+            {
+              "id": "ed54a59fb1ac3a51239351362941b868e85a60e3d7b2485d828821dc7a69c279-2",
+              "reason": "refused",
+              "verdict": "GrantRevoked"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-2",
+              "reason": "refused",
+              "verdict": "GrantStale"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-3",
+              "reason": "refused",
+              "verdict": "ClockAhead"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-6",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-7",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-8",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-10",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-11",
+              "reason": "refused",
+              "verdict": "LocalOnly"
+            },
+            {
+              "id": "6c28fd058c18c88c6cce2af981d2d11c851b123ed5b69b7876773ed099ea3f83-1",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-12",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-18",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-19",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-20",
+              "reason": "refused",
+              "verdict": "DocColumnWrite"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-23",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-24",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-25",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-26",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-29",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-30",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-31",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "column"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-32",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "adapter"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-33",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-34",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-35",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-1",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-37",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "replace"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-38",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-2",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "replace"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-3",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            }
+          ]
+        },
+        {
+          "description": "the rule combinators",
+          "events": [
+            "825894a700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041020403821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001657461736b730262763103a6686172636869766564f564646f6e65f4626964627631656c6162656c637265646970726f6a6563744964627032657469746c65617858406e66b85020b54b14e64b9f0d9306930861f0b301be0d812d4f929024988b1cccafc405560930735fc2f3de32546d365f71388268475c6f49f8bc3d90c8a33f04",
+            "825880a700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041020503821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001657461736b730262763203a464646f6e65f46269646276326970726f6a6563744964627039657469746c65617858405da5ebbf3c07ded0690152f0211ca84044978ebefd7448e6538f4e2f8d77b52f5cb1836b4f5bd76447c805fd023c2e345c5a0aa9a284e6fcf7bc10e23cba230d",
+            "82586da700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041020603821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000101657461736b730262743103a264646f6e65f566706f696e7473015840ab8e11633eb679989a9438caa4c82028e9b86821e04ad5e2a195cad7026b26c83ed9934f9cabd47368b38544c1713e09f3b70102081d23ada41a1ac768141808",
+            "825888a700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041020703821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001657461736b730262763303a564646f6e65f4626964627633656c6162656c637265646970726f6a6563744964f6657469746c6561785840be5e4eb9034ef0d016ad2c16e0d9a259147e8ffd1467f33acff58dfdc77d9138e59cc347c7d62915ee3e0f057e0ff83608eadeb44b32d86b2c3071b18e9d6805",
+            "825869a700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041020803821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000101657461736b730262743103a1656c6162656c6364757058406d0b83c374d21a17ccaa9d19830411be4fde8a6661853847c56a4fb956b66430e9e7cbe34f76e1d3b39224d6e597092271e135c8e8d0520daed33b7c1864590d",
+            "82586da700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041020903821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000101657461736b730262743103a1657469746c656772656e616d656458402dc2229d2bbd035079c231e45b1a113b6bd5d8d84d15e4ab49f2428118205d0013e41e28ff81002052366ab6368d04386a792323bc54f43ac3f7f275f2e6fb09",
+            "825865a700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041020a03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000101657461736b730262763103a164646f6e65f5584048ffbeb6646eb8a5fe69d2fff58ebc90eb23900cc2ba8e7de36b91317d4a9158f15d00fd18bb92b2153cb84f80d1359c1acac2819c90c2b4f980538ea2517800",
+            "825860a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902182a03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000201657461736b730262743103f6584073aab5b4f37bbd4579eee3d87a6f3bfc33a17901856272c71d82c14012a3356476821a4f06a2bfd96181b34b6c1464fd7b33caf38174e802f045dad7faf8310e",
+            "825860a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902182b03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000201657461736b730262763103f65840f78430b47e6e837dc585e0fb01e5c3fb04aa2dd5db6b60f7d971dd477c753866319e317ecc84b3c5d1e9f7c2f036df2df2d0eae47491fce48e9e078221a8d102",
+            "82586ca70001015820882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd020303821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a40001016572616e6b7302676e6f7468696e6703a1657469746c6561785840ac4af948f198f83b44efc88fb688f14c0944226ee5f0f87ea71a95c99c7c74833aefe5e9de9c85dfb508ca79fe75ed01e0df2312075665a8f92c6783cc37de0e",
+            "825876a700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041020b03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a40000016572616e6b7302626b3103a3626964626b316573636f7265f6657469746c65637a65645840f1ad5d1de02306b533376c203cc5b4aff82f9e2ad45e58384bab48f78f8c0d38875ee5f634d66478f2b6965081e6f304281c5b4e3223c8a16e6ef8d18625d103",
+            "825876a700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041020c03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a40000016572616e6b7302626b3203a3626964626b326573636f72650a657469746c65636162635840f176a9e7bff6f0ef6a51a9ed6058731ddf85dcd00ed2750fbe2b90aae41ccd0d8736e6237ce76f46006ec99019d63847f6b3dfee3512c8d73e883e8fbf1b8306",
+            "825876a700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041020d03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a40000016572616e6b7302626b3303a3626964626b336573636f726509657469746c65636162635840f234f8955efe52c49d5115f7e3e624920935b043c8690ab61107ef053862ce906abddae513f100acd64b13e41a6e8a48bda947ce55b5878022c46d0d10e7310c",
+            "825870a700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041020e03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a40000016572616e6b7302626b3403a2626964626b34657469746c6564f09f988058406c38530d197df1faf4bcb0b3b2ba6fbc712fff3e2219384fa8e49db668514536bc6c46ff984993cd88d8a3331249e9624b5c1efd84ac9c9174be0ab9ef662003",
+            "82586fa700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041020f03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a40000016572616e6b7302626b3503a2626964626b35657469746c6563efbda158408c19eb47efb9d7fecd465369812e5b0ae1a6584458409714dd6d05448dd510ef6621a84235e9f008ebfe6d4fdbfb2462082896bdb43880681c8143db009f3f03",
+            "82586ca700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041021003821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a40001016572616e6b7302626b3103a1657469746c65666c6f636b656458409edea1a8408a82833fb835b705766f67daf83fd48296e364d27095a2a218ae1f174a0ccc8e2159144b5c872ed50fa6b693859dd6365db4c57e81bc6cab53b508",
+            "825866a700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041021103821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a40001016572616e6b7302626b3103a16573636f7265015840dda555ee1e71cc2cb271d673b12b7581a9daf47a4ff026894e077031b8c965d70b7094ceb88cc3993a50c07b6f861930e9dac0ffb98dba06a6d0ae9645a8c508"
+          ],
+          "report": {
+            "folded": 10,
+            "skipped": 0,
+            "quarantined": 7
+          },
+          "parked": [
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-13",
+              "reason": "unknown-table",
+              "verdict": "UnknownTable"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-39",
+              "reason": "unknown-table",
+              "verdict": "UnknownTable"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-14",
+              "reason": "dropped-table",
+              "verdict": "TableDropped"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-16",
+              "reason": "unknown-kind",
+              "verdict": "UnknownChangeKind"
+            },
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "7529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c-1",
+              "reason": "refused",
+              "verdict": "NoGrant"
+            },
+            {
+              "id": "6c8d14b047593d7117dc445957d8bdd6772c303d064297fdc8e329927d370bda-1",
+              "reason": "refused",
+              "verdict": "PartitionNotGranted"
+            },
+            {
+              "id": "ed54a59fb1ac3a51239351362941b868e85a60e3d7b2485d828821dc7a69c279-2",
+              "reason": "refused",
+              "verdict": "GrantRevoked"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-2",
+              "reason": "refused",
+              "verdict": "GrantStale"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-3",
+              "reason": "refused",
+              "verdict": "ClockAhead"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-6",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-7",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-8",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-10",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-11",
+              "reason": "refused",
+              "verdict": "LocalOnly"
+            },
+            {
+              "id": "6c28fd058c18c88c6cce2af981d2d11c851b123ed5b69b7876773ed099ea3f83-1",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-12",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-18",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-19",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-20",
+              "reason": "refused",
+              "verdict": "DocColumnWrite"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-23",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-24",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-25",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-26",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-29",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-30",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-31",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "column"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-32",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "adapter"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-33",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-34",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-35",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-1",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-37",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "replace"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-38",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-2",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "replace"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-3",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-5",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-9",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-10",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-43",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "delete"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-13",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-15",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-16",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            }
+          ]
+        },
+        {
+          "description": "a batch is judged as it arrived: an update rides on the insert beside it",
+          "events": [
+            "825882a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902182c03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001656e6f7465730262703103a3626964627031676f776e657249646b616363745f6d656d626572657469746c6561785840438a78bc509b59d3672e0cbfe2e56f875e4d63bb196ef47d29b6c7dd7302ebe44d47e1ec8b2a847ecafd217ca122778e6cb106a66970ae3e3206bb4ea772d203",
+            "825868a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902182d03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000101656e6f7465730262703103a1657469746c6561795840b638759ebfd39839f80fdab9292b82c1c0bd3233dcbac945b61822b90d3104bf440ff036a1a340fddf37366661c5f33aceb4e2c2240bcfd837ae506dc27c1a0e",
+            "825860a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902182e03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000201656e6f7465730262703103f658401caeaebf48403b70ee751eb935b9fa1ca877392450a56bf0113bf88e99d4ec422aa352759513ec44cb40a9fef1181381c08135ee93ad8c814e16f167f5591e0e",
+            "825880a70001015820882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd020403821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a626574610781a4000001656e6f7465730262713103a3626964627131676f776e657249646a616363745f61646d696e657469746c656178584016aff4e034fadd20f1bf272683a2d175b307e86945a100d63aaafb5f96e2abf9c20e84730c7732c42b588a951367e997ef6fd72544703c4522da3ac2d966d502",
+            "825881a700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041021203821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a626574610781a4000001656e6f7465730262713203a3626964627132676f776e657249646b616363745f766965776572657469746c6561785840a513aa226c8e3dc236db9fc610ab640adb0082e7380143af30739670da515042af2577ad2ec2edab2394cce87227edca7ece553bfc1b854996d5ac73667bd805",
+            "825882a700010158200b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041021303821b0000018bcfe47da000056d706f6c6963792e766563746f7206696f72673a67616d6d610781a4000001656e6f7465730262713303a3626964627133676f776e657249646b616363745f766965776572657469746c6561785840a44d0c29f4e59e725b5e3ce2395a45e85861306f17dc31504b297b03229397fd02f0f169984a78d949b1b16e664f5c02a547adb5c9daf0c95c24604d903bc603",
+            "82586ba70001015820882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd020503821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a626574610781a4000101656e6f74657302626e3103a1657469746c65656d6f7665645840d0f85a2898160abef259fbe785e28ccabb5dc8b7d056087a4190628652b9aa1711f3ab720009a6959382d51c251de76c77051bd3a74c626dbb56c818c83e0004"
+          ],
+          "report": {
+            "folded": 4,
+            "skipped": 0,
+            "quarantined": 3
+          },
+          "parked": [
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-13",
+              "reason": "unknown-table",
+              "verdict": "UnknownTable"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-39",
+              "reason": "unknown-table",
+              "verdict": "UnknownTable"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-14",
+              "reason": "dropped-table",
+              "verdict": "TableDropped"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-16",
+              "reason": "unknown-kind",
+              "verdict": "UnknownChangeKind"
+            },
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "7529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c-1",
+              "reason": "refused",
+              "verdict": "NoGrant"
+            },
+            {
+              "id": "6c8d14b047593d7117dc445957d8bdd6772c303d064297fdc8e329927d370bda-1",
+              "reason": "refused",
+              "verdict": "PartitionNotGranted"
+            },
+            {
+              "id": "ed54a59fb1ac3a51239351362941b868e85a60e3d7b2485d828821dc7a69c279-2",
+              "reason": "refused",
+              "verdict": "GrantRevoked"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-2",
+              "reason": "refused",
+              "verdict": "GrantStale"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-3",
+              "reason": "refused",
+              "verdict": "ClockAhead"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-6",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-7",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-8",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-10",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-11",
+              "reason": "refused",
+              "verdict": "LocalOnly"
+            },
+            {
+              "id": "6c28fd058c18c88c6cce2af981d2d11c851b123ed5b69b7876773ed099ea3f83-1",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-12",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-18",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-19",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-20",
+              "reason": "refused",
+              "verdict": "DocColumnWrite"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-23",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-24",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-25",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-26",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-29",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-30",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-31",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "column"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-32",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "adapter"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-33",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-34",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-35",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-1",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-37",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "replace"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-38",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-2",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "replace"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-3",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-5",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-9",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-10",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-43",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "delete"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-13",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-15",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-16",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-46",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "delete"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-19",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            }
+          ]
+        },
+        {
+          "description": "an update before its row, then the row: refused, then re-offered and folded",
+          "events": [
+            "82586aa70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902185a03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000101656e6f74657302646c61746503a1657469746c65617958408a66847efc35607f7478a758ff647c938060d8d6da0ba09c45f7397711acf7bf3c688ce2705194aa7acbcfc8240f37a7349250123b2c0e1b8e62631f9b920b03"
+          ],
+          "report": {
+            "folded": 0,
+            "skipped": 0,
+            "quarantined": 1
+          },
+          "parked": [
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-13",
+              "reason": "unknown-table",
+              "verdict": "UnknownTable"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-39",
+              "reason": "unknown-table",
+              "verdict": "UnknownTable"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-14",
+              "reason": "dropped-table",
+              "verdict": "TableDropped"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-16",
+              "reason": "unknown-kind",
+              "verdict": "UnknownChangeKind"
+            },
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "7529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c-1",
+              "reason": "refused",
+              "verdict": "NoGrant"
+            },
+            {
+              "id": "6c8d14b047593d7117dc445957d8bdd6772c303d064297fdc8e329927d370bda-1",
+              "reason": "refused",
+              "verdict": "PartitionNotGranted"
+            },
+            {
+              "id": "ed54a59fb1ac3a51239351362941b868e85a60e3d7b2485d828821dc7a69c279-2",
+              "reason": "refused",
+              "verdict": "GrantRevoked"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-2",
+              "reason": "refused",
+              "verdict": "GrantStale"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-3",
+              "reason": "refused",
+              "verdict": "ClockAhead"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-6",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-7",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-8",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-10",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-11",
+              "reason": "refused",
+              "verdict": "LocalOnly"
+            },
+            {
+              "id": "6c28fd058c18c88c6cce2af981d2d11c851b123ed5b69b7876773ed099ea3f83-1",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-12",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-18",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-19",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-20",
+              "reason": "refused",
+              "verdict": "DocColumnWrite"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-23",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-24",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-25",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-26",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-29",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-30",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-31",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "column"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-32",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "adapter"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-33",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-34",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-35",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-1",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-37",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "replace"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-38",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-2",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "replace"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-3",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-5",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-9",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-10",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-43",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "delete"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-13",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-15",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-16",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-46",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "delete"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-19",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-90",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            }
+          ]
+        },
+        {
+          "description": "the row lands, and the parked update is taken on the retry",
+          "events": [
+            "825886a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902185903821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001656e6f74657302646c61746503a3626964646c617465676f776e657249646b616363745f6d656d626572657469746c65617858401a5cbcb517f8952995027ba890cc5f788b80077141cf027b221e5cf4bfc3b47f0da9a0e1c5747ad5c85622a692adc034677281a23548d789eeadaa8ee1cc9f06"
+          ],
+          "report": {
+            "folded": 2,
+            "skipped": 0,
+            "quarantined": 0
+          },
+          "parked": [
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-13",
+              "reason": "unknown-table",
+              "verdict": "UnknownTable"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-39",
+              "reason": "unknown-table",
+              "verdict": "UnknownTable"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-14",
+              "reason": "dropped-table",
+              "verdict": "TableDropped"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-16",
+              "reason": "unknown-kind",
+              "verdict": "UnknownChangeKind"
+            },
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "7529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c-1",
+              "reason": "refused",
+              "verdict": "NoGrant"
+            },
+            {
+              "id": "6c8d14b047593d7117dc445957d8bdd6772c303d064297fdc8e329927d370bda-1",
+              "reason": "refused",
+              "verdict": "PartitionNotGranted"
+            },
+            {
+              "id": "ed54a59fb1ac3a51239351362941b868e85a60e3d7b2485d828821dc7a69c279-2",
+              "reason": "refused",
+              "verdict": "GrantRevoked"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-2",
+              "reason": "refused",
+              "verdict": "GrantStale"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-3",
+              "reason": "refused",
+              "verdict": "ClockAhead"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-6",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-7",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-8",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-10",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-11",
+              "reason": "refused",
+              "verdict": "LocalOnly"
+            },
+            {
+              "id": "6c28fd058c18c88c6cce2af981d2d11c851b123ed5b69b7876773ed099ea3f83-1",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-12",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-18",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-19",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-20",
+              "reason": "refused",
+              "verdict": "DocColumnWrite"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-23",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-24",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-25",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-26",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-29",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-30",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-31",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "column"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-32",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "adapter"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-33",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-34",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-35",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-1",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-37",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "replace"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-38",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-2",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "replace"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-3",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-5",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-9",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-10",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-43",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "delete"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-13",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-15",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-16",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-46",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "delete"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-19",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            }
+          ]
+        },
+        {
+          "description": "links are subject-signed, granted mode or not",
+          "events": [
+            "8259027fa70001015820882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd020603821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001665f6c696e6b7302788a6f72673a61636d653a313164363234653439323236643433633863323865393337663336323634306161656331653030323135666436353334623436313131383035393232306135623a3463626432343835356566316638636136353962396339336434633431313130343962323530366338386564393362663132653535623435383330363538383303a5676163636f756e747840313463373063376530633463373731323735366562626466643333333137626538666466373633353838323465363336303938393132636564383163316662316261741b0000018bcfd31880626964788a6f72673a61636d653a313164363234653439323236643433633863323865393337663336323634306161656331653030323135666436353334623436313131383035393232306135623a34636264323438353565663166386361363539623963393364346334313131303439623235303663383865643933626631326535356234353833303635383833646b696e6400647769726558a482585fa6000101582014c70c7e0c4c7712756ebbdfd33317be8fdf76358824e636098912ced81c1fb102582011d624e49226d43c8c28e937f362640aaec1e00215fd6534b461118059220a5b030004686f72673a61636d65051b0000018bcfd318805840eab8fe8b93fadf4c8da5ea534a2454fc6e03185a6964754e02fb327791732e3cbc3a8fe36c5313f9dce75f56f0a540a443d400bc82dedf33da12050541edc80c584070be4ec2905aa150dea624e3b0bf517c5e23a34cd1dca13c1608cdb952c5d2b9bed11a933b0b4a4230378be5f856cff128a6b9ecf142efcada419144baaedd01",
+            "8259027fa70001015820882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd020703821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001665f6c696e6b7302788a6f72673a61636d653a383832643065613362323836346537613538376633653639386365613434353939393833313265363535653035666135653862353131396438626161633863643a3536303364316264653636636133633730343361666435303462613762393032613039633737303337373063373036313666363935393135323532653034633403a5676163636f756e747840313463373063376530633463373731323735366562626466643333333137626538666466373633353838323465363336303938393132636564383163316662316261741b0000018bcfd31880626964788a6f72673a61636d653a383832643065613362323836346537613538376633653639386365613434353939393833313265363535653035666135653862353131396438626161633863643a35363033643162646536366361336337303433616664353034626137623930326130396337373033373730633730363136663639353931353235326530346334646b696e6401647769726558a482585fa6000101582014c70c7e0c4c7712756ebbdfd33317be8fdf76358824e636098912ced81c1fb1025820882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd030104686f72673a61636d65051b0000018bcfd318805840bb5dbe1a0430b741858d406d2e7f2fb24630c208a394b07aa3d189bcf43fe436bd1a2f38616565b69931b483ae602d9d6f16f0643fbfb8da81f3411217d0280f58407923a7856fbfe45b76987e9e452e46db8a21563a03f0745a80c9435b93f006e4990a0f89e52fc43fe2ac0a13444049fd5d9f900e8af9d3d14e0d1235d6e19502",
+            "82585fa70001015820882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd020803821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000201665f6c696e6b7302617803f658408695f5821637a22c433a1574909653bb2ff6af84d94fc88aa71b0d6cf1aec0fc3f89456938721819cba85728f92ad9575ce6bb7fd3177cde48d51fbeae3c4405"
+          ],
+          "report": {
+            "folded": 1,
+            "skipped": 0,
+            "quarantined": 2
+          },
+          "parked": [
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-13",
+              "reason": "unknown-table",
+              "verdict": "UnknownTable"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-39",
+              "reason": "unknown-table",
+              "verdict": "UnknownTable"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-14",
+              "reason": "dropped-table",
+              "verdict": "TableDropped"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-16",
+              "reason": "unknown-kind",
+              "verdict": "UnknownChangeKind"
+            },
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "7529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c-1",
+              "reason": "refused",
+              "verdict": "NoGrant"
+            },
+            {
+              "id": "6c8d14b047593d7117dc445957d8bdd6772c303d064297fdc8e329927d370bda-1",
+              "reason": "refused",
+              "verdict": "PartitionNotGranted"
+            },
+            {
+              "id": "ed54a59fb1ac3a51239351362941b868e85a60e3d7b2485d828821dc7a69c279-2",
+              "reason": "refused",
+              "verdict": "GrantRevoked"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-2",
+              "reason": "refused",
+              "verdict": "GrantStale"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-3",
+              "reason": "refused",
+              "verdict": "ClockAhead"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-6",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-7",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-8",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-10",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-11",
+              "reason": "refused",
+              "verdict": "LocalOnly"
+            },
+            {
+              "id": "6c28fd058c18c88c6cce2af981d2d11c851b123ed5b69b7876773ed099ea3f83-1",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-12",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-18",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-19",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-20",
+              "reason": "refused",
+              "verdict": "DocColumnWrite"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-23",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-24",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-25",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-26",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-29",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-30",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-31",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "column"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-32",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "adapter"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-33",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-34",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-35",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-1",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-37",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "replace"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-38",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-2",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "replace"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-3",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-5",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-9",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-10",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-43",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "delete"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-13",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-15",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-16",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-46",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "delete"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-19",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-6",
+              "reason": "refused",
+              "verdict": "LinkRefused",
+              "rung": "author"
+            },
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-8",
+              "reason": "refused",
+              "verdict": "LinkRefused",
+              "rung": "columns"
+            }
+          ]
+        }
+      ],
+      "rows": {
+        "_cdc": ["pg"],
+        "_links": [
+          "org:acme:882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd:5603d1bde66ca3c7043afd504ba7b902a09c7703770c70616f695915252e04c4"
+        ],
+        "_policy": ["org:beta", "org:gamma", "org:strict"],
+        "_revocations": [
+          "org:acme:ed54a59fb1ac3a51239351362941b868e85a60e3d7b2485d828821dc7a69c279"
+        ],
+        "archive": ["a1"],
+        "boards": ["b1"],
+        "feed": ["f1"],
+        "notes": ["c2", "dv1", "g2", "late", "n1", "p1", "q1", "q2", "r1"],
+        "profiles": ["me"],
+        "ranks": ["k1", "k2", "k4", "nothing"],
+        "settings": ["theme"],
+        "shifts": [],
+        "tasks": ["t1", "t6", "t7", "v1", "v3"]
+      },
+      "probes": [
+        {
+          "description": "a retired table refuses this device's own write",
+          "event": "825870a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902185b03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400000167617263686976650262613203a2626964626132657469746c65617858402b9bdc622f32ecc2f664217768d20a7e2184ce9321477cd1521d7e61d092710b3ad0dc3d42115d9f3db057bd1a75a678a7f1117e98154665c8a935cc88087601",
+          "verdict": "RetiredWrite"
+        },
+        {
+          "description": "a retired column too, null included",
+          "event": "825868a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902185c03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000101656e6f74657302626e3103a1666c6567616379f65840a7275a1cedae0bb51b5dd82957037004c3c1d7a1f5ca13796d54325b59bc29b54193a79f261d445369b47da7868a767d646405aea507a0139c014c1978817e02",
+          "verdict": "RetiredWrite"
+        },
+        {
+          "description": "a derived column is never written",
+          "event": "82586aa70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902185d03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000101656e6f74657302626e3103a16773756d6d617279617858402e795a950f9f5826bfb3490118c9a83a72c4fdf57994833e18695a2fdceb82bedf17ad839bc018b121344d383f69e2adce3700d7c18013a4e90fc870dedca600",
+          "verdict": "DocColumnWrite"
+        },
+        {
+          "description": "an owner's edit",
+          "event": "82586ba70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902185e03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000101656e6f74657302626e3103a1657469746c65646564697458403ac3f6e60580ddfcb67c3a0805d470a06cbeb55325fe99a05d4514dc7d3891f85434f1c4a2904e5e075526062a003983adec4f90b8484ff6ff7b6a5e50b8a606",
+          "verdict": null
+        },
+        {
+          "description": "a genesis on a probe names no lineage yet",
+          "event": "82588aa70001015820882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd020903821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000601656e6f74657302626e3103a50067636f6e74656e7401666c6f726f403102502a29e314186307e4e2aaa34a392e4d2a03446c6f726f050158401d31ba00c3a951d94979bf62382929de73e12723ed35ac95ef80c0151ab5148690ed2b83e00268c1e11f148d1d69f4d2c3433302ceeb30e5a687421d87fc1b04",
+          "verdict": null
+        },
+        {
+          "description": "an owner may edit and not replace",
+          "event": "82588ba70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902185f03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000601656e6f74657302626e3103a50067636f6e74656e7401666c6f726f4031025060baec5c0a5beb9b13e47b3bc39013f603446c6f726f05015840180a13f8dec431ff3747939fc953a5254f302a2c4f2e99358703febdba1d52551facd402f84626f42f3bad6c86cb761d3f5c07d1842b3e7641f96e415d8ff10b",
+          "verdict": "PolicyDenied",
+          "op": "replace"
+        },
+        {
+          "description": "a local table's write is not local here",
+          "event": "825864a60001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186003821b0000018bcfe47da000056d706f6c6963792e766563746f720781a4000001666472616674730262643203a264626f647961786269646264325840aca65ef2117c46434448ba74dceb8f11496e0e1dd2e5fdcfda7fd9dbdd35426199562aad8df35e64e6161b3db92150d563fb92558c2052f142ba828433ca560b",
+          "verdict": "LocalOnly"
+        },
+        {
+          "description": "a stale grant is judged against now",
+          "event": "825884a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186103821b0000018bcfe47da000056d706f6c6963792e766563746f72066a6f72673a7374726963740781a4000001656e6f7465730262673303a3626964626733676f776e657249646b616363745f6d656d626572657469746c6561785840e7aa019517e92d15f27620fdc8842e4f6ba01f30282c5e8f57f4f2d3f724bea713bbd9b4ecbeb678619e886dcaaed07af3324de67d1d69c6483050a574485e09",
+          "verdict": "GrantStale"
+        }
+      ]
+    },
+    {
+      "description": "ungranted with accounts: a link is the only author a rule ever sees",
+      "granted": false,
+      "accounts": true,
+      "steps": [
+        {
+          "description": "no author: every rule is skipped, the schema never is",
+          "events": [
+            "8258b7a700010158207529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c020103821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001656e6f74657302626e3103a3626964626e31676f776e65724964784031346337306337653063346337373132373536656262646664333333313762653866646637363335383832346536333630393839313263656438316331666231657469746c65617858409d1f110ffeda5641c8aa86018671d39d4e5dbe1259966915f3a3c8a60ccce28fc3b6ff9643dca66c799afef011d5a5d782743a7ad73336ce275785db0df55801",
+            "8258b6a700010158207529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c020203821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001656e6f74657302626e3203a3626964626e32676f776e65724964784031346337306337653063346337373132373536656262646664333333313762653866646637363335383832346536333630393839313263656438316331666231657469746c65015840fb636baadc2ba52f75b6b6981e60331341b1087f6f85cec51baf90380992da2580bfdc43aa1c4005b432b47fd42b122dfb52a7c74f6c93de82cfb6e86891fb09",
+            "825878a700010158207529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c020303821b0000018bcfe47da000056d706f6c6963792e766563746f72066c757365723a77686f657665720781a40000016870726f66696c65730262703103a2626964627031646e616d6566616e796f6e6558409cea369c9893ed1206b1140b599f05e68b1042c368e5c1f174b41ac746c88568d1dcd3b59e3efb813825966951bd679ffe0d9dae13fc4e229da8feb512227407"
+          ],
+          "report": {
+            "folded": 2,
+            "skipped": 0,
+            "quarantined": 1
+          },
+          "parked": [
+            {
+              "id": "7529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c-2",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            }
+          ]
+        },
+        {
+          "description": "links: a device claims only itself, alone, with the account's signature",
+          "events": [
+            "8259027fa7000101582011d624e49226d43c8c28e937f362640aaec1e00215fd6534b461118059220a5b020103821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001665f6c696e6b7302788a6f72673a61636d653a313164363234653439323236643433633863323865393337663336323634306161656331653030323135666436353334623436313131383035393232306135623a3463626432343835356566316638636136353962396339336434633431313130343962323530366338386564393362663132653535623435383330363538383303a5676163636f756e747840313463373063376530633463373731323735366562626466643333333137626538666466373633353838323465363336303938393132636564383163316662316261741b0000018bcfd31880626964788a6f72673a61636d653a313164363234653439323236643433633863323865393337663336323634306161656331653030323135666436353334623436313131383035393232306135623a34636264323438353565663166386361363539623963393364346334313131303439623235303663383865643933626631326535356234353833303635383833646b696e6400647769726558a482585fa6000101582014c70c7e0c4c7712756ebbdfd33317be8fdf76358824e636098912ced81c1fb102582011d624e49226d43c8c28e937f362640aaec1e00215fd6534b461118059220a5b030004686f72673a61636d65051b0000018bcfd318805840eab8fe8b93fadf4c8da5ea534a2454fc6e03185a6964754e02fb327791732e3cbc3a8fe36c5313f9dce75f56f0a540a443d400bc82dedf33da12050541edc80c5840e66931ded6c731c6f534035ad49d3beaefaa55a9ad13ad4fea7cf650ad35683d9447056ff2cc5d3fc8a61590cd1784ee43d6c75bae02874c1cc7fec01b68000d",
+            "8259027fa700010158207529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c020403821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001665f6c696e6b7302788a6f72673a61636d653a303230626434323734343662373233343234643830643263616433353262613364663336343964306566386661616530636137656232353434333934316232393a3537326631326164343338636661323232646631386535376463383866396631383563356463653139333330633366353166326534663262316337636163613503a5676163636f756e747840313463373063376530633463373731323735366562626466643333333137626538666466373633353838323465363336303938393132636564383163316662316261741b0000018bcfd31880626964788a6f72673a61636d653a303230626434323734343662373233343234643830643263616433353262613364663336343964306566386661616530636137656232353434333934316232393a35373266313261643433386366613232326466313865353764633838663966313835633564636531393333306333663531663265346632623163376361636135646b696e6400647769726558a482585fa6000101582014c70c7e0c4c7712756ebbdfd33317be8fdf76358824e636098912ced81c1fb1025820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29030004686f72673a61636d65051b0000018bcfd318805840150a1c6c7d3144ead53ebf7c845a149b9d3be3ba7f56260c212ed0a7de860198952821bdc4aa03cc45030953449404e69d55edc7d5e9ec6a9a232e9de9f9c4075840261b43ab04c72f9ee7563f9201598549cbf54607ccb6b9688e875f49199a2278969506deb327602c66ef5471bdccc04fee09a83fc47f35e1fa4ee466b0913e0d",
+            "8259027fa70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020103821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001665f6c696e6b7302788a6f72673a61636d653a303230626434323734343662373233343234643830643263616433353262613364663336343964306566386661616530636137656232353434333934316232393a3537326631326164343338636661323232646631386535376463383866396631383563356463653139333330633366353166326534663262316337636163613503a5676163636f756e747840313463373063376530633463373731323735366562626466643333333137626538666466373633353838323465363336303938393132636564383163316662316261741b0000018bcfd31880626964788a6f72673a61636d653a303230626434323734343662373233343234643830643263616433353262613364663336343964306566386661616530636137656232353434333934316232393a35373266313261643433386366613232326466313865353764633838663966313835633564636531393333306333663531663265346632623163376361636135646b696e6400647769726558a482585fa6000101582014c70c7e0c4c7712756ebbdfd33317be8fdf76358824e636098912ced81c1fb1025820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29030004686f72673a61636d65051b0000018bcfd318805840da0dea330cb02bb93aa52d8ae887a866965d0f17dc3135192cf915df264436d9d08c4b75f643b06302b955ddddd28f0dfa404605309f971cb2bc04a97f2fd30d58403244a2a33f1c7bb2d3fadf374acbf485b23b77619e9f5c88752b7c905496a197790ffe98eaac217b9c222f18e382bd3b8cc597bc84d6a361a187c69fbd398f06",
+            "8259027fa70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020203821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001665f6c696e6b7302788a6f72673a61636d653a303230626434323734343662373233343234643830643263616433353262613364663336343964306566386661616530636137656232353434333934316232393a3537326631326164343338636661323232646631386535376463383866396631383563356463653139333330633366353166326534663262316337636163613503a5676163636f756e747840313463373063376530633463373731323735366562626466643333333137626538666466373633353838323465363336303938393132636564383163316662316261741b0000018bcfd31880626964788a6f72673a61636d653a303230626434323734343662373233343234643830643263616433353262613364663336343964306566386661616530636137656232353434333934316232393a35373266313261643433386366613232326466313865353764633838663966313835633564636531393333306333663531663265346632623163376361636135646b696e6401647769726558a482585fa6000101582014c70c7e0c4c7712756ebbdfd33317be8fdf76358824e636098912ced81c1fb1025820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29030004686f72673a61636d65051b0000018bcfd318805840150a1c6c7d3144ead53ebf7c845a149b9d3be3ba7f56260c212ed0a7de860198952821bdc4aa03cc45030953449404e69d55edc7d5e9ec6a9a232e9de9f9c4075840d0484c157c08957081893b7daaa5039795c3f6f5bf3cc757881c55d95b9559217b06ab5a9d16a754f7b9956941c5d5db62641c73e57c9d3432df9a77ee074a0f",
+            "8259027fa70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020303821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001665f6c696e6b7302788a6f72673a626574613a303230626434323734343662373233343234643830643263616433353262613364663336343964306566386661616530636137656232353434333934316232393a3762306161316164656438306335396466646134626531616663313636666166623938363835646335373837656134343532626633616163663764333364306203a5676163636f756e747840313463373063376530633463373731323735366562626466643333333137626538666466373633353838323465363336303938393132636564383163316662316261741b0000018bcfd31880626964788a6f72673a626574613a303230626434323734343662373233343234643830643263616433353262613364663336343964306566386661616530636137656232353434333934316232393a37623061613161646564383063353964666461346265316166633136366661666239383638356463353738376561343435326266336161636637643333643062646b696e6400647769726558a482585fa6000101582014c70c7e0c4c7712756ebbdfd33317be8fdf76358824e636098912ced81c1fb1025820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29030004686f72673a62657461051b0000018bcfd318805840f6b5c965366fa7d6313394fb6d1c3e5bb82d3ce1025f2ce8993a3f0d7e26ac62b11538ec3a544f162ebe1cc22c3967f1b9e2c7dba8293728f685e65e9d1bee0a58405a07bbcf790b77b1560cd02a362a99d103f6f91ed95d66896256b954225fc81cb4f470d6c191edbd4df8aca75f11d0c84af1185d422a4644a7d48328da670f06",
+            "825902a7a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020403821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650782a4000001665f6c696e6b7302788a6f72673a61636d653a303230626434323734343662373233343234643830643263616433353262613364663336343964306566386661616530636137656232353434333934316232393a3537326631326164343338636661323232646631386535376463383866396631383563356463653139333330633366353166326534663262316337636163613503a5676163636f756e747840313463373063376530633463373731323735366562626466643333333137626538666466373633353838323465363336303938393132636564383163316662316261741b0000018bcfd31880626964788a6f72673a61636d653a303230626434323734343662373233343234643830643263616433353262613364663336343964306566386661616530636137656232353434333934316232393a35373266313261643433386366613232326466313865353764633838663966313835633564636531393333306333663531663265346632623163376361636135646b696e6400647769726558a482585fa6000101582014c70c7e0c4c7712756ebbdfd33317be8fdf76358824e636098912ced81c1fb1025820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29030004686f72673a61636d65051b0000018bcfd318805840150a1c6c7d3144ead53ebf7c845a149b9d3be3ba7f56260c212ed0a7de860198952821bdc4aa03cc45030953449404e69d55edc7d5e9ec6a9a232e9de9f9c407a4000001656e6f74657302626e3903a3626964626e39676f776e657249646161657469746c6561785840e8e442a99f08577fdf3a95a48ff211ac88a4a44db1e4637fa873b0cc76b539bb415fb670f2f53af877589b4bf848e3c4ba125e7630d4b72066084dddf3f4e20e",
+            "825876a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29020503821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000601665f6c696e6b7302617803a30067636f6e74656e7401666c6f726f403103446c6f726f5840a79ba2ba7b047cc08b3ae8d35006f7195b355b009453f1c1a0a09c1c699a5a560df6702972e3557a50ac2f01d67aafe40b343dff7aa8a1afbe12d67c63085f07"
+          ],
+          "report": {
+            "folded": 1,
+            "skipped": 0,
+            "quarantined": 6
+          },
+          "parked": [
+            {
+              "id": "7529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c-2",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "7529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c-4",
+              "reason": "refused",
+              "verdict": "LinkRefused",
+              "rung": "author"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-1",
+              "reason": "refused",
+              "verdict": "LinkRefused",
+              "rung": "signature"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-2",
+              "reason": "refused",
+              "verdict": "LinkRefused",
+              "rung": "columns"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-3",
+              "reason": "refused",
+              "verdict": "LinkRefused",
+              "rung": "key"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-4",
+              "reason": "refused",
+              "verdict": "LinkRefused",
+              "rung": "isolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-5",
+              "reason": "refused",
+              "verdict": "LinkRefused",
+              "rung": "columns"
+            }
+          ]
+        },
+        {
+          "description": "a linked device answers to its account, with no role",
+          "events": [
+            "82586ba7000101582011d624e49226d43c8c28e937f362640aaec1e00215fd6534b461118059220a5b020203821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000101656e6f74657302626e3103a1657469746c65656f776e656458403f8535a0cb13852c2baa1d85397271bb659e27dad1ad03317e111ef7a4cafc4fa2949336649a545b947ffa5c23126e3087e8d9f41553f449042cb669f2ff0d0c",
+            "8258b7a7000101582011d624e49226d43c8c28e937f362640aaec1e00215fd6534b461118059220a5b020303821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001656e6f74657302626e3303a3626964626e33676f776e65724964784031346337306337653063346337373132373536656262646664333333313762653866646637363335383832346536333630393839313263656438316331666231657469746c6561785840bc86093d5c004a805b995cfdd0aa51a3c496b72aef6c75baadefa146642a637c978dec7b39062919be088544c34f9228155cef5d75a8d00c131ab9d48fdf0207",
+            "8258b0a7000101582011d624e49226d43c8c28e937f362640aaec1e00215fd6534b461118059220a5b020403821b0000018bcfe47da000056d706f6c6963792e766563746f72067845757365723a313463373063376530633463373731323735366562626466643333333137626538666466373633353838323465363336303938393132636564383163316662310781a40000016870726f66696c65730262703203a2626964627032646e616d65646d696e655840c452de32cd420fde4932aadb53c5e6a21cf7280943094dd9637af8830fccbe2f2802ccbf9ac39a23aadd2fec117a2132ac56883f0fc4f3839dc716304822540b",
+            "82587aa7000101582011d624e49226d43c8c28e937f362640aaec1e00215fd6534b461118059220a5b020503821b0000018bcfe47da000056d706f6c6963792e766563746f72066c757365723a736f6d656f6e650781a40000016870726f66696c65730262703303a2626964627033646e616d65686e6f74206d696e6558400857054e170e1f54ee648b1c5836c379ef3c5fccd143832ba081a88bc68ee0ac86df2d8af14e533467d4eaf2b658be3c9f997efdcf71c363c3eb7f356a6d090b"
+          ],
+          "report": {
+            "folded": 3,
+            "skipped": 0,
+            "quarantined": 1
+          },
+          "parked": [
+            {
+              "id": "7529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c-2",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "7529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c-4",
+              "reason": "refused",
+              "verdict": "LinkRefused",
+              "rung": "author"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-1",
+              "reason": "refused",
+              "verdict": "LinkRefused",
+              "rung": "signature"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-2",
+              "reason": "refused",
+              "verdict": "LinkRefused",
+              "rung": "columns"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-3",
+              "reason": "refused",
+              "verdict": "LinkRefused",
+              "rung": "key"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-4",
+              "reason": "refused",
+              "verdict": "LinkRefused",
+              "rung": "isolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-5",
+              "reason": "refused",
+              "verdict": "LinkRefused",
+              "rung": "columns"
+            },
+            {
+              "id": "11d624e49226d43c8c28e937f362640aaec1e00215fd6534b461118059220a5b-3",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            }
+          ]
+        }
+      ],
+      "rows": {
+        "_links": [
+          "org:acme:11d624e49226d43c8c28e937f362640aaec1e00215fd6534b461118059220a5b:4cbd24855ef1f8ca659b9c93d4c4111049b2506c88ed93bf12e55b4583065883"
+        ],
+        "notes": ["n1"],
+        "profiles": ["p1", "p2", "p3"]
+      },
+      "probes": [
+        {
+          "description": "an unlinked device is judged by the schema alone",
+          "event": "825873a700010158207529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c020503821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001657461736b730262743103a364646f6e65f5626964627431657469746c65617858407d7b5c1d2faedaa9062785e125d83d63f6fa655595d56f79d14d9d2029c4e8d92dd69cfcf9c7b3d06b71d1b241d5c84e7b6d2806997b46b0c6439a27cd44b606",
+          "verdict": null
+        },
+        {
+          "description": "a linked device's role rule",
+          "event": "82585fa7000101582011d624e49226d43c8c28e937f362640aaec1e00215fd6534b461118059220a5b020603821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000201656e6f74657302626e3103f65840df284e756f517eb0be29794ff8b764efb8fea7ecb84c51ad4cf9cf312dd4a99238f32b2a4e4c7096ba286e6b00453df3dfc032b4fdbd3adbb54b799f9e7da304",
+          "verdict": "PolicyDenied",
+          "op": "delete"
+        }
+      ]
+    }
+  ]
+}

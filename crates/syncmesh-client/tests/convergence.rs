@@ -13,7 +13,7 @@
 //! One invariant the generator keeps rather than the fold: a row belongs to one partition. The
 //! fold fixes a row's partition by the first write that reaches it, so two writes placing the same
 //! row in two partitions would end differently on devices that saw them in a different order.
-//! That is the policy ladder's job to refuse (no port yet), so here every key has one partition,
+//! That is the policy ladder's job to refuse (`WrongPartition`; these engines run none), so here every key has one partition,
 //! which some writes name and others leave out — `None` beside `Some` does converge.
 
 use std::collections::BTreeMap;

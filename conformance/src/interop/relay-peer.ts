@@ -8,8 +8,9 @@
  * measured against what this process sees: a row the Rust device wrote has to come out of this
  * engine, byte for byte through the same relay a TypeScript device would use.
  *
- * No validator on purpose: the Rust client has no policy ladder yet (D37), and a test that admits
- * on one side and refuses on the other would be testing the ladder, not the wire.
+ * No validator on purpose: this measures the wire, and a test that admits on one side and refuses
+ * on the other would be testing the ladder. The ladder is measured on its own, in both runtimes,
+ * against `conformance/policy-vectors.json` (gap U3).
  */
 import type { FoldBatch } from "@syncmesh/engine";
 import type {

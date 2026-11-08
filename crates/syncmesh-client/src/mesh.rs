@@ -26,6 +26,7 @@ use crate::presence::{PresenceEntry, PresenceTier, PresenceTouch};
 use crate::random;
 use crate::relay::{RelayLink, RelayOptions};
 use crate::store::{EventStore, StateStore, StoreError};
+use crate::validate::GrantSource;
 
 pub struct MeshOptions {
     pub identity: Identity,
@@ -38,6 +39,8 @@ pub struct MeshOptions {
     /// This device's blob cache; memory when absent.
     pub blob_store: Option<Box<dyn BlobStore + Send>>,
     /// Whose grants to believe; this device's own key when absent (a mesh with no authority).
+    /// With `engine.validator` set, it also decides the validator's mode: granted, over this
+    /// mesh's registry, exactly when an issuer is given; ungranted otherwise.
     pub issuer: Option<PeerId>,
 }
 
@@ -93,12 +96,22 @@ impl Mesh {
             identity,
             url,
             relay,
-            engine,
+            mut engine,
             store,
             state_store,
             blob_store,
             issuer,
         } = options;
+        let grants = Arc::new(Mutex::new(GrantRegistry::new(
+            issuer.clone().unwrap_or_else(|| identity.peer_id().clone()),
+        )));
+        if let Some(validator) = engine.validator.as_mut() {
+            // granted exactly when an issuer is configured, as the TypeScript client decides: the
+            // validator reads the registry the link fills as grants arrive
+            validator.grants = issuer
+                .is_some()
+                .then(|| Box::new(grants.clone()) as Box<dyn GrantSource + Send>);
+        }
         let engine = Arc::new(Mutex::new(Engine::open(
             identity.clone(),
             store,
@@ -108,9 +121,6 @@ impl Mesh {
         let presence = Arc::new(Mutex::new(PresenceTier::new(
             identity.clone(),
             random::session_id(),
-        )));
-        let grants = Arc::new(Mutex::new(GrantRegistry::new(
-            issuer.unwrap_or_else(|| identity.peer_id().clone()),
         )));
         let blobs: Arc<Mutex<Box<dyn BlobStore + Send>>> = Arc::new(Mutex::new(
             blob_store.unwrap_or_else(|| Box::new(MemoryBlobStore::new())),

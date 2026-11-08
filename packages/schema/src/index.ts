@@ -55,6 +55,8 @@ export {
   parseShippedSchema,
   shippedSchema,
 } from "./shipped.js";
+export type { PortableColumn, PortableSchema, PortableTable, PortingSchema } from "./portable.js";
+export { portableSchema } from "./portable.js";
 export type { AllowFn, Combinators, FieldsFn } from "./bind.js";
 export { combinators } from "./bind.js";
 export { authorityTables, servedTables, syncSchema, syncedTables } from "./manifest.js";
