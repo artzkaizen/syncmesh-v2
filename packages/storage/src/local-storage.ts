@@ -140,15 +140,28 @@ function appendAll(memory: EventStore, disk: LocalLog, batch: readonly StoredEve
  * point: the log answers what it holds, the head answers what it has ever held, and only the second
  * one may never regress — `lastSeq` and `maxHlc` survive both compaction and a failed write.
  */
-function storeOver(memory: MemoryEventStore, disk: LocalLog, seeded: Cursors): EventStore {
+function storeOver(
+  memory: MemoryEventStore,
+  disk: LocalLog,
+  seeded: Cursors,
+  stored: string | null,
+): EventStore {
   const ok = <T>(value: T) => Promise.resolve(Result.ok(value));
-  /** Writes what lies under the floors, when an append, a compaction or an evict moved it. */
+  let persisted = stored;
+  /**
+   * Writes what lies under the floors whenever it differs from what the key holds — not only
+   * when this call moved it, so a value open trimmed in memory but could not write is repaired by
+   * the next write instead of outliving the floor it was trimmed to.
+   */
   const keepBelow = <T>(run: () => Promise<Result<T, StoreFailure>>) =>
     Result.gen(async function* () {
-      const before = encodeBelow(below());
       const value = yield* Result.await(run());
       const after = below();
-      if (encodeBelow(after) !== before) yield* disk.saveBelow(after);
+      const encoded = encodeBelow(after);
+      if (encoded !== persisted) {
+        yield* disk.saveBelow(after);
+        persisted = encoded;
+      }
       return Result.ok(value);
     });
   let installed = seeded;
@@ -255,7 +268,9 @@ function recover(rawHead: string | null, rawLog: string | null): Recovered {
  * read — and the caller should open a different store.
  *
  * An append rewrites the whole key, so the log must stay small: this is the store that most needs
- * the size-based compaction trigger, not the one that can afford to grow.
+ * the size-based compaction trigger, not the one that can afford to grow. Compaction does not
+ * shrink `<name>.below`: a run below the floor the log never held stays until an event in it
+ * arrives, so a device sent only some partitions keeps one per run it was never sent.
  *
  * @example
  * const { store, corrupt } = (await localStorageEventStore({ name: "notes" })).unwrap();
@@ -284,14 +299,19 @@ export function localStorageEventStore(
     }
     // a hole is a run below a floor, so holes go with a head that did not decode; the installed
     // floor is about the state, not the log, and stays
-    const decoded = decodeBelow(yield* disk.read("below"));
+    const rawBelow = yield* disk.read("below");
+    const decoded = decodeBelow(rawBelow);
     const kept = decoded.isOk() ? decoded.value : EMPTY_BELOW;
     const below = recovered.floorsLost === true ? { ...kept, holes: [] } : kept;
-    if (decoded.isErr()) yield* disk.saveBelow(below);
     const corrupt = recovered.corrupt ?? (decoded.isErr() ? decoded.error : undefined);
     const memory = createMemoryEventStore({ floors: marks.floors, ...below });
     yield* Result.await(memory.appendBatch(entries));
-    const store = storeOver(memory, disk, below.installed);
+    // what open settled on (holes trimmed to the floors, or cleared with a lost head) goes back
+    // now; a refused write does not stop the boot, and the next write tries again (keepBelow)
+    const settled = { holes: memory.holes(), installed: below.installed };
+    const encoded = encodeBelow(settled);
+    const stored = encoded === rawBelow || disk.saveBelow(settled).isOk() ? encoded : rawBelow;
+    const store = storeOver(memory, disk, below.installed, stored);
     if (corrupt === undefined) return Result.ok({ store });
     return Result.ok(
       numberingLost === true ? { store, corrupt, numberingLost } : { store, corrupt },

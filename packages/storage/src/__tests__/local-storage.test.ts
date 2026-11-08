@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { LocalStorageLike } from "../local-storage.js";
 
 import { A, B, at, entry, event, grownEntry, seq } from "../driver-tests/fixtures.js";
-import { encodeLog } from "../local-log.js";
+import { decodeBelow, encodeLog } from "../local-log.js";
 import { localStorageEventStore } from "../local-storage.js";
 
 /** A `localStorage` whose contents the test can read and damage; `refuse` fails writes to one key, the way a full quota does. */
@@ -206,5 +206,22 @@ describe("the localStorage event store", () => {
     (await store.compactBelow(new Map([[A, seq(6)]]), "synced", FOREVER)).unwrap();
     expect((await store.compacted(event(A, 5, 104))).unwrap()).toBe(true);
     expect((await store.compacted(event(A, 2, 101))).unwrap()).toBe(false);
+    // the trimmed value reached the key too: a reopen under the floor of 6 does not bring A:5's hole back
+    const reopened = (await open(storage)).unwrap().store;
+    expect((await reopened.compacted(event(A, 5, 104))).unwrap()).toBe(true);
+    expect((await reopened.compacted(event(A, 2, 101))).unwrap()).toBe(false);
+  });
+
+  test("holes cleared with a lost head are cleared on disk at open (gaps U1)", async () => {
+    const storage = fakeStorage();
+    {
+      const { store } = (await open(storage)).unwrap();
+      (await store.appendBatch([entry(A, 1, 100), entry(A, 3, 102)])).unwrap();
+      (await store.compactBelow(new Map([[A, seq(3)]]), "synced", FOREVER)).unwrap();
+    }
+    storage.items.set("notes.head", "not a head");
+    const { corrupt } = (await open(storage)).unwrap();
+    expect(corrupt).toBeDefined();
+    expect(decodeBelow(storage.items.get("notes.below") ?? null).unwrap().holes).toEqual([]);
   });
 });
