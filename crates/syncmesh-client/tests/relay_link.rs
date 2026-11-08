@@ -4,10 +4,15 @@
 //! what lets these tests say what a link does at 2.5× a keepalive without waiting for one.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use syncmesh_client::relay::{Action, REENTITLED, REFUSED, RelayLink, RelayOptions, UNPINNED};
 use syncmesh_client::room::{Room, RoomAction, RoomOptions, SocketId};
-use syncmesh_client::{Engine, EngineOptions, Interest, MemoryEventStore, StoredEvent};
+use syncmesh_client::{
+    Engine, EngineOptions, GrantRegistry, Interest, Manifest, MemoryEventStore, StoredEvent,
+    ValidatorOptions,
+};
 use syncmesh_core::cbor::{Key, Value};
 use syncmesh_core::event::{Change, PartitionKey, PeerId};
 use syncmesh_core::frames::Frame;
@@ -131,6 +136,20 @@ impl Net {
         self.devices.push(Device {
             link: RelayLink::new(identity(n), options),
             engine: engine(n),
+            socket: None,
+            redial_at: None,
+            redials: Vec::new(),
+            facts: Vec::new(),
+            sent: Vec::new(),
+        });
+        self.devices.len() - 1
+    }
+
+    /// A device built by the caller: its own link and engine.
+    fn add_device(&mut self, link: RelayLink, engine: Engine) -> usize {
+        self.devices.push(Device {
+            link,
+            engine,
             socket: None,
             redial_at: None,
             redials: Vec::new(),
@@ -1144,4 +1163,173 @@ fn a_build_that_declares_a_schema_stamps_its_writes_and_announces_it_at_index_5(
         })
         .collect();
     assert_eq!(announced, vec![Some(four)], "{actions:?}");
+}
+
+/// The policy vectors' manifest: `notes` in an `org` partition, inserted by a `member`.
+fn vectors_manifest() -> Manifest {
+    let path: PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "..",
+        "..",
+        "conformance",
+        "policy-vectors.json",
+    ]
+    .iter()
+    .collect();
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("vectors")).expect("json");
+    Manifest::from_json(&doc["schema"]).expect("manifest")
+}
+
+fn note(key: &str) -> Change {
+    let mut row = BTreeMap::new();
+    for (column, value) in [("id", key), ("title", "t"), ("ownerId", "acct_a")] {
+        row.insert(column.to_owned(), CellValue::text(value));
+    }
+    Change::Insert {
+        table: "notes".into(),
+        key: key.into(),
+        row,
+    }
+}
+
+/// An engine on the harness's clock, judging what it receives with grants from `registry`.
+fn granted_engine(n: u8, now: i64, registry: &Arc<Mutex<GrantRegistry>>) -> Engine {
+    Engine::open(
+        identity(n),
+        Box::new(MemoryEventStore::new()),
+        None,
+        EngineOptions {
+            now_ms: Some(Box::new(move || now)),
+            validator: Some(ValidatorOptions {
+                manifest: vectors_manifest(),
+                grants: Some(Box::new(registry.clone())),
+                authority: None,
+                accounts: false,
+            }),
+            ..EngineOptions::default()
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_grant_is_registered_before_the_events_that_arrive_beside_it_fold() {
+    let mut net = Net::new(room_with(vec![3], 15_000));
+    let now = net.now;
+    let writer = Engine::open(
+        identity(1),
+        Box::new(MemoryEventStore::new()),
+        None,
+        EngineOptions {
+            now_ms: Some(Box::new(move || now)),
+            ..EngineOptions::default()
+        },
+    )
+    .unwrap();
+    let a = net.add_device(RelayLink::new(identity(1), RelayOptions::default()), writer);
+    net.dial(a);
+    let grant = grant_wire(&identity(1));
+    let actions = net.devices[a].link.send_grants(vec![grant.clone()]);
+    net.apply_device(a, actions);
+    net.pump();
+    let wrote = net.devices[a]
+        .engine
+        .mutate("notes.create", vec![note("n1")], Some(acme()))
+        .unwrap()
+        .entry;
+    let actions = net.devices[a].link.on_local_write(&wrote);
+    net.apply_device(a, actions);
+    net.pump();
+
+    // a late joiner: the grant and the event it vouches for arrive on one page
+    let registry = Arc::new(Mutex::new(GrantRegistry::new(
+        identity(100).peer_id().clone(),
+    )));
+    let link = RelayLink::new(identity(2), RelayOptions::default()).with_grants(registry.clone());
+    let b = net.add_device(link, granted_engine(2, now, &registry));
+    net.dial(b);
+    let parked: Vec<_> = net.devices[b]
+        .engine
+        .quarantine()
+        .iter()
+        .map(|p| p.verdict.tag())
+        .collect();
+    assert_eq!(parked, Vec::<&str>::new());
+    assert!(
+        net.devices[b]
+            .engine
+            .state()
+            .read_row("notes", "n1")
+            .is_some()
+    );
+    assert!(net.take_facts(b).contains(&Action::Grant(grant.clone())));
+
+    // live: a grant frame, then an event from the device it names, each in its own frame
+    let registry = Arc::new(Mutex::new(GrantRegistry::new(
+        identity(100).peer_id().clone(),
+    )));
+    let link = RelayLink::new(identity(3), RelayOptions::default()).with_grants(registry.clone());
+    let c = net.add_device(link, granted_engine(3, now, &registry));
+    let d = net.add_device(
+        RelayLink::new(identity(4), RelayOptions::default()),
+        Engine::open(
+            identity(4),
+            Box::new(MemoryEventStore::new()),
+            None,
+            EngineOptions {
+                now_ms: Some(Box::new(move || now)),
+                ..EngineOptions::default()
+            },
+        )
+        .unwrap(),
+    );
+    net.dial(c);
+    net.dial(d);
+    let actions = net.devices[d]
+        .link
+        .send_grants(vec![grant_wire(&identity(4))]);
+    net.apply_device(d, actions);
+    net.pump();
+    let wrote = net.devices[d]
+        .engine
+        .mutate("notes.create", vec![note("n2")], Some(acme()))
+        .unwrap()
+        .entry;
+    let actions = net.devices[d].link.on_local_write(&wrote);
+    net.apply_device(d, actions);
+    net.pump();
+    assert!(net.devices[c].engine.quarantine().is_empty());
+    assert!(
+        net.devices[c]
+            .engine
+            .state()
+            .read_row("notes", "n2")
+            .is_some()
+    );
+
+    // a grant this registry's issuer did not sign is said, never silently dropped
+    let foreign = issue_grant(
+        &identity(101),
+        &GrantRequest {
+            account: "acct_x".to_owned(),
+            device: identity(5).peer_id().clone(),
+            role: Some("member".to_owned()),
+            partitions: vec![acme()],
+            claims: BTreeMap::new(),
+            keys: Vec::new(),
+            valid_for_ms: 86_400_000,
+            now_ms: now,
+        },
+    );
+    net.take_facts(c);
+    let actions = net.devices[d].link.send_grants(vec![foreign.clone()]);
+    net.apply_device(d, actions);
+    net.pump();
+    let facts = net.take_facts(c);
+    assert!(
+        facts.iter().any(|f| matches!(f, Action::Dropped(why) if why.starts_with("a grant from the room was refused"))),
+        "{facts:?}"
+    );
+    assert!(facts.contains(&Action::Grant(foreign)));
 }

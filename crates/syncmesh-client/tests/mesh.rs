@@ -4,14 +4,16 @@
 #![cfg(feature = "tokio")]
 
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use syncmesh_client::driver::serve_room;
 use syncmesh_client::mesh::{Mesh, MeshEvent, MeshOptions};
 use syncmesh_client::relay::RelayOptions;
 use syncmesh_client::room::{Room, RoomOptions};
-use syncmesh_client::{EngineOptions, MemoryEventStore};
+use syncmesh_client::{EngineOptions, Manifest, MemoryEventStore, ValidatorOptions};
 use syncmesh_core::event::{Change, PartitionKey};
+use syncmesh_core::grant::{GrantRequest, issue_grant};
 use syncmesh_core::identity::Identity;
 use syncmesh_core::record::CellValue;
 use tokio::time::timeout;
@@ -222,6 +224,129 @@ async fn a_peer_sees_presence_set_before_the_link_came_up() {
     assert_eq!(peers.len(), 1, "the value set offline arrived");
     assert_eq!(peers[0].peer_id, *a.peer_id());
     assert_eq!(peers[0].value["x"], CellValue::Number(7.0));
+
+    a.stop().await;
+    b.stop().await;
+}
+
+/// The policy vectors' manifest: `notes` in an `org` partition, inserted by a `member`.
+fn vectors_manifest() -> Manifest {
+    let path: PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "..",
+        "..",
+        "conformance",
+        "policy-vectors.json",
+    ]
+    .iter()
+    .collect();
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("vectors")).expect("json");
+    Manifest::from_json(&doc["schema"]).expect("manifest")
+}
+
+fn granted_device(
+    n: u8,
+    url: &str,
+    key: &syncmesh_core::event::PeerId,
+    issuer: &Identity,
+    validator: Option<ValidatorOptions>,
+) -> Mesh {
+    Mesh::open(
+        MeshOptions {
+            identity: Identity::from_seed(&[n; 32]),
+            url: url.to_owned(),
+            relay: RelayOptions {
+                relay_key: Some(key.clone()),
+                reconnect_ms: 50,
+                ..RelayOptions::default()
+            },
+            engine: EngineOptions {
+                validator,
+                ..EngineOptions::default()
+            },
+            store: Box::new(MemoryEventStore::new()),
+            state_store: None,
+            blob_store: None,
+            issuer: Some(issuer.peer_id().clone()),
+        },
+        &tokio::runtime::Handle::current(),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_late_joiner_admits_an_event_whose_grant_came_on_the_same_page() {
+    let port = {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        probe.local_addr().unwrap().port()
+    };
+    let url = format!("ws://127.0.0.1:{port}/licnep");
+    let key = Identity::from_seed(&[9; 32]).peer_id().clone();
+    let issuer = Identity::from_seed(&[100; 32]);
+    let partition = PartitionKey::parse("org:acme").unwrap();
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+
+    // a holds its own grant before its link comes up, so it hands the room the grant on joining
+    let a = Identity::from_seed(&[1; 32]);
+    let grant = issue_grant(
+        &issuer,
+        &GrantRequest {
+            account: "acct_a".to_owned(),
+            device: a.peer_id().clone(),
+            role: Some("member".to_owned()),
+            partitions: vec![partition.clone()],
+            claims: BTreeMap::new(),
+            keys: Vec::new(),
+            valid_for_ms: 86_400_000,
+            now_ms,
+        },
+    );
+    let mut a = granted_device(1, &url, &key, &issuer, None);
+    a.grants().register(&grant, now_ms).unwrap();
+    let mut row = BTreeMap::new();
+    for (column, value) in [("id", "n1"), ("title", "t"), ("ownerId", "acct_a")] {
+        row.insert(column.to_owned(), CellValue::text(value));
+    }
+    a.mutate(
+        "notes.create",
+        vec![Change::Insert {
+            table: "notes".into(),
+            key: "n1".into(),
+            row,
+        }],
+        Some(partition.clone()),
+    )
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .unwrap();
+    serve(listener);
+    until(&mut a, |e| *e == MeshEvent::CaughtUp).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // b joins later with a granted validator: a's grant and n1 arrive on one page
+    let validator = ValidatorOptions {
+        manifest: vectors_manifest(),
+        grants: None,
+        authority: None,
+        accounts: false,
+    };
+    let mut b = granted_device(2, &url, &key, &issuer, Some(validator));
+    until(&mut b, |e| *e == MeshEvent::CaughtUp).await;
+    {
+        let engine = b.engine();
+        let parked: Vec<_> = engine
+            .quarantine()
+            .iter()
+            .map(|p| p.verdict.tag())
+            .collect();
+        assert_eq!(parked, Vec::<&str>::new());
+        assert!(engine.state().read_row("notes", "n1").is_some());
+    }
 
     a.stop().await;
     b.stop().await;

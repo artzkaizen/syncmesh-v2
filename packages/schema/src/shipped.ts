@@ -63,7 +63,8 @@ export interface EvolvingSchema {
   readonly dropped: ReadonlySet<string>;
 }
 
-const shippedColumn = (def: ColumnDef): ShippedColumn => ({
+/** One column's def as the data {@link ShippedColumn} records. */
+export const shippedColumn = (def: ColumnDef): ShippedColumn => ({
   kind: def.kind,
   nullable: def.nullable,
   primaryKey: def.primaryKey,

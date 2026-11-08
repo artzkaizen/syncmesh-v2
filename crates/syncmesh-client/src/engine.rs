@@ -7,10 +7,13 @@
 //! authored always carries its core and signature, so a forwarder never has to special-case its
 //! own writes and a log never holds an own write it cannot send.
 //!
-//! No validator yet. The TypeScript engine asks a schema-and-policy ladder before it folds; this
-//! crate folds what verifies and parks only what it has no fold for (D22-A). A policy port is a
-//! later slice, and until then a Rust device trusts the relay's room the way a TypeScript device
-//! with no schema does.
+//! With a validator ([`EngineOptions::validator`], gap U3) every event — a peer's as it arrives,
+//! and this device's own as a probe before it is numbered — goes through the TypeScript's ladder
+//! over the manifest as data, and what it refuses parks with the verdict, in the TypeScript's
+//! buckets, and is re-offered once after any batch that folds something. Without one, this crate
+//! folds what verifies and parks only what it has no fold for (D22-A) and the doc changes the
+//! declared doc columns refuse, trusting the relay's room the way a TypeScript device with no
+//! schema does.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -34,13 +37,17 @@ use crate::coverage::CoverageTracker;
 use crate::doc_log::{
     DocAppend, DocHead, DocLogEntry, DocStore, MemoryDocStore, doc_appends, record_docs,
 };
-use crate::doc_rules::{DerivedColumns, derived_refusal, doc_refusal};
+use crate::doc_rules::{DerivedColumns, derived_refusal, doc_refusal, doc_verdict};
 use crate::interest::{Interest, matches_interest};
+use crate::quarantine::{Parked, Quarantine};
 use crate::store::{
     Ahead, Coverage, Cursors, EventStore, StateStore, StoreError, StoredEvent, rows_for,
     write_keys_of,
 };
 use crate::undo::{Skipped, Undo, compensate, rows_before};
+use crate::validate::{
+    Overlay, Probe, ValidationClock, ValidationError, Validator, ValidatorOptions, unfoldable,
+};
 
 /// Where a batch came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +83,7 @@ pub struct ReceiveReport {
     pub folded: usize,
     /// Own events, duplicates within the batch, and events already stored.
     pub skipped: usize,
-    /// Parked with no fold for them; never folded, cursor stops below them (D13).
+    /// Parked with the verdict that refused them; never folded, cursor stops below them (D13).
     pub quarantined: usize,
 }
 
@@ -143,10 +150,16 @@ pub enum MutateError {
         procedure: String,
     },
     /// A doc change the declared doc columns refuse (RFC-0023 §10), or a row write naming a
-    /// document column or a derived one (§16.4).
+    /// document column or a derived one (§16.4) — what an engine with no validator still refuses.
     DocRefused {
         procedure: String,
         reason: &'static str,
+    },
+    /// The validator's ladder refused the write as a probe, before it was numbered: nothing was
+    /// stamped, appended or folded.
+    Refused {
+        procedure: String,
+        verdict: ValidationError,
     },
     Store(StoreError),
 }
@@ -159,6 +172,9 @@ impl std::fmt::Display for MutateError {
                 write!(f, "{procedure} wrote a change this build has no fold for")
             }
             MutateError::DocRefused { procedure, reason } => write!(f, "{procedure}: {reason}"),
+            MutateError::Refused { procedure, verdict } => {
+                write!(f, "{procedure}: {} ({verdict})", verdict.tag())
+            }
             MutateError::Store(e) => write!(f, "{e}"),
         }
     }
@@ -188,7 +204,8 @@ pub struct EngineOptions {
     pub max_drift_ms: Option<i64>,
     /// The wall clock, injectable for tests. Default: the system clock in epoch milliseconds.
     pub now_ms: Option<NowMs>,
-    /// Parked events kept before the oldest is dropped. Default 1000.
+    /// Parked events kept per reason before that bucket's oldest is dropped. Default 128, the
+    /// TypeScript's.
     pub quarantine_limit: usize,
     /// The mesh's doc columns and the adapter each declares (RFC-0023 §4.1): their cells join by
     /// the lineage rule, and doc changes are judged against them. `None` declares none, and the
@@ -209,6 +226,9 @@ pub struct EngineOptions {
     /// The app schema this build declares (D31): stamped on every event it writes, under key 9.
     /// A reading for the fleet, never a gate; `None` stamps nothing.
     pub schema_version: Option<SchemaVersion>,
+    /// The shared ladder over a manifest (gap U3); `None` runs none. When `docs` or `merge` is
+    /// `None`, the manifest's own are used; `docs` given is what the ladder judges by too.
+    pub validator: Option<ValidatorOptions>,
 }
 
 impl Default for EngineOptions {
@@ -217,13 +237,14 @@ impl Default for EngineOptions {
             merge: None,
             max_drift_ms: Some(DEFAULT_MAX_DRIFT_MS),
             now_ms: None,
-            quarantine_limit: 1000,
+            quarantine_limit: 128,
             docs: None,
             derived: DerivedColumns::new(),
             doc_adapters: BTreeSet::new(),
             doc_store: None,
             undo_depth: 0,
             schema_version: None,
+            validator: None,
         }
     }
 }
@@ -245,8 +266,9 @@ pub struct Engine {
     coverage: CoverageTracker,
     merge: Option<MergeSpec>,
     acks: BTreeMap<PeerId, Ack>,
-    parked: Vec<StoredEvent>,
-    quarantine_limit: usize,
+    parked: Quarantine,
+    validator: Option<Validator>,
+    max_drift_ms: Option<i64>,
     /// Empty when none were declared: the genesis rungs still run, as they do in TypeScript.
     docs: DocColumns,
     derived: DerivedColumns,
@@ -318,9 +340,20 @@ impl Engine {
             Some(s) if !s.is_empty()? => (s.load_all()?, s.load_coverage()?),
             _ => (State::new(), Coverage::default()),
         };
+        let mut validator = options.validator.map(Validator::new);
+        let docs = options
+            .docs
+            .or_else(|| validator.as_ref().map(|v| v.doc_columns().clone()));
+        // the ladder judges doc changes against the columns the fold joins, never other ones
+        if let (Some(validator), Some(docs)) = (validator.as_mut(), &docs) {
+            validator.judge_docs(docs.clone());
+        }
+        let merge = options
+            .merge
+            .or_else(|| validator.as_ref().map(|v| v.manifest().merge()));
         // a lineage cell another rule wrote is state this build cannot read (RFC-0023 §16.1): never
         // read as the root or merged by another rule, and rebuilt from the log instead
-        let refused = options.docs.as_ref().and_then(|docs| {
+        let refused = docs.as_ref().and_then(|docs| {
             let rows = state.tables.iter().flat_map(|(table, records)| {
                 records
                     .iter()
@@ -349,14 +382,15 @@ impl Engine {
             state_store,
             state,
             coverage: CoverageTracker::new(&coverage),
-            merge: match &options.docs {
-                Some(docs) => Some(with_doc_columns(options.merge.as_ref(), docs)),
-                None => options.merge,
+            merge: match &docs {
+                Some(docs) => Some(with_doc_columns(merge.as_ref(), docs)),
+                None => merge,
             },
             acks: BTreeMap::new(),
-            parked: Vec::new(),
-            quarantine_limit: options.quarantine_limit,
-            docs: options.docs.unwrap_or_default(),
+            parked: Quarantine::new(options.quarantine_limit),
+            validator,
+            max_drift_ms: options.max_drift_ms,
+            docs: docs.unwrap_or_default(),
             derived: options.derived,
             doc_adapters: options.doc_adapters,
             doc_store: options
@@ -430,6 +464,22 @@ impl Engine {
             return Err(MutateError::Unfoldable {
                 procedure: procedure.to_owned(),
             });
+        }
+        if let Some(validator) = &self.validator {
+            // a probe: not numbered and not stamped yet, which reads as "now"
+            let probe = Probe {
+                peer_id: self.identity.peer_id(),
+                partition: partition.as_ref(),
+                changes: &changes,
+                seq: None,
+                hlc: None,
+            };
+            validator
+                .validate(&probe, &self.state, Some(self.validation_clock()))
+                .map_err(|verdict| MutateError::Refused {
+                    procedure: procedure.to_owned(),
+                    verdict,
+                })?;
         }
         let hlc = self.clock.tick(self.now_ms());
         let last = self.store.last_seq(self.identity.peer_id())?;
@@ -523,7 +573,10 @@ impl Engine {
         let Some(undo) = self.undo.remove(index) else {
             unreachable!("the index was just found in the ring")
         };
-        let (changes, skipped) = compensate(&self.state, &undo, self.merge.as_ref());
+        let validator = self.validator.as_ref();
+        let retired =
+            |table: &str, column: &str| validator.is_some_and(|v| v.retired_column(table, column));
+        let (changes, skipped) = compensate(&self.state, &undo, self.merge.as_ref(), retired);
         if changes.is_empty() {
             return Ok(Reverted {
                 mutated: None,
@@ -543,18 +596,80 @@ impl Engine {
         }
     }
 
-    /// Folds entries once each; already-stored events are skipped, and events this build has no
-    /// fold for are parked with the author's cursor stopped below them.
+    /// What a verdict is reached under: this device's clock and the drift bound it folds by.
+    fn validation_clock(&self) -> ValidationClock {
+        ValidationClock {
+            now_ms: self.now_ms(),
+            max_drift_ms: self.max_drift_ms,
+        }
+    }
+
+    /// Folds entries once each; already-stored events are skipped, and events the ladder refuses
+    /// (or, with no validator, that this build has no fold for) are parked with their verdict and
+    /// the author's cursor stopped below them.
+    ///
+    /// Each event is judged against what the device holds and what the batch already admitted
+    /// before it, so an update is judged with the insert beside it. After a batch that folds
+    /// anything, every `refused` event parked is re-offered once (`withRetry`): the row it needed
+    /// may just have landed.
     ///
     /// An event of this device's own author that the log does not hold is taken like anyone
     /// else's (G7): it verified under this device's key, so it is a write this device made and
     /// then lost — a log deleted and rebuilt under a key that outlived it. Skipping it would
     /// leave the device without its own history and numbering its next write over it.
     pub fn receive_batch(&mut self, entries: Vec<StoredEvent>) -> Result<Received, StoreError> {
+        let received = self.admit(entries)?;
+        if received.report.folded == 0 || self.parked.is_empty() {
+            return Ok(received);
+        }
+        let (retry, kept): (Vec<Parked>, Vec<Parked>) = self
+            .parked
+            .take()
+            .into_iter()
+            .partition(|p| p.reason.cleared_by_state());
+        // back first, so a store emptied by `take` is whole again before anything can fail
+        for parked in kept {
+            self.parked.park(parked);
+        }
+        if retry.is_empty() {
+            return Ok(received);
+        }
+        let entries = retry.iter().map(|p| p.entry.clone()).collect();
+        let again = match self.admit(entries) {
+            Ok(again) => again,
+            Err(_) => {
+                for parked in retry {
+                    self.parked.park(parked);
+                }
+                return Ok(received);
+            }
+        };
+        // `folded` grows because those events landed on this call; `quarantined` and `skipped`
+        // stay the batch's own, since the retry re-offers what an earlier call already counted
+        let mut batch = received.batch;
+        batch.event_count += again.batch.event_count;
+        for (table, keys) in again.batch.write_keys {
+            batch.write_keys.entry(table).or_default().extend(keys);
+        }
+        batch.docs.extend(again.batch.docs);
+        Ok(Received {
+            report: ReceiveReport {
+                folded: received.report.folded + again.report.folded,
+                ..received.report
+            },
+            batch,
+        })
+    }
+
+    /// One pass of the admission path: dedup, judge, park, append and fold.
+    fn admit(&mut self, entries: Vec<StoredEvent>) -> Result<Received, StoreError> {
         let total = entries.len();
+        let clock = self.validation_clock();
         let mut fresh: Vec<StoredEvent> = Vec::new();
+        let mut refused: Vec<Parked> = Vec::new();
         let mut seen: BTreeSet<String> = BTreeSet::new();
-        let mut quarantined = 0;
+        let mut own_floor = self.own_floor;
+        let mut overlay = Overlay::new(&self.state);
         for entry in entries {
             let id = entry.id();
             if !seen.insert(id.clone()) {
@@ -568,20 +683,32 @@ impl Engine {
                     // an own event nobody signed cannot be one this device wrote and sent
                     continue;
                 }
-                self.own_floor = self.own_floor.max(entry.event.seq_num.get());
+                own_floor = own_floor.max(entry.event.seq_num.get());
             }
-            if entry
-                .event
-                .changes
-                .iter()
-                .any(|c| matches!(c, Change::Unknown { .. }))
-                || doc_refusal(&entry.event, &self.docs).is_some()
-            {
-                quarantined += 1;
-                self.park(entry);
-                continue;
+            let verdict = match &self.validator {
+                Some(validator) => unfoldable(&entry.event).or_else(|| {
+                    validator
+                        .validate(&Probe::event(&entry.event), &overlay, Some(clock))
+                        .err()
+                }),
+                None => doc_verdict(&entry.event, &self.docs),
+            };
+            match verdict {
+                Some(verdict) => refused.push(Parked {
+                    reason: verdict.reason(),
+                    verdict,
+                    entry,
+                }),
+                None => {
+                    overlay.took(&entry.event);
+                    fresh.push(entry);
+                }
             }
-            fresh.push(entry);
+        }
+        self.own_floor = own_floor;
+        let quarantined = refused.len();
+        for parked in refused {
+            self.parked.park(parked);
         }
         let now = self.now_ms();
         for entry in &fresh {
@@ -604,26 +731,22 @@ impl Engine {
         self.receive_batch(vec![entry])
     }
 
-    fn park(&mut self, entry: StoredEvent) {
-        if self.parked.iter().any(|p| p.id() == entry.id()) {
-            return;
-        }
-        self.parked.push(entry);
-        if self.parked.len() > self.quarantine_limit {
-            self.parked.remove(0);
-        }
-    }
-
-    /// The events this build could not take, with the bytes they arrived as (D13).
-    pub fn quarantine(&self) -> &[StoredEvent] {
-        &self.parked
+    /// The events this build would not take, with the bytes they arrived as and the verdict it
+    /// reached (D13), bucket by bucket.
+    pub fn quarantine(&self) -> Vec<&Parked> {
+        self.parked.list().collect()
     }
 
     /// Re-offers every parked event to the ordinary receive path — what an app calls after an
-    /// update. What the build still cannot fold is parked again.
+    /// update. What the build still cannot take is parked again.
     pub fn retry_quarantined(&mut self) -> Result<Received, StoreError> {
-        let parked = std::mem::take(&mut self.parked);
-        self.receive_batch(parked)
+        let parked = self.parked.take();
+        let entries = parked.iter().map(|p| p.entry.clone()).collect();
+        self.receive_batch(entries).inspect_err(|_| {
+            for p in parked {
+                self.parked.park(p);
+            }
+        })
     }
 
     fn fold(&mut self, entries: &[StoredEvent], source: FoldSource) -> FoldBatch {
@@ -712,7 +835,7 @@ impl Engine {
     /// below one. What a receiver walks an author's run with.
     pub fn holding(&self) -> Ahead {
         let mut merged = self.coverage.ahead();
-        for entry in &self.parked {
+        for Parked { entry, .. } in self.parked.list() {
             merged
                 .entry(entry.event.peer_id.clone())
                 .or_default()
@@ -769,6 +892,11 @@ impl Engine {
     /// Records what `peer` holds, as of `at_ms`; links call it on every cursor exchange.
     pub fn acknowledge(&mut self, peer: PeerId, cursors: Cursors, at_ms: i64) {
         self.acks.insert(peer, Ack { cursors, at_ms });
+    }
+
+    /// The ladder this engine judges every event by; `None` when it runs none.
+    pub fn validator(&self) -> Option<&Validator> {
+        self.validator.as_ref()
     }
 
     /// What this build declares (D31): stamped on its own events and sent on its cursors frames.
