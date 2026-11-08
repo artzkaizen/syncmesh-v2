@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 import { boundaryDriver, notes, notesSchema, writer as device } from "./crash-fixture.js";
 
 /**
@@ -41,7 +42,12 @@ const notesWithTitleSchema = () =>
   });
 
 const open = (dataDir: string, schema = notesSchema()) =>
-  createMesh({ schema, identity: device, authority: device.peerId, dataDir });
+  createMesh({
+    schema,
+    identity: device,
+    storage: sqlite({ dir: dataDir }),
+    trust: { authority: device.peerId },
+  });
 
 /** Runs the writer until it has printed `atLeast` committed rows, then kills it outright. */
 const writeThenKill = async (dataDir: string, atLeast: number): Promise<number> => {
@@ -125,9 +131,8 @@ describe("what a crash may not cost", () => {
           await createMesh({
             schema: notesSchema(),
             identity: device,
-            authority: device.peerId,
-            dataDir,
-            driver,
+            storage: sqlite({ driver }),
+            trust: { authority: device.peerId },
           })
         ).unwrap();
         const count = async (sql: string) => Number((await driver.all(sql))[0]?.[0]);

@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const todos = sqliteTable("todos", { id: text().primaryKey(), title: text().notNull() });
 const org = partition("org", { roles: ladder("member") });
@@ -30,11 +31,11 @@ const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const granted = async (device: typeof deviceA) => {
   const mesh = (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: device,
-      issuer: issuer.peerId,
       now: () => T0,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { issuer: issuer.peerId },
     })
   ).unwrap();
   for (const [d, account] of [

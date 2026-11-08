@@ -1,4 +1,4 @@
-import { createMesh } from "@syncmesh/client";
+import { createServer, sqlite } from "@syncmesh/orpc";
 import { relayTransport, startRelay, webSocketDial } from "@syncmesh/relay";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import {
@@ -33,8 +33,8 @@ export interface BackendOptions {
 
 /**
  * Shape A in one call (D09-A, API.md §14-A): `startRelay()` serves the room, and
- * `createMesh({ store, stateStore })` is the server peer that folds what devices write into the
- * app's own `notes` table. What `server.ts` runs, and what the example's test drives.
+ * `createServer({ storage: sqlite({ store, stateStore }) })` is the server peer that folds what
+ * devices write into the app's own `notes` table. What `server.ts` runs, and what the example's test drives.
  */
 export async function openBackend(options: BackendOptions) {
   const { dataDir } = options;
@@ -73,37 +73,34 @@ export async function openBackend(options: BackendOptions) {
   ).unwrap();
 
   const identity = serverIdentity();
-  const server = (
-    await createMesh({
-      schema,
-      identity,
-      // this process is the room's root of trust: it holds the issuer key and answers grant requests
-      issuer: identity.peerId,
-      issuerKey: identity,
-      store,
-      stateStore,
-      transports: [relayTransport({ dial: webSocketDial(dialing) })],
-      // flow A: an ungranted device asked the room to exist. A real approval screen goes here —
-      // the invite is the only thing binding this request to someone who was actually invited.
-      onGrantRequest: ({ peerId, invite }) => {
-        if (invite !== INVITE) {
-          options.onGrant?.(`refused ${peerId.slice(0, 8)}: wrong invite`);
-          return;
-        }
-        const wire = server.grants.issue({
-          account: `acct_${peerId.slice(0, 8)}`,
-          device: peerId,
-          role: "member",
-          partitions: [INSTANCE],
-          validFor: Temporal.Duration.from({ days: 1 }),
-        });
-        options.onGrant?.(
-          wire.isOk() ? `granted ${peerId.slice(0, 8)}` : `refused: ${wire.error.message}`,
-        );
-      },
-    })
-  ).unwrap();
-  await server.ready();
+  // no procedures and no handlers: this server peer only folds and grants; the app's API is below
+  const server = await createServer({
+    schema,
+    identity,
+    storage: sqlite({ store, stateStore }),
+    // this process is the room's root of trust: it holds the issuer key and answers grant requests
+    trust: { issuer: identity.peerId, issuerKey: identity },
+    transports: [relayTransport({ dial: webSocketDial(dialing) })],
+    // flow A: an ungranted device asked the room to exist. A real approval screen goes here —
+    // the invite is the only thing binding this request to someone who was actually invited.
+    admission: ({ peerId, invite }) => {
+      if (invite !== INVITE) {
+        options.onGrant?.(`refused ${peerId.slice(0, 8)}: wrong invite`);
+        return;
+      }
+      const wire = server.$grants.issue({
+        account: `acct_${peerId.slice(0, 8)}`,
+        device: peerId,
+        role: "member",
+        partitions: [INSTANCE],
+        validFor: Temporal.Duration.from({ days: 1 }),
+      });
+      options.onGrant?.(
+        wire.isOk() ? `granted ${peerId.slice(0, 8)}` : `refused: ${wire.error.message}`,
+      );
+    },
+  });
+  await server.mesh.ready();
 
   return {
     db,

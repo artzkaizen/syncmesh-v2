@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const org = partition("org", { roles: ladder("member") });
 const schema = () =>
@@ -42,9 +43,9 @@ const open = (dataDir: string, now = T0) =>
   createMesh({
     schema: schema(),
     identity: DEVICE,
-    issuer: ISSUER.peerId,
-    dataDir,
     now: () => now,
+    storage: sqlite({ dir: dataDir }),
+    trust: { issuer: ISSUER.peerId },
   });
 
 const HOUR = Temporal.Duration.from({ hours: 1 });

@@ -231,8 +231,9 @@ export interface ApiMesh<PC extends PresenceMap = Record<string, never>> {
  * that bound it had to rebuild the api to change shop, and two shops meant two of everything.
  *
  * @example
- * const mesh = (await createMesh({ … })).unwrap();
- * export const api = meshApi(mesh, { books });
+ * const client = createClient({ schema, storage });
+ * await client.$ready; // `$mesh` throws until the mesh has opened
+ * export const api = meshApi(client.$mesh, { books });
  * api.books.list({ shopId });   // the scope rides here, and nowhere else
  */
 export function meshApi<R extends Router, PC extends PresenceMap = Record<string, never>>(

@@ -36,7 +36,7 @@ export interface MeshTelemetrySeam {
    */
   readonly onTelemetry: (listener: (event: MeshTelemetry) => void) => Unsubscribe;
   /**
-   * Wraps the transports on their way into `createMesh`, which is where the mesh's own costs
+   * Wraps the transports on their way into the mesh (`createClient({ transports })`), which is where the mesh's own costs
    * are: starting a medium, waiting out its first pass, pushing bytes down it. The wrappers are
    * transparent — same promises, same rejections, the same optional capabilities present or
    * absent, the same `priority` — so nearest-first settling (RFC-0019) is unchanged.

@@ -4,6 +4,7 @@
  * reaches SQLite. With `k` 0 it never dies and prints how many statements the write took.
  */
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 import { boundaryDriver, notes, notesSchema, writer as device } from "./crash-fixture.js";
 
 const [dataDir, at] = process.argv.slice(2);
@@ -26,9 +27,8 @@ const mesh = (
   await createMesh({
     schema: notesSchema(),
     identity: device,
-    authority: device.peerId,
-    dataDir,
-    driver: boundaryDriver(dataDir, step),
+    storage: sqlite({ driver: boundaryDriver(dataDir, step) }),
+    trust: { authority: device.peerId },
   })
 ).unwrap();
 const handle = mesh.on().unwrap();

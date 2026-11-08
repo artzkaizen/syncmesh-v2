@@ -24,6 +24,7 @@ import { join } from "node:path";
 import type { MeshGrants } from "../grants.js";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- test fixtures in their documented forms */
@@ -73,12 +74,11 @@ const registerAll = (mesh: { readonly grants: Pick<MeshGrants, "register"> }) =>
 const soloMesh = async (extra: { readonly authority?: PeerId } = {}) => {
   const mesh = (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: deviceA,
-      issuer: issuer.peerId,
       now: () => T0,
-      ...extra,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { issuer: issuer.peerId, ...extra },
     })
   ).unwrap();
   registerAll(mesh);
@@ -100,11 +100,11 @@ describe("the write ledger", () => {
     const open = async (device: typeof deviceA) => {
       const mesh = (
         await createMesh({
-          driver: bunSqliteDriver(":memory:"),
           schema: schema(),
           identity: device,
-          issuer: issuer.peerId,
           now: () => T0,
+          storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+          trust: { issuer: issuer.peerId },
         })
       ).unwrap();
       registerAll(mesh);
@@ -139,11 +139,11 @@ describe("the write ledger", () => {
     const open = async (device: typeof deviceA) => {
       const mesh = (
         await createMesh({
-          driver: bunSqliteDriver(":memory:"),
           schema: schema(),
           identity: device,
-          issuer: issuer.peerId,
           now: () => T0,
+          storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+          trust: { issuer: issuer.peerId },
         })
       ).unwrap();
       registerAll(mesh);
@@ -172,12 +172,12 @@ describe("the write ledger", () => {
     const open = async (device: typeof deviceA, name: string, link: typeof sideA) => {
       const mesh = (
         await createMesh({
-          driver: bunSqliteDriver(":memory:"),
           schema: schema(),
           identity: device,
-          issuer: issuer.peerId,
           now: () => T0,
           transports: [linkTransport(name, () => link)],
+          storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+          trust: { issuer: issuer.peerId },
         })
       ).unwrap();
       registerAll(mesh);
@@ -240,12 +240,12 @@ describe("the write ledger", () => {
     ) =>
       (
         await createMesh({
-          driver: bunSqliteDriver(":memory:"),
           schema: schema(),
           identity: device,
-          issuer: issuer.peerId,
           now: () => now,
           transports: [linkTransport(name, () => link)],
+          storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+          trust: { issuer: issuer.peerId },
         })
       ).unwrap();
     const a = await open(deviceA, "loopback:a", sideA, T0);
@@ -380,11 +380,11 @@ describe("the write ledger", () => {
       const stores = (await defaultStore({ name: "ops", dir, tables })).unwrap();
       const mesh = (
         await createMesh({
-          stores,
           schema: schema(),
           identity: deviceA,
-          issuer: issuer.peerId,
           now: () => T0,
+          storage: sqlite({ stores }),
+          trust: { issuer: issuer.peerId },
         })
       ).unwrap();
       registerAll(mesh);

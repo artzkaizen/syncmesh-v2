@@ -1,4 +1,5 @@
-import { createMesh } from "@syncmesh/client";
+import { sqlite } from "@syncmesh/client";
+import { createMesh } from "@syncmesh/client/internal";
 import { Result } from "@syncmesh/result";
 import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
@@ -81,9 +82,9 @@ const open = async (role: string | undefined) => {
     await createMesh({
       schema,
       identity: device,
-      issuer: issuer.peerId,
-      driver: bunSqliteDriver(":memory:"),
       now: () => T0,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { issuer: issuer.peerId },
     })
   ).unwrap();
   if (role !== undefined) {

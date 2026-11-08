@@ -86,7 +86,7 @@ export interface DevtoolsControls {
    * Parking rather than removing, because a removed transport is an instance the devtool would
    * have to reconstruct to put back — and a transport the devtool built is one the app never
    * configured. What comes back from {@link DevtoolsControls.release} is the object the host
-   * passed to `createMesh`, started again through the same door `$transports.add` uses, which is
+   * passed in `createClient({ transports })`, started again through the same door `$transports.add` uses, which is
    * how a released medium lands in a state the device could have reached on its own.
    */
   readonly force: (name: string, as: TransportCondition) => Promise<Result<void, ControlRefused>>;

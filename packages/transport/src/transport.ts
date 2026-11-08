@@ -24,7 +24,10 @@ import { bridgeFramedLink } from "./bridge.js";
 import { reportingUpgrader } from "./link-events.js";
 import { createUpgrader } from "./upgrade.js";
 
-/** Everything a transport needs to run sessions; `createMesh({ transports })` supplies it. */
+/**
+ * Everything a transport needs to run sessions; the mesh under `createClient({ transports })`
+ * supplies it (`createMesh`, `@syncmesh/client/internal`).
+ */
 export interface TransportContext {
   readonly engine: Engine;
   readonly identity: Identity;
@@ -113,7 +116,8 @@ export interface TransportContext {
   readonly admits?: (ask: AdmissionAsk) => Promise<boolean>;
   /**
    * The authority-visibility tables (D24), which no peer-to-peer link carries: their rows reach a
-   * device only through the authority's gate. `createMesh` fills it from the manifest.
+   * device only through the authority's gate. `createMesh` (`@syncmesh/client/internal`) fills it
+   * from the manifest.
    */
   readonly withheld?: BridgeOptions["withheld"];
   /**

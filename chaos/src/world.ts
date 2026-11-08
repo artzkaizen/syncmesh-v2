@@ -3,10 +3,11 @@ import type { Transport } from "@syncmesh/transport";
 
 import { bleTransport } from "@syncmesh/ble";
 import { virtualAir, type VirtualAir } from "@syncmesh/ble/testing";
-import { createMesh } from "@syncmesh/client";
+import { sqlite } from "@syncmesh/client";
+import { createMesh } from "@syncmesh/client/internal";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { relayTransport, startRelay } from "@syncmesh/relay";
-import { panic } from "@syncmesh/result";
+import { omitUndefined, panic } from "@syncmesh/result";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
@@ -200,16 +201,20 @@ export async function createWorld(options: WorldOptions) {
         );
 
       const driver = bunSqliteDriver(`${dir}/${name}.db`);
-      const meshOptions = {
-        schema: chaosSchema(),
-        identity,
-        issuer: issuer.peerId,
-        driver,
-        transports,
-      };
       // only the issuer's own device can mint, and only under `grants: "fault"` is it a device
-      if (identity === issuer) Object.assign(meshOptions, { issuerKey: issuer });
-      const mesh = (await createMesh(meshOptions)).unwrap();
+      const trust = omitUndefined({
+        issuer: issuer.peerId,
+        issuerKey: identity === issuer ? issuer : undefined,
+      });
+      const mesh = (
+        await createMesh({
+          schema: chaosSchema(),
+          identity,
+          storage: sqlite({ driver }),
+          trust,
+          transports,
+        })
+      ).unwrap();
 
       // what each medium says about its own links — a refusal at the door, a session replaced
       mesh.transports.onLinkEvent((event) =>

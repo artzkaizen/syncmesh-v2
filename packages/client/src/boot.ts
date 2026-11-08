@@ -96,7 +96,7 @@ export interface Booted {
 
 /**
  * The durable store this platform has — one SQLite file per identity under `dir` — or
- * `NoDefaultStore` where there is none yet: pass `store` there, memory included.
+ * `NoDefaultStore` where there is none yet: pass `storage: sqlite({ store })` there, memory included.
  */
 async function defaultStores(
   dir: string,
@@ -114,7 +114,7 @@ async function defaultStores(
   return Result.err(
     new NoDefaultStore({
       message:
-        "no durable store on this platform yet (E04): pass `store` — `createMemoryEventStore()` to opt into memory",
+        "no durable store on this platform yet (E04): pass `storage: sqlite({ store })` — `createMemoryEventStore()` to opt into memory",
     }),
   );
 }
@@ -226,11 +226,11 @@ function engineSettings(
 export function openMeshEngine(options: BootOptions): Promise<Result<Booted, MeshOpenError>> {
   const { schema } = options;
   if (options.store === undefined && options.stateStore !== undefined)
-    panic("stateStore caches a log it was not given: pass `store` alongside it");
+    panic("storage.stateStore caches a log it was not given: pass `storage.store` alongside it");
   if (options.store !== undefined && options.driver !== undefined)
-    panic("`store` and `driver` name two homes for one log: pass one");
+    panic("`storage.store` and `storage.driver` name two homes for one log: pass one");
   if (options.stores !== undefined && (options.store ?? options.driver) !== undefined)
-    panic("`stores` is already a log and a connection: pass it alone");
+    panic("`storage.stores` is already a log and a connection: pass it alone");
   return Result.gen(async function* () {
     const tables = syncedTables(schema);
     const owned = yield* Result.await(resolveStores(options, tables));

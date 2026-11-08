@@ -33,7 +33,7 @@ export interface MeshAccounts {
    *
    * Only the device being claimed may write it — the account's signature is in the row, the
    * device's is the event — so there is nobody to register with and nothing to await. Panics
-   * unless `createMesh` was given `accountKey`.
+   * unless `createClient` was given `trust.accountKey`.
    */
   readonly link: (instance: string) => Promise<Result<SyncEvent, AccountWriteError>>;
   /**
@@ -49,7 +49,7 @@ export interface MeshAccounts {
 }
 
 /**
- * The shipped half, read off `MeshOptions` unchanged. `issuer` decides the arm, not a separate
+ * The shipped half, read off `MeshOptions.trust` unchanged. `issuer` decides the arm, not a separate
  * flag: it is the same test `validatorSettings` makes when it passes `grantFor: null`, and two tests
  * for one question is how `can` and `validate` drift apart.
  */
@@ -146,7 +146,9 @@ export function openAccounts(config: AccountsConfig, deps: AccountsDeps) {
     // outside the generator: a mesh with no account key was configured wrong, not asked wrongly
     const account =
       accountKey ??
-      panic("createMesh was not given accountKey; only the account itself can vouch for a device");
+      panic(
+        "createClient was not given `trust.accountKey`; only the account itself can vouch for a device",
+      );
     return Result.gen(async function* () {
       const partition = yield* parsePartitionKey(instance);
       const link = { account, device, partition, at: now() };

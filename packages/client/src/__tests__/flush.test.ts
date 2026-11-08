@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test";
 
 import { settleAll } from "../flush.js";
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const org = partition("org", { roles: ladder("member") });
 const schema = () =>
@@ -49,11 +50,11 @@ const held = (name: string) => {
 const open = async (transports: readonly Transport[]) =>
   (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: DEVICE,
       now: () => T0,
       transports,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     })
   ).unwrap();
 

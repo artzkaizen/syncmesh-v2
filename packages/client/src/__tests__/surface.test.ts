@@ -8,6 +8,7 @@ import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 /**
  * The two read-only members a diagnostic surface needs, and the one feed it subscribes to
@@ -45,11 +46,11 @@ const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const open = async (transports: readonly Transport[] = []) =>
   (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: device,
       now: () => T0,
       transports,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     })
   ).unwrap();
 
@@ -111,8 +112,8 @@ describe("mesh.query — the door that cannot write", () => {
       await createMesh({
         schema: schema(),
         identity: device,
-        store: createMemoryEventStore(),
         now: () => T0,
+        storage: sqlite({ store: createMemoryEventStore() }),
       })
     ).unwrap();
 

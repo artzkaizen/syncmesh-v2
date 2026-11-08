@@ -1,4 +1,5 @@
-import { createMesh } from "@syncmesh/client";
+import { sqlite } from "@syncmesh/client";
+import { createMesh } from "@syncmesh/client/internal";
 import { tableDigests } from "@syncmesh/engine";
 import { seed } from "@syncmesh/kernel/test-fixtures";
 import { relayTransport, webSocketDial } from "@syncmesh/relay";
@@ -45,11 +46,11 @@ const until = async (check: () => Promise<boolean>, ms = 5000): Promise<boolean>
 const device = async (url: string, n: number) =>
   (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: createIdentity(seed(n)).unwrap(),
       now: () => T0,
       transports: [relayTransport({ dial: webSocketDial(url), reconnectMs: 20 })],
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     })
   ).unwrap();
 

@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
 const schema = () =>
@@ -45,10 +46,9 @@ const meshOver = async (dir: string, set: ReturnType<typeof setIn>["set"], scope
     await createMesh({
       schema: schema(),
       identity: device,
-      authority: device.peerId,
-      stores,
-      dataDir: dir,
       now: () => T0,
+      storage: sqlite({ stores, dir }),
+      trust: { authority: device.peerId },
     })
   ).unwrap();
 };

@@ -19,7 +19,6 @@ const fanout = await fanoutConnection(url);
 const server = await createServer({
   // the manifest's partition half is all a pure-custody node reads: it holds rooms, not rows
   schema: roundsSchema(),
-  procedures: {},
   storage: sqlite({ driver: bunSqliteDriver(`${dataDir}/node.db`) }),
   custody: {
     port,
