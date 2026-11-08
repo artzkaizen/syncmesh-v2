@@ -409,6 +409,30 @@ describe("only an answer is taken (D46, gaps U20)", () => {
       far.bridge.close();
     });
 
+  test("a page numbered past the manifest's count is no page: the set waits for the real one (U35)", async () => {
+    const victim = peer(80, "acct_y");
+    const author = peer(40, "acct_x");
+    for (const k of ["n1", "n2"]) (await write(author, k, k)).unwrap();
+    const rows = author.engine.snapshot().rows;
+    const far = rawFarSide(victim);
+    await far.settle();
+    far.bridge.requestSnapshot(undefined, true);
+    await far.settle();
+    // SAFETY: test fixture; the author wrote two events
+    const at = new Map([[author.identity.peerId, 2 as SeqNum]]);
+    far.send(snapManifestFrame("x:1", 2, rows.length, at));
+    far.send(snapChunkFrame("x:1", 0, encodeSnapshotRows(rows.slice(0, 1))));
+    far.send(snapChunkFrame("x:1", 7, encodeSnapshotRows(rows.slice(1))));
+    await far.settle();
+    expect(far.installed).toEqual([]);
+    expect(victim.engine.coverage().synced.get(author.identity.peerId)).toBeUndefined();
+
+    far.send(snapChunkFrame("x:1", 1, encodeSnapshotRows(rows.slice(1))));
+    await far.settle();
+    expect(far.installed).toEqual([{ rows: 2, provisional: true }]);
+    far.bridge.close();
+  });
+
   test("two requests overlapping on one bridge each install under their own policy", async () => {
     const holder = peer(40, "acct_x");
     const joiner = peer(80, "acct_y");

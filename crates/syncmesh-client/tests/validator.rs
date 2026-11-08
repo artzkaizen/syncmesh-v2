@@ -8,16 +8,18 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use syncmesh_client::{
     Engine, EngineOptions, GrantRegistry, GrantSource, Manifest, MemoryEventStore, MutateError,
     ValidationError, ValidatorOptions,
 };
+use syncmesh_core::account::{AccountCore, LinkOp, encode_account_core, sign_link};
 use syncmesh_core::doc::{DocChange, DocUpdate};
-use syncmesh_core::event::{Change, PartitionKey, PeerId};
+use syncmesh_core::event::{AccountId, Change, PartitionKey, PeerId};
 use syncmesh_core::grant::Grant;
-use syncmesh_core::hex::from_hex;
+use syncmesh_core::hex::{from_hex, to_hex};
 use syncmesh_core::identity::Identity;
-use syncmesh_core::record::{CellValue, Row};
+use syncmesh_core::record::{CellValue, JsonValue, Row};
 
 /// The vectors' file: its manifest and grants are the fixtures, declared once there.
 fn vectors() -> Value {
@@ -317,7 +319,7 @@ fn a_manifest_that_does_not_read_is_a_value() {
         manifest.doc_columns()["notes"],
         BTreeMap::from([("content".to_owned(), "loro@1".to_owned())])
     );
-    assert_eq!(manifest.checked_columns().len(), 4);
+    assert_eq!(manifest.checked_columns().len(), 6);
     // a check schema this build cannot compile is a manifest it cannot read
     let mut doc = vectors()["schema"].clone();
     doc["tables"]["checked"]["columns"]["qty"]["checkSchema"] = serde_json::json!({ "type": 3 });
@@ -568,4 +570,126 @@ fn can_answers_for_this_device_by_its_own_grant_and_the_rows_it_holds() {
     )
     .unwrap();
     assert!(!bare.can("notes.read", None, None));
+}
+
+/// An ungranted accounts mesh, with `authority` the one peer that may publish `_policy`.
+fn linked_device(who: u8, authority: &Identity) -> Engine {
+    let doc = vectors();
+    let now = doc["nowMs"].as_i64().expect("now");
+    let mut options = ValidatorOptions::new(Manifest::from_json(&doc["schema"]).expect("manifest"));
+    options.accounts = true;
+    options.authority = Some(authority.peer_id().clone());
+    Engine::open(
+        identity(who),
+        Box::new(MemoryEventStore::new()),
+        None,
+        EngineOptions {
+            now_ms: Some(Box::new(move || now)),
+            validator: Some(options),
+            ..EngineOptions::default()
+        },
+    )
+    .expect("open")
+}
+
+/// The `_links` row `account` signs for `device` in `instance`, as `linkDevice` writes it.
+fn link(account: &Identity, device: &PeerId, instance: &str) -> Change {
+    let partition = PartitionKey::parse(instance).expect("partition");
+    let core = AccountCore {
+        op: LinkOp::Link,
+        account: AccountId::parse(account.peer_id().as_str()).expect("account"),
+        device: device.clone(),
+        partition: partition.clone(),
+        at_ms: vectors()["nowMs"].as_i64().expect("now") - 1,
+    };
+    let wire = sign_link(account, &core);
+    let key = format!(
+        "{}:{}:{}",
+        partition.as_str(),
+        device.as_str(),
+        to_hex(&Sha256::digest(encode_account_core(&core)))
+    );
+    Change::Insert {
+        table: "_links".into(),
+        key: key.clone(),
+        row: row(&[
+            ("id", CellValue::Text(key)),
+            ("account", CellValue::text(account.peer_id().as_str())),
+            ("kind", CellValue::Number(0.0)),
+            ("at", CellValue::Number(core.at_ms as f64)),
+            ("wire", CellValue::Bytes(wire)),
+        ]),
+    }
+}
+
+#[test]
+fn can_with_no_instance_named_asks_as_the_account_every_link_agrees_on() {
+    let (account, authority) = (identity(7), identity(11));
+    let mut device = linked_device(MEMBER, &authority);
+    let peer = device.peer_id().clone();
+    let profile = row(&[
+        ("id", CellValue::text("me")),
+        ("name", CellValue::text("m")),
+    ]);
+    // nobody yet: no link, no principal
+    assert!(!device.can("settings.read", None, None));
+    device
+        .mutate("link", vec![link(&account, &peer, "org:acme")], acme())
+        .expect("the device carries its own link");
+    // the account a link names answers for any instance, and a user table is the account's own
+    assert!(device.can("settings.read", None, None));
+    assert!(device.can("profiles.insert", Some(&profile), None));
+
+    // the authority's rules for the account's own instance answer, not the manifest's
+    let mine = format!("user:{}", account.peer_id().as_str());
+    let now = vectors()["nowMs"].as_i64().expect("now");
+    let mut publisher = Engine::open(
+        authority,
+        Box::new(MemoryEventStore::new()),
+        None,
+        EngineOptions {
+            now_ms: Some(Box::new(move || now)),
+            ..EngineOptions::default()
+        },
+    )
+    .expect("open");
+    let object = |pairs: Vec<(&str, JsonValue)>| {
+        JsonValue::Object(pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
+    };
+    let lead = object(vec![
+        ("kind", JsonValue::Text("role".into())),
+        ("role", JsonValue::Text("lead".into())),
+    ]);
+    let rules = CellValue::from(object(vec![("profiles", object(vec![("$default", lead)]))]));
+    let published = publisher
+        .mutate(
+            "policy",
+            vec![Change::Insert {
+                table: "_policy".into(),
+                key: mine.clone(),
+                row: row(&[
+                    ("id", CellValue::text(&mine)),
+                    ("rules", rules),
+                    ("version", CellValue::Number(1.0)),
+                    ("grace", CellValue::Null),
+                ]),
+            }],
+            Some(PartitionKey::parse(&mine).expect("partition")),
+        )
+        .expect("publish");
+    let folded = device.receive(published.entry).expect("receive");
+    assert_eq!(folded.report.folded, 1, "{:?}", device.quarantine());
+    assert!(!device.can("profiles.insert", Some(&profile), None));
+
+    // a second account in another instance: with no instance named, there is no one answer
+    let other = identity(13);
+    device
+        .mutate(
+            "link",
+            vec![link(&other, &peer, "org:beta")],
+            Some(PartitionKey::parse("org:beta").unwrap()),
+        )
+        .expect("a second link");
+    assert!(!device.can("settings.read", None, None));
+    assert!(device.can("settings.read", None, Some("org:beta")));
 }

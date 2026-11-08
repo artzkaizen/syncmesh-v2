@@ -215,6 +215,9 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
     const held = incoming.get(frame.id);
     // a page for an exchange we were never told about: the manifest is what says it is coming
     if (held === undefined) return;
+    // a page past the manifest's count is no page of it: counted, it would complete the set
+    // with a real page still missing (gaps U35)
+    if (frame.index >= held.chunks) return;
     const rows = decodeSnapshotRows(frame.bytes);
     // an unreadable page is a missing page — the ack names it and the sender sends it again
     if (rows.isOk()) held.pages.set(frame.index, rows.value);

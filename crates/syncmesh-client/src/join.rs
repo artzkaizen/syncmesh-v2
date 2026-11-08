@@ -158,6 +158,11 @@ pub struct JoinExchange {
 }
 
 impl JoinExchange {
+    /// Whether this exchange names a `trust`, so a certificate could vouch for what it installs.
+    pub fn trusts(&self) -> bool {
+        self.options.trust.is_some()
+    }
+
     pub fn new(options: JoinOptions) -> JoinExchange {
         JoinExchange {
             options,

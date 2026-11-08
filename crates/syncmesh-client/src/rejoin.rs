@@ -402,24 +402,25 @@ pub struct PeerJoin {
     session: SessionId,
     /// The slice this link syncs: a device that joined with an interest asks with it.
     interest: Option<Interest>,
-    /// The mesh set `trust`.
-    trusted: bool,
 }
 
 impl PeerJoin {
-    /// A session over `exchange`, recorded in `rejoins`. `trusted` is whether the mesh set `trust`
-    /// (the exchange's own `JoinOptions::trust`).
+    /// A session over `exchange`, recorded in `rejoins`. Whether the device asks at once below a
+    /// floor is the exchange's own `JoinOptions::trust`: set, a certificate could vouch for the
+    /// answer.
+    ///
+    /// **Call [`PeerJoin::close`] when the link ends.** A dropped `PeerJoin` leaves its open
+    /// requests in `rejoins` for good, and every later session then reads that floor as asked by
+    /// another link and never asks it again.
     pub fn open(
         rejoins: &mut Rejoins,
         exchange: JoinExchange,
         interest: Option<Interest>,
-        trusted: bool,
     ) -> PeerJoin {
         PeerJoin {
             exchange,
             session: rejoins.open(),
             interest,
-            trusted,
         }
     }
 
@@ -442,7 +443,7 @@ impl PeerJoin {
         let context = SessionContext {
             own: engine.peer_id(),
             ours: &ours,
-            trusted: self.trusted,
+            trusted: self.exchange.trusts(),
         };
         rejoins.on_cursors(self.session, context, peer, theirs, floor);
         self.flush(rejoins)
@@ -491,7 +492,8 @@ impl PeerJoin {
         Ok(step)
     }
 
-    /// The link ended: requests still open count as never answered.
+    /// The link ended: requests still open count as never answered. Required: see
+    /// [`PeerJoin::open`].
     pub fn close(self, rejoins: &mut Rejoins) {
         rejoins.close(self.session);
     }

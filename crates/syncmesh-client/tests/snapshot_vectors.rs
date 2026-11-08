@@ -16,6 +16,8 @@ use syncmesh_core::event::{PartitionKey, PeerId, SeqNum};
 use syncmesh_core::frames::{Frame, SnapshotFrame, decode_frame};
 use syncmesh_core::hex::{from_hex, to_hex};
 use syncmesh_core::identity::Identity;
+use syncmesh_core::record::RowRecord;
+use syncmesh_core::snapshot_codec::{SnapshotRow, decode_snapshot_rows, encode_snapshot_rows};
 
 const NOW_MS: i64 = 1_700_000_000_000;
 
@@ -66,10 +68,10 @@ fn snapshot(hex: &Value) -> SnapshotFrame {
     }
 }
 
-fn holder(doc: &Value) -> Engine {
+fn holder(doc: &Value, events: &str) -> Engine {
     let mut holder = engine(identity(3), None);
     assert_eq!(holder.peer_id().as_str(), doc["holder"].as_str().unwrap());
-    let entries = doc["events"]
+    let entries = doc[events]
         .as_array()
         .expect("events")
         .iter()
@@ -91,7 +93,7 @@ fn pairs(cursors: &Cursors) -> Value {
 #[test]
 fn a_rust_holder_serves_the_typescripts_frames_byte_for_byte() {
     let doc = vectors();
-    let mut holder = holder(&doc);
+    let mut holder = holder(&doc, "events");
     let acme = Interest::partitions([PartitionKey::parse("org:acme").unwrap()]);
     for (name, interest) in [
         ("everything", None),
@@ -123,6 +125,105 @@ fn a_rust_holder_serves_the_typescripts_frames_byte_for_byte() {
             .map(|v| v.as_str().unwrap())
             .collect();
         assert_eq!(sent, want, "{name}: served frames");
+    }
+}
+
+/// Serves `served` from `holder` with the certificate the TypeScript holder relayed, as frames.
+fn serve(holder: &mut Engine, doc: &Value, served: &Value) -> Vec<SnapshotFrame> {
+    let mut options = JoinOptions::new("holder");
+    options.rows_per_chunk = doc["rowsPerChunk"].as_u64().unwrap() as usize;
+    if let SnapshotFrame::Manifest { certificate, .. } = snapshot(&served["frames"][0]) {
+        options.certificate = certificate;
+    }
+    let step = JoinExchange::new(options)
+        .dispatch(holder, snapshot(&served["request"]))
+        .unwrap();
+    step.send
+        .iter()
+        .map(|b| match decode_frame(b).expect("frame") {
+            Frame::Snapshot(f) => f,
+            other => panic!("not a snapshot frame: {}", other.kind()),
+        })
+        .collect()
+}
+
+/// The rows of every chunk, decoded.
+fn chunk_rows(frames: &[SnapshotFrame]) -> Vec<SnapshotRow> {
+    frames
+        .iter()
+        .filter_map(|frame| match frame {
+            SnapshotFrame::Chunk { bytes, .. } => Some(decode_snapshot_rows(bytes).expect("rows")),
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// U34: a Rust holder keeps a row's cells in column order, not the order they were first
+/// written, so it serves the same rows as the TypeScript but not the same bytes, and a relayed
+/// certificate over cells written out of column order does not vouch for its page.
+#[test]
+fn a_rust_holder_of_cells_written_out_of_column_order_serves_them_sorted() {
+    let doc = vectors();
+    let served = &doc["served"]["unsorted"];
+    let mut rust = holder(&doc, "unsortedEvents");
+    let frames = serve(&mut rust, &doc, served);
+    let typescript: Vec<SnapshotFrame> = served["frames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(snapshot)
+        .collect();
+    let (ours, theirs) = (chunk_rows(&frames), chunk_rows(&typescript));
+    let records = |rows: &[SnapshotRow]| -> Vec<(String, String, RowRecord)> {
+        rows.iter()
+            .map(|r| (r.table.clone(), r.key.clone(), r.record.clone()))
+            .collect()
+    };
+    assert_eq!(records(&ours), records(&theirs), "the same rows");
+    assert_eq!(
+        theirs[0].columns,
+        ["id", "title", "body"],
+        "first-written order"
+    );
+    assert_eq!(
+        encode_snapshot_rows(&ours),
+        encode_snapshot_rows(&{
+            let mut sorted = theirs.clone();
+            sorted[0].columns.clear();
+            sorted
+        }),
+        "the Rust page is the TypeScript's with its cells in column order",
+    );
+    // a trusting joiner of the Rust page installs it, with nothing vouched
+    let issuer = PeerId::parse(doc["issuer"].as_str().unwrap()).unwrap();
+    let mut options = JoinOptions::new("joiner");
+    options.trust = Some(issuer);
+    let mut exchange = JoinExchange::new(options);
+    let mut joiner = engine(identity(5), None);
+    exchange.request_under(
+        None,
+        JoinPolicy {
+            adopt_unvouched: false,
+            floor: None,
+        },
+    );
+    let mut settled = Vec::new();
+    for frame in frames {
+        settled.extend(exchange.dispatch(&mut joiner, frame).unwrap().settled);
+    }
+    match &settled[..] {
+        [s] => match &s.outcome {
+            JoinOutcome::Installed { vouched, installed } => {
+                assert!(
+                    !vouched,
+                    "the certificate hashes the cells in first-written order"
+                );
+                assert_eq!(installed.rows, 1);
+            }
+            JoinOutcome::Refused(r) => panic!("refused: {r:?}"),
+        },
+        other => panic!("settled {} times", other.len()),
     }
 }
 

@@ -91,4 +91,47 @@ describe("the manifest as a port reads it (gap U3)", () => {
     // JSON is the format: what is written reads back as itself
     expect(JSON.parse(JSON.stringify(portable))).toEqual(portable);
   });
+
+  test("a check a port runs is never stricter than the function it says", () => {
+    const loose = syncSchema({
+      tables: {
+        loose: {
+          columns: {
+            id: t.text().primaryKey(),
+            folded: t.text().check(z.string().regex(/^ab$/i)),
+            caught: t.text().check(z.string().min(5).catch("x")),
+            preprocessed: t
+              .text()
+              .check(z.preprocess((v) => String(v).toLowerCase(), z.enum(["red"]))),
+            coerced: t.text().check(z.coerce.number()),
+            trimmed: t.text().check(z.string().trim().max(3)),
+            long: t.text().check(z.string().min(3).max(9)),
+            step: t.float().check(z.number().multipleOf(0.1)),
+            nested: t.json(z.object({ tag: z.string().regex(/^x$/m), n: z.number().catch(0) })),
+          },
+        },
+      },
+    });
+    const schemaOf = (column: string) => {
+      const { $schema: _, ...rest } =
+        portableSchema(loose).tables["loose"]?.columns[column]?.checkSchema ?? {};
+      return rest;
+    };
+    // the i flag says "AB" passes, and a pattern of `^ab$` would refuse it
+    expect(schemaOf("folded")).toEqual({ type: "string" });
+    // a catch, a preprocess and a coerce each take any value the function takes
+    expect(schemaOf("caught")).toEqual({});
+    expect(schemaOf("preprocessed")).toEqual({});
+    expect(schemaOf("coerced")).toEqual({});
+    // the length is measured after the trim: "  abc  " passes
+    expect(schemaOf("trimmed")).toEqual({ type: "string" });
+    // "😀😀" is four UTF-16 units and two code points
+    expect(schemaOf("long")).toEqual({ type: "string", minLength: 2, maxLength: 9 });
+    expect(schemaOf("step")).toEqual({ type: "number" });
+    expect(schemaOf("nested")).toEqual({
+      type: "object",
+      properties: { tag: { type: "string" }, n: {} },
+      required: ["tag"],
+    });
+  });
 });

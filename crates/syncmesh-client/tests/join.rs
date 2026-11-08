@@ -377,7 +377,7 @@ fn below_a_trusted_peers_floor_the_device_asks_and_a_vouched_install_clears_it()
     let mut rejoins = Rejoins::new();
     let mut options = JoinOptions::new("x");
     options.trust = Some(issuer.peer_id().clone());
-    let mut x = PeerJoin::open(&mut rejoins, JoinExchange::new(options), None, true);
+    let mut x = PeerJoin::open(&mut rejoins, JoinExchange::new(options), None);
     let mut x_engine = engine(2);
     let (peer, theirs, floor) = claim(&holder.engine, 2);
 
@@ -421,12 +421,7 @@ fn with_no_trust_nothing_is_asked_until_the_app_accepts_and_then_at_most_the_flo
     let mut rejoins = Rejoins::new();
     let mut x_engine = engine(2);
     let (peer, theirs, floor) = claim(&holder.engine, 2);
-    let mut x = PeerJoin::open(
-        &mut rejoins,
-        JoinExchange::new(JoinOptions::new("x")),
-        None,
-        false,
-    );
+    let mut x = PeerJoin::open(&mut rejoins, JoinExchange::new(JoinOptions::new("x")), None);
     assert!(
         x.on_cursors(&mut rejoins, &x_engine, &peer, &theirs, Some(&floor))
             .is_empty()
@@ -483,7 +478,6 @@ fn trust_and_no_certificate_merges_the_rows_and_raises_unvouched_once() {
             &mut rejoins,
             JoinExchange::new(options_like(&options)),
             None,
-            true,
         );
         let ask = x.on_cursors(&mut rejoins, &x_engine, &peer, &theirs, Some(&floor));
         let mut back = Vec::new();
@@ -530,7 +524,6 @@ fn three_sessions_unanswered_raise_the_issue_instead_of_a_fourth_request() {
             &mut rejoins,
             JoinExchange::new(options_like(&options)),
             None,
-            true,
         );
         let ask = x.on_cursors(&mut rejoins, &x_engine, &peer, &theirs, Some(&floor));
         // the link drops before any answer
@@ -550,7 +543,7 @@ fn a_repage_frame_with_no_cursors_ignores_every_floor_and_uses_no_guard() {
     let (peer, theirs, floor) = claim(&h, 1);
     let mut options = JoinOptions::new("x");
     options.trust = Some(identity(9).peer_id().clone());
-    let mut x = PeerJoin::open(&mut rejoins, JoinExchange::new(options), None, true);
+    let mut x = PeerJoin::open(&mut rejoins, JoinExchange::new(options), None);
     assert!(
         x.on_cursors(
             &mut rejoins,
@@ -582,12 +575,7 @@ fn on_a_schema_with_document_columns_a_floor_answer_adopts_nothing_and_says_inco
     let mut rejoins = Rejoins::new();
     let mut x_engine = engine_with(2, Some(docs));
     let (peer, theirs, floor) = claim(&holder.engine, 1);
-    let mut x = PeerJoin::open(
-        &mut rejoins,
-        JoinExchange::new(JoinOptions::new("x")),
-        None,
-        false,
-    );
+    let mut x = PeerJoin::open(&mut rejoins, JoinExchange::new(JoinOptions::new("x")), None);
     x.on_cursors(&mut rejoins, &x_engine, &peer, &theirs, Some(&floor));
     assert_eq!(
         rejoins.accept(&peer, &x_engine.coverage().synced),
@@ -681,4 +669,124 @@ fn an_install_keeps_its_floor_across_a_reopen_and_tombstones_win() {
     assert_eq!(reopened.cursors()[&author].get(), 2);
     // and what this device claims to a joiner carries no floor
     assert!(reopened.snapshot(None).coverage.floor.is_empty());
+}
+
+/// Carries `ask` to `holder` and every answer back through `x`, until neither says more.
+fn answer(
+    x: &mut PeerJoin,
+    rejoins: &mut Rejoins,
+    x_engine: &mut Engine,
+    holder: &mut Side,
+    ask: Vec<Vec<u8>>,
+) -> Vec<Settled> {
+    let mut settled = Vec::new();
+    let mut flight = ask;
+    while !flight.is_empty() {
+        let mut back = Vec::new();
+        for bytes in flight {
+            let step = holder
+                .join
+                .dispatch(&mut holder.engine, snapshot_frame(&bytes))
+                .unwrap();
+            back.extend(step.send);
+        }
+        flight = Vec::new();
+        for bytes in back {
+            let step = x
+                .on_snapshot(rejoins, x_engine, snapshot_frame(&bytes))
+                .unwrap();
+            flight.extend(step.send);
+            settled.extend(step.settled);
+        }
+    }
+    settled
+}
+
+fn trusting(prefix: &str) -> JoinExchange {
+    let mut options = JoinOptions::new(prefix);
+    options.trust = Some(identity(9).peer_id().clone());
+    JoinExchange::new(options)
+}
+
+#[test]
+fn an_install_the_device_refuses_stays_unanswered_and_the_next_session_asks_again() {
+    let mut holder = side(engine(1), JoinOptions::new("holder"));
+    write(&mut holder.engine, "a", None);
+    // the device declares `notes.body` a document column: the holder's text there is no lineage
+    // cell, so the install is refused whole (RFC-0023 §16.1)
+    let docs = DocColumns::from([(
+        "notes".to_owned(),
+        BTreeMap::from([("body".to_owned(), "loro@1".to_owned())]),
+    )]);
+    let mut x_engine = engine_with(2, Some(docs));
+    let mut rejoins = Rejoins::new();
+    let (peer, theirs, floor) = claim(&holder.engine, 1);
+    let mut x = PeerJoin::open(&mut rejoins, trusting("x"), None);
+    let ask = x.on_cursors(&mut rejoins, &x_engine, &peer, &theirs, Some(&floor));
+    assert_eq!(ask.len(), 1);
+    let settled = answer(&mut x, &mut rejoins, &mut x_engine, &mut holder, ask);
+    assert!(matches!(&settled[..], [s] if matches!(s.outcome, JoinOutcome::Refused(_))));
+    assert!(x_engine.state().read_row("notes", "a").is_none());
+    // no issue: the refusal is an ask still unanswered, not an install that left it below
+    assert!(rejoins.issues(&x_engine.coverage().synced).is_empty());
+    x.close(&mut rejoins);
+    let mut next = PeerJoin::open(&mut rejoins, trusting("y"), None);
+    assert_eq!(
+        next.on_cursors(&mut rejoins, &x_engine, &peer, &theirs, Some(&floor))
+            .len(),
+        1,
+        "a later session asks again"
+    );
+}
+
+#[test]
+fn two_links_to_one_peer_put_one_request_on_the_wire_and_a_closed_one_frees_it() {
+    let mut h = engine(1);
+    write(&mut h, "a", None);
+    let (peer, theirs, floor) = claim(&h, 1);
+    let x_engine = engine(2);
+    let mut rejoins = Rejoins::new();
+    let mut first = PeerJoin::open(&mut rejoins, trusting("x"), None);
+    let mut second = PeerJoin::open(&mut rejoins, trusting("y"), None);
+    let cursors = |link: &mut PeerJoin, rejoins: &mut Rejoins| {
+        link.on_cursors(rejoins, &x_engine, &peer, &theirs, Some(&floor))
+            .len()
+    };
+    assert_eq!(cursors(&mut first, &mut rejoins), 1);
+    assert_eq!(
+        cursors(&mut second, &mut rejoins),
+        0,
+        "the first link's ask stands"
+    );
+    // the first link drops unanswered: the second may ask now
+    first.close(&mut rejoins);
+    assert_eq!(cursors(&mut second, &mut rejoins), 1);
+}
+
+#[test]
+fn an_accepted_ask_a_closed_session_never_sent_is_sent_by_the_next() {
+    let mut h = engine(1);
+    write(&mut h, "a", None);
+    let (peer, theirs, floor) = claim(&h, 1);
+    let x_engine = engine(2);
+    let mut rejoins = Rejoins::new();
+    let untrusting = |prefix: &str| JoinExchange::new(JoinOptions::new(prefix));
+    let mut first = PeerJoin::open(&mut rejoins, untrusting("x"), None);
+    assert!(
+        first
+            .on_cursors(&mut rejoins, &x_engine, &peer, &theirs, Some(&floor))
+            .is_empty()
+    );
+    assert_eq!(
+        rejoins.accept(&peer, &x_engine.coverage().synced),
+        Accepted::Requested
+    );
+    // the session closes before the host flushed it: the accepted ask never went out
+    first.close(&mut rejoins);
+    let mut next = PeerJoin::open(&mut rejoins, untrusting("y"), None);
+    assert_eq!(
+        next.on_cursors(&mut rejoins, &x_engine, &peer, &theirs, Some(&floor))
+            .len(),
+        1
+    );
 }

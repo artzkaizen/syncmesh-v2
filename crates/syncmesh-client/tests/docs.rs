@@ -655,3 +655,34 @@ fn a_local_write_naming_a_derived_column_is_refused_and_a_numbered_one_folds() {
     let entry = write(&mut older, vec![insert()]);
     assert_eq!(a.receive(entry).unwrap().report.folded, 1);
 }
+
+#[test]
+fn an_install_that_moves_the_winning_lineage_relabels_the_doc_log() {
+    let mut a = engine(1, true);
+    let mut b = engine(2, true);
+    b.receive(write(&mut a, vec![insert()])).unwrap();
+    // A's replace is the first stamp, so A's lineage wins wherever both are held
+    write(&mut a, vec![replace(1)]);
+    write(&mut b, vec![replace(2)]);
+    let on_b = lineage(&b);
+    let b_edit = write(&mut b, vec![edit(3, on_b)]);
+    let mut r = engine(3, true);
+    // B's log holds A's insert and B's own two writes
+    r.receive_batch(b.events_since(&Default::default(), None).unwrap())
+        .unwrap();
+    assert_eq!(lineage(&r), on_b);
+    assert_eq!(states(&r), [DocEntryState::Tail, DocEntryState::Tail]);
+    assert_eq!(b_edit.event.seq_num.get(), 2);
+    // A's state, never A's events: the rows carry A's genesis into the lineage cell
+    r.install_snapshot(a.snapshot(None)).unwrap();
+    assert_eq!(lineage(&r), lineage(&a), "the install moved the winner");
+    assert_eq!(
+        labels(&r, &b),
+        BTreeMap::from([
+            ((true, 1), DocEntryState::Orphaned),
+            ((true, 2), DocEntryState::Orphaned),
+        ])
+    );
+    let heads = r.doc_heads().unwrap();
+    assert_eq!((heads[0].lineage, heads[0].tail_count), (lineage(&a), 0));
+}

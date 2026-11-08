@@ -43,8 +43,9 @@ pub struct StoredEvent {
     pub event: SyncEvent,
     pub core: Option<Vec<u8>>,
     pub sig: Option<Vec<u8>>,
-    /// A local-only write (`partition: local`, or written with `Engine::mutate_local`): numbered
-    /// in its own sequence, never signed and never sent.
+    /// A local-only write, written with `Engine::mutate_local`: numbered in its own sequence,
+    /// never signed and never sent. Only `mutate_local` sets it: a write to a `local` table
+    /// through `Engine::mutate` is never marked, and a validator refuses it (`LocalOnly`).
     pub local: bool,
 }
 

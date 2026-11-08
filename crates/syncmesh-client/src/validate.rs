@@ -12,7 +12,7 @@
 //! takes this device's own local-only writes (`Engine::mutate_local`) and refuses every other
 //! write as `LocalOnly`, as the TypeScript does.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use sha2::{Digest, Sha256};
@@ -365,6 +365,18 @@ impl<'a> Probe<'a> {
             local: false,
         }
     }
+
+    /// No change at all, by `peer` in `partition`: what a link lookup reads an author from.
+    fn own(peer_id: &'a PeerId, partition: &'a PartitionKey) -> Probe<'a> {
+        Probe {
+            peer_id,
+            partition: Some(partition),
+            changes: &[],
+            seq: None,
+            hlc: None,
+            local: false,
+        }
+    }
 }
 
 /// What the device holds about the rows an event touches.
@@ -506,15 +518,11 @@ impl Validator {
                 .filter(|g| &g.device == peer)
                 .map(Author::from),
             None if self.accounts => {
-                let probe = Probe {
-                    peer_id: peer,
-                    partition,
-                    changes: &[],
-                    seq: None,
-                    hlc: None,
-                    local: false,
-                };
-                linked_author(&probe, before, &|wire| self.link_signed(wire))
+                let signed = |wire: &[u8]| self.link_signed(wire);
+                match partition {
+                    Some(partition) => linked_author(&Probe::own(peer, partition), before, &signed),
+                    None => linked_account(peer, before, &signed),
+                }
             }
             None => None,
         }?;
@@ -1428,6 +1436,40 @@ fn linked_author(
         claims: BTreeMap::new(),
         partitions: None,
     })
+}
+
+/// The account `peer`'s links agree on across every instance they name, as an author with no
+/// claims (`linkedAccount` in `client/src/accounts.ts`). Two instances naming two accounts is no
+/// account: with no instance in hand there is no single link to read.
+fn linked_account(
+    peer: &PeerId,
+    before: &dyn StateLookup,
+    signed: &dyn Fn(&[u8]) -> bool,
+) -> Option<Author> {
+    let partitions: BTreeSet<PartitionKey> = before
+        .records(LINKS)?
+        .iter()
+        .filter(|(_, record)| record.delete_stamp.is_none())
+        .filter_map(|(key, record)| {
+            resolve_link(key, |name| record.cells.get(name).map(|c| &c.value), signed).ok()
+        })
+        .filter(|core| &core.device == peer)
+        .map(|core| core.partition)
+        .collect();
+    let mut found: Option<Author> = None;
+    for partition in &partitions {
+        let Some(author) = linked_author(&Probe::own(peer, partition), before, signed) else {
+            continue;
+        };
+        if found
+            .as_ref()
+            .is_some_and(|held| held.account != author.account)
+        {
+            return None;
+        }
+        found = Some(author);
+    }
+    found
 }
 
 /// What the batch has already admitted, layered over what the device held before it, so an

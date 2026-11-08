@@ -27,6 +27,8 @@ export interface StandardJSONSchemaV1Props {
   readonly jsonSchema: {
     readonly input: (options: {
       readonly target: "draft-2020-12" | "draft-07" | "openapi-3.0";
+      /** The vendor's own converter options (zod: `toJSONSchema`'s params, `override` among them). */
+      readonly libraryOptions?: Record<string, unknown>;
     }) => Record<string, unknown>;
   };
 }

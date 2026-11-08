@@ -52,7 +52,10 @@ A column's `check()` runs as the JSON Schema the manifest carries for it (`check
 by `portableSchema` from the Standard JSON Schema extension zod 4 implements). JSON Schema says
 less than a function can: a `.refine()` is dropped from it, and a `z.custom` has none, so such a
 column's check is weaker here or not run (`Manifest::unported_checks` lists the second kind).
-Register the rest yourself; a host check replaces the column's schema:
+It is never stricter: `portableSchema` leaves out whatever zod's converter would say stricter
+than zod runs (a `/…/i` regex, a `.catch()`, a coerce, a trimmed string, a UTF-16 `.min(n)`), and
+a check from a vendor other than zod travels as the flag alone. Register the rest yourself; a
+host check replaces the column's schema:
 
 ```rust
 let mut checks = ColumnChecks::new();
@@ -65,7 +68,9 @@ let options = ValidatorOptions { checks, ..ValidatorOptions::new(manifest) };
 
 `Engine::can("notes.update", Some(&row), Some("org:acme"))` is the UI's question (`mesh.can`),
 answered by the same rules the ladder enforces: the instance's synced `_policy` row when the
-device holds one, the manifest's block otherwise. `Validator::can` asks it for any principal.
+device holds one, the manifest's block otherwise. With no instance named, an accounts mesh asks as
+the account every one of the device's `_links` rows agrees on. `Validator::can` asks it for any
+principal; `Mesh::can` and `Mesh::mutate_local` reach the same through a mesh.
 
 A `local` table takes this device's own local-only writes, `Engine::mutate_local`: numbered in
 their own run (`peer-L1`), folded and kept, never signed and never offered to a peer. A write to
@@ -89,7 +94,7 @@ use syncmesh_core::frames::{Frame, decode_frame};
 let mut rejoins = Rejoins::new();
 let mut options = JoinOptions::new(&engine.peer_id().as_str()[..8]);
 options.trust = Some(issuer.clone()); // None: nothing vouches, and nothing below a floor is asked
-let mut link = PeerJoin::open(&mut rejoins, JoinExchange::new(options), None, true);
+let mut link = PeerJoin::open(&mut rejoins, JoinExchange::new(options), None);
 
 // every frame the peer sends:
 match decode_frame(&bytes)? {
@@ -106,6 +111,9 @@ match decode_frame(&bytes)? {
     _ => {}
 }
 
+// when the link ends — required: a dropped PeerJoin leaves its requests in `rejoins` for good
+// link.close(&mut rejoins);
+
 // after a fold, so an issue whose authors caught up some other way goes
 rejoins.sweep(&engine.coverage().synced);
 // the app's call, in a mesh with no trust: take the state, up to the floor the peer claimed
@@ -118,3 +126,8 @@ if rejoins.accept(&peer, &engine.coverage().synced) == Accepted::Requested {
 own); `request(None, true)` is a rebuild. A manifest nobody asked for installs nothing. A vouched
 install (a certificate from `trust` over exactly the rows) adopts what the certificate signs and
 never more than the manifest claims; what an install adopts beyond the log is `Engine::floor`.
+
+A Rust holder serves a row's cells in column order, not the order they were first written (gaps
+U34): a certificate it relays from a TypeScript authority vouches for its page only when each
+row's cells were first written in column order. A certificate a Rust issuer mints over its own
+rows always does.

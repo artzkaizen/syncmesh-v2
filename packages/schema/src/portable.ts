@@ -18,8 +18,15 @@ import { speaksJsonSchema, type StandardSchemaV1 } from "./standard-schema.js";
  * One column as a port reads it: what shipped, and whether a `check()` schema guards it. The
  * schema is a function; where it can say itself as JSON Schema (the Standard JSON Schema
  * extension, which zod 4 carries) `checkSchema` holds that, draft 2020-12, and a port runs it.
- * What JSON Schema cannot say — a `.refine()`, a transform — is not in it, so there a port's
- * verdict is the weaker one unless the port registers a check of its own.
+ *
+ * A port's check is never stricter than the function. What JSON Schema cannot say — a
+ * `.refine()`, a transform — is not in it, so there a port's verdict is the weaker one unless the
+ * port registers a check of its own. Where zod's own converter would say *more* than the function
+ * accepts, the part that would refuse is left out: a `.catch()`, a `z.preprocess` or a
+ * `z.coerce` accepts any value; a string that is trimmed, case-folded or otherwise rewritten
+ * before its checks, or whose regex carries `i`, `m` or `s`, keeps only its type; a `.min(n)`
+ * length (UTF-16 units in JavaScript, code points in JSON Schema) becomes `ceil(n / 2)`; a
+ * fractional `multipleOf` is dropped. A check from a vendor other than zod travels as the flag.
  */
 export interface PortableColumn extends ShippedColumn {
   readonly check?: true;
@@ -27,12 +34,68 @@ export interface PortableColumn extends ShippedColumn {
   readonly checkSchema?: JsonObject;
 }
 
+/* oxlint-disable no-underscore-dangle -- zod names its internals `_zod`; read here structurally */
+/** The part of a zod 4 schema node {@link loosen} reads. zod's internals, read structurally. */
+interface ZodNode {
+  readonly _zod: {
+    readonly def: {
+      readonly type: string;
+      readonly coerce?: boolean;
+      readonly in?: ZodNode;
+      readonly checks?: readonly { readonly _zod: { readonly def: { readonly check: string } } }[];
+    };
+    readonly bag?: { readonly patterns?: ReadonlySet<RegExp> };
+  };
+}
+
+/** What zod's `override` hook hands over for each node it converts. */
+interface ZodOverride {
+  readonly zodSchema: ZodNode;
+  readonly jsonSchema: {
+    minLength?: number;
+    multipleOf?: number;
+    [keyword: string]: JsonValue | undefined;
+  };
+}
+
+/** Regex flags whose meaning a JSON Schema `pattern` cannot carry. */
+const UNSAID_FLAGS = /[ims]/;
+
+/** Whether a node accepts values its JSON Schema would refuse: it rewrites or replaces its input. */
+const acceptsAnything = ({ type, coerce, in: input }: ZodNode["_zod"]["def"]) =>
+  type === "catch" || coerce === true || (type === "pipe" && input?._zod.def.type === "transform");
+
+const clear = (json: ZodOverride["jsonSchema"], keep: readonly string[] = []) => {
+  for (const key of Object.keys(json)) if (!keep.includes(key)) delete json[key];
+};
+
+/** Leaves out of one converted node whatever would make it stricter than the zod node it says. */
+const loosen = ({ zodSchema, jsonSchema }: ZodOverride) => {
+  const { def, bag } = zodSchema._zod;
+  if (acceptsAnything(def)) return clear(jsonSchema);
+  const rewrites = def.checks?.some((check) => check._zod.def.check === "overwrite") === true;
+  const flagged = [...(bag?.patterns ?? [])].some((regex) => UNSAID_FLAGS.test(regex.flags));
+  if (rewrites || flagged) return clear(jsonSchema, ["type"]);
+  const { minLength, multipleOf } = jsonSchema;
+  if (def.type === "string" && minLength !== undefined && minLength > 1) {
+    jsonSchema.minLength = Math.ceil(minLength / 2);
+  }
+  if (multipleOf !== undefined && !Number.isInteger(multipleOf)) delete jsonSchema.multipleOf;
+};
+/* oxlint-enable no-underscore-dangle */
+
 /** The JSON Schema a check says it accepts, or `undefined` when it cannot say. */
 const checkSchemaOf = (check: StandardSchemaV1): JsonObject | undefined => {
   const standard = check["~standard"];
-  if (!speaksJsonSchema(standard)) return undefined;
+  // only zod's converter lets `loosen` see each node, so only zod's schema can be kept no stricter
+  if (standard.vendor !== "zod" || !speaksJsonSchema(standard)) return undefined;
   // a converter throws on what JSON Schema cannot express (`z.custom`, a transform's output)
-  const converted = Result.try(() => standard.jsonSchema.input({ target: "draft-2020-12" }));
+  const converted = Result.try(() =>
+    standard.jsonSchema.input({
+      target: "draft-2020-12",
+      libraryOptions: { override: loosen },
+    }),
+  );
   if (converted.isErr()) return undefined;
   // a round trip through JSON keeps only what the format can carry: the manifest is JSON
   const json = Result.try(

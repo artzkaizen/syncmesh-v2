@@ -103,6 +103,8 @@ export async function snapshotVectors() {
     rowsPerChunk: ROWS_PER_CHUNK,
     docs: { boards: { content: "loro@1" } },
     events: history(),
+    // what the `unsorted` holder folded: a port's holder of these keeps the cells' order or not (U34)
+    unsortedEvents: unsortedHistory(),
     served,
     joins,
   };

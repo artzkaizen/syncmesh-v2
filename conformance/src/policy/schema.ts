@@ -164,6 +164,12 @@ export const policySchema = syncSchema({
         code: t.text().check(z.string().regex(/^[A-Z]{3}$/)),
         qty: t.integer().check(z.number().int().min(1).max(9)),
         email: t.text().nullable().check(z.email()),
+        // checks zod's converter would say stricter than they are: the port keeps them no stricter
+        folded: t
+          .text()
+          .nullable()
+          .check(z.string().regex(/^[a-z]{2}$/i)),
+        word: t.text().nullable().check(z.string().min(2)),
         meta: t
           .json(z.object({ tag: z.enum(["red", "blue"]), n: z.number().optional() }))
           .nullable(),
