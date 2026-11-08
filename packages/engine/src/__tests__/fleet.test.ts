@@ -85,6 +85,16 @@ describe("oldestSchema: which builds are still writing (D31)", () => {
     expect(readings(device, { now: at(60_000), within: WINDOW })).toEqual({});
   });
 
+  test("a reading stamped after the window's now waits for now to reach it", async () => {
+    const device = setup(PEER_A).engine;
+    const b = author(PEER_B);
+    (await device.receive({ event: await b(100_000, 2) })).unwrap();
+    // a clock running ahead must not look freshly seen in every window it is ever asked about
+    expect(readings(device, { now: at(35_000), within: WINDOW })).toEqual({});
+    expect(readings(device, { now: at(105_000), within: WINDOW })).toEqual({ b: 2 });
+    expect(readings(device, { now: at(120_000), within: WINDOW })).toEqual({});
+  });
+
   test("a cursors frame's version counts; an ack that announced none says nothing", () => {
     const device = setup(PEER_A).engine;
     device.acknowledge(PEER_B, new Map(), at(5_000), version(6));

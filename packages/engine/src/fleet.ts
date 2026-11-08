@@ -16,7 +16,11 @@ export interface SchemaReading {
   readonly at: Temporal.Instant;
 }
 
-/** Which readings count: those at or after `now - within`. Absent, every one since boot. */
+/**
+ * Which readings count: those from `now - within` up to `now`. A reading stamped after `now` —
+ * an author whose clock runs ahead, parked as `ClockAhead` — counts once `now` reaches it, so a
+ * skewed stamp never stays inside every window. Absent, every one since boot.
+ */
 export interface FleetWindow {
   readonly now: Temporal.Instant;
   readonly within: Temporal.Duration;
@@ -60,8 +64,9 @@ export interface FleetApi {
    * The event half is signed by its author; the cursors-frame half is the sender's claim, as
    * the acks are, so a linked peer can lower another author's reading, never raise it above
    * what that author's own events say. A relay's join frame carries no version and replaces the
-   * joiner's last announcement until its next cursors frame: until then the reading rests on
-   * that peer's events alone, and a peer that wrote nothing drops out of it.
+   * joiner's last announcement until its next cursors frame, which a relay session sends once
+   * its join has caught up: in between, the reading rests on that peer's events alone, and a
+   * peer that wrote nothing drops out of it.
    *
    * The reading D31's rule waits on. A table or column is retired once every author that wrote in
    * the retention window reads at or above the version that stopped needing it, and an authority
@@ -95,6 +100,7 @@ function lowest(
   const readings = new Map<PeerId, SchemaReading>();
   const offer = (peer: PeerId, version: SchemaVersion, at: Temporal.Instant): void => {
     if (cutoff !== undefined && Temporal.Instant.compare(at, cutoff) < 0) return;
+    if (window !== undefined && Temporal.Instant.compare(at, window.now) > 0) return;
     const held = readings.get(peer);
     if (held === undefined || version < held.version) readings.set(peer, { version, at });
     else if (version === held.version) readings.set(peer, { version, at: later(held.at, at) });
