@@ -124,9 +124,11 @@ export function createCoveragePath(
 }
 
 /**
- * A snapshot install's coverage committed: its floor into the log first, then the state's
- * cursors, so a state that is lost or never read still says it held rows the log cannot rebuild
- * (gaps U33).
+ * A snapshot install's coverage committed: the state's cursors first, then its floor into the log,
+ * so a state that is lost or never read later still says it held rows the log cannot rebuild
+ * (gaps U33). In that order a crash between the two leaves cursors the next readable boot copies
+ * into the log; the other way round it left a floor over a state that reads as empty, which no
+ * boot could ever open again.
  */
 export async function persistInstall(
   store: EventStore,
@@ -134,7 +136,7 @@ export async function persistInstall(
   errors: Hub<EngineError>,
   persistCoverage: () => Promise<void>,
 ): Promise<void> {
+  await persistCoverage();
   const recorded = await store.recordInstalled(coverage.current().floor ?? new Map());
   if (recorded.isErr()) errors.emit(recorded.error);
-  await persistCoverage();
 }

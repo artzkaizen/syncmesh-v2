@@ -432,6 +432,37 @@ describe("below the floor (gaps U1, U33)", () => {
     expect((await stateB.loadAll()).unwrap().get(NOTES)?.size).toBe(2);
   });
 
+  test("a crash between an install's rows and its cursors still reopens (U33)", async () => {
+    const a = setup(PEER_A, 100, { stateStore: createMemoryStateStore() });
+    for (const k of ["n1", "n2"]) (await write(a.engine, k, k)).unwrap();
+    const real = createMemoryStateStore();
+    let commits = 0;
+    const { promise: died, resolve: die } = Promise.withResolvers<void>();
+    // the process dies once the rows land: the next commit never returns, and nothing after it runs
+    const dying: StateStore = {
+      ...real,
+      commit: (rows, coverage) => {
+        commits += 1;
+        if (commits === 1) return real.commit(rows, coverage);
+        die();
+        return new Promise(() => undefined);
+      },
+    };
+    const b = setup(PEER_B, 100, { stateStore: dying });
+    const installing = b.engine.installSnapshot(a.engine.snapshot());
+    await died;
+    expect((await real.isEmpty()).unwrap()).toBe(true);
+    // no cursors claim the install, so the log is folded again and the snapshot asked for again
+    const reopened = await openEngine({
+      peerId: PEER_B,
+      clock: fakeClock(1),
+      store: b.store,
+      stateStore: real,
+    });
+    expect(reopened.isOk()).toBe(true);
+    expect(installing).toBeInstanceOf(Promise);
+  });
+
   test("a state installed before the log kept the floor gives it to the log at boot (U33)", async () => {
     const { a, b, stateB } = pair();
     (await write(a.engine, "n1", "n1")).unwrap();
