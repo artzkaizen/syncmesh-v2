@@ -68,7 +68,7 @@
 | O11 | E24 versioned row patches (`epoch` + monotone id, resnapshot-on-gap) | `plan/epics/E24.md:24` | S5 | built (#6) |
 | O12 | E27 `ClientView`, `desire / undesire / rows` frames, engine-less patch client | `plan/epics/E27.md:31-37` | S5 | built (#6): `createServerWindows` (was `ClientView`), relay tags 32–34, a store-less patch client (D43) |
 | O13 | E14 snapshot window is not a field of `Interest` (gap-audit №19); E13 an interest change leaves a permanent gap | `plan/epics/E14.md:43`, `plan/epics/E13.md:53` | S5 | open |
-| O14 | Collaborative text / doc branch merge (D04's open door, D38) | `research/crdt-cells.md` | S6 | partly built: document columns (#2, #3) and the loro@1 adapter under TipTap (#11); D38 and D41 are still draft |
+| O14 | Collaborative text / doc branch merge (D04's open door, D38) | `research/crdt-cells.md` | S6 | partly built: document columns (#2, #3) and the loro@1 adapter under TipTap (#11); D41 decided A; D38 still draft. `feat/doc-lineage-versioning`: the lineage cell carries its rule's version wherever it is kept outside events and another version is refused as `LineageCellRefused` (RFC-0023 §16.1, `doc-vectors.json` `lineageCells` in both runtimes); a parent landing in a snapshot or repair relabels the doc log at once; the Rust adapter's `snapshot()` is total (D41) |
 | O15 | Chaos in CI on a small seed; grant propagation under fault; blobs and retention-floor refusals in the schedule (gap-audit №10–12) | `chaos/`, `.github/workflows/ci.yml` | S7 | built (#10): an invariant check after every run, and new `--grants fault`, `--blobs` and `--retention` switches (`--retention` and a soak loop nightly only, in `nightly.yml`); the bugs it found are `test.todo` replays |
 | O16 | Crash safety and format migration: `kill -9` mid-fold / mid-append, torn writes, `_syncmesh_meta` upgrades (gap-audit №13) | `storage/` | S7 | partly built (#10): kill -9 mid-append and mid-fold on `bun:sqlite`, `node:sqlite` and PGlite, and the migration ladder now commits per step; a torn log page is D39 (D10 above), and the Durable Object, OPFS and expo drivers are not covered |
 | O17 | 10M-event test; threat model (RFC-0017) | — | S7 | partly built (#10): the 10M ladder runs nightly and **does not hold** (SQLite abandoned at 795k rows after 30 min); the threat model is `plan/security/threat-model.md`, with findings N1–N26 |
@@ -79,7 +79,7 @@
 |---|---|---|---|
 | U1 | Dedup below the compaction floor: `receiveBatch` re-admits a compacted event below the floor (state stays right only because the merge is a max-join) | `engine/src/admit.ts` (`store.has(event.id)`), `api-gaps.md` §3.7 | open |
 | U2 | Telemetry has no consumer: no inspector, no storage taps; a policy verdict is a bare boolean with no "why" (gap-audit №24) | `plan/epics/E24.md:22`, `engine/src/telemetry.ts` | open |
-| U3 | Rust client (D37) has no policy ladder, no local scope, no radios | `crates/syncmesh-client`, `plan/epics/E24.md:32` | open |
+| U3 | Rust client (D37) has no policy ladder, no local scope, no radios. RFC-0023 §16.2's optional `allow.replace` waits on the ladder too: checking it alone would refuse a genesis by `replace` while folding the doc edits and row updates its `update` fallback denies (RFC-0023 §11) | `crates/syncmesh-client`, `plan/epics/E24.md:32` | open |
 | U4 | Device seed stored in plaintext SQLite; no platform keystore seam (gap-audit addendum №3) | `client/src/identity.ts:82` | open |
 | U5 | Strict capture mode: an unarmed write to a synced table should raise, not diverge silently (gap-audit №30) | `storage/src/capture.ts` | open |
 | U6 | rounds-web's only test is a manual Playwright smoke script no runner picks up (gap-audit №25) | `apps/rounds-web/package.json:10` | open |
@@ -95,6 +95,7 @@
 | U17 | Refusals and receipts are not carried by the relay (D32 limit: direct links only); React `refused-by` rendering (`plan/react-api.md` G12) unbuilt | `relay/src/session.ts` | open |
 | U18 | Blob sweep limits: a reference is kept for the life of the instance (log trims do not release it, since a trimmed insert is still a live row), so deleting a row never frees its blob and only uploads no row ever named are swept; a room that has seen a sealed event stops sweeping; only blobs put since the room opened are swept or billed; no telemetry on a sweep; the Rust client ignores the put answer | `relay/src/blob-keeper.ts` | open |
 | U19 | A stalled relay WebSocket still buffers presence inside the socket; conflation stops at the link (`FrameLink.sendLatest` covers BLE, not the relay) | `relay/src/sender.ts`, `relay/src/transport.ts` | open |
+| U20 | A document's lineage cell grows by about 110 bytes per `replace()` and has no cap (RFC-0023 §16.1). No bound is trivial: a genesis dropped by one peer and not another changes the walk, so trimming the tree needs a floor every peer agrees on | `packages/kernel/src/doc.ts` (`lineageRule`), `crates/syncmesh-core/src/doc.rs` | open |
 | U15 | The fleet `compose.yaml` is never run by CI (the shape is proved in-process by `fleet.test.ts`) | `examples/src/fleet/compose.yaml` | open |
 
 ## Hardware — listed, not built here

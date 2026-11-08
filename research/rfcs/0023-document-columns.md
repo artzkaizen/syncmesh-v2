@@ -401,19 +401,20 @@ double their content when merged. Syncmesh answers it once:
   child and wins, however late. Plain "oldest genesis ever wins" would make each of those lose
   forever, which is why the rule is a tree and not one cell.
 - **The lineage cell holds the tree, not the winner.** In the kernel's `RowRecord`, the doc
-  column's cell holds every genesis it has seen, keyed by lineage id:
-  `{ lineage → [parent | null, hlc ms, hlc logical, peer] }`. Two cells join by union (a lattice
-  join: commutative, associative, idempotent), and the cell's stamp is the later of the two. The
-  winner is read from the set by the walk (`winningLineage` / `winning_lineage`), never stored, so
-  every arrival order and batching lands on one lineage. Row digests, snapshot pages (RFC-0019),
-  repairs, tombstones and `insert`×`insert` carry the whole set because they carry the cell. The
-  SQL column still holds snapshot bytes. The projection writes the winner to `doc_heads`, not to
-  the column.
+  column's cell holds every genesis it has seen, keyed by lineage id, tagged with the version of
+  the rule that wrote it (the `1` a genesis carries in key 5):
+  `[1, { lineage → [parent | null, hlc ms, hlc logical, peer] }]`. Two cells join by union (a
+  lattice join: commutative, associative, idempotent), and the cell's stamp is the later of the
+  two. The winner is read from the set by the walk (`winningLineage` / `winning_lineage`), never
+  stored, so every arrival order and batching lands on one lineage. Row digests, snapshot pages
+  (RFC-0019), repairs, tombstones and `insert`×`insert` carry the whole set, tag included,
+  because they carry the cell. The SQL column still holds snapshot bytes. The projection writes
+  the winner to `doc_heads`, not to the column.
 - **A genesis whose parent has not arrived waits off the walk.** It is folded into the set, and
   the walk cannot reach it until its parent lands, at which point the winner, and every doc-log
-  label with it, is recomputed. That holds when the parent lands in an event. A parent that lands
-  through a snapshot page or a repair record moves the winner, but the doc-log labels are only
-  recomputed at the next doc append (a known gap, listed for follow-up). Nothing is parked: parking would need cross-author holdback, and
+  label with it, is recomputed. That holds whether the parent lands in an event, a snapshot page
+  or a repair record: an install or a repair that moves a document's winner relabels its doc log
+  and refreshes its head in the same persist step. Nothing is parked: parking would need cross-author holdback, and
   this is how out-of-order delivery looks, exactly as a doc change on a row whose insert has not
   arrived folds (§11). A genesis naming its own lineage as its parent is refused (§10). A longer
   cycle cannot be reached from the root, and the walk stops at any lineage it has already visited.
@@ -692,12 +693,15 @@ until first `open()`, which is RFC-0019 §3's window rule applied to documents.
 | genesis naming a `parent` this peer does not hold | folds; it waits off the lineage walk until the parent lands (§5.3) | the cell is a set, so the winner is the same whatever arrives first |
 | genesis under the pre-§16.1 rule (`5: true`) at a build of the tree rule | decodes, flagged `legacy`, so a log that holds one still reads; refused at admission → quarantine | the event is never folded by a rule this build does not run, and is kept rather than dropped |
 | genesis under the tree rule (`5: 1`) at a build from before it | refused at decode by that build | that build never folds a tree-rule genesis by the LWW rule |
+| a snapshot page (RFC-0019) or repair record whose doc-column cell is not tagged `1`: untagged (the LWW rule's lineage id, or the tree rule's set before cells were versioned) or another version | the whole snapshot or repair is refused as `LineageCellRefused { table, key, column, version }` before any row joins; no coverage is adopted; the join exchange closes and reports it on the bridge's `onError` | the cell is never read as the root nor merged by another rule; the history behind it still arrives as events |
+| persisted state holding such a cell | TypeScript: reported on `onError`, then the state is rebuilt from the log, as any unreadable state is (`StateCorrupt` when the log is compacted below it). Rust: `Engine::open` refuses with a `StoreError` naming the cell | each runtime treats it as state it cannot read, as it already treats a row that does not decode |
 
-The version in key 5 covers **events only**. The lineage cell in snapshot pages (RFC-0019),
-repair records and persisted state carries no version. A build of the tree rule reads an old
-build's cell (a lineage id as a string) as the root and drops it, and an old build merges a new
-build's cell (an object of geneses) by LWW. So **every peer of a mesh must upgrade together**
-past §16.1. Doc columns have not shipped in a release, so no deployed mesh is affected.
+Lineage cells are versioned wherever they are kept outside events — snapshot pages, repair
+records and persisted state — with the tag genesis key 5 carries (decided in §16.1), and frozen by
+`doc-vectors.json`'s `lineageCells` in both runtimes. A later rule meets this build's cells, and
+this build meets a later rule's, as a version it does not run. Builds from before the tag (main up
+to `d01bb92`) do not check it and must not share a mesh with this one; doc columns have not shipped
+in a release, so no deployed mesh is affected.
 | adapter cannot parse an update | materialisation marks that `doc_log` row `failed`; the doc stays usable at its last good version; loud in `$inspect` | the fold already happened identically; this only affects materialisation, which is local |
 | minor version skew (`loro-crdt` 1.4 vs 1.16) | allowed: the id's major (`@1`) is the compatibility contract; the adapter package pins a floor and runs the adapter conformance suite (§13) | Loro's own 1.x encoding stability |
 
@@ -728,8 +732,16 @@ decompression cap and a time budget, and exceeding them is a `failed` update, ne
   operation that can set others' work aside. Absent, a genesis is judged by the row's `update`
   rule exactly as any doc change (`resolveAllow("replace")` falls back to `update`, then `write`,
   then `$default`). The rule is data in the manifest's allow block, so a port reads it as it reads
-  the others. The device validator and the authority share one ladder in TypeScript; the Rust
-  device has no policy port yet, and takes the rule when it gets one.
+  the others. The device validator and the authority share one ladder in TypeScript. The Rust
+  device does not enforce it, and enforcing it alone would be a half validator: the Rust engine
+  has no `allow` ladder at all (`crates/syncmesh-client/src/engine.rs`: "No validator yet"). A
+  `replace` rule is a policy AST (`role`, `owner`, claims and row comparisons) evaluated against
+  the author's grant, the partition kind's roles and the row before the write, and its absence
+  falls back to `update`, then `write`, then `$default`. Checking `replace` exactly where the
+  TypeScript does therefore needs the manifest's allow blocks, the rule evaluator and the author
+  resolution `checkAuthor` does — the whole policy port (gap U3). Built alone, a Rust device
+  would refuse a genesis by `replace` while folding the plain doc edits and row updates the same
+  `update` rule denies. It takes the rule with the policy port.
 
 ## 12 · Schema evolution (RFC-0013)
 
@@ -754,6 +766,8 @@ columns like any column. `fromDrizzle` already maps pg `bytea` → `blob` and Dr
   - the lineage derivation
   - lineage trees: geneses, the winner, and the lineage cell's record bytes, folded in every
     permutation in both runtimes
+  - lineage cells as snapshot pages, repairs and persisted state carry them: one tagged `1`, read
+    to its winner; an untagged set, an LWW lineage id and a version-2 cell, refused
   - events carrying `action`/`undoOf`
   - a `DocCheckpoint` core + signature
   - a v=1 vector re-verified to prove the new keys did not disturb it
@@ -892,21 +906,26 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    device's winner as its parent, so restores, resets and the undo of a replace still win. A
    genesis naming a parent not yet held folds and waits off the walk (no parking). Genesis key 5
    is now `1`, so an older build refuses a tree-rule genesis event rather than folding it LWW;
-   this build decodes a `true` genesis as `legacy` and quarantines it at admission (§10). That
-   versioning covers events only: lineage cells in snapshot pages, repair records and persisted
-   state carry no version, so all peers must upgrade together. Doc columns are unreleased.
+   this build decodes a `true` genesis as `legacy` and quarantines it at admission (§10).
    **Decided 2026-11-08: the lineage cell is versioned before doc columns ship**, with the same
    `1` tag events carry, in all three places; a build meeting a cell of a version it does not run
-   refuses it as a value rather than reading it as a root or merging it by LWW.
+   refuses it as a value rather than reading it as a root or merging it by LWW. **Built** (§5.3,
+   §10): the cell is `[1, { lineage → genesis }]` in both runtimes; `parseLineageCells` /
+   `parse_lineage_cells` refuse any other cell as `LineageCellRefused` where it enters — a
+   snapshot install and a repair (TypeScript; the Rust device takes neither) and persisted state
+   at boot (both). `doc-vectors.json`'s `lineageCells` freeze the verdicts. A parent that lands
+   through a snapshot page or a repair now relabels the doc log at once.
    Known limits, accepted: the earliest stamp wins and only *future* clock skew is bounded, so a
    device with a lagging or back-dated clock wins sibling races. That grants no privilege, since
    any replacer can already win by naming the current winner as its parent. The lineage cell
-   grows by about 110 bytes per replace and has no cap. A parent that lands through a snapshot
-   page or repair relabels the doc log only at the next doc append (follow-up, §5.3).
+   grows by about 110 bytes per replace and has no cap: no bound is trivial, because dropping a
+   genesis every peer has not dropped alike changes the walk, and a compaction of the tree needs
+   a floor all peers agree on (gap U20).
 2. **`replace()` permission — decided 2026-11-08 by Jace: an optional `replace` rule, defaulting
    to `update`.** `AllowBlock.replace` beside the other operations; absent, a genesis is judged by
    the row's `update` rule exactly as before (§11). Enforced by the shared validator (device and
-   authority); carried in the manifest for ports.
+   authority); carried in the manifest for ports. Not enforced by the Rust device, which has no
+   policy ladder; §11 says why a `replace`-only check would be a half validator.
 3. **Row undo semantics — decided 2026-11-08 by Jace: compensate only cells that still hold the
    action's stamp.** Built for `revert(eventId)` in TypeScript and Rust (§9): restore each cell
    whose stamp is still the write's (a `counter` by the increment that cancels the write's), report
