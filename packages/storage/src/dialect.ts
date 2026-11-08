@@ -188,8 +188,11 @@ export interface Dialect {
   readonly docs: DocSql;
   readonly capture: CaptureSql;
   readonly operations: OperationSql;
-  /** The bind marker for the 1-based position — `?` or `$n`. */
-  readonly placeholder: (position: number) => string;
+  /**
+   * The bind marker for the 1-based position — `?` or `$n` — of a value for a column of `kind`:
+   * Postgres binds a `json` value as text and casts it.
+   */
+  readonly placeholder: (position: number, kind?: ColumnKind) => string;
   /** A cell in the form the column's SQL type holds it in this dialect. */
   readonly cell: (kind: ColumnKind, cell: CellValue) => SqlValue;
   /** Brings the mesh's own tables up to date; a no-op when they already are. */

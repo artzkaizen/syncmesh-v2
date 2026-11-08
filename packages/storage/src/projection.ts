@@ -56,7 +56,9 @@ export function tablesProjection(
       const pk = table.columnNames[table.primaryKey];
       const key = pk === undefined ? '"id"' : quote(pk);
       const updates = names.map((n) => `${n} = excluded.${n}`).join(", ");
-      const marks = names.map((_, i) => dialect.placeholder(i + 1)).join(", ");
+      const marks = names
+        .map((_, i) => dialect.placeholder(i + 1, columns[i]?.[2].def.kind))
+        .join(", ");
       const upsert = `INSERT INTO ${quote(table.name)} (${names.join(", ")}) VALUES (${marks}) ON CONFLICT(${key}) DO UPDATE SET ${updates}`;
       const remove = `DELETE FROM ${quote(table.name)} WHERE ${key} = ${dialect.placeholder(1)}`;
       return [String(table.name), { columns, upsert, remove }] as const;

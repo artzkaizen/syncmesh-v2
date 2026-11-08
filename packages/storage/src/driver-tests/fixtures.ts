@@ -164,6 +164,8 @@ export const sqlText = (driver: { readonly dialect?: "sqlite" | "postgres" }) =>
         ts: (ms: number): SqlValue => new Date(ms),
         tsLiteral: (ms: number) => `to_timestamp(${ms} / 1000.0)`,
         p: (i: number) => `$${i}`,
+        /** A JSON value's bind marker: its text, cast, as the dialect binds one. */
+        json: (i: number) => `$${i}::text::jsonb`,
         boolText: (b: boolean) => (b ? "true" : "false"),
         tsText: (ms: number) => String(new Date(ms)),
         jsonText: (v: SqlValue) => JSON.stringify(v),
@@ -176,6 +178,7 @@ export const sqlText = (driver: { readonly dialect?: "sqlite" | "postgres" }) =>
         ts: (ms: number): SqlValue => ms,
         tsLiteral: (ms: number) => String(ms),
         p: () => "?",
+        json: () => "?",
         boolText: (b: boolean) => (b ? "1" : "0"),
         tsText: (ms: number) => String(ms),
         jsonText: (v: SqlValue) => String(v),

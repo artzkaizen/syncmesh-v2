@@ -42,7 +42,7 @@ export const captureCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       const changes = (
         await captured(driver, () =>
           driver.run(
-            `INSERT INTO jobs (id, title, hours, rank, done, "dueAt", meta, photo) VALUES (${[1, 2, 3, 4, 5, 6, 7, 8].map(L.p).join(", ")})`,
+            `INSERT INTO jobs (id, title, hours, rank, done, "dueAt", meta, photo) VALUES (${[1, 2, 3, 4, 5, 6].map(L.p).join(", ")}, ${L.json(7)}, ${L.p(8)})`,
             [
               "j1",
               "panel B",

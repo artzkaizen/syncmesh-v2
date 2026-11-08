@@ -1,5 +1,7 @@
 import type { PostgresDriver, SqlRow, SqlValue } from "@syncmesh/storage";
 
+import { Temporal } from "@syncmesh/temporal";
+
 /**
  * What this adapter needs from a postgres.js client — the `sql` an app already hands to
  * `drizzle-orm/postgres-js`, so the mesh's log, its state and the app's queries share one pool
@@ -10,8 +12,13 @@ export interface PostgresQuerier {
   unsafe(
     query: string,
     params?: unknown[],
-  ): PromiseLike<unknown> & { values(): PromiseLike<readonly (readonly unknown[])[]> };
+  ): PromiseLike<unknown> & { values(): PromiseLike<PostgresValues> };
 }
+
+/** Rows as postgres.js answers `.values()`: positional cells, and each column's type. */
+export type PostgresValues = readonly (readonly unknown[])[] & {
+  readonly columns?: readonly { readonly type: number }[];
+};
 
 export interface PostgresClient extends PostgresQuerier {
   /** Runs `fn` on one connection inside BEGIN/COMMIT; the handle it passes cannot nest another. */
@@ -34,19 +41,56 @@ export interface PgliteTransaction {
   query: PgliteClient["query"];
 }
 
-/** postgres.js takes `Buffer` for `bytea`; everything else binds as it is. */
+/**
+ * Params as postgres.js sends them whoever set its serializers: `bytea` as a `Buffer`, and a
+ * timestamp as its ISO text, which a client Drizzle wrapped (it sends a time as it is given)
+ * sends as well as postgres.js's own serializer does. Everything else binds as it is.
+ */
 const bind = (params: readonly SqlValue[]): unknown[] =>
-  params.map((p) => (p instanceof Uint8Array && !Buffer.isBuffer(p) ? Buffer.from(p) : p));
+  params.map((p) =>
+    p instanceof Date
+      ? Temporal.Instant.fromEpochMilliseconds(p.getTime()).toString()
+      : p instanceof Uint8Array && !Buffer.isBuffer(p)
+        ? Buffer.from(p)
+        : p,
+  );
 
 // SAFETY: a Postgres row is text, integers (number, or a decimal string for bigint), doubles, booleans, timestamps as Date, bytea as Buffer and NULL — every one a SqlValue
 const asRows = (rows: readonly (readonly unknown[])[]): readonly SqlRow[] =>
   rows as readonly SqlRow[];
+
+/** `timestamptz`'s type oid: the only time type the mesh's tables hold. */
+const TIMESTAMPTZ = 1184;
+
+/**
+ * Rows with each `timestamptz` a `Date`, whoever set the client's parsers: postgres.js parses
+ * one into a `Date`, and a client Drizzle wrapped first hands back the text Postgres sent.
+ */
+const withDates = (rows: PostgresValues): readonly SqlRow[] => {
+  const times = (rows.columns ?? []).flatMap((c, i) => (c.type === TIMESTAMPTZ ? [i] : []));
+  if (times.length === 0) return asRows(rows);
+  return asRows(
+    rows.map((row) => {
+      const cells = [...row];
+      for (const i of times) {
+        const cell = cells[i];
+        /* oxlint-disable-next-line anti-slop/no-runtime-typeof -- a cell is whatever the client's parser made of it: this is the parse */
+        if (typeof cell === "string")
+          cells[i] = new Date(Temporal.Instant.from(cell).epochMilliseconds);
+      }
+      return cells;
+    }),
+  );
+};
 
 /**
  * A `SqlDriver` over a postgres.js client. `transaction` runs its body on one connection from
  * the pool through `sql.begin`; the storage layer serializes transactions per driver, so a
  * `run`/`all` issued while one is open joins it — the same single-connection semantics the
  * device's SQLite driver has.
+ *
+ * The client may be one Drizzle wraps too, before or after this: what Drizzle changes on it (how
+ * `json` is sent, how a `timestamptz` is read) changes nothing here.
  *
  * @example
  * const sql = postgres(process.env.DATABASE_URL!);
@@ -59,7 +103,8 @@ export function postgresDriver(sql: PostgresClient): PostgresDriver {
     run: async (query, params = []) => {
       await current.unsafe(query, bind(params));
     },
-    all: async (query, params = []) => asRows(await current.unsafe(query, bind(params)).values()),
+    all: async (query, params = []) =>
+      withDates(await current.unsafe(query, bind(params)).values()),
     transaction: (fn) =>
       sql.begin(async (tx) => {
         current = tx;
