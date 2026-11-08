@@ -51,7 +51,7 @@ import { strandedWrites, type StrandedWrites } from "./stranded.js";
 import { mergeAhead } from "./sync.js";
 import { type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
 import { createRevert, type Reverted, type Undo } from "./undo.js";
-import { createWritePath, type OwnPositionApi } from "./writes.js";
+import { createWritePath, type WritePathApi } from "./writes.js";
 
 export type { AtomicStores, EngineOptions, MutateOptions } from "./options.js";
 
@@ -70,7 +70,7 @@ export interface Quarantined {
   readonly reason: ValidationError;
 }
 
-export interface Engine extends FeedApi, RepairApi, SnapshotApi, DocApi, OwnPositionApi, PurgeApi {
+export interface Engine extends FeedApi, RepairApi, SnapshotApi, DocApi, WritePathApi, PurgeApi {
   readonly peerId: PeerId;
   /** Records, stamps, numbers, appends, folds, then hands the event to `onOutbound` — a write is real once appended. */
   readonly mutate: (
@@ -269,7 +269,7 @@ export function createEngine(options: EngineOptions): Engine {
     initial: boot?.state ?? emptyState(),
     hasAdapter,
   });
-  const { getState, setState, fold, persist, persistCoverage, notify, derive } = foldPath;
+  const { getState, setState, fold, persist, persistCoverage, notify } = foldPath;
   docPath.bind({ ...foldPath, synced: () => coverage.current().synced, atomically });
   fold(boot?.replay ?? [], "boot");
 
@@ -302,6 +302,8 @@ export function createEngine(options: EngineOptions): Engine {
   });
 
   const { receiveBatch, ...writes } = createWritePath({
+    // `getState`, `fold`, `persist`, `notify` and `derive`, as `docPath.bind` takes them
+    ...foldPath,
     peerId,
     clock,
     validate,
@@ -309,11 +311,7 @@ export function createEngine(options: EngineOptions): Engine {
     undoDepth,
     undo,
     atomically,
-    getState,
-    fold,
-    persist,
-    notify,
-    derive,
+    atomic: atomic !== undefined,
     outbound,
     telemetry,
     admitEntries: (entries) =>

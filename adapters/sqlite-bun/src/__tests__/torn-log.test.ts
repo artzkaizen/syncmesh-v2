@@ -15,7 +15,8 @@ import { join } from "node:path";
 import { bunSqliteDriver } from "../index.js";
 
 const dir = mkdtempSync(join(tmpdir(), "syncmesh-torn-log-"));
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+// tens of megabytes of copies: under load the removal outlasts the default five seconds
+afterAll(() => rmSync(dir, { recursive: true, force: true }), 60_000);
 
 const file = (name: string) => join(dir, `${name}.db`);
 

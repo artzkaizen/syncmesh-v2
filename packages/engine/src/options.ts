@@ -61,10 +61,10 @@ export interface EngineOptions extends DocEngineOptions {
    * the log ahead of the cursor, which is precisely what `openEngine` repairs by replaying
    * `allSince(coverage)`. Nothing is lost; a boot does the work the crash interrupted.
    *
-   * That is what makes two files possible (RFC-0022), where one transaction cannot span them:
-   * SQLite commits atomically across attached databases only in rollback-journal mode, and every
-   * device here runs WAL. It is also why the order above is a contract and not an accident — the
-   * half that cannot be recomputed commits first.
+   * The order above is a contract and not an accident — the half that cannot be recomputed
+   * commits first. With `atomic`, SQLite commits a transaction over two attached files one file at
+   * a time; `openStores`' `atomic` journals the log half into the state file so that a crash
+   * between the two is finished at the next open (RFC-0022, U29).
    */
   readonly atomic?: <T>(fn: (scoped: AtomicStores) => Promise<T>) => Promise<T>;
 }

@@ -44,6 +44,7 @@ export type {
   ReceiveReport,
 } from "./engine.js";
 export { createEngine } from "./engine.js";
+export type { CaptureSettings, CapturedWrite } from "./writes.js";
 export type {
   Parked,
   QuarantineOptions,

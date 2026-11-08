@@ -53,7 +53,6 @@ export const GRANDFATHERED: ReadonlySet<string> = new Set([
   "scaleOf",
   "schemaOf",
   "scopeOf",
-  "seqOf",
   "sqlOf",
   "sqlValueOf",
   "stampOf",
