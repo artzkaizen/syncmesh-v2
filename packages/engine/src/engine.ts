@@ -49,7 +49,7 @@ import { createSnapshotPath } from "./snapshot.js";
 import { strandedWrites, type StrandedWrites } from "./stranded.js";
 import { mergeAhead } from "./sync.js";
 import { type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
-import { createRevert, type Undo } from "./undo.js";
+import { createRevert, type Reverted, type Undo } from "./undo.js";
 import { createWritePath, type OwnPositionApi } from "./writes.js";
 
 export type { AtomicStores, EngineOptions } from "./options.js";
@@ -115,7 +115,7 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi, DocApi, OwnPosi
    */
   readonly deletedAt: (table: TableName, key: RowKey) => Stamp | undefined;
   /** Writes the compensating event for one of this engine's last `undoDepth` writes, in that event's partition. */
-  readonly revert: (id: EventId) => Promise<Result<SyncEvent, RevertError>>;
+  readonly revert: (id: EventId) => Promise<Result<Reverted, RevertError>>;
   readonly canRevert: (id: EventId) => boolean;
   /**
    * Per author, the highest sequence number below which this engine holds **every** event — the
@@ -325,7 +325,7 @@ export function createEngine(options: EngineOptions): Engine {
       }),
   });
 
-  const revert = createRevert({ undo, undoDepth, mutate: writes.mutate });
+  const revert = createRevert({ undo, undoDepth, getState, mutate: writes.mutate });
 
   const chains = createFeedPath({ store, feeds, receiveBatch });
 
