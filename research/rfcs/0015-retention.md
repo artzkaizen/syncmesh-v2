@@ -88,7 +88,8 @@ sequence at or below its coverage that its log does not hold: what it compacted,
 adopted from a snapshot with no events behind it, never coverage a pass-over adopted for events
 withheld from it) rides at index 4 of every cursors frame, `ahead` always at 3
 before it. A device whose cursor for some author is strictly under that floor asks that peer for
-state once per floor per session. With `trust` set it adopts only what the issuer vouched for;
+state once per floor per session. With `trust` set it adopts only what the issuer vouched for (per
+author, at most the coverage the certificate signs, never the manifest's unsigned `at` alone);
 with no `trust` it asks nothing and raises a `$recovery` issue until the app accepts the state
 (`$recovery.acceptState`), which then adopts per author at most the claimed floor. A snapshot
 manifest nobody asked for installs nothing. Peer to peer only: a relay refusing a below-floor join

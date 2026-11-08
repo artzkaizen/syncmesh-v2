@@ -143,8 +143,11 @@ export function createRejoins(): Rejoins {
   const raised = new Map<PeerId, { readonly issue: BelowFloor; readonly ours: () => Cursors }>();
   /** Sessions asked per (peer, floor) with no install completed. */
   const attempts = new Map<string, number>();
-  /** (peer, floor) pairs with a request on the wire, so a second link to that peer waits for it. */
-  const inflight = new Set<string>();
+  /**
+   * (peer, floor) pairs with a request on the wire, and whether it was an accepted one, so a
+   * second link to that peer, or a second `accept`, waits for it.
+   */
+  const inflight = new Map<string, boolean>();
   /** (peer, floor) pairs an install left below: no later session asks again on its own. */
   const halted = new Set<string>();
   /**
@@ -201,7 +204,7 @@ export function createRejoins(): Rejoins {
 
     const ask = (peer: PeerId, below: Cursors, adoptUnvouched: boolean): void => {
       const key = floorKey(peer, below);
-      inflight.add(key);
+      inflight.set(key, adoptUnvouched);
       mine.add(key);
       const settled = (outcome: JoinOutcome): void => {
         inflight.delete(key);
@@ -224,7 +227,10 @@ export function createRejoins(): Rejoins {
     const register = (peer: PeerId): void => {
       if (registered.has(peer)) return;
       const now = (below: Cursors) => {
-        acted.add(floorKey(peer, below));
+        const key = floorKey(peer, below);
+        acted.add(key);
+        // an accepted request for this floor is already on the wire: its answer is this one's
+        if (inflight.get(key) === true) return;
         ask(peer, below, true);
       };
       registered.set(peer, now);

@@ -101,8 +101,8 @@ export interface JoinDeps {
  * `adoptUnvouched` is the one choice the two original callers make. A request prompted by a
  * peer's compaction floor adds `floor`: the authors this device is below and the floor the peer
  * claimed for each. Then an unvouched install, where allowed at all, adopts per author at most
- * that floor, for those authors only; a vouched one adopts the sender's coverage as any vouched
- * install does; and on a schema with document columns nothing is adopted, because a snapshot
+ * that floor, for those authors only; a vouched one adopts what the certificate signs, as any
+ * vouched install does; and on a schema with document columns nothing is adopted, because a snapshot
  * carries no doc snapshots to stand for the doc updates the floor removed.
  */
 export interface JoinPolicy {
@@ -243,8 +243,9 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
    */
   const complete = async (id: string, held: Incoming): Promise<void> => {
     const rows = [...Array(held.chunks).keys()].flatMap((i) => [...(held.pages.get(i) ?? [])]);
-    const vouched = certified(held, rows);
-    const synced = adopted(held, vouched, engine.hasDocColumns());
+    const signed = certified(held, rows);
+    const vouched = signed !== undefined;
+    const synced = adopted(held, signed, engine.hasDocColumns());
     // `local` stays empty: a device's own local-only events never travel, so a snapshot has
     // nothing to say about them and adopting a floor for them would be a claim it cannot make
     const coverage = synced === undefined ? engine.coverage() : { synced, local: new Map() };
@@ -268,18 +269,23 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
   };
 
   /**
-   * Whether the authority signed exactly this state. Both halves have to hold: the signature is
-   * the issuer's, and the rows hash to what it covers — a relayed certificate over altered rows
-   * fails the second even though it passes the first.
+   * The coverage the authority signed for exactly this state, or `undefined` when nothing vouches
+   * for it. Both halves have to hold: the signature is the issuer's, and the rows hash to what it
+   * covers — a relayed certificate over altered rows fails the second even though it passes the
+   * first.
    */
-  const certified = (held: Incoming, rows: readonly KeyedRecord[]): boolean => {
-    if (held.certificate === undefined || trust === undefined) return false;
+  const certified = (
+    held: Incoming,
+    rows: readonly KeyedRecord[],
+  ): ReadonlyMap<PeerId, number> | undefined => {
+    if (held.certificate === undefined || trust === undefined) return undefined;
     const hashed = rows.map((row) => ({
       table: String(row.table),
       key: String(row.key),
       record: encodeRecord(row.record),
     }));
-    return verifyCheckpoint(held.certificate, trust, hashed).isOk();
+    const verified = verifyCheckpoint(held.certificate, trust, hashed);
+    return verified.isOk() ? verified.value.coverage : undefined;
   };
 
   const onAck = (frame: Extract<SnapshotFrame, { kind: "snap-ack" }>): void => {
@@ -323,22 +329,32 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
 }
 
 /**
- * The synced coverage an install adopts, or `undefined` for none (D46's table). Without a floor
- * the rule is the one the original callers had: everything the sender claimed, when vouched or
- * when the asker took unvouched state. With a floor, unvouched state adopts per author at most
- * the claimed floor, and a schema with document columns adopts nothing at all.
+ * The synced coverage an install adopts, or `undefined` for none (D46's table). A vouched install
+ * adopts per author the lower of what the manifest claimed and what the certificate signs: the
+ * manifest's `at` is unsigned, so only the signed coverage can retire history. Without a floor an
+ * unvouched install adopts everything the sender claimed when the asker took unvouched state.
+ * With a floor, unvouched state adopts per author at most the claimed floor, and a schema with
+ * document columns adopts nothing at all.
  */
-const adopted = (held: Incoming, vouched: boolean, docs: boolean): Cursors | undefined => {
+const adopted = (
+  held: Incoming,
+  signed: ReadonlyMap<PeerId, number> | undefined,
+  docs: boolean,
+): Cursors | undefined => {
   const { policy, at } = held;
-  if (policy.floor === undefined) return vouched || policy.adoptUnvouched ? at : undefined;
-  if (docs) return undefined;
-  if (vouched) return at;
+  if (policy.floor !== undefined && docs) return undefined;
+  if (signed !== undefined) return lower(at, signed);
   if (!policy.adoptUnvouched) return undefined;
+  return policy.floor === undefined ? at : lower(at, policy.floor);
+};
+
+/** Per author named by `cap`, the lower of `at` and `cap`; an author either leaves out is dropped. */
+const lower = (at: Cursors, cap: ReadonlyMap<PeerId, number>): Cursors => {
   const bounded = new Map<PeerId, SeqNum>();
-  for (const [author, floor] of policy.floor) {
+  for (const [author, limit] of cap) {
     const claimed = at.get(author) ?? 0;
     // SAFETY: the lower of two sequence numbers is one of them
-    const capped = (claimed < floor ? claimed : floor) as SeqNum;
+    const capped = (claimed < limit ? claimed : limit) as SeqNum;
     if (capped > 0) bounded.set(author, capped);
   }
   return bounded;

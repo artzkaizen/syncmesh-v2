@@ -159,6 +159,17 @@ describe("a session below a peer's floor", () => {
     second.close();
   });
 
+  test("a second accept while the accepted request is open puts nothing more on the wire", () => {
+    const rejoins = createRejoins();
+    const asked: Parameters<typeof sessionWith>[2] = [];
+    const session = sessionWith(rejoins, false, asked);
+    session.onCursors(far, theirs, floor);
+    expect(rejoins.accept(far)).toBe("requested");
+    expect(rejoins.accept(far)).toBe("requested");
+    expect(asked).toHaveLength(1);
+    session.close();
+  });
+
   test("an accepted floor still holds for the authors a partial catch-up left below it", () => {
     const rejoins = createRejoins();
     const asked: Parameters<typeof sessionWith>[2] = [];

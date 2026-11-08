@@ -17,7 +17,7 @@ import type { JoinExchange, JoinOutcome, JoinPolicy, SnapshotInstalled } from ".
 import type { Peer } from "./fixtures.js";
 
 import { bridgeFramedLink } from "../bridge.js";
-import { decodeFrame } from "../frame.js";
+import { cursorsFrame, decodeFrame } from "../frame.js";
 import { createJoinExchange } from "../join.js";
 import { loopbackPair } from "../link.js";
 import { snapChunkFrame, snapManifestFrame } from "../snap-frame.js";
@@ -93,6 +93,16 @@ const connect = (holder: Peer, joiner: Peer, options: JoinOptions = {}) => {
     close: () => [held.close(), joined.close()],
   };
 };
+
+/** The rows a holder is about to send, hashed the way a receiver will hash them. */
+const stateOf = (holder: Peer) =>
+  [...holder.engine.state()].flatMap(([table, rows]) =>
+    [...rows].map(([key, record]) => ({
+      table: String(table),
+      key: String(key),
+      record: encodeRecord(record),
+    })),
+  );
 
 describe("the join exchange", () => {
   test("state instead of history: the rows arrive and the coverage comes with them", async () => {
@@ -229,16 +239,6 @@ describe("the join exchange", () => {
 });
 
 describe("who vouches for a snapshot (book ch. 4)", () => {
-  /** The rows the holder is about to send, hashed the way a receiver will hash them. */
-  const stateOf = (holder: Peer) =>
-    [...holder.engine.state()].flatMap(([table, rows]) =>
-      [...rows].map(([key, record]) => ({
-        table: String(table),
-        key: String(key),
-        record: encodeRecord(record),
-      })),
-    );
-
   test("a verified certificate makes the install no longer provisional", async () => {
     const authority = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 7 + i)).unwrap();
     const holder = peer(40, "acct_x");
@@ -374,6 +374,40 @@ describe("only an answer is taken (D46, gaps U20)", () => {
       far.bridge.close();
     });
   }
+
+  for (const asking of ["a floor", "a cold join"] as const)
+    test(`a vouched answer to ${asking} adopts what the certificate signs, not the manifest's \`at\``, async () => {
+      const authority = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 7 + i)).unwrap();
+      const victim = peer(80, "acct_y");
+      const author = peer(40, "acct_x");
+      for (let i = 1; i <= 3; i += 1) (await write(author, `n${i}`, `body ${i}`)).unwrap();
+      const rows = author.engine.snapshot().rows;
+      const a = author.identity.peerId;
+      // a genuine certificate over the author's real rows, covering its three events
+      const certificate = issueCheckpoint(authority, {
+        stateHash: checkpointHash(stateOf(author)),
+        coverage: new Map([[a, 3]]),
+        now: T0,
+      });
+      const far = rawFarSide(victim, authority.peerId);
+      await far.settle();
+
+      // SAFETY: test fixture; a sequence far past any the author wrote
+      const huge = new Map([[a, 1_000_000 as SeqNum]]);
+      // the victim asks, prompted by a claimed floor or as `joinIfEmpty` does; the far side answers
+      // with the genuine certificate over the genuine rows, and an `at` nobody signed
+      if (asking === "a floor") far.send(cursorsFrame(a, huge, new Map(), huge));
+      else far.bridge.requestSnapshot(undefined, false);
+      await far.settle();
+      far.send(snapManifestFrame("evil:1", 1, rows.length, huge, undefined, certificate));
+      far.send(snapChunkFrame("evil:1", 0, encodeSnapshotRows(rows)));
+      await far.settle();
+
+      expect(far.installed).toEqual([{ rows: 3, provisional: false }]);
+      expect(Number(victim.engine.coverage().synced.get(a))).toBe(3);
+      if (asking === "a floor") expect(Number(victim.engine.floor().get(a))).toBe(3);
+      far.bridge.close();
+    });
 
   test("two requests overlapping on one bridge each install under their own policy", async () => {
     const holder = peer(40, "acct_x");
