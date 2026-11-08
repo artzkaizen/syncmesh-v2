@@ -183,7 +183,7 @@ suite("served reads over a real Postgres and its logical replication (D43, E27)"
     await server.idle();
     expect(client.refusal("open")).toBe(`${fx.names.open} has no read rule, so no one may read it`);
     expect(client.refusal("nope")).toBe("no read mail.nope");
-    expect(client.refusal("zero")).toBe("Number must be greater than or equal to 1");
+    expect(client.refusal("zero")).toBe("Too small: expected number to be >=1");
     expect(client.rows("open")).toEqual([]);
     expect(ids(client.rows("ok"))).toEqual(down(100, 2));
   });
