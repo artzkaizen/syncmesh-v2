@@ -41,6 +41,12 @@ export interface RelayRoomOptions {
   readonly store: EventStore;
   /** The log's lineage id: persisted with it, sent in every `hello`. A new log is a new epoch. */
   readonly epoch: string;
+  /**
+   * Whether `store` outlives this process — a file, a Durable Object's SQLite, a database (D42).
+   * Every `hello` says so, and only a room that does has its acks counted by `mesh.synced()`.
+   * Default `false`: a log in memory acks as promptly as one on disk, and a restart loses it.
+   */
+  readonly durable?: boolean;
   /** Cadence of `ka` frames; the client's liveness deadline is 2.5× this. Default 15000. */
   readonly keepaliveMs?: number;
   /** Events per catch-up frame. One frame is not a transfer, it is a cliff (RFC-0010). Default 2000. */
@@ -248,6 +254,7 @@ export async function openRelayRoom(
   const state: RoomState = {
     store,
     epoch,
+    durable: options.durable === true,
     keepaliveMs,
     pageSize,
     maxBacklog,

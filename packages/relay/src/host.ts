@@ -41,6 +41,11 @@ export type RoomTuning = Partial<
 export interface RoomStore {
   readonly store: EventStore;
   readonly epoch: string;
+  /**
+   * Whether this log outlives the process (D42): a file or a platform's database does, memory does
+   * not. Absent, it does not — only a room that says so has its acks counted by `mesh.synced()`.
+   */
+  readonly durable?: boolean;
   readonly blobs?: BlobStore;
   /** Where each of those blobs may be read (D44), kept beside them so a reopened room still knows. */
   readonly blobHomes?: BlobHomes;
@@ -65,7 +70,12 @@ export interface RelayHostOptions extends RoomTuning {
    * Your own log instead of per-room ones; the host then serves a single room
    * whatever the path says. The caller opened that store and the caller closes it.
    */
-  readonly singleRoom?: { readonly store: EventStore; readonly epoch?: string };
+  readonly singleRoom?: {
+    readonly store: EventStore;
+    readonly epoch?: string;
+    /** Whether that store outlives this process (D42); absent, it is treated as one that does not. */
+    readonly durable?: boolean;
+  };
   /** Who may open a socket, and onto which rooms: announce apart from access. */
   readonly posture?: RelayPosture;
   /**
@@ -94,7 +104,7 @@ export interface RelayHost {
    */
   readonly admits: (request: Request, room: string) => Promise<Response | undefined>;
   /** A caller-supplied store serves one room whatever the path says; otherwise the path is the room. */
-  readonly roomFor: (path: string) => string;
+  readonly roomName: (path: string) => string;
   /**
    * Binds an accepted socket to its room. Returns at once; the room opens underneath
    * and frames that race it are flushed in order the moment the connection exists.
@@ -205,6 +215,8 @@ export async function durableRoomStore(
   return {
     store: stores.events,
     epoch: await relayEpoch(driver),
+    // a file the next process opens again: what this room acks survives its restart
+    durable: true,
     ...omitUndefined({ blobs, blobHomes }),
     release: stores.close,
   };
@@ -253,6 +265,7 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
         grants,
         store: options.singleRoom.store,
         epoch: singleEpoch,
+        ...omitUndefined({ durable: options.singleRoom.durable }),
       });
       // the caller opened that store and the caller closes it; an eviction here borrows nothing
       return room.match({
@@ -267,6 +280,7 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
         blobs: held.blobs,
         blobHomes: held.blobHomes,
         identity: held.identity,
+        durable: held.durable,
       }),
       name,
       grants,
@@ -285,7 +299,7 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
     now: () => Temporal.Now.instant(),
   });
   // a caller-supplied store is one log: it serves one room whatever the path says
-  const roomFor = (path: string): string => (options.singleRoom === undefined ? path : "main");
+  const roomName = (path: string): string => (options.singleRoom === undefined ? path : "main");
 
   // the host's, one room's, and the table's ceilings (gap audit №5); all three are approximate
   // under races — they count sockets already accepted, not upgrades still in flight — and all
@@ -294,7 +308,7 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
   let live = 0;
   const atCapacity = (room: string): boolean => {
     if (live >= limits.maxConnections) return true;
-    const name = roomFor(room);
+    const name = roomName(room);
     const sockets = table.sockets(name);
     if (sockets !== undefined) return sockets >= limits.maxRoomConnections;
     // a room nobody is on is not counted: `accept` closes one to seat the new name
@@ -308,7 +322,7 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
     let pending: Uint8Array[] | undefined = [];
     let release: (() => void) | undefined;
     let gone = false;
-    const name = roomFor(path);
+    const name = roomName(path);
     // only an admitted socket closes an idle room, so a dial the posture refuses evicts nothing
     if (table.sockets(name) === undefined && table.count() >= limits.maxRooms) table.evictIdlest();
     void table.acquire(name).then((held) => {
@@ -345,9 +359,9 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
     peerId: identity.peerId,
     gate,
     admits: postureGate(access),
-    roomFor,
+    roomName,
     accept,
-    acquire: (path) => table.acquire(roomFor(path)),
+    acquire: (path) => table.acquire(roomName(path)),
     live: () => live,
     atCapacity,
     close: () => table.close(),

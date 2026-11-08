@@ -43,8 +43,13 @@ export interface SessionHooks {
   readonly rejoin: () => void;
   /** A challenging room's first frame: what a v2 join has to sign (D33). A sealed link never sends one (D36). */
   readonly onChallenge: (nonce: Uint8Array) => void;
-  /** The room said hello: its keepalive, and the lineage of the log it is serving (RFC-0020 §3.2). */
-  readonly onHello: (keepaliveMs: number, epoch: string) => void;
+  /**
+   * The room said hello: its keepalive, the lineage of the log it is serving (RFC-0020 §3.2), and
+   * whether that log is durable and what it holds unbroken — what `synced()` starts from (D42).
+   */
+  readonly onHello: (hello: Extract<RelayFrame, { kind: "hello" }>) => void;
+  /** The room holds one event this session sent — a duplicate as much as a first (D42). */
+  readonly onAck?: (id: string) => void;
   /**
    * The room's log runs at least to `offset`, and everything this device was sent below it has
    * been folded into rows — what `visibleAt` settles on. Called behind the fold chain, never beside
@@ -337,14 +342,17 @@ export function wireSession(
     else if (frame.kind === "hello") {
       relayCursors = frame.cursors;
       adoptOwn(frame.cursors);
-      hooks.onHello(frame.keepaliveMs, frame.epoch);
+      hooks.onHello(frame);
     } else if (frame.kind === "page") onPage(frame);
     else if (isBlobAnswer(frame)) answerBlob(hooks, frame);
     else if (frame.kind === "relayed") {
       fold([frame.wire]);
       position(frame.offset);
-    } else if (frame.kind === "ack") position(frame.offset);
-    else if (frame.kind === "error") {
+    } else if (frame.kind === "ack") {
+      // durability is a fact about the room, not about this device's fold, so it is not queued
+      hooks.onAck?.(frame.id);
+      position(frame.offset);
+    } else if (frame.kind === "error") {
       if (frame.code === "version") hooks.onVersionRefused();
       dialed.close();
     } else if (frame.kind === "session") onSession(frame.frame);

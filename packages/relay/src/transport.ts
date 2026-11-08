@@ -47,7 +47,8 @@ export interface RelayTransportOptions {
  * push what the relay lacks only after the last page, hold a liveness deadline of 2.5× the
  * relay's keepalive re-armed on every frame (a hello-less relay arms nothing), and reconnect
  * with backoff. A version refusal is permanent — no reconnect loop against a relay that
- * already said no.
+ * already said no. Declares `blobs`, `visibility` and `durable` (D42): the last settles only on a
+ * room whose hello says its log outlives the process.
  */
 export function relayTransport(options: RelayTransportOptions): Transport {
   const link = new RelayLink(options);
@@ -62,6 +63,7 @@ export function relayTransport(options: RelayTransportOptions): Transport {
     sendPresence: (wire) => link.sendPresence(wire),
     blobs: link.blobChannel.capability,
     visibility: link.visibility.capability,
+    durable: link.durability.durable,
     start: (context) => link.start(context),
     whenReady: () => link.whenReady(),
     caughtUp: () => link.caughtUp(),

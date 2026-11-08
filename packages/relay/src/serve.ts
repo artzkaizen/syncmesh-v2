@@ -24,6 +24,11 @@ export interface StartRelayOptions {
   readonly store?: EventStore;
   /** Only with `store`: its lineage id. A store without one gets one fresh epoch per process. */
   readonly epoch?: string;
+  /**
+   * Only with `store`: whether it outlives this process (D42). Absent, it is treated as memory —
+   * its acks never settle `mesh.synced()`. The `dataDir` default is durable and says so itself.
+   */
+  readonly durable?: boolean;
   readonly keepaliveMs?: number;
   readonly pageSize?: number;
   readonly maxBacklog?: number;
@@ -96,7 +101,7 @@ export const hostTuning = (
     singleRoom:
       options.store === undefined
         ? undefined
-        : omitUndefined({ store: options.store, epoch: options.epoch }),
+        : omitUndefined({ store: options.store, epoch: options.epoch, durable: options.durable }),
     keepaliveMs: options.keepaliveMs,
     pageSize: options.pageSize,
     maxBacklog: options.maxBacklog,

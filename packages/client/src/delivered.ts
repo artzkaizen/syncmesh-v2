@@ -20,10 +20,10 @@ const covered = (cursors: Cursors | undefined, peer: PeerId, seq: SeqNum): boole
   (cursors?.get(peer) ?? 0) >= seq;
 
 /** A synced event id as the (author, seq) a cursor map covers; a local id is refused — it never travels. */
-const targetOf = (event: EventId) => {
-  const parsed = parseEventId(String(event));
-  if (parsed.isErr()) return panic(`${String(event)}: ${parsed.error.message}`);
-  if (parsed.value.local) return panic(`${String(event)}: a local event never leaves this device`);
+export const eventTarget = (event: EventId) => {
+  const parsed = parseEventId(event);
+  if (parsed.isErr()) return panic(`${event}: ${parsed.error.message}`);
+  if (parsed.value.local) return panic(`${event}: a local event never leaves this device`);
   return { peer: parsed.value.peerId, seq: parsed.value.seqNum };
 };
 
@@ -34,7 +34,7 @@ const targetOf = (event: EventId) => {
  */
 export function createReceived(engine: Engine): (options: ReceivedOptions) => Promise<void> {
   return ({ event }) => {
-    const target = targetOf(event);
+    const target = eventTarget(event);
     const folded = () => covered(engine.coverage().synced, target.peer, target.seq);
     if (folded()) return Promise.resolve();
     return new Promise((resolve) => {
@@ -57,7 +57,7 @@ export function createDelivered(
   self: PeerId,
 ): (options?: DeliveredOptions) => Promise<void> {
   const deliveryTarget = (event: EventId | undefined) => {
-    if (event !== undefined) return targetOf(event);
+    if (event !== undefined) return eventTarget(event);
     const seq = engine.coverage().synced.get(self);
     return seq === undefined ? undefined : { peer: self, seq };
   };
