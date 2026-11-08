@@ -71,8 +71,13 @@ export interface GapSql {
   readonly delete: string;
   /** Every recorded gap as `peer, local, from, to`, ordered by author and start. */
   readonly selectAll: string;
-  /** Gaps compaction has put wholly below the floor: binds `(peer, local, floor)`. */
-  readonly deleteBelow: string;
+  /**
+   * The floor a snapshot install left below the log's own history (`EventStore.installedBelow`),
+   * as a JSON list of `[peer, seq]` pairs in `meta` under `installed`: no row is no floor.
+   */
+  readonly selectInstalled: string;
+  /** Writes that list whole. Binds `(json)`. */
+  readonly upsertInstalled: string;
   /**
    * Holds one author's run in one scope until the transaction ends: binds `(peer, local)`. Only
    * where two connections can append to the same log at once (Postgres); SQLite appends take the

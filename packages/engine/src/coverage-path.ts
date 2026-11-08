@@ -122,3 +122,19 @@ export function createCoveragePath(
   /** `adoptUnheld` for a snapshot install: what it adopts is said like any other adoption. */
   return { adoptUnheld: announced(coverage.adoptUnheld), api };
 }
+
+/**
+ * A snapshot install's coverage committed: its floor into the log first, then the state's
+ * cursors, so a state that is lost or never read still says it held rows the log cannot rebuild
+ * (gaps U33).
+ */
+export async function persistInstall(
+  store: EventStore,
+  coverage: CoverageTracker,
+  errors: Hub<EngineError>,
+  persistCoverage: () => Promise<void>,
+): Promise<void> {
+  const recorded = await store.recordInstalled(coverage.current().floor ?? new Map());
+  if (recorded.isErr()) errors.emit(recorded.error);
+  await persistCoverage();
+}

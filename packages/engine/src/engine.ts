@@ -28,7 +28,7 @@ import type { StateLookup } from "./validate.js";
 
 import { admit } from "./admit.js";
 import { createCompaction } from "./compaction.js";
-import { type CoverageApi, createCoveragePath } from "./coverage-path.js";
+import { type CoverageApi, createCoveragePath, persistInstall } from "./coverage-path.js";
 import { trackCoverage } from "./coverage.js";
 import { createRepairPath } from "./digest.js";
 import { createDocEditor } from "./doc-editor.js";
@@ -264,7 +264,8 @@ export function createEngine(options: EngineOptions): Engine {
     adopt: covered.adoptUnheld,
     // in a turn, so a purge never runs between a snapshot's state commit and its own (D45)
     persist: (batch: FoldBatch) => turn(() => persist(batch, plain)),
-    persistCoverage: () => turn(() => persistCoverage(plain)),
+    persistCoverage: () =>
+      turn(() => persistInstall(store, coverage, errors, () => persistCoverage(plain))),
     notify,
     docs: options.docs,
   });

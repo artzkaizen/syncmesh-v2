@@ -155,4 +155,26 @@ describe("the localStorage event store", () => {
     const absent = await localStorageEventStore({ name: "notes" });
     expect(absent.isErr() && absent.error._tag).toBe("StoreFailure");
   });
+
+  test("what lies under the floors survives a reopen: the holes compaction passed and the installed floor (gaps U1, U33)", async () => {
+    const storage = fakeStorage();
+    {
+      const { store } = (await open(storage)).unwrap();
+      // A:2 never reached this log
+      (await store.appendBatch([entry(A, 1, 100), entry(A, 3, 102)])).unwrap();
+      (await store.compactBelow(new Map([[A, seq(3)]]), "synced", FOREVER)).unwrap();
+      (await store.recordInstalled(new Map([[B, seq(4)]]))).unwrap();
+    }
+    const { store, corrupt } = (await open(storage)).unwrap();
+    expect(corrupt).toBeUndefined();
+    expect((await store.compacted(event(A, 1, 100))).unwrap()).toBe(true);
+    expect((await store.compacted(event(A, 2, 101))).unwrap()).toBe(false);
+    expect((await store.compacted(event(A, 3, 102))).unwrap()).toBe(true);
+    expect((await store.installedBelow()).unwrap()).toEqual(new Map([[B, seq(4)]]));
+    // the late event fills its hole, and that survives a reopen too
+    (await store.append(entry(A, 2, 101))).unwrap();
+    const again = (await open(storage)).unwrap().store;
+    expect((await again.compacted(event(A, 2, 101))).unwrap()).toBe(false);
+    expect((await again.all()).unwrap()).toHaveLength(1);
+  });
 });

@@ -1,13 +1,28 @@
-import type { Coverage, Cursors, EventStore, StoredEvent } from "@syncmesh/engine";
+import type {
+  Coverage,
+  Cursors,
+  EventStore,
+  MemoryEventStore,
+  StoredEvent,
+} from "@syncmesh/engine";
 import type { EventId } from "@syncmesh/kernel";
 
-import { StoreFailure, createMemoryEventStore } from "@syncmesh/engine";
+import { StoreFailure, createMemoryEventStore, higherFloor } from "@syncmesh/engine";
 import { compareHlc } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
-import type { LogCorrupt, PersistedHead } from "./local-log.js";
+import type { LogCorrupt, PersistedBelow, PersistedHead } from "./local-log.js";
 
-import { EMPTY_HEAD, decodeHead, decodeLog, encodeHead, encodeLog } from "./local-log.js";
+import {
+  EMPTY_BELOW,
+  EMPTY_HEAD,
+  decodeBelow,
+  decodeHead,
+  decodeLog,
+  encodeBelow,
+  encodeHead,
+  encodeLog,
+} from "./local-log.js";
 import { failure } from "./sql.js";
 
 /** The `Storage` calls this store makes — a browser's `localStorage`, or anything of that shape. */
@@ -49,18 +64,9 @@ const ambient = (): LocalStorageLike | undefined =>
   // SAFETY: a property read off globalThis, used only through LocalStorageLike; anywhere but a browser it is absent and the caller takes the undefined branch
   (globalThis as { localStorage?: LocalStorageLike }).localStorage;
 
-const higher = (held: Cursors, seen: Cursors): Cursors => {
-  const merged = new Map(held);
-  for (const [peer, seq] of seen) {
-    const mark = merged.get(peer);
-    if (mark === undefined || mark < seq) merged.set(peer, seq);
-  }
-  return merged;
-};
-
 const mergeCoverage = (held: Coverage, seen: Coverage): Coverage => ({
-  synced: higher(held.synced, seen.synced),
-  local: higher(held.local, seen.local),
+  synced: higherFloor(held.synced, seen.synced),
+  local: higherFloor(held.local, seen.local),
 });
 
 /** The head after `entries` are appended. Every mark only rises — that is the whole job of this function. */
@@ -76,15 +82,15 @@ function advance(head: PersistedHead, entries: readonly StoredEvent[]): Persiste
   return { ...head, hlc, seqs };
 }
 
-/** The two keys, and the head as this process last knew it. */
+/** The three keys, and the head as this process last knew it. */
 function localLog(storage: LocalStorageLike, name: string) {
-  const keys = { head: `${name}.head`, log: `${name}.log` };
+  const keys = { head: `${name}.head`, log: `${name}.log`, below: `${name}.below` };
   let head = EMPTY_HEAD;
   const write = (key: string, text: string) =>
     Result.try({ try: () => storage.setItem(key, text), catch: failure(`writing ${key} failed`) });
 
   return {
-    read: (key: "head" | "log") =>
+    read: (key: "head" | "log" | "below") =>
       Result.try({
         try: () => storage.getItem(keys[key]),
         catch: failure(`reading ${keys[key]} failed`),
@@ -99,6 +105,7 @@ function localLog(storage: LocalStorageLike, name: string) {
         head = next;
       }),
     saveLog: (entries: readonly StoredEvent[]) => write(keys.log, encodeLog(entries)),
+    saveBelow: (below: PersistedBelow) => write(keys.below, encodeBelow(below)),
   };
 }
 
@@ -133,11 +140,22 @@ function appendAll(memory: EventStore, disk: LocalLog, batch: readonly StoredEve
  * point: the log answers what it holds, the head answers what it has ever held, and only the second
  * one may never regress — `lastSeq` and `maxHlc` survive both compaction and a failed write.
  */
-function storeOver(memory: EventStore, disk: LocalLog): EventStore {
+function storeOver(memory: MemoryEventStore, disk: LocalLog, seeded: Cursors): EventStore {
   const ok = <T>(value: T) => Promise.resolve(Result.ok(value));
+  /** Writes what lies under the floors, when an append, a compaction or an evict moved it. */
+  const keepBelow = <T>(run: () => Promise<Result<T, StoreFailure>>) =>
+    Result.gen(async function* () {
+      const before = encodeBelow(below());
+      const value = yield* Result.await(run());
+      const after = below();
+      if (encodeBelow(after) !== before) yield* disk.saveBelow(after);
+      return Result.ok(value);
+    });
+  let installed = seeded;
+  const below = (): PersistedBelow => ({ holes: memory.holes(), installed });
   return {
-    append: (entry) => appendAll(memory, disk, [entry]),
-    appendBatch: (entries) => appendAll(memory, disk, entries),
+    append: (entry) => keepBelow(() => appendAll(memory, disk, [entry])),
+    appendBatch: (entries) => keepBelow(() => appendAll(memory, disk, entries)),
     has: (id) => memory.has(id),
     all: () => memory.all(),
     stranded: (mine) => memory.stranded(mine),
@@ -145,9 +163,21 @@ function storeOver(memory: EventStore, disk: LocalLog): EventStore {
     lastSeq: (peer, scope) => ok(disk.head().seqs[scope].get(peer)),
     maxHlc: () => ok(disk.head().hlc),
     compactedBelow: () => ok(disk.head().floors),
+    compacted: (event) => memory.compacted(event),
+    installedBelow: () => memory.installedBelow(),
+    recordInstalled: (floor) =>
+      keepBelow(() =>
+        Result.gen(async function* () {
+          yield* Result.await(memory.recordInstalled(floor));
+          installed = yield* Result.await(memory.installedBelow());
+          return Result.ok(undefined);
+        }),
+      ),
     compactBelow: (floor, scope, olderThan) =>
       Result.gen(async function* () {
-        const removed = yield* Result.await(memory.compactBelow(floor, scope, olderThan));
+        const removed = yield* Result.await(
+          keepBelow(() => memory.compactBelow(floor, scope, olderThan)),
+        );
         if (removed === 0) return Result.ok(0);
         const head = disk.head();
         const marks = yield* Result.await(memory.compactedBelow());
@@ -159,7 +189,7 @@ function storeOver(memory: EventStore, disk: LocalLog): EventStore {
     // the head keeps its marks: an evicted event was numbered, and numbering never goes back
     evict: (ids) =>
       Result.gen(async function* () {
-        const removed = yield* Result.await(memory.evict(ids));
+        const removed = yield* Result.await(keepBelow(() => memory.evict(ids)));
         if (removed === 0) return Result.ok(0);
         yield* disk.saveLog(yield* Result.await(memory.all()));
         return Result.ok(removed);
@@ -173,6 +203,8 @@ interface Recovered {
   readonly corrupt?: LogCorrupt;
   /** Both keys were damaged: no mark survived, so where this device had numbered to is unknown. */
   readonly numberingLost?: boolean;
+  /** The head was damaged, and the compaction floors with it. */
+  readonly floorsLost?: boolean;
 }
 
 /**
@@ -200,7 +232,12 @@ function recover(rawHead: string | null, rawLog: string | null): Recovered {
   const entries = decodeLog(rawLog);
   if (head.isErr()) {
     const survived = entries.isOk() ? entries.value : [];
-    const recovered = { head: advance(EMPTY_HEAD, survived), entries: [], corrupt: head.error };
+    const recovered = {
+      head: advance(EMPTY_HEAD, survived),
+      entries: [],
+      corrupt: head.error,
+      floorsLost: true,
+    };
     return survived.length > 0 ? recovered : { ...recovered, numberingLost: true };
   }
   if (entries.isErr()) return { head: head.value, entries: [], corrupt: entries.error };
@@ -237,16 +274,24 @@ export function localStorageEventStore(
   return Result.gen(async function* () {
     const rawHead = yield* disk.read("head");
     const rawLog = yield* disk.read("log");
-    const { head, entries, corrupt, numberingLost } = recover(rawHead, rawLog);
+    const recovered = recover(rawHead, rawLog);
+    const { head, entries, numberingLost } = recovered;
     const marks = advance(head, entries); // an entry outliving the mark it set raises it back
     disk.adopt(marks);
-    if (corrupt !== undefined) {
+    if (recovered.corrupt !== undefined) {
       yield* disk.saveHead(marks); // the damaged bytes go now, not on the next write
       yield* disk.saveLog(entries);
     }
-    const memory = createMemoryEventStore();
+    // a hole is a run below a floor, so holes go with a head that did not decode; the installed
+    // floor is about the state, not the log, and stays
+    const decoded = decodeBelow(yield* disk.read("below"));
+    const kept = decoded.isOk() ? decoded.value : EMPTY_BELOW;
+    const below = recovered.floorsLost === true ? { ...kept, holes: [] } : kept;
+    if (decoded.isErr()) yield* disk.saveBelow(below);
+    const corrupt = recovered.corrupt ?? (decoded.isErr() ? decoded.error : undefined);
+    const memory = createMemoryEventStore({ floors: marks.floors, ...below });
     yield* Result.await(memory.appendBatch(entries));
-    const store = storeOver(memory, disk);
+    const store = storeOver(memory, disk, below.installed);
     if (corrupt === undefined) return Result.ok({ store });
     return Result.ok(
       numberingLost === true ? { store, corrupt, numberingLost } : { store, corrupt },

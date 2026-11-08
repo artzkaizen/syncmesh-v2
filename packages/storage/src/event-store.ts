@@ -1,4 +1,4 @@
-import type { Coverage, EventStore, StoredEvent } from "@syncmesh/engine";
+import type { Coverage, EventStore, StateCorrupt, StoredEvent } from "@syncmesh/engine";
 import type { Hlc, SeqNum } from "@syncmesh/kernel";
 
 import { DEFAULT_RECENT, LogTorn, StoreFailure } from "@syncmesh/engine";
@@ -12,6 +12,7 @@ import type { Hole } from "./holes.js";
 
 import { driverDialect } from "./dialect.js";
 import { evictEvents } from "./evict.js";
+import { createFloorReads } from "./floor-reads.js";
 import { readHoles, unaccounted } from "./holes.js";
 import { attempt, failure, headerRow, hlcRow, inTransaction } from "./sql.js";
 import { parseCoverage, parseSeqCell } from "./sql.js";
@@ -204,6 +205,9 @@ export interface SqlEventStoreOptions {
   readonly nested?: boolean;
 }
 
+const asStoreFailure = (e: StoreFailure | StateCorrupt): StoreFailure =>
+  e._tag === "StateCorrupt" ? new StoreFailure({ message: e.message }) : e;
+
 export function sqlEventStore(
   driver: SqlDriver,
   options: SqlEventStoreOptions = {},
@@ -325,7 +329,6 @@ export function sqlEventStore(
               ms ?? null,
               logical ?? null,
             ]);
-            await driver.run(GAPS.deleteBelow, [peer ?? null, local, max ?? null]);
             removed += Number(count);
           }
           if (removed > 0) await driver.run(SQL.deleteCompactable, bind);
@@ -334,12 +337,9 @@ export function sqlEventStore(
       ),
     compactedBelow: () =>
       query("compactedBelow failed", SQL.selectFloors).then((rows) =>
-        rows
-          .andThen(parseCoverage)
-          .mapError((e) =>
-            e._tag === "StateCorrupt" ? new StoreFailure({ message: e.message }) : e,
-          ),
+        rows.andThen(parseCoverage).mapError(asStoreFailure),
       ),
+    ...createFloorReads({ driver, events: SQL, gaps: GAPS }, () => store.compactedBelow()),
     maxHlc: () =>
       query("maxHlc failed", SQL.selectMaxHlc).then((rows) => rows.andThen((r) => hlcRow(r[0]))),
     evict: (ids) => evictEvents(driver, { events: SQL, gaps: GAPS }, transaction, ids),
