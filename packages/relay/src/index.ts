@@ -48,7 +48,16 @@ export { cappedBlobStore } from "./blob-cap.js";
 export type { HeldRoom, OpenedRoom, RoomTable, RoomTableOptions } from "./rooms.js";
 export { DEFAULT_IDLE_AFTER, createRoomTable } from "./rooms.js";
 export type { RelayPosture, RoomAccess } from "./posture.js";
-export { createRoomAccess } from "./posture.js";
+export { BEARER_SECRET, createRoomAccess, hostedPosture } from "./posture.js";
+export type { RoomTrust } from "./trust.js";
+export {
+  REGRANTED,
+  REGRANTED_MESSAGE,
+  REVOKED,
+  REVOKED_MESSAGE,
+  UNGRANTED,
+  UNGRANTED_MESSAGE,
+} from "./trust.js";
 export type { RelayTelemetry } from "./telemetry.js";
 export type { GrantCache } from "./grant-cache.js";
 export { createGrantCache } from "./grant-cache.js";

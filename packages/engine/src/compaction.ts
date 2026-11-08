@@ -3,10 +3,13 @@ import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { Temporal, addToInstant } from "@syncmesh/temporal";
 
+import type { DocStore } from "./doc-log.js";
 import type { StateCorrupt, StateStore } from "./state-store.js";
 import type { EventStore, StoreFailure } from "./store.js";
 import type { Coverage, Cursors } from "./sync.js";
 
+import { createMemoryDocStore } from "./doc-log-memory.js";
+import { docAppends } from "./doc-log.js";
 import { CompactionRefused } from "./errors.js";
 import { EMPTY_COVERAGE } from "./sync.js";
 
@@ -62,6 +65,19 @@ interface CompactDeps {
   readonly store: EventStore;
   readonly stateStore: StateStore | undefined;
   readonly acks: ReadonlyMap<PeerId, Ack>;
+  /** Holds back every event with a doc change no persisted snapshot covers (RFC-0023 §8.3). */
+  readonly docs: DocStore;
+  /**
+   * Whether {@link CompactDeps.docs} outlives the engine. When it does not, a reopened engine's
+   * doc log starts empty over a log that still holds doc changes, so the clamp reads them from
+   * the events instead.
+   */
+  readonly docsPersist: boolean;
+  /**
+   * Per author, a floor the engine itself holds: below this principal's last `undoDepth` writes
+   * that carry doc changes, whose updates an undo will need again (§8.3, clause 3).
+   */
+  readonly held: () => Cursors;
 }
 
 /** The lowest cursor per author across the peers still counted; an author no peer has acked floors at 0. */
@@ -85,6 +101,19 @@ function ackFloor(acks: Iterable<Ack>, authors: Iterable<PeerId>): Cursors {
 }
 
 /**
+ * Never above a hold: per author, the lower of the floor and the hold, and an author the floor
+ * names but no hold does keeps the floor. The opposite of {@link clampToPersisted}, where absence
+ * means nothing is persisted and so nothing may go.
+ */
+export const clampToHeld = (floor: Cursors, held: Cursors): Cursors => {
+  const clamped = new Map<PeerId, SeqNum>();
+  for (const [peer, seq] of floor) {
+    const hold = held.get(peer);
+    clamped.set(peer, hold !== undefined && hold < seq ? hold : seq);
+  }
+  return clamped;
+};
+/**
  * Whether this device's folded state could be thrown away and rebuilt from the log alone.
  *
  * **The question RFC-0022 rests on, and the answer is not always yes.** Compaction deletes events
@@ -103,6 +132,22 @@ export const refoldable = (store: EventStore): Promise<Result<boolean, StoreFail
   Result.gen(async function* () {
     const floor = yield* Result.await(store.compactedBelow());
     return Result.ok(floor.synced.size === 0 && floor.local.size === 0);
+  });
+
+/**
+ * The uncovered floor the log's own doc changes imply, every one of them uncovered: what the
+ * clamp falls back on when the doc log was kept in memory and may have been lost with a restart.
+ */
+const loggedDocFloor = (store: EventStore): Promise<Result<Cursors, StoreFailure>> =>
+  Result.gen(async function* () {
+    const events = yield* Result.await(store.all());
+    const scratch = createMemoryDocStore();
+    const appends = docAppends(
+      events.map((e) => e.event),
+      () => false,
+    );
+    yield* Result.await(scratch.append(appends.map((a) => a.entry)));
+    return Result.ok(yield* Result.await(scratch.uncoveredFloor()));
   });
 
 /** Never above what is persisted: a device cannot refold what it deleted. */
@@ -126,7 +171,7 @@ export function compactLog(
   deps: CompactDeps,
   options: CompactOptions,
 ): Promise<Result<Compaction, CompactError>> {
-  const { store, stateStore, acks } = deps;
+  const { store, stateStore, acks, docs, docsPersist, held } = deps;
   const { now, keepAtLeast } = options;
   if (stateStore === undefined) {
     return Promise.resolve(
@@ -140,9 +185,16 @@ export function compactLog(
   }
   return Result.gen(async function* () {
     const persisted = yield* Result.await(stateStore.loadCursors());
-    const synced = clampToPersisted(
-      ackFloor(livePeers(acks, options), persisted.synced.keys()),
-      persisted.synced,
+    const uncovered = yield* Result.await(docs.uncoveredFloor());
+    const logged = docsPersist
+      ? new Map<PeerId, SeqNum>()
+      : yield* Result.await(loggedDocFloor(store));
+    const synced = [uncovered, logged, held()].reduce(
+      (floor, hold) => clampToHeld(floor, hold),
+      clampToPersisted(
+        ackFloor(livePeers(acks, options), persisted.synced.keys()),
+        persisted.synced,
+      ),
     );
     const local = persisted.local;
     const olderThan = keepAtLeast === undefined ? now : addToInstant(now, keepAtLeast.negated());

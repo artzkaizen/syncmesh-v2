@@ -20,6 +20,8 @@ export interface GrantCache {
   readonly admit: (wire: Uint8Array) => boolean;
   /** Every wire held, newest mint per device, in the bytes it arrived as. */
   readonly all: () => readonly Uint8Array[];
+  /** The wire held for one device, if any. */
+  readonly wireFor: (device: PeerId) => Uint8Array | undefined;
 }
 
 export function createGrantCache(): GrantCache {
@@ -40,5 +42,6 @@ export function createGrantCache(): GrantCache {
       return true;
     },
     all: () => [...held.values()].map((entry) => entry.wire),
+    wireFor: (device) => held.get(device)?.wire,
   };
 }

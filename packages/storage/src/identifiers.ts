@@ -16,3 +16,11 @@ export const columnsOf = (table: Table) =>
     const name = table.columnNames[key];
     return name === undefined ? [] : [[key, name, column] as const];
   });
+
+/**
+ * The columns whose values the fold carries: every column but a document's. A document column's
+ * cell holds its lineage (RFC-0023 §6.1), not the bytes the app reads, so the projection never
+ * writes it and capture never logs a change to it — the materialiser owns that column.
+ */
+export const valueColumns = (table: Table) =>
+  columnsOf(table).filter(([, , column]) => column.def.doc === undefined);

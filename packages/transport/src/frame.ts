@@ -53,6 +53,13 @@ export type Frame =
   | { readonly kind: "refusal"; readonly wire: Uint8Array }
   /** What the sender can reach and how far: one advertisement per destination (book ch. 17). */
   | { readonly kind: "routes"; readonly ads: readonly RouteAdWire[] }
+  /**
+   * The sequences the sender withheld from this peer because its grant does not cover them, and
+   * the entitlement it judged by (D40). The receiver counts them as accounted for — never as
+   * held — so the hole they leave stops stalling its holdback, while an event lost in transit
+   * still stops its cursor: only a named sequence is skipped, never a range.
+   */
+  | { readonly kind: "withheld"; readonly scope: string; readonly withheld: Ahead }
   /** The join exchange (RFC-0019), one tag with a sub-kind of its own. */
   | SnapshotFrame
   /** A tag this build does not know; ignored, never an error. */
@@ -97,6 +104,10 @@ export const cursorsFrame = (from: PeerId, cursors: Cursors, ahead?: Ahead): Uin
   );
 
 export const eventFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.event, wire]);
+
+/** What the sender may not send this peer, per author by sequence, under the entitlement `scope` (D40). */
+export const withheldFrame = (scope: string, withheld: Ahead): Uint8Array =>
+  encodeCbor([KIND.withheld, scope, aheadPairs(withheld)]);
 
 export const presenceFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.presence, wire]);
 
@@ -175,7 +186,18 @@ function decodeTagged(
   if (kind === KIND.digest) return decodeDigest(payload, extra, outer[3], outer[4]);
   if (kind === KIND.routes) return decodeRoutes(payload);
   if (kind === KIND.snapshot) return decodeSnapshotFrame(outer);
+  if (kind === KIND.withheld) return decodeWithheld(payload, extra);
   return Result.ok({ kind: "unknown" } as const);
+}
+
+function decodeWithheld(
+  payload: CborValue | undefined,
+  extra: CborValue | undefined,
+): Result<Frame, MalformedFrame> {
+  if (!isString(payload)) return malformedFrame("withheld scope is not text");
+  return decodeAheadPairs(extra).map(
+    (withheld) => ({ kind: "withheld", scope: payload, withheld }) as const,
+  );
 }
 
 function decodeRequest(

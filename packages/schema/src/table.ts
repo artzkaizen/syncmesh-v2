@@ -153,7 +153,7 @@ export function checkRow(
   mode: "insert" | "update",
 ): Result<void, RowError> {
   for (const key of Object.keys(row)) {
-    if (!(key in t.columns))
+    if (!Object.hasOwn(t.columns, key))
       return Result.err(
         new UnknownColumn({ column: key, message: `${String(t.name)} has no column ${key}` }),
       );

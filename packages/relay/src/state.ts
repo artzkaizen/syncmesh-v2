@@ -3,7 +3,7 @@ import type { PeerId, SyncEvent } from "@syncmesh/kernel";
 import type { BlobStore } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { PresenceStore } from "@syncmesh/transport";
-import type { Identity } from "@syncmesh/wire";
+import type { Grant, Identity } from "@syncmesh/wire";
 
 import type { Gate } from "./admission.js";
 import type { BlobKeeper } from "./blob-keeper.js";
@@ -11,6 +11,7 @@ import type { GrantCache } from "./grant-cache.js";
 import type { Budget, RelayLimits } from "./limits.js";
 import type { RelaySocket, Sender } from "./sender.js";
 import type { RelayTelemetry } from "./telemetry.js";
+import type { RoomTrust } from "./trust.js";
 
 export interface Client {
   readonly peer: PeerId;
@@ -19,9 +20,13 @@ export interface Client {
   /**
    * One live event: sent when this client asked for it and is admitted to it, withheld otherwise
    * — and a withheld one remembered, so the client is told the relay passed over it and the
-   * author's later events are not held behind a hole nothing will fill (D23, D24).
+   * author's later events are not held behind a hole nothing will fill (D23, D24, D40).
    */
   readonly offer: (frame: Uint8Array, event: SyncEvent) => Offered;
+  /** The grant this socket was seated under, in a grant-gated room (D40); absent in an open one. */
+  readonly granted?: Grant;
+  /** Hangs up on this socket with a typed reason — how a revocation reaches it from elsewhere. */
+  readonly refuse: (code: string, message: string) => void;
 }
 
 /** What one live event cost one socket. */
@@ -63,8 +68,15 @@ export interface RoomState {
   readonly keeper: BlobKeeper | undefined;
   /** One grant per device, the room's newest mint for each; a joiner gets these first. */
   readonly grants: GrantCache;
+  /** The issuers whose grants admit a device (D40); absent, the room is open. */
+  readonly trust: RoomTrust | undefined;
   readonly presence: PresenceStore;
   readonly clients: Map<PeerId, Client>;
+  /**
+   * Joins held for their ticket (D40), each as the seat's own `offered`: a grant the room admits,
+   * from any socket or instance, is offered to every one of them.
+   */
+  readonly held: Set<() => void>;
   /**
    * Per author, the highest sequence below which the room holds **every** entry it could serve
    * (D13). Contiguous rather than the highest seen, and counted over the entries catch-up can

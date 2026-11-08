@@ -115,6 +115,12 @@ export const JOBS = table("jobs", {
   photo: t.blob().nullable(),
 });
 export const COUNTERS = table("counters", { id: t.integer().primaryKey(), n: t.integer() });
+/** A synced table with a document column (RFC-0023): its cell is the lineage, its SQL column the snapshot. */
+export const DOC_NOTES = table("doc_notes", {
+  id: t.text().primaryKey(),
+  title: t.text(),
+  content: t.blob({ merge: { id: "loro@1" } }).nullable(),
+});
 
 /**
  * The mesh's own table names and a one-byte blob literal, as this driver spells them — for the

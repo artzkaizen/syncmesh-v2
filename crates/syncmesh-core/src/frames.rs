@@ -31,8 +31,10 @@ pub mod tag {
     pub const ROUTES: u8 = 8;
     /// A signed refusal of one event, back to its author (D32); additive like the rest.
     pub const REFUSAL: u8 = 9;
+    /// Sequences the sender may not send this peer, which its grant does not cover (D40).
+    pub const WITHHELD: u8 = 10;
 
-    pub const ALL: [u8; 10] = [
+    pub const ALL: [u8; 11] = [
         GRANT,
         GRANT_REQUEST,
         CURSORS,
@@ -43,6 +45,7 @@ pub mod tag {
         RECEIPT,
         ROUTES,
         REFUSAL,
+        WITHHELD,
     ];
 }
 
@@ -203,6 +206,12 @@ pub enum Frame {
     Routes {
         ads: Vec<RouteAd>,
     },
+    /// The sequences withheld from this peer because its grant does not cover them, under the
+    /// entitlement the sender judged by (D40). Skipped by the receiver, never claimed as held.
+    Withheld {
+        scope: String,
+        withheld: Ahead,
+    },
     Snapshot(SnapshotFrame),
     /// A tag this build does not know; ignored, never an error.
     Unknown,
@@ -221,6 +230,7 @@ impl Frame {
             Frame::Receipt { .. } => "receipt",
             Frame::Refusal { .. } => "refusal",
             Frame::Routes { .. } => "routes",
+            Frame::Withheld { .. } => "withheld",
             Frame::Snapshot(SnapshotFrame::Request { .. }) => "snap-req",
             Frame::Snapshot(SnapshotFrame::Manifest { .. }) => "snap-manifest",
             Frame::Snapshot(SnapshotFrame::Chunk { .. }) => "snap-chunk",
@@ -252,6 +262,7 @@ impl Frame {
             Frame::Receipt { wire } => bytes_frame(tag::RECEIPT, wire),
             Frame::Refusal { wire } => bytes_frame(tag::REFUSAL, wire),
             Frame::Routes { ads } => routes_frame(ads),
+            Frame::Withheld { scope, withheld } => withheld_frame(scope, withheld),
             Frame::Snapshot(SnapshotFrame::Request { interest }) => {
                 snap_request_frame(interest.as_deref())
             }
@@ -398,6 +409,15 @@ pub fn digest_frame(
         items.push(ahead_pairs(ahead));
     }
     encode(&Value::Array(items))
+}
+
+/// What the sender may not send this peer, per author by sequence, under `scope` (D40).
+pub fn withheld_frame(scope: &str, withheld: &[(PeerId, Vec<SeqNum>)]) -> Vec<u8> {
+    encode(&Value::Array(vec![
+        tag_value(tag::WITHHELD),
+        Value::text(scope),
+        ahead_pairs(withheld),
+    ]))
 }
 
 /// The sender's reachable destinations.
@@ -635,6 +655,16 @@ pub fn decode_frame(frame: &[u8]) -> Result<Frame, MalformedFrame> {
         tag::DIGEST => decode_digest(&outer),
         tag::ROUTES => decode_routes(payload),
         tag::SNAPSHOT => decode_snapshot(&outer),
+        tag::WITHHELD => {
+            let Some(scope) = as_text(payload) else {
+                return shape("withheld scope is not text");
+            };
+            let withheld = decode_ahead_pairs(extra)?;
+            Ok(Frame::Withheld {
+                scope: scope.to_owned(),
+                withheld,
+            })
+        }
         _ => Ok(Frame::Unknown),
     }
 }

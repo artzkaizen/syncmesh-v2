@@ -14,6 +14,7 @@ import type { LinkEvent, LinkFact } from "./link-events.js";
 import type { FrameLink } from "./link.js";
 import type { TransportCondition, TransportKind } from "./medium.js";
 import type { PeerSessions, SessionLink } from "./peer-session.js";
+import type { ReadGate } from "./read-gate.js";
 import type { RouteMessage } from "./route-scorer.js";
 import type { RouteProfile } from "./route-scorer.js";
 import type { RouteTable } from "./routes.js";
@@ -98,6 +99,8 @@ export interface TransportContext {
    * what a relay does for a partition it holds no key for.
    */
   readonly crypto?: EventCrypto;
+  /** What each peer may be sent (D40); absent, every link carries everything — an ungranted mesh. */
+  readonly readGate?: ReadGate;
   /**
    * Whether a link to this peer may stand at all (book ch. 14) — the door, as against the budget,
    * which decides which of the links that did form are worth keeping.
@@ -432,6 +435,9 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
         }
         // one table, every link: a route learned here is one every other link may advertise
         if (ctx.routes !== undefined) Object.assign(bridgeOptions, { routes: ctx.routes });
+        // one read gate on every link: what a device may be sent does not depend on the medium —
+        // the gate judges the peer the handshake proved, never one a frame names (D40)
+        Object.assign(bridgeOptions, omitUndefined({ readGate: ctx.readGate, peer }));
         // once per peer, because a session builds its bridge once: subscribing where the bridge
         // is made is what keeps three media reaching one laptop from reporting its errors thrice
         const build = (framed: FrameLink): Bridge => {

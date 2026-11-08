@@ -1,9 +1,9 @@
-import { readRow } from "@syncmesh/kernel";
+import { parseAdapterId, readRow } from "@syncmesh/kernel";
 import { describe, expect, test } from "bun:test";
 
 import { createEngine } from "../engine.js";
 import { createMemoryEventStore } from "../store.js";
-import { CREATE, fakeClock, key, N1, NOTES, PEER_A, row } from "./fixtures.js";
+import { CREATE, column, fakeClock, key, N1, NOTES, PEER_A, row } from "./fixtures.js";
 
 const N2 = key("n2");
 
@@ -39,6 +39,22 @@ describe("revert", () => {
     expect(readRow(engine.state(), NOTES, N2)).toBeUndefined();
     (await engine.revert(del.id)).unwrap();
     expect(readRow(engine.state(), NOTES, N2)).toEqual(row({ title: "x", body: "y" }));
+  });
+
+  test("a write of document updates alone is refused, and stays revertable", async () => {
+    const { engine } = withUndo();
+    (await engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ title: "t" })))).unwrap();
+    const doc = { column: column("content"), adapter: parseAdapterId("loro@1").unwrap() };
+    const e = (
+      await engine.mutate(CREATE, (tx) =>
+        tx.doc(NOTES, N1, { ...doc, update: { bytes: Uint8Array.of(1) } }),
+      )
+    ).unwrap();
+    const refused = await engine.revert(e.id);
+    expect(refused.isErr() && refused.error.message).toContain("adapter");
+    // the ring kept the write: asked again, it is the same refusal, not "not among the last"
+    const again = await engine.revert(e.id);
+    expect(again.isErr() && again.error.message).toContain("adapter");
   });
 
   test("a column that did not exist before is reverted to null", async () => {

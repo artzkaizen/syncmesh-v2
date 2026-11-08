@@ -1,12 +1,17 @@
-import type { Change, FoldableChange, Row } from "@syncmesh/kernel";
+import type { AdapterId, Change, ColumnName, FoldableChange, Row } from "@syncmesh/kernel";
 
 import { Result } from "@syncmesh/result";
 import { checkRow, type Table, type WireRow } from "@syncmesh/schema";
 
-import { SchemaViolation, UnknownChangeKind, type ValidationError } from "./errors.js";
+import {
+  DocColumnWrite,
+  SchemaViolation,
+  UnknownChangeKind,
+  type ValidationError,
+} from "./errors.js";
 
 /** The change kinds this build can fold. A kernel that grows one grows this set with it. */
-const FOLDABLE = new Set(["insert", "update", "delete"]);
+const FOLDABLE = new Set(["insert", "update", "delete", "doc"]);
 
 /**
  * Whether this build can fold the change — and, because it narrows, the only way to reach the
@@ -32,31 +37,52 @@ export const unfoldableKind = (change: Change): string | undefined =>
  * shows whichever columns its own schema names.
  */
 const declared = (table: Table, cells: Row): WireRow =>
-  Object.fromEntries([...cells].filter(([name]) => String(name) in table.columns));
+  Object.fromEntries([...cells].filter(([name]) => Object.hasOwn(table.columns, name)));
+
+/** A table's doc columns and the adapter each declares; empty for a table without any. */
+export type TableDocs = ReadonlyMap<ColumnName, AdapterId>;
+
+const NO_DOCS: TableDocs = new Map();
 
 /**
- * A change against the table it names: a kind this build can fold, and cells that pass the
- * columns it knows about.
+ * A change against the table it names: a kind this build can fold, cells that pass the columns it
+ * knows about, and no row write to a document column. A doc change's own rules are `checkDoc`'s,
+ * since they need the event it sits in.
  */
-export function checkColumns(table: Table, change: Change): Result<void, ValidationError> {
+export function checkColumns(
+  table: Table,
+  change: Change,
+  docs: TableDocs = NO_DOCS,
+): Result<void, ValidationError> {
   if (!foldable(change)) {
     const kind = unfoldableKind(change) ?? change.kind;
     return Result.err(
       new UnknownChangeKind({
-        table: String(table.name),
+        table: table.name,
         kind,
-        message: `${String(table.name)}: this build has no fold for a ${kind} change`,
+        message: `${table.name}: this build has no fold for a ${kind} change`,
       }),
     );
   }
-  if (change.kind === "delete") return Result.ok(undefined);
-  const values = declared(table, change.kind === "insert" ? change.row : change.patch);
-  const r = checkRow(table, values, change.kind);
+  if (change.kind === "delete" || change.kind === "doc") return Result.ok(undefined);
+  const cells = change.kind === "insert" ? change.row : change.patch;
+  for (const column of cells.keys()) {
+    if (!docs.has(column)) continue;
+    return Result.err(
+      new DocColumnWrite({
+        table: table.name,
+        key: change.key,
+        column,
+        message: `${table.name}.${column} is a document: it is opened and edited, never written as a value`,
+      }),
+    );
+  }
+  const r = checkRow(table, declared(table, cells), change.kind);
   return r.isErr()
     ? Result.err(
         new SchemaViolation({
-          table: String(table.name),
-          key: String(change.key),
+          table: table.name,
+          key: change.key,
           cause: r.error,
           message: r.error.message,
         }),

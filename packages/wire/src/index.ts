@@ -19,6 +19,27 @@ export { MalformedSnapshot, decodeSnapshotRows, encodeSnapshotRows } from "./sna
 export type { Identity } from "./identity.js";
 export { InvalidSeed, SEED_LENGTH, createIdentity, verify } from "./identity.js";
 export { MalformedEvent, decodeEventCore, encodeEventCore } from "./event-codec.js";
+export {
+  DOC,
+  ID16_LENGTH,
+  MalformedDoc,
+  actionIdOf,
+  deriveLineage,
+  docChangeId,
+  docDataToCbor,
+  docFromCbor,
+} from "./doc-codec.js";
+export type { DocCheckpoint, SignedCheckpoint } from "./checkpoint-codec.js";
+// checkpoint.ts (row snapshot pages) already owns the bare names; the doc-checkpoint
+// errors ride aliased until the two systems are unified.
+export {
+  BadCheckpointSignature as DocBadCheckpointSignature,
+  MalformedCheckpoint as DocMalformedCheckpoint,
+  decodeCheckpoint,
+  decodeCheckpointCore,
+  encodeCheckpointCore,
+  signCheckpoint,
+} from "./checkpoint-codec.js";
 export type { SignedEvent, VerifiedEvent, WireError } from "./envelope.js";
 export {
   BadSignature,
@@ -117,6 +138,8 @@ export {
 } from "./sealing.js";
 export type { KeyRing } from "./keyring.js";
 export { createKeyRing } from "./keyring.js";
+export type { HeldKey, PartitionKeys, PartitionKeysOptions } from "./partition-keys.js";
+export { createPartitionKeys } from "./partition-keys.js";
 
 export type { Entropy } from "./entropy.js";
 export { NoSecureRandomness, randomBytes, supplyEntropy } from "./entropy.js";

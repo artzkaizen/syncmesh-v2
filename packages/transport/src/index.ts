@@ -15,6 +15,7 @@ export {
   decodeFrame,
   digestFrame,
   eventFrame,
+  withheldFrame,
   grantFrame,
   grantRequestFrame,
   presenceFrame,
@@ -115,6 +116,8 @@ export type { Upgraded, Upgrader, UpgradeOptions, UpgraderDeps } from "./upgrade
 export { createUpgrader } from "./upgrade.js";
 export type { LinkEvent, LinkEventKind, LinkFact } from "./link-events.js";
 export { reportingUpgrader } from "./link-events.js";
+export type { ReadGate, ReadGateOptions } from "./read-gate.js";
+export { createReadGate } from "./read-gate.js";
 
 export type { Withheld } from "./withheld.js";
 export { openDigests, servable, withholds } from "./withheld.js";

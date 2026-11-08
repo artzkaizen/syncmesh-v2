@@ -1,5 +1,33 @@
 export type { EventStore, SeqScope, StoredEvent } from "./store.js";
 export { StoreFailure, createMemoryEventStore } from "./store.js";
+export type { DocWrite } from "./tx.js";
+export type {
+  DocAddress,
+  DocAppend,
+  DocCover,
+  DocEntryRef,
+  DocEntryState,
+  DocHead,
+  DocHeadMode,
+  DocLogEntry,
+  DocSnapshot,
+  DocStore,
+  LiveStates,
+} from "./doc-log.js";
+export { createMemoryDocStore } from "./doc-log-memory.js";
+export {
+  DocCoverStale,
+  LIVE_STATES,
+  docAppends,
+  docChangeDigest,
+  docDigests,
+  docKey,
+  inTail,
+  liveStates,
+  nextState,
+  recordDocs,
+} from "./doc-log.js";
+export type { DocApi, DocEngineOptions, DocTail, TailUpdate } from "./doc-path.js";
 export type { EventHeader, RecentEvents } from "./recent.js";
 export { DEFAULT_RECENT, headerOf, recentHeaders } from "./recent.js";
 export type { Tx } from "./tx.js";
@@ -48,12 +76,14 @@ export {
   writeKeysOf,
 } from "./state-store.js";
 export type { Ack, CompactError, CompactOptions, Compaction } from "./compaction.js";
-export { refoldable } from "./compaction.js";
+export { clampToHeld, refoldable } from "./compaction.js";
 export type { LinkOptions } from "./link.js";
 export {
   CannotRevert,
   ClockAhead,
   CompactionRefused,
+  DocChangeRefused,
+  DocColumnWrite,
   EmptyMutation,
   GrantDeviceMismatch,
   GrantStale,
@@ -69,8 +99,17 @@ export {
   UnknownTable,
   WrongPartition,
 } from "./errors.js";
+export type { TableDocs } from "./columns.js";
 export { checkColumns, foldable, unfoldableKind } from "./columns.js";
-export type { EngineError, LinkRung, MutateError, RevertError, ValidationError } from "./errors.js";
+export { checkCells, checkDoc } from "./doc-rules.js";
+export type {
+  DocRung,
+  EngineError,
+  LinkRung,
+  MutateError,
+  RevertError,
+  ValidationError,
+} from "./errors.js";
 export type { Hub, Unsubscribe } from "./listeners.js";
 export { createHub } from "./listeners.js";
 export type { Ahead, Coverage, Cursors, SyncDoc, SyncMessage, SyncState } from "./sync.js";
@@ -107,6 +146,8 @@ export { chunkSince, createFeedPath, receiveChunk, trackFeeds } from "./feed.js"
 export type { Interest, Scope } from "./interest.js";
 export {
   EVERYTHING,
+  entitledInterest,
+  entitles,
   interestFrom,
   interestKey,
   interestText,

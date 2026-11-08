@@ -26,14 +26,53 @@ quarantine — implemented and fuzz-tested).
 | Passive radio eavesdropper — **donor stack, today** | Read every payload: the session key is derived and never used, frames are plaintext | — | None. This is a hole (`identity.ts` derives `nacl.box.before` shared keys nothing consumes); deleted in the RFC-0006 port |
 | Passive radio eavesdropper — **after RFC-0006 port** | Observe traffic patterns: who is near whom, when, how much | Read payloads | XChaCha20-Poly1305 per frame, on by default (RFC-0006) |
 | Active radio attacker (inject / replay) | Inject garbage frames; replay captured valid frames | Forge an event without a device key; make a replay apply twice | Ed25519 verify-before-apply over received core bytes (RFC-0002); dedup by `event.id` makes replay a no-op; garbage → typed error, never a throw (fuzz suite) |
-| Compromised relay | Drop, delay, reorder, partition — an **availability attack, acknowledged** | Forge events or grants; interpret the grant wires it stores opaquely | End-to-end signatures (RFC-0002, RFC-0010): the relay forwards bytes it cannot mint. Content secrecy needs per-partition encryption — OPEN |
+| Compromised relay | Drop, delay, reorder, partition — an **availability attack, acknowledged**; read the content of **unsealed** partitions | Forge events or grants; read a **sealed** partition's content | End-to-end signatures (RFC-0002, RFC-0010): the relay forwards bytes it cannot mint. Content secrecy is per partition: a kind declared `sealed: true` travels under keys only its members hold (D40) |
 | Hacked client with a valid key (Byzantine, B10) | Write garbage **within its grant scope** — blast radius = its granted partitions | Write outside its partitions (`PartitionNotGranted` at every receiver); escalate role; plant a `_policy` row for another instance | Strict-mode policy checks at every honest receiver + quarantine + authority corrective events **bound** it — not eliminate it. Recovery = revocation (RFC-0016) |
 | Stolen device | Act as that device until the grant lapses | Outlast the validity window; replay a stale broader grant (newest-issued wins) | Grant validity window (RFC-0008) + revocation (RFC-0016). The offline gap is weakest link #2 below |
-| Malicious authority | Reject or rewrite anything within its role via corrective events; settle requests dishonestly | Plant `_policy` for a foreign partition instance (rejected even from a hacked authority device); read member-secret content if per-partition encryption excludes it — OPEN | The authority is the **trust anchor** — acknowledged, not solved. Its power is scoped, not checked |
+| Malicious authority | Reject or rewrite anything within its role via corrective events; settle requests dishonestly; read every sealed partition, since the issuer mints its keys | Plant `_policy` for a foreign partition instance (rejected even from a hacked authority device) | The authority is the **trust anchor** — acknowledged, not solved. Its power is scoped, not checked |
+| Device without a grant for a partition (D40) | Join a gated room under its own grant; read the partitions that grant names | Be sent an event of any other partition — by a gated relay, in catch-up or live, or by a peer over a handshaken link; keep being sent one after a narrower grant arrives | Grant-gated rooms (`posture.trust`) and the read gate on every peer link; a narrowing or lapsed grant closes the socket |
+| Removed member (D40) | Keep what it already read | Read a sealed partition's writes made after it was removed | `grants.rekey`: a new key epoch, re-issued only to the members who remain |
 
 The recurring shape: crypto eliminates forgery and replay; policy and
 partitions **bound** what a valid key can do; availability and the authority
 are trusted-component risks we name instead of hand-waving.
+
+## Confidentiality posture (D40)
+
+Two sentences, and which deployment each describes.
+
+**`verifyJoin` + per-partition encryption.** A hosted relay is grant-gated: it holds the issuer's
+public keys (`posture.trust`) and nothing private, seats a device only under a grant one of
+those keys signed, and serves each socket only the partitions that grant names — catch-up and
+live fan-out alike, with the scoped coverage naming the entitlement. It reads the partition every
+event core carries in the clear, never a payload. `verifyJoin` stays the app's own HTTP gate in
+front of that (a cookie, a rate limit); the grant, checked in band after the link handshake, is
+the ticket. Peer to peer, a sender in a granted mesh sends a proven peer only what its verified
+grant covers. What the relay operator must not read as well — DMs, HR records — is declared
+`sealed: true` and travels under per-partition keys that ride inside grants; removing a member
+rotates the key (`grants.rekey`), so the removed device reads nothing written after.
+
+**"A room name is a bearer secret."** That is exactly what an open relay is, in those words:
+one with no `trust`, where whoever knows a room's name reads all of it, including a member who
+was removed. `@syncmesh/relay`'s in-process `startRelay` is open by default, for tests and local
+development. The hosted presets (`@syncmesh/relay-node`, `@syncmesh/cloudflare-do`) refuse to
+start unless the operator either gives `trust` or writes `open: true` — and an open preset says
+the sentence above at start. They default `announce` to off.
+
+What the posture does not cover:
+
+- **Field-level secrecy from a partition's own members.** A column cannot be cut out of a
+  signed event, so `fields: { column: rule }` holds only where an authority serves rows (a
+  query answered on the server over the caller's grant); on a device that syncs the partition it
+  is cosmetic. A column its members must not read belongs in a narrower or sealed partition.
+- **What a device already read.** No scheme takes back a read; revocation stops what comes next.
+- **Unsealed content across a stranger.** A device that may not read an unsealed partition does
+  not carry it either, so that partition's events reach far devices only through ones that may
+  read it. Sealing is how content crosses a carrier.
+- **Metadata.** Grants, presence and cursors frames still reach every socket in a room; grant
+  scopes reveal partition ids (RFC-0024 §4.10).
+- **A pipe with no handshake.** `linkTransport` names no peer, so the read gate carries it whole:
+  it is a pipe the app already trusts (a worker port, a tab). Every radio proves its peer.
 
 ## What the fuzz campaign already proves
 
@@ -86,7 +125,8 @@ are not aspiration — they are pinned by tests.
 | BLE frame auth | **hole** — `transport.ts:398–401` falls back to decoding unauthenticated bare frames |
 | BLE identity | **hole** — `createDeterministicIdentity` mints keypairs from the public peerId (`identity.ts:121–138`), and `peerHintMatchesPublicKey` accepts them — trivially impersonable |
 | Revocation | proposed (RFC-0016) |
-| Per-partition payload encryption | open (RFC-0008 remaining work) |
+| Per-partition payload encryption | implemented: sealed kinds, keys in grants, epochs; issuer-side `createPartitionKeys` and `grants.rekey` (D40) |
+| Read gate: who is sent which partition | implemented: grant-gated rooms, the peer-link read gate, `ungranted` / `revoked` / `regranted` refusals (D40) |
 | Quarantine caps | proposed |
 
 All three BLE holes are slated for deletion in the RFC-0006 port — none of
@@ -111,13 +151,13 @@ them survives into `@syncmesh/ble-channel`.
   (RFC-0016, RFC-0008 remaining work).
 - Quarantine caps + `quarantine-grew` alarm; add a fuzz lane that measures
   quarantine growth under sustained forged-event load.
-- Decide per-partition encryption (who holds keys: members only, or
-  authority too) — it is the mechanism behind two OPEN cells above.
+- ~~Decide per-partition encryption~~ — decided (D40): members and the
+  issuer hold keys; the relay holds none.
 
 ## Open questions
 
-- Per-partition encryption key distribution: app-managed, or a SyncMesh
-  envelope like grants?
+- ~~Per-partition encryption key distribution~~ — inside grants (grant key
+  8), minted by the issuer's `createPartitionKeys` (D40).
 - Should a peer whose events repeatedly quarantine get its **frames**
   throttled (per-peer inbound budget), or only alarmed on?
 - How long is the stale-grant grace window per partition class, and who

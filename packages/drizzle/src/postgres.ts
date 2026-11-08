@@ -12,7 +12,7 @@ import type { FaceDeps, Span } from "./face.js";
 import { commitHub } from "./face.js";
 import { createLive } from "./live.js";
 import { createProxy } from "./proxy.js";
-import { readPredicate, readScope } from "./read.js";
+import { readColumns, readPredicate, readScope } from "./read.js";
 import { tableIdentity } from "./tree.js";
 
 export type PostgresMeshDb = PgRemoteDatabase<EmptyRelations>;
@@ -104,10 +104,15 @@ export function postgresFace(deps: FaceDeps) {
   /** The table as this principal may read it: a subquery with the `read` rule (and the pin) compiled in. */
   const read = <T extends PgTable>(table: T): Source<T> => {
     // the rule is the table's own, an alias of it included; the subquery keeps the name the query calls it by
-    const rule = readPredicate(tableIdentity(table), scope);
+    const name = tableIdentity(table);
+    const rule = readPredicate(name, scope);
     // SAFETY: pg-core's `from` refuses only a returning-less write subquery, a shape a table can never have; its guard is a conditional type that does not reduce on a type parameter, so the table goes in as its base class
     const source = table as PgTable;
-    const aliased = db.select().from(source).where(rule).as(getTableName(table));
+    const columns = readColumns(name, source, scope);
+    // SAFETY: `columns` is the table's own column map with ruled entries swapped for aliased
+    // expressions of the same name and decoder, which is a selection Drizzle accepts as-is
+    const selecting = columns === undefined ? db.select() : db.select(columns as never);
+    const aliased = selecting.from(source).where(rule).as(getTableName(table));
     // SAFETY: the alias wraps exactly the table's columns — what `.as()` would have typed had `from` taken T
     return aliased as Source<T>;
   };

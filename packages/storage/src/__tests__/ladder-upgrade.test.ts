@@ -12,9 +12,9 @@ import { openPair } from "./pair.js";
  * applying only the steps above where it stands, and a climb interrupted part-way leaves the
  * database at a step it can resume from rather than one it can never open again.
  *
- * The shipped ladders have one step each, so the upgrade path is proven on a synthetic ladder
- * over the same `ladder()` both dialects climb, with the position in a `meta` row as Postgres and
- * the inline log keep it.
+ * The shipped ladders are short (the log has one step, the state two: its tables, then the doc
+ * log and heads), so the upgrade path is proven on a synthetic ladder over the same `ladder()`
+ * both dialects climb, with the position in a `meta` row as Postgres and the inline log keep it.
  */
 
 const TABLES = [table("notes", { id: t.text().primaryKey(), body: t.text() })];
@@ -80,9 +80,10 @@ describe("the shipped ladders", () => {
     (await openStores(driver, { tables: TABLES })).unwrap();
     const log = Number((await driver.all(`PRAGMA syncmesh.user_version`, []))[0]?.[0]);
     const state = Number((await driver.all(`PRAGMA main.user_version`, []))[0]?.[0]);
-    expect([log, state]).toEqual([1, 1]);
+    expect([log, state]).toEqual([1, 3]);
     (await openStores(driver, { tables: TABLES })).unwrap();
     expect(Number((await driver.all(`PRAGMA syncmesh.user_version`, []))[0]?.[0])).toBe(1);
+    expect(Number((await driver.all(`PRAGMA main.user_version`, []))[0]?.[0])).toBe(3);
     await driver.close?.();
   });
 });

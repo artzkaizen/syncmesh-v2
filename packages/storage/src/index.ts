@@ -9,6 +9,7 @@ export type {
 export type { AsyncSqliteBinding, BoundSqlValue, SqliteBinding } from "./sqlite-driver.js";
 export { asyncSqliteDriver, bindSqlite, sqliteDriver } from "./sqlite-driver.js";
 export { sqlEventStore, sqliteEventStore, type SqlEventStoreOptions } from "./event-store.js";
+export { sqlDocStore, type SqlDocStoreOptions } from "./doc-store.js";
 export { LogCorrupt } from "./local-log.js";
 export type {
   OperationOutcome,
@@ -93,7 +94,7 @@ export { installRls, principalSettings, rlsDdl } from "./rls.js";
 export type { ServedManifest, ServedReadDdlOptions } from "./served-rls.js";
 export { SERVED, SERVED_READ_TIMEOUT, servedReadDdl, servedReadSettings } from "./served-rls.js";
 export { inTransaction, onConnection } from "./sql.js";
-export { compileRead } from "./read-filter.js";
+export { compileField, compileRead } from "./read-filter.js";
 export type {
   TxReceipt,
   Write,

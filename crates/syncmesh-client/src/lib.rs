@@ -17,6 +17,9 @@
 
 pub mod blobs;
 pub mod coverage;
+pub mod doc_log;
+pub mod doc_rules;
+pub mod docs;
 pub mod engine;
 pub mod grants;
 pub mod holdback;
@@ -41,6 +44,10 @@ pub use blobs::{
     BlobAnswer, BlobChannel, BlobError, BlobStore, MemoryBlobStore, hash_of, verify_blob,
 };
 pub use coverage::CoverageTracker;
+pub use doc_log::{
+    DocAddress, DocAppend, DocEntryState, DocHead, DocHeadMode, DocLogEntry, DocStore,
+    MemoryDocStore, doc_digests,
+};
 pub use engine::{
     Engine, EngineOptions, FoldBatch, FoldSource, MutateError, Mutated, OwnPosition, ReceiveReport,
     Received,

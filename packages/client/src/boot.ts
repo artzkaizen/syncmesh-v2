@@ -9,14 +9,14 @@ import type {
   Validator,
   ValidatorOptions,
 } from "@syncmesh/engine";
-import type { MergeSpec, PeerId } from "@syncmesh/kernel";
-import type { Table } from "@syncmesh/schema";
+import type { DocColumns, MergeSpec, PeerId, TableName } from "@syncmesh/kernel";
+import type { DocColumnEntry, Table } from "@syncmesh/schema";
 import type { OperationStore, RowSync, SqlDriver, StoreLocked, Stores } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { Grant, Identity } from "@syncmesh/wire";
 
 import { createValidator, openEngine } from "@syncmesh/engine";
-import { DEFAULT_MAX_DRIFT, createHlcClock } from "@syncmesh/kernel";
+import { DEFAULT_MAX_DRIFT, createHlcClock, parseAdapterId } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
 import { syncedTables } from "@syncmesh/schema";
 import { installRls, openStores, operationStore } from "@syncmesh/storage";
@@ -27,8 +27,14 @@ import { deviceIncarnation } from "./identity.js";
 export type MeshOpenError = StoreFailure | StateCorrupt | NoDefaultStore | StoreLocked;
 
 export interface BootOptions {
-  /** What boot reads off the manifest: the validator's structural view, plus the merge rules. */
-  readonly schema: ValidatorOptions["schema"] & { readonly merge: MergeSpec };
+  /**
+   * What boot reads off the manifest: the validator's structural view, the merge rules, and the
+   * document columns the validator and the fold both judge a doc change by (RFC-0023 §4.1).
+   */
+  readonly schema: ValidatorOptions["schema"] & {
+    readonly merge: MergeSpec;
+    readonly docs?: ReadonlyMap<TableName, readonly DocColumnEntry[]>;
+  };
   readonly identity: Identity;
   readonly issuer?: PeerId;
   readonly authority?: PeerId;
@@ -113,8 +119,28 @@ async function defaultStores(
   );
 }
 
+/**
+ * The manifest's document columns keyed the way the kernel keys them: per table, each column and
+ * its adapter. Absent when the schema declares none.
+ */
+function docColumns(schema: BootOptions["schema"]): DocColumns | undefined {
+  if (schema.docs === undefined || schema.docs.size === 0) return undefined;
+  return new Map(
+    [...schema.docs].map(([table, entries]) => [
+      table,
+      new Map(
+        entries.map((entry) => [
+          entry.column,
+          // the schema's checkMerge already refused any id the kernel's rule refuses
+          parseAdapterId(entry.doc).unwrap(),
+        ]),
+      ),
+    ]),
+  );
+}
+
 /** The validator an identity runs: grants when an issuer is configured, authorship when this process is the authority. */
-function validatorFor(options: BootOptions): ValidatorOptions {
+function validatorFor(options: BootOptions, docs: DocColumns | undefined): ValidatorOptions {
   const { schema, issuer, authority, grantFor, now } = options;
   const validatorOptions = {
     schema,
@@ -128,6 +154,7 @@ function validatorFor(options: BootOptions): ValidatorOptions {
   } satisfies ValidatorOptions;
   if (authority !== undefined) Object.assign(validatorOptions, { authority });
   if (options.accounts === true) Object.assign(validatorOptions, { accounts: true });
+  if (docs !== undefined) Object.assign(validatorOptions, { docs });
   return validatorOptions;
 }
 
@@ -171,7 +198,9 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
     const owned = yield* Result.await(storesFor(options, tables));
     // SAFETY: one of the two is defined — `owned` is opened exactly when `store` is absent
     const store = (options.store ?? owned?.events) as EventStore;
-    const validate = createValidator(validatorFor(options));
+    // one map for both: a doc change the validator admits is one the fold joins by the lineage rule
+    const docs = docColumns(schema);
+    const validate = createValidator(validatorFor(options, docs));
     const engineOptions = {
       peerId: identity.peerId,
       clock: createHlcClock({ now, maxDrift: options.clockDrift ?? DEFAULT_MAX_DRIFT }),
@@ -181,11 +210,14 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
     } satisfies EngineOptions;
     const stateStore = options.stateStore ?? owned?.state;
     if (stateStore !== undefined) Object.assign(engineOptions, { stateStore });
-    // log and state share a connection exactly when the stores are one `openStores` pair
+    if (docs !== undefined) Object.assign(engineOptions, { docs });
+    // log and state share a connection exactly when the stores are one `openStores` pair; the
+    // doc log lives beside the log it indexes and commits in the same transaction (RFC-0023 §6.3)
     if (options.store === undefined && owned !== undefined)
       Object.assign(engineOptions, {
         atomic: <T>(fn: (scoped: { events: EventStore; state?: StateStore }) => Promise<T>) =>
           owned.atomic(fn),
+        docStore: owned.docs,
       });
     if (options.undoDepth !== undefined)
       Object.assign(engineOptions, { undoDepth: options.undoDepth });

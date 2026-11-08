@@ -112,6 +112,12 @@ export function paged(
  * answer would hold every other socket's ingest, acks and fan-out behind it, and one that never
  * came would stop the room for good. Nothing is lost by asking first — until the answer, every
  * gated event is withheld live and not remembered, and the scan reads everything above `theirs`.
+ *
+ * In a grant-gated room the viewer also cuts the run to the partitions the joiner's grant names
+ * (D40), and its scope names the interest cut to them — `entitledInterest`, which the device
+ * computes from the same grant — so a device granted more later sees a wider scope than its
+ * cursor's and re-pages, instead of keeping a cursor that silently skips everything it was not
+ * allowed to see while it was narrower.
  */
 export function sendCatchUp(
   conversation: Conversation,
