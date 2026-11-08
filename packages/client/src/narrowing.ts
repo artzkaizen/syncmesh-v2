@@ -29,17 +29,19 @@ const named = (rows: Purged["before"]): ReadonlySet<BlobHash> => {
 
 /**
  * The bytes a purge left nothing to name: cached copies of blobs the dropped rows referenced, and
- * that the rows rebuilt in their place no longer do. A blob this device made is kept — it may be
- * the only copy anywhere, and its author may always read what it wrote.
+ * that no row still held does — the rebuilt ones, or any other this device may still read. A blob
+ * this device made is kept — it may be the only copy anywhere, and its author may always read
+ * what it wrote.
  */
 async function dropBlobs(deps: NarrowingDeps, purged: Purged): Promise<void> {
-  const state = deps.engine.state();
-  const after = purged.before.flatMap(({ table, key }) => {
-    const record = getRecord(state, table, key);
-    return record === undefined ? [] : [{ table, key, record }];
-  });
-  const kept = named(after);
-  for (const hash of named(purged.before)) {
+  const gone = named(purged.before);
+  if (gone.size === 0) return;
+  const kept = named(
+    [...deps.engine.state()].flatMap(([table, records]) =>
+      [...records].map(([key, record]) => ({ table, key, record })),
+    ),
+  );
+  for (const hash of gone) {
     if (kept.has(hash)) continue;
     if ((await deps.blobs.origin(hash)) === "cached") await deps.blobs.delete(hash);
   }

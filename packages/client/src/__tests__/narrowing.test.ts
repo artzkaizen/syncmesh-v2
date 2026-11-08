@@ -224,6 +224,42 @@ describe("a narrowed device on the default blob cache (D45)", () => {
   }, 30_000);
 });
 
+describe("a cached blob a row still readable names (D45)", () => {
+  test("is kept, though a purged row named it too", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "syncmesh-narrowing-shared-"));
+    const { relay, authority, authorityId, mint } = await gatedWorld(dataDir);
+    try {
+      const payrollKey = parsePartitionKey(PAYROLL).unwrap();
+      await authority.ready();
+      const blob = (await authority.blobs.put(payslip, { partition: payrollKey })).unwrap();
+      await authority.on(PAYROLL).unwrap().db.insert(notes).values({ id: "p1", body: blob });
+      // the same bytes, named again from a partition she keeps
+      await authority.on(CHECKOUT).unwrap().db.insert(notes).values({ id: "c1", body: blob });
+      // and bytes only payroll names: their drop is the sign the purge's blob pass has run
+      const only = (await authority.blobs.put(photo, { partition: payrollKey })).unwrap();
+      await authority.on(PAYROLL).unwrap().db.insert(notes).values({ id: "p2", body: only });
+
+      const daveId = createIdentity(seed(62)).unwrap();
+      const dave = await member(relay.url, daveId, authorityId, mint(daveId, [CHECKOUT, PAYROLL]));
+      expect(await until(async () => (await held(dave.driver, PAYROLL)) === 2)).toBe(true);
+      expect((await dave.mesh.blobs.fetch(blob, { timeoutMs: 3000 })).unwrap()).toEqual(payslip);
+      expect((await dave.mesh.blobs.fetch(only, { timeoutMs: 3000 })).unwrap()).toEqual(photo);
+
+      await nextMillisecond();
+      dave.mesh.grants.register(mint(daveId, [CHECKOUT])).unwrap();
+      expect(await until(async () => !(await dave.blobStore.has(only)))).toBe(true);
+      // the checkout row still names the payslip, so its cached copy stays
+      expect(await bodies(dave.mesh)).toEqual([blob]);
+      expect(await until(async () => !(await dave.blobStore.has(blob)), 300)).toBe(false);
+
+      await Promise.all([authority.stop(), dave.mesh.stop()]);
+    } finally {
+      await relay.stop();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
 describe("blobs in a grant-gated room, at the app surface (D44)", () => {
   test("a put into an ungranted partition is BlobNotGranted; a fetch outside the grant is BlobNotFound", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "syncmesh-gated-blobs-"));
