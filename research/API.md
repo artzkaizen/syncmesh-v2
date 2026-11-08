@@ -885,8 +885,11 @@ mesh.revert(eventId)              // a NEW compensating event, not a log rewrite
 
 A revert puts back only the cells that still hold the write's stamp (RFC-0023 §16.3). A cell
 someone changed since keeps their value and comes back in `skipped` as `"superseded"`; a document
-update comes back as `"document"`. When nothing of the write still stands, nothing is written and
-`event` is absent.
+update comes back as `"document"`. A `counter` cell is put back by the increment that cancels the
+write's; a `max`/`min` cell its rule will not let go back comes back as `"merge"`. Reverting an
+insert deletes the row even when a colleague has edited it since, and each cell they wrote comes
+back as `"overridden"`. When nothing of the write still stands, nothing is written and `event` is
+absent; a revert the engine refuses leaves the write revertable.
 
 ### What the server does with your write
 

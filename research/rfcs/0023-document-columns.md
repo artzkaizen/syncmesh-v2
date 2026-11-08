@@ -411,7 +411,9 @@ double their content when merged. Syncmesh answers it once:
   the column.
 - **A genesis whose parent has not arrived waits off the walk.** It is folded into the set, and
   the walk cannot reach it until its parent lands, at which point the winner, and every doc-log
-  label with it, is recomputed. Nothing is parked: parking would need cross-author holdback, and
+  label with it, is recomputed. That holds when the parent lands in an event. A parent that lands
+  through a snapshot page or a repair record moves the winner, but the doc-log labels are only
+  recomputed at the next doc append (a known gap, listed for follow-up). Nothing is parked: parking would need cross-author holdback, and
   this is how out-of-order delivery looks, exactly as a doc change on a row whose insert has not
   arrived folds (§11). A genesis naming its own lineage as its parent is refused (§10). A longer
   cycle cannot be reached from the root, and the walk stops at any lineage it has already visited.
@@ -648,10 +650,20 @@ until first `open()`, which is RFC-0019 §3's window rule applied to documents.
     stays as they left it, and the result reports it as `skipped: superseded`. This is licnep's
     `VariablesDelta` rule, made general, and it replaced the whole-row `invert`
     (`engine/src/undo.ts`), which clobbered concurrent edits. Rows the action inserted are
-    deleted. Rows it deleted are re-inserted from their pre-action record, unless someone wrote
-    the row after the delete; an update is not compensated into a row someone deleted since.
-    Both of those are reported as a whole row `superseded`. When nothing of the write still
-    stands, nothing is written. The TypeScript returns `{ event?, skipped }`; the Rust device
+    deleted, even when a colleague has edited them since. Each cell a colleague wrote after the
+    insert is then reported as `skipped: overridden`, so the caller knows whose work the delete
+    took. A row the action inserted that is gone already is reported as a whole row
+    `superseded`, and nothing is written for it. Rows it deleted are re-inserted from their
+    pre-action record, unless someone wrote the row after the delete; an update is not
+    compensated into a row someone deleted since. Both of those are reported as a whole row
+    `superseded`. A re-insert leaves the row's doc columns out: they are never written as values,
+    and their lineage cells outlived the delete. A cell's column rule decides how it is
+    restored. A `counter` cell gets the increment that cancels the action's own (`{"+": -n}`,
+    with `n` taken from the action's change), because writing the old totals back joins by
+    per-author max and changes nothing. A `max` or `min` cell whose old value the rule would not
+    let win is reported as `skipped: merge` and left alone. When nothing of the write still
+    stands, nothing is written. A compensation the engine refuses writes nothing and leaves the
+    write revertable. The TypeScript returns `{ event?, skipped }`; the Rust device
     gained `Engine::revert` / `Mesh::revert` returning `Reverted { mutated, skipped }`.
   - **Docs:** `compensating_update(doc, action's updates)` for each doc the action touched, on
     the winning lineage. A `replace()` in the action is undone by a new genesis carrying the
@@ -678,7 +690,14 @@ until first `open()`, which is RFC-0019 §3's window rule applied to documents.
 | genesis whose lineage ≠ the derivation (§5.3) | refused → quarantine | the check needs only the event |
 | genesis naming its own lineage as `parent`, or a `parent` on a change that is not a genesis | refused → quarantine | the check needs only the event |
 | genesis naming a `parent` this peer does not hold | folds; it waits off the lineage walk until the parent lands (§5.3) | the cell is a set, so the winner is the same whatever arrives first |
-| genesis under the pre-§16.1 rule (`5: true`) at a build of the tree rule, or under the tree rule (`5: 1`) at a build from before it | refused at decode → quarantine, both ways | neither build folds a genesis by a rule it does not run; the two builds disagree only on geneses, and loudly |
+| genesis under the pre-§16.1 rule (`5: true`) at a build of the tree rule | decodes, flagged `legacy`, so a log that holds one still reads; refused at admission → quarantine | the event is never folded by a rule this build does not run, and is kept rather than dropped |
+| genesis under the tree rule (`5: 1`) at a build from before it | refused at decode by that build | that build never folds a tree-rule genesis by the LWW rule |
+
+The version in key 5 covers **events only**. The lineage cell in snapshot pages (RFC-0019),
+repair records and persisted state carries no version. A build of the tree rule reads an old
+build's cell (a lineage id as a string) as the root and drops it, and an old build merges a new
+build's cell (an object of geneses) by LWW. So **every peer of a mesh must upgrade together**
+past §16.1. Doc columns have not shipped in a release, so no deployed mesh is affected.
 | adapter cannot parse an update | materialisation marks that `doc_log` row `failed`; the doc stays usable at its last good version; loud in `$inspect` | the fold already happened identically; this only affects materialisation, which is local |
 | minor version skew (`loro-crdt` 1.4 vs 1.16) | allowed: the id's major (`@1`) is the compatibility contract; the adapter package pins a floor and runs the adapter conformance suite (§13) | Loro's own 1.x encoding stability |
 
@@ -872,15 +891,25 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    both runtimes and `doc-vectors.json`'s lineage trees prove it. A replace names the authoring
    device's winner as its parent, so restores, resets and the undo of a replace still win. A
    genesis naming a parent not yet held folds and waits off the walk (no parking). Genesis key 5
-   is now `1`, so an older build refuses a tree-rule genesis rather than folding it LWW (§10).
+   is now `1`, so an older build refuses a tree-rule genesis event rather than folding it LWW;
+   this build decodes a `true` genesis as `legacy` and quarantines it at admission (§10). That
+   versioning covers events only: lineage cells in snapshot pages, repair records and persisted
+   state carry no version, so all peers must upgrade together. Doc columns are unreleased.
+   Known limits, accepted: the earliest stamp wins and only *future* clock skew is bounded, so a
+   device with a lagging or back-dated clock wins sibling races. That grants no privilege, since
+   any replacer can already win by naming the current winner as its parent. The lineage cell
+   grows by about 110 bytes per replace and has no cap. A parent that lands through a snapshot
+   page or repair relabels the doc log only at the next doc append (follow-up, §5.3).
 2. **`replace()` permission — decided 2026-11-08 by Jace: an optional `replace` rule, defaulting
    to `update`.** `AllowBlock.replace` beside the other operations; absent, a genesis is judged by
    the row's `update` rule exactly as before (§11). Enforced by the shared validator (device and
    authority); carried in the manifest for ports.
 3. **Row undo semantics — decided 2026-11-08 by Jace: compensate only cells that still hold the
    action's stamp.** Built for `revert(eventId)` in TypeScript and Rust (§9): restore each cell
-   whose stamp is still the write's, report the rest `skipped: superseded`, delete rows the write
-   inserted, re-insert rows it deleted unless rewritten since. The refusal of a revert of document
+   whose stamp is still the write's (a `counter` by the increment that cancels the write's), report
+   the rest `skipped: superseded`, report a `max`/`min` the rule will not let go back as
+   `skipped: merge`, delete rows the write inserted (cells a colleague wrote since reported
+   `skipped: overridden`), re-insert rows it deleted unless rewritten since. The refusal of a revert of document
    updates alone (ade88cb) stays until doc compensation (P6).
 4. **Derived columns never travel — OPEN.** Proposed: each replica computes, opaque hosts take
    them from checkpoints. The alternative is authority-signed row updates, which work for
