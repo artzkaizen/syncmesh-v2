@@ -375,6 +375,8 @@ export function wireSession(
    */
   const offFolds = engine.onFoldBatch((batch) => {
     if (!caughtUp || batch.source !== "remote") return;
+    // a recovery run or another link folded it: what moved is signed for, to the author seated
+    custody.moved();
     pushOutstanding();
     // our contiguous position, for every other peer's `delivered`; the relay passes it on
     hooks.sendSafe(ownCursorsFrame(engine, identity.peerId));

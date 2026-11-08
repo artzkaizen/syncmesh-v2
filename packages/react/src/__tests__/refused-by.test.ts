@@ -1,6 +1,6 @@
 import "./dom.js";
 import { describe, expect, test } from "bun:test";
-import { createElement } from "react";
+import { createElement, useReducer } from "react";
 
 import type { RefusedBy } from "../refused-by.js";
 import type { OperationRecord } from "../use-operation.js";
@@ -71,7 +71,10 @@ describe("useRefusedBy", () => {
       for (const listener of listeners) listener();
     };
     const seen: (readonly RefusedBy[])[] = [];
+    let rerender = () => {};
     const Lines = () => {
+      // a render the record did not cause: what the memo exists for
+      rerender = useReducer((n: number) => n + 1, 0)[1];
       const lines = useRefusedBy(ref, { authority: OFFICE });
       seen.push(lines);
       return createElement(
@@ -91,10 +94,12 @@ describe("useRefusedBy", () => {
     expect(container.textContent).toBe("the authority refused this (PolicyDenied)");
     expect(container.querySelector("li")?.getAttribute("data-kind")).toBe("refused");
 
-    // the ledger re-read the same record: no new lines, the same array
+    // a render with the same record: no new lines, the same array
     const before = seen.at(-1);
-    notify();
+    const renders = seen.length;
+    rerender();
     await settle();
+    expect(seen.length).toBeGreaterThan(renders);
     expect(seen.at(-1)).toBe(before);
 
     row = record(undefined); // the refuser later signed custody, which retires the refusal

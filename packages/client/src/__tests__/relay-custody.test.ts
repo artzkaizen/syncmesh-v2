@@ -95,7 +95,6 @@ describe("the author's ledger over a relay (D32, U17)", () => {
       // through the relay like the refusal was, retires the refusal
       b.grants.register(grantFor(deviceA, "acct_a", LATER)).unwrap();
       (await b.recovery.run()).unwrap();
-      await a.on("org:acme").unwrap().db.insert(notes).values({ id: "n2", body: "again" });
       expect(await until(async () => (await refusedBy()).length === 0)).toBe(true);
       const vouched = (await ledger.vouchesOf(deviceA.peerId, first)).unwrap();
       expect(vouched.map((v) => v.holder)).toEqual([deviceB.peerId]);

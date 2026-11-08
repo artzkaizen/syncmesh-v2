@@ -27,9 +27,9 @@ export interface Custody {
   /**
    * Signs what this device now holds of `author`'s log and hands it back down the link. Signs
    * nothing while its coverage is scoped: a receipt claims the whole run, and a scoped cursor
-   * stands past events this device was never sent.
+   * stands past events this device was never sent. Whether a receipt went out.
    */
-  readonly vouch: (author: PeerId) => void;
+  readonly vouch: (author: PeerId) => boolean;
   /** One arriving receipt: verified, and kept only when it is about this device's own writes. */
   readonly receive: (wire: Uint8Array) => void;
   /**
@@ -86,18 +86,19 @@ export function createCustody(deps: CustodyDeps): Custody {
   };
   return {
     vouch: (author) => {
-      if (incarnation === undefined) return;
+      if (incarnation === undefined) return false;
       const coverage = engine.coverage();
       // a scoped cursor (D23) says "everything below N that I may read"; a receipt says everything
       // below N, so a device whose cursor stepped over withheld events would sign for what it lacks
-      if (coverage.scope !== undefined) return;
+      if (coverage.scope !== undefined) return false;
       const held = coverage.synced.get(author);
-      if (held === undefined) return;
+      if (held === undefined) return false;
       send(
         KIND.receipt,
         "receipt",
         receiptFrame(issueReceipt(identity, { author, throughSeq: held, incarnation, now: now() })),
       );
+      return true;
     },
     receive: (wire) => {
       const verified = verifyReceipt(wire);

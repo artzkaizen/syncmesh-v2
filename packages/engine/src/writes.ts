@@ -141,16 +141,16 @@ export interface WriteDeps {
   ) => Promise<Result<{ fresh: readonly StoredEvent[]; quarantined: number }, StoreFailure>>;
 }
 
-/**
- * The paths a write takes into the engine — its own `mutate` and `mutateCaptured`, a peer's
- * `receiveBatch` — with one shape: append and state commit inside `atomically`, the fold
- * notification after it.
- */
 /** How many events a transaction made durable: one write, a captured write if it made one, a batch. */
 const oneEvent = () => 1;
 const builtCount = (outcome: { readonly built: unknown }) => (outcome.built === undefined ? 0 : 1);
 const foldedCount = (folded: FoldBatch) => folded.eventCount;
 
+/**
+ * The paths a write takes into the engine — its own `mutate` and `mutateCaptured`, a peer's
+ * `receiveBatch` — with one shape: append and state commit inside `atomically`, the fold
+ * notification after it.
+ */
 export function createWritePath(deps: WriteDeps) {
   const {
     peerId,

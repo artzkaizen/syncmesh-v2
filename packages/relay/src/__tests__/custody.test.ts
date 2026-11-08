@@ -20,6 +20,7 @@ import {
   fakeSocket,
   openRoom,
   peer,
+  mintFor,
   scriptedRoom,
   seed,
   tick,
@@ -69,6 +70,54 @@ describe("custody over a relay (D32, U17)", () => {
     expect(receipt?.author).toBe(author.identity.peerId);
     expect(receipt?.throughSeq).toBe(ONE);
     expect(receipt?.incarnation).toBe("holder-store-1");
+    room.close();
+  });
+
+  test("an author away while a holder caught up hears the receipt once it is back", async () => {
+    const room = await openRoom();
+    const author = peer(40, "acct_a");
+    const { dial } = dialTo(room);
+    const away = await attach(author.context, dial);
+    await write(author, "n1", "one");
+    await tick(30);
+    await away.stop();
+
+    const holder = peer(80, "acct_b");
+    await attach({ ...holder.context, incarnation: "holder-store-1" }, dial);
+    expect(holder.engine.coverage().synced.get(author.identity.peerId)).toBe(ONE);
+    const kept: CustodyReceipt[] = [];
+    await attach({ ...author.context, onReceipt: (r) => void kept.push(r) }, dial);
+    expect(await until(() => kept.length > 0)).toBe(true);
+    expect(kept[0]?.holder).toBe(holder.identity.peerId);
+    expect(kept[0]?.throughSeq).toBe(ONE);
+    room.close();
+  });
+
+  test("a write a holder parked, then folded on a recovery run, is signed for with no write after it", async () => {
+    const room = await openRoom();
+    const author = ungranted(41);
+    const holder = peer(80, "acct_b");
+    const kept: CustodyReceipt[] = [];
+    const heard: RefusalReceipt[] = [];
+    const { dial } = dialTo(room);
+    await attach(
+      {
+        ...author.context,
+        onReceipt: (r) => void kept.push(r),
+        onRefusal: (r) => void heard.push(r),
+      },
+      dial,
+    );
+    await attach({ ...holder.context, incarnation: "holder-store-1" }, dial);
+    await write(author, "n1", "one");
+    expect(await until(() => heard.length > 0)).toBe(true);
+    expect(kept).toHaveLength(0);
+
+    holder.grants.register(mintFor(author.identity, "acct_a")).unwrap();
+    (await holder.engine.retryQuarantined()).unwrap();
+    expect(await until(() => kept.length > 0)).toBe(true);
+    expect(kept[0]?.holder).toBe(holder.identity.peerId);
+    expect(kept[0]?.throughSeq).toBe(ONE);
     room.close();
   });
 
