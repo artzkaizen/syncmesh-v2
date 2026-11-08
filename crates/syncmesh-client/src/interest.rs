@@ -83,6 +83,18 @@ pub fn matches_interest(interest: Option<&Interest>, event: &SyncEvent) -> bool 
     }
 }
 
+/// Whether a row is in the partitions the asker named (`rowsIn`): an unpinned row is in no
+/// instance, so a clause about instances says nothing about it (D24).
+pub fn rows_in(record: &syncmesh_core::record::RowRecord, interest: Option<&Interest>) -> bool {
+    match (
+        interest.and_then(|i| i.partitions.as_ref()),
+        &record.partition,
+    ) {
+        (None, _) | (_, None) => true,
+        (Some(list), Some(p)) => list.iter().any(|k| k.as_str() == p),
+    }
+}
+
 /// The two halves of a scope as the TypeScript relay's `scopeText` writes them (D23, D24): the
 /// interest the device asked with, and the entitlement the relay admitted it under.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

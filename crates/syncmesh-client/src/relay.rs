@@ -676,8 +676,8 @@ impl RelayLink {
                 bytes: Some(bytes),
             }),
             RelayFrame::BlobMissing { hash } => out.push(Action::BlobAnswer { hash, bytes: None }),
-            // a `retention` refusal's floor has nowhere to go here: this client keeps no recovery
-            // record (gaps U31), so it hangs up and redials on its backoff as before
+            // a `retention` refusal's floor has nowhere to go here: the recovery record (`Rejoins`,
+            // gaps U31) takes peer floors only, so it hangs up and redials on its backoff (gaps U37)
             RelayFrame::Error { code, message, .. } => {
                 if code == "version" {
                     self.fatal = true;
@@ -846,6 +846,7 @@ impl RelayLink {
             synced: cursors_to_map(&scoped.synced),
             local: Cursors::new(),
             scope: Some(scoped.scope),
+            floor: Cursors::new(),
         };
         for (author, seq) in &coverage.synced {
             let Some(live) = self.live.as_mut() else {
@@ -887,6 +888,7 @@ impl RelayLink {
             synced,
             local,
             scope: if scope.is_empty() { None } else { Some(scope) },
+            floor: Cursors::new(),
         });
     }
 

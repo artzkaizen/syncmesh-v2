@@ -18,7 +18,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use syncmesh_core::apply::apply_change;
+use syncmesh_core::apply::{apply_change, merge_record};
 use syncmesh_core::doc::{
     DocColumns, Id16, LineageCellRefused, derive_lineage, lineage_of, parse_lineage_cells,
     with_doc_columns,
@@ -35,19 +35,23 @@ use syncmesh_core::strategy::MergeSpec;
 
 use crate::coverage::CoverageTracker;
 use crate::doc_log::{
-    DocAppend, DocHead, DocLogEntry, DocStore, MemoryDocStore, doc_appends, record_docs,
+    DocAddress, DocAppend, DocHead, DocLogEntry, DocStore, MemoryDocStore, doc_appends,
+    lineage_moves, record_docs, relabel_docs,
 };
 use crate::doc_rules::{DerivedColumns, derived_refusal, doc_refusal, doc_verdict};
-use crate::interest::{Interest, matches_interest};
+use crate::interest::{Interest, interest_text, matches_interest, rows_in};
 use crate::quarantine::{Parked, Quarantine};
+use crate::snapshot::{InstallError, Installed, Snapshot};
 use crate::store::{
     Ahead, Coverage, Cursors, EventStore, StateStore, StoreError, StoredEvent, rows_for,
     write_keys_of,
 };
 use crate::undo::{Skipped, Undo, compensate, rows_before};
 use crate::validate::{
-    Overlay, Probe, ValidationClock, ValidationError, Validator, ValidatorOptions, unfoldable,
+    Overlay, PolicySource, Probe, ValidationClock, ValidationError, Validator, ValidatorOptions,
+    unfoldable,
 };
+use syncmesh_core::snapshot_codec::SnapshotRow;
 
 /// Where a batch came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +59,8 @@ pub enum FoldSource {
     Local,
     Remote,
     Boot,
+    /// A snapshot install (RFC-0019): rows merged, no events folded.
+    Snapshot,
 }
 
 /// One notification per fold, however many events it covered. `write_keys` is exact.
@@ -256,6 +262,14 @@ fn system_now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Where a write lands: its partition, its action, what it compensates, and whether it travels.
+struct WriteScope {
+    partition: Option<PartitionKey>,
+    action: Option<Id16>,
+    undo_of: Option<Id16>,
+    local: bool,
+}
+
 pub struct Engine {
     identity: Identity,
     clock: HlcClock,
@@ -328,8 +342,9 @@ impl Engine {
     /// sorts after everything already held (D05). Rows holding a lineage cell of a rule this build
     /// does not run are state it cannot read: the state store is cleared and rebuilt from the
     /// whole log, as the TypeScript's `openEngine` does, and the refused cell is kept for
-    /// [`Engine::refused_at_open`]. This crate never compacts its log or installs a snapshot, so
-    /// the log holds every event the state stood for.
+    /// [`Engine::refused_at_open`]. This crate never compacts its log, so the log holds every
+    /// event the state stood for — unless a snapshot install left a floor (D46): then those rows
+    /// have no events behind them, and such a state is refused as `StateCorrupt` instead.
     pub fn open(
         identity: Identity,
         store: Box<dyn EventStore + Send>,
@@ -361,6 +376,18 @@ impl Engine {
             });
             parse_lineage_cells(rows, docs).err()
         });
+        if let Some(cell) = &refused
+            && !coverage.floor.is_empty()
+        {
+            // rows a snapshot installed have no events behind them: a rebuild from the log would
+            // drop them without a word, so the state is refused instead, as the TypeScript's
+            // `StateCorrupt` refuses it (gap U22). Nothing is cleared
+            return Err(StoreError::new(format!(
+                "StateCorrupt: the state holds {} and rows a snapshot installed, which the log \
+                 cannot rebuild; rejoin from a peer's state",
+                cell
+            )));
+        }
         if refused.is_some() {
             if let Some(s) = state_store.as_mut() {
                 s.clear()?;
@@ -402,10 +429,34 @@ impl Engine {
             refused_at_open: refused,
             schema_version: options.schema_version,
         };
-        let replay = engine.store.all_since(&coverage.synced)?;
+        let mut replay = engine.store.all_since(&coverage.synced)?;
+        replay.extend(engine.store.local_since(&coverage.local)?);
         let batch = engine.fold(&replay, FoldSource::Boot);
         engine.persist(&batch)?;
+        engine.relabel_stale_heads()?;
         Ok(engine)
+    }
+
+    /// Relabels every document whose head names a winning lineage the state does not: what an
+    /// install leaves when it stops after its rows commit and before the doc log is relabelled.
+    fn relabel_stale_heads(&mut self) -> Result<(), StoreError> {
+        let state = &self.state;
+        let winner_of =
+            |doc: &DocAddress| lineage_of(state.record(&doc.table, &doc.key), &doc.column);
+        let stale: Vec<(DocAddress, String)> = self
+            .doc_store
+            .heads()?
+            .into_iter()
+            .filter(|head| head.lineage != winner_of(&head.doc))
+            .map(|head| (head.doc, head.adapter))
+            .collect();
+        if stale.is_empty() {
+            return Ok(());
+        }
+        let adapters = &self.doc_adapters;
+        relabel_docs(self.doc_store.as_mut(), &stale, winner_of, |a| {
+            adapters.contains(a)
+        })
     }
 
     /// The persisted lineage cell `open` refused, after which it rebuilt the state from the log;
@@ -455,6 +506,47 @@ impl Engine {
         action: Option<Id16>,
         undo_of: Option<Id16>,
     ) -> Result<Mutated, MutateError> {
+        let options = WriteScope {
+            partition,
+            action,
+            undo_of,
+            local: false,
+        };
+        self.write(procedure, changes, options)
+    }
+
+    /// A write that never leaves this device (`MutateOptions.local` in the TypeScript): numbered
+    /// in its own sequence (`peer-L1`, `peer-L2`, …), folded and kept like any other, never signed
+    /// and never sent, so its entry has no envelope and `events_since` never returns it. What a
+    /// `local` table is written with; a write to one by [`Engine::mutate`] is refused as
+    /// `LocalOnly` by a validator, as the TypeScript refuses it. A document change never rides one.
+    pub fn mutate_local(
+        &mut self,
+        procedure: &str,
+        changes: Vec<Change>,
+        partition: Option<PartitionKey>,
+    ) -> Result<Mutated, MutateError> {
+        let options = WriteScope {
+            partition,
+            action: None,
+            undo_of: None,
+            local: true,
+        };
+        self.write(procedure, changes, options)
+    }
+
+    fn write(
+        &mut self,
+        procedure: &str,
+        changes: Vec<Change>,
+        options: WriteScope,
+    ) -> Result<Mutated, MutateError> {
+        let WriteScope {
+            partition,
+            action,
+            undo_of,
+            local,
+        } = options;
         if changes.is_empty() {
             return Err(MutateError::Empty {
                 procedure: procedure.to_owned(),
@@ -473,6 +565,7 @@ impl Engine {
                 changes: &changes,
                 seq: None,
                 hlc: None,
+                local,
             };
             validator
                 .validate(&probe, &self.state, Some(self.validation_clock()))
@@ -482,10 +575,16 @@ impl Engine {
                 })?;
         }
         let hlc = self.clock.tick(self.now_ms());
-        let last = self.store.last_seq(self.identity.peer_id())?;
+        let own = self.identity.peer_id();
         // after the log and after anything a room said it holds of ours: a number reused is a
-        // write a room drops as a duplicate, silently (G7)
-        let after = last.map(|s| s.get()).unwrap_or(0).max(self.own_floor);
+        // write a room drops as a duplicate, silently (G7). Local writes never travel, so their
+        // run is this log's alone
+        let after = if local {
+            self.store.last_local_seq(own)?.map_or(0, |s| s.get())
+        } else {
+            let last = self.store.last_seq(own)?;
+            last.map(|s| s.get()).unwrap_or(0).max(self.own_floor)
+        };
         let seq_num = SeqNum::parse(after + 1)
             .ok_or_else(|| StoreError::new("the sequence space is exhausted"))?;
         let peer_id = self.identity.peer_id().clone();
@@ -513,8 +612,8 @@ impl Engine {
             undo_of,
             schema_version: self.schema_version,
         };
-        if let Some(reason) =
-            doc_refusal(&event, &self.docs).or_else(|| derived_refusal(&event, &self.derived))
+        if let Some(reason) = doc_refusal(&event, &self.docs, local)
+            .or_else(|| derived_refusal(&event, &self.derived))
         {
             return Err(MutateError::DocRefused {
                 procedure: procedure.to_owned(),
@@ -526,7 +625,18 @@ impl Engine {
         } else {
             Vec::new()
         };
-        let entry = StoredEvent::from_verified(sign_event(event, &self.identity));
+        // a local write is never signed: an envelope for it would be a valid synced event under a
+        // number the synced run will use again
+        let entry = if local {
+            StoredEvent {
+                event,
+                core: None,
+                sig: None,
+                local: true,
+            }
+        } else {
+            StoredEvent::from_verified(sign_event(event, &self.identity))
+        };
         self.store.append(&entry)?;
         let batch = self.fold(std::slice::from_ref(&entry), FoldSource::Local);
         self.persist(&batch)?;
@@ -534,6 +644,7 @@ impl Engine {
             self.undo.push_back(Undo {
                 event: entry.event.clone(),
                 before,
+                local,
             });
             if self.undo.len() > self.undo_depth {
                 self.undo.pop_front();
@@ -544,7 +655,7 @@ impl Engine {
 
     /// Whether `event_id` is among this engine's last `undo_depth` writes.
     pub fn can_revert(&self, event_id: &str) -> bool {
-        self.undo.iter().any(|u| u.event.id() == event_id)
+        self.undo.iter().any(|u| u.id() == event_id)
     }
 
     /// Writes the compensating event for one of this engine's last `undo_depth` writes, in that
@@ -554,7 +665,7 @@ impl Engine {
     /// still stands, nothing is written; a compensation the engine refuses leaves the write
     /// revertable.
     pub fn revert(&mut self, event_id: &str) -> Result<Reverted, RevertError> {
-        let Some(index) = self.undo.iter().position(|u| u.event.id() == event_id) else {
+        let Some(index) = self.undo.iter().position(|u| u.id() == event_id) else {
             return Err(RevertError::NotRevertable {
                 event_id: event_id.to_owned(),
             });
@@ -583,7 +694,14 @@ impl Engine {
                 skipped,
             });
         }
-        match self.mutate("revert", changes, undo.event.partition.clone()) {
+        // in the partition and the locality of the write it answers
+        let scope = WriteScope {
+            partition: undo.event.partition.clone(),
+            action: None,
+            undo_of: None,
+            local: undo.local,
+        };
+        match self.write("revert", changes, scope) {
             Ok(mutated) => Ok(Reverted {
                 mutated: Some(mutated),
                 skipped,
@@ -691,7 +809,7 @@ impl Engine {
                         .validate(&Probe::event(&entry.event), &overlay, Some(clock))
                         .err()
                 }),
-                None => doc_verdict(&entry.event, &self.docs),
+                None => doc_verdict(&entry.event, &self.docs, entry.local),
             };
             match verdict {
                 Some(verdict) => refused.push(Parked {
@@ -753,7 +871,7 @@ impl Engine {
         let write_keys = write_keys_of(entries.iter().map(|e| &e.event));
         for entry in entries {
             let event = &entry.event;
-            self.coverage.note(event);
+            self.coverage.note(event, entry.local);
             let stamp = Stamp::new(event.hlc, event.peer_id.clone());
             for change in &event.changes {
                 // an unknown change was parked before it reached here; the fold has nothing to do
@@ -862,6 +980,108 @@ impl Engine {
         }
     }
 
+    /// The rows this device holds, tombstones included, as one transferable value (RFC-0019,
+    /// `engine.snapshot`). With an interest only the rows in it, and the snapshot then claims
+    /// completeness for that slice alone. The floor is this device's own account of its log and
+    /// never part of what it claims.
+    pub fn snapshot(&self, interest: Option<&Interest>) -> Snapshot {
+        let rows = self
+            .state
+            .tables
+            .iter()
+            .flat_map(|(table, records)| {
+                records
+                    .iter()
+                    .filter(|(_, record)| rows_in(record, interest))
+                    .map(move |(key, record)| SnapshotRow::new(table, key, record.clone()))
+            })
+            .collect();
+        let coverage = Coverage {
+            floor: Cursors::new(),
+            ..self.coverage.current()
+        };
+        Snapshot {
+            rows,
+            coverage,
+            scope: interest.cloned(),
+        }
+    }
+
+    /// Merges a snapshot's rows and, only then, adopts the coverage they stand for
+    /// (`installSnapshot`). Every row goes through the ordinary field-level merge, so an install
+    /// is safe to repeat and to interleave with live events, and cannot resurrect a tombstone.
+    /// What it adopts beyond the log is the floor (D46); a scoped snapshot's coverage is adopted
+    /// as scoped (D23).
+    ///
+    /// A row holding a lineage cell of a rule this build does not run refuses the whole snapshot
+    /// before anything joins (RFC-0023 §16.1): nothing installed, nothing adopted. A document whose
+    /// winning lineage the rows move has its doc log relabelled in the same step. Rows and
+    /// coverage commit to the state store together, before the relabel: a stop between the two
+    /// leaves heads naming the old winner, which the next [`Engine::open`] relabels.
+    pub fn install_snapshot(&mut self, snapshot: Snapshot) -> Result<Installed, InstallError> {
+        let keyed = snapshot
+            .rows
+            .iter()
+            .map(|row| (row.table.as_str(), row.key.as_str(), &row.record));
+        parse_lineage_cells(keyed, &self.docs).map_err(InstallError::Refused)?;
+        let before = self.state.clone();
+        let mut write_keys: BTreeMap<TableName, BTreeSet<RowKey>> = BTreeMap::new();
+        let count = snapshot.rows.len();
+        for row in snapshot.rows {
+            write_keys
+                .entry(row.table.clone())
+                .or_default()
+                .insert(row.key.clone());
+            merge_record(
+                &mut self.state,
+                &row.table,
+                &row.key,
+                row.record,
+                self.merge.as_ref(),
+            );
+        }
+        let moved = lineage_moves(&before, &self.state, &write_keys, &self.docs);
+        let mut adopted = snapshot.coverage;
+        if let Some(scope) = &snapshot.scope {
+            adopted.scope = Some(interest_text(Some(scope)));
+        }
+        let mut coverage = self.coverage.clone();
+        coverage.adopt_unheld(&adopted);
+        if let Some(store) = self.state_store.as_mut() {
+            store.commit(&rows_for(&self.state, &write_keys), &coverage.current())?;
+        }
+        self.coverage = coverage;
+        let (state, adapters) = (&self.state, &self.doc_adapters);
+        relabel_docs(
+            self.doc_store.as_mut(),
+            &moved,
+            |doc| lineage_of(state.record(&doc.table, &doc.key), &doc.column),
+            |a| adapters.contains(a),
+        )?;
+        Ok(Installed {
+            rows: count,
+            batch: FoldBatch {
+                source: FoldSource::Snapshot,
+                event_count: count,
+                write_keys,
+                docs: Vec::new(),
+            },
+        })
+    }
+
+    /// Per author, the highest sequence this device claims with no event in its log behind it —
+    /// what a snapshot install left (D46). Sent at index 4 of a peer link's cursors frame; empty
+    /// until an install adopts something the log does not hold, since this crate never compacts.
+    pub fn floor(&self) -> Cursors {
+        self.coverage.current().floor
+    }
+
+    /// Whether the mesh declares document columns: a snapshot answering a floor then adopts no
+    /// coverage, because it carries no document snapshots (D46).
+    pub fn has_doc_columns(&self) -> bool {
+        self.docs.values().any(|columns| !columns.is_empty())
+    }
+
     /// Takes on a room's position for this device's own author (its `hello` cursors): nothing
     /// is ever numbered at or below it again (G7). A key that outlives its log — a database
     /// deleted, restored from an older copy, or a key shared by two logs — would otherwise
@@ -892,6 +1112,47 @@ impl Engine {
     /// Records what `peer` holds, as of `at_ms`; links call it on every cursor exchange.
     pub fn acknowledge(&mut self, peer: PeerId, cursors: Cursors, at_ms: i64) {
         self.acks.insert(peer, Ack { cursors, at_ms });
+    }
+
+    /// `mesh.can` (`client/src/can.ts`): may this device do `"table.op"` on `row`, by the rules its
+    /// validator enforces, read where the write path reads them — the instance's synced `_policy`
+    /// row when this device holds one, the manifest otherwise. `instance` names the partition; with
+    /// none, a `user` table is asked in the account's own instance and any other table by the
+    /// manifest's rules. An instance that does not parse is no instance. `false` with no validator:
+    /// nothing here could say yes.
+    pub fn can(
+        &self,
+        what: &str,
+        row: Option<&syncmesh_core::record::Row>,
+        instance: Option<&str>,
+    ) -> bool {
+        let Some(validator) = &self.validator else {
+            return false;
+        };
+        let named = instance.and_then(|i| PartitionKey::parse(i).ok());
+        let held = validator.principal(self.peer_id(), named.as_ref(), &self.state, self.now_ms());
+        let partition = match instance {
+            Some(_) => named,
+            None => {
+                let table = what.split_once('.').map_or(what, |(t, _)| t);
+                let kind = validator
+                    .manifest()
+                    .tables
+                    .get(table)
+                    .map(|t| t.partition.as_str());
+                match (kind, &held) {
+                    (Some("user"), Some(p)) => {
+                        PartitionKey::parse(&format!("user:{}", p.account)).ok()
+                    }
+                    _ => None,
+                }
+            }
+        };
+        let source = partition.as_ref().map(|partition| PolicySource {
+            partition,
+            rows: &self.state,
+        });
+        validator.can(held.as_ref(), what, row, None, source)
     }
 
     /// The ladder this engine judges every event by; `None` when it runs none.

@@ -20,6 +20,10 @@ use crate::store::StoredEvent;
 
 /// What a host asks of a running link.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a write is the command a link carries most; boxing it would allocate per write to save bytes on the rare ones"
+)]
 pub enum LinkCommand {
     /// This device wrote something (the entry `Engine::mutate` returned).
     Write(StoredEvent),

@@ -395,11 +395,24 @@ pub fn record_docs(
     }
     let entries: Vec<DocLogEntry> = appends.iter().map(|a| a.entry.clone()).collect();
     store.append(&entries)?;
-    let mut touched: BTreeMap<&DocAddress, &str> = BTreeMap::new();
+    let mut touched: BTreeMap<DocAddress, String> = BTreeMap::new();
     for a in appends {
-        touched.insert(&a.entry.doc, &a.adapter);
+        touched.insert(a.entry.doc.clone(), a.adapter.clone());
     }
-    for (doc, adapter) in touched {
+    let touched: Vec<(DocAddress, String)> = touched.into_iter().collect();
+    relabel_docs(store, &touched, winner_of, has_adapter)
+}
+
+/// Brings each named document's labels and head up to date with the lineage that now wins it:
+/// what a fold that appends doc entries does, and what a snapshot install that moves a document's
+/// winning lineage does with no entry to append (`lineageMoves`).
+pub fn relabel_docs(
+    store: &mut dyn DocStore,
+    docs: &[(DocAddress, String)],
+    winner_of: impl Fn(&DocAddress) -> Option<Id16>,
+    has_adapter: impl Fn(&str) -> bool,
+) -> Result<(), StoreError> {
+    for (doc, adapter) in docs {
         let winner = winner_of(doc);
         let live = live_states(has_adapter(adapter));
         let mut tail = (0u64, 0u64);
@@ -415,4 +428,36 @@ pub fn record_docs(
         store.upsert_head(doc, adapter, winner, tail.0, tail.1)?;
     }
     Ok(())
+}
+
+/// The documents whose winning lineage differs between `before` and `after` among the rows
+/// written, with the adapter each declares (`lineageMoves`).
+pub fn lineage_moves(
+    before: &syncmesh_core::state::State,
+    after: &syncmesh_core::state::State,
+    written: &BTreeMap<String, std::collections::BTreeSet<String>>,
+    docs: &syncmesh_core::doc::DocColumns,
+) -> Vec<(DocAddress, String)> {
+    let mut moves = Vec::new();
+    for (table, keys) in written {
+        let Some(columns) = docs.get(table) else {
+            continue;
+        };
+        for key in keys {
+            for (column, adapter) in columns {
+                let winner = |state: &syncmesh_core::state::State| {
+                    syncmesh_core::doc::lineage_of(state.record(table, key), column)
+                };
+                if winner(before) != winner(after) {
+                    let doc = DocAddress {
+                        table: table.clone(),
+                        key: key.clone(),
+                        column: column.clone(),
+                    };
+                    moves.push((doc, adapter.clone()));
+                }
+            }
+        }
+    }
+    moves
 }

@@ -1206,6 +1206,7 @@ fn granted_engine(n: u8, now: i64, registry: &Arc<Mutex<GrantRegistry>>) -> Engi
                 grants: Some(Box::new(registry.clone())),
                 authority: None,
                 accounts: false,
+                checks: Default::default(),
             }),
             ..EngineOptions::default()
         },

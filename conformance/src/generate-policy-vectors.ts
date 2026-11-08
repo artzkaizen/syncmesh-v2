@@ -10,19 +10,26 @@
  * cases live in `policy/`, one module per part of the ladder.
  */
 import {
+  can,
   createEngine,
   createMemoryEventStore,
   createValidator,
   type ValidationError,
 } from "@syncmesh/engine";
-import { createHlcClock, readRows, type RowKey, type TableName } from "@syncmesh/kernel";
+import {
+  createHlcClock,
+  parsePartitionKey,
+  readRows,
+  type RowKey,
+  type TableName,
+} from "@syncmesh/kernel";
 import { portableSchema } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createGrantRegistry, decodeAndVerify, hexToBytes } from "@syncmesh/wire";
 
 import type { Mesh } from "./policy/changes.js";
 
-import { grantWire, grants } from "./policy/changes.js";
+import { cells, grantWire, grants } from "./policy/changes.js";
 import { grantedMesh } from "./policy/granted-rules.js";
 import {
   AUTHORITY,
@@ -101,14 +108,27 @@ export async function runPolicyMesh(mesh: Mesh) {
         peerId: event.peerId,
         changes: event.changes,
         ...(event.partition !== undefined && { partition: event.partition }),
+        ...(probe.local === true && { local: true as const }),
       },
       lookup,
     );
     return {
       description: probe.description,
       event: probe.event,
+      ...(probe.local === true && { local: true }),
       ...(verdict.isErr() ? verdictFields(verdict.error) : { verdict: null }),
     };
+  });
+  // the UI's question, against the rows the steps left: the same rules the ladder enforced
+  const answers = (mesh.can ?? []).map((question) => {
+    const principal =
+      question.principal === null ? undefined : { claims: {}, ...question.principal };
+    const row = question.row === undefined ? undefined : cells(question.row);
+    const patch = question.patch === undefined ? undefined : cells(question.patch);
+    const partition =
+      question.partition === undefined ? undefined : parsePartitionKey(question.partition).unwrap();
+    const source = partition === undefined ? undefined : { partition, rows: lookup.row };
+    return { ...question, answer: can(policySchema, principal, question.what, row, patch, source) };
   });
   return {
     description: mesh.description,
@@ -117,6 +137,7 @@ export async function runPolicyMesh(mesh: Mesh) {
     steps,
     rows,
     probes,
+    ...(answers.length > 0 && { can: answers }),
   };
 }
 
