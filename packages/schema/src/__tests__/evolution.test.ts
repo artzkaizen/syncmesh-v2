@@ -8,7 +8,7 @@ import { t } from "../column.js";
 import { checkEvolution } from "../evolution.js";
 import { syncSchema } from "../manifest.js";
 import { ladder, partition, user } from "../partition.js";
-import { shippedSchema } from "../shipped.js";
+import { formatShippedSchema, parseShippedSchema, shippedSchema } from "../shipped.js";
 
 const id = () => t.text().primaryKey();
 const none = ({ deny }: { readonly deny: PolicyNode }) => ({ $default: deny });
@@ -177,6 +177,54 @@ describe("checkEvolution: the additive lint D13 asked for (D31)", () => {
       },
     });
     expect(broken(reused, contracted)).toEqual(["dropped-forgotten", "table-reused"]);
+  });
+
+  test("a removed column's name stays removed, through the file, and is never declared again", () => {
+    const memos = { columns: { id: id(), body: t.text() }, partition: user };
+    const retired = syncSchema({
+      schemaVersion: 2,
+      tables: {
+        notes: {
+          columns: { id: id(), body: t.text(), owner: t.text().nullable().retired() },
+          partition: user,
+        },
+        memos,
+      },
+    });
+    const removed = syncSchema({
+      schemaVersion: 3,
+      tables: { notes: { columns: { id: id(), body: t.text() }, partition: user }, memos },
+    });
+    const s2 = checkEvolution(shipped, retired).unwrap();
+    const s3 = checkEvolution(s2, removed).unwrap();
+    expect(s3.tables["notes"]?.dropped).toEqual(["owner"]);
+    // the committed file is what the next check reads, so the name survives it
+    const committed = parseShippedSchema(formatShippedSchema(s3)).unwrap();
+    expect(committed).toEqual(s3);
+    // the same name, back with another kind: older builds still write text under it
+    const repurposed = syncSchema({
+      schemaVersion: 4,
+      tables: {
+        notes: {
+          columns: { id: id(), body: t.text(), owner: t.integer().nullable() },
+          partition: user,
+        },
+        memos,
+      },
+    });
+    expect(broken(repurposed, committed)).toEqual(["column-reused"]);
+    // and a later unrelated change keeps the name in the file it returns
+    const later = syncSchema({
+      schemaVersion: 4,
+      tables: {
+        notes: {
+          columns: { id: id(), body: t.text(), pinned: t.text().nullable() },
+          partition: user,
+        },
+        memos,
+      },
+    });
+    expect(checkEvolution(committed, later).unwrap().tables["notes"]?.dropped).toEqual(["owner"]);
   });
 
   test("the version only goes up, and goes up whenever the shape changes", () => {

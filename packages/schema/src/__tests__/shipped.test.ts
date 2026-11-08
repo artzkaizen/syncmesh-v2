@@ -1,3 +1,5 @@
+import type { JsonValue } from "@syncmesh/kernel";
+
 import { describe, expect, test } from "bun:test";
 
 import { t } from "../column.js";
@@ -24,5 +26,11 @@ describe("the shipped-schema file (D31)", () => {
     expect(parseShippedSchema("{").isErr()).toBe(true);
     expect(parseShippedSchema(JSON.stringify({ ...shipped, v: 2 })).isErr()).toBe(true);
     expect(parseShippedSchema(JSON.stringify({ ...shipped, schemaVersion: 0 })).isErr()).toBe(true);
+    // a table's removed columns are names, or the file is not one
+    const withDropped = (dropped: JsonValue) =>
+      JSON.stringify({ ...shipped, tables: { notes: { ...shipped.tables["notes"], dropped } } });
+    expect(parseShippedSchema(withDropped(["owner"])).isOk()).toBe(true);
+    expect(parseShippedSchema(withDropped([1])).isErr()).toBe(true);
+    expect(parseShippedSchema(withDropped("owner")).isErr()).toBe(true);
   });
 });

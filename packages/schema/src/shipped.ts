@@ -33,6 +33,11 @@ export interface ShippedTable {
   readonly sync?: "window";
   readonly retired?: true;
   readonly columns: Readonly<Record<string, ShippedColumn>>;
+  /**
+   * Columns this table has removed, kept for good so no later build declares the name again.
+   * Only {@link checkEvolution} writes it, from the file before; a schema does not know it.
+   */
+  readonly dropped?: readonly string[];
 }
 
 /**
@@ -71,8 +76,9 @@ const shippedColumn = (def: ColumnDef): ShippedColumn => ({
 });
 
 /**
- * A schema as the data {@link checkEvolution} compares: what to write to the file the app
- * commits once a build ships.
+ * A schema as the data {@link checkEvolution} compares: the file to commit when the app first
+ * ships. After that, commit what `checkEvolution` returns, which also keeps the names of the
+ * columns removed since; this function cannot know them.
  *
  * @example
  * await Bun.write("schema.shipped.json", formatShippedSchema(shippedSchema(schema)));
@@ -174,34 +180,44 @@ function readEach<T>(
   return out;
 }
 
+/** A list of names, absent for absent, or `undefined` when it is there and is not one. */
+function names(value: JsonValue | undefined): readonly string[] | undefined | false {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return false;
+  const each = value.filter((name): name is string => typeof name === "string");
+  return each.length === value.length ? each : false;
+}
+
 function readTable(value: JsonValue): ShippedTable | undefined {
   if (!isObject(value)) return undefined;
   const { partition, sync } = value;
+  const dropped = names(value["dropped"]);
   const visibility = VISIBILITIES.get(value["visibility"]);
   const retired = flag(value["retired"]);
   const columns = readEach(value["columns"], readColumn);
   if (typeof partition !== "string" || visibility === undefined || columns === undefined)
     return undefined;
-  if ((sync !== undefined && sync !== "window") || retired === false) return undefined;
+  if ((sync !== undefined && sync !== "window") || retired === false || dropped === false)
+    return undefined;
   return {
     partition,
     visibility,
     ...(sync !== undefined && { sync }),
     ...(retired === true && { retired }),
     columns,
+    ...(dropped !== undefined && { dropped }),
   };
 }
 
 function readShipped(value: JsonValue): ShippedSchema | undefined {
   if (!isObject(value) || value["v"] !== 1) return undefined;
-  const { schemaVersion, dropped } = value;
+  const { schemaVersion } = value;
   const tables = readEach(value["tables"], readTable);
+  const dropped = names(value["dropped"]);
   if (typeof schemaVersion !== "number" || !Number.isSafeInteger(schemaVersion)) return undefined;
-  if (schemaVersion < 1 || tables === undefined || !Array.isArray(dropped)) return undefined;
-  const names = dropped.filter((name): name is string => typeof name === "string");
-  return names.length === dropped.length
-    ? { v: 1, schemaVersion, tables, dropped: names }
-    : undefined;
+  if (schemaVersion < 1 || tables === undefined || dropped === undefined || dropped === false)
+    return undefined;
+  return { v: 1, schemaVersion, tables, dropped };
 }
 
 /* oxlint-enable anti-slop/no-runtime-typeof */
