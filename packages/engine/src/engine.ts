@@ -17,7 +17,7 @@ import type { RepairApi } from "./digest.js";
 import type { DocApi } from "./doc-path.js";
 import type { FeedApi } from "./feed.js";
 import type { Interest } from "./interest.js";
-import type { AtomicStores, EngineOptions } from "./options.js";
+import type { EngineOptions } from "./options.js";
 import type { Parked } from "./quarantine.js";
 import type { EventHeader, RecentEvents } from "./recent.js";
 import type { SnapshotApi } from "./snapshot.js";
@@ -40,6 +40,7 @@ import {
 } from "./errors.js";
 import { createFeedPath, trackFeeds } from "./feed.js";
 import { createFoldPath, type FoldBatch } from "./fold.js";
+import { gatedTransactions } from "./gate.js";
 import { eventsWanted } from "./interest.js";
 import { createHub, type Unsubscribe } from "./listeners.js";
 import { type PurgeApi, createPurge } from "./purge.js";
@@ -239,8 +240,7 @@ export function createEngine(options: EngineOptions): Engine {
   const docPath = createDocPath(options, peerId, undo);
   const { merge, hasAdapter, store: docStore } = docPath;
   const plain = omitUndefined({ events: store, docs: docStore, state: stateStore });
-  const atomically = <T>(fn: (scoped: AtomicStores) => Promise<T>): Promise<T> =>
-    atomic === undefined ? fn(plain) : atomic((scoped) => fn(docPath.within(scoped)));
+  const { shared: atomically, exclusive } = gatedTransactions(atomic, plain, docPath.within);
   const coverage = trackCoverage(boot?.coverage);
   const errors = createHub<EngineError>();
   if (options.onError !== undefined) errors.subscribe(options.onError);
@@ -371,7 +371,7 @@ export function createEngine(options: EngineOptions): Engine {
     retryQuarantined: () => retryQuarantined(parked, receiveAndRetry),
     onQuarantine: quarantine.subscribe,
     stranded: () => strandedWrites(store, peerId),
-    purge: createPurge({ ...snapshotDeps, peerId, store, parked, folds, atomically, hasAdapter }),
+    purge: createPurge({ ...snapshotDeps, peerId, parked, folds, hasAdapter, exclusive }),
     onTelemetry: telemetry.subscribe,
     ...docPath.api,
   };

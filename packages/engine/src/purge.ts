@@ -19,7 +19,7 @@ import type { Hub } from "./listeners.js";
 import type { AtomicStores } from "./options.js";
 import type { QuarantineStore } from "./quarantine.js";
 import type { RowWrite, WriteKeys } from "./state-store.js";
-import type { EventStore, StoredEvent } from "./store.js";
+import type { StoredEvent } from "./store.js";
 
 import { foldable } from "./columns.js";
 import { docAppends, recordDocs } from "./doc-log.js";
@@ -89,14 +89,14 @@ export interface PurgeApi {
 
 export interface PurgeDeps {
   readonly peerId: PeerId;
-  readonly store: EventStore;
   readonly merge?: MergeSpec;
   readonly hasAdapter: (adapter: AdapterId) => boolean;
   readonly parked: QuarantineStore;
   readonly coverageOf: CoverageTracker["current"];
   readonly getState: () => State;
   readonly setState: (next: State) => void;
-  readonly atomically: <T>(fn: (scoped: AtomicStores) => Promise<T>) => Promise<T>;
+  /** The stores in one transaction, with no write running beside it (the gate's exclusive turn). */
+  readonly exclusive: <T>(fn: (scoped: AtomicStores) => Promise<T>) => Promise<T>;
   readonly folds: Hub<FoldBatch>;
 }
 
@@ -179,51 +179,51 @@ const without = (state: State, keys: WriteKeys): State => {
  * whatever its source still holds.
  */
 export function createPurge(deps: PurgeDeps) {
-  const { peerId, store, merge, hasAdapter, parked, coverageOf, getState, setState } = deps;
+  const { peerId, merge, hasAdapter, parked, coverageOf, getState, setState } = deps;
 
   return async (scope: PurgeScope): Promise<Result<Purged, StoreFailure>> => {
-    const held = await store.all();
-    if (held.isErr()) return Result.err(held.error);
     const theirs = (event: SyncEvent): boolean =>
       event.local !== true && event.peerId !== peerId && scope.events(event);
-    const evicted = held.value.filter(({ event }) => theirs(event));
-    const state = getState();
-    const keys = rowsTouched(evicted, state, scope.rows);
-    const dropped = unpark(parked, theirs);
-    if (keys.size === 0 && evicted.length === 0)
-      return Result.ok({ events: dropped, rows: keys, before: [] });
-
-    const gone = new Set(evicted.map(({ event }) => event.id));
-    const touches = (event: SyncEvent): boolean =>
-      event.changes.some((change) => keys.get(change.table)?.has(change.key) === true);
-    const kept = held.value.filter(({ event }) => !gone.has(event.id) && touches(event));
-    const next = rebuilt(state, keys, kept, merge);
-    const rows = rowsFor(next, keys);
-    const docs = docAppends(
-      kept.map(({ event }) => event),
-      hasAdapter,
-    ).filter(({ entry }) => keys.get(entry.table)?.has(entry.key) === true);
-
     const stored = await Result.tryPromise({
       try: () =>
-        deps.atomically(async (scoped) => {
+        deps.exclusive(async (scoped) => {
+          const held = await scoped.events.all();
+          if (held.isErr()) throw held.error;
+          const evicted = held.value.filter(({ event }) => theirs(event));
+          const keys = rowsTouched(evicted, getState(), scope.rows);
+          if (keys.size === 0 && evicted.length === 0) return { events: 0, keys, before: [] };
+
+          const gone = new Set(evicted.map(({ event }) => event.id));
+          const touches = (event: SyncEvent): boolean =>
+            event.changes.some((change) => keys.get(change.table)?.has(change.key) === true);
+          const kept = held.value.filter(({ event }) => !gone.has(event.id) && touches(event));
+          const docs = docAppends(
+            kept.map(({ event }) => event),
+            hasAdapter,
+          ).filter(({ entry }) => keys.get(entry.table)?.has(entry.key) === true);
+
           const removed = await scoped.events.evict([...gone]);
           if (removed.isErr()) throw removed.error;
+          const drafted = rebuilt(getState(), keys, kept, merge);
           const writes = [
             await scoped.state?.remove(keys),
-            await scoped.state?.commit(rows, coverageOf()),
+            await scoped.state?.commit(rowsFor(drafted, keys), coverageOf()),
             await scoped.docs?.forget(keys),
             scoped.docs === undefined
               ? undefined
               : await recordDocs(
                   scoped.docs,
                   docs,
-                  (doc) => docLineage(getRecord(next, doc.table, doc.key), doc.column),
+                  (doc) => docLineage(getRecord(drafted, doc.table, doc.key), doc.column),
                   hasAdapter,
                 ),
           ];
           for (const written of writes) if (written?.isErr() === true) throw written.error;
-          return removed.value;
+          // rebuilt again from the state as it is now, with no await before it is set: a snapshot
+          // or a repair merged in while the stores were written is kept, outside the touched rows
+          const current = getState();
+          setState(rebuilt(current, keys, kept, merge));
+          return { events: removed.value, keys, before: rowsFor(current, keys) };
         }),
       catch: (cause) =>
         cause instanceof StoreFailure
@@ -231,14 +231,16 @@ export function createPurge(deps: PurgeDeps) {
           : new StoreFailure({ message: "the purge did not commit", cause }),
     });
     if (stored.isErr()) return Result.err(stored.error);
-    const before = rowsFor(state, keys);
-    setState(next);
-    deps.folds.emit({
-      source: "purge",
-      eventCount: stored.value,
-      writeTables: new Set(keys.keys()),
-      writeKeys: keys,
-    });
-    return Result.ok({ events: stored.value + dropped, rows: keys, before });
+    // after the commit, so a purge that failed leaves the quarantine as it was
+    const dropped = unpark(parked, theirs);
+    const { events, keys, before } = stored.value;
+    if (keys.size > 0 || events > 0)
+      deps.folds.emit({
+        source: "purge",
+        eventCount: events,
+        writeTables: new Set(keys.keys()),
+        writeKeys: keys,
+      });
+    return Result.ok({ events: events + dropped, rows: keys, before });
   };
 }
