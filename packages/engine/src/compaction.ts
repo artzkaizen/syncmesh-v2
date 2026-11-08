@@ -127,7 +127,9 @@ export const clampToHeld = (floor: Cursors, held: Cursors): Cursors => {
  *
  * A device that has never compacted can refold everything, which is most devices for most of
  * their lives. One that has cannot, and its remedy is a peer rather than its own disk — which is
- * exactly what `openEngine` says when it finds an absent cache over a compacted log.
+ * exactly what `openEngine` says when it finds an absent cache over a compacted log. Nor can one
+ * that took rows from a snapshot install (`EventStore.installedBelow`, gaps U33): those rows came
+ * with coverage and no events, so the log never held what they stand for.
  *
  * Asked of the store rather than the engine because the caller is deciding whether to *open* one:
  * a schema change that wants a fresh state file has to know this before it discards the old.
@@ -135,7 +137,8 @@ export const clampToHeld = (floor: Cursors, held: Cursors): Cursors => {
 export const refoldable = (store: EventStore): Promise<Result<boolean, StoreFailure>> =>
   Result.gen(async function* () {
     const floor = yield* Result.await(store.compactedBelow());
-    return Result.ok(floor.synced.size === 0 && floor.local.size === 0);
+    const installed = yield* Result.await(store.installedBelow());
+    return Result.ok(floor.synced.size === 0 && floor.local.size === 0 && installed.size === 0);
   });
 
 /**

@@ -48,7 +48,8 @@ export const sqliteGaps = (log: LogPlacement): GapSql => {
       WHERE peer = ? AND local = ? AND from_seq <= ? ORDER BY from_seq DESC LIMIT 1`,
     delete: `DELETE FROM ${gaps} WHERE peer = ? AND local = ? AND from_seq = ?`,
     selectAll: `SELECT peer, local, from_seq, to_seq FROM ${gaps} ORDER BY peer, local, from_seq`,
-    deleteBelow: `DELETE FROM ${gaps} WHERE peer = ? AND local = ? AND to_seq <= ?`,
+    selectInstalled: `SELECT value FROM ${logTable("meta", log)} WHERE key = 'installed'`,
+    upsertInstalled: `INSERT OR REPLACE INTO ${logTable("meta", log)} (key, value) VALUES ('installed', ?)`,
   };
 };
 
@@ -80,7 +81,10 @@ export const POSTGRES_GAPS: GapSql = {
     WHERE peer = $1 AND local = $2 AND from_seq <= $3 ORDER BY from_seq DESC LIMIT 1`,
   delete: `DELETE FROM syncmesh.gaps WHERE peer = $1 AND local = $2 AND from_seq = $3`,
   selectAll: `SELECT peer, local, from_seq, to_seq FROM syncmesh.gaps ORDER BY peer, local, from_seq`,
-  deleteBelow: `DELETE FROM syncmesh.gaps WHERE peer = $1 AND local = $2 AND to_seq <= $3`,
+  selectInstalled: `SELECT value FROM syncmesh.meta WHERE key = 'installed'`,
+  upsertInstalled: `INSERT INTO syncmesh.meta (key, value) VALUES ('installed', $1)
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+  lockInstalled: `SELECT pg_advisory_xact_lock(hashtext('syncmesh.meta:installed'))`,
   // a read that found a hole looks again with the entries and the gaps from one snapshot
   snapshot: "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
   // two writers that both read an author's head before either commits would each record a gap

@@ -676,7 +676,9 @@ impl RelayLink {
                 bytes: Some(bytes),
             }),
             RelayFrame::BlobMissing { hash } => out.push(Action::BlobAnswer { hash, bytes: None }),
-            RelayFrame::Error { code, message } => {
+            // a `retention` refusal's floor has nowhere to go here: the recovery record (`Rejoins`,
+            // gaps U31) takes peer floors only, so it hangs up and redials on its backoff (gaps U37)
+            RelayFrame::Error { code, message, .. } => {
                 if code == "version" {
                     self.fatal = true;
                     out.push(Action::Refused {

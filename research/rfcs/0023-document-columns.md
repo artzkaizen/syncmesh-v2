@@ -712,7 +712,7 @@ until first `open()`, which is RFC-0019 §3's window rule applied to documents.
 | genesis under the pre-§16.1 rule (`5: true`) at a build of the tree rule | decodes, flagged `legacy`, so a log that holds one still reads; refused at admission → quarantine | the event is never folded by a rule this build does not run, and is kept rather than dropped |
 | genesis under the tree rule (`5: 1`) at a build from before it | refused at decode by that build | that build never folds a tree-rule genesis by the LWW rule |
 | a snapshot page (RFC-0019) or repair record whose doc-column cell is not tagged `1`: untagged (the LWW rule's lineage id, or the tree rule's set before cells were versioned) or another version | the whole snapshot or repair is refused as `LineageCellRefused { table, key, column, version }` before any row joins; no coverage is adopted; the join exchange closes and reports it on the bridge's `onError` | the cell is never read as the root nor merged by another rule; the history behind it still arrives as events |
-| persisted state holding such a cell | reported (TypeScript: `onError`; Rust: `Engine::refused_at_open`), then the state is rebuilt from the log, as any unreadable state is — `StateCorrupt` instead when the log is compacted below it or the state holds rows a snapshot installed (its cursors carry a floor) | each runtime treats it as state it cannot read, as it already treats a row that does not decode |
+| persisted state holding such a cell | reported (TypeScript: `onError`; Rust: `Engine::refused_at_open`), then the state is rebuilt from the log, as any unreadable state is — `StateCorrupt` instead when the log is compacted below it or the state holds rows a snapshot installed (its cursors carry a floor, and the log records it) | each runtime treats it as state it cannot read, as it already treats a row that does not decode |
 | adapter cannot parse an update | materialisation marks that `doc_log` row `failed`; the doc stays usable at its last good version; loud in `$inspect` | the fold already happened identically; this only affects materialisation, which is local |
 | minor version skew (`loro-crdt` 1.4 vs 1.16) | allowed: the id's major (`@1`) is the compatibility contract; the adapter package pins a floor and runs the adapter conformance suite (§13) | Loro's own 1.x encoding stability |
 
@@ -728,11 +728,14 @@ snapshot install came with coverage and no events, and the install raised the fl
 the cursors (D46). So when the state cannot be read — a refused persisted cell or a row that does
 not decode — and its cursors carry a floor, boot refuses with `StateCorrupt` ("rejoin from a peer")
 instead of rebuilding without them, as it refuses over a compacted log; nothing is cleared (gaps
-U22, partly built). Rust takes no snapshots and never compacts, so its log always holds what its state
-stood for, and it rebuilds. Two ways round it remain: cursors that cannot be read either, where the
-floor is unknown and the state is rebuilt as before, and a state file that is not read at all — a
-schema change opening a new one (RFC-0022), an operator deleting it — whose floor goes with it
-(gaps U33). Until U33 closes, U22 holds only where the cursors are read.
+U22). Rust takes no snapshots and never compacts, so its log always holds what its state
+stood for, and it rebuilds. The install's floor is kept in the log as well
+(`EventStore.installedBelow`, gaps U33, built; decided 2026-11-08, Jace delegated the call), so the
+two ways round it are closed too: cursors that cannot be read either are refused by the log's copy
+of the floor, and a state file that is not read at all — a schema change opening a new one
+(RFC-0022), an operator deleting it — finds the log not `refoldable` and boot refuses an empty
+state over it with `StateCorrupt`, as over a compacted log. A state installed before the log kept
+the floor gives it to the log the first time it boots readable.
 
 The boot check reads only tables that declare a doc column. The state cache decodes a row when it is
 first read, so the other tables stay undecoded until a fold writes them; a doc table is decoded in

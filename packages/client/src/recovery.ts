@@ -87,9 +87,16 @@ export interface RecoveryView {
   /** Re-runs admission over everything parked; a no-op when nothing changed since it parked. */
   readonly run: () => Promise<ResultType<ReceiveReport, StoreFailure>>;
   /**
-   * The peers this device is below the compaction floor of (D46), and why it is still there: the
-   * history it lacks is in no log that peer keeps, so delta sync cannot reach it. Empty once every
-   * author catches up to the floor, however it got there.
+   * Where this device is below a floor, and why it is still there: the history it lacks is in no
+   * log that side keeps, so delta sync cannot reach it. Two kinds, told apart by `reason` — narrow
+   * on it before reading `.peer` or `.relay`:
+   *
+   * - `BelowPeerFloor`: a peer this device is below the compaction floor of (D46).
+   * - `BelowRelayFloor` (`reason: "retention"`): a relay that refused the join because its room
+   *   trimmed below the cursors it sent (gaps U30). A relay serves no state, so `acceptState`
+   *   answers `nothing-to-accept` for it.
+   *
+   * Empty once every author catches up to the floor, however it got there.
    *
    * With `trust` set the device asks for state on its own and adopts what the issuer vouched for;
    * an issue here means that did not finish. With no `trust` nothing can vouch for a snapshot, so

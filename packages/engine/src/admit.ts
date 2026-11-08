@@ -11,6 +11,7 @@ import type { StateLookup, Validator } from "./validate.js";
 import { unfoldableKind } from "./columns.js";
 import { UnknownChangeKind } from "./errors.js";
 import { UnreadableEvent, isUnknown, quarantineReason } from "./quarantine.js";
+import { EMPTY_COVERAGE } from "./sync.js";
 
 interface Hubs {
   readonly quarantine: { readonly emit: (q: Quarantined) => void };
@@ -116,7 +117,10 @@ const createOverlay = (
 };
 
 /**
- * Drops duplicate and already-stored entries; parks what fails, and returns the rest in order.
+ * Drops duplicate and already-stored entries, and entries compaction removed (`EventStore.compacted`:
+ * a log that compacted cannot answer `has` for them, and taking one again would put it back in
+ * the log below its floor and fold it a second time, which only a max-join merge forgives — gaps
+ * U1); parks what fails, and returns the rest in order.
  *
  * An own event the log does not hold is taken like anyone else's (RFC 0024 G7). It verified under
  * this device's key, so it is a write this device made and then lost — a log rebuilt under a key
@@ -138,6 +142,8 @@ export const admit = (entries: readonly StoredEvent[], deps: AdmitDeps) =>
     const fresh: StoredEvent[] = [];
     const seen = new Set<string>();
     const overlay = createOverlay(deps.before);
+    const floors =
+      entries.length === 0 ? EMPTY_COVERAGE : yield* Result.await(deps.store.compactedBelow());
     let quarantined = 0;
     for (const entry of entries) {
       const { event } = entry;
@@ -145,6 +151,10 @@ export const admit = (entries: readonly StoredEvent[], deps: AdmitDeps) =>
       if ((own && entry.sig === undefined) || seen.has(event.id)) continue;
       seen.add(event.id);
       if (yield* Result.await(deps.store.has(event.id))) continue;
+      // below the floor the log cannot say it held the event, so it is asked whether compaction
+      // took it: one that did already stands in the state, and is skipped like one it holds
+      const floor = (event.local === true ? floors.local : floors.synced).get(event.peerId) ?? 0;
+      if (event.seqNum <= floor && (yield* Result.await(deps.store.compacted(event)))) continue;
       const verdict = unfoldable(event) ?? refusal(deps, event, overlay);
       if (verdict !== undefined) {
         quarantined++;

@@ -58,7 +58,13 @@ export interface EngineOptions extends DocEngineOptions {
    * same reason: a report nobody could have been listening for is a report nobody gets.
    */
   readonly onError?: (error: EngineError) => void;
-  /** Where folded rows are kept between runs; absent, every boot refolds the log. */
+  /**
+   * Where folded rows are kept between runs; absent, every boot refolds the log.
+   *
+   * It must outlive a restart whenever the log does. A snapshot install records its floor in the
+   * log (`EventStore.installedBelow`), and a later boot that finds an empty state over that floor
+   * refuses with `StateCorrupt`, so a volatile state store over a persistent log opens once.
+   */
   readonly stateStore?: StateStore;
   /** What to start from; `openEngine` builds it. Absent, the engine starts empty. */
   readonly boot?: Boot;

@@ -95,4 +95,57 @@ export const compactionCases = (openDriver: OpenDriver): readonly SuiteCase[] =>
       equal((await reopened.compactedBelow()).unwrap().synced.get(A), seq(2), "floor unchanged");
     },
   },
+  {
+    name: "compaction: an event compaction removed reads as compacted, and one the log never held below the floor does not (gaps U1)",
+    run: async () => {
+      const store = (await sqlEventStore(await openDriver("compaction-compacted"))).unwrap();
+      // A:3 never reached this log (withheld, or scoped out): the gap table records it
+      const held = [entry(A, 1, 10), entry(A, 2, 20), entry(A, 4, 40), entry(B, 1, 10)];
+      (await store.appendBatch(held)).unwrap();
+      (await store.compactBelow(new Map([[A, seq(4)]]), "synced", at(100))).unwrap();
+      const asked = async (n: number) => (await store.compacted(event(A, n, n * 10))).unwrap();
+      equal([await asked(1), await asked(2), await asked(4)], [true, true, true], "removed");
+      equal(await asked(3), false, "the run compaction passed without holding");
+      equal(await asked(5), false, "above the floor");
+      equal((await store.compacted(event(B, 1, 10))).unwrap(), false, "held, not removed");
+      // the late event fills its gap and is held from then on: still not one compaction took
+      (await store.append(entry(A, 3, 30))).unwrap();
+      equal(await asked(3), false, "held after it arrived");
+      equal(ids((await store.all()).unwrap()), [event(B, 1, 10).id, event(A, 3, 30).id], "log");
+    },
+  },
+  {
+    name: "compaction: the floor a snapshot install left is kept in the log and only rises (gaps U33)",
+    run: async () => {
+      const driver = await openDriver("compaction-installed");
+      const store = (await sqlEventStore(driver)).unwrap();
+      equal((await store.installedBelow()).unwrap().size, 0, "none before an install");
+      (await store.recordInstalled(new Map([[A, seq(5)]]))).unwrap();
+      (
+        await store.recordInstalled(
+          new Map([
+            [A, seq(3)],
+            [B, seq(2)],
+          ]),
+        )
+      ).unwrap();
+      const reopened = (await sqlEventStore(driver)).unwrap();
+      const installed = (await reopened.installedBelow()).unwrap();
+      equal([installed.get(A), installed.get(B)], [seq(5), seq(2)], "raised, never lowered");
+    },
+  },
+  {
+    name: "compaction: two installs at once both raise the installed floor (gaps U33)",
+    run: async () => {
+      const driver = await openDriver("compaction-installed-race");
+      const store = (await sqlEventStore(driver)).unwrap();
+      const raised = await Promise.all([
+        store.recordInstalled(new Map([[A, seq(5)]])),
+        store.recordInstalled(new Map([[B, seq(4)]])),
+      ]);
+      for (const outcome of raised) outcome.unwrap();
+      const installed = (await store.installedBelow()).unwrap();
+      equal([installed.get(A), installed.get(B)], [seq(5), seq(4)], "neither raise lost");
+    },
+  },
 ];

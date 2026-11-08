@@ -1,8 +1,9 @@
-import type { Coverage, StoredEvent } from "@syncmesh/engine";
-import type { Hlc } from "@syncmesh/kernel";
+import type { Coverage, Cursors, SeqRun, StoredEvent } from "@syncmesh/engine";
+import type { Hlc, PeerId, SeqNum } from "@syncmesh/kernel";
 import type { CborValue } from "@syncmesh/wire";
 
 import { EMPTY_COVERAGE } from "@syncmesh/engine";
+import { parsePeerId } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
 import {
   bytesToHex,
@@ -121,6 +122,59 @@ export function decodeHead(text: string | null): Result<PersistedHead, LogCorrup
       seqs: yield* parseCursors(seqs),
       floors: yield* parseCursors(floors),
     });
+  });
+}
+
+/**
+ * What lies under the floors, in a third key beside the head: the runs below the compaction floor
+ * the log never held (`MemoryEventStore.holes`, the SQL log's gap table), and the floor a snapshot
+ * install left (`EventStore.installedBelow`). Absent from a log written before either was kept,
+ * which reads as none.
+ */
+export interface PersistedBelow {
+  readonly holes: readonly SeqRun[];
+  readonly installed: Cursors;
+}
+
+export const EMPTY_BELOW: PersistedBelow = { holes: [], installed: new Map() };
+
+export const encodeBelow = ({ holes, installed }: PersistedBelow): string =>
+  bytesToHex(
+    encodeCbor([
+      VERSION,
+      holes.map(({ peer, local, from, to }) => [peer, local ? 1 : 0, from, to]),
+      cursorRows({ synced: installed, local: new Map() }),
+    ]),
+  );
+
+const parseRun = (value: CborValue): Result<SeqRun, LogCorrupt> => {
+  if (!Array.isArray(value)) return Result.err(corrupt("a hole is not a row"));
+  const [peer, local, from, to] = value;
+  if (
+    !isString(peer) ||
+    !isSafeNonNegative(local) ||
+    !isSafeNonNegative(from) ||
+    !isSafeNonNegative(to)
+  )
+    return Result.err(corrupt("a hole is not (peer, local, from, to)"));
+  // SAFETY: both ends were checked as safe non-negative integers above, which is what a sequence is
+  const run = (author: PeerId) => ({
+    peer: author,
+    local: local === 1,
+    from: from as SeqNum,
+    to: to as SeqNum,
+  });
+  return parsePeerId(peer).map(run).mapError(asCorrupt);
+};
+
+export function decodeBelow(text: string | null): Result<PersistedBelow, LogCorrupt> {
+  return Result.gen(function* () {
+    const [, holes, installed] = yield* frame(text, 3);
+    if (holes === undefined) return Result.ok(EMPTY_BELOW); // no key: a log from before it
+    if (!Array.isArray(holes)) return Result.err(corrupt("the holes are not an array"));
+    const runs: SeqRun[] = [];
+    for (const row of holes) runs.push(yield* parseRun(row));
+    return Result.ok({ holes: runs, installed: (yield* parseCursors(installed)).synced });
   });
 }
 
