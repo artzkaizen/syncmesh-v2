@@ -89,7 +89,7 @@ export interface BridgeOptions {
   readonly onReceipt?: (receipt: CustodyReceipt) => void;
   /**
    * A verified refusal arrived for one of this device's own writes (D32): the far side parked it
-   * and said why. Information only — direct links carry it; a relay does not, as with receipts.
+   * and said why. Information only, never a gate; a relay room carries it too, to the author alone.
    */
   readonly onRefusal?: CustodyDeps["onRefusal"];
   /**

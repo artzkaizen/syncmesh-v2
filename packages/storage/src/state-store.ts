@@ -10,7 +10,14 @@ import type { Projection } from "./projection.js";
 
 import { driverDialect } from "./dialect.js";
 import { lazyTable } from "./lazy-state.js";
-import { CURSOR_FLOOR, attempt, parseCoverage, inTransaction, rowScope } from "./sql.js";
+import {
+  CURSOR_FLOOR,
+  CURSOR_HELD,
+  attempt,
+  parseCoverage,
+  inTransaction,
+  rowScope,
+} from "./sql.js";
 
 const corrupt = (message: string) => new StateCorrupt({ message });
 
@@ -119,6 +126,11 @@ export function sqlStateStore(
             await driver.run(SQL.upsertCursor, [peer, 1, seq]);
           for (const [peer, seq] of coverage.floor ?? [])
             await driver.run(SQL.upsertCursor, [peer, CURSOR_FLOOR, seq]);
+          // replaced whole: a held run lowered by a torn log, or dropped with the scope, must not
+          // load back as one still held
+          await driver.run(`${SQL.clearCursors} WHERE local = ${CURSOR_HELD}`);
+          for (const [peer, seq] of coverage.held ?? [])
+            await driver.run(SQL.upsertCursor, [peer, CURSOR_HELD, seq]);
           // in the same transaction as the numbers: a scope that survived a commit the cursors
           // did not, or the other way round, is exactly the mismatch D23 exists to prevent
           if (coverage.scope === undefined) await driver.run(SQL.clearScope);

@@ -8,7 +8,8 @@
 import type { QuarantineReason } from "@syncmesh/wire";
 
 import { parseSeqNum } from "@syncmesh/kernel";
-import { bytesToHex, createIdentity, issueRefusal } from "@syncmesh/wire";
+import { roomRefusalFrame } from "@syncmesh/relay";
+import { bytesToHex, createIdentity, hexToBytes, issueRefusal } from "@syncmesh/wire";
 
 import { AUTHOR_SEED, HOLDER_SEED, NOW } from "./generate-receipt-vectors.js";
 
@@ -61,6 +62,21 @@ export function refusalVectors() {
     })),
   };
 }
+
+/**
+ * The first refusal above, crossing a relay to its author (D32, U17): the wire unchanged, under
+ * the relay's own control tag 22, because its session tag 9 is the relay's `hello`. Frozen in
+ * relay-vectors.json beside the other control frames.
+ */
+export const roomRefusalVectors = () =>
+  refusalVectors()
+    .vectors.slice(0, 1)
+    .map((vector) => ({
+      description: `refusal across a relay: ${vector.description}, the wire unchanged under tag 22`,
+      kind: "refusal",
+      tag: 22,
+      wireHex: bytesToHex(roomRefusalFrame(hexToBytes(vector.wireHex).unwrap())),
+    }));
 
 if (import.meta.main) {
   const out = new URL("../refusal-vectors.json", import.meta.url);

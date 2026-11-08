@@ -21,6 +21,7 @@ export {
   kaFrame,
   pageFrame,
   relayedFrame,
+  roomRefusalFrame,
 } from "./frames.js";
 export { NONCE_BYTES, newChallenge, proveJoin, verifyJoinProof } from "./proof.js";
 export type { LinkOffer, LinkSession, SecureLink, SecureLinkOptions } from "./secure.js";

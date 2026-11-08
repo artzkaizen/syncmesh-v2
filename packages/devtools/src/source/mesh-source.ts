@@ -1,7 +1,6 @@
 import type { Mesh } from "@syncmesh/client";
 import type { Unsubscribe } from "@syncmesh/engine";
 
-import { createInspector } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 
@@ -17,7 +16,7 @@ import { createLinkRing } from "./link-ring.js";
 import { watchMediums } from "./mediums.js";
 import { createSqlDoor } from "./sql.js";
 import { createStoreReader } from "./store.js";
-import { syncOf } from "./sync.js";
+import { syncSnapshot } from "./sync.js";
 import { linksOf, schemaOf } from "./topology.js";
 import { createWritesReader, strandedRows } from "./writes.js";
 
@@ -28,7 +27,8 @@ import { createWritesReader, strandedRows } from "./writes.js";
  * synchronously inside the write path, so every listener attached to them is a cost the app's
  * users pay on every write they make and every batch they receive. This source takes exactly
  * three engine hooks for the whole devtool — folds, acknowledgements, quarantine — plus one
- * telemetry listener feeding a single {@link createInspector}, plus the link feed. Each of the
+ * telemetry tap (`mesh.inspect.telemetry()`, a single inspector on the mesh's seam), plus the
+ * link feed. Each of the
  * first three does one thing: add a string to a set that already exists. A design with a
  * subscription per panel would multiply that by however many panels an app happened to install,
  * which is the sort of cost that is invisible in development and obvious on a phone.
@@ -61,7 +61,8 @@ export function createMeshSource(mesh: Mesh, options: MeshSourceOptions = {}): D
   // one `onStatus` per medium, reconciled with the live set on every read — the only reading of
   // "is this radio up" a mesh surface will not hand over, and the one `$status` folds away
   const mediums = watchMediums(mesh, () => channels.moved("link"));
-  const inspector = createInspector();
+  // the mesh's own tap: one listener on its seam, read by polling, counted in `handles()` (U2)
+  const timings = mesh.inspect.telemetry();
 
   /**
    * `settled()` is a promise nothing re-announces, so it is awaited once and read as a flag. A
@@ -80,7 +81,7 @@ export function createMeshSource(mesh: Mesh, options: MeshSourceOptions = {}): D
     mesh.engine.onAcknowledge(() => channels.moved("ack")),
     mesh.engine.onQuarantine(() => channels.moved("quarantine")),
     // the one reader of the telemetry union, so `fold` never pays for a second counter
-    mesh.onTelemetry(inspector.note),
+    timings.close,
     // the only feed that retains anything, because it is the only one that is not a snapshot
     mesh.transports.onLinkEvent((event) => {
       ring.note(event);
@@ -101,7 +102,7 @@ export function createMeshSource(mesh: Mesh, options: MeshSourceOptions = {}): D
   return {
     identity: () => identityOf(mesh),
     overview: () => overviewOf(mesh, { settled: () => settled, mediums: mediums.list }),
-    sync: () => syncOf(mesh),
+    sync: () => syncSnapshot(mesh),
     links: () => linksOf(mesh, ring),
     schema: () => schemaOf(mesh),
     events: async (recent) => {
@@ -112,7 +113,7 @@ export function createMeshSource(mesh: Mesh, options: MeshSourceOptions = {}): D
     writes: ledger === undefined ? undefined : createWritesReader(ledger),
     stranded: async () => (await mesh.recovery.stranded()).map(strandedRows),
     grants: () => grantsOf(mesh, now),
-    timings: inspector.stats,
+    timings: timings.stats,
     sql: query === undefined ? undefined : createSqlDoor(query),
     onChange: channels.subscribe,
     close: () => {

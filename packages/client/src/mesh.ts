@@ -18,7 +18,7 @@ import { openAccounts } from "./accounts.js";
 import { openAuth } from "./auth.js";
 import { openBlobs } from "./blobs.js";
 import { openMeshEngine } from "./boot.js";
-import { createCan, tableKinds } from "./can.js";
+import { createPolicyQuestions } from "./can.js";
 import { createDelivered, createReceived } from "./delivered.js";
 import { createDrafts } from "./drafts.js";
 import { createFlush } from "./flush.js";
@@ -166,6 +166,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
 
   const shipped = { identity, ...trust };
   const { accounts, accountOf, author } = openAccounts(shipped, { engine, grants, now });
+  const questions = createPolicyQuestions({ schema, engine, author });
 
   const history = historyView({ schema, store: booted.store, accountOf });
 
@@ -243,12 +244,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     visibility: createMeshVisibility(() => links.list()),
     accounts,
     corrections: internal.corrections,
-    can: createCan({
-      schema,
-      engine,
-      author,
-      kindOf: tableKinds(schema.entries),
-    }),
+    can: questions.can,
     delivered: createDelivered(engine, identity.peerId),
     received: createReceived(engine),
     synced: createSynced(() => links.list()),
@@ -265,7 +261,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
       recovery,
       settled: links.settled,
     }),
-    inspect: createInspect({ tally, transports: links.list, driver: booted.driver, engine, now }),
+    inspect: createInspect({ tally, links, booted, engine, now, why: questions.why, telemetry }),
     flush,
     onTelemetry: (listener) => tally.wrap("subscriptions", telemetry(listener)),
     ready: links.ready,

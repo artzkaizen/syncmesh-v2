@@ -710,7 +710,9 @@ impl RelayLink {
             | RelayFrame::Unknown
             | RelayFrame::Join(_)
             | RelayFrame::BlobPut { .. }
-            | RelayFrame::BlobGet { .. } => {}
+            | RelayFrame::BlobGet { .. }
+            // this client keeps no write ledger, so a refusal of its write has nowhere to land
+            | RelayFrame::Refusal { .. } => {}
         }
     }
 

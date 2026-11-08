@@ -1,7 +1,8 @@
 import { Temporal } from "@syncmesh/temporal";
 
 /**
- * What the engine reports about itself: the two paths a write takes through it.
+ * What the engine reports about itself: the two paths a write takes through it, and the storage
+ * transaction that makes it durable.
  */
 export type EngineTelemetry =
   | {
@@ -10,8 +11,20 @@ export type EngineTelemetry =
       readonly duration: Temporal.Duration;
     }
   | {
+      /** The in-memory fold alone: what applying `events` to the state cost, no store call. */
       readonly type: "engine.fold";
       readonly sizes: { readonly events: number; readonly keys: number };
+      readonly duration: Temporal.Duration;
+    }
+  | {
+      /**
+       * One storage transaction that made events durable, timed to its commit: the log append, the
+       * state rows, the ledger row and the commit itself — for a local write (`events: 1`, a
+       * captured write's own statements inside it) or a received batch. The storage tap: where a
+       * slow disk shows up, which `engine.fold` and `engine.mutate` never time.
+       */
+      readonly type: "engine.store.commit";
+      readonly sizes: { readonly events: number };
       readonly duration: Temporal.Duration;
     };
 
@@ -54,10 +67,11 @@ export type MeshTelemetry =
     };
 
 /**
- * What a room reports about the sockets it serves. Deliberately anonymous: no variant carries a
- * peer id, a room name or any part of a payload, because D17 left "may relay telemetry name
- * peers" open as a privacy question and an emitted identity cannot be taken back out of whatever
- * collected it. Counts and byte totals answer "how big, how long" without answering "who".
+ * What a room reports about the sockets it serves. Anonymous by rule (D48): no variant carries a
+ * peer id, a room name, an event id, any part of a payload, or anything derived from one. A room
+ * name in an open room is a bearer secret (D40), and an identity that reached a metrics pipeline
+ * cannot be taken back out of it. Counts and byte totals answer "how big, how long"; "who" is
+ * answered on the device, which names its own events, and in the host's own access log.
  */
 export type RelayTelemetry =
   | {
@@ -83,8 +97,8 @@ export type RelayTelemetry =
          *
          * It is reported rather than refused because refusing would take the rest of the history
          * away from a joiner that can still use it. Counted rather than named, because every
-         * `relay.*` variant is anonymous by construction (D17) and an event id is a peer id with
-         * a number after it. A non-zero reading is the signal; which events is a question for
+         * `relay.*` variant is anonymous (D48) and an event id is a peer id with a number after
+         * it. A non-zero reading is the signal; which events is a question for
          * the device that holds them, where `Engine.stranded` names them.
          */
         readonly unsendable: number;
@@ -174,4 +188,22 @@ export function timed<T>(
   const since = (): Temporal.Duration => start.until(Temporal.Now.instant());
   const value = block();
   return value instanceof Promise ? value.then((settled) => [settled, since()]) : [value, since()];
+}
+
+/**
+ * `atomically`, reporting every transaction that made events durable once it has committed
+ * (`engine.store.commit`): timed from its start to its commit, and said after it, never from
+ * inside. `events` reads how many it made durable off what it returned; none is said for zero.
+ */
+export function reportCommits<S>(
+  atomically: <T>(work: (scoped: S) => Promise<T>) => Promise<T>,
+  telemetry: { readonly emit: (event: TelemetryEvent) => void },
+) {
+  return async <T>(work: (scoped: S) => Promise<T>, events: (value: T) => number): Promise<T> => {
+    const [value, duration] = await timed(() => atomically(work));
+    const count = events(value);
+    if (count > 0)
+      telemetry.emit({ type: "engine.store.commit", sizes: { events: count }, duration });
+    return value;
+  };
 }

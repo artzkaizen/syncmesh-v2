@@ -1,5 +1,5 @@
 //! The relay's control vocabulary (`relay/src/frames.ts`, D14, D33): its own additive tag space,
-//! 8–21, above the session frames, so grants and events pass through a relay byte-identical
+//! 8–22, above the session frames, so grants and events pass through a relay byte-identical
 //! under their existing tags and a later version adds tags without renumbering these.
 //!
 //! Tag 8 is `routes` among the session frames and `join` here. The relay decoder asks its own
@@ -28,6 +28,9 @@ pub mod tag {
     pub const CHALLENGE: u8 = 19;
     pub const BLOB_STORED: u8 = 20;
     pub const BLOB_REFUSED: u8 = 21;
+    /// A signed refusal receipt on its way to its author (D32): the session tag for it, 9, is
+    /// `hello` here.
+    pub const REFUSAL: u8 = 22;
 }
 
 /// The protocol this build speaks; `join` offers, `hello` picks the highest in common.
@@ -148,6 +151,12 @@ pub enum RelayFrame {
         used: u64,
         partition: Option<PartitionKey>,
     },
+    /// A refusal receipt (D32), the signed wire unchanged, from the refuser to the room and from
+    /// the room to the author it names. A custody receipt needs no tag of its own: its session
+    /// tag, 7, is below the relay's, so it passes as a session frame.
+    Refusal {
+        wire: Vec<u8>,
+    },
     /// A tag this build does not know; ignored, never an error (D14).
     Unknown,
 }
@@ -171,6 +180,7 @@ impl RelayFrame {
             RelayFrame::BlobMissing { .. } => "blob-missing",
             RelayFrame::BlobStored { .. } => "blob-stored",
             RelayFrame::BlobRefused { .. } => "blob-refused",
+            RelayFrame::Refusal { .. } => "refusal",
             RelayFrame::Unknown => "unknown",
         }
     }
@@ -231,6 +241,7 @@ impl RelayFrame {
                 used,
                 partition,
             } => blob_refused_frame(hash, code, *limit, *used, partition.as_ref()),
+            RelayFrame::Refusal { wire } => room_refusal_frame(wire),
             RelayFrame::Unknown => return None,
         })
     }
@@ -391,6 +402,11 @@ pub fn blob_missing_frame(hash: &str) -> Vec<u8> {
 
 pub fn blob_stored_frame(hash: &str) -> Vec<u8> {
     tagged(tag::BLOB_STORED, vec![Value::text(hash)])
+}
+
+/// `[wire]` — a refusal receipt across a relay, under the control tag its session tag collides with.
+pub fn room_refusal_frame(wire: &[u8]) -> Vec<u8> {
+    tagged(tag::REFUSAL, vec![Value::Bytes(wire.to_vec())])
 }
 
 /// `[hash, code, limit, used, partition?]` — the partition last, absent for the unnamed budget.
@@ -566,6 +582,10 @@ fn decode_control(t: u64, p: &[Option<&Value>; 5]) -> Option<Result<RelayFrame, 
                 )
             }
             _ => shape("blob-put is not [hash, bytes]"),
+        },
+        tag::REFUSAL => match bytes(a) {
+            Some(wire) => Ok(RelayFrame::Refusal { wire }),
+            None => shape("refusal is not [wire]"),
         },
         tag::BLOB_STORED => match text(a) {
             Some(hash) => Ok(RelayFrame::BlobStored { hash }),

@@ -49,6 +49,23 @@ describe("onError", () => {
 });
 
 describe("onTelemetry", () => {
+  test("a received batch reports its storage transaction with the events it made durable, and a duplicate none", async () => {
+    const author = setup();
+    const { engine } = setup(PEER_B, 200);
+    (await author.engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ x: 1 })))).unwrap();
+    (await author.engine.mutate(CREATE, (tx) => tx.update(NOTES, N1, row({ x: 2 })))).unwrap();
+    const seen: TelemetryEvent[] = [];
+    engine.onTelemetry((e) => void seen.push(e));
+    const batch = (await author.engine.eventsSince(new Map())).unwrap();
+    (await engine.receiveBatch(batch)).unwrap();
+    expect(seen.filter((e) => e.type === "engine.store.commit").map((e) => e.sizes)).toEqual([
+      { events: 2 },
+    ]);
+    seen.length = 0;
+    (await engine.receiveBatch(batch)).unwrap(); // nothing fresh: no transaction made anything durable
+    expect(seen.filter((e) => e.type === "engine.store.commit")).toEqual([]);
+  });
+
   test("a mutate reports its own duration and one fold with exact sizes", async () => {
     const { engine } = setup();
     const seen: TelemetryEvent[] = [];
@@ -57,9 +74,15 @@ describe("onTelemetry", () => {
       tx.insert(NOTES, N1, row({ x: 1 }));
       tx.update(NOTES, N1, row({ y: 2 }));
     });
-    expect(seen.map((e) => e.type)).toEqual(["engine.mutate", "engine.fold"]);
+    // the fold inside the transaction, then the transaction itself once it committed (U2)
+    expect(seen.map((e) => e.type)).toEqual([
+      "engine.mutate",
+      "engine.fold",
+      "engine.store.commit",
+    ]);
     expect(seen[0]?.sizes).toEqual({ changes: 2 });
     expect(seen[1]?.sizes).toEqual({ events: 1, keys: 1 });
+    expect(seen[2]?.sizes).toEqual({ events: 1 });
     for (const e of seen) {
       expect(e.duration).toBeInstanceOf(Temporal.Duration);
       expect(

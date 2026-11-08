@@ -46,7 +46,7 @@ scopeOf [orpc] vs [storage]  -> callScope(input) / rowScope(rows)  # two meaning
 `bodyOf` (relay fixtures, transport peers/tests), `epochOf` (wire sealing — kept;
 relay renamed to `relayEpoch`), `identityOf` (devtools health, drizzle tree),
 `mintFor` (relay fixtures, transport fixtures), `scopeOf` (orpc scope, storage sql),
-`syncOf` (devtools sync, drizzle sync-of), `windowOf` (devtools dom, drizzle window).
+`syncOf` (drizzle sync-of; devtools renamed to `syncSnapshot`), `windowOf` (devtools dom, drizzle window).
 Test fixtures collide freely — fixtures are local by design and excluded from the rule.
 
 ## Recipes

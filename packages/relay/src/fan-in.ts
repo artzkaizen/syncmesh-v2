@@ -3,6 +3,7 @@ import { decodeAndVerifyPresence } from "@syncmesh/wire";
 
 import type { RoomState } from "./state.js";
 
+import { routeCustody } from "./custody-route.js";
 import { decodeRelayFrame } from "./frame-decode.js";
 import { absorbEvent } from "./ingest.js";
 import { admitGrant } from "./trust.js";
@@ -40,11 +41,20 @@ export function fanIn(room: RoomState): (frame: Uint8Array) => void {
       });
       return;
     }
+    // a receipt or a refusal is for its author alone, here as from a socket (D32)
+    if (value.kind === "refusal") {
+      routeCustody(room, frame, value, "fleet");
+      return;
+    }
     if (value.kind !== "session") return; // a control frame belongs to one socket, not to a room
     const inner = value.frame;
     if (inner.kind === "grant") {
       // the cache a joiner's first page is built from, on this instance as much as on that one
       if (admitGrant(room, inner.wire)) room.toClients(frame);
+      return;
+    }
+    if (inner.kind === "receipt") {
+      routeCustody(room, frame, inner, "fleet");
       return;
     }
     if (inner.kind === "presence") {

@@ -30,6 +30,45 @@ const cursorsOf = async (store: StateStore) => {
   return [c.synced.get(A), c.synced.get(B), c.local.get(A)];
 };
 
+/**
+ * The held run beside a scoped cursor, or below a purged one (D32): stored with the cursors and
+ * replaced whole.
+ */
+const heldCase = (openDriver: OpenDriver): SuiteCase => ({
+  name: "state: a scoped device's held run is stored with the cursors, replaced whole, and survives a reopen (D32)",
+  run: async () => {
+    const first = await openDriver("state-held");
+    const store = await open(first);
+    const scoped = { ...coverage, scope: "org:acme" };
+    (
+      await write(store, "a", 1, {
+        ...scoped,
+        held: new Map([
+          [A, seq(1)],
+          [B, seq(1)],
+        ]),
+      })
+    ).unwrap();
+    // a torn log took B's run back: the row that said it was held must not load back
+    (await write(store, "b", 2, { ...scoped, held: new Map([[A, seq(2)]]) })).unwrap();
+    await first.close?.();
+    const again = await open(await openDriver("state-held"));
+    const reopened = (await again.loadCursors()).unwrap();
+    equal([reopened.held?.get(A), reopened.held?.has(B)], [seq(2), false], "held read back");
+    equal(
+      [reopened.synced.get(A), reopened.synced.get(B), reopened.local.get(A)],
+      [seq(3), seq(1), seq(2)],
+      "cursors untouched",
+    );
+    (await write(again, "c", 3)).unwrap();
+    equal((await again.loadCursors()).unwrap().held === undefined, true, "gone with the scope");
+    // a purge (D45) lowered it with no scope: it is the only claim below the cursors, so it stays
+    (await write(again, "d", 4, { ...coverage, held: new Map([[A, seq(1)]]) })).unwrap();
+    const purged = (await again.loadCursors()).unwrap();
+    equal([purged.scope, purged.held?.get(A)], [undefined, seq(1)], "kept with no scope");
+  },
+});
+
 export const stateCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   {
     name: "state: remove drops a row and keeps the cursors (D45)",
@@ -112,6 +151,7 @@ export const stateCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       );
     },
   },
+  heldCase(openDriver),
   {
     name: "state: durable — write, close, reopen the same name, read",
     run: async () => {
