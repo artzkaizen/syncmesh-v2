@@ -3,7 +3,9 @@ import type { JsonValue, Row } from "@syncmesh/kernel";
 import type { WindowClient } from "@syncmesh/window";
 
 import { driverValues, keyOfRows } from "@syncmesh/drizzle";
-import { ReadRefused } from "@syncmesh/window";
+import { ReadFailed, ReadRefused } from "@syncmesh/window";
+
+import { AuthorityUnreachable } from "./errors.js";
 
 /* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type -- `input` is the call's own argument, which the server's copy of the procedure parses; a row is rebuilt into the shape the handler's own query declares */
 
@@ -14,6 +16,7 @@ const PENDING: LiveSnapshot<never> = {
   error: undefined,
 };
 const NONE: ReadonlyMap<string, never> = new Map<string, never>();
+const NO_DIFF = { added: NONE, removed: NONE, changed: NONE } as const;
 
 /** A live read that cannot open, as the snapshot `useLiveQuery` reports and a `ready` that rejects. */
 export const failedLive = <T>(error: Error): Live<T> => {
@@ -71,24 +74,38 @@ export function servedLives(windows: WindowClient) {
       return made;
     };
 
+    /** The window's refusal or failure as the error a live read reports, if it has one. */
+    const problem = (): Error | undefined => {
+      const refusal = windows.refusal(id);
+      if (refusal !== undefined) return new ReadRefused({ message: `${path}: ${refusal}` });
+      const failure = windows.failure(id);
+      return failure === undefined ? undefined : new ReadFailed({ message: `${path}: ${failure}` });
+    };
+
+    /** Whether the snapshot already shows these very rows, and shows them as an answer. */
+    const shows = (data: readonly T[]): boolean =>
+      snapshot.answered &&
+      snapshot.status === "success" &&
+      data.length === snapshot.data.length &&
+      data.every((row, i) => row === snapshot.data[i]);
+
     const update = (): void => {
-      const reason = windows.refusal(id);
-      if (reason !== undefined && !snapshot.answered) {
-        const error = new ReadRefused({ message: `${path}: ${reason}` });
-        snapshot = { answered: false, data: [], status: "error", error };
+      const error = problem();
+      if (error !== undefined) {
+        // the same error again is no change, so the snapshot keeps its identity
+        if (snapshot.status === "error" && snapshot.error?.message === error.message) return;
+        // an answered window keeps its last rows, as a failed re-run of a local query does
+        snapshot = snapshot.answered
+          ? { ...snapshot, diff: NO_DIFF, status: "error", error }
+          : { answered: false, data: [], status: "error", error };
         settle?.reject(error);
-        for (const listener of listeners) listener([]);
+        for (const listener of listeners) listener(snapshot.data);
         return;
       }
       if (!windows.arrived(id)) return;
       const data = windows.rows(id).map((r) => rowOf(r.row));
       const before = snapshot.answered ? snapshot.state : NONE;
-      if (
-        snapshot.answered &&
-        data.length === snapshot.data.length &&
-        data.every((row, i) => row === snapshot.data[i])
-      )
-        return;
+      if (shows(data)) return;
       const state = new Map(data.map((row) => [keyOf(row), row]));
       const added = new Map([...state].filter(([key]) => !before.has(key)));
       const changed = new Map(
@@ -126,28 +143,63 @@ export function servedLives(windows: WindowClient) {
     };
   };
 
+  const live = <T>(path: string, input: unknown, query: Runnable<T>): Live<T> => {
+    const id = JSON.stringify([path, input ?? null]);
+    const shared = open.get(id) ?? { live: create(id, path, input, query), count: 0 };
+    open.set(id, shared);
+    shared.count++;
+    // SAFETY: one id is one path and one input, so one handler and one row type
+    const one = shared.live as Live<T>;
+    let released = false;
+    return {
+      ...one,
+      release: () => {
+        if (released) return;
+        released = true;
+        shared.count--;
+        if (shared.count > 0) return;
+        open.delete(id);
+        one.release();
+      },
+    };
+  };
+
+  /**
+   * The rows of `path` called with `input`, once. With no socket there is no one to ask, so it
+   * fails at once, as a call to the authority does; a socket that goes before the answer fails
+   * it then. A window another holder keeps open answers from what it already shows.
+   */
+  const once = async <T>(path: string, input: unknown, query: Runnable<T>) => {
+    const unreachable = () =>
+      new AuthorityUnreachable({
+        path,
+        message: `${path} reads a sync: "window" table, which the server serves, and there is no socket to it`,
+      });
+    const held = live(path, input, query);
+    const answered = held.snapshot();
+    if (windows.status() === "detached" && !answered.answered) {
+      held.release();
+      throw unreachable();
+    }
+    let unsubscribe: (() => void) | undefined;
+    const gone = new Promise<never>((_, reject) => {
+      unsubscribe = windows.subscribe(() => {
+        if (windows.status() === "detached") reject(unreachable());
+      });
+    });
+    gone.catch(() => undefined);
+    try {
+      return await Promise.race([held.ready, gone]);
+    } finally {
+      unsubscribe?.();
+      held.release();
+    }
+  };
+
   return {
     /** The live rows of `path` called with `input`; `query` is the handler's query, built here only to read its shape. */
-    live: <T>(path: string, input: unknown, query: Runnable<T>): Live<T> => {
-      const id = JSON.stringify([path, input ?? null]);
-      const shared = open.get(id) ?? { live: create(id, path, input, query), count: 0 };
-      open.set(id, shared);
-      shared.count++;
-      // SAFETY: one id is one path and one input, so one handler and one row type
-      const live = shared.live as Live<T>;
-      let released = false;
-      return {
-        ...live,
-        release: () => {
-          if (released) return;
-          released = true;
-          shared.count--;
-          if (shared.count > 0) return;
-          open.delete(id);
-          live.release();
-        },
-      };
-    },
+    live,
+    once,
   };
 }
 /* oxlint-enable anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type */

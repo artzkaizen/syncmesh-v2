@@ -8,7 +8,7 @@ import { decodeRecord, encodeRecord } from "@syncmesh/wire";
 import type { SqlDriver, SqlRow, SqlValue } from "./driver.js";
 import type { Projection } from "./projection.js";
 
-import { dialectOf } from "./dialect.js";
+import { driverDialect } from "./dialect.js";
 import { lazyTable } from "./lazy-state.js";
 import { attempt, coverageOf, inTransaction, scopeOf } from "./sql.js";
 
@@ -69,7 +69,7 @@ export function sqlStateStore(
   options: SqlStateStoreOptions = {},
 ): Promise<Result<StateStore, StoreFailure>> {
   const { projection } = options;
-  const { state: SQL, migrate } = dialectOf(driver);
+  const { state: SQL, migrate } = driverDialect(driver);
   const transaction = <T>(fn: () => Promise<T>): Promise<T> =>
     options.nested === true ? fn() : inTransaction(driver, fn);
   const query = (message: string, sql: string, values: readonly SqlValue[] = []) =>

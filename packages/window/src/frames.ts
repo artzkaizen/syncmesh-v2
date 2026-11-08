@@ -37,27 +37,28 @@ export interface WindowRow {
 }
 
 /**
- * A row the server now holds at this value, whether it is new or changed. `path` is the read
- * that returned it: two reads may project one table differently, so a row is one read's row.
+ * A row the server now holds at this value, whether it is new or changed. `read` is the read
+ * that returned it, as `readKey` names it: two reads, or one read with two inputs, may project one
+ * table's row differently, so a row is one read's row.
  */
 export interface RowPut extends WindowRow {
-  readonly path: string;
+  readonly read: string;
 }
 
 /** A row no window on this socket holds any more. */
 export interface RowRef {
-  readonly path: string;
+  readonly read: string;
   readonly key: string;
 }
 
 /** A window's contents, in its order: the keys of the rows its read returned. */
 export interface WindowKeys {
   readonly id: string;
-  readonly path: string;
+  readonly read: string;
   readonly keys: readonly string[];
 }
 
-/** A window the server would not open, and why. */
+/** A window the server would not open, or could not read this time, and why. */
 export interface WindowRefusal {
   readonly id: string;
   readonly reason: string;
@@ -75,6 +76,11 @@ export interface RowPatch extends StreamPosition {
   /** Windows whose key list changed; a window not named here is unchanged. */
   readonly windows: readonly WindowKeys[];
   readonly refused: readonly WindowRefusal[];
+  /**
+   * Windows whose last read failed (`ReadFailed`): each keeps the rows it had and is read
+   * again. A window named in `windows` has been read since, and is no longer failed.
+   */
+  readonly failed: readonly WindowRefusal[];
 }
 
 /**
@@ -106,16 +112,18 @@ export const desireFrame = (id: string, request: string, since?: StreamPosition)
 
 export const undesireFrame = (id: string): Uint8Array => encodeCbor([WINDOW_TAGS.undesire, id]);
 
+/** `failed` rides last and only when it names a window, so a patch without one is the bytes it was. */
 export const rowsFrame = (patch: RowPatch): Uint8Array =>
   encodeCbor([
     WINDOW_TAGS.rows,
     patch.epoch,
     patch.version,
     patch.reset ? 1 : 0,
-    patch.puts.map((put): CborValue => [put.path, put.key, rowToCbor(put.row)]),
-    patch.dels.map((del): CborValue => [del.path, del.key]),
-    patch.windows.map((w): CborValue => [w.id, w.path, [...w.keys]]),
+    patch.puts.map((put): CborValue => [put.read, put.key, rowToCbor(put.row)]),
+    patch.dels.map((del): CborValue => [del.read, del.key]),
+    patch.windows.map((w): CborValue => [w.id, w.read, [...w.keys]]),
     patch.refused.map((r): CborValue => [r.id, r.reason]),
+    ...(patch.failed.length === 0 ? [] : [patch.failed.map((f): CborValue => [f.id, f.reason])]),
   ]);
 
 const parseList = <T>(
@@ -134,10 +142,10 @@ const parseList = <T>(
   return Result.ok(out);
 };
 
-const asRef = ([path, key]: readonly CborValue[]): Result<RowRef, MalformedWindowFrame> =>
-  isString(path) && isString(key)
-    ? Result.ok({ path, key })
-    : malformed("a row is named by [path, key]");
+const asRef = ([read, key]: readonly CborValue[]): Result<RowRef, MalformedWindowFrame> =>
+  isString(read) && isString(key)
+    ? Result.ok({ read, key })
+    : malformed("a row is named by [read, key]");
 
 const asPut = (entry: readonly CborValue[]): Result<RowPut, MalformedWindowFrame> =>
   Result.gen(function* () {
@@ -148,13 +156,13 @@ const asPut = (entry: readonly CborValue[]): Result<RowPut, MalformedWindowFrame
     return Result.ok({ ...ref, row });
   });
 
-const asWindow = ([id, path, keys]: readonly CborValue[]): Result<
+const asWindow = ([id, read, keys]: readonly CborValue[]): Result<
   WindowKeys,
   MalformedWindowFrame
 > =>
-  isString(id) && isString(path) && Array.isArray(keys) && keys.every((k) => isString(k))
-    ? Result.ok({ id, path, keys: keys.filter(isString) })
-    : malformed("a window is [id, path, keys]");
+  isString(id) && isString(read) && Array.isArray(keys) && keys.every((k) => isString(k))
+    ? Result.ok({ id, read, keys: keys.filter(isString) })
+    : malformed("a window is [id, read, keys]");
 
 const asRefusal = ([id, reason]: readonly CborValue[]): Result<
   WindowRefusal,
@@ -166,7 +174,7 @@ const asRefusal = ([id, reason]: readonly CborValue[]): Result<
 
 const decodeRows = (parts: readonly CborValue[]): Result<WindowFrame, MalformedWindowFrame> =>
   Result.gen(function* () {
-    const [, epoch, version, reset, puts, dels, windows, refused] = parts;
+    const [, epoch, version, reset, puts, dels, windows, refused, failed] = parts;
     if (!isString(epoch) || !isSafeNonNegative(version) || (reset !== 0 && reset !== 1))
       return malformed("rows is not [epoch, version, reset, …]");
     return Result.ok({
@@ -178,6 +186,7 @@ const decodeRows = (parts: readonly CborValue[]): Result<WindowFrame, MalformedW
       dels: yield* parseList(dels, "dels", asRef),
       windows: yield* parseList(windows, "windows", asWindow),
       refused: yield* parseList(refused, "refused", asRefusal),
+      failed: failed === undefined ? [] : yield* parseList(failed, "failed", asRefusal),
     } as const);
   });
 

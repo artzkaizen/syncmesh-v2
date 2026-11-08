@@ -36,3 +36,26 @@ const EPOCH_UTC = Temporal.Instant.fromEpochMilliseconds(0).toZonedDateTimeISO("
 export function durationMs(duration: Temporal.Duration): number {
   return duration.total({ unit: "milliseconds", relativeTo: EPOCH_UTC });
 }
+
+/** How long to wait between tries: `first` after the first failure, doubling, never past `most`. */
+export interface RetryPolicy {
+  readonly first: Temporal.Duration;
+  readonly most: Temporal.Duration;
+}
+
+/**
+ * The wait after `failures` failures in a row: `first`, doubled once per failure since, capped
+ * at `most`.
+ *
+ * @example
+ * const policy = { first: Temporal.Duration.from({ seconds: 1 }), most: Temporal.Duration.from({ seconds: 30 }) };
+ * backoff(policy, 1); // PT1S
+ * backoff(policy, 3); // PT4S
+ * backoff(policy, 9); // PT30S
+ */
+export function backoff({ first, most }: RetryPolicy, failures: number): Temporal.Duration {
+  let wait = first;
+  for (let n = 1; n < failures && Temporal.Duration.compare(wait, most) < 0; n++)
+    wait = wait.add(wait);
+  return Temporal.Duration.compare(wait, most) > 0 ? most : wait;
+}

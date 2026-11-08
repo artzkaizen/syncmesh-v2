@@ -24,7 +24,7 @@ import { attempt } from "./sql.js";
 const OPERATORS = { ne: "<>", lt: "<", lte: "<=", gt: ">", gte: ">=" } as const;
 
 /** A scalar as SQL text in the form its kind takes; the caller has already proved the kind. */
-const literalOf = (kind: ScalarKind, value: CellValue): string => {
+const sqlLiteral = (kind: ScalarKind, value: CellValue): string => {
   if (kind === "string") {
     // SAFETY: the caller matched scalarKindOf(value) against `kind`, so this one is a string
     return str(value as string);
@@ -43,7 +43,24 @@ const GUC = {
 /** A setting's value, absent-or-empty normalised to SQL NULL. */
 const setting = (name: string): string => `NULLIF(current_setting('${name}', TRUE), '')`;
 
-const str = (value: string): string => `'${value.replaceAll("'", "''")}'`;
+/**
+ * Where a policy reads the principal from, as SQL: its account and role as text, its claims as
+ * `jsonb`, each NULL when there is none.
+ */
+export interface PrincipalSource {
+  readonly account: string;
+  readonly role: string;
+  readonly claims: string;
+}
+
+/** The principal in the transaction's `syncmesh.*` settings, as `principalSettings` sets them. */
+export const SETTINGS = {
+  account: setting(GUC.account),
+  role: setting(GUC.role),
+  claims: `${setting(GUC.claims)}::jsonb`,
+} as const satisfies PrincipalSource;
+
+export const str = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
 /** The column as `evaluate` compares it: numbers as numbers, timestamps as their epoch milliseconds. */
 const columnExpr = (kind: ColumnKind, name: string): string => {
@@ -63,8 +80,8 @@ const jsonCast = (scalar: ScalarKind): string =>
   scalar === "number" ? "::float8" : scalar === "boolean" ? "::boolean" : "";
 
 /** `claimAt`'s dot-path walk: each step yields NULL unless the value so far is an object. */
-const claimExpr = (path: string): string => {
-  let current = `${setting(GUC.claims)}::jsonb`;
+const claimExpr = (claims: string, path: string): string => {
+  let current = claims;
   for (const segment of path.split(".")) {
     current = `(CASE WHEN jsonb_typeof(${current}) = 'object' THEN (${current}) -> ${str(segment)} ELSE NULL END)`;
   }
@@ -81,8 +98,27 @@ type Handlers = {
   readonly [K in PolicyNode["kind"]]: (node: Extract<PolicyNode, { kind: K }>) => string;
 };
 
-/** One compiler per node, mirroring `evaluate`'s handler table, so the two cannot drift apart silently. */
-function policyPredicate(table: Table, roles: RoleSet, allow: AllowBlock): string {
+/**
+ * The table's `read` rule as SQL: one compiler per node, mirroring `evaluate`'s handler table, so
+ * the two cannot drift apart silently. The principal is read from `from`: the transaction's
+ * settings unless told otherwise.
+ */
+export function policyPredicate(
+  table: Table,
+  roles: RoleSet,
+  allow: AllowBlock,
+  from: PrincipalSource = SETTINGS,
+): string {
+  return rulePredicate(table, roles, resolveAllow(allow, "read"), from);
+}
+
+/** One rule as SQL — a table's resolved `read` rule, or a column's field rule (E06, D40). */
+export function rulePredicate(
+  table: Table,
+  roles: RoleSet,
+  rule: PolicyNode,
+  from: PrincipalSource = SETTINGS,
+): string {
   const columns = new Map(
     columnsOf(table).map(([key, name, column]) => [key, { name: quote(name), column }]),
   );
@@ -118,21 +154,21 @@ function policyPredicate(table: Table, roles: RoleSet, allow: AllowBlock): strin
     role: (node) => {
       const needed = roles.names.indexOf(node.role);
       if (needed === -1) return "FALSE";
-      if (!roles.ordered) return leaf(`${setting(GUC.role)} = ${str(node.role)}`);
+      if (!roles.ordered) return leaf(`${from.role} = ${str(node.role)}`);
       const array = `ARRAY[${roles.names.map(str).join(", ")}]::text[]`;
-      return leaf(`array_position(${array}, ${setting(GUC.role)}) <= ${needed + 1}`);
+      return leaf(`array_position(${array}, ${from.role}) <= ${needed + 1}`);
     },
     owner: (node) => {
       const found = columns.get(node.column);
       if (found === undefined || columnScalarKind(found.column.def.kind) !== "string")
         return "FALSE";
-      return leaf(`${found.name} = ${setting(GUC.account)}`);
+      return leaf(`${found.name} = ${from.account}`);
     },
     claimHas: (node) => {
       const found = columns.get(node.column);
       const kind = found === undefined ? undefined : columnScalarKind(found.column.def.kind);
       if (found === undefined || kind === undefined) return "FALSE";
-      const claim = claimExpr(node.claim);
+      const claim = claimExpr(from.claims, node.claim);
       const items = `SELECT ((e.v) #>> '{}')${jsonCast(kind)} FROM jsonb_array_elements(CASE WHEN jsonb_typeof(${claim}) = 'array' THEN ${claim} ELSE '[]'::jsonb END) AS e(v) WHERE jsonb_typeof(e.v) = ${str(kind)}`;
       return leaf(`${columnExpr(found.column.def.kind, found.name)} IN (${items})`);
     },
@@ -140,13 +176,13 @@ function policyPredicate(table: Table, roles: RoleSet, allow: AllowBlock): strin
       const found = columns.get(node.column);
       const kind = found === undefined ? undefined : columnScalarKind(found.column.def.kind);
       if (found === undefined || kind === undefined) return "FALSE";
-      const claim = claimExpr(node.claim);
+      const claim = claimExpr(from.claims, node.claim);
       return leaf(
         `CASE WHEN jsonb_typeof(${claim}) = 'null' THEN ${found.name} IS NULL WHEN jsonb_typeof(${claim}) = ${str(kind)} THEN ${columnExpr(found.column.def.kind, found.name)} = ((${claim}) #>> '{}')${jsonCast(kind)} ELSE FALSE END`,
       );
     },
     claimIncludes: (node) => {
-      const claim = claimExpr(node.claim);
+      const claim = claimExpr(from.claims, node.claim);
       return leaf(
         `CASE WHEN jsonb_typeof(${claim}) = 'array' THEN (${claim}) @> ${str(JSON.stringify(node.value))}::jsonb ELSE FALSE END`,
       );
@@ -163,7 +199,7 @@ function policyPredicate(table: Table, roles: RoleSet, allow: AllowBlock): strin
       if (found === undefined || kind === undefined) return "FALSE";
       if (node.value === null || scalarKindOf(node.value) !== kind) return "FALSE";
       if (node.op !== "ne" && kind === "boolean") return "FALSE"; // a boolean has no order
-      const value = literalOf(kind, node.value);
+      const value = sqlLiteral(kind, node.value);
       return leaf(
         `${columnExpr(found.column.def.kind, found.name)} ${OPERATORS[node.op]} ${value}`,
       );
@@ -174,7 +210,7 @@ function policyPredicate(table: Table, roles: RoleSet, allow: AllowBlock): strin
       if (found === undefined || kind === undefined) return "FALSE";
       const items = node.values.filter((item) => scalarKindOf(item) === kind);
       if (items.length === 0) return "FALSE";
-      const list = items.map((item) => literalOf(kind, item)).join(", ");
+      const list = items.map((item) => sqlLiteral(kind, item)).join(", ");
       return leaf(`${columnExpr(found.column.def.kind, found.name)} IN (${list})`);
     },
     // a read carries no patch, so nothing it touches can fall outside the list
@@ -184,8 +220,14 @@ function policyPredicate(table: Table, roles: RoleSet, allow: AllowBlock): strin
     not: (node) => `(NOT ${compile(node.of)})`,
   };
 
-  return compile(resolveAllow(allow, "read"));
+  return compile(rule);
 }
+
+/**
+ * The open policy `servedReadDdl` gives a table that had no row-level security, so serving it
+ * changes nothing for other roles. {@link rlsDdl} drops it: its own policies are the table's.
+ */
+export const SERVED_OPEN_POLICY = "syncmesh_served_others";
 
 export interface RlsOptions {
   /** The column holding the partition key, pinned when the `partition` setting is set. Default `_partition`; `false` when the table has no such column. */
@@ -195,7 +237,8 @@ export interface RlsOptions {
 /**
  * The DDL that puts a table's `read` rule into the database itself: RLS enabled and forced (so
  * the table's owner is filtered too), one SELECT policy from the rule, and open write policies —
- * writes are capture's to judge. Idempotent; superusers and BYPASSRLS roles are outside RLS by
+ * writes are capture's to judge. The open policy a served table was given before ({@link
+ * SERVED_OPEN_POLICY}) is dropped, as it would OR every row back in. Idempotent; superusers and BYPASSRLS roles are outside RLS by
  * Postgres's own rules, so serve the app through a plain role.
  */
 export function rlsDdl(
@@ -217,6 +260,8 @@ export function rlsDdl(
   return [
     `ALTER TABLE ${name} ENABLE ROW LEVEL SECURITY`,
     `ALTER TABLE ${name} FORCE ROW LEVEL SECURITY`,
+    // permissive policies OR together: an open one beside the rule would read every row
+    `DROP POLICY IF EXISTS "${SERVED_OPEN_POLICY}" ON ${name}`,
     `DROP POLICY IF EXISTS "syncmesh_read" ON ${name}`,
     `CREATE POLICY "syncmesh_read" ON ${name} FOR SELECT USING (${predicate})`,
     `DROP POLICY IF EXISTS "syncmesh_insert" ON ${name}`,
@@ -247,6 +292,18 @@ export interface PrincipalStatement {
   readonly params: readonly SqlValue[];
 }
 
+/** The settings that make a transaction the principal's, as `[setting, value]`. */
+export const principalValues = (
+  principal: Principal | undefined,
+  partition: PartitionKey | undefined,
+): readonly (readonly [string, string])[] => [
+  // an empty value reads back as NULL through the policies' NULLIF: no principal is nobody, not somebody blank
+  [GUC.account, principal?.account ?? ""],
+  [GUC.role, principal?.role ?? ""],
+  [GUC.claims, principal === undefined ? "" : JSON.stringify(principal.claims)],
+  [GUC.partition, partition === undefined ? "" : String(partition)],
+];
+
 /**
  * The statements that make a transaction the principal's: `set_config(…, true)` is transaction-
  * local, so the settings die with COMMIT or ROLLBACK and the pooled connection carries nothing
@@ -256,15 +313,8 @@ export function principalSettings(
   principal: Principal | undefined,
   options: { readonly partition?: PartitionKey } = {},
 ): readonly PrincipalStatement[] {
-  const set = (name: string, value: string): PrincipalStatement => ({
+  return principalValues(principal, options.partition).map(([name, value]) => ({
     sql: `SELECT set_config('${name}', $1, TRUE)`,
     params: [value],
-  });
-  // an empty value reads back as NULL through the policies' NULLIF: no principal is nobody, not somebody blank
-  return [
-    set(GUC.account, principal?.account ?? ""),
-    set(GUC.role, principal?.role ?? ""),
-    set(GUC.claims, principal === undefined ? "" : JSON.stringify(principal.claims)),
-    set(GUC.partition, options.partition === undefined ? "" : String(options.partition)),
-  ];
+  }));
 }

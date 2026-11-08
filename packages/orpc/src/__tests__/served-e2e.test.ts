@@ -8,7 +8,7 @@ import { createWindowClient } from "@syncmesh/window";
 import { createIdentity } from "@syncmesh/wire";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { createClient, sqlite } from "../index.js";
+import { AuthorityUnreachable, createClient, sqlite } from "../index.js";
 import {
   ALICE,
   POSTGRES_URL,
@@ -141,6 +141,44 @@ suite("useLiveQuery's read of a served table, over a real socket, from Postgres 
       "the close",
     );
     socket.close();
+    await client.$close();
+  });
+
+  test("a one-shot read with no socket fails as unreachable instead of waiting forever", async () => {
+    const client = createClient({
+      schema: fx.schema,
+      procedures: fx.router,
+      identity,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      // configured, and never attached: the device is offline
+      windows: createWindowClient(),
+    });
+    await client.$ready;
+    const answer = await client.mail.inbox({ folder: "inbox", limit: 2 });
+    expect(answer.isErr() && answer.error).toBeInstanceOf(AuthorityUnreachable);
+    await client.$close();
+  });
+
+  test("a one-shot read whose socket goes before the answer fails as unreachable", async () => {
+    const windows = createWindowClient();
+    // a socket that takes the desire and never answers, then goes
+    windows.attach(() => undefined);
+    const client = createClient({
+      schema: fx.schema,
+      procedures: fx.router,
+      identity,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      windows,
+    });
+    await client.$ready;
+    const pending = client.mail.inbox({ folder: "inbox", limit: 2 });
+    await eventually(
+      () => windows.status() === "resyncing" || windows.status() === "live",
+      "the desire",
+    );
+    windows.detach();
+    const answer = await pending;
+    expect(answer.isErr() && answer.error).toBeInstanceOf(AuthorityUnreachable);
     await client.$close();
   });
 

@@ -8,8 +8,8 @@ import { openStores } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
-import { eq } from "drizzle-orm";
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { alias, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import { meshDrizzle, readOnly, scopeReads } from "../index.js";
 
@@ -297,6 +297,22 @@ describe("scopeReads — the caller's view without asking for it", () => {
     expect(await db.$count(jobs, eq(jobs.status, "open"))).toBe(1);
   });
 
+  test("a built query, or a count, hands out no session to run statements of its own on", async () => {
+    const seeded = await seedTwo();
+    const face = await acting(seeded, tech7);
+    const db = scopeReads(face.db, face.read);
+    const query = db.select({ id: jobs.id }).from(jobs).where(eq(jobs.status, "open"));
+    const count = db.$count(jobs);
+    for (const built of [query, count]) {
+      expect(Reflect.getOwnPropertyDescriptor(built, "session")).toBeUndefined();
+      expect("session" in built).toBe(false);
+      expect(Reflect.ownKeys(built)).not.toContain("session");
+    }
+    // still runnable: Drizzle reaches its own session from inside its methods
+    expect((await query).map((r) => r.id)).toEqual(["j1"]);
+    expect(await count).toBe(1);
+  });
+
   test("a CTE built by $with's callback reads through the caller's view too", async () => {
     const seeded = await seedTwo();
     const face = await acting(seeded, tech7);
@@ -318,6 +334,69 @@ describe("scopeReads — the caller's view without asking for it", () => {
     const cte = db.$with("one").as(db.select({ id: jobs.id }).from(jobs));
     const rows = await db.with(cte).select({ id: jobs.id }).from(jobs).orderBy(jobs.id);
     expect(rows.map((r) => r.id)).toEqual(["j1"]);
+  });
+
+  test("a join chained after where, $dynamic or orderBy is scoped like one chained after from", async () => {
+    const seeded = await seedTwo();
+    const face = await acting(seeded, tech7);
+    const db = scopeReads(face.db, face.read);
+    const other = alias(jobs, "other");
+    const seen = async (rows: PromiseLike<readonly { readonly id: string | null }[]>) =>
+      [...(await rows)].map((r) => r.id ?? "").sort((a, b) => a.localeCompare(b));
+    // every chain order a handler might write: none of them may reach tech8's j2 through `other`
+    expect(
+      await seen(
+        db
+          .select({ id: other.id })
+          .from(jobs)
+          .where(sql`1`)
+          .innerJoin(other, sql`1`),
+      ),
+    ).toEqual(["j1"]);
+    expect(
+      await seen(
+        db
+          .select({ id: other.id })
+          .from(jobs)
+          .$dynamic()
+          .leftJoin(other, sql`1`),
+      ),
+    ).toEqual(["j1"]);
+    expect(
+      await seen(
+        db
+          .select({ id: other.id })
+          .from(jobs)
+          .orderBy(jobs.id)
+          .innerJoin(other, sql`1`),
+      ),
+    ).toEqual(["j1"]);
+    expect(
+      await seen(
+        db
+          .select({ id: other.id })
+          .from(jobs)
+          .where(sql`1`)
+          .orderBy(jobs.id)
+          .$dynamic()
+          .crossJoin(other),
+      ),
+    ).toEqual(["j1"]);
+  });
+
+  test("a subquery whose join follows a where answers no question about another caller's rows", async () => {
+    const seeded = await seedTwo();
+    const face = await acting(seeded, tech7);
+    const db = scopeReads(face.db, face.read);
+    const other = alias(jobs, "other");
+    // a yes/no oracle: any row back would say tech8 holds a job titled "two"
+    const probe = db
+      .select({ id: jobs.id })
+      .from(jobs)
+      .where(sql`1`)
+      .innerJoin(other, and(eq(other.assignee, "tech8"), eq(other.title, "two")));
+    const rows = await db.select({ id: jobs.id }).from(jobs).where(inArray(jobs.id, probe));
+    expect(rows).toEqual([]);
   });
 
   test("writes go through unscoped: the rule is about what a caller reads, not what capture sees", async () => {

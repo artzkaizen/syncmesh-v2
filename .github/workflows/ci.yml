@@ -12,9 +12,9 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # a real Postgres for @syncmesh/postgres's logical-replication suite: PGlite has no
-    # replication. A service cannot be given server flags, so wal_level is set and the
-    # container restarted in the first step.
+    # a real Postgres for @syncmesh/postgres's logical-replication suite (PGlite has no
+    # replication) and its store contract. A service cannot be given server flags, so wal_level
+    # is set and the container restarted in the first step.
     services:
       postgres:
         image: postgres:17
@@ -30,6 +30,8 @@ jobs:
           --health-retries 30
     env:
       SYNCMESH_PG_REPLICATION_URL: postgres://postgres:postgres@localhost:5432/postgres
+      # the store contract against a real server, on a client as postgres.js and Drizzle leave it
+      SYNCMESH_PG_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - name: Turn on logical replication
         run: |

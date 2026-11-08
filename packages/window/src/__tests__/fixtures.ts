@@ -1,5 +1,6 @@
 import type { ColumnName, JsonValue, Row } from "@syncmesh/kernel";
 
+import { Temporal } from "@syncmesh/temporal";
 import { encodeCbor } from "@syncmesh/wire";
 
 import type { WindowRow } from "../frames.js";
@@ -131,3 +132,14 @@ export const ats = (rows: readonly { readonly row: Row }[]) => rows.map((r) => r
 
 /** `n` numbers counting down from `from`: the `at`s a newest-first window shows. */
 export const down = (from: number, n: number) => Array.from({ length: n }, (_, i) => from - i);
+
+/** Waits until `check` holds, for what a timer rather than a step brings about. */
+export async function eventually(check: () => boolean, label: string) {
+  const deadline = Temporal.Now.instant().add({ seconds: 5 });
+  const poll = Temporal.Duration.from({ milliseconds: 2 });
+  while (!check()) {
+    if (Temporal.Instant.compare(Temporal.Now.instant(), deadline) > 0)
+      throw new Error(`timed out waiting for ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, poll.total("milliseconds")));
+  }
+}

@@ -7,7 +7,7 @@ import { Result } from "@syncmesh/result";
 import type { SqlDriver, SqlRow } from "./driver.js";
 import type { OperationRefusal, RefusalRow } from "./operation-refusals.js";
 
-import { dialectOf, namespaceDdl } from "./dialect.js";
+import { driverDialect, namespaceDdl } from "./dialect.js";
 import { createRefusalReads } from "./operation-refusals.js";
 import { attempt } from "./sql.js";
 
@@ -179,7 +179,7 @@ const decodeOp = (row: SqlRow): ResultType<OperationRow, StoreFailure> => {
 export function operationStore(
   driver: SqlDriver,
 ): Promise<ResultType<OperationStore, StoreFailure>> {
-  const sql = dialectOf(driver).operations;
+  const sql = driverDialect(driver).operations;
   return Result.gen(async function* () {
     yield* Result.await(
       attempt("operation tables failed to open", async () => {

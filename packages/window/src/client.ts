@@ -1,4 +1,4 @@
-import type { StreamPosition, WindowRow } from "./frames.js";
+import type { RowPatch, StreamPosition, WindowRow } from "./frames.js";
 import type { ReadRequest } from "./request.js";
 import type { PatchStream } from "./stream.js";
 
@@ -35,6 +35,11 @@ export interface WindowClient {
   readonly arrived: (id: string) => boolean;
   /** Why the server refused a window, if it did. */
   readonly refusal: (id: string) => string | undefined;
+  /**
+   * Why the window's last read failed, while it stays failed. Its rows are the last it was sent,
+   * and the server reads it again: the next patch that names it clears this.
+   */
+  readonly failure: (id: string) => string | undefined;
   readonly status: () => WindowStatus;
   /** Distinct rows held across every window. */
   readonly held: () => number;
@@ -50,7 +55,7 @@ export interface WindowClient {
    */
   readonly attach: (send: (frame: Uint8Array) => void) => void;
   readonly detach: () => void;
-  /** Called after every patch that lands. Returns the unsubscribe. */
+  /** Called after every patch that lands, and when the socket goes. Returns the unsubscribe. */
   readonly subscribe: (listener: () => void) => () => void;
 }
 
@@ -67,6 +72,7 @@ export function createWindowClient(): WindowClient {
   let pending: { readonly stream: PatchStream; readonly settled: Set<string> } | undefined;
   const requests = new Map<string, ReadRequest>();
   const refusals = new Map<string, string>();
+  const failures = new Map<string, string>();
   const listeners = new Set<() => void>();
   let send: ((frame: Uint8Array) => void) | undefined;
   /**
@@ -118,14 +124,33 @@ export function createWindowClient(): WindowClient {
     resync(target, epoch);
   };
 
+  /** What a landed patch says about each window: named, refused, or failed. */
+  const note = (target: PatchStream, patch: RowPatch): void => {
+    // a reset names every window still failed
+    if (patch.reset) failures.clear();
+    for (const { id } of patch.windows) {
+      refusals.delete(id);
+      failures.delete(id);
+      // a patch the view sent before it read an undesire still names that window
+      if (!requests.has(id)) target.forget(id);
+    }
+    for (const { id, reason } of patch.refused) {
+      refusals.set(id, reason);
+      failures.delete(id);
+    }
+    for (const { id, reason } of patch.failed) if (requests.has(id)) failures.set(id, reason);
+  };
+
   return {
     open: (id, request) => {
       requests.set(id, request);
       refusals.delete(id);
+      failures.delete(id);
       send?.(desireFrame(id, requestText(request)));
     },
     close: (id) => {
       requests.delete(id);
+      failures.delete(id);
       shown.forget(id);
       pending?.stream.forget(id);
       // with no socket no server counts these rows held, so they can go now; on one, the server
@@ -137,6 +162,7 @@ export function createWindowClient(): WindowClient {
     rows: (id) => shown.rows(id),
     arrived: (id) => shown.has(id),
     refusal: (id) => refusals.get(id),
+    failure: (id) => failures.get(id),
     status: () => (send === undefined ? "detached" : pending !== undefined ? "resyncing" : "live"),
     held: () => shown.held(),
     receive: (bytes) => {
@@ -158,17 +184,12 @@ export function createWindowClient(): WindowClient {
       // every desire sent before the resync was read before it, so its reset holds them all
       const answered = frame.reset && asked !== undefined;
       if (frame.reset) asked = undefined;
-      for (const { id } of frame.windows) {
-        refusals.delete(id);
-        // a patch the view sent before it read an undesire still names that window
-        if (!requests.has(id)) target.forget(id);
-      }
-      for (const { id, reason } of frame.refused) refusals.set(id, reason);
+      note(target, frame);
       if (pending === undefined) notify();
       else {
         const settled = answered
           ? requests.keys()
-          : [...frame.windows, ...frame.refused].map((w) => w.id);
+          : [...frame.windows, ...frame.refused, ...frame.failed].map((w) => w.id);
         for (const id of settled) pending.settled.add(id);
         settle();
       }
@@ -184,6 +205,8 @@ export function createWindowClient(): WindowClient {
     },
     detach: () => {
       send = undefined;
+      // a read waiting on this socket has nothing to wait on now
+      notify();
     },
     subscribe: (listener) => {
       listeners.add(listener);

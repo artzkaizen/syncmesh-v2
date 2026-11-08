@@ -39,8 +39,11 @@ export interface PatchStream {
   readonly prune: () => void;
 }
 
-/** One read's row: the same key under two reads is two rows, since each may project it differently. */
-export const rowId = (path: string, key: string): string => `${path}\u0000${key}`;
+/**
+ * One read's row: the same key under two reads, or under one procedure called with two inputs,
+ * is two rows, since each may project it differently. `read` is the read's `readKey`.
+ */
+export const rowId = (read: string, key: string): string => `${read}\u0000${key}`;
 
 /** What {@link PatchStream.rows} returns for a window it does not hold: one array, never a new one. */
 const NO_ROWS = [] as const satisfies readonly WindowRow[];
@@ -66,8 +69,8 @@ export function createPatchStream(): PatchStream {
         rows.clear();
         windows.clear();
       }
-      for (const put of patch.puts) rows.set(rowId(put.path, put.key), put);
-      for (const del of patch.dels) rows.delete(rowId(del.path, del.key));
+      for (const put of patch.puts) rows.set(rowId(put.read, put.key), put);
+      for (const del of patch.dels) rows.delete(rowId(del.read, del.key));
       for (const window of patch.windows) windows.set(window.id, window);
       for (const refusal of patch.refused) windows.delete(refusal.id);
       position = { epoch: patch.epoch, version: patch.version };
@@ -80,7 +83,7 @@ export function createPatchStream(): PatchStream {
       if (window === undefined) return NO_ROWS;
       const out: WindowRow[] = [];
       for (const key of window.keys) {
-        const held = rows.get(rowId(window.path, key));
+        const held = rows.get(rowId(window.read, key));
         if (held !== undefined) out.push({ key: held.key, row: held.row });
       }
       rendered.set(id, out);
@@ -96,7 +99,7 @@ export function createPatchStream(): PatchStream {
     prune: () => {
       const kept = new Set<string>();
       for (const window of windows.values())
-        for (const key of window.keys) kept.add(rowId(window.path, key));
+        for (const key of window.keys) kept.add(rowId(window.read, key));
       for (const id of rows.keys()) if (!kept.has(id)) rows.delete(id);
     },
   };

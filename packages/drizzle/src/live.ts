@@ -6,8 +6,8 @@ import type { LiveChange, LiveDiff } from "./patch.js";
 import { replaceEqualDeep } from "./equal.js";
 import { diffOf, patchWindow, stateOf } from "./patch.js";
 import { ROW_SYNC_TABLE } from "./sync-of.js";
-import { identityOf, tablesOf } from "./tree.js";
-import { keyOfRows, windowOf } from "./window.js";
+import { queryIdentity, queryTables } from "./tree.js";
+import { keyOfRows, windowPlan } from "./window.js";
 
 /**
  * Before any local read has completed: `data` is empty and carries **no information**, so
@@ -144,11 +144,11 @@ export const createLive = (engine: LiveSource) => {
   const shared = new Map<string, { readonly live: Live<never>; refs: number }>();
 
   const build = <T>(query: Runnable<T>, rebuild: (() => Runnable<T>) | undefined): Live<T> => {
-    const touched = tablesOf(query);
+    const touched = queryTables(query);
     // the row-sync table appears in raw SQL rather than as a Drizzle table, so the walk cannot
     // see it; the query's own text is what says whether a `syncOf` column was selected
-    const sql = identityOf(query);
-    const plan = rebuild === undefined ? undefined : windowOf(query, rebuild);
+    const sql = queryIdentity(query);
+    const plan = rebuild === undefined ? undefined : windowPlan(query, rebuild);
     const keyOf = keyOfRows(query);
     const listeners = new Set<LiveListener<T>>();
     let current: readonly T[] | undefined;
@@ -312,7 +312,7 @@ export const createLive = (engine: LiveSource) => {
     const rebuild = typeof source === "function" ? source : undefined;
     // SAFETY: the same check narrowed `rebuild`, so the other arm is the query itself
     const query = rebuild === undefined ? (source as Runnable<T>) : rebuild();
-    const id = identityOf(query);
+    const id = queryIdentity(query);
     const held = shared.get(id);
     if (held !== undefined) {
       held.refs += 1;

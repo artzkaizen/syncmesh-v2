@@ -3,7 +3,7 @@ import type { Runnable } from "@syncmesh/drizzle";
 import type { PresenceMap } from "@syncmesh/schema";
 
 import { LOCAL_ONLY } from "@syncmesh/client";
-import { tablesOf } from "@syncmesh/drizzle";
+import { queryTables } from "@syncmesh/drizzle";
 import { Result } from "@syncmesh/result";
 
 import type { QueryCall, ReadAnswer } from "./api.js";
@@ -44,14 +44,14 @@ export function readOf<PC extends PresenceMap>(
 ): QueryCall<unknown> {
   /* thrown, not returned: a live query has no error channel of its own, and the hook has an `error` */
   const runnable = () => running(def, validate<never>(def.schema, input).unwrap(), input);
-  // the real builder the moment there is one: `windowOf` reads a Drizzle query's own config to
+  // the real builder the moment there is one: `windowPlan` reads a Drizzle query's own config to
   // decide whether the query can be maintained, and a stand-in has none to read. Only a call
   // made before the mesh exists gets the wrapper, and that one has nothing to maintain from
   const run = () =>
     lazy.current() === undefined ? deferredRunnable(lazy.ready, runnable) : runnable();
   /** Whether the handler's query reads a table the server keeps rather than this device. */
   const isServed = (query: Runnable<unknown>) =>
-    served.size > 0 && [...tablesOf(query)].some((table) => served.has(table));
+    served.size > 0 && [...queryTables(query)].some((table) => served.has(table));
   /** The same rows, read a page at a time from the server (D43). */
   const servedLive = (query: Runnable<unknown>) =>
     windows?.live(path, input, query) ??
@@ -74,12 +74,9 @@ export function readOf<PC extends PresenceMap>(
         await lazy.ready;
         const query = running(def, parsed.value, input);
         if (!isServed(query)) return { data: await query, coverage: coverage() };
-        const live = servedLive(query);
-        try {
-          return { data: await live.ready, coverage: coverage() };
-        } finally {
-          live.release();
-        }
+        if (windows === undefined)
+          return { data: await servedLive(query).ready, coverage: coverage() };
+        return { data: await windows.once(path, input, query), coverage: coverage() };
       },
       catch: asError,
     });

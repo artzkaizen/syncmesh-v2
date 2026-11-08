@@ -1,9 +1,10 @@
 import type { PeerId } from "@syncmesh/kernel";
 import type { PageSource } from "@syncmesh/window";
 
-import { commitFeed } from "@syncmesh/cdc";
+import { resumableCommitFeed } from "@syncmesh/cdc";
 import { postgresChangeSource } from "@syncmesh/postgres";
 import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
+import { servedReadDdl } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { createServerWindows, createWindowClient } from "@syncmesh/window";
 import { and, desc, eq, sql } from "drizzle-orm";
@@ -35,8 +36,8 @@ if (POSTGRES_URL === undefined) {
 /** A name no other run of this suite uses, so runs never read each other's tables or slots. */
 export const runId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
-const replication = () =>
-  postgres(POSTGRES_URL ?? "", {
+const replication = (url = POSTGRES_URL ?? "") =>
+  postgres(url, {
     max: 1,
     fetch_types: false,
     max_lifetime: null,
@@ -80,13 +81,19 @@ const mailColumns = {
  * The manifest: `mail` is served, and a person reads only their own; `open` is served with no
  * rule at all, which a served read must refuse rather than read.
  */
-export const schemaFor = (mail: string, open: string) =>
+export const schemaFor = (
+  mail: string,
+  open: string,
+  options: { readonly hideSubject?: boolean } = {},
+) =>
   syncSchema({
     tables: {
       [mail]: {
         columns: mailColumns,
         partition: mailbox,
         allow: ({ owner, deny }) => ({ $default: deny, read: owner("owner") }),
+        // a column rule (E06): only an admin reads a subject, when the test asks for one
+        fields: ({ role }) => (options.hideSubject === true ? { subject: role("admin") } : {}),
         sync: "window",
       },
       [open]: { columns: mailColumns, sync: "window" },
@@ -155,6 +162,36 @@ export const BOB = { account: "bob", role: "owner", claims: {} } as const;
 /* oxlint-disable-next-line anti-slop/require-safety-comment-for-type-assertion -- a test peer id */
 export const SERVER = "server-peer" as PeerId;
 
+/**
+ * The role served reads run as, and the login they connect as, for one run. Roles are the
+ * cluster's, not one database's, so each run makes its own and drops them at the end: a run that
+ * swept another's grants would fail it.
+ */
+export const rolesFor = (id: string) => ({
+  reader: `syncmesh_reader_${id}`,
+  login: `syncmesh_reads_${id}`,
+  password: `reads-${id}`,
+});
+
+/** A connection URL for `user`, on the suite's server. */
+export const urlAs = (user: string, password: string) => {
+  const url = new URL(POSTGRES_URL ?? "postgres://localhost");
+  url.username = user;
+  url.password = password;
+  return url.toString();
+};
+
+/** Drops a run's read role and login, and whatever was granted to them in this database. */
+export const dropRoles = async (pg: postgres.Sql, roles: ReturnType<typeof rolesFor>) => {
+  for (const role of [roles.login, roles.reader]) {
+    const exists = await pg.unsafe(`SELECT 1 FROM pg_roles WHERE rolname = $1`, [role]);
+    if (exists.length === 0) continue;
+    await pg.unsafe(`DROP OWNED BY "${role}"`);
+    await pg.unsafe(`DROP ROLE "${role}"`);
+  }
+  await pg.unsafe(`DELETE FROM syncmesh_served.login WHERE login = $1`, [roles.login]);
+};
+
 /** Every statement the server's Drizzle sent, so a test can explain what a page read cost. */
 export interface Statement {
   readonly sql: string;
@@ -167,39 +204,84 @@ export interface Statement {
  * a million changes to stream.
  */
 export async function served(
-  options: { readonly seed?: (sql: postgres.Sql, mail: string) => Promise<void> } = {},
+  options: {
+    readonly seed?: (sql: postgres.Sql, mail: string) => Promise<void>;
+    /** Whether the manifest rules the subject column, so the DDL serves `mail` through a view. */
+    readonly hideSubject?: boolean;
+  } = {},
 ) {
   const id = runId();
   const names = { mail: `mail_${id}`, open: `open_${id}` };
+  const roles = rolesFor(id);
   const pg = postgres(POSTGRES_URL ?? "", { max: 4, onnotice: (notice) => console.log(notice) });
+  await pg.unsafe(`CREATE ROLE "${roles.login}" LOGIN PASSWORD '${roles.password}'`);
   await pg.unsafe(MAIL_DDL(names.mail));
   await pg.unsafe(MAIL_DDL(names.open));
   await options.seed?.(pg, names.mail);
   await pg.unsafe(`ANALYZE ${names.mail}`);
+  const schema = schemaFor(names.mail, names.open, { hideSubject: options.hideSubject === true });
+  for (const statement of servedReadDdl(schema, { role: roles.reader, grantTo: roles.login }))
+    await pg.unsafe(statement);
   const statements: Statement[] = [];
+  // the served reads' own connection, logged in as the login the DDL granted the read role
+  const reads = postgres(urlAs(roles.login, roles.password), {
+    max: 4,
+    onnotice: (notice) => console.log(notice),
+  });
   const db = drizzle({
-    client: pg,
+    client: reads,
     logger: { logQuery: (text, params) => void statements.push({ sql: text, params }) },
   });
+  /** While set, the replication connection cannot be made: the database is unreachable. */
+  let cut = false;
   const source = postgresChangeSource({
     sql: pg,
-    connect: replication,
+    // port 1 refuses at once, as a database that is down does
+    connect: () => (cut ? replication("postgres://postgres@127.0.0.1:1/postgres") : replication()),
     slot: `slot_${id}`,
     publication: `pub_${id}`,
     status: Temporal.Duration.from({ milliseconds: 50 }),
+    // one try, so an outage ends the stream instead of being ridden out
+    reconnect: { attempts: 0, delay: Temporal.Duration.from({ milliseconds: 10 }) },
   });
   (await source.publish([names.mail, names.open])).unwrap();
-  const feed = commitFeed(await source.start({ after: null }), "postgres");
+  // restarted when it fails, so a test can kill the walsender and watch the windows come back
+  const reading = Promise.withResolvers<void>();
+  const feed = resumableCommitFeed(
+    async () => {
+      const stream = await source.start({ after: null });
+      reading.resolve();
+      return stream;
+    },
+    {
+      source: "postgres",
+      retry: {
+        first: Temporal.Duration.from({ milliseconds: 50 }),
+        most: Temporal.Duration.from({ milliseconds: 200 }),
+      },
+    },
+  );
+  // a test that writes before the slot is read would race it
+  await reading.promise;
   const mail = mailTable(names.mail);
   const open = mailTable(names.open);
-  const schema = schemaFor(names.mail, names.open);
   const router = proceduresFor(mail, open);
   /** The page source for one principal's socket. */
   const sourceFor = (principal: typeof ALICE | typeof BOB): PageSource =>
-    servedReads({ router, schema, db, principal, self: SERVER, onCommit: feed.onCommit });
+    servedReads({
+      router,
+      schema,
+      db,
+      principal,
+      self: SERVER,
+      onCommit: feed.onCommit,
+      onFeed: feed.onFeed,
+      readRole: roles.reader,
+    });
   return {
     pg,
     db,
+    roles,
     names,
     mail,
     open,
@@ -207,6 +289,18 @@ export async function served(
     router,
     statements,
     sourceFor,
+    /** Ends the walsender reading this run's slot, and refuses the reconnect: an outage. */
+    cutFeed: async () => {
+      cut = true;
+      await pg.unsafe(
+        `SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots WHERE slot_name = $1 AND active_pid IS NOT NULL`,
+        [`slot_${id}`],
+      );
+    },
+    /** The database is reachable again; the feed's next start reads the slot. */
+    restoreFeed: () => {
+      cut = false;
+    },
     insert: (n: number, owner = "alice", folder = "inbox") =>
       pg.unsafe(
         `INSERT INTO ${names.mail} (id, owner, folder, received, subject) VALUES ($1, $2, $3, $4, $5)`,
@@ -218,6 +312,8 @@ export async function served(
       await source.drop();
       await pg.unsafe(`DROP PUBLICATION IF EXISTS pub_${id}`);
       await pg.unsafe(`DROP TABLE IF EXISTS ${names.mail}, ${names.open}`);
+      await reads.end();
+      await dropRoles(pg, roles);
       await pg.end();
     },
   };

@@ -6,7 +6,7 @@ import { counterValue, isVisible } from "@syncmesh/kernel";
 import type { SqlDriver } from "./driver.js";
 import type { RowSync } from "./row-sync.js";
 
-import { dialectOf } from "./dialect.js";
+import { driverDialect } from "./dialect.js";
 import { quote, valueColumns } from "./identifiers.js";
 
 /** A cell in the form the column's SQL type holds it on SQLite — what the fold writes and what a compiled rule compares against. */
@@ -44,7 +44,7 @@ export function tablesProjection(
   tables: readonly Table[],
   options: ProjectionOptions = {},
 ): Projection {
-  const dialect = dialectOf(driver);
+  const dialect = driverDialect(driver);
   const partitionColumn = options.partitionColumn ?? "_partition";
   const byName = new Map(tables.map((t) => [String(t.name), t]));
   const statements = new Map(
@@ -56,7 +56,9 @@ export function tablesProjection(
       const pk = table.columnNames[table.primaryKey];
       const key = pk === undefined ? '"id"' : quote(pk);
       const updates = names.map((n) => `${n} = excluded.${n}`).join(", ");
-      const marks = names.map((_, i) => dialect.placeholder(i + 1)).join(", ");
+      const marks = names
+        .map((_, i) => dialect.placeholder(i + 1, columns[i]?.[2].def.kind))
+        .join(", ");
       const upsert = `INSERT INTO ${quote(table.name)} (${names.join(", ")}) VALUES (${marks}) ON CONFLICT(${key}) DO UPDATE SET ${updates}`;
       const remove = `DELETE FROM ${quote(table.name)} WHERE ${key} = ${dialect.placeholder(1)}`;
       return [String(table.name), { columns, upsert, remove }] as const;

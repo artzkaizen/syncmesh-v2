@@ -139,12 +139,13 @@ await runScale([
       "A serializer walks its payload once. Anything worse than linear is the writer doing per-byte work with a per-call cost — an array of numbers grown one push at a time, or a spread that re-reads what it already wrote. It also caps how large a blob or snapshot can be encoded before the spread overflows the stack.",
     sizes: [16_384, 65_536, 262_144],
     /**
-     * A quarter-megabyte payload, with room to spare over a writer that fills a preallocated
-     * buffer — measured at roughly 30 µs for this size. The budget is here rather than a tighter
-     * class because the curve is honest: the writer *is* linear, it simply pays a per-byte push
-     * into a number array and a spread on top of it, which a shape check can never see.
+     * A quarter-megabyte payload. A writer that pushes each byte into a number array and spreads
+     * it is still linear, so only a budget sees it: that writer took about 87 ms at this size.
+     * The growable-buffer writer takes 30–60 µs on a laptop and about 250 µs on a shared CI
+     * runner, where allocation and page faults dominate. The budget sits far above the second and
+     * far below the first.
      */
-    budget: 200,
+    budget: 2_000,
     prepare: (bytes) => new Uint8Array(bytes).fill(1),
     run: (payload) => encodeCbor(payload),
   }),

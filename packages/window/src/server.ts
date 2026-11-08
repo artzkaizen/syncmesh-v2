@@ -1,23 +1,18 @@
-import type { CellValue, Row } from "@syncmesh/kernel";
+import type { RetryPolicy } from "@syncmesh/temporal";
 
 import { Result } from "@syncmesh/result";
+import { Temporal } from "@syncmesh/temporal";
 import { bytesToHex, randomBytes } from "@syncmesh/wire";
 
-import type {
-  RowPut,
-  RowRef,
-  StreamPosition,
-  WindowKeys,
-  WindowRefusal,
-  WindowRow,
-} from "./frames.js";
+import type { Draft, WindowBook } from "./book.js";
+import type { Desire, RowPatch, StreamPosition, Undesire } from "./frames.js";
 import type { ReadRequest } from "./request.js";
-import type { Page, PageSource } from "./source.js";
+import type { Page, PageSource, ReadRefused } from "./source.js";
 
+import { createWindowBook, emptyDraft, isEmpty } from "./book.js";
 import { decodeWindowFrame, rowsFrame } from "./frames.js";
-import { parseRequest } from "./request.js";
-import { ReadRefused } from "./source.js";
-import { rowId } from "./stream.js";
+import { parseRequest, readKey } from "./request.js";
+import { ReadFailed } from "./source.js";
 
 export interface ServerWindowsOptions {
   /** Runs each window's read, already scoped to the reader this socket belongs to. */
@@ -32,18 +27,52 @@ export interface ServerWindowsOptions {
    * @default 64
    */
   readonly maxWindows?: number;
+  /**
+   * Rows one page may hold. A read that returns more is refused rather than sent, so a window
+   * costs at most this many rows whatever its read asks for.
+   * @default 1000
+   */
+  readonly maxRows?: number;
+  /**
+   * When a window whose read failed is read again. A commit to a table it reads re-reads it
+   * sooner.
+   * @default { first: 1 second, most: 30 seconds }
+   */
+  readonly retry?: RetryPolicy;
+  /**
+   * Hangs up the socket, once, when `send` throws. A patch that never left puts the client's
+   * stream behind the server's for good, so the socket goes and the reconnect resnapshots.
+   */
+  readonly close?: (reason: string) => void;
 }
 
 /** The {@link ServerWindowsOptions.maxWindows} a socket takes when none is given. */
 export const MAX_WINDOWS = 64;
+
+/** The {@link ServerWindowsOptions.maxRows} a page takes when none is given. */
+export const MAX_ROWS = 1000;
+
+/** The {@link ServerWindowsOptions.retry} a socket takes when none is given. */
+export const RETRY = {
+  first: Temporal.Duration.from({ seconds: 1 }),
+  most: Temporal.Duration.from({ seconds: 30 }),
+} as const satisfies RetryPolicy;
 
 /**
  * The server's half of one socket's windows (E27). A row reaches the client once, however many
  * of this socket's windows hold it, and is evicted when the last of them lets it go. Every change
  * leaves as one versioned patch (E24).
  *
- * Work runs one step at a time in arrival order — a desire, an undesire, a commit — so a patch
- * always describes the step before it, whatever each read costs.
+ * Work runs one step at a time, so a patch always describes the step before it, whatever each
+ * read costs. Work is coalesced while a step runs: a window's latest desire replaces any earlier
+ * one not yet read, every commit since the last re-read is one re-read, and windows asking the
+ * same read are read once. A re-read hands the source every read it needs at once
+ * ({@link PageSource.readPages}). So a socket has at most one read in flight and one pending per
+ * window, however many frames or commits arrive.
+ *
+ * A read that fails ({@link ReadFailed}) leaves its window holding the rows it had, marked
+ * failed, and the window is read again after {@link ServerWindowsOptions.retry} or on the next
+ * commit to a table it reads, whichever is first. A read that is refused closes the window.
  */
 export interface ServerWindows {
   /**
@@ -59,226 +88,250 @@ export interface ServerWindows {
   readonly stop: () => void;
 }
 
-interface Open {
-  readonly request: ReadRequest;
-  readonly keys: readonly string[];
-  readonly tables: ReadonlySet<string>;
-}
-
-interface Held {
-  readonly path: string;
-  readonly key: string;
-  row: Row;
-  count: number;
-}
+/**
+ * What a window's frames have asked for and no step has acted on: only the latest counts, but a
+ * resync's `since` is kept by whatever replaces it, as the reset it asked for is still owed.
+ */
+type Want =
+  | { readonly kind: "desire"; readonly text: string; readonly since: StreamPosition | undefined }
+  | { readonly kind: "undesire"; readonly since: StreamPosition | undefined };
 
 const freshEpoch = (): string => bytesToHex(randomBytes(8));
 
-/** A patch being assembled from one desire, undesire or commit. */
-interface Draft {
-  readonly puts: Map<string, RowPut>;
-  readonly dels: Map<string, RowRef>;
-  readonly windows: Map<string, WindowKeys>;
-  readonly refused: WindowRefusal[];
-  reset: boolean;
-}
+const causeMessage = (cause: unknown, fallback: string): string =>
+  cause instanceof Error ? cause.message : fallback;
 
-const emptyDraft = (): Draft => ({
-  puts: new Map(),
-  dels: new Map(),
-  windows: new Map(),
-  refused: [],
-  reset: false,
-});
+/** A client that names a position this stream is not at missed a patch, and is resnapshot. */
+const missed = (since: StreamPosition | undefined, at: StreamPosition | undefined): boolean =>
+  since !== undefined &&
+  (at === undefined || since.epoch !== at.epoch || since.version !== at.version);
 
-/* oxlint-disable anti-slop/no-runtime-typeof -- comparing cells dispatches on a cell's runtime kind */
-const sameCell = (a: CellValue | undefined, b: CellValue | undefined): boolean => {
-  if (a instanceof Uint8Array || b instanceof Uint8Array)
-    return (
-      a instanceof Uint8Array &&
-      b instanceof Uint8Array &&
-      a.length === b.length &&
-      a.every((byte, i) => byte === b[i])
-    );
-  if (typeof a === "object" && a !== null) return JSON.stringify(a) === JSON.stringify(b);
-  return a === b;
+type Answer = Result<Page, ReadRefused | ReadFailed>;
+
+/** A source that throws rather than answering is one that could not run the read. */
+const unran = (cause: unknown) =>
+  new ReadFailed({ message: causeMessage(cause, "the read failed") });
+
+/** One read's page. */
+const readOne = async (source: PageSource, request: ReadRequest): Promise<Answer> =>
+  (await Result.tryPromise({ try: () => source.readPage(request), catch: unran })).andThen(
+    (page) => page,
+  );
+
+/** Several reads' pages in order: at once when the source can, one by one when it cannot. */
+const readAll = async (
+  source: PageSource,
+  requests: readonly ReadRequest[],
+): Promise<readonly Answer[]> => {
+  const { readPages } = source;
+  if (readPages === undefined || requests.length < 2) {
+    const answers: Answer[] = [];
+    for (const request of requests) answers.push(await readOne(source, request));
+    return answers;
+  }
+  const read = await Result.tryPromise({ try: () => readPages(requests), catch: unran });
+  // a source that answers a different number of reads answered none of them
+  if (read.isOk() && read.value.length === requests.length) return read.value;
+  const failed = read.isErr() ? read.error : unran(new Error("the reads were not all answered"));
+  return requests.map(() => Result.err(failed));
 };
-/* oxlint-enable anti-slop/no-runtime-typeof */
-
-const sameRow = (a: Row, b: Row): boolean =>
-  a.size === b.size && [...a].every(([column, cell]) => sameCell(cell, b.get(column)));
 
 /**
- * Takes one reference on a row. It is sent when it is new to this socket or its cells changed,
- * so a window that merely re-reads its rows sends nothing for them.
+ * The patch a draft becomes at `at`: a reset carrying the whole book when the draft asks for one
+ * or nothing was sent yet, the next version otherwise, and nothing for a draft with nothing in it.
  */
-const take = (held: Map<string, Held>, draft: Draft, path: string, { key, row }: WindowRow) => {
-  const id = rowId(path, key);
-  const found = held.get(id);
-  const changed = found !== undefined && !sameRow(found.row, row);
-  if (found === undefined) held.set(id, { path, key, row, count: 1 });
-  else {
-    found.count++;
-    found.row = row;
-  }
-  draft.dels.delete(id);
-  if (found === undefined || changed) draft.puts.set(id, { path, key, row });
+const nextPatch = (
+  draft: Draft,
+  at: StreamPosition | undefined,
+  nextEpoch: () => string,
+  book: WindowBook,
+): RowPatch | undefined => {
+  if (draft.reset || at === undefined)
+    return {
+      epoch: nextEpoch(),
+      version: 1,
+      reset: true,
+      dels: [],
+      refused: draft.refused,
+      ...book.whole(),
+    };
+  if (isEmpty(draft)) return undefined;
+  return {
+    epoch: at.epoch,
+    version: at.version + 1,
+    reset: false,
+    puts: [...draft.puts.values()],
+    dels: [...draft.dels.values()],
+    windows: [...draft.windows.values()],
+    refused: draft.refused,
+    failed: [...draft.failed.values()],
+  };
 };
 
-/** Drops one reference; at zero the row is evicted and the client told. */
-const release = (held: Map<string, Held>, draft: Draft, path: string, key: string): void => {
-  const id = rowId(path, key);
-  const found = held.get(id);
-  if (found === undefined) return;
-  found.count--;
-  if (found.count > 0) return;
-  held.delete(id);
-  draft.puts.delete(id);
-  draft.dels.set(id, { path, key });
+/** Keeps a window's latest frame; a resync's `since` survives any later frame, as the reset is still owed. */
+const coalesce = (wanted: Map<string, Want>, frame: Desire | Undesire): void => {
+  const owed = wanted.get(frame.id)?.since;
+  if (frame.kind === "undesire") wanted.set(frame.id, { kind: "undesire", since: owed });
+  else wanted.set(frame.id, { kind: "desire", text: frame.request, since: frame.since ?? owed });
 };
-
-const touches = (window: Open, tables: ReadonlySet<string>): boolean =>
-  [...window.tables].some((table) => tables.has(table));
 
 export function createServerWindows(options: ServerWindowsOptions): ServerWindows {
-  const { source, send, epoch: nextEpoch = freshEpoch, maxWindows = MAX_WINDOWS } = options;
-  const open = new Map<string, Open>();
-  const held = new Map<string, Held>();
+  const {
+    source,
+    send,
+    close,
+    epoch: nextEpoch = freshEpoch,
+    maxWindows = MAX_WINDOWS,
+    maxRows = MAX_ROWS,
+    retry = RETRY,
+  } = options;
+  /** Frames not yet acted on, one per window, in the order each window first asked. */
+  const wanted = new Map<string, Want>();
+  /** Tables committed since the last re-read began; one re-read answers every commit behind it. */
+  const dirty = new Set<string>();
+  /** Failed windows whose wait is over. */
+  const due = new Set<string>();
+  /** A new change feed may have missed any commit, so every window is read again. */
+  let everything = false;
+  /** Why the change feed is down, while it is: no commit is heard, so every window is failed. */
+  let feedLost: string | undefined;
+  /** The feed went down and the windows have not been told. */
+  let lossUntold = false;
   let position: StreamPosition | undefined;
   let stopped = false;
-  let tail = Promise.resolve();
-  /** Tables committed since the last re-read began; one re-read answers every commit queued behind it. */
-  const dirty = new Set<string>();
-  let rereading = false;
+  let working: Promise<void> | undefined;
+  const book = createWindowBook({
+    maxRows,
+    retry,
+    feedLost: () => feedLost,
+    due: (id) => {
+      due.add(id);
+      pump();
+    },
+  });
 
-  /** Runs `step` after every step before it. A step never throws: a read that does is a refusal. */
-  const queue = (step: () => Promise<void>): void => {
-    tail = tail.then(step);
+  const halt = (): void => {
+    stopped = true;
+    unsubscribe();
+    unfeed?.();
+    book.stop();
+    wanted.clear();
   };
 
-  const readPage = async (request: ReadRequest): Promise<Result<Page, ReadRefused>> =>
-    (
-      await Result.tryPromise({
-        try: () => source.readPage(request),
-        catch: (cause) =>
-          new ReadRefused({ message: cause instanceof Error ? cause.message : "the read failed" }),
-      })
-    ).andThen((page) => page);
-
-  const unplace = (draft: Draft, id: string): void => {
-    const before = open.get(id);
-    if (before === undefined) return;
-    open.delete(id);
-    for (const key of before.keys) release(held, draft, before.request.path, key);
+  const transmit = (patch: RowPatch): void => {
+    position = { epoch: patch.epoch, version: patch.version };
+    const sent = Result.try({
+      try: () => send(rowsFrame(patch)),
+      catch: (cause) => causeMessage(cause, "the socket would not take a patch"),
+    });
+    if (sent.isOk()) return;
+    halt();
+    close?.(sent.error);
   };
 
-  /** Runs one window's read and moves the references to match. */
-  const place = async (draft: Draft, id: string, request: ReadRequest): Promise<void> => {
-    const read = await readPage(request);
-    if (read.isErr()) {
-      unplace(draft, id);
-      draft.refused.push({ id, reason: read.error.message });
-      return;
-    }
-    const { rows, tables } = read.value;
-    const before = open.get(id);
-    // take the new references before releasing the old, so a row in both never touches zero
-    for (const row of rows) take(held, draft, request.path, row);
-    for (const key of before?.keys ?? []) release(held, draft, before?.request.path ?? "", key);
-    const keys = rows.map((r) => r.key);
-    open.set(id, { request, keys, tables });
-    const same =
-      before !== undefined &&
-      before.request.path === request.path &&
-      before.keys.length === keys.length &&
-      before.keys.every((k, i) => k === keys[i]);
-    if (!same) draft.windows.set(id, { id, path: request.path, keys });
-  };
+  const readPage = (request: ReadRequest) => readOne(source, request);
 
   const flush = (draft: Draft): void => {
-    if (stopped) return;
-    const at = position;
-    if (draft.reset || at === undefined) {
-      position = { epoch: nextEpoch(), version: 1 };
-      send(
-        rowsFrame({
-          ...position,
-          reset: true,
-          puts: [...held.values()].map(({ path, key, row }) => ({ path, key, row })),
-          dels: [],
-          windows: [...open].map(([id, w]) => ({ id, path: w.request.path, keys: w.keys })),
-          refused: draft.refused,
-        }),
-      );
-      return;
-    }
-    if (
-      draft.puts.size === 0 &&
-      draft.dels.size === 0 &&
-      draft.windows.size === 0 &&
-      draft.refused.length === 0
-    )
-      return;
-    position = { epoch: at.epoch, version: at.version + 1 };
-    send(
-      rowsFrame({
-        ...position,
-        reset: false,
-        puts: [...draft.puts.values()],
-        dels: [...draft.dels.values()],
-        windows: [...draft.windows.values()],
-        refused: draft.refused,
-      }),
-    );
+    const patch = stopped ? undefined : nextPatch(draft, position, nextEpoch, book);
+    if (patch !== undefined) transmit(patch);
   };
 
-  const reread = async (): Promise<void> => {
-    rereading = false;
-    const tables = new Set(dirty);
-    dirty.clear();
-    if (stopped) return;
-    const touched = [...open].filter(([, window]) => touches(window, tables));
-    // a commit that touches no open window sends nothing, so an idle socket is sent nothing
-    if (touched.length === 0) return;
+  const desire = async (id: string, want: Extract<Want, { kind: "desire" }>): Promise<void> => {
     const draft = emptyDraft();
-    for (const [id, window] of touched) await place(draft, id, window.request);
+    const request = parseRequest(want.text);
+    if (request.isErr()) {
+      book.unplace(draft, id);
+      draft.refused.push({ id, reason: request.error.message });
+    } else if (!book.has(id) && book.count() >= maxWindows)
+      draft.refused.push({ id, reason: `a socket holds at most ${maxWindows} windows` });
+    else book.settle(draft, id, request.value, await readPage(request.value));
+    draft.reset = missed(want.since, position);
     flush(draft);
+  };
+
+  /** Re-reads every window a commit touched, every failed one whose wait is over, or every one. */
+  const reread = async (): Promise<void> => {
+    const targets = book.targets(new Set(dirty), new Set(due), everything);
+    dirty.clear();
+    due.clear();
+    everything = false;
+    // a commit that touches no open window sends nothing, so an idle socket is sent nothing
+    if (targets.size === 0) return;
+    const draft = emptyDraft();
+    // two windows asking the same read are read once, and every read is asked at once
+    const distinct = new Map<string, ReadRequest>();
+    for (const request of targets.values()) distinct.set(readKey(request), request);
+    const keys = [...distinct.keys()];
+    const answers = await readAll(source, [...distinct.values()]);
+    const pages = new Map(keys.map((key, n) => [key, answers[n]]));
+    for (const [id, request] of targets) {
+      const page = pages.get(readKey(request)) ?? Result.err(unran(new Error("no answer")));
+      book.settle(draft, id, request, page);
+    }
+    flush(draft);
+  };
+
+  /** One step of whatever is waiting, desires first; `false` when nothing was. */
+  const step = async (): Promise<boolean> => {
+    const [first] = wanted;
+    if (first !== undefined) {
+      const [id, want] = first;
+      wanted.delete(id);
+      if (want.kind === "desire") await desire(id, want);
+      else {
+        const draft = emptyDraft();
+        book.unplace(draft, id);
+        draft.reset = missed(want.since, position);
+        flush(draft);
+      }
+    } else if (lossUntold) {
+      lossUntold = false;
+      // the windows keep their rows, failed, until the feed is back
+      const draft = emptyDraft();
+      if (feedLost !== undefined) book.failAll(draft, feedLost);
+      flush(draft);
+    } else if (dirty.size > 0 || everything || due.size > 0) await reread();
+    else return false;
+    return true;
+  };
+
+  const drain = async (): Promise<void> => {
+    let more = true;
+    while (more && !stopped) more = await step();
+  };
+
+  const waiting = (): boolean =>
+    wanted.size > 0 || lossUntold || dirty.size > 0 || everything || due.size > 0;
+
+  /** Starts working through what is waiting, unless a step already is. */
+  const pump = (): void => {
+    if (working !== undefined || stopped) return;
+    working = Result.tryPromise({
+      try: drain,
+      catch: (cause) => causeMessage(cause, "a step failed"),
+    }).then((done) => {
+      working = undefined;
+      // a step that threw has left the stream in no known state: hang up rather than guess
+      if (done.isErr()) {
+        halt();
+        close?.(done.error);
+      } else if (waiting()) pump();
+    });
   };
 
   const unsubscribe = source.onCommit((tables) => {
-    // queued even with no window open: a desire whose read is in flight may have read before
+    // kept even with no window open: a desire whose read is in flight may have read before
     // this commit, and the re-read behind it is what catches that
     for (const table of tables) dirty.add(table);
-    if (rereading || stopped) return;
-    rereading = true;
-    queue(reread);
+    pump();
   });
 
-  const desire = async (id: string, text: string, since?: StreamPosition): Promise<void> => {
-    if (stopped) return;
-    const draft = emptyDraft();
-    const request = parseRequest(text);
-    if (request.isErr()) {
-      unplace(draft, id);
-      draft.refused.push({ id, reason: request.error.message });
-    } else if (!open.has(id) && open.size >= maxWindows)
-      draft.refused.push({ id, reason: `a socket holds at most ${maxWindows} windows` });
-    else await place(draft, id, request.value);
-    // a client that names a position this stream is not at missed a patch: resnapshot
-    draft.reset =
-      since !== undefined &&
-      (position === undefined ||
-        since.epoch !== position.epoch ||
-        since.version !== position.version);
-    flush(draft);
-  };
-
-  const undesire = async (id: string): Promise<void> => {
-    if (stopped) return;
-    const draft = emptyDraft();
-    unplace(draft, id);
-    flush(draft);
-  };
+  const unfeed = source.onFeed?.((state) => {
+    feedLost = state.kind === "lost" ? state.reason : undefined;
+    lossUntold = state.kind === "lost";
+    everything ||= state.kind === "resumed";
+    pump();
+  });
 
   return {
     receive: (bytes) => {
@@ -286,22 +339,18 @@ export function createServerWindows(options: ServerWindowsOptions): ServerWindow
       // a malformed window frame is consumed and changes nothing: there is no window to name
       if (frame.isErr()) return true;
       const { value } = frame;
-      if (value?.kind === "desire") queue(() => desire(value.id, value.request, value.since));
-      else if (value?.kind === "undesire") queue(() => undesire(value.id));
-      return value !== undefined && value.kind !== "rows";
-    },
-    held: () => held.size,
-    idle: async () => {
-      // a step can queue another (a commit seen mid-read), so wait until the tail stops moving
-      let seen: Promise<void> | undefined;
-      while (seen !== tail) {
-        seen = tail;
-        await seen;
+      if (value === undefined || value.kind === "rows") return false;
+      if (!stopped) {
+        coalesce(wanted, value);
+        pump();
       }
+      return true;
     },
-    stop: () => {
-      stopped = true;
-      unsubscribe();
+    held: book.held,
+    idle: async () => {
+      // a step can start another (a commit seen mid-read), so wait until none is running
+      while (working !== undefined) await working;
     },
+    stop: halt,
   };
 }

@@ -121,7 +121,7 @@ const capture: CaptureSql = {
 };
 
 /** The floor a cursor map sets for this author, from the JSON the caller binds. */
-const PG_FLOOR = `COALESCE((SELECT f.value::bigint FROM jsonb_each_text($3::jsonb) AS f WHERE f.key = e.peer), 0)`;
+const PG_FLOOR = `COALESCE((SELECT f.value::bigint FROM jsonb_each_text($3::text::jsonb) AS f WHERE f.key = e.peer), 0)`;
 const PG_COMPACTABLE = `FROM syncmesh.events e
   WHERE e.local = $1 AND e.hlc_ms < $2 AND e.seq <= ${PG_FLOOR}`;
 
@@ -205,7 +205,7 @@ export const POSTGRES: Dialect = {
       ORDER BY hlc_ms DESC, hlc_logical DESC LIMIT $3`,
     selectSince: `SELECT e.core, e.local, e.sig FROM syncmesh.events e
       WHERE e.local = $1
-        AND e.seq > COALESCE((SELECT f.value::bigint FROM jsonb_each_text($2::jsonb) AS f WHERE f.key = e.peer), 0)
+        AND e.seq > COALESCE((SELECT f.value::bigint FROM jsonb_each_text($2::text::jsonb) AS f WHERE f.key = e.peer), 0)
       ORDER BY e.peer, e.seq`,
     selectStranded: `SELECT core, local, sig FROM syncmesh.events
       WHERE sig IS NULL AND local = 0 AND peer <> $1 ORDER BY peer, seq`,
@@ -251,7 +251,9 @@ export const POSTGRES: Dialect = {
   docs: POSTGRES_DOCS,
   capture,
   operations: POSTGRES_OPERATIONS,
-  placeholder: (position) => `$${position}`,
+  // JSON binds as its text and is cast here: a client whose jsonb serializer is `JSON.stringify`
+  // (postgres.js's own) and one whose is not (one Drizzle wrapped) then send the same bytes
+  placeholder: (position, kind) => (kind === "json" ? `$${position}::text::jsonb` : `$${position}`),
   cell: postgresCell,
   schema: {
     ddl: `CREATE TABLE IF NOT EXISTS syncmesh.meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,

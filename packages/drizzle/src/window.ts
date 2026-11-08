@@ -12,6 +12,8 @@ import {
   inArray,
   is,
 } from "drizzle-orm";
+import { PgColumn } from "drizzle-orm/pg-core";
+import { postgresJsCodecs } from "drizzle-orm/postgres-js/codecs";
 
 import type { Runnable } from "./live.js";
 import type { Cell, Cells } from "./order.js";
@@ -30,7 +32,7 @@ import { walkSql } from "./tree.js";
  * the position the same `ORDER BY` gives them. Nothing else in the list can have moved, because
  * nothing else was written. The cost is the size of the change, not the size of the list.
  *
- * Only some queries admit that, and the checks in {@link windowOf} are what say which. A query
+ * Only some queries admit that, and the checks in {@link windowPlan} are what say which. A query
  * that fails one is not broken and is not slower than it was: it re-runs, exactly as every query
  * did before this existed.
  */
@@ -69,7 +71,7 @@ interface SelectConfig {
   readonly withList?: readonly unknown[] | undefined;
 }
 
-const configOf = (query: SQLWrapper): SelectConfig | undefined => {
+const selectConfig = (query: SQLWrapper): SelectConfig | undefined => {
   // SAFETY: `_` is Drizzle's own bag on every select, read here only to be probed; nothing is
   // assumed about it beyond the three checks below
   const bag: unknown = (query as { readonly _?: unknown })._;
@@ -86,14 +88,19 @@ const configOf = (query: SQLWrapper): SelectConfig | undefined => {
  * what `read(table)` hands back, the table with the caller's read rule compiled in. A source that
  * names two tables is a join, and a join can hand out one table's key twice.
  */
-const singleTableOf = (source: unknown): string | undefined => {
+const soleTable = (source: unknown): string | undefined => {
   if (is(source, Table)) return getTableName(source);
   if (!is(source, Subquery)) return undefined;
   const named = new Set<string>();
-  walkSql(source._.sql, (chunk) => {
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- a chunk, or a field a select named: `is()` is the parse
+  const name = (chunk: unknown) => {
     if (is(chunk, Table)) named.add(getTableName(chunk));
     else if (is(chunk, Column)) named.add(getTableName(getColumnTable(chunk)));
-  });
+  };
+  walkSql(source._.sql, name);
+  // a source read under another name (an alias, a served view) is not in the SQL as a table:
+  // its columns say which table it is
+  for (const field of Object.values(source._.selectedFields)) name(field);
   const [only] = named;
   return named.size === 1 ? only : undefined;
 };
@@ -131,7 +138,7 @@ const fieldsByColumn = (
 };
 
 /** The one field carrying the primary key, which is what a `RowKey` is — or nothing to key by. */
-const keyFieldOf = (fields: Record<string, unknown>): string | undefined => {
+const primaryKeyField = (fields: Record<string, unknown>): string | undefined => {
   const keyed = Object.entries(fields)
     .filter(([, value]) => is(value, Column) && value.primary)
     .map(([field]) => field);
@@ -196,20 +203,20 @@ const sortedBy = (
 
 // SAFETY: a row is whatever the driver returned for this projection — an object of cells under
 // the very field names this plan read off that same projection
-const cellOf = (row: unknown, field: string): Cell => ((row ?? {}) as Cells)[field];
+const rowCell = (row: unknown, field: string): Cell => ((row ?? {}) as Cells)[field];
 
 /** The query's `ORDER BY`, as the comparison that decides where a changed row now belongs. */
 const orderBy =
   <T>(sorted: readonly Sorted[]) =>
   (left: T, right: T): number => {
     for (const { field, descending } of sorted) {
-      const side = compareCells(cellOf(left, field), cellOf(right, field));
+      const side = compareCells(rowCell(left, field), rowCell(right, field));
       if (side !== 0) return descending ? -side : side;
     }
     return 0;
   };
 
-/** What {@link limitOf} says when the window is one this cannot stand behind. */
+/** What {@link windowLimit} says when the window is one this cannot stand behind. */
 const REFUSED = Symbol("refused");
 
 /**
@@ -220,7 +227,7 @@ const REFUSED = Symbol("refused");
  * they sorted after the last row drawn; with a tie at that boundary an unseen row can sort level
  * with it, and nothing in hand says which of the two belongs in the window.
  */
-const limitOf = (
+const windowLimit = (
   config: SelectConfig,
   sorted: readonly Sorted[],
   keyField: string,
@@ -235,16 +242,51 @@ const limitOf = (
  * The primary key a row of this query is keyed by, or `undefined` for a query that hands out none.
  *
  * One plain select over one table, projecting its one primary column: the only shape under which
- * a key is unique per row. Looser than {@link windowOf} on purpose — a computed column, an
+ * a key is unique per row. Looser than {@link windowPlan} on purpose — a computed column, an
  * expression in the `ORDER BY` or an `OFFSET` all stop a query being *maintained* and none of
  * them stops its rows being *keyed*.
  */
 export const keyOfRows = <T>(query: Runnable<T>): ((row: T) => string) | undefined => {
-  const config = configOf(query);
+  const config = selectConfig(query);
   if (config === undefined || !isPlain(config)) return undefined;
-  const keyField = keyFieldOf(config.fields);
-  if (keyField === undefined || singleTableOf(config.table) === undefined) return undefined;
-  return (row) => String(cellOf(row, keyField));
+  const keyField = primaryKeyField(config.fields);
+  if (keyField === undefined || soleTable(config.table) === undefined) return undefined;
+  return (row) => String(rowCell(row, keyField));
+};
+
+/**
+ * The query's `LIMIT` when the build knows it as a number, and `undefined` for a query with none
+ * or one bound at execution: how many rows a run can hand back at most.
+ */
+export const limitOfRows = (query: SQLWrapper): number | undefined => {
+  const limit = selectConfig(query)?.limit;
+  return typeof limit === "number" ? limit : undefined;
+};
+
+/**
+ * The driver's codec for a Postgres column's type (`timestamptz`: text to a `Date`), or
+ * `undefined` for a type that has none. Drizzle decodes a driver value there before
+ * `mapFromDriverValue`, so a row read off the wire has to as well. The served reads' server is
+ * postgres-js, so its table is the one.
+ */
+const columnCodec = (column: Column) => {
+  if (!is(column, PgColumn)) return undefined;
+  // `codec` is Drizzle's own (internal) name for the column's type in the codec tables
+  const type = "codec" in column ? column.codec : undefined;
+  if (typeof type !== "string" || !Object.hasOwn(postgresJsCodecs, type)) return undefined;
+  // SAFETY: `type` is one of the table's own keys, checked just above
+  return postgresJsCodecs[type as keyof typeof postgresJsCodecs];
+};
+
+/** A driver value as the column's own mapping takes it: through its type's codec, if any. */
+const normalized = (column: Column, value: unknown) => {
+  const codec = columnCodec(column);
+  const dimensions = is(column, PgColumn) ? (column.dimensions ?? 0) : 0;
+  const decoded: unknown =
+    dimensions > 0
+      ? (codec?.normalizeArray?.(value, dimensions) ?? value)
+      : (codec?.normalize?.(value) ?? value);
+  return decoded;
 };
 
 /**
@@ -255,7 +297,7 @@ export const keyOfRows = <T>(query: Runnable<T>): ((row: T) => string) | undefin
  * not a plain column (a computed `sql` expression) crosses as the value the query returned.
  */
 export const driverValues = (query: SQLWrapper) => {
-  const fields = configOf(query)?.fields ?? {};
+  const fields = selectConfig(query)?.fields ?? {};
   const column = (field: string) => {
     const found = fields[field];
     return is(found, Column) ? found : undefined;
@@ -274,7 +316,8 @@ export const driverValues = (query: SQLWrapper) => {
       Object.fromEntries(
         Object.entries(row).map(([field, value]) => {
           const at = column(field);
-          return [field, at === undefined || value === null ? value : at.mapFromDriverValue(value)];
+          if (at === undefined || value === null) return [field, value];
+          return [field, at.mapFromDriverValue(normalized(at, value))];
         }),
       ),
   };
@@ -288,29 +331,29 @@ export const driverValues = (query: SQLWrapper) => {
  * mutated by its own chained calls: narrowing the one the caller is holding would narrow the
  * query it is about to await.
  */
-export const windowOf = <T>(
+export const windowPlan = <T>(
   query: Runnable<T>,
   again: () => Runnable<T>,
 ): LiveWindow<T> | undefined => {
-  const config = configOf(query);
+  const config = selectConfig(query);
   // an offset addresses a position, and every position below it moves when a row above changes
   if (config === undefined || !isPlain(config) || config.offset !== undefined) return undefined;
 
-  const table = plainFields(config.table) ? singleTableOf(config.table) : undefined;
+  const table = plainFields(config.table) ? soleTable(config.table) : undefined;
   const byColumn = fieldsByColumn(config.fields);
-  const keyField = keyFieldOf(config.fields);
+  const keyField = primaryKeyField(config.fields);
   if (table === undefined || byColumn === undefined || keyField === undefined) return undefined;
 
   const terms = config.orderBy ?? [];
   const sorted = terms.length === 0 ? undefined : sortedBy(terms, byColumn);
   if (sorted === undefined) return undefined;
 
-  const limit = limitOf(config, sorted, keyField);
+  const limit = windowLimit(config, sorted, keyField);
   if (limit === REFUSED) return undefined;
 
   const probe = (keys: readonly string[]): Runnable<T> | undefined => {
     const fresh = again();
-    const narrowed = configOf(fresh);
+    const narrowed = selectConfig(fresh);
     if (narrowed === undefined) return undefined;
     // taken off the rebuilt query rather than the sample: a subquery mints a fresh column proxy
     // per access, and the filter belongs to the statement that will carry it
@@ -326,7 +369,7 @@ export const windowOf = <T>(
 
   return {
     table,
-    keyOf: (row) => String(cellOf(row, keyField)),
+    keyOf: (row) => String(rowCell(row, keyField)),
     order: orderBy<T>(sorted),
     limit,
     probe,

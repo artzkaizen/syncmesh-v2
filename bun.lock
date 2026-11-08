@@ -573,10 +573,10 @@
         "@syncmesh/policy": "workspace:*",
         "@syncmesh/result": "workspace:*",
         "@syncmesh/schema": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
       },
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
-        "@syncmesh/temporal": "workspace:*",
         "@syncmesh/wire": "workspace:*",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
@@ -734,6 +734,7 @@
         "@syncmesh/result": "workspace:*",
         "@syncmesh/schema": "workspace:*",
         "@syncmesh/storage": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
         "@syncmesh/window": "workspace:*",
       },
       "devDependencies": {
@@ -744,7 +745,6 @@
         "@syncmesh/postgres": "workspace:*",
         "@syncmesh/relay": "workspace:*",
         "@syncmesh/sqlite-bun": "workspace:*",
-        "@syncmesh/temporal": "workspace:*",
         "@syncmesh/wire": "workspace:*",
         "@types/bun": "catalog:",
         "drizzle-orm": "catalog:",
@@ -973,11 +973,11 @@
       "dependencies": {
         "@syncmesh/kernel": "workspace:*",
         "@syncmesh/result": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
         "@syncmesh/wire": "workspace:*",
       },
       "devDependencies": {
         "@syncmesh/config": "workspace:*",
-        "@syncmesh/temporal": "workspace:*",
         "@types/bun": "catalog:",
         "typescript": "catalog:",
         "vite-plus": "catalog:",

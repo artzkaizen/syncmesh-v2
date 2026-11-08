@@ -8,7 +8,7 @@ import { decodeEventCore, encodeEventCore } from "@syncmesh/wire";
 
 import type { SqlDriver, SqlRow, SqlValue } from "./driver.js";
 
-import { dialectOf } from "./dialect.js";
+import { driverDialect } from "./dialect.js";
 import { attempt, coverageOf, failure, headerRow, hlcRow, inTransaction, seqOf } from "./sql.js";
 
 /**
@@ -94,7 +94,7 @@ export function sqlEventStore(
   driver: SqlDriver,
   options: SqlEventStoreOptions = {},
 ): Promise<Result<EventStore, StoreFailure>> {
-  const { events: SQL, migrate } = dialectOf(driver);
+  const { events: SQL, migrate } = driverDialect(driver);
   const transaction = <T>(fn: () => Promise<T>): Promise<T> =>
     options.nested === true ? fn() : inTransaction(driver, fn);
   const query = (message: string, sql: string, values: readonly SqlValue[] = []) =>

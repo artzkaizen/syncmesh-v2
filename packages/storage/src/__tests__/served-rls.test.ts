@@ -1,0 +1,115 @@
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
+import { describe, expect, test } from "bun:test";
+
+import { servedReadDdl, servedReadSettings, servedView } from "../served-rls.js";
+
+const mailbox = partition("mailbox", { roles: ladder("owner") });
+const columns = { id: t.text().primaryKey(), owner: t.text() };
+const schema = syncSchema({
+  tables: {
+    mail: {
+      columns,
+      partition: mailbox,
+      allow: ({ owner, deny }) => ({ $default: deny, read: owner("owner") }),
+      sync: "window",
+    },
+    notes: {
+      columns,
+      partition: mailbox,
+      allow: ({ owner, deny }) => ({ $default: deny, read: owner("owner") }),
+      sync: "window",
+    },
+    open: { columns, sync: "window" },
+  },
+});
+
+const ddl = servedReadDdl(schema, { role: "reader", grantTo: ["reads", "reads_b"] });
+
+describe("servedReadDdl — what the read role is given (D43)", () => {
+  test("a rule is a restrictive policy reading the principal row, never a setting", () => {
+    const rules = ddl.filter((s) => s.startsWith('CREATE POLICY "syncmesh_served_rule"'));
+    expect(rules).toHaveLength(2);
+    for (const rule of rules) {
+      expect(rule).toContain('AS RESTRICTIVE FOR SELECT TO "reader"');
+      expect(rule).toContain(`(SELECT "syncmesh_served"."principal"()) ->> 'account'`);
+      expect(rule).not.toContain("current_setting");
+    }
+  });
+
+  test("the role is granted to each login named, never to whoever runs the DDL", () => {
+    const text = ddl.join("\n");
+    expect(text).not.toContain("CURRENT_USER");
+    expect(text).toContain('GRANT "reader" TO "reads"');
+    expect(text).toContain('GRANT "reader" TO "reads_b"');
+  });
+
+  test("a table with no rule is granted nothing, and kept out of the sweep's list", () => {
+    const grants = ddl.filter((s) => s.startsWith("GRANT SELECT"));
+    expect(grants).toEqual([
+      'GRANT SELECT ON "public"."mail" TO "reader"',
+      'GRANT SELECT ON "public"."notes" TO "reader"',
+    ]);
+    const sweep =
+      ddl.find((s) => s.includes("DROP POLICY IF EXISTS syncmesh_served_rule ON %s")) ?? "";
+    expect(sweep).toContain(`to_regclass('"public"."notes"')`);
+    expect(sweep).not.toContain('"open"');
+  });
+
+  test("a migrator that may not create roles says the role exists, and the DDL creates none", () => {
+    const made = servedReadDdl(schema, { role: "reader", grantTo: "reads", createRole: false });
+    expect(made.join("\n")).not.toContain('CREATE ROLE "reader"');
+    expect(made[0]).toContain("createRole: false says it was made already");
+  });
+});
+
+describe("servedReadDdl — a table with a ruled column (D43, E06)", () => {
+  const ruled = syncSchema({
+    tables: {
+      mail: {
+        columns: { ...columns, subject: t.text() },
+        partition: mailbox,
+        allow: ({ owner, deny }) => ({ $default: deny, read: owner("owner") }),
+        fields: ({ role }) => ({ subject: role("owner") }),
+        sync: "window",
+      },
+    },
+  });
+  const made = servedReadDdl(ruled, { role: "reader", grantTo: "reads" });
+
+  test("is read through a security-barrier view, and the role is granted no whole table", () => {
+    expect(servedView(ruled.entries[0] ?? { table: { name: "" } })).toEqual({
+      schema: "syncmesh_served",
+      name: "read:mail",
+    });
+    expect(made.filter((s) => s.startsWith("GRANT SELECT"))).toEqual([]);
+    const view = made.find((s) => s.includes("WITH (security_barrier)")) ?? "";
+    expect(view).toContain(`'"syncmesh_served"."read:mail"'`);
+    // the rule is the column's own, read off the principal row; the table keeps its other columns
+    expect(view).toContain(`"subject":"COALESCE(array_position(`);
+    expect(view).toContain("GRANT SELECT (%s) ON %s TO %I");
+  });
+
+  test("a table with no ruled column drops a view it once had", () => {
+    expect(ddl).toContain('DROP VIEW IF EXISTS "syncmesh_served"."read:mail"');
+    expect(servedView({ table: { name: "mail" } })).toBeUndefined();
+  });
+});
+
+describe("servedReadSettings — the statement a served read starts with", () => {
+  test("the principal is written before the transaction turns read-only, and nothing after", () => {
+    const { sql, params } = servedReadSettings("reader", {
+      account: "alice",
+      role: "owner",
+      claims: { team: "a" },
+    });
+    const at = (part: string) => sql.indexOf(part);
+    expect(at('"syncmesh_served"."enter"')).toBeGreaterThan(-1);
+    expect(at('"syncmesh_served"."enter"')).toBeLessThan(at("'transaction_read_only'"));
+    expect(params).toEqual([
+      "reader",
+      '{"account":"alice","role":"owner","claims":{"team":"a"}}',
+      "reader",
+      "5000",
+    ]);
+  });
+});

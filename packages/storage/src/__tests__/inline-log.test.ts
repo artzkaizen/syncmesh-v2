@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { SqlRow, SqliteDriver } from "../driver.js";
 
-import { SQLITE, SQLITE_INLINE, dialectOf, logTable, placementOf } from "../dialect.js";
+import { SQLITE, SQLITE_INLINE, driverDialect, logTable, placementOf } from "../dialect.js";
 import { A, entry } from "../driver-tests/fixtures.js";
 import { sqlEventStore } from "../event-store.js";
 import { sqliteDriver } from "../sqlite-driver.js";
@@ -62,7 +62,7 @@ describe("a runtime with no ATTACH still gets the namespace", () => {
   test("the driver picks the spelling, and one database is enough to open a store", async () => {
     const driver = oneDatabase();
     expect(placementOf(driver)).toBe("inline");
-    expect(dialectOf(driver)).toBe(SQLITE_INLINE);
+    expect(driverDialect(driver)).toBe(SQLITE_INLINE);
     expect(logTable("events", placementOf(driver))).toBe("syncmesh_events");
 
     const store = (await sqlEventStore(driver)).unwrap();
