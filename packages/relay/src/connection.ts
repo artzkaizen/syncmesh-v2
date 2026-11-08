@@ -252,9 +252,10 @@ export function createConnection(
      * its holdback until that overflowed into a re-join, which re-requests the same missing run
      * from the same room, forever.
      *
-     * Not permanent the way a version refusal is: the socket closes, the client reconnects on its
-     * backoff, and the join after it succeeds the moment the gap has been filled from a peer that
-     * still holds it. This room simply is not where that history lives any more.
+     * Not permanent the way a version refusal is: the socket closes and the refusal names the
+     * floor, so the client raises `BelowRelayFloor` and holds off its redial until its next join
+     * would be at or above that floor, or it is woken (gaps U30). The join after that succeeds.
+     * This room simply is not where that history lives any more.
      *
      * This is the cheap half — before hello, before registration, before any page — and it reads
      * the floor as it stands right now. A sweep already on the room's queue has not moved it yet,

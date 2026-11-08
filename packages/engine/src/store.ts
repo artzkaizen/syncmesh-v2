@@ -203,10 +203,22 @@ const raisedFloor = (known: Floor | undefined, event: SyncEvent): Floor => {
 const seeded = (cursors: Cursors | undefined) =>
   new Map<PeerId, Floor>([...(cursors ?? [])].map(([peer, seq]) => [peer, { seq }]));
 
+/**
+ * The part of each run at or below its author's floor. A persisted log can save its runs before its
+ * floors and die between the two; a run above the floor that did land is no hole, and kept, it
+ * would never be filled by the event that later arrives inside it (gaps U1).
+ */
+const underFloors = (runs: readonly SeqRun[], floors: Record<SeqScope, Map<PeerId, Floor>>) =>
+  runs.flatMap((run) => {
+    const floor = floors[run.local ? "local" : "synced"].get(run.peer)?.seq;
+    if (floor === undefined || run.from > floor) return [];
+    return [run.to > floor ? { ...run, to: floor } : run];
+  });
+
 export function createMemoryEventStore(seed: MemorySeed = {}): MemoryEventStore {
   const events = new Map<EventId, StoredEvent>();
   const floors = { synced: seeded(seed.floors?.synced), local: seeded(seed.floors?.local) };
-  const holes = createFloorHoles(seed.holes);
+  const holes = createFloorHoles(underFloors(seed.holes ?? [], floors));
   let installed: Cursors = new Map(seed.installed);
   const below = (event: SyncEvent): boolean =>
     event.seqNum <= (floors[event.local === true ? "local" : "synced"].get(event.peerId)?.seq ?? 0);

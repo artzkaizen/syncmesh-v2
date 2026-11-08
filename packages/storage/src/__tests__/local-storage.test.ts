@@ -177,4 +177,34 @@ describe("the localStorage event store", () => {
     expect((await again.compacted(event(A, 2, 101))).unwrap()).toBe(false);
     expect((await again.all()).unwrap()).toHaveLength(1);
   });
+
+  test("a hole saved above a head that never landed is dropped at open (gaps U1)", async () => {
+    const storage = fakeStorage();
+    {
+      const { store } = (await open(storage)).unwrap();
+      (await store.appendBatch([entry(A, 1, 100), entry(A, 3, 102)])).unwrap();
+      (await store.compactBelow(new Map([[A, seq(3)]]), "synced", FOREVER)).unwrap();
+      (await store.appendBatch([entry(A, 4, 103), entry(A, 6, 105)])).unwrap();
+    }
+    {
+      // the process dies between writing the holes and the head: A:5's hole is saved, the floor of 6 is not
+      const crashing = {
+        getItem: storage.getItem,
+        setItem: (key: string, value: string) => {
+          if (key === "notes.head") throw new Error("the process died");
+          storage.setItem(key, value);
+        },
+      };
+      const { store } = (await open(crashing)).unwrap();
+      expect((await store.compactBelow(new Map([[A, seq(6)]]), "synced", FOREVER)).isErr()).toBe(
+        true,
+      );
+    }
+    const { store } = (await open(storage)).unwrap();
+    // A:5 arrives above the floor that did land, and a later compaction removes it
+    (await store.append(entry(A, 5, 104))).unwrap();
+    (await store.compactBelow(new Map([[A, seq(6)]]), "synced", FOREVER)).unwrap();
+    expect((await store.compacted(event(A, 5, 104))).unwrap()).toBe(true);
+    expect((await store.compacted(event(A, 2, 101))).unwrap()).toBe(false);
+  });
 });
