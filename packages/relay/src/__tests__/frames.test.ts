@@ -96,6 +96,13 @@ const VECTORS = [
       "860901193a986765706f63682d3181825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0781825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f04",
   },
   {
+    description: "hello from a room whose log outlives it: one more element, `1` (D42)",
+    tag: 9,
+    wire: () => helloFrame(1, 15_000, "epoch-1", CURSORS, FLOOR, true),
+    wireHex:
+      "870901193a986765706f63682d3181825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0781825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0401",
+  },
+  {
     description: "error, the typed version refusal",
     tag: 10,
     wire: () => errorFrame("version", "this relay speaks 1"),
@@ -211,6 +218,17 @@ describe("the vector is additive", () => {
     expect(decoded.kind).toBe("hello");
     expect(decoded.kind === "hello" && [...decoded.floor]).toEqual([]);
     expect(decoded.kind === "hello" && Number(decoded.cursors.get(PEER))).toBe(7);
+  });
+
+  test("only a hello that says so is durable: one without the element is not (D42)", () => {
+    const without = decodeRelayFrame(helloFrame(1, 15_000, "epoch-1", CURSORS, FLOOR)).unwrap();
+    expect(without.kind === "hello" && without.durable).toBe(false);
+    const said = decodeRelayFrame(helloFrame(1, 15_000, "epoch-1", CURSORS, FLOOR, true)).unwrap();
+    expect(said.kind === "hello" && said.durable).toBe(true);
+    // a value other than `1` is not a claim this build reads as one
+    const odd = encodeCbor([9, 1, 15_000, "epoch-1", [], [], "yes"]);
+    const decodedOdd = decodeRelayFrame(odd).unwrap();
+    expect(decodedOdd.kind === "hello" && decodedOdd.durable).toBe(false);
   });
 
   test("a tag this build does not know decodes as `unknown`, never as an error", () => {

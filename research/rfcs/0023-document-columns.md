@@ -710,7 +710,7 @@ Rebuilding from the log keeps only what the log holds. Rows this device took fro
 snapshot install came with coverage and no events, so a rebuild that refuses a persisted cell loses
 them without a word unless the log is compacted (then it is `StateCorrupt`); the device gets them
 back by joining again. That was already true of any unreadable state; the lineage check is one more
-way to reach it (gaps U21).
+way to reach it (gaps U22).
 
 The boot check reads only tables that declare a doc column. The state cache decodes a row when it is
 first read, so the other tables stay undecoded until a fold writes them; a doc table is decoded in
@@ -933,7 +933,7 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    any replacer can already win by naming the current winner as its parent. The lineage cell
    grows by about 110 bytes per replace and has no cap: no bound is trivial, because dropping a
    genesis every peer has not dropped alike changes the walk, and a compaction of the tree needs
-   a floor all peers agree on (gap U20).
+   a floor all peers agree on (gap U21).
 2. **`replace()` permission — decided 2026-11-08 by Jace: an optional `replace` rule, defaulting
    to `update`.** `AllowBlock.replace` beside the other operations; absent, a genesis is judged by
    the row's `update` rule exactly as before (§11). Enforced by the shared validator (device and
