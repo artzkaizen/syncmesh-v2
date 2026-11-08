@@ -1,7 +1,7 @@
 import type { DocAddress, DocAppend, FoldBatch, StoreFailure } from "@syncmesh/engine";
 import type { AdapterId, DocColumns, Procedure, SyncEvent } from "@syncmesh/kernel";
 
-import { docKey } from "@syncmesh/engine";
+import { docEntryId, docKey } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 
@@ -13,7 +13,7 @@ import type { Derive, DocsEngine } from "./materialise.js";
 import { columnAdapter } from "./adapter.js";
 import { clearTimers, deliver, flush } from "./entry.js";
 import { FlushRefused } from "./errors.js";
-import { load } from "./materialise.js";
+import { entryRef, load } from "./materialise.js";
 import { replicaId } from "./replica.js";
 
 export type OpenError = AdapterMissing | NotADocColumn | UpdateRejected | StoreFailure;
@@ -170,6 +170,7 @@ export function createHandles(deps: OpenDeps) {
         status: loaded.missing.length > 0 || loaded.pending ? "behind" : "current",
         flushed: adapter.version(loaded.doc),
         stash: [],
+        seen: new Map(tail.updates.map((u) => [docEntryId(u.entry), entryRef(u)])),
         listeners: new Set(),
         stop: () => {},
         timers: {},
@@ -183,6 +184,11 @@ export function createHandles(deps: OpenDeps) {
   const unfold = engine.onFoldBatch(applyFolded);
   return {
     open: openDoc,
+    /** The replica open at `address`, unless none is or it was invalidated. */
+    held: (address: DocAddress): Entry | undefined => {
+      const entry = open.get(docKey(address));
+      return entry?.status === "invalidated" ? undefined : entry;
+    },
     stop: () => {
       unfold();
       for (const entry of open.values()) {

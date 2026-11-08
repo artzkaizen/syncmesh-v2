@@ -113,6 +113,8 @@ export interface ValidatorOptions {
 export interface Validator {
   /** Ladder: clock → grant → device → revocation → grace → partition → schema → policy. The first failure is the verdict. */
   readonly validate: (event: ProbeEvent, before: StateLookup) => Result<void, ValidationError>;
+  /** The peer whose events may write `global` tables, as {@link ValidatorOptions.authority} named it. */
+  readonly authority?: PeerId;
 }
 
 const RESERVED = new Set(["global", "user", "local"]);
@@ -156,7 +158,7 @@ export function createValidator(options: ValidatorOptions): Validator {
     return Result.ok(undefined);
   };
 
-  return { validate };
+  return authority === undefined ? { validate } : { validate, authority };
 }
 
 /**

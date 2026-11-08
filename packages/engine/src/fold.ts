@@ -1,14 +1,14 @@
 import type { AdapterId, MergeSpec, RowKey, State, TableName } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
 
-import { applyChange, getRecord, docLineage, stampOf } from "@syncmesh/kernel";
+import { applyChange, getRecord, docLineage, isVisible, stampOf } from "@syncmesh/kernel";
 
 import type { CoverageTracker } from "./coverage.js";
 import type { DocAddress, DocAppend, DocStore, LineageMove } from "./doc-log.js";
 import type { EngineError } from "./errors.js";
 import type { FeedTracker } from "./feed.js";
 import type { Hub } from "./listeners.js";
-import type { DerivedRow, StateStore } from "./state-store.js";
+import type { DerivedRow, StateStore, WriteKeys } from "./state-store.js";
 import type { StoreFailure, StoredEvent } from "./store.js";
 import type { TelemetryEvent } from "./telemetry.js";
 
@@ -43,6 +43,13 @@ export interface FoldBatch {
    * in the batch's persist step (RFC-0023 §5.3).
    */
   readonly lineageMoves?: readonly LineageMove[];
+  /**
+   * The rows the batch made visible: absent or tombstoned before it, visible after — inserted, or
+   * deleted and inserted again. The projection writes each afresh, so its derived columns start
+   * over until a replica computes them (RFC-0023 §16.4); absent when there were none. A snapshot
+   * or repair batch does not name them: every row it writes is rewritten.
+   */
+  readonly appeared?: WriteKeys;
 }
 
 export interface FoldDeps {
@@ -118,6 +125,18 @@ export function withDerivedKeys(batch: FoldBatch, rows: readonly DerivedRow[]): 
   return { ...batch, writeTables: new Set(keys.keys()), writeKeys: keys };
 }
 
+/** The keys whose rows `state` does not show — or, with `shown`, the ones it does. */
+function hiddenKeys(state: State, keys: WriteKeys, shown = false): WriteKeys {
+  const out = new Map<TableName, Set<RowKey>>();
+  for (const [table, set] of keys)
+    for (const key of set) {
+      const record = getRecord(state, table, key);
+      if ((record !== undefined && isVisible(record)) !== shown) continue;
+      out.set(table, (out.get(table) ?? new Set()).add(key));
+    }
+  return out;
+}
+
 const NO_KEYS: FoldBatch = {
   source: "derive",
   eventCount: 0,
@@ -137,6 +156,7 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
   const fold = (entries: readonly StoredEvent[], source: FoldSource): FoldBatch => {
     const [batch, duration] = timed((): FoldBatch => {
       const writeKeys = eventWriteKeys(entries.map((entry) => entry.event));
+      const hidden = hiddenKeys(state, writeKeys);
       for (const entry of entries) {
         const { event } = entry;
         coverage.note(event);
@@ -151,12 +171,14 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
         entries.map((entry) => entry.event),
         hasAdapter,
       );
+      const appeared = hiddenKeys(state, hidden, true);
       return {
         source,
         eventCount: entries.length,
         writeTables: new Set(writeKeys.keys()),
         writeKeys,
         ...(docs.length > 0 && { docs }),
+        ...(appeared.size > 0 && { appeared }),
       };
     });
     if (entries.length === 0) return batch;

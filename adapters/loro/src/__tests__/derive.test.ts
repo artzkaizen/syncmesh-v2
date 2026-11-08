@@ -1,5 +1,6 @@
 import type { BackgroundError } from "@syncmesh/docs";
 import type { Runnable } from "@syncmesh/drizzle";
+import type { Validator } from "@syncmesh/engine";
 import type { CellValue, ColumnName, Row, RowKey } from "@syncmesh/kernel";
 import type { DocumentAdapter } from "@syncmesh/schema";
 import type { SqlDriver } from "@syncmesh/storage";
@@ -7,9 +8,16 @@ import type { LoroDoc } from "loro-crdt";
 
 import { createDocuments } from "@syncmesh/docs";
 import { createLive } from "@syncmesh/drizzle";
-import { createEngine, createLink, createValidator } from "@syncmesh/engine";
+import {
+  PolicyDenied,
+  createEngine,
+  createLink,
+  createValidator,
+  openEngine,
+} from "@syncmesh/engine";
 import { createHlcClock, hlcOf, parseSeqNum } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
+import { Result } from "@syncmesh/result";
 import {
   createDerivers,
   drizzleTable,
@@ -75,6 +83,7 @@ interface NodeOptions {
   readonly adapter?: boolean;
   readonly schema?: typeof schema;
   readonly driver?: SqlDriver;
+  readonly validate?: Validator;
 }
 
 /** An engine over SQLite stores holding the app's `notes` table, with the document runtime over it. */
@@ -93,7 +102,7 @@ async function storedNode(n: number, options: NodeOptions = {}) {
     stateStore: stores.state,
     docStore: stores.docs,
     atomic: stores.atomic,
-    validate: createValidator({ schema: using, grantFor: null, docs: DOCS }),
+    validate: options.validate ?? createValidator({ schema: using, grantFor: null, docs: DOCS }),
     docs: DOCS,
     ...(withAdapter && { docAdapters: new Set([LORO_ID]) }),
   });
@@ -166,7 +175,7 @@ describe("derived columns: every replica computes them (RFC-0023 §16.4)", () =>
     live.release();
   });
 
-  test("a peer computes its own title — none arrives with the edit — and digests agree without it", async () => {
+  test("a peer computes its own title from the edit it receives — none arrives with it — and digests agree without it", async () => {
     const a = await storedNode(2);
     const b = await storedNode(3);
     await insertNote(a);
@@ -177,15 +186,19 @@ describe("derived columns: every replica computes them (RFC-0023 §16.4)", () =>
     (await doc.flush()).unwrap();
     await link.flush();
     expect(await until(async () => (await b.engine.docLog()).unwrap().length === 1)).toBe(true);
-    expect(await b.row()).toEqual({ title: null, words: null });
+    // b holds no handle: it reads the document from its own log and derives the title (U25)
+    expect(await until(async () => (await b.row())?.title === "Minutes")).toBe(true);
+    expect(await b.row()).toEqual({ title: "Minutes", words: 3 });
     // nothing derived is a cell, so the row's digest is the same with and without the title
     expect(b.engine.rowDigests(NOTES)).toEqual(a.engine.rowDigests(NOTES));
     expect(a.engine.state().get(NOTES)?.get(N1)?.cells.has(TITLE)).toBe(false);
+    expect(b.engine.state().get(NOTES)?.get(N1)?.cells.has(TITLE)).toBe(false);
 
     // b materialises: the snapshot and the title it computed commit together
     (await b.documents.materialise(DOC)).unwrap();
     expect(await b.row()).toEqual({ title: "Minutes", words: 3 });
     expect(b.engine.rowDigests(NOTES)).toEqual(a.engine.rowDigests(NOTES));
+    expect(b.errors).toEqual([]);
     link.close();
   });
 
@@ -251,7 +264,7 @@ describe("derived columns: every replica computes them (RFC-0023 §16.4)", () =>
     expect((await a.engine.docLog()).unwrap().map((e) => e.state)).toEqual(["tail"]);
   });
 
-  test("changing a derive function needs no migration: the next materialisation recomputes", async () => {
+  test("changing a derive function needs no migration: the runtime recomputes as it starts", async () => {
     const driver = bunSqliteDriver(":memory:");
     const a = await storedNode(5, { driver });
     await insertNote(a);
@@ -263,6 +276,7 @@ describe("derived columns: every replica computes them (RFC-0023 §16.4)", () =>
     const shouted = schemaWith((d) => plainTitle(d).toUpperCase());
     // the derive is not in the table's shape: the state file's name, and its rows, stay put
     expect(schemaName(syncedTables(shouted))).toBe(schemaName(syncedTables(schema)));
+    a.documents.stop();
     const later = createDocuments({
       engine: a.engine,
       adapters: [loro()],
@@ -271,6 +285,8 @@ describe("derived columns: every replica computes them (RFC-0023 §16.4)", () =>
       autoMaterialise: false,
       derive: createDerivers(shouted),
     });
+    // the runtime recomputes every row once as it starts: nobody has to edit the note (U25)
+    expect(await until(async () => (await a.row())?.title === "BUDGET")).toBe(true);
     (await later.materialise(DOC)).unwrap();
     expect((await a.row())?.title).toBe("BUDGET");
     later.stop();
@@ -282,6 +298,8 @@ describe("derived columns: every replica computes them (RFC-0023 §16.4)", () =>
     });
     const a = await storedNode(6, { schema: broken });
     await insertNote(a);
+    // the insert's own recomputation finds an empty document: nothing to run the function on
+    await a.documents.rederive(DOC);
     const doc = (await a.documents.open<LoroDoc>(DOC)).unwrap();
     type(doc.value, "t", "still saved");
     expect((await doc.flush()).isOk()).toBe(true);
@@ -297,12 +315,154 @@ describe("derived columns: every replica computes them (RFC-0023 §16.4)", () =>
   });
 });
 
+describe("derived columns catch up with the document between flushes (gaps U25)", () => {
+  /** A device that edits the note and a peer it is linked to, both holding the note. */
+  const linked = async (n: number) => {
+    const a = await storedNode(n);
+    const b = await storedNode(n + 1);
+    await insertNote(a);
+    const link = createLink(a.engine, b.engine);
+    (await link.catchUp()).unwrap();
+    return { a, b, link };
+  };
+  const retitle = (doc: LoroDoc, next: string) => {
+    const title = doc.getText("title");
+    title.delete(0, title.length);
+    title.insert(0, next);
+    doc.commit();
+  };
+
+  test("a remote edit to a document open here recomputes the row from the open replica", async () => {
+    const { a, b, link } = await linked(20);
+    const mine = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(mine.value, "Agenda", "one");
+    (await mine.flush()).unwrap();
+    await link.flush();
+    const theirs = (await b.documents.open<LoroDoc>(DOC)).unwrap();
+    expect(await until(async () => (await b.row())?.title === "Agenda")).toBe(true);
+    // b only reads: nothing of its own is flushed, and its row still follows a's edits
+    retitle(mine.value, "Agenda, revised");
+    (await mine.flush()).unwrap();
+    await link.flush();
+    expect(await until(() => theirs.value.getText("title").toString() === "Agenda, revised")).toBe(
+      true,
+    );
+    expect(await until(async () => (await b.row())?.title === "Agenda, revised")).toBe(true);
+    expect((await b.engine.docLog()).unwrap()).toHaveLength(2);
+    expect(b.errors).toEqual([]);
+    (await theirs.close()).unwrap();
+    (await mine.close()).unwrap();
+    link.close();
+  });
+
+  /** A device that wrote the note and edited it, in two events, and its entries in log order. */
+  const written = async (n: number, title: string, body: string) => {
+    const a = await storedNode(n);
+    await insertNote(a);
+    const doc = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(doc.value, title, body);
+    (await doc.close()).unwrap();
+    const [insert, edit] = (await a.engine.eventsSince(new Map())).unwrap();
+    if (insert === undefined || edit === undefined) throw new Error("two events were written");
+    return { a, insert, edit };
+  };
+
+  test("a row whose insert lands after its document is derived when the insert arrives", async () => {
+    const { insert, edit } = await written(22, "Early", "words before the row");
+    const b = await storedNode(23);
+    // delivered out of order: b folds the edit with no row to show it on
+    (await b.engine.receive(edit)).unwrap();
+    expect((await b.engine.docLog()).unwrap()).toHaveLength(1);
+    await b.documents.rederive(DOC);
+    expect(await b.row()).toBeUndefined();
+    (await b.engine.receive(insert)).unwrap();
+    expect(await until(async () => (await b.row())?.title === "Early")).toBe(true);
+    expect(await b.row()).toEqual({ title: "Early", words: 4 });
+    expect(b.errors).toEqual([]);
+  });
+
+  test("a row deleted and inserted again gets its derived values back", async () => {
+    const { a, b, link } = await linked(24);
+    const doc = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(doc.value, "Kept", "x");
+    (await doc.close()).unwrap();
+    await link.flush();
+    expect(await until(async () => (await b.row())?.title === "Kept")).toBe(true);
+    (await a.engine.mutate(EDIT, (tx) => tx.delete(NOTES, N1), { partition: W1 })).unwrap();
+    await link.flush();
+    expect(await until(async () => (await b.row()) === undefined)).toBe(true);
+    await insertNote(a);
+    await link.flush();
+    // the projection inserted the row afresh, without the title it never writes
+    expect(await until(async () => (await b.row())?.title === "Kept")).toBe(true);
+    expect(await until(async () => (await a.row())?.title === "Kept")).toBe(true);
+    link.close();
+  });
+
+  test("a snapshot that brings a row whose document is already here derives it", async () => {
+    const { a, edit } = await written(26, "From state", "a b");
+    const b = await storedNode(27);
+    (await b.engine.receive(edit)).unwrap();
+    // the row comes as state rather than as the insert event (RFC-0019)
+    (await b.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    expect(await until(async () => (await b.row())?.title === "From state")).toBe(true);
+    expect(await b.row()).toEqual({ title: "From state", words: 2 });
+    expect(b.errors).toEqual([]);
+  });
+
+  test("a state rebuilt from the log gets its derived values back when the runtime starts", async () => {
+    const driver = bunSqliteDriver(":memory:");
+    const a = await storedNode(28, { driver });
+    await insertNote(a);
+    const doc = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(doc.value, "Rebuilt", "one two");
+    (await doc.close()).unwrap();
+    expect(await a.row()).toEqual({ title: "Rebuilt", words: 2 });
+    a.documents.stop();
+    // a state file thrown away: the next open refolds the rows from the log, without their titles
+    (await a.stores.state.clear()).unwrap();
+    const reopened = (
+      await openEngine({
+        peerId: a.identity.peerId,
+        clock: createHlcClock({ now: a.now }),
+        store: a.stores.events,
+        stateStore: a.stores.state,
+        docStore: a.stores.docs,
+        atomic: a.stores.atomic,
+        validate: createValidator({ schema, grantFor: null, docs: DOCS }),
+        docs: DOCS,
+        docAdapters: new Set([LORO_ID]),
+      })
+    ).unwrap();
+    expect(await a.row()).toEqual({ title: null, words: null });
+    const documents = createDocuments({
+      engine: reopened,
+      adapters: [loro()],
+      docs: DOCS,
+      procedure: EDIT,
+      autoMaterialise: false,
+      derive: createDerivers(schema),
+    });
+    expect(await until(async () => (await a.row())?.title === "Rebuilt")).toBe(true);
+    expect(await a.row()).toEqual({ title: "Rebuilt", words: 2 });
+    // and an app that rewrote rows outside syncmesh asks for the same itself
+    await driver.run(`UPDATE notes SET title = 'clobbered'`);
+    await documents.rederive(DOC);
+    expect((await a.row())?.title).toBe("Rebuilt");
+    documents.stop();
+  });
+});
+
 describe("an opaque host takes derived values from a device checkpoint (RFC-0023 §7.2)", () => {
   /** A device that edited the note, and a host without the adapter that folded the same events. */
-  const pair = async (n: number, sealed = false) => {
+  const pair = async (n: number, sealed = false, validate?: Validator) => {
     const using = sealed ? schemaWith(plainTitle, true) : schema;
     const device = await storedNode(n, { schema: using });
-    const host = await storedNode(n + 50, { adapter: false, schema: using });
+    const host = await storedNode(n + 50, {
+      adapter: false,
+      schema: using,
+      ...(validate !== undefined && { validate }),
+    });
     await insertNote(device);
     const link = createLink(device.engine, host.engine);
     (await link.catchUp()).unwrap();
@@ -364,6 +524,36 @@ describe("an opaque host takes derived values from a device checkpoint (RFC-0023
     );
     expect(ahead.isErr() && ahead.error.message).toContain("has not folded");
     expect(await host.row()).toEqual({ title: null, words: null });
+    link.close();
+  });
+
+  test("the host takes key 8 only from a producer that may update the row (U26)", async () => {
+    const reader = createIdentity(seed(99)).unwrap();
+    const open = createValidator({ schema, grantFor: null, docs: DOCS });
+    // the reader holds the partition and can sign a checkpoint of it; its grant edits nothing
+    const readOnly: Validator = {
+      validate: (event, before) =>
+        event.peerId === reader.peerId
+          ? Result.err(
+              new PolicyDenied({ table: "notes", key: "n1", op: "update", message: "a reader" }),
+            )
+          : open.validate(event, before),
+    };
+    const { host, link, made } = await pair(13, false, readOnly);
+    const forged = signCheckpoint(
+      { ...made.signed.checkpoint, derived: new Map([[TITLE, "Pwned"]]) },
+      reader,
+    );
+    const refused = await host.documents.installProvisional(
+      forged.wire,
+      reader.peerId,
+      made.snapshot,
+      DOC,
+    );
+    expect(refused.isErr() && refused.error.message).toBe("its producer may not update this row");
+    expect(refused.isErr() && refused.error.cause).toBeInstanceOf(PolicyDenied);
+    expect(await host.row()).toEqual({ title: null, words: null });
+    expect((await host.engine.docHeads()).unwrap()[0]?.mode).not.toBe("checkpoint");
     link.close();
   });
 

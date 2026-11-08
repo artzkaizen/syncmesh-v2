@@ -88,8 +88,9 @@ function provisionalDerived(
 /**
  * Installs a device's checkpoint on an opaque host — one without the adapter, or one for a sealed
  * partition (RFC-0023 §7.2) — **provisionally** (§7.3, §16.6): its signature, address, adapter,
- * winning lineage and snapshot hash are checked, and its floor must not claim a change this host
- * has not folded, but its version cannot be re-derived without the adapter. The snapshot lands in
+ * winning lineage and snapshot hash are checked, its producer must be the authority or a peer the
+ * row's `update` rule lets edit it here (§11, `engine.mayEditDoc`), and its floor must not claim
+ * a change this host has not folded, but its version cannot be re-derived without the adapter. The snapshot lands in
  * the doc store with the head in `checkpoint` mode, and the derived values key 8 carries land in
  * the row in the same commit. No log entry moves: a provisional snapshot never makes an event
  * compactable, so the host keeps the long log a later audit replays.
@@ -115,6 +116,10 @@ export async function installProvisional(
       producer,
       snapshot,
     );
+    // key 8 writes the row's derived columns: only a peer that may edit the row may set them
+    const producerMay = engine.mayEditDoc(producer, address);
+    if (producerMay.isErr())
+      return refuseCheckpoint("its producer may not update this row", producerMay.error);
     const derived = yield* provisionalDerived(checkpoint, checks);
     const cursors = yield* Result.await(engine.cursors());
     const ahead = [...checkpoint.covers].some(([author, seq]) => (cursors.get(author) ?? 0) < seq);

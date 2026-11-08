@@ -1,10 +1,19 @@
-import type { Change, DocChange, DocColumns, Row } from "@syncmesh/kernel";
+import type {
+  AdapterId,
+  Change,
+  DocChange,
+  DocColumns,
+  PartitionKey,
+  PeerId,
+  Row,
+} from "@syncmesh/kernel";
 
 import { Result } from "@syncmesh/result";
 import { type Table } from "@syncmesh/schema";
 import { deriveLineage } from "@syncmesh/wire";
 
 import type { TableDocs } from "./columns.js";
+import type { DocAddress } from "./doc-log.js";
 import type { ProbeEvent, RowLookup } from "./validate.js";
 
 import { checkColumns } from "./columns.js";
@@ -139,3 +148,19 @@ export const refuseReservedDoc = (table: string, change: DocChange) =>
       message: `${table} has no document columns`,
     }),
   );
+
+/**
+ * What asking whether `author` may edit `doc` looks like to the validator: one empty doc change on
+ * its column, in the row's partition — to the ladder an `update` of the row (§11), judged with the
+ * author's grant, its partitions and the row as this device holds it.
+ */
+export const docEditProbe = (
+  author: PeerId,
+  doc: DocAddress,
+  adapter: AdapterId,
+  partition: PartitionKey | undefined,
+): ProbeEvent => ({
+  peerId: author,
+  ...(partition !== undefined && { partition }),
+  changes: [{ kind: "doc", ...doc, adapter, update: { bytes: new Uint8Array() } }],
+});

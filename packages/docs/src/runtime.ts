@@ -18,6 +18,7 @@ import { installProvisional } from "./checkpoint.js";
 import { DEFAULT_PACING, createHandles } from "./documents.js";
 import { installCheckpoint } from "./install.js";
 import { materialise, produceCheckpoint } from "./materialise.js";
+import { createRederive } from "./rederive.js";
 import { replicaId } from "./replica.js";
 
 /** What a background materialisation can fail with. */
@@ -40,7 +41,8 @@ export interface DocumentsOptions {
   /**
    * The schema's derive functions (`createDerivers(schema)`, RFC-0023 §16.4): after every flush of
    * an open document and every materialisation, the row's derived columns are computed here and
-   * written to the local row. Its `sealedKinds` are the partitions whose checkpoints carry none
+   * written to the local row, and again whenever the fold moves the document or rewrites its row
+   * (see {@link Documents.rederive}). Its `sealedKinds` are the partitions whose checkpoints carry none
    * (§11), taken from the same schema so the two cannot disagree. Absent, no column is derived.
    */
   readonly derive?: Derivers;
@@ -50,6 +52,13 @@ export interface DocumentsOptions {
    * (RFC-0023 §8.2), so its log may be trimmed. On by default.
    */
   readonly autoMaterialise?: boolean;
+  /**
+   * Recompute every row's derived columns once when the runtime starts, in the background (gaps
+   * U25): what catches up rows rebuilt while it was not running — a fresh or repaired state
+   * file — and a derive function that changed. On by default when `derive` is given; a host with
+   * many documents and a state it knows is current may turn it off and call `rederive()` itself.
+   */
+  readonly rederiveAtStart?: boolean;
   /**
    * Where a failed background materialisation or paced flush goes. Absent, a materialisation is
    * retried at the next fold, and a flush's failure shows only as its handle's status.
@@ -93,8 +102,31 @@ export function createDocuments(options: DocumentsOptions) {
     const partition = getRecord(engine.state(), address.table, address.key)?.partition;
     return partition !== undefined && options.derive?.sealedKinds.has(kindOf(partition)) === true;
   };
+  const rederive =
+    options.derive === undefined
+      ? undefined
+      : createRederive({
+          engine,
+          docs,
+          adapters,
+          derive: options.derive,
+          replica: fresh,
+          held: (address) => handles.held(address),
+          ...(options.onError !== undefined && { onError: options.onError }),
+        });
+  // a flush's values ride its own write; the recomputation after its fold compares against them
+  const flushDerive = (address: DocAddress): Derive<unknown> | undefined => {
+    const computing = derive(address);
+    if (computing === undefined) return undefined;
+    return (doc) => {
+      const values = computing(doc);
+      const seen = new Set(handles.held(address)?.seen.keys());
+      rederive?.flushing(address, values, seen);
+      return values;
+    };
+  };
   const handles = createHandles({
-    derive,
+    derive: flushDerive,
     engine,
     docs,
     adapters,
@@ -135,6 +167,7 @@ export function createDocuments(options: DocumentsOptions) {
   };
   const unmaintain =
     options.autoMaterialise === false ? () => {} : engine.onFoldBatch((b) => void maintain(b));
+  if (options.rederiveAtStart !== false) void rederive?.rederive();
 
   return {
     /** Opens a document column; two opens share one replica, and the last close lets it go. */
@@ -205,8 +238,17 @@ export function createDocuments(options: DocumentsOptions) {
           ),
         );
       }),
+    /**
+     * Recomputes the derived columns of the document at `address`, or of every row when absent,
+     * from the replica open there or from its snapshot and tail, and resolves once nothing is
+     * queued (RFC-0023 §16.4). The runtime already does this whenever the fold moves a document
+     * or rewrites its row, and once at start; an app calls it after rewriting rows outside
+     * syncmesh. Does nothing without `derive`.
+     */
+    rederive: (address?: DocAddress) => rederive?.rederive(address) ?? Promise.resolve(),
     stop: () => {
       unmaintain();
+      rederive?.stop();
       handles.stop();
     },
   };

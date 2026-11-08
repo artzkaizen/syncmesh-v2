@@ -1,6 +1,7 @@
-import type { DocAddress, DocAppend } from "@syncmesh/engine";
+import type { DocAddress, DocAppend, DocEntryRef } from "@syncmesh/engine";
 import type { LineageId, PartitionKey, Procedure, SyncEvent } from "@syncmesh/kernel";
 
+import { docEntryId } from "@syncmesh/engine";
 import { getRecord, docLineage } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { bytesEqual } from "@syncmesh/wire";
@@ -27,6 +28,12 @@ export interface Entry {
   flushed: Uint8Array;
   /** Local updates exported ahead of a remote apply, waiting for the next flush. */
   readonly stash: Uint8Array[];
+  /**
+   * The doc-log entries of its lineage the replica was given — loaded, delivered, or its own
+   * flushes coming back — whether the adapter took them or not: what derived values computed
+   * from it include (RFC-0023 §16.4).
+   */
+  readonly seen: Map<string, DocEntryRef>;
   readonly listeners: Set<() => void>;
   readonly stop: () => void;
   timers: { idle?: ReturnType<typeof setTimeout>; max?: ReturnType<typeof setTimeout> };
@@ -52,6 +59,7 @@ export function deliver(engine: DocsEngine, held: Entry, appends: readonly DocAp
   const live = appends.filter(
     ({ entry }) => entry.state !== "orphaned" && entry.lineage === held.lineage,
   );
+  for (const { entry } of live) held.seen.set(docEntryId(entry), entry);
   applyTo(
     held,
     live.flatMap(({ update }) => (update.bytes === undefined ? [] : [update.bytes])),
