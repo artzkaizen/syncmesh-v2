@@ -440,6 +440,38 @@ describe("derived columns catch up with the document between flushes (gaps U25)"
     link.close();
   });
 
+  test("a purge invalidates an open replica, so the row is derived from the kept document, not it", async () => {
+    const { a, b, link } = await linked(36);
+    const c = await storedNode(38);
+    const toC = createLink(a.engine, c.engine);
+    (await toC.catchUp()).unwrap();
+    const mine = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(mine.value, "Kept", "x y");
+    (await mine.close()).unwrap();
+    await toC.flush();
+    const theirs = (await c.documents.open<LoroDoc>(DOC)).unwrap();
+    theirs.value.getText("body").insert(0, "from c ");
+    theirs.value.commit();
+    (await theirs.close()).unwrap();
+    await toC.flush();
+    (await link.catchUp()).unwrap();
+    expect(await until(async () => (await b.row())?.words === 4)).toBe(true);
+    // b holds the document open across the purge: its replica still has c's edit in it
+    const held = (await b.documents.open<LoroDoc>(DOC)).unwrap();
+    expect(held.value.getText("body").toString()).toBe("from c x y");
+    (await b.engine.purge({ events: (event) => event.peerId === c.identity.peerId })).unwrap();
+    expect(held.status()).toBe("invalidated");
+    await b.documents.rederive();
+    expect(await b.row()).toEqual({ title: "Kept", words: 2 });
+    // reopening loads the kept log, without c's edit
+    const reopened = (await b.documents.open<LoroDoc>(DOC)).unwrap();
+    expect(reopened.value.getText("body").toString()).toBe("x y");
+    (await reopened.close()).unwrap();
+    expect(b.errors).toEqual([]);
+    toC.close();
+    link.close();
+  });
+
   test("a refused flush's values do not stand in for the row's when the next write lands", async () => {
     let refuse = false;
     const open = createValidator({ schema, grantFor: null, docs: DOCS });

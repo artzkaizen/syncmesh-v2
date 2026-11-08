@@ -85,7 +85,8 @@ const stashLocal = (entry: Entry): Result<void, UpdateRejected> => {
   });
 };
 
-const invalidate = (entry: Entry) => {
+/** Stops a replica for good: its handles refuse every flush, and the app reopens the document. */
+export const invalidate = (entry: Entry) => {
   entry.status = "invalidated";
   entry.stop();
   clearTimers(entry);

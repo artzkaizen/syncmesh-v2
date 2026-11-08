@@ -11,7 +11,7 @@ import type { AdapterMissing, NotADocColumn } from "./errors.js";
 import type { Derive, DocsEngine } from "./materialise.js";
 
 import { columnAdapter } from "./adapter.js";
-import { clearTimers, deliver, flush } from "./entry.js";
+import { clearTimers, deliver, flush, invalidate } from "./entry.js";
 import { FlushRefused } from "./errors.js";
 import { entryRef, load } from "./materialise.js";
 import { replicaId } from "./replica.js";
@@ -68,6 +68,8 @@ export function createHandles(deps: OpenDeps) {
   /** Opens still reading their tail: a second open waits for the first, never loads a second replica. */
   const loading = new Map<string, Promise<Result<Entry, OpenError>>>();
   const arrivals = new Map<string, DocAppend[]>(); // what folded while those reads ran
+  /** Opens whose tail was read before a purge rewrote their row: the replica they load is stale. */
+  const purgedWhileLoading = new Set<string>();
   const ms = (d: Temporal.Duration) => d.total({ unit: "milliseconds" });
 
   const flushEntry = async (address: DocAddress, entry: Entry) => {
@@ -93,6 +95,7 @@ export function createHandles(deps: OpenDeps) {
   // local batches too: a genesis or a doc write this device made outside the handle moves the
   // document as surely as a remote one, and re-importing the handle's own flush changes nothing
   const applyFolded = (batch: FoldBatch) => {
+    if (batch.source === "purge") return forgetPurged(batch);
     if (batch.docs === undefined) return;
     const byDoc = new Map<string, DocAppend[]>();
     for (const append of batch.docs) {
@@ -105,6 +108,22 @@ export function createHandles(deps: OpenDeps) {
       if (held === undefined) arrivals.get(key)?.push(...appends);
       else deliver(engine, held, appends);
     }
+  };
+
+  /**
+   * A purge (D45) dropped the documents of the rows it names and re-recorded them from the events
+   * it kept, so a replica open on one of them still holds what this device was told to forget: it
+   * is invalidated, with whatever it had not flushed, and reopening loads the kept log.
+   */
+  const forgetPurged = (batch: FoldBatch) => {
+    for (const [table, keys] of batch.writeKeys)
+      for (const column of deps.docs.get(table)?.keys() ?? [])
+        for (const key of keys) {
+          const doc = docKey({ table, key, column });
+          const held = open.get(doc);
+          if (held !== undefined) invalidate(held);
+          if (loading.has(doc)) purgedWhileLoading.add(doc);
+        }
   };
 
   const handle = <D>(address: DocAddress, entry: Entry): OpenDoc<D> => {
@@ -152,7 +171,9 @@ export function createHandles(deps: OpenDeps) {
     loading.set(key, loaded);
     const entry = await loaded;
     loading.delete(key);
-    if (entry.isOk()) deliver(engine, entry.value, arrivals.get(key) ?? []);
+    if (entry.isOk() && purgedWhileLoading.has(key)) invalidate(entry.value);
+    else if (entry.isOk()) deliver(engine, entry.value, arrivals.get(key) ?? []);
+    purgedWhileLoading.delete(key);
     arrivals.delete(key);
     return entry.map((e) => handle<D>(address, e));
   };
