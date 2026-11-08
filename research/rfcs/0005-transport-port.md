@@ -52,7 +52,11 @@ correct: nothing about a cursor is useful to a client that has no rows yet.
 Built for BLE as `FrameLink.sendLatest`, and for the relay (gaps U19) as `Sender.sendLatest`
 on the room's side — a slot keyed `(topic, instance, peer)`, held while the socket has a backlog
 or buffered since its last drain — and, on the device's side, a hold keyed the same way while
-the dial's `buffered()` (a WebSocket's `bufferedAmount`) is above zero.
+the dial's `buffered()` (a WebSocket's `bufferedAmount`) is above zero. The room's hold needs a
+socket that reports backpressure, which the Bun and Node hosts do; the Durable Object and Rivet
+sockets never answer `buffered` (the platform owns the outgoing queue and has no drain event),
+so on those hosts presence to a stalled client still queues in the platform's socket and the
+bound is the platform's own close of a client that cannot keep up.
 
 **A liveness timeout belongs at this seam too** `[built for the relay link]`. A
 link that stops delivering without closing is indistinguishable from a quiet one

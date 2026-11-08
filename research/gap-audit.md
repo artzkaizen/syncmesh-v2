@@ -116,7 +116,9 @@ version negotiation). What remains:
     the sealed, held and multiplexed links. A stalled relay WebSocket still buffers presence in
     the socket; nothing there conflates yet. **2026-11-08:** it does now (gaps U19): the
     relay's sender holds the newest value per slot while a socket is behind, and the device
-    holds its own while its socket's `bufferedAmount` is above zero.
+    holds its own while its socket's `bufferedAmount` is above zero. The relay's half needs a
+    socket that reports backpressure (the Bun and Node hosts); the Durable Object and Rivet
+    sockets do not, and there the platform's own slow-client close is the bound.
 22. E15: blob compaction sweep + per-partition quotas — deliberately unsized until a
     real workload; rounds-web may now be that workload.
     **2026-11-07: built, opt-in and unsized.** `relay/src/blob-keeper.ts`: the sweep runs
