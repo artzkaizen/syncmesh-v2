@@ -1,6 +1,9 @@
+import type { EngineError, FoldBatch } from "@syncmesh/engine";
 import type { SeqNum } from "@syncmesh/kernel";
 
-import { seed } from "@syncmesh/kernel/test-fixtures";
+import { LogTorn, StoreFailure, createHub } from "@syncmesh/engine";
+import { PEER_A, seed } from "@syncmesh/kernel/test-fixtures";
+import { Result } from "@syncmesh/result";
 import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { linkTransport, loopbackPair } from "@syncmesh/transport";
@@ -10,6 +13,7 @@ import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import { createMesh } from "../mesh.js";
 import { sqlite } from "../options.js";
+import { type TornDeps, watchTorn } from "../torn.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text() });
 const schema = () =>
@@ -119,5 +123,57 @@ describe("a torn log, on a running mesh (D39)", () => {
     // still asked for as a hole: the cursor stands below it until something sends it
     expect(device.mesh.engine.coverage().synced.get(AUTHOR.peerId)).toBe(at(1));
     await Promise.all([author.mesh.stop(), device.mesh.stop()]);
+  });
+});
+
+describe("a torn run being rejoined (D39)", () => {
+  test("is not cleared by a fold that lands before its reopen does", async () => {
+    // the engine's synced cursor still claims the run until reopen lowers it
+    const synced = new Map([[PEER_A, at(5)]]);
+    const errors = createHub<EngineError>();
+    const folds = createHub<FoldBatch>();
+    const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+    const engine = {
+      acks: () => new Map([[PEER_A, new Map([[PEER_A, at(5)]])]]),
+      coverage: () => ({ synced, local: new Map() }),
+      reopen: async () => {
+        await gate;
+        synced.set(PEER_A, at(1));
+        return Result.ok(undefined);
+      },
+      onError: errors.subscribe,
+      onAcknowledge: () => () => {},
+      onFoldBatch: folds.subscribe,
+      onAdopt: () => () => {},
+    } satisfies TornDeps["engine"];
+    // a medium that names no peers carries to any
+    const medium = { resync: () => {} };
+    // SAFETY: settle reads nothing off the batch, only that one folded
+    const batch = {} as FoldBatch;
+    const watch = watchTorn({ engine, transports: () => [medium] });
+
+    const run = { peer: PEER_A, local: false, from: at(2), to: at(3) };
+    errors.emit(
+      new StoreFailure({
+        message: "log has a hole",
+        cause: new LogTorn({ runs: [run], message: "log has a hole" }),
+      }),
+    );
+    expect(watch.list().map(({ state }) => state)).toEqual(["rejoining"]);
+
+    // an unrelated batch folds while the reopen is still under way
+    folds.emit(batch);
+    expect(watch.list().map(({ state }) => state)).toEqual(["rejoining"]);
+
+    release();
+    expect(await until(() => synced.get(PEER_A) === at(1))).toBe(true);
+    await Promise.resolve();
+    // reopened: the cursor stands below the run, and a fold does not clear it until it is back
+    folds.emit(batch);
+    expect(watch.list()).toHaveLength(1);
+    synced.set(PEER_A, at(5));
+    folds.emit(batch);
+    expect(watch.list()).toEqual([]);
+    await watch.stop();
   });
 });

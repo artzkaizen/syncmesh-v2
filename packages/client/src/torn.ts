@@ -8,8 +8,9 @@ import { createHub, tornRuns } from "@syncmesh/engine";
  * One run of events this device's log held and lost (D39), and where getting it back stands.
  *
  * - `waiting`: no linked peer has said it holds the run yet; the first that does is asked.
- * - `rejoining`: the run was reopened — recorded as a hole the log admits to, the cursor dropped
- *   below it — and every link asked again; it clears once the run is held.
+ * - `rejoining`: the run is reopened — recorded as a hole the log admits to, the cursor dropped
+ *   below it — and every link asked again; it clears once the reopen has landed and the cursor
+ *   passes the run again.
  * - `lost`: a run of this device's local-only events, which never travelled. Nothing holds it.
  */
 export interface TornIssue {
@@ -18,9 +19,12 @@ export interface TornIssue {
 }
 
 export interface TornDeps {
-  readonly engine: Engine;
+  readonly engine: Pick<
+    Engine,
+    "acks" | "coverage" | "reopen" | "onError" | "onAcknowledge" | "onFoldBatch" | "onAdopt"
+  >;
   /** The running media: who a run can be asked of, and what to ask again through. */
-  readonly transports: () => readonly Transport[];
+  readonly transports: () => readonly Pick<Transport, "reaches" | "delivers" | "resync">[];
 }
 
 const runKey = ({ peer, local, from }: TornRun): string => `${peer}:${local}:${from}`;
@@ -36,7 +40,7 @@ const holds = (peer: PeerId, cursors: Cursors, run: TornRun): boolean =>
  * Whether a running medium may carry to this peer now: one that names the peers it reaches names
  * it, or one that cannot say runs at all — a resync through it costs one cursors exchange.
  */
-const linked = (transports: readonly Transport[], peer: PeerId): boolean =>
+const linked = (transports: ReturnType<TornDeps["transports"]>, peer: PeerId): boolean =>
   transports.some((transport) => {
     const named = transport.reaches?.() ?? transport.delivers?.();
     return named === undefined || named.has(peer);
@@ -58,6 +62,11 @@ export function watchTorn(deps: TornDeps) {
   const issues = new Map<string, TornIssue>();
   const changed = createHub<void>();
   let queue: Promise<void> = Promise.resolve();
+  /**
+   * Rejoining runs whose reopen has not landed: until it does, the synced cursor still claims the
+   * run, so a fold in between must not read it as back.
+   */
+  const reopening = new Set<string>();
 
   const set = (issue: TornIssue): void => void issues.set(runKey(issue.run), issue);
 
@@ -71,10 +80,14 @@ export function watchTorn(deps: TornDeps) {
         acks.some(([peer, cursors]) => holds(peer, cursors, run) && linked(running, peer)),
     );
     if (held.length === 0) return;
-    for (const { run } of held) set({ run, state: "rejoining" });
+    for (const { run } of held) {
+      set({ run, state: "rejoining" });
+      reopening.add(runKey(run));
+    }
     changed.emit();
     queue = queue.then(async () => {
       const reopened = await engine.reopen(held.map(({ run }) => run));
+      for (const { run } of held) reopening.delete(runKey(run));
       if (reopened.isErr()) {
         console.warn("[syncmesh] a torn log could not be reopened:", reopened.error);
         for (const { run } of held) set({ run, state: "waiting" });
@@ -90,7 +103,7 @@ export function watchTorn(deps: TornDeps) {
     const synced = engine.coverage().synced;
     let cleared = false;
     for (const [key, { run, state }] of issues)
-      if (state === "rejoining" && (synced.get(run.peer) ?? 0) >= run.to) {
+      if (state === "rejoining" && !reopening.has(key) && (synced.get(run.peer) ?? 0) >= run.to) {
         issues.delete(key);
         cleared = true;
       }
