@@ -41,6 +41,14 @@ export interface PageSource {
   /** Runs the read the request names and returns its page, or why it will not. */
   readonly readPage: (request: ReadRequest) => Promise<Result<Page, ReadRefused | ReadFailed>>;
   /**
+   * Runs several reads for the same reader at once, answering each in order, for a source that
+   * can do that more cheaply than one at a time (one transaction, one snapshot). Without it each
+   * is a `readPage`.
+   */
+  readonly readPages?: (
+    requests: readonly ReadRequest[],
+  ) => Promise<readonly Result<Page, ReadRefused | ReadFailed>[]>;
+  /**
    * Committed changes, as the tables each transaction touched, in commit order. Returns the
    * unsubscribe.
    */

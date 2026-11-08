@@ -9,8 +9,8 @@ import type { ServerWindowsOptions } from "../server.js";
 import type { FeedState, PageSource } from "../source.js";
 
 import { createWindowClient } from "../client.js";
-import { decodeWindowFrame } from "../frames.js";
-import { readKey } from "../request.js";
+import { decodeWindowFrame, desireFrame, undesireFrame } from "../frames.js";
+import { readKey, requestText } from "../request.js";
 import { createServerWindows } from "../server.js";
 import { ReadFailed, ReadRefused } from "../source.js";
 import {
@@ -516,6 +516,40 @@ describe("a socket's windows over a page source (E27)", () => {
     expect(client.held()).toBe(server.held());
   });
 
+  test("a resync whose desire is closed and reopened before the server reads it still gets its reset", async () => {
+    const { source } = scripted("ok");
+    const sent: Uint8Array[] = [];
+    const server = createServerWindows({ source, send: (frame) => sent.push(frame) });
+    const text = requestText(CALLS_READ);
+    server.receive(desireFrame("w", text));
+    await server.idle();
+    const at = lastPatch(sent);
+    // a read in flight, so the three frames behind it are coalesced before a step reads them
+    server.receive(desireFrame("busy", requestText(newest(1))));
+    server.receive(desireFrame("w", text, { epoch: "stale", version: 1 }));
+    server.receive(undesireFrame("w"));
+    server.receive(desireFrame("w", text));
+    await server.idle();
+    const answer = lastPatch(sent);
+    expect(answer.reset).toBe(true);
+    expect(answer.epoch).not.toBe(at.epoch);
+  });
+
+  test("a resync whose window is closed before the server reads it is still answered with a reset", async () => {
+    const { source } = scripted("ok");
+    const sent: Uint8Array[] = [];
+    const server = createServerWindows({ source, send: (frame) => sent.push(frame) });
+    const text = requestText(CALLS_READ);
+    server.receive(desireFrame("w", text));
+    server.receive(desireFrame("x", text));
+    await server.idle();
+    server.receive(desireFrame("busy", requestText(newest(1))));
+    server.receive(desireFrame("w", text, { epoch: "stale", version: 1 }));
+    server.receive(undesireFrame("w"));
+    await server.idle();
+    expect(lastPatch(sent).reset).toBe(true);
+  });
+
   test("a resync asked while the client's frames queue settles once the server reads them", async () => {
     const { client, source, server, loseNext, queueUp, deliver } = harness(100);
     client.open("inbox", newest(5));
@@ -685,6 +719,50 @@ describe("what a socket's frames and commits cost (D43)", () => {
     await server.idle();
     // the first commit starts a re-read, the other 49 wait behind it as one
     expect(reads() - before).toBeLessThanOrEqual(2);
+  });
+
+  test("a re-read of many windows asks the source once, and each window gets its own answer", async () => {
+    const { source, reads, commit } = scripted("ok");
+    const batches: number[] = [];
+    const batched: PageSource = {
+      ...source,
+      readPages: async (requests) => {
+        batches.push(requests.length);
+        const answers = [];
+        for (const request of requests) answers.push(await source.readPage(request));
+        return answers;
+      },
+    };
+    const { client, server } = joined(batched);
+    for (const q of ["a", "b", "c", "d"]) client.open(q, { path: "search", input: { q } });
+    // two windows of one read are one read in the batch
+    client.open("d2", { path: "search", input: { q: "d" } });
+    await server.idle();
+    batches.length = 0;
+    const before = reads();
+    commit();
+    await server.idle();
+    expect(batches).toEqual([4]);
+    expect(reads() - before).toBe(4);
+    for (const q of ["a", "b", "c", "d"])
+      expect(subjectOf(client, q)).toStartWith(`["search",{"q":"${q}"}]`);
+    expect(subjectOf(client, "d2")).toBe(subjectOf(client, "d"));
+  });
+
+  test("a batch the source cannot answer fails every window in it, which keep their rows", async () => {
+    const { source, commit } = scripted("ok");
+    const { client, server } = joined(
+      { ...source, readPages: () => Promise.reject(new Error("connection lost")) },
+      { retry: NO_RETRY },
+    );
+    client.open("a", { path: "search", input: { q: "a" } });
+    client.open("b", { path: "search", input: { q: "b" } });
+    await server.idle();
+    commit();
+    await server.idle();
+    expect(client.failure("a")).toBe("connection lost");
+    expect(client.failure("b")).toBe("connection lost");
+    expect(subjectOf(client, "a")).toStartWith('["search",{"q":"a"}]');
   });
 
   test("a page past the row ceiling is refused, not sent", async () => {

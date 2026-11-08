@@ -66,7 +66,8 @@ export const RETRY = {
  * Work runs one step at a time, so a patch always describes the step before it, whatever each
  * read costs. Work is coalesced while a step runs: a window's latest desire replaces any earlier
  * one not yet read, every commit since the last re-read is one re-read, and windows asking the
- * same read are read once. So a socket has at most one read in flight and one pending per
+ * same read are read once. A re-read hands the source every read it needs at once
+ * ({@link PageSource.readPages}). So a socket has at most one read in flight and one pending per
  * window, however many frames or commits arrive.
  *
  * A read that fails ({@link ReadFailed}) leaves its window holding the rows it had, marked
@@ -87,14 +88,17 @@ export interface ServerWindows {
   readonly stop: () => void;
 }
 
-/** What a window's frames have asked for and no step has acted on: only the latest counts. */
+/**
+ * What a window's frames have asked for and no step has acted on: only the latest counts, but a
+ * resync's `since` is kept by whatever replaces it, as the reset it asked for is still owed.
+ */
 type Want =
   | { readonly kind: "desire"; readonly text: string; readonly since: StreamPosition | undefined }
-  | { readonly kind: "undesire" };
+  | { readonly kind: "undesire"; readonly since: StreamPosition | undefined };
 
 const freshEpoch = (): string => bytesToHex(randomBytes(8));
 
-const reasonOf = (cause: unknown, fallback: string): string =>
+const causeMessage = (cause: unknown, fallback: string): string =>
   cause instanceof Error ? cause.message : fallback;
 
 /** A client that names a position this stream is not at missed a patch, and is resnapshot. */
@@ -102,23 +106,41 @@ const missed = (since: StreamPosition | undefined, at: StreamPosition | undefine
   since !== undefined &&
   (at === undefined || since.epoch !== at.epoch || since.version !== at.version);
 
-/** One read's page; a source that throws rather than answering is one that could not run it. */
-const pageOf = async (
+type Answer = Result<Page, ReadRefused | ReadFailed>;
+
+/** A source that throws rather than answering is one that could not run the read. */
+const unran = (cause: unknown) =>
+  new ReadFailed({ message: causeMessage(cause, "the read failed") });
+
+/** One read's page. */
+const readOne = async (source: PageSource, request: ReadRequest): Promise<Answer> =>
+  (await Result.tryPromise({ try: () => source.readPage(request), catch: unran })).andThen(
+    (page) => page,
+  );
+
+/** Several reads' pages in order: at once when the source can, one by one when it cannot. */
+const readAll = async (
   source: PageSource,
-  request: ReadRequest,
-): Promise<Result<Page, ReadRefused | ReadFailed>> =>
-  (
-    await Result.tryPromise({
-      try: () => source.readPage(request),
-      catch: (cause) => new ReadFailed({ message: reasonOf(cause, "the read failed") }),
-    })
-  ).andThen((page) => page);
+  requests: readonly ReadRequest[],
+): Promise<readonly Answer[]> => {
+  const { readPages } = source;
+  if (readPages === undefined || requests.length < 2) {
+    const answers: Answer[] = [];
+    for (const request of requests) answers.push(await readOne(source, request));
+    return answers;
+  }
+  const read = await Result.tryPromise({ try: () => readPages(requests), catch: unran });
+  // a source that answers a different number of reads answered none of them
+  if (read.isOk() && read.value.length === requests.length) return read.value;
+  const failed = read.isErr() ? read.error : unran(new Error("the reads were not all answered"));
+  return requests.map(() => Result.err(failed));
+};
 
 /**
  * The patch a draft becomes at `at`: a reset carrying the whole book when the draft asks for one
  * or nothing was sent yet, the next version otherwise, and nothing for a draft with nothing in it.
  */
-const patchOf = (
+const nextPatch = (
   draft: Draft,
   at: StreamPosition | undefined,
   nextEpoch: () => string,
@@ -146,15 +168,11 @@ const patchOf = (
   };
 };
 
-/** Keeps a window's latest frame; a resync's `since` survives a later desire, as the reset is still owed. */
+/** Keeps a window's latest frame; a resync's `since` survives any later frame, as the reset is still owed. */
 const coalesce = (wanted: Map<string, Want>, frame: Desire | Undesire): void => {
-  if (frame.kind === "undesire") {
-    wanted.set(frame.id, { kind: "undesire" });
-    return;
-  }
-  const before = wanted.get(frame.id);
-  const since = frame.since ?? (before?.kind === "desire" ? before.since : undefined);
-  wanted.set(frame.id, { kind: "desire", text: frame.request, since });
+  const owed = wanted.get(frame.id)?.since;
+  if (frame.kind === "undesire") wanted.set(frame.id, { kind: "undesire", since: owed });
+  else wanted.set(frame.id, { kind: "desire", text: frame.request, since: frame.since ?? owed });
 };
 
 export function createServerWindows(options: ServerWindowsOptions): ServerWindows {
@@ -204,17 +222,17 @@ export function createServerWindows(options: ServerWindowsOptions): ServerWindow
     position = { epoch: patch.epoch, version: patch.version };
     const sent = Result.try({
       try: () => send(rowsFrame(patch)),
-      catch: (cause) => reasonOf(cause, "the socket would not take a patch"),
+      catch: (cause) => causeMessage(cause, "the socket would not take a patch"),
     });
     if (sent.isOk()) return;
     halt();
     close?.(sent.error);
   };
 
-  const readPage = (request: ReadRequest) => pageOf(source, request);
+  const readPage = (request: ReadRequest) => readOne(source, request);
 
   const flush = (draft: Draft): void => {
-    const patch = stopped ? undefined : patchOf(draft, position, nextEpoch, book);
+    const patch = stopped ? undefined : nextPatch(draft, position, nextEpoch, book);
     if (patch !== undefined) transmit(patch);
   };
 
@@ -240,13 +258,15 @@ export function createServerWindows(options: ServerWindowsOptions): ServerWindow
     // a commit that touches no open window sends nothing, so an idle socket is sent nothing
     if (targets.size === 0) return;
     const draft = emptyDraft();
-    // two windows asking the same read are read once
-    const pages = new Map<string, Promise<Result<Page, ReadRefused | ReadFailed>>>();
+    // two windows asking the same read are read once, and every read is asked at once
+    const distinct = new Map<string, ReadRequest>();
+    for (const request of targets.values()) distinct.set(readKey(request), request);
+    const keys = [...distinct.keys()];
+    const answers = await readAll(source, [...distinct.values()]);
+    const pages = new Map(keys.map((key, n) => [key, answers[n]]));
     for (const [id, request] of targets) {
-      const key = readKey(request);
-      const page = pages.get(key) ?? readPage(request);
-      pages.set(key, page);
-      book.settle(draft, id, request, await page);
+      const page = pages.get(readKey(request)) ?? Result.err(unran(new Error("no answer")));
+      book.settle(draft, id, request, page);
     }
     flush(draft);
   };
@@ -261,6 +281,7 @@ export function createServerWindows(options: ServerWindowsOptions): ServerWindow
       else {
         const draft = emptyDraft();
         book.unplace(draft, id);
+        draft.reset = missed(want.since, position);
         flush(draft);
       }
     } else if (lossUntold) {
@@ -287,7 +308,7 @@ export function createServerWindows(options: ServerWindowsOptions): ServerWindow
     if (working !== undefined || stopped) return;
     working = Result.tryPromise({
       try: drain,
-      catch: (cause) => reasonOf(cause, "a step failed"),
+      catch: (cause) => causeMessage(cause, "a step failed"),
     }).then((done) => {
       working = undefined;
       // a step that threw has left the stream in no known state: hang up rather than guess
