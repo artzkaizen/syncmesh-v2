@@ -385,7 +385,8 @@ manifest nobody asked for installs nothing; today one does, which is gaps U20. N
 **Built in #26 (2026-11-08).** With `trust` set the device asks on its own and adopts what the
 issuer vouched for; with no `trust` it raises a `$recovery` issue and asks only once the app
 accepts it (`$recovery.acceptState`), the default decided 2026-11-08. The `test.todo` is a passing
-test; U20 is closed.
+test; U20 is closed. A device that joined from state sends the coverage it holds no log for as
+its floor too, so a peer behind it is told to ask rather than stalling one hop on.
 
 ### 3.7 Dedup below the compaction floor
 `receiveBatch` of x's old insert on b reports `folded: 1, skipped: 0` and b's log regains the
