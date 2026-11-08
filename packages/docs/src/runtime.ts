@@ -120,13 +120,13 @@ export function createDocuments(options: DocumentsOptions) {
     if (computing === undefined) return undefined;
     return (doc) => {
       const values = computing(doc);
-      const seen = new Set(handles.held(address)?.seen.keys());
-      rederive?.flushing(address, values, seen);
+      rederive?.flushing(address, values, new Set(handles.held(address)?.seen.keys()));
       return values;
     };
   };
   const handles = createHandles({
     derive: flushDerive,
+    onFlushFailed: (address) => rederive?.flushFailed(address),
     engine,
     docs,
     adapters,

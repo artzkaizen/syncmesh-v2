@@ -759,7 +759,8 @@ decompression cap and a time budget, and exceeding them is a `failed` update, ne
   `engine.mayEditDoc(producer, doc)` — the validator's own ladder over a probe doc change on the
   row, so grant, partitions, revocation and the `update` rule judge it as they judge an edit, and
   the authority the validator names always passes — and refuses the checkpoint whole before key 8
-  is read. A device's `install` re-derives the version from the bytes, so whom it trusts stays
+  is read, a sealed checkpoint with no key 8 included. An engine built with no validator has no
+  ladder to run, so every producer passes there. A device's `install` re-derives the version from the bytes, so whom it trusts stays
   the caller's question (§7.3).
 - **Sealed partitions:** doc bytes are inside the sealed core, the authority is structurally
   opaque (§7.2), and a checkpoint's snapshot blob is sealed to the partition key (not built yet).
@@ -1064,8 +1065,8 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
      the fold moves its document — a remote edit to an open document (from the open replica,
      after it is handed the update) or a closed one (loaded from its snapshot and tail), a
      `replace()`, a lineage move — whenever its row appears (an insert that lands after its
-     document, a row deleted and inserted again: `FoldBatch.appeared`), whenever a snapshot or
-     repair rewrites the row, and once for every row when the runtime starts, which is how a
+     document, a row deleted and inserted again: `FoldBatch.appeared`), whenever a snapshot, a
+     repair or a D45 purge rewrites the row, and once for every row when the runtime starts, which is how a
      state rebuilt from the log and a changed derive function catch up
      (`rederiveAtStart: false` turns that pass off). `documents.rederive(address?)` asks for
      the same and resolves when nothing is queued; an app calls it after rewriting rows itself.
@@ -1076,7 +1077,10 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
      follows. A recomputation whose values equal what the row was last given here or by a flush
      writes nothing, and a flush's own fold is recomputed only when its replica was handed an
      update between computing and committing. A document with no snapshot and no tail is left
-     alone, so an empty document writes nothing.
+     alone, so an empty document writes nothing. The start pass keeps no record of what a row
+     held before it, so it writes every derived row once, changed or not. An open replica is
+     read as it stands, unflushed local edits included: a crash before the flush leaves the row
+     ahead of the log until the next start pass recomputes it.
    - Producer (U26): §11 above.
    - Rules (U27): schema construction refuses an `insert`, `update`, `delete` or `replace` rule
      (as `resolveAllow` resolves each, so `write` and `$default` count) that reads a derived

@@ -1,4 +1,11 @@
-import type { DerivedFrom, DocAddress, FoldBatch, StoreFailure, WriteKeys } from "@syncmesh/engine";
+import type {
+  DerivedFrom,
+  DocAddress,
+  FoldBatch,
+  FoldSource,
+  StoreFailure,
+  WriteKeys,
+} from "@syncmesh/engine";
 import type { AdapterId, DocColumns, Row, TableName } from "@syncmesh/kernel";
 import type { DeriveFailed, Derivers } from "@syncmesh/schema";
 
@@ -27,6 +34,9 @@ export interface RederiveDeps {
   readonly onError?: (error: RederiveError) => void;
 }
 
+/** The batches that write each row they name afresh: a purge drops every row it touches and rebuilds it (D45). */
+const REWRITES = new Set<FoldSource>(["snapshot", "repair", "purge"]);
+
 /** Whether two derived rows hold the same value in every column. */
 const sameValues = (a: Row, b: Row) =>
   a.size === b.size &&
@@ -40,7 +50,7 @@ const sameValues = (a: Row, b: Row) =>
  * (RFC-0023 §16.4, gaps U25). A document is recomputed when the fold hands it a doc change — a
  * remote edit to an open document or a closed one, a `replace()` — when its lineage moves, when
  * its row appears (an insert landing after the document, a delete and re-insert), when a
- * snapshot or repair rewrites the row, and once for every row when the runtime starts, which is
+ * snapshot, a repair or a purge (D45) rewrites the row, and once for every row when the runtime starts, which is
  * how a rebuilt state file and a changed derive function catch up.
  *
  * One document at a time, in the background. An open replica is read as it stands; a closed
@@ -58,6 +68,8 @@ export function createRederive(deps: RederiveDeps) {
    * they were computed, until the fold of the write they rode on says it committed.
    */
   const flushing = new Map<string, { readonly values?: Row; readonly seen: ReadonlySet<string> }>();
+  /** Per document, how many local batches have named it: a write they overtook is not the row's last. */
+  const localFolds = new Map<string, number>();
   const idle: (() => void)[] = [];
   let draining = false;
   let stopped = false;
@@ -112,7 +124,10 @@ export function createRederive(deps: RederiveDeps) {
       const last = written.get(key);
       if (last !== undefined && sameValues(last, made.values)) return Result.ok(undefined);
       const row = { table: address.table, key: address.key, values: made.values };
-      if (yield* Result.await(engine.writeDerived(row, made.from))) written.set(key, made.values);
+      const folds = localFolds.get(key);
+      const wrote = yield* Result.await(engine.writeDerived(row, made.from));
+      // a local write that folded meanwhile may have committed its own values after these
+      if (wrote && localFolds.get(key) === folds) written.set(key, made.values);
       return Result.ok(undefined);
     });
   };
@@ -157,9 +172,10 @@ export function createRederive(deps: RederiveDeps) {
 
   /**
    * Whether a document a local batch names needs recomputing: not when a flush wrote its values
-   * with the batch from a replica that has since been given nothing new.
+   * with the batch from a replica that has since been given nothing new. Counts the local batch.
    */
   const afterFlush = (batch: FoldBatch, key: string, address: DocAddress, own: Set<string>) => {
+    if (batch.source === "local") localFolds.set(key, (localFolds.get(key) ?? 0) + 1);
     const flushed = batch.source === "local" ? flushing.get(key) : undefined;
     flushing.delete(key);
     if (flushed === undefined) return true;
@@ -180,7 +196,7 @@ export function createRederive(deps: RederiveDeps) {
       if (append !== undefined && afterFlush(batch, key, append.entry, ids)) mark(append.entry);
     }
     for (const move of batch.lineageMoves ?? []) mark(move);
-    if (batch.source === "snapshot" || batch.source === "repair") markRows(batch.writeKeys, true);
+    if (REWRITES.has(batch.source)) markRows(batch.writeKeys, true);
     else if (batch.appeared !== undefined) markRows(batch.appeared, true);
   };
   const unfold = engine.onFoldBatch(onFold);
@@ -208,11 +224,14 @@ export function createRederive(deps: RederiveDeps) {
      */
     flushing: (address: DocAddress, values: Row | undefined, seen: ReadonlySet<string>) =>
       void flushing.set(docKey(address), { ...(values !== undefined && { values }), seen }),
+    /** The flush at `address` wrote nothing: what it computed is not on the row. */
+    flushFailed: (address: DocAddress) => void flushing.delete(docKey(address)),
     stop: () => {
       stopped = true;
       unfold();
       queue.clear();
       flushing.clear();
+      localFolds.clear();
       for (const resolve of idle.splice(0)) resolve();
     },
   };

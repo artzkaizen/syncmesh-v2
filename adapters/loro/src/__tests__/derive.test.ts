@@ -4,7 +4,6 @@ import type { Validator } from "@syncmesh/engine";
 import type { CellValue, ColumnName, Row, RowKey } from "@syncmesh/kernel";
 import type { DocumentAdapter } from "@syncmesh/schema";
 import type { SqlDriver } from "@syncmesh/storage";
-import type { LoroDoc } from "loro-crdt";
 
 import { createDocuments } from "@syncmesh/docs";
 import { createLive } from "@syncmesh/drizzle";
@@ -33,6 +32,7 @@ import { createIdentity, signCheckpoint } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import { sql } from "drizzle-orm";
 import { blob, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { LoroDoc } from "loro-crdt";
 
 import { LORO_ID, loro } from "../index.js";
 import { EDIT, FAST, W1, until } from "./fixtures.js";
@@ -408,6 +408,74 @@ describe("derived columns catch up with the document between flushes (gaps U25)"
     expect(await until(async () => (await b.row())?.title === "From state")).toBe(true);
     expect(await b.row()).toEqual({ title: "From state", words: 2 });
     expect(b.errors).toEqual([]);
+  });
+
+  test("a purge that rebuilds the row derives it again from the document it keeps", async () => {
+    const { a, b, link } = await linked(30);
+    const c = await storedNode(32);
+    const toC = createLink(a.engine, c.engine);
+    (await toC.catchUp()).unwrap();
+    const mine = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(mine.value, "Kept", "x y");
+    (await mine.close()).unwrap();
+    await toC.flush();
+    const theirs = (await c.documents.open<LoroDoc>(DOC)).unwrap();
+    theirs.value.getText("body").insert(0, "from c ");
+    theirs.value.commit();
+    (await theirs.close()).unwrap();
+    await toC.flush();
+    // live forwarding carries a device's own writes: c's edit reaches b through a's log
+    (await link.catchUp()).unwrap();
+    expect(await until(async () => (await b.row())?.words === 4)).toBe(true);
+    expect(await b.row()).toEqual({ title: "Kept", words: 4 });
+    // c's edit leaves b's log, and the row is dropped and rebuilt without the values it never writes
+    const purged = (
+      await b.engine.purge({ events: (event) => event.peerId === c.identity.peerId })
+    ).unwrap();
+    expect(purged.events).toBe(1);
+    expect(await until(async () => (await b.row())?.words === 2)).toBe(true);
+    expect(await b.row()).toEqual({ title: "Kept", words: 2 });
+    expect(b.errors).toEqual([]);
+    toC.close();
+    link.close();
+  });
+
+  test("a refused flush's values do not stand in for the row's when the next write lands", async () => {
+    let refuse = false;
+    const open = createValidator({ schema, grantFor: null, docs: DOCS });
+    const toggled: Validator = {
+      validate: (event, before) =>
+        refuse
+          ? Result.err(
+              new PolicyDenied({ table: "notes", key: "n1", op: "update", message: "refused" }),
+            )
+          : open.validate(event, before),
+    };
+    const a = await storedNode(34, { validate: toggled });
+    await insertNote(a);
+    const draft = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(draft.value, "Draft", "x");
+    refuse = true;
+    expect((await draft.flush()).isErr()).toBe(true);
+    refuse = false;
+    await draft.close();
+    // the next doc change is the app's own write, with no flush behind it
+    const elsewhere = new LoroDoc();
+    type(elsewhere, "Final", "a b c");
+    (
+      await a.engine.mutate(
+        EDIT,
+        (tx) =>
+          tx.doc(NOTES, N1, {
+            column: CONTENT,
+            adapter: LORO_ID,
+            update: { bytes: elsewhere.export({ mode: "snapshot" }) },
+          }),
+        { partition: W1 },
+      )
+    ).unwrap();
+    expect(await until(async () => (await a.row())?.title === "Final")).toBe(true);
+    expect(await a.row()).toEqual({ title: "Final", words: 3 });
   });
 
   test("a state rebuilt from the log gets its derived values back when the runtime starts", async () => {

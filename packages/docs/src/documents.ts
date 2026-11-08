@@ -57,6 +57,8 @@ export interface OpenDeps {
   readonly derive: (address: DocAddress) => Derive<unknown> | undefined;
   /** Where a paced flush that failed goes; the handle's status says it too. */
   readonly onError?: (error: FlushError) => void;
+  /** A flush at `address` wrote nothing, so the derived values it computed never landed. */
+  readonly onFlushFailed?: (address: DocAddress) => void;
 }
 
 /** The handle registry one runtime keeps: one replica per document, however many handles. */
@@ -68,8 +70,11 @@ export function createHandles(deps: OpenDeps) {
   const arrivals = new Map<string, DocAppend[]>(); // what folded while those reads ran
   const ms = (d: Temporal.Duration) => d.total({ unit: "milliseconds" });
 
-  const flushEntry = (address: DocAddress, entry: Entry) =>
-    flush(engine, deps.procedure, address, entry, deps.derive(address));
+  const flushEntry = async (address: DocAddress, entry: Entry) => {
+    const flushed = await flush(engine, deps.procedure, address, entry, deps.derive(address));
+    if (flushed.isErr()) deps.onFlushFailed?.(address);
+    return flushed;
+  };
 
   const schedule = (address: DocAddress, entry: Entry) => {
     if (entry.timers.idle !== undefined) clearTimeout(entry.timers.idle);
