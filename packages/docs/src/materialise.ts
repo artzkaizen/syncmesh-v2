@@ -255,6 +255,24 @@ function heldBy<D>(adapter: DocumentAdapter<D>, doc: D, below: TailUpdate[], rep
 }
 
 /**
+ * Imports into `doc` the tail updates above a checkpoint's floor this device holds, update by
+ * update, and returns the ones it took. A refused one is skipped, as {@link load} skips it.
+ */
+function aboveFloor<D>(
+  adapter: DocumentAdapter<D>,
+  doc: D,
+  tail: DocTail,
+  below: readonly TailUpdate[],
+): DocEntryRef[] {
+  const under = new Set(below);
+  const taken: DocEntryRef[] = [];
+  for (const u of tail.updates)
+    if (!under.has(u) && u.bytes !== undefined && adapter.apply(doc, [u.bytes]).isOk())
+      taken.push(ref(u));
+  return taken;
+}
+
+/**
  * Installs a checkpoint in place of history this device never held (RFC-0023 §8.4): verified
  * against the producer's key, the snapshot's hash, the column's adapter and winning lineage, and
  * by re-deriving the version from the bytes — a snapshot that does not reproduce the version it
@@ -292,11 +310,13 @@ export async function installCheckpoint<D>(
     const holds = heldBy(adapter, doc, below, replica);
     if (holds === undefined)
       return refuseCheckpoint("the snapshot lacks updates the checkpoint's floor claims");
-    // computed here, never taken from key 8: every replica that can read the document derives it
+    // computed here, never taken from key 8: every replica that can read the document derives it,
+    // from the snapshot and the tail above its floor, which stays tail
+    const above = derive === undefined ? [] : aboveFloor(adapter, doc, tail, below);
     const derived = derive?.(doc);
     yield* Result.await(
       engine.coverDoc(address, {
-        ...(derived !== undefined && { derived }),
+        ...(derived !== undefined && { derived, derivedIncludes: above }),
         adapter: adapter.id,
         covers: checkpoint.covers,
         version: checkpoint.version,

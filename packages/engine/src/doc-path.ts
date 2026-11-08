@@ -28,7 +28,7 @@ import type { Cursors } from "./sync.js";
 import type { Undo } from "./undo.js";
 
 import { createMemoryDocStore } from "./doc-log-memory.js";
-import { DocCoverStale, docKey } from "./doc-log.js";
+import { DocCoverStale, docEntryId, docKey } from "./doc-log.js";
 import { StoreFailure, orThrow } from "./store.js";
 
 /** How an engine is told about documents. */
@@ -235,20 +235,24 @@ function coverIfCurrent(
 }
 
 /**
- * Whether `cover`, now committed, leaves no `tail` entry of its lineage on `doc`. One left was
- * folded after the snapshot was read — a flush that wrote newer derived values, or an edit the
- * next materialisation covers — so the cover's own values would be older than the document.
+ * Whether `cover`, now committed, leaves no `tail` entry of its lineage on `doc` that its derived
+ * values were not computed with. One left was folded after the tail was read — a flush that wrote
+ * newer derived values, or an edit the next materialisation covers — so the cover's own values
+ * would be older than the document.
  */
 function coversTail(
   docStore: DocStore,
   doc: DocAddress,
   cover: DocCover,
 ): Promise<Result<boolean, StoreFailure>> {
+  const included = new Set(cover.derivedIncludes?.map(docEntryId));
   return docStore
     .entriesOf(doc)
     .then((read) =>
       read.map((entries) =>
-        entries.every((e) => e.state !== "tail" || e.lineage !== cover.lineage),
+        entries.every(
+          (e) => e.state !== "tail" || e.lineage !== cover.lineage || included.has(docEntryId(e)),
+        ),
       ),
     );
 }

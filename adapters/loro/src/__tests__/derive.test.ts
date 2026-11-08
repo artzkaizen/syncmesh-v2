@@ -211,6 +211,31 @@ describe("derived columns: every replica computes them (RFC-0023 §16.4)", () =>
     expect(a.errors).toEqual([]);
   });
 
+  test("a joiner installing a checkpoint derives from the snapshot and the tail it holds above it", async () => {
+    const a = await storedNode(8);
+    const b = await storedNode(9);
+    await insertNote(a);
+    const doc = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(doc.value, "First", "one");
+    (await doc.flush()).unwrap();
+    const at = hlcOf(a.now().epochMilliseconds, 0);
+    const made = (await a.documents.checkpoint(DOC, a.identity, at)).unwrap();
+    const title = doc.value.getText("title");
+    title.delete(0, title.length);
+    title.insert(0, "Second");
+    doc.value.commit();
+    (await doc.close()).unwrap();
+    const link = createLink(a.engine, b.engine);
+    (await link.catchUp()).unwrap();
+    expect(await until(async () => (await b.engine.docLog()).unwrap().length === 2)).toBe(true);
+    (await b.documents.install(made.signed.wire, a.identity.peerId, made.snapshot, DOC)).unwrap();
+    // the edit above the checkpoint's floor stays tail, and the values already include it
+    expect(await b.row()).toEqual({ title: "Second", words: 1 });
+    expect((await b.engine.docLog()).unwrap().map((e) => e.state)).toEqual(["covered", "tail"]);
+    expect(b.errors).toEqual([]);
+    link.close();
+  });
+
   test("a materialisation whose derived write fails commits no snapshot either", async () => {
     const a = await storedNode(4);
     await insertNote(a);
