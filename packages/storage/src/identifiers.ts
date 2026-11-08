@@ -17,6 +17,9 @@ export const tableColumns = (table: Table) =>
     return name === undefined ? [] : [[key, name, column] as const];
   });
 
+/** What `tableColumns` returns, or any filter of it. */
+export type TableColumns = ReturnType<typeof tableColumns>;
+
 /**
  * The columns whose values the fold carries: every column but a document's and those derived from
  * one. A document column's cell holds its lineage (RFC-0023 §6.1), not the bytes the app reads,

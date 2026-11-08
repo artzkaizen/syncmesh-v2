@@ -116,4 +116,35 @@ export const derivedColumnCases = (openDriver: OpenDriver): readonly SuiteCase[]
       equal(String(row?.[0]), "T", "the refused write rolled back");
     },
   },
+  {
+    name: "capture: an insert that leaves a defaulted derived column out is no write to it",
+    run: async () => {
+      const driver = await openDriver("capture-derived-default");
+      const L = sqlText(driver);
+      const blob = driver.dialect === "postgres" ? "BYTEA" : "BLOB";
+      // the app's own migration made the table first, with RFC-0023 §4.1's `default("")`
+      await driver.run(
+        `CREATE TABLE derived_notes (id TEXT PRIMARY KEY, body TEXT, title TEXT NOT NULL DEFAULT '', words INTEGER DEFAULT 0, content ${blob}, "_partition" TEXT)`,
+      );
+      (await openStores(driver, { tables: [DERIVED_NOTES] })).unwrap();
+      const insert = await captureChanges(driver, [DERIVED_NOTES], () =>
+        driver.run(`INSERT INTO derived_notes (id, body) VALUES (${L.p(1)}, ${L.p(2)})`, [
+          "n1",
+          "b",
+        ]),
+      );
+      equal(
+        insert.isOk() ? insert.value.map((change) => change.kind) : insert.error._tag,
+        ["insert"],
+        "the defaults are the table's, not the app's write",
+      );
+      const named = await captureChanges(driver, [DERIVED_NOTES], () =>
+        driver.run(`INSERT INTO derived_notes (id, title) VALUES (${L.p(1)}, ${L.p(2)})`, [
+          "n2",
+          "mine",
+        ]),
+      );
+      equal(named.isErr() ? named.error._tag : "ok", "DocColumnWrite", "an insert naming one");
+    },
+  },
 ];
