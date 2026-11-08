@@ -159,6 +159,29 @@ describe("a session below a peer's floor", () => {
     second.close();
   });
 
+  test("an accepted floor still holds for the authors a partial catch-up left below it", () => {
+    const rejoins = createRejoins();
+    const asked: Parameters<typeof sessionWith>[2] = [];
+    const own = peer(83, "acct_w");
+    const other = peer(121, "acct_d").identity.peerId;
+    const both = cursors([author, 5], [other, 5]);
+    const theirsBoth = cursors([author, 9], [other, 9]);
+    const first = sessionWith(rejoins, false, asked, own.engine);
+    first.onCursors(far, theirsBoth, both);
+    first.close();
+    expect(rejoins.accept(far)).toBe("deferred");
+
+    // one author's run reached this device some other way; the other is still below the floor
+    own.engine.adoptCoverage({ synced: cursors([author, 5]), local: new Map() });
+    const second = sessionWith(rejoins, false, asked, own.engine);
+    second.onCursors(far, theirsBoth, both);
+    expect(asked.map(({ policy }) => ({ ...policy, settled: undefined }))).toEqual([
+      { adoptUnvouched: true, floor: cursors([other, 5]), settled: undefined },
+    ]);
+    expect(rejoins.issues().map(({ reason }) => reason)).toEqual(["untrusted"]);
+    second.close();
+  });
+
   test("a refused install is an unanswered ask: it does not reset the count, and three raise the issue", () => {
     const rejoins = createRejoins();
     const asked: Parameters<typeof sessionWith>[2] = [];

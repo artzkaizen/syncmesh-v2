@@ -147,8 +147,16 @@ export function createRejoins(): Rejoins {
   const inflight = new Set<string>();
   /** (peer, floor) pairs an install left below: no later session asks again on its own. */
   const halted = new Set<string>();
-  /** Floors the app accepted unvouched, by (peer, floor). */
-  const accepted = new Set<string>();
+  /**
+   * Floors the app accepted unvouched, per peer. A floor some of whose authors have since caught
+   * up some other way is still the floor accepted for the rest, so it is matched per author.
+   */
+  const accepted = new Map<PeerId, Cursors>();
+  /** Whether the app accepted every author of `below` at the floor it names. */
+  const consented = (peer: PeerId, below: Cursors): boolean => {
+    const floor = accepted.get(peer);
+    return floor !== undefined && [...below].every(([author, seq]) => floor.get(author) === seq);
+  };
   /** Open sessions per peer, each able to send an accepted request now. */
   const live = new Map<PeerId, Set<(floor: Cursors) => void>>();
 
@@ -201,7 +209,7 @@ export function createRejoins(): Rejoins {
         // a refused install merged nothing and completed nothing: it stays an unanswered ask
         if (outcome.kind === "refused") return;
         attempts.delete(key);
-        accepted.delete(key);
+        if (adoptUnvouched) accepted.delete(peer);
         const left = belowPeerFloor(self, ours(), below, below);
         if (left.size === 0) return clear(peer);
         stopped.add(peer);
@@ -236,7 +244,7 @@ export function createRejoins(): Rejoins {
       const key = floorKey(peer, below);
       // another link to the same peer already asked: its answer is this one's too
       if (acted.has(key) || inflight.has(key)) return;
-      if (accepted.has(key)) {
+      if (consented(peer, below)) {
         acted.add(key);
         return ask(peer, below, true);
       }
@@ -280,7 +288,7 @@ export function createRejoins(): Rejoins {
         return "nothing-to-accept";
       }
       const { floor } = held.issue;
-      accepted.add(floorKey(peer, floor));
+      accepted.set(peer, floor);
       // the issue stays until an install answers it: accepting is not yet being caught up
       const sessions = live.get(peer);
       const first = sessions === undefined ? undefined : [...sessions][0];
