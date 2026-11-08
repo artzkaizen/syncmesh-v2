@@ -101,7 +101,8 @@ export function watchNarrowing(deps: NarrowingDeps) {
    * Partitions purged and not granted since. An event of one can still arrive after the purge — it
    * was in flight when the grant narrowed, before the far side heard of it — and is purged on
    * arrival, without telling the app again. Held for the process: a session opened after a restart
-   * is already served under the narrower grant.
+   * is already served under the narrower grant. While one is lost, every snapshot that lands
+   * has its scope cut back to the grant again.
    */
   const lost = new Set<PartitionKey>();
 
@@ -147,9 +148,18 @@ export function watchNarrowing(deps: NarrowingDeps) {
   });
 
   const offFolds = engine.onFoldBatch((batch) => {
-    if (!ARRIVALS.has(batch.source) || lost.size === 0 || !wroteInto(engine, batch, lost)) return;
+    if (!ARRIVALS.has(batch.source) || lost.size === 0 || held === undefined) return;
+    const wrote = wroteInto(engine, batch, lost);
+    // a snapshot adopts its own scope once its rows are written, and that can be after the
+    // rescope — unscoped, or the scope read before the purge — so the cut is made again
+    const recut = batch.source === "snapshot";
+    if (!wrote && !recut) return;
     const late = new Set(lost);
-    queue = queue.then(() => purgeQuietly(partitionsOut(late)));
+    const kept = held;
+    queue = queue.then(async () => {
+      if (wrote) await purgeQuietly(partitionsOut(late));
+      if (recut) rescope(engine, kept);
+    });
   });
 
   let then: () => Promise<void> = () => Promise.resolve();

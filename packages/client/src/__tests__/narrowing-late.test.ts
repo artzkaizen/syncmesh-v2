@@ -1,4 +1,9 @@
-import { createEngine, createMemoryEventStore } from "@syncmesh/engine";
+import {
+  createEngine,
+  createMemoryEventStore,
+  createMemoryStateStore,
+  scopeFrom,
+} from "@syncmesh/engine";
 import { createHlcClock, parsePartitionKey, readRow } from "@syncmesh/kernel";
 import { column, key, row, seed, table } from "@syncmesh/kernel/test-fixtures";
 import { memoryBlobStore } from "@syncmesh/storage";
@@ -19,11 +24,48 @@ const TITLE = column("title");
 // SAFETY: a test fixture; procedure naming rules arrive with the schema
 const CREATE = "notes.create" as Parameters<ReturnType<typeof createEngine>["mutate"]>[0];
 
-const engineFor = (peerId: typeof DEVICE.peerId, startMs: number) => {
+const engineFor = (
+  peerId: typeof DEVICE.peerId,
+  startMs: number,
+  stateStore = createMemoryStateStore(),
+) => {
   let ms = startMs;
   const clock = createHlcClock({ now: () => Temporal.Instant.fromEpochMilliseconds(ms++) });
   const store = createMemoryEventStore();
-  return { engine: createEngine({ peerId, clock, store }), store };
+  return { engine: createEngine({ peerId, clock, store, stateStore }), store };
+};
+
+/**
+ * A memory state store that holds the first two commits after a `remove`, each until released:
+ * the purge's own commit, then the write queued behind it.
+ */
+const heldCommits = () => {
+  const inner = createMemoryStateStore();
+  const holds = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  const entered = Promise.withResolvers<void>();
+  let removed = false;
+  let held = 0;
+  const store = {
+    ...inner,
+    remove: async (keys: Parameters<typeof inner.remove>[0]) => {
+      removed = true;
+      return inner.remove(keys);
+    },
+    commit: async (...args: Parameters<typeof inner.commit>) => {
+      const hold = removed ? holds[held] : undefined;
+      if (hold !== undefined) {
+        held += 1;
+        if (held === 1) entered.resolve();
+        await hold.promise;
+      }
+      return inner.commit(...args);
+    },
+  } satisfies typeof inner;
+  return {
+    store,
+    entered: entered.promise,
+    release: (index: 0 | 1) => holds[index]?.resolve(),
+  };
 };
 
 const grantOf = (partitions: readonly (typeof ACME)[], at: number) =>
@@ -87,6 +129,46 @@ describe("an event of a lost partition that arrives after the purge (D45)", () =
     (await device.engine.receiveBatch(await write("after"))).unwrap();
     await watch.idle();
     expect(holds("after")).toBe(true);
+    await watch.close();
+  });
+
+  test("a snapshot whose coverage lands after the rescope does not widen it back", async () => {
+    const held = heldCommits();
+    const device = engineFor(DEVICE.peerId, 500, held.store);
+    const author = engineFor(AUTHOR.peerId, 100);
+    const grants = createGrantRegistry({ issuer: ISSUER.peerId, now: () => T0 });
+    const watch = watchNarrowing({
+      engine: device.engine,
+      self: DEVICE.peerId,
+      grants,
+      blobs: memoryBlobStore(),
+    });
+    const write = async (id: string, partition: typeof ACME) =>
+      (
+        await author.engine.mutate(CREATE, (tx) => tx.insert(NOTES, key(id), row({ title: id })), {
+          partition,
+        })
+      ).unwrap();
+    const partitions = () => scopeFrom(device.engine.coverage().scope).interest?.partitions;
+
+    grants.register(grantOf([ACME, PAYROLL], 0)).unwrap();
+    await write("kept", ACME);
+    await write("bonus", PAYROLL);
+    (await device.engine.receiveBatch((await author.store.all()).unwrap())).unwrap();
+
+    grants.register(grantOf([ACME], 1)).unwrap();
+    await held.entered;
+    // an unscoped snapshot lands mid-purge: its rows merge now, its write and coverage wait
+    const installing = device.engine.installSnapshot(author.engine.snapshot());
+    held.release(0);
+    await watch.idle();
+    expect(partitions()).toEqual([ACME]);
+
+    held.release(1);
+    await installing;
+    await watch.idle();
+    expect(partitions()).toEqual([ACME]);
+    expect(readRow(device.engine.state(), NOTES, key("bonus"))).toBeUndefined();
     await watch.close();
   });
 });
