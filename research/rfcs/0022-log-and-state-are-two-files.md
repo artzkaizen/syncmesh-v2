@@ -119,7 +119,7 @@ that rebuilds whatever sits above the floor, drops the rest, and reports itself 
 `rejoin from a peer`. It is a bug in today's single-file build too, reachable by anyone who clears
 the cache by hand.
 
-## A torn commit is survivable, but only under a protocol we do not have yet
+## A torn commit is survivable, under a protocol built since (U29)
 
 **The first draft of this section was wrong and the error is worth keeping**, because it is the
 one somebody else would make next.
@@ -167,11 +167,84 @@ Cross-database commits are atomic only in rollback-journal mode, where SQLite wr
 journal. Every device here runs WAL, so tearing is the normal case rather than a rare one to
 design around.
 
-> Out of scope here but found while writing it: `writer.ts` already commits the app-table write in
-> `captureChanges`' own transaction and the event in a second one. A crash between them leaves a
-> row written, the change log cleared, and no event — a write that is local forever and that
-> `strandedWrites` cannot see, because it scans the event store and there is no event. That gap
-> exists today, in one file, and this RFC neither causes nor fixes it.
+> Found while writing it, and fixed since (U29, 2026-11-08): `writer.ts` committed the app-table
+> write in `captureChanges`' own transaction and the event in a second one. A crash between them
+> left a row written, the change log cleared, and no event — a write that is local forever and
+> that `strandedWrites` cannot see, because it scans the event store and there is no event. The
+> writer now runs the capture inside the engine's own write transaction
+> (`Engine.mutateCaptured`), so the app's statements, the event, its ledger row and the state
+> commit are one transaction.
+
+### What was built (U29, decided 2026-11-08: Jace delegated the call)
+
+The three steps above are not what shipped, because they cannot hold for the one write that
+matters most: a captured write's rows are in `main` and exist *before* its event does, so they
+cannot commit second. What shipped keeps one transaction and makes its split recoverable:
+
+1. **Row and event in one transaction, everywhere.** `createWriter` hands `captureWithin` to
+   `Engine.mutateCaptured`, which runs it first inside `atomic`, then numbers, appends, records
+   and persists. A refusal from the capture or the ladder rolls the app's statements back with
+   the rest; statements that changed no synced row still commit, as no event. An engine built
+   without `atomic` (a memory log, or stores opened by hand and not joined) has no transaction to
+   run the capture in: there the statements still commit first, in the `around` transaction the
+   caller hands over, and the event second, as before, so durable stores should always pass
+   `atomic` — `createMesh` does. With neither `atomic` nor `around`, nothing could roll a refused
+   capture back, and `mutateCaptured` panics rather than commit it. On Postgres, PGlite
+   and an inline (Durable Object, Rivet) log that one transaction is the whole answer: one
+   database, one commit.
+2. **The split inside `COMMIT`, journaled.** On a device's SQLite (`bun:sqlite`, `node:sqlite`,
+   `expo-sqlite`, sqlite-wasm on OPFS) `openStores` hands back a driver that journals every
+   transaction writing both files: its log statements, copied into `main`'s `syncmesh_journal`
+   in the same transaction, under a number the log's `meta` also records. SQLite commits `main`
+   first, so the only reachable tear is `main` committed and the log not; `openStores` replays a
+   journal entry the log has not reached into the log, before anything reads either file. The
+   other direction (log committed, `main` not) is the log ahead of the cursor, which boot already
+   replays. A transaction that writes one file is not journaled.
+3. **What it does not cover.** A log write made on the bare driver you passed to `openStores`
+   rather than `Stores.driver` is not journaled. The app's own statements write `main` and are
+   safe on either; what is not is an `OperationStore` built on the bare driver, whose ledger rows
+   are the log's — `createMesh` builds it on the stores' driver, and `meshDrizzle`'s `operations`
+   says to. A state file swapped for another schema's and swapped back after a crash compares its
+   journal number with a log that has moved on, and does not replay. Nor does a tear followed by
+   an app update that changes the schema: the state file is per schema (`statePath(log,
+   schemaName(tables))`), so the next open refolds into a new file, and the journal entry and the
+   app's row stay in the old one; the write is lost, as it was before U29. A replay that fails
+   (a statement the upgraded log no longer accepts, below) refuses the open with a `StoreFailure`,
+   and every later open the same way; the store opens again only once that state file is deleted
+   and refolded, which loses the torn write. Statements are journaled by
+   their target (`syncmesh.<table>`), which holds for every statement this repo writes and is
+   pinned by `journal.test.ts`. A journal entry is replayed after both ladders climb, so a tear
+   whose next open is also an upgrade that moves the log ladder replays statements written for
+   the log as it was before the upgrade; a log rung must therefore keep the columns an older
+   write names, or say why it may not.
+4. **A commit that fails without a crash.** A full disk or an I/O error on the log file can fail
+   the `COMMIT` after `main` landed, and the process lives on. The journaling driver then holds
+   every later transaction on that connection, refused as a `StoreFailure`, while the journal is
+   ahead of the log, so the entry is not overwritten before an open replays it. Every wrapper over
+   one connection counts from one number, so two `openStores` on one driver cannot journal under
+   the same number and skip a replay; they share the transaction in flight too, so a log
+   statement through one inside the other's transaction is journaled with it; and the replay
+   runs in the connection's turn, so a second `openStores` never begins it inside another
+   store's open transaction.
+5. **What it costs.** Every transaction that writes both files writes its log statements twice:
+   once into the log and once, CBOR-encoded with their parameters (event bytes included), into
+   the one journal row in `main`. A received batch is held twice in memory while it commits. Not
+   measured yet on a device; a large catch-up page is where it shows, and splitting a page into
+   several transactions bounds it if it matters.
+
+Pinned three ways, each failing without its half of the fix: `client/src/__tests__/crash.test.ts`
+kills a mesh write with SIGKILL before each of its statements (13 of 21 boundaries left a row
+with no event before); `storage/src/__tests__/journal.test.ts` puts the log file back as it was
+before a write — the state SQLite leaves when it dies between the two files' commits — for a
+local write and a received batch; and the driver suite's `journal: a log half that never landed
+is replayed into the log at the next open` case does the same on an adapter's own driver. That
+case exercises the replay only where the log is an attached second file (`bun:sqlite`,
+`node:sqlite`, sqlite-wasm over `memdb`, the expo driver over its test fake); on Postgres and
+PGlite it returns early, because one database has nothing to journal.
+
+Under load, `client/src/__tests__/crash.test.ts` passed 20 runs of 20 on 2026-11-08 (Apple
+silicon, bun 1.4.4: four `bun test` processes at a time beside four busy-loop processes), where
+"kill -9 mid-write" had failed about 1 run in 10 before U29.
 
 ## The shape
 
@@ -276,7 +349,13 @@ inert there — correctly, since `openStores` is not what a relay opens.
 
 ## Current state → work
 
-1. ✅ **The two-phase protocol.** Less work than this said, because the shape was already here:
+1. ✅ **The two-phase protocol** — for an engine whose stores have no `atomic`. It was **not**
+   true of `createMesh` over `openStores`, which passes `atomic` across both files: a local write
+   tore twice there, between the writer's two transactions and inside SQLite's `COMMIT` between
+   the files (U29). Both are closed by the journal described under "What was built" above, not
+   by this item. What follows is the protocol as it stands without `atomic`.
+
+   Less work than this said, because the shape was already here:
    `atomic` has always been optional, and its absent case is each store committing on its own
    while the coverage cursor recovers the gap. What was wrong was one thing on the wrong side —
    the operation record was written *after* `persist`, so a tear between them left a write that

@@ -15,7 +15,7 @@ import { join } from "node:path";
 
 import { createMesh } from "../mesh.js";
 import { sqlite } from "../options.js";
-import { notes, notesSchema, writer as device } from "./crash-fixture.js";
+import { boundaryDriver, notes, notesSchema, writer as device } from "./crash-fixture.js";
 
 /**
  * What a crash may not cost (E-B durability): a process killed mid-write reopens to exactly
@@ -103,6 +103,68 @@ describe("what a crash may not cost", () => {
     }
   }, 30_000);
 
+  test("kill -9 before each statement of a write: row, event, ledger row and cursor agree", async () => {
+    const child = async (dataDir: string, k: number) => {
+      const proc = Bun.spawn(
+        ["bun", join(import.meta.dir, "crash-boundary.ts"), dataDir, String(k)],
+        { stdout: "pipe", stderr: "inherit" },
+      );
+      const printed = await new Response(proc.stdout).text();
+      await proc.exited;
+      return { printed: printed.trim(), killed: proc.signalCode === "SIGKILL" };
+    };
+    const fresh = () => mkdtempSync(join(tmpdir(), "syncmesh-boundary-"));
+
+    // a run that never dies says how many statements the write takes
+    const dry = fresh();
+    const total = Number((await child(dry, 0)).printed);
+    rmSync(dry, { recursive: true, force: true });
+    expect(total).toBeGreaterThan(4);
+
+    const torn: string[] = [];
+    for (let k = 1; k <= total; k += 1) {
+      const dataDir = fresh();
+      try {
+        expect((await child(dataDir, k)).killed).toBe(true);
+        const driver = boundaryDriver(dataDir);
+        const mesh = (
+          await createMesh({
+            schema: notesSchema(),
+            identity: device,
+            storage: sqlite({ driver }),
+            trust: { authority: device.peerId },
+          })
+        ).unwrap();
+        const count = async (sql: string) => Number((await driver.all(sql))[0]?.[0]);
+        const cursor = async () =>
+          Number((await mesh.engine.cursors()).unwrap().get(device.peerId) ?? 0);
+        const seen = {
+          rows: await count(`SELECT COUNT(*) FROM notes`),
+          events: await count(`SELECT COUNT(*) FROM syncmesh.events`),
+          ledger: await count(`SELECT COUNT(*) FROM syncmesh.operations`),
+          cursor: await cursor(),
+        };
+        const { rows } = seen;
+        // the second write either landed whole or not at all
+        if (
+          (rows !== 1 && rows !== 2) ||
+          seen.events !== rows ||
+          seen.ledger !== rows ||
+          seen.cursor !== rows
+        )
+          torn.push(`killed before statement ${k} of ${total}: ${JSON.stringify(seen)}`);
+        await mesh.on().unwrap().db.insert(notes).values({ id: "after", body: "after the kill" });
+        if ((await cursor()) !== seen.cursor + 1)
+          torn.push(`killed before statement ${k}: the next write did not follow on`);
+        await mesh.stop();
+        await driver.close?.();
+      } finally {
+        rmSync(dataDir, { recursive: true, force: true });
+      }
+    }
+    expect(torn).toEqual([]);
+  }, 120_000);
+
   test("a torn write-ahead log on the state half is healed from the log; the fold never runs ahead of it", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "syncmesh-torn-"));
     try {
@@ -181,5 +243,5 @@ describe("what a crash may not cost", () => {
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });

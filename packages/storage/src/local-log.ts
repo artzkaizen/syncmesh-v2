@@ -18,7 +18,7 @@ import {
 import type { SqlRow } from "./driver.js";
 
 import { decodeStoredEvent } from "./event-store.js";
-import { coverageOf, hlcRow } from "./sql.js";
+import { parseCoverage, hlcRow } from "./sql.js";
 
 /**
  * What a `localStorage` log persists, in two strings: the entries, and the head — the marks a boot
@@ -59,7 +59,7 @@ const cursorRows = (coverage: Coverage): CborValue => [
   ...[...coverage.local].map(([peer, seq]) => [peer, 1, seq]),
 ];
 
-function cursorsOf(value: CborValue | undefined): Result<Coverage, LogCorrupt> {
+function parseCursors(value: CborValue | undefined): Result<Coverage, LogCorrupt> {
   if (!Array.isArray(value)) return Result.err(corrupt("cursors are not an array"));
   const rows: SqlRow[] = [];
   for (const row of value) {
@@ -69,7 +69,7 @@ function cursorsOf(value: CborValue | undefined): Result<Coverage, LogCorrupt> {
       return Result.err(corrupt("a cursor is not (peer, local, seq)"));
     rows.push([peer, local, seq]);
   }
-  return coverageOf(rows).mapError(asCorrupt);
+  return parseCoverage(rows).mapError(asCorrupt);
 }
 
 /**
@@ -103,7 +103,7 @@ export const encodeHead = ({ hlc, seqs, floors }: PersistedHead): string =>
     ]),
   );
 
-const stampOf = (value: CborValue): Result<Hlc | undefined, LogCorrupt> => {
+const parseStamp = (value: CborValue): Result<Hlc | undefined, LogCorrupt> => {
   if (value === null) return Result.ok(undefined);
   if (!Array.isArray(value)) return Result.err(corrupt("the stamp is not a pair"));
   const [ms, logical] = value;
@@ -117,22 +117,22 @@ export function decodeHead(text: string | null): Result<PersistedHead, LogCorrup
     const [, stamp, seqs, floors] = yield* frame(text, 4);
     if (stamp === undefined) return Result.ok(EMPTY_HEAD); // no key yet: a first boot, not damage
     return Result.ok({
-      hlc: yield* stampOf(stamp),
-      seqs: yield* cursorsOf(seqs),
-      floors: yield* cursorsOf(floors),
+      hlc: yield* parseStamp(stamp),
+      seqs: yield* parseCursors(seqs),
+      floors: yield* parseCursors(floors),
     });
   });
 }
 
 /** The same `(core, local, sig)` row the SQL log stores: the bytes the signature covers, never a re-encode of them. */
-const rowOf = ({ event, core, sig }: StoredEvent): CborValue => [
+const logRow = ({ event, core, sig }: StoredEvent): CborValue => [
   core ?? encodeEventCore(event),
   event.local === true ? 1 : 0,
   sig ?? null,
 ];
 
 export const encodeLog = (entries: readonly StoredEvent[]): string =>
-  bytesToHex(encodeCbor([VERSION, entries.map(rowOf)]));
+  bytesToHex(encodeCbor([VERSION, entries.map(logRow)]));
 
 export function decodeLog(text: string | null): Result<readonly StoredEvent[], LogCorrupt> {
   return Result.gen(function* () {

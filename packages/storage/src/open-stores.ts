@@ -15,6 +15,7 @@ import { ATTACHED_LOG, driverDialect, logPlacement } from "./dialect.js";
 import { sqlDocStore } from "./doc-store.js";
 import { sqlEventStore } from "./event-store.js";
 import { closeSession, openSession, reopenSession } from "./integrity.js";
+import { journalPosition, journalingDriver, recoverJournal } from "./journal.js";
 import { tablesProjection } from "./projection.js";
 import { rowSyncDdlFor, rowSyncTable, type RowSync } from "./row-sync.js";
 import { attempt, inTransaction } from "./sql.js";
@@ -30,13 +31,18 @@ export interface ScopedStores {
 
 /** The event log and the persisted state over one database, closed together. */
 export interface Stores extends ScopedStores {
-  /** The connection everything shares — what a query layer runs over. */
+  /**
+   * The connection everything shares — what a query layer and a writer run over. On a device's
+   * SQLite it journals every transaction that writes both files (RFC-0022), so a write through it
+   * survives a crash between their commits; one through the driver you passed in does not.
+   */
   readonly driver: SqlDriver;
   /**
    * Runs `fn` in one transaction on the connection, with stores that write into it rather than
-   * opening their own: an event appended and its rows materialised land together or not at all —
-   * the crash window the cursor sidecar would otherwise have to recover. What the engine's
-   * `atomic` option takes.
+   * opening their own: an event appended and its rows materialised land together or not at all.
+   * Across the two files of a device's SQLite that holds through a crash because the transaction
+   * is journaled and the open replays a log half that did not land. What the engine's `atomic`
+   * option takes.
    */
   readonly atomic: <T>(fn: (scoped: ScopedStores) => Promise<T>) => Promise<T>;
   /** Where each row's own write got to, for `syncOf` (book ch. 10); absent with no tables. */
@@ -199,16 +205,16 @@ const logAttached = (driver: SqlDriver): Promise<Result<boolean, StoreFailure>> 
   );
 
 export function openStores(
-  driver: SqlDriver,
+  connection: SqlDriver,
   options: OpenStoresOptions = {},
 ): Promise<Result<Stores, StoreFailure>> {
   return Result.gen(async function* () {
     // an inline driver was never going to attach anything — its runtime has no `ATTACH` — so the
     // guard would be refusing the one arrangement that is correct there (RFC-0022)
     if (
-      logPlacement(driver) === "attached" &&
-      driver.dialect !== "postgres" &&
-      !(yield* Result.await(logAttached(driver)))
+      logPlacement(connection) === "attached" &&
+      connection.dialect !== "postgres" &&
+      !(yield* Result.await(logAttached(connection)))
     ) {
       return Result.err(
         new StoreFailure({
@@ -216,6 +222,12 @@ export function openStores(
         }),
       );
     }
+    // both ladders, and then before anything reads either file: a write whose state committed
+    // and whose log entry did not is finished here, so no reader sees a cursor past the log
+    // (RFC-0022)
+    yield* Result.await(sqlEventStore(connection));
+    yield* Result.await(recoverJournal(connection));
+    const driver = journalingDriver(connection, yield* Result.await(journalPosition(connection)));
     const events = yield* Result.await(sqlEventStore(driver));
     // once, and only after a session that never reached `close`: a torn page a read cannot see
     // is refused here rather than folded around (D39)
