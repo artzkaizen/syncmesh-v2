@@ -27,6 +27,7 @@ type ControlDecoder = (
   c: CborValue | undefined,
   d: CborValue | undefined,
   e: CborValue | undefined,
+  f: CborValue | undefined,
 ) => Result<RelayFrame, MalformedFrame>;
 
 const decodeJoin: ControlDecoder = (a, b, c, d, e) =>
@@ -51,7 +52,7 @@ const decodeChallenge: ControlDecoder = (a) =>
     ? Result.ok({ kind: "challenge", nonce: a } as const)
     : malformedFrame(`challenge is not ${CHALLENGE_BYTES} bytes`);
 
-const decodeHello: ControlDecoder = (a, b, c, d, e) =>
+const decodeHello: ControlDecoder = (a, b, c, d, e, f) =>
   Result.gen(function* () {
     if (!isSafeNonNegative(a) || !isSafeNonNegative(b) || !isString(c))
       return malformedFrame("hello is not [version, keepalive, epoch, cursors]");
@@ -66,6 +67,8 @@ const decodeHello: ControlDecoder = (a, b, c, d, e) =>
       epoch: c,
       cursors,
       floor,
+      // only a room that says so is durable: absent is a relay built before D42, and not a claim
+      durable: f === 1,
     } as const);
   });
 
@@ -179,9 +182,9 @@ const CONTROL = new Map<number, ControlDecoder>([
 export function decodeRelayFrame(bytes: Uint8Array): Result<RelayFrame, MalformedFrame> {
   const outer = decodeCbor(bytes);
   const parts: readonly CborValue[] = outer.isOk() && Array.isArray(outer.value) ? outer.value : [];
-  const [kind, a, b, c, d, e] = parts;
+  const [kind, a, b, c, d, e, f] = parts;
   const control = isSafeNonNegative(kind) ? CONTROL.get(kind) : undefined;
-  if (control !== undefined) return control(a, b, c, d, e);
+  if (control !== undefined) return control(a, b, c, d, e, f);
   // a bare tag is nobody's session frame — those all carry a payload — so an unrecognised one is
   // a tag some later version added and this build ignores (D14's additive vector), not junk
   if (parts.length === 1 && isSafeNonNegative(kind)) return Result.ok({ kind: "unknown" } as const);
