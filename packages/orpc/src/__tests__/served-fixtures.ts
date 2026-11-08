@@ -1,4 +1,5 @@
 import type { PeerId } from "@syncmesh/kernel";
+import type { FieldsFn } from "@syncmesh/schema";
 import type { PageSource } from "@syncmesh/window";
 
 import { resumableCommitFeed } from "@syncmesh/cdc";
@@ -77,17 +78,28 @@ const mailColumns = {
   subject: t.text(),
 };
 
+/** A column rule (E06): only an admin reads a mail's subject. */
+const adminSubject = (({ role }) => ({ subject: role("admin") })) satisfies FieldsFn<
+  typeof mailColumns,
+  string
+>;
+
 /**
  * The manifest: `mail` is served, and a person reads only their own; `open` is served with no
  * rule at all, which a served read must refuse rather than read.
  */
-export const schemaFor = (mail: string, open: string) =>
+export const schemaFor = (
+  mail: string,
+  open: string,
+  options: { readonly hideSubject?: boolean } = {},
+) =>
   syncSchema({
     tables: {
       [mail]: {
         columns: mailColumns,
         partition: mailbox,
         allow: ({ owner, deny }) => ({ $default: deny, read: owner("owner") }),
+        ...(options.hideSubject === true ? { fields: adminSubject } : {}),
         sync: "window",
       },
       [open]: { columns: mailColumns, sync: "window" },

@@ -20,6 +20,7 @@ import {
   mailId,
   pipe,
   runId,
+  schemaFor,
   seedMailbox,
   served,
 } from "./served-fixtures.js";
@@ -537,6 +538,28 @@ suite("what a served handler cannot reach, however it asks (D43, E13)", () => {
     });
     expect(rows.isOk()).toBe(true);
     expect(found).toEqual([undefined, undefined, false]);
+  });
+
+  test("a column the reader's rule refuses is read as null, its value kept on the server", async () => {
+    const m = fx.mail;
+    const router = {
+      r: query.input(z.object({})).handler(({ db }) => db.select().from(m).orderBy(m.id).limit(5)),
+    };
+    const source = servedReads({
+      router,
+      schema: schemaFor(fx.names.mail, fx.names.open, { hideSubject: true }),
+      db: fx.db,
+      principal: ALICE,
+      self: SERVER,
+      onCommit: () => () => undefined,
+      readRole: fx.roles.reader,
+    });
+    const page = (await source.readPage({ path: "r", input: {} })).unwrap();
+    expect(page.rows.map((row) => Object.fromEntries(row.row)["subject"])).toEqual([
+      null,
+      null,
+      null,
+    ]);
   });
 
   test("a handler that throws is refused, not read again", async () => {

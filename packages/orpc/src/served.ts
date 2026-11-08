@@ -9,6 +9,7 @@ import {
   driverValues,
   keyOfRows,
   limitOfRows,
+  readColumns,
   readOnly,
   readPredicate,
   scopeReads,
@@ -131,7 +132,7 @@ interface ServedDb {
 interface ServedTx {
   readonly execute: (query: SQL) => PromiseLike<unknown>;
   readonly rollback: () => never;
-  readonly select: () => {
+  readonly select: (fields?: object) => {
     from: (t: Table) => { where: (w: unknown) => { as: (n: string) => unknown } };
   };
 }
@@ -254,9 +255,12 @@ export function servedReads(options: ServedReadsOptions): PageSource {
     if (entry?.sync !== "window")
       throw refused(`${name} is not served: only a sync: "window" table is read on the server`);
     if (entry.allow === undefined) throw refused(`${name} has no read rule, so no one may read it`);
-    const rule = readPredicate(name, { schema, dialect: "postgres", actor: principal });
+    const scope = { schema, dialect: "postgres", actor: principal } as const;
+    // a column the reader's rule refuses reads NULL: its value never leaves the server
+    const columns = readColumns(name, table, scope);
+    const selecting = columns === undefined ? tx.select() : tx.select(columns);
     // named as the query calls it, so an alias's columns still resolve
-    return tx.select().from(table).where(rule).as(getTableName(table));
+    return selecting.from(table).where(readPredicate(name, scope)).as(getTableName(table));
   };
 
   /** The handler's query, built inside `tx`, or why it will not be run. */
