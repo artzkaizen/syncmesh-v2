@@ -118,7 +118,8 @@ have someone else run.
 
 The rule's policy is restrictive, so a policy of yours that is open to `PUBLIC` does not widen
 what the read role sees. A table that had no row-level security gets an open policy for every
-other role, so turning it on changes nothing for the app.
+other role, so turning it on changes nothing for the app. `rlsDdl` (`createMesh({ rls: true })`)
+drops that open policy when it installs the app's own, so the two run in either order.
 
 A served table with a column rule (`fields`) is read through a view the DDL makes in
 `syncmesh_served` (`"syncmesh_served"."read:mail"` for `mail`), with `security_barrier`: its rows
@@ -151,8 +152,10 @@ const source = servedReads({
 ```
 
 Each read is a transaction that is rolled back. A statement runs at most `timeout` (5 seconds by
-default), and a pass of N reads that is still running after `timeout × (N + 1)` is cancelled from
-another connection of the pool, so give the reads pool two connections or more. A table the role
+default), and a pass of N reads that is still running after `timeout × (N + 1)` is cancelled with
+postgres.js's `query.cancel()`, over a socket of its own, so a pool of one or a full pool still
+cancels it. `db` must be a postgres.js Drizzle (`drizzle-orm/postgres-js`). Each read ends with a
+rollback to before the reads, so what one read set or broke the next does not inherit. A table the role
 may not read, or that does not exist, is retried for `grace` (1 minute by default, for a deploy
 whose migration has not run yet), then refused. A handler's `db` is for its read: one it keeps
 is refused once the read's rows are in.
@@ -173,12 +176,16 @@ and their login must not have `default_transaction_read_only = on`.
   manifest does not serve. Revoke `SELECT` from `PUBLIC` and grant it to the roles that read it.
   The DDL looks when it runs; a read does not look again.
 - **Change a setting** such as `statement_timeout` for the statements after its own. The pass's
-  own deadline (above) still cancels it. A session advisory lock it takes is let go before the
-  rollback, and session settings, transaction-scoped locks and `pg_notify` end with it.
+  own deadline (above) still cancels it, and the change ends with the read. A session advisory
+  lock it takes is let go before the rollback, and session settings, transaction-scoped locks
+  and `pg_notify` end with it.
+- **See how big a served table is.** `pg_class.reltuples` and the `pg_stat_*` views are
+  readable by every role, so a read can see roughly how many rows a table holds, everyone's
+  together. It sees no row it may not read.
 - **See and end the other served reads.** They all log in as one login, so a read can see their
   SQL in `pg_stat_activity` (never their values, which Drizzle binds) and `pg_terminate_backend`
-  them. Revoke `EXECUTE` on `pg_terminate_backend` from `PUBLIC` if that matters to you; the
-  deadline needs `pg_cancel_backend`. A read whose backend is ended mid-transaction is worse
+  them. Revoke `EXECUTE` on `pg_terminate_backend` and `pg_cancel_backend` from `PUBLIC` if that
+  matters to you; the deadline needs neither, as it sends a cancel request of its own. A read whose backend is ended mid-transaction is worse
   than failed: postgres.js 3.4.9 writes its `ROLLBACK` to the closed socket inside a
   `setImmediate`, which throws outside every promise, an uncaught exception the process dies
   of unless the host handles `uncaughtException`.
