@@ -7,6 +7,7 @@ import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const schema = () =>
   syncSchema({
@@ -27,7 +28,7 @@ const radio = (name: string, says: () => TransportCondition) => {
 
 const device = async (transports?: Parameters<typeof createMesh>[0]["transports"]) => {
   const options = {
-    driver: bunSqliteDriver(":memory:"),
+    storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     schema: schema(),
     identity: createIdentity(seed(7)).unwrap(),
     now: () => T0,

@@ -9,6 +9,7 @@ import { eq } from "drizzle-orm";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const todos = sqliteTable("todos", {
   id: text().primaryKey(),
@@ -39,11 +40,11 @@ const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const granted = async (device: typeof deviceA, at: () => Temporal.Instant) => {
   const mesh = (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: device,
-      issuer: issuer.peerId,
       now: at,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { issuer: issuer.peerId },
     })
   ).unwrap();
   for (const [d, acct] of [
@@ -73,13 +74,13 @@ describe("history — a row's timeline", () => {
     const device = deviceA;
     const mesh = (
       await createMesh({
-        driver: bunSqliteDriver(":memory:"),
         schema: syncSchema({
           tables: { notes: { columns: { id: t.text().primaryKey(), body: t.text() } } }, // global
         }),
         identity: device,
-        authority: device.peerId,
         now: () => T0,
+        storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+        trust: { authority: device.peerId },
       })
     ).unwrap();
     const { db } = mesh.on().unwrap();

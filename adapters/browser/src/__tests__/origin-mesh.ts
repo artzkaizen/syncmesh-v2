@@ -1,6 +1,7 @@
 import type { Router } from "@syncmesh/orpc";
 
-import { createMesh } from "@syncmesh/client";
+import { sqlite } from "@syncmesh/client";
+import { createMesh } from "@syncmesh/client/internal";
 import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
@@ -67,9 +68,9 @@ const openMesh = async () => {
     await createMesh({
       schema,
       identity: device,
-      issuer: issuer.peerId,
-      driver: bunSqliteDriver(":memory:"),
       now: () => T0,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { issuer: issuer.peerId },
     })
   ).unwrap();
   mesh.grants

@@ -11,6 +11,7 @@ import { join } from "node:path";
 
 import { createDrafts } from "../drafts.js";
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const schema = () =>
   syncSchema({
@@ -23,10 +24,10 @@ describe("drafts — local-only, with no replication promise (book ch. 8)", () =
   test("saved, read back, forgotten — and never an event", async () => {
     const mesh = (
       await createMesh({
-        driver: bunSqliteDriver(":memory:"),
         schema: schema(),
         identity,
         now: () => T0,
+        storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
       })
     ).unwrap();
     const drafts = mesh.drafts ?? panicNoDrafts();
@@ -51,7 +52,7 @@ describe("drafts — local-only, with no replication promise (book ch. 8)", () =
     const open = async () => {
       const stores = (await defaultStore({ name: "drafts", dir, tables: [] })).unwrap();
       const mesh = (
-        await createMesh({ stores, schema: schema(), identity, now: () => T0 })
+        await createMesh({ schema: schema(), identity, now: () => T0, storage: sqlite({ stores }) })
       ).unwrap();
       return { mesh, close: () => stores.close() };
     };

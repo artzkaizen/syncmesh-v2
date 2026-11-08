@@ -1,5 +1,6 @@
 import "./dom.js";
-import { createMesh } from "@syncmesh/client";
+import { sqlite } from "@syncmesh/client";
+import { createMesh } from "@syncmesh/client/internal";
 import { syncOf } from "@syncmesh/drizzle";
 import { parsePeerId, type SeqNum } from "@syncmesh/kernel";
 import { mutation, query } from "@syncmesh/orpc";
@@ -58,9 +59,9 @@ const open = async () => {
     await createMesh({
       schema,
       identity: device,
-      issuer: issuer.peerId,
-      driver: bunSqliteDriver(":memory:"),
       now: () => T0,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { issuer: issuer.peerId },
     })
   ).unwrap();
   mesh.grants

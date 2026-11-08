@@ -9,6 +9,7 @@ import { eq } from "drizzle-orm";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 /** The tag the capture threw, under Drizzle's one wrapper — the same unwrap `withMesh` does. */
 const tagOf = (thrown: Error): string | undefined => {
@@ -53,11 +54,11 @@ const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const open = async () =>
   (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: device,
-      issuer: issuer.peerId,
       now: () => T0,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { issuer: issuer.peerId },
     })
   ).unwrap();
 
@@ -102,10 +103,10 @@ describe("the schema judges every write, wherever it entered", () => {
     // no issuer: the mesh trusts no root yet, so nothing is granted
     const mesh = (
       await createMesh({
-        driver: bunSqliteDriver(":memory:"),
         schema: schema(),
         identity: device,
         now: () => T0,
+        storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
       })
     ).unwrap();
     const global = mesh.on().unwrap().db;
@@ -124,11 +125,11 @@ describe("the schema judges every write, wherever it entered", () => {
     // as the authority the partition rung passes, and the column check gets its turn
     const authority = (
       await createMesh({
-        driver: bunSqliteDriver(":memory:"),
         schema: schema(),
         identity: device,
-        authority: device.peerId,
         now: () => T0,
+        storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+        trust: { authority: device.peerId },
       })
     ).unwrap();
     const adb = authority.on().unwrap().db;

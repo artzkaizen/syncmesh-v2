@@ -1,6 +1,6 @@
 import type { SocketData } from "@syncmesh/relay";
 
-import { createMesh } from "@syncmesh/client";
+import { createMesh } from "@syncmesh/client/internal";
 import { seed } from "@syncmesh/kernel/test-fixtures";
 import { relayTransport, webSocketDial } from "@syncmesh/relay";
 import { panic } from "@syncmesh/result";
@@ -72,11 +72,11 @@ const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const device = async (url: string, n: number) =>
   (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: deviceSchema(),
       identity: createIdentity(seed(n)).unwrap(),
       now: () => T0,
       transports: [relayTransport({ dial: webSocketDial(url), reconnectMs: 20 })],
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     })
   ).unwrap();
 const until = async (check: () => Promise<boolean>, ms = 5000): Promise<boolean> => {

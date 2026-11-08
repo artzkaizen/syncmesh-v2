@@ -15,6 +15,7 @@ import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const org = partition("org", { roles: ladder("member") });
 const schema = () =>
@@ -45,13 +46,11 @@ const ACME = parsePartitionKey("org:acme").unwrap();
 const governing = async () => {
   const mesh = (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: ISSUER,
-      issuer: ISSUER.peerId,
-      issuerKey: ISSUER,
-      authority: ISSUER.peerId,
       now: () => T0,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { issuer: ISSUER.peerId, issuerKey: ISSUER, authority: ISSUER.peerId },
     })
   ).unwrap();
   mesh.grants

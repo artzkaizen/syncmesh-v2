@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 /**
  * D45 and D44 end to end, at the app surface: real meshes on a grant-gated relay over WebSocket.
@@ -68,12 +69,11 @@ const gatedWorld = async (dataDir: string) => {
   });
   const authority = (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: authorityId,
-      issuer: authorityId.peerId,
-      issuerKey: authorityId,
       transports: [relayTransport({ dial: webSocketDial(relay.url), reconnectMs: 20 })],
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { issuer: authorityId.peerId, issuerKey: authorityId },
     })
   ).unwrap();
   const mint = (device: Identity, partitions: readonly string[]) =>
@@ -103,13 +103,12 @@ const member = async (
   const blobStore = (await sqlBlobStore(driver)).unwrap();
   const mesh = (
     await createMesh({
-      driver,
       schema: schema(),
       identity,
-      issuer: issuer.peerId,
-      ...(cache === "sql" && { blobStore }),
       onNarrowed: onNarrowed ?? (() => undefined),
       transports: [relayTransport({ dial: webSocketDial(url), reconnectMs: 20 })],
+      storage: sqlite({ driver, ...(cache === "sql" && { blobs: blobStore }) }),
+      trust: { issuer: issuer.peerId },
     })
   ).unwrap();
   mesh.grants.register(grant).unwrap();

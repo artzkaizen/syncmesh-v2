@@ -13,6 +13,7 @@ import type { MeshTelemetry } from "../telemetry.js";
 
 import { createBlobs } from "../blobs.js";
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 import { createMeshTelemetry } from "../telemetry.js";
 import { runTransports } from "../transports.js";
 
@@ -219,7 +220,6 @@ describe("follow: one listener rather than three", () => {
     const device = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 90 + i)).unwrap();
     const mesh = (
       await createMesh({
-        driver: bunSqliteDriver(":memory:"),
         schema: syncSchema({
           // a local table: this write never has to travel to be worth measuring
           tables: {
@@ -228,6 +228,7 @@ describe("follow: one listener rather than three", () => {
         }),
         identity: device,
         now: () => Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000),
+        storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
       })
     ).unwrap();
     const seam = createMeshTelemetry();

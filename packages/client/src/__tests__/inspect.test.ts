@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text() });
 const schema = () =>
@@ -19,10 +20,10 @@ const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const device = async () =>
   (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: createIdentity(seed(7)).unwrap(),
       now: () => T0,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     })
   ).unwrap();
 
@@ -89,10 +90,10 @@ describe("inspect.verify", () => {
   test("a mesh over a bare event store says it has no pages to check", async () => {
     const mesh = (
       await createMesh({
-        store: createMemoryEventStore(),
         schema: schema(),
         identity: createIdentity(seed(7)).unwrap(),
         now: () => T0,
+        storage: sqlite({ store: createMemoryEventStore() }),
       })
     ).unwrap();
     const verified = await mesh.inspect.verify();
@@ -104,10 +105,10 @@ describe("inspect.verify", () => {
     const driver = bunSqliteDriver(":memory:");
     const mesh = (
       await createMesh({
-        driver,
         schema: schema(),
         identity: createIdentity(seed(7)).unwrap(),
         now: () => T0,
+        storage: sqlite({ driver }),
       })
     ).unwrap();
     const ended = () => driver.all(`SELECT value FROM syncmesh.meta WHERE key = 'session'`);

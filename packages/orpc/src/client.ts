@@ -1,14 +1,15 @@
-import type { Mesh, MeshStatus } from "@syncmesh/client";
+import type { Mesh, MeshStatus, MeshStopped } from "@syncmesh/client";
+import type { Result as ResultType } from "@syncmesh/result";
 import type { ColumnsMap, PresenceMap } from "@syncmesh/schema";
 
-import { createMesh } from "@syncmesh/client";
-import { panic } from "@syncmesh/result";
+import { createMesh } from "@syncmesh/client/internal";
+import { Result, panic } from "@syncmesh/result";
 
 import type { Api, ApiMesh, Router } from "./api.js";
 import type { ClientOptions } from "./options.js";
 
 import { meshApi } from "./api.js";
-import { flatten, named } from "./options.js";
+import { named } from "./options.js";
 
 /**
  * One noun (book ch. 8, rule 1): the client **is** the api. Procedures sit at the top level —
@@ -29,7 +30,7 @@ import { flatten, named } from "./options.js";
  * export const client = createClient({
  *   schema,
  *   procedures: router,
- *   driver: bunSqliteDriver("rounds.db"),
+ *   storage: sqlite({ driver: bunSqliteDriver("rounds.db") }),
  *   transports: [relayTransport({ dial: webSocketDial(RELAY_URL) })],
  * });
  *
@@ -39,7 +40,7 @@ import { flatten, named } from "./options.js";
  */
 export type Client<R extends Router, PC extends PresenceMap = Record<string, never>> = Api<R> & {
   /**
-   * The mesh exists. Rejects if it never will — no database, no key, whatever `createMesh`
+   * The mesh exists. Rejects if it never will — no database, no key, whatever opening it
    * refused for — with the reason, and every `$` surface below throws the same reason after.
    *
    * A script awaits this before it reads `$mesh`; a screen never has to, because every read it
@@ -82,6 +83,20 @@ export type Client<R extends Router, PC extends PresenceMap = Record<string, nev
   readonly $query: Mesh<"sqlite", PC>["query"];
   /** Which devices an account has vouched for (ch. 14). */
   readonly $accounts: Mesh<"sqlite", PC>["accounts"];
+  /**
+   * Opens the transports of a client created with `start: false` (book ch. 13). Idempotent, and
+   * a no-op on a client that started at construction; `MeshStopped` after `$close`.
+   *
+   * Callable before `$ready`: the client is a value, so a start asked for while the database is
+   * still opening is remembered and happens the moment the mesh exists. After a refused open it
+   * throws the reason, like every other `$` surface.
+   *
+   * @example
+   * const client = createClient({ schema, procedures, start: false });
+   * await signIn();
+   * client.$start().unwrap();
+   */
+  readonly $start: () => ResultType<void, MeshStopped>;
   /** Every transport's queue has run out. Never rejects, never stops early (ch. 13). */
   readonly $flush: () => Promise<void>;
   /**
@@ -120,33 +135,44 @@ const MESH_SURFACES = [
   "accounts",
 ] as const;
 
+/**
+ * The one constructor an app calls (D47): opens a mesh from the grouped options and puts the
+ * app's procedures on top. Returns at once; see {@link Client} for what is pending until `$ready`.
+ */
 export function createClient<
-  R extends Router,
-  C extends ColumnsMap,
+  // no procedures is a client of `$` surface alone: a relay, a courier, a device that only carries
+  R extends Router = Record<never, never>,
+  C extends ColumnsMap = ColumnsMap,
   PC extends PresenceMap = Record<string, never>,
 >(options: ClientOptions<R, C, PC>): Client<R, PC> {
   let mesh: Mesh<"sqlite", PC> | undefined;
   /** The same mesh under the narrower name the api binds to, built once rather than per call. */
   let bound: ApiMesh<PC> | undefined;
   let refused: Error | undefined;
+  /** `$start()` was called before the mesh existed: honoured the moment it does. */
+  let startAsked = false;
   const watching = new Set<() => void>();
 
   const opening = (async (): Promise<void> => {
-    // `procedures`, `link` and `windows` are the client's own and pass through `flatten`
-    // unchanged, so the api above was built from them already; `createMesh` takes the rest
+    // `procedures`, `link` and `windows` are the client's own, and the api below is built from
+    // them; the mesh reads every other group exactly as the app wrote it
     const {
       procedures: _procedures,
       link: _link,
       windows: _windows,
       ...meshOptions
-    } = flatten(await named(options));
+    } = await named(options);
     const opened = await createMesh(meshOptions);
     // the tagged error travels as the cause, so a caller who does want to branch — "storage
     // damaged, rejoin?" — still can, without every other caller unwrapping to reach it
     if (opened.isErr())
       return panic(`the app could not open: ${opened.error.message}`, opened.error);
-    mesh = opened.value;
+    // SAFETY: the `$` surface is typed for the device dialect, as it always was; a postgres node
+    // reaches its handles through procedure bodies and `$mesh.on`, which read no dialect off this
+    mesh = opened.value as Mesh<"sqlite", PC>;
     bound = { ...mesh, self: mesh.engine.peerId };
+    // a fresh mesh has not stopped, so this cannot be `MeshStopped`
+    if (startAsked) mesh.start().unwrap();
   })();
   const ready = opening.then(
     () => {
@@ -177,7 +203,9 @@ export function createClient<
   if (options.windows !== undefined) Object.assign(carries, { windows: options.windows });
   const api = meshApi<R, PC>(
     { current: () => bound, ready, schema: options.schema },
-    options.procedures,
+    // SAFETY: absent procedures leave `R` at its default, the empty router, which `{}` is; a
+    // caller who names an `R` and passes none gets an api with no leaves, as it asked
+    options.procedures ?? ({} as R),
     carries,
   );
 
@@ -222,6 +250,16 @@ export function createClient<
           () => held().stop(),
           () => undefined,
         ),
+    },
+    $start: {
+      enumerable: true,
+      value: (): ResultType<void, MeshStopped> => {
+        if (mesh !== undefined) return mesh.start();
+        // after a refused open this throws the reason, as every other `$` surface does
+        if (refused !== undefined) return held().start();
+        startAsked = true;
+        return Result.ok(undefined);
+      },
     },
     $mesh: { enumerable: true, get: () => held() },
   };

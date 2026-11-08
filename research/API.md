@@ -2,8 +2,8 @@
 
 > **SUPERSEDED (2026-08-26, D20).** This document describes the collection-era surface —
 > `mesh.<table>.create/update/list`, `tx()`, `scoped()`, query descriptors — which was retired
-> when SQL became the data API. The current surface is: `createMesh({ driver })` →
-> `mesh.on(instance?, { as? })` → a Drizzle handle (`db`, `read`, `live`), with `db.transaction()`
+> when SQL became the data API. The current surface is: `createClient({ schema, procedures,
+> storage: sqlite({ driver }) })` from `@syncmesh/orpc` (D47) → `client.$mesh.on(instance?, { as? })` → a Drizzle handle (`db`, `read`, `live`), with `db.transaction()`
 > as the capture boundary, `@syncmesh/orpc`'s `withMesh` for procedures, `@syncmesh/react` for
 > hooks, and `rls: true` for Postgres-enforced reads. Read `plan/decisions/D20.md` and the
 > epics E09/E10/E12/E17 for what is true now; read on only for the historical rationale.
@@ -1991,7 +1991,7 @@ not name answers `BlobNotGranted { partition }`, and a fetch is served only to a
 grant names a partition the bytes were put into (or for bytes put with none). Name the
 partition the row lives in, and only its members can fetch the bytes.
 
-When a device's entitlement narrows (D45), `createMesh({ onNarrowed })` hears
+When a device's entitlement narrows (D45), `createClient({ onNarrowed })` hears
 `{ partitions, tables }` first, and then the device drops the rows, the other devices' events
 behind them, their doc logs and the cached blobs only they named. Its own writes stay.
 
@@ -2075,7 +2075,8 @@ construction, so there is a `stop()` with no matching `start()`. Asymmetric, and
 worth fixing at the same time.
 
 > Built (2026-11-07): `mesh.transports.add/remove`, and `createMesh({ start: false })`
-> with `mesh.start()` — idempotent, `MeshStopped` as a value after `stop()`.
+> with `mesh.start()` — idempotent, `MeshStopped` as a value after `stop()`. Since D47
+> (2026-11-08) an app says it as `createClient({ start: false })` and `client.$start()`.
 
 ## 25 · Not built yet
 

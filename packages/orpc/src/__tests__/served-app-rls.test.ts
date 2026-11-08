@@ -20,7 +20,7 @@ import {
 
 const suite = POSTGRES_URL === undefined ? describe.skip : describe;
 
-/** Which DDL a deployment ran first: `createMesh({ rls: true })` installs the app's at boot. */
+/** Which DDL a deployment ran first: `createServer({ storage: postgres({ driver, rls: true }) })` installs the app's at boot. */
 const ORDERS = ["served reads first, the app's RLS at boot", "the app's RLS first"] as const;
 
 for (const order of ORDERS)

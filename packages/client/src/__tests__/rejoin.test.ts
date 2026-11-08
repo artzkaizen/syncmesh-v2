@@ -15,6 +15,7 @@ import { checkpointHash, createIdentity, issueCheckpoint } from "@syncmesh/wire"
 import { describe, expect, test } from "bun:test";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const org = partition("org", { roles: ladder("member") });
 const schema = () =>
@@ -44,10 +45,10 @@ describe("$recovery below a peer's compaction floor (D46)", () => {
     const { a, b, control } = loopbackPair();
     const mesh = (
       await createMesh({
-        driver: bunSqliteDriver(":memory:"),
+        storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
         schema: schema(),
         identity: device,
-        issuer: issuer.peerId,
+        trust: { issuer: issuer.peerId },
         now: () => T0,
         transports: [linkTransport("loopback", () => b)],
       })
@@ -122,10 +123,10 @@ describe("$recovery below a peer's compaction floor (D46)", () => {
     const { a, b, control } = loopbackPair();
     const mesh = (
       await createMesh({
-        driver: bunSqliteDriver(":memory:"),
+        storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
         schema: schema(),
         identity: device,
-        issuer: issuer.peerId,
+        trust: { issuer: issuer.peerId },
         now: () => T0,
         transports: [linkTransport("loopback", () => b)],
       })

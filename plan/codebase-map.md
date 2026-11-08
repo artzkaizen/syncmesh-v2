@@ -184,6 +184,12 @@ No listeners anywhere — kernel/temporal/result are pure. Injection seams: `now
 
 ## 9 · client — the mesh
 
+> **D47 (2026-11-08):** an app constructs with `createClient` (`@syncmesh/orpc`); `createMesh` is at
+> `@syncmesh/client/internal` for adapters and harnesses, and takes the grouped options
+> (`storage: sqlite({ dir, driver, stores, sweep, store, stateStore, blobs })` or
+> `postgres({ driver, rls, blobs })`, `trust: { issuer, authority, issuerKey, partitionKeys, accountKey, accounts }`,
+> `admission`, …). The flat signature below is the one this map was drawn against.
+
 `createMesh({schema, identity, issuer?, store?, stateStore?, dataDir?=".syncmesh", undoDepth?, transports?, onGrantRequest?, authority?, issuerKey?, now?})` → `Result<Mesh, MeshOpenError>`. Durable by default (platform SQLite per identity under dataDir, dynamic import of sqlite-bun/-node); memory only ever explicit.
 
 `Mesh` = one `Collection` per table (spread onto the mesh; name collisions panic) + base:

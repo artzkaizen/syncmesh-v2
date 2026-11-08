@@ -78,8 +78,9 @@ export type Server<R extends Router, PC extends PresenceMap = Record<string, nev
 };
 
 export async function createServer<
-  R extends Router,
-  C extends ColumnsMap,
+  // no procedures and no handlers is the relay: custody alone (book ch. 19)
+  R extends Router = Record<never, never>,
+  C extends ColumnsMap = ColumnsMap,
   PC extends PresenceMap = Record<string, never>,
 >(options: ServerOptions<R, C, PC>): Promise<Server<R, PC>> {
   const { handlers, watchdogs, custody, ...clientOptions } = options;
@@ -87,7 +88,9 @@ export async function createServer<
   const client = createClient(clientOptions);
   await client.$ready;
 
-  const handlerOptions = { procedures: options.procedures, api: client };
+  // SAFETY: absent procedures leave `R` at its default, the empty router, which `{}` is
+  const routes = options.procedures ?? ({} as R);
+  const handlerOptions = { procedures: routes, api: client };
   if (handlers !== undefined)
     Object.assign(handlerOptions, {
       // the replica comes from the call's own input, because scope is input (ch. 3) — a server
@@ -115,7 +118,7 @@ export async function createServer<
 
   // from the contract, so the spec and a contract.json a build writes cannot disagree
   const openapi = (info: { readonly title: string; readonly version: string }) =>
-    openApi(contractJson(options.procedures), info);
+    openApi(contractJson(routes), info);
 
   // assigned onto the client rather than spread: the client is a walked tree of callables, and
   // spreading one would copy the leaves off their own group objects

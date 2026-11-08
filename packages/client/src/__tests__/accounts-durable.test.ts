@@ -20,6 +20,7 @@ import { join } from "node:path";
 
 import { openAccounts } from "../accounts.js";
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 /**
  * The account layer at the client door, on a real file (D21). Two properties this level is the
@@ -72,10 +73,9 @@ const open = (dataDir: string, now = T0) =>
   createMesh({
     schema: schema(),
     identity: DEVICE,
-    accounts: true,
-    accountKey: ALICE,
-    dataDir,
     now: () => now,
+    storage: sqlite({ dir: dataDir }),
+    trust: { accounts: true, accountKey: ALICE },
   });
 
 /** One temp directory per test, since a mesh is one SQLite file per identity. */
