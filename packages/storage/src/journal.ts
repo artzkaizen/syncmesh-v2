@@ -5,7 +5,7 @@ import { decodeCbor, encodeCbor, isNumber, isString, type CborValue } from "@syn
 import type { SqlDriver, SqlValue } from "./driver.js";
 
 import { ATTACHED_LOG, logPlacement, logTable } from "./namespace.js";
-import { attempt, rootConnection, underlyingConnection } from "./sql.js";
+import { attempt, onConnection, rootConnection, underlyingConnection } from "./sql.js";
 import { bindSqlite } from "./sqlite-driver.js";
 
 /**
@@ -132,7 +132,12 @@ const numberCell = (value: SqlValue | undefined): number =>
  */
 export function recoverJournal(driver: SqlDriver): Promise<Result<number, StoreFailure>> {
   if (!journaled(driver)) return Promise.resolve(Result.ok(0));
-  return Result.gen(async function* () {
+  // in the connection's turn: another `openStores` on this connection may have a transaction open
+  return onConnection(driver, () => replayJournal(driver));
+}
+
+const replayJournal = (driver: SqlDriver): Promise<Result<number, StoreFailure>> =>
+  Result.gen(async function* () {
     const [row, n, mark] = yield* Result.await(
       attempt("could not read the write journal", () => journalAndMark(driver)),
     );
@@ -154,7 +159,6 @@ export function recoverJournal(driver: SqlDriver): Promise<Result<number, StoreF
     );
     return Result.ok(statements.length);
   });
-}
 
 /** What {@link journalingDriver} keeps for the transaction it is in. */
 interface Open {
@@ -164,13 +168,15 @@ interface Open {
 
 /**
  * What every journaling wrapper over one connection shares: the number the last journaled
- * transaction took, so two wrappers never journal under one number, and whether a transaction
- * that wrote its journal entry then failed, so its `COMMIT` may have landed in `main` alone.
+ * transaction took, so two wrappers never journal under one number; whether a transaction that
+ * wrote its journal entry then failed, so its `COMMIT` may have landed in `main` alone; and the
+ * transaction in flight, which a statement through any wrapper over the connection is part of.
  */
 interface Counter {
   n: number;
   /** The number of a journaled transaction whose commit has not resolved yet. */
   pending: number | undefined;
+  open: Open | undefined;
 }
 const counters = new WeakMap<SqlDriver, Counter>();
 
@@ -184,8 +190,9 @@ const journalAndMark = async (driver: SqlDriver) => {
 /**
  * `driver`, with every transaction that writes both files journaled into `main` before it commits
  * (see {@link recoverJournal}). Statements outside a transaction, and transactions that write one
- * file, run as they are. Shares `driver`'s turn ({@link onConnection}), and its count: every
- * wrapper over one connection numbers from one counter.
+ * file, run as they are. Shares `driver`'s turn ({@link onConnection}), its count and its open
+ * transaction: every wrapper over one connection numbers from one counter, and a log statement
+ * through one wrapper inside another's transaction is journaled with that transaction.
  *
  * A transaction that wrote its journal entry and then failed may have committed `main` and not the
  * log (a full disk or an I/O error on the log file, not a crash). The next transaction on the
@@ -199,11 +206,11 @@ export function journalingDriver(driver: SqlDriver, last: number): SqlDriver {
   const { transaction } = driver;
   if (!journaled(driver) || transaction === undefined) return driver;
   const connection = underlyingConnection(driver);
-  const counter = counters.get(connection) ?? { n: last, pending: undefined };
+  const counter = counters.get(connection) ?? { n: last, pending: undefined, open: undefined };
   counter.n = Math.max(counter.n, last);
   counters.set(connection, counter);
-  let open: Open | undefined;
   const note = (sql: string, params: readonly SqlValue[]) => {
+    const { open } = counter;
     if (open === undefined) return;
     const target = statementTarget(sql);
     if (target === "log") open.statements.push([sql, params]);
@@ -232,7 +239,7 @@ export function journalingDriver(driver: SqlDriver, last: number): SqlDriver {
           counter.pending = undefined;
         }
         const mine: Open = { statements: [], main: false };
-        open = mine;
+        counter.open = mine;
         try {
           const inner = await fn();
           if (mine.main && mine.statements.length > 0) {
@@ -247,7 +254,7 @@ export function journalingDriver(driver: SqlDriver, last: number): SqlDriver {
           }
           return inner;
         } finally {
-          open = undefined;
+          counter.open = undefined;
         }
       });
       if (taken !== undefined && counter.pending === taken) counter.pending = undefined;

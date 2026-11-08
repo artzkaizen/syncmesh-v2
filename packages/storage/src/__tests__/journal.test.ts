@@ -15,7 +15,7 @@ import type { SqlDriver, SqliteDriver } from "../driver.js";
 import { decodeStatements, statementTarget } from "../journal.js";
 import { openStores, schemaName, statePath } from "../open-stores.js";
 import { operationStore } from "../operation-store.js";
-import { rootConnection } from "../sql.js";
+import { inTransaction, rootConnection } from "../sql.js";
 import { createWriter } from "../writer.js";
 import { openPair } from "./pair.js";
 
@@ -244,6 +244,63 @@ describe("a write split between the two files' commits", () => {
       );
       expect(keys.map(([key]) => key)).toEqual(["x1", "x2"]);
       await driver.close?.();
+    } finally {
+      files.done();
+    }
+  });
+
+  test("a log write through one store inside another's transaction is journaled with it", async () => {
+    const files = scratch();
+    try {
+      const first = await openPair(files.log, schemaName(tables));
+      const a = (await openStores(first, { tables })).unwrap();
+      const b = (await openStores(first, { tables })).unwrap();
+      const restore = snapshot(files.log);
+      // one SQLite transaction, opened by `a`, whose log half goes through `b`
+      await a.driver.transaction?.(async () => {
+        await a.driver.run(`INSERT INTO notes (id, body) VALUES (?, ?)`, ["x1", "x1"]);
+        await b.driver.run(`INSERT INTO syncmesh.meta (key, value) VALUES (?, ?)`, ["x1", "x1"]);
+      });
+      await first.close?.();
+      restore();
+
+      const driver = await openPair(files.log, schemaName(tables));
+      (await openStores(driver, { tables })).unwrap();
+      const keys = await driver.all(`SELECT key FROM syncmesh.meta WHERE key = 'x1'`);
+      expect(keys).toEqual([["x1"]]);
+      await driver.close?.();
+    } finally {
+      files.done();
+    }
+  });
+
+  test("a second open replays the journal in the connection's turn, not inside a transaction in flight", async () => {
+    const files = scratch();
+    try {
+      const connection = await openPair(files.log, schemaName(tables));
+      const a = (await openStores(connection, { tables })).unwrap();
+      await a.driver.transaction?.(async () => {
+        await a.driver.run(`INSERT INTO notes (id, body) VALUES (?, ?)`, ["x1", "x1"]);
+        await a.driver.run(`INSERT INTO syncmesh.meta (key, value) VALUES (?, ?)`, ["x1", "x1"]);
+      });
+      // the log half undone and its mark rewound, as a tear leaves them
+      await connection.run(`DELETE FROM syncmesh.meta WHERE key = 'x1'`);
+      await connection.run(`UPDATE syncmesh.meta SET value = '0' WHERE key = 'journal'`);
+
+      let release = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const inFlight = inTransaction(a.driver, () => held);
+      const second = openStores(connection, { tables });
+      // let the second open reach the journal while the first transaction is still open
+      await Bun.sleep(Temporal.Duration.from({ milliseconds: 20 }).total("milliseconds"));
+      release();
+      await inFlight;
+      (await second).unwrap();
+      const keys = await connection.all(`SELECT key FROM syncmesh.meta WHERE key = 'x1'`);
+      expect(keys).toEqual([["x1"]]);
+      await connection.close?.();
     } finally {
       files.done();
     }
