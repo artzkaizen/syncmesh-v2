@@ -16,7 +16,6 @@ import type { RepairApi } from "./digest.js";
 import type { DocApi } from "./doc-path.js";
 import type { FeedApi } from "./feed.js";
 import type { FleetApi } from "./fleet.js";
-import type { Interest } from "./interest.js";
 import type { EngineOptions, MutateOptions } from "./options.js";
 import type { Parked } from "./quarantine.js";
 import type { EventHeader, RecentEvents } from "./recent.js";
@@ -29,6 +28,7 @@ import type { StateLookup } from "./validate.js";
 
 import { admit } from "./admit.js";
 import { createCompaction } from "./compaction.js";
+import { type CoverageApi, createCoveragePath } from "./coverage-path.js";
 import { trackCoverage } from "./coverage.js";
 import { createRepairPath } from "./digest.js";
 import { createDocPath } from "./doc-path.js";
@@ -43,7 +43,6 @@ import { createFeedPath, trackFeeds } from "./feed.js";
 import { createFleet } from "./fleet.js";
 import { createFoldPath, type FoldBatch } from "./fold.js";
 import { gatedTransactions } from "./gate.js";
-import { eventsWanted } from "./interest.js";
 import { createHub, type Unsubscribe } from "./listeners.js";
 import { type PurgeApi, createPurge } from "./purge.js";
 import { createQuarantine, retryQuarantined, withRetry } from "./quarantine.js";
@@ -73,7 +72,7 @@ export interface Quarantined {
 }
 
 export interface Engine
-  extends FeedApi, RepairApi, SnapshotApi, DocApi, WritePathApi, PurgeApi, FleetApi {
+  extends CoverageApi, FeedApi, RepairApi, SnapshotApi, DocApi, WritePathApi, PurgeApi, FleetApi {
   readonly peerId: PeerId;
   /** Records, stamps, numbers, appends, folds, then hands the event to `onOutbound` — a write is real once appended. */
   readonly mutate: (
@@ -134,16 +133,6 @@ export interface Engine
   readonly holding: () => Ahead;
   /** What this engine has folded, per author and scope. */
   readonly coverage: () => Coverage;
-  /**
-   * Takes on a coverage that events already folded stand for (D23) — what a filtered catch-up
-   * hands over at its end. Raises each author's cursor, never lowers one, and takes on the
-   * `scope` that makes the numbers true.
-   *
-   * Separate from `installSnapshot` because there are no rows to install: the events themselves
-   * arrived and were folded, and what is being adopted is the claim about the ones that were
-   * filtered out — the only thing that can move a cursor past a hole nobody is going to fill.
-   */
-  readonly adoptCoverage: (coverage: Coverage) => void;
   /** Removes events every counted peer has acked and the state store has persisted; unobservable to peers. See RFC-0015 §2. */
   readonly compact: (options: CompactOptions) => Promise<Result<Compaction, CompactError>>;
   /**
@@ -156,15 +145,6 @@ export interface Engine
    * left by a purge (D45) is not in it: the relay or the authority fills that gap, not state. The local half never travels, so it is not here.
    */
   readonly floor: () => Cursors;
-  /**
-   * Synced events the holder of `theirs` lacks, narrowed to what they asked for. The
-   * filter runs **here**, at the sender, so an uninterested event never becomes bytes — and it
-   * only ever narrows: what the reader may see at all is the read policy's to decide.
-   */
-  readonly eventsSince: (
-    theirs: Cursors,
-    interest?: Interest,
-  ) => Promise<Result<readonly StoredEvent[], StoreFailure>>;
   /**
    * The log's tail as headers, newest first — what a log viewer reads, and the only read here
    * that shows a write which never left the device.
@@ -262,6 +242,9 @@ export function createEngine(options: EngineOptions): Engine {
     for (const { event } of entries) fleet.note(event);
     return foldPath.fold(entries, source);
   };
+  const covered = createCoveragePath({ coverage, store, turn, errors }, () =>
+    persistCoverage(plain),
+  );
   docPath.bind({ ...foldPath, synced: () => coverage.current().synced, atomically });
   fold(boot?.replay ?? [], "boot");
 
@@ -277,7 +260,7 @@ export function createEngine(options: EngineOptions): Engine {
   const compaction = createCompaction(compactDeps, coverage, boot?.compacted);
   const snapshots = createSnapshotPath({
     ...held,
-    adopt: coverage.adoptUnheld,
+    adopt: covered.adoptUnheld,
     // in a turn, so a purge never runs between a snapshot's state commit and its own (D45)
     persist: (batch: FoldBatch) => turn(() => persist(batch, plain)),
     persistCoverage: () => turn(() => persistCoverage(plain)),
@@ -349,11 +332,10 @@ export function createEngine(options: EngineOptions): Engine {
     ahead: coverage.ahead,
     holding: () => mergeAhead(coverage.ahead(), parked.ahead()),
     coverage: coverage.current,
-    adoptCoverage: coverage.adopt,
+    ...covered.api,
     ...fleet.api,
     ...compaction,
     ...snapshots,
-    eventsSince: (theirs, interest) => eventsWanted(store, theirs, interest),
     recentEvents: (options = {}) => store.recent?.(options) ?? recentHeaders(store, options),
     ...repair,
     onFoldBatch: folds.subscribe,

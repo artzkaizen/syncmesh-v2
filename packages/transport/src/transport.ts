@@ -9,6 +9,7 @@ import { Temporal } from "@syncmesh/temporal";
 
 import type { TransportBlobs } from "./blob-capability.js";
 import type { Bridge, BridgeOptions } from "./bridge.js";
+import type { DurabilityLost } from "./durability.js";
 import type { AdmissionAsk } from "./gate.js";
 import type { LinkEvent, LinkFact } from "./link-events.js";
 import type { FrameLink } from "./link.js";
@@ -127,8 +128,9 @@ export interface TransportContext {
   readonly withheld?: BridgeOptions["withheld"];
   /**
    * Forgets what this device was just found to be refused (D45): the mesh tells the app, then
-   * purges. A relay re-paging this device under a narrower entitlement is what finds it. Absent,
-   * a transport purges the engine directly and tells nobody.
+   * purges. A relay re-paging this device under a narrower entitlement is what finds it. A
+   * `narrowed` naming nothing is a late copy of what the app was already told of, purged without
+   * telling it again. Absent, a transport purges the engine directly and tells nobody.
    */
   readonly purge?: (narrowed: Narrowed, scope: PurgeScope) => Promise<void>;
 }
@@ -318,7 +320,7 @@ export interface Transport {
    * (D42): the answer `mesh.synced()` waits on. Present only on a medium with such a hop — a relay
    * room does, a peer-to-peer radio does not — and never settled by a hop whose log is in memory.
    */
-  readonly durable?: (event: EventId) => Promise<void>;
+  readonly durable?: (event: EventId) => Promise<Result<void, DurabilityLost>>;
   readonly onStatus?: (cb: (online: boolean) => void) => Unsubscribe;
   /**
    * Link-level endings as they happen (book ch. 18): proved, refused, closed, dropped, failed.

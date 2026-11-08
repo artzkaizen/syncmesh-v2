@@ -11,6 +11,10 @@ import { AppState } from "react-native";
  * aeroplane mode means the same. Every one of those ends with this app becoming `active` again, and
  * this is the signal that says so — no native module, no permission, nothing to rebuild for.
  *
+ * It also says when the app goes to the `background`, which wakes nothing: the mesh marks its
+ * log's session clean there and open again on `active` (D39), so a phone that swipes the app
+ * away is not taken for one that crashed, and the next launch skips the page-by-page check.
+ *
  * It does not cover a network that comes and goes while the app stays in front: a train, a lift, an
  * access point with a captive portal. That is what `reachability` in `@syncmesh/react-native/network`
  * is for, and the two are meant to be used together — they knock on the same door for different
@@ -25,7 +29,10 @@ import { AppState } from "react-native";
  */
 export const foreground = (): Knock => (wake) => {
   const subscription = AppState.addEventListener("change", (state) => {
-    if (state === "active") wake();
+    // `inactive` is passing (a call banner, the app switcher on its way): only `background` is
+    // where the platform may end the process without a word
+    if (state === "active") wake("foreground");
+    else if (state === "background") wake("background");
   });
   return () => subscription.remove();
 };

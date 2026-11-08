@@ -1,4 +1,4 @@
-import type { Engine, FoldBatch, Narrowed, PurgeScope, Purged } from "@syncmesh/engine";
+import type { Coverage, Engine, FoldBatch, Narrowed, PurgeScope, Purged } from "@syncmesh/engine";
 import type { PartitionKey, PeerId } from "@syncmesh/kernel";
 import type { BlobHash, BlobStore } from "@syncmesh/storage";
 import type { GrantRegistry } from "@syncmesh/wire";
@@ -66,6 +66,12 @@ const partitionsOut = (lost: ReadonlySet<PartitionKey>): PurgeScope => {
   return { events: (event) => out(event.partition), rows: (record) => out(record.partition) };
 };
 
+/** Whether a coverage claims any of the lost partitions: unscoped, or a scope naming one. */
+const widerThan = (coverage: Coverage, lost: ReadonlySet<PartitionKey>): boolean => {
+  const partitions = scopeFrom(coverage.scope).interest?.partitions;
+  return partitions === undefined || partitions.some((partition) => lost.has(partition));
+};
+
 /** Folds that bring rows from elsewhere: a late one of a lost partition is purged on arrival. */
 const ARRIVALS = new Set<FoldBatch["source"]>(["remote", "snapshot", "repair"]);
 
@@ -116,6 +122,9 @@ export function watchNarrowing(deps: NarrowingDeps) {
   };
 
   const run = async (narrowed: Narrowed, scope: PurgeScope): Promise<void> => {
+    // nothing named: a late arrival of what the app was already told of, purged without a word
+    if (narrowed.partitions.length === 0 && narrowed.tables.length === 0)
+      return purgeQuietly(scope);
     const told = await Result.tryPromise({
       try: async () => deps.onNarrowed?.(narrowed),
       catch: (cause) => cause,
@@ -149,16 +158,21 @@ export function watchNarrowing(deps: NarrowingDeps) {
 
   const offFolds = engine.onFoldBatch((batch) => {
     if (!ARRIVALS.has(batch.source) || lost.size === 0 || held === undefined) return;
-    const wrote = wroteInto(engine, batch, lost);
-    // a snapshot adopts its own scope once its rows are written, and that can be after the
-    // rescope — unscoped, or the scope read before the purge — so the cut is made again
-    const recut = batch.source === "snapshot";
-    if (!wrote && !recut) return;
+    if (!wroteInto(engine, batch, lost)) return;
     const late = new Set(lost);
+    queue = queue.then(() => purgeQuietly(partitionsOut(late)));
+  });
+
+  // a snapshot adopts its own scope once its rows are written, and that can be after the
+  // rescope — unscoped, or the scope read before the purge — and one with no rows is no fold at
+  // all; so any coverage taken on that reads wider than the grant is cut back again
+  const offAdopt = engine.onAdopt((coverage) => {
+    if (lost.size === 0 || held === undefined) return;
+    if (!widerThan(coverage, lost)) return;
     const kept = held;
-    queue = queue.then(async () => {
-      if (wrote) await purgeQuietly(partitionsOut(late));
-      if (recut) rescope(engine, kept);
+    queue = queue.then(() => {
+      // a later grant may have given the partition back while this waited
+      if (lost.size > 0 && widerThan(engine.coverage(), lost)) rescope(engine, kept);
     });
   });
 
@@ -173,6 +187,7 @@ export function watchNarrowing(deps: NarrowingDeps) {
     close: async (): Promise<void> => {
       offGrants();
       offFolds();
+      offAdopt();
       await queue;
       await then();
     },

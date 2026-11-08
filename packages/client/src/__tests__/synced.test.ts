@@ -38,7 +38,9 @@ describe("mesh.synced (D42)", () => {
     const event = (await writeConsult(mesh, "x", "a")).unwrap();
     const answer = await mesh.synced({ event: event.id });
     expect(answer.isErr() && answer.error._tag).toBe("NoSuchCapability");
-    expect(answer.isErr() && answer.error.capability).toBe("durable");
+    expect(
+      answer.isErr() && answer.error._tag === "NoSuchCapability" && answer.error.capability,
+    ).toBe("durable");
     await mesh.stop();
   });
 
@@ -84,5 +86,34 @@ describe("mesh.synced (D42)", () => {
 
     await mesh.stop();
     await relay.stop();
+  });
+
+  test("a relay restarted over a fresh log settles a waiting synced as DurabilityLost", async () => {
+    const first = await startRelay(0, {
+      keepaliveMs: 60_000,
+      blobs: false,
+      store: createMemoryEventStore(),
+    });
+    const mesh = await meshOver([
+      relayTransport({ dial: webSocketDial(first.url), reconnectMs: 20, maxReconnectMs: 40 }),
+    ]);
+    await mesh.settled();
+    const event = (await writeConsult(mesh, "x", "a")).unwrap();
+    // a memory room: the wait is open when the room goes away
+    const answer = mesh.synced({ event: event.id });
+    expect(await settlesWithin(answer, 200)).toBe(false);
+
+    await first.stop();
+    const second = await startRelay(first.port, {
+      keepaliveMs: 60_000,
+      blobs: false,
+      store: createMemoryEventStore(),
+    });
+    expect(await settlesWithin(answer, 5000)).toBe(true);
+    const lost = await answer;
+    expect(lost.isErr() && lost.error._tag).toBe("DurabilityLost");
+
+    await mesh.stop();
+    await second.stop();
   });
 });

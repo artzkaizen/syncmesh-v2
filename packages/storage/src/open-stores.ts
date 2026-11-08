@@ -14,7 +14,7 @@ import { captureStatements, installCapture } from "./capture.js";
 import { ATTACHED_LOG, driverDialect, logPlacement } from "./dialect.js";
 import { sqlDocStore } from "./doc-store.js";
 import { sqlEventStore } from "./event-store.js";
-import { closeSession, openSession } from "./integrity.js";
+import { closeSession, openSession, reopenSession } from "./integrity.js";
 import { journalPosition, journalingDriver, recoverJournal } from "./journal.js";
 import { tablesProjection } from "./projection.js";
 import { rowSyncDdlFor, rowSyncTable, type RowSync } from "./row-sync.js";
@@ -50,9 +50,22 @@ export interface Stores extends ScopedStores {
   /**
    * Records that this session over the log ended cleanly, without closing the connection: what a
    * caller that owns the driver runs where `close` would close what is not its own. A session that
-   * ends without it is checked page by page at the next open (D39).
+   * ends without it is checked page by page at the next open (D39). The mark holds only until the
+   * next write through these stores, which marks the session open again before it lands.
    */
   readonly markClean: () => Promise<void>;
+  /**
+   * Marks the session over the log open again after {@link Stores.markClean}, without the page
+   * check an open runs: what a device coming back to the foreground runs, having marked the
+   * session clean when it went to the background (D39). A crash after it is seen at the next open.
+   */
+  readonly markOpen: () => Promise<void>;
+  /**
+   * Marks the session open again when it is marked clean, and settles once it is; settles at once
+   * when it is open. What every write through these stores runs first (D39), for a write on
+   * {@link Stores.driver} that does not go through them — the write ledger's, or your own.
+   */
+  readonly beforeWrite: () => Promise<void>;
   /** {@link Stores.markClean}, then closes the connection. */
   readonly close: () => Promise<void>;
 }
@@ -244,20 +257,77 @@ export function openStores(
       state: yield* Result.await(sqlStateStore(driver, { ...stateOptions, nested: true })),
       docs: yield* Result.await(sqlDocStore(driver, { nested: true })),
     };
-    const atomic: Stores["atomic"] = (fn) => inTransaction(driver, () => fn(scoped));
+    // whether the session is marked clean now: the first write after the mark opens it again
+    // before it lands, so a crash under a write made while backgrounded is still checked (D39)
+    let clean = false;
+    let opening = Promise.resolve();
     // a mark that does not land costs one check at the next open, which is the safe direction —
     // so it is said, not thrown, and the connection still closes
     const markClean = async () => {
+      clean = true;
       const marked = await closeSession(driver);
-      if (marked.isErr()) console.warn(`[syncmesh] ${marked.error.message}`);
+      if (marked.isErr()) {
+        clean = false;
+        console.warn(`[syncmesh] ${marked.error.message}`);
+      }
     };
+    // the unsafe direction: a session left marked clean skips the check after a crash, so a
+    // failure is said as loudly, and the next write or foreground tries again
+    const markOpen = async () => {
+      clean = false;
+      const marked = await reopenSession(driver);
+      if (marked.isErr()) {
+        clean = true;
+        console.warn(`[syncmesh] ${marked.error.message}`);
+      }
+    };
+    const openBeforeWrite = (): Promise<void> => {
+      if (clean) opening = markOpen();
+      return opening;
+    };
+    // every method that writes the database, so nothing lands on a session marked clean: the
+    // engine compacts and a torn rejoin evicts outside `atomic`, on their own turn (D39)
+    const opensFirst =
+      <A extends readonly unknown[], R>(write: (...args: A) => Promise<R>) =>
+      async (...args: A) => {
+        await openBeforeWrite();
+        return write(...args);
+      };
+    const atomic: Stores["atomic"] = async (fn) => {
+      await openBeforeWrite();
+      return inTransaction(driver, () => fn(scoped));
+    };
+    const writesState = {
+      ...state,
+      commit: opensFirst(state.commit),
+      clear: opensFirst(state.clear),
+      remove: opensFirst(state.remove),
+    } satisfies StateStore;
     const opened = {
-      events,
-      state,
-      docs,
+      events: {
+        ...events,
+        append: opensFirst(events.append),
+        appendBatch: opensFirst(events.appendBatch),
+        compactBelow: opensFirst(events.compactBelow),
+        evict: opensFirst(events.evict),
+      } satisfies EventStore,
+      state:
+        state.derive === undefined
+          ? writesState
+          : { ...writesState, derive: opensFirst(state.derive) },
+      docs: {
+        ...docs,
+        append: opensFirst(docs.append),
+        relineage: opensFirst(docs.relineage),
+        refreshHead: opensFirst(docs.refreshHead),
+        cover: opensFirst(docs.cover),
+        forget: opensFirst(docs.forget),
+      } satisfies DocStore,
       driver,
       atomic,
       markClean,
+      markOpen,
+      beforeWrite: openBeforeWrite,
       close: async () => {
         await markClean();
         await driver.close?.();

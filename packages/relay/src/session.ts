@@ -9,12 +9,12 @@ import { createHoldback, cursorsFrame, eventFrame, grantFrame } from "@syncmesh/
 import { decodeAndVerify, relayEnvelope, signEvent } from "@syncmesh/wire";
 
 import type { RelayFrame } from "./frames.js";
+import type { SessionRefusals } from "./refused.js";
 import type { JoinedScope } from "./scoped.js";
 import type { RelayDial } from "./transport.js";
 
 import { uploadRefusal } from "./blob-channel.js";
 import { decodeRelayFrame } from "./frame-decode.js";
-import { refusedOnRepage } from "./refused.js";
 import { scopedCoverage } from "./scoped.js";
 
 /** A stored event as bytes to send: this device signs its own, and relays another's verbatim. */
@@ -94,6 +94,8 @@ export interface SessionHooks {
   readonly onDropped: (why: string) => void;
   /** What this session last joined with, so a coverage scoped to anything else is not adopted. */
   readonly joined: () => JoinedScope;
+  /** This session's notes for the row-level purge, on the link's memory of what was refused (D45). */
+  readonly refusals: SessionRefusals;
   /** This device's own grant changed what it may read since the last join (D40). */
   readonly regranted: () => boolean;
   /**
@@ -203,8 +205,6 @@ export function wireSession(
   /** Set once this session has been found to hold cursors from another entitlement; nothing after it is acted on. */
   let abandoned = false;
   let relayCursors: Cursors = new Map();
-  /** What a re-page from nothing delivers, and what it proves this device is now refused (D45). */
-  const refusals = refusedOnRepage(context, hooks.onDropped);
 
   /** Everything the holdback can let go of for these authors, in run order. */
   const release = async (authors: Iterable<PeerId>): Promise<void> => {
@@ -231,11 +231,13 @@ export function wireSession(
         const verified = decodeAndVerify(wire);
         if (verified.isErr()) {
           // junk from a relay is dropped, never folded — and said, because a relay handing this
-          // device unverifiable bytes is a fact about the room and not about this event
+          // device unverifiable bytes is a fact about the room and not about this event. On a
+          // re-page it was still sent, so it is not taken as refused (D45)
           hooks.onDropped(verified.error.message);
+          if (hooks.repaging?.() === true) hooks.refusals.unverified(wire);
           continue;
         }
-        if (hooks.repaging?.() === true) refusals.delivered(verified.value.event.id);
+        if (hooks.repaging?.() === true) hooks.refusals.delivered(verified.value.event.id);
         if (direct) {
           straight.push(verified.value);
           continue;
@@ -275,7 +277,7 @@ export function wireSession(
       abandoned = true;
       hooks.onReentitled?.();
     },
-    repaged: refusals.repaged,
+    repaged: hooks.refusals.repaged,
   });
 
   /**

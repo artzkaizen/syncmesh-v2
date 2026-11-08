@@ -206,12 +206,10 @@ describe("a narrowed device on the default blob cache (D45)", () => {
       carol.mesh.grants.register(mint(carolId, [CHECKOUT])).unwrap();
       expect(await until(async () => !(await carol.mesh.blobs.has(blob)))).toBe(true);
       expect(await bodies(carol.mesh)).toEqual([]);
-      // and the gated room will not serve it to her again, once her session carries the new grant
-      const refused = async () => {
-        const asked = await carol.mesh.blobs.fetch(blob, { timeoutMs: 500 });
-        return asked.isErr() && asked.error._tag === "BlobNotFound";
-      };
-      expect(await until(refused)).toBe(true);
+      // and the gated room will not serve it to her again: asked once, while her session is
+      // re-seated under the new grant, the room answers under that seat rather than not at all
+      const asked = await carol.mesh.blobs.fetch(blob, { timeoutMs: 3000 });
+      expect(asked.isErr() && asked.error._tag).toBe("BlobNotFound");
       // what she made is still in her cache
       expect(await carol.mesh.blobs.has(upload)).toBe(true);
 
