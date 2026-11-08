@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 import { openRecovery } from "../recovery.js";
 import { createSweep } from "../sweep.js";
 
@@ -56,10 +57,9 @@ const fixture = async (dir: string) => {
       await createMesh({
         schema: schema(),
         identity: device,
-        authority: device.peerId,
-        stores: (await set.storeFor(scope)).unwrap(),
-        dataDir: dir,
         now: () => clock,
+        storage: sqlite({ stores: (await set.storeFor(scope)).unwrap(), dir }),
+        trust: { authority: device.peerId },
       })
     ).unwrap();
   const mesh = await meshOver(ACME);
@@ -207,14 +207,16 @@ describe("a mesh given its set sweeps through recovery.stores", () => {
         await createMesh({
           schema: schema(),
           identity: device,
-          authority: device.peerId,
-          stores: (await f.set.storeFor(GLOBEX)).unwrap(),
-          dataDir: dir,
           now: () => T0,
-          sweep: {
-            set: f.set,
-            remove: (scope) => Promise.resolve(rmSync(f.fileFor(scope), { force: true })),
-          },
+          storage: sqlite({
+            stores: (await f.set.storeFor(GLOBEX)).unwrap(),
+            dir,
+            sweep: {
+              set: f.set,
+              remove: (scope) => Promise.resolve(rmSync(f.fileFor(scope), { force: true })),
+            },
+          }),
+          trust: { authority: device.peerId },
         })
       ).unwrap();
       const stores = mesh.recovery.stores;

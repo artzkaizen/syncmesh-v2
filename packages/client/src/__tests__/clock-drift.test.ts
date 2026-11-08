@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
 const org = partition("org", { roles: ladder("member") });
@@ -29,11 +30,11 @@ const HOUR = Temporal.Duration.from({ hours: 1 });
 const open = async (n: number, now: Temporal.Instant, clockDrift?: Temporal.Duration) =>
   (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: createIdentity(seed(n)).unwrap(),
       now: () => now,
       ...omitUndefined({ clockDrift }),
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     })
   ).unwrap();
 

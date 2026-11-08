@@ -1,7 +1,8 @@
 import type { Interest } from "@syncmesh/engine";
 import type { Fanout, RelayFrame, RunningRelay } from "@syncmesh/relay";
 
-import { createMesh } from "@syncmesh/client";
+import { sqlite } from "@syncmesh/client";
+import { createMesh } from "@syncmesh/client/internal";
 import { tableDigests } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import {
@@ -78,7 +79,6 @@ const scratch = () => {
 const device = async (relay: RunningRelay, n: number, interest?: Interest, file?: string) =>
   (
     await createMesh({
-      driver: bunSqliteDriver(file ?? ":memory:"),
       schema: notesSchema(),
       identity: createIdentity(seed(n)).unwrap(),
       now: () => T0,
@@ -89,6 +89,7 @@ const device = async (relay: RunningRelay, n: number, interest?: Interest, file?
           ...omitUndefined({ interest }),
         }),
       ],
+      storage: sqlite({ driver: bunSqliteDriver(file ?? ":memory:") }),
     })
   ).unwrap();
 

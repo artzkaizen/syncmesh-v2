@@ -6,11 +6,12 @@ import { createHub } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { omitUndefined, Result, panic } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
-import { createGrantRegistry } from "@syncmesh/wire";
+import { createGrantRegistry, supplyEntropy } from "@syncmesh/wire";
 
 import type { Booted, MeshOpenError } from "./boot.js";
 import type { MeshOptions } from "./options.js";
 import type { Mesh } from "./surface.js";
+import type { SweepOver } from "./sweep.js";
 import type { RunningTransports } from "./transports.js";
 
 import { openAccounts } from "./accounts.js";
@@ -21,7 +22,7 @@ import { createCan, tableKinds } from "./can.js";
 import { createDelivered, createReceived } from "./delivered.js";
 import { createDrafts } from "./drafts.js";
 import { createFlush } from "./flush.js";
-import { openGrants, restoreGrants, type MeshGrants, type MeshGrantsOptions } from "./grants.js";
+import { openGrants, restoreGrants, type MeshGrants } from "./grants.js";
 import { openHandles, readableWith } from "./handles.js";
 import { historyView } from "./history-view.js";
 import { createHandleTally, linksAcross, meterHandles, verifyStore } from "./inspect.js";
@@ -33,6 +34,7 @@ import { createPeers } from "./peers.js";
 import { openPresence } from "./presence.js";
 import { createReadCoverage } from "./read-coverage.js";
 import { openRecovery, recoveryDeps } from "./recovery.js";
+import { bootSettings, checkTrust, splitStorage } from "./settings.js";
 import { createStatus } from "./status.js";
 import { sweepFor } from "./sweep.js";
 import { createSyncStates } from "./sync-state.js";
@@ -50,43 +52,47 @@ export type { Mesh, MeshSchema, MeshSchemaEntry } from "./surface.js";
 export type { TxReceipt };
 
 /**
- * One constructor: opens (or is given) the stores, boots the engine over them, installs the
- * tables and capture, and hands out Drizzle handles per instance and principal. Async because
- * boot is (D05): the clock must pass every stored stamp before a write is numbered.
+ * Opens one mesh: opens (or is given) the stores, boots the engine over them, installs the tables
+ * and capture, and hands out Drizzle handles per instance and principal. Async because boot is
+ * (D05): the clock must pass every stored stamp before a write is numbered.
+ *
+ * **Not the app's constructor** (D47). An app calls `createClient` from `@syncmesh/orpc`, which
+ * opens a mesh with this and puts procedures on top; this is reached through
+ * `@syncmesh/client/internal` by the layers under the app — that client, adapters that serve a
+ * mesh, and the harnesses that test one — and takes the same grouped options minus `procedures`.
+ *
+ * @example
+ * import { createMesh } from "@syncmesh/client/internal";
+ *
+ * const mesh = (await createMesh({ schema, identity, storage: sqlite({ driver }) })).unwrap();
  */
 export async function createMesh<
   C extends ColumnsMap,
   D extends SqlDialect = "sqlite",
   PC extends PresenceMap = Record<string, never>,
 >(options: MeshOptions<C, D, PC>): Promise<Result<Mesh<D, PC>, MeshOpenError>> {
-  const { identity, issuer, issuerKey } = options;
-  if (issuerKey !== undefined && issuerKey.peerId !== issuer)
-    panic(
-      "issuerKey does not match issuer: the private half must belong to the configured root of trust",
-    );
-  // the same shape one table over: a key whose feature is off signs rows this peer will never
-  // read, and a mesh half-configured that way looks like one where links simply do not work
-  if (options.accountKey !== undefined && options.accounts !== true)
-    panic("accountKey does not match accounts: links are only read where `accounts: true` is set");
+  const { identity, storage, trust = {} } = options;
+  const { issuer, issuerKey, partitionKeys } = trust;
+  checkTrust(trust);
+  // before anything else: the first key this mesh mints must come from the source the app named
+  if (options.entropy !== undefined) supplyEntropy(options.entropy);
   const now = options.now ?? (() => Temporal.Now.instant());
   const registry = createGrantRegistry({ issuer: issuer ?? identity.peerId, now });
-  const grantsOptions = { now } satisfies MeshGrantsOptions;
-  if (issuerKey !== undefined) Object.assign(grantsOptions, { issuerKey });
-  if (options.partitionKeys !== undefined)
-    Object.assign(grantsOptions, { partitionKeys: options.partitionKeys });
-  const { grants, bind } = openGrants(registry, grantsOptions);
-  // plain await, not Result.gen: a definition-time panic in `assemble` must reach the caller as itself
-  const booted = await openMeshEngine({
-    ...options,
-    dataDir: options.dataDir ?? ".syncmesh",
+  const { grants, bind } = openGrants(registry, {
     now,
-    grantFor: grants.grantFor,
+    ...omitUndefined({ issuerKey, partitionKeys }),
   });
+  // plain await, not Result.gen: a definition-time panic in `assemble` must reach the caller as itself
+  const booted = await openMeshEngine(bootSettings(options, { now, grantFor: grants.grantFor }));
   if (booted.isErr()) return booted;
   bind(booted.value.engine);
   // before the grants are restored, so the restored own grant is the baseline a narrowing is
   // measured from, never a narrowing itself
-  const { blobStore, narrowing } = narrowingFor(booted.value.engine, registry, options);
+  const { blobStore, narrowing } = narrowingFor(
+    booted.value.engine,
+    registry,
+    omitUndefined({ identity, blobStore: storage?.blobs, onNarrowed: options.onNarrowed }),
+  );
   // after boot, because the grants live in the database boot opens; before any session, because
   // a peer that reconnects first would meet a device that had forgotten who everyone is
   const remembered = await restoreGrants(registry, booted.value.driver, narrowing.idle);
@@ -99,7 +105,8 @@ export async function createMesh<
     await booted.value.close();
   };
   const held = { ...booted.value, close };
-  return Result.ok(assemble(options, { grants, now, booted: held, blobStore, narrowing }));
+  const sweep = splitStorage(storage).local?.sweep;
+  return Result.ok(assemble(options, { grants, now, booted: held, blobStore, narrowing, sweep }));
 }
 
 interface Assembled {
@@ -108,6 +115,8 @@ interface Assembled {
   readonly booted: Booted;
   readonly blobStore: BlobStore;
   readonly narrowing: ReturnType<typeof watchNarrowing>;
+  /** The store set the mesh sheds through, when `storage` named one. */
+  readonly sweep: SweepOver | undefined;
 }
 
 /** `mesh.transports`: the running links' add, remove, list, events and route forcing. */
@@ -125,7 +134,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
   options: MeshOptions<C, D, PC>,
   deps: Assembled,
 ): Mesh<D, PC> {
-  const { schema, identity } = options;
+  const { schema, identity, trust } = options;
   const { grants, now, booted, blobStore, narrowing } = deps;
   const { engine } = booted;
 
@@ -144,7 +153,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
   const on = meterHandles<D>(tally, openHandles<C, D, PC>(schema, booted, wired.extras));
   const flush = createFlush({ transports: () => links.list() });
   const snapshots = createHub<SnapshotInstalled>();
-  const swept = sweepFor({ self: identity.peerId, grants, over: options.sweep });
+  const swept = sweepFor({ self: identity.peerId, grants, over: deps.sweep });
   const recovery = openRecovery(engine, {
     ...recoveryDeps(engine, identity.peerId, snapshots, () => links.list()),
     ...omitUndefined({ stores: swept.stores }),
@@ -156,7 +165,8 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
   // makes the column's answer move when a peer says it holds this device's writes
   const syncStates = createSyncStates(engine, identity.peerId, booted.rowSync);
 
-  const { accounts, accountOf, author } = openAccounts(options, { engine, grants, now });
+  const shipped = { identity, ...trust };
+  const { accounts, accountOf, author } = openAccounts(shipped, { engine, grants, now });
 
   const history = historyView({ schema, store: booted.store, accountOf });
 
@@ -180,9 +190,9 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
       onRefusal: wired.refused,
     }),
     onSnapshot: (installed) => snapshots.emit(installed),
-    servesAuthority: options.authority === identity.peerId,
+    servesAuthority: trust?.authority === identity.peerId,
     // the gated tables, which reach a device only through the authority's gate (D24)
-    ...gatedFor(schema, options.authority),
+    ...gatedFor(schema, trust?.authority),
     purge: narrowing.purge,
     keys,
     sealedKinds: schema.sealedKinds,
@@ -190,13 +200,13 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     partitions: () => (grants.grantFor(identity.peerId)?.partitions ?? []).map(String),
     ...omitUndefined({
       shaping: options.mesh,
-      onGrantRequest: options.onGrantRequest,
+      onGrantRequest: options.admission,
       // the same anchor grants are checked against: a snapshot is state nobody signed per event, so
       // the certificate over it is the only thing that can make it more than provisional
-      trust: options.issuer,
+      trust: trust?.issuer,
       certificate: options.certificate,
       // a granted mesh gates reads on every link (D40)
-      issuer: options.issuer,
+      issuer: trust?.issuer,
     }),
   });
   const { routes } = transportContext;

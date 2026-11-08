@@ -230,9 +230,10 @@ export interface Mesh<
    * call on a mesh that started at construction, does nothing. After `stop()` it is `MeshStopped`.
    *
    * @example
-   * const mesh = (await createMesh({ ...options, start: false })).unwrap();
-   * mesh.start().unwrap();
-   * await mesh.ready();
+   * const client = createClient({ ...options, start: false });
+   * await client.$ready; // `$mesh` throws until the mesh has opened
+   * client.$mesh.start().unwrap(); // or `client.$start()`, which needs no `$ready`
+   * await client.$mesh.ready();
    */
   readonly start: () => Result<void, MeshStopped>;
   /** Asks every connected peer for a grant for this device (flow A). */

@@ -33,7 +33,7 @@ syncmesh/
 │   ├── policy/            E06   policy AST (data; syncs as a `_policy` row)
 │   ├── identity/          E07   grants, bring-your-own-auth
 │   ├── partitions/        E08
-│   ├── client/            E09   createMesh, collections, tx
+│   ├── client/            E09   the mesh under createClient; createMesh at /internal
 │   ├── react/             E10   LiveQuery, useLiveQuery
 │   ├── transport/         E11   Transport port, framed links, routing
 │   ├── relay/             E12–E19

@@ -15,13 +15,16 @@ export type {
   Handle,
   HistoryOptions,
   Mesh,
-  MeshOptions,
   MeshSchema,
   MeshSchemaEntry,
   OnOptions,
   RevisionView,
   TxReceipt,
 } from "./mesh.js";
+// the options `createClient` takes and the storage helpers that fill them; the constructor that
+// reads them directly is `createMesh`, at `@syncmesh/client/internal` (D47)
+export type { MeshOptions, PostgresStorage, SqliteStorage, Storage, Trust } from "./options.js";
+export { postgres, sqlite } from "./options.js";
 export type { HandleCounts, Inspect, Teardown } from "./inspect.js";
 export type { OperationsView } from "./operations.js";
 export { openOperations, operationRefs, wireOperations } from "./operations.js";
@@ -56,7 +59,6 @@ export type {
 export { createSweep, sweepFor } from "./sweep.js";
 export { createHandleTally } from "./inspect.js";
 export type { SyncState } from "./sync-state.js";
-export { createMesh } from "./mesh.js";
 export type { GrantsRestored, IssueRequest, MeshGrants, StandingOf } from "./grants.js";
 export { DeviceRevoked, NoGrantHeld, createMeshGrants, rememberGrants } from "./grants.js";
 export type { ForcedMedium, Forcing, ForcingDeps } from "./forced.js";

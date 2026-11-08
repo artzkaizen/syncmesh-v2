@@ -37,7 +37,7 @@ export class DeviceRevoked extends TaggedError("DeviceRevoked")<{
 
 /** The registry every mesh has, plus minting where this process holds the issuer key. */
 export interface MeshGrants extends GrantRegistry {
-  /** Mints, registers locally (the issuer must validate the grantee too), and returns the wire bytes to send. Panics unless `createMesh` was given `issuerKey`. */
+  /** Mints, registers locally (the issuer must validate the grantee too), and returns the wire bytes to send. Panics unless `createClient` was given `trust.issuerKey`. */
   readonly issue: (request: IssueRequest) => Result<Uint8Array, InvalidPartitionKey | GrantError>;
   /**
    * Grants that lapse inside `within`, soonest first, counting the ones that already have.
@@ -64,7 +64,7 @@ export interface MeshGrants extends GrantRegistry {
    * first — `issue` the departing device a grant without the partition — and this second: the
    * departed keeps what it already read and opens nothing written after. Answers the wires it
    * minted, each already registered and so on its way to every link as `issue`'s are; panics
-   * unless `createMesh` was given `issuerKey` and `partitionKeys`.
+   * unless `createClient` was given `trust.issuerKey` and `trust.partitionKeys`.
    *
    * @example
    * ```ts
@@ -176,7 +176,7 @@ export async function restoreGrants(
  * Before boot there is none and both answer "nothing known", which is the honest answer for a
  * mesh that has not opened its log yet — and renewal cannot run before then anyway.
  */
-const standingOf = (engineOf: () => Engine | undefined): StandingOf => ({
+const createStanding = (engineOf: () => Engine | undefined): StandingOf => ({
   revokedAt: (device, partition) => {
     const engine = engineOf();
     return engine === undefined ? undefined : revokedAt(engine, partition, device);
@@ -199,7 +199,7 @@ export function openGrants(registry: GrantRegistry, options: MeshGrantsOptions) 
   let engine: Engine | undefined;
   const grants = createMeshGrants(registry, {
     ...options,
-    standing: standingOf(() => engine),
+    standing: createStanding(() => engine),
   });
   return { grants, bind: (booted: Engine) => void (engine = booted) };
 }
@@ -209,7 +209,7 @@ export function createMeshGrants(registry: GrantRegistry, options: MeshGrantsOpt
 
   const issue: MeshGrants["issue"] = (request) => {
     if (issuerKey === undefined)
-      return panic("createMesh was not given issuerKey; only the issuer can mint grants");
+      return panic("createClient was not given `trust.issuerKey`; only the issuer can mint grants");
     return Result.gen(function* () {
       const partitions = [];
       for (const p of request.partitions) partitions.push(yield* parsePartitionKey(p));
@@ -290,7 +290,9 @@ export function createMeshGrants(registry: GrantRegistry, options: MeshGrantsOpt
   const rekey: MeshGrants["rekey"] = (partition) => {
     const keys = options.partitionKeys;
     if (keys === undefined)
-      return panic("createMesh was not given partitionKeys; only the issuer holds sealed keys");
+      return panic(
+        "createClient was not given `trust.partitionKeys`; only the issuer holds sealed keys",
+      );
     keys.rotate(partition);
     return Result.gen(function* () {
       const wires: Uint8Array[] = [];

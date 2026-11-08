@@ -159,7 +159,7 @@ have someone else run.
 
 The rule's policy is restrictive, so a policy of yours that is open to `PUBLIC` does not widen
 what the read role sees. A table that had no row-level security gets an open policy for every
-other role, so turning it on changes nothing for the app. `rlsDdl` (`createMesh({ rls: true })`)
+other role, so turning it on changes nothing for the app. `rlsDdl` (`createServer({ storage: postgres({ driver, rls: true }) })`)
 drops that open policy when it installs the app's own, so the two run in either order.
 
 A served table with a column rule (`fields`) is read through a view the DDL makes in

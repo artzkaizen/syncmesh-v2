@@ -1,4 +1,4 @@
-import { createMesh } from "@syncmesh/client";
+import { createClient, sqlite } from "@syncmesh/orpc";
 import { relayTransport, webSocketDial } from "@syncmesh/relay";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { mkdirSync } from "node:fs";
@@ -22,16 +22,16 @@ mkdirSync(DATA_DIR, { recursive: true });
 
 // A phone: its own SQLite, its own keypair, and the issuer's peer id — shipped config, the same
 // on every device. `driver` is the whole storage story here; the mesh opens the log, the sidecar
-// and the `notes` table on it.
-const mesh = (
-  await createMesh({
-    schema: notesSchema(),
-    identity: identityNamed(`device:${name}`),
-    issuer: serverIdentity().peerId,
-    driver: bunSqliteDriver(`${DATA_DIR}/device-${name}.db`),
-    transports: [relayTransport({ dial: webSocketDial(RELAY_URL) })],
-  })
-).unwrap();
+// and the `notes` table on it. No procedures: this phone writes through the mesh's own handle.
+const client = createClient({
+  schema: notesSchema(),
+  identity: identityNamed(`device:${name}`),
+  storage: sqlite({ driver: bunSqliteDriver(`${DATA_DIR}/device-${name}.db`) }),
+  trust: { issuer: serverIdentity().peerId },
+  transports: [relayTransport({ dial: webSocketDial(RELAY_URL) })],
+});
+await client.$ready; // `$mesh` throws until the mesh has opened
+const mesh = client.$mesh;
 
 await mesh.ready();
 await mesh.settled(); // every source has finished its first pass: what to await before drawing
@@ -49,4 +49,4 @@ await handle.db.insert(notes).values({ id: `${name}-${Date.now()}`, body, author
 await mesh.flush(); // the transport's queue has drained; the relay has the event
 
 console.table(await handle.db.select().from(notes));
-await mesh.stop();
+await client.$close();

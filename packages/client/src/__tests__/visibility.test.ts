@@ -19,17 +19,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const PHONE = createIdentity(seed(41)).unwrap();
 
 const meshFor = async (identity: typeof PHONE, transports: readonly Transport[]) =>
   (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: gatedSchema,
       identity,
-      authority: AUTHORITY.peerId,
       transports: [...transports],
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { authority: AUTHORITY.peerId },
     })
   ).unwrap();
 

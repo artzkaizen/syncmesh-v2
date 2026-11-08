@@ -10,15 +10,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const meshOver = async (transports: readonly Transport[]) =>
   (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: gatedSchema,
       identity: AUTHORITY,
-      authority: AUTHORITY.peerId,
       transports: [...transports],
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { authority: AUTHORITY.peerId },
     })
   ).unwrap();
 
