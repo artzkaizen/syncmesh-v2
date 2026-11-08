@@ -7,8 +7,6 @@ import { eventFrame, grantFrame } from "@syncmesh/transport";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
-import type { RelayRoomOptions } from "../room.js";
-
 import { joinFrame } from "../frames.js";
 import { relayTransport } from "../transport.js";
 import { REGRANTED, REVOKED, UNGRANTED } from "../trust.js";
@@ -21,8 +19,8 @@ import {
   challengeOf,
   dialTo,
   fakeSocket,
+  gatedRoom,
   mintFor,
-  openRoom,
   peer,
   secureProbe,
   signedJoin,
@@ -30,15 +28,6 @@ import {
   until,
   write,
 } from "./fixtures.js";
-
-/** A room that seats only devices holding a grant from {@link ISSUER} (D40), on a clock the test owns. */
-const gatedRoom = (overrides: Partial<RelayRoomOptions> = {}) =>
-  openRoom({
-    pageSize: 100,
-    now: () => T0,
-    trust: { issuers: [ISSUER.peerId], wait: Temporal.Duration.from({ milliseconds: 60 }) },
-    ...overrides,
-  });
 
 const later = (ms: number) => T0.add({ milliseconds: ms });
 

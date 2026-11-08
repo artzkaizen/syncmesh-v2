@@ -71,9 +71,27 @@ export interface Coverage {
    * (`Engine.floor`), which adds what compaction removed.
    */
   readonly floor?: Cursors;
+  /**
+   * Per author, the synced run this device holds every event of, while `scope` is set (D32): a
+   * scoped cursor stands past events this device was never sent, so it is not a claim a custody
+   * receipt can sign, and this is. Absent with no scope, where `synced` is that claim. Persisted
+   * with the cursors, and never part of what this device tells a peer.
+   */
+  readonly held?: Cursors;
 }
 
 export const EMPTY_COVERAGE: Coverage = { synced: new Map(), local: new Map() };
+
+/**
+ * Per author, the synced run a custody receipt can claim (D32): every event at or below it is
+ * held here. The cursors themselves when they are unscoped, `held` when they are not.
+ *
+ * @example
+ * heldRuns({ synced: new Map([[a, 9]]), local: new Map(), scope: "org", held: new Map([[a, 4]]) })
+ * // Map { a => 4 }
+ */
+export const heldRuns = (coverage: Coverage): Cursors =>
+  coverage.scope === undefined ? coverage.synced : (coverage.held ?? new Map());
 
 /** What one side remembers about the other between messages; a received message replaces it whole. */
 export interface SyncState {

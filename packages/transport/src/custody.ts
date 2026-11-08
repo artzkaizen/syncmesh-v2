@@ -3,7 +3,7 @@ import type { PeerId } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 import type { CustodyReceipt, Identity, RefusalReceipt } from "@syncmesh/wire";
 
-import { wireReason } from "@syncmesh/engine";
+import { heldRuns, wireReason } from "@syncmesh/engine";
 import { issueReceipt, issueRefusal, verifyReceipt, verifyRefusal } from "@syncmesh/wire";
 
 import type { BridgeOptions } from "./bridge.js";
@@ -25,9 +25,10 @@ import { receiptFrame, refusalFrame } from "./frame.js";
  */
 export interface Custody {
   /**
-   * Signs what this device now holds of `author`'s log and hands it back down the link. Signs
-   * nothing while its coverage is scoped: a receipt claims the whole run, and a scoped cursor
-   * stands past events this device was never sent. Whether a receipt went out.
+   * Signs what this device now holds of `author`'s log and hands it back down the link. A receipt
+   * claims the whole run, so while the coverage is scoped it signs the run folded here
+   * (`Coverage.held`), never the cursor: a scoped cursor stands past events this device was never
+   * sent. Whether a receipt went out.
    */
   readonly vouch: (author: PeerId) => boolean;
   /** One arriving receipt: verified, and kept only when it is about this device's own writes. */
@@ -87,11 +88,9 @@ export function createCustody(deps: CustodyDeps): Custody {
   return {
     vouch: (author) => {
       if (incarnation === undefined) return false;
-      const coverage = engine.coverage();
       // a scoped cursor (D23) says "everything below N that I may read"; a receipt says everything
-      // below N, so a device whose cursor stepped over withheld events would sign for what it lacks
-      if (coverage.scope !== undefined) return false;
-      const held = coverage.synced.get(author);
+      // below N, so a scoped device signs the run it folded, which stops below what was withheld
+      const held = heldRuns(engine.coverage()).get(author);
       if (held === undefined) return false;
       send(
         KIND.receipt,

@@ -4,7 +4,7 @@ import type { CustodyReceipt, RefusalReceipt } from "@syncmesh/wire";
 import { createEngine, createMemoryEventStore } from "@syncmesh/engine";
 import { createHlcClock, parseSeqNum } from "@syncmesh/kernel";
 import { Temporal } from "@syncmesh/temporal";
-import { receiptFrame } from "@syncmesh/transport";
+import { cursorsFrame, receiptFrame } from "@syncmesh/transport";
 import { createGrantRegistry, createIdentity, issueReceipt, issueRefusal } from "@syncmesh/wire";
 import { afterEach, describe, expect, test } from "bun:test";
 
@@ -14,10 +14,13 @@ import { memoryFanout } from "../fanout.js";
 import { joinFrame, roomRefusalFrame } from "../frames.js";
 import { relayTransport } from "../transport.js";
 import {
+  ACME,
+  GLOBEX,
   ISSUER,
   T0,
   dialTo,
   fakeSocket,
+  gatedRoom,
   openRoom,
   peer,
   mintFor,
@@ -121,6 +124,49 @@ describe("custody over a relay (D32, U17)", () => {
     room.close();
   });
 
+  test("a holder in a grant-gated room signs for the run it was sent, though its cursor is scoped", async () => {
+    const room = await gatedRoom();
+    const author = peer(40, "acct_a");
+    const holder = peer(80, "acct_b");
+    const kept: CustodyReceipt[] = [];
+    const { dial } = dialTo(room);
+    await attach({ ...author.context, onReceipt: (r) => void kept.push(r) }, dial);
+    await attach({ ...holder.context, incarnation: "holder-store-1" }, dial);
+    expect(holder.engine.coverage().scope).toBeDefined();
+
+    await write(author, "n1", "one");
+    expect(await until(() => kept.length > 0)).toBe(true);
+    expect(kept[0]?.holder).toBe(holder.identity.peerId);
+    expect(kept[0]?.throughSeq).toBe(ONE);
+    room.close();
+  });
+
+  test("a holder entitled to less signs below the first write it was never sent, never past it", async () => {
+    const room = await gatedRoom();
+    const author = peer(40, "acct_a");
+    const holder = peer(80, "acct_b", 100, { partitions: [ACME] });
+    const kept: CustodyReceipt[] = [];
+    const { dial } = dialTo(room);
+    await attach({ ...author.context, onReceipt: (r) => void kept.push(r) }, dial);
+    await attach({ ...holder.context, incarnation: "holder-store-1" }, dial);
+
+    await write(author, "a1", "acme one", ACME);
+    await write(author, "g2", "globex", GLOBEX);
+    await write(author, "a3", "acme three", ACME);
+    expect(await until(() => kept.length > 0)).toBe(true);
+    // a write after the hole: the holder folds it, and its cursor steps over seq 2 to reach it
+    await write(author, "a4", "acme four", ACME);
+    const four = parseSeqNum(4).unwrap();
+    expect(
+      await until(() => holder.engine.coverage().synced.get(author.identity.peerId) === four),
+    ).toBe(true);
+    await tick(60);
+    // seq 2 never reached the holder, so 1 is all it can sign, however far its cursor stands
+    expect(holder.engine.coverage().held?.get(author.identity.peerId)).toBe(ONE);
+    expect(kept.map((r) => r.throughSeq)).toEqual(kept.map(() => ONE));
+    room.close();
+  });
+
   test("a peer in the room that parks the author's write says so, and the author hears it", async () => {
     const room = await openRoom();
     const author = ungranted(41);
@@ -221,6 +267,33 @@ describe("the room hands a custody frame to its author and nobody else", () => {
     await tick();
 
     expect(custodyFrames(sa)).toHaveLength(0);
+    room.close();
+  });
+
+  test("a cursors frame naming somebody other than the key that joined is dropped", async () => {
+    const room = await scriptedRoom();
+    const author = peer(40, "acct_a");
+    const spoofer = peer(90, "acct_c");
+    const holder = seat(room, peer(80, "acct_b"));
+    const { conn } = seat(room, spoofer);
+    await tick();
+    const cursorsFrom = (p: ReturnType<typeof peer>) =>
+      holder
+        .frames()
+        .filter(
+          (f) =>
+            f.kind === "session" &&
+            f.frame.kind === "cursors" &&
+            f.frame.from === p.identity.peerId,
+        );
+    // the join's own cursors frame names the spoofer, so it is counted from here
+    const before = cursorsFrom(spoofer).length;
+    conn.receive(cursorsFrame(author.identity.peerId, new Map()));
+    conn.receive(cursorsFrame(spoofer.identity.peerId, new Map()));
+    await tick();
+
+    expect(cursorsFrom(author)).toHaveLength(0);
+    expect(cursorsFrom(spoofer)).toHaveLength(before + 1);
     room.close();
   });
 

@@ -67,8 +67,9 @@ export function stateSnapshot(
   const { interest } = options;
   // tombstones travel: without them a joiner would resurrect every row anyone deleted
   const rows = [...keyedRecords(state)].filter(({ record }) => rowsIn(record, interest));
-  // the floor is this device's own account of its log, never part of what it claims to a joiner
-  const { floor: _ownFloor, ...claimed } = coverage;
+  // the floor and the held run are this device's own account of its log, never part of what it
+  // claims to a joiner
+  const { floor: _ownFloor, held: _ownHeld, ...claimed } = coverage;
   return interest === undefined
     ? { rows, coverage: claimed }
     : { rows, coverage: claimed, scope: interest };

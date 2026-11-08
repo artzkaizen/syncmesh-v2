@@ -3,6 +3,7 @@ import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 import type { CustodyDeps, TransportContext } from "@syncmesh/transport";
 
+import { heldRuns } from "@syncmesh/engine";
 import { omitUndefined } from "@syncmesh/result";
 import { createCustody } from "@syncmesh/transport";
 
@@ -72,13 +73,13 @@ export function createRoomCustody(
   const self = context.identity.peerId;
   // the run last signed per author, and the run last signed per author while it was seated: a
   // receipt sent while its author is away reaches nobody, and the room keeps none to hand over
-  const signed = new Map<PeerId, SeqNum>(engine.coverage().synced);
+  const signed = new Map<PeerId, SeqNum>(heldRuns(engine.coverage()));
   const seated = new Map<PeerId, SeqNum>();
   const sign = (author: PeerId, at: SeqNum): void => {
     if (custody.vouch(author)) signed.set(author, at);
   };
   const moved = (): void => {
-    for (const [author, at] of engine.coverage().synced)
+    for (const [author, at] of heldRuns(engine.coverage()))
       if (author !== self && signed.get(author) !== at) sign(author, at);
   };
   return {
@@ -95,7 +96,7 @@ export function createRoomCustody(
     heard: (peer) => {
       // a write folded while its author was away was signed to nobody: signed again now it is
       // here, once per position, because every peer's cursors would otherwise re-sign every run
-      const at = engine.coverage().synced.get(peer);
+      const at = heldRuns(engine.coverage()).get(peer);
       if (peer !== self && at !== undefined && seated.get(peer) !== at && custody.vouch(peer)) {
         seated.set(peer, at);
         signed.set(peer, at);

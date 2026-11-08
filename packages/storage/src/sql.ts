@@ -89,7 +89,14 @@ function decodeCursor(
  */
 export const CURSOR_FLOOR = 2;
 
-/** Folds `(peer, local, seq)` rows into a Coverage; a floor row lands in `floor`. */
+/**
+ * The `local` column of a cursor row that holds `Coverage.held` (D32), written only while the
+ * cursors are scoped. A build from before it reads such a row as a synced cursor at or below the
+ * real one, which, like a floor row, only ever makes it ask again for what it holds.
+ */
+export const CURSOR_HELD = 3;
+
+/** Folds `(peer, local, seq)` rows into a Coverage; a floor row lands in `floor`, a held row in `held`. */
 export function parseCoverage(
   rows: readonly SqlRow[],
 ): Result<Coverage, StateCorrupt | StoreFailure> {
@@ -97,12 +104,19 @@ export function parseCoverage(
     const synced = new Map<PeerId, SeqNum>();
     const local = new Map<PeerId, SeqNum>();
     const floor = new Map<PeerId, SeqNum>();
+    const held = new Map<PeerId, SeqNum>();
     for (const row of rows) {
       const [peer, kind, seq] = yield* decodeCursor(row);
-      const into = kind === 1 ? local : kind === CURSOR_FLOOR ? floor : synced;
+      const into =
+        kind === 1 ? local : kind === CURSOR_FLOOR ? floor : kind === CURSOR_HELD ? held : synced;
       into.set(peer, seq);
     }
-    return Result.ok(floor.size === 0 ? { synced, local } : { synced, local, floor });
+    return Result.ok({
+      synced,
+      local,
+      ...(floor.size > 0 && { floor }),
+      ...(held.size > 0 && { held }),
+    });
   });
 }
 

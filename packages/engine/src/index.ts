@@ -130,6 +130,7 @@ export { createHub } from "./listeners.js";
 export type { Ahead, Coverage, Cursors, SyncDoc, SyncMessage, SyncState } from "./sync.js";
 export {
   EMPTY_COVERAGE,
+  heldRuns,
   coversCursors,
   generateSyncMessage,
   heldAhead,

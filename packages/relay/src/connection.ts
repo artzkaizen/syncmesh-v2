@@ -270,8 +270,13 @@ export function createConnection(
     if (frame.frame.kind === "event") ingest(frame.frame.wire);
     else if (frame.frame.kind === "grant") onGrant(bytes, frame.frame.wire);
     else if (frame.frame.kind === "presence") onPresence(bytes, frame.frame.wire);
-    else if (frame.frame.kind === "grant-request" || frame.frame.kind === "cursors")
-      room.toClients(bytes, me); // peer-to-peer facts pass through byte-identical
+    else if (frame.frame.kind === "grant-request") room.toClients(bytes, me);
+    // peer-to-peer facts pass through byte-identical, cursors only from the key that joined: a
+    // peer's cursors make every holder say again what of theirs it parked (D32), so one naming
+    // somebody else is dropped
+    else if (frame.frame.kind === "cursors") {
+      if (frame.frame.from === me) room.toClients(bytes, me);
+    }
     // a signed receipt goes to the author it is about, here and across the fleet (D32)
     else if (frame.frame.kind === "receipt") forwardCustody(room, bytes, frame.frame, me);
   };

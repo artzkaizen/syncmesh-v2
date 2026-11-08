@@ -2,7 +2,7 @@ import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 
 import type { TornRun } from "./store.js";
 
-import { EMPTY_COVERAGE, type Ahead, type Coverage, type Cursors } from "./sync.js";
+import { EMPTY_COVERAGE, heldRuns, type Ahead, type Coverage, type Cursors } from "./sync.js";
 
 /**
  * One author's position on this device: everything at or below `contiguous` has landed, and
@@ -35,6 +35,27 @@ const close = (chain: Chain): void => {
   }
 };
 
+/** Records one sequence number in a chain, closing the run it completes. */
+const noteIn = (chain: Chain, seqNum: SeqNum): void => {
+  const at = Number(seqNum);
+  if (at <= Number(chain.contiguous ?? 0)) return;
+  chain.ahead.set(at, seqNum);
+  close(chain);
+};
+
+/** Takes the run `from..to` back out of a chain: the cursor drops below it, the rest is ahead. */
+const reopenIn = (chain: Chain, from: SeqNum, to: SeqNum): void => {
+  const top = chain.contiguous ?? 0;
+  for (let seq: number = from; seq <= to; seq += 1) chain.ahead.delete(seq);
+  if (from > top) return;
+  for (let seq = to + 1; seq <= top; seq += 1) {
+    // SAFETY: above `to`, which is a positive sequence number, so each one is one too
+    chain.ahead.set(seq, seq as SeqNum);
+  }
+  // SAFETY: at least 1 when the run does not start the author's run, which `> 1` checks
+  chain.contiguous = from > 1 ? ((from - 1) as SeqNum) : undefined;
+};
+
 export interface CoverageTracker {
   /** Records the event in the author's chain; the cursor stops below a gap rather than jumping it. */
   readonly note: (event: Pick<SyncEvent, "peerId" | "seqNum" | "local">) => void;
@@ -60,7 +81,10 @@ export interface CoverageTracker {
    * that reads `ahead` sends the hole alone. The one place a cursor is lowered.
    */
   readonly reopen: (run: TornRun) => void;
-  /** The cursors, their scope, and the floor when there is one; what the state store persists. */
+  /**
+   * The cursors, their scope, the floor when there is one, and the held run while scoped; what
+   * the state store persists.
+   */
   readonly current: () => Coverage;
   /** Per author, what this device holds above its contiguous cursor: the far side of every gap. */
   readonly ahead: () => Ahead;
@@ -77,6 +101,10 @@ export function trackCoverage(initial: Coverage = EMPTY_COVERAGE): CoverageTrack
   };
   seed(scopes.synced, initial.synced);
   seed(scopes.local, initial.local);
+  // the synced run folded here, beside the cursors (D32): a scoped adopt raises the cursors past
+  // what was withheld and never this, and an unscoped one raises both, so unscoped they agree
+  const held = new Map<PeerId, Chain>();
+  seed(held, heldRuns(initial));
 
   const raise = (chains: Map<PeerId, Chain>, peer: PeerId, seq: SeqNum): void => {
     const chain = authorChain(chains, peer);
@@ -108,29 +136,21 @@ export function trackCoverage(initial: Coverage = EMPTY_COVERAGE): CoverageTrack
   const adopt = (adopted: Coverage): void => {
     for (const [peer, seq] of adopted.synced) raise(scopes.synced, peer, seq);
     for (const [peer, seq] of adopted.local) raise(scopes.local, peer, seq);
+    if (adopted.scope === undefined)
+      for (const [peer, seq] of adopted.synced) raise(held, peer, seq);
     scope = adopted.scope;
   };
 
   return {
     note: (event) => {
-      const chain = authorChain(event.local === true ? scopes.local : scopes.synced, event.peerId);
-      const at = Number(event.seqNum);
-      if (at <= Number(chain.contiguous ?? 0)) return;
-      chain.ahead.set(at, event.seqNum);
-      close(chain);
+      const local = event.local === true;
+      noteIn(authorChain(local ? scopes.local : scopes.synced, event.peerId), event.seqNum);
+      if (!local) noteIn(authorChain(held, event.peerId), event.seqNum);
     },
     adopt,
     reopen: ({ peer, local, from, to }) => {
-      const chain = authorChain(local ? scopes.local : scopes.synced, peer);
-      const top = chain.contiguous ?? 0;
-      for (let seq: number = from; seq <= to; seq += 1) chain.ahead.delete(seq);
-      if (from > top) return;
-      for (let seq = to + 1; seq <= top; seq += 1) {
-        // SAFETY: above `to`, which is a positive sequence number, so each one is one too
-        chain.ahead.set(seq, seq as SeqNum);
-      }
-      // SAFETY: at least 1 when the run does not start the author's run, which `> 1` checks
-      chain.contiguous = from > 1 ? ((from - 1) as SeqNum) : undefined;
+      reopenIn(authorChain(local ? scopes.local : scopes.synced, peer), from, to);
+      if (!local) reopenIn(authorChain(held, peer), from, to);
     },
     adoptUnheld: (adopted) => {
       const from = contiguousCursors(scopes.synced);
@@ -143,6 +163,7 @@ export function trackCoverage(initial: Coverage = EMPTY_COVERAGE): CoverageTrack
       local: contiguousCursors(scopes.local),
       ...(scope !== undefined && { scope }),
       ...(floor.size > 0 && { floor }),
+      ...(scope !== undefined && { held: contiguousCursors(held) }),
     }),
     ahead,
   };

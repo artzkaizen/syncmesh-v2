@@ -86,7 +86,9 @@ const NONE: readonly RefusedBy[] = [];
 
 /**
  * {@link refusedBy} over one operation's ref, as React state: the lines change when a refusal
- * lands or a refuser's later custody retires one, and keep their identity otherwise.
+ * lands or a refuser's later custody retires one, and keep their identity otherwise. `name` is
+ * compared by identity: an inline function is a new one every render, and new lines with it, so
+ * declare it outside the component or wrap it in `useCallback`.
  *
  * ```tsx
  * const refusals = useRefusedBy(client.$operations.get(operationId), { authority: OFFICE });
