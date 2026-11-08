@@ -9,7 +9,7 @@ import { Temporal } from "@syncmesh/temporal";
 import type { SqlDriver } from "../driver.js";
 import type { OpenDriver } from "./index.js";
 
-import { openStores, schemaNameFor } from "../open-stores.js";
+import { openStores, schemaName } from "../open-stores.js";
 
 /**
  * What a `kill -9` may not cost on any `SqlDriver`: the durability half of the driver contract.
@@ -76,7 +76,7 @@ const ZERO = 0 as Logical;
 export const CRASH_TABLES = [table("notes", { id: t.text().primaryKey(), body: t.text() })];
 
 /** The name the derived half is opened under: pass it to the driver both sides construct. */
-export const CRASH_SCHEMA = schemaNameFor(CRASH_TABLES);
+export const CRASH_SCHEMA = schemaName(CRASH_TABLES);
 
 /** The foreign author of every event the child writes: whose run a reopened store is asked about. */
 export const CRASH_AUTHOR = parsePeerId("c".repeat(64)).unwrap();

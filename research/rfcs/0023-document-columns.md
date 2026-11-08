@@ -998,7 +998,7 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
      `installProvisional` is a library call only: no relay or server calls it yet.
    - Rust: `syncmesh_client::docs::{Derive, DocColumnEntry}`, a builder of closures checked
      against the manifest's names, with no macro (§16.8).
-   - A changed derive function changes no table shape (`schemaNameFor` is the same), so it needs no
+   - A changed derive function changes no table shape (`schemaName` is the same), so it needs no
      migration; the next flush or materialisation recomputes. Nothing triggers that
      materialisation, so for a document nobody edits it can be a long time coming.
    - The validator refuses a derived column only in this device's own write (a probe, not yet

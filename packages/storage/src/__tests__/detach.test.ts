@@ -10,7 +10,7 @@ import type { StoreScope } from "../open-stores.js";
 
 import { sweepBudget } from "../budget.js";
 import { detachScope } from "../detach.js";
-import { scopedStores, storeNameFor } from "../open-stores.js";
+import { scopedStores, storeName } from "../open-stores.js";
 import { operationStore } from "../operation-store.js";
 import { openPair } from "./pair.js";
 
@@ -40,7 +40,7 @@ describe("detach — a partition leaves whole, or not at all", () => {
       expect(error?._tag === "DetachRefused" && error.unsent).toEqual(["op-1"]);
 
       (await ledger.acknowledge(B, A, seq(1), 5)).unwrap();
-      const file = pathOf(storeNameFor(ORG));
+      const file = pathOf(storeName(ORG));
       expect(existsSync(file)).toBe(true);
       (
         await detachScope(set, ORG, {
@@ -73,7 +73,7 @@ describe("the storage budget — pressure sheds whole idle partitions", () => {
         sizeOf: () => Promise.resolve(1000),
         isIdle: () => true,
         remove: (scope: StoreScope) =>
-          Promise.resolve(rmSync(pathOf(storeNameFor(scope)), { force: true })),
+          Promise.resolve(rmSync(pathOf(storeName(scope)), { force: true })),
       };
 
       const suggested = (
@@ -88,7 +88,7 @@ describe("the storage budget — pressure sheds whole idle partitions", () => {
       expect(swept.shed).toEqual([WARD]); // acme was guarded; ward, though younger, was free
       expect(swept.kept).toEqual([ORG]);
       expect(set.opened()).toEqual([ORG]);
-      expect(existsSync(pathOf(storeNameFor(WARD)))).toBe(false);
+      expect(existsSync(pathOf(storeName(WARD)))).toBe(false);
     } finally {
       await set.close();
       rmSync(dir, { recursive: true, force: true });

@@ -19,7 +19,7 @@ import {
   syncedTables,
 } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
-import { openStores, schemaNameFor } from "@syncmesh/storage";
+import { openStores, schemaName } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, signCheckpoint } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -262,7 +262,7 @@ describe("derived columns: every replica computes them (RFC-0023 §16.4)", () =>
 
     const shouted = schemaWith((d) => plainTitle(d).toUpperCase());
     // the derive is not in the table's shape: the state file's name, and its rows, stay put
-    expect(schemaNameFor(syncedTables(shouted))).toBe(schemaNameFor(syncedTables(schema)));
+    expect(schemaName(syncedTables(shouted))).toBe(schemaName(syncedTables(schema)));
     const later = createDocuments({
       engine: a.engine,
       adapters: [loro()],

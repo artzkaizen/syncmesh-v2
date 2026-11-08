@@ -6,6 +6,7 @@ import type { LogPlacement, SqlValue } from "./driver.js";
 import type { Rung } from "./ladder.js";
 
 import { SQLITE_DOCS, SQLITE_DOC_SNAPSHOTS, SQLITE_DOC_TABLES } from "./dialect-docs.js";
+import { sqliteGapTables, sqliteGaps } from "./dialect-gaps.js";
 import { sqliteOperations } from "./dialect-operations.js";
 import { tableColumns, literal, quote, type TableColumns } from "./identifiers.js";
 import { ladder } from "./ladder.js";
@@ -177,8 +178,9 @@ const sqliteDialect = (log: LogPlacement): Dialect => {
    * shape changes for log reasons and the projection's for schema reasons, and neither has to know
    * when the other moved.
    *
-   * One step, because this is the shape the log has now. History is not preserved here on purpose:
-   * nothing has shipped, and a ladder whose earlier rungs nobody has ever stood on is a museum.
+   * The first step is the shape the log had before D39, kept without history on purpose: nothing
+   * had shipped, and a ladder whose earlier rungs nobody has ever stood on is a museum. The second
+   * is a real rung, because logs written by the first exist.
    */
   const logSteps: readonly (readonly string[])[] = [
     [
@@ -209,6 +211,8 @@ const sqliteDialect = (log: LogPlacement): Dialect => {
         scope TEXT NOT NULL
       ) WITHOUT ROWID`,
     ],
+    // the holes the log was written with (D39): `dialect-gaps.ts`
+    sqliteGapTables(log),
   ];
 
   /** The derived half's, in `main`, beside the app's own tables. Rebuilt by folding the log. */
@@ -283,6 +287,7 @@ const sqliteDialect = (log: LogPlacement): Dialect => {
       upsertScope: `INSERT OR REPLACE INTO ${t("scope")} (id, scope) VALUES (0, ?)`,
       clearScope: `DELETE FROM ${t("scope")}`,
     },
+    gaps: sqliteGaps(log),
     docs: SQLITE_DOCS,
     capture,
     operations: sqliteOperations(log),

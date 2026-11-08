@@ -1,7 +1,7 @@
 import type { SqliteDriver } from "@syncmesh/storage";
 
 import { Result, TaggedError, omitUndefined } from "@syncmesh/result";
-import { schemaNameFor, sqliteDriver } from "@syncmesh/storage";
+import { schemaName, sqliteDriver } from "@syncmesh/storage";
 
 import type { SqliteWasmUnavailable } from "./module.js";
 import type { WirePort } from "./protocol.js";
@@ -37,12 +37,12 @@ export class SqliteWorkerUnavailable extends TaggedError("SqliteWorkerUnavailabl
 
 export interface WasmSqliteOptions {
   /**
-   * The database, as `storeNameFor` names one scope's (D07). Percent-encoded into a filename, so
+   * The database, as `storeName` names one scope's (D07). Percent-encoded into a filename, so
    * a partition id with a slash or a colon in it is still one file and still injective.
    */
   readonly name: string;
   /**
-   * The shape of the app's tables, as `schemaNameFor(tables)` gives it. It names the derived half
+   * The shape of the app's tables, as `schemaName(tables)` gives it. It names the derived half
    * of the pair, so changing a column opens an empty file and refolds from the log into it rather
    * than migrating the previous shape's rows (RFC-0022). Omitted, every shape shares one file —
    * which is what a driver opened with no tables at all wants.
@@ -195,7 +195,7 @@ export function wasmSqliteDriver(
   const storage = options.storage ?? "auto";
   const where = omitUndefined({
     name: options.name,
-    schema: options.schema ?? schemaNameFor([]),
+    schema: options.schema ?? schemaName([]),
     directory: options.directory ?? DIRECTORY,
     capacity: options.capacity ?? CAPACITY,
     whenHeld: options.whenHeld,

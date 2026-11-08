@@ -1,3 +1,4 @@
+import { createMemoryEventStore } from "@syncmesh/engine";
 import { seed } from "@syncmesh/kernel/test-fixtures";
 import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
@@ -75,5 +76,44 @@ describe("inspect.handles", () => {
     // nobody kept the reference — the seat stays taken, which is the point
     expect(mesh.inspect.handles().observers).toBe(1);
     await mesh.stop();
+  });
+});
+
+describe("inspect.verify", () => {
+  test("checks the log's pages, and a sound log passes", async () => {
+    const mesh = await device();
+    expect((await mesh.inspect.verify()).isOk()).toBe(true);
+    await mesh.stop();
+  });
+
+  test("a mesh over a bare event store says it has no pages to check", async () => {
+    const mesh = (
+      await createMesh({
+        store: createMemoryEventStore(),
+        schema: schema(),
+        identity: createIdentity(seed(7)).unwrap(),
+        now: () => T0,
+      })
+    ).unwrap();
+    const verified = await mesh.inspect.verify();
+    expect(verified.isErr() && verified.error._tag).toBe("NoSuchCapability");
+    await mesh.stop();
+  });
+
+  test("stopping over the app's own connection marks the session clean and leaves it open", async () => {
+    const driver = bunSqliteDriver(":memory:");
+    const mesh = (
+      await createMesh({
+        driver,
+        schema: schema(),
+        identity: createIdentity(seed(7)).unwrap(),
+        now: () => T0,
+      })
+    ).unwrap();
+    const ended = () => driver.all(`SELECT value FROM syncmesh.meta WHERE key = 'session'`);
+    expect(await ended()).toEqual([["open"]]);
+    await mesh.stop();
+    // without this the next launch would check every page as if the last one had crashed (D39)
+    expect(await ended()).toEqual([["closed"]]);
   });
 });

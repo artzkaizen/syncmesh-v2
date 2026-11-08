@@ -23,7 +23,7 @@ import { grownCore } from "@syncmesh/wire/wire-tests";
 
 import type { SqlDriver, SqlValue } from "../driver.js";
 
-import { logTable, placementOf } from "../namespace.js";
+import { logTable, logPlacement } from "../namespace.js";
 
 export const A = parsePeerId("a".repeat(64)).unwrap();
 export const B = parsePeerId("b".repeat(64)).unwrap();
@@ -158,7 +158,7 @@ export const DERIVED_NOTES = syncSchema({
  * place the naming rule is stated twice.
  */
 export const sqlOf = (driver: Pick<SqlDriver, "dialect" | "log">) => {
-  const log = (name: string) => logTable(name, placementOf(driver));
+  const log = (name: string) => logTable(name, logPlacement(driver));
   return driver.dialect === "postgres"
     ? {
         events: log("events"),

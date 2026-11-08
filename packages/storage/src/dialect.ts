@@ -13,7 +13,7 @@ export {
   STATE_TABLES,
   logTable,
   namespaceDdl,
-  placementOf,
+  logPlacement,
   sqliteLogIndex,
   stateTable,
 } from "./namespace.js";
@@ -54,6 +54,37 @@ export interface EventSql {
   readonly upsertFloor: string;
   readonly selectFloors: string;
   readonly selectMaxHlc: string;
+}
+
+/**
+ * The gap table (D39): every run of an author's sequences that was absent when a later one landed,
+ * so a read can tell a hole the log was written with from one a damaged page made.
+ */
+export interface GapSql {
+  /** Binds `(peer, local, from, to)`; a gap already recorded is left as it is. */
+  readonly insert: string;
+  /** The recorded gap with the largest start at or below a sequence: binds `(peer, local, seq)`. */
+  readonly selectAt: string;
+  /** Binds `(peer, local, from)`. */
+  readonly delete: string;
+  /** Every recorded gap as `peer, local, from, to`, ordered by author and start. */
+  readonly selectAll: string;
+  /** Gaps compaction has put wholly below the floor: binds `(peer, local, floor)`. */
+  readonly deleteBelow: string;
+  /**
+   * Holds one author's run in one scope until the transaction ends: binds `(peer, local)`. Only
+   * where two connections can append to the same log at once (Postgres); SQLite appends take the
+   * driver's turn one at a time, and a second connection that read a stale head is refused at
+   * its write. A driver with no `transaction` gets neither, and relies on its
+   * caller to append one batch at a time.
+   */
+  readonly lock?: string;
+  /**
+   * The first statement of a read that must see the entries and the gaps at one instant, where a
+   * transaction alone does not give that (Postgres reads each statement afresh under READ
+   * COMMITTED). SQLite's read transaction already holds one snapshot.
+   */
+  readonly snapshot?: string;
 }
 
 export interface StateSql {
@@ -193,6 +224,7 @@ export interface OperationSql {
 export interface Dialect {
   readonly name: SqlDialect;
   readonly events: EventSql;
+  readonly gaps: GapSql;
   readonly state: StateSql;
   readonly docs: DocSql;
   readonly capture: CaptureSql;

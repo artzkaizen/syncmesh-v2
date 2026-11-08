@@ -11,9 +11,10 @@ import type { SqlDialect, SqlDriver } from "./driver.js";
 import type { ProjectionOptions } from "./projection.js";
 
 import { captureStatements, installCapture } from "./capture.js";
-import { ATTACHED_LOG, driverDialect, placementOf } from "./dialect.js";
+import { ATTACHED_LOG, driverDialect, logPlacement } from "./dialect.js";
 import { sqlDocStore } from "./doc-store.js";
 import { sqlEventStore } from "./event-store.js";
+import { closeSession, openSession } from "./integrity.js";
 import { tablesProjection } from "./projection.js";
 import { rowSyncDdlFor, rowSyncTable, type RowSync } from "./row-sync.js";
 import { attempt, inTransaction } from "./sql.js";
@@ -40,6 +41,13 @@ export interface Stores extends ScopedStores {
   readonly atomic: <T>(fn: (scoped: ScopedStores) => Promise<T>) => Promise<T>;
   /** Where each row's own write got to, for `syncOf` (book ch. 10); absent with no tables. */
   readonly rowSync?: RowSync;
+  /**
+   * Records that this session over the log ended cleanly, without closing the connection: what a
+   * caller that owns the driver runs where `close` would close what is not its own. A session that
+   * ends without it is checked page by page at the next open (D39).
+   */
+  readonly markClean: () => Promise<void>;
+  /** {@link Stores.markClean}, then closes the connection. */
   readonly close: () => Promise<void>;
 }
 
@@ -65,7 +73,7 @@ export interface OpenStoresOptions extends ProjectionOptions {
  * the DDL is what the file contains. Twelve hex characters: this distinguishes a handful of
  * shapes on one device over its life, not a corpus.
  */
-export const schemaNameFor = (tables: readonly Table[], dialect: SqlDialect = "sqlite"): string =>
+export const schemaName = (tables: readonly Table[], dialect: SqlDialect = "sqlite"): string =>
   bytesToHex(
     sha256(new TextEncoder().encode(captureStatements({ dialect }, tables).join(";"))),
   ).slice(0, 12);
@@ -85,7 +93,7 @@ export const schemaNameFor = (tables: readonly Table[], dialect: SqlDialect = "s
  *
  * **A changed schema is only free while the log can still produce the rows.** The row it compares
  * lives in the log, which is shared; the file it is comparing against is the derived half, which
- * `schemaNameFor` gives a different name to for every shape. So changing a column normally opens
+ * `schemaName` gives a different name to for every shape. So changing a column normally opens
  * an empty file and refolds into it, and the previous shape's file is an orphan nobody reads.
  * Once the log has been compacted that stops being true — the old file holds rows no fold can
  * produce again — and the open refuses rather than silently presenting an empty database.
@@ -138,11 +146,10 @@ const installed = (
  * taken on data is a transaction held open against it for the life of the process, which is what
  * WAL exists to avoid.
  */
-export const statePathFor = (logPath: string, schema: string): string =>
-  `${logPath}.state@${schema}`;
+export const statePath = (logPath: string, schema: string): string => `${logPath}.state@${schema}`;
 
 /** The hold is over the **store** — every file below — and only one opener may have it. */
-export const lockPathFor = (logPath: string): string => `${logPath}.lock`;
+export const lockPath = (logPath: string): string => `${logPath}.lock`;
 
 /**
  * Both halves, for a caller that has to delete or copy the set.
@@ -152,9 +159,9 @@ export const lockPathFor = (logPath: string): string => `${logPath}.lock`;
  * the log would leave every event in it to be found again on the next join — which a test caught
  * doing exactly that.
  */
-export const storeFilesFor = (logPath: string, schema: string): readonly string[] => [
+export const storeFiles = (logPath: string, schema: string): readonly string[] => [
   logPath,
-  statePathFor(logPath, schema),
+  statePath(logPath, schema),
 ];
 
 /**
@@ -192,7 +199,7 @@ export function openStores(
     // an inline driver was never going to attach anything — its runtime has no `ATTACH` — so the
     // guard would be refusing the one arrangement that is correct there (RFC-0022)
     if (
-      placementOf(driver) === "attached" &&
+      logPlacement(driver) === "attached" &&
       driver.dialect !== "postgres" &&
       !(yield* Result.await(logAttached(driver)))
     ) {
@@ -203,6 +210,9 @@ export function openStores(
       );
     }
     const events = yield* Result.await(sqlEventStore(driver));
+    // once, and only after a session that never reached `close`: a torn page a read cannot see
+    // is refused here rather than folded around (D39)
+    yield* Result.await(openSession(driver));
     const stateOptions = {};
     let rowSync: RowSync | undefined;
     if (options.tables !== undefined) {
@@ -223,13 +233,23 @@ export function openStores(
       docs: yield* Result.await(sqlDocStore(driver, { nested: true })),
     };
     const atomic: Stores["atomic"] = (fn) => inTransaction(driver, () => fn(scoped));
+    // a mark that does not land costs one check at the next open, which is the safe direction —
+    // so it is said, not thrown, and the connection still closes
+    const markClean = async () => {
+      const marked = await closeSession(driver);
+      if (marked.isErr()) console.warn(`[syncmesh] ${marked.error.message}`);
+    };
     const opened = {
       events,
       state,
       docs,
       driver,
       atomic,
-      close: () => driver.close?.() ?? Promise.resolve(),
+      markClean,
+      close: async () => {
+        await markClean();
+        await driver.close?.();
+      },
     };
     return Result.ok(rowSync === undefined ? opened : { ...opened, rowSync });
   });
@@ -249,7 +269,7 @@ export type StoreScope = PartitionKey | "user";
  * colon is not a filename everywhere. Injective: a kind holds no `-`, so the first one is always
  * the separator, and `"user"` holds none at all.
  */
-export const storeNameFor = (scope: StoreScope): string => {
+export const storeName = (scope: StoreScope): string => {
   if (scope === "user") return "user";
   const at = scope.indexOf(":");
   return `${scope.slice(0, at)}-${encodeURIComponent(scope.slice(at + 1))}`;
@@ -288,7 +308,7 @@ export function scopedStores(options: ScopedStoresOptions): ScopedStoreSet {
   const held = new Map<StoreScope, Promise<Result<Stores, StoreFailure>>>();
 
   const open = async (scope: StoreScope): Promise<Result<Stores, StoreFailure>> => {
-    const driver = await driverFor(scope, storeNameFor(scope));
+    const driver = await driverFor(scope, storeName(scope));
     return openStores(driver, storeOptions);
   };
 
