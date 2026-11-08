@@ -4,14 +4,13 @@ import type {
   Principal,
   StateLookup,
   StoreFailure,
-  Tx,
   Validator,
   ValidatorSchema,
 } from "@syncmesh/engine";
 import type { Change, EventId, PartitionKey, Procedure, SyncEvent } from "@syncmesh/kernel";
 import type { Table } from "@syncmesh/schema";
 
-import { EmptyMutation, PolicyDenied, can } from "@syncmesh/engine";
+import { PolicyDenied, can } from "@syncmesh/engine";
 import { getRecord, readRow } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
@@ -19,7 +18,8 @@ import { Temporal } from "@syncmesh/temporal";
 import type { SqlDriver } from "./driver.js";
 import type { OperationStore } from "./operation-store.js";
 
-import { captureChanges } from "./capture.js";
+import { captureChanges, captureWithin } from "./capture.js";
+import { inTransaction } from "./sql.js";
 
 /** One committed transaction: the event it appended, for `delivered` and `revert`. */
 export interface TxReceipt {
@@ -51,7 +51,12 @@ export type WriteError = MutateError | StoreFailure;
 export interface WriterDeps {
   readonly engine: Engine;
   readonly validate: Validator;
-  /** The connection the app's tables live on; capture is installed on it. */
+  /**
+   * The connection the app's tables live on, with capture installed: the one the engine's
+   * `atomic` runs on (`Stores.driver`), or any connection when the engine has no `atomic`. The
+   * capture runs inside the engine's write transaction, so on another connection it would commit
+   * apart from its event.
+   */
   readonly driver: SqlDriver;
   readonly tables: readonly Table[];
   /**
@@ -98,15 +103,6 @@ class Rehearsed extends TaggedError("Rehearsed")<{ message?: string }> {}
 const procedure = (label: string): Procedure => label as Procedure;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 
-/** The captured changes, applied to the engine's recording tx exactly as the app made them. */
-const replay = (tx: Tx, changes: readonly Change[]): void => {
-  for (const change of changes) {
-    if (change.kind === "insert") tx.insert(change.table, change.key, change.row);
-    else if (change.kind === "update") tx.update(change.table, change.key, change.patch);
-    else tx.delete(change.table, change.key);
-  }
-};
-
 export function createWriter(deps: WriterDeps): Write {
   const { engine, validate, driver, tables, actor, schema } = deps;
   const localTables = new Set(
@@ -147,7 +143,7 @@ export function createWriter(deps: WriterDeps): Write {
    * synced tables gets no flag, so its local change fails validation (`LocalOnly`) and the
    * whole transaction rolls back — one event cannot both travel and stay.
    */
-  const mutateOptionsFor = (options: WriteOptions, captured: readonly Change[]) => {
+  const mutateSettings = (options: WriteOptions, captured: readonly Change[]) => {
     const mutateOptions = {};
     if (options.partition !== undefined)
       Object.assign(mutateOptions, { partition: options.partition });
@@ -165,7 +161,7 @@ export function createWriter(deps: WriterDeps): Write {
         .find((d) => d !== undefined);
       if (denied !== undefined) return Result.err(denied);
       return validate.validate(
-        { peerId: engine.peerId, changes: captured, ...mutateOptionsFor(options, captured) },
+        { peerId: engine.peerId, changes: captured, ...mutateSettings(options, captured) },
         before,
       );
     };
@@ -187,45 +183,65 @@ export function createWriter(deps: WriterDeps): Write {
     return verdict;
   };
 
+  /** The operation record's seat (book ch. 10) for a synced write, and the id it records under. */
+  const recordSeat = (name: string, options: WriteOptions) => {
+    const store = deps.operations;
+    if (store === undefined) return undefined;
+    const id = options.operationId ?? crypto.randomUUID();
+    const record = async (event: SyncEvent) => {
+      const row = {
+        id,
+        peer: event.peerId,
+        seq: event.seqNum,
+        label: name,
+        atMs: (deps.now?.() ?? Temporal.Now.instant()).epochMilliseconds,
+        // the write's own stamp, so a row can find this record by what it already carries
+        hlcMs: event.hlc[0].epochMilliseconds,
+        hlcLogical: Number(event.hlc[1]),
+      };
+      (await store.record(row)).unwrap();
+    };
+    return { id, record };
+  };
+
   const write: Write = Object.assign(
     (label: WriteLabel, fn: () => Promise<void>, options: WriteOptions = {}) =>
       Result.gen(async function* () {
         const captureOptions = { check: judge(options) };
         if (options.partition !== undefined)
           Object.assign(captureOptions, { partition: options.partition });
-        const changes = yield* Result.await(captureChanges(driver, tables, fn, captureOptions));
-        const name = label instanceof Function ? label(changes) : label;
-        if (changes.length === 0) {
-          return Result.err(
-            new EmptyMutation({ procedure: procedure(name), message: `${name} changed nothing` }),
-          );
-        }
-        const mutateOptions = mutateOptionsFor(options, changes);
-        const recorded =
-          deps.operations !== undefined && !("local" in mutateOptions)
-            ? { store: deps.operations, id: options.operationId ?? crypto.randomUUID() }
-            : undefined;
-        if (recorded !== undefined)
-          Object.assign(mutateOptions, {
-            record: async (event: SyncEvent) => {
-              const row = {
-                id: recorded.id,
-                peer: event.peerId,
-                seq: event.seqNum,
-                label: name,
-                atMs: (deps.now?.() ?? Temporal.Now.instant()).epochMilliseconds,
-                // the write's own stamp, so a row can find this record by what it already carries
-                hlcMs: event.hlc[0].epochMilliseconds,
-                hlcLogical: Number(event.hlc[1]),
-              };
-              (await recorded.store.record(row)).unwrap();
-            },
-          });
+        let operationId: string | undefined;
+        /*
+         * The app's statements, the event, its ledger row and the state commit are one
+         * transaction: the engine opens it and runs the capture first inside it. Two — the rows
+         * committed, then the event — left a row with no event behind a crash between them, a
+         * write that is local forever and that nothing can see (RFC-0022).
+         */
         const event = yield* Result.await(
-          engine.mutate(procedure(name), (tx) => replay(tx, changes), mutateOptions),
+          engine.mutateCaptured(
+            async () => {
+              const captured = await captureWithin(driver, tables, fn, captureOptions);
+              if (captured.isErr()) return Result.err(captured.error);
+              const changes = captured.value;
+              const name = label instanceof Function ? label(changes) : label;
+              const mutateOptions = mutateSettings(options, changes);
+              // local-only writes never travel, so they get no record
+              const seat =
+                changes.length > 0 && !("local" in mutateOptions)
+                  ? recordSeat(name, options)
+                  : undefined;
+              if (seat !== undefined) {
+                operationId = seat.id;
+                Object.assign(mutateOptions, { record: seat.record });
+              }
+              return Result.ok({ procedure: procedure(name), changes, options: mutateOptions });
+            },
+            // an engine whose log is not on this connection has no transaction of its own here
+            { around: (body) => inTransaction(driver, body) },
+          ),
         );
         const receipt = { eventId: event.id };
-        if (recorded !== undefined) Object.assign(receipt, { operationId: recorded.id });
+        if (operationId !== undefined) Object.assign(receipt, { operationId });
         return Result.ok(receipt);
       }),
     { rehearse },

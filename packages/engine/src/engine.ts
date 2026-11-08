@@ -25,6 +25,7 @@ import type { StoreFailure, StoredEvent } from "./store.js";
 import type { Ahead, Coverage, Cursors } from "./sync.js";
 import type { Tx } from "./tx.js";
 import type { StateLookup } from "./validate.js";
+import type { MutateCaptured } from "./writes.js";
 
 import { admit } from "./admit.js";
 import { compactLog } from "./compaction.js";
@@ -78,6 +79,12 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi, DocApi, OwnPosi
     fn: (tx: Tx) => void,
     options?: MutateOptions,
   ) => Promise<Result<SyncEvent, MutateError>>;
+  /**
+   * `mutate` for a write made by statements: `capture` runs first inside the write's transaction
+   * and hands back what they changed (D20), so those rows, the event, its operation record and
+   * the state commit land together; a refusal rolls the statements back with the rest.
+   */
+  readonly mutateCaptured: MutateCaptured;
   /** Folds entries once each; already-stored events are skipped, and an own event only when unsigned (G7: a signed own event the log lacks is a write it lost). A relayed event keeps its author's signature — pass it. */
   readonly receiveBatch: (
     entries: readonly StoredEvent[],

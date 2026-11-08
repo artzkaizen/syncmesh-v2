@@ -9,6 +9,7 @@ import { SQLITE_DOCS, SQLITE_DOC_SNAPSHOTS, SQLITE_DOC_TABLES } from "./dialect-
 import { sqliteGapTables, sqliteGaps } from "./dialect-gaps.js";
 import { sqliteOperations } from "./dialect-operations.js";
 import { tableColumns, literal, quote, type TableColumns } from "./identifiers.js";
+import { JOURNAL_DDL } from "./journal.js";
 import { ladder } from "./ladder.js";
 import { logTable, sqliteLogIndex } from "./namespace.js";
 
@@ -235,6 +236,9 @@ const sqliteDialect = (log: LogPlacement): Dialect => {
     SQLITE_DOC_TABLES,
     // The column snapshots (§6.1): a step of their own, for a database already at the one above.
     SQLITE_DOC_SNAPSHOTS,
+    // The write journal (`journal.ts`): only where the log is a second file whose commit can land
+    // apart from this one's
+    ...(log === "attached" ? [[JOURNAL_DDL]] : []),
   ];
 
   return {

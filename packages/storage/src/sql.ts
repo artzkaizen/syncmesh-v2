@@ -15,19 +15,27 @@ export const attempt = <T>(message: string, fn: () => Promise<T>) =>
   Result.tryPromise({ try: fn, catch: failure(message) });
 
 const queues = new WeakMap<SqlDriver, Promise<unknown>>();
+/** A driver that wraps another connection, to the driver it wraps: both take one queue. */
+const roots = new WeakMap<SqlDriver, SqlDriver>();
+
+/** Records that `wrapper` runs on `root`'s connection, so the two take turns in one queue. */
+export const rootConnection = (wrapper: SqlDriver, root: SqlDriver): void => {
+  roots.set(wrapper, roots.get(root) ?? root);
+};
 
 /**
  * Runs `fn` in this driver's turn: later callers wait for earlier ones, in call order, whatever
- * the earlier one settled as. A connection does one thing at a time, and this is the one queue
+ * the earlier one settled as. A driver wrapping another ({@link rootConnection}) shares its turn. A connection does one thing at a time, and this is the one queue
  * that says so — every transaction on this driver takes a turn in it, so a bare statement that
  * takes one cannot land inside somebody else's open transaction.
  *
  * A body must not take a second turn on the same driver: it would wait for itself.
  */
 export const onConnection = <T>(driver: SqlDriver, fn: () => Promise<T>): Promise<T> => {
-  const turn = (queues.get(driver) ?? Promise.resolve()).then(fn, fn);
+  const connection = roots.get(driver) ?? driver;
+  const turn = (queues.get(connection) ?? Promise.resolve()).then(fn, fn);
   queues.set(
-    driver,
+    connection,
     turn.then(
       () => undefined,
       () => undefined,
@@ -48,7 +56,9 @@ export const inTransaction = <T>(driver: SqlDriver, fn: () => Promise<T>): Promi
 };
 
 /** A `MAX(seq)`-style cell: NULL is absent, anything else must be a sequence number. */
-export const seqOf = (value: SqlValue | undefined): Result<SeqNum | undefined, StoreFailure> =>
+export const parseSeqCell = (
+  value: SqlValue | undefined,
+): Result<SeqNum | undefined, StoreFailure> =>
   value === null || value === undefined
     ? Result.ok(undefined)
     : parseSeqNum(Number(value)).mapError(failure("stored sequence number is invalid"));
@@ -62,7 +72,7 @@ function decodeCursor(
     const peerId = yield* parsePeerId(String(peer)).mapError(
       (e) => new StateCorrupt({ message: e.message }),
     );
-    const seqNum = yield* seqOf(seq);
+    const seqNum = yield* parseSeqCell(seq);
     if (seqNum === undefined)
       return Result.err(new StateCorrupt({ message: "cursor without a sequence number" }));
     return Result.ok([peerId, local === 1, seqNum] as const);
@@ -70,7 +80,9 @@ function decodeCursor(
 }
 
 /** Folds `(peer, local, seq)` rows into a Coverage. */
-export function coverageOf(rows: readonly SqlRow[]): Result<Coverage, StateCorrupt | StoreFailure> {
+export function parseCoverage(
+  rows: readonly SqlRow[],
+): Result<Coverage, StateCorrupt | StoreFailure> {
   return Result.gen(function* () {
     const synced = new Map<PeerId, SeqNum>();
     const local = new Map<PeerId, SeqNum>();
@@ -86,13 +98,13 @@ export function coverageOf(rows: readonly SqlRow[]): Result<Coverage, StateCorru
  * The interest text the scope table holds, or `undefined` when it holds none (D23). Absent is a
  * device that never adopted a filtered catch-up, and its cursors keep their plain meaning.
  */
-export const scopeOf = (rows: readonly SqlRow[]): string | undefined => {
+export const rowScope = (rows: readonly SqlRow[]): string | undefined => {
   const value = rows[0]?.[0];
   return !value ? undefined : String(value);
 };
 
 /** A stored `partition` cell, which is NULL for a global table and a key everywhere else. */
-const partitionOf = (
+const parsePartitionCell = (
   value: SqlValue | undefined,
 ): Result<PartitionKey | undefined, StoreFailure> =>
   value === null || value === undefined
@@ -109,12 +121,12 @@ const partitionOf = (
 export function headerRow(row: SqlRow): Result<EventHeader, StoreFailure> {
   return Result.gen(function* () {
     const peer = yield* parsePeerId(String(row[0])).mapError(failure("stored author is invalid"));
-    const seq = yield* seqOf(row[1]);
+    const seq = yield* parseSeqCell(row[1]);
     const hlc = yield* hlcRow(row.slice(3, 5));
     if (seq === undefined || hlc === undefined)
       return Result.err(new StoreFailure({ message: "stored event has no sequence or stamp" }));
     const local = Number(row[2]) === 1;
-    const partition = yield* partitionOf(row[5]);
+    const partition = yield* parsePartitionCell(row[5]);
     return Result.ok({
       id: eventId(peer, seq, local),
       peer,

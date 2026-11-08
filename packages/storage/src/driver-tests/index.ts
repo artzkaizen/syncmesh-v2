@@ -10,6 +10,7 @@ import { docColumnCases } from "./doc-columns.js";
 import { docCases } from "./docs.js";
 import { eventCases } from "./events.js";
 import { holeCases } from "./holes.js";
+import { journalCases } from "./journal.js";
 import { readFilterCases } from "./read-filter.js";
 
 export { LADDER, PRINCIPALS, ROWS, RULES, asCells } from "./read-filter.js";
@@ -63,6 +64,7 @@ export function captureTests(openDriver: OpenDriver): readonly SuiteCase[] {
     ...captureCases(openDriver),
     ...captureRuleCases(openDriver),
     ...tablesCases(openDriver),
+    ...journalCases(openDriver),
     ...docColumnCases(openDriver),
     ...derivedColumnCases(openDriver),
   ];

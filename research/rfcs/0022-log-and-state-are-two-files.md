@@ -119,7 +119,7 @@ that rebuilds whatever sits above the floor, drops the rest, and reports itself 
 `rejoin from a peer`. It is a bug in today's single-file build too, reachable by anyone who clears
 the cache by hand.
 
-## A torn commit is survivable, but only under a protocol we do not have yet
+## A torn commit is survivable, under a protocol built since (U29)
 
 **The first draft of this section was wrong and the error is worth keeping**, because it is the
 one somebody else would make next.
@@ -167,11 +167,47 @@ Cross-database commits are atomic only in rollback-journal mode, where SQLite wr
 journal. Every device here runs WAL, so tearing is the normal case rather than a rare one to
 design around.
 
-> Out of scope here but found while writing it: `writer.ts` already commits the app-table write in
-> `captureChanges`' own transaction and the event in a second one. A crash between them leaves a
-> row written, the change log cleared, and no event — a write that is local forever and that
-> `strandedWrites` cannot see, because it scans the event store and there is no event. That gap
-> exists today, in one file, and this RFC neither causes nor fixes it.
+> Found while writing it, and fixed since (U29, 2026-11-08): `writer.ts` committed the app-table
+> write in `captureChanges`' own transaction and the event in a second one. A crash between them
+> left a row written, the change log cleared, and no event — a write that is local forever and
+> that `strandedWrites` cannot see, because it scans the event store and there is no event. The
+> writer now runs the capture inside the engine's own write transaction
+> (`Engine.mutateCaptured`), so the app's statements, the event, its ledger row and the state
+> commit are one transaction.
+
+### What was built (U29, decided 2026-11-08: Jace delegated the call)
+
+The three steps above are not what shipped, because they cannot hold for the one write that
+matters most: a captured write's rows are in `main` and exist *before* its event does, so they
+cannot commit second. What shipped keeps one transaction and makes its split recoverable:
+
+1. **Row and event in one transaction, everywhere.** `createWriter` hands `captureWithin` to
+   `Engine.mutateCaptured`, which runs it first inside `atomic`, then numbers, appends, records
+   and persists. A refusal from the capture or the ladder rolls the app's statements back with
+   the rest; statements that changed no synced row still commit, as no event. On Postgres, PGlite
+   and an inline (Durable Object, Rivet) log that one transaction is the whole answer: one
+   database, one commit.
+2. **The split inside `COMMIT`, journaled.** On a device's SQLite (`bun:sqlite`, `node:sqlite`,
+   `expo-sqlite`, sqlite-wasm on OPFS) `openStores` hands back a driver that journals every
+   transaction writing both files: its log statements, copied into `main`'s `syncmesh_journal`
+   in the same transaction, under a number the log's `meta` also records. SQLite commits `main`
+   first, so the only reachable tear is `main` committed and the log not; `openStores` replays a
+   journal entry the log has not reached into the log, before anything reads either file. The
+   other direction (log committed, `main` not) is the log ahead of the cursor, which boot already
+   replays. A transaction that writes one file is not journaled.
+3. **What it does not cover.** A write made on the bare driver you passed to `openStores`
+   rather than `Stores.driver` is not journaled; `createMesh` and `meshDrizzle` use the stores'
+   driver. A state file swapped for another schema's and swapped back after a crash compares its
+   journal number with a log that has moved on, and does not replay. Statements are journaled by
+   their target (`syncmesh.<table>`), which holds for every statement this repo writes and is
+   pinned by `journal.test.ts`.
+
+Pinned three ways, each failing without its half of the fix: `client/src/__tests__/crash.test.ts`
+kills a mesh write with SIGKILL before each of its statements (13 of 21 boundaries left a row
+with no event before); `storage/src/__tests__/journal.test.ts` puts the log file back as it was
+before a write — the state SQLite leaves when it dies between the two files' commits — for a
+local write and a received batch; and the driver suite's `tables: atomic across two files` case
+does the same on every adapter's own driver.
 
 ## The shape
 
@@ -276,7 +312,13 @@ inert there — correctly, since `openStores` is not what a relay opens.
 
 ## Current state → work
 
-1. ✅ **The two-phase protocol.** Less work than this said, because the shape was already here:
+1. ✅ **The two-phase protocol** — for an engine whose stores have no `atomic`. It was **not**
+   true of `createMesh` over `openStores`, which passes `atomic` across both files: a local write
+   tore twice there, between the writer's two transactions and inside SQLite's `COMMIT` between
+   the files (U29). Both are closed by the journal described under "What was built" above, not
+   by this item. What follows is the protocol as it stands without `atomic`.
+
+   Less work than this said, because the shape was already here:
    `atomic` has always been optional, and its absent case is each store committing on its own
    while the coverage cursor recovers the gap. What was wrong was one thing on the wrong side —
    the operation record was written *after* `persist`, so a tear between them left a write that
