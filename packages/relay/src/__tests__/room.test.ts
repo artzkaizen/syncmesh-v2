@@ -532,6 +532,52 @@ describe("fanout (D09-B)", () => {
     two.close();
   });
 
+  test("a stale cursor from another instance does not take the newer one's place for a stalled reader", async () => {
+    const a = peer(40, "acct_a");
+    const b = peer(80, "acct_b");
+    const fanout = memoryFanout();
+    const one = await open({ fanout });
+    const two = await open({ fanout, store: createMemoryEventStore() });
+    const onOne = one.connect(fakeSocket().socket);
+    onOne.receive(join(a.identity.peerId));
+    const onTwo = two.connect(fakeSocket().socket); // the author moved: a socket on each instance
+    onTwo.receive(join(a.identity.peerId));
+    const sb = fakeSocket();
+    const cb = two.connect(sb.socket);
+    cb.receive(join(b.identity.peerId));
+    await tick();
+    const cursor = (count: number) =>
+      presenceFrame(
+        signPresence(
+          {
+            v: 1,
+            peerId: a.identity.peerId,
+            topic: "cursor",
+            partition: ACME,
+            session: "s1",
+            count,
+            // SAFETY: test fixture column name; names are brands over these strings
+            value: new Map([["x" as never, count]]),
+            expires: Date.now() + 60_000,
+          },
+          a.identity,
+        ).wire,
+      );
+
+    const [older, newer] = [cursor(1), cursor(2)];
+    sb.setMode("dropped"); // b stopped reading
+    onTwo.receive(newer); // the newer value, here
+    await tick();
+    onOne.receive(older); // an older one, arriving from the other instance afterwards
+    await tick();
+    sb.sent.length = 0;
+    sb.setMode("sent");
+    cb.drain();
+    expect(sb.sent).toEqual([newer]);
+    one.close();
+    two.close();
+  });
+
   test("a narrowed interest is honoured whichever instance the event came from", async () => {
     const a = peer(40, "acct_a");
     const b = peer(80, "acct_b");

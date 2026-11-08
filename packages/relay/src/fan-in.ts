@@ -1,4 +1,5 @@
 import { presenceSlot } from "@syncmesh/transport";
+import { decodeAndVerifyPresence } from "@syncmesh/wire";
 
 import type { RoomState } from "./state.js";
 
@@ -46,8 +47,16 @@ export function fanIn(room: RoomState): (frame: Uint8Array) => void {
       if (admitGrant(room, inner.wire)) room.toClients(frame);
       return;
     }
-    // presence and the peer-to-peer facts pass through byte-identical, as they do from a socket,
-    // and presence is conflated per slot, as it is from a socket
-    room.toClientsLatest(inner.kind === "presence" ? presenceSlot(inner.wire) : undefined, frame);
+    if (inner.kind === "presence") {
+      // admitted here as from a socket: a stale value (an author who moved instances) must not
+      // take the place of the newer one a stalled reader is holding, and a joiner here is greeted
+      // with who is on the other instances too
+      const verified = decodeAndVerifyPresence(inner.wire);
+      if (verified.isErr() || !room.presence.admit(verified.value)) return;
+      room.toClientsLatest(presenceSlot(inner.wire), frame);
+      return;
+    }
+    // the peer-to-peer facts pass through byte-identical, as they do from a socket
+    room.toClients(frame);
   };
 }
