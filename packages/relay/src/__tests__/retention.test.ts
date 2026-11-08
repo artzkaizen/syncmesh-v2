@@ -3,7 +3,7 @@ import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import { createMemoryEventStore, tableDigests } from "@syncmesh/engine";
 import { hashOf, memoryBlobStore } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
-import { createRejoins, eventFrame } from "@syncmesh/transport";
+import { createRejoins, eventFrame, grantFrame } from "@syncmesh/transport";
 import { describe, expect, test } from "bun:test";
 
 import type { RelayRoomOptions } from "../room.js";
@@ -13,7 +13,11 @@ import { webSocketDial } from "../dial.js";
 import { RELAY_PROTOCOL_VERSIONS, blobGetFrame, blobPutFrame, joinFrame } from "../frames.js";
 import { startRelay } from "../serve.js";
 import { relayTransport } from "../transport.js";
+import { UNGRANTED } from "../trust.js";
 import {
+  ISSUER,
+  challengeOf,
+  signedJoin,
   bodyOf,
   dialTo,
   entryOf,
@@ -446,6 +450,36 @@ describe("a device the room refuses with retention (gaps U30)", () => {
     expect(await until(() => rejoins.issues().length === 1)).toBe(true);
     await t.stop();
     expect(rejoins.issues()).toEqual([]);
+    room.close();
+  });
+
+  test("a gated room names its floor only to a key a grant seats", async () => {
+    const trust = { issuers: [ISSUER.peerId], wait: MS(60) };
+    const { a, room, tick: setClock } = await fourEvents(2, { trust });
+    setClock(at(KEEP_MS + STEP_MS));
+    await room.sweep();
+    const author = a.identity.peerId;
+    expect(Number(room.floor().get(author))).toBe(2);
+
+    // a fresh key, no grant: told it is ungranted, never who writes here or how much
+    const stranger = fakeSocket();
+    const strangerConn = room.connect(stranger.socket);
+    strangerConn.receive(signedJoin(peer(99, "acct_nobody").identity, challengeOf(stranger)));
+    await tick(120);
+    expect(stranger.ofKind("error").map((f) => [f.code, f.floor])).toEqual([
+      [UNGRANTED, undefined],
+    ]);
+
+    // the same join under a grant is seated, and then told the floor it is below
+    const device = peer(98, "acct_device").identity;
+    const granted = fakeSocket();
+    const grantedConn = room.connect(granted.socket);
+    grantedConn.receive(signedJoin(device, challengeOf(granted)));
+    grantedConn.receive(grantFrame(mintFor(device, "acct_device")));
+    await tick(30);
+    expect(granted.ofKind("error")).toMatchObject([
+      { code: "retention", floor: new Map([[author, 2]]) },
+    ]);
     room.close();
   });
 });

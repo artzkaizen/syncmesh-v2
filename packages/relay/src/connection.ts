@@ -260,11 +260,16 @@ export function createConnection(
      * the floor as it stands right now. A sweep already on the room's queue has not moved it yet,
      * so `sendCatchUp` asks the same question again from inside that queue, where the answer is
      * final.
+     *
+     * It runs inside the seat, never before it: the refusal names the floor, which lists every
+     * author in the room, and a gated room tells that only to a key its grant seats — the same
+     * thing the hello would have told it (D40). An open room seats at once, so there it is still
+     * the first thing the join is answered with.
      */
-    if (refusedBelowFloor(refuse, theirs, room.floor())) return;
     // a gated room seats a proven key only under a grant for it (D40): the one already cached
     // from an earlier visit, or the one the device is about to send
     seat.admit(peer, (grant) => {
+      if (refusedBelowFloor(refuse, theirs, room.floor())) return;
       me = peer;
       const held = { socket, seat, refuse: hangUp, closed: () => closed };
       sitDown(conversation, { ...frame, selected }, held, grant);
