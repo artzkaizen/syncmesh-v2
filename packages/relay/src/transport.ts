@@ -16,6 +16,11 @@ export interface RelayDial {
 }
 
 export interface RelayTransportOptions {
+  /**
+   * The link's name, `"relay"` by default. `$recovery` raises a relay's `retention` issue under it
+   * (gaps U30), so two relay transports on one mesh need different names: under the same one, the
+   * room that serves one link clears the issue the other link's room raised.
+   */
   readonly name?: string;
   readonly dial: () => Promise<RelayDial> | RelayDial;
   readonly versions?: readonly number[];

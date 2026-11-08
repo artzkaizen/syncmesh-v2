@@ -80,7 +80,7 @@ export interface BelowPeerFloor {
  * would be at or above the floor, or something wakes it (`Transport.wake`).
  */
 export interface BelowRelayFloor {
-  /** The relay transport's name. */
+  /** The relay transport's name; one issue is kept per name, so give each relay its own. */
   readonly relay: string;
   /** Per author this device's join was below, the floor the room said it had trimmed to. */
   readonly floor: Cursors;

@@ -94,7 +94,8 @@ with no `trust` it asks nothing and raises a `$recovery` issue until the app acc
 (`$recovery.acceptState`), which then adopts per author at most the claimed floor. A snapshot
 manifest nobody asked for installs nothing. A relay refusing a below-floor join with `retention`
 names its floor on the refusal (one additive element of the `error` frame, frozen in
-`relay-vectors.json`), and the device raises the same `$recovery` issue for it
+`relay-vectors.json`; a gated room checks only once the grant seats the key, so an ungranted key
+is told `ungranted` and never the floor), and the device raises the same `$recovery` issue for it
 (`reason: "retention"`, keyed by the relay transport's name) and stops dialling that room until
 its next join would be at or above the floor, or something wakes the link; a relay folds nothing
 and serves no state, so the history comes from a peer (gaps U30, built; decided 2026-11-08, Jace
