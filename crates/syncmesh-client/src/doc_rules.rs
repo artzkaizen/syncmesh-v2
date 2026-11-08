@@ -4,7 +4,9 @@
 //!
 //! A genesis's parent (§16.1) need not be held: one that has not arrived is how out-of-order
 //! delivery looks, and the lineage walk resolves it when it lands. Only what the event disproves
-//! is refused — a parent on an edit, a genesis that names its own lineage as the one it replaces.
+//! is refused — a parent on an edit, a genesis that names its own lineage as the one it replaces,
+//! and a genesis written under the rule before §16.1 (`legacy`), which the wire keeps readable so
+//! this is where it stops.
 //!
 //! The TypeScript also refuses a doc change on a column its schema declares as something else;
 //! this crate has no schema to know the table's other columns by, so a doc change on an
@@ -30,6 +32,10 @@ pub fn doc_refusal(event: &SyncEvent, docs: &DocColumns) -> Option<&'static str>
                 } else if !d.genesis {
                     d.parent
                         .map(|_| "only a genesis names the lineage it replaces")
+                } else if d.legacy {
+                    Some(
+                        "a genesis written under the lineage rule before RFC-0023 §16.1 (key 5 `true`)",
+                    )
                 } else if d.parent.is_some() && d.parent == d.lineage {
                     Some("a genesis cannot replace its own lineage")
                 } else if event.changes.iter().enumerate().any(|(at, other)| {

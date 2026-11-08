@@ -105,6 +105,12 @@ export interface DocChange {
   /** Only on a `replace()`: the update is the new lineage's whole snapshot. */
   readonly genesis?: true;
   /**
+   * Only on a genesis written under the lineage rule before RFC-0023 §16.1 — key 5 `true` rather
+   * than the rule's version. Decoded so a log that holds one still reads; refused at admission,
+   * and never folded.
+   */
+  readonly legacy?: true;
+  /**
    * Only on a genesis: the lineage it replaces — the one that won on the authoring device when it
    * was written. Absent is the root. What {@link winningLineage} walks.
    */

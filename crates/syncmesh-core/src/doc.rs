@@ -27,7 +27,8 @@ const DOC_PARENT: i64 = 6;
 
 /// What key 5 holds on a genesis: the version of the lineage rule it was written under, `1` for the
 /// first-genesis tree (RFC-0023 §16.1). The last-writer-wins rule before it wrote `true`; a build
-/// from then refuses anything else, and this one refuses `true`, as the TypeScript's `GENESIS_RULE`.
+/// from then refuses anything else, and this one refuses `true` at admission — it decodes one as
+/// [`DocChange::legacy`], so a stored log holding it still reads — as the TypeScript's `GENESIS_RULE`.
 pub const GENESIS_RULE: i64 = 1;
 
 /// A lineage or an action: 16 bytes on the wire, 32 lowercase hex characters wherever it is text.
@@ -71,6 +72,10 @@ pub struct DocChange {
     pub update: DocUpdate,
     /// Only on a `replace()`: the update is the new lineage's whole snapshot.
     pub genesis: bool,
+    /// Only on a genesis written under the lineage rule before RFC-0023 §16.1 — key 5 `true` rather
+    /// than [`GENESIS_RULE`]. Decoded so a log that holds one still reads; refused at admission, and
+    /// never folded.
+    pub legacy: bool,
     /// Only on a genesis: the lineage it replaces, the one that won where it was written. `None`
     /// is the root. What [`winning_lineage`] walks.
     pub parent: Option<Id16>,
@@ -163,7 +168,14 @@ pub fn doc_data_to_cbor(change: &DocChange) -> Value {
         DocUpdate::Blob(r) => (Key::Int(DOC_BLOB), blob_to_cbor(r)),
     });
     if change.genesis {
-        data.push((Key::Int(DOC_GENESIS), Value::Int(GENESIS_RULE)));
+        data.push((
+            Key::Int(DOC_GENESIS),
+            if change.legacy {
+                Value::Bool(true)
+            } else {
+                Value::Int(GENESIS_RULE)
+            },
+        ));
     }
     if let Some(parent) = change.parent {
         data.push((Key::Int(DOC_PARENT), Value::Bytes(parent.to_vec())));
@@ -173,8 +185,9 @@ pub fn doc_data_to_cbor(change: &DocChange) -> Value {
 
 /// A doc change from its `data` map. Refuses what no fold could take — no column, a malformed
 /// adapter id, both or neither payload, a lineage or parent that is not 16 bytes, a `genesis` that
-/// is not [`GENESIS_RULE`], a parent on anything but a genesis — and skips keys it has no name
-/// for. Never panics.
+/// is neither [`GENESIS_RULE`] nor the `true` of the rule before it, a parent on anything but a
+/// genesis — and skips keys it has no name for. A `true` genesis decodes as `legacy`, so a stored
+/// log that holds one still reads; admission is what refuses it. Never panics.
 pub fn doc_from_cbor(
     table: String,
     key: String,
@@ -198,12 +211,10 @@ pub fn doc_from_cbor(
         (None, blob @ Some(_)) => DocUpdate::Blob(blob_from_cbor(blob)?),
         _ => return Err("a doc change carries exactly one of bytes and blob"),
     };
-    let genesis = match m.get(&Key::Int(DOC_GENESIS)) {
-        None => false,
-        Some(Value::Bool(true)) => {
-            return Err("genesis `true` is the lineage rule before RFC-0023 §16.1");
-        }
-        Some(Value::Int(GENESIS_RULE)) => true,
+    let (genesis, legacy) = match m.get(&Key::Int(DOC_GENESIS)) {
+        None => (false, false),
+        Some(Value::Bool(true)) => (true, true),
+        Some(Value::Int(GENESIS_RULE)) => (true, false),
         Some(_) => return Err("genesis is 1, the lineage rule's version"),
     };
     let lineage = match m.get(&Key::Int(DOC_LINEAGE)) {
@@ -225,6 +236,7 @@ pub fn doc_from_cbor(
         lineage,
         update,
         genesis,
+        legacy,
         parent,
     })
 }
@@ -468,7 +480,10 @@ mod tests {
         );
         assert!(with(vec![(Key::Int(DOC_LINEAGE), Value::Bytes(vec![0; 15]))]).is_err());
         assert!(with(vec![(Key::Int(DOC_GENESIS), Value::Bool(false))]).is_err());
-        assert!(with(vec![(Key::Int(DOC_GENESIS), Value::Bool(true))]).is_err());
+        assert!(
+            with(vec![(Key::Int(DOC_GENESIS), Value::Bool(true))])
+                .is_ok_and(|d| d.genesis && d.legacy)
+        );
         assert!(with(vec![(Key::Int(DOC_GENESIS), Value::Int(2))]).is_err());
         assert!(with(vec![(Key::Int(DOC_GENESIS), Value::Int(1))]).is_ok_and(|d| d.genesis));
         assert!(with(vec![(Key::Int(DOC_PARENT), Value::Bytes(vec![0; 16]))]).is_err());

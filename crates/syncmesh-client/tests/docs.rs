@@ -62,6 +62,7 @@ fn edit(byte: u8, lineage: Option<Id16>) -> Change {
         lineage,
         update: DocUpdate::Bytes(vec![byte]),
         genesis: false,
+        legacy: false,
         parent: None,
     })
 }
@@ -480,4 +481,35 @@ mod sqlite {
         let _ = std::fs::remove_dir_all(dir);
         (columns, indexed)
     }
+}
+
+/// `entry` re-signed by `seed` with every genesis in it marked as written under the lineage rule
+/// before RFC-0023 §16.1 (key 5 `true`).
+fn legacy(entry: &StoredEvent, seed: u8) -> StoredEvent {
+    let mut event = entry.event.clone();
+    for change in &mut event.changes {
+        if let Change::Doc(d) = change {
+            d.legacy = d.genesis;
+        }
+    }
+    StoredEvent::from_verified(syncmesh_core::sign_event(
+        event,
+        &Identity::from_seed(&[seed; 32]),
+    ))
+}
+
+#[test]
+fn a_legacy_genesis_reads_back_from_the_wire_and_is_quarantined_at_admission() {
+    let mut a = engine(1, true);
+    let old = legacy(&write(&mut a, vec![insert(), replace(1)]), 1);
+    let core = syncmesh_core::encode_event_core(&old.event);
+    let decoded = syncmesh_core::decode_event_core(&core).unwrap();
+    assert!(matches!(&decoded.changes[1], Change::Doc(d) if d.genesis && d.legacy));
+    assert_eq!(syncmesh_core::encode_event_core(&decoded), core);
+
+    let mut b = engine(2, true);
+    b.receive(old.clone()).unwrap();
+    let parked: Vec<String> = b.quarantine().iter().map(StoredEvent::id).collect();
+    assert_eq!(parked, [old.id()]);
+    assert_eq!(b.state().record("notes", "n1"), None);
 }

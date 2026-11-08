@@ -98,10 +98,12 @@ describe("a doc change on the wire (tag 6)", () => {
     expect(rootData.has(DOC.parent)).toBe(false);
   });
 
-  test("a genesis written under last-writer-wins (`true`) is refused, as the old rule's build refuses ours", () => {
+  test("a genesis written under last-writer-wins (`true`) decodes as legacy and re-encodes byte for byte", () => {
     const legacy = withData((d) => d.set(DOC.lineage, new Uint8Array(16)).set(DOC.genesis, true));
-    const decoded = decodeEventCore(legacy);
-    expect(decoded.isErr() && decoded.error.message).toContain("§16.1");
+    const decoded = decodeEventCore(legacy).unwrap();
+    expect(decoded.changes[0]).toMatchObject({ genesis: true, legacy: true });
+    // still readable from a log; admission is what refuses it
+    expect(bytesEqual(encodeEventCore(decoded), legacy)).toBe(true);
   });
 
   test("unknown data keys are skipped, not refused (RFC-0002 invariant 4)", () => {

@@ -189,6 +189,7 @@ fn a_write_of_document_updates_alone_is_refused_and_stays_revertable() {
         lineage: None,
         update: DocUpdate::Bytes(vec![1]),
         genesis: false,
+        legacy: false,
         parent: None,
     });
     let edited = write(&mut a, doc.clone());

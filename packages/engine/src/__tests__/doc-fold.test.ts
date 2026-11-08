@@ -72,6 +72,22 @@ const lineageAt = (n: Node) => lineageOf(getRecord(n.engine.state(), NOTES, N1),
 const log = async (n: Node) => (await n.engine.docLog()).unwrap();
 
 describe("folding a doc change", () => {
+  test("a legacy genesis (key 5 `true`) from a peer is quarantined, and folds nothing", async () => {
+    const a = node(PEER_A, 100, true);
+    const b = node(PEER_B, 200, true);
+    const event = await write(a, (tx) => {
+      tx.insert(NOTES, N1, row({ id: "n1", title: "t" }));
+      tx.doc(NOTES, N1, replace(1));
+    });
+    const legacy = {
+      ...event,
+      changes: event.changes.map((c) => (c.kind === "doc" ? { ...c, legacy: true as const } : c)),
+    };
+    (await b.engine.receive({ event: legacy })).unwrap();
+    expect(b.engine.quarantine().map((p) => p.entry.event.id)).toEqual([event.id]);
+    expect(getRecord(b.engine.state(), NOTES, N1)).toBeUndefined();
+  });
+
   test("a local replace derives its lineage, sets the lineage cell and appends a tail entry", async () => {
     const a = node(PEER_A, 100, true);
     const event = await write(a, (tx) => {

@@ -63,6 +63,7 @@ fn replace_of(
         lineage,
         update,
         genesis,
+        legacy: false,
         parent,
     })
 }

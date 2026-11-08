@@ -183,6 +183,14 @@ describe("a doc change against the schema (RFC-0023 §10)", () => {
     });
   });
 
+  test("a genesis written under the lineage rule before §16.1 is refused, numbered or not", () => {
+    const at = { seqNum: seq(4) };
+    const derived = deriveLineage(editor.peerId, seq(4), 0);
+    const legacy = doc({ genesis: true, legacy: true, lineage: derived });
+    expect(verdict([legacy], at)).toEqual({ tag: "DocChangeRefused", rung: "lineage" });
+    expect(verdict([legacy])).toEqual({ tag: "DocChangeRefused", rung: "lineage" });
+  });
+
   test("one event starts one lineage per document", () => {
     const twice = [doc({ genesis: true, lineage: parseLineageId("01".repeat(16)).unwrap() })];
     expect(verdict([...twice, ...twice])).toEqual({ tag: "DocChangeRefused", rung: "lineage" });

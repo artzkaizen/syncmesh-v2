@@ -36,8 +36,9 @@ const refuse = (change: DocChange, rung: DocRung, message: string) =>
  * A genesis's parent — the lineage it replaces (§16.1) — is never required to be held. Naming one
  * this peer has not seen yet is how out-of-order delivery looks, and the lineage walk resolves it
  * when the parent lands, so parking it would park at one peer what another folds. Only what the
- * event alone disproves is refused: a parent on an edit that is not a genesis, and a genesis that
- * names its own lineage as the one it replaces.
+ * event alone disproves is refused: a parent on an edit that is not a genesis, a genesis that
+ * names its own lineage as the one it replaces, and a genesis written under the rule before §16.1
+ * (`legacy`), which the wire keeps readable so this is where it stops.
  */
 export function checkDoc(
   table: Table,
@@ -61,6 +62,12 @@ export function checkDoc(
     return change.parent === undefined
       ? Result.ok(undefined)
       : refuse(change, "lineage", "only a genesis names the lineage it replaces");
+  if (change.legacy === true)
+    return refuse(
+      change,
+      "lineage",
+      "a genesis written under the lineage rule before RFC-0023 §16.1 (key 5 `true`)",
+    );
   if (change.parent !== undefined && change.parent === change.lineage)
     return refuse(change, "lineage", "a genesis cannot replace its own lineage");
   const twice = event.changes.some(

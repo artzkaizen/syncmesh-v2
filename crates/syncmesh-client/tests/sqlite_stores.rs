@@ -387,3 +387,32 @@ fn blobs_persist_across_reopen_and_share_the_file_with_the_stores() {
     let (log, _) = open_stores(&dir.db()).unwrap();
     assert_eq!(log.len().unwrap(), 1);
 }
+
+#[test]
+fn a_log_holding_a_legacy_genesis_still_reads() {
+    use syncmesh_core::doc::{DocChange, DocUpdate};
+    let mut engine = memory_engine(1);
+    let mut event = engine
+        .mutate("notes.create", vec![insert("k1", "x")], None)
+        .unwrap()
+        .entry
+        .event;
+    // key 5 `true`: a genesis written under the lineage rule before RFC-0023 §16.1
+    event.changes.push(Change::Doc(DocChange {
+        table: "notes".into(),
+        key: "k1".into(),
+        column: "content".into(),
+        adapter: "loro@1".into(),
+        lineage: Some([7; 16]),
+        update: DocUpdate::Bytes(vec![1]),
+        genesis: true,
+        legacy: true,
+        parent: None,
+    }));
+    let old = StoredEvent::from_verified(syncmesh_core::sign_event(event, &identity(1)));
+    let mut log = SqliteEventStore::open_in_memory().unwrap();
+    log.append(&old).unwrap();
+    let held = std::slice::from_ref(&old);
+    assert_eq!(log.all().unwrap(), held);
+    assert_eq!(log.all_since(&Cursors::new()).unwrap(), held);
+}

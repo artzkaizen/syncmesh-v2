@@ -63,7 +63,8 @@ function applyGenesis(
   merge: MergeSpec | undefined,
   partition: PartitionKey | undefined,
 ): State {
-  if (change.genesis !== true || change.lineage === undefined) return state;
+  if (change.genesis !== true || change.legacy === true || change.lineage === undefined)
+    return state;
   const genesis = { lineage: change.lineage, parent: change.parent, stamp };
   const cells = new Map([[change.column, lineageCell(genesis)]]);
   const rules = new Map<ColumnName, CellRule>(merge?.get(change.table) ?? []);

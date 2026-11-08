@@ -33,6 +33,7 @@ fn replace_of(lineage: Option<Id16>, genesis: bool, parent: Option<Id16>) -> Cha
         lineage,
         update: DocUpdate::Bytes(vec![1, 2, 3]),
         genesis,
+        legacy: false,
         parent,
     })
 }

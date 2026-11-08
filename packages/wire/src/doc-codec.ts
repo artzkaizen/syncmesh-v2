@@ -38,7 +38,8 @@ export const DOC = {
  * What key 5 holds on a genesis: the version of the lineage rule it was written under. `1` is the
  * first-genesis tree (RFC-0023 §16.1). The rule before it, last-writer-wins, wrote `true`; a build
  * from then refuses anything else, so it quarantines a genesis it would have folded by the old
- * rule, and this build refuses `true` for the same reason the other way round.
+ * rule, and this build refuses `true` at admission for the same reason the other way round — it
+ * decodes one as `legacy`, so a stored log holding it still reads.
  */
 export const GENESIS_RULE = 1;
 
@@ -121,7 +122,7 @@ export function docDataToCbor(change: DocChange): CborValue {
   if (change.lineage !== undefined) data.set(DOC.lineage, hexToBytes(change.lineage).unwrap());
   if (change.update.bytes !== undefined) data.set(DOC.bytes, change.update.bytes);
   else data.set(DOC.blob, blobToCbor(change.update.blob));
-  if (change.genesis === true) data.set(DOC.genesis, GENESIS_RULE);
+  if (change.genesis === true) data.set(DOC.genesis, change.legacy === true ? true : GENESIS_RULE);
   if (change.parent !== undefined) data.set(DOC.parent, hexToBytes(change.parent).unwrap());
   return data;
 }
@@ -129,8 +130,9 @@ export function docDataToCbor(change: DocChange): CborValue {
 /**
  * A doc change from its `data` map. Refuses what no fold could take — no column, no adapter, a
  * lineage or parent that is not 16 bytes, both or neither of `bytes` and `blob`, a `genesis` that
- * is not {@link GENESIS_RULE}, a parent on anything but a genesis — and skips keys it has no name
- * for. Never throws.
+ * is neither {@link GENESIS_RULE} nor the `true` of the rule before it, a parent on anything but a
+ * genesis — and skips keys it has no name for. A `true` genesis decodes as `legacy`, so a stored
+ * log that holds one still reads; admission is what refuses it. Never throws.
  */
 export function docFromCbor(
   table: TableName,
@@ -169,28 +171,36 @@ export function docFromCbor(
   });
 }
 
-/** Which history a change belongs to: keys 2, 5 and 6 — its lineage, and on a genesis, its parent. */
-type History = Pick<DocChange, "lineage" | "genesis" | "parent">;
+/**
+ * Which history a change belongs to: keys 2, 5 and 6 — its lineage, and on a genesis, the rule it
+ * was written under and its parent.
+ */
+type History = Pick<DocChange, "lineage" | "genesis" | "legacy" | "parent">;
+
+/** Key 5: absent, this build's rule, or the `true` of the rule before it (`legacy`). */
+function genesisFromCbor(value: CborValue | undefined): Result<History, MalformedDoc> {
+  if (value === undefined) return Result.ok({});
+  if (value === GENESIS_RULE) return Result.ok({ genesis: true });
+  if (value === true) return Result.ok({ genesis: true, legacy: true });
+  return malformed("genesis is 1, the lineage rule's version");
+}
 
 function historyFromCbor(data: Map<CborKey, CborValue>): Result<History, MalformedDoc> {
   const lineage = data.get(DOC.lineage);
-  const genesis = data.get(DOC.genesis);
   const parent = data.get(DOC.parent);
-  if (genesis === true)
-    return malformed("genesis `true` is the lineage rule before RFC-0023 §16.1");
-  if (genesis !== undefined && genesis !== GENESIS_RULE)
-    return malformed("genesis is 1, the lineage rule's version");
+  const rule = genesisFromCbor(data.get(DOC.genesis));
+  if (rule.isErr()) return rule;
   const lineageId = lineage === undefined ? undefined : id16(lineage);
   if (lineage !== undefined && lineageId === undefined)
     return malformed("doc lineage is not 16 bytes");
   const parentId = parent === undefined ? undefined : id16(parent);
   if (parent !== undefined && parentId === undefined)
     return malformed("doc parent is not 16 bytes");
-  if (parent !== undefined && genesis === undefined)
+  if (parent !== undefined && rule.value.genesis === undefined)
     return malformed("only a genesis names the lineage it replaces");
   return Result.ok({
     ...(lineageId !== undefined && { lineage: parseLineageId(lineageId).unwrap() }),
-    ...(genesis !== undefined && { genesis: true as const }),
+    ...rule.value,
     ...(parentId !== undefined && { parent: parseLineageId(parentId).unwrap() }),
   });
 }

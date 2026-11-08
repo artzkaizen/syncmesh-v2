@@ -75,7 +75,7 @@ pub fn apply_change(
         ),
         Change::Unknown { tag, .. } => return Err(Unfoldable { tag: *tag }),
         Change::Doc(doc) => {
-            let (true, Some(lineage)) = (doc.genesis, doc.lineage) else {
+            let (true, false, Some(lineage)) = (doc.genesis, doc.legacy, doc.lineage) else {
                 return Ok(());
             };
             let mut spec = merge.cloned().unwrap_or_default();
