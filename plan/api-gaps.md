@@ -288,8 +288,10 @@ handler holds exactly one object that can only read, and only what the caller ma
 
 ### 3.1 One constructor
 `createMesh` (`client/src/index.ts:38`) and `createClient` (`orpc/src/client.ts`) both exist and
-both have callers — `apps/issues/src/app/devtools.tsx`, `bench/src/browser-mesh.ts`,
-`packages/devtools`. The book's cut list says one. Mechanical but wide; needs a sequencing call.
+both have callers. `createMesh`'s non-test callers are `orpc/src/client.ts`, `chaos`, `bench`,
+`tooling/verify-node-consumer` and the embedded example; no app calls it
+(`apps/issues/src/app/devtools.tsx` and `packages/devtools` use `createMeshSource` /
+`createMeshControls`, not `createMesh`). The book's cut list says one. Mechanical but wide; needs a sequencing call.
 
 **Decided as D47 B (2026-11-08):** `createClient` is the one public constructor; `createMesh`
 moves to `@syncmesh/client/internal`. Not built yet.
@@ -376,7 +378,7 @@ pending writes — which a device that wrote while dark will have. Only the rela
 peer-to-peer does it. This is D31's "pin D15's compaction floor for every peer", now with a
 red test naming the exact observed state. Needs a floor on the wire — a decision.
 
-**Decided as D46 A (2026-11-08):** the floor trails the cursors frame and the device below it
+**Decided as D46 A (2026-11-08):** the floor goes at index 4 of the cursors frame and the device below it
 asks for state. Not built yet.
 
 ### 3.7 Dedup below the compaction floor
