@@ -8,6 +8,8 @@ import {
   type ColumnName,
   type LineageId,
   type PeerId,
+  type RowKey,
+  type RowRecord,
   type SyncEvent,
 } from "@syncmesh/kernel";
 import { partition, syncSchema, t } from "@syncmesh/schema";
@@ -35,11 +37,13 @@ import {
   row,
   seq,
   setup,
+  table,
 } from "./fixtures.js";
 
 const CONTENT = column("content");
 const LORO = parseAdapterId("loro@1").unwrap();
 const DOCS = new Map([[NOTES, new Map<ColumnName, typeof LORO>([[CONTENT, LORO]])]]);
+const PLAIN = table("plain");
 const W1 = parsePartitionKey("workspace:w1").unwrap();
 const EDIT = procedure("notes.edit");
 
@@ -381,6 +385,14 @@ describe("a lineage cell that joins outside an event (RFC-0023 §5.3, §16.1)", 
     await relabelled(r, winner);
   });
 
+  test("a snapshot whose documents have no doc-log entries here adds no heads", async () => {
+    const { a } = await scenario();
+    const fresh = node(PEER_C, 50, true);
+    (await fresh.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    expect(lineageAt(fresh)).toBe(lineageAt(a));
+    expect((await fresh.engine.docHeads()).unwrap()).toEqual([]);
+  });
+
   /** A's record with its lineage cell rewritten as another build would keep it. */
   const foreign = (a: Node, value: CellValue) => {
     const record = getRecord(a.engine.state(), NOTES, N1);
@@ -420,6 +432,38 @@ describe("a lineage cell that joins outside an event (RFC-0023 §5.3, §16.1)", 
     const refused = await r.engine.repairRows(NOTES, [foreign(a, [2, untagged(a)])]);
     expect(refused.isErr() && refused.error.version).toBe(2);
     expect(r.engine.state()).toBe(before);
+  });
+
+  test("the boot check reads only tables with a doc column, so the rest stay undecoded", async () => {
+    const stateStore = createMemoryStateStore();
+    const a = setup(PEER_A, 100, { docs: DOCS, validate, stateStore });
+    await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+    /** A table of the cache that has not been decoded: reading any row of it fails the test. */
+    class Undecoded extends Map<RowKey, RowRecord> {
+      override get(): never {
+        throw new Error("a table with no doc column was decoded at boot");
+      }
+      override [Symbol.iterator](): never {
+        return this.get();
+      }
+      override entries(): never {
+        return this.get();
+      }
+    }
+    const lazy: typeof stateStore = {
+      ...stateStore,
+      loadAll: async () =>
+        (await stateStore.loadAll()).map((state) => new Map([...state, [PLAIN, new Undecoded()]])),
+    };
+    const booted = await openEngine({
+      peerId: PEER_A,
+      clock: fakeClock(500),
+      store: a.store,
+      stateStore: lazy,
+      docs: DOCS,
+      validate,
+    });
+    expect(booted.isOk()).toBe(true);
   });
 
   test("persisted state holding another rule's cell is refused, said, and rebuilt from the log", async () => {

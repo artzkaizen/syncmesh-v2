@@ -15,6 +15,7 @@ export type {
   LineageMove,
   LiveStates,
 } from "./doc-log.js";
+export { lineageMoves } from "./lineage-moves.js";
 export { createMemoryDocStore } from "./doc-log-memory.js";
 export {
   DocCoverStale,
@@ -24,7 +25,6 @@ export {
   docDigests,
   docKey,
   inTail,
-  lineageMoves,
   liveStates,
   nextState,
   recordDocs,

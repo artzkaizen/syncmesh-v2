@@ -13,7 +13,8 @@ import type { StoreFailure, StoredEvent } from "./store.js";
 import type { TelemetryEvent } from "./telemetry.js";
 
 import { foldable } from "./columns.js";
-import { docAppends, recordDocs, relabelDocs } from "./doc-log.js";
+import { docAppends, recordDocs } from "./doc-log.js";
+import { relabelMoved } from "./lineage-moves.js";
 import { rowsFor, writeKeysOf } from "./state-store.js";
 import { timed } from "./telemetry.js";
 
@@ -146,7 +147,7 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
       if (into.docs !== undefined && batch.docs !== undefined)
         report(await recordDocs(into.docs, batch.docs, docWinner, hasAdapter));
       if (into.docs !== undefined && batch.lineageMoves !== undefined)
-        report(await relabelDocs(into.docs, batch.lineageMoves, docWinner, hasAdapter));
+        report(await relabelMoved(into.docs, batch.lineageMoves, docWinner, hasAdapter));
     },
     notify: (batch) => {
       if (batch.eventCount > 0) folds.emit(batch);

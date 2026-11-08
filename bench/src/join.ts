@@ -195,7 +195,7 @@ const ship = async (strategy: string, snapshot: Snapshot): Promise<Measured> => 
       snapChunkFrame("bench", i / PAGE, encodeSnapshotRows(snapshot.rows.slice(i, i + PAGE))),
     );
   const receiver = fresh();
-  const applyMs = await timed(async () => void (await receiver.installSnapshot(snapshot)));
+  const applyMs = await timed(async () => void (await receiver.installSnapshot(snapshot)).unwrap());
   return {
     strategy,
     units: `${snapshot.rows.length.toLocaleString()} rows`,

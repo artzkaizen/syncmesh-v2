@@ -3,22 +3,18 @@ import type {
   AdapterId,
   ColumnName,
   DocChange,
-  DocColumns,
   DocUpdate,
   Hlc,
-  KeyedRecord,
   LineageId,
   PeerId,
   RowKey,
   SeqNum,
-  State,
   SyncEvent,
   TableName,
 } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
 import { sha256 } from "@noble/hashes/sha2.js";
-import { docLineage, getRecord } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
 import { docChangeId } from "@syncmesh/wire";
 
@@ -360,25 +356,4 @@ export function relabelDocs(
     }
     return Result.ok(undefined);
   });
-}
-
-/**
- * The documents among `rows` whose winning lineage differs between `before` and `after`: what a
- * snapshot install or a repair, which join lineage cells with no doc change, must relabel the doc
- * log for at once rather than at the document's next append (RFC-0023 §5.3).
- */
-export function lineageMoves(
-  before: State,
-  after: State,
-  rows: Iterable<KeyedRecord>,
-  docs: DocColumns,
-): readonly LineageMove[] {
-  const moves = new Map<string, LineageMove>();
-  for (const { table, key } of rows)
-    for (const [column, adapter] of docs.get(table) ?? []) {
-      const winner = (state: State) => docLineage(getRecord(state, table, key), column);
-      if (winner(before) !== winner(after))
-        moves.set(docKey({ table, key, column }), { table, key, column, adapter });
-    }
-  return [...moves.values()];
 }

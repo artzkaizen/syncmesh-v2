@@ -15,8 +15,8 @@ import { encodeRecord } from "@syncmesh/wire";
 import type { FoldBatch } from "./engine.js";
 import type { Interest } from "./interest.js";
 
-import { lineageMoves } from "./doc-log.js";
 import { rowsIn } from "./interest.js";
+import { lineageMoves } from "./lineage-moves.js";
 
 /**
  * Divergence, detected cheaply and healed by the ordinary merge (RFC-0014). A digest is a **sum**

@@ -16,8 +16,8 @@ import type { FoldBatch } from "./engine.js";
 import type { Interest } from "./interest.js";
 import type { Coverage } from "./sync.js";
 
-import { lineageMoves } from "./doc-log.js";
 import { interestText, rowsIn } from "./interest.js";
+import { lineageMoves } from "./lineage-moves.js";
 
 /**
  * State instead of history (RFC-0019). A device joining a room with 300k events does not want
