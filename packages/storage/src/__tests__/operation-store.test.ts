@@ -107,6 +107,21 @@ describe("operationStore", () => {
     expect((await store.soleCustody()).unwrap()).toEqual([]);
   });
 
+  test("a stale receipt that arrives after a lower one does not put back what it withdrew", async () => {
+    const { store } = await open();
+    for (const n of [1, 2, 3])
+      (await store.record({ id: `op-${n}`, peer: A, seq: seq(n), label: "l", atMs: n })).unwrap();
+    (await store.vouch(B, A, seq(3), "inc-1", 10)).unwrap();
+    (await store.vouch(B, A, seq(1), "inc-1", 20)).unwrap();
+
+    // the receipt for 3 arrives again, over a second link or from another room instance
+    (await store.vouch(B, A, seq(3), "inc-1", 10)).unwrap();
+    expect((await store.soleCustody()).unwrap().map((op) => op.id)).toEqual(["op-2", "op-3"]);
+    expect((await store.vouchesOf(A, seq(1))).unwrap()).toEqual([
+      { holder: B, incarnation: "inc-1", atMs: 20 },
+    ]);
+  });
+
   test("a correction marks the displaced write and keeps the why", async () => {
     const { store } = await open();
     (await store.record({ id: "op-1", peer: A, seq: seq(1), label: "l", atMs: 1 })).unwrap();

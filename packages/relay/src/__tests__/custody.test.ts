@@ -183,12 +183,13 @@ describe("custody over a relay (D32, U17)", () => {
     expect(await until(() => kept.some((r) => r.throughSeq === three))).toBe(true);
     expect(holder.engine.coverage().scope).toBeDefined();
 
+    await tick(60);
+    const before = kept.length;
     // the narrowing's purge (D45): the globex write leaves the holder's log, its cursor stays
     const purged = (
       await holder.engine.purge({ events: (event) => event.partition === GLOBEX })
     ).unwrap();
     expect(purged.events).toBe(1);
-    const before = kept.length;
     await write(author, "a4", "acme four", ACME);
     expect(
       await until(() => holder.engine.coverage().synced.get(author.identity.peerId) === four),
@@ -198,6 +199,30 @@ describe("custody over a relay (D32, U17)", () => {
     // seq 2 is gone from the holder, so 1 is all it can sign again, though it folded 4
     const after = kept.slice(before).map((r) => r.throughSeq);
     expect(after).toEqual(after.map(() => ONE));
+    room.close();
+  });
+
+  test("a scoped holder signs the lowered run as soon as it purges, before anything else folds", async () => {
+    const room = await gatedRoom();
+    const author = peer(40, "acct_a");
+    const holder = peer(80, "acct_b", 100, { partitions: [ACME, GLOBEX] });
+    const kept: CustodyReceipt[] = [];
+    const { dial } = dialTo(room);
+    await attach({ ...author.context, onReceipt: (r) => void kept.push(r) }, dial);
+    await attach({ ...holder.context, incarnation: "holder-store-1" }, dial);
+    const three = parseSeqNum(3).unwrap();
+
+    await write(author, "a1", "acme one", ACME);
+    await write(author, "g2", "globex", GLOBEX);
+    await write(author, "a3", "acme three", ACME);
+    expect(await until(() => kept.some((r) => r.throughSeq === three))).toBe(true);
+    await tick(60);
+    const before = kept.length;
+
+    // the purge alone: no write follows, so no remote fold and no fresh cursors from the author
+    (await holder.engine.purge({ events: (event) => event.partition === GLOBEX })).unwrap();
+    expect(await until(() => kept.length > before)).toBe(true);
+    expect(kept.slice(before).map((r) => r.throughSeq)).toEqual([ONE]);
     room.close();
   });
 

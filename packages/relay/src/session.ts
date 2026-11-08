@@ -374,6 +374,9 @@ export function wireSession(
    * difference, which is nothing at all when the relay already had it.
    */
   const offFolds = engine.onFoldBatch((batch) => {
+    // a purge lowered a held run (D45): signed for now, so the author's ledger withdraws what was
+    // evicted without waiting for the next remote fold; nothing new is held, so nothing is pushed
+    if (caughtUp && batch.source === "purge") custody.moved();
     if (!caughtUp || batch.source !== "remote") return;
     // a recovery run or another link folded it: what moved is signed for, to the author seated
     custody.moved();
