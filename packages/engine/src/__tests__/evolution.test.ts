@@ -623,6 +623,30 @@ describe("retired: declared, read and folded, never written here (D31)", () => {
     expect(readRow(device.state(), NOTES, key("n1"))?.get(column("owner"))).toBe("ada");
     expect(digestOf(device)).toEqual(digestOf(older));
   });
+
+  test("undoing a delete brings the row back, its retired cell included, without writing it", async () => {
+    const older = peer(PEER_B, { validate: builtOn(shipped.v1) });
+    const note = (
+      await older.mutate(
+        CREATE,
+        (tx) => tx.insert(NOTES, key("n1"), row({ id: "n1", body: "one", owner: "ada" })),
+        { partition: USER },
+      )
+    ).unwrap();
+    const device = peer(PEER_A, { validate: builtOn(shipped.v2), undoDepth: 5 });
+    (await device.receive({ event: note })).unwrap();
+    const deleted = (
+      await device.mutate(CREATE, (tx) => tx.delete(NOTES, key("n1")), { partition: USER })
+    ).unwrap();
+
+    const reverted = (await device.revert(deleted.id)).unwrap();
+    expect(reverted.skipped).toEqual([]);
+    const [change] = reverted.event?.changes ?? [];
+    expect(change?.kind === "insert" && [...change.row.keys()].map(String)).toEqual(["id", "body"]);
+    const back = readRow(device.state(), NOTES, key("n1"));
+    expect(back?.get(column("owner"))).toBe("ada");
+    expect(back?.get(column("body"))).toBe("one");
+  });
 });
 
 describe("a dropped table parks in a bucket of its own (D31)", () => {

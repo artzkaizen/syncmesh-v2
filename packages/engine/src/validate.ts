@@ -1,5 +1,14 @@
 import type { DocColumns, PartitionKey } from "@syncmesh/kernel";
-import type { Change, Hlc, PeerId, Row, RowKey, SyncEvent, TableName } from "@syncmesh/kernel";
+import type {
+  Change,
+  ColumnName,
+  Hlc,
+  PeerId,
+  Row,
+  RowKey,
+  SyncEvent,
+  TableName,
+} from "@syncmesh/kernel";
 import type { TableState } from "@syncmesh/kernel";
 import type { Grant } from "@syncmesh/wire";
 
@@ -29,7 +38,7 @@ import {
   type ValidationError,
 } from "./errors.js";
 import { checkReserved } from "./reserved.js";
-import { resolveEntry } from "./retired.js";
+import { resolveEntry, retiredColumn } from "./retired.js";
 import { syncedRules } from "./rules.js";
 
 /** What validation needs from a schema, structurally, so any concrete `Schema<P, R, C>` fits. */
@@ -120,6 +129,11 @@ export interface ValidatorOptions {
 export interface Validator {
   /** Ladder: clock → grant → device → revocation → grace → partition → schema → policy. The first failure is the verdict. */
   readonly validate: (event: ProbeEvent, before: StateLookup) => Result<void, ValidationError>;
+  /**
+   * Whether the schema marks the column retired (D31). What a compensation leaves out, so undoing
+   * a delete brings the row back without writing a column this build refuses. Absent, none is.
+   */
+  readonly retiredColumn?: (table: TableName, column: ColumnName) => boolean;
 }
 
 const RESERVED = new Set(["global", "user", "local"]);
@@ -163,7 +177,13 @@ export function createValidator(options: ValidatorOptions): Validator {
     return Result.ok(undefined);
   };
 
-  return { validate };
+  return {
+    validate,
+    retiredColumn: (table, column) => {
+      const entry = entries.get(table);
+      return entry !== undefined && retiredColumn(entry.table, column);
+    },
+  };
 }
 
 /**

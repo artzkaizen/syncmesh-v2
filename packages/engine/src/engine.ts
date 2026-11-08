@@ -24,6 +24,7 @@ import type { SnapshotApi } from "./snapshot.js";
 import type { StoreFailure, StoredEvent } from "./store.js";
 import type { Ahead, Coverage, Cursors } from "./sync.js";
 import type { Tx } from "./tx.js";
+import type { Reverted, Undo } from "./undo.js";
 import type { StateLookup } from "./validate.js";
 
 import { admit } from "./admit.js";
@@ -47,11 +48,11 @@ import { createHub, type Unsubscribe } from "./listeners.js";
 import { type PurgeApi, createPurge } from "./purge.js";
 import { createQuarantine, retryQuarantined, withRetry } from "./quarantine.js";
 import { recentHeaders } from "./recent.js";
+import { createRevert } from "./revert.js";
 import { createSnapshotPath } from "./snapshot.js";
 import { strandedWrites, type StrandedWrites } from "./stranded.js";
 import { mergeAhead } from "./sync.js";
 import { type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
-import { createRevert, type Reverted, type Undo } from "./undo.js";
 import { createWritePath, type OwnPositionApi } from "./writes.js";
 
 export type { AtomicStores, EngineOptions, MutateOptions } from "./options.js";
@@ -270,7 +271,7 @@ export function createEngine(options: EngineOptions): Engine {
     partition: (table, key) => getRecord(getState(), table, key)?.partition,
   } satisfies StateLookup;
 
-  // what the snapshot install and the purge both read and replace
+  // what the snapshot install and the purge both read and replace, and revert reads
   const held = { getState, setState, coverageOf: coverage.current, merge };
   const compactDeps = { store, stateStore, acks: fleet.acks, ...docPath.compaction };
   const compaction = createCompaction(compactDeps, coverage, boot?.compacted);
@@ -322,7 +323,7 @@ export function createEngine(options: EngineOptions): Engine {
       }),
   });
 
-  const revert = createRevert({ undo, undoDepth, getState, merge, mutate: writes.mutate });
+  const revert = createRevert({ ...held, undo, undoDepth, validate, mutate: writes.mutate });
 
   const chains = createFeedPath({ store, feeds, receiveBatch });
 

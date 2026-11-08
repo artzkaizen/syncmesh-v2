@@ -4,7 +4,6 @@ import type {
   Change,
   ColumnName,
   MergeSpec,
-  Procedure,
   Row,
   RowKey,
   RowRecord,
@@ -23,20 +22,8 @@ import {
   readRow,
   eventStamp,
 } from "@syncmesh/kernel";
-import { Result } from "@syncmesh/result";
 
-import type { Engine, MutateOptions } from "./engine.js";
-import type { Tx } from "./tx.js";
-
-import { CannotRevert } from "./errors.js";
-import { docWriteOf } from "./tx.js";
-
-const revertProcedure = (): Procedure => {
-  // SAFETY: the one procedure the engine itself authors; naming rules arrive with the client
-  return "revert" as Procedure;
-};
-
-const REVERT = revertProcedure();
+import type { Validator } from "./validate.js";
 
 export interface Undo {
   readonly event: SyncEvent;
@@ -209,6 +196,7 @@ function compensateRow(
   image: RowBefore,
   written: Written,
   out: Out,
+  retired: Validator["retiredColumn"],
 ): void {
   const { table, key, row } = image;
   const now = getRecord(state, table, key);
@@ -217,9 +205,13 @@ function compensateRow(
     if (!written.deleted) uninsert(mine, table, key, now, out);
   } else if (now === undefined || !isVisible(now)) {
     if (written.deleted && holds(now?.deleteStamp, mine)) {
-      // a document column is opened and edited, never written as a value: its lineage cell
-      // outlived the delete and comes back with the row
-      const values = new Map([...row].filter(([column]) => rules?.get(column) !== "lineage"));
+      // a document column is opened and edited, never written as a value, and a retired one is
+      // written by nothing here (D31): either cell outlived the delete and comes back with the row
+      const values = new Map(
+        [...row].filter(
+          ([column]) => rules?.get(column) !== "lineage" && retired?.(table, column) !== true,
+        ),
+      );
       out.changes.push({ kind: "insert", table, key, row: values });
     } else out.skipped.push({ table, key, reason: "superseded" });
   } else if (written.deleted) out.skipped.push({ table, key, reason: "superseded" });
@@ -236,9 +228,15 @@ const NOTHING_WRITTEN: Written = { deleted: false, columns: new Map() };
  * colleague wrote since reported `overridden`; a row it deleted comes back as it was, unless
  * someone wrote it after the delete; and an update is never undone into a row someone deleted
  * since. Document updates are reported, never compensated here. `merge` names the column rules
- * of the engine the write was made on.
+ * of the engine the write was made on, and `retired` the columns a row brought back leaves out
+ * (D31): their cells outlived the delete, so the row comes back with them all the same.
  */
-export function compensate(state: State, { event, before }: Undo, merge?: MergeSpec): Compensation {
+export function compensate(
+  state: State,
+  { event, before }: Undo,
+  merge?: MergeSpec,
+  retired?: Validator["retiredColumn"],
+): Compensation {
   const mine = eventStamp(event);
   const changes: Change[] = [];
   const skipped = event.changes.flatMap((c): Skipped[] =>
@@ -254,85 +252,7 @@ export function compensate(state: State, { event, before }: Undo, merge?: MergeS
       image,
       written.get(rowId(image.table, image.key)) ?? NOTHING_WRITTEN,
       out,
+      retired,
     );
   return out;
-}
-
-export const replay = (tx: Tx, changes: readonly Change[]): void => {
-  for (const c of changes) {
-    if (c.kind === "insert") tx.insert(c.table, c.key, c.row);
-    else if (c.kind === "update") tx.update(c.table, c.key, c.patch);
-    else if (c.kind === "delete") tx.delete(c.table, c.key);
-    else if (c.kind === "doc") tx.doc(c.table, c.key, docWriteOf(c));
-  }
-};
-
-/**
- * What `revert` needs: the ring of revertable writes, its depth, the state now, the column rules
- * it is joined by, and the way to write.
- */
-export interface RevertDeps {
-  readonly undo: Undo[];
-  readonly undoDepth: number;
-  readonly getState: () => State;
-  readonly merge: MergeSpec | undefined;
-  readonly mutate: Engine["mutate"];
-}
-
-/** `entry` back at `index` in the ring, the oldest dropped if writes meanwhile filled it. */
-function restore(undo: Undo[], undoDepth: number, index: number, entry: Undo): void {
-  undo.splice(Math.min(index, undo.length), 0, entry);
-  if (undo.length > undoDepth) undo.shift();
-}
-
-/**
- * Undo as an ordinary write (RFC-0014): the compensating event is authored, signed and folded
- * like any other, in the partition and locality of the write it answers — a peer that receives
- * it needs no idea that it was an undo. What it compensates is decided against the state as it is
- * now, cell by cell ({@link compensate}), and what it leaves alone comes back as `skipped`; when
- * nothing of the write still stands, nothing is written. A write outside the last `undoDepth` is
- * simply not revertable, which is a value rather than a throw; a compensation the engine refuses
- * leaves the write revertable.
- */
-export function createRevert(deps: RevertDeps): Engine["revert"] {
-  const { undo, undoDepth, getState, merge, mutate } = deps;
-  return (id) => {
-    const index = undo.findIndex((u) => u.event.id === id);
-    const entry = undo[index];
-    if (entry === undefined) {
-      return Promise.resolve(
-        Result.err(
-          new CannotRevert({
-            eventId: id,
-            message: `not among the last ${undoDepth} writes of this engine`,
-          }),
-        ),
-      );
-    }
-    if (entry.event.changes.every((c) => c.kind === "doc" || c.kind === "unknown")) {
-      // nothing but document updates, which only their adapter can compensate: refuse before the
-      // ring gives up the slot, so the write is still revertable once document undo lands
-      return Promise.resolve(
-        Result.err(
-          new CannotRevert({
-            eventId: id,
-            message: "a write of document updates alone is undone by its adapter (RFC-0023 §9)",
-          }),
-        ),
-      );
-    }
-    // out of the ring before the write, so a second revert of it cannot run alongside this one
-    undo.splice(index, 1);
-    const { changes, skipped } = compensate(getState(), entry, merge);
-    if (changes.length === 0) return Promise.resolve(Result.ok({ skipped }));
-    const { partition, local } = entry.event;
-    const options: MutateOptions = {};
-    if (partition !== undefined) Object.assign(options, { partition });
-    if (local === true) Object.assign(options, { local });
-    return mutate(REVERT, (tx) => replay(tx, changes), options).then((written) => {
-      // a refused compensation wrote nothing, so the write is still there to revert
-      if (written.isErr()) restore(undo, undoDepth, index, entry);
-      return written.map((event) => ({ event, skipped }));
-    });
-  };
 }

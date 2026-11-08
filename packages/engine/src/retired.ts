@@ -41,7 +41,7 @@ export function resolveEntry(
 }
 
 /** Whether the table declares the column retired. Own keys only: an inherited name is no column. */
-const retiredColumn = (table: Table, column: ColumnName): boolean =>
+export const retiredColumn = (table: Table, column: ColumnName): boolean =>
   Object.hasOwn(table.columns, column) && table.columns[column]?.def.retired === true;
 
 /**
