@@ -54,6 +54,11 @@ export interface LinkOptions extends ReassemblyOptions {
  * acknowledgement above the radio's own — a frame whose fragments do not all arrive is never
  * delivered, so nothing folds it, the receiver's cursor does not move, and the ordinary
  * anti-entropy exchange asks for the events again.
+ *
+ * **`sendLatest` is what keeps a 60 Hz cursor from becoming a backlog.** A radio that falls behind
+ * holds one frame per slot — the newest — and puts every ordinary frame on the air ahead of it,
+ * so an ephemeral value is what yields on a busy link and an event never waits behind a queue of
+ * dead ones (D16). Memory is bounded by the slots in use, however fast values are set.
  */
 export function bleLink(options: LinkOptions): FrameLink & {
   readonly accept: (valueBase64: string) => void;
@@ -69,7 +74,10 @@ export function bleLink(options: LinkOptions): FrameLink & {
     Object.assign(bounds, { maxAssemblies: options.maxAssemblies });
   const rx = reassembler(bounds);
   let message = 0;
-  let queue: Promise<unknown> = Promise.resolve();
+  /** Frames not yet on the air: every ordinary one in order, and the newest per slot. */
+  const ordinary: (readonly Uint8Array[])[] = [];
+  const latest = new Map<string, readonly Uint8Array[]>();
+  let pumping = false;
   let failure: unknown;
 
   /** One packet out, by whichever primitive this end owns. */
@@ -84,26 +92,59 @@ export function bleLink(options: LinkOptions): FrameLink & {
     await radio.setCharacteristicValue(serviceUuid, characteristicUuid, value, true);
   };
 
+  /** The next frame to put on the air: ordinary ones first, then the oldest slot still held. */
+  const next = (): readonly Uint8Array[] | undefined => {
+    const first = ordinary.shift();
+    if (first !== undefined) return first;
+    for (const [slot, packets] of latest) {
+      latest.delete(slot);
+      return packets;
+    }
+    return undefined;
+  };
+
+  // serialised per link: a radio is one pipe, and letting two frames race their packets onto it
+  // only invites the stack to reorder them under load
+  // `pumping` is cleared in the same synchronous step that finds the queues empty, so a frame
+  // enqueued at any later moment either sees the flag down and starts a pump, or is found by this one
+  const pump = async (): Promise<void> => {
+    try {
+      for (let packets = next(); packets !== undefined; packets = next())
+        for (const packet of packets) await put(packet);
+    } catch (cause) {
+      fail(cause);
+    } finally {
+      pumping = false;
+    }
+  };
+
+  const fail = (cause: unknown): void => {
+    if (failure !== undefined) return;
+    failure = cause;
+    ordinary.length = 0;
+    latest.clear();
+    options.onFailed?.(cause);
+  };
+
+  /** Fragments one frame and hands it to `hold`, then makes sure the pump is running. */
+  const enqueue = (frame: Uint8Array, hold: (packets: readonly Uint8Array[]) => void): void => {
+    // a write that already failed makes every later one a lie: the link is down until it is
+    // rebuilt, and saying so here is what stops the bridge queueing onto a dead radio
+    if (failure !== undefined)
+      throw new SendFailed({ peer, message: `the link to ${peer} is down`, cause: failure });
+    const packets = fragment(frame, options.limit(), (message = (message + 1) >>> 0));
+    if (packets.isErr())
+      throw new SendFailed({ peer, message: packets.error.message, cause: packets.error });
+    hold(packets.value);
+    if (pumping) return;
+    pumping = true;
+    void pump();
+  };
+
   return {
-    send: (frame) => {
-      // a write that already failed makes every later one a lie: the link is down until it is
-      // rebuilt, and saying so here is what stops the bridge queueing onto a dead radio
-      if (failure !== undefined)
-        throw new SendFailed({ peer, message: `the link to ${peer} is down`, cause: failure });
-      const packets = fragment(frame, options.limit(), (message = (message + 1) >>> 0));
-      if (packets.isErr())
-        throw new SendFailed({ peer, message: packets.error.message, cause: packets.error });
-      // serialised per link: a radio is one pipe, and letting two frames race their packets onto
-      // it only invites the stack to reorder them under load
-      queue = queue.then(async () => {
-        for (const packet of packets.value) await put(packet);
-      });
-      void queue.then(undefined, (cause: unknown) => {
-        if (failure !== undefined) return;
-        failure = cause;
-        options.onFailed?.(cause);
-      });
-    },
+    send: (frame) => enqueue(frame, (packets) => void ordinary.push(packets)),
+    // a newer value for a slot takes the older one's place in line, so a slot is held at most once
+    sendLatest: (slot, frame) => enqueue(frame, (packets) => void latest.set(slot, packets)),
     onFrame: (cb) => {
       listeners.add(cb);
       return () => void listeners.delete(cb);

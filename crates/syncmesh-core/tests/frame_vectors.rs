@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use syncmesh_core::event::{PeerId, SeqNum};
+use syncmesh_core::event::{PartitionKey, PeerId, SeqNum};
 use syncmesh_core::frames::{self, Digest, Frame, RouteAd, SnapshotFrame, class_of};
 use syncmesh_core::framing::{self, FrameReader};
 use syncmesh_core::identity::Identity;
@@ -49,7 +49,7 @@ fn session_frames_decode_to_their_kind_and_reencode_byte_for_byte() {
     assert_eq!(doc["otherId"].as_str(), Some(other.peer_id().as_str()));
 
     let list = doc["vectors"].as_array().unwrap();
-    assert_eq!(list.len(), 19);
+    assert_eq!(list.len(), 20);
     let mut tags: Vec<u8> = Vec::new();
     for v in list {
         let what = v["description"].as_str().unwrap();
@@ -102,6 +102,7 @@ fn session_frames_are_reproduced_from_the_generator_inputs() {
         syncmesh_core::envelope::envelope(&hex(event, "coreHex"), &hex(event, "sigHex"));
     let grant_wire = hex(&vectors("grant-vectors.json")["vectors"][0], "wireHex");
     let receipt_wire = hex(&vectors("receipt-vectors.json")["vectors"][0], "wireHex");
+    let refusal_wire = hex(&vectors("refusal-vectors.json")["vectors"][0], "wireHex");
 
     let expected: Vec<(usize, Vec<u8>)> = vec![
         (0, frames::grant_frame(&grant_wire)),
@@ -151,9 +152,10 @@ fn session_frames_are_reproduced_from_the_generator_inputs() {
                 expires_at_ms: now + 60_000.0,
             }]),
         ),
+        (18, frames::refusal_frame(&refusal_wire)),
         // what a peer's grant kept back, named by sequence (D40)
         (
-            18,
+            19,
             frames::withheld_frame(r#"{"partitions":["org:acme"]}"#, &ahead),
         ),
     ];
@@ -290,8 +292,8 @@ fn relay_control_frames_decode_to_their_kind_and_reencode_byte_for_byte() {
     tags.sort();
     assert_eq!(
         tags,
-        (8..=19).collect::<Vec<u64>>(),
-        "control tags 8–19, no gaps"
+        (8..=21).collect::<Vec<u64>>(),
+        "control tags 8–21, no gaps"
     );
 }
 
@@ -314,6 +316,7 @@ fn relay_control_frames_are_reproduced_from_the_generator_inputs() {
         "b3:0102",
     );
     let nonce: [u8; 32] = std::array::from_fn(|i| i as u8);
+    let acme = PartitionKey::parse("org:acme").expect("partition");
     // indexes follow conformance/src/generate-relay-vectors.ts; 2–3 are the v2 joins from
     // join-vectors.json, checked in their own test below
     let expected: Vec<(usize, Vec<u8>)> = vec![
@@ -368,35 +371,46 @@ fn relay_control_frames_are_reproduced_from_the_generator_inputs() {
             relay_frames::page_frame(&[], &[event.to_vec()], false, 9, None),
         ),
         (15, relay_frames::relayed_frame(&event, 4)),
-        (16, relay_frames::blob_put_frame(hash, &bytes)),
+        (16, relay_frames::blob_put_frame(hash, &bytes, None)),
         (17, relay_frames::blob_get_frame(hash)),
         (18, relay_frames::blob_frame(hash, &bytes)),
         (19, relay_frames::blob_missing_frame(hash)),
         (20, relay_frames::challenge_frame(&nonce)),
+        // 21–22 are main's gated pages (D24), scoped through `scopeText`; checked by decode above
+        (23, relay_frames::blob_put_frame(hash, &bytes, Some(&acme))),
+        (24, relay_frames::blob_stored_frame(hash)),
+        (
+            25,
+            relay_frames::blob_refused_frame(hash, "quota", 1024, 1000, Some(&acme)),
+        ),
+        (
+            26,
+            relay_frames::blob_refused_frame(hash, "quota", 1024, 1000, None),
+        ),
         // the grant-gated room's refusals and its live skip notice (D40)
         (
-            21,
+            27,
             relay_frames::error_frame(
                 "ungranted",
                 "no grant from an issuer this room trusts names this device",
             ),
         ),
         (
-            22,
+            28,
             relay_frames::error_frame(
                 "revoked",
                 "this device's grant no longer covers what it was served",
             ),
         ),
         (
-            23,
+            29,
             relay_frames::error_frame(
                 "regranted",
                 "this device was granted more; join again to be served it",
             ),
         ),
         (
-            24,
+            30,
             relay_frames::page_frame(
                 &[],
                 &[],

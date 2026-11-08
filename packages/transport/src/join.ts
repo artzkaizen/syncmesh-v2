@@ -9,8 +9,10 @@ import {
 } from "@syncmesh/wire";
 
 import type { SnapshotFrame } from "./snap-frame.js";
+import type { Withheld } from "./withheld.js";
 
 import { snapAckFrame, snapChunkFrame, snapManifestFrame, snapRequestFrame } from "./snap-frame.js";
+import { servable } from "./withheld.js";
 
 /**
  * The join exchange, both sides of it (RFC-0019). A device asks for state rather than history,
@@ -72,6 +74,12 @@ export interface JoinDeps {
    * Absent, it is served what it asked for — an ungranted mesh.
    */
   readonly serves?: (asked: Interest | undefined) => Interest | undefined;
+  /**
+   * The gated tables (D24): a snapshot served from here carries none of their rows and claims none
+   * of the authority's run — a certificate over the whole state no longer covers it, so the install
+   * stays provisional, which is the honest state of a slice nobody signed.
+   */
+  readonly withheld?: Withheld;
 }
 
 /** A join in progress: what was promised, and the pages that have arrived so far. */
@@ -113,7 +121,10 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
 
   /** Answers a request with a manifest and then the pages, which is the whole of the sending side. */
   const serve = (interest: Interest | undefined): void => {
-    const snapshot = interest === undefined ? engine.snapshot() : engine.snapshot({ interest });
+    const snapshot = servable(
+      deps.withheld,
+      interest === undefined ? engine.snapshot() : engine.snapshot({ interest }),
+    );
     const pages: (readonly KeyedRecord[])[] = [];
     for (let i = 0; i < snapshot.rows.length; i += rowsPerChunk)
       pages.push(snapshot.rows.slice(i, i + rowsPerChunk));

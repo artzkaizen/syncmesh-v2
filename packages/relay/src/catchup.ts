@@ -1,14 +1,7 @@
-import type { Coverage, Interest, StoredEvent } from "@syncmesh/engine";
-import type { PartitionKey, PeerId, SeqNum } from "@syncmesh/kernel";
+import type { Coverage, StoredEvent } from "@syncmesh/engine";
+import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 
-import {
-  entitledInterest,
-  entitles,
-  interestText,
-  matchesInterest,
-  timed,
-  trackCoverage,
-} from "@syncmesh/engine";
+import { timed, trackCoverage } from "@syncmesh/engine";
 import { relayEnvelope } from "@syncmesh/wire";
 
 import type { Conversation } from "./state.js";
@@ -32,11 +25,28 @@ import { BELOW_FLOOR, belowFloor } from "./retention.js";
 function scannedCoverage(
   entries: readonly StoredEvent[],
   theirs: ReadonlyMap<PeerId, SeqNum>,
-  interest: Interest,
+  scope: string,
 ): Coverage {
   const tracker = trackCoverage({ synced: new Map(theirs), local: new Map() });
   for (const entry of entries) tracker.note(entry.event);
-  return { ...tracker.current(), scope: interestText(interest) };
+  return { ...tracker.current(), scope };
+}
+
+/** What a catch-up needs of the socket it serves: what it may send, and what that slice is called. */
+export interface CatchUpViewer {
+  /**
+   * Asks the authority what this socket may read (D24); `false` when the join was refused for it.
+   * `true` at once, rather than a promise of it, when the room gates nothing.
+   */
+  readonly entitle: () => true | Promise<boolean>;
+  /** The live filter, asked of history: the interest, then the gate. */
+  readonly wants: (event: SyncEvent) => boolean;
+  /** The slice the scan is true for — interest and entitlement — or `undefined` when nothing was filtered. */
+  readonly scope: () => string | undefined;
+  /** The pages are on the socket: from here a pass-over can no longer outrun them. */
+  readonly paged: () => void;
+  /** The socket was refused, possibly by {@link wants} itself, so nothing scanned may be sent. */
+  readonly closed: () => boolean;
 }
 
 /**
@@ -97,22 +107,25 @@ export function paged(
  * the bottom out of. Asked again at the head of the queue, the sweep has either finished or has
  * not started, and there is no third state.
  *
- * In a gated room `granted` is the partitions the joiner's grant names (D40), and the run is cut
- * to them as well as to the interest. The coverage then names the entitlement rather than the
- * interest — `entitledInterest`, which the device computes from the same grant — so a device
- * granted more later sees a wider scope than its cursor's and re-pages, instead of keeping a
- * cursor that silently skips everything it was not allowed to see while it was narrower.
- * `onPaged` runs once the last page is on the socket, which is when live notices may follow it.
+ * **The entitlement is asked off the queue**, and the scan queued once it is answered. The answer
+ * comes from the authority's database, which the room does not own: asked on the queue, one slow
+ * answer would hold every other socket's ingest, acks and fan-out behind it, and one that never
+ * came would stop the room for good. Nothing is lost by asking first — until the answer, every
+ * gated event is withheld live and not remembered, and the scan reads everything above `theirs`.
+ *
+ * In a grant-gated room the viewer also cuts the run to the partitions the joiner's grant names
+ * (D40), and its scope names the interest cut to them — `entitledInterest`, which the device
+ * computes from the same grant — so a device granted more later sees a wider scope than its
+ * cursor's and re-pages, instead of keeping a cursor that silently skips everything it was not
+ * allowed to see while it was narrower.
  */
 export function sendCatchUp(
   conversation: Conversation,
   theirs: ReadonlyMap<PeerId, SeqNum>,
-  interest: Interest | undefined,
-  granted?: readonly PartitionKey[],
-  onPaged?: () => void,
+  viewer: CatchUpViewer,
 ): void {
   const { room, sender, refuse } = conversation;
-  room.enqueue(async () => {
+  const scan = async (): Promise<void> => {
     if (belowFloor(theirs, room.floor())) {
       refuse("retention", BELOW_FLOOR, true);
       return;
@@ -124,19 +137,15 @@ export function sendCatchUp(
         return undefined;
       }
       const found = entries.value;
-      // narrowed at the sender: an event this device did not ask for, or may not read, never
-      // becomes a page
+      // narrowed at the sender: an event this device did not ask for, or was not admitted to,
+      // never becomes a page
+      const scope = viewer.scope();
       const admitted =
-        interest === undefined && granted === undefined
-          ? found
-          : found.filter(
-              (entry) =>
-                (granted === undefined || entitles(granted, entry.event)) &&
-                (interest === undefined || matchesInterest(interest, entry.event)),
-            );
-      // and said so: only a filtered run needs the coverage, since an unfiltered one leaves the
-      // joiner's own fold able to compute the same number
-      const scope = granted === undefined ? interest : entitledInterest(interest, granted);
+        scope === undefined ? found : found.filter((entry) => viewer.wants(entry.event));
+      // an `admits` that threw refused the socket: its coverage would claim the event it did not
+      // answer for, and pages without that coverage would be a run the device cannot place
+      if (viewer.closed()) return undefined;
+      // and said so, naming the entitlement as well as the interest (D24)
       const scoped = scope === undefined ? undefined : scannedCoverage(found, theirs, scope);
       const { pages, unsendable } = paged(
         admitted,
@@ -146,9 +155,13 @@ export function sendCatchUp(
         scoped,
       );
       for (const page of pages) sender.send(page);
-      onPaged?.();
+      viewer.paged();
       return { found: found.length, admitted: admitted.length, unsendable, pages: pages.length };
     });
     if (sizes !== undefined) room.report({ type: "relay.catchup", sizes, duration });
-  });
+  };
+  const entitled = viewer.entitle();
+  // an ungated room queues the scan where the join stood, exactly as it did before there was a gate
+  if (entitled === true) room.enqueue(scan);
+  else void entitled.then((admitted) => admitted && room.enqueue(scan));
 }

@@ -4,7 +4,7 @@ import type { Compiled, SqlDialect } from "@syncmesh/storage";
 import type { SQL } from "drizzle-orm";
 
 import { compileField, compileRead } from "@syncmesh/storage";
-import { getTableColumns, sql, type Column, type Table } from "drizzle-orm";
+import { getColumns, sql, type Column, type Table } from "drizzle-orm";
 
 /** A compiled predicate as a Drizzle fragment: raw text between the `?`s, each param bound by Drizzle for its dialect. */
 const fragment = ({ sql: text, params }: Compiled): SQL => {
@@ -97,16 +97,14 @@ export const readColumns = (
       ([key]) => String(entry.table.columnNames[key] ?? key) === column.name || key === jsKey,
     )?.[1];
   return Object.fromEntries(
-    Object.entries(getTableColumns(table)).map(
-      ([jsKey, column]): [string, Column | SQL.Aliased] => {
-        const rule = ruleOf(jsKey, column);
-        if (rule === undefined) return [jsKey, column];
-        const allowed = fragment(compileField(entry.table, roles, rule, actor, { dialect }));
-        const guarded = sql`CASE WHEN ${allowed} THEN ${column} ELSE NULL END`
-          .mapWith(column)
-          .as(column.name);
-        return [jsKey, guarded];
-      },
-    ),
+    Object.entries(getColumns(table)).map(([jsKey, column]): [string, Column | SQL.Aliased] => {
+      const rule = ruleOf(jsKey, column);
+      if (rule === undefined) return [jsKey, column];
+      const allowed = fragment(compileField(entry.table, roles, rule, actor, { dialect }));
+      const guarded = sql`CASE WHEN ${allowed} THEN ${column} ELSE NULL END`
+        .mapWith(column)
+        .as(column.name);
+      return [jsKey, guarded];
+    }),
   );
 };

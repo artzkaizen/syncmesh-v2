@@ -221,3 +221,19 @@ describe("the gate before the pair", () => {
     db.close();
   });
 });
+
+describe("the room's socket cap (gap audit №5)", () => {
+  test("a full object refuses the next upgrade with 503, and a close frees the seat", async () => {
+    const db = new Database(":memory:");
+    const object = durableRelay(db, { limits: { maxRoomConnections: 2 } });
+    const request = () => object.gate(new Request("https://relay.example/main"));
+    const first = object.dial();
+    object.dial();
+    expect((await request())?.status).toBe(503);
+    first.close();
+    expect(await request()).toBeUndefined();
+    // the room opens behind the first socket; let it finish before its SQLite goes away
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    db.close();
+  });
+});

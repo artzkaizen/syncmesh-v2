@@ -51,6 +51,8 @@ export function transportContextFor(base: {
   readonly incarnation?: TransportContext["incarnation"];
   /** Where a peer's signed custody of this device's own writes lands (D28). */
   readonly onReceipt?: TransportContext["onReceipt"];
+  /** Where a peer's signed refusal of this device's own writes lands (D32). */
+  readonly onRefusal?: TransportContext["onRefusal"];
   /** This device answers for the authority itself; every other learns the way to one. */
   readonly servesAuthority: boolean;
   /** What this device can read of the sealed partitions (book ch. 14). */
@@ -66,6 +68,8 @@ export function transportContextFor(base: {
   readonly issuer?: PeerId;
   /** The kinds whose content is sealed, which a link may carry to a peer that cannot read them. */
   readonly sealedKinds?: ReadonlySet<string>;
+  /** The authority-visibility tables (D24), which no peer-to-peer link here carries. */
+  readonly withheld?: TransportContext["withheld"];
 }): TransportContext & { readonly routes: RouteTable } {
   const routes = createRouteTable({ self: base.identity.peerId, now: base.now });
   if (base.servesAuthority) routes.serve("authority");
@@ -102,6 +106,8 @@ export function transportContextFor(base: {
     Object.assign(context, { onGrantRequest: base.onGrantRequest });
   if (base.incarnation !== undefined) Object.assign(context, { incarnation: base.incarnation });
   if (base.onReceipt !== undefined) Object.assign(context, { onReceipt: base.onReceipt });
+  if (base.onRefusal !== undefined) Object.assign(context, { onRefusal: base.onRefusal });
+  if (base.withheld !== undefined) Object.assign(context, { withheld: base.withheld });
   if (base.issuer !== undefined) {
     const sealedKinds = base.sealedKinds ?? new Set<string>();
     const readGate = createReadGate({

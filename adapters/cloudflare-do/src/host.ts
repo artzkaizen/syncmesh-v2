@@ -11,6 +11,8 @@ import type {
 import type { BlobStore, SqliteDriver } from "@syncmesh/storage";
 
 import {
+  DEFAULT_LIMITS,
+  capacityRefusal,
   createRelayHost,
   decodeRelayFrame,
   hostedPosture,
@@ -51,8 +53,10 @@ export interface RelayDurableHostOptions {
   /** Serve blobs from the object's own SQLite (D18). Default true; `false` for a log-only room. */
   readonly blobs?: boolean;
   /**
-   * Per-socket ceilings — frame size and the two token buckets. Forwarded whole, because a
+   * Per-socket ceilings — frame size and the token buckets. Forwarded whole, because a
    * partly-overridden rate table is a table where the class nobody thought about is left open.
+   * The object is one room, so `maxConnections` and `maxRoomConnections` cap the same sockets
+   * and the lower one wins; `maxRooms` has nothing to count.
    */
   readonly limits?: Partial<RelayLimits>;
   /** Protocol versions this room accepts (D14); narrowing it is how an operator raises the floor. */
@@ -173,6 +177,8 @@ export function relayDurableHost(
       posture: hostedPosture(options.posture, [name]),
     }),
   );
+  const limits = { ...DEFAULT_LIMITS, ...options.limits };
+  const seats = Math.min(limits.maxConnections, limits.maxRoomConnections);
   // held for the life of the instance: an object that has woken its sockets is never idle, and
   // there is no eviction here but the platform's own, which takes the whole instance with it
   let opening: Promise<HeldRoom> | undefined;
@@ -224,7 +230,13 @@ export function relayDurableHost(
     // the path is not the room here — the platform already routed this request to the object
     // that *is* the room — so the posture is asked under this room's own name, never under
     // whatever name a stranger put in the path
-    gate: (request) => host.gate(request, name),
+    //
+    // the socket caps are the object's to count: it binds its sockets through `acquire`, never
+    // `accept`, so the host core sees one hold however many sockets the platform has accepted
+    gate: (request) =>
+      ctx.getWebSockets().length >= seats
+        ? Promise.resolve(capacityRefusal())
+        : host.gate(request, name),
     // bound at once rather than on the first frame: the room speaks first now, and a socket that
     // is never told the challenge never sends a join the room would accept
     join: (ws) => {

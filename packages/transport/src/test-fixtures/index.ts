@@ -7,9 +7,10 @@
  */
 
 import type { EngineOptions } from "@syncmesh/engine";
+import type { ColumnName, Procedure, RowKey, TableName } from "@syncmesh/kernel";
 
 import { createEngine, createMemoryEventStore, createValidator } from "@syncmesh/engine";
-import { createHlcClock, parsePartitionKey, type PartitionKey } from "@syncmesh/kernel";
+import { createHlcClock, parsePartitionKey, readRow, type PartitionKey } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
 import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
@@ -73,3 +74,32 @@ export const peer = (n: number, account: string, startMs = 100) => {
 };
 
 export type Peer = ReturnType<typeof peer>;
+
+/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- test fixtures; the naming rules are not what these tests are about */
+export const NOTES = "notes" as TableName;
+export const ID = "id" as ColumnName;
+export const BODY = "body" as ColumnName;
+export const CREATE = "notes.create" as Procedure;
+export const key = (k: string) => k as RowKey;
+/* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
+
+/** One row into one peer's log — the write every bridge test syncs. */
+export const write = (p: Pick<Peer, "engine">, id: string, body: string, partition = ACME) =>
+  p.engine.mutate(
+    CREATE,
+    (tx) =>
+      tx.insert(
+        NOTES,
+        key(id),
+        new Map([
+          [ID, id],
+          [BODY, body],
+        ]),
+      ),
+    { partition },
+  );
+
+/** What a peer's state says that row's body is, or `undefined` where the row never arrived. */
+export const bodyOf = (p: Peer, id: string) => readRow(p.engine.state(), NOTES, key(id))?.get(BODY);
+
+export * from "./gated.js";

@@ -20,6 +20,7 @@ export {
   grantRequestFrame,
   presenceFrame,
   receiptFrame,
+  refusalFrame,
   routesFrame,
 } from "./frame.js";
 export type {
@@ -28,7 +29,7 @@ export type {
   PresenceStoreOptions,
   PresenceTouch,
 } from "./presence.js";
-export { createPresenceStore } from "./presence.js";
+export { createPresenceStore, presenceSlot } from "./presence.js";
 export type { JoinDeps, JoinExchange, SnapshotInstalled } from "./join.js";
 export { createJoinExchange } from "./join.js";
 export type { SnapshotFrame } from "./snap-frame.js";
@@ -55,7 +56,7 @@ export { createRouteTable } from "./routes.js";
 export type { RouteExchange, RouteExchangeDeps } from "./route-exchange.js";
 export { createRouteExchange } from "./route-exchange.js";
 export type { Custody, CustodyDeps } from "./custody.js";
-export { controlFrames, createCustody, custodyFor } from "./custody.js";
+export { controlFrames, createBridgeCustody, createCustody } from "./custody.js";
 export type { Divergence } from "./divergence.js";
 export { answerDigest } from "./divergence.js";
 export type { FrameHandlers } from "./dispatch.js";
@@ -68,8 +69,6 @@ export type {
   TransportCondition,
   TransportContext,
   TransportKind,
-  TransportBlobs,
-  DownloadBlobOptions,
   TransportVisibility,
   VisibilityToken,
 } from "./transport.js";
@@ -79,6 +78,13 @@ export {
   createFrameTransport,
   linkTransport,
 } from "./transport.js";
+export type {
+  BlobRefusal,
+  DownloadBlobOptions,
+  TransportBlobs,
+  UploadBlobOptions,
+} from "./blob-capability.js";
+export { BLOB_MISSING } from "./blob-capability.js";
 export type { DiscoveryOptions, Sighting } from "./discovery.js";
 export { DEFAULT_TTL_MS, createDiscovery, shouldDial } from "./discovery.js";
 export type { Liveness, LivenessOptions } from "./liveness.js";
@@ -112,3 +118,6 @@ export type { LinkEvent, LinkEventKind, LinkFact } from "./link-events.js";
 export { reportingUpgrader } from "./link-events.js";
 export type { ReadGate, ReadGateOptions } from "./read-gate.js";
 export { createReadGate } from "./read-gate.js";
+
+export type { Withheld } from "./withheld.js";
+export { openDigests, servable, withholds } from "./withheld.js";

@@ -37,14 +37,35 @@ version negotiation). What remains:
 5. **No connection cap of any kind** — no per-IP, per-room, or per-process socket
    count anywhere in `packages/relay` or the DO adapter; `room.clients` is unbounded.
    The only A1 item still fully open, and E24's task list doesn't even name it.
+   **Fixed 2026-11-07:** three caps, all refused at upgrade with 503 before a socket
+   exists — `RelayLimits.maxConnections` per process, `maxRoomConnections` per room
+   (counted from the room table; on the Durable Object, from the object's own
+   sockets), and `maxRooms` for rooms not already open. Per-IP is still unbuilt: the
+   host sees no address it can trust behind a proxy. Tests: `relay/…/host.test.ts`,
+   `serve.test.ts`, `cloudflare-do/…/host.test.ts`.
 6. **The send backlog is bounded in frames, not bytes** (`maxBacklog = 1000`,
    room.ts:126): a thousand near-8 MiB blob frames is ~8 GB of retained buffers. The
    ceiling needs a byte semantic (reflectdb's `maxBufferedBytes`).
+   **Fixed 2026-11-07:** `RelayLimits.maxBacklogBytes` (default 64 MiB) bounds it in
+   bytes beside the frame count (`sender.ts`).
 7. **Rate limiting meters ingress only.** Fan-out — the amplification vector
    reflectdb documents — is unmetered per room.
+   **Fixed 2026-11-07:** every delivery is charged twice, to the sending socket's
+   `rates.fanout` and to the room's `RelayLimits.roomFanout`. While the socket's own
+   budget owes, its event frame is refused with `rate` and it is hung up; while the
+   room's owes, every socket's events are held in order until the room can afford
+   them (`eventIntake`, `ingest.ts`), since refusing whoever sent next would let a few
+   sockets get every honest writer in the room hung up. N sockets each under its own
+   budget no longer amplify together. Defaults are nominal. Test: `limits.test.ts`.
 8. **Every retention/eviction knob defaults to off**, so an unconfigured relay
    still grows forever. Choose production defaults (or make the hosted presets set
    them) rather than shipping infinite-growth-by-default.
+   **Fixed 2026-11-07 (as far as the owner chose):** durable hosts (`startRelay` on
+   Bun and Node over `dataDir`) evict idle rooms after `DEFAULT_IDLE_AFTER`
+   (15 minutes); a caller-supplied store keeps no eviction. The blob store has a
+   default byte ceiling and `relay.retention.unbounded` reports any room whose log
+   is unbounded. The room **log** stays unbounded unless `DURABLE_RETENTION` is
+   opted into — deliberately, since trimming history is the operator's call.
 9. **BLE has never touched hardware.** The manual device checklist has every box
    unchecked, and two donor mechanisms are recorded as wrong (E22.md:20): silent
    data loss on multi-fragment ack, and `maxFrameBytes = 140` (~350 bytes on air)
@@ -83,10 +104,28 @@ version negotiation). What remains:
 19. E14: the snapshot window is not yet a field of `Interest`.
 20. E16: mixed-version-fleet correction mismatch (RFC-0013 G18) has no mitigation.
 21. E19: the 60 Hz presence burst test and BLE-shaped drop test are unwritten.
+    **2026-11-07: written and passing** (`packages/ble/src/__tests__/presence.test.ts`). Writing
+    them showed the claim was false: the BLE link queued every frame in order, so a 60 Hz cursor
+    on a slow radio became a 150-frame backlog with events stuck behind it. Fixed by
+    `FrameLink.sendLatest` (newest frame per presence slot, ordinary frames first), passed through
+    the sealed, held and multiplexed links. A stalled relay WebSocket still buffers presence in
+    the socket; nothing there conflates yet.
 22. E15: blob compaction sweep + per-partition quotas — deliberately unsized until a
     real workload; rounds-web may now be that workload.
+    **2026-11-07: built, opt-in and unsized.** `relay/src/blob-keeper.ts`: the sweep runs
+    on the room's retention pass (`keepUnreferencedBlobsFor`), a `blob-put` past
+    `maxBlobBytesPerPartition` is answered `blob-refused` and surfaces as
+    `BlobQuotaExceeded` from `mesh.blobs.put`; frozen in `relay-vectors.json` (tags 20–21).
+    Limit kept open: "referenced" means any event this instance has seen, kept through
+    log trims (a trimmed insert is still a live row), so a delete frees nothing and only
+    uploads no row ever named are swept; sealed rooms never sweep.
+    The numbers are still nobody's until a workload sets them.
 23. E24/E09 contradict each other on `mesh.transports.add/remove` (E24 wants it,
     E09 deliberately marks it absent). Reconcile.
+    **2026-11-07: reconciled for E24.** add/remove are built and tested
+    (`client/mesh-transport.test.ts`), and `createMesh({ start: false })` + `mesh.start()` is
+    the matching start for `stop()`. E09.md:39 now points at E24 rather than calling them
+    deliberately absent.
 
 ## P4 — observability and DX debt
 
@@ -105,6 +144,7 @@ version negotiation). What remains:
 
 28. **E24.md:18 is now false** — it still says "nothing in the relay caps or evicts
     anything"; retention.ts / blob-cap.ts / rooms.ts exist. Update the epic.
+    **Fixed 2026-11-07:** E24 now names every cap and its default.
 29. codebase-map.md is pinned to `29dac35` and calls `packages/drizzle` untracked
     WIP with a `test.todo`; it is committed, built, and its suite passes.
 

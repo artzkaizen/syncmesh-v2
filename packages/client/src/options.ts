@@ -76,6 +76,12 @@ export interface MeshOptions<
   /** Started at construction (D12); `mesh.transports.add/remove` reshape the set later (book ch. 8). */
   readonly transports?: readonly Transport[];
   /**
+   * Whether `createMesh` opens the transports itself. Default `true`. With `false` the engine and
+   * stores boot and nothing is dialled until `mesh.start()`; `transports.add` before then queues
+   * the medium to open with the rest, and `ready()`/`settled()` wait for the start.
+   */
+  readonly start?: boolean;
+  /**
    * The platform signals that mean *look at your links again* (see {@link Knock}).
    *
    * Recovery is the library's job, not the app's: an app names the signals its platform has and the

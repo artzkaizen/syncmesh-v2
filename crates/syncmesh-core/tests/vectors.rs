@@ -171,6 +171,11 @@ fn receipt_vectors_are_signed_by_the_holder() {
 }
 
 #[test]
+fn refusal_vectors_are_signed_by_the_refuser() {
+    check_signed_vectors("refusal-vectors.json", "refuserId");
+}
+
+#[test]
 fn checkpoint_vectors_are_signed_by_the_issuer() {
     check_signed_vectors("checkpoint-vectors.json", "issuerId");
 }

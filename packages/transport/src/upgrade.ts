@@ -100,12 +100,12 @@ const heldUntilRead = (link: FrameLink): FrameLink => {
     if (sink === undefined) return void waiting.push(frame);
     sink(frame);
   });
-  return {
+  const held: FrameLink = {
     send: (frame) => link.send(frame),
     onFrame: (cb) => {
       sink = cb;
-      const held = waiting.splice(0);
-      for (const frame of held) cb(frame);
+      const read = waiting.splice(0);
+      for (const frame of read) cb(frame);
       return () => (sink = undefined);
     },
     close: () => {
@@ -113,6 +113,9 @@ const heldUntilRead = (link: FrameLink): FrameLink => {
       link.close?.();
     },
   };
+  const { sendLatest } = link;
+  if (sendLatest !== undefined) Object.assign(held, { sendLatest });
+  return held;
 };
 
 export function createUpgrader(deps: UpgraderDeps): Upgrader {

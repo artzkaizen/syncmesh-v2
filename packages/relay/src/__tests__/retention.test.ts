@@ -13,7 +13,17 @@ import { webSocketDial } from "../dial.js";
 import { blobGetFrame, blobPutFrame, joinFrame } from "../frames.js";
 import { startRelay } from "../serve.js";
 import { relayTransport } from "../transport.js";
-import { bodyOf, entryOf, fakeSocket, scriptedRoom, peer, tick, until, write } from "./fixtures.js";
+import {
+  bodyOf,
+  entryOf,
+  fakeSocket,
+  filled,
+  scriptedRoom,
+  peer,
+  tick,
+  until,
+  write,
+} from "./fixtures.js";
 
 const MS = (n: number) => Temporal.Duration.from({ milliseconds: n });
 const KEEP_MS = 1000;
@@ -233,18 +243,16 @@ describe("the room-log retention cap", () => {
 });
 
 describe("the blob retention cap", () => {
-  const bytes = (n: number, size: number) => Uint8Array.from({ length: size }, () => n);
-
   test("the least recently touched bytes go first, and a fetch is a touch", async () => {
     const inner = memoryBlobStore();
     const capped = cappedBlobStore(inner, 30);
-    const first = (await capped.put(bytes(1, 10))).unwrap();
-    const second = (await capped.put(bytes(2, 10))).unwrap();
+    const first = (await capped.put(filled(1, 10))).unwrap();
+    const second = (await capped.put(filled(2, 10))).unwrap();
     (await capped.get(first)).unwrap(); // first is now the young end
-    const third = (await capped.put(bytes(3, 10))).unwrap();
+    const third = (await capped.put(filled(3, 10))).unwrap();
     expect(await inner.has(second)).toBe(true); // still under the cap: nothing evicted yet
 
-    const fourth = (await capped.put(bytes(4, 10))).unwrap();
+    const fourth = (await capped.put(filled(4, 10))).unwrap();
     expect(await inner.has(second)).toBe(false); // the oldest touch, and the one dropped
     expect(await inner.has(first)).toBe(true);
     expect(await inner.has(third)).toBe(true);
@@ -254,11 +262,11 @@ describe("the blob retention cap", () => {
   test("bytes the room evicted come back under the same name when anyone puts them again", async () => {
     const inner = memoryBlobStore();
     const capped = cappedBlobStore(inner, 10);
-    const gone = (await capped.put(bytes(1, 10))).unwrap();
-    (await capped.put(bytes(2, 10))).unwrap();
+    const gone = (await capped.put(filled(1, 10))).unwrap();
+    (await capped.put(filled(2, 10))).unwrap();
     expect((await capped.get(gone)).isErr()).toBe(true);
-    (await capped.putAt(gone, bytes(1, 10))).unwrap();
-    expect((await capped.get(gone)).unwrap()).toEqual(bytes(1, 10));
+    (await capped.putAt(gone, filled(1, 10))).unwrap();
+    expect((await capped.get(gone)).unwrap()).toEqual(filled(1, 10));
   });
 
   /**
@@ -279,15 +287,15 @@ describe("the blob retention cap", () => {
       },
     };
     const capped = cappedBlobStore(slow, 20);
-    const first = (await capped.put(bytes(1, 10))).unwrap();
-    const second = (await capped.put(bytes(2, 10))).unwrap();
+    const first = (await capped.put(filled(1, 10))).unwrap();
+    const second = (await capped.put(filled(2, 10))).unwrap();
     racing = async () => void (await capped.get(first)); // a reader, mid-delete
-    const third = (await capped.put(bytes(3, 10))).unwrap();
+    const third = (await capped.put(filled(3, 10))).unwrap();
     expect(await inner.has(first)).toBe(false); // it really went
 
     // the cap now holds exactly `second` and `third`, which is exactly its ceiling. A phantom
     // `first` in the ledger would make this put evict two blobs instead of one.
-    const fourth = (await capped.put(bytes(4, 10))).unwrap();
+    const fourth = (await capped.put(filled(4, 10))).unwrap();
     expect(await inner.has(third)).toBe(true);
     expect(await inner.has(fourth)).toBe(true);
     expect(await inner.has(second)).toBe(false); // the oldest touch, and the only one dropped
@@ -296,7 +304,7 @@ describe("the blob retention cap", () => {
   test("a blob bigger than the whole cap is kept: `putAt` must not answer ok for bytes it dropped", async () => {
     const inner = memoryBlobStore();
     const capped = cappedBlobStore(inner, 10);
-    const big = (await capped.put(bytes(9, 40))).unwrap();
+    const big = (await capped.put(filled(9, 40))).unwrap();
     expect((await capped.get(big)).unwrap()).toHaveLength(40);
   });
 
@@ -310,8 +318,8 @@ describe("the blob retention cap", () => {
     const conn = room.connect(s.socket);
     conn.receive(joinFrame([1], a.identity.peerId, new Map()));
     await tick();
-    const one = bytes(1, 8);
-    const two = bytes(2, 8);
+    const one = filled(1, 8);
+    const two = filled(2, 8);
     conn.receive(blobPutFrame(hashOf(one), one));
     await tick();
     conn.receive(blobPutFrame(hashOf(two), two));

@@ -289,6 +289,37 @@ describe("scopeReads — the caller's view without asking for it", () => {
     ).toEqual(["j1", "j2"]);
   });
 
+  test("$count counts the caller's rows, not the table's", async () => {
+    const seeded = await seedTwo();
+    const face = await acting(seeded, tech7);
+    const db = scopeReads(face.db, face.read);
+    expect(await db.$count(jobs)).toBe(1);
+    expect(await db.$count(jobs, eq(jobs.status, "open"))).toBe(1);
+  });
+
+  test("a CTE built by $with's callback reads through the caller's view too", async () => {
+    const seeded = await seedTwo();
+    const face = await acting(seeded, tech7);
+    const db = scopeReads(face.db, face.read);
+    const open = db.$with("open_jobs").as((qb) => qb.select({ id: jobs.id }).from(jobs));
+    const built = db.$with("built_jobs").as(db.select({ id: jobs.id }).from(jobs));
+    expect((await db.with(open).select({ id: open.id }).from(open)).map((r) => r.id)).toEqual([
+      "j1",
+    ]);
+    expect((await db.with(built).select({ id: built.id }).from(built)).map((r) => r.id)).toEqual([
+      "j1",
+    ]);
+  });
+
+  test("a select after `with` reads a bare table through the caller's view", async () => {
+    const seeded = await seedTwo();
+    const face = await acting(seeded, tech7);
+    const db = scopeReads(face.db, face.read);
+    const cte = db.$with("one").as(db.select({ id: jobs.id }).from(jobs));
+    const rows = await db.with(cte).select({ id: jobs.id }).from(jobs).orderBy(jobs.id);
+    expect(rows.map((r) => r.id)).toEqual(["j1"]);
+  });
+
   test("writes go through unscoped: the rule is about what a caller reads, not what capture sees", async () => {
     const seeded = await open();
     const db = scopeReads(seeded.db, seeded.read);

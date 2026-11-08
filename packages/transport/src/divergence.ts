@@ -5,6 +5,10 @@ import type { Identity } from "@syncmesh/wire";
 import { sameAhead } from "@syncmesh/engine";
 import { omitUndefined } from "@syncmesh/result";
 
+import type { Withheld } from "./withheld.js";
+
+import { openDigests } from "./withheld.js";
+
 /** What a digest exchange found: the tables that differ, and the slice both sides counted. */
 export interface Divergence {
   readonly peer: PeerId;
@@ -60,11 +64,15 @@ export function divergenceAgainst(
     readonly digests: ReadonlyMap<string, bigint>;
     readonly ahead?: Ahead;
   },
+  withheld?: Withheld,
 ): readonly TableName[] | undefined {
   if (theirs.scope !== scope) return undefined;
   if (!sameCoverage(engine.coverage().synced, theirs.at)) return undefined;
   if (theirs.ahead === undefined || !sameAhead(engine.ahead(), theirs.ahead)) return undefined;
-  return disagreements(tableNames(engine.digest(interest)), theirs.digests);
+  return disagreements(
+    openDigests(withheld, tableNames(engine.digest(interest))),
+    openDigests(withheld, theirs.digests),
+  );
 }
 
 /**
@@ -80,6 +88,7 @@ export function answerDigest(deps: {
   readonly scope: string;
   readonly onDivergence?: (divergence: Divergence) => void;
   readonly queued: (run: () => void) => void;
+  readonly withheld?: Withheld;
 }): (
   scopeThere: string,
   at: ReadonlyMap<PeerId, SeqNum>,
@@ -91,7 +100,7 @@ export function answerDigest(deps: {
     if (onDivergence === undefined) return;
     queued(() => {
       const theirs = omitUndefined({ scope: scopeThere, at, digests, ahead });
-      const tables = divergenceAgainst(engine, interest, scope, theirs);
+      const tables = divergenceAgainst(engine, interest, scope, theirs, deps.withheld);
       if (tables !== undefined && tables.length > 0)
         onDivergence({ peer: identity.peerId, scope, tables });
     });

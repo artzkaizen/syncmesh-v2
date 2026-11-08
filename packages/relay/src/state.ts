@@ -5,6 +5,8 @@ import type { Temporal } from "@syncmesh/temporal";
 import type { PresenceStore } from "@syncmesh/transport";
 import type { Grant, Identity } from "@syncmesh/wire";
 
+import type { Gate } from "./admission.js";
+import type { BlobKeeper } from "./blob-keeper.js";
 import type { GrantCache } from "./grant-cache.js";
 import type { Budget, RelayLimits } from "./limits.js";
 import type { RelaySocket, Sender } from "./sender.js";
@@ -15,22 +17,31 @@ export interface Client {
   readonly peer: PeerId;
   readonly sender: Sender;
   readonly socket: RelaySocket;
-  /** Whether this client asked for that event; a client with no interest wants them all. */
-  readonly wants: (event: SyncEvent) => boolean;
-  /** The grant this socket was seated under, in a gated room (D40); absent in an open one. */
+  /**
+   * One live event: sent when this client asked for it and is admitted to it, withheld otherwise
+   * — and a withheld one remembered, so the client is told the relay passed over it and the
+   * author's later events are not held behind a hole nothing will fill (D23, D24, D40).
+   */
+  readonly offer: (frame: Uint8Array, event: SyncEvent) => Offered;
+  /** The grant this socket was seated under, in a grant-gated room (D40); absent in an open one. */
   readonly granted?: Grant;
-  /**
-   * Live fan-out passed this client over: say how far the author's run now reaches, so the hole
-   * the filter left does not hold everything after it in the client's holdback (D23, D40).
-   */
-  readonly skipped?: (event: SyncEvent) => void;
-  /**
-   * Live fan-out sent this client an event: when it filled a hole, say how far the author's run
-   * now reaches, so the events above it the filter passed over are accounted for too.
-   */
-  readonly sent?: (event: SyncEvent) => void;
   /** Hangs up on this socket with a typed reason — how a revocation reaches it from elsewhere. */
   readonly refuse: (code: string, message: string) => void;
+}
+
+/** What one live event cost one socket. */
+export interface Offered {
+  /** The event itself went out. */
+  readonly sent: boolean;
+  /** Frames it put on the socket, or queued for it: the event, a pass-over, both, or none. */
+  readonly frames: number;
+}
+
+/** What one live event cost the room: who received it, and every frame it caused. */
+export interface Fanned {
+  readonly receivers: number;
+  /** The events sent plus the pass-overs they caused — what the sender is charged (gap audit №7). */
+  readonly frames: number;
 }
 
 /** The room as one connection sees it: shared state, and the three ways to reach the others. */
@@ -46,8 +57,15 @@ export interface RoomState {
   readonly identity: Identity;
   /** What one socket may spend before the relay hangs up on it: frame size and rate. */
   readonly limits: RelayLimits;
+  /**
+   * What the room as a whole may spend, of which only `fanout` is drawn: every socket's event
+   * is charged here as well as to its own budget, at `limits.roomFanout`.
+   */
+  readonly budget: Budget;
   /** Where this room's bytes live (D18); absent, it serves none and says so. */
   readonly blobs: BlobStore | undefined;
+  /** What `blobs` owes (D18): every put goes through it, and every held event is noted to it. */
+  readonly keeper: BlobKeeper | undefined;
   /** One grant per device, the room's newest mint for each; a joiner gets these first. */
   readonly grants: GrantCache;
   /** The issuers whose grants admit a device (D40); absent, the room is open. */
@@ -74,8 +92,8 @@ export interface RoomState {
   readonly floor: () => Cursors;
   /** Every client but one — the author, who already has what it sent. */
   readonly toClients: (frame: Uint8Array, except?: PeerId) => void;
-  /** The same, minus every client whose interest excludes this event; counts who got it. */
-  readonly toInterested: (frame: Uint8Array, event: SyncEvent, except?: PeerId) => number;
+  /** The same, minus every client whose interest or entitlement excludes this event. */
+  readonly toInterested: (frame: Uint8Array, event: SyncEvent, except?: PeerId) => Fanned;
   /** The same frame to the other instances serving this room; best-effort by design (D09-B). */
   readonly publish: (frame: Uint8Array) => void;
   readonly offset: () => number;
@@ -85,6 +103,8 @@ export interface RoomState {
   readonly enqueue: (work: () => Promise<void>) => void;
   /** The room's clock, injectable so a rate limit can be tested without waiting for one. */
   readonly now: () => Temporal.Instant;
+  /** The authority-visibility gate (D24); absent, the room withholds nothing it was not asked to. */
+  readonly gate: Gate | undefined;
   /** Emitted after the work it describes; a listener can never change what the room did (D17). */
   readonly report: (event: RelayTelemetry) => void;
 }

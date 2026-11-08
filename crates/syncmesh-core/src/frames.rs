@@ -1,7 +1,7 @@
 //! The session frames every transport carries (`transport/src/frame.ts`, `frame-parts.ts`,
-//! `snap-frame.ts`): `[tag, …]` in canonical CBOR, tags 0–8.
+//! `snap-frame.ts`): `[tag, …]` in canonical CBOR, tags 0–9.
 //!
-//! Signed payloads — grants, events, presence, receipts — ride as the bytes they arrived in and
+//! Signed payloads — grants, events, presence, receipts, refusals — ride as the bytes they arrived in and
 //! are never opened here: the frame is a carrier, and whoever acts on the payload verifies it
 //! with the codec that owns it. A tag this build does not know is [`Frame::Unknown`], never an
 //! error (D14's additive rule); a known tag with the wrong shape is a [`MalformedFrame`].
@@ -29,10 +29,12 @@ pub mod tag {
     pub const RECEIPT: u8 = 7;
     /// What this peer can reach, and how far away it is; additive like the rest.
     pub const ROUTES: u8 = 8;
+    /// A signed refusal of one event, back to its author (D32); additive like the rest.
+    pub const REFUSAL: u8 = 9;
     /// Sequences the sender may not send this peer, which its grant does not cover (D40).
-    pub const WITHHELD: u8 = 9;
+    pub const WITHHELD: u8 = 10;
 
-    pub const ALL: [u8; 10] = [
+    pub const ALL: [u8; 11] = [
         GRANT,
         GRANT_REQUEST,
         CURSORS,
@@ -42,6 +44,7 @@ pub mod tag {
         SNAPSHOT,
         RECEIPT,
         ROUTES,
+        REFUSAL,
         WITHHELD,
     ];
 }
@@ -196,6 +199,10 @@ pub enum Frame {
     Receipt {
         wire: Vec<u8>,
     },
+    /// A signed refusal of one event (D32): parked, never folded — information, never a veto.
+    Refusal {
+        wire: Vec<u8>,
+    },
     Routes {
         ads: Vec<RouteAd>,
     },
@@ -221,6 +228,7 @@ impl Frame {
             Frame::Presence { .. } => "presence",
             Frame::Digest { .. } => "digest",
             Frame::Receipt { .. } => "receipt",
+            Frame::Refusal { .. } => "refusal",
             Frame::Routes { .. } => "routes",
             Frame::Withheld { .. } => "withheld",
             Frame::Snapshot(SnapshotFrame::Request { .. }) => "snap-req",
@@ -252,6 +260,7 @@ impl Frame {
                 ahead,
             } => digest_frame(scope, at, digests, ahead.as_deref()),
             Frame::Receipt { wire } => bytes_frame(tag::RECEIPT, wire),
+            Frame::Refusal { wire } => bytes_frame(tag::REFUSAL, wire),
             Frame::Routes { ads } => routes_frame(ads),
             Frame::Withheld { scope, withheld } => withheld_frame(scope, withheld),
             Frame::Snapshot(SnapshotFrame::Request { interest }) => {
@@ -346,6 +355,11 @@ pub fn presence_frame(wire: &[u8]) -> Vec<u8> {
 /// One signed custody receipt, on its way back to the author whose events it covers.
 pub fn receipt_frame(wire: &[u8]) -> Vec<u8> {
     bytes_frame(tag::RECEIPT, wire)
+}
+
+/// One signed refusal, on its way back to the author whose event was parked.
+pub fn refusal_frame(wire: &[u8]) -> Vec<u8> {
+    bytes_frame(tag::REFUSAL, wire)
 }
 
 pub fn grant_request_frame(peer_id: &PeerId, invite: Option<&str>) -> Vec<u8> {
@@ -599,7 +613,10 @@ pub fn decode_frame(frame: &[u8]) -> Result<Frame, MalformedFrame> {
         return Ok(Frame::Unknown);
     };
     let t = t as u8;
-    if matches!(t, tag::GRANT | tag::EVENT | tag::PRESENCE | tag::RECEIPT) {
+    if matches!(
+        t,
+        tag::GRANT | tag::EVENT | tag::PRESENCE | tag::RECEIPT | tag::REFUSAL
+    ) {
         let Some(Value::Bytes(wire)) = payload else {
             return shape("payload is not bytes");
         };
@@ -608,6 +625,7 @@ pub fn decode_frame(frame: &[u8]) -> Result<Frame, MalformedFrame> {
             tag::GRANT => Frame::Grant { wire },
             tag::EVENT => Frame::Event { wire },
             tag::RECEIPT => Frame::Receipt { wire },
+            tag::REFUSAL => Frame::Refusal { wire },
             _ => Frame::Presence { wire },
         });
     }

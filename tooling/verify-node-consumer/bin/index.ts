@@ -19,6 +19,7 @@ interface Manifest {
   readonly name: string;
   readonly private?: boolean;
   readonly engines?: { readonly bun?: string; readonly node?: string };
+  readonly peerDependencies?: Readonly<Record<string, string>>;
 }
 
 interface Publishable {
@@ -26,10 +27,21 @@ interface Publishable {
   readonly dir: string;
   /** Declares `engines.bun` and not `engines.node`: installable everywhere, importable only on Bun. */
   readonly bunOnly: boolean;
+  /**
+   * Peers on `react-native` or `expo-sqlite`: installable everywhere, importable only under a React
+   * Native runtime, whose own entry points are Flow source that plain `node` cannot parse.
+   */
+  readonly nativeOnly: boolean;
 }
 
 const bunOnly = (manifest: Manifest): boolean =>
   manifest.engines?.bun !== undefined && manifest.engines.node === undefined;
+
+/** The runtimes whose packages do not load in plain `node`, named by the peer that brings them. */
+const NATIVE_PEERS = ["react-native", "expo-sqlite"] as const;
+
+const nativeOnly = (manifest: Manifest): boolean =>
+  NATIVE_PEERS.some((peer) => manifest.peerDependencies?.[peer] !== undefined);
 
 const publishable = (): readonly Publishable[] =>
   ["packages", "adapters"].flatMap((group) =>
@@ -45,7 +57,14 @@ const publishable = (): readonly Publishable[] =>
           return [];
         }
         if (manifest.private === true) return [];
-        return [{ name: manifest.name, dir, bunOnly: bunOnly(manifest) }];
+        return [
+          {
+            name: manifest.name,
+            dir,
+            bunOnly: bunOnly(manifest),
+            nativeOnly: nativeOnly(manifest),
+          },
+        ];
       }),
   );
 
@@ -63,11 +82,11 @@ const importWithNode = (cwd: string, script: string): string | undefined => {
 
 const clientSmoke = `
   const { createMesh } = await import("@syncmesh/client");
-  const { defineSchema, t } = await import("@syncmesh/schema");
+  const { syncSchema, t } = await import("@syncmesh/schema");
   const { createIdentity } = await import("@syncmesh/wire");
   const { sqliteTable, text } = await import("drizzle-orm/sqlite-core");
   const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
-  const schema = defineSchema({ tables: { notes: { columns: { id: t.text().primaryKey(), body: t.text() } } } });
+  const schema = syncSchema({ tables: { notes: { columns: { id: t.text().primaryKey(), body: t.text() } } } });
   const identity = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 7 + i)).unwrap();
   const mesh = (await createMesh({ schema, identity, authority: identity.peerId, dataDir: "./data" })).unwrap();
   const { db } = mesh.on().unwrap();
@@ -105,7 +124,7 @@ function main(): number {
           private: true,
           type: "module",
           // the peers an app supplies: drizzle-orm for the client, react for the hooks
-          dependencies: { ...specs, "drizzle-orm": "latest", react: "^19", "react-dom": "^19" },
+          dependencies: { ...specs, "drizzle-orm": "1.0.0-rc.4", react: "^19", "react-dom": "^19" },
           overrides: specs,
         },
         null,
@@ -117,9 +136,13 @@ function main(): number {
       `installed ${packages.length} tarballs with npm ${run("npm", ["--version"], project).trim()} under node ${process.version}\n`,
     );
 
-    for (const { name, bunOnly: skip } of packages) {
-      if (skip) {
+    for (const { name, bunOnly: onBun, nativeOnly: onNative } of packages) {
+      if (onBun) {
         process.stdout.write(`bun-only ${name} (installed, not imported: engines.bun)\n`);
+        continue;
+      }
+      if (onNative) {
+        process.stdout.write(`rn-only  ${name} (installed, not imported: a React Native peer)\n`);
         continue;
       }
       const failure = importWithNode(project, `await import(${JSON.stringify(name)})`);

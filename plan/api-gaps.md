@@ -318,7 +318,7 @@ Sealing is per kind, full stop: `partition(name, { sealed: true })`, read as `Sc
 and enforced at `client/handles.ts:69`. There is no parent for it to inherit from or leak into,
 so the question §2.1 raised no longer has an object.
 
-### 3.4 A quarantine report on the wire
+### 3.4 A quarantine report on the wire — **built (2026-11-07), direct links only**
 The hole behind §1's "failure state": a refused write is indistinguishable from an unsynced one,
 forever, to its author. Closing it is protocol work and wants its own decision. Until then every
 surface that reports custody must say the weaker true thing (§2.5).
@@ -334,6 +334,24 @@ later `CustodyReceipt` from the same holder covering the seq (no retraction fram
 no free text; weighted by refuser identity, never by count. Rejects an unsigned frame (B) because
 relays forward unread bytes, and authority-only correction (D) as the whole answer because a
 refused event never folded on the refuser and sealed partitions have no corrections.
+
+**Built 2026-11-07, as decided (D32-C).** `RefusalReceipt` and `issueRefusal`/`verifyRefusal`
+beside the custody receipt in `wire/src/receipt.ts` (core keys `0 v · 1 refuser · 2 author · 3 seq
+· 4 reason · 5 verdict · 6 issuedAt`; a verdict must be a tag, `^[A-Z][A-Za-z0-9]{0,63}$`, so a
+sentence is a panic to issue and malformed to receive), frozen in `conformance/refusal-vectors.json`
+and as the tag-9 case of `frame-vectors.json`, mirrored in `crates/syncmesh-core/src/refusal.rs`.
+`QuarantineReason` now lives in `@syncmesh/wire` and the engine re-exports it. The bridge signs
+one per event a batch parked, and repeats the author's still-parked ones on every cursor exchange
+with that author (`transport/src/custody.ts` `refuse`/`repeat`); arrivals about anyone else's
+write are dropped. The ledger's fourth table `refusals (peer, seq, refuser, reason, verdict,
+at_ms)` is replaced per refuser, skipped once that refuser has signed custody, and deleted by a
+later vouch from the same holder covering the seq. Read as `OperationsView.refusals(peer, seq)`
+(not `refusalsOf` — the naming skill) and as `OperationRow.refusals?: { by, reason, verdict }[]`,
+mirrored across the browser port. `unknown-table`/`unknown-kind` are kept as the reason, and the
+`unsettled()` copy says *on an older build*, never *refused*, for them. Nothing gates on it.
+**Still open:** the relay carries no refusal, exactly as it carries no receipt — closing both is
+one relay frame under D14's version bump. React's `refused-by` rendering is `plan/react-api.md`
+G12, unbuilt; its prerequisites now exist.
 
 ### 3.5 Delete-resurrection — **proven for every peer past the floor; two findings**
 `transport/src/__tests__/resurrection.test.ts`: three peers over real bridged links, x folds a row

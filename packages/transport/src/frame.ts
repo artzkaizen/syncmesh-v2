@@ -49,6 +49,8 @@ export type Frame =
     }
   /** A signed acknowledgement of durable custody (book ch. 10): held, not accepted. */
   | { readonly kind: "receipt"; readonly wire: Uint8Array }
+  /** A signed refusal of one event (D32): parked, never folded — information, never a veto. */
+  | { readonly kind: "refusal"; readonly wire: Uint8Array }
   /** What the sender can reach and how far: one advertisement per destination (book ch. 17). */
   | { readonly kind: "routes"; readonly ads: readonly RouteAdWire[] }
   /**
@@ -69,6 +71,9 @@ export const grantFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.gra
 
 /** One signed custody receipt, on its way back to the author whose events it covers. */
 export const receiptFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.receipt, wire]);
+
+/** One signed refusal, on its way back to the author whose event was parked. */
+export const refusalFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.refusal, wire]);
 
 /** What a route advertisement carries on the wire: where to, how far, and until when. */
 export interface RouteAdWire {
@@ -138,12 +143,14 @@ export function decodeFrame(frame: Uint8Array): Result<Frame, MalformedFrame> {
       kind === KIND.grant ||
       kind === KIND.event ||
       kind === KIND.presence ||
-      kind === KIND.receipt
+      kind === KIND.receipt ||
+      kind === KIND.refusal
     ) {
       if (!(payload instanceof Uint8Array)) return malformedFrame("payload is not bytes");
       if (kind === KIND.grant) return Result.ok({ kind: "grant", wire: payload } as const);
       if (kind === KIND.event) return Result.ok({ kind: "event", wire: payload } as const);
       if (kind === KIND.receipt) return Result.ok({ kind: "receipt", wire: payload } as const);
+      if (kind === KIND.refusal) return Result.ok({ kind: "refusal", wire: payload } as const);
       return Result.ok({ kind: "presence", wire: payload } as const);
     }
     return decodeTagged(kind, payload, extra, outer);

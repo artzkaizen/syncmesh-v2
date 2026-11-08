@@ -27,10 +27,12 @@ export function resumeVectors() {
   const hex = (s: string) => hexToBytes(s).unwrap();
   const grant = hex(frameVectors().vectors[0]?.wireHex ?? "");
   const v2Join = hex(joins.vectors[0]?.joinHex ?? "");
-  // SAFETY: the join vectors' device id is a validated peer id; a sequence is a branded integer
+  // SAFETY: the join vectors' device id is a validated peer id
   const device = joins.deviceId as PeerId;
+  // SAFETY: 7 is a non-negative integer, which is all a sequence number is
   const v3Join = joinFrame([3], device, new Map([[device, 7 as SeqNum]]));
   const session = {
+    // SAFETY: the handshake vectors' b-side id is a validated peer id
     peer: shake.bId as PeerId,
     keys: { seal: hex(shake.aSealKeyHex), open: hex(shake.bSealKeyHex) },
   };

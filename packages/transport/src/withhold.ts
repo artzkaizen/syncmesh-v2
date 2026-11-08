@@ -7,9 +7,11 @@ import { signEvent } from "@syncmesh/wire";
 
 import type { FrameClass } from "./frame-parts.js";
 import type { ReadGate } from "./read-gate.js";
+import type { Withheld } from "./withheld.js";
 
 import { KIND } from "./frame-parts.js";
 import { eventFrame, withheldFrame } from "./frame.js";
+import { withholds } from "./withheld.js";
 
 /**
  * The two halves of withholding on a peer link (D40): the sender keeps back what the far peer's
@@ -63,10 +65,13 @@ export interface OfferDeps {
   readonly carries?: (message: { readonly cls: FrameClass; readonly bytes: number }) => boolean;
   readonly crypto?: EventCrypto;
   readonly readGate?: ReadGate;
+  /** The authority-visibility tables (D24), which no peer link carries. */
+  readonly withheld?: Withheld;
 }
 
 /**
- * Signs the event and offers it to this link, unless routing put it on another one (E28).
+ * Signs the event and offers it to this link, unless routing put it on another one (E28) or it
+ * writes a table only the authority's gate may hand out (D24).
  *
  * The size weighed is the **frame's**, not the event's: what occupies a medium is what goes on it.
  * An absent `carries` emits — a link with no routing behind it carries everything, which is what
@@ -79,6 +84,7 @@ export const offerEvent = (
   emit: Emit,
 ): void => {
   const { identity, carries, crypto, readGate } = options;
+  if (withholds(options.withheld, event)) return;
   // what the far peer may not read is named instead of sent (D40), on every link alike: routing
   // decides which link carries a frame, never whether a peer may read it
   if (readGate?.withholds(peer, event) === true) {
@@ -93,18 +99,21 @@ export const offerEvent = (
 
 /**
  * A diff answered to one peer: the events it may read, then the frame naming the ones it may not
- * — after the events, so the peer folds what it was sent before it skips what it was not.
+ * — after the events, so the peer folds what it was sent before it skips what it was not. A gated
+ * row is never one of either: only the authority's gate decides who reads it (D24).
  */
 export function sendOwed(
-  owed: readonly StoredEvent[],
+  diff: readonly StoredEvent[],
   deps: {
     readonly gate: ReadGate | undefined;
     readonly peer: PeerId | undefined;
+    readonly withheld: Withheld | undefined;
     readonly envelopeOf: (entry: StoredEvent) => Uint8Array | undefined;
     readonly send: Emit;
   },
 ): void {
   const { gate, peer, envelopeOf, send } = deps;
+  const owed = diff.filter((entry) => !withholds(deps.withheld, entry.event));
   const split =
     gate === undefined ? { send: owed, withheld: new Map() } : splitDiff(owed, gate, peer);
   for (const entry of split.send) {

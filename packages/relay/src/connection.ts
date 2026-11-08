@@ -21,8 +21,9 @@ import {
   selectVersion,
   speaksHandshake,
 } from "./frames.js";
-import { ingestEvent, serveBlob } from "./ingest.js";
+import { eventIntake, serveBlob } from "./ingest.js";
 import { createBudget } from "./limits.js";
+import { createViewer } from "./passover.js";
 import { newChallenge, verifyJoinProof } from "./proof.js";
 import { BELOW_FLOOR, belowFloor } from "./retention.js";
 import { createSeat, type Seat } from "./seat.js";
@@ -118,22 +119,28 @@ function proofFailure(
 function sitDown(
   conversation: Conversation,
   join: Extract<RelayFrame, { kind: "join" }> & { readonly selected: number },
-  held: Pick<Client, "socket" | "refuse"> & { readonly seat: Seat },
+  held: Pick<Client, "socket" | "refuse"> & {
+    readonly seat: Seat;
+    readonly closed: () => boolean;
+  },
   grant: Grant | undefined,
 ): void {
   const { room, sender } = conversation;
   const { peerId: peer, cursors: theirs, interest: wanted, selected } = join;
-  const { seat, socket, refuse } = held;
+  const { seat, socket, refuse, closed } = held;
   seat.take(wanted, grant);
-  const client = {
+  // what this socket is sent, withheld and told it was passed over: its interest, its grant and
+  // the authority's gate, one view for the catch-up and the live fan-out alike (D23, D24, D40)
+  const view = createViewer(room, sender, {
     peer,
-    sender,
-    socket,
-    wants: seat.wants,
-    skipped: seat.skipped,
-    sent: seat.sent,
-    refuse,
-  };
+    interest: wanted,
+    closed,
+    refuse: conversation.refuse,
+    ...omitUndefined({
+      seat: grant === undefined ? undefined : { wants: seat.wants, partitions: grant.partitions },
+    }),
+  });
+  const client = { peer, sender, socket, offer: view.offer, refuse };
   const [greeted, duration] = timed(() => {
     // one socket per peer, never a silent room switch: the old socket goes first
     room.clients.get(peer)?.socket.close("superseded by a newer join");
@@ -143,7 +150,7 @@ function sitDown(
     // who is here now — never how they got here: presence has no history to page through
     const here = room.presence.all();
     for (const entry of here) sender.send(presenceFrame(entry.wire));
-    sendCatchUp(conversation, theirs, wanted, grant?.partitions, seat.paged);
+    sendCatchUp(conversation, theirs, view.catchUp);
     // what the joiner holds, in its own words, for everyone else's `delivered`
     room.toClients(cursorsFrame(peer, theirs), peer);
     return here.length;
@@ -207,10 +214,10 @@ export function createConnection(
     budget: createBudget(room.limits, room.now),
     refuse,
   };
-
+  const ingest = eventIntake(conversation, () => closed);
   const hangUp = (code: string, message: string): void => refuse(code, message, true);
   /** What this socket may be served: its interest, cut to its grant in a gated room (D40). */
-  const seat = createSeat(room, hangUp, (frame) => (closed ? undefined : sender.send(frame)));
+  const seat = createSeat(room, hangUp);
 
   const onJoin = (frame: Extract<RelayFrame, { kind: "join" }>): void => {
     const { versions, peerId: peer, cursors: theirs } = frame;
@@ -260,7 +267,8 @@ export function createConnection(
     // from an earlier visit, or the one the device is about to send
     seat.admit(peer, (grant) => {
       me = peer;
-      sitDown(conversation, { ...frame, selected }, { socket, seat, refuse: hangUp }, grant);
+      const held = { socket, seat, refuse: hangUp, closed: () => closed };
+      sitDown(conversation, { ...frame, selected }, held, grant);
     });
   };
 
@@ -281,7 +289,7 @@ export function createConnection(
   };
 
   const onSession = (bytes: Uint8Array, frame: Extract<RelayFrame, { kind: "session" }>): void => {
-    if (frame.frame.kind === "event") ingestEvent(conversation, frame.frame.wire);
+    if (frame.frame.kind === "event") ingest(frame.frame.wire);
     else if (frame.frame.kind === "grant") onGrant(bytes, frame.frame.wire);
     else if (frame.frame.kind === "presence") onPresence(bytes, frame.frame.wire);
     else if (frame.frame.kind === "grant-request" || frame.frame.kind === "cursors")

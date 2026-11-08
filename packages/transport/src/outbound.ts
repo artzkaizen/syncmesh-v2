@@ -7,11 +7,13 @@ import { relayEnvelope, signEvent } from "@syncmesh/wire";
 import type { BridgeOptions } from "./bridge.js";
 import type { FrameClass } from "./frame-parts.js";
 import type { FrameLink } from "./link.js";
+import type { Withheld } from "./withheld.js";
 
 import { tableNames } from "./divergence.js";
 import { KIND } from "./frame-parts.js";
 import { cursorsFrame, digestFrame } from "./frame.js";
 import { createOutbox } from "./outbox.js";
+import { openDigests } from "./withheld.js";
 
 /**
  * The sending half of a session, and the two ways it can fail. Kept out of the bridge because
@@ -39,6 +41,8 @@ export interface OutboundDeps {
   readonly errors: Hub<BridgeError>;
   /** What this device seals its own events with (book ch. 14); absent, they leave in the clear. */
   readonly crypto?: EventCrypto;
+  /** The gated tables (D24), left out of the digest: devices admitted different rows agree. */
+  readonly withheld?: Withheld;
 }
 
 /** What the outbound half needs, assembled so an absent capability stays absent (D12-A). */
@@ -54,7 +58,7 @@ export const outboundFor = (
   interest: options.interest,
   scope,
   errors,
-  ...omitUndefined({ crypto: options.crypto }),
+  ...omitUndefined({ crypto: options.crypto, withheld: options.withheld }),
 });
 
 /**
@@ -66,9 +70,15 @@ export function createOutbound(deps: OutboundDeps) {
   const { link, engine, identity, interest, scope, errors } = deps;
 
   /** The one place a failed send becomes a value — and presence, the one class allowed to vanish. */
-  const deliver = (cls: FrameClass, what: string, frame: Uint8Array): void => {
+  const deliver = (
+    cls: FrameClass,
+    what: string,
+    frame: Uint8Array,
+    slot: string | undefined,
+  ): void => {
     try {
-      link.send(frame);
+      if (slot !== undefined && link.sendLatest !== undefined) link.sendLatest(slot, frame);
+      else link.send(frame);
     } catch (cause) {
       if (cls !== KIND.presence)
         errors.emit(new SendFailed({ message: `${what} did not leave`, cause }));
@@ -104,7 +114,7 @@ export function createOutbound(deps: OutboundDeps) {
       digestFrame(
         scope,
         engine.coverage().synced,
-        tableNames(engine.digest(interest)),
+        openDigests(deps.withheld, tableNames(engine.digest(interest))),
         engine.ahead(),
       ),
     );

@@ -37,8 +37,8 @@ export interface ManualOptions {
  * The source for a database that cannot stream: your app calls it when it writes.
  *
  * It is the smallest useful implementation of the port and the one everything else is measured
- * against — Postgres logical replication is the same two types with a replication slot behind
- * them, and is deliberately left as follow-on work rather than half-built here.
+ * against — `postgresChangeSource` in `@syncmesh/postgres` is the same two types with a
+ * replication slot behind them.
  *
  * It is an **outbox**, not a mirror: a transaction stays held until an ack says the derived
  * events are durable, which is what lets a resume replay it after a crash. That also means it

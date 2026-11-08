@@ -2,22 +2,25 @@ import type { Cursors, Interest, Unsubscribe } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 import type { Transport, TransportContext } from "@syncmesh/transport";
 
-import { createHub, interestFrom, interestText } from "@syncmesh/engine";
+import { createHub, interestText, scopeFrom } from "@syncmesh/engine";
 import { omitUndefined } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { grantFrame, grantRequestFrame, presenceFrame } from "@syncmesh/transport";
 
 import type { LinkReport } from "./link-report.js";
 import type { Redial } from "./redial.js";
-import type { JoinedScope, SessionHooks } from "./session.js";
+import type { JoinedScope } from "./scoped.js";
+import type { SessionHooks } from "./session.js";
 
 import { createBlobChannel } from "./blob-channel.js";
 import { RELAY_PROTOCOL_VERSIONS, joinCore, joinFrame, speaksHandshake } from "./frames.js";
 import { createLinkReport } from "./link-report.js";
 import { proveJoin } from "./proof.js";
 import { createRedial } from "./redial.js";
+import { covers, entitledScope } from "./scoped.js";
 import { isHello, secureLink, type SecureLink } from "./secure.js";
-import { covers, entitledScope, wireSession } from "./session.js";
+import { wireSession } from "./session.js";
+import { createVisibility } from "./visibility.js";
 
 /** Why a socket this file hung up hung up, said once here and read by the close that follows. */
 /**
@@ -44,6 +47,8 @@ const UNSECURED = "the link is not sealed yet, and nothing but a hello travels b
 const UNPINNED =
   "the relay's hello is signed by a key other than the one this device was told to expect";
 const UNDIALLED = "the relay could not be dialled";
+const REENTITLED =
+  "the relay admits this device under a different entitlement, so it re-pages from nothing";
 
 /** A thrown cause in words, or the sentence that stands in when it brought none. */
 const reasonOf = (cause: unknown, fallback: string): string =>
@@ -113,6 +118,14 @@ class RelayLink {
   private repaging = false;
   /** What the last join on this session may be served (D23, D40). */
   private joined: JoinedScope = { sent: undefined, entitled: undefined };
+  /**
+   * The room admits this device under a different entitlement than its cursors were earned under
+   * (D24), so the next join asks from nothing — held until a catch-up has completed, so a socket
+   * lost mid-repair repairs again rather than resuming from the cursors that needed it.
+   */
+  private reentitled = false;
+  /** Where this device has been told the room's log runs, and in which lineage (RFC-0020 §3.2). */
+  readonly visibility = createVisibility();
   private online = false;
   /** This session's challenge from the room; a v2 join is sent once it has arrived, never before (D33). */
   private nonce: Uint8Array | undefined;
@@ -212,7 +225,9 @@ class RelayLink {
    */
   private askFrom(context: TransportContext): Cursors {
     const coverage = context.engine.coverage();
-    this.repaging = !covers(context, this.options.interest, interestFrom(coverage.scope));
+    this.repaging =
+      this.reentitled ||
+      !covers(context, this.options.interest, scopeFrom(coverage.scope).interest);
     return this.repaging ? new Map() : coverage.synced;
   }
 
@@ -369,7 +384,8 @@ class RelayLink {
         this.nonce = nonce;
         this.join();
       },
-      onHello: (announcedMs) => {
+      onHello: (announcedMs, epoch) => {
+        this.visibility.lineage(epoch);
         this.report.proven();
         this.keepaliveMs = announcedMs;
         this.rearm();
@@ -384,10 +400,17 @@ class RelayLink {
       },
       onDropped: this.report.dropped,
       onBlobAnswer: this.blobChannel.answer,
+      onBlobSettled: this.blobChannel.settle,
       onPeerHeard: (peer) => void this.heard.set(peer, Date.now()),
       onCaughtUp: () => {
         this.repaging = false;
+        this.reentitled = false;
         this.lastPageResolve();
+      },
+      onPosition: (offset) => this.visibility.reached(offset),
+      onReentitled: () => {
+        this.reentitled = true;
+        this.hangUp(REENTITLED);
       },
     };
     // what a scoped coverage on the last page has to match before this device adopts it
@@ -501,6 +524,7 @@ export function relayTransport(options: RelayTransportOptions): Transport {
     priority: options.priority ?? 1,
     sendPresence: (wire) => link.sendPresence(wire),
     blobs: link.blobChannel.capability,
+    visibility: link.visibility.capability,
     start: (context) => link.start(context),
     whenReady: () => link.whenReady(),
     caughtUp: () => link.caughtUp(),

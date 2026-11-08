@@ -18,8 +18,9 @@ import type { FrameClass } from "./frame-parts.js";
  * per `(topic, instance, peer)`, and a frame here is opaque bytes with no topic to read: two
  * pending presence frames are usually two different topics, and dropping one because another
  * arrived would lose a live value nothing supersedes. So the outbox orders presence and keeps
- * it, and conflation stays where the topic is known — `createPresenceStore`. What presence does
- * get is its place in the order: after the events, which is the class that yields under load.
+ * it, and conflation stays where the topic is known — `createPresenceStore`, and a link's
+ * `sendLatest`, which is handed the frame's slot rather than guessing one. What presence does
+ * get here is its place in the order: after the events, which is the class that yields under load.
  *
  * What it buys, once a link can be busy enough to have a queue at all: a live event does
  * not wait behind a snapshot transfer, and a grant that would stop the far side quarantining
@@ -30,11 +31,15 @@ import type { FrameClass } from "./frame-parts.js";
 interface Pending {
   readonly what: string;
   readonly frame: Uint8Array;
+  readonly slot: string | undefined;
 }
 
 export interface Outbox {
-  /** Offers one frame under its own tag; it leaves at the next drain, ahead of higher tags. */
-  readonly send: (cls: FrameClass, what: string, frame: Uint8Array) => void;
+  /**
+   * Offers one frame under its own tag; it leaves at the next drain, ahead of higher tags. A
+   * `slot` travels with it to `deliver`, for a link that keeps only the newest frame per slot.
+   */
+  readonly send: (cls: FrameClass, what: string, frame: Uint8Array, slot?: string) => void;
   /** Everything waiting goes now. The caller's way of flushing before a close or a test. */
   readonly drain: () => void;
 }
@@ -48,7 +53,7 @@ const soon = (drain: () => void): void => queueMicrotask(drain);
  * an error worth reporting, a lost presence value is the correct outcome on a full radio.
  */
 export function createOutbox(
-  deliver: (cls: FrameClass, what: string, frame: Uint8Array) => void,
+  deliver: (cls: FrameClass, what: string, frame: Uint8Array, slot: string | undefined) => void,
   schedule: (drain: () => void) => void = soon,
 ): Outbox {
   const waiting = new Map<FrameClass, Pending[]>();
@@ -72,7 +77,7 @@ export function createOutbox(
     try {
       for (let cls = lowest(); cls !== undefined; cls = lowest()) {
         const next = waiting.get(cls)?.shift();
-        if (next !== undefined) deliver(cls, next.what, next.frame);
+        if (next !== undefined) deliver(cls, next.what, next.frame, next.slot);
       }
     } finally {
       draining = false;
@@ -80,9 +85,9 @@ export function createOutbox(
   };
 
   return {
-    send: (cls, what, frame) => {
+    send: (cls, what, frame, slot) => {
       const queue = waiting.get(cls) ?? [];
-      queue.push({ what, frame });
+      queue.push({ what, frame, slot });
       waiting.set(cls, queue);
       if (draining || scheduled) return;
       scheduled = true;

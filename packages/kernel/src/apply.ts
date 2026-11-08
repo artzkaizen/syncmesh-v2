@@ -3,6 +3,7 @@ import type { PartitionKey } from "./partition.js";
 import type { Cell, ColumnName, RowRecord } from "./record.js";
 import type { State, TableState } from "./state.js";
 
+import { withEntry } from "./persistent-map.js";
 import { compareStamp, type Stamp } from "./stamp.js";
 import { strategies, type MergeSpec, type StrategyName } from "./strategy.js";
 
@@ -77,14 +78,15 @@ function mergeCells(
   incoming: ReadonlyMap<ColumnName, Cell>,
   columnStrategies: ColumnStrategies,
 ): ReadonlyMap<ColumnName, Cell> {
-  const cells = new Map(current);
+  // one write per incoming column, never a copy of the others: a wide row pays for what changed
+  let cells = current;
   for (const [column, candidate] of incoming) {
     const existing = cells.get(column);
     const strategy = strategies[columnStrategies?.get(column) ?? "lww"];
     // A first arrival passes `undefined` so `counter` can tell an increment landing on nothing
     // from one landing on totals; storing the sender's raw shape instead would leave two peers
     // digesting the same cell differently.
-    cells.set(column, strategy(candidate, existing));
+    cells = withEntry(cells, column, strategy(candidate, existing));
   }
   return cells;
 }
@@ -99,16 +101,11 @@ function stampFields(
   return {};
 }
 
-function withRecord(
+/** The state with one record replaced — O(1), sharing everything else with `state` (see `withEntry`). */
+const withRecord = (
   state: State,
   name: TableName,
   table: TableState,
   key: RowKey,
   record: RowRecord,
-): State {
-  const nextTable = new Map(table);
-  nextTable.set(key, record);
-  const nextState = new Map(state);
-  nextState.set(name, nextTable);
-  return nextState;
-}
+): State => withEntry(state, name, withEntry(table, key, record));

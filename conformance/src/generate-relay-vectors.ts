@@ -2,11 +2,13 @@
  * Regenerates conformance/relay-vectors.json. Run only when a relay control frame deliberately
  * changes (README rule 3): `bun conformance/src/generate-relay-vectors.ts`.
  *
- * D14's tag space above the session frames, tag by tag. The join with a proof comes from the
+ * D14's tag space above the session frames, tag by tag. A vector is only ever appended: the Rust
+ * check in crates/syncmesh-core/tests/frame_vectors.rs reads them by index. The join with a proof comes from the
  * join vectors, so the two files can never disagree about what a v2 join is.
  */
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
+import { scopeText } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import {
   REGRANTED,
@@ -21,6 +23,8 @@ import {
   blobGetFrame,
   blobMissingFrame,
   blobPutFrame,
+  blobRefusedFrame,
+  blobStoredFrame,
   challengeFrame,
   errorFrame,
   helloFrame,
@@ -45,9 +49,83 @@ const BYTES = Uint8Array.of(0xde, 0xad, 0xbe, 0xef);
 const HASH = "b3:0102";
 const NONCE = Uint8Array.from({ length: 32 }, (_, i) => i);
 
+/** One frozen control frame: what it shows, its kind and tag, and its bytes. */
+interface RelayVector {
+  readonly description: string;
+  readonly kind: string;
+  readonly tag: number;
+  readonly wireHex: string;
+}
+
+/** D40's grant-gated room: its three typed refusals, and the live notice of an event passed over. */
+const grantGateVectors = () => [
+  {
+    description:
+      "error, the typed gate refusal: a gated room holds no grant from an issuer it trusts for this key (D40)",
+    kind: "error",
+    tag: 10,
+    wireHex: bytesToHex(errorFrame(UNGRANTED, UNGRANTED_MESSAGE)),
+  },
+  {
+    description:
+      "error, a newer grant narrowed what this socket may read, or its grant lapsed: re-join (D40)",
+    kind: "error",
+    tag: 10,
+    wireHex: bytesToHex(errorFrame(REVOKED, REVOKED_MESSAGE)),
+  },
+  {
+    description: "error, a newer grant widened what this socket may read: re-join (D40)",
+    kind: "error",
+    tag: 10,
+    wireHex: bytesToHex(errorFrame(REGRANTED, REGRANTED_MESSAGE)),
+  },
+  {
+    description:
+      "page, empty and last, carrying only a scoped coverage: live fan-out passed an event over, and the author's run is held up to it (D23, D40)",
+    kind: "page",
+    tag: 13,
+    wireHex: bytesToHex(
+      pageFrame([], [], false, 9, {
+        synced: CURSORS,
+        local: new Map(),
+        scope: '{"partitions":["org:acme"]}',
+      }),
+    ),
+  },
+];
+
+/** D18's per-partition quota: a put billed to a partition, and the two answers to a put. */
+const blobQuotaVectors = () => [
+  {
+    description:
+      "blob-put billed to a partition: one additive element, which a relay built before quotas reads past (D18)",
+    kind: "blob-put",
+    tag: 15,
+    wireHex: bytesToHex(blobPutFrame(HASH, BYTES, ACME)),
+  },
+  {
+    description: "blob-stored, the relay kept a put: the author may stop being the only holder",
+    kind: "blob-stored",
+    tag: 20,
+    wireHex: bytesToHex(blobStoredFrame(HASH)),
+  },
+  {
+    description: "blob-refused, a partition's quota: limit and spend, nothing stored (D18)",
+    kind: "blob-refused",
+    tag: 21,
+    wireHex: bytesToHex(blobRefusedFrame(HASH, "quota", 1024, 1000, ACME)),
+  },
+  {
+    description: "blob-refused, the budget of puts that named no partition",
+    kind: "blob-refused",
+    tag: 21,
+    wireHex: bytesToHex(blobRefusedFrame(HASH, "quota", 1024, 1000)),
+  },
+];
+
 export function relayVectors() {
   const signed = joinVectors();
-  const cases: readonly { description: string; kind: string; tag: number; wireHex: string }[] = [
+  const cases: readonly RelayVector[] = [
     {
       description: "join, v1: one version, one cursor, no interest, no proof",
       kind: "join",
@@ -155,37 +233,32 @@ export function relayVectors() {
     },
     {
       description:
-        "error, the typed gate refusal: a gated room holds no grant from an issuer it trusts for this key (D40)",
-      kind: "error",
-      tag: 10,
-      wireHex: bytesToHex(errorFrame(UNGRANTED, UNGRANTED_MESSAGE)),
-    },
-    {
-      description:
-        "error, a newer grant narrowed what this socket may read, or its grant lapsed: re-join (D40)",
-      kind: "error",
-      tag: 10,
-      wireHex: bytesToHex(errorFrame(REVOKED, REVOKED_MESSAGE)),
-    },
-    {
-      description: "error, a newer grant widened what this socket may read: re-join (D40)",
-      kind: "error",
-      tag: 10,
-      wireHex: bytesToHex(errorFrame(REGRANTED, REGRANTED_MESSAGE)),
-    },
-    {
-      description:
-        "page, empty and last, carrying only a scoped coverage: live fan-out passed an event over, and the author's run is held up to it (D23, D40)",
+        "page, the last of a gated catch-up: its coverage scoped to the interest and to the entitlement the relay admitted under (D24)",
       kind: "page",
       tag: 13,
       wireHex: bytesToHex(
-        pageFrame([], [], false, 9, {
+        pageFrame([], [EVENT], false, 9, {
           synced: CURSORS,
           local: new Map(),
-          scope: '{"partitions":["org:acme"]}',
+          scope: scopeText({ partitions: [ACME] }, "clinics:a"),
         }),
       ),
     },
+    {
+      description:
+        "page, a pass-over: no events, the last, and a coverage for one author — the relay withheld what this device may not read and says how far it passed (D24)",
+      kind: "page",
+      tag: 13,
+      wireHex: bytesToHex(
+        pageFrame([], [], false, 12, {
+          synced: CURSORS,
+          local: new Map(),
+          scope: scopeText(undefined, "clinics:a"),
+        }),
+      ),
+    },
+    ...blobQuotaVectors(),
+    ...grantGateVectors(),
   ];
   return { protocolVersions: [...RELAY_PROTOCOL_VERSIONS], vectors: cases };
 }

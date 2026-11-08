@@ -39,7 +39,7 @@ use syncmesh_core::relay_frames::{
 
 use crate::engine::{Engine, FoldBatch};
 use crate::holdback::Holdback;
-use crate::interest::{Interest, interest_from, interest_text, narrows};
+use crate::interest::{Interest, interest_text, narrows, same_interest, scope_from};
 use crate::store::{Coverage, Cursors, StoredEvent};
 
 /// How long a peer stays claimed after it was last heard through this relay. Long against the
@@ -49,6 +49,9 @@ pub const HEARD_TTL_MS: i64 = 60_000;
 
 pub const MUTE: &str = "the relay stopped answering: no frame within 2.5 times its keepalive";
 pub const REFUSED: &str = "the relay speaks none of the protocol versions this build offers";
+/// The relay admits this device under an entitlement its cursors were not earned under (D24).
+pub const REENTITLED: &str =
+    "the relay admits this device under a different entitlement, so it re-pages from nothing";
 pub const UNSECURED: &str =
     "the link is not sealed yet, and nothing but a hello travels before it is";
 pub const UNPINNED: &str =
@@ -241,6 +244,9 @@ struct Live {
     keepalive_ms: Option<u64>,
     deadline_ms: Option<i64>,
     caught_up: bool,
+    /// A join is out and its last page has not landed: an empty last page now ends a catch-up,
+    /// not a pass-over.
+    paging: bool,
     /// What we know the relay holds: its hello, moved forward by what we have pushed since.
     relay_cursors: Cursors,
     holdback: Holdback,
@@ -257,6 +263,8 @@ pub struct RelayLink {
     fatal: bool,
     /// This join asked from nothing because the interest outgrew what our cursors describe (D23).
     repaging: bool,
+    /// The cursors were earned under another entitlement (D24): the next join asks from nothing.
+    reentitled: bool,
     online: bool,
     backoff_ms: u64,
     heard: BTreeMap<PeerId, i64>,
@@ -285,6 +293,7 @@ impl RelayLink {
             stopped: false,
             fatal: false,
             repaging: false,
+            reentitled: false,
             online: false,
             heard: BTreeMap::new(),
             grant_wires: Vec::new(),
@@ -366,6 +375,7 @@ impl RelayLink {
             keepalive_ms: None,
             deadline_ms: None,
             caught_up: false,
+            paging: false,
             relay_cursors: Cursors::new(),
             holdback: Holdback::new(self.options.gap_limit),
             closing: false,
@@ -584,6 +594,7 @@ impl RelayLink {
                 scoped,
                 ..
             } => {
+                let grants_empty = grants.is_empty();
                 for wire in grants {
                     out.push(Action::Grant(wire));
                 }
@@ -592,16 +603,31 @@ impl RelayLink {
                 // handling still runs, exactly as the TypeScript's synchronous half of it does
                 self.fold(engine, &events, repaging, out);
                 if !more {
+                    let passed_over = events.is_empty() && grants_empty;
                     if let Some(scoped) = scoped {
-                        self.adopt_scoped(engine, scoped, out);
+                        self.adopt_scoped(engine, scoped, repaging, out);
                     } else if repaging {
                         self.rescope(engine);
+                    } else if !Self::earned_under(engine, None) {
+                        // an unfiltered run under cursors earned behind a gate: they skip what
+                        // the gate withheld, and nothing in this run will offer it again
+                        self.reentitle(out);
                     }
-                    if let Some(live) = self.live.as_mut() {
-                        live.caught_up = true;
+                    let Some(live) = self.live.as_mut() else {
+                        return;
+                    };
+                    if live.closing {
+                        return;
                     }
+                    // a pass-over (an empty last page no join asked for) moves a cursor and nothing else
+                    if !live.paging && passed_over {
+                        return;
+                    }
+                    live.paging = false;
+                    live.caught_up = true;
                     self.push_outstanding(engine, out);
                     self.repaging = false;
+                    self.reentitled = false;
                     out.push(Action::CaughtUp);
                 }
             }
@@ -630,7 +656,11 @@ impl RelayLink {
             | RelayFrame::Unknown
             | RelayFrame::Join(_)
             | RelayFrame::BlobPut { .. }
-            | RelayFrame::BlobGet { .. } => {}
+            | RelayFrame::BlobGet { .. }
+            // this client's uploads do not wait on an answer, so a stored or refused put is news
+            // to nobody here; the TypeScript client is the one that surfaces a quota (D18)
+            | RelayFrame::BlobStored { .. }
+            | RelayFrame::BlobRefused { .. } => {}
         }
     }
 
@@ -660,6 +690,7 @@ impl RelayLink {
             // withheld is a peer link's (D40): a relay narrows by its own scoped page instead
             Frame::Digest { .. }
             | Frame::Receipt { .. }
+            | Frame::Refusal { .. }
             | Frame::Routes { .. }
             | Frame::Withheld { .. }
             | Frame::Snapshot(_)
@@ -743,13 +774,33 @@ impl RelayLink {
         }
     }
 
-    /// Takes on the coverage a filtered catch-up ended with (D23): the events it accounts for are
-    /// folded before this device claims to hold them. A coverage scoped to something other than
-    /// what we asked with is dropped rather than adopted — it would be a claim about a slice this
-    /// device did not request, and adopting it is how a cursor comes to describe events nobody
-    /// will ever send again.
-    fn adopt_scoped(&mut self, engine: &mut Engine, scoped: PageScope, out: &mut Vec<Action>) {
-        if scoped.scope != interest_text(self.options.interest.as_ref()) {
+    /// Takes on the coverage a filtered catch-up ended with (D23) — a pass-over is one of these
+    /// too: the events it accounts for are folded before this device claims to hold them.
+    ///
+    /// A coverage scoped to something other than what we asked with is dropped rather than
+    /// adopted — it would be a claim about a slice this device did not request, and adopting it is
+    /// how a cursor comes to describe events nobody will ever send again. An interest-only scope
+    /// keeps D23's exact-text rule; one naming an entitlement (D24) is compared on what it asks
+    /// for, since the relay wrote the interest back out of its own copy. One scoped to another
+    /// *entitlement* is worse: the cursors it would replace skip what the old one withheld, so the
+    /// session is abandoned and the next join asks from nothing — as `scopedCoverage` does.
+    fn adopt_scoped(
+        &mut self,
+        engine: &mut Engine,
+        scoped: PageScope,
+        repaging: bool,
+        out: &mut Vec<Action>,
+    ) {
+        let offered = scope_from(Some(&scoped.scope));
+        let ours = match offered.entitlement {
+            None => scoped.scope == interest_text(self.options.interest.as_ref()),
+            Some(_) => same_interest(offered.interest.as_ref(), self.options.interest.as_ref()),
+        };
+        if !ours {
+            return;
+        }
+        if !repaging && !Self::earned_under(engine, offered.entitlement.as_deref()) {
+            self.reentitle(out);
             return;
         }
         let coverage = Coverage {
@@ -769,6 +820,20 @@ impl RelayLink {
         engine.adopt_coverage(&coverage);
         let authors: Vec<PeerId> = coverage.synced.keys().cloned().collect();
         self.release(engine, authors, out);
+    }
+
+    /// Whether this device's cursors were earned under `offered` — or under something the relay
+    /// could only have narrowed from: an unscoped cursor, or an interest with no entitlement. Any
+    /// change of name is a change, since the names are opaque (`earnedUnder`, D24).
+    fn earned_under(engine: &Engine, offered: Option<&str>) -> bool {
+        let held = scope_from(engine.coverage().scope.as_deref()).entitlement;
+        held.is_none() || held.as_deref() == offered
+    }
+
+    /// The cursors are from another entitlement: hang up, and ask from nothing on the next join.
+    fn reentitle(&mut self, out: &mut Vec<Action>) {
+        self.reentitled = true;
+        self.hang_up(REENTITLED, out);
     }
 
     /// After a widening re-page the relay did not filter: the cursors this device holds are now
@@ -870,10 +935,11 @@ impl RelayLink {
     /// keeps the cursor, because a cursor true for a wider slice is true for a smaller one.
     fn ask_from(&mut self, engine: &Engine) -> Vec<(PeerId, SeqNum)> {
         let coverage = engine.coverage();
-        self.repaging = !narrows(
-            self.options.interest.as_ref(),
-            interest_from(coverage.scope.as_deref()).as_ref(),
-        );
+        self.repaging = self.reentitled
+            || !narrows(
+                self.options.interest.as_ref(),
+                scope_from(coverage.scope.as_deref()).interest.as_ref(),
+            );
         if self.repaging {
             Vec::new()
         } else {
@@ -905,6 +971,9 @@ impl RelayLink {
             join_frame(&versions, &peer, &cursors, interest, Some(&proof))
         };
         self.send_safe(frame, out);
+        if let Some(live) = self.live.as_mut() {
+            live.paging = true;
+        }
         for wire in self.grant_wires.clone() {
             self.send_safe(grant_frame(&wire), out);
         }
