@@ -279,24 +279,44 @@ export function openStores(
       if (clean) opening = markOpen();
       return opening;
     };
+    // every method that writes the database, so nothing lands on a session marked clean: the
+    // engine compacts and a torn rejoin evicts outside `atomic`, on their own turn (D39)
+    const opensFirst =
+      <A extends readonly unknown[], R>(write: (...args: A) => Promise<R>) =>
+      async (...args: A) => {
+        await openBeforeWrite();
+        return write(...args);
+      };
     const atomic: Stores["atomic"] = async (fn) => {
       await openBeforeWrite();
       return inTransaction(driver, () => fn(scoped));
     };
+    const writesState = {
+      ...state,
+      commit: opensFirst(state.commit),
+      clear: opensFirst(state.clear),
+      remove: opensFirst(state.remove),
+    } satisfies StateStore;
     const opened = {
       events: {
         ...events,
-        append: async (entry) => {
-          await openBeforeWrite();
-          return events.append(entry);
-        },
-        appendBatch: async (entries) => {
-          await openBeforeWrite();
-          return events.appendBatch(entries);
-        },
+        append: opensFirst(events.append),
+        appendBatch: opensFirst(events.appendBatch),
+        compactBelow: opensFirst(events.compactBelow),
+        evict: opensFirst(events.evict),
       } satisfies EventStore,
-      state,
-      docs,
+      state:
+        state.derive === undefined
+          ? writesState
+          : { ...writesState, derive: opensFirst(state.derive) },
+      docs: {
+        ...docs,
+        append: opensFirst(docs.append),
+        relineage: opensFirst(docs.relineage),
+        refreshHead: opensFirst(docs.refreshHead),
+        cover: opensFirst(docs.cover),
+        forget: opensFirst(docs.forget),
+      } satisfies DocStore,
       driver,
       atomic,
       markClean,
