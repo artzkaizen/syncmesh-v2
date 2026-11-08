@@ -37,10 +37,16 @@ export type ChangeMappings = Readonly<Record<string, ChangeMapping>>;
  * migration on their side from becoming a schema violation on ours — the DDL alarm is where a
  * shape change is meant to be heard. A column the manifest declares and the row lacks is left
  * absent, which the schema check refuses on insert if it was not nullable.
+ *
+ * Document and derived columns are left out too (RFC-0023 §16.4): a document travels as doc
+ * changes, never as a value, and a derived one is computed by every replica, so the
+ * authority's own derive `UPDATE` reaching the WAL publishes nothing of it.
  */
 export function meshCells(collection: Table, row: SourceRow): Row {
   const cells = new Map<ColumnName, CellValue>();
   for (const [key, name] of Object.entries(collection.columnNames)) {
+    const def = collection.columns[key]?.def;
+    if (def?.doc !== undefined || def?.derived !== undefined) continue;
     const value = row[key];
     if (value !== undefined) cells.set(name, value);
   }
