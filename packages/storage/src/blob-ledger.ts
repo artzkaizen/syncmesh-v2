@@ -39,6 +39,13 @@ export interface BlobWindow {
 export const laterStamp = (a: Stamp | undefined, b: Stamp | undefined): Stamp | undefined =>
   a === undefined || (b !== undefined && compareStamp(b, a) > 0) ? b : a;
 
+/** The later of a kept window start and a new one: a window saved again only ever moves later. */
+const laterInstant = (
+  kept: Temporal.Instant | undefined,
+  next: Temporal.Instant,
+): Temporal.Instant =>
+  kept === undefined || Temporal.Instant.compare(next, kept) > 0 ? next : kept;
+
 /**
  * Two records of one row joined: every name either carried, the later of each stamp. The join
  * is what makes a save safe to repeat and to reorder — a ledger only ever learns more.
@@ -78,8 +85,8 @@ export interface BlobLedgerState {
 export interface BlobLedger {
   readonly load: () => Promise<Result<BlobLedgerState, StoreFailure>>;
   /**
-   * Joins these rows into what was kept for them ({@link joinBlobRows}), sets or forgets these
-   * windows, adds these sealed partitions and records `complete` — in one transaction where the
+   * Joins these rows into what was kept for them ({@link joinBlobRows}), keeps the later start of
+   * each of these windows or forgets it, adds these sealed partitions and records `complete` — in one transaction where the
    * driver has them.
    */
   readonly save: (state: BlobLedgerState) => Promise<Result<void, StoreFailure>>;
@@ -113,7 +120,7 @@ export function memoryBlobLedger(): BlobLedger {
       }
       for (const { hash, since } of state.windows)
         if (since === undefined) windows.delete(hash);
-        else windows.set(hash, since);
+        else windows.set(hash, laterInstant(windows.get(hash), since));
       for (const home of state.sealed) sealed.add(home);
       complete = state.complete;
       return Promise.resolve(Result.ok(undefined));
@@ -201,7 +208,7 @@ export async function sqlBlobLedger(driver: SqlDriver): Promise<Result<BlobLedge
     "tbl, row_key, hashes, written_ms, written_logical, written_peer, deleted_ms, deleted_logical, deleted_peer";
   const upsertRow = `INSERT INTO ${ROWS} (${columns}) VALUES (${values(9)}) ON CONFLICT (tbl, row_key) DO UPDATE SET hashes = excluded.hashes, written_ms = excluded.written_ms, written_logical = excluded.written_logical, written_peer = excluded.written_peer, deleted_ms = excluded.deleted_ms, deleted_logical = excluded.deleted_logical, deleted_peer = excluded.deleted_peer`;
   const selectRow = `SELECT ${columns} FROM ${ROWS} WHERE tbl = ${p(1)} AND row_key = ${p(2)}`;
-  const upsertWindow = `INSERT INTO ${WINDOWS} (hash, since_ms) VALUES (${values(2)}) ON CONFLICT (hash) DO UPDATE SET since_ms = excluded.since_ms`;
+  const upsertWindow = `INSERT INTO ${WINDOWS} (hash, since_ms) VALUES (${values(2)}) ON CONFLICT (hash) DO UPDATE SET since_ms = CASE WHEN excluded.since_ms > since_ms THEN excluded.since_ms ELSE since_ms END`;
   const deleteWindow = `DELETE FROM ${WINDOWS} WHERE hash = ${p(1)}`;
   const upsertMeta = `INSERT INTO ${META} (key, value) VALUES (${values(2)}) ON CONFLICT (key) DO UPDATE SET value = excluded.value`;
 

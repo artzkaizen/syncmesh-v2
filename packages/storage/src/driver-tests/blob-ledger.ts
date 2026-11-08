@@ -59,7 +59,12 @@ export const blobLedgerCases = (openDriver: OpenDriver): readonly SuiteCase[] =>
       (
         await ledger.save({
           rows: [{ ...live, hashes: [], written: older, deleted }],
-          windows: [{ hash: left, since: undefined }],
+          // an older start saved later (another instance on a shared store) does not move the
+          // window back, so the blob is not swept sooner
+          windows: [
+            { hash: left, since: undefined },
+            { hash, since: Temporal.Instant.fromEpochMilliseconds(1_600_000_000_000) },
+          ],
           sealed: [ACME],
           complete: true,
         })
@@ -96,7 +101,7 @@ export const blobLedgerCases = (openDriver: OpenDriver): readonly SuiteCase[] =>
       equal(
         state.windows.map((window) => [window.hash, window.since?.epochMilliseconds]),
         [[hash, 1_700_000_000_789]],
-        "a window kept, and one forgotten when its blob left",
+        "a window kept at its later start, and one forgotten when its blob left",
       );
       equal(String(rows[0]?.written?.peer), String(PEER), "and its peer");
       const sizes = (await again.stored?.())?.unwrap();

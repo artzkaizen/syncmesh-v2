@@ -170,6 +170,34 @@ describe("the blob sweep (D18)", () => {
     expect(await store.has(hashOf(photo))).toBe(true);
   });
 
+  test("a blob whose delete fails stays held and billed, is counted, and goes on the next pass", async () => {
+    let clock = T0;
+    let failing = true;
+    const inner = memoryBlobStore();
+    const store = {
+      ...inner,
+      delete: (hash: Parameters<typeof inner.delete>[0]) =>
+        failing ? Promise.reject(new Error("disk busy")) : inner.delete(hash),
+    };
+    const keeper = createBlobKeeper({
+      homes: memoryBlobHomes(),
+      store,
+      quota: 8,
+      keepUnreferencedFor: DAY,
+      now: () => clock,
+    });
+    const [a, b] = [filled(1, 8), filled(2, 8)];
+    (await keeper.put(hashOf(a), a, ACME)).unwrap();
+    clock = addToInstant(clock, DAY);
+    expect(await keeper.sweep()).toMatchObject({ swept: 0, failed: 1, held: 1, heldBytes: 8 });
+    expect(await store.has(hashOf(a))).toBe(true);
+    // still billed: the budget is as full as the disk is
+    expect((await keeper.put(hashOf(b), b, ACME)).isErr()).toBe(true);
+    failing = false;
+    expect(await keeper.sweep()).toMatchObject({ swept: 1, failed: 0, held: 0 });
+    expect(await store.has(hashOf(a))).toBe(false);
+  });
+
   test("a sealed event keeps the blobs of its partition and of none; another partition's still go", async () => {
     let clock = T0;
     const store = memoryBlobStore();
@@ -195,6 +223,7 @@ describe("the blob sweep (D18)", () => {
       heldBytes: 16,
       referenced: 0,
       sealed: 2,
+      failed: 0,
     });
     expect(await store.has(hashOf(mine))).toBe(true);
     expect(await store.has(hashOf(unpinned))).toBe(true);
@@ -318,6 +347,25 @@ describe("per-partition blob quotas (D18)", () => {
     (await keeper.put(hashOf(b), b, ACME)).unwrap(); // evicts a: only b's 4 bytes are held
     clock = addToInstant(clock, HOUR);
     expect((await keeper.put(hashOf(c), c, ACME)).isOk()).toBe(true);
+  });
+
+  test("the same bytes put twice at once are billed once", async () => {
+    // both puts read the blob as new before either stores it; the second to land must find the
+    // first one's bill rather than add its own
+    const keeper = createBlobKeeper({
+      homes: memoryBlobHomes(),
+      store: memoryBlobStore(),
+      quota: 12,
+      keepUnreferencedFor: undefined,
+      now: () => T0,
+    });
+    const [a, b] = [filled(1, 6), filled(2, 6)];
+    const twice = await Promise.all([
+      keeper.put(hashOf(a), a, ACME),
+      keeper.put(hashOf(a), a, ACME),
+    ]);
+    expect(twice.every((put) => put.isOk())).toBe(true);
+    expect((await keeper.put(hashOf(b), b, ACME)).isOk()).toBe(true);
   });
 
   test("a swept blob gives its partition its bytes back", async () => {
@@ -466,6 +514,7 @@ describe("references follow rows, across trims and restarts (gaps U18)", () => {
       heldBytes: 0,
       referenced: 0,
       sealed: 0,
+      failed: 0,
     });
     expect(await store.has(hashOf(photo))).toBe(true);
   });
@@ -499,7 +548,7 @@ describe("references follow rows, across trims and restarts (gaps U18)", () => {
     await r.room.sweep();
     const sweeps = seen.filter((event) => event.type === "relay.blob.sweep");
     expect(sweeps.map((event) => event.sizes)).toEqual([
-      { swept: 1, sweptBytes: 8, held: 1, heldBytes: 16, referenced: 1, sealed: 0 },
+      { swept: 1, sweptBytes: 8, held: 1, heldBytes: 16, referenced: 1, sealed: 0, failed: 0 },
     ]);
     r.room.close();
   });

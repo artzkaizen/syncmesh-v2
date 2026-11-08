@@ -128,7 +128,8 @@ export type RelayTelemetry =
        * One blob sweep (gaps U18): what it removed and what it left, in counts and bytes. `held`
        * and `heldBytes` are the blobs the room holds after it; `referenced` the held ones a live
        * row names; `sealed` the unreferenced ones kept because a sealed event's partition may name
-       * them. Emitted on every retention pass of a room that keeps blobs, whether or not it swept.
+       * them; `failed` the due ones whose delete failed, still held and due again next pass.
+       * Emitted on every retention pass of a room that keeps blobs, whether or not it swept.
        */
       readonly type: "relay.blob.sweep";
       readonly sizes: {
@@ -138,6 +139,7 @@ export type RelayTelemetry =
         readonly heldBytes: number;
         readonly referenced: number;
         readonly sealed: number;
+        readonly failed: number;
       };
       readonly duration: Temporal.Duration;
     }

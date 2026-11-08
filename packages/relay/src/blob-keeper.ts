@@ -130,6 +130,8 @@ export interface BlobSweep {
   readonly referenced: number;
   /** Unreferenced blobs kept because a sealed event's partition may name them. */
   readonly sealed: number;
+  /** Blobs due to go whose delete failed: still held and billed, and due again next pass. */
+  readonly failed: number;
 }
 
 /** One blob this room admitted: its size, whose budget it is on, and when its window started. */
@@ -159,6 +161,31 @@ async function blinded(
   if (found.isErr()) return true;
   const where = found.value;
   return where.length === 0 || where.some((home) => home === undefined || sealed.has(home));
+}
+
+/**
+ * The held blobs unreferenced since before `cut`, split into those to go and a count of those a
+ * sealed partition keeps. Chosen in one synchronous pass, then checked: the room's queue runs the
+ * sweep, but a delete that yields must not find the set it is walking changed under it.
+ */
+async function dueToSweep(
+  held: ReadonlyMap<BlobHash, Held>,
+  referenced: ReadonlySet<BlobHash>,
+  cut: Temporal.Instant,
+  sealed: ReadonlySet<BlobHome>,
+  homes: BlobHomes,
+): Promise<{ readonly go: readonly (readonly [BlobHash, Held])[]; readonly sealed: number }> {
+  const candidates = [...held]
+    .filter(
+      ([hash, entry]) => !referenced.has(hash) && Temporal.Instant.compare(entry.since, cut) <= 0,
+    )
+    .map(([hash, entry]) => [hash, { ...entry }] as const);
+  const go: (readonly [BlobHash, Held])[] = [];
+  let kept = 0;
+  for (const candidate of candidates)
+    if (await blinded(candidate[0], sealed, homes)) kept += 1;
+    else go.push(candidate);
+  return { go, sealed: kept };
 }
 
 /** Window starts not yet saved to the ledger; `undefined` for a blob that left. */
@@ -292,9 +319,11 @@ export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
       // after the store verified the bytes: a home is recorded only for someone who held them
       const homed = await homes.add(hash, partition);
       if (homed.isErr()) return homed;
-      // read again, not `spent`: the ceiling may have evicted, and unbilled, during the put
-      if (known !== undefined) restart(hash, known, at);
-      else if (fresh) bill(hash, bytes.byteLength, partition, at);
+      // read again after the awaits: the ceiling may have evicted this blob and unbilled it during
+      // the put, and a second put of the same bytes may have billed it already
+      const current = held.get(hash);
+      if (current !== undefined) restart(hash, current, at);
+      else if (fresh || known !== undefined) bill(hash, bytes.byteLength, partition, at);
       return stored;
     },
     readable: async (hash, partitions) =>
@@ -318,30 +347,25 @@ export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
     },
     sweep: async () => {
       const referenced = references.referenced();
-      const report = { swept: 0, sweptBytes: 0, sealed: 0 };
+      const report = { swept: 0, sweptBytes: 0, sealed: 0, failed: 0 };
       if (keepUnreferencedFor !== undefined) {
         const cut = addToInstant(now(), keepUnreferencedFor.negated());
-        // chosen in one synchronous pass, then checked and deleted: the room's queue runs this, but
-        // a delete that yields must not find the set it is walking changed under it
-        const candidates = [...held]
-          .filter(
-            ([hash, entry]) =>
-              !referenced.has(hash) && Temporal.Instant.compare(entry.since, cut) <= 0,
-          )
-          .map(([hash, entry]) => [hash, entry.bytes] as const);
-        const due: (readonly [BlobHash, number])[] = [];
-        for (const candidate of candidates) {
-          if (await blinded(candidate[0], sealed, homes)) report.sealed += 1;
-          else due.push(candidate);
-        }
-        for (const [hash] of due) unbill(hash);
-        for (const [hash, bytes] of due) {
-          await store.delete(hash);
+        const due = await dueToSweep(held, referenced, cut, sealed, homes);
+        report.sealed = due.sealed;
+        for (const [hash] of due.go) unbill(hash);
+        for (const [hash, entry] of due.go) {
+          const deleted = await Result.tryPromise(() => store.delete(hash));
+          // the bytes are still on disk: billed again as they were, and due again next pass
+          if (deleted.isErr()) {
+            bill(hash, entry.bytes, entry.partition, entry.since);
+            report.failed += 1;
+            continue;
+          }
           // a home outliving its bytes would be harmless — a fetch finds nothing — but it is a row
           // per blob ever swept; a failed forget is the same harmless leftover, so it is not fatal
           await homes.forget(hash);
           report.swept += 1;
-          report.sweptBytes += bytes;
+          report.sweptBytes += entry.bytes;
         }
       }
       let heldBytes = 0;
