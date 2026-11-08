@@ -251,8 +251,9 @@ export function deviceIdentity(
           message: `a vault's kind is letters, digits and - only, and "${vault.kind}" is not: the row it sealed could not be read back`,
         }),
       );
-    if (vault.notice !== undefined) notice(vault.notice);
     const seed = yield* Result.await(rememberedSeed(driver, vault, notice));
+    // said once the seed is open through this vault: one refused over a sealed row holds no key
+    if (vault.notice !== undefined) notice(vault.notice);
     return createIdentity(seed).mapError(
       unavailable("this install's stored device key is not the 32 bytes a key is"),
     );

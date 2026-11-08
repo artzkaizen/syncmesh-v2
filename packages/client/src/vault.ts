@@ -113,6 +113,10 @@ const prefixed = (id: Uint8Array, body: Uint8Array) => {
  * take each other's key. A boot that seals and then loses the race for its database's row leaves
  * its key behind, unread.
  *
+ * The store is read once per boot: a seal's read-back, which the boot's check of its own seal
+ * reuses, or an open's one read. A store that asks for biometrics on a read therefore prompts
+ * once at the first boot and once at every boot after it.
+ *
  * @example
  * import { Entry } from "@napi-rs/keyring";
  * const vault = createSecretStoreVault({
@@ -129,6 +133,9 @@ export function createSecretStoreVault(
     const text = await store.get(name);
     return text === null || text === undefined ? undefined : hexToBytes(text).unwrap();
   };
+  // the keys this vault minted, as the store gave them back: a boot opening what it just sealed
+  // reads the store once, which is one prompt where the store asks for biometrics on a read
+  const minted = new Map<string, Uint8Array>();
   return {
     kind: options.kind ?? "secret-store",
     seal: async (seed) => {
@@ -136,11 +143,12 @@ export function createSecretStoreVault(
       await store.set(name, bytesToHex(randomBytes(WRAPPING_KEY_BYTES)));
       const key = await held(name);
       if (key === undefined) throw new Error(`the secret store did not keep ${name}`);
+      minted.set(name, key);
       return prefixed(id, sealPayload(key, seed, SEED_AAD));
     },
     open: async (sealed) => {
       const { body, name } = splitSealed(prefix, sealed);
-      const key = await held(name);
+      const key = minted.get(name) ?? (await held(name));
       if (key === undefined)
         throw new Error(
           `the secret store holds no ${name}: this database was sealed on another device, or the store was cleared`,

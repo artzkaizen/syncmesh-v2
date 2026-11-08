@@ -296,6 +296,53 @@ describe("the seed at rest (U4)", () => {
     expect(await driver.all(`SELECT name FROM sqlite_master WHERE name = '_device'`)).toEqual([]);
   });
 
+  test("a plaintext vault refused over a sealed row says nothing about plaintext", async () => {
+    const path = join(freshDir(), "sealed-then-plain.db");
+    (
+      await deviceIdentity(driverOn(path), { vault: createSecretStoreVault(memoryStore()) })
+    ).unwrap();
+    const said: string[] = [];
+    const down = await deviceIdentity(driverOn(path), {
+      vault: plaintext,
+      onNotice: (m) => said.push(m),
+    });
+    expect(down.isErr()).toBe(true);
+    expect(said).toEqual([]);
+  });
+
+  test("a boot reads the secret store once, first or not", async () => {
+    // a store that asks for biometrics on a read prompts once per read
+    const store = memoryStore();
+    let reads = 0;
+    const counted = {
+      get: (name: string) => {
+        reads += 1;
+        return store.get(name);
+      },
+      set: store.set,
+    } satisfies SecretStore;
+    const path = join(freshDir(), "prompts.db");
+    (await deviceIdentity(driverOn(path), { vault: createSecretStoreVault(counted) })).unwrap();
+    expect(reads).toBe(1);
+    (await deviceIdentity(driverOn(path), { vault: createSecretStoreVault(counted) })).unwrap();
+    expect(reads).toBe(2);
+  });
+
+  test("two boots moving one plaintext seed at once leave it sealed, and the same device", async () => {
+    // both read the plaintext row and seal the same seed; the later UPDATE wins, and the other
+    // boot's key is left unread
+    const path = join(freshDir(), "migrate-race.db");
+    const before = (await deviceIdentity(driverOn(path), quiet)).unwrap();
+    const vault = createSecretStoreVault(slowSecondWrite(memoryStore()));
+    const boots = await Promise.all([
+      deviceIdentity(driverOn(path), { vault, onNotice: () => {} }),
+      deviceIdentity(driverOn(path), { vault, onNotice: () => {} }),
+    ]);
+    expect(boots.map((opened) => opened.unwrap().peerId)).toEqual([before.peerId, before.peerId]);
+    expect((await storedRow(path)).startsWith("sealed:secret-store:")).toBe(true);
+    expect((await deviceIdentity(driverOn(path), { vault })).unwrap().peerId).toBe(before.peerId);
+  });
+
   test("a store that keeps nothing fails the first boot", async () => {
     const leaky = { get: () => Promise.resolve(undefined), set: () => Promise.resolve() };
     const opened = await deviceIdentity(driverOn(":memory:"), {

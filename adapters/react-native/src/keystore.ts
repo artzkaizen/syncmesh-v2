@@ -27,7 +27,10 @@ interface NativeOptions {
 const native = requireOptionalNativeModule<SecureStoreNative>("ExpoSecureStore");
 
 export interface SecureStoreVaultOptions {
-  /** The keychain item the wrapping key is kept under. Default `"syncmesh.device-seed-key"`. */
+  /**
+   * The prefix of the keychain items the wrapping keys are kept under: each seal's item is
+   * `<name>.<32 hex>`. Default `"syncmesh.device-seed-key"`.
+   */
   readonly name?: string;
   /** iOS `kSecAttrService` / Android key alias. Default: the module's own. */
   readonly keychainService?: string;
@@ -37,7 +40,10 @@ export interface SecureStoreVaultOptions {
    * refuses those boots. Both keep the key out of backups and iCloud Keychain.
    */
   readonly accessible?: Accessible;
-  /** Ask for the device's biometrics or passcode before the key is read. Default `false`. */
+  /**
+   * Ask for the device's biometrics or passcode before the key is read. Default `false`. A boot
+   * reads the key once, so this is one prompt at the first boot and one at every boot after it.
+   */
   readonly requireAuthentication?: boolean;
   readonly authenticationPrompt?: string;
 }
@@ -50,6 +56,9 @@ export interface SecureStoreVaultOptions {
  * the sealed seed and not the key, so that phone's first boot is refused (`DeviceKeyUnavailable`)
  * rather than a second install of this device. A binary built without `expo-secure-store` refuses
  * every open the same way, never falls back to plaintext.
+ *
+ * Keychain items outlive the app on iOS: an uninstall leaves each seal's item behind, and a
+ * reinstall seals under a new one, so the old items are orphans nothing reads.
  *
  * @example
  * import { createSecureStoreVault } from "@syncmesh/react-native/keystore";
