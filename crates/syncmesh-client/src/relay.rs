@@ -38,6 +38,7 @@ use syncmesh_core::relay_frames::{
     join_core, join_frame,
 };
 
+use crate::blobs::{PutRefusal, put_answer};
 use crate::engine::{Engine, FoldBatch};
 use crate::grants::GrantRegistry;
 use crate::holdback::Holdback;
@@ -96,6 +97,11 @@ pub enum Action {
     BlobAnswer {
         hash: String,
         bytes: Option<Vec<u8>>,
+    },
+    /// The relay answered a put: kept (`None`), or refused for the partition's budget or grant.
+    BlobPutAnswer {
+        hash: String,
+        refusal: Option<PutRefusal>,
     },
     /// Another device spoke through this relay, so the relay demonstrably carries it.
     PeerHeard(PeerId),
@@ -676,6 +682,11 @@ impl RelayLink {
                 bytes: Some(bytes),
             }),
             RelayFrame::BlobMissing { hash } => out.push(Action::BlobAnswer { hash, bytes: None }),
+            RelayFrame::BlobStored { .. } | RelayFrame::BlobRefused { .. } => {
+                if let Some((hash, refusal)) = put_answer(&frame) {
+                    out.push(Action::BlobPutAnswer { hash, refusal });
+                }
+            }
             // a `retention` refusal's floor has nowhere to go here: the recovery record (`Rejoins`,
             // gaps U31) takes peer floors only, so it hangs up and redials on its backoff (gaps U37)
             RelayFrame::Error { code, message, .. } => {
@@ -695,11 +706,7 @@ impl RelayLink {
             | RelayFrame::Unknown
             | RelayFrame::Join(_)
             | RelayFrame::BlobPut { .. }
-            | RelayFrame::BlobGet { .. }
-            // this client's uploads do not wait on an answer, so a stored or refused put is news
-            // to nobody here; the TypeScript client is the one that surfaces a quota (D18)
-            | RelayFrame::BlobStored { .. }
-            | RelayFrame::BlobRefused { .. } => {}
+            | RelayFrame::BlobGet { .. } => {}
         }
     }
 

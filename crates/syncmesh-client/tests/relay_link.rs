@@ -748,6 +748,14 @@ fn presence_grants_and_blobs_pass_through_the_room() {
     net.apply_device(a, actions);
     net.pump();
     assert_eq!(net.room.blob(&hash), Some(bytes.as_slice()));
+    // the room said it kept them, and the link reads that rather than dropping it
+    assert_eq!(
+        net.take_facts(a),
+        vec![Action::BlobPutAnswer {
+            hash: hash.clone(),
+            refusal: None
+        }]
+    );
     let actions = net.devices[b].link.send_raw_frame(blob_get_frame(&hash));
     net.apply_device(b, actions);
     net.pump();

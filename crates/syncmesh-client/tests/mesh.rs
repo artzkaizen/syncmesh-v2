@@ -155,7 +155,14 @@ async fn two_devices_converge_through_the_rust_room_with_presence_and_blobs() {
     assert!(b.presence_peers("cursor", &partition).is_empty());
 
     // blobs: put at a, fetched by hash at b; an unknown hash is a value
-    let hash = a.blob_put(b"a large snapshot").unwrap();
+    // the room answers the put, so it settles well inside the wait a silent relay would cost
+    let hash = timeout(
+        Duration::from_secs(2),
+        a.blob_put(b"a large snapshot", None),
+    )
+    .await
+    .expect("the put waited out the answer it was given")
+    .unwrap();
     let fetched = timeout(STEP, b.blob_fetch(&hash, Duration::from_secs(5)))
         .await
         .unwrap()

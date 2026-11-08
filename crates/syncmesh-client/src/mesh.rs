@@ -16,7 +16,9 @@ use syncmesh_core::record::Row;
 use syncmesh_core::relay_frames::{blob_get_frame, blob_put_frame};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::blobs::{BlobError, BlobStore, MemoryBlobStore, hash_of, verify_blob};
+use crate::blobs::{
+    BLOB_ANSWER_WAIT, BlobError, BlobStore, MemoryBlobStore, PutRefusal, hash_of, verify_blob,
+};
 use crate::driver::{LinkCommand, LinkEvent, run_link};
 use crate::engine::{
     Engine, EngineOptions, FoldBatch, MutateError, Mutated, RevertError, Reverted,
@@ -76,13 +78,50 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 type Waiters = Arc<Mutex<HashMap<String, Vec<oneshot::Sender<Option<Vec<u8>>>>>>>;
 
+/// One put waiting on its answer: the partition its bytes are billed to, and where to say it.
+struct Upload {
+    partition: Option<PartitionKey>,
+    settle: oneshot::Sender<Option<PutRefusal>>,
+}
+
+/// Puts in flight, by hash: a `blob-stored` settles every one, a refusal only those billed to the
+/// partition it names.
+type Uploads = Arc<Mutex<HashMap<String, Vec<Upload>>>>;
+
+/// Everyone waiting on a blob answer from the room: fetches, and puts.
+#[derive(Clone, Default)]
+struct BlobWaits {
+    fetches: Waiters,
+    uploads: Uploads,
+}
+
+/// Settles the uploads of `hash` that this answer is for, and keeps the rest waiting.
+fn settle_uploads(uploads: &Uploads, hash: &str, refusal: Option<PutRefusal>) {
+    let mut held = lock(uploads);
+    let Some(waits) = held.remove(hash) else {
+        return;
+    };
+    let (answered, rest): (Vec<Upload>, Vec<Upload>) = waits.into_iter().partition(|upload| {
+        refusal
+            .as_ref()
+            .is_none_or(|r| r.partition() == upload.partition.as_ref())
+    });
+    if !rest.is_empty() {
+        held.insert(hash.to_owned(), rest);
+    }
+    drop(held);
+    for upload in answered {
+        let _ = upload.settle.send(refusal.clone());
+    }
+}
+
 pub struct Mesh {
     identity: Identity,
     engine: Arc<Mutex<Engine>>,
     presence: Arc<Mutex<PresenceTier>>,
     grants: Arc<Mutex<GrantRegistry>>,
     blobs: Arc<Mutex<Box<dyn BlobStore + Send>>>,
-    waiters: Waiters,
+    waits: BlobWaits,
     commands: mpsc::Sender<LinkCommand>,
     events: mpsc::Receiver<MeshEvent>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -127,7 +166,7 @@ impl Mesh {
         let blobs: Arc<Mutex<Box<dyn BlobStore + Send>>> = Arc::new(Mutex::new(
             blob_store.unwrap_or_else(|| Box::new(MemoryBlobStore::new())),
         ));
-        let waiters: Waiters = Arc::default();
+        let waits = BlobWaits::default();
         let (commands, command_rx) = mpsc::channel(256);
         let (link_tx, link_rx) = mpsc::channel(256);
         let (event_tx, events) = mpsc::channel(256);
@@ -140,7 +179,7 @@ impl Mesh {
                 presence.clone(),
                 grants.clone(),
                 blobs.clone(),
-                waiters.clone(),
+                waits.clone(),
                 commands.clone(),
             )),
             handle.spawn(heartbeat(presence.clone(), commands.clone())),
@@ -151,7 +190,7 @@ impl Mesh {
             presence,
             grants,
             blobs,
-            waiters,
+            waits,
             commands,
             events,
             tasks,
@@ -234,14 +273,44 @@ impl Mesh {
         lock(&self.grants)
     }
 
-    /// Stores the bytes here under their hash and offers them to the room (D18). Put first,
+    /// Stores the bytes here under their hash and offers them to the room (D18), billed to
+    /// `partition`'s byte budget there; answers once the relay has said it kept them. Put first,
     /// write the row that names the hash second.
-    pub fn blob_put(&self, bytes: &[u8]) -> Result<String, BlobError> {
+    ///
+    /// A refusal is a value: [`BlobError::QuotaExceeded`] when the partition's budget would pass
+    /// its quota, [`BlobError::NotGranted`] when a grant-gated room's grant for this device does
+    /// not name the partition — either way the room stored nothing and this device is still the
+    /// holder. A room that keeps no blobs (`no-store`), a code this build cannot name, and a relay
+    /// that says nothing for [`BLOB_ANSWER_WAIT`] are not refusals: the bytes are here, and the put
+    /// succeeds, as it did before rooms answered at all.
+    pub async fn blob_put(
+        &self,
+        bytes: &[u8],
+        partition: Option<PartitionKey>,
+    ) -> Result<String, BlobError> {
         let hash = lock(&self.blobs).put(bytes)?;
-        let _ = self
-            .commands
-            .try_send(LinkCommand::RawFrame(blob_put_frame(&hash, bytes, None)));
-        Ok(hash)
+        let (settle, answer) = oneshot::channel();
+        let frame = blob_put_frame(&hash, bytes, partition.as_ref());
+        lock(&self.waits.uploads)
+            .entry(hash.clone())
+            .or_default()
+            .push(Upload { partition, settle });
+        let _ = self.commands.try_send(LinkCommand::RawFrame(frame));
+        match tokio::time::timeout(BLOB_ANSWER_WAIT, answer).await {
+            Ok(Ok(Some(refusal))) => Err(refusal.into_error(&hash)),
+            Ok(_) => Ok(hash),
+            Err(_) => {
+                // silence: a relay that predates the answer; this wait is over, others are not
+                let mut held = lock(&self.waits.uploads);
+                if let Some(waits) = held.get_mut(&hash) {
+                    waits.retain(|upload| !upload.settle.is_closed());
+                    if waits.is_empty() {
+                        held.remove(&hash);
+                    }
+                }
+                Ok(hash)
+            }
+        }
     }
 
     /// Whether this device already holds the bytes, without asking anyone.
@@ -255,7 +324,7 @@ impl Mesh {
             return Ok(bytes);
         }
         let (tx, rx) = oneshot::channel();
-        lock(&self.waiters)
+        lock(&self.waits.fetches)
             .entry(hash.to_owned())
             .or_default()
             .push(tx);
@@ -273,7 +342,7 @@ impl Mesh {
                 hash: hash.to_owned(),
             }),
             _ => {
-                lock(&self.waiters).remove(hash);
+                lock(&self.waits.fetches).remove(hash);
                 Err(BlobError::Timeout {
                     hash: hash.to_owned(),
                 })
@@ -321,7 +390,7 @@ async fn pump(
     presence: Arc<Mutex<PresenceTier>>,
     grants: Arc<Mutex<GrantRegistry>>,
     blobs: Arc<Mutex<Box<dyn BlobStore + Send>>>,
-    waiters: Waiters,
+    waits: BlobWaits,
     commands: mpsc::Sender<LinkCommand>,
 ) {
     while let Some(fact) = link.recv().await {
@@ -363,11 +432,15 @@ async fn pump(
                 if let Some(b) = &bytes {
                     let _ = lock(&blobs).put_at(&hash, b);
                 }
-                if let Some(list) = lock(&waiters).remove(&hash) {
+                if let Some(list) = lock(&waits.fetches).remove(&hash) {
                     for tx in list {
                         let _ = tx.send(bytes.clone());
                     }
                 }
+                Vec::new()
+            }
+            LinkEvent::BlobPutAnswer { hash, refusal } => {
+                settle_uploads(&waits.uploads, &hash, refusal);
                 Vec::new()
             }
             LinkEvent::PeerHeard(peer) => vec![MeshEvent::PeerHeard(peer)],
@@ -442,7 +515,7 @@ mod tests {
             presence.clone(),
             Arc::new(Mutex::new(GrantRegistry::new(identity.peer_id().clone()))),
             blobs,
-            Waiters::default(),
+            BlobWaits::default(),
             commands,
         ));
 
@@ -467,5 +540,38 @@ mod tests {
 
         drop(link_tx);
         pumping.await.unwrap();
+    }
+
+    #[test]
+    fn a_put_answer_settles_the_uploads_it_is_for() {
+        let acme = PartitionKey::parse("org:acme").unwrap();
+        let globex = PartitionKey::parse("org:globex").unwrap();
+        let uploads = Uploads::default();
+        let wait = |partition: Option<PartitionKey>| {
+            let (settle, answer) = oneshot::channel();
+            lock(&uploads)
+                .entry("h".to_owned())
+                .or_default()
+                .push(Upload { partition, settle });
+            answer
+        };
+        let mut at_acme = wait(Some(acme.clone()));
+        let mut at_globex = wait(Some(globex));
+        let quota = PutRefusal::Quota {
+            partition: Some(acme),
+            limit: 40,
+            used: 30,
+        };
+        // a refusal is about the budget of the one partition it names
+        settle_uploads(&uploads, "h", Some(quota.clone()));
+        assert_eq!(at_acme.try_recv(), Ok(Some(quota)));
+        assert!(
+            at_globex.try_recv().is_err(),
+            "another partition still waits"
+        );
+        // a `blob-stored` answers every put of those bytes
+        settle_uploads(&uploads, "h", None);
+        assert_eq!(at_globex.try_recv(), Ok(None));
+        assert!(lock(&uploads).is_empty());
     }
 }
