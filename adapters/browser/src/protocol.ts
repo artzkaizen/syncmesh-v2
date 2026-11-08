@@ -1,6 +1,6 @@
 /* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type -- this file *is* the thread boundary: a `postMessage` hands over `unknown`, the `kind` is the parse, and a serialized tagged error has no shape until the class that declared it revives (`adapters/sqlite-wasm`'s protocol.ts disables the same two for the same reason) */
 
-import type { ForcedMedium, MeshStatus, PeerGraph } from "@syncmesh/client";
+import type { AppPhase, ForcedMedium, MeshStatus, PeerGraph } from "@syncmesh/client";
 import type { ProxyMethod, ProxyResult } from "@syncmesh/drizzle";
 import type { Principal } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
@@ -297,8 +297,23 @@ export type Ask =
   | LedgerBody
   | InspectBody;
 
-/** A client's message: an ask paired with the number its reply carries, or the parting word. */
-export type ClientMessage = ({ readonly id: number } & Ask) | { readonly kind: "bye" };
+/**
+ * Where a window stands with the person: shown, or put away (D39, U32).
+ *
+ * Told rather than asked, with nothing to answer: the host has no `document` of its own, so a
+ * window says when its page is hidden or shown, and the origin's mesh is in the background only
+ * while every window it serves is.
+ */
+export interface PhaseBody {
+  readonly kind: "phase";
+  readonly phase: AppPhase;
+}
+
+/**
+ * A client's message: an ask paired with the number its reply carries, a window's phase, or the
+ * parting word.
+ */
+export type ClientMessage = ({ readonly id: number } & Ask) | PhaseBody | { readonly kind: "bye" };
 
 /**
  * What the host says. A reply is paired by `id`; an event is not a reply to anything.
