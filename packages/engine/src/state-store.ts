@@ -106,7 +106,11 @@ export function createMemoryStateStore(): StateStore {
         records.set(key, record);
         tables.set(table, records);
       }
-      coverage = { synced: new Map(next.synced), local: new Map(next.local) };
+      coverage = {
+        synced: new Map(next.synced),
+        local: new Map(next.local),
+        ...(next.floor !== undefined && { floor: new Map(next.floor) }),
+      };
       return ok(undefined);
     },
     clear: () => {

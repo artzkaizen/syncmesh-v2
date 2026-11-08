@@ -10,7 +10,8 @@ import type { EventStore } from "../store.js";
 
 import { openEngine } from "../boot.js";
 import { dueForCompaction } from "../compaction.js";
-import { refoldable, unheldBelow } from "../compaction.js";
+import { refoldable } from "../compaction.js";
+import { unheldBelow } from "../coverage.js";
 import { createLink } from "../link.js";
 import { StateCorrupt, createMemoryStateStore, type StateStore } from "../state-store.js";
 import {
@@ -126,6 +127,12 @@ describe("compaction — RFC-0015 §2", () => {
     (await b.engine.installSnapshot(a.engine.snapshot())).unwrap();
     expect(b.engine.coverage().synced.get(PEER_A)).toBe(seq(3));
     expect(b.engine.floor()).toEqual(cursors([[PEER_A, seq(3)]]));
+    // persisted with the coverage it qualifies, at once: a restart before the next fold keeps it
+    const right = (
+      await openEngine({ peerId: PEER_B, clock: fakeClock(1), store: b.store, stateStore: stateB })
+    ).unwrap();
+    expect(right.coverage().synced.get(PEER_A)).toBe(seq(3));
+    expect(right.floor()).toEqual(cursors([[PEER_A, seq(3)]]));
 
     // events after the install are held, so the floor does not move with them
     (await write(a.engine, "n4", "n4")).unwrap();
@@ -141,6 +148,26 @@ describe("compaction — RFC-0015 §2", () => {
       await openEngine({ peerId: PEER_B, clock: fakeClock(1), store: b.store, stateStore: stateB })
     ).unwrap();
     expect(rebooted.floor()).toEqual(cursors([[PEER_A, seq(3)]]));
+  });
+
+  test("coverage a pass-over adopted is no floor, in the session or after a reboot (D46)", async () => {
+    const { a, b, link, stateB } = pair();
+    (await write(a.engine, "n1", "n1")).unwrap();
+    (await link.catchUp()).unwrap();
+    link.close();
+    for (const k of ["n2", "n3"]) (await write(a.engine, k, k)).unwrap();
+    // A:2 was withheld from b and passed over (D24, D40): the relay or the authority has it
+    b.engine.adoptCoverage({ synced: cursors([[PEER_A, seq(2)]]), local: new Map() });
+    const rest = (await a.engine.eventsSince(cursors([[PEER_A, seq(2)]]))).unwrap();
+    (await b.engine.receiveBatch(rest)).unwrap();
+    expect(b.engine.coverage().synced.get(PEER_A)).toBe(seq(3));
+    expect(b.engine.floor().size).toBe(0);
+
+    const rebooted = (
+      await openEngine({ peerId: PEER_B, clock: fakeClock(1), store: b.store, stateStore: stateB })
+    ).unwrap();
+    expect(rebooted.coverage().synced.get(PEER_A)).toBe(seq(3));
+    expect(rebooted.floor().size).toBe(0);
   });
 
   test("unheldBelow: the highest sequence in the range the log lacks, or nothing", () => {

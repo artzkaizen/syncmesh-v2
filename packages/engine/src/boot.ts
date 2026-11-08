@@ -1,4 +1,4 @@
-import type { DocColumns, PeerId, SeqNum, State } from "@syncmesh/kernel";
+import type { DocColumns, State } from "@syncmesh/kernel";
 
 import {
   docLineage,
@@ -12,9 +12,8 @@ import { Result } from "@syncmesh/result";
 import type { Engine, EngineOptions } from "./engine.js";
 import type { StateStore } from "./state-store.js";
 import type { EventStore, StoreFailure, StoredEvent } from "./store.js";
-import type { Ahead, Coverage, Cursors } from "./sync.js";
+import type { Coverage, Cursors } from "./sync.js";
 
-import { higherFloor, unheldBelow } from "./compaction.js";
 import { docAppends, recordDocs } from "./doc-log.js";
 import { createEngine } from "./engine.js";
 import { StateCorrupt, allRows, rowWrites, eventWriteKeys } from "./state-store.js";
@@ -36,20 +35,9 @@ export interface Boot {
   readonly coverage: Coverage;
   /** Entries, not events: the feed chain a boot rebuilds is over the bytes each author signed. */
   readonly replay: readonly StoredEvent[];
-  /** Per author, the highest synced sequence below coverage the log lacks ({@link Engine.floor}); absent is none. */
-  readonly floor?: Cursors;
+  /** Per author, the highest synced sequence compaction removed (`compactedBelow`); absent is none. */
+  readonly compacted?: Cursors;
 }
-
-/** Per author, every synced sequence the log holds. */
-const heldBy = (entries: readonly StoredEvent[]): Ahead => {
-  const held = new Map<PeerId, SeqNum[]>();
-  for (const { event } of entries) {
-    const seqs = held.get(event.peerId) ?? [];
-    seqs.push(event.seqNum);
-    held.set(event.peerId, seqs);
-  }
-  return held;
-};
 
 interface Cached {
   readonly state: State;
@@ -68,10 +56,6 @@ interface Cached {
  * point at which anybody could still be told. It reports rather than refuses — every database
  * this has already happened to would be bricked by a refusal, and the events are folded and
  * standing in the state either way — so a caller that wants to *stop* is told in time to.
- *
- * **It reads the whole synced log, not only the tail it folds,** to find the floor this device
- * advertises ({@link Engine.floor}): coverage a snapshot install adopted has no events behind it,
- * and nothing but the log itself says which (D46). Compaction is what keeps that read bounded.
  */
 export function openEngine(
   options: EngineOptions,
@@ -84,19 +68,14 @@ export function openEngine(
       stateStore === undefined ? undefined : yield* Result.await(load(store, stateStore, options));
     const state = cached?.state ?? emptyState();
     const coverage = cached?.coverage ?? EMPTY_COVERAGE;
-    // the whole synced log, not just above coverage: what it lacks below coverage is the floor
-    const all = yield* Result.await(store.allSince(new Map(), "synced"));
-    const above = (entry: StoredEvent) =>
-      entry.event.seqNum > (coverage.synced.get(entry.event.peerId) ?? 0);
-    const synced = all.filter(above);
+    const synced = yield* Result.await(store.allSince(coverage.synced, "synced"));
     const local = yield* Result.await(store.allSince(coverage.local, "local"));
     const replay = [...synced, ...local];
     const max = yield* Result.await(store.maxHlc());
     if (max !== undefined) clock.receive(max);
     const compacted = (yield* Result.await(store.compactedBelow())).synced;
-    const floor = higherFloor(compacted, unheldBelow(new Map(), coverage.synced, heldBy(all)));
 
-    const engine = createEngine({ ...options, boot: { state, coverage, replay, floor } });
+    const engine = createEngine({ ...options, boot: { state, coverage, replay, compacted } });
     if (stateStore !== undefined) {
       const rows =
         cached === undefined
