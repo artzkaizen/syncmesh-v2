@@ -171,4 +171,35 @@ describe("an event of a lost partition that arrives after the purge (D45)", () =
     expect(readRow(device.engine.state(), NOTES, key("bonus"))).toBeUndefined();
     await watch.close();
   });
+
+  test("an empty unscoped snapshot adopted after the rescope does not widen it back", async () => {
+    const device = engineFor(DEVICE.peerId, 500);
+    const author = engineFor(AUTHOR.peerId, 100);
+    const grants = createGrantRegistry({ issuer: ISSUER.peerId, now: () => T0 });
+    const watch = watchNarrowing({
+      engine: device.engine,
+      self: DEVICE.peerId,
+      grants,
+      blobs: memoryBlobStore(),
+    });
+    const partitions = () => scopeFrom(device.engine.coverage().scope).interest?.partitions;
+
+    grants.register(grantOf([ACME, PAYROLL], 0)).unwrap();
+    (
+      await author.engine.mutate(CREATE, (tx) => tx.insert(NOTES, key("x"), row({ title: "x" })), {
+        partition: PAYROLL,
+      })
+    ).unwrap();
+    (await device.engine.receiveBatch((await author.store.all()).unwrap())).unwrap();
+    grants.register(grantOf([ACME], 1)).unwrap();
+    await watch.idle();
+    expect(partitions()).toEqual([ACME]);
+
+    // a snapshot with no rows and no scope: nothing to fold, and still a claim on the coverage
+    const { coverage } = author.engine.snapshot();
+    (await device.engine.installSnapshot({ rows: [], coverage })).unwrap();
+    await watch.idle();
+    expect(partitions()).toEqual([ACME]);
+    await watch.close();
+  });
 });

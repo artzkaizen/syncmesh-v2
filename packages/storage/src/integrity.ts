@@ -171,11 +171,7 @@ export function openSession(driver: SqlDriver): Promise<Result<void, StoreFailur
           }),
         );
     }
-    yield* Result.await(
-      attempt("could not mark the session open", () =>
-        driver.run(`INSERT OR REPLACE INTO ${meta} (key, value) VALUES (?, 'open')`, [SESSION]),
-      ),
-    );
+    yield* Result.await(reopenSession(driver));
     return Result.ok(undefined);
   });
 }
@@ -185,6 +181,19 @@ export function closeSession(driver: SqlDriver): Promise<Result<void, StoreFailu
   if (!sessioned(driver)) return Promise.resolve(Result.ok(undefined));
   return attempt("could not mark the session closed", () =>
     driver.run(`INSERT OR REPLACE INTO ${logTable("meta")} (key, value) VALUES (?, 'closed')`, [
+      SESSION,
+    ]),
+  );
+}
+
+/**
+ * Marks the session over the log open again, without the check {@link openSession} runs: the
+ * session was {@link closeSession}d by this same process, which has not crashed since (D39).
+ */
+export function reopenSession(driver: SqlDriver): Promise<Result<void, StoreFailure>> {
+  if (!sessioned(driver)) return Promise.resolve(Result.ok(undefined));
+  return attempt("could not mark the session open", () =>
+    driver.run(`INSERT OR REPLACE INTO ${logTable("meta")} (key, value) VALUES (?, 'open')`, [
       SESSION,
     ]),
   );

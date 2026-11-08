@@ -11,6 +11,8 @@ export type { Peer, Topic, Topics, ValueOf } from "./presence.js";
 export { rowHistory } from "./history.js";
 export type { DeliveredOptions, ReceivedOptions } from "./delivered.js";
 export type { SyncedOptions } from "./synced.js";
+// what `mesh.synced()` can refuse with, so an app narrowing it needs no import of the transport
+export { DurabilityLost } from "@syncmesh/transport";
 export type {
   Handle,
   HistoryOptions,
@@ -29,6 +31,7 @@ export type { Fleet, HandleCounts, Inspect, Teardown } from "./inspect.js";
 export type { OperationsView } from "./operations.js";
 export { openOperations, operationRefs, wireOperations } from "./operations.js";
 export type { RecoveryIssue, RecoveryView } from "./recovery.js";
+export type { TornIssue } from "./torn.js";
 export type { Auth, AuthStatus, Session, SessionAsk, SessionProvider } from "./auth.js";
 export { createAuth } from "./auth.js";
 export type { DraftSaveOptions, DraftStoreOptions, Drafts } from "./drafts.js";
@@ -72,7 +75,7 @@ export { NoSuchTransport, createForcing, standInFor } from "./forced.js";
  * build printed it and carried on with exit 0, so it sat there being reported and ignored.
  */
 export type { MeshTelemetry } from "./telemetry.js";
-export type { Knock, MeshShaping, RunningTransports } from "./transports.js";
+export type { AppPhase, Knock, MeshShaping, RunningTransports } from "./transports.js";
 export { TransportAddFailed, runTransports } from "./transports.js";
 export { keyRingFor, transportContextFor } from "./transport-context.js";
 

@@ -1,5 +1,7 @@
 import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 
+import type { TornRun } from "./store.js";
+
 import { EMPTY_COVERAGE, type Ahead, type Coverage, type Cursors } from "./sync.js";
 
 /**
@@ -52,6 +54,12 @@ export interface CoverageTracker {
    * adopts with `adopt` and raises no floor — a relay or the authority fills that gap, not state.
    */
   readonly adoptUnheld: (coverage: Coverage) => void;
+  /**
+   * Takes back a claim: the run `from..to` of this author is not held after all (D39, a torn log).
+   * The cursor drops below it, and what was held above it is kept as held past a gap, so a peer
+   * that reads `ahead` sends the hole alone. The one place a cursor is lowered.
+   */
+  readonly reopen: (run: TornRun) => void;
   /** The cursors, their scope, and the floor when there is one; what the state store persists. */
   readonly current: () => Coverage;
   /** Per author, what this device holds above its contiguous cursor: the far side of every gap. */
@@ -112,6 +120,18 @@ export function trackCoverage(initial: Coverage = EMPTY_COVERAGE): CoverageTrack
       close(chain);
     },
     adopt,
+    reopen: ({ peer, local, from, to }) => {
+      const chain = authorChain(local ? scopes.local : scopes.synced, peer);
+      const top = chain.contiguous ?? 0;
+      for (let seq: number = from; seq <= to; seq += 1) chain.ahead.delete(seq);
+      if (from > top) return;
+      for (let seq = to + 1; seq <= top; seq += 1) {
+        // SAFETY: above `to`, which is a positive sequence number, so each one is one too
+        chain.ahead.set(seq, seq as SeqNum);
+      }
+      // SAFETY: at least 1 when the run does not start the author's run, which `> 1` checks
+      chain.contiguous = from > 1 ? ((from - 1) as SeqNum) : undefined;
+    },
     adoptUnheld: (adopted) => {
       const from = contiguousCursors(scopes.synced);
       const held = ahead();

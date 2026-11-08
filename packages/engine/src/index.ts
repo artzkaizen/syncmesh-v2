@@ -1,5 +1,5 @@
-export type { EventStore, SeqScope, StoredEvent } from "./store.js";
-export { StoreFailure, createMemoryEventStore } from "./store.js";
+export type { EventStore, SeqScope, StoredEvent, TornRun } from "./store.js";
+export { LogTorn, StoreFailure, createMemoryEventStore, tornRuns } from "./store.js";
 export type { DocWrite } from "./tx.js";
 export type {
   DocAddress,

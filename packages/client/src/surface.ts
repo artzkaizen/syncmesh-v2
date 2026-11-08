@@ -3,7 +3,7 @@ import type { EventId, InvalidPartitionKey, Stamp, Row as WireCells } from "@syn
 import type { Result } from "@syncmesh/result";
 import type { PresenceMap, PresenceTopic, SchemaEntry } from "@syncmesh/schema";
 import type { SqlDialect, SqlDriver } from "@syncmesh/storage";
-import type { RouteTable } from "@syncmesh/transport";
+import type { DurabilityLost, RouteTable } from "@syncmesh/transport";
 
 import type { MeshAccounts } from "./accounts.js";
 import type { Auth } from "./auth.js";
@@ -135,12 +135,16 @@ export interface Mesh<
    * Resolves once a relay room whose log outlives it holds the event (D42) — the answer to *may I
    * close the laptop?*. `NoSuchCapability` on a mesh with no transport declaring `durable`; a
    * relay over a memory log never settles it, because a restart would lose the write.
+   * `DurabilityLost` when the room's log was replaced (a new epoch) before it held the event; ask
+   * again to wait on the new log. No timeout: race your own.
    *
    * @example
    * const event = (await mesh.engine.mutate(procedure, write)).unwrap();
    * (await mesh.synced({ event: event.id })).unwrap();
    */
-  readonly synced: (options: SyncedOptions) => Promise<Result<void, NoSuchCapability>>;
+  readonly synced: (
+    options: SyncedOptions,
+  ) => Promise<Result<void, NoSuchCapability | DurabilityLost>>;
   readonly revert: (id: EventId) => Promise<Result<unknown, unknown>>;
   readonly canRevert: (id: EventId) => boolean;
   /**

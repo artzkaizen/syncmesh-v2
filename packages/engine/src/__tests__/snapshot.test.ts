@@ -151,9 +151,13 @@ describe("installSnapshot", () => {
     const a = setup(PEER_A, 100);
     const b = setup(PEER_B, 200);
     let notified = 0;
+    const adopted: unknown[] = [];
     b.engine.onFoldBatch(() => void (notified += 1));
+    b.engine.onAdopt((coverage) => void adopted.push(coverage));
     const installed = (await b.engine.installSnapshot(a.engine.snapshot())).unwrap();
     expect(installed.rows).toBe(0);
     expect(notified).toBe(0);
+    // no fold, and the coverage it took on is still said (D45)
+    expect(adopted).toEqual([b.engine.coverage()]);
   });
 });

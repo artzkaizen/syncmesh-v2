@@ -17,7 +17,7 @@ import type { Grant, Identity } from "@syncmesh/wire";
 
 import { createValidator, openEngine } from "@syncmesh/engine";
 import { DEFAULT_MAX_DRIFT, createHlcClock, parseAdapterId } from "@syncmesh/kernel";
-import { Result, panic } from "@syncmesh/result";
+import { Result, omitUndefined, panic } from "@syncmesh/result";
 import { syncedTables } from "@syncmesh/schema";
 import { installRls, openStores, operationStore } from "@syncmesh/storage";
 
@@ -93,7 +93,19 @@ export interface Booted {
   readonly rowSync?: RowSync;
   /** The same ladder the engine runs on every write — for judging a captured transaction before it commits (D20). */
   readonly validate: Validator;
+  /**
+   * The session over the log, marked clean and open again around a time the process may be killed
+   * without reaching `close` — an app in the background (D39). Present exactly when the mesh marks
+   * the session at `close`: over your driver or the default store, never over stores you opened.
+   */
+  readonly session?: SessionMarks;
   readonly close: () => Promise<void>;
+}
+
+/** Marking the session over a device's log ended cleanly, and open again (D39). */
+export interface SessionMarks {
+  readonly clean: () => Promise<void>;
+  readonly open: () => Promise<void>;
 }
 
 /**
@@ -255,7 +267,10 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
     yield* Result.await(installPolicies(options, driver));
     if (driver !== undefined) {
       Object.assign(booted, { driver });
-      const operations = yield* Result.await(operationStore(driver));
+      // the ledger lives in the log's file: a receipt that lands in the background opens it (D39)
+      const operations = yield* Result.await(
+        operationStore(driver, omitUndefined({ beforeWrite: owned?.beforeWrite })),
+      );
       Object.assign(booted, { operations });
       /*
        * Beside the device key, in the same table and for the same reason: both are true of this
@@ -274,6 +289,9 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
           `[syncmesh] this store cannot sign for what it holds: ${lineage.error.message}`,
         );
     }
+    // the same rule `close` follows below: stores you opened are yours to mark
+    if (options.stores === undefined && owned !== undefined)
+      Object.assign(booted, { session: { clean: owned.markClean, open: owned.markOpen } });
     return Result.ok({
       ...booted,
       // a driver or a set of stores you passed stays yours to close; the default store is ours.
