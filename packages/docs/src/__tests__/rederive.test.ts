@@ -64,8 +64,9 @@ describe("createRederive", () => {
       },
     } satisfies DocsEngine;
 
-    // SAFETY: only looked up, never called: the open replica below is read, not loaded
-    const adapter = {} as AnyAdapter;
+    // SAFETY: only `version` is called, to see the open replica below holds nothing unflushed; the
+    // rest is looked up, never called: the replica is read, not loaded
+    const adapter = { ...({} as AnyAdapter), version: () => new Uint8Array() };
     const replica = {
       adapter,
       lineage: undefined,

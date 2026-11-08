@@ -85,6 +85,10 @@ const stashLocal = (entry: Entry): Result<void, UpdateRejected> => {
   });
 };
 
+/** Whether the replica holds local operations no flush has exported yet. */
+export const unflushed = (entry: Entry) =>
+  entry.stash.length > 0 || !bytesEqual(entry.adapter.version(entry.doc), entry.flushed);
+
 /** Stops a replica for good: its handles refuse every flush, and the app reopens the document. */
 export const invalidate = (entry: Entry) => {
   entry.status = "invalidated";

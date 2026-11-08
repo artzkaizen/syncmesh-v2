@@ -472,24 +472,30 @@ describe("derived columns catch up with the document between flushes (gaps U25)"
     link.close();
   });
 
-  test("a refused flush's values do not stand in for the row's when the next write lands", async () => {
-    let refuse = false;
+  /** A validator that refuses every write while `refuse` is set, and the schema's verdict otherwise. */
+  const refusable = () => {
     const open = createValidator({ schema, grantFor: null, docs: DOCS });
-    const toggled: Validator = {
+    const gate = { refuse: false };
+    const validate = {
       validate: (event, before) =>
-        refuse
+        gate.refuse
           ? Result.err(
               new PolicyDenied({ table: "notes", key: "n1", op: "update", message: "refused" }),
             )
           : open.validate(event, before),
-    };
-    const a = await storedNode(34, { validate: toggled });
+    } satisfies Validator;
+    return { gate, validate };
+  };
+
+  test("a refused flush's values do not stand in for the row's when the next write lands", async () => {
+    const { gate, validate } = refusable();
+    const a = await storedNode(34, { validate });
     await insertNote(a);
     const draft = (await a.documents.open<LoroDoc>(DOC)).unwrap();
     type(draft.value, "Draft", "x");
-    refuse = true;
+    gate.refuse = true;
     expect((await draft.flush()).isErr()).toBe(true);
-    refuse = false;
+    gate.refuse = false;
     await draft.close();
     // the next doc change is the app's own write, with no flush behind it
     const elsewhere = new LoroDoc();
@@ -508,6 +514,65 @@ describe("derived columns catch up with the document between flushes (gaps U25)"
     ).unwrap();
     expect(await until(async () => (await a.row())?.title === "Final")).toBe(true);
     expect(await a.row()).toEqual({ title: "Final", words: 3 });
+  });
+
+  test("a recomputation reads no edit a flush has not committed, so a refused one leaves the row as it was", async () => {
+    const { gate, validate } = refusable();
+    const a = await storedNode(40, { validate });
+    await insertNote(a);
+    const before = await a.row();
+    const draft = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    gate.refuse = true;
+    type(draft.value, "Ghost", "never committed");
+    // recomputed while the edit is still only in the replica: the log holds nothing of it
+    await a.documents.rederive(DOC);
+    expect(await a.row()).toEqual(before);
+    expect((await draft.flush()).isErr()).toBe(true);
+    expect(draft.status()).toBe("invalidated");
+    gate.refuse = false;
+    await draft.close();
+    await a.documents.rederive();
+    expect((await a.engine.docLog()).unwrap()).toHaveLength(0);
+    expect(await a.row()).toEqual(before);
+  });
+
+  test("a recomputation while a flush is in flight reads the log, not the burst the flush may lose", async () => {
+    const { gate, validate } = refusable();
+    const a = await storedNode(44, { validate });
+    await insertNote(a);
+    const before = await a.row();
+    const draft = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    gate.refuse = true;
+    type(draft.value, "Ghost", "in flight");
+    // the burst has left the replica's pending edits, and its write has not been judged yet
+    const flushed = draft.flush();
+    const recomputed = a.documents.rederive(DOC);
+    expect((await flushed).isErr()).toBe(true);
+    await recomputed;
+    gate.refuse = false;
+    await draft.close();
+    await a.documents.rederive();
+    expect(await a.row()).toEqual(before);
+  });
+
+  test("an open replica with an edit not flushed yet is recomputed from the committed document", async () => {
+    const { gate, validate } = refusable();
+    const a = await storedNode(42, { validate });
+    await insertNote(a);
+    const draft = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(draft.value, "Base", "x");
+    (await draft.flush()).unwrap();
+    expect(await until(async () => (await a.row())?.title === "Base")).toBe(true);
+    gate.refuse = true;
+    type(draft.value, "Ghost", "y");
+    await a.documents.rederive(DOC);
+    expect(await a.row()).toEqual({ title: "Base", words: 1 });
+    expect((await draft.flush()).isErr()).toBe(true);
+    gate.refuse = false;
+    await draft.close();
+    await a.documents.rederive();
+    expect((await a.engine.docLog()).unwrap()).toHaveLength(1);
+    expect(await a.row()).toEqual({ title: "Base", words: 1 });
   });
 
   test("a state rebuilt from the log gets its derived values back when the runtime starts", async () => {

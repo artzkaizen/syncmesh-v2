@@ -761,7 +761,7 @@ decompression cap and a time budget, and exceeding them is a `failed` update, ne
   `engine.mayEditDoc(producer, doc)` — the validator's own ladder over a probe doc change on the
   row, so grant, partitions, revocation and the `update` rule judge it as they judge an edit, and
   the authority the validator names always passes — and refuses the checkpoint whole before key 8
-  is read, a sealed checkpoint with no key 8 included. An engine built with no validator has no
+  is read: its snapshot as well as its derived values, a sealed checkpoint with no key 8 included. An engine built with no validator has no
   ladder to run, so every producer passes there. The probe carries no stamp, so the producer is
   judged as of now: one revoked after it produced a valid checkpoint is refused. A device's `install` re-derives the version from the bytes, so whom it trusts stays
   the caller's question (§7.3).
@@ -1082,8 +1082,12 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
      update between computing and committing. A document with no snapshot and no tail is left
      alone, so an empty document writes nothing. The start pass keeps no record of what a row
      held before it, so it writes every derived row once, changed or not. An open replica is
-     read as it stands, unflushed local edits included: a crash before the flush leaves the row
-     ahead of the log until the next start pass recomputes it. A D45 purge invalidates every
+     read only while everything in it was committed: one holding edits no flush has exported, or
+     one whose flush is in flight, is skipped and the document loaded from its snapshot and tail
+     instead, so a row's values only ever come from what the log holds, and a refused flush (or
+     a crash before one) leaves nothing of its edits on the row (decided 2026-11-08, Jace
+     delegated the call). Until the flush commits, the row shows the committed document; the
+     flush then writes its own values with its doc change. A D45 purge invalidates every
      replica open on a row it rewrites, since the replica still holds the content the purge
      dropped; the row is then derived from the document log the purge kept, and the app reopens
      the handle, losing what the replica had not flushed.

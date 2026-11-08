@@ -17,6 +17,7 @@ import type { AnyAdapter, UpdateRejected } from "./adapter.js";
 import type { Entry } from "./entry.js";
 import type { DocsEngine } from "./materialise.js";
 
+import { unflushed } from "./entry.js";
 import { entryRef, load } from "./materialise.js";
 
 /** What recomputing a row's derived columns outside a flush or a cover can fail with. */
@@ -53,8 +54,9 @@ const sameValues = (a: Row, b: Row) =>
  * snapshot, a repair or a purge (D45) rewrites the row, and once for every row when the runtime starts, which is
  * how a rebuilt state file and a changed derive function catch up.
  *
- * One document at a time, in the background. An open replica is read as it stands; a closed
- * document is loaded from its snapshot and tail. Each write is guarded by what it was computed
+ * One document at a time, in the background, and only from what the log holds: an open replica is
+ * read when everything in it was committed, and otherwise the document is loaded from its snapshot
+ * and tail, so a refused flush leaves nothing of its edits on the row. Each write is guarded by what it was computed
  * from (`engine.writeDerived`), so a recomputation overtaken by a newer edit writes nothing and
  * the newer edit's own recomputation follows it.
  */
@@ -89,7 +91,11 @@ export function createRederive(deps: RederiveDeps) {
     const deriver = deriverAt(address);
     const adapter = adapterAt(address);
     if (deriver === undefined || adapter === undefined) return Result.ok(undefined);
-    const open = deps.held(address);
+    const held = deps.held(address);
+    // edits no write has committed would put content on the row that a refused flush never takes
+    // back: a replica holding them, or one whose flush is in flight, is read from the log instead
+    const open =
+      held === undefined || unflushed(held) || flushing.has(docKey(address)) ? undefined : held;
     if (open !== undefined)
       return deriver.compute(open.doc).map((values) => ({
         values,
