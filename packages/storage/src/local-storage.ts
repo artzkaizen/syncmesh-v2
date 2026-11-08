@@ -156,6 +156,14 @@ function storeOver(memory: EventStore, disk: LocalLog): EventStore {
         yield* disk.saveLog(kept);
         return Result.ok(removed);
       }),
+    // the head keeps its marks: an evicted event was numbered, and numbering never goes back
+    evict: (ids) =>
+      Result.gen(async function* () {
+        const removed = yield* Result.await(memory.evict(ids));
+        if (removed === 0) return Result.ok(0);
+        yield* disk.saveLog(yield* Result.await(memory.all()));
+        return Result.ok(removed);
+      }),
   };
 }
 

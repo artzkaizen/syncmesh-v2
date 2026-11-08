@@ -48,8 +48,45 @@ const coreCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   },
 ];
 
+/** What a purge asks of the log (D45): exactly the events named go, and no floor is recorded. */
+const evictCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
+  {
+    name: "events: evict deletes exactly the events named and records no floor (D45)",
+    run: async () => {
+      const store = await open(await openDriver("events-evict"));
+      const kept = entry(A, 1, 100, { partition: ACME });
+      const gone = entry(B, 1, 101, { partition: ACME });
+      const alsoGone = entry(B, 2, 102);
+      (await store.appendBatch([kept, gone, alsoGone])).unwrap();
+      equal((await store.evict([gone.event.id, alsoGone.event.id])).unwrap(), 2, "evicted");
+      equal(ids((await store.all()).unwrap()), ids([kept]), "only the kept event is left");
+      equal((await store.has(gone.event.id)).unwrap(), false, "an evicted event is not held");
+      equal((await store.compactedBelow()).unwrap().synced.size, 0, "no floor recorded");
+      // so a later delivery of it is stored again
+      (await store.append(gone)).unwrap();
+      equal((await store.has(gone.event.id)).unwrap(), true, "stored again after eviction");
+    },
+  },
+  {
+    name: "events: evicting from the middle of a run leaves a log that still reads (D45, D39)",
+    run: async () => {
+      const store = await open(await openDriver("events-evict-middle"));
+      const [first, middle, last] = [entry(B, 1, 100), entry(B, 2, 101), entry(B, 3, 102)];
+      (await store.appendBatch([first, middle, last])).unwrap();
+      equal((await store.evict([middle.event.id])).unwrap(), 1, "evicted");
+      const read = await store.all();
+      check(read.isOk(), "the hole an eviction leaves is recorded, not read as damage");
+      equal(ids(read.unwrap()), ids([first, last]), "the rest of the run");
+      // stored again, it fills the hole it left
+      (await store.append(middle)).unwrap();
+      equal(ids((await store.all()).unwrap()), ids([first, middle, last]), "the run is whole");
+    },
+  },
+];
+
 export const eventCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   ...coreCases(openDriver),
+  ...evictCases(openDriver),
   {
     name: "events: core bytes survive, an absent partition stays absent, local survives",
     run: async () => {

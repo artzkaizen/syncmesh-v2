@@ -7,7 +7,7 @@ import type {
   TelemetryListener,
 } from "@syncmesh/engine";
 import type { PeerId, SyncEvent } from "@syncmesh/kernel";
-import type { BlobStore } from "@syncmesh/storage";
+import type { BlobHomes, BlobStore } from "@syncmesh/storage";
 
 import { createHub, trackCoverage, type Unsubscribe } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
@@ -78,6 +78,13 @@ export interface RelayRoomOptions {
    * device treat what it fetched as a cache it may evict. Absent, the room serves no bytes.
    */
   readonly blobs?: BlobStore;
+  /**
+   * Where each of those blobs may be read (D44): the partitions its puts were billed to, which a
+   * grant-gated room checks a fetch against. Kept beside the bytes by every durable host; absent,
+   * the room keeps them in memory, and after a restart a gated room answers `blob-missing` for
+   * bytes put before it until somebody holding them puts them again.
+   */
+  readonly blobHomes?: BlobHomes;
   /**
    * What this room stops keeping. Absent, it keeps everything, which is what it did before
    * the option existed — a cap that trims history is one an operator has to ask for.
@@ -201,6 +208,7 @@ export async function openRelayRoom(
     store,
     policy: options.retention,
     blobs: options.blobs,
+    homes: options.blobHomes,
     ceiling: () => coverage.current().synced,
     booted: trimmed.value.synced,
     held: boot.value,

@@ -150,9 +150,11 @@ describe("who may read what, over a gated relay (D40)", () => {
       await ha.db.insert(notes).values({ id: "c3", body: "still hers" });
       expect(await until(async () => (await bodies(alice.mesh)).includes("still hers"))).toBe(true);
       expect(await until(async () => (await bodies(bob.mesh)).includes("still hers"))).toBe(true);
-      // what she read before the cut she keeps; nothing of payroll after it ever reached her
+      // nothing of payroll after the cut ever reached her, and what she read before it is purged
+      // from her table and her log (D45)
       expect(await bodies(alice.mesh)).not.toContain("after alice left");
-      expect(await held(alice.driver, PAYROLL)).toBe(2);
+      expect(await until(async () => (await held(alice.driver, PAYROLL)) === 0)).toBe(true);
+      expect(await bodies(alice.mesh)).toEqual(["checkout copy", "checkout spec", "still hers"]);
       expect(await held(bob.driver, PAYROLL)).toBe(0);
 
       await Promise.all([authority.stop(), alice.mesh.stop(), bob.mesh.stop()]);

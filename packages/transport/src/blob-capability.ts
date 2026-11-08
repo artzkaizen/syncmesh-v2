@@ -15,15 +15,19 @@ export interface UploadBlobOptions {
 }
 
 /**
- * The far end would not keep the bytes, and why. `quota`: the partition already holds `used`
- * bytes of a `limit` this put would pass, so nothing was stored.
+ * The far end would not keep the bytes, and why; nothing was stored either way. `quota`: the
+ * partition already holds `used` bytes of a `limit` this put would pass. `ungranted`: a
+ * grant-gated room, and this device's grant does not name the partition the put was billed to
+ * (D44).
  */
-export interface BlobRefusal {
-  readonly reason: "quota";
-  readonly partition?: PartitionKey;
-  readonly limit: number;
-  readonly used: number;
-}
+export type BlobRefusal =
+  | {
+      readonly reason: "quota";
+      readonly partition?: PartitionKey;
+      readonly limit: number;
+      readonly used: number;
+    }
+  | { readonly reason: "ungranted"; readonly partition: PartitionKey };
 
 /** The far end's answer to a fetch: it holds no bytes under that name. Not the same as silence. */
 export const BLOB_MISSING = "missing";

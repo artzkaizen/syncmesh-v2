@@ -8,7 +8,13 @@ import type {
   SocketSession,
 } from "@syncmesh/relay";
 
-import { createRelayHost, describeRoom, relayEpoch, relayIdentity } from "@syncmesh/relay";
+import {
+  createRelayHost,
+  describeRoom,
+  openBlobHomes,
+  relayEpoch,
+  relayIdentity,
+} from "@syncmesh/relay";
 import { omitUndefined, panic } from "@syncmesh/result";
 import { sqlBlobStore, sqliteEventStore } from "@syncmesh/storage";
 
@@ -110,12 +116,13 @@ export function relayRivetActor(options: RelayRivetActorOptions = {}): RelayRive
         options.blobs === false
           ? undefined
           : (await sqlBlobStore(driver)).match({ ok: (value) => value, err: () => undefined });
+      const blobHomes = options.blobs === false ? undefined : await openBlobHomes(driver);
       return {
         store,
         epoch: await relayEpoch(driver),
         // the platform's own database, which outlives every eviction (D42)
         durable: true,
-        ...omitUndefined({ blobs }),
+        ...omitUndefined({ blobs, blobHomes }),
         // the actor's storage is the platform's to close; nothing was borrowed
         release: () => undefined,
       };

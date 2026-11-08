@@ -4,7 +4,6 @@ import type { BlobRefusal, TransportContext } from "@syncmesh/transport";
 import type { Grant } from "@syncmesh/wire";
 
 import { ownPositionWarning } from "@syncmesh/engine";
-import { omitUndefined } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { createHoldback, cursorsFrame, eventFrame, grantFrame } from "@syncmesh/transport";
 import { decodeAndVerify, relayEnvelope, signEvent } from "@syncmesh/wire";
@@ -13,7 +12,9 @@ import type { RelayFrame } from "./frames.js";
 import type { JoinedScope } from "./scoped.js";
 import type { RelayDial } from "./transport.js";
 
+import { uploadRefusal } from "./blob-channel.js";
 import { decodeRelayFrame } from "./frame-decode.js";
+import { refusedOnRepage } from "./refused.js";
 import { scopedCoverage } from "./scoped.js";
 
 /** A stored event as bytes to send: this device signs its own, and relays another's verbatim. */
@@ -102,24 +103,6 @@ export interface SessionHooks {
   readonly repaging?: () => boolean;
 }
 
-/**
- * What a put's answer means to the upload waiting on it: nothing for `blob-stored`, the budget
- * for a `quota` refusal — and nothing for any other code, `no-store` from a room that keeps no
- * blobs or one this build cannot name (D14), which is what that upload heard before the answer
- * existed.
- */
-const uploadRefusal = (
-  frame: Extract<RelayFrame, { kind: "blob-stored" | "blob-refused" }>,
-): BlobRefusal | undefined =>
-  frame.kind === "blob-refused" && frame.code === "quota"
-    ? omitUndefined({
-        reason: "quota",
-        limit: frame.limit,
-        used: frame.used,
-        partition: frame.partition,
-      } as const)
-    : undefined;
-
 /** The four frames that answer a blob fetch or put (D18). */
 type BlobAnswer = Extract<
   RelayFrame,
@@ -201,6 +184,8 @@ export function wireSession(
   /** Set once this session has been found to hold cursors from another entitlement; nothing after it is acted on. */
   let abandoned = false;
   let relayCursors: Cursors = new Map();
+  /** What a re-page from nothing delivers, and what it proves this device is now refused (D45). */
+  const refusals = refusedOnRepage(context, hooks.onDropped);
 
   /** Everything the holdback can let go of for these authors, in run order. */
   const release = async (authors: Iterable<PeerId>): Promise<void> => {
@@ -231,6 +216,7 @@ export function wireSession(
           hooks.onDropped(verified.error.message);
           continue;
         }
+        if (hooks.repaging?.() === true) refusals.delivered(verified.value.event.id);
         if (direct) {
           straight.push(verified.value);
           continue;
@@ -270,6 +256,7 @@ export function wireSession(
       abandoned = true;
       hooks.onReentitled?.();
     },
+    repaged: refusals.repaged,
   });
 
   /**
@@ -303,10 +290,6 @@ export function wireSession(
     const own = cursors.get(identity.peerId);
     if (own !== undefined) chain = chain.then(() => adoptOwnRun(engine, own, hooks.onDropped));
   };
-
-  /** Our contiguous position, for every other peer's `delivered`; the relay passes it on. */
-  const sendCursors = (): void =>
-    hooks.sendSafe(cursorsFrame(identity.peerId, engine.coverage().synced));
 
   const onSession = (frame: Extract<RelayFrame, { kind: "session" }>["frame"]): void => {
     if (frame.kind === "presence") context.onPresence?.(frame.wire);
@@ -388,7 +371,8 @@ export function wireSession(
   const offFolds = engine.onFoldBatch((batch) => {
     if (!caughtUp || batch.source !== "remote") return;
     pushOutstanding();
-    sendCursors();
+    // our contiguous position, for every other peer's `delivered`; the relay passes it on
+    hooks.sendSafe(cursorsFrame(identity.peerId, engine.coverage().synced));
   });
   return [offFrame, offOutbound, offRegistered, offFolds];
 }

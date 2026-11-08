@@ -99,6 +99,9 @@ export const SQLITE_DOCS: DocSql = {
   upsertSnapshot: `INSERT INTO ${SQLITE_SNAPSHOTS} (tbl, key, col, lineage, bytes) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT (tbl, key, col) DO UPDATE SET lineage = excluded.lineage, bytes = excluded.bytes`,
   selectSnapshot: `SELECT lineage, bytes FROM ${SQLITE_SNAPSHOTS} WHERE tbl = ? AND key = ? AND col = ?`,
+  forgetEntries: `DELETE FROM ${SQLITE_LOG} WHERE tbl = ? AND key = ?`,
+  forgetHeads: `DELETE FROM ${SQLITE_HEADS} WHERE tbl = ? AND key = ?`,
+  forgetSnapshots: `DELETE FROM ${SQLITE_SNAPSHOTS} WHERE tbl = ? AND key = ?`,
 };
 
 /** The Postgres migration step that creates `syncmesh.doc_log` and `syncmesh.doc_heads`. */
@@ -176,4 +179,7 @@ export const POSTGRES_DOCS: DocSql = {
     ON CONFLICT (tbl, key, col) DO UPDATE SET lineage = excluded.lineage, bytes = excluded.bytes`,
   selectSnapshot: `SELECT lineage, bytes FROM ${PG_SNAPSHOTS}
     WHERE tbl = $1 AND key = $2 AND col = $3`,
+  forgetEntries: `DELETE FROM ${PG_LOG} WHERE tbl = $1 AND key = $2`,
+  forgetHeads: `DELETE FROM ${PG_HEADS} WHERE tbl = $1 AND key = $2`,
+  forgetSnapshots: `DELETE FROM ${PG_SNAPSHOTS} WHERE tbl = $1 AND key = $2`,
 };

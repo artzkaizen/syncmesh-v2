@@ -1,4 +1,4 @@
-import type { RowWrite } from "@syncmesh/engine";
+import type { RowWrite, WriteKeys } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 
 import type { SqlDialect, SqlDriver } from "./driver.js";
@@ -72,6 +72,8 @@ export interface RowSync {
   /** Moves the watermark; what an acknowledgement does, once, however many rows it settles. */
   readonly acknowledge: (hlcMs: number, hlcLogical: number) => Promise<void>;
   readonly clear: () => Promise<void>;
+  /** Forgets these rows' sync state, as a purge does (D45). */
+  readonly remove: (keys: WriteKeys) => Promise<void>;
 }
 
 export function rowSyncTable(driver: SqlDriver): RowSync {
@@ -107,6 +109,10 @@ export function rowSyncTable(driver: SqlDriver): RowSync {
     clear: async () => {
       await driver.run(`DELETE FROM ${ROW_SYNC}`);
       await driver.run(`DELETE FROM ${ACKED}`);
+    },
+    remove: async (keys) => {
+      for (const [table, set] of keys)
+        for (const key of set) await driver.run(remove, [table, key]);
     },
   };
 }

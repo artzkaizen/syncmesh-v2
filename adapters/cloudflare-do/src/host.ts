@@ -16,6 +16,7 @@ import {
   createRelayHost,
   decodeRelayFrame,
   hostedPosture,
+  openBlobHomes,
   relayIdentity,
   relayEpoch,
 } from "@syncmesh/relay";
@@ -151,13 +152,14 @@ export function relayDurableHost(
       err: (failure) => panic(`the room's log failed to open: ${failure.message}`),
     });
     const blobs = options.blobs === false ? undefined : await openBlobs(driver);
+    const blobHomes = options.blobs === false ? undefined : await openBlobHomes(driver);
     return {
       store,
       epoch: await relayEpoch(driver),
       // the platform's own database, which outlives every eviction (D42)
       durable: true,
       identity: await relayIdentity(driver),
-      ...omitUndefined({ blobs }),
+      ...omitUndefined({ blobs, blobHomes }),
       // the object's storage is the platform's to close; nothing was borrowed
       release: () => undefined,
     };

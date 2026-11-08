@@ -11,6 +11,7 @@ import type { SqlDriver, SqlRow, SqlValue } from "./driver.js";
 import type { Hole } from "./holes.js";
 
 import { driverDialect } from "./dialect.js";
+import { evictEvents } from "./evict.js";
 import { readHoles, unaccounted } from "./holes.js";
 import { attempt, coverageOf, failure, headerRow, hlcRow, inTransaction, seqOf } from "./sql.js";
 
@@ -336,6 +337,7 @@ export function sqlEventStore(
       ),
     maxHlc: () =>
       query("maxHlc failed", SQL.selectMaxHlc).then((rows) => rows.andThen((r) => hlcRow(r[0]))),
+    evict: (ids) => evictEvents(driver, { events: SQL, gaps: GAPS }, transaction, ids),
   };
 
   if (options.nested === true) return Promise.resolve(Result.ok(store)); // the owner migrated

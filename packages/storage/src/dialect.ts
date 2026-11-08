@@ -54,6 +54,8 @@ export interface EventSql {
   readonly upsertFloor: string;
   readonly selectFloors: string;
   readonly selectMaxHlc: string;
+  /** Deletes one event, recording no floor (D45). Binds `(peer, seq, local)`. */
+  readonly deleteEvent: string;
 }
 
 /**
@@ -99,6 +101,8 @@ export interface StateSql {
   readonly selectScope: string;
   readonly upsertScope: string;
   readonly clearScope: string;
+  /** Deletes one cached row (D45). Binds `(tbl, key)`. */
+  readonly deleteRow: string;
 }
 
 /**
@@ -126,6 +130,10 @@ export interface DocSql {
   readonly upsertSnapshot: string;
   /** Binds `tbl, key, col`; `lineage, bytes`. */
   readonly selectSnapshot: string;
+  /** Each deletes one row's documents from the log, the heads and the snapshots (D45). Binds `(tbl, key)`. */
+  readonly forgetEntries: string;
+  readonly forgetHeads: string;
+  readonly forgetSnapshots: string;
 }
 
 /**

@@ -52,6 +52,16 @@ export class BlobQuotaExceeded extends TaggedError("BlobQuotaExceeded")<{
   message: string;
 }> {}
 
+/**
+ * A put a grant-gated room would not keep (D44): this device's grant does not name the partition
+ * the bytes were billed to. Nothing was stored there, so the bytes are still only the author's.
+ */
+export class BlobNotGranted extends TaggedError("BlobNotGranted")<{
+  hash: string;
+  partition: PartitionKey;
+  message: string;
+}> {}
+
 /** A blob name as the wire spells it: 64 lowercase hex digits, the length of a sha-256. */
 export const BLOB_HASH_HEX = /^[0-9a-f]{64}$/;
 
@@ -61,6 +71,27 @@ export const BLOB_HASH_HEX = /^[0-9a-f]{64}$/;
  * keep, never a reason to fetch.
  */
 export const isBlobHash = (value: string): value is BlobHash => BLOB_HASH_HEX.test(value);
+
+/**
+ * Every blob name a value spells, however deep: a cell holds JSON, an opaque change whatever CBOR
+ * read. A reference is defined by spelling alone ({@link isBlobHash}), so this is what both a
+ * relay keeping blobs and a device purging them read a row with. Walked with a stack rather than
+ * recursion, because the depth is the sender's choice.
+ */
+/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof -- a reference is defined over whatever a cell holds, an opaque change's CBOR included, which no schema here describes: the walk reads spelling, never meaning, and `isBlobHash` is the parse it hands each string to */
+export function* blobNamesIn(value: unknown): Generator<BlobHash> {
+  const stack = [value];
+  while (stack.length > 0) {
+    const next = stack.pop();
+    if (typeof next === "string") {
+      if (isBlobHash(next)) yield next;
+    } else if (Array.isArray(next) || next instanceof Map)
+      for (const item of next.values()) stack.push(item);
+    else if (typeof next === "object" && next !== null && !(next instanceof Uint8Array))
+      for (const item of Object.values(next)) stack.push(item);
+  }
+}
+/* oxlint-enable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof */
 
 /** The sha-256 of the bytes, in the wire's lowercase hex — the blob's whole identity. */
 export const hashOf = (bytes: Uint8Array): BlobHash =>
@@ -105,8 +136,9 @@ export interface BlobStore {
   /**
    * Where these bytes came from, which is the whole of what may be dropped and what may not.
    *
-   * `undefined` for bytes this store does not hold. A store with no answer — the in-memory one —
-   * reports everything as `mine`, which is the safe direction: it never licenses an eviction.
+   * `undefined` for bytes this store does not hold. Bytes stored by `put` stay `mine` when the
+   * same bytes arrive again through `putAt`. A store with no record of origin must answer `mine`,
+   * the safe direction: it never licenses an eviction.
    */
   readonly origin: (hash: BlobHash) => Promise<BlobOrigin | undefined>;
   /**
@@ -135,10 +167,13 @@ const missing = (hash: BlobHash) =>
 /** A store that lives as long as the process: a device's cache, and what tests run against. */
 export function memoryBlobStore(): BlobStore {
   const held = new Map<string, Uint8Array>();
+  // the hashes `put` stored; an echo through `putAt` does not demote one, as in `sqlBlobStore`
+  const mine = new Set<string>();
   return {
     put: (bytes) => {
       const hash = hashOf(bytes);
       held.set(hash, Uint8Array.from(bytes));
+      mine.add(hash);
       return Promise.resolve(Result.ok(hash));
     },
     putAt: (hash, bytes) =>
@@ -152,17 +187,14 @@ export function memoryBlobStore(): BlobStore {
     has: (hash) => Promise.resolve(held.has(hash)),
     delete: (hash) => {
       held.delete(hash);
+      mine.delete(hash);
       return Promise.resolve();
     },
-    /**
-     * This store keeps no origin, so it answers the only safe way: everything it holds is
-     * irreplaceable. A cache that wrongly says "you can drop this" loses bytes; one that wrongly
-     * says "keep it" costs space, and only one of those is recoverable.
-     */
-    origin: (hash) => Promise.resolve(held.has(hash) ? "mine" : undefined),
+    origin: (hash) =>
+      Promise.resolve(held.has(hash) ? (mine.has(hash) ? "mine" : "cached") : undefined),
     irreplaceable: () =>
-      // SAFETY: the keys are the hashes `put`/`putAt` stored them under
-      Promise.resolve([...held.keys()] as BlobHash[]),
+      // SAFETY: the keys are the hashes `put` stored them under
+      Promise.resolve([...mine] as BlobHash[]),
   };
 }
 

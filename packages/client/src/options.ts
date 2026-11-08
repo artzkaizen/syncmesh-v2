@@ -1,4 +1,4 @@
-import type { EngineError, EventStore, StateStore } from "@syncmesh/engine";
+import type { EngineError, EventStore, Narrowed, StateStore } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 import type { ColumnsMap, PresenceMap, Schema } from "@syncmesh/schema";
 import type {
@@ -113,6 +113,22 @@ export interface MeshOptions<
    * `sqlBlobStore` over your driver keeps them across restarts.
    */
   readonly blobStore?: BlobStore;
+  /**
+   * This device was just told it may no longer read something it holds (D45): its own grant now
+   * names fewer partitions, or the authority's gate re-paged it and withheld rows of these tables.
+   * Runs before anything is removed — tell the person — and is awaited; a throw is warned about
+   * and the purge goes ahead. Then the device drops those rows, the events of other devices that
+   * wrote them, their doc logs, and the cached blobs only those rows named unless this device
+   * made them. Its own writes are kept.
+   *
+   * Return promptly: a row narrowing found by a relay re-page waits on this hook inside that
+   * relay session, so sync from it stalls until the hook settles. Show the notice and return;
+   * do not wait for the person to dismiss it.
+   *
+   * Hygiene on an honest device, not a security boundary: a modified client keeps what it was
+   * sent. A later widening brings the rows back by re-paging.
+   */
+  readonly onNarrowed?: (narrowed: Narrowed) => Promise<void> | void;
   /**
    * Postgres only: install row-level security compiled from the schema's `read` rules on boot,
    * so a handle's plain `db.select()` is already the caller's view — no `read()` wrapper at the

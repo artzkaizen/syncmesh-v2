@@ -1,4 +1,4 @@
-import type { DerivedRow, RowWrite } from "@syncmesh/engine";
+import type { DerivedRow, RowWrite, WriteKeys } from "@syncmesh/engine";
 import type { Table } from "@syncmesh/schema";
 
 import { counterValue, isVisible } from "@syncmesh/kernel";
@@ -21,6 +21,8 @@ export interface Projection {
    */
   readonly derive: (rows: readonly DerivedRow[]) => Promise<void>;
   readonly clear: () => Promise<void>;
+  /** Deletes these rows from the app's tables and their sync state, as a purge does (D45). */
+  readonly remove: (keys: WriteKeys) => Promise<void>;
 }
 
 export interface ProjectionOptions {
@@ -120,6 +122,14 @@ export function tablesProjection(
     clear: async () => {
       await rowSync?.clear();
       for (const table of byName.values()) await driver.run(`DELETE FROM ${quote(table.name)}`);
+    },
+    remove: async (keys) => {
+      await rowSync?.remove(keys);
+      for (const [table, set] of keys) {
+        const plan = statements.get(table);
+        if (plan === undefined) continue;
+        for (const key of set) await driver.run(plan.remove, [key]);
+      }
     },
   };
 }

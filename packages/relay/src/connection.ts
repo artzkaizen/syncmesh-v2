@@ -21,7 +21,7 @@ import {
   selectVersion,
   speaksHandshake,
 } from "./frames.js";
-import { eventIntake, serveBlob } from "./ingest.js";
+import { eventIntake, isBlobFrame, serveBlob } from "./ingest.js";
 import { createBudget } from "./limits.js";
 import { createViewer } from "./passover.js";
 import { newChallenge, verifyJoinProof } from "./proof.js";
@@ -353,7 +353,7 @@ export function createConnection(
         onGrant(bytes, frame.frame.wire);
       return;
     }
-    if (frame.kind === "blob-put" || frame.kind === "blob-get") serveBlob(conversation, frame);
+    if (isBlobFrame(frame)) serveBlob(conversation, frame, seat);
     // anything else control-shaped is one the relay did not ask for, and ignores
     else if (frame.kind === "session") onSession(bytes, frame);
   };

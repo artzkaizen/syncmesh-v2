@@ -19,6 +19,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { Result, TaggedError } from "@syncmesh/result";
 import { docChangeId } from "@syncmesh/wire";
 
+import type { WriteKeys } from "./state-store.js";
 import type { StoreFailure } from "./store.js";
 import type { Cursors } from "./sync.js";
 
@@ -217,6 +218,11 @@ export interface DocStore {
    * holds them back.
    */
   readonly uncoveredFloor: () => Promise<Result<Cursors, StoreFailure>>;
+  /**
+   * Drops every entry, head and snapshot of these rows' documents — what a purge does to rows
+   * this device may no longer read (D45). A row with no document is skipped.
+   */
+  readonly forget: (keys: WriteKeys) => Promise<Result<void, StoreFailure>>;
 }
 
 /** Every doc change in the events, as the entries a fold appends, in event and change order. */

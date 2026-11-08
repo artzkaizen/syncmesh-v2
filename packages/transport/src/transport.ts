@@ -1,4 +1,4 @@
-import type { Engine, Interest, Unsubscribe } from "@syncmesh/engine";
+import type { Engine, Interest, Narrowed, PurgeScope, Unsubscribe } from "@syncmesh/engine";
 import type { EventId, PeerId } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
 import type { EventCrypto, GrantRegistry, Identity } from "@syncmesh/wire";
@@ -116,6 +116,12 @@ export interface TransportContext {
    * device only through the authority's gate. `createMesh` fills it from the manifest.
    */
   readonly withheld?: BridgeOptions["withheld"];
+  /**
+   * Forgets what this device was just found to be refused (D45): the mesh tells the app, then
+   * purges. A relay re-paging this device under a narrower entitlement is what finds it. Absent,
+   * a transport purges the engine directly and tells nobody.
+   */
+  readonly purge?: (narrowed: Narrowed, scope: PurgeScope) => Promise<void>;
 }
 
 /**

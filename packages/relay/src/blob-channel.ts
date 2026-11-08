@@ -1,10 +1,14 @@
 import type { PartitionKey } from "@syncmesh/kernel";
 import type { BlobRefusal, TransportBlobs } from "@syncmesh/transport";
 
+import { omitUndefined } from "@syncmesh/result";
 import { Temporal, durationMs } from "@syncmesh/temporal";
 import { BLOB_MISSING } from "@syncmesh/transport";
 
+import type { RelayFrame } from "./frames.js";
+
 import { blobGetFrame, blobPutFrame } from "./frames.js";
+import { UNGRANTED } from "./trust.js";
 
 /**
  * How long an upload waits for the relay to say it kept the bytes. A relay built before
@@ -100,3 +104,26 @@ export function createBlobChannel(send: (frame: Uint8Array) => void) {
     },
   };
 }
+
+/**
+ * What a put's answer means to the upload waiting on it: nothing for `blob-stored`, the budget
+ * for a `quota` refusal, the partition for an `ungranted` one (D44) — and nothing for any other
+ * code, `no-store` from a room that keeps no blobs or one this build cannot name (D14), which is
+ * what that upload heard before the answer existed.
+ */
+export const uploadRefusal = (
+  frame: Extract<RelayFrame, { kind: "blob-stored" | "blob-refused" }>,
+): BlobRefusal | undefined => {
+  if (frame.kind !== "blob-refused") return undefined;
+  if (frame.code === "quota")
+    return omitUndefined({
+      reason: "quota",
+      limit: frame.limit,
+      used: frame.used,
+      partition: frame.partition,
+    } as const);
+  // a refusal naming no partition cannot be about a grant: a put billed to none is never refused
+  if (frame.code === UNGRANTED && frame.partition !== undefined)
+    return { reason: "ungranted", partition: frame.partition };
+  return undefined;
+};

@@ -104,6 +104,8 @@ export interface MeshGrantsOptions {
 
 /** What a load of stored grants found: how many came back, and how many the registry refused. */
 export interface GrantsRestored {
+  /** Settles once every grant registered or forgotten so far is written: what a stop waits on. */
+  readonly saved: () => Promise<void>;
   readonly restored: number;
   /** Grants that no longer verify — expired, almost always — dropped from the store on the way past. */
   readonly dropped: number;
@@ -117,9 +119,15 @@ export interface GrantsRestored {
  * registry would not have accepted from a peer. What fails to come back is deleted rather than
  * left to be re-read on every boot.
  */
+/** A grant write that failed is said: the grant holds for this run and is gone after a restart. */
+const said = (written: Result<void, StoreFailure>): void => {
+  if (written.isErr()) console.warn("a grant could not be saved:", written.error);
+};
+
 export async function rememberGrants(
   registry: GrantRegistry,
   store: GrantStore,
+  settled: () => Promise<void> = () => Promise.resolve(),
 ): Promise<Result<GrantsRestored, StoreFailure>> {
   const stored = await store.all();
   if (stored.isErr()) return stored;
@@ -137,20 +145,30 @@ export async function rememberGrants(
     const origin = readGrantOrigin(wire);
     if (origin.isOk()) await store.delete(origin.value.device);
   }
-  registry.onRegistered((grant, wire) => void store.put(grant.device, wire));
-  registry.onForgotten((device) => void store.delete(device));
-  return Result.ok({ restored, dropped });
+  // one queue, so a later grant is never overwritten by an earlier one still waiting; each waits
+  // for `settled` — the purge a narrowing grant starts (D45) — so a narrower grant is kept only
+  // once what it took away is gone: a device stopped in between restarts on the wider grant and
+  // learns of the narrowing again from the next session that carries it
+  let saving: Promise<void> = Promise.resolve();
+  registry.onRegistered((grant, wire) => {
+    saving = saving.then(settled).then(async () => said(await store.put(grant.device, wire)));
+  });
+  registry.onForgotten((device) => {
+    saving = saving.then(async () => said(await store.delete(device)));
+  });
+  return Result.ok({ restored, dropped, saved: () => saving });
 }
 
 /** The grants this device already knew, back from its own database; nothing to restore without one. */
 export async function restoreGrants(
   registry: GrantRegistry,
   driver: SqlDriver | undefined,
-): Promise<Result<void, StoreFailure>> {
-  if (driver === undefined) return Result.ok(undefined);
+  settled?: () => Promise<void>,
+): Promise<Result<() => Promise<void>, StoreFailure>> {
+  if (driver === undefined) return Result.ok(() => Promise.resolve());
   const store = await sqlGrantStore(driver);
   if (store.isErr()) return store;
-  return (await rememberGrants(registry, store.value)).map(() => undefined);
+  return (await rememberGrants(registry, store.value, settled)).map(({ saved }) => saved);
 }
 
 /**

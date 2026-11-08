@@ -313,6 +313,52 @@ describe("visibility: authority — admission at the relay (D24-A)", () => {
     room.close();
   });
 
+  test("an entitlement that narrows purges what the device may no longer read, log and all (D45)", async () => {
+    const room = await gatedRoom();
+    await seeded(room);
+    const b = gatedPeer(43);
+    clinics.set(b.identity.peerId, ["a", "b"]);
+    await attach(b, dialTo(room).dial);
+    expect(idsIn(b, CONSULTS)).toEqual(["x", "y"]);
+
+    // b leaves clinic a: no partition changes — the gate is the authority's, row by row
+    clinics.set(b.identity.peerId, ["b"]);
+    room.reentitle([b.identity.peerId]);
+    expect(await until(() => !holds(b, CONSULTS, "x"), 3000)).toBe(true);
+    expect(idsIn(b, CONSULTS)).toEqual(["y"]);
+    expect(idsIn(b, CATALOG).length).toBeGreaterThan(0);
+    // gone from the log too, so nothing a restart refolds can bring it back
+    const log = (await b.engine.eventsSince(new Map())).unwrap();
+    const consultsHeld = log.filter(({ event }) =>
+      event.changes.some((change) => change.table === CONSULTS),
+    );
+    expect(consultsHeld.length).toBe(1);
+
+    // and a widening brings it back: the re-page from nothing sends it again, and it folds
+    clinics.set(b.identity.peerId, ["a", "b"]);
+    room.reentitle([b.identity.peerId]);
+    expect(await until(() => holds(b, CONSULTS, "x"), 3000)).toBe(true);
+    expect(idsIn(b, CONSULTS)).toEqual(["x", "y"]);
+    room.close();
+  });
+
+  test("a re-entitlement that only widens purges nothing", async () => {
+    const room = await gatedRoom();
+    await seeded(room);
+    const b = gatedPeer(43);
+    clinics.set(b.identity.peerId, ["b"]);
+    await attach(b, dialTo(room).dial);
+    const purges: number[] = [];
+    b.engine.onFoldBatch((batch) => {
+      if (batch.source === "purge") purges.push(batch.eventCount);
+    });
+    clinics.set(b.identity.peerId, ["a", "b"]);
+    room.reentitle([b.identity.peerId]);
+    expect(await until(() => holds(b, CONSULTS, "x"), 3000)).toBe(true);
+    expect(purges).toEqual([]);
+    room.close();
+  });
+
   test("the fan-out from another instance passes through the same gate", async () => {
     const fanout = memoryFanout();
     const store = () => createMemoryEventStore();

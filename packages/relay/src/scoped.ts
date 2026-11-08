@@ -54,6 +54,12 @@ export interface ScopedDeps {
   readonly release: (authors: Iterable<PeerId>) => Promise<void>;
   /** The cursors are from another entitlement: stop acting on this session and re-page. */
   readonly reentitled: () => void;
+  /**
+   * A re-page from nothing ended with a coverage naming an entitlement (D24): everything the room
+   * scanned for this device has now been sent or withheld, so what this device holds inside that
+   * coverage and was not sent again is what the authority's gate now refuses it (D45).
+   */
+  readonly repaged: (scoped: Coverage, asked: JoinedScope) => Promise<void>;
 }
 
 /**
@@ -117,6 +123,7 @@ export function scopedCoverage(deps: ScopedDeps) {
       engine.adoptCoverage(scoped);
       // and then whatever sat above it, which the moved cursor has just made contiguous
       await release(scoped.synced.keys());
+      if (repaging && offered.entitlement !== undefined) await deps.repaged(scoped, asked);
     });
   };
 

@@ -78,6 +78,18 @@ export function createMemoryDocStore(): DocStore {
       return ok(undefined);
     },
     snapshotOf: (doc) => ok(snapshots.get(docKey(doc))),
+    forget: (keys) => {
+      const gone = (doc: Pick<DocAddress, "table" | "key">) =>
+        keys.get(doc.table)?.has(doc.key) === true;
+      for (const [id, entry] of log) if (gone(entry)) log.delete(id);
+      // a snapshot is written with its head and keyed the same, so the heads name both
+      for (const [id, head] of heads)
+        if (gone(head)) {
+          heads.delete(id);
+          snapshots.delete(id);
+        }
+      return ok(undefined);
+    },
     uncoveredFloor: () => {
       const floor = new Map<PeerId, SeqNum>();
       for (const entry of log.values()) {

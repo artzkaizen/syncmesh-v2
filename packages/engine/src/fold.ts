@@ -20,10 +20,11 @@ import { timed } from "./telemetry.js";
 
 /**
  * Where a batch came from; `repair` carries no cursors (RFC-0014), `snapshot` adopts them last
- * (RFC-0019). `derive` folds no event: a replica wrote derived columns it computed from a
- * document (RFC-0023 §16.4), and only the rows' app tables moved.
+ * (RFC-0019), `purge` dropped rows this device may no longer read (D45). `derive` folds no event:
+ * a replica wrote derived columns it computed from a document (RFC-0023 §16.4), and only the rows'
+ * app tables moved.
  */
-export type FoldSource = "local" | "remote" | "boot" | "repair" | "snapshot" | "derive";
+export type FoldSource = "local" | "remote" | "boot" | "repair" | "snapshot" | "purge" | "derive";
 
 /** One notification per fold, however many events it covered. `writeKeys` is exact: live queries trust it. */
 export interface FoldBatch {

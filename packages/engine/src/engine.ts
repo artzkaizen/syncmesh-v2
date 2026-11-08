@@ -17,12 +17,11 @@ import type { RepairApi } from "./digest.js";
 import type { DocApi } from "./doc-path.js";
 import type { FeedApi } from "./feed.js";
 import type { Interest } from "./interest.js";
-import type { AtomicStores, EngineOptions, MutateOptions } from "./options.js";
+import type { EngineOptions, MutateOptions } from "./options.js";
 import type { Parked } from "./quarantine.js";
 import type { EventHeader, RecentEvents } from "./recent.js";
 import type { SnapshotApi } from "./snapshot.js";
-import type { StoredEvent } from "./store.js";
-import type { StoreFailure } from "./store.js";
+import type { StoreFailure, StoredEvent } from "./store.js";
 import type { Ahead, Coverage, Cursors } from "./sync.js";
 import type { Tx } from "./tx.js";
 import type { StateLookup } from "./validate.js";
@@ -41,8 +40,10 @@ import {
 } from "./errors.js";
 import { createFeedPath, trackFeeds } from "./feed.js";
 import { createFoldPath, type FoldBatch } from "./fold.js";
+import { gatedTransactions } from "./gate.js";
 import { eventsWanted } from "./interest.js";
 import { createHub, type Unsubscribe } from "./listeners.js";
+import { type PurgeApi, createPurge } from "./purge.js";
 import { createQuarantine, retryQuarantined, withRetry } from "./quarantine.js";
 import { recentHeaders } from "./recent.js";
 import { createSnapshotPath } from "./snapshot.js";
@@ -69,7 +70,7 @@ export interface Quarantined {
   readonly reason: ValidationError;
 }
 
-export interface Engine extends FeedApi, RepairApi, SnapshotApi, DocApi, OwnPositionApi {
+export interface Engine extends FeedApi, RepairApi, SnapshotApi, DocApi, OwnPositionApi, PurgeApi {
   readonly peerId: PeerId;
   /** Records, stamps, numbers, appends, folds, then hands the event to `onOutbound` — a write is real once appended. */
   readonly mutate: (
@@ -227,8 +228,7 @@ export function createEngine(options: EngineOptions): Engine {
   const docPath = createDocPath(options, peerId, undo);
   const { merge, hasAdapter, store: docStore } = docPath;
   const plain = omitUndefined({ events: store, docs: docStore, state: stateStore });
-  const atomically = <T>(fn: (scoped: AtomicStores) => Promise<T>): Promise<T> =>
-    atomic === undefined ? fn(plain) : atomic((scoped) => fn(docPath.within(scoped)));
+  const { shared: atomically, exclusive, turn } = gatedTransactions(atomic, plain, docPath.within);
   const coverage = trackCoverage(boot?.coverage);
   const errors = createHub<EngineError>();
   if (options.onError !== undefined) errors.subscribe(options.onError);
@@ -269,21 +269,21 @@ export function createEngine(options: EngineOptions): Engine {
     partition: (table, key) => getRecord(getState(), table, key)?.partition,
   } satisfies StateLookup;
 
+  // what the snapshot install and the purge both read and replace
+  const held = { getState, setState, coverageOf: coverage.current, merge };
   const snapshots = createSnapshotPath({
-    getState,
-    setState,
-    coverageOf: coverage.current,
+    ...held,
     adopt: coverage.adopt,
-    persist: (batch: FoldBatch) => persist(batch, plain),
+    // in a turn, so a purge never runs between a snapshot's state commit and its own (D45)
+    persist: (batch: FoldBatch) => turn(() => persist(batch, plain)),
     notify,
-    merge,
     docs: options.docs,
   });
 
   const repair = createRepairPath({
     getState,
     mergeInto: (table, key, record) => setState(mergeRecord(getState(), table, key, record, merge)),
-    persist: (batch) => persist(batch, plain),
+    persist: (batch) => turn(() => persist(batch, plain)),
     notify,
     docs: options.docs,
   });
@@ -362,6 +362,7 @@ export function createEngine(options: EngineOptions): Engine {
     retryQuarantined: () => retryQuarantined(parked, receiveAndRetry),
     onQuarantine: quarantine.subscribe,
     stranded: () => strandedWrites(store, peerId),
+    purge: createPurge({ ...held, peerId, parked, folds, hasAdapter, exclusive }),
     onTelemetry: telemetry.subscribe,
     ...docPath.api,
   };

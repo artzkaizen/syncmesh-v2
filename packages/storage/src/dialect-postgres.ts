@@ -1,13 +1,10 @@
-import type { CellValue } from "@syncmesh/kernel";
-import type { ColumnKind } from "@syncmesh/schema";
-
 import type { CaptureSql, Dialect } from "./dialect.js";
-import type { SqlValue } from "./driver.js";
 import type { Rung } from "./ladder.js";
 
 import { POSTGRES_DOCS, POSTGRES_DOC_SNAPSHOTS, POSTGRES_DOC_TABLES } from "./dialect-docs.js";
 import { POSTGRES_GAPS, POSTGRES_GAP_TABLES } from "./dialect-gaps.js";
 import { POSTGRES_OPERATIONS } from "./dialect-operations.js";
+import { postgresCell, sqlType } from "./dialect-postgres-cells.js";
 import { tableColumns, literal, quote, type TableColumns } from "./identifiers.js";
 import { ladder } from "./ladder.js";
 import { namespaceDdl } from "./namespace.js";
@@ -32,26 +29,6 @@ const VERSION: Rung = {
         ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
       [String(step)],
     ),
-};
-
-/** What a Drizzle `pg-core` column of the kind would be, so a mesh-created table reads like the app's own. */
-const sqlType = (kind: ColumnKind): string => {
-  switch (kind) {
-    case "integer":
-      return "BIGINT";
-    case "float":
-      return "DOUBLE PRECISION";
-    case "boolean":
-      return "BOOLEAN";
-    case "timestamp":
-      return "TIMESTAMPTZ";
-    case "json":
-      return "JSONB";
-    case "blob":
-      return "BYTEA";
-    default:
-      return "TEXT";
-  }
 };
 
 /** The logged image in the shared shape: hex bytes, epoch-millisecond timestamps, JSON as text. */
@@ -180,25 +157,6 @@ const POSTGRES_MIGRATIONS: readonly (readonly string[])[] = [
   POSTGRES_GAP_TABLES,
 ];
 
-const postgresCell = (kind: ColumnKind, cell: CellValue): SqlValue => {
-  if (cell === null) return null;
-  if (cell instanceof Uint8Array) return cell;
-  switch (kind) {
-    case "boolean":
-      return cell === true;
-    case "json":
-      return JSON.stringify(cell);
-    case "timestamp":
-      return new Date(Number(cell));
-    case "integer":
-    case "float":
-      return Number(cell);
-    default:
-      // SAFETY: a text or uuid cell passed the column's kind check when it was written, so it is a string
-      return cell as string;
-  }
-};
-
 export const POSTGRES: Dialect = {
   name: "postgres",
   events: {
@@ -236,6 +194,7 @@ export const POSTGRES: Dialect = {
           ELSE syncmesh.compaction.hlc_logical END,
         hlc_ms = GREATEST(syncmesh.compaction.hlc_ms, excluded.hlc_ms)`,
     selectFloors: `SELECT peer, local, seq FROM syncmesh.compaction`,
+    deleteEvent: `DELETE FROM syncmesh.events WHERE peer = $1 AND seq = $2 AND local = $3`,
     selectMaxHlc: `SELECT hlc_ms, hlc_logical FROM (
       SELECT hlc_ms, hlc_logical FROM syncmesh.events
       UNION ALL SELECT hlc_ms, hlc_logical FROM syncmesh.compaction) AS u
@@ -255,6 +214,7 @@ export const POSTGRES: Dialect = {
     upsertScope: `INSERT INTO syncmesh.scope (id, scope) VALUES (0, $1)
       ON CONFLICT (id) DO UPDATE SET scope = excluded.scope`,
     clearScope: `DELETE FROM syncmesh.scope`,
+    deleteRow: `DELETE FROM syncmesh.state_rows WHERE tbl = $1 AND key = $2`,
   },
   gaps: POSTGRES_GAPS,
   docs: POSTGRES_DOCS,

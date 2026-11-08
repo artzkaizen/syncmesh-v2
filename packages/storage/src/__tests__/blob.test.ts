@@ -71,6 +71,21 @@ describe("a blob's origin decides whether losing it costs anything", () => {
     expect(await store.irreplaceable()).toEqual([mine]);
   });
 
+  test("the memory store keeps the same record: made here is mine, arrived is cached", async () => {
+    const store = memoryBlobStore();
+    const mine = (await store.put(bytes(1))).unwrap();
+    const theirs = hashOf(bytes(9));
+    (await store.putAt(theirs, bytes(9))).unwrap();
+    (await store.putAt(mine, bytes(1))).unwrap();
+
+    expect(await store.origin(mine)).toBe("mine");
+    expect(await store.origin(theirs)).toBe("cached");
+    expect(await store.irreplaceable()).toEqual([mine]);
+    await store.delete(mine);
+    expect(await store.origin(mine)).toBeUndefined();
+    expect(await store.irreplaceable()).toEqual([]);
+  });
+
   test("a hash nobody stored has no origin, rather than a wrong one", async () => {
     const driver = await openPair();
     const store = (await sqlBlobStore(driver)).unwrap();

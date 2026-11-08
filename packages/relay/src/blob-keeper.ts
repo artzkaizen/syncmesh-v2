@@ -1,14 +1,17 @@
+import type { StoreFailure } from "@syncmesh/engine";
 import type { PartitionKey, SyncEvent } from "@syncmesh/kernel";
-import type { BlobError, BlobHash, BlobStore } from "@syncmesh/storage";
+import type { BlobError, BlobHash, BlobHomes, BlobStore, SqlDriver } from "@syncmesh/storage";
 
-import { Result } from "@syncmesh/result";
-import { BlobQuotaExceeded, isBlobHash } from "@syncmesh/storage";
+import { Result, panic } from "@syncmesh/result";
+import { BlobQuotaExceeded, blobNamesIn, sqlBlobHomes } from "@syncmesh/storage";
 import { Temporal, addToInstant } from "@syncmesh/temporal";
 
 /** What a room lends the blobs it keeps: where they live, its budget and window, and its clock. */
 export interface BlobKeeperOptions {
   /** The room's store, capped when it has a ceiling — a sweep's delete goes through the cap. */
   readonly store: BlobStore;
+  /** Every partition a put billed each blob to (D44): what a grant-gated room serves a fetch by. */
+  readonly homes: BlobHomes;
   /** Bytes one partition may hold here; absent, every partition may hold as much as it likes. */
   readonly quota: number | undefined;
   /** How long a blob nothing references is kept; absent, the sweep removes nothing. */
@@ -43,8 +46,11 @@ export interface BlobKeeperOptions {
  * - **The set of names seen only grows.** One entry per distinct hash ever referenced, held or
  *   not, for as long as the instance runs.
  *
- * The partition a put is billed to is the putter's claim (a `blob-put` carries it): the relay has
- * seen no row yet and cannot check it, so this is a budget, not access control.
+ * The partition a put is billed to is the putter's claim (a `blob-put` carries it). An open room
+ * takes it as a budget; a grant-gated room checks it against the putter's grant before the put
+ * reaches here (D44), and every put that lands records the partition as one of the blob's
+ * {@link BlobHomes} — where a fetch may be served from. A home comes only from a verified put, so
+ * it is a claim made by someone who held the bytes, never by someone who only knew the hash.
  */
 export interface BlobKeeper {
   /**
@@ -56,7 +62,15 @@ export interface BlobKeeper {
     hash: BlobHash,
     bytes: Uint8Array,
     partition: PartitionKey | undefined,
-  ) => Promise<Result<void, BlobError | BlobQuotaExceeded>>;
+  ) => Promise<Result<void, BlobError | BlobQuotaExceeded | StoreFailure>>;
+  /**
+   * Whether a socket entitled to `partitions` may be served these bytes (D44): a put billed them
+   * to one of those partitions, or to none. Bytes no put of this room recorded are nobody's.
+   */
+  readonly readable: (
+    hash: BlobHash,
+    partitions: readonly PartitionKey[],
+  ) => Promise<Result<boolean, StoreFailure>>;
   /** Every blob name an event this room now holds references. */
   readonly note: (event: SyncEvent) => void;
   /** These bytes left the store some other way — the cap evicted them — so stop billing them. */
@@ -72,24 +86,6 @@ interface Held {
   since: Temporal.Instant;
 }
 
-/**
- * Every string in a cell value, however deep: rows hold JSON, an opaque change holds whatever
- * CBOR read. Walked with a stack rather than recursion, because the depth is the sender's choice.
- */
-/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof -- a reference is defined over whatever a cell holds, an opaque change's CBOR included, which no schema here describes: the walk reads spelling, never meaning, and `isBlobHash` is the parse it hands each string to */
-function* strings(value: unknown): Generator<string> {
-  const stack = [value];
-  while (stack.length > 0) {
-    const next = stack.pop();
-    if (typeof next === "string") yield next;
-    else if (Array.isArray(next) || next instanceof Map)
-      for (const item of next.values()) stack.push(item);
-    else if (typeof next === "object" && next !== null && !(next instanceof Uint8Array))
-      for (const item of Object.values(next)) stack.push(item);
-  }
-}
-/* oxlint-enable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof */
-
 /** What one change could reference: the cells it writes, or the payload a newer build wrote. */
 const written = (event: SyncEvent): unknown[] =>
   event.changes.map((change) => {
@@ -100,7 +96,7 @@ const written = (event: SyncEvent): unknown[] =>
   });
 
 export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
-  const { store, quota, keepUnreferencedFor, now } = options;
+  const { store, homes, quota, keepUnreferencedFor, now } = options;
   const held = new Map<BlobHash, Held>();
   /** Per partition (absent is its own budget), the bytes billed to it. */
   const used = new Map<PartitionKey | undefined, number>();
@@ -136,6 +132,9 @@ export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
         );
       const stored = await store.putAt(hash, bytes);
       if (stored.isErr()) return stored;
+      // after the store verified the bytes: a home is recorded only for someone who held them
+      const homed = await homes.add(hash, partition);
+      if (homed.isErr()) return homed;
       if (known !== undefined) known.since = at;
       else if (fresh) {
         held.set(hash, { bytes: bytes.byteLength, partition, since: at });
@@ -144,9 +143,13 @@ export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
       }
       return stored;
     },
+    readable: async (hash, partitions) =>
+      (await homes.of(hash)).map((found) =>
+        found.some((home) => home === undefined || partitions.includes(home)),
+      ),
     note: (event) => {
       if (event.sealed === true) blind = true;
-      for (const value of strings(written(event))) if (isBlobHash(value)) references.add(value);
+      for (const hash of blobNamesIn(written(event))) references.add(hash);
     },
     forget: unbill,
     sweep: async () => {
@@ -161,8 +164,23 @@ export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
         )
         .map(([hash]) => hash);
       for (const hash of due) unbill(hash);
-      for (const hash of due) await store.delete(hash);
+      for (const hash of due) {
+        await store.delete(hash);
+        // a home outliving its bytes would be harmless — a fetch finds nothing — but it is a row
+        // per blob ever swept; a failed forget is the same harmless leftover, so it is not fatal
+        await homes.forget(hash);
+      }
       return due.length;
     },
   };
 }
+
+/**
+ * A durable room's blob homes on its own database, or a stop: a gated room that fell back to
+ * homes in memory would answer every fetch `blob-missing` after its next restart, unsaid (D44).
+ */
+export const openBlobHomes = async (driver: SqlDriver): Promise<BlobHomes> =>
+  (await sqlBlobHomes(driver)).match({
+    ok: (homes) => homes,
+    err: (failure) => panic(`the room's blob homes failed to open: ${failure.message}`),
+  });
