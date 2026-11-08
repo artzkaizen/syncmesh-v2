@@ -703,11 +703,9 @@ fn presence_grants_and_blobs_pass_through_the_room() {
         .position(|f| *f == Action::Grant(grant.clone()));
     let caught_at = facts.iter().position(|f| *f == Action::CaughtUp);
     assert!(presence_at < grant_at && grant_at < caught_at, "{facts:?}");
-    // the others heard c join: the room passed its cursors on
-    assert_eq!(
-        net.take_facts(a),
-        vec![Action::PeerHeard(identity(3).peer_id().clone())]
-    );
+    // the others heard c join, and then c's own cursors frame once it caught up (D31)
+    let heard = Action::PeerHeard(identity(3).peer_id().clone());
+    assert_eq!(net.take_facts(a), vec![heard.clone(), heard]);
     net.take_facts(b);
     // a grant request travels to everyone else
     let actions = net.devices[c].link.request_grant(Some("invite-1"));

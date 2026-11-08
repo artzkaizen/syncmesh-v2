@@ -174,13 +174,19 @@ const adoptOwnRun = async (
  * Our contiguous position, for every other peer's `delivered`, with the schema this build
  * declares (D31) for their fleet reading. Index 5 needs index 3 written, so a versioned frame
  * says what is held above the cursors too, truthfully; an undeclared one is the frame it was.
+ *
+ * Sent after every fold of a remote batch, and once each join has caught up: the room's join
+ * frame for us carries no version, and a device that only writes folds nothing remote.
  */
-const ownCursorsFrame = (engine: Engine, self: PeerId): Uint8Array => {
-  const { schemaVersion } = engine;
-  const at = engine.coverage().synced;
-  return schemaVersion === undefined
-    ? cursorsFrame(self, at)
-    : cursorsFrame(self, at, engine.ahead(), undefined, schemaVersion);
+const ownCursorsFrame = (engine: Engine, self: PeerId): Uint8Array =>
+  engine.schemaVersion === undefined
+    ? cursorsFrame(self, engine.coverage().synced)
+    : cursorsFrame(self, engine.coverage().synced, engine.ahead(), undefined, engine.schemaVersion);
+
+/** A join that has caught up: our position and build go out, then the hook fires. */
+const caughtUpAnnounced = (engine: Engine, self: PeerId, hooks: SessionHooks): void => {
+  hooks.sendSafe(ownCursorsFrame(engine, self));
+  hooks.onCaughtUp();
 };
 
 /** Everything one session subscribes to; the returned unsubscribes are the session's teardown. */
@@ -334,7 +340,7 @@ export function wireSession(
       // announcing here would announce a pass that has not folded a single event of its last
       // page. What the hook means is "nothing more to hand over right now", and the moment that
       // becomes true is the moment this chain drains
-      after(() => hooks.onCaughtUp());
+      after(() => caughtUpAnnounced(engine, identity.peerId, hooks));
     }
   };
 

@@ -626,6 +626,9 @@ impl RelayLink {
                     live.paging = false;
                     live.caught_up = true;
                     self.push_outstanding(engine, out);
+                    // our position and build (D31), once per catch-up: the room's join frame for
+                    // us carries no version, and a device that only writes folds nothing remote
+                    self.send_cursors(engine, out);
                     self.repaging = false;
                     self.reentitled = false;
                     out.push(Action::CaughtUp);
