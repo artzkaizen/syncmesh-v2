@@ -81,7 +81,16 @@ don't resurrect on latecomers, log bounded (<120) under 500 events of churn.
 ## 3 · Snapshots — the default join path
 
 A peer below someone's compaction floor cannot delta-sync — the events are
-gone. It bootstraps, and per §1 every fresh joiner should too:
+gone. It bootstraps, and per §1 every fresh joiner should too.
+
+**How a peer learns it is below [built, D46].** A sender's floor (per author, the highest
+sequence its log no longer holds) rides at index 4 of every cursors frame, `ahead` always at 3
+before it. A device whose cursor for some author is strictly under that floor asks that peer for
+state once per floor per session. With `trust` set it adopts only what the issuer vouched for;
+with no `trust` it asks nothing and raises a `$recovery` issue until the app accepts the state
+(`$recovery.acceptState`), which then adopts per author at most the claimed floor. A snapshot
+manifest nobody asked for installs nothing. Peer to peer only: a relay refusing a below-floor join
+with `retention` raises no issue yet.
 
 ```
 joiner    → snapshot-request { have?: { stateHash, floorCursors } }

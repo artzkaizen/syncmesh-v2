@@ -382,6 +382,11 @@ red test naming the exact observed state. Needs a floor on the wire — a decisi
 asks for state, adopting unvouched coverage only up to the claimed floor and only with no `trust`. A snapshot
 manifest nobody asked for installs nothing; today one does, which is gaps U20. Not built yet.
 
+**Built in #26 (2026-11-08).** With `trust` set the device asks on its own and adopts what the
+issuer vouched for; with no `trust` it raises a `$recovery` issue and asks only once the app
+accepts it (`$recovery.acceptState`), the default decided 2026-11-08. The `test.todo` is a passing
+test; U20 is closed.
+
 ### 3.7 Dedup below the compaction floor
 `receiveBatch` of x's old insert on b reports `folded: 1, skipped: 0` and b's log regains the
 event *below its floor*: `admit.ts` dedups by `store.has(event.id)`, which a compacted store
