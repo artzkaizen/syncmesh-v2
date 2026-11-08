@@ -328,8 +328,8 @@ fn relay_control_frames_decode_to_their_kind_and_reencode_byte_for_byte() {
     tags.sort();
     assert_eq!(
         tags,
-        (8..=21).collect::<Vec<u64>>(),
-        "control tags 8–21, no gaps"
+        (8..=22).collect::<Vec<u64>>(),
+        "control tags 8–22, no gaps"
     );
 }
 
@@ -457,6 +457,14 @@ fn relay_control_frames_are_reproduced_from_the_generator_inputs() {
                     scope: r#"{"partitions":["org:acme"]}"#.to_owned(),
                 }),
             ),
+        ),
+        // the first refusal vector's signed wire, crossing the relay under its own tag (D32)
+        (
+            31,
+            relay_frames::room_refusal_frame(&hex(
+                &vectors("refusal-vectors.json")["vectors"][0],
+                "wireHex",
+            )),
         ),
     ];
     for (i, b) in expected {

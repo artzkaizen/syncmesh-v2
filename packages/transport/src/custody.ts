@@ -60,10 +60,16 @@ export interface CustodyDeps {
   readonly incarnation?: string;
   readonly onReceipt?: (receipt: CustodyReceipt) => void;
   readonly onRefusal?: (refusal: RefusalReceipt) => void;
+  /**
+   * How a signed refusal is framed on this link. Default the session frame, kind 9; a relay socket
+   * carries it under a control tag of its own, because 9 is the relay's `hello` (D32).
+   */
+  readonly refusalFrame?: (wire: Uint8Array) => Uint8Array;
 }
 
 export function createCustody(deps: CustodyDeps): Custody {
   const { engine, identity, now, send, errors, incarnation, onReceipt, onRefusal } = deps;
+  const framed = deps.refusalFrame ?? refusalFrame;
   const report = (parked: readonly Parked[]): void => {
     for (const { entry, reason, verdict } of parked) {
       const { peerId: author, seqNum: seq } = entry.event;
@@ -75,7 +81,7 @@ export function createCustody(deps: CustodyDeps): Custody {
         verdict: verdict._tag,
         now: now(),
       });
-      send(KIND.refusal, "refusal", refusalFrame(wire));
+      send(KIND.refusal, "refusal", framed(wire));
     }
   };
   return {

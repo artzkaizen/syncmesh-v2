@@ -13,6 +13,7 @@ import type { RelaySocket } from "./sender.js";
 import type { Client, Conversation, RoomState } from "./state.js";
 
 import { sendCatchUp } from "./catchup.js";
+import { forwardCustody } from "./custody-route.js";
 import { decodeRelayFrame } from "./frame-decode.js";
 import {
   challengeFrame,
@@ -24,7 +25,8 @@ import {
 import { eventIntake, isBlobFrame, serveBlob } from "./ingest.js";
 import { createBudget } from "./limits.js";
 import { createViewer } from "./passover.js";
-import { newChallenge, verifyJoinProof } from "./proof.js";
+import { proofFailure } from "./proof-failure.js";
+import { newChallenge } from "./proof.js";
 import { BELOW_FLOOR, belowFloor } from "./retention.js";
 import { createSeat, type Seat } from "./seat.js";
 import { secureLink } from "./secure.js";
@@ -86,31 +88,6 @@ const sealing = (socket: RelaySocket, link: SecureLink): RelaySocket => ({
 /** Which bucket a frame spends from: bulk is priced apart from everything else. */
 const trafficClass = (kind: RelayFrame["kind"]): TrafficClass =>
   kind === "blob-put" || kind === "blob-get" ? "blob" : "event";
-
-/**
- * Why a join that names a key fails to prove it, or `undefined` when it passes. A wrong signature
- * fails on any version. A bare join — no sealed link, no proof — fails at v2, and in a grant-gated
- * room on any version (D40): the room seats it under the grant it caches for the key the join
- * names, so a key taken on trust would let anyone who has seen a device's public key read what
- * that device's grant names.
- */
-function proofFailure(
-  frame: Extract<RelayFrame, { kind: "join" }>,
-  selected: number,
-  challenge: Uint8Array | undefined,
-  link: SecureLink | undefined,
-  room: RoomState,
-): string | undefined {
-  const proven =
-    frame.proof === undefined || challenge === undefined
-      ? undefined
-      : verifyJoinProof(frame.peerId, challenge, frame.core, frame.proof);
-  if (proven === false) return "the join was not signed by the key it names";
-  if (link !== undefined || proven === true) return undefined;
-  if (selected === 2) return "a v2 join signs the room's challenge with the key it names";
-  if (room.trust !== undefined) return "a grant-gated room seats only a key the join proves";
-  return undefined;
-}
 
 /**
  * A proven, admitted joiner takes its seat: the old socket for the same key goes, the hello and
@@ -295,6 +272,8 @@ export function createConnection(
     else if (frame.frame.kind === "presence") onPresence(bytes, frame.frame.wire);
     else if (frame.frame.kind === "grant-request" || frame.frame.kind === "cursors")
       room.toClients(bytes, me); // peer-to-peer facts pass through byte-identical
+    // a signed receipt goes to the author it is about, here and across the fleet (D32)
+    else if (frame.frame.kind === "receipt") forwardCustody(room, bytes, frame.frame, me);
   };
 
   /**
@@ -354,6 +333,7 @@ export function createConnection(
       return;
     }
     if (isBlobFrame(frame)) serveBlob(conversation, frame, seat);
+    else if (frame.kind === "refusal") forwardCustody(room, bytes, frame, me);
     // anything else control-shaped is one the relay did not ask for, and ignores
     else if (frame.kind === "session") onSession(bytes, frame);
   };

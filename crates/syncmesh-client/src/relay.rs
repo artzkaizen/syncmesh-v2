@@ -697,7 +697,9 @@ impl RelayLink {
             // this client's uploads do not wait on an answer, so a stored or refused put is news
             // to nobody here; the TypeScript client is the one that surfaces a quota (D18)
             | RelayFrame::BlobStored { .. }
-            | RelayFrame::BlobRefused { .. } => {}
+            | RelayFrame::BlobRefused { .. }
+            // this client keeps no write ledger, so a refusal of its write has nowhere to land
+            | RelayFrame::Refusal { .. } => {}
         }
     }
 

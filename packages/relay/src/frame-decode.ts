@@ -153,6 +153,11 @@ const decodeRelayed: ControlDecoder = (a, b) =>
     ? Result.ok({ kind: "relayed", wire: a, offset: b } as const)
     : malformedFrame("relayed is not [wire, offset]");
 
+const decodeRefusal: ControlDecoder = (a) =>
+  a instanceof Uint8Array
+    ? Result.ok({ kind: "refusal", wire: a } as const)
+    : malformedFrame("refusal is not [wire]");
+
 /** One decoder per control tag; an unlisted tag is `unknown`, never an error (D14). */
 const CONTROL = new Map<number, ControlDecoder>([
   [KIND.join, decodeJoin],
@@ -169,6 +174,7 @@ const CONTROL = new Map<number, ControlDecoder>([
   [KIND.challenge, decodeChallenge],
   [KIND.blobStored, decodeBlobHash("blob-stored")],
   [KIND.blobRefused, decodeBlobRefused],
+  [KIND.refusal, decodeRefusal],
 ]);
 
 /**
