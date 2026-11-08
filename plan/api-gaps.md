@@ -325,7 +325,7 @@ Sealing is per kind, full stop: `partition(name, { sealed: true })`, read as `Sc
 and enforced at `client/handles.ts:69`. There is no parent for it to inherit from or leak into,
 so the question §2.1 raised no longer has an object.
 
-### 3.4 A quarantine report on the wire — **built (2026-11-07), direct links only**
+### 3.4 A quarantine report on the wire — **built (2026-11-07); through a relay too (2026-11-08)**
 The hole behind §1's "failure state": a refused write is indistinguishable from an unsynced one,
 forever, to its author. Closing it is protocol work and wants its own decision. Until then every
 surface that reports custody must say the weaker true thing (§2.5).
@@ -356,9 +356,11 @@ later vouch from the same holder covering the seq. Read as `OperationsView.refus
 (not `refusalsOf` — the naming skill) and as `OperationRow.refusals?: { by, reason, verdict }[]`,
 mirrored across the browser port. `unknown-table`/`unknown-kind` are kept as the reason, and the
 `unsettled()` copy says *on an older build*, never *refused*, for them. Nothing gates on it.
-**Still open:** the relay carries no refusal, exactly as it carries no receipt — closing both is
-one relay frame under D14's version bump. React's `refused-by` rendering is `plan/react-api.md`
-G12, unbuilt; its prerequisites now exist.
+**Built 2026-11-08 (U17):** a relay room carries both — a receipt as the session frame it is, a
+refusal under the relay's own control tag 22 (session tag 9 is the relay's `hello`) — from the
+device that signed it to the author it names and nobody else, with no version bump (additive, D14).
+React renders `refused-by` (`refusedBy`, `useRefusedBy`; `plan/react-api.md` G12). See D32's
+"Built: the relay half".
 
 ### 3.5 Delete-resurrection — **proven for every peer past the floor; two findings**
 `transport/src/__tests__/resurrection.test.ts`: three peers over real bridged links, x folds a row
