@@ -5,9 +5,9 @@ import { Result } from "@syncmesh/result";
 
 import type { AtomicStores, Engine, FoldBatch, FoldSource, MutateOptions } from "./engine.js";
 import type { ValidationError } from "./errors.js";
+import type { PersistInto } from "./fold.js";
 import type { Hub } from "./listeners.js";
 import type { OwnPosition } from "./own-position.js";
-import type { StateStore } from "./state-store.js";
 import type { StoredEvent } from "./store.js";
 import type { TelemetryEvent } from "./telemetry.js";
 import type { Undo } from "./undo.js";
@@ -70,7 +70,7 @@ export interface WriteDeps {
   readonly atomically: <T>(fn: (scoped: AtomicStores) => Promise<T>) => Promise<T>;
   readonly getState: () => State;
   readonly fold: (entries: readonly StoredEvent[], source: FoldSource) => FoldBatch;
-  readonly persist: (batch: FoldBatch, into: StateStore | undefined) => Promise<void>;
+  readonly persist: (batch: FoldBatch, into: PersistInto) => Promise<void>;
   readonly notify: (batch: FoldBatch) => void;
   readonly outbound: Hub<SyncEvent>;
   readonly telemetry: Hub<TelemetryEvent>;
@@ -150,7 +150,7 @@ export function createWritePath(deps: WriteDeps) {
                */
               await mutateOptions.record?.(event);
               const folded = fold([{ event }], "local");
-              await persist(folded, scoped.state);
+              await persist(folded, scoped);
               return { event, folded };
             }),
           catch: (cause) => asStoreFailure(cause),
@@ -179,7 +179,7 @@ export function createWritePath(deps: WriteDeps) {
             atomically(async (scoped) => {
               orThrow(await scoped.events.appendBatch(fresh));
               const folded = fold(fresh, "remote");
-              await persist(folded, scoped.state);
+              await persist(folded, scoped);
               return folded;
             }),
           catch: (cause) => asStoreFailure(cause),

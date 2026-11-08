@@ -7,7 +7,7 @@ import type { SqlDriver } from "./driver.js";
 import type { RowSync } from "./row-sync.js";
 
 import { dialectOf } from "./dialect.js";
-import { columnsOf, quote } from "./identifiers.js";
+import { quote, valueColumns } from "./identifiers.js";
 
 /** A cell in the form the column's SQL type holds it on SQLite — what the fold writes and what a compiled rule compares against. */
 
@@ -36,6 +36,8 @@ export interface ProjectionOptions {
  * The fold's side of the two writers (D20): a visible record is UPSERTed into its table, a
  * tombstoned one deleted, with the capture guard at rest so none of it is logged as the app's
  * own. Stamps stay in the sidecar; the app's tables hold values only, in the driver's dialect.
+ * A document column is left out of both the insert and the update: its cell is the lineage, and
+ * the column holds the snapshot the materialiser writes (RFC-0023 §6.1).
  */
 export function tablesProjection(
   driver: SqlDriver,
@@ -47,7 +49,7 @@ export function tablesProjection(
   const byName = new Map(tables.map((t) => [String(t.name), t]));
   const statements = new Map(
     tables.map((table) => {
-      const columns = columnsOf(table);
+      const columns = valueColumns(table);
       const names = columns.map(([, name]) => quote(name));
       // the partition column is the mesh's own, never a schema column: quoted like one
       if (partitionColumn !== false) names.push(`"${partitionColumn.replaceAll('"', '""')}"`);

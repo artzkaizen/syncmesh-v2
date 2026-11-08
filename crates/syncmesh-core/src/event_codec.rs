@@ -1,7 +1,9 @@
 //! The event core: a CBOR map with the keys the vectors froze (RFC-0002).
-//! `v`0 `peerId`1 `seq`2 `hlc`3 `procedure`5 `partition`6 `changes`7 `sealed`8.
+//! `v`0 `peerId`1 `seq`2 `hlc`3 `procedure`5 `partition`6 `changes`7 `sealed`8, and RFC-0023's
+//! `action`10 `undoOf`11. Key 9 is reserved for `schemaVersion` and never written here.
 
 use crate::cbor::{Key, MalformedCbor, Value, decode, encode};
+use crate::doc::{doc_data_to_cbor, doc_from_cbor, id16};
 use crate::event::{Change, PartitionKey, PeerId, SeqNum, SyncEvent};
 use crate::hex::to_hex;
 use crate::hlc::Hlc;
@@ -15,6 +17,8 @@ const KEY_PROCEDURE: i64 = 5;
 const KEY_PARTITION: i64 = 6;
 const KEY_CHANGES: i64 = 7;
 const KEY_SEALED: i64 = 8;
+const KEY_ACTION: i64 = 10;
+const KEY_UNDO_OF: i64 = 11;
 
 /// One change's map keys.
 const CHANGE_KIND: i64 = 0;
@@ -25,6 +29,8 @@ const CHANGE_DATA: i64 = 3;
 const KIND_INSERT: i64 = 0;
 const KIND_UPDATE: i64 = 1;
 const KIND_DELETE: i64 = 2;
+/// 3–5 were the cell lattices D25 deleted and are never reused; they decode as `Unknown`.
+const KIND_DOC: i64 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventDecodeError {
@@ -48,6 +54,7 @@ fn encode_change(change: &Change) -> Value {
         Change::Insert { row, .. } => (Value::Int(KIND_INSERT), row_to_cbor(row)),
         Change::Update { patch, .. } => (Value::Int(KIND_UPDATE), row_to_cbor(patch)),
         Change::Delete { .. } => (Value::Int(KIND_DELETE), Value::Null),
+        Change::Doc(doc) => (Value::Int(KIND_DOC), doc_data_to_cbor(doc)),
         Change::Unknown { tag, data, .. } => {
             (Value::Int(*tag as i64), data.clone().unwrap_or(Value::Null))
         }
@@ -97,6 +104,12 @@ pub fn encode_event_core_with(event: &SyncEvent, sealed: Option<Vec<u8>>) -> Vec
     if let Some(p) = &event.partition {
         core.push((Key::Int(KEY_PARTITION), Value::Text(p.as_str().to_owned())));
     }
+    if let Some(action) = event.action {
+        core.push((Key::Int(KEY_ACTION), Value::Bytes(action.to_vec())));
+    }
+    if let Some(undo_of) = event.undo_of {
+        core.push((Key::Int(KEY_UNDO_OF), Value::Bytes(undo_of.to_vec())));
+    }
     // exactly one of the two: a sealed event has no plaintext to be inconsistent with
     match sealed {
         Some(bytes) => core.push((Key::Int(KEY_SEALED), Value::Bytes(bytes))),
@@ -132,6 +145,9 @@ fn decode_change(v: &Value) -> Result<Change, EventDecodeError> {
     };
     Ok(match kind as i64 {
         KIND_DELETE => Change::Delete { table, key },
+        KIND_DOC => {
+            Change::Doc(doc_from_cbor(table, key, data).map_err(EventDecodeError::Malformed)?)
+        }
         KIND_INSERT => Change::Insert {
             table,
             key,
@@ -238,5 +254,9 @@ pub fn decode_event_core_with(
         partition,
         changes,
         sealed,
+        // lenient on purpose: an old build skips both keys and folds the event, so refusing it
+        // over a malformed one would park what every old peer folded
+        action: id16(m.get(&Key::Int(KEY_ACTION))),
+        undo_of: id16(m.get(&Key::Int(KEY_UNDO_OF))),
     })
 }

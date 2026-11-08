@@ -5,6 +5,8 @@ import type { SqlDriver } from "../driver.js";
 import { blobCases } from "./blobs.js";
 import { captureCases, captureRuleCases } from "./capture.js";
 import { compactionCases } from "./compaction.js";
+import { docColumnCases } from "./doc-columns.js";
+import { docCases } from "./docs.js";
 import { eventCases } from "./events.js";
 import { readFilterCases } from "./read-filter.js";
 
@@ -44,6 +46,7 @@ export function storeTests(openDriver: OpenDriver): readonly SuiteCase[] {
     ...stateCases(openDriver),
     ...compactionCases(openDriver),
     ...blobCases(openDriver),
+    ...docCases(openDriver),
   ];
 }
 
@@ -52,7 +55,12 @@ export function storeTests(openDriver: OpenDriver): readonly SuiteCase[] {
  * path — the fold into real tables, and the app's own statements back out as changes.
  */
 export function captureTests(openDriver: OpenDriver): readonly SuiteCase[] {
-  return [...captureCases(openDriver), ...captureRuleCases(openDriver), ...tablesCases(openDriver)];
+  return [
+    ...captureCases(openDriver),
+    ...captureRuleCases(openDriver),
+    ...tablesCases(openDriver),
+    ...docColumnCases(openDriver),
+  ];
 }
 
 /**

@@ -9,6 +9,7 @@ export type {
 export type { AsyncSqliteBinding, BoundSqlValue, SqliteBinding } from "./sqlite-driver.js";
 export { asyncSqliteDriver, bindSqlite, sqliteDriver } from "./sqlite-driver.js";
 export { sqlEventStore, sqliteEventStore, type SqlEventStoreOptions } from "./event-store.js";
+export { sqlDocStore, type SqlDocStoreOptions } from "./doc-store.js";
 export { LogCorrupt } from "./local-log.js";
 export type {
   OperationOutcome,

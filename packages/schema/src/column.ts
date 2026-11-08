@@ -1,6 +1,8 @@
 import type { JsonValue, StrategyName } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
+import { parseAdapterId } from "@syncmesh/kernel";
+
 import type { AppValue } from "./convert.js";
 import type { DocumentAdapter } from "./documents.js";
 import type { Output, StandardSchemaV1 } from "./standard-schema.js";
@@ -51,8 +53,6 @@ export interface ColumnDef {
   readonly doc?: { readonly adapter: string };
 }
 
-const ADAPTER_ID = /^[a-z][a-z0-9-]*@\d+$/;
-
 const NUMERIC = new Set<ColumnKind>(["integer", "float"]);
 
 /** Kinds whose storage a developer might mistake for bytes; the rest are never a document. */
@@ -66,12 +66,12 @@ export function mergeDef(
   merge: StrategyName | DocumentAdapter | undefined,
 ): Pick<ColumnDef, "merge" | "doc"> {
   if (merge === undefined) return {};
-  return merge instanceof Object ? { doc: { adapter: String(merge.id) } } : { merge };
+  return merge instanceof Object ? { doc: { adapter: merge.id } } : { merge };
 }
 
 /**
  * Refuses a merge declaration the column cannot carry. `max` and `min` need an order (D25); an
- * adapter needs a byte column with no constraint a document could break (RFC-0023 §4.1). Runs
+ * adapter needs a nullable byte column with no constraint a document could break (RFC-0023 §4.1). Runs
  * wherever a table is built, as the backstop for a def that did not come through the types.
  *
  * @throws {MergeKindMismatch | DocColumnNotBinary | DocColumnConstraint}
@@ -85,7 +85,7 @@ export function checkMerge(column: string, def: ColumnDef): void {
       });
     return;
   }
-  if (!ADAPTER_ID.test(def.doc.adapter))
+  if (parseAdapterId(def.doc.adapter).isErr())
     throw new MergeKindMismatch({
       column,
       message: `${column}: merge is neither a rule nor a document adapter ("${def.doc.adapter}" is not name@major)`,
@@ -116,6 +116,11 @@ export function checkMerge(column: string, def: ColumnDef): void {
     throw new DocColumnConstraint({
       column,
       message: `${column}: a document column cannot be a ${constraint}`,
+    });
+  if (!def.nullable)
+    throw new DocColumnConstraint({
+      column,
+      message: `${column}: a document column must be nullable; a row write never carries it, so a new row holds none`,
     });
 }
 

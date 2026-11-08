@@ -264,6 +264,7 @@ export function checkLink(change: Change, event: ProbeEvent): Result<void, Valid
   // narrowing the type asks for the same fact the validator states (D22-A)
   if (change.kind === "unknown")
     return refuse(key, "columns", "a link this build cannot read is not a link it can admit");
+  if (change.kind === "doc") return refuse(key, "columns", "a link carries no document");
   const filed = splitLinkKey(key);
   const device = parsePeerId(filed.device).unwrapOr(undefined);
   if (device === undefined || filed.partition !== String(event.partition ?? ""))

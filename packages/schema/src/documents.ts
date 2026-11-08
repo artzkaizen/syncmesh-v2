@@ -24,7 +24,7 @@ export class DocColumnNotBinary extends TaggedError("DocColumnNotBinary")<{
   message: string;
 }> {}
 
-/** An adapter on a key, `unique()` or `check()` column: none of those can hold a document. */
+/** An adapter on a key, `unique()`, `check()` or non-nullable column: none of those can hold a document. */
 export class DocColumnConstraint extends TaggedError("DocColumnConstraint")<{
   column: string;
   message: string;
@@ -93,7 +93,7 @@ export interface DocColumnEntry {
  *
  * @throws {InvalidDerive}
  */
-export function docColumnsOf(
+export function docColumnEntries(
   name: string,
   tbl: Table,
   derive: DeriveBlock<Columns>,

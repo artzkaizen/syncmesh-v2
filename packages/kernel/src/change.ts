@@ -1,3 +1,4 @@
+import type { DocChange } from "./doc.js";
 import type { Brand } from "./primitives.js";
 import type { CellValue, ColumnName } from "./record.js";
 
@@ -6,7 +7,8 @@ export type RowKey = Brand<string, "RowKey">;
 
 export type Row = ReadonlyMap<ColumnName, CellValue>;
 
-export type Change =
+/** A change to a row's cells or its existence — what every row rule folds. */
+export type RowChange =
   | { readonly kind: "insert"; readonly table: TableName; readonly key: RowKey; readonly row: Row }
   | {
       readonly kind: "update";
@@ -14,7 +16,12 @@ export type Change =
       readonly key: RowKey;
       readonly patch: Row;
     }
-  | { readonly kind: "delete"; readonly table: TableName; readonly key: RowKey }
+  | { readonly kind: "delete"; readonly table: TableName; readonly key: RowKey };
+
+export type Change =
+  | RowChange
+  /** An update to a document column (RFC-0023 §5.1): appended to the doc log, never read as a value. */
+  | DocChange
   /**
    * A change a newer build wrote and this one has no fold for (D22-A), kept exactly as it
    * arrived so a later build can read what this one could not.
@@ -44,3 +51,7 @@ export type Change =
  * accident — the check that rules it out is the same check that narrows the type.
  */
 export type FoldableChange = Exclude<Change, { readonly kind: "unknown" }>;
+
+/** Whether the change carries a row's cells or its existence, rather than a document update. */
+export const isRowChange = (change: Change): change is RowChange =>
+  change.kind === "insert" || change.kind === "update" || change.kind === "delete";

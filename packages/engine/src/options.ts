@@ -1,6 +1,8 @@
 import type { HlcClock, MergeSpec, PeerId } from "@syncmesh/kernel";
 
 import type { Boot } from "./boot.js";
+import type { DocStore } from "./doc-log.js";
+import type { DocEngineOptions } from "./doc-path.js";
 import type { EngineError } from "./errors.js";
 import type { UnknownHandling } from "./quarantine.js";
 import type { StateStore } from "./state-store.js";
@@ -16,7 +18,7 @@ import type { Validator } from "./validate.js";
  * file that is only ever added to gets there.
  */
 
-export interface EngineOptions {
+export interface EngineOptions extends DocEngineOptions {
   readonly peerId: PeerId;
   readonly clock: HlcClock;
   readonly store: EventStore;
@@ -67,8 +69,9 @@ export interface EngineOptions {
   readonly atomic?: <T>(fn: (scoped: AtomicStores) => Promise<T>) => Promise<T>;
 }
 
-/** What a write touches inside `atomic`: the log, and the state store when there is one. */
+/** What a write touches inside `atomic`: the log, the state store and the doc log, where each exists. */
 export interface AtomicStores {
   readonly events: EventStore;
   readonly state?: StateStore;
+  readonly docs?: DocStore;
 }
