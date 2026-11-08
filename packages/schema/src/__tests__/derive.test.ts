@@ -159,4 +159,19 @@ describe("createDerivers — what a replica runs, and what a host checks", () =>
     });
     expect(createDerivers(plain).size).toBe(0);
   });
+
+  test("carries the schema's sealed kinds, so a runtime that derives knows which checkpoints carry none", () => {
+    const sealed = syncSchema({
+      tables: {
+        notes: drizzleTable(notes, {
+          partition: partition("vault", { sealed: true }),
+          merge: { content: loro },
+          derive: { title: from("content", (d: FakeDoc) => d.title) },
+          allow: ({ allow }) => ({ $default: allow }),
+        }),
+      },
+    });
+    expect([...createDerivers(sealed).sealedKinds]).toEqual(["vault"]);
+    expect([...createDerivers(schema).sealedKinds]).toEqual([]);
+  });
 });

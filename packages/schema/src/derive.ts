@@ -30,8 +30,16 @@ export interface DocDeriver {
   readonly check: (values: Row) => Result<Row, DeriveFailed>;
 }
 
-/** Per table, per document column, its {@link DocDeriver}; a document column with no derive is absent. */
-export type Derivers = ReadonlyMap<TableName, ReadonlyMap<ColumnName, DocDeriver>>;
+/**
+ * Per table, per document column, its {@link DocDeriver}; a document column with no derive is
+ * absent. Carries the schema's sealed partition kinds with it: a document in one has its derived
+ * values computed on the device and never put in a checkpoint (RFC-0023 §11), and taking both from
+ * one schema is what keeps a runtime from deriving without knowing which partitions are sealed.
+ */
+export interface Derivers extends ReadonlyMap<TableName, ReadonlyMap<ColumnName, DocDeriver>> {
+  /** The schema's sealed partition kinds, as `schema.sealedKinds` holds them. */
+  readonly sealedKinds: ReadonlySet<string>;
+}
 
 /** One target's value as the column holds it: the app's value in wire form, refused if its kind cannot hold it. */
 function cell<V>(tbl: Table, target: ColumnName, value: V): Result<CellValue, DeriveFailed> {
@@ -103,7 +111,10 @@ function createDeriver(entry: SchemaEntry, source: ColumnName): DocDeriver | und
  * const derive = createDerivers(schema);
  * derive.get(notes.name)?.get(notes.columnNames.content)?.compute(doc); // Ok(Map { title → "Q3" })
  */
-export function createDerivers(schema: { readonly entries: readonly SchemaEntry[] }): Derivers {
+export function createDerivers(schema: {
+  readonly entries: readonly SchemaEntry[];
+  readonly sealedKinds: ReadonlySet<string>;
+}): Derivers {
   const derivers = new Map<TableName, ReadonlyMap<ColumnName, DocDeriver>>();
   for (const entry of schema.entries) {
     const byDoc = new Map<ColumnName, DocDeriver>();
@@ -115,5 +126,5 @@ export function createDerivers(schema: { readonly entries: readonly SchemaEntry[
     }
     if (byDoc.size > 0) derivers.set(entry.table.name, byDoc);
   }
-  return derivers;
+  return Object.assign(derivers, { sealedKinds: schema.sealedKinds });
 }

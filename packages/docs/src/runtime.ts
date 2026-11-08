@@ -39,14 +39,10 @@ export interface DocumentsOptions {
   /**
    * The schema's derive functions (`createDerivers(schema)`, RFC-0023 §16.4): after every flush of
    * an open document and every materialisation, the row's derived columns are computed here and
-   * written to the local row. Absent, no column is derived.
+   * written to the local row. Its `sealedKinds` are the partitions whose checkpoints carry none
+   * (§11), taken from the same schema so the two cannot disagree. Absent, no column is derived.
    */
   readonly derive?: Derivers;
-  /**
-   * The schema's sealed partition kinds (`schema.sealedKinds`): a checkpoint of a document in one
-   * carries no derived values, since they would be plaintext read out of sealed content (§11).
-   */
-  readonly sealedKinds?: ReadonlySet<string>;
   readonly pacing?: Pacing;
   /**
    * Materialise a document once its tail passes the adapter's `snapshotEvery`/`snapshotEveryBytes`
@@ -94,7 +90,7 @@ export function createDocuments(options: DocumentsOptions) {
   };
   const sealed = (address: DocAddress) => {
     const partition = getRecord(engine.state(), address.table, address.key)?.partition;
-    return partition !== undefined && options.sealedKinds?.has(kindOf(partition)) === true;
+    return partition !== undefined && options.derive?.sealedKinds.has(kindOf(partition)) === true;
   };
   const handles = createHandles({
     derive,

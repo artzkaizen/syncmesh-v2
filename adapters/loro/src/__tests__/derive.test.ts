@@ -106,7 +106,6 @@ async function storedNode(n: number, options: NodeOptions = {}) {
     pacing: FAST,
     autoMaterialise: false,
     derive: createDerivers(using),
-    sealedKinds: using.sealedKinds,
     now,
     onError: (error) => errors.push(error),
   });
@@ -242,6 +241,12 @@ describe("derived columns: every replica computes them (RFC-0023 §16.4)", () =>
     expect((await a.engine.docLog()).unwrap().length).toBe(1);
     expect(a.errors.map((e) => e._tag)).toEqual(["DeriveFailed"]);
     expect(await a.row()).toEqual({ title: null, words: null });
+    // a checkpoint takes the values its materialisation computed: one run, one report
+    a.errors.length = 0;
+    const at = hlcOf(a.now().epochMilliseconds, 0);
+    const made = (await a.documents.checkpoint(DOC, a.identity, at)).unwrap();
+    expect(made.signed.checkpoint.derived.size).toBe(0);
+    expect(a.errors.map((e) => e._tag)).toEqual(["DeriveFailed"]);
   });
 });
 

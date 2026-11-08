@@ -99,6 +99,8 @@ export interface Materialised {
   readonly covered: number;
   readonly failed: number;
   readonly snapshotBytes: number;
+  /** The derived values written with the cover (RFC-0023 §16.4); absent when the column derives nothing or the derive failed. */
+  readonly derived?: Row;
 }
 
 /**
@@ -157,6 +159,7 @@ export async function materialise<D>(
       covered: loaded.applied.length,
       failed: loaded.failed.length,
       snapshotBytes: snapshot.length,
+      ...(derived !== undefined && { derived }),
     });
   });
 }
@@ -184,12 +187,11 @@ export async function produceCheckpoint<D>(
   sealed = false,
 ) {
   return Result.gen(async function* () {
-    yield* Result.await(materialise(engine, adapter, address, replica, at[0], derive));
+    const made = yield* Result.await(materialise(engine, adapter, address, replica, at[0], derive));
     const tail = yield* Result.await(engine.docTail(address));
     const snapshot = tail.snapshot?.bytes ?? adapter.snapshot(adapter.create(replica));
-    const held = adapter.create(replica);
-    const withheld = sealed || derive === undefined || adapter.apply(held, [snapshot]).isErr();
-    const derived = withheld ? undefined : derive(held);
+    // the values the cover just wrote are the snapshot's: it was taken from the same document
+    const derived = sealed ? undefined : made.derived;
     const signed = signCheckpoint(
       {
         ...address,
