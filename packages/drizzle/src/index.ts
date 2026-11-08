@@ -1,4 +1,4 @@
-import type { Engine, Principal, Validator, ValidatorSchema } from "@syncmesh/engine";
+import type { Engine, Principal, Validator } from "@syncmesh/engine";
 import type { PartitionKey } from "@syncmesh/kernel";
 import type { OperationStore, SqlDialect, SqlDriver } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
@@ -8,6 +8,7 @@ import { createWriter } from "@syncmesh/storage";
 import { PgDialect } from "drizzle-orm/pg-core";
 
 import type { FaceDeps } from "./face.js";
+import type { ReadSchema } from "./read.js";
 
 import { postgresFace } from "./postgres.js";
 import { sqliteFace } from "./sqlite.js";
@@ -21,8 +22,8 @@ export { driverValues, keyOfRows, windowOf } from "./window.js";
 export { compareCells } from "./order.js";
 export { identityOf, tablesOf } from "./tree.js";
 export type { ProxyMethod, ProxyResult, ProxySink, WriteNaming } from "./proxy.js";
-export type { ReadScope } from "./read.js";
-export { readPredicate, readScope } from "./read.js";
+export type { ReadSchema, ReadScope } from "./read.js";
+export { readColumns, readPredicate, readScope } from "./read.js";
 export type { ReadOnlyDb } from "./scoped.js";
 export { readOnly, scopeReads } from "./scoped.js";
 export type { SyncState } from "./sync-of.js";
@@ -52,7 +53,7 @@ export interface MeshDrizzleOptions<D extends SqlDialect = "sqlite"> {
   /** The connection the tables live on, with capture installed (`openStores` does both). Its dialect picks the face. */
   readonly driver: SqlDriver & { readonly dialect?: D };
   /** The manifest: which tables sync, their rules, the role ladders. */
-  readonly schema: ValidatorSchema;
+  readonly schema: ReadSchema;
   /** The instance every write runs under and every read is confined to. */
   readonly partition?: PartitionKey;
   /**

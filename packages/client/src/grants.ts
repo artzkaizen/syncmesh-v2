@@ -2,7 +2,7 @@ import type { Engine, StoreFailure } from "@syncmesh/engine";
 import type { JsonValue, PartitionKey, PeerId } from "@syncmesh/kernel";
 import type { InvalidPartitionKey } from "@syncmesh/kernel";
 import type { GrantStore, SqlDriver } from "@syncmesh/storage";
-import type { Grant, GrantError, GrantRegistry, Identity } from "@syncmesh/wire";
+import type { Grant, GrantError, GrantRegistry, Identity, PartitionKeys } from "@syncmesh/wire";
 
 import { graceMillis, revokedAt } from "@syncmesh/engine";
 import { parsePartitionKey, readRow } from "@syncmesh/kernel";
@@ -58,6 +58,23 @@ export interface MeshGrants extends GrantRegistry {
     device: PeerId,
     validFor: Temporal.Duration,
   ) => Result<Uint8Array, InvalidPartitionKey | GrantError | NoGrantHeld | DeviceRevoked>;
+  /**
+   * Rotates a sealed partition's content key and re-issues every held grant that still names it,
+   * each to its current expiry, so the members carry the new epoch (D40). The removal comes
+   * first — `issue` the departing device a grant without the partition — and this second: the
+   * departed keeps what it already read and opens nothing written after. Answers the wires it
+   * minted, each already registered and so on its way to every link as `issue`'s are; panics
+   * unless `createMesh` was given `issuerKey` and `partitionKeys`.
+   *
+   * @example
+   * ```ts
+   * mesh.grants.issue({ ...bob, partitions: ["team:acme"] }); // Bob leaves HR
+   * mesh.grants.rekey(hr); // everyone still in HR now carries epoch 2
+   * ```
+   */
+  readonly rekey: (
+    partition: PartitionKey,
+  ) => Result<readonly Uint8Array[], InvalidPartitionKey | GrantError>;
 }
 
 /**
@@ -78,6 +95,8 @@ export interface StandingOf {
 
 export interface MeshGrantsOptions {
   readonly issuerKey?: Identity;
+  /** The issuer's content keys for sealed partitions (D40); every minted grant carries its share. */
+  readonly partitionKeys?: PartitionKeys;
   readonly now: () => Temporal.Instant;
   /** Absent, renewal sees only grants — right for a mesh with no authority, wrong for one with. */
   readonly standing?: StandingOf;
@@ -186,7 +205,9 @@ export function createMeshGrants(registry: GrantRegistry, options: MeshGrantsOpt
       const withRole = request.role === undefined ? base : { ...base, role: request.role };
       const full =
         request.claims === undefined ? withRole : { ...withRole, claims: request.claims };
-      const wire = issueGrant(issuerKey, full);
+      // the grant is the key's only carrier: what it admits to, sealed, it hands the keys for
+      const keys = options.partitionKeys?.wrap(request.device, partitions) ?? [];
+      const wire = issueGrant(issuerKey, keys.length === 0 ? full : { ...full, keys });
       yield* registry.register(wire);
       return Result.ok(wire);
     });
@@ -248,5 +269,30 @@ export function createMeshGrants(registry: GrantRegistry, options: MeshGrantsOpt
     return issue(request);
   };
 
-  return { ...registry, issue, expiring, renew };
+  const rekey: MeshGrants["rekey"] = (partition) => {
+    const keys = options.partitionKeys;
+    if (keys === undefined)
+      return panic("createMesh was not given partitionKeys; only the issuer holds sealed keys");
+    keys.rotate(partition);
+    return Result.gen(function* () {
+      const wires: Uint8Array[] = [];
+      for (const held of registry.all()) {
+        if (!held.partitions.includes(partition) || revokedIn(held) !== undefined) continue;
+        // to its current expiry: a rotation is not a renewal, and must not extend anyone's grant
+        const left = now().until(held.expiresAt);
+        if (left.sign <= 0) continue;
+        const base = {
+          account: held.account,
+          device: held.device,
+          partitions: held.partitions,
+          claims: held.claims,
+          validFor: left,
+        };
+        wires.push(yield* issue(held.role === undefined ? base : { ...base, role: held.role }));
+      }
+      return Result.ok(wires);
+    });
+  };
+
+  return { ...registry, issue, expiring, renew, rekey };
 }

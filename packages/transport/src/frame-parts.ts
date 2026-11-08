@@ -31,6 +31,11 @@ export const KIND = {
   routes: 8,
   /** A signed refusal of one event, back to its author (D32); additive like the rest. */
   refusal: 9,
+  /**
+   * Events the sender may not send this peer, named by sequence (D40): what its grant does not
+   * cover. Above `refusal`, so it leaves after the events of the same exchange; additive.
+   */
+  withheld: 10,
 } as const;
 
 /**

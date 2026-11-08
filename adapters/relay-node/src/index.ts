@@ -17,6 +17,7 @@ import {
   describeRoom,
   durableRoomStore,
   hostTuning,
+  hostedPosture,
   requestRoom,
 } from "@syncmesh/relay";
 import { panic } from "@syncmesh/result";
@@ -154,15 +155,26 @@ const answer = async (response: Response, into: ServerResponse): Promise<void> =
 /**
  * D09-A: the embedded host on Node — the relay in the process you already run, one durable
  * SQLite log per room under `dataDir`. Port 0 picks a free port. The same options and the same
- * answer as `@syncmesh/relay`'s `startRelay`; the runtime is the only difference.
+ * answer as `@syncmesh/relay`'s `startRelay`, with one difference besides the runtime: this is a
+ * hosted preset, so it throws without `posture.trust` or `posture.open: true`, and `announce`
+ * defaults to off (D40).
+ *
+ * @example
+ * ```ts
+ * await startRelay(8787, {
+ *   posture: { trust: { issuers: [authority.peerId] }, rooms: ["acme"] },
+ * });
+ * ```
  */
 export async function startRelay(
   port: number,
   options: StartRelayOptions = {},
 ): Promise<RunningRelay> {
   const dataDir = options.dataDir ?? ".syncmesh/relay";
+  // a relay that faces a network states who reads it (D40): trust, or open on purpose
+  const posture = hostedPosture(options.posture);
   const host = createRelayHost(
-    hostTuning(options, nodeRoomStore(dataDir, options.blobs !== false)),
+    hostTuning({ ...options, posture }, nodeRoomStore(dataDir, options.blobs !== false)),
   );
   // a plain request never reaches the upgrade listener: it gets the room described instead
   const server = createServer((request, response) => {

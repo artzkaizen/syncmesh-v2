@@ -1,4 +1,5 @@
 import type { PeerId } from "@syncmesh/kernel";
+import type { Grant } from "@syncmesh/wire";
 
 import { timed } from "@syncmesh/engine";
 import { omitUndefined } from "@syncmesh/result";
@@ -9,7 +10,7 @@ import type { RelayFrame } from "./frames.js";
 import type { TrafficClass } from "./limits.js";
 import type { LinkOffer, LinkSession, SecureLink } from "./secure.js";
 import type { RelaySocket } from "./sender.js";
-import type { Conversation, RoomState } from "./state.js";
+import type { Client, Conversation, RoomState } from "./state.js";
 
 import { sendCatchUp } from "./catchup.js";
 import {
@@ -25,8 +26,10 @@ import { createBudget } from "./limits.js";
 import { createViewer } from "./passover.js";
 import { newChallenge, verifyJoinProof } from "./proof.js";
 import { BELOW_FLOOR, belowFloor } from "./retention.js";
+import { createSeat, type Seat } from "./seat.js";
 import { secureLink } from "./secure.js";
 import { createSender } from "./sender.js";
+import { admitGrant } from "./trust.js";
 
 /** What the host wires each accepted socket to. */
 export interface RelayConnection {
@@ -85,6 +88,81 @@ const trafficOf = (kind: RelayFrame["kind"]): TrafficClass =>
   kind === "blob-put" || kind === "blob-get" ? "blob" : "event";
 
 /**
+ * Why a join that names a key fails to prove it, or `undefined` when it passes. A wrong signature
+ * fails on any version. A bare join — no sealed link, no proof — fails at v2, and in a grant-gated
+ * room on any version (D40): the room seats it under the grant it caches for the key the join
+ * names, so a key taken on trust would let anyone who has seen a device's public key read what
+ * that device's grant names.
+ */
+function proofFailure(
+  frame: Extract<RelayFrame, { kind: "join" }>,
+  selected: number,
+  challenge: Uint8Array | undefined,
+  link: SecureLink | undefined,
+  room: RoomState,
+): string | undefined {
+  const proven =
+    frame.proof === undefined || challenge === undefined
+      ? undefined
+      : verifyJoinProof(frame.peerId, challenge, frame.core, frame.proof);
+  if (proven === false) return "the join was not signed by the key it names";
+  if (link !== undefined || proven === true) return undefined;
+  if (selected === 2) return "a v2 join signs the room's challenge with the key it names";
+  if (room.trust !== undefined) return "a grant-gated room seats only a key the join proves";
+  return undefined;
+}
+
+/**
+ * A proven, admitted joiner takes its seat: the old socket for the same key goes, the hello and
+ * who is here go out, and the catch-up is queued under the grant it sat down with (D40).
+ */
+function sitDown(
+  conversation: Conversation,
+  join: Extract<RelayFrame, { kind: "join" }> & { readonly selected: number },
+  held: Pick<Client, "socket" | "refuse"> & {
+    readonly seat: Seat;
+    readonly closed: () => boolean;
+  },
+  grant: Grant | undefined,
+): void {
+  const { room, sender } = conversation;
+  const { peerId: peer, cursors: theirs, interest: wanted, selected } = join;
+  const { seat, socket, refuse, closed } = held;
+  seat.take(wanted, grant);
+  // what this socket is sent, withheld and told it was passed over: its interest, its grant and
+  // the authority's gate, one view for the catch-up and the live fan-out alike (D23, D24, D40)
+  const view = createViewer(room, sender, {
+    peer,
+    interest: wanted,
+    closed,
+    refuse: conversation.refuse,
+    ...omitUndefined({
+      seat: grant === undefined ? undefined : { wants: seat.wants, partitions: grant.partitions },
+    }),
+  });
+  const client = { peer, sender, socket, offer: view.offer, refuse };
+  const [greeted, duration] = timed(() => {
+    // one socket per peer, never a silent room switch: the old socket goes first
+    room.clients.get(peer)?.socket.close("superseded by a newer join");
+    room.clients.delete(peer);
+    room.clients.set(peer, grant === undefined ? client : { ...client, granted: grant });
+    sender.send(helloFrame(selected, room.keepaliveMs, room.epoch, room.cursors(), room.floor()));
+    // who is here now — never how they got here: presence has no history to page through
+    const here = room.presence.all();
+    for (const entry of here) sender.send(presenceFrame(entry.wire));
+    sendCatchUp(conversation, theirs, view.catchUp);
+    // what the joiner holds, in its own words, for everyone else's `delivered`
+    room.toClients(cursorsFrame(peer, theirs), peer);
+    return here.length;
+  });
+  room.report({
+    type: "relay.join",
+    sizes: { cursors: theirs.size, presence: greeted },
+    duration,
+  });
+}
+
+/**
  * One connection's whole protocol: the versioned handshake, its paged catch-up, and everything
  * it may send afterwards. Held apart from the room's own state so each reads as what it is — a
  * room is a log, its clients and the current presence; a connection is a conversation with one.
@@ -122,7 +200,6 @@ export function createConnection(
    * N+1 without N — a hole every later joiner is paged and no author ever re-sends.
    */
   let closed = false;
-
   const refuse = (code: string, message: string, fatal = false): void => {
     sender.send(errorFrame(code, message));
     if (fatal) {
@@ -138,9 +215,12 @@ export function createConnection(
     refuse,
   };
   const ingest = eventIntake(conversation, () => closed);
+  const hangUp = (code: string, message: string): void => refuse(code, message, true);
+  /** What this socket may be served: its interest, cut to its grant in a gated room (D40). */
+  const seat = createSeat(room, hangUp);
 
   const onJoin = (frame: Extract<RelayFrame, { kind: "join" }>): void => {
-    const { versions, peerId: peer, cursors: theirs, interest: wanted } = frame;
+    const { versions, peerId: peer, cursors: theirs } = frame;
     const selected = selectVersion(versions, room.versions);
     if (selected === undefined) {
       refuse("version", `this relay speaks ${room.versions.join(", ")}`, true);
@@ -159,18 +239,9 @@ export function createConnection(
       refuse("impostor", "the join names a key other than the one that opened this link", true);
       return;
     }
-    const proven =
-      frame.proof === undefined || challenge === undefined
-        ? undefined
-        : verifyJoinProof(peer, challenge, frame.core, frame.proof);
-    if (proven === false || (proven === undefined && selected === 2)) {
-      refuse(
-        "unproven",
-        proven === false
-          ? "the join was not signed by the key it names"
-          : "a v2 join signs the room's challenge with the key it names",
-        true,
-      );
+    const unproven = proofFailure(frame, selected, challenge, link, room);
+    if (unproven !== undefined) {
+      refuse("unproven", unproven, true);
       return;
     }
     /**
@@ -192,31 +263,12 @@ export function createConnection(
       refuse("retention", BELOW_FLOOR, true);
       return;
     }
-    const [greeted, duration] = timed(() => {
-      // one socket per peer, never a silent room switch: the old socket goes first
-      room.clients.get(peer)?.socket.close("superseded by a newer join");
-      room.clients.delete(peer);
+    // a gated room seats a proven key only under a grant for it (D40): the one already cached
+    // from an earlier visit, or the one the device is about to send
+    seat.admit(peer, (grant) => {
       me = peer;
-      const view = createViewer(room, sender, {
-        peer,
-        interest: wanted,
-        closed: () => closed,
-        refuse,
-      });
-      room.clients.set(peer, { peer, sender, socket, offer: view.offer });
-      sender.send(helloFrame(selected, room.keepaliveMs, room.epoch, room.cursors(), room.floor()));
-      // who is here now — never how they got here: presence has no history to page through
-      const here = room.presence.all();
-      for (const entry of here) sender.send(presenceFrame(entry.wire));
-      sendCatchUp(conversation, theirs, view.catchUp);
-      // what the joiner holds, in its own words, for everyone else's `delivered`
-      room.toClients(cursorsFrame(peer, theirs), peer);
-      return here.length;
-    });
-    room.report({
-      type: "relay.join",
-      sizes: { cursors: theirs.size, presence: greeted },
-      duration,
+      const held = { socket, seat, refuse: hangUp, closed: () => closed };
+      sitDown(conversation, { ...frame, selected }, held, grant);
     });
   };
 
@@ -230,10 +282,10 @@ export function createConnection(
   };
 
   const onGrant = (bytes: Uint8Array, wire: Uint8Array): void => {
-    if (!room.grants.admit(wire)) return;
+    const admitted = admitGrant(room, wire);
     // the received frame bytes, untouched: grants forward byte-identical, never re-encoded
-    room.toClients(bytes, me);
-    room.publish(bytes);
+    if (admitted) room.toClients(bytes, me);
+    if (admitted) room.publish(bytes);
   };
 
   const onSession = (bytes: Uint8Array, frame: Extract<RelayFrame, { kind: "session" }>): void => {
@@ -294,7 +346,10 @@ export function createConnection(
       return;
     }
     if (me === undefined) {
-      refuse("join-first", "the first frame on a relay socket is join", true);
+      // a join waiting on its ticket takes grants meanwhile, and nothing else (D40)
+      if (!seat.waiting()) refuse("join-first", "the first frame on a relay socket is join", true);
+      else if (frame.kind === "session" && frame.frame.kind === "grant")
+        onGrant(bytes, frame.frame.wire);
       return;
     }
     if (frame.kind === "blob-put" || frame.kind === "blob-get") serveBlob(conversation, frame);
@@ -314,6 +369,7 @@ export function createConnection(
     drain: () => sender.drain(),
     closed: () => {
       closed = true;
+      seat.close();
       if (me !== undefined && room.clients.get(me)?.sender === sender) room.clients.delete(me);
     },
   };

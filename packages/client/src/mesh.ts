@@ -70,6 +70,8 @@ export async function createMesh<
   const registry = createGrantRegistry({ issuer: issuer ?? identity.peerId, now });
   const grantsOptions = { now } satisfies MeshGrantsOptions;
   if (issuerKey !== undefined) Object.assign(grantsOptions, { issuerKey });
+  if (options.partitionKeys !== undefined)
+    Object.assign(grantsOptions, { partitionKeys: options.partitionKeys });
   const { grants, bind } = openGrants(registry, grantsOptions);
   // plain await, not Result.gen: a definition-time panic in `assemble` must reach the caller as itself
   const booted = await openMeshEngine({
@@ -168,6 +170,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     // the gated tables, which reach a device only through the authority's gate (D24)
     ...gatedFor(schema, options.authority),
     keys,
+    sealedKinds: schema.sealedKinds,
     // our own partitions, which is what the door's grant-derived default compares against
     partitions: () => (grants.grantFor(identity.peerId)?.partitions ?? []).map(String),
     ...omitUndefined({
@@ -177,6 +180,8 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
       // the certificate over it is the only thing that can make it more than provisional
       trust: options.issuer,
       certificate: options.certificate,
+      // a granted mesh gates reads on every link (D40)
+      issuer: options.issuer,
     }),
   });
   const { routes } = transportContext;

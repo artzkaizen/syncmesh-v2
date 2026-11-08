@@ -1,9 +1,10 @@
 import type { Engine, Hub, Interest, StoredEvent } from "@syncmesh/engine";
 import type { EventCrypto, Identity } from "@syncmesh/wire";
 
-import { TaggedError } from "@syncmesh/result";
+import { TaggedError, omitUndefined } from "@syncmesh/result";
 import { relayEnvelope, signEvent } from "@syncmesh/wire";
 
+import type { BridgeOptions } from "./bridge.js";
 import type { FrameClass } from "./frame-parts.js";
 import type { FrameLink } from "./link.js";
 import type { Withheld } from "./withheld.js";
@@ -43,6 +44,22 @@ export interface OutboundDeps {
   /** The gated tables (D24), left out of the digest: devices admitted different rows agree. */
   readonly withheld?: Withheld;
 }
+
+/** What the outbound half needs, assembled so an absent capability stays absent (D12-A). */
+export const outboundFor = (
+  link: FrameLink,
+  options: BridgeOptions,
+  scope: string,
+  errors: OutboundDeps["errors"],
+): OutboundDeps => ({
+  link,
+  engine: options.engine,
+  identity: options.identity,
+  interest: options.interest,
+  scope,
+  errors,
+  ...omitUndefined({ crypto: options.crypto, withheld: options.withheld }),
+});
 
 /**
  * Everything one link sends, offered to the outbox under the class each frame already is. A
@@ -105,13 +122,15 @@ export function createOutbound(deps: OutboundDeps) {
   /**
    * Our position — the contiguous cursors, and what we hold above them — sent once whatever the
    * caller is already doing has finished. The second half only narrows what the far side bothers
-   * to send: a peer that ignores it re-sends a run we then skip.
+   * to send: a peer that ignores it re-sends a run we then skip. `fromNothing`, asked as the frame
+   * leaves, sends no cursors at all, which asks for the whole run (D23).
    */
-  const cursorsAfter = (queue: Promise<unknown>): Promise<void> =>
+  const cursorsAfter = (queue: Promise<unknown>, fromNothing?: () => boolean): Promise<void> =>
     queue.then(async () => {
       const cursors = await engine.cursors();
-      if (cursors.isOk())
-        send(KIND.cursors, "cursors", cursorsFrame(identity.peerId, cursors.value, engine.ahead()));
+      if (cursors.isErr()) return;
+      const at = fromNothing?.() === true ? new Map() : cursors.value;
+      send(KIND.cursors, "cursors", cursorsFrame(identity.peerId, at, engine.ahead()));
     });
 
   return { send, drain, envelopeOf, sendDigest, cursorsAfter };

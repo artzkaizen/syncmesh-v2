@@ -23,7 +23,11 @@ import { receiptFrame, refusalFrame } from "./frame.js";
  * one is not accepting it.
  */
 export interface Custody {
-  /** Signs what this device now holds of `author`'s log and hands it back down the link. */
+  /**
+   * Signs what this device now holds of `author`'s log and hands it back down the link. Signs
+   * nothing while its coverage is scoped: a receipt claims the whole run, and a scoped cursor
+   * stands past events this device was never sent.
+   */
   readonly vouch: (author: PeerId) => void;
   /** One arriving receipt: verified, and kept only when it is about this device's own writes. */
   readonly receive: (wire: Uint8Array) => void;
@@ -75,7 +79,11 @@ export function createCustody(deps: CustodyDeps): Custody {
   return {
     vouch: (author) => {
       if (incarnation === undefined) return;
-      const held = engine.coverage().synced.get(author);
+      const coverage = engine.coverage();
+      // a scoped cursor (D23) says "everything below N that I may read"; a receipt says everything
+      // below N, so a device whose cursor stepped over withheld events would sign for what it lacks
+      if (coverage.scope !== undefined) return;
+      const held = coverage.synced.get(author);
       if (held === undefined) return;
       send(
         KIND.receipt,

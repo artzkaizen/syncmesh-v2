@@ -1,10 +1,10 @@
 import type { ColumnName, MergeSpec, StrategyName, TableName } from "@syncmesh/kernel";
-import type { AllowBlock, RoleSet } from "@syncmesh/policy";
+import type { AllowBlock, PolicyNode, RoleSet } from "@syncmesh/policy";
 
 import { NO_ROLES } from "@syncmesh/policy";
 import { panic } from "@syncmesh/result";
 
-import type { AllowFn } from "./bind.js";
+import type { AllowFn, FieldsFn } from "./bind.js";
 import type { DeriveBlock, DocColumnEntry } from "./documents.js";
 
 import { combinators } from "./bind.js";
@@ -40,6 +40,8 @@ export type TableEntry<C extends Columns = Columns> =
        */
       readonly partition: Partition;
       readonly allow: AllowFn<C, string>;
+      /** Field-level read rules, honoured where an authority serves rows (E06, D40). */
+      readonly fields?: FieldsFn<C, string>;
       readonly visibility?: undefined;
       readonly derive?: DeriveBlock<C>;
       /**
@@ -89,6 +91,8 @@ export interface SchemaEntry {
   readonly visibility: "partition" | "authority";
   /** The rules, as data — what the `_policy` row will carry. Absent for user, local and global tables. */
   readonly allow?: AllowBlock;
+  /** Per column, who may read its value where an authority serves rows; absent when none is restricted. */
+  readonly fields?: Readonly<Record<string, PolicyNode>>;
   /** The derive functions, keyed by target column; absent when the table declares none. */
   readonly derive?: DeriveBlock<Columns>;
   /** `"window"` for a table the server serves pages of instead of replicating; absent, it replicates. */
@@ -197,7 +201,9 @@ export function syncSchema<
       visibility: entry.visibility ?? "partition",
     };
     const ruled = entry.allow === undefined ? base : { ...base, allow: entry.allow(combinators()) };
-    const derived = entry.derive === undefined ? ruled : { ...ruled, derive: entry.derive };
+    const fields = entry.allow === undefined ? undefined : fieldsOf(name, tbl, entry.fields);
+    const fielded = fields === undefined ? ruled : { ...ruled, fields };
+    const derived = entry.derive === undefined ? fielded : { ...fielded, derive: entry.derive };
     entries.push(entry.sync === undefined ? derived : { ...derived, sync: entry.sync });
     const rules = mergeRulesFor(name, tbl);
     if (rules.size > 0) merge.set(tbl.name, rules);
@@ -219,6 +225,30 @@ export function syncSchema<
     sealedKinds: new Set([...declared.values()].filter((p) => p.sealed).map((p) => p.name)),
     rolesFor: (kind) => declared.get(kind)?.roles ?? NO_ROLES,
   };
+}
+
+/**
+ * A table's field rules as data, checked the way the types cannot for a value: every rule names a
+ * column the table has, and none names the primary key — a row whose identity reads as `null` is
+ * not a row anything can address, update or delete.
+ */
+function fieldsOf(
+  name: string,
+  tbl: Table,
+  fields: FieldsFn<Columns, string> | undefined,
+): Readonly<Record<string, PolicyNode>> | undefined {
+  if (fields === undefined) return undefined;
+  const rules = Object.entries(fields(combinators())).filter(
+    (pair): pair is [string, PolicyNode] => pair[1] !== undefined,
+  );
+  if (rules.length === 0) return undefined;
+  for (const [column] of rules) {
+    if (!Object.hasOwn(tbl.columns, column))
+      panic(`${name}.fields: there is no column "${column}"`);
+    if (tbl.primaryKey === column)
+      panic(`${name}.fields: "${column}" is the primary key, which every reader must see`);
+  }
+  return Object.fromEntries(rules);
 }
 
 /** The kind a table's rows live in, with the two `allow` guards the types cannot express for a value. */

@@ -80,7 +80,10 @@ export interface StateLookup {
 
 export interface ValidatorOptions {
   readonly schema: ValidatorSchema;
-  /** `null` is ungranted mode: grant and policy steps are skipped; schema never is. */
+  /**
+   * `null` is ungranted mode: grant and policy steps are skipped; schema never is. So a `deny`
+   * rule is not enforced here — there is nobody to deny, because no write names a grant.
+   */
   readonly grantFor: ((peer: PeerId) => Grant | undefined) | null;
   /** The one peer whose events may write `global` tables; named like the issuer is, checked against the event's author. Absent, global tables are read-only everywhere. */
   readonly authority?: PeerId;

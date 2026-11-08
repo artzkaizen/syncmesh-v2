@@ -1,11 +1,14 @@
+import type { PeerId } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 import type { AdmissionAsk, RouteTable, TransportContext } from "@syncmesh/transport";
 import type { KeyRing } from "@syncmesh/wire";
 
+import { kindOf } from "@syncmesh/kernel";
 import { omitUndefined } from "@syncmesh/result";
 import {
   createAdmissionGate,
   createPeerSessions,
+  createReadGate,
   createRouteTable,
   oneSeatPerPeer,
 } from "@syncmesh/transport";
@@ -58,6 +61,13 @@ export function transportContextFor(base: {
   readonly partitions: () => readonly string[];
   /** How this device shapes its part of the mesh, including who may form a link at all. */
   readonly shaping?: MeshShaping;
+  /**
+   * The issuer of a granted mesh, which turns on the read gate (D40): every link then sends a
+   * peer only what its verified grant covers. Absent, the mesh is ungranted and links carry all.
+   */
+  readonly issuer?: PeerId;
+  /** The kinds whose content is sealed, which a link may carry to a peer that cannot read them. */
+  readonly sealedKinds?: ReadonlySet<string>;
   /** The authority-visibility tables (D24), which no peer-to-peer link here carries. */
   readonly withheld?: TransportContext["withheld"];
 }): TransportContext & { readonly routes: RouteTable } {
@@ -98,5 +108,15 @@ export function transportContextFor(base: {
   if (base.onReceipt !== undefined) Object.assign(context, { onReceipt: base.onReceipt });
   if (base.onRefusal !== undefined) Object.assign(context, { onRefusal: base.onRefusal });
   if (base.withheld !== undefined) Object.assign(context, { withheld: base.withheld });
+  if (base.issuer !== undefined) {
+    const sealedKinds = base.sealedKinds ?? new Set<string>();
+    const readGate = createReadGate({
+      grants: base.grants,
+      self: base.identity.peerId,
+      issuer: base.issuer,
+      sealed: (partition) => sealedKinds.has(kindOf(partition)),
+    });
+    Object.assign(context, { readGate });
+  }
   return context;
 }

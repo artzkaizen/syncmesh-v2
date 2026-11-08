@@ -23,6 +23,7 @@ import type { RelayLimits } from "./limits.js";
 import type { RelayRetention } from "./retention.js";
 import type { RelaySocket } from "./sender.js";
 import type { Client, Fanned, RoomState } from "./state.js";
+import type { RoomTrust } from "./trust.js";
 
 import { createGate } from "./admission.js";
 import { createConnection } from "./connection.js";
@@ -84,6 +85,12 @@ export interface RelayRoomOptions {
    * catch-up it cannot validate. Absent, the room starts with an empty one.
    */
   readonly grants?: GrantCache;
+  /**
+   * The issuers whose grants admit a device, which makes this a grant-gated room (D40): a joiner
+   * is seated only under a grant one of them signed, and is served only the partitions it names.
+   * Absent, the room is open — whoever knows its name reads all of it.
+   */
+  readonly trust?: RoomTrust;
   /** The room's clock, for rate limiting and presence expiry. Default the wall clock. */
   readonly now?: () => Temporal.Instant;
   /**
@@ -256,8 +263,10 @@ export async function openRelayRoom(
     blobs: retention.blobs,
     keeper: retention.keeper,
     grants,
+    trust: options.trust,
     presence,
     clients,
+    held: new Set(),
     cursors,
     floor: retention.floor,
     toClients,

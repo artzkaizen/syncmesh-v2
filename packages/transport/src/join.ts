@@ -70,6 +70,11 @@ export interface JoinDeps {
    */
   readonly trust?: PeerId;
   /**
+   * What a request is served under: what it asked for, cut to what the asker may read (D40).
+   * Absent, it is served what it asked for — an ungranted mesh.
+   */
+  readonly serves?: (asked: Interest | undefined) => Interest | undefined;
+  /**
    * The gated tables (D24): a snapshot served from here carries none of their rows and claims none
    * of the authority's run — a certificate over the whole state no longer covers it, so the install
    * stays provisional, which is the honest state of a slice nobody signed.
@@ -239,7 +244,7 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
     dispatch: async (frame) => {
       switch (frame.kind) {
         case "snap-req":
-          return serve(frame.interest);
+          return serve(deps.serves === undefined ? frame.interest : deps.serves(frame.interest));
         case "snap-manifest":
           return onManifest(frame);
         case "snap-chunk":

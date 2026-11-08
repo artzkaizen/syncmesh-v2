@@ -14,6 +14,7 @@ import {
   type TableName,
 } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
+import { omitUndefined } from "@syncmesh/result";
 import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import {
@@ -81,11 +82,22 @@ export const mintFor = (
     now,
   });
 
-/** One granted peer: engine with a real validator, registry seeded with its own grant. */
-export const peer = (n: number, account: string, startMs = 100) => {
+/**
+ * One granted peer: engine with a real validator, registry seeded with its own grant. `partitions`
+ * narrows that grant; `granted: false` leaves the registry empty, a device nobody admitted.
+ */
+export const peer = (
+  n: number,
+  account: string,
+  startMs = 100,
+  {
+    partitions,
+    granted = true,
+  }: { readonly partitions?: readonly PartitionKey[]; readonly granted?: boolean } = {},
+) => {
   const identity = createIdentity(seed(n)).unwrap();
   const grants = createGrantRegistry({ issuer: ISSUER.peerId, now: () => T0 });
-  grants.register(mintFor(identity, account)).unwrap();
+  if (granted) grants.register(mintFor(identity, account, omitUndefined({ partitions }))).unwrap();
   let ms = startMs;
   const clock = createHlcClock({ now: () => Temporal.Instant.fromEpochMilliseconds(ms++) });
   const options: EngineOptions = {

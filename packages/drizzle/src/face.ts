@@ -1,14 +1,15 @@
-import type { Engine, Principal, ValidatorSchema } from "@syncmesh/engine";
+import type { Engine, Principal } from "@syncmesh/engine";
 import type { PartitionKey } from "@syncmesh/kernel";
 import type { SqlDriver, TxReceipt, Write } from "@syncmesh/storage";
 import type { PgDialect } from "drizzle-orm/pg-core";
 
 import type { ProxySink } from "./proxy.js";
+import type { ReadSchema } from "./read.js";
 
 /** What both faces build on: the mesh's writer over the capturing connection, and the read scope. */
 export interface FaceDeps {
   readonly engine: Engine;
-  readonly schema: ValidatorSchema;
+  readonly schema: ReadSchema;
   readonly driver: SqlDriver;
   readonly writer: Write;
   readonly partition?: PartitionKey;

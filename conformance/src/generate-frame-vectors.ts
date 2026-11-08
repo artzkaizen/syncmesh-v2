@@ -23,6 +23,7 @@ import {
   receiptFrame,
   refusalFrame,
   routesFrame,
+  withheldFrame,
   snapAckFrame,
   snapChunkFrame,
   snapManifestFrame,
@@ -208,6 +209,13 @@ export function frameVectors() {
       kind: "refusal",
       tag: 9,
       wire: refusalFrame(refusalWire),
+    },
+    {
+      description:
+        "withheld, two sequences of one author the receiver's grant does not cover, under its entitlement (D40)",
+      kind: "withheld",
+      tag: 10,
+      wire: withheldFrame('{"partitions":["org:acme"]}', ahead),
     },
   ];
 
