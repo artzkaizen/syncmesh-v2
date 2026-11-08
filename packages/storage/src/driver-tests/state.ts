@@ -30,7 +30,10 @@ const cursorsOf = async (store: StateStore) => {
   return [c.synced.get(A), c.synced.get(B), c.local.get(A)];
 };
 
-/** The held run beside a scoped cursor (D32): stored with the cursors and replaced whole. */
+/**
+ * The held run beside a scoped cursor, or below a purged one (D32): stored with the cursors and
+ * replaced whole.
+ */
 const heldCase = (openDriver: OpenDriver): SuiteCase => ({
   name: "state: a scoped device's held run is stored with the cursors, replaced whole, and survives a reopen (D32)",
   run: async () => {
@@ -59,6 +62,10 @@ const heldCase = (openDriver: OpenDriver): SuiteCase => ({
     );
     (await write(again, "c", 3)).unwrap();
     equal((await again.loadCursors()).unwrap().held === undefined, true, "gone with the scope");
+    // a purge (D45) lowered it with no scope: it is the only claim below the cursors, so it stays
+    (await write(again, "d", 4, { ...coverage, held: new Map([[A, seq(1)]]) })).unwrap();
+    const purged = (await again.loadCursors()).unwrap();
+    equal([purged.scope, purged.held?.get(A)], [undefined, seq(1)], "kept with no scope");
   },
 });
 

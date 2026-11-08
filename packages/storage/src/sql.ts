@@ -90,8 +90,8 @@ function decodeCursor(
 export const CURSOR_FLOOR = 2;
 
 /**
- * The `local` column of a cursor row that holds `Coverage.held` (D32), written only while the
- * cursors are scoped. A build from before it reads such a row as a synced cursor at or below the
+ * The `local` column of a cursor row that holds `Coverage.held` (D32), written while the cursors
+ * are scoped or a purge (D45) left the held run below them. A build from before it reads such a row as a synced cursor at or below the
  * real one, which, like a floor row, only ever makes it ask again for what it holds.
  */
 export const CURSOR_HELD = 3;

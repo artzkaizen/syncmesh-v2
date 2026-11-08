@@ -82,8 +82,15 @@ export interface CoverageTracker {
    */
   readonly reopen: (run: TornRun) => void;
   /**
-   * The cursors, their scope, the floor when there is one, and the held run while scoped; what
-   * the state store persists.
+   * Takes events this device just deleted from its log out of the held run (D45, D32), and lowers
+   * no cursor: each author's held run drops below the lowest one evicted, and what it still holds
+   * above that is kept as held past a gap. A custody receipt signs the held run, so a purged
+   * holder stops signing for what it no longer has.
+   */
+  readonly evict: (events: readonly Pick<SyncEvent, "peerId" | "seqNum" | "local">[]) => void;
+  /**
+   * The cursors, their scope, the floor when there is one, and the held run while scoped or
+   * while it stands below the cursors; what the state store persists.
    */
   readonly current: () => Coverage;
   /** Per author, what this device holds above its contiguous cursor: the far side of every gap. */
@@ -152,19 +159,30 @@ export function trackCoverage(initial: Coverage = EMPTY_COVERAGE): CoverageTrack
       reopenIn(authorChain(local ? scopes.local : scopes.synced, peer), from, to);
       if (!local) reopenIn(authorChain(held, peer), from, to);
     },
+    evict: (events) => {
+      const seqs = events
+        .filter((event) => event.local !== true)
+        .sort((a, b) => a.seqNum - b.seqNum);
+      // lowest first: the first drops the run below it, and each one after only leaves `ahead`
+      for (const { peerId, seqNum } of seqs) reopenIn(authorChain(held, peerId), seqNum, seqNum);
+    },
     adoptUnheld: (adopted) => {
       const from = contiguousCursors(scopes.synced);
       const held = ahead();
       adopt(adopted);
       floor = higherFloor(floor, unheldBelow(from, contiguousCursors(scopes.synced), held));
     },
-    current: () => ({
-      synced: contiguousCursors(scopes.synced),
-      local: contiguousCursors(scopes.local),
-      ...(scope !== undefined && { scope }),
-      ...(floor.size > 0 && { floor }),
-      ...(scope !== undefined && { held: contiguousCursors(held) }),
-    }),
+    current: () => {
+      const synced = contiguousCursors(scopes.synced);
+      const run = contiguousCursors(held);
+      return {
+        synced,
+        local: contiguousCursors(scopes.local),
+        ...(scope !== undefined && { scope }),
+        ...(floor.size > 0 && { floor }),
+        ...((scope !== undefined || !sameCursors(run, synced)) && { held: run }),
+      };
+    },
     ahead,
   };
 }
@@ -190,6 +208,10 @@ export function unheldBelow(from: Cursors, to: Cursors, held: Ahead): Cursors {
   }
   return unheld;
 }
+
+/** Whether two cursor maps name the same authors at the same sequences. */
+const sameCursors = (a: Cursors, b: Cursors): boolean =>
+  a.size === b.size && [...a].every(([author, seq]) => b.get(author) === seq);
 
 /** Per author, the higher of the two floors: a floor only ever rises. */
 export const higherFloor = (a: Cursors, b: Cursors): Cursors => {

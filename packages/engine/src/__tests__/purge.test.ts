@@ -1,10 +1,11 @@
-import type { PartitionKey } from "@syncmesh/kernel";
+import type { PartitionKey, SeqNum } from "@syncmesh/kernel";
 
 import { parsePartitionKey, readRow } from "@syncmesh/kernel";
 import { describe, expect, test } from "bun:test";
 
 import { openEngine } from "../boot.js";
 import { createMemoryStateStore } from "../state-store.js";
+import { heldRuns } from "../sync.js";
 import {
   CREATE,
   column,
@@ -26,6 +27,8 @@ const N4 = key("n4");
 const TITLE = column("title");
 const BODY = column("body");
 const NOTE = column("note");
+// SAFETY: test fixture sequence numbers
+const at = (n: number) => n as SeqNum;
 
 const lost = (partition: PartitionKey) => ({
   events: (event: { readonly partition?: PartitionKey }) => event.partition === partition,
@@ -289,5 +292,32 @@ describe("engine.purge (D45)", () => {
     const disk = (await stall.store.loadAll()).unwrap();
     expect(readRow(disk, NOTES, N4)).toBeUndefined();
     expect(readRow(disk, NOTES, N1)?.get(TITLE)).toBe("acme");
+  });
+});
+
+describe("the held run a custody receipt signs, after a purge (D45, D32)", () => {
+  test("a scoped holder's held run drops below the first event it evicted, on disk too", async () => {
+    const { a, stateStore } = await held();
+    a.engine.adoptCoverage({ ...a.engine.coverage(), scope: "org:acme" });
+    expect(heldRuns(a.engine.coverage()).get(PEER_B)).toBe(at(3));
+    (await a.engine.purge(lost(PAYROLL))).unwrap();
+    expect(heldRuns(a.engine.coverage()).get(PEER_B)).toBe(at(1));
+    expect(a.engine.coverage().synced.get(PEER_B)).toBe(at(3));
+    const persisted = (await stateStore.loadCursors()).unwrap();
+    expect(heldRuns(persisted).get(PEER_B)).toBe(at(1));
+    const again = (
+      await openEngine({ peerId: PEER_A, clock: fakeClock(900), store: a.store, stateStore })
+    ).unwrap();
+    expect(heldRuns(again.coverage()).get(PEER_B)).toBe(at(1));
+  });
+
+  test("an unscoped holder signs below the purge too, and the events delivered again raise it", async () => {
+    const { a, b } = await held();
+    (await a.engine.purge(lost(PAYROLL))).unwrap();
+    expect(a.engine.coverage().synced.get(PEER_B)).toBe(at(3));
+    expect(heldRuns(a.engine.coverage()).get(PEER_B)).toBe(at(1));
+    (await a.engine.receiveBatch((await b.store.all()).unwrap())).unwrap();
+    expect(heldRuns(a.engine.coverage()).get(PEER_B)).toBe(at(3));
+    expect(a.engine.coverage().held).toBeUndefined();
   });
 });

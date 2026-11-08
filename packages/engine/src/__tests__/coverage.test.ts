@@ -82,4 +82,38 @@ describe("the held run beside a scoped cursor (D32)", () => {
     const unscoped = { synced: new Map([[PEER_A, at(5)]]), local: new Map() };
     expect(heldRuns(trackCoverage(unscoped).current()).get(PEER_A)).toBe(at(5));
   });
+
+  test("evicting events lowers the held run below the lowest one, and no cursor", () => {
+    const tracker = trackCoverage();
+    for (const n of [1, 2, 3, 4]) tracker.note({ peerId: PEER_A, seqNum: at(n) });
+    tracker.adopt(scoped(4));
+    tracker.evict([
+      { peerId: PEER_A, seqNum: at(4) },
+      { peerId: PEER_A, seqNum: at(2) },
+    ]);
+    expect(tracker.current().synced.get(PEER_A)).toBe(at(4));
+    expect(heldRuns(tracker.current()).get(PEER_A)).toBe(at(1));
+    // 3 is still held past the hole: 2 coming back closes the run to 3, and 4 is gone
+    tracker.note({ peerId: PEER_A, seqNum: at(2) });
+    expect(heldRuns(tracker.current()).get(PEER_A)).toBe(at(3));
+  });
+
+  test("unscoped, a held run below the cursors is kept in the coverage until it catches up", () => {
+    const tracker = trackCoverage();
+    for (const n of [1, 2, 3]) tracker.note({ peerId: PEER_A, seqNum: at(n) });
+    tracker.evict([{ peerId: PEER_A, seqNum: at(3) }]);
+    expect(tracker.current().held?.get(PEER_A)).toBe(at(2));
+    expect(heldRuns(tracker.current()).get(PEER_A)).toBe(at(2));
+    tracker.note({ peerId: PEER_A, seqNum: at(3) });
+    expect(tracker.current().held).toBeUndefined();
+  });
+
+  test("an unscoped adopt below a scoped cursor signs what was adopted, not the cursor", () => {
+    const tracker = trackCoverage();
+    for (const n of [1, 2]) tracker.note({ peerId: PEER_A, seqNum: at(n) });
+    tracker.adopt(scoped(5));
+    tracker.adopt({ synced: new Map([[PEER_A, at(3)]]), local: new Map() });
+    expect(tracker.current().synced.get(PEER_A)).toBe(at(5));
+    expect(heldRuns(tracker.current()).get(PEER_A)).toBe(at(3));
+  });
 });
