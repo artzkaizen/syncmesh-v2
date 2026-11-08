@@ -4,6 +4,8 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use sha2::{Digest, Sha256};
+
+use crate::doc_rules::DerivedColumns;
 use syncmesh_core::record::{CellValue, Row};
 
 /// The bounds an adapter holds every document to (RFC-0023 §5.4, §8.2, §10). Exceeding one is a
@@ -110,6 +112,34 @@ pub struct DocColumnEntry {
     pub doc: String,
     /// The columns derived from this one, in declaration order.
     pub derive: Vec<String>,
+}
+
+/// Per table, the columns its manifest entries derive: what [`crate::EngineOptions::derived`] takes
+/// so the engine refuses a local write naming one.
+///
+/// # Examples
+///
+/// ```
+/// use syncmesh_client::docs::{DocColumnEntry, derived_columns};
+///
+/// let manifest = r#"[{ "column": "content", "doc": "loro@1", "derive": ["title"] }]"#;
+/// let entries = DocColumnEntry::parse_list(manifest).unwrap();
+/// let derived = derived_columns([("notes", entries.as_slice())]);
+/// assert!(derived["notes"].contains("title"));
+/// ```
+pub fn derived_columns<'a>(
+    tables: impl IntoIterator<Item = (&'a str, &'a [DocColumnEntry])>,
+) -> DerivedColumns {
+    tables
+        .into_iter()
+        .map(|(table, entries)| {
+            let columns = entries
+                .iter()
+                .flat_map(|e| e.derive.iter().cloned())
+                .collect();
+            (table.to_owned(), columns)
+        })
+        .collect()
 }
 
 impl DocColumnEntry {

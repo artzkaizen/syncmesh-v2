@@ -129,6 +129,8 @@ export interface ValidatorOptions {
 export interface Validator {
   /** Ladder: clock → grant → device → revocation → grace → partition → schema → policy. The first failure is the verdict. */
   readonly validate: (event: ProbeEvent, before: StateLookup) => Result<void, ValidationError>;
+  /** The peer whose events may write `global` tables, as {@link ValidatorOptions.authority} named it. */
+  readonly authority?: PeerId;
   /**
    * Whether the schema marks the column retired (D31). What a compensation leaves out, so undoing
    * a delete brings the row back without writing a column this build refuses. Absent, none is.
@@ -179,6 +181,7 @@ export function createValidator(options: ValidatorOptions): Validator {
 
   return {
     validate,
+    ...(authority !== undefined && { authority }),
     retiredColumn: (table, column) => {
       const entry = entries.get(table);
       return entry !== undefined && retiredColumn(entry.table, column);

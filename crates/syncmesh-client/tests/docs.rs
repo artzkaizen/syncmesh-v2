@@ -6,9 +6,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use syncmesh_client::doc_log::{DocEntryState, DocStore, doc_digests};
+use syncmesh_client::docs::{DocColumnEntry, derived_columns};
 use syncmesh_client::{
-    Engine, EngineOptions, MemoryEventStore, MemoryStateStore, MutateError, RowWrite, StateStore,
-    StoreError, StoredEvent,
+    Engine, EngineOptions, EventStore, MemoryEventStore, MemoryStateStore, MutateError, RowWrite,
+    StateStore, StoreError, StoredEvent,
 };
 use syncmesh_core::doc::{
     DocBlobRef, DocChange, DocColumns, DocUpdate, Id16, derive_lineage, lineage_of,
@@ -518,8 +519,10 @@ fn a_legacy_genesis_reads_back_from_the_wire_and_is_quarantined_at_admission() {
     assert_eq!(b.state().record("notes", "n1"), None);
 }
 
-/// A state store holding n1's record with its lineage cell as `value`, beside the log it came from.
-fn persisted_with(value: impl FnOnce(CellValue) -> CellValue) -> MemoryStateStore {
+/// A state store holding n1's record with its lineage cell as `value`, and the log it came from.
+fn persisted_with(
+    value: impl FnOnce(CellValue) -> CellValue,
+) -> (MemoryStateStore, Vec<StoredEvent>) {
     let mut a = engine(1, true);
     write(&mut a, vec![insert(), replace(1)]);
     let mut record = a.state().record("notes", "n1").unwrap().clone();
@@ -532,13 +535,17 @@ fn persisted_with(value: impl FnOnce(CellValue) -> CellValue) -> MemoryStateStor
         record,
     };
     store.commit(&[row], &a.coverage()).unwrap();
-    store
+    (store, a.all_events().unwrap())
 }
 
-fn open_over(store: MemoryStateStore) -> Result<Engine, StoreError> {
+fn open_over((store, log): (MemoryStateStore, Vec<StoredEvent>)) -> Result<Engine, StoreError> {
+    let mut events = MemoryEventStore::new();
+    for entry in &log {
+        events.append(entry)?;
+    }
     Engine::open(
         Identity::from_seed(&[1; 32]),
-        Box::new(MemoryEventStore::new()),
+        Box::new(events),
         Some(Box::new(store)),
         EngineOptions {
             docs: Some(docs()),
@@ -548,16 +555,17 @@ fn open_over(store: MemoryStateStore) -> Result<Engine, StoreError> {
 }
 
 #[test]
-fn persisted_state_holding_another_rules_lineage_cell_is_refused_at_open() {
-    let opened = open_over(persisted_with(|tagged| tagged)).unwrap();
-    assert_eq!(
-        lineage(&opened),
+fn persisted_state_holding_another_rules_lineage_cell_is_rebuilt_from_the_log() {
+    let derived = |engine: &Engine| {
         Some(derive_lineage(
-            opened.peer_id(),
+            engine.peer_id(),
             SeqNum::parse(1).unwrap(),
-            1
+            1,
         ))
-    );
+    };
+    let opened = open_over(persisted_with(|tagged| tagged)).unwrap();
+    assert_eq!(lineage(&opened), derived(&opened));
+    assert!(opened.refused_at_open().is_none());
 
     let untag = |tagged: CellValue| match tagged {
         CellValue::Array(items) => CellValue::from(items[1].clone()),
@@ -567,13 +575,62 @@ fn persisted_state_holding_another_rules_lineage_cell_is_refused_at_open() {
         CellValue::Array(items) => CellValue::Array(vec![JsonValue::Number(2.0), items[1].clone()]),
         other => other,
     };
-    for (store, found) in [
+    for (persisted, found) in [
         (persisted_with(untag), "a lineage cell with no version"),
         (persisted_with(retag), "a lineage cell of version 2"),
     ] {
-        let refused = open_over(store)
-            .err()
-            .expect("refused, never read as the root");
-        assert!(refused.message.contains(found), "{}", refused.message);
+        // never read as the root: the state is the log's, refold for refold
+        let rebuilt = open_over(persisted).expect("rebuilt from the log, not refused");
+        let refused = rebuilt
+            .refused_at_open()
+            .expect("the refusal is kept for the host");
+        assert!(refused.to_string().contains(found), "{refused}");
+        assert_eq!(lineage(&rebuilt), derived(&rebuilt));
+        assert_eq!(
+            rebuilt.state().record("notes", "n1").unwrap().cells["title"].value,
+            CellValue::text("t")
+        );
     }
+}
+
+#[test]
+fn a_local_write_naming_a_derived_column_is_refused_and_a_numbered_one_folds() {
+    let manifest = r#"[{ "column": "content", "doc": "loro@1", "derive": ["title"] }]"#;
+    let entries = DocColumnEntry::parse_list(manifest).unwrap();
+    let open = |seed: u8| {
+        Engine::open(
+            Identity::from_seed(&[seed; 32]),
+            Box::new(MemoryEventStore::new()),
+            None,
+            EngineOptions {
+                docs: Some(docs()),
+                derived: derived_columns([("notes", entries.as_slice())]),
+                ..EngineOptions::default()
+            },
+        )
+        .unwrap()
+    };
+    let mut a = open(1);
+    // `insert()` names `title`, which this schema derives from `content`
+    let refused = a.mutate("notes.edit", vec![insert()], partition());
+    assert!(
+        matches!(&refused, Err(MutateError::DocRefused { reason, .. }) if reason.contains("derived")),
+        "{refused:?}"
+    );
+    let patched = a.mutate(
+        "notes.edit",
+        vec![Change::Update {
+            table: "notes".into(),
+            key: "n1".into(),
+            patch: BTreeMap::from([("title".to_owned(), CellValue::text("forged"))]),
+        }],
+        partition(),
+    );
+    assert!(matches!(patched, Err(MutateError::DocRefused { .. })));
+    assert!(a.all_events().unwrap().is_empty());
+
+    // history written by a build that does not derive it still folds, as in TypeScript
+    let mut older = engine(2, true);
+    let entry = write(&mut older, vec![insert()]);
+    assert_eq!(a.receive(entry).unwrap().report.folded, 1);
 }

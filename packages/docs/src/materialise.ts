@@ -21,7 +21,16 @@ import { DocPending, DocTooLarge } from "./errors.js";
 /** What the runtime asks of an engine: the write path, the fold feed and the doc log. */
 export type DocsEngine = Pick<
   Engine,
-  "peerId" | "mutate" | "onFoldBatch" | "docTail" | "coverDoc" | "docHeads" | "state" | "cursors"
+  | "peerId"
+  | "mutate"
+  | "onFoldBatch"
+  | "docTail"
+  | "coverDoc"
+  | "docHeads"
+  | "state"
+  | "cursors"
+  | "mayEditDoc"
+  | "writeDerived"
 >;
 
 /**
