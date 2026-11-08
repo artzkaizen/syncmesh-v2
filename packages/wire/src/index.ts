@@ -24,7 +24,7 @@ export {
   GENESIS_RULE,
   ID16_LENGTH,
   MalformedDoc,
-  actionIdOf,
+  wireActionId,
   deriveLineage,
   docChangeId,
   docDataToCbor,

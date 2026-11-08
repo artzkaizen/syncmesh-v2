@@ -1,7 +1,7 @@
 import type { AdapterId, MergeSpec, RowKey, State, TableName } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
 
-import { applyChange, getRecord, lineageOf, stampOf } from "@syncmesh/kernel";
+import { applyChange, getRecord, docLineage, stampOf } from "@syncmesh/kernel";
 
 import type { CoverageTracker } from "./coverage.js";
 import type { DocStore } from "./doc-log.js";
@@ -141,7 +141,7 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
           await recordDocs(
             into.docs,
             batch.docs,
-            (doc) => lineageOf(getRecord(state, doc.table, doc.key), doc.column),
+            (doc) => docLineage(getRecord(state, doc.table, doc.key), doc.column),
             hasAdapter,
           ),
         );

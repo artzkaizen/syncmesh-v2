@@ -128,7 +128,7 @@ export interface Genesis {
 }
 
 /** A genesis as one entry of the cell: `[parent | null, ms, logical, peer]`, keyed by its lineage. */
-const entryOf = ({ parent, stamp }: Genesis): JsonValue => [
+const genesisEntry = ({ parent, stamp }: Genesis): JsonValue => [
   parent ?? null,
   stamp.hlc[0].epochMilliseconds,
   stamp.hlc[1],
@@ -141,8 +141,8 @@ const isCount = (n: JsonValue | undefined, max = Number.MAX_SAFE_INTEGER): n is 
 /** The largest logical counter an HLC holds on the wire, a u32. */
 const LOGICAL_MAX = 0xff_ff_ff_ff;
 
-/** One entry back, or `undefined` for anything that is not exactly the shape {@link entryOf} writes. */
-function genesisOf(lineage: string, entry: JsonValue | undefined): Genesis | undefined {
+/** One entry back, or `undefined` for anything that is not exactly the shape {@link genesisEntry} writes. */
+function entryGenesis(lineage: string, entry: JsonValue | undefined): Genesis | undefined {
   const id = parseLineageId(lineage);
   if (id.isErr() || !isJsonArray(entry) || entry.length !== 4) return undefined;
   const [parent, ms, logical, peer] = entry;
@@ -164,12 +164,12 @@ function genesisOf(lineage: string, entry: JsonValue | undefined): Genesis | und
  * write that reached a doc column before the ladder refused those, an entry a peer mangled — is
  * skipped entry by entry, so every peer reads the same foreign value the same way.
  */
-export function genesesOf(value: CellValue | undefined): readonly Genesis[] {
+export function cellGeneses(value: CellValue | undefined): readonly Genesis[] {
   const held = jsonObject(value);
   if (held === undefined) return [];
   return Object.keys(held)
     .sort()
-    .flatMap((lineage) => genesisOf(lineage, held[lineage]) ?? []);
+    .flatMap((lineage) => entryGenesis(lineage, held[lineage]) ?? []);
 }
 
 /** Which of two geneses goes first: the smaller stamp, then the smaller lineage, then the root parent. */
@@ -223,8 +223,8 @@ export function winningLineage(geneses: readonly Genesis[]): LineageId | undefin
  * {@link firstGenesis} is kept, on every peer alike. The cell's stamp is the later of the two.
  */
 export const lineageRule: Strategy = (incoming, current) => {
-  const held = new Map(genesesOf(current?.value).map((g) => [g.lineage, g]));
-  for (const genesis of genesesOf(incoming.value)) {
+  const held = new Map(cellGeneses(current?.value).map((g) => [g.lineage, g]));
+  for (const genesis of cellGeneses(incoming.value)) {
     const kept = held.get(genesis.lineage);
     if (kept === undefined || firstGenesis(genesis, kept) < 0) held.set(genesis.lineage, genesis);
   }
@@ -236,7 +236,7 @@ export const lineageRule: Strategy = (incoming, current) => {
     [...held.keys()].sort().map((lineage) => {
       // SAFETY: every key came from `held`, so the lookup is always there
       const genesis = held.get(lineage) as Genesis;
-      return [lineage, entryOf(genesis)];
+      return [lineage, genesisEntry(genesis)];
     }),
   );
   return { value, stamp };
@@ -273,7 +273,7 @@ export function withDocColumns(merge: MergeSpec | undefined, docs: DocColumns): 
 
 /** The lineage cell a genesis writes: the one genesis, stamped with it. */
 export const lineageCell = (genesis: Genesis): Cell => ({
-  value: { [genesis.lineage]: entryOf(genesis) },
+  value: { [genesis.lineage]: genesisEntry(genesis) },
   stamp: genesis.stamp,
 });
 
@@ -281,7 +281,7 @@ export const lineageCell = (genesis: Genesis): Cell => ({
  * The lineage a document is on: the winner of the geneses its cell holds (see
  * {@link winningLineage}), or `undefined` for the root lineage.
  */
-export const lineageOf = (
+export const docLineage = (
   record: RowRecord | undefined,
   column: ColumnName,
-): LineageId | undefined => winningLineage(genesesOf(record?.cells.get(column)?.value));
+): LineageId | undefined => winningLineage(cellGeneses(record?.cells.get(column)?.value));

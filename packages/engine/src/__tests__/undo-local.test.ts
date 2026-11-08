@@ -1,7 +1,7 @@
 import {
   counterValue,
   getRecord,
-  lineageOf,
+  docLineage,
   parseAdapterId,
   parsePartitionKey,
   readRow,
@@ -366,13 +366,13 @@ describe("revert of a row that holds a document", () => {
         genesis: true,
       }),
     );
-    const lineage = lineageOf(getRecord(engine.state(), NOTES, N1), CONTENT);
+    const lineage = docLineage(getRecord(engine.state(), NOTES, N1), CONTENT);
     const del = await write((tx) => tx.delete(NOTES, N1));
     const r = (await engine.revert(del.id)).unwrap();
     expect(r.event?.changes).toEqual([
       { kind: "insert", table: NOTES, key: N1, row: row({ id: "n1", title: "t" }) },
     ]);
-    expect(lineageOf(getRecord(engine.state(), NOTES, N1), CONTENT)).toBe(lineage);
+    expect(docLineage(getRecord(engine.state(), NOTES, N1), CONTENT)).toBe(lineage);
     expect(engine.canRevert(del.id)).toBe(false);
   });
 });

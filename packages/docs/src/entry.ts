@@ -1,7 +1,7 @@
 import type { DocAddress, DocAppend } from "@syncmesh/engine";
 import type { LineageId, PartitionKey, Procedure, SyncEvent } from "@syncmesh/kernel";
 
-import { getRecord, lineageOf } from "@syncmesh/kernel";
+import { getRecord, docLineage } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { bytesEqual } from "@syncmesh/wire";
 
@@ -38,7 +38,7 @@ const notify = (entry: Entry) => {
 
 /** The winning lineage of the document `address` names, as this engine's state holds it. */
 const winnerAt = (engine: DocsEngine, address: DocAddress) =>
-  lineageOf(getRecord(engine.state(), address.table, address.key), address.column);
+  docLineage(getRecord(engine.state(), address.table, address.key), address.column);
 
 /**
  * Applies one document's folded changes to its open replica, unless the winning lineage moved off

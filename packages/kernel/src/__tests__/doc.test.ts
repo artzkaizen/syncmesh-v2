@@ -5,8 +5,8 @@ import type { DocChange, LineageId } from "../doc.js";
 
 import { applyChange, mergeRecord } from "../apply.js";
 import {
-  genesesOf,
-  lineageOf,
+  cellGeneses,
+  docLineage,
   parseActionId,
   parseAdapterId,
   parseLineageId,
@@ -50,7 +50,7 @@ const genesis = (l: LineageId, at: Stamped["stamp"], parent?: LineageId): Stampe
 });
 
 const lineageAfter = (changes: readonly Stamped[]) =>
-  lineageOf(getRecord(applyAll(changes), NOTES, N1), CONTENT);
+  docLineage(getRecord(applyAll(changes), NOTES, N1), CONTENT);
 
 describe("doc ids", () => {
   test("a 16-byte id is 32 lowercase hex characters, and nothing else", () => {
@@ -88,7 +88,7 @@ describe("applyChange — a doc change", () => {
       [lineage("b")]: [lineage("a"), 3, 0, PEER_A],
     });
     expect(record?.cells.get(CONTENT)?.stamp).toEqual(stamp(3, 0, PEER_A));
-    expect(genesesOf(record?.cells.get(CONTENT)?.value)).toEqual([
+    expect(cellGeneses(record?.cells.get(CONTENT)?.value)).toEqual([
       { lineage: lineage("a"), parent: undefined, stamp: at },
       { lineage: lineage("b"), parent: lineage("a"), stamp: stamp(3, 0, PEER_A) },
     ]);
@@ -115,7 +115,7 @@ describe("applyChange — a doc change", () => {
   test("the root lineage is the absent cell, and a foreign value reads as the root", () => {
     expect(lineageAfter([insert({ title: "t" }, stamp(1, 0, PEER_A))])).toBeUndefined();
     const foreign = applyAll([insert({ content: "not an id" }, stamp(1, 0, PEER_A))]);
-    expect(lineageOf(getRecord(foreign, NOTES, N1), CONTENT)).toBeUndefined();
+    expect(docLineage(getRecord(foreign, NOTES, N1), CONTENT)).toBeUndefined();
   });
 });
 
@@ -196,8 +196,8 @@ describe("lineage — the first genesis wins, as a tree (RFC-0023 §16.1)", () =
       [lineage("c")]: [null, -1, 0, PEER_A],
       "not a lineage": [null, 1, 0, PEER_A],
     };
-    expect(genesesOf(mangled).map((g) => g.lineage)).toEqual([lineage("a")]);
-    expect(genesesOf(lineage("a"))).toEqual([]);
+    expect(cellGeneses(mangled).map((g) => g.lineage)).toEqual([lineage("a")]);
+    expect(cellGeneses(lineage("a"))).toEqual([]);
   });
 
   test("any tree, in any order, in any batches, repeated: one cell, and the reference winner", () => {
@@ -241,7 +241,7 @@ describe("lineage — the first genesis wins, as a tree (RFC-0023 §16.1)", () =
             record === undefined ? state : mergeRecord(state, NOTES, N1, record, spec),
           emptyState(),
         );
-        expect(lineageOf(getRecord(joined, NOTES, N1), CONTENT)).toBe(lineageAfter(geneses));
+        expect(docLineage(getRecord(joined, NOTES, N1), CONTENT)).toBe(lineageAfter(geneses));
         expect(lineageAfter(shuffled)).toBe(reference(geneses));
       }),
       { numRuns: 500, seed: 23 },
@@ -263,6 +263,6 @@ describe("lineage — the first genesis wins, as a tree (RFC-0023 §16.1)", () =
       older,
       spec,
     );
-    expect(lineageOf(getRecord(joined, NOTES, N1), CONTENT)).toBe(lineage("f"));
+    expect(docLineage(getRecord(joined, NOTES, N1), CONTENT)).toBe(lineage("f"));
   });
 });

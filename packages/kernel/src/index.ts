@@ -25,9 +25,9 @@ export type {
 export {
   InvalidDocId,
   cellRules,
-  genesesOf,
+  cellGeneses,
   lineageCell,
-  lineageOf,
+  docLineage,
   lineageRule,
   parseActionId,
   parseAdapterId,

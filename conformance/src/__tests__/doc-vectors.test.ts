@@ -1,4 +1,4 @@
-import { getRecord, lineageOf, parseLineageId, parsePeerId, parseSeqNum } from "@syncmesh/kernel";
+import { getRecord, docLineage, parseLineageId, parsePeerId, parseSeqNum } from "@syncmesh/kernel";
 import {
   bytesToHex,
   decodeCheckpoint,
@@ -72,7 +72,7 @@ describe("doc vectors — frozen (RFC-0023 §13)", () => {
       for (const order of permutations(geneses)) {
         const record = getRecord(foldGeneses(order), NOTES, N1);
         expect(record === undefined ? "" : bytesToHex(encodeRecord(record))).toBe(tree.recordHex);
-        expect(lineageOf(record, CONTENT)).toBe(winner);
+        expect(docLineage(record, CONTENT)).toBe(winner);
       }
     });
   }

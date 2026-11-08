@@ -213,7 +213,7 @@ const asColumn = (s: string) => s as ColumnName;
  * on purpose: an old build skips both keys and folds the event, so a new one that refused the
  * event over them would park what every old peer folded — the divergence D13 exists to prevent.
  */
-export const actionIdOf = (value: CborValue | undefined) => {
+export const wireActionId = (value: CborValue | undefined) => {
   const hex = id16(value);
   return hex === undefined ? undefined : parseActionId(hex).unwrapOr(undefined);
 };

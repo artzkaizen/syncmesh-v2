@@ -1,6 +1,6 @@
 import {
   getRecord,
-  lineageOf,
+  docLineage,
   parseAdapterId,
   parsePartitionKey,
   type ColumnName,
@@ -68,7 +68,7 @@ const replace = (bytes: number): DocWrite => ({ ...edit(bytes), genesis: true })
 type Node = ReturnType<typeof node>;
 const write = async (n: Node, fn: Parameters<Node["engine"]["mutate"]>[1]) =>
   (await n.engine.mutate(EDIT, fn, { partition: W1 })).unwrap();
-const lineageAt = (n: Node) => lineageOf(getRecord(n.engine.state(), NOTES, N1), CONTENT);
+const lineageAt = (n: Node) => docLineage(getRecord(n.engine.state(), NOTES, N1), CONTENT);
 const log = async (n: Node) => (await n.engine.docLog()).unwrap();
 
 describe("folding a doc change", () => {

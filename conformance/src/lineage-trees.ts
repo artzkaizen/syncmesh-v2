@@ -8,7 +8,7 @@ import {
   emptyState,
   getRecord,
   hlcOf,
-  lineageOf,
+  docLineage,
   parseLineageId,
   type LineageId,
   type PeerId,
@@ -110,7 +110,7 @@ export const lineageTreeVectors = (author: PeerId, producer: PeerId) =>
       peer: who === "author" ? author : producer,
     }));
     const record = getRecord(foldGeneses(held), NOTES, N1);
-    const settled = lineageOf(record, CONTENT);
+    const settled = docLineage(record, CONTENT);
     if (settled !== (winner === undefined ? undefined : id16(winner)))
       throw new Error(`${description}: the rule settled on ${settled ?? "the root"}`);
     return {

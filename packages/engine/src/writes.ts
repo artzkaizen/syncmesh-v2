@@ -1,6 +1,6 @@
 import type { HlcClock, PeerId, SeqNum, State } from "@syncmesh/kernel";
 
-import { getRecord, lineageOf, type Procedure, type SyncEvent } from "@syncmesh/kernel";
+import { getRecord, docLineage, type Procedure, type SyncEvent } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
 import type { AtomicStores, Engine, FoldBatch, FoldSource, MutateOptions } from "./engine.js";
@@ -133,7 +133,7 @@ export function createWritePath(deps: WriteDeps) {
                 nextSeq(pastFloor(last, floor)),
                 changes,
                 mutateOptions,
-                (doc) => lineageOf(getRecord(getState(), doc.table, doc.key), doc.column),
+                (doc) => docLineage(getRecord(getState(), doc.table, doc.key), doc.column),
               );
               (await scoped.events.append({ event })).unwrap();
               /**
