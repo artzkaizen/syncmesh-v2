@@ -73,7 +73,9 @@ value the fold carries:
   and with each materialisation. A row that is not there yet is left alone.
 - Capture never carries them, and a transaction that sets one is refused with `DocColumnWrite`
   and rolled back. Every replica computes its own derived values from its own document, so a
-  value the app wrote would never reach anyone else.
+  value the app wrote would never reach anyone else. An `INSERT` that leaves them out is no
+  write to them, even where the app's own migration gave one a SQL `DEFAULT`: capture compares
+  an inserted row's guarded columns with their defaults, not with null.
 - Neither is a kernel cell, so neither is in a digest, a snapshot page or an event.
 
 Changing a derive function changes no table shape, so `schemaNameFor` keeps the state file and
