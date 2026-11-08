@@ -2,7 +2,7 @@ import type { Change, Hlc, HlcClock, PeerId, SeqNum, State } from "@syncmesh/ker
 import type { Temporal } from "@syncmesh/temporal";
 
 import { getRecord, docLineage, type Procedure, type SyncEvent } from "@syncmesh/kernel";
-import { Result } from "@syncmesh/result";
+import { Result, panic } from "@syncmesh/result";
 
 import type { AtomicStores, Engine, FoldBatch, FoldSource, MutateOptions } from "./engine.js";
 import type { MutateError, ValidationError } from "./errors.js";
@@ -49,7 +49,9 @@ export interface CaptureSettings {
   /**
    * A transaction on the capture's connection, for an engine whose stores have no `atomic`: the
    * statements commit in it, and the event after it. Ignored with `atomic`, where the capture runs
-   * inside the engine's own transaction — so on the connection `atomic` runs on.
+   * inside the engine's own transaction — so on the connection `atomic` runs on. Required without
+   * `atomic`: with neither, nothing could roll a refused capture's statements back, and the call
+   * panics.
    */
   readonly around?: <T>(fn: () => Promise<T>) => Promise<T>;
 }
@@ -59,6 +61,15 @@ export type MutateCaptured = <E>(
   capture: () => Promise<Result<CapturedWrite, E>>,
   settings?: CaptureSettings,
 ) => Promise<Result<SyncEvent, MutateError | E>>;
+
+/** `settings.around`, which an engine without `atomic` cannot run a capture without. */
+const captureAround = (atomic: boolean, settings: CaptureSettings) => {
+  if (!atomic && settings.around === undefined)
+    panic(
+      "mutateCaptured on an engine without `atomic` needs `settings.around`: nothing else can roll a refused capture back",
+    );
+  return settings.around;
+};
 
 /** A write admitted and stamped, ready to be numbered inside its transaction. */
 interface Prepared {
@@ -244,12 +255,13 @@ export function createWritePath(deps: WriteDeps) {
   const mutateCaptured: MutateCaptured = <E>(
     capture: () => Promise<Result<CapturedWrite, E>>,
     settings: CaptureSettings = {},
-  ) =>
-    Result.gen(async function* () {
+  ) => {
+    const around = captureAround(atomic, settings);
+    return Result.gen(async function* () {
       const written = yield* Result.await(
         Result.tryPromise({
           try: async () => {
-            if (atomic || settings.around === undefined)
+            if (atomic || around === undefined)
               return atomically(async (scoped) => {
                 const { procedure, prepared } = await captureInside(capture);
                 if (prepared === undefined) return { procedure, built: undefined };
@@ -257,7 +269,7 @@ export function createWritePath(deps: WriteDeps) {
               });
             // no transaction spans the engine's stores here, so the statements commit in
             // `around` first and the event after them, each store on its own (`EngineOptions.atomic`)
-            const { procedure, prepared } = await settings.around(() => captureInside(capture));
+            const { procedure, prepared } = await around(() => captureInside(capture));
             if (prepared === undefined) return { procedure, built: undefined };
             const built = await atomically((scoped) => commit(scoped, prepared));
             return { procedure, built: { ...built, prepared } };
@@ -271,6 +283,7 @@ export function createWritePath(deps: WriteDeps) {
       publish(written.built, written.built.prepared.image);
       return Result.ok(written.built.event);
     });
+  };
 
   const receiveBatch: Engine["receiveBatch"] = (entries) =>
     Result.gen(async function* () {
