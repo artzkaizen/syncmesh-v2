@@ -11,12 +11,12 @@ import type {
 import {
   createRelayHost,
   describeRoom,
-  openBlobHomes,
+  openDurableBlobs,
   relayEpoch,
   relayIdentity,
 } from "@syncmesh/relay";
 import { omitUndefined, panic } from "@syncmesh/result";
-import { sqlBlobStore, sqliteEventStore } from "@syncmesh/storage";
+import { sqliteEventStore } from "@syncmesh/storage";
 
 import type { RivetDatabase } from "./driver.js";
 import type { RivetWebSocket } from "./socket.js";
@@ -112,17 +112,13 @@ export function relayRivetActor(options: RelayRivetActorOptions = {}): RelayRive
         ok: (value) => value,
         err: (failure) => panic(`the room's log failed to open: ${failure.message}`),
       });
-      const blobs =
-        options.blobs === false
-          ? undefined
-          : (await sqlBlobStore(driver)).match({ ok: (value) => value, err: () => undefined });
-      const blobHomes = options.blobs === false ? undefined : await openBlobHomes(driver);
+      const blobs = options.blobs === false ? {} : await openDurableBlobs(driver);
       return {
         store,
         epoch: await relayEpoch(driver),
         // the platform's own database, which outlives every eviction (D42)
         durable: true,
-        ...omitUndefined({ blobs, blobHomes }),
+        ...blobs,
         // the actor's storage is the platform's to close; nothing was borrowed
         release: () => undefined,
       };

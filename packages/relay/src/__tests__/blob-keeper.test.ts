@@ -1,6 +1,20 @@
-import type { SyncEvent } from "@syncmesh/kernel";
+import type { TelemetryEvent } from "@syncmesh/engine";
+import type { SeqNum, SyncEvent } from "@syncmesh/kernel";
+import type { BlobLedger } from "@syncmesh/storage";
 
-import { hashOf, memoryBlobHomes, memoryBlobStore } from "@syncmesh/storage";
+import { StoreFailure } from "@syncmesh/engine";
+import { Result } from "@syncmesh/result";
+import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
+import {
+  hashOf,
+  memoryBlobHomes,
+  memoryBlobLedger,
+  memoryBlobStore,
+  sqlBlobHomes,
+  sqlBlobLedger,
+  sqlBlobStore,
+  sqliteEventStore,
+} from "@syncmesh/storage";
 import { Temporal, addToInstant } from "@syncmesh/temporal";
 import { eventFrame } from "@syncmesh/transport";
 import { describe, expect, test } from "bun:test";
@@ -18,6 +32,7 @@ import {
   fakeSocket,
   filled,
   peer,
+  remove,
   scriptedRoom,
   tick,
   write,
@@ -27,14 +42,22 @@ const DAY = Temporal.Duration.from({ days: 1 });
 const HOUR = Temporal.Duration.from({ hours: 1 });
 
 /** A room on a clock the test moves, one joined socket on it, and the blob store underneath. */
-const blobRoom = async (retention: RelayRetention) => {
-  let clock = T0;
-  const blobs = memoryBlobStore();
-  const room = await scriptedRoom({ blobs, retention, now: () => clock });
+const blobRoom = async (
+  retention: RelayRetention,
+  extra: Partial<Parameters<typeof scriptedRoom>[0]> = {},
+  start = T0,
+  /** Where the author's cursor stands: a reopened room that trimmed refuses a join below its floor. */
+  at = 0,
+) => {
+  let clock = start;
+  const blobs = extra?.blobs ?? memoryBlobStore();
+  const room = await scriptedRoom({ blobs, retention, now: () => clock, ...extra });
   const author = peer(40, "acct_a");
   const s = fakeSocket();
   const conn = room.connect(s.socket);
-  conn.receive(joinFrame([1], author.identity.peerId, new Map()));
+  // SAFETY: a test's cursor, a non-negative integer by construction
+  const cursors = new Map(at === 0 ? [] : [[author.identity.peerId, at as SeqNum]]);
+  conn.receive(joinFrame([1], author.identity.peerId, cursors));
   await tick();
   return {
     room,
@@ -56,6 +79,13 @@ const blobRoom = async (retention: RelayRetention) => {
       conn.receive(eventFrame(await write(author, id, hashOf(bytes))));
       await tick();
     },
+    /** The author deletes the row: the relay sees the delete and nothing else about it. */
+    unreference: async (id: string) => {
+      conn.receive(eventFrame(await remove(author, id)));
+      await tick();
+    },
+    /** Where the room's clock is now, for a room reopened after this one. */
+    clock: () => clock,
   };
 };
 
@@ -136,11 +166,11 @@ describe("the blob sweep (D18)", () => {
     });
     (await keeper.put(hashOf(photo), photo, ACME)).unwrap();
     clock = addToInstant(clock, DAY);
-    expect(await keeper.sweep()).toBe(0);
+    expect((await keeper.sweep()).swept).toBe(0);
     expect(await store.has(hashOf(photo))).toBe(true);
   });
 
-  test("a room that has seen a sealed event sweeps nothing: a reference it cannot read is still one", async () => {
+  test("a sealed event keeps the blobs of its partition and of none; another partition's still go", async () => {
     let clock = T0;
     const store = memoryBlobStore();
     const keeper = createBlobKeeper({
@@ -150,12 +180,44 @@ describe("the blob sweep (D18)", () => {
       keepUnreferencedFor: DAY,
       now: () => clock,
     });
-    const photo = filled(9, 8);
-    (await keeper.put(hashOf(photo), photo, ACME)).unwrap();
-    const plain = entryOf(await write(peer(41, "acct_b"), "s1", "anything")).event;
+    const [mine, unpinned, theirs] = [filled(9, 8), filled(10, 8), filled(11, 8)];
+    (await keeper.put(hashOf(mine), mine, ACME)).unwrap();
+    (await keeper.put(hashOf(unpinned), unpinned, undefined)).unwrap();
+    (await keeper.put(hashOf(theirs), theirs, GLOBEX)).unwrap();
+    const plain = entryOf(await write(peer(41, "acct_b"), "s1", "anything", ACME)).event;
     keeper.note({ ...plain, changes: [], sealed: true } satisfies SyncEvent);
     clock = addToInstant(clock, DAY);
-    expect(await keeper.sweep()).toBe(0);
+    const report = await keeper.sweep();
+    expect(report).toEqual({
+      swept: 1,
+      sweptBytes: 8,
+      held: 2,
+      heldBytes: 16,
+      referenced: 0,
+      sealed: 2,
+    });
+    expect(await store.has(hashOf(mine))).toBe(true);
+    expect(await store.has(hashOf(unpinned))).toBe(true);
+    expect(await store.has(hashOf(theirs))).toBe(false);
+  });
+
+  test("a sealed event in no partition keeps every blob", async () => {
+    let clock = T0;
+    const store = memoryBlobStore();
+    const keeper = createBlobKeeper({
+      homes: memoryBlobHomes(),
+      store,
+      quota: undefined,
+      keepUnreferencedFor: DAY,
+      now: () => clock,
+    });
+    const photo = filled(12, 8);
+    (await keeper.put(hashOf(photo), photo, GLOBEX)).unwrap();
+    const plain = entryOf(await write(peer(41, "acct_b"), "s1", "anything")).event;
+    const { partition: _, ...unpartitioned } = plain;
+    keeper.note({ ...unpartitioned, changes: [], sealed: true } satisfies SyncEvent);
+    clock = addToInstant(clock, DAY);
+    expect((await keeper.sweep()).swept).toBe(0);
     expect(await store.has(hashOf(photo))).toBe(true);
   });
 
@@ -181,7 +243,7 @@ describe("the blob sweep (D18)", () => {
     nested.set(column, { album: [{ cover: hash }] });
     keeper.note({ ...plain, changes: [{ ...first, row: nested }] });
     clock = addToInstant(clock, DAY);
-    expect(await keeper.sweep()).toBe(0);
+    expect((await keeper.sweep()).swept).toBe(0);
     expect(await store.has(hash)).toBe(true);
   });
 });
@@ -265,6 +327,144 @@ describe("per-partition blob quotas (D18)", () => {
     await r.room.sweep();
     await r.put(filled(2, 30));
     expect(r.s.ofKind("blob-refused")).toEqual([]);
+    r.room.close();
+  });
+});
+
+describe("references follow rows, across trims and restarts (gaps U18)", () => {
+  test("deleting the row frees its blob a window after the delete, not before", async () => {
+    const r = await blobRoom({ keepUnreferencedBlobsFor: DAY });
+    const photo = filled(13, 16);
+    await r.put(photo);
+    await r.reference(photo, "n1");
+    r.later(DAY);
+    await r.room.sweep();
+    expect(await r.blobs.has(hashOf(photo))).toBe(true); // a live row names it
+
+    await r.unreference("n1");
+    r.later(HOUR);
+    await r.room.sweep();
+    // a day since its put, an hour since its delete: an offline write may still bring the row back
+    expect(await r.blobs.has(hashOf(photo))).toBe(true);
+    r.later(DAY);
+    await r.room.sweep();
+    expect(await r.blobs.has(hashOf(photo))).toBe(false);
+    r.room.close();
+  });
+
+  test("a delete stamped before the row's latest write frees nothing, whatever order they arrive in", async () => {
+    const r = await blobRoom({ keepUnreferencedBlobsFor: DAY });
+    const photo = filled(14, 16);
+    await r.put(photo);
+    await r.reference(photo, "n1"); // stamped at the author's clock, which starts at 100
+    const early = peer(44, "acct_e", 10); // a clock behind the author's: its delete is older
+    r.conn.receive(eventFrame(await remove(early, "n1")));
+    await tick();
+    r.later(DAY);
+    r.later(DAY);
+    await r.room.sweep();
+    expect(await r.blobs.has(hashOf(photo))).toBe(true);
+    r.room.close();
+  });
+
+  test("a reopened room keeps what a trimmed insert named, and bills and sweeps what an earlier run left", async () => {
+    const driver = bunSqliteDriver(":memory:");
+    const durable = async () => ({
+      store: (await sqliteEventStore(driver)).unwrap(),
+      blobs: (await sqlBlobStore(driver)).unwrap(),
+      blobHomes: (await sqlBlobHomes(driver)).unwrap(),
+      blobLedger: (await sqlBlobLedger(driver)).unwrap(),
+    });
+    const retention = {
+      keepEventsFor: HOUR,
+      keepUnreferencedBlobsFor: DAY,
+      maxBlobBytesPerPartition: 40,
+    };
+    const first = await blobRoom(retention, await durable());
+    const [photo, orphan, more] = [filled(15, 16), filled(16, 16), filled(17, 16)];
+    await first.put(photo);
+    await first.reference(photo, "n1");
+    first.later(HOUR);
+    await first.room.sweep(); // samples the ceiling the insert sits under
+    first.later(HOUR);
+    await first.room.sweep(); // trims the insert: only the ledger remembers what it named
+    expect(Number(first.room.floor().get(first.author.identity.peerId))).toBe(1);
+    await first.put(orphan); // an upload whose row never arrives, left on disk at close
+    first.room.close();
+
+    const second = await blobRoom(retention, await durable(), first.clock(), 1);
+    // the earlier run's 32 bytes are on ACME's budget: 16 more would pass its 40
+    await second.put(more);
+    expect(second.s.ofKind("blob-refused").map((f) => f.code)).toEqual(["quota"]);
+    second.later(DAY);
+    await second.room.sweep();
+    expect(await second.blobs.has(hashOf(photo))).toBe(true); // the trimmed insert's row is live
+    expect(await second.blobs.has(hashOf(orphan))).toBe(false); // a day since the room opened
+    second.room.close();
+  });
+
+  test("a room whose log was trimmed before it had a ledger keeps an earlier run's blobs", async () => {
+    let clock = T0;
+    const store = memoryBlobStore();
+    const photo = filled(18, 8);
+    (await store.putAt(hashOf(photo), photo)).unwrap();
+    const ledger: BlobLedger = {
+      ...memoryBlobLedger(),
+      stored: () => Promise.resolve(Result.ok(new Map([[hashOf(photo), photo.byteLength]]))),
+    };
+    const keeper = createBlobKeeper({
+      homes: memoryBlobHomes(),
+      store,
+      quota: undefined,
+      keepUnreferencedFor: DAY,
+      now: () => clock,
+      ledger,
+      trimmedBefore: true,
+    });
+    (await keeper.open([])).unwrap();
+    clock = addToInstant(clock, DAY);
+    expect(await keeper.sweep()).toEqual({
+      swept: 0,
+      sweptBytes: 0,
+      held: 0,
+      heldBytes: 0,
+      referenced: 0,
+      sealed: 0,
+    });
+    expect(await store.has(hashOf(photo))).toBe(true);
+  });
+
+  test("a trim waits for the ledger: one that cannot save holds the floor where it was", async () => {
+    const failing: BlobLedger = {
+      ...memoryBlobLedger(),
+      save: () => Promise.resolve(Result.err(new StoreFailure({ message: "disk full" }))),
+    };
+    const r = await blobRoom({ keepEventsFor: HOUR }, { blobLedger: failing });
+    await r.reference(filled(19, 8), "n1");
+    r.later(HOUR);
+    await r.room.sweep();
+    r.later(HOUR);
+    await r.room.sweep();
+    expect(r.room.floor().size).toBe(0);
+    r.room.close();
+  });
+
+  test("every pass says what the sweep did, in counts and bytes (relay.blob.sweep)", async () => {
+    const seen: TelemetryEvent[] = [];
+    const r = await blobRoom(
+      { keepUnreferencedBlobsFor: DAY },
+      { onTelemetry: (event) => void seen.push(event) },
+    );
+    const [kept, gone] = [filled(20, 16), filled(21, 8)];
+    await r.put(kept);
+    await r.reference(kept, "n1");
+    await r.put(gone);
+    r.later(DAY);
+    await r.room.sweep();
+    const sweeps = seen.filter((event) => event.type === "relay.blob.sweep");
+    expect(sweeps.map((event) => event.sizes)).toEqual([
+      { swept: 1, sweptBytes: 8, held: 1, heldBytes: 16, referenced: 1, sealed: 0 },
+    ]);
     r.room.close();
   });
 });

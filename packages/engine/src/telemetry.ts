@@ -111,6 +111,24 @@ export type RelayTelemetry =
     }
   | {
       /**
+       * One blob sweep (gaps U18): what it removed and what it left, in counts and bytes. `held`
+       * and `heldBytes` are the blobs the room holds after it; `referenced` the held ones a live
+       * row names; `sealed` the unreferenced ones kept because a sealed event's partition may name
+       * them. Emitted on every retention pass of a room that keeps blobs, whether or not it swept.
+       */
+      readonly type: "relay.blob.sweep";
+      readonly sizes: {
+        readonly swept: number;
+        readonly sweptBytes: number;
+        readonly held: number;
+        readonly heldBytes: number;
+        readonly referenced: number;
+        readonly sealed: number;
+      };
+      readonly duration: Temporal.Duration;
+    }
+  | {
+      /**
        * A room opened keeping its log forever (gap audit №8).
        *
        * Not a warning and not a default anyone changed for you: a room that keeps everything is

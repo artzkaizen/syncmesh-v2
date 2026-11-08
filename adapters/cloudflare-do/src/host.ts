@@ -8,7 +8,6 @@ import type {
   RelayPosture,
   RoomStore,
 } from "@syncmesh/relay";
-import type { BlobStore, SqliteDriver } from "@syncmesh/storage";
 
 import {
   DEFAULT_LIMITS,
@@ -17,12 +16,12 @@ import {
   decodeRelayFrame,
   describeRoom,
   hostedPosture,
-  openBlobHomes,
+  openDurableBlobs,
   relayIdentity,
   relayEpoch,
 } from "@syncmesh/relay";
 import { omitUndefined, panic } from "@syncmesh/result";
-import { sqlBlobStore, sqliteEventStore } from "@syncmesh/storage";
+import { sqliteEventStore } from "@syncmesh/storage";
 
 import type { DurableSqlStorage } from "./driver.js";
 import type { DurableWebSocket } from "./socket.js";
@@ -100,11 +99,6 @@ export interface RelayDurableHost {
   readonly leave: (ws: DurableWebSocket) => void;
 }
 
-const openBlobs = async (driver: SqliteDriver): Promise<BlobStore | undefined> => {
-  const opened = await sqlBlobStore(driver);
-  return opened.isOk() ? opened.value : undefined;
-};
-
 /**
  * D09-C: the room mounted in one actor. The platform routes every socket for a room to this
  * object, so there is no fleet to gossip with and no Redis — the fan-out port stays unused and
@@ -160,15 +154,14 @@ export function relayDurableHost(
       ok: (value) => value,
       err: (failure) => panic(`the room's log failed to open: ${failure.message}`),
     });
-    const blobs = options.blobs === false ? undefined : await openBlobs(driver);
-    const blobHomes = options.blobs === false ? undefined : await openBlobHomes(driver);
+    const blobs = options.blobs === false ? {} : await openDurableBlobs(driver);
     return {
       store,
       epoch: await relayEpoch(driver),
       // the platform's own database, which outlives every eviction (D42)
       durable: true,
       identity: await relayIdentity(driver),
-      ...omitUndefined({ blobs, blobHomes }),
+      ...blobs,
       // the object's storage is the platform's to close; nothing was borrowed
       release: () => undefined,
     };

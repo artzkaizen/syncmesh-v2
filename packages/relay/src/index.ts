@@ -95,6 +95,8 @@ export {
   postureGate,
 } from "./host.js";
 export { describeRoom } from "./describe.js";
-export { openBlobHomes } from "./blob-keeper.js";
+export type { BlobSweep } from "./blob-keeper.js";
+export type { DurableBlobs } from "./durable-blobs.js";
+export { openBlobHomes, openBlobLedger, openDurableBlobs } from "./durable-blobs.js";
 export type { WindowConnection, WindowServerOptions } from "./windows.js";
 export { serveWindows } from "./windows.js";

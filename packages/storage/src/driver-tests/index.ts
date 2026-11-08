@@ -2,6 +2,7 @@ import type { SuiteCase } from "@syncmesh/engine";
 
 import type { SqlDriver } from "../driver.js";
 
+import { blobLedgerCases } from "./blob-ledger.js";
 import { blobCases } from "./blobs.js";
 import { captureCases, captureRuleCases } from "./capture.js";
 import { compactionCases } from "./compaction.js";
@@ -51,6 +52,7 @@ export function storeTests(openDriver: OpenDriver): readonly SuiteCase[] {
     ...stateCases(openDriver),
     ...compactionCases(openDriver),
     ...blobCases(openDriver),
+    ...blobLedgerCases(openDriver),
     ...docCases(openDriver),
   ];
 }
