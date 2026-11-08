@@ -132,7 +132,7 @@ interface ServedDb {
 interface ServedTx {
   readonly execute: (query: SQL) => PromiseLike<unknown>;
   readonly rollback: () => never;
-  readonly select: (fields?: object) => {
+  readonly select: (fields?: NonNullable<ReturnType<typeof readColumns>>) => {
     from: (t: Table) => { where: (w: unknown) => { as: (n: string) => unknown } };
   };
 }
