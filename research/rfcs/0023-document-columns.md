@@ -414,7 +414,8 @@ double their content when merged. Syncmesh answers it once:
   the walk cannot reach it until its parent lands, at which point the winner, and every doc-log
   label with it, is recomputed. That holds whether the parent lands in an event, a snapshot page
   or a repair record: an install or a repair that moves a document's winner relabels its doc log
-  and refreshes its head in the same persist step. Nothing is parked: parking would need cross-author holdback, and
+  and refreshes its head in the same persist step, for a document that holds doc-log entries (one
+  with none has nothing to relabel and gets no head). Nothing is parked: parking would need cross-author holdback, and
   this is how out-of-order delivery looks, exactly as a doc change on a row whose insert has not
   arrived folds (§11). A genesis naming its own lineage as its parent is refused (§10). A longer
   cycle cannot be reached from the root, and the walk stops at any lineage it has already visited.
@@ -695,6 +696,8 @@ until first `open()`, which is RFC-0019 §3's window rule applied to documents.
 | genesis under the tree rule (`5: 1`) at a build from before it | refused at decode by that build | that build never folds a tree-rule genesis by the LWW rule |
 | a snapshot page (RFC-0019) or repair record whose doc-column cell is not tagged `1`: untagged (the LWW rule's lineage id, or the tree rule's set before cells were versioned) or another version | the whole snapshot or repair is refused as `LineageCellRefused { table, key, column, version }` before any row joins; no coverage is adopted; the join exchange closes and reports it on the bridge's `onError` | the cell is never read as the root nor merged by another rule; the history behind it still arrives as events |
 | persisted state holding such a cell | TypeScript: reported on `onError`, then the state is rebuilt from the log, as any unreadable state is (`StateCorrupt` when the log is compacted below it). Rust: `Engine::open` refuses with a `StoreError` naming the cell | each runtime treats it as state it cannot read, as it already treats a row that does not decode |
+| adapter cannot parse an update | materialisation marks that `doc_log` row `failed`; the doc stays usable at its last good version; loud in `$inspect` | the fold already happened identically; this only affects materialisation, which is local |
+| minor version skew (`loro-crdt` 1.4 vs 1.16) | allowed: the id's major (`@1`) is the compatibility contract; the adapter package pins a floor and runs the adapter conformance suite (§13) | Loro's own 1.x encoding stability |
 
 Lineage cells are versioned wherever they are kept outside events — snapshot pages, repair
 records and persisted state — with the tag genesis key 5 carries (decided in §16.1), and frozen by
@@ -702,8 +705,16 @@ records and persisted state — with the tag genesis key 5 carries (decided in �
 this build meets a later rule's, as a version it does not run. Builds from before the tag (main up
 to `d01bb92`) do not check it and must not share a mesh with this one; doc columns have not shipped
 in a release, so no deployed mesh is affected.
-| adapter cannot parse an update | materialisation marks that `doc_log` row `failed`; the doc stays usable at its last good version; loud in `$inspect` | the fold already happened identically; this only affects materialisation, which is local |
-| minor version skew (`loro-crdt` 1.4 vs 1.16) | allowed: the id's major (`@1`) is the compatibility contract; the adapter package pins a floor and runs the adapter conformance suite (§13) | Loro's own 1.x encoding stability |
+
+Rebuilding from the log keeps only what the log holds. Rows this device took from an earlier
+snapshot install came with coverage and no events, so a rebuild that refuses a persisted cell loses
+them without a word unless the log is compacted (then it is `StateCorrupt`); the device gets them
+back by joining again. That was already true of any unreadable state; the lineage check is one more
+way to reach it (gaps U21).
+
+The boot check reads only tables that declare a doc column. The state cache decodes a row when it is
+first read, so the other tables stay undecoded until a fold writes them; a doc table is decoded in
+full at open.
 
 A hostile update from a valid author (for example "delete everything") is taxonomy B10: undo it,
 revoke the grant. Adapters must be **total** and bounded. There is a max update size, a
@@ -914,7 +925,9 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    `parse_lineage_cells` refuse any other cell as `LineageCellRefused` where it enters — a
    snapshot install and a repair (TypeScript; the Rust device takes neither) and persisted state
    at boot (both). `doc-vectors.json`'s `lineageCells` freeze the verdicts. A parent that lands
-   through a snapshot page or a repair now relabels the doc log at once.
+   through a snapshot page or a repair now relabels the doc log at once, skipping documents with
+   no doc-log entries. At boot only tables that declare a doc column are read for the check, so the
+   lazily decoded state cache leaves every other table undecoded.
    Known limits, accepted: the earliest stamp wins and only *future* clock skew is bounded, so a
    device with a lagging or back-dated clock wins sibling races. That grants no privilege, since
    any replacer can already win by naming the current winner as its parent. The lineage cell

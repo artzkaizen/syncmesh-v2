@@ -91,12 +91,13 @@
 | U12 | `@syncmesh/docs` is a scaffold whose only test is the template's `test.todo` | `packages/docs/src/__tests__/index.test.ts:4` | open |
 | U13 | `describeRoom` reports the host's key, not the room's when a `RoomStore` supplies its own identity (the Durable Object host does, and mounts no describe yet); the Rivet host sidesteps it by opening its host over the stored key | `relay/src/describe.ts` (`host.peerId`), `relay/src/host.ts` (`RoomStore.identity`) | open (latent) |
 | U14 | D31's two "now" fixes: split `unknown-table` from the retired-table case sharing its 128-slot bucket; pin D15's compaction floor for every peer | `engine/src/quarantine.ts` | open (waits on D1) |
+| U15 | The fleet `compose.yaml` is never run by CI (the shape is proved in-process by `fleet.test.ts`) | `examples/src/fleet/compose.yaml` | open |
 | U16 | **main's CI had failed on every push since 2026-09-28.** #9 fixed the formatting, the undeclared `@syncmesh/transport` in `adapters/browser` and the private `@syncmesh/ble` (`3bfa67a`); #2 fixed the `apps/issues-native` bulk; #15 cleared the last ten file-size, complexity and type errors, so `vp check` reports none | `vp lint`; `.github/workflows/ci.yml` | built (#15) |
 | U17 | Refusals and receipts are not carried by the relay (D32 limit: direct links only); React `refused-by` rendering (`plan/react-api.md` G12) unbuilt | `relay/src/session.ts` | open |
 | U18 | Blob sweep limits: a reference is kept for the life of the instance (log trims do not release it, since a trimmed insert is still a live row), so deleting a row never frees its blob and only uploads no row ever named are swept; a room that has seen a sealed event stops sweeping; only blobs put since the room opened are swept or billed; no telemetry on a sweep; the Rust client ignores the put answer | `relay/src/blob-keeper.ts` | open |
 | U19 | A stalled relay WebSocket still buffers presence inside the socket; conflation stops at the link (`FrameLink.sendLatest` covers BLE, not the relay) | `relay/src/sender.ts`, `relay/src/transport.ts` | open |
 | U20 | A document's lineage cell grows by about 110 bytes per `replace()` and has no cap (RFC-0023 §16.1). No bound is trivial: a genesis dropped by one peer and not another changes the walk, so trimming the tree needs a floor every peer agrees on | `packages/kernel/src/doc.ts` (`lineageRule`), `crates/syncmesh-core/src/doc.rs` | open |
-| U15 | The fleet `compose.yaml` is never run by CI (the shape is proved in-process by `fleet.test.ts`) | `examples/src/fleet/compose.yaml` | open |
+| U21 | A state rebuilt from the log keeps only what the log holds: rows taken from an earlier snapshot install (coverage, no events) are dropped without a word when the log is not compacted. Already true of any unreadable state; a refused persisted lineage cell is one more way to reach it (RFC-0023 §10) | `engine/src/boot.ts` | open |
 
 ## Hardware — listed, not built here
 
