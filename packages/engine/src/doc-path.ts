@@ -29,7 +29,7 @@ import type { Undo } from "./undo.js";
 
 import { createMemoryDocStore } from "./doc-log-memory.js";
 import { DocCoverStale, docKey } from "./doc-log.js";
-import { StoreFailure } from "./store.js";
+import { StoreFailure, orThrow } from "./store.js";
 
 /** How an engine is told about documents. */
 export interface DocEngineOptions {
@@ -166,16 +166,16 @@ export function createDocPath(
             Result.tryPromise({
               try: () =>
                 bindings().atomically(async (scoped) => {
-                  const done = await coverIfCurrent(
-                    scoped.docs ?? docStore,
-                    bindings(),
-                    doc,
-                    cover,
-                  );
-                  if (done.isOk()) await bindings().derive(derived, scoped);
-                  return done;
+                  const store = scoped.docs ?? docStore;
+                  const done = await coverIfCurrent(store, bindings(), doc, cover);
+                  if (done.isErr()) return Result.err(done.error);
+                  // a tail entry folded since the snapshot was read is newer than its values
+                  const whole = orThrow(await coversTail(store, doc, cover));
+                  const written = whole ? derived : [];
+                  await bindings().derive(written, scoped);
+                  return Result.ok(written);
                 }),
-              // a derived write the store refused inside the transaction, rolling the cover back
+              // a store failure inside the transaction, rolling the cover back
               catch: (cause) =>
                 cause instanceof StoreFailure
                   ? cause
@@ -184,8 +184,8 @@ export function createDocPath(
           )
           .then((done) => {
             const covered = done.andThen((inner) => inner);
-            if (covered.isOk()) bindings().notifyDerived(derived);
-            return covered;
+            if (covered.isOk()) bindings().notifyDerived(covered.value);
+            return covered.map(() => {});
           });
         covering = next.then(settled, settled);
         return next;
@@ -232,6 +232,25 @@ function coverIfCurrent(
       );
     return Result.ok(yield* Result.await(docStore.cover(doc, cover)));
   });
+}
+
+/**
+ * Whether `cover`, now committed, leaves no `tail` entry of its lineage on `doc`. One left was
+ * folded after the snapshot was read — a flush that wrote newer derived values, or an edit the
+ * next materialisation covers — so the cover's own values would be older than the document.
+ */
+function coversTail(
+  docStore: DocStore,
+  doc: DocAddress,
+  cover: DocCover,
+): Promise<Result<boolean, StoreFailure>> {
+  return docStore
+    .entriesOf(doc)
+    .then((read) =>
+      read.map((entries) =>
+        entries.every((e) => e.state !== "tail" || e.lineage !== cover.lineage),
+      ),
+    );
 }
 
 const settled = () => {};

@@ -17,7 +17,7 @@ import { buildEvent, nextSeq } from "./build-event.js";
 import { EmptyMutation } from "./errors.js";
 import { withDerivedKeys } from "./fold.js";
 import { adoptOwnPosition, createOwnFloor, pastFloor } from "./own-position.js";
-import { StoreFailure } from "./store.js";
+import { StoreFailure, orThrow } from "./store.js";
 import { timed } from "./telemetry.js";
 import { record } from "./tx.js";
 import { rowsBefore } from "./undo.js";
@@ -27,12 +27,6 @@ const asStoreFailure = (cause: unknown): StoreFailure =>
   cause instanceof StoreFailure
     ? cause
     : new StoreFailure({ message: "the write's transaction failed", cause });
-
-/** Inside an `atomic` body a store's `Err` must abort the transaction: thrown as itself, caught above. */
-const orThrow = <T>(result: Result<T, StoreFailure>): T => {
-  if (result.isErr()) throw result.error;
-  return result.value;
-};
 
 /** The verdict a probe gets before a local write is numbered; `undefined` when nothing validates. */
 const probeVerdict = (

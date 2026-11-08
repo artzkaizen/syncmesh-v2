@@ -189,6 +189,28 @@ describe("derived columns: every replica computes them (RFC-0023 §16.4)", () =>
     link.close();
   });
 
+  test("a materialisation that read the tail before a flush leaves the flush's newer title in place", async () => {
+    const a = await storedNode(7);
+    await insertNote(a);
+    const doc = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(doc.value, "Old", "a");
+    (await doc.flush()).unwrap();
+    // the materialisation reads its tail now, and commits only after the next flush has landed
+    const racing = a.documents.materialise(DOC);
+    const title = doc.value.getText("title");
+    title.delete(0, title.length);
+    title.insert(0, "New");
+    doc.value.commit();
+    (await doc.flush()).unwrap();
+    expect((await a.row())?.title).toBe("New");
+    (await racing).unwrap();
+    expect((await a.row())?.title).toBe("New");
+    // the snapshot still committed: the first entry is covered, the flush's own entry is tail
+    expect((await a.engine.docLog()).unwrap().map((e) => e.state)).toEqual(["covered", "tail"]);
+    (await doc.close()).unwrap();
+    expect(a.errors).toEqual([]);
+  });
+
   test("a materialisation whose derived write fails commits no snapshot either", async () => {
     const a = await storedNode(4);
     await insertNote(a);
