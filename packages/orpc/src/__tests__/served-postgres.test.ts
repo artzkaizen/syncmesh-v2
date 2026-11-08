@@ -1,11 +1,14 @@
 import type { ColumnName } from "@syncmesh/kernel";
 import type { WindowRow } from "@syncmesh/window";
 
+import { SERVED_READ_TIMEOUT, servedReadDdl } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { ReadFailed, ReadRefused, createServerWindows, decodeWindowFrame } from "@syncmesh/window";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { alias, pgSchema, text } from "drizzle-orm/pg-core";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
 import { z } from "zod";
 
 import { query } from "../index.js";
@@ -23,6 +26,7 @@ import {
   schemaFor,
   seedMailbox,
   served,
+  urlAs,
 } from "./served-fixtures.js";
 
 const suite = POSTGRES_URL === undefined ? describe.skip : describe;
@@ -540,28 +544,6 @@ suite("what a served handler cannot reach, however it asks (D43, E13)", () => {
     expect(found).toEqual([undefined, undefined, false]);
   });
 
-  test("a column the reader's rule refuses is read as null, its value kept on the server", async () => {
-    const m = fx.mail;
-    const router = {
-      r: query.input(z.object({})).handler(({ db }) => db.select().from(m).orderBy(m.id).limit(5)),
-    };
-    const source = servedReads({
-      router,
-      schema: schemaFor(fx.names.mail, fx.names.open, { hideSubject: true }),
-      db: fx.db,
-      principal: ALICE,
-      self: SERVER,
-      onCommit: () => () => undefined,
-      readRole: fx.roles.reader,
-    });
-    const page = (await source.readPage({ path: "r", input: {} })).unwrap();
-    expect(page.rows.map((row) => Object.fromEntries(row.row)["subject"])).toEqual([
-      null,
-      null,
-      null,
-    ]);
-  });
-
   test("a handler that throws is refused, not read again", async () => {
     const rows = await read(() => {
       throw new Error("no such folder");
@@ -626,3 +608,330 @@ suite("what a served handler cannot reach, however it asks (D43, E13)", () => {
     expect(later.isErr() && later.error.message).toStartWith("permission denied for table");
   });
 });
+
+/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-explicit-any, typescript/no-explicit-any, typescript/no-unsafe-return, typescript/no-unsafe-call, typescript/no-unsafe-member-access, typescript/no-unsafe-assignment -- each handler here is written as an attacker would, against the Drizzle the server hands it */
+type Handler = (context: { readonly db: any }) => any;
+
+/** One principal's page source over `routes`, with no feed: each test reads by hand. */
+const sourceOver = (
+  fx: Fixture,
+  routes: Readonly<Record<string, Handler>>,
+  options: {
+    readonly principal?: typeof ALICE | typeof BOB;
+    readonly db?: object;
+    readonly timeout?: Temporal.Duration;
+    readonly schema?: Fixture["schema"];
+  } = {},
+) =>
+  servedReads({
+    // SAFETY: each handler is written against the Drizzle `servedReads` hands it
+    router: Object.fromEntries(
+      Object.entries(routes).map(([path, handler]) => [
+        path,
+        query.input(z.object({})).handler(handler as never),
+      ]),
+    ),
+    schema: options.schema ?? fx.schema,
+    db: options.db ?? fx.db,
+    principal: options.principal ?? ALICE,
+    self: SERVER,
+    onCommit: () => () => undefined,
+    readRole: fx.roles.reader,
+    // a refusal here is the read's own fault, not a deploy still running
+    grace: Temporal.Duration.from({ seconds: 0 }),
+    timeout: options.timeout ?? SERVED_READ_TIMEOUT,
+  });
+
+/** Alice's rows of `handler`, read as `r`. */
+const readAs = async (fx: Fixture, handler: Handler) => {
+  const page = await sourceOver(fx, { r: handler }).readPage({ path: "r", input: {} });
+  return page.map((p) => p.rows.map((r) => Object.fromEntries(r.row)));
+};
+
+suite("what a served read leaves behind, and what its login may hold (D43)", () => {
+  let fx: Fixture;
+  const app = `syncmesh_app_${runId()}`;
+  beforeAll(async () => {
+    fx = await served({
+      seed: async (pg, mail) => {
+        await seedMailbox(3)(pg, mail);
+        await pg.unsafe(`INSERT INTO ${mail} VALUES ('b-1', 'bob', 'inbox', now(), 'BOB SECRET')`);
+      },
+    });
+    await fx.pg.unsafe(`CREATE TABLE ${PRIVATE}_2 (id text PRIMARY KEY, secret text)`);
+    await fx.pg.unsafe(`INSERT INTO ${PRIVATE}_2 VALUES ('s', 'NOT IN THE MANIFEST')`);
+    await fx.pg.unsafe(`CREATE ROLE "${app}" NOLOGIN`);
+    await fx.pg.unsafe(`GRANT SELECT ON ${PRIVATE}_2 TO "${app}"`);
+  });
+  afterAll(async () => {
+    await fx.pg.unsafe(`DROP TABLE IF EXISTS ${PRIVATE}_2`);
+    await fx.pg.unsafe(`DROP ROLE IF EXISTS "${app}"`);
+    await fx.close();
+  });
+
+  /** Alice's first mail with `x` beside it: what a fragment is put in. */
+  const beside =
+    (x: ReturnType<typeof sql>): Handler =>
+    ({ db }) =>
+      db.select({ id: fx.mail.id, x }).from(fx.mail).orderBy(fx.mail.id).limit(1);
+
+  test("a db a handler kept is refused once its read has ended, and sends nothing", async () => {
+    let kept: any;
+    const rows = await readAs(fx, ({ db }) => {
+      kept = db;
+      return db.select().from(fx.mail).orderBy(fx.mail.id).limit(1);
+    });
+    expect(rows.isOk()).toBe(true);
+    const sent = fx.statements.length;
+    const enter = kept
+      .select({
+        a: sql<string>`syncmesh_served.enter(${fx.roles.reader}, '{"account":"bob","role":"owner","claims":{}}')::text`,
+      })
+      .from(sql`(select 1) z`);
+    expect(
+      await Promise.resolve(enter).then(
+        () => "sent",
+        (error: Error) => error.message,
+      ),
+    ).toBe("r used its db after its read ended: a handler's db is for that read");
+    expect(fx.statements.length).toBe(sent);
+    const [principals] = await fx.pg.unsafe<{ n: number }[]>(
+      `SELECT count(*)::int AS n FROM syncmesh_served.principal`,
+    );
+    expect(principals).toEqual({ n: 0 });
+  });
+
+  test("a db one reader kept never runs in the next reader's transaction on that connection", async () => {
+    const one = postgres(urlAs(fx.roles.login, fx.roles.password), { max: 1 });
+    const db = drizzle({ client: one });
+    const m = fx.mail;
+    let kept: any;
+    let late = Promise.resolve("unsent");
+    const routes = {
+      a: ({ db: mine }: { readonly db: any }) => {
+        kept = mine;
+        return mine.select().from(m).orderBy(m.id).limit(1);
+      },
+      // while bob's transaction holds the one connection, alice's db asks it for bob's mail
+      b: ({ db: mine }: { readonly db: any }) => {
+        late = kept
+          .select({
+            s: sql<string>`(select string_agg(subject, '|') from ${sql.raw(fx.names.mail)})`,
+          })
+          .from(sql`(select 1) z`)
+          .then(
+            () => "sent",
+            (error: Error) => error.message,
+          );
+        return mine.select().from(m).orderBy(m.id).limit(1);
+      },
+    };
+    expect((await sourceOver(fx, routes, { db }).readPage({ path: "a", input: {} })).isOk()).toBe(
+      true,
+    );
+    const bob = await sourceOver(fx, routes, { db, principal: BOB }).readPage({
+      path: "b",
+      input: {},
+    });
+    expect(bob.isOk()).toBe(true);
+    expect(await late).toBe("a used its db after its read ended: a handler's db is for that read");
+    await one.end();
+  });
+
+  /** Advisory locks held by any session on `key`. */
+  const locks = async (key: number) =>
+    (
+      await fx.pg.unsafe<{ n: number }[]>(
+        `SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND classid = 0 AND objid = $1`,
+        [key],
+      )
+    )[0];
+
+  test("a session advisory lock a read takes is let go, even when a later read of the pass fails", async () => {
+    const key = 4000 + Math.floor(Math.random() * 1000);
+    const source = sourceOver(fx, {
+      lock: beside(sql`pg_advisory_lock(${key}::bigint)::text`),
+      bad: beside(sql`(1 / 0)::text`),
+    });
+    expect((await source.readPage({ path: "lock", input: {} })).isOk()).toBe(true);
+    expect(await locks(key)).toEqual({ n: 0 });
+    const both = await source.readPages?.([
+      { path: "lock", input: {} },
+      { path: "bad", input: {} },
+    ]);
+    expect(both?.map((page) => page.isOk())).toEqual([true, false]);
+    expect(await locks(key)).toEqual({ n: 0 });
+  });
+
+  test("a fragment that turns its statement_timeout off is still cancelled once the pass is late", async () => {
+    const source = sourceOver(
+      fx,
+      {
+        off: beside(sql`set_config('statement_timeout', '0', true)`),
+        slow: beside(sql`pg_sleep(10)::text`),
+      },
+      { timeout: Temporal.Duration.from({ milliseconds: 100 }) },
+    );
+    const started = Temporal.Now.instant();
+    const pages = await source.readPages?.([
+      { path: "off", input: {} },
+      { path: "slow", input: {} },
+    ]);
+    const took = Temporal.Now.instant().since(started);
+    expect(pages?.[0]?.isOk()).toBe(true);
+    const slow = pages?.[1];
+    expect(slow?.isErr() && ReadFailed.is(slow.error)).toBe(true);
+    expect(slow?.isErr() && slow.error.message).toBe("canceling statement due to user request");
+    expect(Temporal.Duration.compare(took, { seconds: 3 })).toBe(-1);
+  });
+
+  /** Runs `grant`, reads, takes it back with `revoke`, and answers what the read said. */
+  const whileGranted = async (grant: string, revoke: string) => {
+    await fx.pg.unsafe(grant);
+    const rows = await readAs(fx, beside(sql`(select secret from ${sql.raw(`${PRIVATE}_2`)})`));
+    await fx.pg.unsafe(revoke);
+    return rows.isErr() ? rows.error.message : JSON.stringify(rows.value);
+  };
+
+  test("a login or read role that holds more than the read role is refused, not read through", async () => {
+    const { reader, login } = fx.roles;
+    expect(
+      await whileGranted(
+        `GRANT pg_read_all_data TO "${reader}"`,
+        `REVOKE pg_read_all_data FROM "${reader}"`,
+      ),
+    ).toBe(
+      `syncmesh: served reads log in as ${login}, which has the privileges of pg_read_all_data too, and a read can use them`,
+    );
+    expect(
+      await whileGranted(`GRANT "${app}" TO "${reader}"`, `REVOKE "${app}" FROM "${reader}"`),
+    ).toBe(
+      `syncmesh: served reads log in as ${login}, which has the privileges of ${app} too, and a read can use them`,
+    );
+    expect(
+      await whileGranted(
+        `GRANT SELECT (secret) ON ${PRIVATE}_2 TO "${login}"`,
+        `REVOKE SELECT (secret) ON ${PRIVATE}_2 FROM "${login}"`,
+      ),
+    ).toBe(
+      `syncmesh: served reads log in as ${login}, which owns or was granted column secret of table public.${PRIVATE}_2`,
+    );
+    expect(
+      await whileGranted(
+        `GRANT SELECT ON ${PRIVATE}_2 TO "${reader}"`,
+        `REVOKE SELECT ON ${PRIVATE}_2 FROM "${reader}"`,
+      ),
+    ).toBe(
+      `syncmesh: the read role ${reader} was granted public.${PRIVATE}_2, which servedReadDdl does not serve`,
+    );
+    // all taken back: the read reaches the fragment, and Postgres refuses the table
+    expect(await whileGranted(`SELECT 1`, `SELECT 1`)).toBe(
+      `permission denied for table ${PRIVATE}_2`,
+    );
+  });
+
+  test("the DDL warns of a table the read role can read that the manifest does not serve", async () => {
+    const notices: string[] = [];
+    const owner = postgres(POSTGRES_URL ?? "", {
+      max: 1,
+      onnotice: (notice) => void notices.push(notice.message ?? ""),
+    });
+    await owner.unsafe(`GRANT SELECT ON ${PRIVATE}_2 TO PUBLIC`);
+    for (const statement of servedReadDdl(fx.schema, {
+      role: fx.roles.reader,
+      grantTo: fx.roles.login,
+    }))
+      await owner.unsafe(statement);
+    await owner.unsafe(`REVOKE SELECT ON ${PRIVATE}_2 FROM PUBLIC`);
+    await owner.end();
+    expect(notices).toContain(
+      `syncmesh: the read role ${fx.roles.reader} can read ${PRIVATE}_2, which the manifest does not serve: a served read could read all of it`,
+    );
+  });
+});
+
+suite(
+  "a column rule holds for a sql fragment too: the ruled table is read through its view (D43, E06)",
+  () => {
+    let fx: Fixture;
+    beforeAll(async () => {
+      fx = await served({
+        hideSubject: true,
+        seed: async (pg, mail) => {
+          await seedMailbox(3)(pg, mail);
+          await pg.unsafe(
+            `INSERT INTO ${mail} VALUES ('b-1', 'bob', 'inbox', now(), 'BOB SECRET')`,
+          );
+        },
+      });
+    });
+    afterAll(() => fx.close());
+
+    const beside =
+      (x: ReturnType<typeof sql>): Handler =>
+      ({ db }) =>
+        db.select({ id: fx.mail.id, x }).from(fx.mail).orderBy(fx.mail.id).limit(1);
+
+    test("the handler's own select reads the ruled column as null, the reader's rows only", async () => {
+      const rows = await readAs(fx, ({ db }) =>
+        db.select().from(fx.mail).orderBy(fx.mail.id).limit(5),
+      );
+      expect(rows.unwrap().map((row) => [row["id"], row["subject"]])).toEqual([
+        ["m-0000001", null],
+        ["m-0000002", null],
+        ["m-0000003", null],
+      ]);
+    });
+
+    test("a fragment that names the table's ruled column is refused by Postgres", async () => {
+      const rows = await readAs(
+        fx,
+        beside(sql`(select string_agg(subject, '|') from ${sql.raw(fx.names.mail)})`),
+      );
+      expect(rows.isErr() && rows.error.message).toBe(
+        `permission denied for table ${fx.names.mail}`,
+      );
+    });
+
+    test("a fragment reads the table's other columns, and the view, only as the reader may", async () => {
+      const rows = await readAs(
+        fx,
+        beside(
+          sql`(select count(*)::text from ${sql.raw(fx.names.mail)}) || ':' || (select count(*)::text || '/' || count(subject)::text from ${sql.raw(`syncmesh_served."read:${fx.names.mail}"`)})`,
+        ),
+      );
+      expect(rows.unwrap()).toEqual([{ id: "m-0000001", x: "3:3/0" }]);
+    });
+
+    test("the DDL again keeps the view; without the rule it drops it and grants the table back", async () => {
+      const run = async (schema: Fixture["schema"]) => {
+        for (const statement of servedReadDdl(schema, {
+          role: fx.roles.reader,
+          grantTo: fx.roles.login,
+        }))
+          await fx.pg.unsafe(statement);
+      };
+      const view = async () =>
+        (
+          await fx.pg.unsafe<{ view: string | null }[]>(`SELECT to_regclass($1)::text AS view`, [
+            `syncmesh_served."read:${fx.names.mail}"`,
+          ])
+        )[0];
+      await run(fx.schema);
+      expect(await view()).toEqual({ view: `syncmesh_served."read:${fx.names.mail}"` });
+      await run(schemaFor(fx.names.mail, fx.names.open));
+      expect(await view()).toEqual({ view: null });
+      // the table is the role's to read whole again, each row by its rule
+      const unruled = sourceOver(
+        fx,
+        { r: beside(sql`(select count(subject)::text from ${sql.raw(fx.names.mail)})`) },
+        { schema: schemaFor(fx.names.mail, fx.names.open) },
+      );
+      const page = (await unruled.readPage({ path: "r", input: {} })).unwrap();
+      expect(page.rows.map((r) => Object.fromEntries(r.row))).toEqual([
+        { id: "m-0000001", x: "3" },
+      ]);
+    });
+  },
+);
+/* oxlint-enable anti-slop/no-unknown-parameters, anti-slop/no-explicit-any, typescript/no-explicit-any, typescript/no-unsafe-return, typescript/no-unsafe-call, typescript/no-unsafe-member-access, typescript/no-unsafe-assignment */

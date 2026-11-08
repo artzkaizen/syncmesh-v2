@@ -204,7 +204,11 @@ export interface Statement {
  * a million changes to stream.
  */
 export async function served(
-  options: { readonly seed?: (sql: postgres.Sql, mail: string) => Promise<void> } = {},
+  options: {
+    readonly seed?: (sql: postgres.Sql, mail: string) => Promise<void>;
+    /** Whether the manifest rules the subject column, so the DDL serves `mail` through a view. */
+    readonly hideSubject?: boolean;
+  } = {},
 ) {
   const id = runId();
   const names = { mail: `mail_${id}`, open: `open_${id}` };
@@ -215,7 +219,7 @@ export async function served(
   await pg.unsafe(MAIL_DDL(names.open));
   await options.seed?.(pg, names.mail);
   await pg.unsafe(`ANALYZE ${names.mail}`);
-  const schema = schemaFor(names.mail, names.open);
+  const schema = schemaFor(names.mail, names.open, { hideSubject: options.hideSubject === true });
   for (const statement of servedReadDdl(schema, { role: roles.reader, grantTo: roles.login }))
     await pg.unsafe(statement);
   const statements: Statement[] = [];

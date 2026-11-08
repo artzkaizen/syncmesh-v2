@@ -1,9 +1,7 @@
 import type { Principal, ValidatorSchema } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 import type { SchemaEntry } from "@syncmesh/schema";
-import type { PrincipalStatement } from "@syncmesh/storage";
-import type { Page, PageSource, ReadRequest, WindowRow } from "@syncmesh/window";
-import type { SQL } from "drizzle-orm";
+import type { Page, PageSource, ReadRequest, WindowRow, ReadFailed } from "@syncmesh/window";
 
 import {
   driverValues,
@@ -11,20 +9,24 @@ import {
   limitOfRows,
   readColumns,
   readOnly,
+  revocable,
+  readFrom,
   readPredicate,
   scopeReads,
   tableIdentity,
   queryTables,
 } from "@syncmesh/drizzle";
 import { Result } from "@syncmesh/result";
-import { SERVED_READ_TIMEOUT, servedReadSettings } from "@syncmesh/storage";
+import { SERVED_READ_TIMEOUT, servedReadSettings, servedView } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
-import { MAX_ROWS, ReadFailed, ReadRefused, readKey } from "@syncmesh/window";
+import { MAX_ROWS, ReadRefused, readKey } from "@syncmesh/window";
 import { Table, TransactionRollbackError, getTableName, is, sql } from "drizzle-orm";
 
 import type { QueryContext, QueryDef, Router } from "./procedures.js";
+import type { ServedDb, ServedTx } from "./served-pass.js";
 
 import { isDef } from "./procedures.js";
+import { SNAPSHOT, drizzleStatement, failures, refused, watchdog } from "./served-pass.js";
 import { toRow } from "./served-row.js";
 import { validate } from "./validate.js";
 
@@ -88,58 +90,6 @@ export interface ServedReadsOptions {
 /** The {@link ServedReadsOptions.grace} a server takes when none is given. */
 export const GRACE = Temporal.Duration.from({ minutes: 1 });
 
-const refused = (message: string) => new ReadRefused({ message });
-
-/**
- * SQLSTATE classes that say the read itself is wrong, so asking again gives the same answer:
- * `42` (a name it may not use, or that does not exist), `22` (a value it cannot take), `0A`
- * (something Postgres does not do) and `25` (a write inside a read-only transaction).
- */
-const REFUSING = new Set(["42", "22", "0A", "25"]);
-
-/**
- * The two of those a deploy in progress also gives, while the code is ahead of the migration:
- * `42501` (the role may not read the table yet) and `42P01` (the table does not exist yet).
- */
-const DEPLOYING = new Set(["42501", "42P01"]);
-
-/** The driver's own error under Drizzle's wrapper, and its SQLSTATE: what Postgres said, not the query it said it about. */
-const driverError = (cause: unknown) => {
-  for (let at = cause; at instanceof Error; at = at.cause) {
-    const code: unknown = "code" in at ? at.code : undefined;
-    if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code))
-      return { state: code, message: at.message };
-  }
-  return undefined;
-};
-
-/** `SELECT set_config('…', $1, TRUE)` as a Drizzle statement, each `$n` bound to its param. */
-const drizzleStatement = ({ sql: text, params }: PrincipalStatement): SQL =>
-  sql.join(
-    text
-      .split(/\$(\d+)/)
-      .map((part, i) => (i % 2 === 0 ? sql.raw(part) : sql`${params[Number(part) - 1] ?? null}`)),
-  );
-
-/** The parts of a Postgres Drizzle a served read uses: a transaction, and SQL in it. */
-interface ServedDb {
-  readonly transaction: <T>(
-    body: (tx: ServedTx) => Promise<T>,
-    config?: { readonly isolationLevel: "repeatable read" },
-  ) => Promise<T>;
-}
-
-interface ServedTx {
-  readonly execute: (query: SQL) => PromiseLike<unknown>;
-  readonly rollback: () => never;
-  readonly select: (fields?: NonNullable<ReturnType<typeof readColumns>>) => {
-    from: (t: Table) => { where: (w: unknown) => { as: (n: string) => unknown } };
-  };
-}
-
-/** Several reads in one transaction read one snapshot. */
-const SNAPSHOT = { isolationLevel: "repeatable read" } as const;
-
 /** A request matched to its procedure, its input parsed: a read ready to run. */
 interface Planned {
   readonly key: string;
@@ -167,6 +117,32 @@ const planRead = (router: Router, request: ReadRequest): Result<Planned, ReadRef
   return validate<never>(def.schema, input)
     .mapError((error) => refused(error.message))
     .map((parsed) => ({ key: readKey(request), path, def, input: parsed }));
+};
+
+/** The table as `principal` may read it: the read rule compiled in, or a refusal. */
+const canRead = (
+  schema: ServedReadsOptions["schema"],
+  principal: Principal,
+  tx: ServedTx,
+  table: Table,
+): unknown => {
+  const name = tableIdentity(table);
+  const entry = schema.entries.find((e) => e.table.name === name);
+  if (entry?.sync !== "window")
+    throw refused(`${name} is not served: only a sync: "window" table is read on the server`);
+  if (entry.allow === undefined) throw refused(`${name} has no read rule, so no one may read it`);
+  const scope = { schema, dialect: "postgres", actor: principal } as const;
+  // a column the reader's rule refuses reads NULL: its value never leaves the server
+  const columns = readColumns(name, table, scope);
+  const selecting = columns === undefined ? tx.select() : tx.select(columns);
+  // a table with a ruled column is read from its view, which reads NULL where the rule
+  // refuses: the role may not read that column of the table itself, `sql` fragments included
+  const view = servedView(entry);
+  // named as the query calls it, so an alias's columns still resolve
+  return selecting
+    .from(view === undefined ? table : readFrom(table, view))
+    .where(readPredicate(name, scope))
+    .as(getTableName(table));
 };
 
 /**
@@ -220,53 +196,14 @@ export function servedReads(options: ServedReadsOptions): PageSource {
   // the handler's own chain
   const db = options.db as ServedDb;
   const settings = servedReadSettings(readRole, principal, timeout);
-  /** When each read was first told its role or table is not there, while it still is not. */
-  const missing = new Map<string, Temporal.Instant>();
-
-  /** A missing role or table: a deploy for {@link grace}, then the read's own fault. */
-  const deploying = (key: string, message: string): ReadRefused | ReadFailed => {
-    const now = Temporal.Now.instant();
-    const since = missing.get(key) ?? now;
-    missing.set(key, since);
-    return Temporal.Duration.compare(now.since(since), grace) < 0
-      ? new ReadFailed({ message })
-      : refused(message);
-  };
-
-  /** A read that threw, as a refusal when asking again cannot help, and a failure when it may. */
-  const classifyFailure = (key: string, cause: unknown): ReadRefused | ReadFailed => {
-    if (cause instanceof ReadRefused || cause instanceof ReadFailed) return cause;
-    const driver = driverError(cause);
-    // no SQLSTATE: the connection, not the read
-    if (driver === undefined)
-      return new ReadFailed({
-        message: cause instanceof Error ? cause.message : "the read failed",
-      });
-    if (DEPLOYING.has(driver.state)) return deploying(key, driver.message);
-    return REFUSING.has(driver.state.slice(0, 2))
-      ? refused(driver.message)
-      : new ReadFailed({ message: driver.message });
-  };
-
-  /** The table as this principal may read it: the read rule compiled in, or a refusal. */
-  const canRead = (tx: ServedTx, table: Table): unknown => {
-    const name = tableIdentity(table);
-    const entry = schema.entries.find((e) => e.table.name === name);
-    if (entry?.sync !== "window")
-      throw refused(`${name} is not served: only a sync: "window" table is read on the server`);
-    if (entry.allow === undefined) throw refused(`${name} has no read rule, so no one may read it`);
-    const scope = { schema, dialect: "postgres", actor: principal } as const;
-    // a column the reader's rule refuses reads NULL: its value never leaves the server
-    const columns = readColumns(name, table, scope);
-    const selecting = columns === undefined ? tx.select() : tx.select(columns);
-    // named as the query calls it, so an alias's columns still resolve
-    return selecting.from(table).where(readPredicate(name, scope)).as(getTableName(table));
-  };
+  const { classify: classifyFailure, settled } = failures(grace);
 
   /** The handler's query, built inside `tx`, or why it will not be run. */
   const build = (tx: ServedTx, { path, def, input }: Planned) => {
     const scoped = readOnly(
-      scopeReads(tx, (table: never) => (is(table, Table) ? canRead(tx, table) : table)),
+      scopeReads(tx, (table: never) =>
+        is(table, Table) ? canRead(schema, principal, tx, table) : table,
+      ),
     );
     /* oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: the handler is written against the app's Drizzle; a Postgres Drizzle has the same read verbs, and the handler only chains them */
     const context = { input, db: scoped, principal, self } as unknown as QueryContext<never>;
@@ -315,31 +252,65 @@ export function servedReads(options: ServedReadsOptions): PageSource {
   };
 
   /**
+   * One read, built and run on a `db` that is revoked once its rows are in, and whether Postgres
+   * refused its statement, which leaves the transaction aborted.
+   */
+  const runRead = async (
+    tx: ServedTx,
+    read: Planned,
+  ): Promise<{ readonly answer: Answer; readonly aborted: boolean }> => {
+    const fence = revocable(tx, () =>
+      refused(`${read.path} used its db after its read ended: a handler's db is for that read`),
+    );
+    try {
+      const built = build(fence.db, read);
+      if (built.isErr()) return { answer: Result.err(built.error), aborted: false };
+      const { query, keyOf } = built.value;
+      const rows = await Result.tryPromise({
+        // SAFETY: a handler's select runs on await, and answers its rows
+        try: async () => (await query) as readonly unknown[],
+        catch: (cause) => classifyFailure(read.key, cause),
+      });
+      return {
+        answer: rows.andThen((found) => toPage(query, found, keyOf)),
+        aborted: rows.isErr(),
+      };
+    } finally {
+      fence.revoke();
+    }
+  };
+
+  /**
    * Runs `reads` in one transaction, in order, after the statement that makes it this reader's.
    * A statement Postgres refuses ends the transaction, so the reads after it run in the next one.
+   *
+   * Before the rollback, the session-level advisory locks a read took are let go: a rollback
+   * keeps them, and the pool hands the connection to the next pass still holding them.
    */
   const pass = async (reads: readonly Planned[]): Promise<readonly Answer[]> => {
     const answers: Answer[] = [];
+    let stop = () => Promise.resolve<unknown>(undefined);
     const ended = await Result.tryPromise({
       try: () =>
         db.transaction(
           async (tx) => {
-            await tx.execute(drizzleStatement(settings));
+            stop = watchdog(
+              db,
+              timeout,
+              await tx.execute(drizzleStatement(settings)),
+              reads.length,
+            );
+            await tx.execute(sql`SAVEPOINT syncmesh_reads`);
+            let aborted = false;
             for (const read of reads) {
-              const built = build(tx, read);
-              if (built.isErr()) {
-                answers.push(Result.err(built.error));
-                continue;
-              }
-              const { query, keyOf } = built.value;
-              const rows = await Result.tryPromise({
-                // SAFETY: a handler's select runs on await, and answers its rows
-                try: async () => (await query) as readonly unknown[],
-                catch: (cause) => classifyFailure(read.key, cause),
-              });
-              answers.push(rows.andThen((found) => toPage(query, found, keyOf)));
-              if (rows.isErr()) break;
+              const ran = await runRead(tx, read);
+              answers.push(ran.answer);
+              aborted = ran.aborted;
+              if (aborted) break;
             }
+            // a statement that failed left the transaction aborted: back to before the reads
+            if (aborted) await tx.execute(sql`ROLLBACK TO SAVEPOINT syncmesh_reads`);
+            await tx.execute(sql`SELECT pg_advisory_unlock_all()`);
             // nothing a read does is kept: the principal's row least of all
             tx.rollback();
           },
@@ -347,6 +318,7 @@ export function servedReads(options: ServedReadsOptions): PageSource {
         ),
       catch: (cause) => cause,
     });
+    await stop();
     const cause = ended.isErr() ? ended.error : undefined;
     if (cause !== undefined && !(cause instanceof TransactionRollbackError))
       // the transaction itself did not run: every read it had not answered failed with it
@@ -356,7 +328,7 @@ export function servedReads(options: ServedReadsOptions): PageSource {
       ];
     for (const [n, answer] of answers.entries()) {
       const key = reads[n]?.key;
-      if (key !== undefined && answer.isOk()) missing.delete(key);
+      if (key !== undefined && answer.isOk()) settled(key);
     }
     if (answers.length === reads.length) return answers;
     return [...answers, ...(await pass(reads.slice(answers.length)))];
