@@ -5,7 +5,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use syncmesh_client::doc_log::{DocEntryState, DocStore, doc_digests};
+use syncmesh_client::doc_log::{
+    DocAddress, DocEntryState, DocHead, DocLogEntry, DocStore, MemoryDocStore, doc_digests,
+};
 use syncmesh_client::docs::{DocColumnEntry, derived_columns};
 use syncmesh_client::{
     Engine, EngineOptions, EventStore, MemoryEventStore, MemoryStateStore, MutateError, RowWrite,
@@ -594,6 +596,27 @@ fn persisted_state_holding_another_rules_lineage_cell_is_rebuilt_from_the_log() 
 }
 
 #[test]
+fn unreadable_state_holding_rows_a_snapshot_installed_is_refused_not_rebuilt() {
+    // the same refused cell, with a floor in the coverage: rows a snapshot installed are in no log
+    let (mut store, log) = persisted_with(|tagged| match tagged {
+        CellValue::Array(items) => CellValue::from(items[1].clone()),
+        other => other,
+    });
+    let mut coverage = store.load_coverage().unwrap();
+    let author = Identity::from_seed(&[9; 32]).peer_id().clone();
+    coverage
+        .synced
+        .insert(author.clone(), SeqNum::parse(4).unwrap());
+    coverage.floor.insert(author, SeqNum::parse(4).unwrap());
+    store.commit(&[], &coverage).unwrap();
+    let refused = match open_over((store, log)) {
+        Ok(_) => panic!("a state the log cannot rebuild was rebuilt"),
+        Err(e) => e,
+    };
+    assert!(refused.message.starts_with("StateCorrupt"), "{refused}");
+}
+
+#[test]
 fn a_local_write_naming_a_derived_column_is_refused_and_a_numbered_one_folds() {
     let manifest = r#"[{ "column": "content", "doc": "loro@1", "derive": ["title"] }]"#;
     let entries = DocColumnEntry::parse_list(manifest).unwrap();
@@ -633,4 +656,181 @@ fn a_local_write_naming_a_derived_column_is_refused_and_a_numbered_one_folds() {
     let mut older = engine(2, true);
     let entry = write(&mut older, vec![insert()]);
     assert_eq!(a.receive(entry).unwrap().report.folded, 1);
+}
+
+#[test]
+fn an_install_that_moves_the_winning_lineage_relabels_the_doc_log() {
+    let mut a = engine(1, true);
+    let mut b = engine(2, true);
+    b.receive(write(&mut a, vec![insert()])).unwrap();
+    // A's replace is the first stamp, so A's lineage wins wherever both are held
+    write(&mut a, vec![replace(1)]);
+    write(&mut b, vec![replace(2)]);
+    let on_b = lineage(&b);
+    let b_edit = write(&mut b, vec![edit(3, on_b)]);
+    let mut r = engine(3, true);
+    // B's log holds A's insert and B's own two writes
+    r.receive_batch(b.events_since(&Default::default(), None).unwrap())
+        .unwrap();
+    assert_eq!(lineage(&r), on_b);
+    assert_eq!(states(&r), [DocEntryState::Tail, DocEntryState::Tail]);
+    assert_eq!(b_edit.event.seq_num.get(), 2);
+    // A's state, never A's events: the rows carry A's genesis into the lineage cell
+    r.install_snapshot(a.snapshot(None)).unwrap();
+    assert_eq!(lineage(&r), lineage(&a), "the install moved the winner");
+    assert_eq!(
+        labels(&r, &b),
+        BTreeMap::from([
+            ((true, 1), DocEntryState::Orphaned),
+            ((true, 2), DocEntryState::Orphaned),
+        ])
+    );
+    let heads = r.doc_heads().unwrap();
+    assert_eq!((heads[0].lineage, heads[0].tail_count), (lineage(&a), 0));
+}
+
+/// A store two engines open in turn, as a database outlives the process; `stopped` makes its
+/// writes fail, as a process stopping between two commits leaves them.
+#[derive(Default)]
+struct Shared<T> {
+    inner: std::sync::Arc<std::sync::Mutex<T>>,
+    stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl<T> Clone for Shared<T> {
+    fn clone(&self) -> Shared<T> {
+        Shared {
+            inner: self.inner.clone(),
+            stopped: self.stopped.clone(),
+        }
+    }
+}
+
+impl<T> Shared<T> {
+    fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        f(&mut self.inner.lock().unwrap())
+    }
+
+    fn write<R>(&self, f: impl FnOnce(&mut T) -> Result<R, StoreError>) -> Result<R, StoreError> {
+        if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(StoreError::new("stopped"));
+        }
+        self.with(f)
+    }
+}
+
+impl StateStore for Shared<MemoryStateStore> {
+    fn is_empty(&self) -> Result<bool, StoreError> {
+        self.with(|s| s.is_empty())
+    }
+    fn load_all(&self) -> Result<syncmesh_core::state::State, StoreError> {
+        self.with(|s| s.load_all())
+    }
+    fn load_coverage(&self) -> Result<syncmesh_client::Coverage, StoreError> {
+        self.with(|s| s.load_coverage())
+    }
+    fn commit(
+        &mut self,
+        rows: &[RowWrite],
+        coverage: &syncmesh_client::Coverage,
+    ) -> Result<(), StoreError> {
+        self.write(|s| s.commit(rows, coverage))
+    }
+    fn clear(&mut self) -> Result<(), StoreError> {
+        self.write(|s| s.clear())
+    }
+}
+
+impl DocStore for Shared<MemoryDocStore> {
+    fn append(&mut self, entries: &[DocLogEntry]) -> Result<(), StoreError> {
+        self.write(|s| s.append(entries))
+    }
+    fn entries(&self) -> Result<Vec<DocLogEntry>, StoreError> {
+        self.with(|s| s.entries())
+    }
+    fn entries_of(&self, doc: &DocAddress) -> Result<Vec<DocLogEntry>, StoreError> {
+        self.with(|s| s.entries_of(doc))
+    }
+    fn set_state(
+        &mut self,
+        author: &syncmesh_core::event::PeerId,
+        seq: SeqNum,
+        index: u32,
+        state: DocEntryState,
+    ) -> Result<(), StoreError> {
+        self.write(|s| s.set_state(author, seq, index, state))
+    }
+    fn upsert_head(
+        &mut self,
+        doc: &DocAddress,
+        adapter: &str,
+        lineage: Option<Id16>,
+        tail_count: u64,
+        tail_bytes: u64,
+    ) -> Result<(), StoreError> {
+        self.write(|s| s.upsert_head(doc, adapter, lineage, tail_count, tail_bytes))
+    }
+    fn heads(&self) -> Result<Vec<DocHead>, StoreError> {
+        self.with(|s| s.heads())
+    }
+    fn uncovered_floor(&self) -> Result<BTreeMap<syncmesh_core::event::PeerId, u64>, StoreError> {
+        self.with(|s| s.uncovered_floor())
+    }
+}
+
+#[test]
+fn an_install_stopped_before_its_relabel_is_relabelled_at_the_next_open() {
+    let mut a = engine(1, true);
+    let mut b = engine(2, true);
+    b.receive(write(&mut a, vec![insert()])).unwrap();
+    write(&mut a, vec![replace(1)]);
+    write(&mut b, vec![replace(2)]);
+    let on_b = lineage(&b);
+    write(&mut b, vec![edit(3, on_b)]);
+    let (rows, docs) = (
+        Shared::<MemoryStateStore>::default(),
+        Shared::<MemoryDocStore>::default(),
+    );
+    let open = |events: MemoryEventStore| {
+        Engine::open(
+            Identity::from_seed(&[3; 32]),
+            Box::new(events),
+            Some(Box::new(rows.clone())),
+            EngineOptions {
+                docs: Some(self::docs()),
+                doc_adapters: BTreeSet::from(["loro@1".to_owned()]),
+                doc_store: Some(Box::new(docs.clone())),
+                ..EngineOptions::default()
+            },
+        )
+        .unwrap()
+    };
+    let mut r = open(MemoryEventStore::new());
+    r.receive_batch(b.events_since(&Default::default(), None).unwrap())
+        .unwrap();
+    assert_eq!(lineage(&r), on_b);
+    let log = r.all_events().unwrap();
+    // the rows commit; the doc store stops before the relabel lands
+    docs.stopped
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(r.install_snapshot(a.snapshot(None)).is_err());
+    docs.stopped
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(docs.with(|d| d.heads().unwrap())[0].lineage, on_b);
+    drop(r);
+    let mut events = MemoryEventStore::new();
+    for entry in &log {
+        events.append(entry).unwrap();
+    }
+    let reopened = open(events);
+    assert_eq!(lineage(&reopened), lineage(&a), "the rows committed");
+    assert_eq!(
+        labels(&reopened, &b),
+        BTreeMap::from([
+            ((true, 1), DocEntryState::Orphaned),
+            ((true, 2), DocEntryState::Orphaned),
+        ])
+    );
+    let heads = reopened.doc_heads().unwrap();
+    assert_eq!((heads[0].lineage, heads[0].tail_count), (lineage(&a), 0));
 }

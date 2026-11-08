@@ -66,12 +66,16 @@ ask **before** discarding anything:
 export const refoldable = (store: EventStore): Promise<Result<boolean, StoreFailure>> =>
   Result.gen(async function* () {
     const floor = yield* Result.await(store.compactedBelow());
-    return Result.ok(floor.synced.size === 0 && floor.local.size === 0);
+    const installed = yield* Result.await(store.installedBelow());
+    return Result.ok(floor.synced.size === 0 && floor.local.size === 0 && installed.size === 0);
   });
 ```
 
 A device that has never compacted can rebuild everything, which is most devices for most of their
-lives. One that has cannot, and its remedy is a peer rather than its own disk.
+lives. One that has cannot, and its remedy is a peer rather than its own disk. Nor can one that
+took rows from a snapshot install: the log records the floor the install left
+(`EventStore.installedBelow`, gaps U33), so the question is answered by the log alone, as it must
+be when the state file is the thing about to be discarded.
 
 **`acked` is not derived either, and losing it is now a decision rather than a surprise.** It
 moves when a *peer acknowledges*, which touches no row and leaves no event; the map it comes from,
@@ -280,6 +284,14 @@ to migrate it in place or to rejoin from a peer — neither of which is "no migr
 
 That is a real limit on the borrowed idea rather than a detail. A young replica gets the clean
 version; an old one gets a migration or a rejoin, and has to be told which.
+
+The same limit reaches every device that joined by snapshot, and joining by snapshot is the
+normal path for a new device (gaps U33): its log records the install's floor, so `refoldable` is
+`false` from its first boot and a table-shape schema change refuses with "Keep the previous
+schema, or rejoin from a peer" exactly as it does over a compacted log. So "young replica" means
+"filled by events", not "new". A migration that copies rows from the old state file into the new
+one is what lets these devices take a schema change in place; it is planned, not built
+(decided 2026-11-08, Jace delegated the call: refusing is the safe default until it exists).
 
 This is what makes the fingerprint added in `syncmesh_meta` this week
 *mostly* redundant: it compares DDL text and then reinstalls in place, which

@@ -20,14 +20,17 @@ pub type Cursors = BTreeMap<PeerId, SeqNum>;
 /// Per author, the sequences a peer holds *above* its cursor — the far side of a gap. Advisory.
 pub type Ahead = BTreeMap<PeerId, Vec<SeqNum>>;
 
-/// Cursors per scope, and the interest they are true for (D23). This crate numbers no local
-/// scope — a Rust device has no `local` writes yet — so `local` is carried for the wire and the
-/// state store and is always empty here.
+/// Cursors per scope, the interest they are true for (D23), and the floor: per author, the
+/// highest sequence this device claims with no event behind it in its log (D46), which a snapshot
+/// install leaves. `local` counts this device's own local-only writes, which never travel.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Coverage {
     pub synced: Cursors,
     pub local: Cursors,
     pub scope: Option<String>,
+    /// This device's own account of its log, never part of what it claims to a joiner; empty
+    /// until a snapshot install adopts coverage the log does not hold.
+    pub floor: Cursors,
 }
 
 /// What the log keeps for one event: the event, and the exact core bytes the author signed with
@@ -40,11 +43,16 @@ pub struct StoredEvent {
     pub event: SyncEvent,
     pub core: Option<Vec<u8>>,
     pub sig: Option<Vec<u8>>,
+    /// A local-only write, written with `Engine::mutate_local`: numbered in its own sequence,
+    /// never signed and never sent. Only `mutate_local` sets it: a write to a `local` table
+    /// through `Engine::mutate` is never marked, and a validator refuses it (`LocalOnly`).
+    pub local: bool,
 }
 
 impl StoredEvent {
+    /// `peer-seq`, or `peer-Lseq` for a local-only write: the two sequences never share an id.
     pub fn id(&self) -> String {
-        self.event.id()
+        syncmesh_core::event::event_id(&self.event.peer_id, self.event.seq_num, self.local)
     }
 
     /// `[core, sig]` bytes to forward, or `None` when no signature was ever held.
@@ -62,6 +70,7 @@ impl StoredEvent {
             event: v.event,
             core: Some(v.core),
             sig: Some(v.sig),
+            local: false,
         }
     }
 }
@@ -101,11 +110,18 @@ pub trait EventStore {
         Ok(())
     }
     fn has(&self, id: &str) -> Result<bool, StoreError>;
+    /// Every event held, local-only ones included, ordered by author then sequence.
     fn all(&self) -> Result<Vec<StoredEvent>, StoreError>;
-    /// Events above the given per-author cursors, ordered by author then sequence.
+    /// Synced events above the given per-author cursors, ordered by author then sequence. Never
+    /// a local-only one: this is what a peer is sent.
     fn all_since(&self, cursors: &Cursors) -> Result<Vec<StoredEvent>, StoreError>;
-    /// Highest sequence number this peer has appended, if any.
+    /// Local-only events above the given cursors, ordered by author then sequence: what a boot
+    /// replays above the state store's `local` coverage.
+    fn local_since(&self, cursors: &Cursors) -> Result<Vec<StoredEvent>, StoreError>;
+    /// Highest synced sequence number this peer has appended, if any.
     fn last_seq(&self, peer: &PeerId) -> Result<Option<SeqNum>, StoreError>;
+    /// Highest local-only sequence number this peer has appended, if any.
+    fn last_local_seq(&self, peer: &PeerId) -> Result<Option<SeqNum>, StoreError>;
     fn max_hlc(&self) -> Result<Option<Hlc>, StoreError>;
 }
 
@@ -188,10 +204,35 @@ impl MemoryEventStore {
     }
 }
 
+impl MemoryEventStore {
+    fn above(&self, cursors: &Cursors, local: bool) -> Vec<StoredEvent> {
+        let mut out: Vec<StoredEvent> = self
+            .events
+            .values()
+            .filter(|e| {
+                let at = cursors.get(&e.event.peer_id).map(|s| s.get()).unwrap_or(0);
+                e.local == local && e.event.seq_num.get() > at
+            })
+            .cloned()
+            .collect();
+        out.sort_by(by_author_then_seq);
+        out
+    }
+
+    fn last(&self, peer: &PeerId, local: bool) -> Option<SeqNum> {
+        self.events
+            .values()
+            .filter(|e| e.local == local && &e.event.peer_id == peer)
+            .map(|e| e.event.seq_num)
+            .max()
+    }
+}
+
 fn by_author_then_seq(a: &StoredEvent, b: &StoredEvent) -> std::cmp::Ordering {
     a.event
         .peer_id
         .cmp(&b.event.peer_id)
+        .then(a.local.cmp(&b.local))
         .then(a.event.seq_num.cmp(&b.event.seq_num))
 }
 
@@ -214,26 +255,19 @@ impl EventStore for MemoryEventStore {
     }
 
     fn all_since(&self, cursors: &Cursors) -> Result<Vec<StoredEvent>, StoreError> {
-        let mut out: Vec<StoredEvent> = self
-            .events
-            .values()
-            .filter(|e| {
-                let at = cursors.get(&e.event.peer_id).map(|s| s.get()).unwrap_or(0);
-                e.event.seq_num.get() > at
-            })
-            .cloned()
-            .collect();
-        out.sort_by(by_author_then_seq);
-        Ok(out)
+        Ok(self.above(cursors, false))
+    }
+
+    fn local_since(&self, cursors: &Cursors) -> Result<Vec<StoredEvent>, StoreError> {
+        Ok(self.above(cursors, true))
     }
 
     fn last_seq(&self, peer: &PeerId) -> Result<Option<SeqNum>, StoreError> {
-        Ok(self
-            .events
-            .values()
-            .filter(|e| &e.event.peer_id == peer)
-            .map(|e| e.event.seq_num)
-            .max())
+        Ok(self.last(peer, false))
+    }
+
+    fn last_local_seq(&self, peer: &PeerId) -> Result<Option<SeqNum>, StoreError> {
+        Ok(self.last(peer, true))
     }
 
     fn max_hlc(&self) -> Result<Option<Hlc>, StoreError> {

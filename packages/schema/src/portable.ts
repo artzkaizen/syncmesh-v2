@@ -2,20 +2,149 @@
  * A manifest as the data another runtime's validator reads (gap U3): every fact the shared ladder
  * judges an event by, with nothing a port would have to run JavaScript to know.
  */
+import type { JsonObject, JsonValue } from "@syncmesh/kernel";
 import type { AllowBlock, RoleSet } from "@syncmesh/policy";
+
+import { jsonObject } from "@syncmesh/kernel";
+import { Result } from "@syncmesh/result";
 
 import type { SchemaEntry } from "./manifest.js";
 import type { Table } from "./table.js";
 
+import { spelledPattern } from "./pattern.js";
 import { shippedColumn, type ShippedColumn, type ShippedTable } from "./shipped.js";
+import { speaksJsonSchema, type StandardSchemaV1 } from "./standard-schema.js";
 
 /**
  * One column as a port reads it: what shipped, and whether a `check()` schema guards it. The
- * schema is a function, so a port cannot run it; the flag says where its verdict is the weaker one.
+ * schema is a function; where it can say itself as JSON Schema (the Standard JSON Schema
+ * extension, which zod 4 carries) `checkSchema` holds that, draft 2020-12, and a port runs it.
+ *
+ * A port's check is never stricter than the function. What JSON Schema cannot say — a
+ * `.refine()`, a transform — is not in it, so there a port's verdict is the weaker one unless the
+ * port registers a check of its own. Where zod's own converter would say *more* than the function
+ * accepts, the part that would refuse is left out: a `.catch()`, a `z.preprocess` or a
+ * `z.coerce` accepts any value; a string that is trimmed, case-folded or otherwise rewritten
+ * before its checks, or whose regex a port's engine would read otherwise (a flag, a `.` that
+ * counts UTF-16 units, a `\b`, a lookbehind), keeps only its type; a pattern's `.`, `\d`, `\w`
+ * and `\s` travel spelled as the sets JavaScript means; a `.min(n)`
+ * length (UTF-16 units in JavaScript, code points in JSON Schema) becomes `ceil(n / 2)`; a
+ * fractional `multipleOf` is dropped. A check from a vendor other than zod travels as the flag.
  */
 export interface PortableColumn extends ShippedColumn {
   readonly check?: true;
+  /** The check's input as JSON Schema (draft 2020-12); absent when it cannot say itself as one. */
+  readonly checkSchema?: JsonObject;
 }
+
+/* oxlint-disable no-underscore-dangle -- zod names its internals `_zod`; read here structurally */
+/** The part of a zod 4 schema node {@link loosen} reads. zod's internals, read structurally. */
+interface ZodNode {
+  readonly _zod: {
+    readonly def: {
+      readonly type: string;
+      readonly coerce?: boolean;
+      readonly in?: ZodNode;
+      readonly checks?: readonly { readonly _zod: { readonly def: { readonly check: string } } }[];
+      /** A record's: `loose` states its key patterns as `patternProperties`. */
+      readonly mode?: string;
+      readonly keyType?: ZodNode;
+    };
+    readonly bag?: { readonly patterns?: ReadonlySet<RegExp> };
+    /** A template literal's whole pattern, which its JSON Schema states as `pattern`. */
+    readonly pattern?: RegExp;
+  };
+}
+
+/** What zod's `override` hook hands over for each node it converts. */
+interface ZodOverride {
+  readonly zodSchema: ZodNode;
+  readonly jsonSchema: ConvertedNode;
+}
+
+/** The keywords of one converted node {@link loosen} rewrites. */
+interface ConvertedNode {
+  minLength?: number;
+  multipleOf?: number;
+  pattern?: string;
+  allOf?: ConvertedNode[];
+  patternProperties?: Record<string, ConvertedNode>;
+  [keyword: string]: JsonValue | ConvertedNode[] | Record<string, ConvertedNode> | undefined;
+}
+
+/** Whether a node accepts values its JSON Schema would refuse: it rewrites or replaces its input. */
+const acceptsAnything = ({ type, coerce, in: input }: ZodNode["_zod"]["def"]) =>
+  type === "catch" || coerce === true || (type === "pipe" && input?._zod.def.type === "transform");
+
+const clear = (json: ZodOverride["jsonSchema"], keep: readonly string[] = []) => {
+  for (const key of Object.keys(json)) if (!keep.includes(key)) delete json[key];
+};
+
+/** The regexes a node's JSON Schema states, each as zod wrote it and as a port reads it. */
+const statedPatterns = ({ def, bag, pattern }: ZodNode["_zod"]) => {
+  const keys = def.type === "record" && def.mode === "loose" ? def.keyType?._zod.bag?.patterns : [];
+  const whole = def.type === "template_literal" && pattern !== undefined ? [pattern] : [];
+  return [...(bag?.patterns ?? []), ...(keys ?? []), ...whole].map(
+    (regex) => [regex.source, spelledPattern(regex)] as const,
+  );
+};
+
+/** Puts each pattern a node's JSON Schema states as a port reads it. */
+const respell = (json: ConvertedNode, spellings: ReadonlyMap<string, string>) => {
+  const spelled = (pattern: string) => spellings.get(pattern) ?? pattern;
+  const { pattern, allOf, patternProperties } = json;
+  if (pattern !== undefined) json.pattern = spelled(pattern);
+  if (allOf !== undefined) {
+    json.allOf = allOf.map((entry) =>
+      entry.pattern === undefined ? entry : { ...entry, pattern: spelled(entry.pattern) },
+    );
+  }
+  if (patternProperties === undefined) return;
+  json.patternProperties = Object.fromEntries(
+    Object.entries(patternProperties).map(([key, value]) => [spelled(key), value]),
+  );
+};
+
+/** Leaves out of one converted node whatever would make it stricter than the zod node it says. */
+const loosen = ({ zodSchema, jsonSchema }: ZodOverride) => {
+  const { def } = zodSchema._zod;
+  if (acceptsAnything(def)) return clear(jsonSchema);
+  const rewrites = def.checks?.some((check) => check._zod.def.check === "overwrite") === true;
+  const patterns = statedPatterns(zodSchema._zod);
+  const unportable = patterns.some(([, spelled]) => spelled === undefined);
+  if (rewrites || unportable) return clear(jsonSchema, ["type"]);
+  const spellings = patterns.flatMap(([source, spelled]) =>
+    spelled === undefined ? [] : [[source, spelled] as const],
+  );
+  respell(jsonSchema, new Map(spellings));
+  const { minLength, multipleOf } = jsonSchema;
+  if (def.type === "string" && minLength !== undefined && minLength > 1) {
+    jsonSchema.minLength = Math.ceil(minLength / 2);
+  }
+  if (multipleOf !== undefined && !Number.isInteger(multipleOf)) delete jsonSchema.multipleOf;
+};
+/* oxlint-enable no-underscore-dangle */
+
+/** The JSON Schema a check says it accepts, or `undefined` when it cannot say. */
+const checkJsonSchema = (check: StandardSchemaV1): JsonObject | undefined => {
+  const standard = check["~standard"];
+  // only zod's converter lets `loosen` see each node, so only zod's schema can be kept no stricter
+  if (standard.vendor !== "zod" || !speaksJsonSchema(standard)) return undefined;
+  // a converter throws on what JSON Schema cannot express (`z.custom`, a transform's output)
+  const converted = Result.try(() =>
+    standard.jsonSchema.input({
+      target: "draft-2020-12",
+      libraryOptions: { override: loosen },
+    }),
+  );
+  if (converted.isErr()) return undefined;
+  // a round trip through JSON keeps only what the format can carry: the manifest is JSON
+  const json = Result.try(
+    // SAFETY: `JSON.parse` answers `any`, and JSON text parses to exactly a JsonValue
+    () => JSON.parse(JSON.stringify(converted.value)) as JsonValue,
+  );
+  return json.isOk() ? jsonObject(json.value) : undefined;
+};
 
 /** One table as a port reads it: its shape, and its rules as the data `allow` returned. */
 export interface PortableTable extends Omit<ShippedTable, "columns" | "dropped"> {
@@ -57,13 +186,21 @@ export interface PortingSchema {
   readonly dropped: ReadonlySet<string>;
 }
 
+const portableCheck = (check: StandardSchemaV1 | undefined) => {
+  if (check === undefined) return {};
+  const checkSchema = checkJsonSchema(check);
+  return checkSchema === undefined
+    ? { check: true as const }
+    : { check: true as const, checkSchema };
+};
+
 const portableColumns = (table: Table): Readonly<Record<string, PortableColumn>> =>
   Object.fromEntries(
     Object.entries(table.columns).map(([name, column]) => [
       name,
       {
         ...shippedColumn(column.def),
-        ...(column.def.check !== undefined && { check: true as const }),
+        ...portableCheck(column.def.check),
       },
     ]),
   );

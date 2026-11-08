@@ -24,12 +24,15 @@ pub mod engine;
 pub mod grants;
 pub mod holdback;
 pub mod interest;
+pub mod join;
 pub mod manifest;
 pub mod presence;
 pub mod quarantine;
 pub mod random;
+pub mod rejoin;
 pub mod relay;
 pub mod room;
+pub mod snapshot;
 pub mod store;
 pub mod undo;
 pub mod validate;
@@ -59,21 +62,29 @@ pub use engine::{
 pub use grants::{GrantCache, GrantRegistry};
 pub use holdback::Holdback;
 pub use interest::{Interest, interest_from, interest_text, matches_interest, narrows};
-pub use manifest::{ColumnDef, ColumnKind, Manifest, ManifestUnreadable, TableDef, Visibility};
+pub use join::{
+    JoinExchange, JoinOptions, JoinOutcome, JoinPolicy, JoinStep, Settled, SnapshotInstalled,
+    Ticket, Withheld,
+};
+pub use manifest::{
+    CheckSchema, ColumnDef, ColumnKind, Manifest, ManifestUnreadable, TableDef, Visibility,
+};
 pub use presence::{
     MalformedPresence, Presence, PresenceEntry, PresenceStore, PresenceTier, PresenceTouch,
     VerifiedPresence, decode_and_verify_presence, decode_presence_core, encode_presence_core,
     sign_presence,
 };
 pub use quarantine::{ParkReason, Parked};
+pub use rejoin::{Accepted, BelowFloor, BelowFloorReason, PeerJoin, Rejoins, below_floor};
 pub use relay::{Action, RelayLink, RelayOptions};
 pub use room::{Room, RoomAction, RoomOptions, SocketId};
+pub use snapshot::{InstallError, Installed, Snapshot};
 pub use store::{
     Ahead, Coverage, Cursors, EventStore, MemoryEventStore, MemoryStateStore, RowWrite, StateStore,
     StoreError, StoredEvent,
 };
 pub use undo::{SkipReason, Skipped};
 pub use validate::{
-    GrantSource, LinkRung, Probe, StateLookup, ValidationClock, ValidationError, Validator,
-    ValidatorOptions,
+    ColumnCheck, ColumnChecks, GrantSource, LinkRung, PolicySource, Principal, Probe, StateLookup,
+    ValidationClock, ValidationError, Validator, ValidatorOptions,
 };

@@ -1,4 +1,12 @@
-export type { EventStore, SeqScope, StoredEvent, TornRun } from "./store.js";
+export type {
+  EventStore,
+  MemoryEventStore,
+  MemorySeed,
+  SeqScope,
+  StoredEvent,
+  TornRun,
+} from "./store.js";
+export type { SeqRun } from "./floor-holes.js";
 export { LogTorn, StoreFailure, createMemoryEventStore, tornRuns } from "./store.js";
 export type { DocWrite } from "./tx.js";
 export type {
@@ -69,7 +77,7 @@ export {
 } from "./quarantine.js";
 export type { FleetApi, FleetWindow, SchemaReading } from "./fleet.js";
 export type { CoverageTracker } from "./coverage.js";
-export { trackCoverage } from "./coverage.js";
+export { higherFloor, trackCoverage } from "./coverage.js";
 export type { FoldDeps, FoldPath } from "./fold.js";
 export { createFoldPath } from "./fold.js";
 export type { Boot } from "./boot.js";

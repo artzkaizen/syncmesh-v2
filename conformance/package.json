@@ -23,6 +23,7 @@
     "fast-check": "catalog:",
     "loro-crdt": "1.17.1",
     "typescript": "catalog:",
-    "vite-plus": "catalog:"
+    "vite-plus": "catalog:",
+    "zod": "catalog:"
   }
 }

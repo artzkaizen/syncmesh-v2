@@ -417,8 +417,14 @@ impl EventStore for Flaky {
     fn all_since(&self, cursors: &Cursors) -> Result<Vec<StoredEvent>, StoreError> {
         self.inner.all_since(cursors)
     }
+    fn local_since(&self, cursors: &Cursors) -> Result<Vec<StoredEvent>, StoreError> {
+        self.inner.local_since(cursors)
+    }
     fn last_seq(&self, peer: &PeerId) -> Result<Option<SeqNum>, StoreError> {
         self.inner.last_seq(peer)
+    }
+    fn last_local_seq(&self, peer: &PeerId) -> Result<Option<SeqNum>, StoreError> {
+        self.inner.last_local_seq(peer)
     }
     fn max_hlc(&self) -> Result<Option<Hlc>, StoreError> {
         self.inner.max_hlc()

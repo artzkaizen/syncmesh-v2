@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test";
 
 import { decodeRelayFrame } from "../frame-decode.js";
 import {
+  KIND,
   RELAY_PROTOCOL_VERSIONS,
   ackFrame,
   blobFrame,
@@ -229,6 +230,14 @@ describe("the vector is additive", () => {
     const odd = encodeCbor([9, 1, 15_000, "epoch-1", [], [], "yes"]);
     const decodedOdd = decodeRelayFrame(odd).unwrap();
     expect(decodedOdd.kind === "hello" && decodedOdd.durable).toBe(false);
+  });
+
+  test("only a retention refusal reads a floor: another code's third element is read past (gaps U30)", () => {
+    const other = decodeRelayFrame(encodeCbor([KIND.error, "version", "speaks 1", "a v2 hint"]));
+    expect(other.unwrap()).toEqual({ kind: "error", code: "version", message: "speaks 1" });
+    // a floor that does not decode leaves the refusal standing, without one
+    const odd = decodeRelayFrame(encodeCbor([KIND.error, "retention", "below", "not pairs"]));
+    expect(odd.unwrap()).toEqual({ kind: "error", code: "retention", message: "below" });
   });
 
   test("a tag this build does not know decodes as `unknown`, never as an error", () => {

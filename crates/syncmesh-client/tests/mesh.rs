@@ -334,6 +334,7 @@ async fn a_late_joiner_admits_an_event_whose_grant_came_on_the_same_page() {
         grants: None,
         authority: None,
         accounts: false,
+        checks: Default::default(),
     };
     let mut b = granted_device(2, &url, &key, &issuer, Some(validator));
     until(&mut b, |e| *e == MeshEvent::CaughtUp).await;

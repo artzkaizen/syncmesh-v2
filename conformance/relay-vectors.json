@@ -188,6 +188,12 @@
       "wireHex": "860d808000098281825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f07781b7b22706172746974696f6e73223a5b226f72673a61636d65225d7d"
     },
     {
+      "description": "error, the typed retention refusal naming the room's floor, so the device can say what it is below and stop dialling (gaps U30)",
+      "kind": "error",
+      "tag": 10,
+      "wireHex": "840a69726574656e74696f6e78407468697320726f6f6d206e6f206c6f6e67657220686f6c64732074686520686973746f72792062656c6f772074686520637572736f727320796f752073656e7481825820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f04"
+    },
+    {
       "description": "refusal across a relay: the ladder said no: no grant, the wire unchanged under tag 22",
       "kind": "refusal",
       "tag": 22,

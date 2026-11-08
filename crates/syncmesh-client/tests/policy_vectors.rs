@@ -8,13 +8,14 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 use syncmesh_client::{
-    Engine, EngineOptions, GrantRegistry, Manifest, MemoryEventStore, Parked, Probe, StoredEvent,
-    ValidationClock, ValidationError, ValidatorOptions,
+    Engine, EngineOptions, GrantRegistry, Manifest, MemoryEventStore, Parked, PolicySource,
+    Principal, Probe, StoredEvent, ValidationClock, ValidationError, ValidatorOptions,
 };
 use syncmesh_core::envelope::decode_and_verify;
-use syncmesh_core::event::PeerId;
+use syncmesh_core::event::{PartitionKey, PeerId};
 use syncmesh_core::hex::from_hex;
 use syncmesh_core::identity::Identity;
+use syncmesh_core::record::{CellValue, JsonValue, Row};
 
 fn vectors() -> Value {
     let path: PathBuf = [
@@ -70,6 +71,7 @@ fn device(doc: &Value, mesh: &Value) -> Engine {
                 grants: granted.then(|| Box::new(registry) as _),
                 authority: Some(peer(&doc["authority"])),
                 accounts: mesh["accounts"].as_bool().expect("accounts"),
+                checks: Default::default(),
             }),
             ..EngineOptions::default()
         },
@@ -154,6 +156,7 @@ fn every_batch_folds_and_parks_as_the_typescript_did() {
                 changes: &event.changes,
                 seq: None,
                 hlc: None,
+                local: probe["local"].as_bool().unwrap_or(false),
             };
             let got = match validator.validate(&judged, engine.state(), Some(clock)) {
                 Ok(()) => json!({ "verdict": null }),
@@ -167,7 +170,69 @@ fn every_batch_folds_and_parks_as_the_typescript_did() {
             }
             assert_eq!(got, want, "{what}");
         }
+        for question in mesh["can"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            let what = format!(
+                "{name} / can: {}",
+                question["description"].as_str().expect("question")
+            );
+            let principal = principal(&question["principal"]);
+            let written = question.get("row").map(cells);
+            let patch = question.get("patch").map(cells);
+            let partition = question
+                .get("partition")
+                .map(|p| PartitionKey::parse(p.as_str().expect("partition")).expect("partition"));
+            let source = partition.as_ref().map(|partition| PolicySource {
+                partition,
+                rows: engine.state(),
+            });
+            let answer = validator.can(
+                principal.as_ref(),
+                question["what"].as_str().expect("what"),
+                written.as_ref(),
+                patch.as_ref(),
+                source,
+            );
+            assert_eq!(json!(answer), question["answer"], "{what}");
+        }
     }
+}
+
+fn json_value(v: &Value) -> JsonValue {
+    match v {
+        Value::Null => JsonValue::Null,
+        Value::Bool(b) => JsonValue::Bool(*b),
+        Value::Number(n) => JsonValue::Number(n.as_f64().expect("number")),
+        Value::String(s) => JsonValue::Text(s.clone()),
+        Value::Array(a) => JsonValue::Array(a.iter().map(json_value).collect()),
+        Value::Object(o) => {
+            JsonValue::Object(o.iter().map(|(k, v)| (k.clone(), json_value(v))).collect())
+        }
+    }
+}
+
+fn cells(v: &Value) -> Row {
+    v.as_object()
+        .expect("a row")
+        .iter()
+        .map(|(k, v)| (k.clone(), CellValue::from(json_value(v))))
+        .collect()
+}
+
+fn principal(v: &Value) -> Option<Principal> {
+    let o = v.as_object()?;
+    Some(Principal {
+        account: o["account"].as_str().expect("account").to_owned(),
+        role: o.get("role").and_then(Value::as_str).map(str::to_owned),
+        claims: o
+            .get("claims")
+            .and_then(Value::as_object)
+            .map(|c| c.iter().map(|(k, v)| (k.clone(), json_value(v))).collect())
+            .unwrap_or_default(),
+    })
 }
 
 #[test]
