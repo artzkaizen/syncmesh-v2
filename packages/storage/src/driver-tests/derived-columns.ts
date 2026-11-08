@@ -17,6 +17,55 @@ import { ACME, DERIVED_NOTES, N1, sqlText, stamp } from "./fixtures.js";
  * document itself.
  */
 
+/** A derived column the app's migration gave a default: an insert that leaves it out writes none. */
+const defaultedInsert = (openDriver: OpenDriver) =>
+  ({
+    name: "capture: an insert that leaves a defaulted derived column out is no write to it",
+    run: async () => {
+      const driver = await openDriver("capture-derived-default");
+      const L = sqlText(driver);
+      const blob = driver.dialect === "postgres" ? "BYTEA" : "BLOB";
+      // the app's own migration made the table first, with RFC-0023 §4.1's `default("")`
+      await driver.run(
+        `CREATE TABLE derived_notes (id TEXT PRIMARY KEY, body TEXT, title TEXT NOT NULL DEFAULT '', words INTEGER DEFAULT 0, content ${blob}, "_partition" TEXT)`,
+      );
+      (await openStores(driver, { tables: [DERIVED_NOTES] })).unwrap();
+      const insert = await captureChanges(driver, [DERIVED_NOTES], () =>
+        driver.run(`INSERT INTO derived_notes (id, body) VALUES (${L.p(1)}, ${L.p(2)})`, [
+          "n1",
+          "b",
+        ]),
+      );
+      equal(
+        insert.isOk() ? insert.value.map((change) => change.kind) : insert.error._tag,
+        ["insert"],
+        "the defaults are the table's, not the app's write",
+      );
+      const named = await captureChanges(driver, [DERIVED_NOTES], () =>
+        driver.run(`INSERT INTO derived_notes (id, title) VALUES (${L.p(1)}, ${L.p(2)})`, [
+          "n2",
+          "mine",
+        ]),
+      );
+      equal(named.isErr() ? named.error._tag : "ok", "DocColumnWrite", "an insert naming one");
+      const edited = await captureChanges(driver, [DERIVED_NOTES], async () => {
+        await driver.run(`INSERT INTO derived_notes (id, body) VALUES (${L.p(1)}, ${L.p(2)})`, [
+          "n3",
+          "b",
+        ]);
+        await driver.run(`UPDATE derived_notes SET body = ${L.p(1)} WHERE id = ${L.p(2)}`, [
+          "c",
+          "n3",
+        ]);
+      });
+      equal(
+        edited.isOk() ? edited.value.map((change) => change.kind) : edited.error._tag,
+        ["insert"],
+        "an insert edited in the same transaction is still judged against the defaults",
+      );
+    },
+  }) satisfies SuiteCase;
+
 /** A delete and an insert of the same row in one transaction nets to an update, judged as the insert it ends with. */
 const reinsertedRow = (openDriver: OpenDriver) =>
   ({
@@ -156,36 +205,6 @@ export const derivedColumnCases = (openDriver: OpenDriver): readonly SuiteCase[]
       equal(String(row?.[0]), "T", "the refused write rolled back");
     },
   },
-  {
-    name: "capture: an insert that leaves a defaulted derived column out is no write to it",
-    run: async () => {
-      const driver = await openDriver("capture-derived-default");
-      const L = sqlText(driver);
-      const blob = driver.dialect === "postgres" ? "BYTEA" : "BLOB";
-      // the app's own migration made the table first, with RFC-0023 §4.1's `default("")`
-      await driver.run(
-        `CREATE TABLE derived_notes (id TEXT PRIMARY KEY, body TEXT, title TEXT NOT NULL DEFAULT '', words INTEGER DEFAULT 0, content ${blob}, "_partition" TEXT)`,
-      );
-      (await openStores(driver, { tables: [DERIVED_NOTES] })).unwrap();
-      const insert = await captureChanges(driver, [DERIVED_NOTES], () =>
-        driver.run(`INSERT INTO derived_notes (id, body) VALUES (${L.p(1)}, ${L.p(2)})`, [
-          "n1",
-          "b",
-        ]),
-      );
-      equal(
-        insert.isOk() ? insert.value.map((change) => change.kind) : insert.error._tag,
-        ["insert"],
-        "the defaults are the table's, not the app's write",
-      );
-      const named = await captureChanges(driver, [DERIVED_NOTES], () =>
-        driver.run(`INSERT INTO derived_notes (id, title) VALUES (${L.p(1)}, ${L.p(2)})`, [
-          "n2",
-          "mine",
-        ]),
-      );
-      equal(named.isErr() ? named.error._tag : "ok", "DocColumnWrite", "an insert naming one");
-    },
-  },
+  defaultedInsert(openDriver),
   reinsertedRow(openDriver),
 ];
