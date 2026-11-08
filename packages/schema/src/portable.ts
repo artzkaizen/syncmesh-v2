@@ -24,7 +24,8 @@ import { speaksJsonSchema, type StandardSchemaV1 } from "./standard-schema.js";
  * port registers a check of its own. Where zod's own converter would say *more* than the function
  * accepts, the part that would refuse is left out: a `.catch()`, a `z.preprocess` or a
  * `z.coerce` accepts any value; a string that is trimmed, case-folded or otherwise rewritten
- * before its checks, or whose regex carries `i`, `m` or `s`, keeps only its type; a `.min(n)`
+ * before its checks, or whose regex a port's engine would read otherwise (a flag, a `.` that
+ * counts UTF-16 units, a `\b`, a lookbehind), keeps only its type; a `.min(n)`
  * length (UTF-16 units in JavaScript, code points in JSON Schema) becomes `ceil(n / 2)`; a
  * fractional `multipleOf` is dropped. A check from a vendor other than zod travels as the flag.
  */
@@ -59,7 +60,69 @@ interface ZodOverride {
 }
 
 /** Regex flags whose meaning a JSON Schema `pattern` cannot carry. */
-const UNSAID_FLAGS = /[ims]/;
+const UNSAID_FLAGS = /[imsv]/;
+
+/** Escapes a port's regex reads as JavaScript does, with or without `u`. */
+const SAME_ESCAPES = new Set("dwstnrfvx^$\\.*+?()[]{}|/-");
+
+/** Escapes that match one UTF-16 unit without `u`, half of a character outside the BMP. */
+const UNIT_ESCAPES = new Set("DWS");
+
+/** What may follow `(?` in a pattern a port runs as JavaScript does: a plain group, a lookahead. */
+const SAME_GROUPS = new Set(":=!");
+
+const isSurrogate = (unit: number) => unit >= 0xd800 && unit <= 0xdfff;
+
+/**
+ * Whether a port's regex engine, which counts code points, accepts no less than `regex` does.
+ *
+ * Without `u` JavaScript matches `.`, a negated class and `\D`, `\W`, `\S` one UTF-16 unit at a
+ * time, so `/^.{2}$/` passes "😀". Such an atom is kept only as a `*` run, which takes the same
+ * strings either way. A pattern with a literal outside the BMP, a `\b`, a backreference, a
+ * named group, a lookbehind, a `\p` or `\u` escape, a nested or empty class, or a flag a
+ * pattern cannot carry is not one a port can be trusted to read alike, so it is left out.
+ */
+const portablePattern = ({ source, flags }: RegExp) => {
+  if (UNSAID_FLAGS.test(flags)) return false;
+  const units = !flags.includes("u");
+  let inClass = false;
+  let unitClass = false;
+  // the atom just read can match half a surrogate pair: only `*` may follow it
+  let unitAtom = false;
+  for (let at = 0; at < source.length; at += 1) {
+    const char = source.charAt(at);
+    if (unitAtom) {
+      if (char !== "*") return false;
+      unitAtom = false;
+      continue;
+    }
+    if (units && isSurrogate(source.charCodeAt(at))) return false;
+    if (char === "\\") {
+      at += 1;
+      const escaped = source.charAt(at);
+      if (units && UNIT_ESCAPES.has(escaped)) {
+        if (inClass) unitClass = true;
+        else unitAtom = true;
+      } else if (!SAME_ESCAPES.has(escaped) && !UNIT_ESCAPES.has(escaped)) return false;
+    } else if (inClass) {
+      if (char === "[" || (/[&~-]/.test(char) && source.charAt(at + 1) === char)) return false;
+      if (char === "]") {
+        inClass = false;
+        unitAtom = unitClass;
+      }
+    } else if (char === "[") {
+      inClass = true;
+      unitClass = units && source.charAt(at + 1) === "^";
+      if (source.charAt(at + 1) === "^") at += 1;
+      if (source.charAt(at + 1) === "]") return false;
+    } else if (char === "(" && source.charAt(at + 1) === "?") {
+      if (!SAME_GROUPS.has(source.charAt(at + 2))) return false;
+    } else if (char === ".") {
+      unitAtom = units;
+    }
+  }
+  return !unitAtom && !inClass;
+};
 
 /** Whether a node accepts values its JSON Schema would refuse: it rewrites or replaces its input. */
 const acceptsAnything = ({ type, coerce, in: input }: ZodNode["_zod"]["def"]) =>
@@ -74,8 +137,8 @@ const loosen = ({ zodSchema, jsonSchema }: ZodOverride) => {
   const { def, bag } = zodSchema._zod;
   if (acceptsAnything(def)) return clear(jsonSchema);
   const rewrites = def.checks?.some((check) => check._zod.def.check === "overwrite") === true;
-  const flagged = [...(bag?.patterns ?? [])].some((regex) => UNSAID_FLAGS.test(regex.flags));
-  if (rewrites || flagged) return clear(jsonSchema, ["type"]);
+  const unportable = [...(bag?.patterns ?? [])].some((regex) => !portablePattern(regex));
+  if (rewrites || unportable) return clear(jsonSchema, ["type"]);
   const { minLength, multipleOf } = jsonSchema;
   if (def.type === "string" && minLength !== undefined && minLength > 1) {
     jsonSchema.minLength = Math.ceil(minLength / 2);

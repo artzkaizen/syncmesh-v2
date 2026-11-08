@@ -35,8 +35,8 @@ use syncmesh_core::strategy::MergeSpec;
 
 use crate::coverage::CoverageTracker;
 use crate::doc_log::{
-    DocAppend, DocHead, DocLogEntry, DocStore, MemoryDocStore, doc_appends, lineage_moves,
-    record_docs, relabel_docs,
+    DocAddress, DocAppend, DocHead, DocLogEntry, DocStore, MemoryDocStore, doc_appends,
+    lineage_moves, record_docs, relabel_docs,
 };
 use crate::doc_rules::{DerivedColumns, derived_refusal, doc_refusal, doc_verdict};
 use crate::interest::{Interest, interest_text, matches_interest, rows_in};
@@ -433,7 +433,30 @@ impl Engine {
         replay.extend(engine.store.local_since(&coverage.local)?);
         let batch = engine.fold(&replay, FoldSource::Boot);
         engine.persist(&batch)?;
+        engine.relabel_stale_heads()?;
         Ok(engine)
+    }
+
+    /// Relabels every document whose head names a winning lineage the state does not: what an
+    /// install leaves when it stops after its rows commit and before the doc log is relabelled.
+    fn relabel_stale_heads(&mut self) -> Result<(), StoreError> {
+        let state = &self.state;
+        let winner_of =
+            |doc: &DocAddress| lineage_of(state.record(&doc.table, &doc.key), &doc.column);
+        let stale: Vec<(DocAddress, String)> = self
+            .doc_store
+            .heads()?
+            .into_iter()
+            .filter(|head| head.lineage != winner_of(&head.doc))
+            .map(|head| (head.doc, head.adapter))
+            .collect();
+        if stale.is_empty() {
+            return Ok(());
+        }
+        let adapters = &self.doc_adapters;
+        relabel_docs(self.doc_store.as_mut(), &stale, winner_of, |a| {
+            adapters.contains(a)
+        })
     }
 
     /// The persisted lineage cell `open` refused, after which it rebuilt the state from the log;
@@ -993,7 +1016,8 @@ impl Engine {
     /// A row holding a lineage cell of a rule this build does not run refuses the whole snapshot
     /// before anything joins (RFC-0023 §16.1): nothing installed, nothing adopted. A document whose
     /// winning lineage the rows move has its doc log relabelled in the same step. Rows and
-    /// coverage commit to the state store together.
+    /// coverage commit to the state store together, before the relabel: a stop between the two
+    /// leaves heads naming the old winner, which the next [`Engine::open`] relabels.
     pub fn install_snapshot(&mut self, snapshot: Snapshot) -> Result<Installed, InstallError> {
         let keyed = snapshot
             .rows

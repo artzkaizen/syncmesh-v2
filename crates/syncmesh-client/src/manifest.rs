@@ -77,7 +77,12 @@ pub struct CheckSchema {
 }
 
 impl CheckSchema {
-    /// Compiles a schema; one this build cannot compile is a manifest it cannot read.
+    /// Compiles a schema, or says why this build cannot.
+    ///
+    /// `format` is an annotation here, not a check: draft 2020-12 does not assert it unless asked,
+    /// and a port's check must never be stricter than the function. zod's `z.iso.datetime({ local:
+    /// true })` says `date-time`, which an asserting validator refuses for a local time, so this
+    /// must not turn `should_validate_formats` on.
     pub fn compile(json: serde_json::Value) -> Result<CheckSchema, String> {
         let compiled = jsonschema::draft202012::new(&json).map_err(|e| e.to_string())?;
         Ok(CheckSchema {
@@ -245,12 +250,13 @@ fn column(value: &serde_json::Value, path: &str) -> Result<ColumnDef, ManifestUn
         derived: optional_text(o, "derived", path)?,
         retired: flag(o, "retired", path)?,
         check: flag(o, "check", path)?,
+        // a schema this build cannot compile (a JavaScript-only regex) leaves the column flagged
+        // with no schema, as one that could not say itself: `Manifest::unported_checks` lists it
         check_schema: match o.get("checkSchema") {
             None => None,
-            Some(schema @ serde_json::Value::Object(_)) => Some(
-                CheckSchema::compile(schema.clone())
-                    .or_else(|e| unreadable(&format!("{path}.checkSchema"), e))?,
-            ),
+            Some(schema @ serde_json::Value::Object(_)) => {
+                CheckSchema::compile(schema.clone()).ok()
+            }
             Some(_) => return unreadable(&format!("{path}.checkSchema"), "expected an object"),
         },
     })
@@ -426,8 +432,9 @@ impl Manifest {
         self.columns_where(|def| def.check)
     }
 
-    /// `(table, column)` for every checked column whose check did not travel as JSON Schema: the
-    /// ones a write only the check refuses folds at, unless the host registers a check for it.
+    /// `(table, column)` for every checked column whose check did not travel as JSON Schema, or
+    /// travelled as one this build cannot compile: the ones a write only the check refuses folds
+    /// at, unless the host registers a check for it.
     pub fn unported_checks(&self) -> Vec<(&str, &str)> {
         self.columns_where(|def| def.check && def.check_schema.is_none())
     }

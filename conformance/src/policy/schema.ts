@@ -170,6 +170,10 @@ export const policySchema = syncSchema({
           .nullable()
           .check(z.string().regex(/^[a-z]{2}$/i)),
         word: t.text().nullable().check(z.string().min(2)),
+        dotted: t
+          .text()
+          .nullable()
+          .check(z.string().regex(/^.{2}$/)),
         meta: t
           .json(z.object({ tag: z.enum(["red", "blue"]), n: z.number().optional() }))
           .nullable(),

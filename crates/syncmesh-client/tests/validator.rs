@@ -319,11 +319,11 @@ fn a_manifest_that_does_not_read_is_a_value() {
         manifest.doc_columns()["notes"],
         BTreeMap::from([("content".to_owned(), "loro@1".to_owned())])
     );
-    assert_eq!(manifest.checked_columns().len(), 6);
-    // a check schema this build cannot compile is a manifest it cannot read
+    assert_eq!(manifest.checked_columns().len(), 7);
+    // a check schema that is not an object is a manifest that does not read
     let mut doc = vectors()["schema"].clone();
-    doc["tables"]["checked"]["columns"]["qty"]["checkSchema"] = serde_json::json!({ "type": 3 });
-    let unreadable = Manifest::from_json(&doc).expect_err("a schema that does not compile");
+    doc["tables"]["checked"]["columns"]["qty"]["checkSchema"] = serde_json::json!("integer");
+    let unreadable = Manifest::from_json(&doc).expect_err("a schema that is not an object");
     assert_eq!(unreadable.path, "tables.checked.columns.qty.checkSchema");
 }
 
@@ -545,6 +545,62 @@ fn a_host_check_runs_where_the_manifest_carries_no_schema_and_wins_where_it_does
             ..
         })
     ));
+}
+
+#[test]
+fn a_check_schema_this_build_cannot_compile_leaves_its_column_flagged_and_the_manifest_read() {
+    let doc = vectors();
+    let mut schema = doc["schema"].clone();
+    // valid JavaScript zod runs, and patterns this build's regex engine does not compile
+    for (column, pattern) in [
+        ("code", r"^(?<x>a)\k<x>$"),
+        ("folded", r"^\uD83D\uDE00$"),
+        ("word", r"^[\p{L}--a]$"),
+    ] {
+        schema["tables"]["checked"]["columns"][column]["checkSchema"] =
+            serde_json::json!({ "type": "string", "pattern": pattern });
+    }
+    let manifest = Manifest::from_json(&schema).expect("one JavaScript-only regex is no lock-out");
+    assert_eq!(
+        manifest.unported_checks(),
+        vec![
+            ("checked", "code"),
+            ("checked", "folded"),
+            ("checked", "word")
+        ]
+    );
+    let dotted = &manifest.tables["checked"].columns["dotted"];
+    assert!(
+        dotted.check_schema.is_some(),
+        "a schema that compiles still travels"
+    );
+    let now = doc["nowMs"].as_i64().expect("now");
+    let mut e = Engine::open(
+        identity(MEMBER),
+        Box::new(MemoryEventStore::new()),
+        None,
+        EngineOptions {
+            now_ms: Some(Box::new(move || now)),
+            validator: Some(ValidatorOptions {
+                grants: Some(Box::new(registry())),
+                ..ValidatorOptions::new(manifest)
+            }),
+            ..EngineOptions::default()
+        },
+    )
+    .unwrap();
+    // the column's check is the flag alone: nothing to run, as for a `.refine()`
+    let insert = Change::Insert {
+        table: "checked".into(),
+        key: "u1".into(),
+        row: Row::from([
+            ("id".to_owned(), CellValue::text("u1")),
+            ("code".to_owned(), CellValue::text("lower")),
+            ("qty".to_owned(), CellValue::Number(3.0)),
+        ]),
+    };
+    let acme = Some(PartitionKey::parse("org:acme").unwrap());
+    assert!(e.mutate("c", vec![insert], acme).is_ok());
 }
 
 #[test]

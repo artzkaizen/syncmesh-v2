@@ -53,9 +53,13 @@ by `portableSchema` from the Standard JSON Schema extension zod 4 implements). J
 less than a function can: a `.refine()` is dropped from it, and a `z.custom` has none, so such a
 column's check is weaker here or not run (`Manifest::unported_checks` lists the second kind).
 It is never stricter: `portableSchema` leaves out whatever zod's converter would say stricter
-than zod runs (a `/…/i` regex, a `.catch()`, a coerce, a trimmed string, a UTF-16 `.min(n)`), and
-a check from a vendor other than zod travels as the flag alone. Register the rest yourself; a
-host check replaces the column's schema:
+than zod runs (a `/…/i` regex, a `.catch()`, a coerce, a trimmed string, a UTF-16 `.min(n)`, a
+regex without `u` whose `.` or negated class would count UTF-16 units, a `\b`, a lookbehind or a
+backreference), and a check from a vendor other than zod travels as the flag alone. A schema this
+build cannot compile leaves its column flagged with no schema, as `unported_checks` lists, and the
+manifest still reads. JSON Schema `format` is an annotation here, never asserted, so a check zod
+runs in code beside a format alone (`z.url()`, `z.jwt()`) is looser here. Register the rest
+yourself; a host check replaces the column's schema:
 
 ```rust
 let mut checks = ColumnChecks::new();
@@ -126,6 +130,12 @@ if rejoins.accept(&peer, &engine.coverage().synced) == Accepted::Requested {
 own); `request(None, true)` is a rebuild. A manifest nobody asked for installs nothing. A vouched
 install (a certificate from `trust` over exactly the rows) adopts what the certificate signs and
 never more than the manifest claims; what an install adopts beyond the log is `Engine::floor`.
+
+An install the store refuses, or one whose state or doc store returns an error, sends no ack: the
+request stays unanswered and the next session asks again, and the holder keeps that exchange's
+pages until its link closes. Rows and coverage commit before the doc log is relabelled; an install
+stopped between the two leaves document heads naming the old winner, and the next `Engine::open`
+relabels them.
 
 A Rust holder serves a row's cells in column order, not the order they were first written (gaps
 U34): a certificate it relays from a TypeScript authority vouches for its page only when each

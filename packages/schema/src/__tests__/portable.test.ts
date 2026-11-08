@@ -108,6 +108,12 @@ describe("the manifest as a port reads it (gap U3)", () => {
             long: t.text().check(z.string().min(3).max(9)),
             step: t.float().check(z.number().multipleOf(0.1)),
             nested: t.json(z.object({ tag: z.string().regex(/^x$/m), n: z.number().catch(0) })),
+            dotted: t.text().check(z.string().regex(/^.{2}$/)),
+            negated: t.text().check(z.string().regex(/^[^a]{2}$/)),
+            bounded: t.text().check(z.string().regex(/^a\b/)),
+            named: t.text().check(z.string().regex(/^(?<x>a)\k<x>$/)),
+            unicode: t.text().check(z.string().regex(/^.{2}$/u)),
+            run: t.text().check(z.string().regex(/^a[^b]*b$/)),
           },
         },
       },
@@ -133,5 +139,15 @@ describe("the manifest as a port reads it (gap U3)", () => {
       properties: { tag: { type: "string" }, n: {} },
       required: ["tag"],
     });
+    // without `u` a `.` and a negated class match half of "😀", so `^.{2}$` passes it
+    expect(schemaOf("dotted")).toEqual({ type: "string" });
+    expect(schemaOf("negated")).toEqual({ type: "string" });
+    // a port's `\b` knows "é" is a letter; JavaScript's does not, and passes "aé"
+    expect(schemaOf("bounded")).toEqual({ type: "string" });
+    // a backreference is JavaScript's own: a port's engine cannot compile it
+    expect(schemaOf("named")).toEqual({ type: "string" });
+    // with `u`, and as a `*` run, a pattern takes the same strings in a port
+    expect(schemaOf("unicode")).toEqual({ type: "string", pattern: "^.{2}$" });
+    expect(schemaOf("run")).toEqual({ type: "string", pattern: "^a[^b]*b$" });
   });
 });
