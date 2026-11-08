@@ -218,6 +218,7 @@ const sqliteDialect = (log: LogPlacement): Dialect => {
     ],
     // The doc log and heads (RFC-0023 §6.2): one step, after the state tables.
     SQLITE_DOC_TABLES,
+    // The column snapshots (§6.1): a step of their own, for a database already at the one above.
     SQLITE_DOC_SNAPSHOTS,
   ];
 
