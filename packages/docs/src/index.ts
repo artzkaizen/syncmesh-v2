@@ -19,7 +19,8 @@ export type {
   Materialised,
   ProducedCheckpoint,
 } from "./materialise.js";
-export { installCheckpoint, load, materialise, produceCheckpoint } from "./materialise.js";
+export { installCheckpoint } from "./install.js";
+export { load, materialise, produceCheckpoint } from "./materialise.js";
 export type { ProvisionalChecks } from "./checkpoint.js";
 export { installProvisional } from "./checkpoint.js";
 export { replicaId } from "./replica.js";

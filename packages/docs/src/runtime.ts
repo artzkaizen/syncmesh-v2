@@ -16,7 +16,8 @@ import type { Derive, DocsEngine } from "./materialise.js";
 import { columnAdapter, resolveAdapterId } from "./adapter.js";
 import { installProvisional } from "./checkpoint.js";
 import { DEFAULT_PACING, createHandles } from "./documents.js";
-import { installCheckpoint, materialise, produceCheckpoint } from "./materialise.js";
+import { installCheckpoint } from "./install.js";
+import { materialise, produceCheckpoint } from "./materialise.js";
 import { replicaId } from "./replica.js";
 
 /** What a background materialisation can fail with. */
