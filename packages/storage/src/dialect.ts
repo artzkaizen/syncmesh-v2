@@ -189,6 +189,10 @@ export interface CaptureSql {
     tables: readonly Table[],
     guarded: (table: Table) => boolean,
   ) => readonly string[];
+  /** Drops the strict guard from one table, whether or not it carries one. */
+  readonly unguardDdl: (table: TableName) => readonly string[];
+  /** One row per table that carries a strict guard now: its name, in the first cell. */
+  readonly guardedTables: string;
   /**
    * The fold's own writes into the app's tables pass the guard between these two, inside the
    * transaction; capture already armed stays armed.

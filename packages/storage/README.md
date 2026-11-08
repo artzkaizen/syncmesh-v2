@@ -62,6 +62,28 @@ change capture, the app's tables and the compiled read filter. Reopening the sam
 reach the same database, because half the cases close and reopen it. It passes, or the driver
 is not one.
 
+## A raw write to a synced table is refused (U5)
+
+Strict capture is on by default. A write to a synced table made outside a captured write would
+change the row with no event to carry it, so the device would diverge from every peer without a
+word. A guard trigger refuses it instead: `syncmesh: INSERT on synced table notes outside a captured
+write would diverge from the log`. Only the mesh's captured writes and the fold's own pass. On
+Postgres a `TRUNCATE` is refused too, and `session_replication_role = replica` does not skip the
+guard.
+
+This breaks code that wrote synced tables directly: a seed script, a migration that backfills rows,
+a `pg_restore --data-only` or a `COPY` (pass `--disable-triggers`). Opt out where that is meant:
+
+```ts
+openStores(driver, { tables, strict: false }); // no guard on any table
+openStores(driver, { tables, strict: { except: ["imports"] } }); // every table but `imports`
+```
+
+`sqlite({ strict })` and `postgres({ strict })` take the same setting. Changing it is no shape
+change, so it never renames the state file. A table taken out of `tables` loses its guard at the
+next open. The guard catches mistakes, not a hostile writer: a role that sets the capture setting
+itself gets past it.
+
 ## A damaged log is refused (D39)
 
 The log is the half nothing can recompute, so a page the disk lost is refused as a value rather

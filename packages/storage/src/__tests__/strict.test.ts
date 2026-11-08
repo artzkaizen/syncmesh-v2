@@ -15,15 +15,18 @@ import { openPair } from "./pair.js";
  */
 
 const schema = syncSchema({
-  tables: { notes: { columns: { id: t.text().primaryKey(), body: t.text() } } },
+  tables: {
+    notes: { columns: { id: t.text().primaryKey(), body: t.text() } },
+    tags: { columns: { id: t.text().primaryKey(), label: t.text() } },
+  },
 });
 const tables = [schema.tables.notes];
 const AUTHOR = parsePeerId("a".repeat(64)).unwrap();
 
-const raw = async (driver: SqlDriver) =>
+const raw = async (driver: SqlDriver, sql = `INSERT INTO notes (id, body) VALUES ('raw', 'x')`) =>
   (
     await Result.tryPromise({
-      try: () => driver.run(`INSERT INTO notes (id, body) VALUES ('raw', 'x')`),
+      try: () => driver.run(sql),
       catch: (cause) => String(cause),
     })
   ).match({
@@ -69,6 +72,17 @@ describe("strict capture at the open", () => {
     expect(await schemaRow(driver)).toBe(fingerprint);
     await driver.run(`DELETE FROM notes`);
     (await openStores(driver, { tables, strict: { except: [] } })).unwrap();
+    expect(await raw(driver)).toBe("refused");
+  });
+
+  test("a table taken out of the schema can be written again, strict or not", async () => {
+    const both = [schema.tables.notes, schema.tables.tags];
+    const driver = await openPair(":memory:", schemaName(both));
+    (await openStores(driver, { tables: both })).unwrap();
+    const tag = (id: string) => `INSERT INTO tags (id, label) VALUES ('${id}', 'x')`;
+    expect(await raw(driver, tag("t1"))).toBe("refused");
+    (await openStores(driver, { tables })).unwrap();
+    expect(await raw(driver, tag("t2"))).toBe("applied");
     expect(await raw(driver)).toBe("refused");
   });
 });

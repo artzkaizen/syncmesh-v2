@@ -1,3 +1,5 @@
+import type { TableName } from "@syncmesh/kernel";
+
 import type { CaptureSql } from "./dialect.js";
 
 import { quote } from "./identifiers.js";
@@ -9,7 +11,10 @@ import { quote } from "./identifiers.js";
  * and never changes the tables' fingerprint (`schemaName`).
  */
 
-type GuardSql = Pick<CaptureSql, "guardDdl" | "fold" | "unfold" | "guardRow">;
+type GuardSql = Pick<
+  CaptureSql,
+  "guardDdl" | "unguardDdl" | "guardedTables" | "fold" | "unfold" | "guardRow"
+>;
 
 /** The SQLite capture guard's one row: `armed` is 0 at rest, 1 capturing, 2 the fold writing. */
 export const SQLITE_ROW = "syncmesh_capture";
@@ -23,14 +28,22 @@ export const SQLITE_GUARD_ROW = [
 /** Capture at rest and no fold writing: a write now is one no event will carry. */
 const AT_REST = `COALESCE((SELECT armed FROM ${SQLITE_ROW} WHERE id = 1), 0) = 0`;
 
+const SQLITE_OPS = ["INSERT", "UPDATE", "DELETE"] as const;
+
+// a table name is `[a-z][a-zA-Z0-9_]*`, so the `.` keeps this apart from every capture trigger's
+// name, and neither it nor the message needs escaping
+const sqliteGuardName = (table: TableName, op: (typeof SQLITE_OPS)[number]) =>
+  `"_syncmesh_strict.${table}.${op}"`;
+
 export const SQLITE_GUARD: GuardSql = {
   guardRow: SQLITE_GUARD_ROW,
+  guardedTables: `SELECT DISTINCT tbl_name FROM sqlite_master WHERE type = 'trigger' AND substr(name, 1, 17) = '_syncmesh_strict.'`,
+  unguardDdl: (table) =>
+    SQLITE_OPS.map((op) => `DROP TRIGGER IF EXISTS ${sqliteGuardName(table, op)}`),
   guardDdl: (tables, guarded) =>
     tables.flatMap((table) =>
-      (["INSERT", "UPDATE", "DELETE"] as const).map((op) => {
-        // a table name is `[a-z][a-zA-Z0-9_]*`, so the `.` keeps this apart from every capture
-        // trigger's name, and neither it nor the message needs escaping
-        const name = `"_syncmesh_strict.${table.name}.${op}"`;
+      SQLITE_OPS.map((op) => {
+        const name = sqliteGuardName(table.name, op);
         if (!guarded(table)) return `DROP TRIGGER IF EXISTS ${name}`;
         const refusal = `'syncmesh: ${op} on synced table ${table.name} outside a captured write would diverge from the log; write through the mesh, or open the stores with strict: false'`;
         return `CREATE TRIGGER IF NOT EXISTS ${name} BEFORE ${op} ON ${quote(table.name)} WHEN ${AT_REST} BEGIN SELECT RAISE(ABORT, ${refusal}); END`;
@@ -63,27 +76,33 @@ BEGIN
     USING HINT = 'write through the mesh, or open the stores with strict: false';
 END $$`;
 
+// a table name is `[a-z][a-zA-Z0-9_]*`, so the `.` keeps these apart from the capture trigger
+const PG_ROWS = `"syncmesh.strict"`;
+const PG_TRUNCATE = `"syncmesh.strict_truncate"`;
+
+const pgUnguard = (table: TableName) => [
+  `DROP TRIGGER IF EXISTS ${PG_ROWS} ON ${quote(table)}`,
+  `DROP TRIGGER IF EXISTS ${PG_TRUNCATE} ON ${quote(table)}`,
+];
+
 export const POSTGRES_GUARD: GuardSql = {
   // a transaction-local setting needs nothing created
   guardRow: [],
+  // only tables an unqualified name reaches: the ones this database's synced tables resolve to
+  guardedTables: `SELECT DISTINCT c.relname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+    WHERE t.tgname IN ('syncmesh.strict', 'syncmesh.strict_truncate') AND pg_table_is_visible(c.oid)`,
+  unguardDdl: pgUnguard,
   guardDdl: (tables, guarded) => [
     GUARD_FUNCTION,
     ...tables.flatMap((table) => {
-      // a table name is `[a-z][a-zA-Z0-9_]*`, so the `.` keeps these apart from the capture trigger
-      const rows = `"syncmesh.strict"`;
-      const truncate = `"syncmesh.strict_truncate"`;
       const on = quote(table.name);
-      if (!guarded(table))
-        return [
-          `DROP TRIGGER IF EXISTS ${rows} ON ${on}`,
-          `DROP TRIGGER IF EXISTS ${truncate} ON ${on}`,
-        ];
+      if (!guarded(table)) return pgUnguard(table.name);
       return [
-        `CREATE OR REPLACE TRIGGER ${rows} BEFORE INSERT OR UPDATE OR DELETE ON ${on} FOR EACH ROW EXECUTE FUNCTION ${GUARD}()`,
-        `CREATE OR REPLACE TRIGGER ${truncate} BEFORE TRUNCATE ON ${on} FOR EACH STATEMENT EXECUTE FUNCTION ${GUARD}()`,
+        `CREATE OR REPLACE TRIGGER ${PG_ROWS} BEFORE INSERT OR UPDATE OR DELETE ON ${on} FOR EACH ROW EXECUTE FUNCTION ${GUARD}()`,
+        `CREATE OR REPLACE TRIGGER ${PG_TRUNCATE} BEFORE TRUNCATE ON ${on} FOR EACH STATEMENT EXECUTE FUNCTION ${GUARD}()`,
         // ALWAYS: `session_replication_role = replica` skips ordinary triggers, not these
-        `ALTER TABLE ${on} ENABLE ALWAYS TRIGGER ${rows}`,
-        `ALTER TABLE ${on} ENABLE ALWAYS TRIGGER ${truncate}`,
+        `ALTER TABLE ${on} ENABLE ALWAYS TRIGGER ${PG_ROWS}`,
+        `ALTER TABLE ${on} ENABLE ALWAYS TRIGGER ${PG_TRUNCATE}`,
       ];
     }),
   ],

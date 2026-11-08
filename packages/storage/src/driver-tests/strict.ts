@@ -155,6 +155,37 @@ const rowCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       );
     },
   },
+  {
+    name: "strict: a table the schema no longer has loses its guard at the next install",
+    run: async () => {
+      const driver = await openDriver("strict-dropped-table");
+      (await installCapture(driver, [jobs, counters])).unwrap();
+      equal(
+        await refused(() => driver.run(`INSERT INTO counters (id, n) VALUES (1, 1)`)),
+        "refused",
+        "guarded while synced",
+      );
+      // the app takes `counters` out of its schema: nothing syncs it, so nothing may refuse it
+      (await installCapture(driver, [jobs])).unwrap();
+      equal(
+        await refused(() => driver.run(`INSERT INTO counters (id, n) VALUES (2, 1)`)),
+        "applied",
+        "left the schema",
+      );
+      (await installCapture(driver, [jobs, counters])).unwrap();
+      (await installGuard(driver, [jobs], false)).unwrap();
+      equal(
+        await refused(() => driver.run(`INSERT INTO counters (id, n) VALUES (3, 1)`)),
+        "applied",
+        "and strict: false reaches it too",
+      );
+      equal(
+        await refused(() => driver.run(`UPDATE jobs SET title = 'raw' WHERE id = 'none'`)),
+        "applied",
+        "the table still in the schema is off",
+      );
+    },
+  },
 ];
 
 /** What only Postgres has to get around a row trigger: `TRUNCATE`, and the replication role. */

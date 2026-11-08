@@ -2,6 +2,8 @@ import type { StoreFailure } from "@syncmesh/engine";
 import type { Result } from "@syncmesh/result";
 import type { Table } from "@syncmesh/schema";
 
+import { parseTableName } from "@syncmesh/schema";
+
 import type { SqlDriver } from "./driver.js";
 
 import { driverDialect } from "./dialect.js";
@@ -34,15 +36,39 @@ export const guardStatements = (
   strict?: StrictCapture,
 ): readonly string[] => driverDialect(driver).capture.guardDdl(tables, strictGuards(strict));
 
-/** Installs or drops the strict-capture guard on these tables ({@link StrictCapture}). */
+/**
+ * Runs the guard's install for these tables, then drops it from every table that carries one and
+ * is not among them: a table the schema no longer has, which no setting could otherwise reach.
+ * Throws what the driver throws.
+ */
+export async function applyGuard(
+  driver: SqlDriver,
+  tables: readonly Table[],
+  strict?: StrictCapture,
+): Promise<void> {
+  const { capture } = driverDialect(driver);
+  for (const sql of guardStatements(driver, tables, strict)) await driver.run(sql);
+  const named = new Set(tables.map((table) => table.name));
+  for (const [cell] of await driver.all(capture.guardedTables)) {
+    // a name that does not parse is no table the guard was ever installed on
+    const name = parseTableName(String(cell));
+    if (name.isErr() || named.has(name.value)) continue;
+    for (const sql of capture.unguardDdl(name.value)) await driver.run(sql);
+  }
+}
+
+/**
+ * Installs or drops the strict-capture guard on these tables ({@link StrictCapture}), and drops it
+ * from any table outside them that still carries one.
+ */
 export function installGuard(
   driver: SqlDriver,
   tables: readonly Table[],
   strict?: StrictCapture,
 ): Promise<Result<void, StoreFailure>> {
-  return attempt("could not install the strict-capture guard", async () => {
-    for (const sql of guardStatements(driver, tables, strict)) await driver.run(sql);
-  });
+  return attempt("could not install the strict-capture guard", () =>
+    applyGuard(driver, tables, strict),
+  );
 }
 
 /**
