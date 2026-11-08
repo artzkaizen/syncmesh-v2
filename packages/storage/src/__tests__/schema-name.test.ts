@@ -75,4 +75,18 @@ describe("the state file is named after the app's schema", () => {
     const reopened = (await openStores(again, { tables: ONE_COLUMN })).unwrap();
     await reopened.close();
   });
+
+  test("a log that took rows from a snapshot install refuses the new shape too (gaps U33)", async () => {
+    const log = join(dir, "installed.db");
+    const first = await openPair(log, schemaName(ONE_COLUMN));
+    const opened = (await openStores(first, { tables: ONE_COLUMN })).unwrap();
+    // an install's rows have no events behind them: only the state file holds them
+    (await opened.events.recordInstalled(new Map([[A, seq(5)]]))).unwrap();
+    await opened.close();
+
+    const second = await openPair(log, schemaName(TWO_COLUMNS));
+    const refused = await openStores(second, { tables: TWO_COLUMNS });
+    expect(refused.match({ ok: () => "", err: (e) => e.message })).toContain("snapshot install");
+    await second.close?.();
+  });
 });
