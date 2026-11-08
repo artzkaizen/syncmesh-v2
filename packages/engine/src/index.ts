@@ -63,8 +63,7 @@ export {
   wireReason,
   withRetry,
 } from "./quarantine.js";
-export type { Fleet, FleetApi, FleetWindow, SchemaReading } from "./fleet.js";
-export { createFleet } from "./fleet.js";
+export type { FleetApi, FleetWindow, SchemaReading } from "./fleet.js";
 export type { CoverageTracker } from "./coverage.js";
 export { trackCoverage } from "./coverage.js";
 export type { FoldDeps, FoldPath } from "./fold.js";

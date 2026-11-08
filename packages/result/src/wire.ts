@@ -21,6 +21,9 @@ export class ForeignTagged extends TaggedError("ForeignTagged")<{
   message?: string;
 }> {}
 
+/** The position fields a runtime may put on an Error; a declared one is anything but an integer. */
+const RUNTIME_POSITION = ["line", "column"] as const;
+
 /**
  * The error as it crosses: the tag, the message, and every own field — never the stack, and
  * `cause` flattened to its message, because a stack is this process's business.
@@ -30,6 +33,12 @@ export function serializeTagged(error: AnyTaggedError): Record<string, unknown> 
   for (const [key, value] of Object.entries(error)) {
     if (key === "stack" || key === "name" || key === "_tag" || key === "cause") continue;
     fields[key] = value;
+  }
+  // JavaScriptCore (Bun, Safari) gives every Error unenumerable `line` and `column` numbers; a
+  // declared field of that name is assigned over one and stays unenumerable, so read it by name
+  for (const key of RUNTIME_POSITION) {
+    const value: unknown = Object.getOwnPropertyDescriptor(error, key)?.value;
+    if (value !== undefined && !Number.isInteger(value)) fields[key] = value;
   }
   // `cause` rides the Error options, not an enumerable field — read it by name
   if (error.cause !== undefined)

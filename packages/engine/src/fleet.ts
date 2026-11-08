@@ -53,7 +53,13 @@ export interface FleetApi {
   /**
    * "The oldest schema still writing" (D31), per author: the lowest `schemaVersion` this device
    * has seen it on — on the events it folded or parked (absent reads as `1`) and on its cursors
-   * frames — within `window`, or since boot without one.
+   * frames — within `window`, or since boot without one. "Since boot" counts the events the
+   * boot replay folds too, so without a window the reading also depends on how far the state
+   * store's coverage lagged the log; pass a window for a reading about now.
+   *
+   * The event half is signed by its author; the cursors-frame half is the sender's claim, as
+   * the acks are, so a linked peer can lower another author's reading, never raise it above
+   * what that author's own events say.
    *
    * The reading D31's rule waits on. A table or column is retired once every author that wrote in
    * the retention window reads at or above the version that stopped needing it, and an authority
