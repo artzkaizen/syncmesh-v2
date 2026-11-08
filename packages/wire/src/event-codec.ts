@@ -25,7 +25,9 @@ export class MalformedEvent extends TaggedError("MalformedEvent")<{ message: str
 /**
  * Event core map keys, frozen by the vectors (RFC-0002). 4 was never used and stays retired.
  * `schemaVersion` (D31) and `action` and `undoOf` (RFC-0023 §5.2) are readings: a build that
- * skips them folds the event identically, which is why none of them needs a `v` bump.
+ * skips them folds the event identically, which is why none of them needs a `v` bump. One that
+ * is there but not a reading (key 9 not a positive integer) decodes as absent, so re-encoding
+ * the decoded event drops it and breaks the signature: what travels on is the arrival bytes.
  */
 const KEY = {
   v: 0,

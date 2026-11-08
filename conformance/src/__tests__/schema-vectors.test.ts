@@ -39,6 +39,8 @@ describe("schema evolution vectors — frozen (D31)", () => {
       expect<number | null>(frame.schemaVersion ?? null).toBe(v.schemaVersion);
       // index 3 is always there for index 5 to follow: empty when there was nothing above
       expect((frame.ahead?.size ?? 0) > 0).toBe(v.ahead);
+      // and index 4, D46's floor, empty from a sender that compacted nothing
+      expect(frame.floor).toEqual(new Map());
     });
   }
 

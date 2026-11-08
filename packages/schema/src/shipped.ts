@@ -199,6 +199,8 @@ function readTable(value: JsonValue): ShippedTable | undefined {
     return undefined;
   if ((sync !== undefined && sync !== "window") || retired === false || dropped === false)
     return undefined;
+  // a removed column that is also declared is two answers for one name
+  if (dropped?.some((name) => Object.hasOwn(columns, name)) === true) return undefined;
   return {
     partition,
     visibility,

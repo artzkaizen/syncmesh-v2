@@ -59,7 +59,9 @@ export interface FleetApi {
    *
    * The event half is signed by its author; the cursors-frame half is the sender's claim, as
    * the acks are, so a linked peer can lower another author's reading, never raise it above
-   * what that author's own events say.
+   * what that author's own events say. A relay's join frame carries no version and replaces the
+   * joiner's last announcement until its next cursors frame: until then the reading rests on
+   * that peer's events alone, and a peer that wrote nothing drops out of it.
    *
    * The reading D31's rule waits on. A table or column is retired once every author that wrote in
    * the retention window reads at or above the version that stopped needing it, and an authority
