@@ -1,0 +1,15 @@
+[package]
+name = "syncmesh-loro"
+version = "0.0.0"
+edition = "2024"
+description = "The loro@1 document adapter in Rust (RFC-0023 §2.8): the same bytes as @syncmesh/loro over the same Loro"
+license = "MIT"
+publish = false
+
+[dependencies]
+syncmesh-client = { path = "../syncmesh-client" }
+loro = { workspace = true }
+
+[dev-dependencies]
+syncmesh-core = { path = "../syncmesh-core" }
+serde_json = { workspace = true }

@@ -8,7 +8,8 @@ import type { StateCorrupt, StateStore } from "./state-store.js";
 import type { EventStore, StoreFailure } from "./store.js";
 import type { Coverage, Cursors } from "./sync.js";
 
-import { createMemoryDocStore, docAppends } from "./doc-log.js";
+import { createMemoryDocStore } from "./doc-log-memory.js";
+import { docAppends } from "./doc-log.js";
 import { CompactionRefused } from "./errors.js";
 import { EMPTY_COVERAGE } from "./sync.js";
 

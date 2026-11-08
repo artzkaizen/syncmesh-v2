@@ -1,7 +1,7 @@
 {
   "name": "@syncmesh/docs",
   "version": "0.0.0",
-  "description": "CRDT document references: versioned rich-text heads carried as content-addressed blobs",
+  "description": "The document SPI and runtime: open, flush, materialise and checkpoint a document column through any adapter (RFC-0023)",
   "license": "MIT",
   "files": [
     "dist"
@@ -16,7 +16,12 @@
     }
   },
   "dependencies": {
-    "@syncmesh/result": "workspace:*"
+    "@noble/hashes": "^2.3.0",
+    "@syncmesh/engine": "workspace:*",
+    "@syncmesh/kernel": "workspace:*",
+    "@syncmesh/result": "workspace:*",
+    "@syncmesh/temporal": "workspace:*",
+    "@syncmesh/wire": "workspace:*"
   },
   "devDependencies": {
     "@syncmesh/config": "workspace:*",

@@ -86,6 +86,14 @@ export interface DocSql {
   readonly selectHeads: string;
   /** `author, MIN(seq)` over the entries no snapshot covers. */
   readonly selectUncovered: string;
+  /** Binds `tbl, key, col, adapter, lineage, covers, version, mode, materialised_at`; the tail is recounted after. */
+  readonly coverHead: string;
+  /** Binds `tail_count, tail_bytes, tbl, key, col`. */
+  readonly countTail: string;
+  /** Binds `tbl, key, col, lineage, bytes`. */
+  readonly upsertSnapshot: string;
+  /** Binds `tbl, key, col`; `lineage, bytes`. */
+  readonly selectSnapshot: string;
 }
 
 /**

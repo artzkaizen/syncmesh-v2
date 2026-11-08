@@ -1,11 +1,12 @@
 /**
- * The doc log and the doc heads (RFC-0023 §6.2), declared once as Drizzle 1.0 tables per dialect:
- * the shape a query layer types its statements against, and the shape each dialect's migration
- * must create — `driver-tests/docs.ts` compares the two, so neither can drift from the other.
+ * The doc log, the doc heads and the column snapshots (RFC-0023 §6.1–6.2), declared once as
+ * Drizzle 1.0 tables per dialect: the shape a query layer types its statements against, and the
+ * shape each dialect's migration must create — `driver-tests/docs.ts` compares the two, so neither
+ * can drift from the other.
  *
- * Named as derived tables by `namespace.ts`: `syncmesh.doc_log` and `syncmesh.doc_heads` in the
- * app's Postgres, `syncmesh_doc_log` and `syncmesh_doc_heads` beside the app's tables on a
- * device, snake_case columns in both. Byte columns are `bytea` on Postgres and
+ * Named as derived tables by `namespace.ts`: `syncmesh.doc_log`, `syncmesh.doc_heads` and
+ * `syncmesh.doc_snapshots` in the app's Postgres, `syncmesh_doc_log`, `syncmesh_doc_heads` and
+ * `syncmesh_doc_snapshots` beside the app's tables on a device, snake_case columns in both. Byte columns are `bytea` on Postgres and
  * `blob({ mode: "buffer" })` on SQLite — in Drizzle 1.0 a `blob()` without a mode stores JSON.
  *
  * @module
@@ -82,6 +83,19 @@ export const pgDocHeads = pgMesh.table(
   (t) => [pgPrimaryKey({ columns: [t.tbl, t.key, t.col] })],
 );
 
+/** The column snapshots in the app's Postgres: one per document, of the lineage it was taken on. */
+export const pgDocSnapshots = pgMesh.table(
+  "doc_snapshots",
+  {
+    tbl: pgText("tbl").notNull(),
+    key: pgText("key").notNull(),
+    col: pgText("col").notNull(),
+    lineage: bytea("lineage"),
+    bytes: bytea("bytes").notNull(),
+  },
+  (t) => [pgPrimaryKey({ columns: [t.tbl, t.key, t.col] })],
+);
+
 /** The doc log on a device: the same shape as {@link pgDocLog}, in SQLite's types. */
 export const sqliteDocLog = sqliteTable(
   stateTable("doc_log"),
@@ -122,6 +136,19 @@ export const sqliteDocHeads = sqliteTable(
     tailBytes: sqliteInteger("tail_bytes", { mode: "number" }).notNull(),
     mode: sqliteText("mode").notNull(),
     materialisedAt: sqliteInteger("materialised_at", { mode: "number" }),
+  },
+  (t) => [sqlitePrimaryKey({ columns: [t.tbl, t.key, t.col] })],
+);
+
+/** The column snapshots on a device: the same shape as {@link pgDocSnapshots}, in SQLite's types. */
+export const sqliteDocSnapshots = sqliteTable(
+  stateTable("doc_snapshots"),
+  {
+    tbl: sqliteText("tbl").notNull(),
+    key: sqliteText("key").notNull(),
+    col: sqliteText("col").notNull(),
+    lineage: blob("lineage", { mode: "buffer" }),
+    bytes: blob("bytes", { mode: "buffer" }).notNull(),
   },
   (t) => [sqlitePrimaryKey({ columns: [t.tbl, t.key, t.col] })],
 );
