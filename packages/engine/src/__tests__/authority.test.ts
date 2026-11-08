@@ -147,6 +147,66 @@ describe("corrections", () => {
     });
   });
 
+  test("a correction to a column an older build cannot see is diagnosable, not invisible (gap-audit №20, D31)", async () => {
+    // v2 added `hours`; the device still runs the build before it, which declares no version and
+    // no such column, so its events read as schema 1
+    const v2 = syncSchema({
+      schemaVersion: 2,
+      tables: {
+        notes: {
+          columns: { id: t.text().primaryKey(), title: t.text(), hours: t.integer().nullable() },
+          partition: org,
+          allow: ({ role: r }) => ({ $default: r("member") }),
+        },
+      },
+    });
+    const on = (
+      peerId: typeof PEER_A,
+      startMs: number,
+      built: typeof schema | typeof v2,
+      account: string,
+      grantRole: string,
+    ) =>
+      createEngine({
+        peerId,
+        clock: fakeClock(startMs),
+        store: createMemoryEventStore(),
+        merge: built.merge,
+        ...(built.schemaVersion !== undefined && { schemaVersion: built.schemaVersion }),
+        validate: createValidator({
+          schema: built,
+          grantFor: (peer) => grantFor(peer, account, grantRole),
+          authority: PEER_B,
+        }),
+      });
+    const device = on(PEER_A, 100, schema, "acct_a", "member");
+    const server = on(PEER_B, 200, v2, "acct_b", "admin");
+    const written = (await writeNote(device, "twelve hours")).unwrap();
+    await sync(device, server);
+
+    // the number the authority reads before it corrects a v2 column: this author is below 2
+    expect<number | undefined>(server.oldestSchema().get(PEER_A)?.version).toBe(1);
+    (
+      await correct(
+        server,
+        {
+          event: String(written.id),
+          table: NOTES,
+          key: N1,
+          reason: "over the limit",
+          partition: ACME,
+        },
+        (tx) => tx.update(NOTES, N1, row({ hours: 8 })),
+      )
+    ).unwrap();
+    await sync(server, device);
+    // the older build folds the reason and keeps the cell it cannot read: no divergence, and the
+    // authority was told in advance that this device would show the reason without the value
+    expect(corrections(device)).toHaveLength(1);
+    expect(device.quarantine()).toEqual([]);
+    expect<number | undefined>(device.oldestSchema().get(PEER_B)?.version).toBe(2);
+  });
+
   test("a member's forged correction is denied at its author and never applies at a peer", async () => {
     const device = peerAt(PEER_A, 100);
     const other = peerAt(PEER_B, 300, "acct_b");

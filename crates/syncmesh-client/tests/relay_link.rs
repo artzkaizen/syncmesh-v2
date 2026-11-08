@@ -703,11 +703,9 @@ fn presence_grants_and_blobs_pass_through_the_room() {
         .position(|f| *f == Action::Grant(grant.clone()));
     let caught_at = facts.iter().position(|f| *f == Action::CaughtUp);
     assert!(presence_at < grant_at && grant_at < caught_at, "{facts:?}");
-    // the others heard c join: the room passed its cursors on
-    assert_eq!(
-        net.take_facts(a),
-        vec![Action::PeerHeard(identity(3).peer_id().clone())]
-    );
+    // the others heard c join, and then c's own cursors frame once it caught up (D31)
+    let heard = Action::PeerHeard(identity(3).peer_id().clone());
+    assert_eq!(net.take_facts(a), vec![heard.clone(), heard]);
     net.take_facts(b);
     // a grant request travels to everyone else
     let actions = net.devices[c].link.request_grant(Some("invite-1"));
@@ -1098,4 +1096,52 @@ fn a_lost_log_that_wrote_before_rejoining_is_told_and_numbers_after_the_room() {
         body_of(&net.devices[b].engine, "n4").as_deref(),
         Some("four")
     );
+}
+
+#[test]
+fn a_build_that_declares_a_schema_stamps_its_writes_and_announces_it_at_index_5() {
+    use syncmesh_core::SchemaVersion;
+    use syncmesh_core::event_codec::decode_event_core;
+
+    // a challenging room, so what the device sends can be read off the wire in the clear
+    let mut net = Net::new(room_with(vec![1, 2], 15_000));
+    let a = net.add(1, v2_options());
+    let four = SchemaVersion::parse(4).unwrap();
+    net.devices[a].engine = Engine::open(
+        identity(1),
+        Box::new(MemoryEventStore::new()),
+        None,
+        EngineOptions {
+            schema_version: Some(four),
+            ..EngineOptions::default()
+        },
+    )
+    .unwrap();
+    net.dial(a);
+    net.take_facts(a);
+
+    // its own write carries the version under key 9, inside the signed core
+    let entry = net.write(a, "n1", "mine", None);
+    assert_eq!(entry.event.schema_version, Some(four));
+    let core = entry.core.as_deref().expect("a signed write has its core");
+    assert_eq!(decode_event_core(core).unwrap().schema_version, Some(four));
+
+    // and the cursors frame it answers a fold from elsewhere with carries it at index 5
+    let mut c = engine(9);
+    let carried = write(&mut c, "c1", "carried", None);
+    net.devices[a].engine.receive(carried).unwrap();
+    let actions = net.remote_fold(a);
+    let announced: Vec<Option<SchemaVersion>> = actions
+        .iter()
+        .filter_map(|action| match action {
+            Action::Send(bytes) => match decode_relay_frame(bytes) {
+                Ok(RelayFrame::Session(Frame::Cursors { schema_version, .. })) => {
+                    Some(schema_version)
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(announced, vec![Some(four)], "{actions:?}");
 }

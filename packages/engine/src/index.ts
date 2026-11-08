@@ -48,6 +48,7 @@ export type { CaptureSettings, CapturedWrite } from "./writes.js";
 export type {
   Parked,
   QuarantineOptions,
+  ParkReason,
   QuarantineReason,
   QuarantineStore,
   UnknownHandling,
@@ -60,8 +61,10 @@ export {
   quarantineReason,
   retryQuarantined,
   retryRefused,
+  wireReason,
   withRetry,
 } from "./quarantine.js";
+export type { FleetApi, FleetWindow, SchemaReading } from "./fleet.js";
 export type { CoverageTracker } from "./coverage.js";
 export { trackCoverage } from "./coverage.js";
 export type { FoldDeps, FoldPath } from "./fold.js";
@@ -99,7 +102,9 @@ export {
   PartitionNotGranted,
   PolicyDenied,
   ReadOnlyPartition,
+  RetiredWrite,
   SchemaViolation,
+  TableDropped,
   UnknownChangeKind,
   UnknownTable,
   WrongPartition,

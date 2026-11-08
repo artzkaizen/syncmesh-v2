@@ -10,7 +10,7 @@ import type {
   TableName,
 } from "@syncmesh/kernel";
 
-import { applyChange, docLineage, getRecord, stampOf } from "@syncmesh/kernel";
+import { applyChange, docLineage, getRecord, eventStamp } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
 import type { CoverageTracker } from "./coverage.js";
@@ -142,7 +142,7 @@ const rebuilt = (
 ): State => {
   let next = without(state, keys);
   for (const { event } of kept) {
-    const stamp = stampOf(event);
+    const stamp = eventStamp(event);
     for (const change of event.changes)
       if (foldable(change) && keys.get(change.table)?.has(change.key) === true)
         next = applyChange(next, change, stamp, merge, event.partition);

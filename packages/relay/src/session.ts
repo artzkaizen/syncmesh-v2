@@ -1,4 +1,4 @@
-import type { Cursors, StoredEvent, Unsubscribe } from "@syncmesh/engine";
+import type { Cursors, Engine, StoredEvent, Unsubscribe } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import type { BlobRefusal, TransportContext } from "@syncmesh/transport";
 import type { Grant } from "@syncmesh/wire";
@@ -172,6 +172,25 @@ const adoptOwnRun = async (
   if (warning !== undefined) dropped(warning);
 };
 
+/**
+ * Our contiguous position, for every other peer's `delivered`, with the schema this build
+ * declares (D31) for their fleet reading. Index 5 needs index 3 written, so a versioned frame
+ * says what is held above the cursors too, truthfully; an undeclared one is the frame it was.
+ *
+ * Sent after every fold of a remote batch, and once each join has caught up: the room's join
+ * frame for us carries no version, and a device that only writes folds nothing remote.
+ */
+const ownCursorsFrame = (engine: Engine, self: PeerId): Uint8Array =>
+  engine.schemaVersion === undefined
+    ? cursorsFrame(self, engine.coverage().synced)
+    : cursorsFrame(self, engine.coverage().synced, engine.ahead(), undefined, engine.schemaVersion);
+
+/** A join that has caught up: our position and build go out, then the hook fires. */
+const caughtUpAnnounced = (engine: Engine, self: PeerId, hooks: SessionHooks): void => {
+  hooks.sendSafe(ownCursorsFrame(engine, self));
+  hooks.onCaughtUp();
+};
+
 /** Everything one session subscribes to; the returned unsubscribes are the session's teardown. */
 export function wireSession(
   context: TransportContext,
@@ -298,7 +317,7 @@ export function wireSession(
     else if (frame.kind === "grant") void grants.register(frame.wire);
     else if (frame.kind === "cursors") {
       hooks.onPeerHeard?.(frame.from);
-      engine.acknowledge(frame.from, frame.cursors, now());
+      engine.acknowledge(frame.from, frame.cursors, now(), frame.schemaVersion);
     } else if (frame.kind === "grant-request") {
       const request = { peerId: frame.peerId };
       if (frame.invite !== undefined) Object.assign(request, { invite: frame.invite });
@@ -323,7 +342,7 @@ export function wireSession(
       // announcing here would announce a pass that has not folded a single event of its last
       // page. What the hook means is "nothing more to hand over right now", and the moment that
       // becomes true is the moment this chain drains
-      after(() => hooks.onCaughtUp());
+      after(() => caughtUpAnnounced(engine, identity.peerId, hooks));
     }
   };
 
@@ -374,7 +393,7 @@ export function wireSession(
     if (!caughtUp || batch.source !== "remote") return;
     pushOutstanding();
     // our contiguous position, for every other peer's `delivered`; the relay passes it on
-    hooks.sendSafe(cursorsFrame(identity.peerId, engine.coverage().synced));
+    hooks.sendSafe(ownCursorsFrame(engine, identity.peerId));
   });
   return [offFrame, offOutbound, offRegistered, offFolds];
 }

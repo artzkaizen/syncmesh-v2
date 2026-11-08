@@ -626,6 +626,9 @@ impl RelayLink {
                     live.paging = false;
                     live.caught_up = true;
                     self.push_outstanding(engine, out);
+                    // our position and build (D31), once per catch-up: the room's join frame for
+                    // us carries no version, and a device that only writes folds nothing remote
+                    self.send_cursors(engine, out);
                     self.repaging = false;
                     self.reentitled = false;
                     out.push(Action::CaughtUp);
@@ -883,10 +886,13 @@ impl RelayLink {
     /// Our contiguous position, for every other peer's `delivered`; the relay passes it on.
     fn send_cursors(&mut self, engine: &Engine, out: &mut Vec<Action>) {
         let pairs = cursors_to_pairs(&engine.coverage().synced);
-        self.send_safe(
-            cursors_frame(self.identity.peer_id(), &pairs, None, None),
-            out,
-        );
+        // with the schema this build declares (D31), for every other peer's fleet reading. Index
+        // 5 needs index 3 written, so that frame says what is held above the cursors, truthfully
+        let version = engine.schema_version();
+        let ahead: Vec<(PeerId, Vec<SeqNum>)> = engine.ahead().into_iter().collect();
+        let held = version.map(|_| ahead.as_slice());
+        let frame = cursors_frame(self.identity.peer_id(), &pairs, held, None, version);
+        self.send_safe(frame, out);
     }
 
     // --- outbound -----------------------------------------------------------------------------

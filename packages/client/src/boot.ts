@@ -9,7 +9,7 @@ import type {
   Validator,
   ValidatorOptions,
 } from "@syncmesh/engine";
-import type { DocColumns, MergeSpec, PeerId, TableName } from "@syncmesh/kernel";
+import type { DocColumns, MergeSpec, PeerId, SchemaVersion, TableName } from "@syncmesh/kernel";
 import type { DocColumnEntry, Table } from "@syncmesh/schema";
 import type { OperationStore, RowSync, SqlDriver, StoreLocked, Stores } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
@@ -34,6 +34,8 @@ export interface BootOptions {
   readonly schema: ValidatorOptions["schema"] & {
     readonly merge: MergeSpec;
     readonly docs?: ReadonlyMap<TableName, readonly DocColumnEntry[]>;
+    /** What the manifest declared (D31): stamped on every event and cursors frame. */
+    readonly schemaVersion?: SchemaVersion;
   };
   readonly identity: Identity;
   readonly issuer?: PeerId;
@@ -217,6 +219,9 @@ function engineSettings(
     merge: options.schema.merge,
     validate,
   } satisfies EngineOptions;
+  // the stamp on every event and cursors frame (D31); a schema that declares none stamps nothing
+  const { schemaVersion } = options.schema;
+  if (schemaVersion !== undefined) Object.assign(engineOptions, { schemaVersion });
   const stateStore = options.stateStore ?? owned?.state;
   if (stateStore !== undefined) Object.assign(engineOptions, { stateStore });
   if (docs !== undefined) Object.assign(engineOptions, { docs });

@@ -66,6 +66,20 @@ function checkPrimaryKey(table: string, key: string, def: ColumnDef | undefined)
   if (def.nullable) panic(`${table}.${key}: a primary key cannot be nullable`);
 }
 
+/**
+ * A retired column is one this build stops writing (D31), so its inserts omit it — and an older
+ * build that still declares it NOT NULL refuses every one of them. Only a nullable column can
+ * retire; a key never can.
+ */
+function checkRetired(table: string, key: string, def: ColumnDef): void {
+  if (def.retired !== true) return;
+  if (def.primaryKey) panic(`${table}.${key}: a primary key cannot be retired`);
+  if (!def.nullable)
+    panic(
+      `${table}.${key}: a retired column must be nullable; an older build refuses an insert that omits a NOT NULL column`,
+    );
+}
+
 export function table<const C extends Columns>(name: string, columns: C): Table<C, PrimaryKey<C>> {
   const parsedName = parseTableName(name);
   if (parsedName.isErr()) panic(`${name}: ${parsedName.error.message}`);
@@ -81,7 +95,10 @@ export function table<const C extends Columns>(name: string, columns: C): Table<
     .map(([k]) => k);
   if (primaryKeys.length !== 1)
     panic(`${name}: expected exactly one primaryKey column, found ${primaryKeys.length}`);
-  for (const [key, c] of Object.entries(columns)) checkMerge(`${name}.${key}`, c.def);
+  for (const [key, c] of Object.entries(columns)) {
+    checkMerge(`${name}.${key}`, c.def);
+    checkRetired(name, key, c.def);
+  }
   // SAFETY: exactly one primary key was found above and it is a key of C
   const primaryKey = primaryKeys[0] as PrimaryKey<C>;
   checkPrimaryKey(name, String(primaryKey), columns[primaryKey]?.def);

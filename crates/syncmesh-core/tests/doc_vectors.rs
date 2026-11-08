@@ -86,6 +86,7 @@ fn events() -> Vec<SyncEvent> {
         sealed: false,
         action: None,
         undo_of: None,
+        schema_version: None,
     };
     let action = id16("a0a1a2a3a4a5a6a7a8a9aaabacadaeaf");
     let undone = id16("b0b1b2b3b4b5b6b7b8b9babbbcbdbebf");

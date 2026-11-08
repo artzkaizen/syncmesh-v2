@@ -66,13 +66,16 @@ export function fromWirePatch<T extends Table>(table: T, cells: WireCells): Part
   return row as Partial<Row<T>>;
 }
 
-/** The wire row an insert writes: the given cells plus explicit `null`s for omitted nullable columns. */
+/**
+ * The wire row an insert writes: the given cells plus explicit `null`s for omitted nullable
+ * columns. A retired column (D31) gets no `null`: nothing on this build writes it.
+ */
 export function withNulls<T extends Table>(table: T, cells: WireCells): WireCells {
   const full = new Map(cells);
   for (const [name, column] of Object.entries(table.columns)) {
     const key = table.columnNames[name];
     if (key === undefined || full.has(key)) continue;
-    if (column.def.nullable) full.set(key, null);
+    if (column.def.nullable && column.def.retired !== true) full.set(key, null);
   }
   return full;
 }

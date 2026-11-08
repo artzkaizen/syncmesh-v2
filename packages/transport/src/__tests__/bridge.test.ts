@@ -1,6 +1,7 @@
 import type { Quarantined } from "@syncmesh/engine";
 import type { SeqNum } from "@syncmesh/kernel";
 
+import { parseSchemaVersion } from "@syncmesh/kernel";
 import { describe, expect, test } from "bun:test";
 
 import type { BridgeError } from "../bridge.js";
@@ -163,5 +164,28 @@ describe("the bridge over a loopback", () => {
     by.resync(); // the receiver re-requests — it is the side missing data
     await settle();
     expect(bodyOf(bob, "n1")).toBe("lost");
+  });
+
+  test("each side's schema version reaches the other's fleet reading, on cursors and on events (D31)", async () => {
+    const alice = peer(40, "acct_a", 100, { schemaVersion: parseSchemaVersion(3).unwrap() });
+    const bob = peer(80, "acct_b", 500, { schemaVersion: parseSchemaVersion(5).unwrap() });
+    const { settle } = connect(alice, bob);
+    await settle();
+    // nothing written yet: the cursors frame alone says which build is on the other end
+    expect<number | undefined>(bob.engine.oldestSchema().get(alice.identity.peerId)?.version).toBe(
+      3,
+    );
+    expect<number | undefined>(alice.engine.oldestSchema().get(bob.identity.peerId)?.version).toBe(
+      5,
+    );
+
+    (await write(alice, "n1", "one")).unwrap();
+    await settle();
+    expect(bodyOf(bob, "n1")).toBe("one");
+    // and the event carries its stamp through the wire, signed with the rest of the core
+    expect(bob.engine.quarantine()).toEqual([]);
+    expect<number | undefined>(bob.engine.oldestSchema().get(alice.identity.peerId)?.version).toBe(
+      3,
+    );
   });
 });

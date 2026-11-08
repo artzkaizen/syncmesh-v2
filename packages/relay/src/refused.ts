@@ -11,7 +11,7 @@ import type {
 import type { TransportContext } from "@syncmesh/transport";
 
 import { entitles, matchesInterest } from "@syncmesh/engine";
-import { compareHlc, getRecord, stampOf } from "@syncmesh/kernel";
+import { compareHlc, getRecord, eventStamp } from "@syncmesh/kernel";
 import { withholds } from "@syncmesh/transport";
 import { decodeEventCore, splitEnvelope } from "@syncmesh/wire";
 
@@ -74,7 +74,7 @@ const ARRIVALS = new Set<FoldBatch["source"]>(["remote", "snapshot", "repair"]);
 const remembered = (events: readonly SyncEvent[]): Refused => {
   const stamps = new Map<PeerId, Hlc[]>();
   for (const event of events) {
-    const stamp = stampOf(event);
+    const stamp = eventStamp(event);
     stamps.set(stamp.peer, [...(stamps.get(stamp.peer) ?? []), stamp.hlc]);
   }
   return { events, ids: new Set(events.map((event) => event.id)), stamps };

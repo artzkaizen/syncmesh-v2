@@ -1,0 +1,64 @@
+{
+  "peerId": "32b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b",
+  "refuserId": "6dc69d472f7f40f4769eadb159b32edae69b0729a33277980d074365311f4d77",
+  "authorId": "da971dcae2b290b4025e2881d19f815591bf76c97693c595af3512c211fed947",
+  "events": [
+    {
+      "description": "notes.create written under schemaVersion 3",
+      "coreHex": "a7000101582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b020103821b0000018bcfe5680000056c6e6f7465732e6372656174650781a4000001656e6f74657302626e3103a1657469746c656568656c6c6f0903",
+      "sigHex": "2b6f7956f028bbc6f576d6668e0080cfa968c5f603bfb4e67adc6d2ff94bf80965cd3f00ffe75561ed0333c123ede112c84421a5663df3dfc30c49dcd0d02f06",
+      "schemaVersion": 3,
+      "reencodes": true
+    },
+    {
+      "description": "notes.create written under schemaVersion 1, which is still written when declared",
+      "coreHex": "a7000101582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b020103821b0000018bcfe5680000056c6e6f7465732e6372656174650781a4000001656e6f74657302626e3103a1657469746c656568656c6c6f0901",
+      "sigHex": "ad64286a13b790980661d9d359c8e08816a3c4f3d35bbb8d0deb2ebbea2de998b535539ff5ef163ef36090c4aae9f3b79a49616622f9f02fa7e4c6f89bba6c0a",
+      "schemaVersion": 1,
+      "reencodes": true
+    },
+    {
+      "description": "key 9 holding text reads as no version, and the event still decodes",
+      "coreHex": "a7000101582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b020103821b0000018bcfe5680000056c6e6f7465732e6372656174650781a4000001656e6f74657302626e3103a1657469746c656568656c6c6f09657468726565",
+      "sigHex": "d2c7be77695edc3766b30df7ad791b1c3790df83e80112daaa82424fa3da3d4b1ac15e780adecc33693824086aaf2557a20975e8881dddc893d22a29d4b05f06",
+      "schemaVersion": null,
+      "reencodes": false
+    },
+    {
+      "description": "key 9 holding 0 reads as no version: a version is a positive integer",
+      "coreHex": "a7000101582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b020103821b0000018bcfe5680000056c6e6f7465732e6372656174650781a4000001656e6f74657302626e3103a1657469746c656568656c6c6f0900",
+      "sigHex": "aa3f08fa001cbc29380e5ec5774238f5cd9c2f915b582b291444e7e775bbcd708162d26571107f6f7895a5d0cddeccce0abc753d8f5d1de122e2ffb2b6e01a04",
+      "schemaVersion": null,
+      "reencodes": false
+    }
+  ],
+  "frames": [
+    {
+      "description": "cursors with what is held above them and schemaVersion 4 at index 5",
+      "wireHex": "8602582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b8282582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b07825820da971dcae2b290b4025e2881d19f815591bf76c97693c595af3512c211fed9470381825820da971dcae2b290b4025e2881d19f815591bf76c97693c595af3512c211fed9478205068004",
+      "schemaVersion": 4,
+      "ahead": true
+    },
+    {
+      "description": "cursors with schemaVersion 4 and nothing ahead: ahead and the floor go empty",
+      "wireHex": "8602582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b8282582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b07825820da971dcae2b290b4025e2881d19f815591bf76c97693c595af3512c211fed94703808004",
+      "schemaVersion": 4,
+      "ahead": false
+    },
+    {
+      "description": "an index 5 that is not a positive integer reads as no version",
+      "wireHex": "8602582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b8282582032b53e882e3daac180d7a5f6224d61b6401b43f901db09f0e4d84ce4e4a2718b07825820da971dcae2b290b4025e2881d19f815591bf76c97693c595af3512c211fed9470381825820da971dcae2b290b4025e2881d19f815591bf76c97693c595af3512c211fed9478205068064666f7572",
+      "schemaVersion": null,
+      "ahead": true
+    }
+  ],
+  "refusals": [
+    {
+      "description": "a newer build that dropped the table: refused, with the verdict that says so",
+      "seq": 9,
+      "reason": "refused",
+      "verdict": "TableDropped",
+      "wireHex": "82586ca700010158206dc69d472f7f40f4769eadb159b32edae69b0729a33277980d074365311f4d77025820da971dcae2b290b4025e2881d19f815591bf76c97693c595af3512c211fed9470309046772656675736564056c5461626c6544726f70706564061b0000018bcfe568005840c7264afc146d15cbd591f48d352f79b2eff536f1d8d7ca46c7fb10499bcb8b3e3dd6e5ede8478e065f01d24bbfe152b4617ae1630d222c2bce4a2d0b9da26205"
+    }
+  ]
+}

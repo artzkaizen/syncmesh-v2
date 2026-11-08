@@ -115,6 +115,11 @@ export interface FromDrizzleOptions<D extends DrizzleTableLike> {
     >;
   };
   readonly onWarn?: (warning: DrizzleWarning) => void;
+  /**
+   * Columns to mark retired (D31), as `t.text().nullable().retired()` marks one: still declared
+   * and read, still folded from older builds, refused for this device's own writes.
+   */
+  readonly retire?: readonly (keyof ColumnsFromDrizzle<D> & string)[];
 }
 
 /**
@@ -249,8 +254,13 @@ export function fromDrizzle<const D extends DrizzleTableLike>(
     const def = drizzleDef(info, rules[key], (message) =>
       options.onWarn?.({ column: key, message }),
     );
-    mapped[key] = columnFromDef(def);
+    mapped[key] = columnFromDef(
+      options.retire?.includes(key) === true ? { ...def, retired: true } : def,
+    );
   }
+  for (const key of options.retire ?? [])
+    if (!(key in mapped))
+      panic(`${runtime[NAME]}.${key}: retire names a column the table does not have`);
   for (const key of Object.keys(rules))
     if (!(key in mapped))
       panic(`${runtime[NAME]}.${key}: merge names a column the table does not have`);
@@ -305,12 +315,15 @@ function readRuntime(drizzle: DrizzleTableLike): DrizzleRuntime {
 export function drizzleTable<const D extends DrizzleTableLike>(
   drizzle: D,
   options: DrizzleTableReserved<D>,
-): DrizzleEntry<D> & Pick<DrizzleTableReserved<D>, "partition" | "derive" | "sync">;
+): DrizzleEntry<D> & Pick<DrizzleTableReserved<D>, "partition" | "derive" | "sync" | "retired">;
 export function drizzleTable<const D extends DrizzleTableLike, N extends string, R extends string>(
   drizzle: D,
   options: DrizzleTableInKind<D, N, R>,
 ): DrizzleEntry<D> &
-  Pick<DrizzleTableInKind<D, N, R>, "partition" | "allow" | "fields" | "derive" | "sync">;
+  Pick<
+    DrizzleTableInKind<D, N, R>,
+    "partition" | "allow" | "fields" | "derive" | "sync" | "retired"
+  >;
 // the derivation-only form stays last: it is all-optional, so a literal that also names `merge` or
 // `onWarn` survives the first overload pass, and `allow` would be typed by it — as `any` — before
 // the kind form is tried
@@ -322,11 +335,12 @@ export function drizzleTable<const D extends DrizzleTableLike>(
   drizzle: D,
   options: DrizzleTableOptions<D> = {},
 ) {
-  const { partition, allow, fields, derive, sync, ...mapping } = options;
+  const { partition, allow, fields, derive, sync, retired, ...mapping } = options;
   const columns = fromDrizzle(drizzle, mapping);
   if (partition === undefined) return { columns };
   const ruled = allow === undefined ? { columns, partition } : { columns, partition, allow };
   const fielded = fields === undefined ? ruled : { ...ruled, fields };
   const entry = derive === undefined ? fielded : { ...fielded, derive };
-  return sync === undefined ? entry : { ...entry, sync };
+  const served = sync === undefined ? entry : { ...entry, sync };
+  return retired === true ? { ...served, retired } : served;
 }

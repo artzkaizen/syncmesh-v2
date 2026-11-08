@@ -10,11 +10,26 @@ import type { Cursors } from "./sync.js";
 
 /**
  * Why a build could not take an event (D13), declared on the wire because a refusal receipt
- * carries it (D32). `unknown-kind` is reached today only by a change built in this process:
- * `decodeChange` refuses an unknown kind and both transports drop the event as a wire error
- * before `admit` ever sees it.
+ * carries it (D32). A newer build's change kind arrives as an `unknown` change carrying its tag
+ * (D22-A), and the `unfoldable` rung in `admit` parks it as `unknown-kind`.
  */
 export type { QuarantineReason };
+
+/**
+ * The bucket an event parks in: the {@link QuarantineReason}s a receipt carries, and one that
+ * never leaves this device.
+ *
+ * `dropped-table` is an older build's write to a table this build dropped (D31). It has its own
+ * bucket and its own cap, because sharing `unknown-table`'s would let an old fleet's ordinary
+ * traffic evict the newer build's events that bucket is holding for the next upgrade. It stays
+ * local because `verifyRefusal` drops a receipt whose reason it cannot name; a receipt says
+ * `refused`, with the verdict's `TableDropped` tag (see {@link wireReason}).
+ */
+export type ParkReason = QuarantineReason | "dropped-table";
+
+/** What a refusal receipt says for a bucket: `dropped-table` travels as `refused` (D31). */
+export const wireReason = (reason: ParkReason): QuarantineReason =>
+  reason === "dropped-table" ? "refused" : reason;
 
 /**
  * What a mesh does about an event no build here can read (D13) — **per mesh, never per event**,
@@ -34,14 +49,26 @@ export type UnknownHandling =
   | "fail";
 
 /** Which bucket a verdict parks in. */
-export const quarantineReason = (error: ValidationError): QuarantineReason => {
+export const quarantineReason = (error: ValidationError): ParkReason => {
   if (error._tag === "UnknownTable") return "unknown-table";
+  if (error._tag === "TableDropped") return "dropped-table";
   if (error._tag === "UnknownChangeKind") return "unknown-kind";
   return "refused";
 };
 
-/** Whether a reason is one a later build could plausibly change its mind about. */
-export const isUnknown = (reason: QuarantineReason): boolean => reason !== "refused";
+/**
+ * Whether a reason is one a later build could plausibly change its mind about: what
+ * `unknownHandling` governs the telling of. A dropped table is not — the build that dropped it
+ * is the later one — so it warns like a refusal does.
+ */
+export const isUnknown = (reason: ParkReason): boolean =>
+  reason === "unknown-table" || reason === "unknown-kind";
+
+/**
+ * Whether new state could clear the verdict, which is what `withRetry` re-offers after a fold.
+ * Only a refusal: no row landing teaches a build a table, or un-drops one.
+ */
+const clearedByState = (reason: ParkReason): boolean => reason === "refused";
 
 /**
  * One parked event: what arrived, and the verdict this build reached about it.
@@ -58,13 +85,12 @@ export const isUnknown = (reason: QuarantineReason): boolean => reason !== "refu
  * written before the log kept arrival bytes holds a re-encode under the same column and parks
  * with that instead: what this build dropped was already gone when the row was written.
  *
- * D13's unknown *change kind* is still out of reach: `decodeChange` refuses a kind it cannot name,
- * so such an event never decodes far enough to be parked at all. Keeping the bytes is what that
- * path will need, not what makes it work.
+ * An unknown *change kind* parks the same way: `decodeChange` keeps a tag it cannot name as an
+ * `unknown` change (D22-A), so the event decodes, parks, and keeps the author's bytes beside it.
  */
 export interface Parked {
   readonly entry: StoredEvent;
-  readonly reason: QuarantineReason;
+  readonly reason: ParkReason;
   /** What this build made of it. A later build may reach a different verdict on the same bytes. */
   readonly verdict: ValidationError;
 }
@@ -77,7 +103,7 @@ export interface Parked {
 export class QuarantineEvicted extends TaggedError("QuarantineEvicted")<{
   peer: PeerId;
   seqNum: SeqNum;
-  reason: QuarantineReason;
+  reason: ParkReason;
   message: string;
 }> {}
 
@@ -90,7 +116,7 @@ export class QuarantineEvicted extends TaggedError("QuarantineEvicted")<{
 export class UnreadableEvent extends TaggedError("UnreadableEvent")<{
   peer: PeerId;
   seqNum: SeqNum;
-  reason: QuarantineReason;
+  reason: ParkReason;
   message: string;
 }> {}
 
@@ -124,8 +150,8 @@ export function createQuarantine(options: QuarantineOptions): QuarantineStore {
   // insertion-ordered per reason, which is what "oldest first" means without reading a clock:
   // an eviction order taken from wall time would differ between two devices holding the same
   // events, and this store is already the last place that should depend on one
-  const buckets = new Map<QuarantineReason, Map<string, Parked>>();
-  const bucketOf = (reason: QuarantineReason): Map<string, Parked> => {
+  const buckets = new Map<ParkReason, Map<string, Parked>>();
+  const bucketOf = (reason: ParkReason): Map<string, Parked> => {
     const held = buckets.get(reason) ?? new Map<string, Parked>();
     buckets.set(reason, held);
     return held;
@@ -189,9 +215,9 @@ export function createQuarantine(options: QuarantineOptions): QuarantineStore {
 /**
  * The parked events new state could plausibly clear, re-offered; the rest left where they are.
  *
- * What {@link retryQuarantined} is for a build upgrade, this is for a fold. `unknown-table` and
- * `unknown-kind` say this build cannot read the event at all, and no row landing next to it
- * changes that — re-offering them costs a walk and, worse, reports each one as newly refused
+ * What {@link retryQuarantined} is for a build upgrade, this is for a fold. `unknown-table`,
+ * `unknown-kind` and `dropped-table` say this build cannot read the event at all, and no row
+ * landing next to it changes that — re-offering them costs a walk and, worse, reports each one as newly refused
  * every time a batch lands. `refused` is the ladder's verdict on the state at the time, and
  * state moves: the row an update patches may have arrived in the batch that just folded.
  */
@@ -200,9 +226,9 @@ export async function retryRefused(
   receive: (entries: readonly StoredEvent[]) => Promise<Result<ReceiveReport, StoreFailure>>,
 ): Promise<Result<ReceiveReport, StoreFailure>> {
   const held = parked.take();
-  const retry = held.filter(({ reason }) => !isUnknown(reason));
+  const retry = held.filter(({ reason }) => clearedByState(reason));
   // back first, so a store emptied by `take` is whole again before anything can fail
-  for (const entry of held) if (isUnknown(entry.reason)) parked.park(entry);
+  for (const entry of held) if (!clearedByState(entry.reason)) parked.park(entry);
   if (retry.length === 0) return Result.ok({ folded: 0, skipped: 0, quarantined: 0 });
   const report = await receive(retry.map(({ entry }) => reread(entry)));
   if (report.isErr()) for (const entry of retry) parked.park(entry);

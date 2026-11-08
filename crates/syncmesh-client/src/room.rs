@@ -600,7 +600,7 @@ impl Room {
         }
         self.send_catch_up(socket, &join.cursors, wanted.as_ref(), out);
         // what the joiner holds, in its own words, for everyone else's `delivered`
-        let cursors = cursors_frame(&join.peer_id, &join.cursors, None, None);
+        let cursors = cursors_frame(&join.peer_id, &join.cursors, None, None, None);
         self.to_clients(&cursors, Some(&join.peer_id), out);
     }
 
@@ -765,6 +765,7 @@ mod tests {
                 sealed: false,
                 action: None,
                 undo_of: None,
+                schema_version: None,
             },
             core: None,
             sig,
