@@ -3,7 +3,7 @@ import type { Grant } from "@syncmesh/wire";
 
 import { createMemoryEventStore, createValidator, openEngine } from "@syncmesh/engine";
 import { createHlcClock, parsePartitionKey, readRow } from "@syncmesh/kernel";
-import { ladder, local, partition, syncSchema, t } from "@syncmesh/schema";
+import { ladder, local, partition, syncSchema, t, user } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { installCapture } from "@syncmesh/storage";
 import { createWriter } from "@syncmesh/storage";
@@ -261,5 +261,86 @@ describe("locality is the schema's", () => {
     expect(await count()).toBe(0);
     expect(Number((await driver.all(`SELECT COUNT(*) FROM drafts`))[0]?.[0])).toBe(0);
     expect((await store.all()).unwrap()).toHaveLength(0);
+  });
+});
+
+describe("a retired column (D31) through change capture", () => {
+  /** v2 retired `owner`: still a column in SQL, read and folded, never written here. */
+  const retiring = syncSchema({
+    schemaVersion: 2,
+    tables: {
+      notes: {
+        columns: {
+          id: t.text().primaryKey(),
+          body: t.text(),
+          owner: t.text().nullable().retired(),
+        },
+        partition: user,
+      },
+    },
+  });
+  const notes = [retiring.tables.notes];
+  const USER = parsePartitionKey("user:acct_a").unwrap();
+  const OWNER = retiring.tables.notes.columnNames.owner;
+  const author = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 170 + i)).unwrap();
+
+  const device = async () => {
+    const driver = bunSqliteDriver(":memory:");
+    (await installCapture(driver, notes)).unwrap();
+    const validate = createValidator({ schema: retiring, grantFor: null });
+    const store = createMemoryEventStore();
+    const engine = (
+      await openEngine({
+        peerId: author.peerId,
+        clock: createHlcClock({ now: () => T0 }),
+        store,
+        validate,
+      })
+    ).unwrap();
+    const write = createWriter({ engine, validate, driver, tables: notes, schema: retiring });
+    const lastChange = async () => (await store.all()).unwrap().at(-1)?.event.changes[0];
+    return { driver, write, lastChange };
+  };
+
+  test("an INSERT that never names it is no write to it, and is not refused", async () => {
+    const { driver, write, lastChange } = await device();
+    const r = await write(
+      "notes.add",
+      () => driver.run(`INSERT INTO notes (id, body) VALUES ('n1', 'one')`),
+      { partition: USER },
+    );
+    expect(tag(r)).toBe("ok");
+    const change = await lastChange();
+    expect(change?.kind).toBe("insert");
+    // the SQL row image holds `owner: null`; the event must not carry it
+    expect(change?.kind === "insert" && change.row.has(OWNER)).toBe(false);
+  });
+
+  test("an INSERT that sets it is still RetiredWrite, and rolls back", async () => {
+    const { driver, write } = await device();
+    const r = await write(
+      "notes.add",
+      () => driver.run(`INSERT INTO notes (id, body, owner) VALUES ('n1', 'one', 'ada')`),
+      { partition: USER },
+    );
+    expect(tag(r)).toBe("RetiredWrite");
+    expect((await driver.all(`SELECT COUNT(*) FROM notes`))[0]?.[0]).toBe(0);
+  });
+
+  test("a row deleted and inserted again without it keeps the old build's value out of the patch", async () => {
+    const { driver, write, lastChange } = await device();
+    // the row as an older build's fold left it, before this transaction: not captured
+    await driver.run(`INSERT INTO notes (id, body, owner) VALUES ('n1', 'one', 'ada')`);
+    const r = await write(
+      "notes.redo",
+      async () => {
+        await driver.run(`DELETE FROM notes WHERE id = 'n1'`);
+        await driver.run(`INSERT INTO notes (id, body) VALUES ('n1', 'again')`);
+      },
+      { partition: USER },
+    );
+    expect(tag(r)).toBe("ok");
+    const change = await lastChange();
+    expect(change?.kind === "update" && [...change.patch.keys()].map(String)).toEqual(["body"]);
   });
 });

@@ -150,7 +150,8 @@ export interface Column<T, Nullable extends boolean = false, PrimaryKey extends 
    * still fold, and it reads as before. Gone on a key, which every row needs; `table()` refuses
    * a retired column that is not nullable, since an older build refuses the inserts that omit it.
    * A write that names it is `RetiredWrite`, `null` included, so a row read back whole and written
-   * again must leave the column out; undoing a delete leaves it out on its own.
+   * again must leave the column out. Undoing a delete, `withNulls`, a captured `INSERT` that sets
+   * no value for it, and a CDC row (which always carries it) leave it out on their own.
    */
   readonly retired: PrimaryKey extends true ? never : () => Column<T, Nullable, false>;
   /** Phantom: carries `T` for inference; never set. */

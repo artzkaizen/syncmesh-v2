@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 import type { EvolutionRule } from "../evolution.js";
 
 import { t } from "../column.js";
+import { withNulls } from "../convert.js";
 import { checkEvolution } from "../evolution.js";
 import { syncSchema } from "../manifest.js";
 import { ladder, partition, user } from "../partition.js";
@@ -304,5 +305,28 @@ describe("the manifest's D31 fields", () => {
     });
     expect(schema.entries[0]?.retired).toBe(true);
     expect(schema.tables.notes.columns.owner.def.retired).toBe(true);
+  });
+});
+
+describe("withNulls and a retired column", () => {
+  test("fills a null for an omitted nullable column, and none for a retired one", () => {
+    const schema = syncSchema({
+      schemaVersion: 2,
+      tables: {
+        notes: {
+          columns: {
+            id: id(),
+            body: t.text(),
+            pinned: t.boolean().nullable(),
+            owner: t.text().nullable().retired(),
+          },
+          partition: user,
+        },
+      },
+    });
+    const { notes } = schema.tables;
+    const full = withNulls(notes, new Map([[notes.columnNames.id, "n1"]]));
+    // an explicit null for `owner` is a write to it, which this build refuses as RetiredWrite
+    expect([...full.keys()].map(String)).toEqual(["id", "pinned"]);
   });
 });
