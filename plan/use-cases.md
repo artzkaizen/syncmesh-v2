@@ -621,7 +621,7 @@ The three tiers, side by side:
 - A narrowed entitlement withholds what comes next, not what is already held. `reentitle` re-pages
   a device under its new entitlement, but the gated rows it was admitted to before stay on its
   disk; nothing is sent to take them back. That is the same snapshot rule entity access follows
-  (§ *Entity access is a snapshot*), and a purge on narrowing is not built.
+  (§ *Entity access is a snapshot*), and a purge on narrowing is decided (D45 A) but not built.
 - `reentitle` is a method of one `RelayRoom`, reached through `createRelayHost().acquire()`.
   `startRelay`'s handle does not offer it, and it closes sockets on the instance it is called on
   alone: a fleet behind a load balancer broadcasts it to every instance itself.
