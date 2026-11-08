@@ -116,7 +116,15 @@ export interface MeshShaping {
  *
  * const app = createClient({ schema, procedures, knocks: [foreground(), reachability()] });
  */
-export type Knock = (wake: () => void) => Unsubscribe;
+export type Knock = (wake: (phase?: AppPhase) => void) => Unsubscribe;
+
+/**
+ * Where an app stands with its platform, for a {@link Knock} that knows: in front of the person,
+ * or put away where the platform may end the process without warning (D39). A knock that names
+ * `background` wakes no link; the mesh marks its log's session clean instead, and `foreground`
+ * marks it open again and wakes every medium as a plain knock does.
+ */
+export type AppPhase = "background" | "foreground";
 
 /** The medium refused to start, or the set had already stopped; the mesh runs on without it. */
 export class TransportAddFailed extends TaggedError("TransportAddFailed")<{
@@ -251,6 +259,26 @@ const wakeEvery = (transports: readonly Transport[]): void => {
   for (const transport of transports) transport.wake?.();
 };
 
+/** How a transport set starts, and who hears the app's phase when a knock names one. */
+export interface RunLifecycle {
+  readonly start?: boolean;
+  /** A knock named the app's phase (D39). */
+  readonly onPhase?: (phase: AppPhase) => void;
+}
+
+/**
+ * What a knock does once the set runs: says the phase it named, and wakes every medium — unless
+ * it named the background, which is no time to redial: nothing is looking, and the platform may
+ * end the process.
+ */
+const answerKnock =
+  (running: () => boolean, active: readonly Transport[], onPhase: RunLifecycle["onPhase"]) =>
+  (phase?: AppPhase): void => {
+    if (!running()) return;
+    if (phase !== undefined) onPhase?.(phase);
+    if (phase !== "background") wakeEvery(active);
+  };
+
 /** Every start the set made has run its course, then every medium says it is ready. */
 const readyAcross = async (
   started: Promise<unknown>,
@@ -276,7 +304,7 @@ export function runTransports(
   context: TransportContext,
   shaping: MeshShaping = {},
   knocks: readonly Knock[] = [],
-  lifecycle: { readonly start?: boolean } = {},
+  lifecycle: RunLifecycle = {},
 ): RunningTransports {
   /**
    * Whether each medium is up, from the one place that says so. A transport that has not spoken
@@ -406,7 +434,7 @@ export function runTransports(
     return [
       // guarded on `running` because a knock is a subscription on somebody else's event source,
       // and a signal arriving after `stop()` would redial a socket the mesh has finished with
-      ...knocks.map((knock) => knock(() => void (life.running() && wakeEvery(active)))),
+      ...knocks.map((knock) => knock(answerKnock(life.running, active, lifecycle.onPhase))),
       startKeepers(shaping, () => active, facts, context, linkEvents.emit),
     ];
   });

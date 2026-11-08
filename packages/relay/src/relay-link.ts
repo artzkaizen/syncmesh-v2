@@ -18,27 +18,16 @@ import { createDurability } from "./durability.js";
 import { RELAY_PROTOCOL_VERSIONS, joinCore, joinFrame } from "./frames.js";
 import { createHeard } from "./heard.js";
 import { createLinkReady } from "./link-ready.js";
+import * as said from "./link-reasons.js";
 import { createLinkReport } from "./link-report.js";
 import { createLinkSeal, type LinkSeal } from "./link-seal.js";
 import { createLiveness } from "./liveness.js";
 import { proveJoin } from "./proof.js";
 import { createRedial } from "./redial.js";
+import { refusalsOver } from "./refused.js";
 import { entitledScope, joinPosition } from "./scoped.js";
 import { wireSession } from "./session.js";
 import { createVisibility } from "./visibility.js";
-
-/** Why a socket this file hung up hung up, said once here and read by the close that follows. */
-const MUTE = "the relay stopped answering: no frame within 2.5 times its keepalive";
-const REFUSED = "the relay speaks none of the protocol versions this build offers";
-const UNSENT = "the frame did not leave the relay socket";
-const UNSECURED = "the link is not sealed yet, and nothing but a hello travels before it is";
-const UNDIALLED = "the relay could not be dialled";
-const REENTITLED =
-  "the relay admits this device under a different entitlement, so it re-pages from nothing";
-
-/** A thrown cause in words, or the sentence that stands in when it brought none. */
-const causeText = (cause: unknown, fallback: string): string =>
-  cause instanceof Error ? cause.message : fallback;
 
 /**
  * One device's link to a relay, its state declared in one place: the live socket, the liveness
@@ -82,12 +71,14 @@ export class RelayLink {
    * (D33) when it challenges instead. A join is sent once either has arrived, never before.
    */
   private readonly sealing: LinkSeal;
-  private readonly liveness = createLiveness(() => this.hangUp(MUTE));
+  private readonly liveness = createLiveness(() => this.hangUp(said.MUTE));
   private unsubscribe: Unsubscribe[] = [];
   /** Whether the relay has said hello, and whether a catch-up has reached its last page. */
   private readonly readiness = createLinkReady();
   /** Peers whose traffic has come through this relay: what `Transport.delivers` answers from. */
   private readonly heard = createHeard();
+  /** What the last re-page from nothing refused, across sessions (D45); held from `start`. */
+  private refusals: ReturnType<typeof refusalsOver> | undefined;
 
   constructor(options: RelayTransportOptions) {
     this.options = options;
@@ -101,7 +92,7 @@ export class RelayLink {
         onDialed: (dialed: RelayDial) => this.session(dialed),
         // a dial that never opened is not a link that closed: nothing was ever there to end, and this
         // is the one ending a relay that is simply not running ever produces
-        onFailed: (cause: unknown) => this.report.undialled(causeText(cause, UNDIALLED)),
+        onFailed: (cause: unknown) => this.report.undialled(said.causeText(cause, said.UNDIALLED)),
         reconnectMs: options.reconnectMs,
         maxReconnectMs: options.maxReconnectMs,
       }),
@@ -118,25 +109,27 @@ export class RelayLink {
     });
   }
 
-  private sendSafe(frame: Uint8Array): void {
+  /** Seals and sends one frame; `false` when it did not leave. */
+  private sendSafe(frame: Uint8Array): boolean {
     const out = this.sealing.seal(frame);
     if (out === undefined) {
       // on a sealed link nothing leaves in the clear: what was asked for before the handshake is
       // said to have been dropped, and the join after the handshake re-requests what it covered
-      this.report.dropped(UNSECURED);
-      return;
+      this.report.dropped(said.UNSECURED);
+      return false;
     }
-    this.sendRaw(out);
+    return this.sendRaw(out);
   }
 
-  /** Bytes onto the socket as they are; `false` when they did not leave. */
+  /** Bytes onto the socket as they are; `false` when they did not leave, or there is no socket. */
   private sendRaw(out: Uint8Array): boolean {
+    if (this.live === undefined) return false;
     try {
-      this.live?.send(out);
+      this.live.send(out);
       return true;
     } catch (cause) {
       // the frame did not leave; the reconnect's fresh join re-requests everything it covered
-      this.report.dropped(causeText(cause, UNSENT));
+      this.report.dropped(said.causeText(cause, said.UNSENT));
       return false;
     }
   }
@@ -171,6 +164,8 @@ export class RelayLink {
         : proveJoin(identity, nonce, joinCore(this.versions, identity.peerId, cursors, wanted));
     this.sendSafe(joinFrame(this.versions, identity.peerId, cursors, wanted, proof));
     for (const wire of grants.allWires()) this.sendSafe(grantFrame(wire));
+    // behind the join and its grants, so a blob request is answered under the seat they make
+    this.blobChannel.seated();
   }
 
   /**
@@ -178,7 +173,7 @@ export class RelayLink {
    * first frame this build was told not to answer, or a hello from a key this device was told not
    * to trust. Permanent — no reconnect loop against it.
    */
-  private refused(why = REFUSED): void {
+  private refused(why = said.REFUSED): void {
     this.report.refused(why);
     this.fatal = true;
     this.hangUp(why);
@@ -222,7 +217,7 @@ export class RelayLink {
   }
 
   private session(dialed: RelayDial): void {
-    if (this.ctx === undefined) return;
+    if (this.ctx === undefined || this.refusals === undefined) return;
     this.live = dialed;
     this.liveness.forget();
     this.sealing.reset();
@@ -231,6 +226,7 @@ export class RelayLink {
       rearm: this.liveness.rearm,
       rejoin: () => this.join(),
       joined: () => this.joined,
+      refusals: this.refusals.session(),
       regranted: () =>
         this.ctx !== undefined &&
         interestText(entitledScope(this.ctx, this.options.interest)) !==
@@ -255,7 +251,7 @@ export class RelayLink {
         this.readiness.hello();
       },
       onVersionRefused: () => {
-        this.report.refused(REFUSED);
+        this.report.refused(said.REFUSED);
         this.fatal = true;
       },
       onDropped: this.report.dropped,
@@ -271,7 +267,7 @@ export class RelayLink {
       onAck: (id) => this.durability.acked(id),
       onReentitled: () => {
         this.reentitled = true;
-        this.hangUp(REENTITLED);
+        this.hangUp(said.REENTITLED);
       },
     };
     // what a scoped coverage on the last page has to match before this device adopts it
@@ -280,6 +276,7 @@ export class RelayLink {
     const offClose = dialed.onClose(() => {
       this.report.closed();
       this.liveness.clear();
+      this.blobChannel.unseated();
       for (const off of this.unsubscribe) off();
       this.unsubscribe = [];
       this.live = undefined;
@@ -323,6 +320,7 @@ export class RelayLink {
   start(context: TransportContext): Promise<void> {
     this.ctx = context;
     this.stopped = false;
+    this.refusals ??= refusalsOver(context, this.report.dropped);
     this.readiness.arm(
       Temporal.Duration.from({ milliseconds: this.options.forceReadyAfter ?? 1000 }),
     );
@@ -352,7 +350,7 @@ export class RelayLink {
     return this.readiness.caughtUp();
   }
 
-  stop(): Promise<void> {
+  async stop(): Promise<void> {
     this.stopped = true;
     this.redial.cancel();
     this.liveness.clear();
@@ -360,6 +358,8 @@ export class RelayLink {
     this.unsubscribe = [];
     this.live?.close();
     this.live = undefined;
-    return Promise.resolve();
+    this.blobChannel.unseated();
+    await this.refusals?.stop();
+    this.refusals = undefined;
   }
 }

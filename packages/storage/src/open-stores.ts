@@ -14,7 +14,7 @@ import { captureStatements, installCapture } from "./capture.js";
 import { ATTACHED_LOG, driverDialect, logPlacement } from "./dialect.js";
 import { sqlDocStore } from "./doc-store.js";
 import { sqlEventStore } from "./event-store.js";
-import { closeSession, openSession } from "./integrity.js";
+import { closeSession, openSession, reopenSession } from "./integrity.js";
 import { tablesProjection } from "./projection.js";
 import { rowSyncDdlFor, rowSyncTable, type RowSync } from "./row-sync.js";
 import { attempt, inTransaction } from "./sql.js";
@@ -47,6 +47,12 @@ export interface Stores extends ScopedStores {
    * ends without it is checked page by page at the next open (D39).
    */
   readonly markClean: () => Promise<void>;
+  /**
+   * Marks the session over the log open again after {@link Stores.markClean}, without the page
+   * check an open runs: what a device coming back to the foreground runs, having marked the
+   * session clean when it went to the background (D39). A crash after it is seen at the next open.
+   */
+  readonly markOpen: () => Promise<void>;
   /** {@link Stores.markClean}, then closes the connection. */
   readonly close: () => Promise<void>;
 }
@@ -239,6 +245,12 @@ export function openStores(
       const marked = await closeSession(driver);
       if (marked.isErr()) console.warn(`[syncmesh] ${marked.error.message}`);
     };
+    // the unsafe direction: a session left marked clean skips the check after a crash, so a
+    // failure is said as loudly, and the next background-and-back tries again
+    const markOpen = async () => {
+      const marked = await reopenSession(driver);
+      if (marked.isErr()) console.warn(`[syncmesh] ${marked.error.message}`);
+    };
     const opened = {
       events,
       state,
@@ -246,6 +258,7 @@ export function openStores(
       driver,
       atomic,
       markClean,
+      markOpen,
       close: async () => {
         await markClean();
         await driver.close?.();

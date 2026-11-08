@@ -34,6 +34,7 @@ import { createPeers } from "./peers.js";
 import { openPresence } from "./presence.js";
 import { createReadCoverage } from "./read-coverage.js";
 import { openRecovery, recoveryDeps } from "./recovery.js";
+import { followPhases } from "./session-marks.js";
 import { bootSettings, checkTrust, splitStorage } from "./settings.js";
 import { createStatus } from "./status.js";
 import { sweepFor } from "./sweep.js";
@@ -210,12 +211,14 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     }),
   });
   const { routes } = transportContext;
+  // the log's session follows the app into the background and back (D39)
+  const phases = followPhases(booted.session);
   const links = runTransports(
     options.transports ?? [],
     transportContext,
     options.mesh ?? {},
     options.knocks ?? [],
-    omitUndefined({ start: options.start }),
+    omitUndefined({ start: options.start, onPhase: phases.phase }),
   );
   // a device holding nothing asks for state instead of history; one that holds coverage does not
   void joinIfEmpty(engine, { ready: links.ready, list: links.list });
@@ -291,6 +294,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
       // what a process exiting loses, and closing first would lose it every time
       await flush();
       await links.stop();
+      await Promise.all([rescue.torn.stop(), phases.settled()]);
       await booted.close();
     },
   };

@@ -81,6 +81,7 @@ export type {
   TransportVisibility,
   VisibilityToken,
 } from "./transport.js";
+export { DurabilityLost } from "./durability.js";
 export {
   VisibilityLost,
   VisibilityTimeout,

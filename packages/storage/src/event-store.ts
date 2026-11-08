@@ -1,7 +1,7 @@
 import type { Coverage, EventStore, StoredEvent } from "@syncmesh/engine";
-import type { Hlc } from "@syncmesh/kernel";
+import type { Hlc, SeqNum } from "@syncmesh/kernel";
 
-import { DEFAULT_RECENT, StoreFailure } from "@syncmesh/engine";
+import { DEFAULT_RECENT, LogTorn, StoreFailure } from "@syncmesh/engine";
 import { eventId, parseEventId } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { decodeEventCore, encodeEventCore } from "@syncmesh/wire";
@@ -177,11 +177,15 @@ const readWhole = (
     const [first] = missing;
     if (first === undefined) return Result.ok(again);
     const scope = first.local ? "local" : "synced";
-    return Result.err(
-      new StoreFailure({
-        message: `log has a hole: ${missing.length} run(s) of events it held are gone, first ${first.peer} ${scope} ${first.from}..${first.to} — the disk lost committed pages; rejoin from a peer`,
-      }),
-    );
+    const message = `log has a hole: ${missing.length} run(s) of events it held are gone, first ${first.peer} ${scope} ${first.from}..${first.to} — the disk lost committed pages; rejoin from a peer`;
+    // the runs ride as the cause, so a mesh can name them as a recovery issue and ask for them
+    // SAFETY: a hole lies between two sequence numbers the log held, so both ends are positive
+    const runs = missing.map((hole) => ({
+      ...hole,
+      from: hole.from as SeqNum,
+      to: hole.to as SeqNum,
+    }));
+    return Result.err(new StoreFailure({ message, cause: new LogTorn({ runs, message }) }));
   });
 
 /**

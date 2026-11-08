@@ -91,7 +91,19 @@ export interface Booted {
   readonly rowSync?: RowSync;
   /** The same ladder the engine runs on every write — for judging a captured transaction before it commits (D20). */
   readonly validate: Validator;
+  /**
+   * The session over the log, marked clean and open again around a time the process may be killed
+   * without reaching `close` — an app in the background (D39). Present exactly when the mesh marks
+   * the session at `close`: over your driver or the default store, never over stores you opened.
+   */
+  readonly session?: SessionMarks;
   readonly close: () => Promise<void>;
+}
+
+/** Marking the session over a device's log ended cleanly, and open again (D39). */
+export interface SessionMarks {
+  readonly clean: () => Promise<void>;
+  readonly open: () => Promise<void>;
 }
 
 /**
@@ -267,6 +279,9 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
           `[syncmesh] this store cannot sign for what it holds: ${lineage.error.message}`,
         );
     }
+    // the same rule `close` follows below: stores you opened are yours to mark
+    if (options.stores === undefined && owned !== undefined)
+      Object.assign(booted, { session: { clean: owned.markClean, open: owned.markOpen } });
     return Result.ok({
       ...booted,
       // a driver or a set of stores you passed stays yours to close; the default store is ours.

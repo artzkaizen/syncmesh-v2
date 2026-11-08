@@ -6,6 +6,7 @@ import { compareHlc } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 
+import type { EngineError } from "./errors.js";
 import type { EventHeader, RecentEvents } from "./recent.js";
 import type { Coverage, Cursors } from "./sync.js";
 
@@ -15,6 +16,51 @@ export class StoreFailure extends TaggedError("StoreFailure")<{
   message: string;
   cause?: unknown;
 }> {}
+
+/**
+ * One run of one author's events, in one scope, that the log held and a read found gone (D39):
+ * every sequence from `from` to `to`, both included.
+ */
+export interface TornRun {
+  readonly peer: PeerId;
+  /** The run is of this device's local-only events, which never travel: no peer can give it back. */
+  readonly local: boolean;
+  readonly from: SeqNum;
+  readonly to: SeqNum;
+}
+
+/**
+ * The cause of a {@link StoreFailure} a read of the log refused because events it held are gone —
+ * a page the disk lost (D39). The runs are what a peer would have to send again; {@link tornRuns}
+ * reads them off any error.
+ */
+export class LogTorn extends TaggedError("LogTorn")<{
+  readonly runs: readonly TornRun[];
+  message: string;
+}> {}
+
+/** The runs a refused read of the log found gone, or `undefined` for any other error. */
+export const tornRuns = (error: EngineError): readonly TornRun[] | undefined =>
+  error instanceof StoreFailure && error.cause instanceof LogTorn ? error.cause.runs : undefined;
+
+/**
+ * Says a refused read of a torn log once per tear (D39): every peer asking for history meets the
+ * same refusal until the runs are reopened, and one report of it is the report.
+ */
+export function sayTears(say: (failure: StoreFailure) => void) {
+  let last: string | undefined;
+  return {
+    /** A read failed: said when it is a tear, and not the same tear as the last one said. */
+    seen: (failure: StoreFailure): void => {
+      const runs = tornRuns(failure);
+      if (runs === undefined) return;
+      const key = runs.map(({ peer, local, from, to }) => `${peer}:${local}:${from}:${to}`).join();
+      if (key === last) return;
+      last = key;
+      say(failure);
+    },
+  };
+}
 
 /** Inside an `atomic` body a store's `Err` must abort the transaction: thrown as itself, caught above. */
 export const orThrow = <T>(result: Result<T, StoreFailure>): T => {

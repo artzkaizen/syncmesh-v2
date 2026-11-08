@@ -62,10 +62,34 @@ describe("one link's record of what a durable room holds (D42)", () => {
     const waiting = held.durable(id(1));
     held.acked(id(1));
     expect(await settles(waiting)).toBe(false);
-    held.hello("epoch-2", true, new Map());
+    held.hello("epoch-1", true, new Map());
     expect(await settles(waiting)).toBe(false);
     held.acked(id(1));
-    expect(await settles(waiting)).toBe(true);
+    expect((await waiting).isOk()).toBe(true);
+  });
+
+  test("a new epoch settles a waiter of the old one as DurabilityLost, not carried over", async () => {
+    const held = createDurability();
+    // a wait begun before any hello takes the first hello's lineage
+    const early = held.durable(id(2));
+    held.hello("epoch-1", true, new Map());
+    const waiting = held.durable(id(1));
+    expect(await settles(waiting)).toBe(false);
+    held.hello("epoch-2", true, new Map());
+    const answer = await waiting;
+    expect(answer.isErr() && answer.error).toMatchObject({
+      _tag: "DurabilityLost",
+      event: id(1),
+      expected: "epoch-1",
+      actual: "epoch-2",
+    });
+    expect((await early).isErr()).toBe(true);
+    // the same hello again is the same log: a wait begun under it waits on, and settles there
+    const again = held.durable(id(1));
+    held.hello("epoch-2", true, new Map());
+    expect(await settles(again)).toBe(false);
+    held.acked(id(1));
+    expect((await again).isOk()).toBe(true);
   });
 
   test("a new epoch drops what the old lineage held, and the waiter settles on the new log's answer", async () => {

@@ -2,7 +2,7 @@ import type { Coverage, StoredEvent } from "@syncmesh/engine";
 import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 
 import { timed, trackCoverage } from "@syncmesh/engine";
-import { relayEnvelope } from "@syncmesh/wire";
+import { isRelayable, relayEnvelope } from "@syncmesh/wire";
 
 import type { Conversation } from "./state.js";
 
@@ -31,6 +31,18 @@ function scannedCoverage(
   for (const entry of entries) tracker.note(entry.event);
   return { ...tracker.current(), scope };
 }
+
+/**
+ * What a scan may stand above: every entry the filter dropped on purpose, and every admitted one
+ * that can leave. An admitted entry with no envelope is a hole nothing will fill from here.
+ */
+const passable = (
+  found: readonly StoredEvent[],
+  admitted: readonly StoredEvent[],
+): readonly StoredEvent[] => {
+  const taken = new Set(admitted);
+  return found.filter((entry) => !taken.has(entry) || isRelayable(entry));
+};
 
 /** What a catch-up needs of the socket it serves: what it may send, and what that slice is called. */
 export interface CatchUpViewer {
@@ -145,8 +157,11 @@ export function sendCatchUp(
       // an `admits` that threw refused the socket: its coverage would claim the event it did not
       // answer for, and pages without that coverage would be a run the device cannot place
       if (viewer.closed()) return undefined;
-      // and said so, naming the entitlement as well as the interest (D24)
-      const scoped = scope === undefined ? undefined : scannedCoverage(found, theirs, scope);
+      // and said so, naming the entitlement as well as the interest (D24). An admitted entry that
+      // can never leave is a hole in the scan, not a refusal: the coverage stops below it, as the
+      // room's advertised cursors do, so a re-paged device never reads it as withheld (D45)
+      const scoped =
+        scope === undefined ? undefined : scannedCoverage(passable(found, admitted), theirs, scope);
       const { pages, unsendable } = paged(
         admitted,
         room.grants.all(),

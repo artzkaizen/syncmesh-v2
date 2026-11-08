@@ -3,6 +3,8 @@ import type { EventId, PeerId, SeqNum } from "@syncmesh/kernel";
 
 import { trackCoverage } from "@syncmesh/engine";
 import { parseEventId } from "@syncmesh/kernel";
+import { Result } from "@syncmesh/result";
+import { DurabilityLost } from "@syncmesh/transport";
 
 /**
  * Per author, how many acks above a hole this link records before it stops recording more. Past
@@ -11,10 +13,15 @@ import { parseEventId } from "@syncmesh/kernel";
  */
 export const MAX_ACKS_AHEAD = 1024;
 
+type Held = Result<void, DurabilityLost>;
+
 interface Waiter {
+  readonly event: EventId;
   readonly peer: PeerId;
   readonly seq: SeqNum;
-  readonly settle: () => void;
+  /** The lineage the wait began under; `undefined` before this link has heard any hello. */
+  epoch: string | undefined;
+  readonly settle: (held: Held) => void;
 }
 
 /**
@@ -30,8 +37,10 @@ interface Waiter {
  *
  * Only a room whose hello says its log is durable is counted; a memory room's acks are dropped as
  * they arrive. A hello under a new epoch drops everything recorded — the old lineage's holdings
- * are not this log's. A waiter is never dropped with them: its event is re-offered to the new log
- * on the join, and settles on that log's answer.
+ * are not this log's, and every waiter that began under the old lineage settles as
+ * {@link DurabilityLost} (decided 2026-11-08): an ack in the old log said nothing about the new one,
+ * and a caller that wants the new log's answer asks again. A waiter that began before any hello
+ * takes the first hello's lineage as its own.
  */
 export function createDurability() {
   let epoch: string | undefined;
@@ -44,23 +53,47 @@ export function createDurability() {
 
   const sweep = (): void => {
     const run = held.current().synced;
-    for (const waiter of waiters) if (holds(waiter.peer, waiter.seq, run)) waiter.settle();
+    for (const waiter of waiters)
+      if (holds(waiter.peer, waiter.seq, run)) waiter.settle(Result.ok(undefined));
+  };
+
+  /** Settles every waiter that began under a lineage other than `now` as lost. */
+  const replaced = (now: string): void => {
+    for (const waiter of waiters) {
+      waiter.epoch ??= now;
+      if (waiter.epoch === now) continue;
+      waiter.settle(
+        Result.err(
+          new DurabilityLost({
+            event: waiter.event,
+            expected: waiter.epoch,
+            actual: now,
+            message: `the room's log was replaced (epoch ${waiter.epoch} is now ${now}) before it held ${waiter.event}; ask again to wait on the new log`,
+          }),
+        ),
+      );
+    }
   };
 
   return {
-    /** Settles once a durable room holds the event; a local id, which never travels, never does. */
-    durable: (event: EventId): Promise<void> => {
+    /**
+     * Settles once a durable room holds the event, or as {@link DurabilityLost} when the room's log
+     * is replaced first. A local id, which never travels, never settles.
+     */
+    durable: (event: EventId): Promise<Held> => {
       const parsed = parseEventId(event);
       if (parsed.isErr() || parsed.value.local) return new Promise(() => undefined);
       const { peerId: peer, seqNum: seq } = parsed.value;
-      if (holds(peer, seq)) return Promise.resolve();
+      if (holds(peer, seq)) return Promise.resolve(Result.ok(undefined));
       return new Promise((resolve) => {
         const waiter: Waiter = {
+          event,
           peer,
           seq,
-          settle: () => {
+          epoch,
+          settle: (outcome) => {
             waiters.delete(waiter);
-            resolve();
+            resolve(outcome);
           },
         };
         waiters.add(waiter);
@@ -70,6 +103,7 @@ export function createDurability() {
     hello: (said: string, saidDurable: boolean, cursors: Cursors): void => {
       if (said !== epoch || !saidDurable) held = trackCoverage();
       epoch = said;
+      replaced(said);
       durable = saidDurable;
       if (!durable) return;
       held.adopt({ synced: cursors, local: new Map() });
