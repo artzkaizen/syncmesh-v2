@@ -895,6 +895,9 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    this build decodes a `true` genesis as `legacy` and quarantines it at admission (§10). That
    versioning covers events only: lineage cells in snapshot pages, repair records and persisted
    state carry no version, so all peers must upgrade together. Doc columns are unreleased.
+   **Decided 2026-11-08: the lineage cell is versioned before doc columns ship**, with the same
+   `1` tag events carry, in all three places; a build meeting a cell of a version it does not run
+   refuses it as a value rather than reading it as a root or merging it by LWW.
    Known limits, accepted: the earliest stamp wins and only *future* clock skew is bounded, so a
    device with a lagging or back-dated clock wins sibling races. That grants no privilege, since
    any replacer can already win by naming the current winner as its parent. The lineage cell
@@ -911,11 +914,17 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    `skipped: merge`, delete rows the write inserted (cells a colleague wrote since reported
    `skipped: overridden`), re-insert rows it deleted unless rewritten since. The refusal of a revert of document
    updates alone (ade88cb) stays until doc compensation (P6).
-4. **Derived columns never travel — OPEN.** Proposed: each replica computes, opaque hosts take
-   them from checkpoints. The alternative is authority-signed row updates, which work for
-   adapter-less devices but put materialisation into the log. Jace asked what "derived" means
-   here: a column whose value the app does not write but computes from the document, like
-   `title: from("content", d => …)` in §4.1. No behaviour changes until this is answered.
+4. **Derived columns — decided 2026-11-08 by Jace: each replica computes; they never travel.**
+   A derived column is one the app does not write but computes from the document, like
+   `title: from("content", d => …)` in §4.1. Every device runs the `from` function on its open
+   document and writes the value locally, so the app reads its own edits at once, offline
+   included. A materialising authority does the same in Postgres; an opaque host takes the values
+   from device checkpoints (key 8). Authority-signed row updates were rejected: they need an
+   authority that can read the document (none for sealed partitions or a Durable Object relay),
+   make offline edits show stale values, and put materialisation into the log. Every runtime that
+   folds a doc column ships its adapter (TypeScript `@syncmesh/loro`, Rust `syncmesh-loro`), so no
+   device is left unable to compute. A Rust app declares its own `from` closures over the same
+   manifest names.
 5. **Device snapshots — decided 2026-11-08 by Jace: full device snapshots**, as D41 built.
    Shallow-at-the-stable-floor (§8.3) stays available as a future option with its forgotten-peer
    edge; it is not the default.
