@@ -1,4 +1,4 @@
-import type { MeshOptions } from "@syncmesh/client";
+import type { MeshOptions, SeedVault } from "@syncmesh/client";
 import type { ColumnsMap, PresenceMap } from "@syncmesh/schema";
 import type { SqlDialect } from "@syncmesh/storage";
 import type { WindowClient } from "@syncmesh/window";
@@ -57,6 +57,14 @@ export interface ClientOptions<
    * `(author, seq)` from two sequences, the loser's writes dropped as stale rather than refused.
    */
   readonly identity?: Identity;
+  /**
+   * Where the minted device key is sealed at rest when `identity` is absent (gaps U4; see
+   * `deviceIdentity`). Default: WebCrypto in a browser, and a refused open elsewhere until one is
+   * passed — `createSecureStoreVault()` from `@syncmesh/react-native/keystore` on a phone,
+   * `createSecretStoreVault` over an OS keychain, or `createPlaintextVault()` for tests and
+   * development.
+   */
+  readonly vault?: SeedVault;
   /** Carries `authority` calls. Absent, one fails naming itself rather than pretending. */
   readonly link?: AuthorityLink;
   /**
@@ -88,7 +96,10 @@ export const named = async <R extends Router, C extends ColumnsMap, PC extends P
     panic(
       "no identity and nowhere to keep one: pass `storage: sqlite({ driver })` so the device key can live beside the log it signs, or pass `identity` from your own key store",
     );
-  const minted = await deviceIdentity(driver);
+  const minted = await deviceIdentity(
+    driver,
+    options.vault === undefined ? {} : { vault: options.vault },
+  );
   if (minted.isErr()) panic(minted.error.message, minted.error);
   return { ...options, identity: minted.value };
 };

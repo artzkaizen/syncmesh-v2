@@ -19,6 +19,7 @@ import {
 import { createClient, httpLink, sqlite } from "@syncmesh/orpc";
 import { foreground } from "@syncmesh/react-native";
 import { devServerHost } from "@syncmesh/react-native/dev-server";
+import { createSecureStoreVault } from "@syncmesh/react-native/keystore";
 import { reachability } from "@syncmesh/react-native/network";
 import { relayTransport, webSocketDial } from "@syncmesh/relay";
 import { Result, TaggedError } from "@syncmesh/result";
@@ -322,8 +323,11 @@ const open = (): Promise<Result<Device, MeshUnavailable>> =>
     const driver = expoSqliteDriver(DATABASE);
 
     // the device key is minted once and read back out of the database beside the log it signs, so
-    // a reinstall is a new author and a relaunch is the same one
-    const device = yield* (await deviceIdentity(driver)).mapError(
+    // a reinstall is a new author and a relaunch is the same one; it is sealed there under a key the
+    // Keychain or Keystore holds for this phone only (U4)
+    const device = yield* (
+      await deviceIdentity(driver, { vault: createSecureStoreVault() })
+    ).mapError(
       (cause) =>
         new MeshUnavailable({ message: "this install's device key would not open", cause }),
     );
