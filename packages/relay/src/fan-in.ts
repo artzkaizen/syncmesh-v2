@@ -1,3 +1,5 @@
+import { presenceSlot } from "@syncmesh/transport";
+
 import type { RoomState } from "./state.js";
 
 import { decodeRelayFrame } from "./frame-decode.js";
@@ -44,7 +46,8 @@ export function fanIn(room: RoomState): (frame: Uint8Array) => void {
       if (admitGrant(room, inner.wire)) room.toClients(frame);
       return;
     }
-    // presence and the peer-to-peer facts pass through byte-identical, as they do from a socket
-    room.toClients(frame);
+    // presence and the peer-to-peer facts pass through byte-identical, as they do from a socket,
+    // and presence is conflated per slot, as it is from a socket
+    room.toClientsLatest(inner.kind === "presence" ? presenceSlot(inner.wire) : undefined, frame);
   };
 }

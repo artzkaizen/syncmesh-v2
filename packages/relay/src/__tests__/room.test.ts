@@ -351,6 +351,50 @@ describe("presence at the middle hop (D16)", () => {
 });
 
 describe("backpressure", () => {
+  test("a stalled socket is handed the current cursor when it drains, not each one it missed (D16)", async () => {
+    const a = peer(40, "acct_a");
+    const b = peer(80, "acct_b");
+    const room = await open();
+    const sa = fakeSocket();
+    const ca = room.connect(sa.socket);
+    ca.receive(join(a.identity.peerId));
+    const sb = fakeSocket();
+    const cb = room.connect(sb.socket);
+    cb.receive(join(b.identity.peerId));
+    await tick();
+
+    sb.setMode("dropped"); // b stopped reading: its socket takes nothing more
+    const cursor = (count: number) =>
+      presenceFrame(
+        signPresence(
+          {
+            v: 1,
+            peerId: a.identity.peerId,
+            topic: "cursor",
+            partition: ACME,
+            session: "s1",
+            count,
+            // SAFETY: test fixture column name; names are brands over these strings
+            value: new Map([["x" as never, count]]),
+            expires: Date.now() + 60_000,
+          },
+          a.identity,
+        ).wire,
+      );
+    const cursors = Array.from({ length: 50 }, (_, n) => cursor(n + 1));
+    for (const frame of cursors) ca.receive(frame);
+    await tick();
+
+    sb.sent.length = 0;
+    sb.setMode("sent");
+    cb.drain();
+    const seen = sb.ofKind("session").filter((f) => f.frame.kind === "presence");
+    expect(seen).toHaveLength(1);
+    expect(sb.sent[0]).toEqual(cursors[49]); // the newest, byte-identical
+    expect(sb.closedWith).toHaveLength(0); // fifty values never reached the backlog ceiling
+    room.close();
+  });
+
   test("dropped frames queue in order and drain flushes them; the ceiling closes the socket", async () => {
     const a = peer(40, "acct_a");
     const b = peer(80, "acct_b");

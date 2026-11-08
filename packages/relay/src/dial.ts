@@ -40,6 +40,7 @@ export const webSocketDial = (url: string) => (): Promise<RelayDial> =>
           return () => void closes.delete(cb);
         },
         close: () => ws.close(),
+        buffered: () => ws.bufferedAmount,
       });
     };
     ws.onerror = () => {

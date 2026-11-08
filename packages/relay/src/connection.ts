@@ -4,7 +4,7 @@ import type { Grant } from "@syncmesh/wire";
 
 import { timed } from "@syncmesh/engine";
 import { omitUndefined } from "@syncmesh/result";
-import { SEAL_OVERHEAD, cursorsFrame, presenceFrame } from "@syncmesh/transport";
+import { SEAL_OVERHEAD, cursorsFrame, presenceFrame, presenceSlot } from "@syncmesh/transport";
 import { decodeAndVerifyPresence } from "@syncmesh/wire";
 
 import type { RelayFrame } from "./frames.js";
@@ -151,7 +151,8 @@ function sitDown(
     sender.send(helloFrame(selected, keepaliveMs, epoch, room.cursors(), room.floor(), durable));
     // who is here now — never how they got here: presence has no history to page through
     const here = room.presence.all();
-    for (const entry of here) sender.send(presenceFrame(entry.wire));
+    for (const entry of here)
+      sender.sendLatest(presenceSlot(entry.wire), presenceFrame(entry.wire));
     sendCatchUp(conversation, theirs, view.catchUp);
     // what the joiner holds, in its own words, for everyone else's `delivered`
     room.toClients(cursorsFrame(peer, theirs), peer);
@@ -282,7 +283,8 @@ export function createConnection(
     const verified = decodeAndVerifyPresence(wire);
     if (verified.isErr()) return; // junk from a client is dropped, never relayed
     if (!room.presence.admit(verified.value)) return; // a stale value or a loop's echo stops here
-    room.toClients(bytes, me);
+    // the newest per slot, never a queue of them: a stalled reader is handed the current cursor
+    room.toClientsLatest(presenceSlot(wire), bytes, me);
     room.publish(bytes);
   };
 

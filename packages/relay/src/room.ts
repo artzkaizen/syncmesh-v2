@@ -231,6 +231,11 @@ export async function openRelayRoom(
       if (client.peer !== except) client.sender.send(frame);
     }
   };
+  const toClientsLatest = (slot: string | undefined, frame: Uint8Array, except?: PeerId): void => {
+    for (const client of clients.values()) {
+      if (client.peer !== except) client.sender.sendLatest(slot, frame);
+    }
+  };
   const toInterested = (frame: Uint8Array, event: SyncEvent, except?: PeerId): Fanned => {
     let receivers = 0;
     let frames = 0;
@@ -272,6 +277,7 @@ export async function openRelayRoom(
     cursors,
     floor: retention.floor,
     toClients,
+    toClientsLatest,
     toInterested,
     publish: (frame) => fan?.publish(frame),
     offset: () => offset,
