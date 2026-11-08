@@ -15,6 +15,7 @@ import {
   capacityRefusal,
   createRelayHost,
   decodeRelayFrame,
+  describeRoom,
   hostedPosture,
   openBlobHomes,
   relayIdentity,
@@ -86,6 +87,13 @@ export interface RelayDurableHost {
    * object then makes its pair and hands the server half to {@link join}.
    */
   readonly gate: (request: Request) => Promise<Response | undefined>;
+  /**
+   * A plain `GET` answered without a socket: the room's epoch, its own key (the one its hello
+   * signs with, kept in the object's SQLite), the protocol it speaks, its offset and how many are
+   * on it — what `describeRoom` answers on every other host. Asked under the object's own name,
+   * since the path is routing, and behind the same posture as an upgrade minus the socket cap.
+   */
+  readonly describe: (request: Request) => Promise<Response>;
   /** Accepts the socket for hibernation and binds it to the room, whose challenge is its first frame (D33). */
   readonly join: (ws: DurableWebSocket) => void;
   readonly message: (ws: DurableWebSocket, data: ArrayBuffer | string) => Promise<void>;
@@ -116,6 +124,7 @@ const openBlobs = async (driver: SqliteDriver): Promise<BlobStore | undefined> =
  * export class Relay extends DurableObject<Env> {
  *   #relay = relayDurableHost(this.ctx, { posture: { trust: { issuers: [ISSUER] } } });
  *   override async fetch(request: Request) {
+ *     if (request.headers.get("upgrade") !== "websocket") return this.#relay.describe(request);
  *     const refused = await this.#relay.gate(request);
  *     if (refused !== undefined) return refused;
  *     const { 0: client, 1: server } = new WebSocketPair();
@@ -241,6 +250,8 @@ export function relayDurableHost(
       ctx.getWebSockets().length >= seats
         ? Promise.resolve(capacityRefusal())
         : host.gate(request, name),
+    // under the object's own name, never the path's: the platform already routed it here
+    describe: (request) => describeRoom(host, request, name),
     // bound at once rather than on the first frame: the room speaks first now, and a socket that
     // is never told the challenge never sends a join the room would accept
     join: (ws) => {

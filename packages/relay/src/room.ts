@@ -128,6 +128,11 @@ export interface RelayRoomOptions {
 export interface RelayRoom {
   /** The log's lineage id, as every `hello` announces it; a describe over HTTP reports the same one. */
   readonly epoch: string;
+  /**
+   * The key this room signs its link hello with (D36) — the one a client pins with `relayKey`, and
+   * the one a describe reports. The host's key unless the room's store supplied its own.
+   */
+  readonly peerId: PeerId;
   readonly connect: (socket: RelaySocket, options?: ConnectionOptions) => RelayConnection;
   /**
    * Entries this room's log holds, counted up from what was there when it opened. A retention
@@ -305,6 +310,7 @@ export async function openRelayRoom(
 
   return Result.ok({
     epoch,
+    peerId: identity.peerId,
     connect: (socket, options) => createConnection(socket, state, options),
     offset: () => offset,
     clients: () => clients.size,

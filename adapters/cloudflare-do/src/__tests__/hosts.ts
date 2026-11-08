@@ -97,6 +97,7 @@ export function durableRelay(db: Database, given: RelayDurableHostOptions = {}) 
   return {
     dial: (): RelayDial => dialOne(to),
     gate: (request: Request) => host.gate(request),
+    describe: (request: Request) => host.describe(request),
     /** Eviction: the instance's memory is reset while its sockets and its SQLite are not. */
     evict: () => void (host = relayDurableHost(ctx, options)),
   };
