@@ -24,7 +24,7 @@ and start it again: devices reconnect on their own and only what is missing cros
 **`stateStore` is where "your database" is said out loud.** `server.ts` opens one
 `bunSqliteDriver` on the app's own file and builds both stores over it. The driver keeps the log in
 `app.db` and the rows in the state file beside it (`app.db.state@<schema>`), so the app's Drizzle
-opens that file — `backend.ts` names it with `statePathFor` — `sqlEventStore` for the
+opens that file — `backend.ts` names it with `statePath` — `sqlEventStore` for the
 log, `sqlStateStore` with a `tablesProjection` for the rows. Every fold UPSERTs the changed rows
 into `notes` and deletes tombstones, in one transaction with the sidecar that holds their stamps.
 Restart the server and the API answers immediately: boot reads the state back rather than

@@ -12,7 +12,7 @@ export {
   STATE_TABLES,
   logTable,
   namespaceDdl,
-  placementOf,
+  logPlacement,
   sqliteLogIndex,
   stateTable,
 } from "./namespace.js";
@@ -53,6 +53,23 @@ export interface EventSql {
   readonly upsertFloor: string;
   readonly selectFloors: string;
   readonly selectMaxHlc: string;
+}
+
+/**
+ * The gap table (D39): every run of an author's sequences that was absent when a later one landed,
+ * so a read can tell a hole the log was written with from one a damaged page made.
+ */
+export interface GapSql {
+  /** Binds `(peer, local, from, to)`; a gap already recorded is left as it is. */
+  readonly insert: string;
+  /** The recorded gap with the largest start at or below a sequence: binds `(peer, local, seq)`. */
+  readonly selectAt: string;
+  /** Binds `(peer, local, from)`. */
+  readonly delete: string;
+  /** Every recorded gap as `peer, local, from, to`, ordered by author and start. */
+  readonly selectAll: string;
+  /** Gaps compaction has put wholly below the floor: binds `(peer, local, floor)`. */
+  readonly deleteBelow: string;
 }
 
 export interface StateSql {
@@ -184,6 +201,7 @@ export interface OperationSql {
 export interface Dialect {
   readonly name: SqlDialect;
   readonly events: EventSql;
+  readonly gaps: GapSql;
   readonly state: StateSql;
   readonly docs: DocSql;
   readonly capture: CaptureSql;

@@ -143,6 +143,7 @@ export const harness = () => {
     peers: { graph: () => ({ self: SELF, edges: [], silent: [] }) },
     inspect: {
       handles: () => ({ observers: 0, subscriptions: 0, operations: 0, fetches: 0, links: 0 }),
+      verify: () => Promise.resolve(Result.ok(undefined)),
     },
     // the healthy answer, which is the one the audit almost always gives; a test that wants a
     // stranded run overrides this reader rather than teaching the harness to have rotated a key

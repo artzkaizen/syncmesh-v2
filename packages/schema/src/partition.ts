@@ -14,7 +14,7 @@ export const RESERVED = new Set<string>(["global", "user", "local"]);
  * A kind has a name, its roles, and whether it is sealed — and nothing else, because nothing
  * else about a kind is true. The tree form this replaces made a kind's *position* mean something:
  * D07 decided a nested kind would live in its parent's store, so where you wrote it decided which
- * file its rows went in. That was never implemented — `storeNameFor` builds a filename from
+ * file its rows went in. That was never implemented — `storeName` builds a filename from
  * `kind:id` with no parent lookup — so nesting silently degraded into "inherit the parent's role
  * ladder" and the place named after a kind was `{}`.
  *

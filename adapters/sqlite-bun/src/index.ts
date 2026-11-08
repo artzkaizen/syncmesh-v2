@@ -11,11 +11,11 @@ import { Result } from "@syncmesh/result";
 import {
   ATTACHED_LOG,
   acquireStoreLock,
-  lockPathFor,
+  lockPath,
   openStores,
-  schemaNameFor,
+  schemaName,
   sqliteDriver,
-  statePathFor,
+  statePath,
 } from "@syncmesh/storage";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
@@ -35,15 +35,15 @@ import { join } from "node:path";
  * @param logPath A file path, or `":memory:"` for a store that lives as long as the driver — in
  * which case the derived half is a second, private in-memory database and the pair is ephemeral
  * together.
- * @param schema Names the derived half; pass `schemaNameFor(tables)` so that changing a column
+ * @param schema Names the derived half; pass `schemaName(tables)` so that changing a column
  * opens an empty file to refold into rather than the previous shape's rows.
  *
  * @example
  * const store = (await sqliteEventStore(bunSqliteDriver("app.db"))).unwrap();
  */
-export function bunSqliteDriver(logPath: string, schema = schemaNameFor([])): SqliteDriver {
+export function bunSqliteDriver(logPath: string, schema = schemaName([])): SqliteDriver {
   const memory = logPath === ":memory:";
-  const db = new Database(memory ? ":memory:" : statePathFor(logPath, schema), {
+  const db = new Database(memory ? ":memory:" : statePath(logPath, schema), {
     create: true,
     strict: true,
   });
@@ -79,7 +79,7 @@ export async function defaultStore(
 ): Promise<Result<Stores, StoreFailure | StoreLocked>> {
   mkdirSync(options.dir, { recursive: true });
   const logPath = join(options.dir, `${options.name}.db`);
-  const lockDb = new Database(lockPathFor(logPath), { create: true, strict: true });
+  const lockDb = new Database(lockPath(logPath), { create: true, strict: true });
   // over the store, not the file: every file named after `logPath` is held and released together
   const lock = acquireStoreLock({
     path: logPath,
@@ -91,7 +91,7 @@ export async function defaultStore(
   // a file that is not a database throws from the driver's own constructor — before any store
   // has a Result to carry it — and a damaged log has to be refused as a value, never a throw
   const driver = Result.try({
-    try: () => bunSqliteDriver(logPath, schemaNameFor(options.tables ?? [])),
+    try: () => bunSqliteDriver(logPath, schemaName(options.tables ?? [])),
     catch: (cause) =>
       new StoreFailure({ message: `the store at ${logPath} would not open`, cause }),
   });

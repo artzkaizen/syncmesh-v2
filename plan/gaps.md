@@ -35,7 +35,7 @@
 | D7 | Confidentiality posture written into RFC-0017 ("a room name is a bearer secret" or `verifyJoin` + per-partition encryption) — gap-audit P0 №2 | **D40 decided C** (grant-gated rooms plus sealed kinds); RFC-0017 carries the posture and the hosted presets refuse to start without `trust` or `open: true` | S4 | built (#12) |
 | D8 | E27 thin client: supported shape or demo — gap-audit P0 №3 | **D43 decided B**: a supported shape, served by the peer that holds the rows | S5 | built (#6) |
 | D9 | D17: may relay telemetry variants carry peer identity | `plan/epics/E24.md:22` | Unowned | decision |
-| D10 | **D39** a damaged log is refused, not read around: a torn page in the log reads back a silent subset (29 of 40 tears in #10's test, pinned as `test.failing`) | **D39 decided C** (2026-11-08): contiguity check on read, `quick_check` on demand and after an unclean shutdown | Unowned | open |
+| D10 | **D39** a damaged log is refused, not read around: a torn page in the log reads back a silent subset (29 of 40 tears in #10's test, pinned as `test.failing`) | **D39 decided C** (2026-11-08): contiguity check on read, `quick_check` on demand and after an unclean shutdown. Built on `feat/torn-log-detection`: the reads refuse a hole the log's new `gaps` table does not account for (so scoped, withheld, snapshot-joined and parked logs still read), `verifyLog` / `mesh.inspect.verify()`, and a page check at open after an unclean shutdown on device SQLite | feat/torn-log-detection | built |
 
 ## Built by the sweep (merged in #9)
 
@@ -70,7 +70,7 @@
 | O13 | E14 snapshot window is not a field of `Interest` (gap-audit №19); E13 an interest change leaves a permanent gap | `plan/epics/E14.md:43`, `plan/epics/E13.md:53` | S5 | open |
 | O14 | Collaborative text / doc branch merge (D04's open door, D38) | `research/crdt-cells.md` | S6 | partly built: document columns (#2, #3) and the loro@1 adapter under TipTap (#11); D38 and D41 are still draft |
 | O15 | Chaos in CI on a small seed; grant propagation under fault; blobs and retention-floor refusals in the schedule (gap-audit №10–12) | `chaos/`, `.github/workflows/ci.yml` | S7 | built (#10): an invariant check after every run, and new `--grants fault`, `--blobs` and `--retention` switches (`--retention` and a soak loop nightly only, in `nightly.yml`); the bugs it found are `test.todo` replays |
-| O16 | Crash safety and format migration: `kill -9` mid-fold / mid-append, torn writes, `_syncmesh_meta` upgrades (gap-audit №13) | `storage/` | S7 | partly built (#10): kill -9 mid-append and mid-fold on `bun:sqlite`, `node:sqlite` and PGlite, and the migration ladder now commits per step; a torn log page is D39 (D10 above), and the Durable Object, OPFS and expo drivers are not covered |
+| O16 | Crash safety and format migration: `kill -9` mid-fold / mid-append, torn writes, `_syncmesh_meta` upgrades (gap-audit №13) | `storage/` | S7 | partly built (#10): kill -9 mid-append and mid-fold on `bun:sqlite`, `node:sqlite` and PGlite, and the migration ladder now commits per step; a torn log page is refused under D39 (D10 above) on `bun:sqlite` and `node:sqlite`, and the Durable Object, OPFS and expo drivers are not covered by a kill or tear test |
 | O17 | 10M-event test; threat model (RFC-0017) | — | S7 | partly built (#10): the 10M ladder runs nightly and **does not hold** (SQLite abandoned at 795k rows after 30 min); the threat model is `plan/security/threat-model.md`, with findings N1–N26 |
 
 ## Unowned — not hardware

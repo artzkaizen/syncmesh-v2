@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 
 import type { SqlRow, SqliteDriver } from "../driver.js";
 
-import { attachLog, statePathFor } from "../open-stores.js";
+import { attachLog, statePath } from "../open-stores.js";
 import { sqliteDriver } from "../sqlite-driver.js";
 
 /**
@@ -18,7 +18,7 @@ import { sqliteDriver } from "../sqlite-driver.js";
 export const openPair = async (logPath = ":memory:", schema = "test"): Promise<SqliteDriver> => {
   // `logPath` names the store, and the state file hangs off it — the same way round as a real
   // adapter, so a test cannot pass because it opened the halves in an order nothing else does
-  const db = new Database(logPath === ":memory:" ? ":memory:" : statePathFor(logPath, schema), {
+  const db = new Database(logPath === ":memory:" ? ":memory:" : statePath(logPath, schema), {
     create: true,
     strict: true,
   });

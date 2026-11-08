@@ -53,7 +53,7 @@ const counting = (inner: SqlDriver) => {
 };
 
 describe("the app schema is installed once, not once per launch", () => {
-  test("a second open of an unchanged database runs one statement instead of forty", async () => {
+  test("a second open of an unchanged database runs two statements instead of forty", async () => {
     const file = await openPair();
     const counted = counting(file);
     const tables = schema.entries.map((entry) => entry.table);
@@ -64,8 +64,9 @@ describe("the app schema is installed once, not once per launch", () => {
     expect(first).toBeGreaterThan(10);
 
     (await openStores(counted.driver, { tables })).unwrap();
-    // the fingerprint's own table, and nothing else: the read that decides is a `SELECT`
-    expect(counted.since()).toBe(1);
+    // the fingerprint's own table and the session marked open (D39), and nothing else: the read
+    // that decides is a `SELECT`
+    expect(counted.since()).toBe(2);
   });
 
   test("a changed manifest is installed again, with no version for anyone to bump", async () => {
@@ -81,6 +82,6 @@ describe("the app schema is installed once, not once per launch", () => {
 
     // and now *that* shape is the one on record
     (await openStores(counted.driver, { tables: wider.entries.map((e) => e.table) })).unwrap();
-    expect(counted.since()).toBe(1);
+    expect(counted.since()).toBe(2);
   });
 });

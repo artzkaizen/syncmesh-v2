@@ -124,7 +124,7 @@ export interface Schema<C extends ColumnsMap, PC extends PresenceMap = Record<st
 
 /**
  * Every table a manifest declares, for the calls that take a list rather than a manifest:
- * `openStores`, `schemaNameFor`, the Drizzle bridge. Not `queryTables`, which `@syncmesh/drizzle`
+ * `openStores`, `schemaName`, the Drizzle bridge. Not `queryTables`, which `@syncmesh/drizzle`
  * already has for a different question — which tables a *query* reads.
  *
  * Reads `entries` rather than `tables`, because `entries` is the one that already has the mesh's
