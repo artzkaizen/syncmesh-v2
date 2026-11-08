@@ -1,6 +1,6 @@
 import { PGlite } from "@electric-sql/pglite";
 import { captureTests, storeTests } from "@syncmesh/storage/driver-tests";
-import { describe, test } from "bun:test";
+import { afterAll, describe, test } from "bun:test";
 
 import { pgliteDriver, postgresDriver } from "../index.js";
 
@@ -19,16 +19,35 @@ describe("@syncmesh/postgres over PGlite passes the store contract", () => {
 
 const url = process.env.SYNCMESH_PG_URL ?? "";
 describe.if(url !== "")("@syncmesh/postgres over a real server passes the store contract", () => {
-  // every database name is its own schema: cases never see each other's tables, and a reopen by
-  // name lands on the same schema through a fresh single-connection client
+  // every database name is a database of its own: the log lives in a fixed `syncmesh` schema, so
+  // a schema per case would have every case share one log. A reopen by name lands on the same
+  // database through a fresh client, as a restarted server would
+  const run = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const made = new Set<string>();
+  const databaseFor = (name: string) =>
+    `syncmesh_store_${run}_${name.replaceAll(/[^a-z0-9]/g, "_")}`.slice(0, 63);
+  const urlFor = (database: string) => {
+    const at = new URL(url);
+    at.pathname = `/${database}`;
+    return at.toString();
+  };
   const openDriver = async (name: string) => {
     const { default: postgres } = await import("postgres");
-    const schema = `syncmesh_test_${name.replaceAll(/[^a-z0-9]/g, "_")}`;
-    const root = postgres(url, { max: 1 });
-    await root.unsafe(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
-    await root.end();
-    const sql = postgres(url, { max: 1, connection: { search_path: schema } });
-    return postgresDriver(sql);
+    const database = databaseFor(name);
+    if (!made.has(database)) {
+      const root = postgres(url, { max: 1 });
+      await root.unsafe(`CREATE DATABASE "${database}"`);
+      await root.end();
+      made.add(database);
+    }
+    return postgresDriver(postgres(urlFor(database), { max: 1 }));
   };
+  afterAll(async () => {
+    const { default: postgres } = await import("postgres");
+    const root = postgres(url, { max: 1 });
+    for (const database of made)
+      await root.unsafe(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
+    await root.end();
+  });
   for (const c of [...storeTests(openDriver), ...captureTests(openDriver)]) test(c.name, c.run);
 });
