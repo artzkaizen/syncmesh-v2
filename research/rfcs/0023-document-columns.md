@@ -710,7 +710,7 @@ until first `open()`, which is RFC-0019 §3's window rule applied to documents.
 | genesis under the pre-§16.1 rule (`5: true`) at a build of the tree rule | decodes, flagged `legacy`, so a log that holds one still reads; refused at admission → quarantine | the event is never folded by a rule this build does not run, and is kept rather than dropped |
 | genesis under the tree rule (`5: 1`) at a build from before it | refused at decode by that build | that build never folds a tree-rule genesis by the LWW rule |
 | a snapshot page (RFC-0019) or repair record whose doc-column cell is not tagged `1`: untagged (the LWW rule's lineage id, or the tree rule's set before cells were versioned) or another version | the whole snapshot or repair is refused as `LineageCellRefused { table, key, column, version }` before any row joins; no coverage is adopted; the join exchange closes and reports it on the bridge's `onError` | the cell is never read as the root nor merged by another rule; the history behind it still arrives as events |
-| persisted state holding such a cell | TypeScript: reported on `onError`, then the state is rebuilt from the log, as any unreadable state is (`StateCorrupt` when the log is compacted below it). Rust: `Engine::open` refuses with a `StoreError` naming the cell | each runtime treats it as state it cannot read, as it already treats a row that does not decode |
+| persisted state holding such a cell | reported (TypeScript: `onError`; Rust: `Engine::refused_at_open`), then the state is rebuilt from the log, as any unreadable state is — `StateCorrupt` instead when the log is compacted below it or the state holds rows a snapshot installed (its cursors carry a floor) | each runtime treats it as state it cannot read, as it already treats a row that does not decode |
 | adapter cannot parse an update | materialisation marks that `doc_log` row `failed`; the doc stays usable at its last good version; loud in `$inspect` | the fold already happened identically; this only affects materialisation, which is local |
 | minor version skew (`loro-crdt` 1.4 vs 1.16) | allowed: the id's major (`@1`) is the compatibility contract; the adapter package pins a floor and runs the adapter conformance suite (§13) | Loro's own 1.x encoding stability |
 
@@ -722,10 +722,15 @@ to `d01bb92`) do not check it and must not share a mesh with this one; doc colum
 in a release, so no deployed mesh is affected.
 
 Rebuilding from the log keeps only what the log holds. Rows this device took from an earlier
-snapshot install came with coverage and no events, so a rebuild that refuses a persisted cell loses
-them without a word unless the log is compacted (then it is `StateCorrupt`); the device gets them
-back by joining again. That was already true of any unreadable state; the lineage check is one more
-way to reach it (gaps U22).
+snapshot install came with coverage and no events, and the install raised the floor persisted with
+the cursors (D46). So when the state cannot be read — a refused persisted cell or a row that does
+not decode — and its cursors carry a floor, boot refuses with `StateCorrupt` ("rejoin from a peer")
+instead of rebuilding without them, as it refuses over a compacted log; nothing is cleared (gaps
+U22, built). Rust takes no snapshots and never compacts, so its log always holds what its state
+stood for, and it rebuilds. Two ways round it remain: cursors that cannot be read either, where the
+floor is unknown and the state is rebuilt as before, and a state file that is not read at all — a
+schema change opening a new one (RFC-0022), an operator deleting it — whose floor goes with it
+(gaps U33).
 
 The boot check reads only tables that declare a doc column. The state cache decodes a row when it is
 first read, so the other tables stay undecoded until a fold writes them; a doc table is decoded in
@@ -750,7 +755,12 @@ decompression cap and a time budget, and exceeding them is a `failed` update, ne
   an event that repeats a held row's insert does not make its doc change an insert.
 - `DocCheckpoint`s are accepted only from the authority or from a device whose grant allows
   `update` on the row. Blob fetches of doc bytes require custody of the partition (D30's blob
-  capability).
+  capability). Built for the opaque host (gaps U26): `installProvisional` asks
+  `engine.mayEditDoc(producer, doc)` — the validator's own ladder over a probe doc change on the
+  row, so grant, partitions, revocation and the `update` rule judge it as they judge an edit, and
+  the authority the validator names always passes — and refuses the checkpoint whole before key 8
+  is read. A device's `install` re-derives the version from the bytes, so whom it trusts stays
+  the caller's question (§7.3).
 - **Sealed partitions:** doc bytes are inside the sealed core, the authority is structurally
   opaque (§7.2), and a checkpoint's snapshot blob is sealed to the partition key (not built yet).
   The checkpoint's core stays readable to the host, so it carries no derived values: key 8 is
@@ -1017,16 +1027,17 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
      cover (`DocCover.derivedIncludes`), so a joiner that already holds newer edits gets values
      that include them instead of none.
    - A flush computes its derived values from the open document before the write is awaited, so
-     a remote entry delivered in between is not in them; it waits like any remote edit (gaps.md
-     U25). Capture evaluates a column's SQL `DEFAULT` again to judge an insert, so a volatile
+     a remote entry delivered in between is not in them; the recomputation after the flush's
+     fold catches it (gaps.md U25, built below). Capture evaluates a column's SQL `DEFAULT` again to judge an insert, so a volatile
      default such as `now()` on a derived or document column differs from the stored value and
-     refuses the insert. CDC's `meshCells` copies every declared column, derived ones included,
-     so a CDC-published table with derived columns builds changes the validator refuses
-     (gaps.md U28).
+     refuses the insert. CDC's `meshCells` copied every declared column, derived ones included,
+     so a CDC-published table with derived columns built changes the validator refuses; it now
+     leaves them out (gaps.md U28, built below).
    - Window and patch clients read kernel cells. A current TypeScript writer puts no derived
-     value there, but a numbered event from an older build, a Rust app (its validator has no
-     derived refusal) or a hand-made client can, and that cell is what they, and an `allow` rule
-     evaluated over the record, see. The SQL read filter reads the row's derived value instead.
+     value there, but a numbered event from an older build or a hand-made client can (a Rust app
+     now refuses its own, below), and that cell is what they see. No write rule may read a
+     derived column (U27, below), so no `allow` verdict depends on that cell; the SQL read
+     filter reads the row's derived value instead.
    Where it departs: the guard is a check in `captureChanges`, not a SQL trigger. It refuses the
    transaction with `DocColumnWrite` as a value, at the same point (capture armed), so a raw
    statement outside capture is not refused, as with a trigger. A remote edit applied to an open
@@ -1038,12 +1049,50 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    `Derive` computes values and nothing in the crate writes them; it checks names against the
    manifest but not kinds, which the manifest entry does not carry, and `compute` does not
    require `check` to have run. `installProvisional` checks the producer's signature, not
-   whether the producer may update the row (gaps.md U26). A `notNull()` derived column on a
+   whether the producer may update the row (gaps.md U26; it now does, §11). A `notNull()` derived column on a
    table syncmesh created itself (no `NOT NULL` or `DEFAULT` in its DDL) reads `NULL` until a
    derive runs, so a Drizzle read hands the app `null` for a column typed `string`. A re-inserted
    row, and a SQLite `INSERT OR REPLACE` (which fires only the insert trigger, and is judged
    against the defaults), lose the row's derived and document values until the next derive or
-   materialisation, without a refusal.
+   materialisation, without a refusal. (Most of this paragraph is superseded by the follow-ups
+   below: remote edits, late inserts, re-inserted rows, snapshot adoption, rebuilds and a changed
+   derive function now recompute; an `INSERT OR REPLACE` the app runs itself waits for
+   `documents.rederive()` or the next start.)
+   **Follow-ups built 2026-11-08** (`fix/doc-column-followups`; decided 2026-11-08, Jace delegated
+   the call — gaps U22, U25–U28):
+   - Recompute (U25): `createDocuments({ derive })` recomputes a row's derived columns whenever
+     the fold moves its document — a remote edit to an open document (from the open replica,
+     after it is handed the update) or a closed one (loaded from its snapshot and tail), a
+     `replace()`, a lineage move — whenever its row appears (an insert that lands after its
+     document, a row deleted and inserted again: `FoldBatch.appeared`), whenever a snapshot or
+     repair rewrites the row, and once for every row when the runtime starts, which is how a
+     state rebuilt from the log and a changed derive function catch up
+     (`rederiveAtStart: false` turns that pass off). `documents.rederive(address?)` asks for
+     the same and resolves when nothing is queued; an app calls it after rewriting rows itself.
+     The work runs one document at a time in the background and writes through
+     `engine.writeDerived(row, from)`, which commits only while `from` still describes the
+     document (its lineage still wins and no `tail` entry of it is left out), in turn with
+     covers; a write overtaken by a newer edit is dropped and that edit's own recomputation
+     follows. A recomputation whose values equal what the row was last given here or by a flush
+     writes nothing, and a flush's own fold is recomputed only when its replica was handed an
+     update between computing and committing. A document with no snapshot and no tail is left
+     alone, so an empty document writes nothing.
+   - Producer (U26): §11 above.
+   - Rules (U27): schema construction refuses an `insert`, `update`, `delete` or `replace` rule
+     (as `resolveAllow` resolves each, so `write` and `$default` count) that reads a derived
+     column's value — `owner`, `claim`, `rowIs`, a comparison, `isIn` — as `InvalidDerive`:
+     derived values are each replica's own, so a verdict on one could differ between peers. A
+     `read` rule, which the authority evaluates where it serves rows, may read one; so may
+     `patchOnly`, which names columns a write touches. A `_policy` document published at
+     runtime is not checked. The Rust engine takes the derived names (`EngineOptions.derived`,
+     from `docs::derived_columns` over the manifest's entries) and refuses a local write naming
+     one, as it already refused one naming a document column; a numbered event naming one folds.
+   - CDC (U28): `meshCells` leaves derived and document columns out, so the authority's own
+     derive `UPDATE` publishes nothing of them. An `UPDATE` touching only derived columns still
+     reaches the WAL as an update and is published as one re-stating the row's other columns,
+     as every CDC update re-states the whole row.
+   - Boot (U22): §10 above.
+
 5. **Device snapshots — decided 2026-11-08 by Jace: full device snapshots**, as D41 built.
    Shallow-at-the-stable-floor (§8.3) stays available as a future option with its forgotten-peer
    edge; it is not the default.
