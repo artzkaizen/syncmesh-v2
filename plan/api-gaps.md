@@ -379,8 +379,8 @@ peer-to-peer does it. This is D31's "pin D15's compaction floor for every peer",
 red test naming the exact observed state. Needs a floor on the wire — a decision.
 
 **Decided as D46 A (2026-11-08):** the floor goes at index 4 of the cursors frame and the device below it
-asks for state, adopting unvouched coverage only up to the claimed floor and only with no `trust`.
-Not built yet.
+asks for state, adopting unvouched coverage only up to the claimed floor and only with no `trust`. A snapshot
+manifest nobody asked for installs nothing; today one does, which is gaps U20. Not built yet.
 
 ### 3.7 Dedup below the compaction floor
 `receiveBatch` of x's old insert on b reports `folded: 1, skipped: 0` and b's log regains the
