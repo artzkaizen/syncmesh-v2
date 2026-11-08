@@ -120,6 +120,48 @@ export const scopeReads = <Db extends object>(db: Db, read: (table: never) => un
 };
 
 /**
+ * `db`, until `revoke()`: from then on every statement it would send is refused before it reaches
+ * the connection, whether it comes from `db` itself, a builder made from it, or a query prepared
+ * from it. A refused statement answers a rejected promise carrying `refusal()`.
+ *
+ * A Drizzle sends every statement through its `session`, which every builder copies when it is
+ * made; so the fence is the session, and a builder made before `revoke()` is refused after it.
+ * This is what keeps a handler that kept its `db` (a timer, a cache, a closure) from running a
+ * statement on whatever transaction holds that connection by then, or on none at all.
+ *
+ * @example
+ * const { db: handlerDb, revoke } = revocable(tx, () => new Error("this read has ended"));
+ * try { rows = await handler({ db: handlerDb }); } finally { revoke(); }
+ */
+export const revocable = <Db extends object>(db: Db, refusal: () => Error) => {
+  let revoked = false;
+  const fence = <T extends object>(target: T): T =>
+    new Proxy(target as Builder, {
+      get(at, property) {
+        const value = Reflect.get(at, property);
+        if (typeof value !== "function") return value;
+        return (...args: readonly unknown[]) => {
+          // preparing sends nothing; what it prepares is fenced like the session it came from
+          if (property === "prepareQuery") return fence(value.apply(at, args));
+          if (revoked) return Promise.reject(refusal());
+          return value.apply(at, args);
+        };
+      },
+    }) as T;
+  const session = Reflect.get(db, "session");
+  const fenced =
+    typeof session === "object" && session !== null
+      ? (Object.create(db, { session: { value: fence(session) } }) as Db)
+      : fence(db);
+  return {
+    db: fenced,
+    revoke: () => {
+      revoked = true;
+    },
+  };
+};
+
+/**
  * The same `db`, minus every verb that writes — what a `query` handler is given (§2.4).
  *
  * A query descriptor is inert until something runs it, and a hook may run it, re-run it on any

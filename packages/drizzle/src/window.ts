@@ -92,10 +92,15 @@ const soleTable = (source: unknown): string | undefined => {
   if (is(source, Table)) return getTableName(source);
   if (!is(source, Subquery)) return undefined;
   const named = new Set<string>();
-  walkSql(source._.sql, (chunk) => {
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- a chunk, or a field a select named: `is()` is the parse
+  const name = (chunk: unknown) => {
     if (is(chunk, Table)) named.add(getTableName(chunk));
     else if (is(chunk, Column)) named.add(getTableName(getColumnTable(chunk)));
-  });
+  };
+  walkSql(source._.sql, name);
+  // a source read under another name (an alias, a served view) is not in the SQL as a table:
+  // its columns say which table it is
+  for (const field of Object.values(source._.selectedFields)) name(field);
   const [only] = named;
   return named.size === 1 ? only : undefined;
 };
