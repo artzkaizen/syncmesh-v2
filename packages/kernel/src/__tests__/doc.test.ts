@@ -5,17 +5,15 @@ import type { DocChange, LineageId } from "../doc.js";
 
 import { applyChange, mergeRecord } from "../apply.js";
 import {
-  lineageOf,
-  lineageRule,
+  cellGeneses,
+  docLineage,
   parseActionId,
   parseAdapterId,
   parseLineageId,
   withDocColumns,
 } from "../doc.js";
 import { getRecord, isVisible } from "../index.js";
-import { compareStamp } from "../stamp.js";
 import { emptyState } from "../state.js";
-import { strategies } from "../strategy.js";
 import {
   applyAll,
   column,
@@ -46,13 +44,13 @@ const doc = (extra: Partial<DocChange> = {}): DocChange => ({
   ...extra,
 });
 
-const genesis = (l: LineageId, at: Stamped["stamp"]): Stamped => ({
-  change: doc({ lineage: l, genesis: true }),
+const genesis = (l: LineageId, at: Stamped["stamp"], parent?: LineageId): Stamped => ({
+  change: doc({ lineage: l, genesis: true, ...(parent !== undefined && { parent }) }),
   stamp: at,
 });
 
 const lineageAfter = (changes: readonly Stamped[]) =>
-  lineageOf(getRecord(applyAll(changes), NOTES, N1), CONTENT);
+  docLineage(getRecord(applyAll(changes), NOTES, N1), CONTENT);
 
 describe("doc ids", () => {
   test("a 16-byte id is 32 lowercase hex characters, and nothing else", () => {
@@ -77,14 +75,23 @@ describe("applyChange — a doc change", () => {
     expect(applyChange(state, doc({ lineage: lineage("a") }), stamp(2, 0, PEER_B))).toBe(state);
   });
 
-  test("a genesis sets only the lineage cell, with the genesis's stamp", () => {
+  test("a genesis adds only itself to the lineage cell: its lineage, its parent, its stamp", () => {
     const at = stamp(2, 0, PEER_B);
     const state = applyAll([
       insert({ title: "t" }, stamp(1, 0, PEER_A)),
       genesis(lineage("a"), at),
+      genesis(lineage("b"), stamp(3, 0, PEER_A), lineage("a")),
     ]);
     const record = getRecord(state, NOTES, N1);
-    expect(record?.cells.get(CONTENT)).toEqual({ value: lineage("a"), stamp: at });
+    expect(record?.cells.get(CONTENT)?.value).toEqual({
+      [lineage("a")]: [null, 2, 0, PEER_B],
+      [lineage("b")]: [lineage("a"), 3, 0, PEER_A],
+    });
+    expect(record?.cells.get(CONTENT)?.stamp).toEqual(stamp(3, 0, PEER_A));
+    expect(cellGeneses(record?.cells.get(CONTENT)?.value)).toEqual([
+      { lineage: lineage("a"), parent: undefined, stamp: at },
+      { lineage: lineage("b"), parent: lineage("a"), stamp: stamp(3, 0, PEER_A) },
+    ]);
     expect(record?.writeStamp).toEqual(stamp(1, 0, PEER_A));
   });
 
@@ -108,48 +115,136 @@ describe("applyChange — a doc change", () => {
   test("the root lineage is the absent cell, and a foreign value reads as the root", () => {
     expect(lineageAfter([insert({ title: "t" }, stamp(1, 0, PEER_A))])).toBeUndefined();
     const foreign = applyAll([insert({ content: "not an id" }, stamp(1, 0, PEER_A))]);
-    expect(lineageOf(getRecord(foreign, NOTES, N1), CONTENT)).toBeUndefined();
+    expect(docLineage(getRecord(foreign, NOTES, N1), CONTENT)).toBeUndefined();
   });
 });
 
-describe("lineageRule — concurrent geneses", () => {
-  test("the rule is last-writer-wins today (RFC-0023 §16.1 is the owner's to change)", () => {
-    expect(lineageRule).toBe(strategies.lww);
+/**
+ * The rule as RFC-0023 §16.1 states it, written out the slow way: among the geneses that replaced
+ * one lineage the smallest stamp wins, and the document follows the winners down from the root.
+ */
+const reference = (geneses: readonly Stamped[]): LineageId | undefined => {
+  const named = geneses.flatMap(({ change, stamp: at }) =>
+    change.kind === "doc" && change.lineage !== undefined
+      ? [{ lineage: change.lineage, parent: change.parent, at }]
+      : [],
+  );
+  let current: LineageId | undefined;
+  for (let depth = 0; depth <= named.length; depth += 1) {
+    const children = named
+      .filter((g) => g.parent === current)
+      .sort((x, y) => compareStampOrLineage(x, y));
+    const first = children[0];
+    if (first === undefined) return current;
+    current = first.lineage;
+  }
+  return current;
+};
+
+const compareStampOrLineage = (
+  x: { at: Stamped["stamp"]; lineage: LineageId },
+  y: { at: Stamped["stamp"]; lineage: LineageId },
+) => {
+  const ms = x.at.hlc[0].epochMilliseconds - y.at.hlc[0].epochMilliseconds;
+  if (ms !== 0) return ms;
+  if (x.at.peer !== y.at.peer) return x.at.peer < y.at.peer ? -1 : 1;
+  return x.lineage < y.lineage ? -1 : 1;
+};
+
+describe("lineage — the first genesis wins, as a tree (RFC-0023 §16.1)", () => {
+  test("two replaces of one lineage: the first wins, and a late one discards nothing", () => {
+    const first = genesis(lineage("a"), stamp(1, 0, PEER_A));
+    const late = genesis(lineage("b"), stamp(5, 0, PEER_B));
+    expect(lineageAfter([first, late])).toBe(lineage("a"));
+    expect(lineageAfter([late, first])).toBe(lineage("a"));
   });
 
-  test("any delivery order of any geneses lands on the one with the greatest stamp", () => {
+  test("a replace on top of the winner — a restore, a reset, an undo — wins, however late", () => {
+    const imported = genesis(lineage("a"), stamp(1, 0, PEER_A));
+    const restored = genesis(lineage("b"), stamp(9, 0, PEER_B), lineage("a"));
+    const reset = genesis(lineage("c"), stamp(12, 0, PEER_A), lineage("b"));
+    expect(lineageAfter([imported, restored])).toBe(lineage("b"));
+    expect(lineageAfter([reset, imported, restored])).toBe(lineage("c"));
+  });
+
+  test("of two replaces of the winner, the first wins and the walk follows it", () => {
+    const base = genesis(lineage("a"), stamp(1, 0, PEER_A));
+    const mine = genesis(lineage("b"), stamp(4, 0, PEER_A), lineage("a"));
+    const theirs = genesis(lineage("c"), stamp(3, 0, PEER_B), lineage("a"));
+    const onMine = genesis(lineage("d"), stamp(2, 0, PEER_C), lineage("b"));
+    expect(lineageAfter([base, mine, theirs, onMine])).toBe(lineage("c"));
+  });
+
+  test("a genesis whose parent has not arrived waits off the walk, and joins it when it lands", () => {
+    const parent = genesis(lineage("a"), stamp(1, 0, PEER_A));
+    const child = genesis(lineage("b"), stamp(2, 0, PEER_B), lineage("a"));
+    expect(lineageAfter([child])).toBeUndefined();
+    expect(lineageAfter([child, parent])).toBe(lineage("b"));
+  });
+
+  test("a cycle that never reaches the root is never walked into", () => {
+    const one = genesis(lineage("a"), stamp(1, 0, PEER_A), lineage("b"));
+    const two = genesis(lineage("b"), stamp(2, 0, PEER_A), lineage("a"));
+    const self = genesis(lineage("c"), stamp(3, 0, PEER_A), lineage("c"));
+    expect(lineageAfter([one, two, self])).toBeUndefined();
+  });
+
+  test("a cell that is not the set's shape reads entry by entry, the same on every peer", () => {
+    const mangled = {
+      [lineage("a")]: [null, 1, 0, PEER_A],
+      [lineage("b")]: ["not an id", 1, 0, PEER_A],
+      [lineage("c")]: [null, -1, 0, PEER_A],
+      "not a lineage": [null, 1, 0, PEER_A],
+    };
+    expect(cellGeneses(mangled).map((g) => g.lineage)).toEqual([lineage("a")]);
+    expect(cellGeneses(lineage("a"))).toEqual([]);
+  });
+
+  test("any tree, in any order, in any batches, repeated: one cell, and the reference winner", () => {
     const peers = [PEER_A, PEER_B, PEER_C];
-    // distinct stamps: one author's clock never repeats, and one event starts one lineage per
-    // document (the ladder refuses a second), so two geneses never share a stamp in a real log
-    const arbitrary = fc.uniqueArray(
-      fc.record({
-        ms: fc.nat({ max: 5 }),
-        peer: fc.nat({ max: 2 }),
-        fill: fc.nat({ max: 15 }),
-        order: fc.nat(),
-      }),
-      { minLength: 1, maxLength: 6, selector: ({ ms, peer }) => `${ms}/${peer}` },
-    );
+    // each genesis may replace the root or any genesis before it; stamps are distinct per author
+    // as a real log's are, and one event starts one lineage per document
+    const arbitrary = fc
+      .uniqueArray(fc.record({ ms: fc.nat({ max: 6 }), peer: fc.nat({ max: 2 }) }), {
+        minLength: 1,
+        maxLength: 7,
+        selector: ({ ms, peer }) => `${ms}/${peer}`,
+      })
+      .chain((stamps) =>
+        fc.tuple(
+          fc.constant(stamps),
+          fc.array(fc.nat(), { minLength: stamps.length, maxLength: stamps.length }),
+          fc.array(fc.nat(), { minLength: stamps.length, maxLength: stamps.length }),
+          fc.nat({ max: stamps.length }),
+        ),
+      );
     fc.assert(
-      fc.property(arbitrary, (specs) => {
-        const geneses = specs.map(({ ms, peer, fill }) =>
-          genesis(lineage(fill.toString(16)), stamp(ms, 0, peers[peer] ?? PEER_A)),
-        );
-        const shuffled = specs
-          .map((spec, i) => [spec.order, geneses[i]] as const)
+      fc.property(arbitrary, ([stamps, parents, order, cut]) => {
+        const geneses = stamps.map(({ ms, peer }, i) => {
+          const parentAt = (parents[i] ?? 0) % (i + 1);
+          const parent = parentAt === i ? undefined : lineage(parentAt.toString(16));
+          return genesis(lineage(i.toString(16)), stamp(ms, 0, peers[peer] ?? PEER_A), parent);
+        });
+        const shuffled = geneses
+          .map((g, i) => [order[i] ?? 0, g] as const)
           .sort(([x], [y]) => x - y)
-          .flatMap(([, g]) => (g === undefined ? [] : [g]));
+          .map(([, g]) => g);
         const forward = plainState(applyAll(geneses));
         expect(plainState(applyAll(shuffled))).toEqual(forward);
-        expect(plainState(applyAll([...geneses, ...geneses]))).toEqual(forward);
-        const winner = geneses.reduce((best, g) =>
-          compareStamp(g.stamp, best.stamp) > 0 ? g : best,
+        expect(plainState(applyAll([...shuffled, ...geneses]))).toEqual(forward);
+        // two peers that each folded half, then exchanged records, hold the same cell
+        const spec = new Map([[NOTES, new Map([[CONTENT, "lineage" as const]])]]);
+        const left = getRecord(applyAll(shuffled.slice(0, cut)), NOTES, N1);
+        const right = getRecord(applyAll(shuffled.slice(cut)), NOTES, N1);
+        const joined = [left, right].reduce(
+          (state, record) =>
+            record === undefined ? state : mergeRecord(state, NOTES, N1, record, spec),
+          emptyState(),
         );
-        expect(lineageAfter(geneses)).toBe(
-          winner.change.kind === "doc" ? winner.change.lineage : undefined,
-        );
+        expect(docLineage(getRecord(joined, NOTES, N1), CONTENT)).toBe(lineageAfter(geneses));
+        expect(lineageAfter(shuffled)).toBe(reference(geneses));
       }),
-      { numRuns: 300, seed: 23 },
+      { numRuns: 500, seed: 23 },
     );
   });
 
@@ -157,12 +252,10 @@ describe("lineageRule — concurrent geneses", () => {
     const spec = withDocColumns(MERGE, new Map([[NOTES, new Map([[CONTENT, LORO]])]]));
     expect(spec.get(NOTES)?.get(CONTENT)).toBe("lineage");
     expect(spec.get(NOTES)?.get(column("likes"))).toBe("max");
-    const older = {
-      cells: new Map([[CONTENT, { value: lineage("f"), stamp: stamp(1, 0, PEER_A) }]]),
-    };
-    const newer = {
-      cells: new Map([[CONTENT, { value: lineage("0"), stamp: stamp(2, 0, PEER_B) }]]),
-    };
+    const cellOf = (l: LineageId, at: Stamped["stamp"]) =>
+      getRecord(applyAll([genesis(l, at)]), NOTES, N1) ?? { cells: new Map() };
+    const older = cellOf(lineage("f"), stamp(1, 0, PEER_A));
+    const newer = cellOf(lineage("0"), stamp(2, 0, PEER_B));
     const joined = mergeRecord(
       mergeRecord(emptyState(), NOTES, N1, newer, spec),
       NOTES,
@@ -170,6 +263,6 @@ describe("lineageRule — concurrent geneses", () => {
       older,
       spec,
     );
-    expect(lineageOf(getRecord(joined, NOTES, N1), CONTENT)).toBe(lineage("0"));
+    expect(docLineage(getRecord(joined, NOTES, N1), CONTENT)).toBe(lineage("f"));
   });
 });

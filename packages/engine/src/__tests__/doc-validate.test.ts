@@ -51,6 +51,17 @@ const schema = syncSchema({
         delete: role("owner"),
       }),
     },
+    templates: {
+      columns: { id: t.text().primaryKey(), content: t.blob().nullable() },
+      partition: workspace,
+      // editors edit a template; only an owner may replace it wholesale (RFC-0023 §16.2)
+      allow: ({ role }) => ({
+        $default: role("owner"),
+        read: role("viewer"),
+        update: role("editor"),
+        replace: role("owner"),
+      }),
+    },
   },
 });
 
@@ -62,11 +73,13 @@ const DOCS = new Map([
   [NOTES, new Map([[CONTENT, LORO]])],
   [table("drafts"), new Map([[CONTENT, LORO]])],
   [table("boards"), new Map([[CONTENT, LORO]])],
+  [table("templates"), new Map([[CONTENT, LORO]])],
 ]);
 
 const issuer = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 50 + i)).unwrap();
 const editor = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 90 + i)).unwrap();
 const viewer = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 130 + i)).unwrap();
+const owner = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 170 + i)).unwrap();
 const NOW = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const W1 = parsePartitionKey("workspace:w1").unwrap();
 
@@ -87,6 +100,7 @@ const grantFor = (device: PeerId, role: string): Grant =>
 const grants = new Map([
   [editor.peerId, grantFor(editor.peerId, "editor")],
   [viewer.peerId, grantFor(viewer.peerId, "viewer")],
+  [owner.peerId, grantFor(owner.peerId, "owner")],
 ]);
 const validator = createValidator({ schema, grantFor: (peer) => grants.get(peer), docs: DOCS });
 
@@ -154,6 +168,29 @@ describe("a doc change against the schema (RFC-0023 §10)", () => {
     expect(verdict([doc({ genesis: true, lineage: forged })])).toBe("ok");
   });
 
+  test("a parent is refused on an edit, and on a genesis that names itself; an unheld one is fine", () => {
+    const at = { seqNum: seq(4) };
+    const derived = deriveLineage(editor.peerId, seq(4), 0);
+    const unheld = parseLineageId("0a".repeat(16)).unwrap();
+    expect(verdict([doc({ genesis: true, lineage: derived, parent: unheld })], at)).toBe("ok");
+    expect(verdict([doc({ parent: unheld })])).toEqual({
+      tag: "DocChangeRefused",
+      rung: "lineage",
+    });
+    expect(verdict([doc({ genesis: true, lineage: derived, parent: derived })], at)).toEqual({
+      tag: "DocChangeRefused",
+      rung: "lineage",
+    });
+  });
+
+  test("a genesis written under the lineage rule before §16.1 is refused, numbered or not", () => {
+    const at = { seqNum: seq(4) };
+    const derived = deriveLineage(editor.peerId, seq(4), 0);
+    const legacy = doc({ genesis: true, legacy: true, lineage: derived });
+    expect(verdict([legacy], at)).toEqual({ tag: "DocChangeRefused", rung: "lineage" });
+    expect(verdict([legacy])).toEqual({ tag: "DocChangeRefused", rung: "lineage" });
+  });
+
   test("one event starts one lineage per document", () => {
     const twice = [doc({ genesis: true, lineage: parseLineageId("01".repeat(16)).unwrap() })];
     expect(verdict([...twice, ...twice])).toEqual({ tag: "DocChangeRefused", rung: "lineage" });
@@ -211,11 +248,37 @@ describe("a doc change against the policy (RFC-0023 §11)", () => {
     // the viewer may start a board and write its first content
     expect(probe([insert, doc(boards)], NONE).isOk()).toBe(true);
     // but repeating the held row's values is no way to edit, or replace, its document
-    for (const change of [doc(boards), doc({ ...boards, genesis: true })]) {
+    for (const [change, op] of [
+      [doc(boards), "update"],
+      [doc({ ...boards, genesis: true }), "replace"],
+    ] as const) {
       const r = probe([insert, change], HELD);
       expect(r.isErr() && r.error._tag).toBe("PolicyDenied");
-      expect(r.isErr() && "op" in r.error && r.error.op).toBe("update");
+      expect(r.isErr() && "op" in r.error && r.error.op).toBe(op);
     }
+  });
+
+  test("a replace with no rule of its own is judged by the row's update rule (§16.2)", () => {
+    const replace = doc({ genesis: true });
+    const as = (who: PeerId) =>
+      validator.validate({ peerId: who, partition: W1, changes: [replace] }, HELD);
+    expect(as(editor.peerId).isOk()).toBe(true);
+    const r = as(viewer.peerId);
+    expect(r.isErr() && r.error._tag).toBe("PolicyDenied");
+    expect(r.isErr() && "op" in r.error && r.error.op).toBe("replace");
+  });
+
+  test("a stricter replace rule refuses an editor's replace and admits the owner's (§16.2)", () => {
+    const templates = { table: table("templates") } as const;
+    const as = (who: PeerId, change: DocChange) =>
+      validator.validate({ peerId: who, partition: W1, changes: [change] }, HELD);
+    const replace = doc({ ...templates, genesis: true });
+    const refused = as(editor.peerId, replace);
+    expect(refused.isErr() && refused.error._tag).toBe("PolicyDenied");
+    expect(refused.isErr() && "op" in refused.error && refused.error.op).toBe("replace");
+    expect(as(owner.peerId, replace).isOk()).toBe(true);
+    // the rule is the replace's alone: an editor still edits the template's document
+    expect(as(editor.peerId, doc(templates)).isOk()).toBe(true);
   });
 
   test("a doc change against another partition's row is WrongPartition, like any change", () => {

@@ -62,6 +62,8 @@ fn edit(byte: u8, lineage: Option<Id16>) -> Change {
         lineage,
         update: DocUpdate::Bytes(vec![byte]),
         genesis: false,
+        legacy: false,
+        parent: None,
     })
 }
 
@@ -133,8 +135,16 @@ fn an_edit_off_the_winning_lineage_is_orphaned_and_moves_no_write_keys() {
     );
 }
 
+fn labels(r: &Engine, b: &Engine) -> BTreeMap<(bool, u64), DocEntryState> {
+    r.doc_log()
+        .unwrap()
+        .into_iter()
+        .map(|e| ((e.author == *b.peer_id(), e.seq.get()), e.state))
+        .collect()
+}
+
 #[test]
-fn a_late_winning_genesis_relabels_the_edits_that_arrived_before_it() {
+fn the_first_of_two_concurrent_replaces_wins_and_the_late_one_discards_nothing() {
     let mut a = engine(1, true);
     let mut b = engine(2, true);
     let created = write(&mut a, vec![insert()]);
@@ -144,18 +154,48 @@ fn a_late_winning_genesis_relabels_the_edits_that_arrived_before_it() {
     let on_b = lineage(&b);
     let b_edit = write(&mut b, vec![edit(3, on_b)]);
     let mut r = engine(3, true);
-    for entry in [created, b_edit, a_replace, b_replace.clone()] {
+    for entry in [created, b_edit, a_replace, b_replace] {
         r.receive(entry).unwrap();
     }
-    assert_eq!(lineage(&r), lineage(&b), "B's replace is the later stamp");
-    let by_author: BTreeMap<_, _> = r
-        .doc_log()
-        .unwrap()
-        .into_iter()
-        .map(|e| ((e.author == *b.peer_id(), e.seq.get()), e.state))
-        .collect();
+    assert_eq!(lineage(&r), lineage(&a), "A's replace is the first stamp");
     assert_eq!(
-        by_author,
+        labels(&r, &b),
+        BTreeMap::from([
+            ((false, 2), DocEntryState::Tail),
+            ((true, 1), DocEntryState::Orphaned),
+            ((true, 2), DocEntryState::Orphaned),
+        ])
+    );
+}
+
+#[test]
+fn a_late_parent_relabels_the_edits_that_arrived_before_it() {
+    let mut a = engine(1, true);
+    let mut b = engine(2, true);
+    let created = write(&mut a, vec![insert()]);
+    let a_replace = write(&mut a, vec![replace(1)]);
+    b.receive(created.clone()).unwrap();
+    b.receive(a_replace.clone()).unwrap();
+    // B restores on top of A's lineage: its replace names A's as the one it replaces
+    let b_replace = write(&mut b, vec![replace(2)]);
+    assert!(matches!(&b_replace.event.changes[0], Change::Doc(d) if d.parent == lineage(&a)));
+    let on_b = lineage(&b);
+    let b_edit = write(&mut b, vec![edit(3, on_b)]);
+    let mut r = engine(3, true);
+    for entry in [b_replace, b_edit] {
+        r.receive(entry).unwrap();
+    }
+    assert_eq!(lineage(&r), None, "B's lineage hangs off one not held yet");
+    assert_eq!(
+        states(&r),
+        [DocEntryState::Orphaned, DocEntryState::Orphaned]
+    );
+    for entry in [created, a_replace] {
+        r.receive(entry).unwrap();
+    }
+    assert_eq!(lineage(&r), on_b);
+    assert_eq!(
+        labels(&r, &b),
         BTreeMap::from([
             ((false, 2), DocEntryState::Orphaned),
             ((true, 1), DocEntryState::Tail),
@@ -441,4 +481,35 @@ mod sqlite {
         let _ = std::fs::remove_dir_all(dir);
         (columns, indexed)
     }
+}
+
+/// `entry` re-signed by `seed` with every genesis in it marked as written under the lineage rule
+/// before RFC-0023 §16.1 (key 5 `true`).
+fn legacy(entry: &StoredEvent, seed: u8) -> StoredEvent {
+    let mut event = entry.event.clone();
+    for change in &mut event.changes {
+        if let Change::Doc(d) = change {
+            d.legacy = d.genesis;
+        }
+    }
+    StoredEvent::from_verified(syncmesh_core::sign_event(
+        event,
+        &Identity::from_seed(&[seed; 32]),
+    ))
+}
+
+#[test]
+fn a_legacy_genesis_reads_back_from_the_wire_and_is_quarantined_at_admission() {
+    let mut a = engine(1, true);
+    let old = legacy(&write(&mut a, vec![insert(), replace(1)]), 1);
+    let core = syncmesh_core::encode_event_core(&old.event);
+    let decoded = syncmesh_core::decode_event_core(&core).unwrap();
+    assert!(matches!(&decoded.changes[1], Change::Doc(d) if d.genesis && d.legacy));
+    assert_eq!(syncmesh_core::encode_event_core(&decoded), core);
+
+    let mut b = engine(2, true);
+    b.receive(old.clone()).unwrap();
+    let parked: Vec<String> = b.quarantine().iter().map(StoredEvent::id).collect();
+    assert_eq!(parked, [old.id()]);
+    assert_eq!(b.state().record("notes", "n1"), None);
 }

@@ -111,8 +111,9 @@ fn contributions_of(value: &CellValue) -> (AuthorTotals, AuthorTotals) {
     }
 }
 
-/// `{"+": n}` — the shape an increment travels in; anything else is normal form.
-fn delta_of(value: &CellValue) -> Option<f64> {
+/// The `n` of `{"+": n}` — the shape an increment travels in — or `None` for anything else, which
+/// is normal form.
+pub fn counter_delta(value: &CellValue) -> Option<f64> {
     match value.as_object()?.get("+")? {
         JsonValue::Number(n) => Some(*n),
         _ => None,
@@ -152,7 +153,7 @@ fn counter(incoming: Cell, current: Option<Cell>) -> Cell {
         Some(c) if incoming.stamp <= c.stamp => c.stamp.clone(),
         _ => incoming.stamp.clone(),
     };
-    if let Some(delta) = delta_of(&incoming.value) {
+    if let Some(delta) = counter_delta(&incoming.value) {
         let author = incoming.stamp.peer.as_str().to_owned();
         let (mut p, mut n) = (held_p, held_n);
         let side = if delta >= 0.0 { &mut p } else { &mut n };

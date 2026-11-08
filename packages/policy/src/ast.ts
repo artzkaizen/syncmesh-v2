@@ -32,7 +32,7 @@ export type PolicyNode =
 /** How a column stands to a constant. Ordered comparisons hold only between two scalars of one kind. */
 export type CompareOp = "ne" | "lt" | "lte" | "gt" | "gte";
 
-export type Operation = "read" | "insert" | "update" | "delete" | (string & {});
+export type Operation = "read" | "insert" | "update" | "delete" | "replace" | (string & {});
 
 /** Rules per operation. `write` covers insert, update and delete; `$default` covers everything else. */
 export interface AllowBlock {
@@ -42,13 +42,23 @@ export interface AllowBlock {
   readonly insert?: PolicyNode;
   readonly update?: PolicyNode;
   readonly delete?: PolicyNode;
+  /**
+   * Who may `replace()` a document column of the row — start a new lineage, the one document
+   * operation that can set others' work aside (RFC-0023 §11, decided §16.2). Absent, a replace is
+   * judged as the `update` it otherwise is.
+   */
+  readonly replace?: PolicyNode;
   readonly [custom: string]: PolicyNode | undefined;
 }
 
 const WRITES = new Set<string>(["insert", "update", "delete"]);
 
-/** `block[op] ?? block.write (for writes) ?? block.$default`. */
+/**
+ * `block[op] ?? block.write (for writes) ?? block.$default` — and a `replace` with no rule of its
+ * own resolves exactly as `update` does.
+ */
 export function resolveAllow(block: AllowBlock, op: Operation): PolicyNode {
+  if (op === "replace") return block.replace ?? resolveAllow(block, "update");
   return block[op] ?? (WRITES.has(op) ? block.write : undefined) ?? block.$default;
 }
 

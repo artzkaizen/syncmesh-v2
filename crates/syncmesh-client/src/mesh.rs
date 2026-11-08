@@ -18,7 +18,9 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::blobs::{BlobError, BlobStore, MemoryBlobStore, hash_of, verify_blob};
 use crate::driver::{LinkCommand, LinkEvent, run_link};
-use crate::engine::{Engine, EngineOptions, FoldBatch, MutateError, Mutated};
+use crate::engine::{
+    Engine, EngineOptions, FoldBatch, MutateError, Mutated, RevertError, Reverted,
+};
 use crate::grants::GrantRegistry;
 use crate::presence::{PresenceEntry, PresenceTier, PresenceTouch};
 use crate::random;
@@ -167,6 +169,17 @@ impl Mesh {
             .commands
             .try_send(LinkCommand::Write(mutated.entry.clone()));
         Ok(mutated)
+    }
+
+    /// [`Engine::revert`], with the compensating write handed to the link like any other.
+    pub fn revert(&self, event_id: &str) -> Result<Reverted, RevertError> {
+        let reverted = lock(&self.engine).revert(event_id)?;
+        if let Some(mutated) = &reverted.mutated {
+            let _ = self
+                .commands
+                .try_send(LinkCommand::Write(mutated.entry.clone()));
+        }
+        Ok(reverted)
     }
 
     /// Publishes this device's value at a topic; conflated at every hop, never queued.

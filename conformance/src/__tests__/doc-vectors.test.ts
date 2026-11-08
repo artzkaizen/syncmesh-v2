@@ -1,4 +1,4 @@
-import { parsePeerId, parseSeqNum } from "@syncmesh/kernel";
+import { getRecord, docLineage, parseLineageId, parsePeerId, parseSeqNum } from "@syncmesh/kernel";
 import {
   bytesToHex,
   decodeCheckpoint,
@@ -8,13 +8,16 @@ import {
   encodeCbor,
   encodeCheckpointCore,
   encodeEventCore,
+  encodeRecord,
   hexToBytes,
   verify,
 } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import raw from "../../doc-vectors.json" with { type: "json" };
+import { CONTENT, N1, NOTES } from "../doc-names.js";
 import { docVectors } from "../generate-doc-vectors.js";
+import { foldGeneses } from "../lineage-trees.js";
 import { wireVectors } from "../vectors.js";
 
 const bytes = (hex: string) => hexToBytes(hex).unwrap();
@@ -35,6 +38,7 @@ describe("doc vectors — frozen (RFC-0023 §13)", () => {
       for (const [index, change] of event.changes.entries())
         if (change.kind === "doc" && change.genesis === true)
           expect(change.lineage).toBe(deriveLineage(event.peerId, event.seqNum, index));
+        else if (change.kind === "doc") expect(change.parent).toBeUndefined();
     });
   }
 
@@ -44,6 +48,32 @@ describe("doc vectors — frozen (RFC-0023 §13)", () => {
       const seq = parseSeqNum(l.seq).unwrap();
       expect(bytesToHex(docChangeId(peer, seq, l.index))).toBe(l.changeIdHex);
       expect(String(deriveLineage(peer, seq, l.index))).toBe(l.lineageHex);
+    });
+  }
+
+  /** Every order of a short list: each lineage tree is folded in all of them. */
+  const permutations = <T>(xs: readonly T[]): T[][] =>
+    xs.length <= 1
+      ? [[...xs]]
+      : xs.flatMap((x, i) =>
+          permutations([...xs.slice(0, i), ...xs.slice(i + 1)]).map((rest) => [x, ...rest]),
+        );
+
+  for (const tree of raw.lineageTrees) {
+    test(`lineage tree: ${tree.description} — in every order, one record and one winner`, () => {
+      const geneses = tree.geneses.map((g) => ({
+        lineage: parseLineageId(g.lineage).unwrap(),
+        parent: g.parent === null ? undefined : parseLineageId(g.parent).unwrap(),
+        ms: g.ms,
+        logical: g.logical,
+        peer: parsePeerId(g.peer).unwrap(),
+      }));
+      const winner = tree.winner === null ? undefined : parseLineageId(tree.winner).unwrap();
+      for (const order of permutations(geneses)) {
+        const record = getRecord(foldGeneses(order), NOTES, N1);
+        expect(record === undefined ? "" : bytesToHex(encodeRecord(record))).toBe(tree.recordHex);
+        expect(docLineage(record, CONTENT)).toBe(winner);
+      }
     });
   }
 

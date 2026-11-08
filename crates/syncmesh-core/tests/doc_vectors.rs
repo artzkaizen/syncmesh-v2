@@ -46,6 +46,15 @@ fn producer() -> Identity {
 }
 
 fn doc(lineage: Option<Id16>, update: DocUpdate, genesis: bool) -> Change {
+    replace_of(lineage, update, genesis, None)
+}
+
+fn replace_of(
+    lineage: Option<Id16>,
+    update: DocUpdate,
+    genesis: bool,
+    parent: Option<Id16>,
+) -> Change {
     Change::Doc(DocChange {
         table: "notes".into(),
         key: "n1".into(),
@@ -54,6 +63,8 @@ fn doc(lineage: Option<Id16>, update: DocUpdate, genesis: bool) -> Change {
         lineage,
         update,
         genesis,
+        legacy: false,
+        parent,
     })
 }
 
@@ -61,7 +72,7 @@ fn loro() -> DocUpdate {
     DocUpdate::Bytes(b"loro".to_vec())
 }
 
-/// The five frozen events, built here from scratch.
+/// The six frozen events, built here from scratch.
 fn events() -> Vec<SyncEvent> {
     let a = author();
     let at = |n: u64, procedure: &str, changes: Vec<Change>| SyncEvent {
@@ -113,7 +124,79 @@ fn events() -> Vec<SyncEvent> {
             undo_of: Some(action),
             ..at(5, "revert", vec![doc(None, loro(), false)])
         },
+        at(
+            6,
+            "notes.replace",
+            vec![replace_of(
+                Some(derive_lineage(a.peer_id(), seq(6), 0)),
+                DocUpdate::Bytes(vec![4, 5, 6]),
+                true,
+                Some(genesis),
+            )],
+        ),
     ]
+}
+
+/// Every order of a short list: each frozen lineage tree is folded in all of them.
+fn permutations<T: Clone>(xs: &[T]) -> Vec<Vec<T>> {
+    if xs.len() <= 1 {
+        return vec![xs.to_vec()];
+    }
+    (0..xs.len())
+        .flat_map(|i| {
+            let mut rest = xs.to_vec();
+            let x = rest.remove(i);
+            permutations(&rest).into_iter().map(move |mut p| {
+                p.insert(0, x.clone());
+                p
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn every_frozen_lineage_tree_folds_to_one_record_and_one_winner_in_every_order() {
+    let file = vectors("doc-vectors.json");
+    let trees = file["lineageTrees"].as_array().unwrap();
+    assert!(!trees.is_empty());
+    for tree in trees {
+        let what = tree["description"].as_str().unwrap();
+        let geneses: Vec<(Change, Stamp)> = tree["geneses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| {
+                let parent = g["parent"].as_str().map(id16);
+                let change = replace_of(
+                    Some(id16(g["lineage"].as_str().unwrap())),
+                    DocUpdate::Bytes(Vec::new()),
+                    true,
+                    parent,
+                );
+                let stamp = Stamp::new(
+                    Hlc::new(
+                        g["ms"].as_i64().unwrap(),
+                        g["logical"].as_u64().unwrap() as u32,
+                    ),
+                    PeerId::parse(g["peer"].as_str().unwrap()).unwrap(),
+                );
+                (change, stamp)
+            })
+            .collect();
+        let winner = tree["winner"].as_str().map(id16);
+        for order in permutations(&geneses) {
+            let mut state = syncmesh_core::state::State::new();
+            for (change, stamp) in &order {
+                apply_change(&mut state, change, stamp, None, None).unwrap();
+            }
+            let record = state.record("notes", "n1");
+            let bytes = record
+                .map(|r| to_hex(&encode_record(r)))
+                .unwrap_or_default();
+            assert_eq!(bytes, tree["recordHex"].as_str().unwrap(), "record: {what}");
+            assert_eq!(lineage_of(record, "content"), winner, "winner: {what}");
+        }
+    }
 }
 
 #[test]

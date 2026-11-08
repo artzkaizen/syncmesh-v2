@@ -9,7 +9,7 @@ import type {
   State,
 } from "@syncmesh/kernel";
 
-import { getRecord, lineageOf, withDocColumns } from "@syncmesh/kernel";
+import { getRecord, docLineage, withDocColumns } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
 import { bytesEqual } from "@syncmesh/wire";
 
@@ -185,7 +185,7 @@ function coverIfCurrent(
   return Result.gen(async function* () {
     const heads = yield* Result.await(docStore.heads());
     const held = heads.find((h) => docKey(h) === docKey(doc))?.version;
-    const winner = lineageOf(getRecord(getState(), doc.table, doc.key), doc.column);
+    const winner = docLineage(getRecord(getState(), doc.table, doc.key), doc.column);
     const moved =
       held === undefined || cover.base === undefined
         ? held !== cover.base
@@ -214,7 +214,7 @@ function readTail(
   doc: DocAddress,
 ): Promise<Result<DocTail, StoreFailure>> {
   return Result.gen(async function* () {
-    const lineage = lineageOf(getRecord(getState(), doc.table, doc.key), doc.column);
+    const lineage = docLineage(getRecord(getState(), doc.table, doc.key), doc.column);
     const entries = yield* Result.await(docStore.entriesOf(doc));
     const heads = yield* Result.await(docStore.heads());
     const head = heads.find((h) => docKey(h) === docKey(doc));

@@ -75,17 +75,18 @@ pub fn apply_change(
         ),
         Change::Unknown { tag, .. } => return Err(Unfoldable { tag: *tag }),
         Change::Doc(doc) => {
-            let (true, Some(lineage)) = (doc.genesis, doc.lineage) else {
+            let (true, false, Some(lineage)) = (doc.genesis, doc.legacy, doc.lineage) else {
                 return Ok(());
             };
             let mut spec = merge.cloned().unwrap_or_default();
             spec.entry(doc.table.clone())
                 .or_default()
                 .insert(doc.column.clone(), StrategyName::Lineage);
-            let cell = Cell {
-                value: crate::record::CellValue::Text(crate::doc::lineage_text(&lineage)),
+            let cell = crate::doc::lineage_cell(&crate::doc::Genesis {
+                lineage,
+                parent: doc.parent,
                 stamp: stamp.clone(),
-            };
+            });
             let incoming = RowRecord {
                 cells: BTreeMap::from([(doc.column.clone(), cell)]),
                 partition: partition.map(|p| p.as_str().to_owned()),

@@ -268,7 +268,8 @@ function checkPolicy(
   schema: ValidatorSchema,
 ): Result<void, ValidationError> {
   if (author === undefined || rules === undefined) return Result.ok(undefined);
-  const op: Operation = change.kind === "doc" ? "update" : change.kind;
+  const op: Operation =
+    change.kind === "doc" ? (change.genesis === true ? "replace" : "update") : change.kind;
   const rule = resolveAllow(rules, op);
   const row = before(change.table, change.key);
   const patch = policyPatch(change);

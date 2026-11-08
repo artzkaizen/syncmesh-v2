@@ -12,7 +12,7 @@ import type { Temporal } from "@syncmesh/temporal";
 
 import { sha256 } from "@noble/hashes/sha2.js";
 import { docKey } from "@syncmesh/engine";
-import { getRecord, lineageOf } from "@syncmesh/kernel";
+import { getRecord, docLineage } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import {
   bytesEqual,
@@ -220,7 +220,7 @@ function verified<D>(
     return refuse("the snapshot bytes are not the ones the checkpoint names");
   if (docKey(checkpoint) !== docKey(address))
     return refuse("the checkpoint is of another document");
-  const winner = lineageOf(getRecord(engine.state(), address.table, address.key), address.column);
+  const winner = docLineage(getRecord(engine.state(), address.table, address.key), address.column);
   if (winner !== checkpoint.lineage)
     return refuse("the checkpoint is of a lineage that does not win here");
   const doc = adapter.create(replica);

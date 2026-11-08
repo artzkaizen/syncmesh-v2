@@ -24,7 +24,24 @@ import { bytesToHex, hexToBytes } from "./hex.js";
  * §5.1). Exactly one of `bytes` and `blob` is present; unknown keys are skipped (RFC-0002
  * invariant 4) and are never re-emitted — the log keeps the author's core bytes for that.
  */
-export const DOC = { column: 0, adapter: 1, lineage: 2, bytes: 3, blob: 4, genesis: 5 } as const;
+export const DOC = {
+  column: 0,
+  adapter: 1,
+  lineage: 2,
+  bytes: 3,
+  blob: 4,
+  genesis: 5,
+  parent: 6,
+} as const;
+
+/**
+ * What key 5 holds on a genesis: the version of the lineage rule it was written under. `1` is the
+ * first-genesis tree (RFC-0023 §16.1). The rule before it, last-writer-wins, wrote `true`; a build
+ * from then refuses anything else, so it quarantines a genesis it would have folded by the old
+ * rule, and this build refuses `true` at admission for the same reason the other way round — it
+ * decodes one as `legacy`, so a stored log holding it still reads.
+ */
+export const GENESIS_RULE = 1;
 
 /** Both 16-byte ids — lineage, action — are this long on the wire. */
 export const ID16_LENGTH = 16;
@@ -105,14 +122,17 @@ export function docDataToCbor(change: DocChange): CborValue {
   if (change.lineage !== undefined) data.set(DOC.lineage, hexToBytes(change.lineage).unwrap());
   if (change.update.bytes !== undefined) data.set(DOC.bytes, change.update.bytes);
   else data.set(DOC.blob, blobToCbor(change.update.blob));
-  if (change.genesis === true) data.set(DOC.genesis, true);
+  if (change.genesis === true) data.set(DOC.genesis, change.legacy === true ? true : GENESIS_RULE);
+  if (change.parent !== undefined) data.set(DOC.parent, hexToBytes(change.parent).unwrap());
   return data;
 }
 
 /**
  * A doc change from its `data` map. Refuses what no fold could take — no column, no adapter, a
- * lineage that is not 16 bytes, both or neither of `bytes` and `blob`, a `genesis` that is not
- * `true` — and skips keys it has no name for. Never throws.
+ * lineage or parent that is not 16 bytes, both or neither of `bytes` and `blob`, a `genesis` that
+ * is neither {@link GENESIS_RULE} nor the `true` of the rule before it, a parent on anything but a
+ * genesis — and skips keys it has no name for. A `true` genesis decodes as `legacy`, so a stored
+ * log that holds one still reads; admission is what refuses it. Never throws.
  */
 export function docFromCbor(
   table: TableName,
@@ -122,10 +142,8 @@ export function docFromCbor(
   if (!(value instanceof Map)) return malformed("doc data is not a map");
   const column = value.get(DOC.column);
   const adapter = value.get(DOC.adapter);
-  const lineage = value.get(DOC.lineage);
   const bytes = value.get(DOC.bytes);
   const blob = value.get(DOC.blob);
-  const genesis = value.get(DOC.genesis);
   if (!isString(column) || column.length === 0) return malformed("doc column is not text");
   if (!isString(adapter)) return malformed("doc adapter is not text");
   const adapterId = parseAdapterId(adapter);
@@ -134,24 +152,57 @@ export function docFromCbor(
     return malformed("a doc change carries exactly one of bytes and blob");
   if (bytes !== undefined && !(bytes instanceof Uint8Array))
     return malformed("doc bytes are not bytes");
-  if (genesis !== undefined && genesis !== true) return malformed("genesis is only ever true");
-  const lineageId = lineage === undefined ? undefined : id16(lineage);
-  if (lineage !== undefined && lineageId === undefined)
-    return malformed("doc lineage is not 16 bytes");
   const update: Result<DocUpdate, MalformedDoc> =
     bytes instanceof Uint8Array
       ? Result.ok({ bytes })
       : blobFromCbor(blob).map((ref) => ({ blob: ref }));
-  return update.map((carried) => ({
-    kind: "doc" as const,
-    table,
-    key,
-    column: asColumn(column),
-    adapter: adapterId.value,
-    update: carried,
+  return Result.gen(function* () {
+    const carried = yield* update;
+    const history = yield* historyFromCbor(value);
+    return Result.ok({
+      kind: "doc" as const,
+      table,
+      key,
+      column: asColumn(column),
+      adapter: adapterId.value,
+      update: carried,
+      ...history,
+    });
+  });
+}
+
+/**
+ * Which history a change belongs to: keys 2, 5 and 6 — its lineage, and on a genesis, the rule it
+ * was written under and its parent.
+ */
+type History = Pick<DocChange, "lineage" | "genesis" | "legacy" | "parent">;
+
+/** Key 5: absent, this build's rule, or the `true` of the rule before it (`legacy`). */
+function genesisFromCbor(value: CborValue | undefined): Result<History, MalformedDoc> {
+  if (value === undefined) return Result.ok({});
+  if (value === GENESIS_RULE) return Result.ok({ genesis: true });
+  if (value === true) return Result.ok({ genesis: true, legacy: true });
+  return malformed("genesis is 1, the lineage rule's version");
+}
+
+function historyFromCbor(data: Map<CborKey, CborValue>): Result<History, MalformedDoc> {
+  const lineage = data.get(DOC.lineage);
+  const parent = data.get(DOC.parent);
+  const rule = genesisFromCbor(data.get(DOC.genesis));
+  if (rule.isErr()) return rule;
+  const lineageId = lineage === undefined ? undefined : id16(lineage);
+  if (lineage !== undefined && lineageId === undefined)
+    return malformed("doc lineage is not 16 bytes");
+  const parentId = parent === undefined ? undefined : id16(parent);
+  if (parent !== undefined && parentId === undefined)
+    return malformed("doc parent is not 16 bytes");
+  if (parent !== undefined && rule.value.genesis === undefined)
+    return malformed("only a genesis names the lineage it replaces");
+  return Result.ok({
     ...(lineageId !== undefined && { lineage: parseLineageId(lineageId).unwrap() }),
-    ...(genesis === true && { genesis: true as const }),
-  }));
+    ...rule.value,
+    ...(parentId !== undefined && { parent: parseLineageId(parentId).unwrap() }),
+  });
 }
 
 // SAFETY: column naming rules are owned by the schema; the codec only requires non-empty text
@@ -162,7 +213,7 @@ const asColumn = (s: string) => s as ColumnName;
  * on purpose: an old build skips both keys and folds the event, so a new one that refused the
  * event over them would park what every old peer folded — the divergence D13 exists to prevent.
  */
-export const actionIdOf = (value: CborValue | undefined) => {
+export const wireActionId = (value: CborValue | undefined) => {
   const hex = id16(value);
   return hex === undefined ? undefined : parseActionId(hex).unwrapOr(undefined);
 };

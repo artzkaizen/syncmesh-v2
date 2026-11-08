@@ -29,6 +29,7 @@ pub mod random;
 pub mod relay;
 pub mod room;
 pub mod store;
+pub mod undo;
 
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
@@ -50,7 +51,7 @@ pub use doc_log::{
 };
 pub use engine::{
     Engine, EngineOptions, FoldBatch, FoldSource, MutateError, Mutated, OwnPosition, ReceiveReport,
-    Received,
+    Received, RevertError, Reverted,
 };
 pub use grants::{GrantCache, GrantRegistry};
 pub use holdback::Holdback;
@@ -66,3 +67,4 @@ pub use store::{
     Ahead, Coverage, Cursors, EventStore, MemoryEventStore, MemoryStateStore, RowWrite, StateStore,
     StoreError, StoredEvent,
 };
+pub use undo::{SkipReason, Skipped};

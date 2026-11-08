@@ -12,7 +12,7 @@
 //! later slice, and until then a Rust device trusts the relay's room the way a TypeScript device
 //! with no schema does.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use syncmesh_core::apply::apply_change;
@@ -35,6 +35,7 @@ use crate::store::{
     Ahead, Coverage, Cursors, EventStore, StateStore, StoreError, StoredEvent, rows_for,
     write_keys_of,
 };
+use crate::undo::{Skipped, Undo, compensate, rows_before};
 
 /// Where a batch came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +81,45 @@ pub struct Mutated {
     pub entry: StoredEvent,
     pub batch: FoldBatch,
 }
+
+/// What a revert did: the compensating write, when anything of the original still stood to
+/// compensate, and what it left alone (RFC-0023 §9).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reverted {
+    pub mutated: Option<Mutated>,
+    pub skipped: Vec<Skipped>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RevertError {
+    /// Not among this engine's last `undo_depth` writes.
+    NotRevertable {
+        event_id: String,
+    },
+    /// Nothing but document updates, which only their adapter compensates; still revertable once
+    /// document undo lands.
+    DocumentsOnly {
+        event_id: String,
+    },
+    Mutate(MutateError),
+}
+
+impl std::fmt::Display for RevertError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RevertError::NotRevertable { event_id } => {
+                write!(f, "{event_id} is not among this engine's revertable writes")
+            }
+            RevertError::DocumentsOnly { event_id } => write!(
+                f,
+                "{event_id} wrote document updates alone, undone by their adapter (RFC-0023 §9)"
+            ),
+            RevertError::Mutate(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for RevertError {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Received {
@@ -154,6 +194,8 @@ pub struct EngineOptions {
     pub doc_adapters: BTreeSet<String>,
     /// Where the doc log and heads live; `None`, in memory.
     pub doc_store: Option<Box<dyn DocStore + Send>>,
+    /// How many of this engine's own writes stay revertable. Default 0.
+    pub undo_depth: usize,
 }
 
 impl Default for EngineOptions {
@@ -166,6 +208,7 @@ impl Default for EngineOptions {
             docs: None,
             doc_adapters: BTreeSet::new(),
             doc_store: None,
+            undo_depth: 0,
         }
     }
 }
@@ -196,6 +239,9 @@ pub struct Engine {
     /// The highest sequence of this device's own author known to exist outside this log — what a
     /// room said it holds (G7). Numbering never goes at or below it, whatever the log holds.
     own_floor: u64,
+    undo_depth: usize,
+    /// The last `undo_depth` own writes and the rows they touched as they read before.
+    undo: VecDeque<Undo>,
 }
 
 /// What a room's position for this device's own author meant for this log (G7).
@@ -275,6 +321,8 @@ impl Engine {
                 .doc_store
                 .unwrap_or_else(|| Box::new(MemoryDocStore::new())),
             own_floor: 0,
+            undo_depth: options.undo_depth,
+            undo: VecDeque::new(),
         };
         let replay = engine.store.all_since(&coverage.synced)?;
         let batch = engine.fold(&replay, FoldSource::Boot);
@@ -311,7 +359,9 @@ impl Engine {
 
     /// [`Engine::mutate`], in an action (event key 10) and compensating another (key 11). A
     /// genesis in `changes` names no lineage of its own: the one derived from its place in the
-    /// event is filled in once the event is numbered, whatever the caller wrote (RFC-0023 §5.3).
+    /// event is filled in once the event is numbered, whatever the caller wrote (RFC-0023 §5.3),
+    /// and so is its parent — the lineage that wins here as it is written, which is what a
+    /// replace replaces (§16.1).
     pub fn mutate_with(
         &mut self,
         procedure: &str,
@@ -344,6 +394,7 @@ impl Engine {
             .map(|(index, change)| match change {
                 Change::Doc(mut d) if d.genesis => {
                     d.lineage = Some(derive_lineage(&peer_id, seq_num, index as u32));
+                    d.parent = lineage_of(self.state.record(&d.table, &d.key), &d.column);
                     Change::Doc(d)
                 }
                 other => other,
@@ -366,11 +417,76 @@ impl Engine {
                 reason,
             });
         }
+        let before = if self.undo_depth > 0 {
+            rows_before(&self.state, &event.changes)
+        } else {
+            Vec::new()
+        };
         let entry = StoredEvent::from_verified(sign_event(event, &self.identity));
         self.store.append(&entry)?;
         let batch = self.fold(std::slice::from_ref(&entry), FoldSource::Local);
         self.persist(&batch)?;
+        if self.undo_depth > 0 {
+            self.undo.push_back(Undo {
+                event: entry.event.clone(),
+                before,
+            });
+            if self.undo.len() > self.undo_depth {
+                self.undo.pop_front();
+            }
+        }
         Ok(Mutated { entry, batch })
+    }
+
+    /// Whether `event_id` is among this engine's last `undo_depth` writes.
+    pub fn can_revert(&self, event_id: &str) -> bool {
+        self.undo.iter().any(|u| u.event.id() == event_id)
+    }
+
+    /// Writes the compensating event for one of this engine's last `undo_depth` writes, in that
+    /// event's partition, as the TypeScript's `revert` (RFC-0023 §9, decided in §16.3): each cell
+    /// still holding the write's stamp goes back to its value before the write, and a cell someone
+    /// changed since is left as they left it and reported in `skipped`. When nothing of the write
+    /// still stands, nothing is written; a compensation the engine refuses leaves the write
+    /// revertable.
+    pub fn revert(&mut self, event_id: &str) -> Result<Reverted, RevertError> {
+        let Some(index) = self.undo.iter().position(|u| u.event.id() == event_id) else {
+            return Err(RevertError::NotRevertable {
+                event_id: event_id.to_owned(),
+            });
+        };
+        let only_documents = self.undo[index]
+            .event
+            .changes
+            .iter()
+            .all(|c| matches!(c, Change::Doc(_) | Change::Unknown { .. }));
+        if only_documents {
+            // refused before the ring gives up the slot, so it stays revertable for doc undo
+            return Err(RevertError::DocumentsOnly {
+                event_id: event_id.to_owned(),
+            });
+        }
+        let Some(undo) = self.undo.remove(index) else {
+            unreachable!("the index was just found in the ring")
+        };
+        let (changes, skipped) = compensate(&self.state, &undo, self.merge.as_ref());
+        if changes.is_empty() {
+            return Ok(Reverted {
+                mutated: None,
+                skipped,
+            });
+        }
+        match self.mutate("revert", changes, undo.event.partition.clone()) {
+            Ok(mutated) => Ok(Reverted {
+                mutated: Some(mutated),
+                skipped,
+            }),
+            Err(e) => {
+                // a refused compensation wrote nothing, so the write is still there to revert
+                self.undo.insert(index.min(self.undo.len()), undo);
+                Err(RevertError::Mutate(e))
+            }
+        }
     }
 
     /// Folds entries once each; already-stored events are skipped, and events this build has no

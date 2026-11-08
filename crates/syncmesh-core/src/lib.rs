@@ -26,8 +26,9 @@ pub mod strategy;
 pub use apply::{apply_change, merge_record};
 pub use cbor::{Key, Value, decode as decode_cbor, encode as encode_cbor};
 pub use doc::{
-    DocBlobRef, DocChange, DocColumns, DocUpdate, Id16, derive_lineage, doc_change_id, lineage_of,
-    lineage_rule, with_doc_columns,
+    DocBlobRef, DocChange, DocColumns, DocUpdate, GENESIS_RULE, Genesis, Id16, derive_lineage,
+    doc_change_id, geneses_of, lineage_cell, lineage_of, lineage_rule, winning_lineage,
+    with_doc_columns,
 };
 pub use doc_checkpoint::{DocCheckpoint, decode_doc_checkpoint, sign_doc_checkpoint};
 pub use envelope::{VerifiedEvent, decode_and_verify, sign_event, split_envelope};

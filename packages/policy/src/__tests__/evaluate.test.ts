@@ -176,4 +176,11 @@ describe("resolveAllow", () => {
     expect(resolveAllow(block, "export")).toEqual(role("member"));
     expect(resolveAllow({ $default: deny }, "insert")).toEqual(deny);
   });
+
+  test("replace: its own rule, else whatever update resolves to (RFC-0023 §16.2)", () => {
+    expect(resolveAllow(block, "replace")).toEqual(role("admin"));
+    expect(resolveAllow({ ...block, update: role("editor") }, "replace")).toEqual(role("editor"));
+    expect(resolveAllow({ ...block, replace: role("owner") }, "replace")).toEqual(role("owner"));
+    expect(resolveAllow({ $default: deny }, "replace")).toEqual(deny);
+  });
 });

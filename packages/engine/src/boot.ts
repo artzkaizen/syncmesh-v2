@@ -1,6 +1,6 @@
 import type { State } from "@syncmesh/kernel";
 
-import { emptyState, getRecord, lineageOf } from "@syncmesh/kernel";
+import { emptyState, getRecord, docLineage } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
 import type { Engine, EngineOptions } from "./engine.js";
@@ -78,7 +78,7 @@ export function openEngine(
             replay.map((entry) => entry.event),
             (adapter) => docAdapters?.has(adapter) === true,
           ),
-          (doc) => lineageOf(getRecord(state, doc.table, doc.key), doc.column),
+          (doc) => docLineage(getRecord(state, doc.table, doc.key), doc.column),
           (adapter) => docAdapters?.has(adapter) === true,
         ),
       );

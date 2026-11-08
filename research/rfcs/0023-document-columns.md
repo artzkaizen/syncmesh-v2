@@ -84,8 +84,10 @@ it.
 8. Rust gets a `DocumentAdapter` trait: open a snapshot, apply an update (did it change
    anything?), snapshot, updates since a version, a compensating update for an action.
 
-A note on `counter`: the TypeScript kernel dropped it in D25 (three rules). `syncmesh-core` and
-the v3 surface still carry it. Nothing below depends on which way that settles.
+A note on `counter`: it is one of the four row rules in both runtimes — a PN-counter per cell in
+the TypeScript kernel (`packages/kernel/src/strategy.ts`), the schema, the client and
+`syncmesh-core` alike. An earlier draft of this note said D25 had dropped it from the TypeScript;
+that was stale (§16.9).
 
 ## 3 · Non-goals
 
@@ -347,9 +349,16 @@ data = {
   2: lineage   bstr(16)           absent = the root lineage (§5.3)
   3: bytes     bstr               the update, inline            ┐ exactly one
   4: blob      [bstr(32), uint]   sha-256 + length, via D18     ┘
-  5: genesis   true               only on a replace(): `bytes`/`blob` is the new lineage's snapshot
+  5: genesis   1                  only on a replace(): `bytes`/`blob` is the new lineage's snapshot
+  6: parent    bstr(16)           only on a genesis: the lineage it replaces; absent = the root
 }
 ```
+
+Key 5's value is the version of the lineage rule the genesis was written under: `1` is the
+first-genesis tree of §5.3 (decided in §16.1). The last-writer-wins rule before it wrote `true`.
+A build from then refuses every genesis value but `true`, so it quarantines a `1` instead of
+folding it by the old rule, and a build of this rule refuses `true` the same way. A parent on a
+change that is not a genesis, or a parent or lineage that is not 16 bytes, is refused at decode.
 
 A doc change is **order-free** at the fold. Its only effect on kernel state is §5.3's lineage
 cell. Everything else is appended to the doc log. Unknown `data` keys are skipped (RFC-0002
@@ -382,11 +391,32 @@ double their content when merged. Syncmesh answers it once:
   The derivation is deterministic, so a receiver checks it and a forged genesis is refused
   (§10). An import from HTML, "reset to template" and "restore this version wholesale" are all
   replaces.
-- **The winning lineage is an LWW cell.** In the kernel's `RowRecord`, the doc column's cell
-  holds the current lineage id (absent = root) with the genesis's stamp. Concurrent replaces
-  resolve by stamp like any concurrent write (RFC-0014 matrix). Row digests, snapshot pages
-  (RFC-0019), tombstones and `insert`×`insert` all come for free. The SQL column still holds
-  snapshot bytes. The projection writes the lineage to `doc_heads`, not to the column.
+- **The first genesis wins, as a tree** (decided in §16.1). Each genesis names, as its `parent`,
+  the lineage it replaces: the one winning on the authoring device when it is written (absent =
+  the root). Among the geneses that replaced one lineage, the one with the **smallest** stamp
+  wins. The document's lineage is found by walking from the root to its winning child, then to
+  that child's winning child, until a lineage nothing replaced. So a late `replace()` of a version
+  someone else already replaced loses and discards nothing, while a replace made on top of the
+  current winner — a restore, a reset to a template, the undo of a replace (§9) — is the winner's
+  child and wins, however late. Plain "oldest genesis ever wins" would make each of those lose
+  forever, which is why the rule is a tree and not one cell.
+- **The lineage cell holds the tree, not the winner.** In the kernel's `RowRecord`, the doc
+  column's cell holds every genesis it has seen, keyed by lineage id:
+  `{ lineage → [parent | null, hlc ms, hlc logical, peer] }`. Two cells join by union (a lattice
+  join: commutative, associative, idempotent), and the cell's stamp is the later of the two. The
+  winner is read from the set by the walk (`winningLineage` / `winning_lineage`), never stored, so
+  every arrival order and batching lands on one lineage. Row digests, snapshot pages (RFC-0019),
+  repairs, tombstones and `insert`×`insert` carry the whole set because they carry the cell. The
+  SQL column still holds snapshot bytes. The projection writes the winner to `doc_heads`, not to
+  the column.
+- **A genesis whose parent has not arrived waits off the walk.** It is folded into the set, and
+  the walk cannot reach it until its parent lands, at which point the winner, and every doc-log
+  label with it, is recomputed. That holds when the parent lands in an event. A parent that lands
+  through a snapshot page or a repair record moves the winner, but the doc-log labels are only
+  recomputed at the next doc append (a known gap, listed for follow-up). Nothing is parked: parking would need cross-author holdback, and
+  this is how out-of-order delivery looks, exactly as a doc change on a row whose insert has not
+  arrived folds (§11). A genesis naming its own lineage as its parent is refused (§10). A longer
+  cycle cannot be reached from the root, and the walk stops at any lineage it has already visited.
 - **Losing lineages are kept, not applied.** Their updates stay in the log. They are marked
   `orphaned` in `doc_log` and listed by `history()`, and an app can read them (`openLineage`)
   to offer "recover the other version". An edit that names a non-winning lineage appends as
@@ -614,16 +644,33 @@ until first `open()`, which is RFC-0019 §3's window rule applied to documents.
 - **An action** is a 16-byte id carried on every event it produced (key 10). One action can span
   several events (a typing burst, an agent run) and any mix of rows and docs.
 - **`undo(action)`** writes **one** event in a new action, with `undoOf` = the action:
-  - **Rows:** compensate only the cells that still hold the action's write, that is, where the
-    cell's stamp is the action's stamp. Restore each such cell's value from before the action.
-    A cell someone changed since stays as they left it, and the result reports it as
-    `skipped: superseded`. This is licnep's `VariablesDelta` rule, made general, and it replaces
-    today's whole-row `invert` (`engine/src/undo.ts`), which would clobber concurrent edits.
-    Rows the action inserted are deleted. Rows it deleted are re-inserted from their pre-action
-    record.
+  - **Rows** (decided in §16.3, built for `revert(eventId)` in both runtimes): compensate only
+    the cells that still hold the action's write, that is, where the cell's stamp is the action's
+    stamp. Restore each such cell's value from before the action. A cell someone changed since
+    stays as they left it, and the result reports it as `skipped: superseded`. This is licnep's
+    `VariablesDelta` rule, made general, and it replaced the whole-row `invert`
+    (`engine/src/undo.ts`), which clobbered concurrent edits. Rows the action inserted are
+    deleted, even when a colleague has edited them since. Each cell a colleague wrote after the
+    insert is then reported as `skipped: overridden`, so the caller knows whose work the delete
+    took. A row the action inserted that is gone already is reported as a whole row
+    `superseded`, and nothing is written for it. Rows it deleted are re-inserted from their
+    pre-action record, unless someone wrote the row after the delete; an update is not
+    compensated into a row someone deleted since. Both of those are reported as a whole row
+    `superseded`. A re-insert leaves the row's doc columns out: they are never written as values,
+    and their lineage cells outlived the delete. A cell's column rule decides how it is
+    restored. A `counter` cell gets the increment that cancels the action's own (`{"+": -n}`,
+    with `n` taken from the action's change), because writing the old totals back joins by
+    per-author max and changes nothing. A `max` or `min` cell whose old value the rule would not
+    let win is reported as `skipped: merge` and left alone. When nothing of the write still
+    stands, nothing is written. A compensation the engine refuses writes nothing and leaves the
+    write revertable. The TypeScript returns `{ event?, skipped }`; the Rust device
+    gained `Engine::revert` / `Mesh::revert` returning `Reverted { mutated, skipped }`.
   - **Docs:** `compensating_update(doc, action's updates)` for each doc the action touched, on
     the winning lineage. A `replace()` in the action is undone by a new genesis carrying the
     previous lineage's snapshot. That is a forward write, with no history surgery.
+  - Until doc compensation lands (P6), a revert of a write holding document updates alone is
+    refused and stays revertable, and the document updates in a mixed write are reported as
+    `skipped: document` while its rows are compensated.
 - **Redo** is `undo(undoAction)`. The undo stack is local and per principal. The history is
   shared.
 - **`history(table, key)`** extends today's `rowHistory` (`client/src/history.ts`). Doc updates
@@ -641,6 +688,16 @@ until first `open()`, which is RFC-0019 §3's window rule applied to documents.
 | build knows tag 6 but has no adapter for `loro@1` | folds (§6.4), appends `doc_log` with state `adapter-missing`, forwards, issues custody receipts; `open()` → `AdapterMissing { adapter }`; no local edits possible; column holds whatever checkpoint it installed | the fold is adapter-independent, so digests and parked sets agree with adapter-holding peers |
 | `adapter` in the change ≠ the schema's declaration for that column | admission refuses → quarantine `refused` | decided from the schema alone: identical on every peer at one schema version |
 | genesis whose lineage ≠ the derivation (§5.3) | refused → quarantine | the check needs only the event |
+| genesis naming its own lineage as `parent`, or a `parent` on a change that is not a genesis | refused → quarantine | the check needs only the event |
+| genesis naming a `parent` this peer does not hold | folds; it waits off the lineage walk until the parent lands (§5.3) | the cell is a set, so the winner is the same whatever arrives first |
+| genesis under the pre-§16.1 rule (`5: true`) at a build of the tree rule | decodes, flagged `legacy`, so a log that holds one still reads; refused at admission → quarantine | the event is never folded by a rule this build does not run, and is kept rather than dropped |
+| genesis under the tree rule (`5: 1`) at a build from before it | refused at decode by that build | that build never folds a tree-rule genesis by the LWW rule |
+
+The version in key 5 covers **events only**. The lineage cell in snapshot pages (RFC-0019),
+repair records and persisted state carries no version. A build of the tree rule reads an old
+build's cell (a lineage id as a string) as the root and drops it, and an old build merges a new
+build's cell (an object of geneses) by LWW. So **every peer of a mesh must upgrade together**
+past §16.1. Doc columns have not shipped in a release, so no deployed mesh is affected.
 | adapter cannot parse an update | materialisation marks that `doc_log` row `failed`; the doc stays usable at its last good version; loud in `$inspect` | the fold already happened identically; this only affects materialisation, which is local |
 | minor version skew (`loro-crdt` 1.4 vs 1.16) | allowed: the id's major (`@1`) is the compatibility contract; the adapter package pins a floor and runs the adapter conformance suite (§13) | Loro's own 1.x encoding stability |
 
@@ -666,9 +723,13 @@ decompression cap and a time budget, and exceeding them is a `failed` update, ne
   capability).
 - **Sealed partitions:** doc bytes are inside the sealed core, the authority is structurally
   opaque (§7.2), and checkpoints are sealed to the partition key.
-- An **open question** (§16) is whether `replace()` deserves its own rule
-  (`allow: { replace: role("owner") }`). It is the one doc operation that can discard others'
-  work.
+- **`replace()` has an optional rule of its own** (decided in §16.2): `allow: { replace:
+  role("owner") }` beside `read`/`insert`/`update`/`delete`/`$default`. It is the one doc
+  operation that can set others' work aside. Absent, a genesis is judged by the row's `update`
+  rule exactly as any doc change (`resolveAllow("replace")` falls back to `update`, then `write`,
+  then `$default`). The rule is data in the manifest's allow block, so a port reads it as it reads
+  the others. The device validator and the authority share one ladder in TypeScript; the Rust
+  device has no policy port yet, and takes the rule when it gets one.
 
 ## 12 · Schema evolution (RFC-0013)
 
@@ -689,8 +750,10 @@ columns like any column. `fromDrizzle` already maps pg `bytea` → `blob` and Dr
 
 - **Frozen vectors** `conformance/doc-vectors.json`, generated in TypeScript and reproduced byte
   for byte in `syncmesh-core`:
-  - doc changes (inline, blob ref, genesis)
+  - doc changes (inline, blob ref, genesis, genesis with a parent)
   - the lineage derivation
+  - lineage trees: geneses, the winner, and the lineage cell's record bytes, folded in every
+    permutation in both runtimes
   - events carrying `action`/`undoOf`
   - a `DocCheckpoint` core + signature
   - a v=1 vector re-verified to prove the new keys did not disturb it
@@ -725,7 +788,7 @@ not count as done until its listed tests exist.
 |---|---|---|---|
 | **P0 · Ground** | fix the presence overflow (§15); owner answers §16; reserve tag 6 and keys 9/10/11 in RFC-0002's tables | `syncmesh-client` (`presence.rs`, `mesh.rs`) | the regression test in §15; licnep drops its workaround |
 | **P1 · Wire** | `Change` gains `doc` (TS kernel + Rust `event.rs`); codecs for `data`, keys 10/11, lineage derivation, `DocCheckpoint` | `@syncmesh/kernel`, `@syncmesh/wire`, `syncmesh-core` (`event_codec.rs`, new `doc.rs`, `checkpoint.rs`) | `doc-vectors.json` in both runtimes; fuzz (500 garbage, 300 bit-flips) with doc changes; old-build simulation parks tag 6 |
-| **P2 · Fold and log, no adapter** | lineage LWW cell; `doc_log`/`doc_heads` (Drizzle 1.0 declarations + migrations, SQLite and Postgres; Rust `sqlite.rs`); validation (§10/§11); digest split; compaction clamp (§8.3) — the `adapter-missing` mode is the first working mode | `@syncmesh/engine`, `@syncmesh/storage` (+ `driver-tests/docs.ts`), `@syncmesh/schema` (`ColumnDef.doc`, binary check), `syncmesh-client` (`engine.rs`, `store.rs`, `sqlite.rs`) | driver tests on both dialects; DDL ≡ Drizzle declaration; compaction unobservable with docs; digests equal across two engines; construction-error table of §4.1 |
+| **P2 · Fold and log, no adapter** | lineage cell (first-genesis tree, §16.1); `doc_log`/`doc_heads` (Drizzle 1.0 declarations + migrations, SQLite and Postgres; Rust `sqlite.rs`); validation (§10/§11); digest split; compaction clamp (§8.3) — the `adapter-missing` mode is the first working mode | `@syncmesh/engine`, `@syncmesh/storage` (+ `driver-tests/docs.ts`), `@syncmesh/schema` (`ColumnDef.doc`, binary check), `syncmesh-client` (`engine.rs`, `store.rs`, `sqlite.rs`) | driver tests on both dialects; DDL ≡ Drizzle declaration; compaction unobservable with docs; digests equal across two engines; construction-error table of §4.1 |
 | **P3 · Adapters** | the SPI (TS + Rust), registry, lazy load, replica ids; `@syncmesh/loro` and `syncmesh-loro`; the conformance suite | new `@syncmesh/documents`, `@syncmesh/loro` (peer: `loro-crdt@^1`), `syncmesh-client::docs`, new crate `syncmesh-loro` (`loro = "1"`, re-exported) | the adapter suite green in both runtimes, including the compensating-update property |
 | **P4 · API** | `drizzleTable` `merge` adapter values + `derive`; `DocRef` in query-side tables; `open`/flush pacing/`subscribe`/invalidation; `ctx.docs` inside mutations; capture exclusion + guard triggers; `useDoc`; Rust `DocColumn`, `Mesh::docs()`; P4b `syncmesh-derive` | `@syncmesh/schema`, `@syncmesh/drizzle`, `@syncmesh/client`, `@syncmesh/react`, `syncmesh-client`, new `syncmesh-derive` | read-your-own-writes on derived columns; a raw write to a doc column refused on both dialects; an invalidated handle never exports; live queries do not re-run on doc-only edits |
 | **P5 · Materialise** | device materialiser + snapshot policy + shallow floor; authority `materialise`/`opaque`; device checkpoints; RFC-0019 pages carry `DocCheckpoint`; `docStateOf` | `@syncmesh/documents`, server package, `@syncmesh/relay`, `adapters/cloudflare-do`, `syncmesh-client` (`room.rs` stores checkpoints) | crash between snapshot and heads; rejoin after trim; opaque SQL honestly behind; provisional snapshot mismatch detected and repaired |
@@ -816,26 +879,56 @@ let wires: Vec<Vec<u8>> = { let mut tier = lock(&presence); tier.heartbeats_due(
    - a unit test that `heartbeats_due(i64::MAX)` no longer panics.
 4. Then licnep removes its "publish only while online" workaround and bumps the pinned rev.
 
-## 16 · Open decisions for the owner
+## 16 · Decisions for the owner
 
-1. **Lineage rule.** Root lineage by default, `replace()` = new lineage, winner by greatest
-   genesis stamp (LWW, as proposed). The alternative is first-genesis-wins for imports, which
-   stops a late `replace()` from discarding a colleague's edits.
-2. **`replace()` permission.** A separate `allow.replace` rule, or the row's `update` rule (as
-   proposed)?
-3. **Row undo semantics.** Compensate only cells still holding the action's stamp (proposed,
-   licnep's `VariablesDelta` rule), replacing today's whole-row `invert`. Is that acceptable as a
-   behaviour change to `revert(eventId)`?
-4. **Derived columns never travel** (proposed; each replica computes, opaque hosts take them from
-   checkpoints). The alternative is authority-signed row updates, which work for adapter-less
-   devices but put materialisation into the log.
-5. **Device snapshots shallow at the stable floor** (smaller, with the forgotten-peer edge of
-   §8.3), or full history always (simpler, larger)?
-6. **Opaque-mode trust.** Accept device checkpoints provisionally with later audit (proposed), or
-   require a materialising authority for any partition with doc columns?
-7. **Numbers.** Tag 6, event keys 10/11 (9 reserved for `schemaVersion`), 64 KiB inline threshold
-   (licnep uses 256 KiB), 300/1000 ms flush pacing.
-8. **Package shape.** A new `@syncmesh/documents` + `syncmesh-client::docs` (proposed) versus
-   folding the SPI into `client`. Is a `syncmesh-derive` macro wanted, or is a builder enough?
-9. **`counter`** exists in Rust and the v3 surface but not in the TypeScript kernel since D25. It
-   is not blocking, but the "row rules" list in this RFC should match one truth.
+Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
+
+1. **Lineage rule — decided 2026-11-08 by Jace: first genesis wins, CRDT-style.** Proposed was
+   LWW by genesis stamp; that let a late `replace()` silently discard a colleague's version. Built
+   as a tree (§5.3): each genesis names the lineage it replaces (`parent`, data key 6, absent =
+   root); among siblings the smallest stamp wins; the winner is the walk from the root. The cell
+   holds the set of geneses and joins by union, so the result is order-free; permutation tests in
+   both runtimes and `doc-vectors.json`'s lineage trees prove it. A replace names the authoring
+   device's winner as its parent, so restores, resets and the undo of a replace still win. A
+   genesis naming a parent not yet held folds and waits off the walk (no parking). Genesis key 5
+   is now `1`, so an older build refuses a tree-rule genesis event rather than folding it LWW;
+   this build decodes a `true` genesis as `legacy` and quarantines it at admission (§10). That
+   versioning covers events only: lineage cells in snapshot pages, repair records and persisted
+   state carry no version, so all peers must upgrade together. Doc columns are unreleased.
+   Known limits, accepted: the earliest stamp wins and only *future* clock skew is bounded, so a
+   device with a lagging or back-dated clock wins sibling races. That grants no privilege, since
+   any replacer can already win by naming the current winner as its parent. The lineage cell
+   grows by about 110 bytes per replace and has no cap. A parent that lands through a snapshot
+   page or repair relabels the doc log only at the next doc append (follow-up, §5.3).
+2. **`replace()` permission — decided 2026-11-08 by Jace: an optional `replace` rule, defaulting
+   to `update`.** `AllowBlock.replace` beside the other operations; absent, a genesis is judged by
+   the row's `update` rule exactly as before (§11). Enforced by the shared validator (device and
+   authority); carried in the manifest for ports.
+3. **Row undo semantics — decided 2026-11-08 by Jace: compensate only cells that still hold the
+   action's stamp.** Built for `revert(eventId)` in TypeScript and Rust (§9): restore each cell
+   whose stamp is still the write's (a `counter` by the increment that cancels the write's), report
+   the rest `skipped: superseded`, report a `max`/`min` the rule will not let go back as
+   `skipped: merge`, delete rows the write inserted (cells a colleague wrote since reported
+   `skipped: overridden`), re-insert rows it deleted unless rewritten since. The refusal of a revert of document
+   updates alone (ade88cb) stays until doc compensation (P6).
+4. **Derived columns never travel — OPEN.** Proposed: each replica computes, opaque hosts take
+   them from checkpoints. The alternative is authority-signed row updates, which work for
+   adapter-less devices but put materialisation into the log. Jace asked what "derived" means
+   here: a column whose value the app does not write but computes from the document, like
+   `title: from("content", d => …)` in §4.1. No behaviour changes until this is answered.
+5. **Device snapshots — decided 2026-11-08 by Jace: full device snapshots**, as D41 built.
+   Shallow-at-the-stable-floor (§8.3) stays available as a future option with its forgotten-peer
+   edge; it is not the default.
+6. **Opaque-mode trust — decided 2026-11-08 by Jace: accept device checkpoints provisionally,
+   with later audit** (§7.2, §7.3). A materialising authority is not required for a partition
+   with doc columns.
+7. **Numbers — decided 2026-11-08 by Jace: as proposed.** Change tag 6, event keys 10/11 (9 stays
+   reserved for `schemaVersion`), 64 KiB inline threshold, 300/1000 ms flush pacing. (§16.1 added
+   data key 6, `parent`, inside tag 6's map.)
+8. **Package shape — decided 2026-11-08 by Jace: the `@syncmesh/docs` SPI, and a builder only.**
+   The SPI lives in `@syncmesh/docs` (D41), not a new `@syncmesh/documents`; Rust's is
+   `syncmesh-client::docs`. No `syncmesh-derive` macro until a Rust app needs one; §4.5's
+   `#[derive(SyncTable)]` is illustrative.
+9. **`counter` — settled 2026-11-08: one truth.** It is implemented in the TypeScript kernel
+   (`packages/kernel/src/strategy.ts`, a PN-counter), the schema, the client and Rust. The note in
+   §2 that said otherwise was stale and is corrected.

@@ -15,7 +15,7 @@ import type { EventCrypto } from "./sealing.js";
 import { decodeCbor, type MalformedCbor } from "./cbor-decode.js";
 import { isSafeNonNegative, isString } from "./cbor-guards.js";
 import { encodeCbor, type CborKey, type CborValue } from "./cbor.js";
-import { actionIdOf, docDataToCbor, docFromCbor } from "./doc-codec.js";
+import { wireActionId, docDataToCbor, docFromCbor } from "./doc-codec.js";
 import { bytesToHex, hexToBytes } from "./hex.js";
 import { rowFromCbor, rowToCbor } from "./row-codec.js";
 
@@ -137,8 +137,8 @@ function decodeEventValue(
   const hlc = m.get(KEY.hlc);
   const procedure = m.get(KEY.procedure);
   const partition = m.get(KEY.partition);
-  const action = actionIdOf(m.get(KEY.action));
-  const undoOf = actionIdOf(m.get(KEY.undoOf));
+  const action = wireActionId(m.get(KEY.action));
+  const undoOf = wireActionId(m.get(KEY.undoOf));
   const under = m.get(KEY.sealed);
   if (partition !== undefined && !isString(partition)) return malformed("partition is not text");
   if (!Array.isArray(hlc) || hlc.length !== 2) return malformed("hlc is not a pair");

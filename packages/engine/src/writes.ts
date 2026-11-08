@@ -1,6 +1,6 @@
 import type { HlcClock, PeerId, SeqNum, State } from "@syncmesh/kernel";
 
-import { type Procedure, type SyncEvent } from "@syncmesh/kernel";
+import { getRecord, docLineage, type Procedure, type SyncEvent } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
 import type { AtomicStores, Engine, FoldBatch, FoldSource, MutateOptions } from "./engine.js";
@@ -19,7 +19,7 @@ import { adoptOwnPosition, createOwnFloor, pastFloor } from "./own-position.js";
 import { StoreFailure } from "./store.js";
 import { timed } from "./telemetry.js";
 import { record } from "./tx.js";
-import { invert } from "./undo.js";
+import { rowsBefore } from "./undo.js";
 
 /** What escaped an `atomic` body: a store's own failure as itself, anything else wrapped. */
 const asStoreFailure = (cause: unknown): StoreFailure =>
@@ -113,7 +113,7 @@ export function createWritePath(deps: WriteDeps) {
       }
       const verdict = probeVerdict(validate, probeOf(peerId, changes, mutateOptions), before);
       if (verdict !== undefined) yield* verdict;
-      const inverse = undoDepth > 0 ? invert(getState(), changes) : [];
+      const image = undoDepth > 0 ? rowsBefore(getState(), changes) : [];
       const hlc = clock.tick();
       const scope = mutateOptions.local === true ? "local" : "synced";
       telemetry.emit({ type: "engine.mutate", sizes: { changes: changes.length }, duration });
@@ -133,6 +133,7 @@ export function createWritePath(deps: WriteDeps) {
                 nextSeq(pastFloor(last, floor)),
                 changes,
                 mutateOptions,
+                (doc) => docLineage(getRecord(getState(), doc.table, doc.key), doc.column),
               );
               (await scoped.events.append({ event })).unwrap();
               /**
@@ -158,7 +159,7 @@ export function createWritePath(deps: WriteDeps) {
       );
       notify(built.folded);
       if (undoDepth > 0) {
-        undo.push({ event: built.event, inverse });
+        undo.push({ event: built.event, before: image });
         if (undo.length > undoDepth) undo.shift();
       }
       if (built.event.local !== true) outbound.emit(built.event);
