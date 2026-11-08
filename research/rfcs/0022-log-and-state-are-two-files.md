@@ -186,8 +186,10 @@ cannot commit second. What shipped keeps one transaction and makes its split rec
    and persists. A refusal from the capture or the ladder rolls the app's statements back with
    the rest; statements that changed no synced row still commit, as no event. An engine built
    without `atomic` (a memory log, or stores opened by hand and not joined) has no transaction to
-   run the capture in: there the statements still commit first and the event second, as before,
-   so durable stores should always pass `atomic` — `createMesh` does. On Postgres, PGlite
+   run the capture in: there the statements still commit first, in the `around` transaction the
+   caller hands over, and the event second, as before, so durable stores should always pass
+   `atomic` — `createMesh` does. With neither `atomic` nor `around`, nothing could roll a refused
+   capture back, and `mutateCaptured` panics rather than commit it. On Postgres, PGlite
    and an inline (Durable Object, Rivet) log that one transaction is the whole answer: one
    database, one commit.
 2. **The split inside `COMMIT`, journaled.** On a device's SQLite (`bun:sqlite`, `node:sqlite`,
@@ -203,14 +205,31 @@ cannot commit second. What shipped keeps one transaction and makes its split rec
    driver. A state file swapped for another schema's and swapped back after a crash compares its
    journal number with a log that has moved on, and does not replay. Statements are journaled by
    their target (`syncmesh.<table>`), which holds for every statement this repo writes and is
-   pinned by `journal.test.ts`.
+   pinned by `journal.test.ts`. A journal entry is replayed after both ladders climb, so a tear
+   whose next open is also an upgrade that moves the log ladder replays statements written for
+   the log as it was before the upgrade; a log rung must therefore keep the columns an older
+   write names, or say why it may not.
+4. **A commit that fails without a crash.** A full disk or an I/O error on the log file can fail
+   the `COMMIT` after `main` landed, and the process lives on. The journaling driver then holds
+   every later transaction on that connection, refused as a `StoreFailure`, while the journal is
+   ahead of the log, so the entry is not overwritten before an open replays it. Every wrapper over
+   one connection counts from one number, so two `openStores` on one driver cannot journal under
+   the same number and skip a replay.
+5. **What it costs.** Every transaction that writes both files writes its log statements twice:
+   once into the log and once, CBOR-encoded with their parameters (event bytes included), into
+   the one journal row in `main`. A received batch is held twice in memory while it commits. Not
+   measured yet on a device; a large catch-up page is where it shows, and splitting a page into
+   several transactions bounds it if it matters.
 
 Pinned three ways, each failing without its half of the fix: `client/src/__tests__/crash.test.ts`
 kills a mesh write with SIGKILL before each of its statements (13 of 21 boundaries left a row
 with no event before); `storage/src/__tests__/journal.test.ts` puts the log file back as it was
 before a write — the state SQLite leaves when it dies between the two files' commits — for a
-local write and a received batch; and the driver suite's `tables: atomic across two files` case
-does the same on every adapter's own driver.
+local write and a received batch; and the driver suite's `journal: a log half that never landed
+is replayed into the log at the next open` case does the same on an adapter's own driver. That
+case exercises the replay only where the log is an attached second file (`bun:sqlite`,
+`node:sqlite`, sqlite-wasm over `memdb`, the expo driver over its test fake); on Postgres and
+PGlite it returns early, because one database has nothing to journal.
 
 ## The shape
 
