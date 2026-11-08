@@ -19,17 +19,20 @@ export type {
   DocChange,
   DocColumns,
   DocUpdate,
+  Genesis,
   LineageId,
 } from "./doc.js";
 export {
   InvalidDocId,
   cellRules,
+  genesesOf,
   lineageCell,
   lineageOf,
   lineageRule,
   parseActionId,
   parseAdapterId,
   parseLineageId,
+  winningLineage,
   withDocColumns,
 } from "./doc.js";
 export type { MergeSpec, Strategy, StrategyName } from "./strategy.js";

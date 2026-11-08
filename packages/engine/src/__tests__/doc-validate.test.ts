@@ -154,6 +154,21 @@ describe("a doc change against the schema (RFC-0023 §10)", () => {
     expect(verdict([doc({ genesis: true, lineage: forged })])).toBe("ok");
   });
 
+  test("a parent is refused on an edit, and on a genesis that names itself; an unheld one is fine", () => {
+    const at = { seqNum: seq(4) };
+    const derived = deriveLineage(editor.peerId, seq(4), 0);
+    const unheld = parseLineageId("0a".repeat(16)).unwrap();
+    expect(verdict([doc({ genesis: true, lineage: derived, parent: unheld })], at)).toBe("ok");
+    expect(verdict([doc({ parent: unheld })])).toEqual({
+      tag: "DocChangeRefused",
+      rung: "lineage",
+    });
+    expect(verdict([doc({ genesis: true, lineage: derived, parent: derived })], at)).toEqual({
+      tag: "DocChangeRefused",
+      rung: "lineage",
+    });
+  });
+
   test("one event starts one lineage per document", () => {
     const twice = [doc({ genesis: true, lineage: parseLineageId("01".repeat(16)).unwrap() })];
     expect(verdict([...twice, ...twice])).toEqual({ tag: "DocChangeRefused", rung: "lineage" });

@@ -1,6 +1,6 @@
 //! The doc change at the fold and on the wire, as the TypeScript's `doc.test.ts` and
-//! `doc-fuzz.test.ts` hold it: a genesis joins one lineage cell by the lineage rule, whatever order
-//! the geneses land in; every other doc change leaves the state alone; and no bytes under tag 6,
+//! `doc-fuzz.test.ts` hold it: a genesis joins one lineage cell by the lineage rule — the first
+//! genesis wins, as a tree (RFC-0023 §16.1) — whatever order the geneses land in; every other doc change leaves the state alone; and no bytes under tag 6,
 //! nor any flip of a valid doc frame, make the decoder panic or pass as the original.
 
 use std::collections::BTreeMap;
@@ -11,7 +11,9 @@ use syncmesh_core::cbor::{Key, Value};
 use syncmesh_core::doc::{DocChange, DocUpdate, Id16, lineage_text};
 use syncmesh_core::envelope::envelope;
 use syncmesh_core::record::CellValue;
+use syncmesh_core::record::{JsonValue, RowRecord};
 use syncmesh_core::state::State;
+use syncmesh_core::strategy::StrategyName;
 use syncmesh_core::*;
 
 fn peer(n: u8) -> PeerId {
@@ -19,6 +21,10 @@ fn peer(n: u8) -> PeerId {
 }
 
 fn doc(lineage: Option<Id16>, genesis: bool) -> Change {
+    replace_of(lineage, genesis, None)
+}
+
+fn replace_of(lineage: Option<Id16>, genesis: bool, parent: Option<Id16>) -> Change {
     Change::Doc(DocChange {
         table: "notes".into(),
         key: "n1".into(),
@@ -27,7 +33,15 @@ fn doc(lineage: Option<Id16>, genesis: bool) -> Change {
         lineage,
         update: DocUpdate::Bytes(vec![1, 2, 3]),
         genesis,
+        parent,
     })
+}
+
+fn genesis(fill: u8, ms: i64, p: u8, parent: Option<u8>) -> (Change, Stamp) {
+    (
+        replace_of(Some([fill; 16]), true, parent.map(|f| [f; 16])),
+        Stamp::new(Hlc::new(ms, 0), peer(p)),
+    )
 }
 
 fn insert(stamp: &Stamp) -> (Change, Stamp) {
@@ -63,41 +77,126 @@ fn an_ordinary_doc_change_leaves_the_state_as_it_was() {
 }
 
 #[test]
-fn a_genesis_sets_only_the_lineage_cell_and_never_the_write_stamp() {
+fn a_genesis_adds_only_itself_to_the_lineage_cell_and_never_the_write_stamp() {
     let at = Stamp::new(Hlc::new(3, 0), peer(2));
     let written = Stamp::new(Hlc::new(1, 0), peer(1));
     let state = fold(&[insert(&written), (doc(Some([9; 16]), true), at.clone())]);
     let record = state.record("notes", "n1").unwrap();
     let cell = record.cells.get("content").unwrap();
-    // the id as the TypeScript holds it: 32 lowercase hex characters
-    assert_eq!(cell.value, CellValue::Text(lineage_text(&[9; 16])));
+    // the set as the TypeScript holds it: lineage hex → [parent | null, ms, logical, peer]
+    let entry = JsonValue::Array(vec![
+        JsonValue::Null,
+        JsonValue::Number(3.0),
+        JsonValue::Number(0.0),
+        JsonValue::Text(peer(2).as_str().to_owned()),
+    ]);
+    assert_eq!(
+        cell.value,
+        CellValue::Object(BTreeMap::from([(lineage_text(&[9; 16]), entry)]))
+    );
     assert_eq!(cell.stamp, at);
     assert_eq!(record.write_stamp, Some(written));
     assert_eq!(lineage(&state), Some([9; 16]));
 }
 
+#[test]
+fn the_first_replace_of_a_lineage_wins_and_a_replace_of_the_winner_wins_however_late() {
+    let first = genesis(0xa, 1, 1, None);
+    let late = genesis(0xb, 5, 2, None);
+    assert_eq!(
+        lineage(&fold(&[first.clone(), late.clone()])),
+        Some([0xa; 16])
+    );
+    assert_eq!(
+        lineage(&fold(&[late.clone(), first.clone()])),
+        Some([0xa; 16])
+    );
+    let restored = genesis(0xc, 9, 2, Some(0xa));
+    assert_eq!(
+        lineage(&fold(&[restored.clone(), late, first])),
+        Some([0xc; 16])
+    );
+}
+
+#[test]
+fn a_genesis_whose_parent_is_missing_waits_and_a_cycle_is_never_walked() {
+    let child = genesis(0xb, 2, 2, Some(0xa));
+    assert_eq!(lineage(&fold(std::slice::from_ref(&child))), None);
+    assert_eq!(
+        lineage(&fold(&[child, genesis(0xa, 1, 1, None)])),
+        Some([0xb; 16])
+    );
+    let cycle = [
+        genesis(0x1, 1, 1, Some(0x2)),
+        genesis(0x2, 2, 1, Some(0x1)),
+        genesis(0x3, 3, 1, Some(0x3)),
+    ];
+    assert_eq!(lineage(&fold(&cycle)), None);
+}
+
+/// The rule written out the slow way, as the TypeScript test's `reference`.
+fn reference(geneses: &[(Change, Stamp)]) -> Option<Id16> {
+    let named: Vec<(Id16, Option<Id16>, &Stamp)> = geneses
+        .iter()
+        .filter_map(|(c, s)| match c {
+            Change::Doc(d) => Some((d.lineage?, d.parent, s)),
+            _ => None,
+        })
+        .collect();
+    let mut current = None;
+    for _ in 0..=named.len() {
+        let first = named
+            .iter()
+            .filter(|(_, parent, _)| *parent == current)
+            .min_by(|a, b| a.2.cmp(b.2).then(a.0.cmp(&b.0)));
+        match first {
+            Some((l, _, _)) => current = Some(*l),
+            None => return current,
+        }
+    }
+    current
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 300, ..ProptestConfig::default() })]
 
-    /// Any delivery order, and any replay, of geneses with distinct stamps — one author's clock never
-    /// repeats, and one event starts one lineage per document — lands on the greatest stamp's lineage.
+    /// Any tree of geneses — each replacing the root or one before it — in any delivery order, any
+    /// replay and any split between two peers that then exchange records, holds one cell and
+    /// settles on the reference winner. Stamps are distinct, as a real log's are.
     #[test]
-    fn geneses_resolve_by_stamp_in_every_order(
-        specs in proptest::collection::btree_map((0i64..6, 0u8..3), (0u8..16, any::<u32>()), 1..6),
+    fn geneses_resolve_as_a_tree_in_every_order(
+        specs in proptest::collection::btree_map((0i64..7, 0u8..3), (any::<u32>(), any::<u32>()), 1..8),
+        cut in 0usize..8,
     ) {
         let geneses: Vec<(Change, Stamp)> = specs
             .iter()
-            .map(|((ms, p), (fill, _))| (doc(Some([*fill; 16]), true), Stamp::new(Hlc::new(*ms, 0), peer(*p))))
+            .enumerate()
+            .map(|(i, ((ms, p), (parent, _)))| {
+                let at = (*parent as usize) % (i + 1);
+                let parent = (at != i).then_some(at as u8);
+                genesis(i as u8, *ms, *p, parent)
+            })
             .collect();
         let mut shuffled: Vec<_> = specs.values().map(|(_, order)| *order).zip(geneses.clone()).collect();
         shuffled.sort_by_key(|(order, _)| *order);
         let shuffled: Vec<_> = shuffled.into_iter().map(|(_, g)| g).collect();
         let forward = fold(&geneses);
         prop_assert_eq!(&fold(&shuffled), &forward);
-        prop_assert_eq!(&fold(&[geneses.clone(), geneses.clone()].concat()), &forward);
-        let winner = geneses.iter().max_by(|a, b| a.1.cmp(&b.1)).unwrap();
-        let Change::Doc(d) = &winner.0 else { unreachable!() };
-        prop_assert_eq!(lineage(&forward), d.lineage);
+        prop_assert_eq!(&fold(&[shuffled.clone(), geneses.clone()].concat()), &forward);
+        let cut = cut.min(shuffled.len());
+        let spec = BTreeMap::from([(
+            "notes".to_owned(),
+            BTreeMap::from([("content".to_owned(), StrategyName::Lineage)]),
+        )]);
+        let mut joined = State::new();
+        for half in [&shuffled[..cut], &shuffled[cut..]] {
+            if let Some(record) = fold(half).record("notes", "n1") {
+                let record: RowRecord = record.clone();
+                merge_record(&mut joined, "notes", "n1", record, Some(&spec));
+            }
+        }
+        prop_assert_eq!(lineage(&joined), lineage(&forward));
+        prop_assert_eq!(lineage(&forward), reference(&geneses));
     }
 
     /// Flips and truncations of the frozen insert+genesis frame: refused unless byte-identical.

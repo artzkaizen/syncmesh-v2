@@ -32,6 +32,12 @@ const refuse = (change: DocChange, rung: DocRung, message: string) =>
  *
  * A genesis's lineage is checked only where the event is numbered. A probe has no sequence yet,
  * and the engine derives the lineage itself as it numbers the event.
+ *
+ * A genesis's parent — the lineage it replaces (§16.1) — is never required to be held. Naming one
+ * this peer has not seen yet is how out-of-order delivery looks, and the lineage walk resolves it
+ * when the parent lands, so parking it would park at one peer what another folds. Only what the
+ * event alone disproves is refused: a parent on an edit that is not a genesis, and a genesis that
+ * names its own lineage as the one it replaces.
  */
 export function checkDoc(
   table: Table,
@@ -51,7 +57,12 @@ export function checkDoc(
       "adapter",
       `${change.column} is merged by ${declaredAdapter}, not ${change.adapter}`,
     );
-  if (change.genesis !== true) return Result.ok(undefined);
+  if (change.genesis !== true)
+    return change.parent === undefined
+      ? Result.ok(undefined)
+      : refuse(change, "lineage", "only a genesis names the lineage it replaces");
+  if (change.parent !== undefined && change.parent === change.lineage)
+    return refuse(change, "lineage", "a genesis cannot replace its own lineage");
   const twice = event.changes.some(
     (other, at) =>
       at !== index &&

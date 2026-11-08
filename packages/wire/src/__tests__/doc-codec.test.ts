@@ -12,7 +12,7 @@ import type { CborKey, CborValue } from "../cbor.js";
 
 import { decodeCbor } from "../cbor-decode.js";
 import { encodeCbor } from "../cbor.js";
-import { deriveLineage, docChangeId, DOC } from "../doc-codec.js";
+import { deriveLineage, docChangeId, DOC, GENESIS_RULE, id16 } from "../doc-codec.js";
 import { decodeEventCore, encodeEventCore } from "../event-codec.js";
 import { bytesEqual, bytesToHex } from "../hex.js";
 import { IDENTITY_A, IDENTITY_B, column, event, key, table } from "./fixtures.js";
@@ -69,6 +69,7 @@ describe("a doc change on the wire (tag 6)", () => {
       doc({ lineage: LINEAGE }),
       doc({ update: { blob: { hash: "ab".repeat(32), size: 70_000 } } }),
       doc({ lineage: LINEAGE, genesis: true, update: { bytes: new Uint8Array(0) } }),
+      doc({ lineage: LINEAGE, genesis: true, parent: parseLineageId("1e".repeat(16)).unwrap() }),
     ];
     const decoded = roundTrip(event(changes));
     expect(decoded.changes).toEqual(changes);
@@ -84,6 +85,23 @@ describe("a doc change on the wire (tag 6)", () => {
       DOC.lineage,
       DOC.bytes,
     ]);
+  });
+
+  test("a genesis carries the lineage rule's version in key 5, and its parent in key 6", () => {
+    const parent = parseLineageId("1e".repeat(16)).unwrap();
+    const core = encodeEventCore(event([doc({ lineage: LINEAGE, genesis: true, parent })]));
+    const data = asMap(asMap(asArray(asMap(decodeCbor(core).unwrap()).get(7))[0]).get(3));
+    expect(data.get(DOC.genesis)).toBe(GENESIS_RULE);
+    expect(id16(data.get(DOC.parent))).toBe(parent);
+    const root = encodeEventCore(event([doc({ lineage: LINEAGE, genesis: true })]));
+    const rootData = asMap(asMap(asArray(asMap(decodeCbor(root).unwrap()).get(7))[0]).get(3));
+    expect(rootData.has(DOC.parent)).toBe(false);
+  });
+
+  test("a genesis written under last-writer-wins (`true`) is refused, as the old rule's build refuses ours", () => {
+    const legacy = withData((d) => d.set(DOC.lineage, new Uint8Array(16)).set(DOC.genesis, true));
+    const decoded = decodeEventCore(legacy);
+    expect(decoded.isErr() && decoded.error.message).toContain("§16.1");
   });
 
   test("unknown data keys are skipped, not refused (RFC-0002 invariant 4)", () => {
@@ -105,7 +123,13 @@ describe("a doc change on the wire (tag 6)", () => {
       },
     ],
     ["a lineage that is not 16 bytes", (d) => d.set(DOC.lineage, new Uint8Array(15))],
-    ["a genesis that is not true", (d) => d.set(DOC.genesis, false)],
+    ["a genesis that is not the rule's version", (d) => d.set(DOC.genesis, false)],
+    ["a genesis of a rule this build does not know", (d) => d.set(DOC.genesis, 2)],
+    [
+      "a parent that is not 16 bytes",
+      (d) => d.set(DOC.genesis, 1).set(DOC.parent, new Uint8Array(15)),
+    ],
+    ["a parent on an edit that is not a genesis", (d) => d.set(DOC.parent, new Uint8Array(16))],
     ["bytes that are text", (d) => d.set(DOC.bytes, "text")],
   ];
   for (const [what, edit] of refused)

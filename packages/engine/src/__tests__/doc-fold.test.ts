@@ -115,8 +115,8 @@ describe("folding a doc change", () => {
     ]);
   });
 
-  test("the lineage cell and the labels follow the winner, whatever order the geneses land in", async () => {
-    // A and B each replace the document while apart; B's is later, and B edits on its lineage
+  test("the first of two concurrent replaces wins, whatever order the geneses land in (§16.1)", async () => {
+    // A and B each replace the document while apart; A's is first, and each edits on its own
     const a = node(PEER_A, 100, true);
     const b = node(PEER_B, 200, true);
     const created = await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
@@ -127,20 +127,86 @@ describe("folding a doc change", () => {
     const aEdit = await write(a, (tx) => tx.doc(NOTES, N1, edit(4, lineageAt(a))));
 
     const r = node(PEER_C, 50, true);
-    // B's edit arrives before B's genesis: until the genesis lands, it names a lineage nobody chose
+    // B's edit arrives before B's genesis, and B's genesis last: the late replace discards nothing
     for (const event of [created, bEdit, aReplace, aEdit, bReplace]) {
       (await r.engine.receive({ event })).unwrap();
     }
-    const winner = deriveLineage(PEER_B, seq(1), 0);
+    const winner = deriveLineage(PEER_A, seq(2), 0);
     expect(lineageAt(r)).toBe(winner);
     const states = new Map((await log(r)).map((e) => [`${e.author[0]}${e.seq}`, e.state]));
     expect(Object.fromEntries(states)).toEqual({
-      a2: "orphaned",
-      a3: "orphaned",
-      b1: "tail",
-      b2: "tail",
+      a2: "tail",
+      a3: "tail",
+      b1: "orphaned",
+      b2: "orphaned",
     });
     expect(bReplace.seqNum).toBe(seq(1));
+  });
+
+  test("a replace names the lineage it replaces, so a restore on top of the winner wins", async () => {
+    const a = node(PEER_A, 100, true);
+    const b = node(PEER_B, 200, true);
+    const created = await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+    const imported = await write(a, (tx) => tx.doc(NOTES, N1, replace(1)));
+    for (const event of [created, imported]) (await b.engine.receive({ event })).unwrap();
+    const first = deriveLineage(PEER_A, seq(2), 0);
+    const [genesis] = imported.changes;
+    expect(genesis?.kind === "doc" && genesis.parent).toBeUndefined();
+
+    // B restores on top of A's import: later, but a child of the winner, so it wins
+    const restored = await write(b, (tx) => tx.doc(NOTES, N1, replace(2)));
+    const [child] = restored.changes;
+    expect(child?.kind === "doc" && child.parent).toBe(first);
+    (await a.engine.receive({ event: restored })).unwrap();
+    const second = deriveLineage(PEER_B, seq(1), 0);
+    expect(lineageAt(a)).toBe(second);
+    expect(lineageAt(b)).toBe(second);
+  });
+
+  test("a parent that lands late moves the winner, and every label with it, in any order", async () => {
+    const a = node(PEER_A, 100, true);
+    const b = node(PEER_B, 200, true);
+    const created = await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+    const g1 = await write(a, (tx) => tx.doc(NOTES, N1, replace(1)));
+    for (const event of [created, g1]) (await b.engine.receive({ event })).unwrap();
+    const g2 = await write(b, (tx) => tx.doc(NOTES, N1, replace(2)));
+    const e2 = await write(b, (tx) => tx.doc(NOTES, N1, edit(3, lineageAt(b))));
+    const winner = deriveLineage(PEER_B, seq(1), 0);
+    const expected = ["a2 orphaned", "b1 tail", "b2 tail"];
+    const labels = async (n: Node) =>
+      (await log(n))
+        .map((e) => `${e.author === PEER_A ? "a" : "b"}${String(e.seq)} ${e.state}`)
+        .sort();
+    // every interleaving of A's two events and B's two, each author's own kept in order: B's
+    // replace names A's lineage as its parent, so until A's genesis lands it hangs off nothing
+    const interleavings = (xs: readonly SyncEvent[], ys: readonly SyncEvent[]): SyncEvent[][] => {
+      const [x, ...xr] = xs;
+      const [y, ...yr] = ys;
+      if (x === undefined) return [[...ys]];
+      if (y === undefined) return [[...xs]];
+      return [
+        ...interleavings(xr, ys).map((rest) => [x, ...rest]),
+        ...interleavings(xs, yr).map((rest) => [y, ...rest]),
+      ];
+    };
+    const orders = interleavings([created, g1], [g2, e2]);
+    expect(orders).toHaveLength(6);
+    for (const order of orders) {
+      const r = node(PEER_C, 50, true);
+      for (const event of order) (await r.engine.receive({ event })).unwrap();
+      expect(lineageAt(r)).toBe(winner);
+      expect(await labels(r)).toEqual(expected);
+    }
+    // and in one batch, in either order of authors
+    for (const order of [
+      [created, g1, g2, e2],
+      [g2, e2, created, g1],
+    ]) {
+      const r = node(PEER_C, 50, true);
+      (await r.engine.receiveBatch(order.map((event) => ({ event })))).unwrap();
+      expect(lineageAt(r)).toBe(winner);
+      expect(await labels(r)).toEqual(expected);
+    }
   });
 });
 

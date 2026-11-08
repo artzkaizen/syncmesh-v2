@@ -2,6 +2,10 @@
 //! decided from the event and the declaration alone — never from which adapters a device holds —
 //! so a device with the adapter and one without park the same set (D22).
 //!
+//! A genesis's parent (§16.1) need not be held: one that has not arrived is how out-of-order
+//! delivery looks, and the lineage walk resolves it when it lands. Only what the event disproves
+//! is refused — a parent on an edit, a genesis that names its own lineage as the one it replaces.
+//!
 //! The TypeScript also refuses a doc change on a column its schema declares as something else;
 //! this crate has no schema to know the table's other columns by, so a doc change on an
 //! undeclared column is let through here as there (D13's additive rule), and that one rung waits
@@ -24,7 +28,10 @@ pub fn doc_refusal(event: &SyncEvent, docs: &DocColumns) -> Option<&'static str>
                 if adapter.is_some_and(|a| a != &d.adapter) {
                     Some("the change names another adapter than the column declares")
                 } else if !d.genesis {
-                    None
+                    d.parent
+                        .map(|_| "only a genesis names the lineage it replaces")
+                } else if d.parent.is_some() && d.parent == d.lineage {
+                    Some("a genesis cannot replace its own lineage")
                 } else if event.changes.iter().enumerate().any(|(at, other)| {
                     at != index
                         && matches!(other, Change::Doc(o) if o.genesis

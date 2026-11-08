@@ -50,7 +50,8 @@ export function applyChange(
 }
 
 /**
- * A genesis joins its lineage into the column's cell, and nothing else: no `writeStamp`, because a
+ * A genesis adds itself — its lineage, the lineage it replaced, its stamp — to the column's cell,
+ * and nothing else: no `writeStamp`, because a
  * document edit is not a row write and must not resurrect a deleted row or outlive a later delete.
  * The column is joined by the lineage rule whatever `merge` says, since the change itself is what
  * names the column as a document.
@@ -63,7 +64,8 @@ function applyGenesis(
   partition: PartitionKey | undefined,
 ): State {
   if (change.genesis !== true || change.lineage === undefined) return state;
-  const cells = new Map([[change.column, lineageCell(change.lineage, stamp)]]);
+  const genesis = { lineage: change.lineage, parent: change.parent, stamp };
+  const cells = new Map([[change.column, lineageCell(genesis)]]);
   const rules = new Map<ColumnName, CellRule>(merge?.get(change.table) ?? []);
   rules.set(change.column, "lineage");
   const spec = new Map(merge ?? []).set(change.table, rules);

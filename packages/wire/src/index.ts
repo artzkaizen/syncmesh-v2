@@ -21,6 +21,7 @@ export { InvalidSeed, SEED_LENGTH, createIdentity, verify } from "./identity.js"
 export { MalformedEvent, decodeEventCore, encodeEventCore } from "./event-codec.js";
 export {
   DOC,
+  GENESIS_RULE,
   ID16_LENGTH,
   MalformedDoc,
   actionIdOf,

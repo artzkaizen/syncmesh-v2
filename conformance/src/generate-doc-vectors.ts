@@ -12,14 +12,11 @@ import {
   eventId,
   hlcOf,
   parseActionId,
-  parseAdapterId,
   parseLineageId,
   parseSeqNum,
   type ColumnName,
   type PartitionKey,
   type Procedure,
-  type RowKey,
-  type TableName,
 } from "@syncmesh/kernel";
 import {
   bytesToHex,
@@ -30,23 +27,19 @@ import {
   signEvent,
 } from "@syncmesh/wire";
 
+import { CONTENT, LORO, N1, NOTES, T0 } from "./doc-names.js";
+import { lineageTreeVectors } from "./lineage-trees.js";
 import { wireVectors } from "./vectors.js";
 
 const AUTHOR_SEED = Uint8Array.from({ length: 32 }, (_, i) => 0x40 + i);
 const PRODUCER_SEED = Uint8Array.from({ length: 32 }, (_, i) => 0x80 + i);
-const T0 = 1_700_000_000_000;
-
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- fixed vector names; the rules for these brands live in the schema */
-const NOTES = "notes" as TableName;
-const N1 = "n1" as RowKey;
-const CONTENT = "content" as ColumnName;
 const TITLE = "title" as ColumnName;
 const WORD_COUNT = "wordCount" as ColumnName;
 const PARTITION = "workspace:w1" as PartitionKey;
 const procedure = (name: string) => name as Procedure;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 
-const LORO = parseAdapterId("loro@1").unwrap();
 const ACTION = parseActionId("a0a1a2a3a4a5a6a7a8a9aaabacadaeaf").unwrap();
 const UNDONE = parseActionId("b0b1b2b3b4b5b6b7b8b9babbbcbdbebf").unwrap();
 
@@ -101,6 +94,17 @@ export function docVectors() {
       "the undo of that action, in an action of its own",
       at(5, { action: UNDONE, undoOf: ACTION, procedure: procedure("revert") }, [doc()]),
     ],
+    [
+      "a genesis that replaces the seq-3 lineage: its parent in key 6 (RFC-0023 §16.1)",
+      at(6, { procedure: procedure("notes.replace") }, [
+        doc({
+          lineage: deriveLineage(author.peerId, seq(6), 0),
+          genesis: true,
+          parent: genesisLineage,
+          update: { bytes: Uint8Array.of(4, 5, 6) },
+        }),
+      ]),
+    ],
   ];
 
   const lineages = (
@@ -139,6 +143,8 @@ export function docVectors() {
     producer,
   );
 
+  const lineageTrees = lineageTreeVectors(author.peerId, producer.peerId);
+
   const frozen = wireVectors.vectors[0];
   return {
     authorId: author.peerId,
@@ -148,6 +154,7 @@ export function docVectors() {
       return { description, coreHex: bytesToHex(signed.core), sigHex: bytesToHex(signed.sig) };
     }),
     lineages,
+    lineageTrees,
     checkpoint: {
       description: "a checkpoint of the genesis lineage, covering both writers",
       coreHex: bytesToHex(checkpoint.core),

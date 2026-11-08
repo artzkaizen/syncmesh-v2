@@ -311,7 +311,9 @@ impl Engine {
 
     /// [`Engine::mutate`], in an action (event key 10) and compensating another (key 11). A
     /// genesis in `changes` names no lineage of its own: the one derived from its place in the
-    /// event is filled in once the event is numbered, whatever the caller wrote (RFC-0023 §5.3).
+    /// event is filled in once the event is numbered, whatever the caller wrote (RFC-0023 §5.3),
+    /// and so is its parent — the lineage that wins here as it is written, which is what a
+    /// replace replaces (§16.1).
     pub fn mutate_with(
         &mut self,
         procedure: &str,
@@ -344,6 +346,7 @@ impl Engine {
             .map(|(index, change)| match change {
                 Change::Doc(mut d) if d.genesis => {
                     d.lineage = Some(derive_lineage(&peer_id, seq_num, index as u32));
+                    d.parent = lineage_of(self.state.record(&d.table, &d.key), &d.column);
                     Change::Doc(d)
                 }
                 other => other,
