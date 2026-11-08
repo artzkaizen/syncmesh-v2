@@ -1,4 +1,5 @@
 export type { RelayFrame } from "./frames.js";
+export { decodeRelayFrame } from "./frame-decode.js";
 export {
   CHALLENGE_BYTES,
   HANDSHAKE_VERSION,
@@ -13,7 +14,6 @@ export {
   blobRefusedFrame,
   blobStoredFrame,
   challengeFrame,
-  decodeRelayFrame,
   errorFrame,
   helloFrame,
   joinCore,

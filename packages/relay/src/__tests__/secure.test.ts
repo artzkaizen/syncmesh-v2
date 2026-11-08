@@ -7,7 +7,8 @@ import { describe, expect, test } from "bun:test";
 
 import type { RelayDial } from "../transport.js";
 
-import { decodeRelayFrame, joinFrame } from "../frames.js";
+import { decodeRelayFrame } from "../frame-decode.js";
+import { joinFrame } from "../frames.js";
 import { isHello, secureLink } from "../secure.js";
 import { relayTransport } from "../transport.js";
 import {

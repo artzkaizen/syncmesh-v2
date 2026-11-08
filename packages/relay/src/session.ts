@@ -13,11 +13,11 @@ import type { RelayFrame } from "./frames.js";
 import type { JoinedScope } from "./scoped.js";
 import type { RelayDial } from "./transport.js";
 
-import { decodeRelayFrame } from "./frames.js";
+import { decodeRelayFrame } from "./frame-decode.js";
 import { scopedCoverage } from "./scoped.js";
 
 /** A stored event as bytes to send: this device signs its own, and relays another's verbatim. */
-const envelopeOf = (entry: StoredEvent, ctx: TransportContext): Uint8Array | undefined =>
+const outgoingEnvelope = (entry: StoredEvent, ctx: TransportContext): Uint8Array | undefined =>
   entry.event.peerId === ctx.identity.peerId
     ? signEvent(entry.event, ctx.identity).wire
     : relayEnvelope(entry);
@@ -282,7 +282,7 @@ export function wireSession(
       if (entries.isErr()) return;
       const sent = new Map(relayCursors);
       for (const entry of entries.value) {
-        const wire = envelopeOf(entry, context);
+        const wire = outgoingEnvelope(entry, context);
         if (wire === undefined) continue;
         hooks.sendSafe(eventFrame(wire));
         const at = sent.get(entry.event.peerId);
@@ -316,6 +316,27 @@ export function wireSession(
     } else if (frame.kind === "event") fold([frame.wire]);
   };
 
+  const onPage = (frame: Extract<RelayFrame, { kind: "page" }>): void => {
+    const asked = hooks.joined();
+    for (const wire of frame.grants) void grants.register(wire);
+    const repaging = hooks.repaging?.() === true;
+    fold(frame.events, repaging);
+    if (!frame.more) {
+      lastPage(frame.scoped, repaging, asked);
+      // only here: every page carries the room's tail, and only the last has delivered up to it
+      position(frame.offset);
+      // a pass-over (an empty last page after the first) moves a cursor and nothing else
+      if (caughtUp && frame.events.length === 0 && frame.grants.length === 0) return;
+      caughtUp = true;
+      pushOutstanding();
+      // behind the chain, not beside it: `fold` and `pushOutstanding` queue their work, so
+      // announcing here would announce a pass that has not folded a single event of its last
+      // page. What the hook means is "nothing more to hand over right now", and the moment that
+      // becomes true is the moment this chain drains
+      after(() => hooks.onCaughtUp());
+    }
+  };
+
   const offFrame = dialed.onFrame((bytes) => {
     if (abandoned) return;
     hooks.rearm();
@@ -330,26 +351,8 @@ export function wireSession(
       relayCursors = frame.cursors;
       adoptOwn(frame.cursors);
       hooks.onHello(frame.keepaliveMs, frame.epoch);
-    } else if (frame.kind === "page") {
-      const asked = hooks.joined();
-      for (const wire of frame.grants) void grants.register(wire);
-      const repaging = hooks.repaging?.() === true;
-      fold(frame.events, repaging);
-      if (!frame.more) {
-        lastPage(frame.scoped, repaging, asked);
-        // only here: every page carries the room's tail, and only the last has delivered up to it
-        position(frame.offset);
-        // a pass-over (an empty last page after the first) moves a cursor and nothing else
-        if (caughtUp && frame.events.length === 0 && frame.grants.length === 0) return;
-        caughtUp = true;
-        pushOutstanding();
-        // behind the chain, not beside it: `fold` and `pushOutstanding` queue their work, so
-        // announcing here would announce a pass that has not folded a single event of its last
-        // page. What the hook means is "nothing more to hand over right now", and the moment that
-        // becomes true is the moment this chain drains
-        after(() => hooks.onCaughtUp());
-      }
-    } else if (isBlobAnswer(frame)) answerBlob(hooks, frame);
+    } else if (frame.kind === "page") onPage(frame);
+    else if (isBlobAnswer(frame)) answerBlob(hooks, frame);
     else if (frame.kind === "relayed") {
       fold([frame.wire]);
       position(frame.offset);

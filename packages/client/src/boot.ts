@@ -140,7 +140,7 @@ function docColumns(schema: BootOptions["schema"]): DocColumns | undefined {
 }
 
 /** The validator an identity runs: grants when an issuer is configured, authorship when this process is the authority. */
-function validatorFor(options: BootOptions, docs: DocColumns | undefined): ValidatorOptions {
+function validatorSettings(options: BootOptions, docs: DocColumns | undefined): ValidatorOptions {
   const { schema, issuer, authority, grantFor, now } = options;
   const validatorOptions = {
     schema,
@@ -159,7 +159,7 @@ function validatorFor(options: BootOptions, docs: DocColumns | undefined): Valid
 }
 
 /** `rls: true` compiles the read rules into the database's own policies — Postgres only. */
-function policiesFor(
+function installPolicies(
   options: BootOptions,
   driver: SqlDriver | undefined,
 ): Promise<Result<void, StoreFailure>> {
@@ -174,7 +174,7 @@ function policiesFor(
  * handed over, or the platform's durable default — decided once, here, so the boot below reads
  * as one path rather than four.
  */
-function storesFor(
+function resolveStores(
   options: BootOptions,
   tables: readonly Table[],
 ): Promise<Result<Stores | undefined, MeshOpenError>> {
@@ -184,9 +184,47 @@ function storesFor(
   return defaultStores(options.dataDir, String(options.identity.peerId), tables);
 }
 
+/**
+ * The engine a boot opens: over the log it settled on, with the state cache, document columns,
+ * shared transaction and undo depth the options and the opened stores supply.
+ */
+function engineSettings(
+  options: BootOptions,
+  opened: {
+    readonly store: EventStore;
+    readonly owned: Stores | undefined;
+    readonly docs: DocColumns | undefined;
+    readonly validate: Validator;
+  },
+): EngineOptions {
+  const { store, owned, docs, validate } = opened;
+  const engineOptions = {
+    peerId: options.identity.peerId,
+    clock: createHlcClock({ now: options.now, maxDrift: options.clockDrift ?? DEFAULT_MAX_DRIFT }),
+    store,
+    merge: options.schema.merge,
+    validate,
+  } satisfies EngineOptions;
+  const stateStore = options.stateStore ?? owned?.state;
+  if (stateStore !== undefined) Object.assign(engineOptions, { stateStore });
+  if (docs !== undefined) Object.assign(engineOptions, { docs });
+  // log and state share a connection exactly when the stores are one `openStores` pair; the
+  // doc log lives beside the log it indexes and commits in the same transaction (RFC-0023 §6.3)
+  if (options.store === undefined && owned !== undefined)
+    Object.assign(engineOptions, {
+      atomic: <T>(fn: (scoped: { events: EventStore; state?: StateStore }) => Promise<T>) =>
+        owned.atomic(fn),
+      docStore: owned.docs,
+    });
+  if (options.undoDepth !== undefined)
+    Object.assign(engineOptions, { undoDepth: options.undoDepth });
+  if (options.onError !== undefined) Object.assign(engineOptions, { onError: options.onError });
+  return engineOptions;
+}
+
 /** Opens the stores the options name (or the platform default) and boots the engine over them (D05). */
 export function openMeshEngine(options: BootOptions): Promise<Result<Booted, MeshOpenError>> {
-  const { schema, identity, now } = options;
+  const { schema } = options;
   if (options.store === undefined && options.stateStore !== undefined)
     panic("stateStore caches a log it was not given: pass `store` alongside it");
   if (options.store !== undefined && options.driver !== undefined)
@@ -195,38 +233,19 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
     panic("`stores` is already a log and a connection: pass it alone");
   return Result.gen(async function* () {
     const tables = syncedTables(schema);
-    const owned = yield* Result.await(storesFor(options, tables));
+    const owned = yield* Result.await(resolveStores(options, tables));
     // SAFETY: one of the two is defined — `owned` is opened exactly when `store` is absent
     const store = (options.store ?? owned?.events) as EventStore;
     // one map for both: a doc change the validator admits is one the fold joins by the lineage rule
     const docs = docColumns(schema);
-    const validate = createValidator(validatorFor(options, docs));
-    const engineOptions = {
-      peerId: identity.peerId,
-      clock: createHlcClock({ now, maxDrift: options.clockDrift ?? DEFAULT_MAX_DRIFT }),
-      store,
-      merge: schema.merge,
-      validate,
-    } satisfies EngineOptions;
-    const stateStore = options.stateStore ?? owned?.state;
-    if (stateStore !== undefined) Object.assign(engineOptions, { stateStore });
-    if (docs !== undefined) Object.assign(engineOptions, { docs });
-    // log and state share a connection exactly when the stores are one `openStores` pair; the
-    // doc log lives beside the log it indexes and commits in the same transaction (RFC-0023 §6.3)
-    if (options.store === undefined && owned !== undefined)
-      Object.assign(engineOptions, {
-        atomic: <T>(fn: (scoped: { events: EventStore; state?: StateStore }) => Promise<T>) =>
-          owned.atomic(fn),
-        docStore: owned.docs,
-      });
-    if (options.undoDepth !== undefined)
-      Object.assign(engineOptions, { undoDepth: options.undoDepth });
-    if (options.onError !== undefined) Object.assign(engineOptions, { onError: options.onError });
-    const engine = yield* Result.await(openEngine(engineOptions));
+    const validate = createValidator(validatorSettings(options, docs));
+    const engine = yield* Result.await(
+      openEngine(engineSettings(options, { store, owned, docs, validate })),
+    );
     const booted = { engine, store, validate };
     if (owned?.rowSync !== undefined) Object.assign(booted, { rowSync: owned.rowSync });
     const driver = options.driver ?? owned?.driver;
-    yield* Result.await(policiesFor(options, driver));
+    yield* Result.await(installPolicies(options, driver));
     if (driver !== undefined) {
       Object.assign(booted, { driver });
       const operations = yield* Result.await(operationStore(driver));

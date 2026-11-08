@@ -156,21 +156,8 @@ export async function openRelayRoom(
   const { name, store, epoch, keepaliveMs = 15_000, pageSize = 2000 } = options;
   const maxBacklog = options.maxBacklog ?? 1000;
   const now = options.now ?? (() => Temporal.Now.instant());
-  const versions = options.versions ?? RELAY_PROTOCOL_VERSIONS;
-  // a definition mistake, so it throws: a room speaks a hello first or a challenge first, and a
-  // list that mixes 3 with an older version asks one socket to be told both
-  if (speaksHandshake(versions) && versions.some((v) => v !== HANDSHAKE_VERSION))
-    throw new Error(
-      `a relay room lists ${HANDSHAKE_VERSION} alone or leaves it out: the link handshake and the challenge cannot share one socket (got ${versions.join(", ")})`,
-    );
-  const identity =
-    options.identity ??
-    createIdentity(randomBytes(32)).match({
-      ok: (value) => value,
-      err: (failure) => {
-        throw new Error(`the room's identity could not be made: ${failure.message}`);
-      },
-    });
+  const versions = roomVersions(options.versions);
+  const identity = roomIdentity(options.identity);
   const boot = await store.all();
   if (boot.isErr()) return boot;
   // read before the log is walked, because it is what the walk starts from: a log already trimmed
@@ -313,6 +300,31 @@ export async function openRelayRoom(
       fan?.close();
       for (const client of clients.values()) client.socket.close("room closed");
       clients.clear();
+    },
+  });
+}
+
+/**
+ * The versions a room offers, `RELAY_PROTOCOL_VERSIONS` when it names none. Throws on a list that
+ * mixes {@link HANDSHAKE_VERSION} with an older version: a definition mistake, since a room speaks
+ * a hello first or a challenge first and one socket cannot be told both.
+ */
+function roomVersions(listed: readonly number[] | undefined): readonly number[] {
+  const versions = listed ?? RELAY_PROTOCOL_VERSIONS;
+  if (speaksHandshake(versions) && versions.some((v) => v !== HANDSHAKE_VERSION))
+    throw new Error(
+      `a relay room lists ${HANDSHAKE_VERSION} alone or leaves it out: the link handshake and the challenge cannot share one socket (got ${versions.join(", ")})`,
+    );
+  return versions;
+}
+
+/** The room's identity: the one it was given, or a fresh one. Throws when one cannot be made. */
+function roomIdentity(given: Identity | undefined): Identity {
+  if (given !== undefined) return given;
+  return createIdentity(randomBytes(32)).match({
+    ok: (value) => value,
+    err: (failure) => {
+      throw new Error(`the room's identity could not be made: ${failure.message}`);
     },
   });
 }
