@@ -216,6 +216,15 @@ export const openRoom = async (overrides: Partial<RelayRoomOptions> = {}) =>
     })
   ).unwrap();
 
+/** A room that seats only devices holding a grant from {@link ISSUER} (D40), on a clock the test owns. */
+export const gatedRoom = (overrides: Partial<RelayRoomOptions> = {}) =>
+  openRoom({
+    pageSize: 100,
+    now: () => T0,
+    trust: { issuers: [ISSUER.peerId], wait: Temporal.Duration.from({ milliseconds: 60 }) },
+    ...overrides,
+  });
+
 /**
  * A room left open to v1 and v2 on purpose: most of this suite scripts a bare `joinFrame([1], …)`
  * at a fake socket to get at a room's behaviour *after* the join, and a handshake or a proof

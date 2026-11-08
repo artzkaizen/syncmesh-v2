@@ -89,6 +89,60 @@ export function evaluate(node: PolicyNode, ctx: PolicyContext): boolean {
   return (handlers[node.kind] as (n: PolicyNode, c: PolicyContext) => boolean)(node, ctx);
 }
 
+/**
+ * One leaf of a rule that decided a verdict, and where it sits in the tree: `path` indexes through
+ * each `any` / `all` `of` list from the root, and a `not` adds a `0`. `held` is what the leaf
+ * itself said, before any `not` above it turned it round.
+ */
+export interface PolicyStep {
+  readonly node: PolicyNode;
+  readonly path: readonly number[];
+  readonly held: boolean;
+}
+
+/**
+ * A verdict with the leaves that decided it. A denial names the leaves that failed — under `all`
+ * the first that did, under `any` every one, since all of them had to — and an allow the leaves
+ * that held, in the same short-circuit order {@link evaluate} reads them in.
+ */
+export interface PolicyVerdict {
+  readonly allowed: boolean;
+  readonly because: readonly PolicyStep[];
+}
+
+/**
+ * {@link evaluate}, with its reasons: the same verdict, always, and the leaves of the rule that
+ * reached it. Slower than `evaluate` by the steps it collects, so the write path evaluates and
+ * asks this only once the answer is no.
+ *
+ * @example
+ * const verdict = explain(any(role("admin"), owner("author")), ctx);
+ * if (!verdict.allowed) console.log(verdict.because.map((step) => step.node.kind)); // ["role", "owner"]
+ */
+export function explain(node: PolicyNode, ctx: PolicyContext): PolicyVerdict {
+  return explainAt(node, ctx, []);
+}
+
+function explainAt(node: PolicyNode, ctx: PolicyContext, path: readonly number[]): PolicyVerdict {
+  if (node.kind === "not") {
+    const inner = explainAt(node.of, ctx, [...path, 0]);
+    return { allowed: !inner.allowed, because: inner.because };
+  }
+  if (node.kind === "all" || node.kind === "any") {
+    // `all` stops at its first no, `any` at its first yes; until then every reason is collected
+    const stopsAt = node.kind === "any";
+    const because: PolicyStep[] = [];
+    for (const [index, child] of node.of.entries()) {
+      const verdict = explainAt(child, ctx, [...path, index]);
+      if (verdict.allowed === stopsAt) return verdict;
+      because.push(...verdict.because);
+    }
+    return { allowed: !stopsAt, because };
+  }
+  const held = evaluate(node, ctx);
+  return { allowed: held, because: [{ node, path, held }] };
+}
+
 /** The value a rule sees for a column: the incoming write first, then the stored row. */
 function cell(ctx: PolicyContext, column: string): CellValue | undefined {
   for (const source of [ctx.patch, ctx.row]) {
@@ -131,7 +185,7 @@ const isObject = (v: JsonValue): v is { readonly [key: string]: JsonValue } =>
 export type ScalarKind = "string" | "number" | "boolean" | "null";
 
 /** The kind of a scalar a rule can compare, or `undefined` for bytes, arrays and objects — never identities. */
-export const scalarKindOf = (v: JsonValue | CellValue | undefined): ScalarKind | undefined => {
+export const scalarKind = (v: JsonValue | CellValue | undefined): ScalarKind | undefined => {
   if (v === null) return "null";
   if (typeof v === "string") return "string";
   if (typeof v === "number") return "number";
@@ -150,9 +204,9 @@ const compareCells = (
   expected: CellValue,
 ): boolean => {
   if (op === "ne") return value !== undefined && !sameScalar(expected, value);
-  const kind = scalarKindOf(value);
+  const kind = scalarKind(value);
   if (kind === undefined || kind === "null" || kind === "boolean") return false;
-  if (scalarKindOf(expected) !== kind) return false;
+  if (scalarKind(expected) !== kind) return false;
   // SAFETY: both sides just proved the same orderable kind — two strings, or two numbers
   const [a, b] = [value, expected] as [string, string] | [number, number];
   if (op === "lt") return a < b;
@@ -163,5 +217,5 @@ const compareCells = (
 
 /** Scalars compare by value; bytes, arrays and objects never match a rule (they are not identities). */
 const sameScalar = (a: JsonValue | CellValue | undefined, b: CellValue): boolean =>
-  scalarKindOf(a) !== undefined && a === b;
+  scalarKind(a) !== undefined && a === b;
 /* oxlint-enable anti-slop/no-runtime-typeof */

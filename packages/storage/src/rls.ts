@@ -5,7 +5,7 @@ import type { AllowBlock, PolicyNode, RoleSet, ScalarKind } from "@syncmesh/poli
 import type { Result } from "@syncmesh/result";
 import type { ColumnKind, Table } from "@syncmesh/schema";
 
-import { resolveAllow, scalarKindOf } from "@syncmesh/policy";
+import { resolveAllow, scalarKind } from "@syncmesh/policy";
 
 import type { SqlDriver, SqlValue } from "./driver.js";
 
@@ -26,7 +26,7 @@ const OPERATORS = { ne: "<>", lt: "<", lte: "<=", gt: ">", gte: ">=" } as const;
 /** A scalar as SQL text in the form its kind takes; the caller has already proved the kind. */
 const sqlLiteral = (kind: ScalarKind, value: CellValue): string => {
   if (kind === "string") {
-    // SAFETY: the caller matched scalarKindOf(value) against `kind`, so this one is a string
+    // SAFETY: the caller matched scalarKind(value) against `kind`, so this one is a string
     return str(value as string);
   }
   if (kind === "boolean") return value === true ? "TRUE" : "FALSE";
@@ -126,11 +126,11 @@ export function rulePredicate(
   const equalsLiteral = (key: string, expected: JsonValue | CellValue | undefined): string => {
     const found = columns.get(key);
     const kind = found === undefined ? undefined : columnScalarKind(found.column.def.kind);
-    const scalar = scalarKindOf(expected);
+    const scalar = scalarKind(expected);
     if (found === undefined || scalar === undefined) return "FALSE";
     if (scalar === "null") return `(${found.name} IS NULL)`;
     if (scalar !== kind) return "FALSE";
-    // SAFETY: scalarKindOf proved the shape — a string is quoted, a boolean its keyword, a number prints as itself
+    // SAFETY: scalarKind proved the shape — a string is quoted, a boolean its keyword, a number prints as itself
     const value =
       scalar === "string"
         ? str(expected as string)
@@ -197,7 +197,7 @@ export function rulePredicate(
       const found = columns.get(node.column);
       const kind = found === undefined ? undefined : columnScalarKind(found.column.def.kind);
       if (found === undefined || kind === undefined) return "FALSE";
-      if (node.value === null || scalarKindOf(node.value) !== kind) return "FALSE";
+      if (node.value === null || scalarKind(node.value) !== kind) return "FALSE";
       if (node.op !== "ne" && kind === "boolean") return "FALSE"; // a boolean has no order
       const value = sqlLiteral(kind, node.value);
       return leaf(
@@ -208,7 +208,7 @@ export function rulePredicate(
       const found = columns.get(node.column);
       const kind = found === undefined ? undefined : columnScalarKind(found.column.def.kind);
       if (found === undefined || kind === undefined) return "FALSE";
-      const items = node.values.filter((item) => scalarKindOf(item) === kind);
+      const items = node.values.filter((item) => scalarKind(item) === kind);
       if (items.length === 0) return "FALSE";
       const list = items.map((item) => sqlLiteral(kind, item)).join(", ");
       return leaf(`${columnExpr(found.column.def.kind, found.name)} IN (${list})`);

@@ -1,9 +1,10 @@
 import { scopeFrom } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { RELAY_PROTOCOL_VERSIONS, decodeRelayFrame } from "@syncmesh/relay";
-import { decodeCbor, hexToBytes } from "@syncmesh/wire";
+import { bytesToHex, decodeCbor, hexToBytes, verifyRefusal } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
+import refusals from "../../refusal-vectors.json" with { type: "json" };
 import raw from "../../relay-vectors.json" with { type: "json" };
 import { relayVectors } from "../generate-relay-vectors.js";
 
@@ -18,9 +19,17 @@ describe("relay control frame vectors — frozen (D14, D33)", () => {
     expect([...RELAY_PROTOCOL_VERSIONS]).toEqual(raw.protocolVersions);
   });
 
-  test("the control tags run 8 through 21 with no gaps, above the session tags", () => {
+  test("the control tags run 8 through 22 with no gaps, above the session tags", () => {
     const tags = [...new Set(raw.vectors.map((v) => v.tag))].sort((a, b) => a - b);
-    expect(tags).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
+    expect(tags).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]);
+  });
+
+  test("a refusal crosses a relay as the refusal vector's own signed wire, under tag 22 (D32)", () => {
+    const [vector] = raw.vectors.filter((v) => v.kind === "refusal");
+    const frame = decodeRelayFrame(hexToBytes(vector?.wireHex ?? "").unwrap()).unwrap();
+    const wire = frame.kind === "refusal" ? frame.wire : new Uint8Array();
+    expect(bytesToHex(wire)).toBe(refusals.vectors[0]?.wireHex ?? "?");
+    expect(verifyRefusal(wire).unwrap().verdict).toBe("NoGrant");
   });
 
   test("a blob-put without a partition decodes as before, and with one carries it (D18)", () => {

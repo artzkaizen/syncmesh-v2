@@ -79,6 +79,9 @@ export const sqliteOperations = (log: LogPlacement): OperationSql => {
     FROM ${t("operations")} o LEFT JOIN ${t("vouches")} v ON v.peer = o.peer AND v.seq = o.seq
     WHERE v.peer IS NULL ORDER BY o.at_ms, o.seq`,
     deleteStaleVouches: `DELETE FROM ${t("vouches")} WHERE holder = ? AND incarnation <> ?`,
+    selectNewerVouch: `SELECT 1 FROM ${t("vouches")} WHERE holder = ? AND peer = ? AND at_ms > ? LIMIT 1`,
+    deleteWithdrawnVouches: `DELETE FROM ${t("vouches")}
+    WHERE holder = ? AND peer = ? AND seq > ? AND at_ms <= ?`,
     insertVouchesThrough: `INSERT OR REPLACE INTO ${t("vouches")} (peer, seq, holder, incarnation, at_ms)
     SELECT peer, seq, ?, ?, ? FROM ${t("operations")} WHERE peer = ? AND seq <= ?`,
     selectVouches: `SELECT holder, incarnation, at_ms FROM ${t("vouches")} WHERE peer = ? AND seq = ?
@@ -159,6 +162,9 @@ export const POSTGRES_OPERATIONS: OperationSql = {
     LEFT JOIN syncmesh.vouches v ON v.peer = o.peer AND v.seq = o.seq
     WHERE v.peer IS NULL ORDER BY o.at_ms, o.seq`,
   deleteStaleVouches: `DELETE FROM syncmesh.vouches WHERE holder = $1 AND incarnation <> $2`,
+  selectNewerVouch: `SELECT 1 FROM syncmesh.vouches WHERE holder = $1 AND peer = $2 AND at_ms > $3 LIMIT 1`,
+  deleteWithdrawnVouches: `DELETE FROM syncmesh.vouches
+    WHERE holder = $1 AND peer = $2 AND seq > $3 AND at_ms <= $4`,
   insertVouchesThrough: `INSERT INTO syncmesh.vouches (peer, seq, holder, incarnation, at_ms)
     SELECT peer, seq, $1, $2, $3 FROM syncmesh.operations WHERE peer = $4 AND seq <= $5
     ON CONFLICT (peer, seq, holder) DO UPDATE SET incarnation = EXCLUDED.incarnation, at_ms = EXCLUDED.at_ms`,

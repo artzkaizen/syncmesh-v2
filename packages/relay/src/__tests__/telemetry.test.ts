@@ -16,11 +16,13 @@ const join = (peerId: PeerId) => joinFrame([1], peerId, new Map());
 /** The seam is typed over the whole union; a relay only ever emits its own prefix. */
 const isRelay = (event: TelemetryEvent): event is RelayTelemetry => event.type.startsWith("relay.");
 
-/** A room that keeps everything it reported, in order. */
+/** A room that keeps everything it reported, in order, from the moment it opened. */
 const watched = async (overrides: Partial<Parameters<typeof scriptedRoom>[0]> = {}) => {
   const seen: RelayTelemetry[] = [];
-  const room = await scriptedRoom(overrides);
-  room.onTelemetry((event) => void (isRelay(event) && seen.push(event)));
+  const room = await scriptedRoom({
+    ...overrides,
+    onTelemetry: (event) => void (isRelay(event) && seen.push(event)),
+  });
   return { room, seen, of: (type: string) => seen.filter((e) => e.type === type) };
 };
 
@@ -121,9 +123,9 @@ describe("what the relay reports (D17)", () => {
     ca.receive(join(a.identity.peerId));
     await tick();
 
-    ca.receive(blobPutFrame(String(hashOf(bytes)), bytes));
+    ca.receive(blobPutFrame(hashOf(bytes), bytes));
     await tick();
-    ca.receive(blobGetFrame(String(hashOf(bytes))));
+    ca.receive(blobGetFrame(hashOf(bytes)));
     ca.receive(blobGetFrame("b3:not-a-hash-anyone-holds"));
     await tick();
 
@@ -134,29 +136,59 @@ describe("what the relay reports (D17)", () => {
 });
 
 /**
- * D17 left "may relay telemetry carry peer identity" open. It does not, and this is the test that
- * keeps it that way: an identity never emitted can still be added, an identity that has reached a
- * metrics pipeline cannot be taken back out of it.
+ * D48 (decided A): no `relay.*` variant carries a peer id, a room name, an event id or anything
+ * derived from them. The type alone cannot pin this — any new `string` field could carry a peer
+ * id — so this drives a room through every path that reports, and reads what came out.
  */
-describe("no relay variant carries identity", () => {
-  test("every event is exactly type, sizes and duration, and holds no peer, room or payload", async () => {
+describe("no relay variant carries identity (D48)", () => {
+  test("open, join, catch-up, an event, a blob put and a get report no peer, room, event or payload", async () => {
     const a = peer(40, "acct_a");
-    const { room, seen } = await watched({ name: "acme-payroll" });
-    const ca = room.connect(fakeSocket().socket);
+    const b = peer(80, "acct_b");
+    const bytes = Uint8Array.of(9, 8, 7, 6);
+    const room = "acme-payroll";
+    const { room: served, seen, of } = await watched({ name: room, blobs: memoryBlobStore() });
+    const ca = served.connect(fakeSocket().socket);
     ca.receive(join(a.identity.peerId));
     await tick();
     const wire = await write(a, "n1", "the body of the note");
     ca.receive(eventFrame(wire));
+    ca.receive(blobPutFrame(hashOf(bytes), bytes));
+    await tick();
+    // a second joiner catches up over the event the log now holds, then fetches the blob
+    const cb = served.connect(fakeSocket().socket);
+    cb.receive(join(b.identity.peerId));
+    await tick();
+    cb.receive(blobGetFrame(hashOf(bytes)));
     await tick();
 
-    expect(seen.length).toBeGreaterThan(0);
+    const types = new Set(seen.map((e) => e.type));
+    for (const type of [
+      "relay.retention.unbounded",
+      "relay.join",
+      "relay.catchup",
+      "relay.event",
+      "relay.blob.put",
+    ] as const)
+      expect(types.has(type)).toBe(true);
+    expect(of("relay.blob.get").map((e) => e.sizes)).toEqual([{ bytes: 4 }]);
+    expect(of("relay.catchup").map((e) => e.sizes)).toContainEqual({
+      found: 1,
+      admitted: 1,
+      unsendable: 0,
+      pages: 1,
+    });
     for (const event of seen)
       expect(Object.keys(event).sort()).toEqual(["duration", "sizes", "type"]);
     const rendered = JSON.stringify(seen);
-    expect(rendered).not.toContain(String(a.identity.peerId));
-    expect(rendered).not.toContain("acme-payroll");
-    expect(rendered).not.toContain("the body of the note");
-    room.close();
+    for (const named of [
+      a.identity.peerId,
+      b.identity.peerId,
+      entryOf(wire).event.id,
+      room,
+      "the body of the note",
+    ])
+      expect(rendered).not.toContain(named);
+    served.close();
   });
 });
 

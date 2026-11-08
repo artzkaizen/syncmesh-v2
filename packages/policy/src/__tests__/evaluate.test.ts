@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   all,
   allow,
+  allowEntry,
   any,
   claimEquals,
   claimHas,
@@ -16,7 +17,8 @@ import {
   rowIs,
   type AllowBlock,
 } from "../ast.js";
-import { evaluate, roleAtLeast, type RoleSet } from "../evaluate.js";
+import { evaluate, explain, roleAtLeast, type RoleSet } from "../evaluate.js";
+import { ruleText } from "../text.js";
 import { ctx, grant, grantWithoutRole, row } from "./fixtures.js";
 
 describe("evaluate — every node, both outcomes", () => {
@@ -182,5 +184,105 @@ describe("resolveAllow", () => {
     expect(resolveAllow({ ...block, update: role("editor") }, "replace")).toEqual(role("editor"));
     expect(resolveAllow({ ...block, replace: role("owner") }, "replace")).toEqual(role("owner"));
     expect(resolveAllow({ $default: deny }, "replace")).toEqual(deny);
+  });
+});
+
+describe("explain — the verdict and the leaves that reached it", () => {
+  test("a leaf names itself, at the root", () => {
+    expect(explain(role("admin"), ctx())).toEqual({
+      allowed: false,
+      because: [{ node: role("admin"), path: [], held: false }],
+    });
+  });
+
+  test("all: denied by its first failing leaf; allowed by every leaf", () => {
+    const rule = all(role("member"), owner("createdBy"), role("viewer"));
+    const theirs = ctx({ row: row({ createdBy: "acct_b" }) });
+    expect(explain(rule, theirs)).toEqual({
+      allowed: false,
+      because: [{ node: owner("createdBy"), path: [1], held: false }],
+    });
+    expect(explain(rule, ctx({ row: row({ createdBy: "acct_a" }) })).because).toHaveLength(3);
+  });
+
+  test("any: allowed by its first holding leaf; denied by every leaf, since each had to fail", () => {
+    const rule = any(role("admin"), all(role("member"), owner("createdBy")));
+    expect(explain(rule, ctx({ row: row({ createdBy: "acct_a" }) }))).toEqual({
+      allowed: true,
+      because: [
+        { node: role("member"), path: [1, 0], held: true },
+        { node: owner("createdBy"), path: [1, 1], held: true },
+      ],
+    });
+    expect(explain(rule, ctx({ row: row({ createdBy: "acct_b" }) }))).toEqual({
+      allowed: false,
+      because: [
+        { node: role("admin"), path: [0], held: false },
+        { node: owner("createdBy"), path: [1, 1], held: false },
+      ],
+    });
+  });
+
+  test("not: the leaf under it, as the leaf said it, and the verdict turned round", () => {
+    expect(explain(not(role("member")), ctx())).toEqual({
+      allowed: false,
+      because: [{ node: role("member"), path: [0], held: true }],
+    });
+  });
+
+  test("always the verdict evaluate gives, over every node and both outcomes", () => {
+    const leaves = [
+      allow,
+      deny,
+      role("member"),
+      role("admin"),
+      owner("createdBy"),
+      claimHas("entities", "entity"),
+      claimIncludes("permissions.controls", "update"),
+      claimEquals("member", "memberId"),
+      rowIs({ status: "open" }),
+      patchOnly(["title"]),
+    ];
+    const contexts = [
+      ctx(),
+      ctx({ row: row({ createdBy: "acct_a", entity: "e_root", status: "open", memberId: "m_1" }) }),
+      ctx({ patch: row({ title: "t", body: "b" }), grant: grantWithoutRole() }),
+    ];
+    const trees = leaves.flatMap((a) =>
+      leaves.flatMap((b) => [all(a, b), any(a, b), not(any(a, not(b))), all(any(a, b), not(a))]),
+    );
+    for (const tree of trees)
+      for (const context of contexts)
+        expect(explain(tree, context).allowed).toBe(evaluate(tree, context));
+  });
+});
+
+describe("allowEntry — which entry of the block answered", () => {
+  const block: AllowBlock = { $default: deny, write: role("member"), update: role("admin") };
+  test("the operation's own, then write for a write, then $default; replace as update", () => {
+    expect(allowEntry(block, "update").key).toBe("update");
+    expect(allowEntry(block, "insert").key).toBe("write");
+    expect(allowEntry(block, "read").key).toBe("$default");
+    expect(allowEntry(block, "replace")).toEqual({ key: "update", node: role("admin") });
+    expect(allowEntry({ ...block, replace: allow }, "replace")).toEqual({
+      key: "replace",
+      node: allow,
+    });
+    for (const op of ["insert", "update", "delete", "read", "replace", "archive"])
+      expect(allowEntry(block, op).node).toBe(resolveAllow(block, op));
+  });
+});
+
+describe("ruleText — a rule as the builders spell it", () => {
+  test("leaves, combinators and constants", () => {
+    expect(ruleText(any(role("admin"), owner("createdBy")))).toBe(
+      'any(role("admin"), owner("createdBy"))',
+    );
+    expect(ruleText(not(patchOnly(["title", "body"])))).toBe('not(patchOnly(["title", "body"]))');
+    expect(ruleText(rowIs({ status: "open", rank: 2 }))).toBe('rowIs({ status: "open", rank: 2 })');
+    expect(ruleText(claimIncludes("permissions.controls", "update"))).toBe(
+      'claimIncludes("permissions.controls", "update")',
+    );
+    expect(ruleText(all(allow, deny))).toBe("all(allow, deny)");
   });
 });

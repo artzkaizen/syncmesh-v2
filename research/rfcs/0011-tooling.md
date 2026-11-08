@@ -24,6 +24,16 @@ frames, sessions, events, quarantines. The old BLE stack already writes it;
 the Swift probes do too (`BLEFileLogger`), so mesh debugging across three
 implementations lands in one timeline.
 
+**Status 2026-11-08.** The hook exists as D17's one union over `engine.*`,
+`mesh.*` and `relay.*` (the relay's variants anonymous, D48), with its
+consumer in the library rather than a sidecar: `mesh.inspect.telemetry()`
+is a tap over the seam (counts, totals and recent percentiles per type,
+read by polling), `engine.store.commit` times the storage transaction behind
+each write and received batch, and `mesh.inspect.why()` gives a policy
+verdict its rung, rule and deciding leaves. `@syncmesh/devtools` reads the
+tap. The JSONL line format is not written; an app that wants it maps the
+union onto it in a listener.
+
 ## Conformance (the cross-language contract)
 
 `conformance/vectors.json` — frozen wire bytes (events, grants; extend per

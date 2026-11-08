@@ -628,6 +628,7 @@
         "@syncmesh/client": "workspace:*",
         "@syncmesh/engine": "workspace:*",
         "@syncmesh/kernel": "workspace:*",
+        "@syncmesh/policy": "workspace:*",
         "@syncmesh/result": "workspace:*",
         "@syncmesh/temporal": "workspace:*",
         "@syncmesh/transport": "workspace:*",

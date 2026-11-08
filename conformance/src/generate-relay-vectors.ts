@@ -30,6 +30,7 @@ import {
 import { bytesToHex } from "@syncmesh/wire";
 
 import { joinVectors } from "./generate-join-vectors.js";
+import { roomRefusalVectors } from "./generate-refusal-vectors.js";
 import { refusalVectors } from "./relay-refusal-vectors.js";
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- fixtures: a 32-byte hex name stands in for a peer, sequences are branded integers */
@@ -217,6 +218,7 @@ export function relayVectors() {
     },
     ...blobQuotaVectors(),
     ...refusalVectors(CURSORS, FLOOR),
+    ...roomRefusalVectors(),
   ];
   return { protocolVersions: [...RELAY_PROTOCOL_VERSIONS], vectors: cases };
 }

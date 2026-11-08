@@ -4,6 +4,7 @@ import type { PeerId } from "@syncmesh/kernel";
 import type { Transport, TransportCondition } from "@syncmesh/transport";
 
 import { NoSuchTransport } from "@syncmesh/client";
+import { createInspector } from "@syncmesh/engine";
 import { parsePeerId, parseSeqNum } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
@@ -40,11 +41,6 @@ export interface ReadableMesh {
     | "quarantine"
     | "recentEvents"
   >;
-  /**
-   * Loosened from `Teardown` to a plain function, because a fake need not be `Disposable` to be
-   * subscribed to — and `Mesh` is still assignable to this, which is what the assertion needs.
-   */
-  readonly onTelemetry: (listener: Listener<Mesh["onTelemetry"]>) => () => void;
   readonly transports: Pick<Mesh["transports"], "list" | "onLinkEvent">;
   readonly routes: Pick<Mesh["routes"], "onChange" | "all">;
   readonly grants: Pick<
@@ -124,7 +120,6 @@ export const harness = () => {
       quarantine: () => [],
       recentEvents: () => Promise.resolve(Result.ok([])),
     },
-    onTelemetry: telemetry.subscribe,
     transports: { list: () => transports, onLinkEvent: linkEvents.subscribe },
     routes: { onChange: routes.subscribe, all: () => [] },
     grants: {
@@ -145,6 +140,13 @@ export const harness = () => {
       handles: () => ({ observers: 0, subscriptions: 0, operations: 0, fetches: 0, links: 0 }),
       verify: () => Promise.resolve(Result.ok(undefined)),
       fleet: { oldestSchema: () => new Map() },
+      why: () => ({ allowed: false, rung: "table" }),
+      // the mesh's tap, over the counted hub: one listener per tap, given back on close
+      telemetry: () => {
+        const inspector = createInspector();
+        const close = telemetry.subscribe(inspector.note);
+        return { ...inspector, close, [Symbol.dispose]: close };
+      },
     },
     // the healthy answer, which is the one the audit almost always gives; a test that wants a
     // stranded run overrides this reader rather than teaching the harness to have rotated a key

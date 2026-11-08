@@ -77,7 +77,7 @@ partition kinds, sealed kinds, presence topics) and a **read-only driver**. `Boo
 
 **The relay half never reaches a client.** `followTelemetry` re-emits only `engine.*`
 (`client/telemetry.ts:195-201`) and `MeshTelemetry` is typed to exclude `relay.*`
-(`client/telemetry.ts:13-16`) — D17 left "may relay telemetry name peers" open. A device-side devtool
+(`client/telemetry.ts:13-16`) — D17 left "may relay telemetry name peers" open, and D48 closed it: `relay.*` never names a peer, a room or an event. A device-side devtool
 sees seven of thirteen, and the six it cannot see are the only ones that count **event bytes**.
 
 `createInspector` (`inspector.ts:75`) already does the counting, with percentiles over the last 256

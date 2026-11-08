@@ -32,11 +32,11 @@ import {
   ClockAhead,
   LocalOnly,
   PartitionNotGranted,
-  PolicyDenied,
   ReadOnlyPartition,
   WrongPartition,
   type ValidationError,
 } from "./errors.js";
+import { createPolicyDenied, explainRule, sourced, type SourcedRules } from "./policy-why.js";
 import { checkReserved } from "./reserved.js";
 import { resolveEntry, retiredColumn } from "./retired.js";
 import { syncedRules } from "./rules.js";
@@ -172,7 +172,9 @@ export function createValidator(options: ValidatorOptions): Validator {
       const cells = checkCells(entry.table, options.docs, change, event, index, before.row);
       if (cells.isErr()) return cells;
       if (cells.value === "settled") continue;
-      const rules = syncedRules(entry.table.name, event.partition, before.row) ?? entry.allow;
+      const synced = syncedRules(entry.table.name, event.partition, before.row);
+      const rules =
+        synced === undefined ? sourced(entry.allow, "manifest") : sourced(synced, "policy-doc");
       const policy = checkPolicy(entry, rules, change, author, before.row, schema);
       if (policy.isErr()) return policy;
     }
@@ -291,7 +293,7 @@ function checkConfined(
 
 function checkPolicy(
   entry: Entry,
-  rules: AllowBlock | undefined,
+  rules: SourcedRules | undefined,
   change: Change,
   author: Author | undefined,
   before: RowLookup,
@@ -300,23 +302,14 @@ function checkPolicy(
   if (author === undefined || rules === undefined) return Result.ok(undefined);
   const op: Operation =
     change.kind === "doc" ? (change.genesis === true ? "replace" : "update") : change.kind;
-  const rule = resolveAllow(rules, op);
   const row = before(change.table, change.key);
   const patch = policyPatch(change);
-  const allowed = evaluate(
-    rule,
-    policyContext(author, schema.rolesFor(entry.partition), row, patch),
-  );
-  return allowed
-    ? Result.ok(undefined)
-    : Result.err(
-        new PolicyDenied({
-          table: String(entry.table.name),
-          key: String(change.key),
-          op,
-          message: `${op} on ${String(entry.table.name)} denied`,
-        }),
-      );
+  const context = policyContext(author, schema.rolesFor(entry.partition), row, patch);
+  if (evaluate(resolveAllow(rules.block, op), context)) return Result.ok(undefined);
+  // asked only now that the answer is no, so an admitted write pays for no explanation
+  const { rule, verdict } = explainRule(op, rules, context);
+  const answer = { allowed: false, rung: "policy", rule, because: verdict.because } as const;
+  return Result.err(createPolicyDenied(entry.table.name, change.key, op, answer));
 }
 
 /** Builds the evaluator's context with absent (not undefined) optionals. */

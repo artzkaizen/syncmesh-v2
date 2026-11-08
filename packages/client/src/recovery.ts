@@ -1,6 +1,7 @@
 import type {
   Engine,
   Interest,
+  PolicyRule,
   ReceiveReport,
   StoreFailure,
   StrandedWrites,
@@ -8,6 +9,7 @@ import type {
   Unsubscribe,
 } from "@syncmesh/engine";
 import type { EventId, PeerId } from "@syncmesh/kernel";
+import type { PolicyStep } from "@syncmesh/policy";
 import type { Result as ResultType } from "@syncmesh/result";
 import type {
   Accepted,
@@ -17,6 +19,7 @@ import type {
   Transport,
 } from "@syncmesh/transport";
 
+import { ruleText } from "@syncmesh/policy";
 import { omitUndefined, Result } from "@syncmesh/result";
 import { createRejoins } from "@syncmesh/transport";
 
@@ -43,6 +46,12 @@ export interface RecoveryIssue {
   /** The verdict's tag — `NoGrant`, `GrantStale`, `PartitionNotGranted`, … */
   readonly verdict: string;
   readonly message: string;
+  /**
+   * On a `PolicyDenied`, why (U2): the rule the event was judged under — the allow-block entry and
+   * whether the instance's synced `_policy` doc or the bundled manifest held it — and the leaves of
+   * it that failed. Absent on every other verdict, and on a denial no rule was read for.
+   */
+  readonly policy?: { readonly rule: PolicyRule; readonly because: readonly PolicyStep[] };
 }
 
 /**
@@ -190,6 +199,16 @@ const CAPABILITY_VERDICTS = new Set([
   "PartitionNotGranted",
 ]);
 
+const REFUSED_BY_RULES =
+  "The event failed the schema's own rules. A later build or policy may read it differently; nothing an operator does now will.";
+
+/** A policy refusal's next step: the rule, where it came from, and the leaves that failed. */
+const policyNext = ({ rule, because }: NonNullable<RecoveryIssue["policy"]>): string => {
+  const held = rule.source === "policy-doc" ? "the instance's policy doc" : "the bundled manifest";
+  const failed = because.map((step) => ruleText(step.node)).join(", ");
+  return `The ${rule.entry} rule for ${rule.op} in ${held} refused it: ${failed}. A policy or a grant that satisfies it lets the next run fold it.`;
+};
+
 /** What would move this one, said plainly. Nothing here guesses: each verdict has one answer. */
 const nextStep = (issue: RecoveryIssue): string => {
   switch (issue.verdict) {
@@ -203,10 +222,12 @@ const nextStep = (issue: RecoveryIssue): string => {
       return "The grant names a different device than the one that signed: re-issue it for this device.";
     case "PartitionNotGranted":
       return "The author's grant does not cover this instance: widen it, or leave the write where it is.";
+    case "PolicyDenied":
+      return issue.policy === undefined ? REFUSED_BY_RULES : policyNext(issue.policy);
     case "TableDropped":
       return `${issue.author.slice(0, 8)} is on an older build that still writes a table this build dropped: upgrade that device. Nothing here will fold it.`;
     default:
-      return "The event failed the schema's own rules. A later build or policy may read it differently; nothing an operator does now will.";
+      return REFUSED_BY_RULES;
   }
 };
 
@@ -259,23 +280,27 @@ export const recoveryDeps = (
 });
 
 export function openRecovery(engine: Engine, deps?: RecoveryDeps): RecoveryView {
-  const issueOf = ({
+  const parkedIssue = ({
     entry,
     verdict,
-  }: ReturnType<Engine["quarantine"]>[number]): RecoveryIssue => ({
-    kind: CAPABILITY_VERDICTS.has(verdict._tag) ? "missing-capability" : "refused",
-    event: entry.event.id,
-    author: entry.event.peerId,
-    verdict: verdict._tag,
-    message: verdict.message,
-  });
+  }: ReturnType<Engine["quarantine"]>[number]): RecoveryIssue => {
+    const issue = {
+      kind: CAPABILITY_VERDICTS.has(verdict._tag) ? "missing-capability" : "refused",
+      event: entry.event.id,
+      author: entry.event.peerId,
+      verdict: verdict._tag,
+      message: verdict.message,
+    } as const;
+    if (verdict._tag !== "PolicyDenied" || verdict.rule === undefined) return issue;
+    return { ...issue, policy: { rule: verdict.rule, because: verdict.because ?? [] } };
+  };
 
   return {
-    list: () => engine.quarantine().map(issueOf),
+    list: () => engine.quarantine().map(parkedIssue),
     explain: (event) => {
       const parked = engine.quarantine().find((held) => held.entry.event.id === event);
       if (parked === undefined) return undefined;
-      const issue = issueOf(parked);
+      const issue = parkedIssue(parked);
       return {
         issue,
         next: nextStep(issue),

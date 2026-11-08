@@ -1,4 +1,5 @@
 import type { EventId, LineageCellRefused, PeerId, Procedure } from "@syncmesh/kernel";
+import type { PolicyStep } from "@syncmesh/policy";
 import type { RowError } from "@syncmesh/schema";
 
 import { TaggedError } from "@syncmesh/result";
@@ -164,10 +165,31 @@ export class DocColumnWrite extends TaggedError("DocColumnWrite")<{
   message: string;
 }> {}
 
+/**
+ * Which rule a policy verdict was reached under (U2): the operation, the entry of the allow block
+ * that answered for it, and where that block came from.
+ */
+export interface PolicyRule {
+  readonly op: string;
+  /** The allow-block key the rule was found under: the operation's own, `write`, `update` or `$default`. */
+  readonly entry: string;
+  /** `policy-doc`: the instance's synced `_policy` row; `manifest`: the block the build bundles. */
+  readonly source: "policy-doc" | "manifest";
+}
+
+/**
+ * The policy rung said no. `rule` is which rule, `because` the leaves of it that failed — a
+ * reading, carried with the verdict so whoever reads it is told why and not only that. A server
+ * acting as a caller (`actor`) can be refused before any rule is read: the table has none and its
+ * kind does not allow the write, or nothing names the caller. Then both are absent and the message
+ * says which; a validator an app writes by hand may leave them out too.
+ */
 export class PolicyDenied extends TaggedError("PolicyDenied")<{
   table: string;
   key: string;
   op: string;
+  rule?: PolicyRule;
+  because?: readonly PolicyStep[];
   message: string;
 }> {}
 /**

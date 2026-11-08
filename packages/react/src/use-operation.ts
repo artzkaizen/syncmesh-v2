@@ -1,11 +1,22 @@
 import { useCallback, useRef, useSyncExternalStore } from "react";
 
+/** One peer's signed verdict on a write (D32), as the ledger keeps it: who, which bucket, which tag. */
+export interface OperationRefusal {
+  readonly by: string;
+  /** `unknown-table` / `unknown-kind`: the refuser's build is older; `refused`: its ladder said no. */
+  readonly reason: string;
+  /** The `ValidationError` tag — `GrantStale`, `PolicyDenied`, … — never the refuser's prose. */
+  readonly verdict: string;
+}
+
 /** One durable operation record; `@syncmesh/client`'s `OperationRecord` satisfies this structurally. */
 export interface OperationRecord {
   readonly id: string;
   readonly label: string;
   readonly status: "applied" | "blocked" | "superseded";
   readonly correction?: { readonly by: string; readonly reason: string };
+  /** The peers that parked this write and signed for saying so (D32); absent when none has. */
+  readonly refusals?: readonly OperationRefusal[];
 }
 
 /**

@@ -164,6 +164,11 @@ export interface DevtoolsParked {
   readonly kind: "missing-capability" | "refused";
   readonly verdict: string;
   readonly message: string;
+  /**
+   * On a policy refusal, why (U2): the rule as `"<entry> rule (<source>)"` and each failing leaf
+   * as the builders spell it — `role("admin")`. Absent on every other verdict.
+   */
+  readonly why?: { readonly rule: string; readonly because: readonly string[] };
   /** What would unblock it, in a sentence; empty when the mesh no longer knows the event. */
   readonly next: string;
   readonly retryWorthwhile: boolean;

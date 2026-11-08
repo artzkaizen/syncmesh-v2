@@ -74,7 +74,8 @@ export interface PurgeApi {
    * Forgets what a narrowed entitlement no longer covers (D45): other devices' events the scope
    * matches leave the log and the quarantine, and the rows they wrote — with any the scope names
    * directly — are dropped and rebuilt from what this device still holds, its own writes always
-   * among it. Writes no event and lowers no cursor; listeners hear one fold with source `purge`.
+   * among it. Writes no event and lowers no cursor, only the held run custody receipts sign
+   * (D32); listeners hear one fold with source `purge`.
    *
    * @example
    * ```ts
@@ -93,6 +94,8 @@ export interface PurgeDeps {
   readonly hasAdapter: (adapter: AdapterId) => boolean;
   readonly parked: QuarantineStore;
   readonly coverageOf: CoverageTracker["current"];
+  /** Takes the evicted events out of the held run, so the commit below persists it lowered. */
+  readonly unhold: CoverageTracker["evict"];
   readonly getState: () => State;
   readonly setState: (next: State) => void;
   /** The stores in one transaction, with no write running beside it (the gate's exclusive turn). */
@@ -172,7 +175,8 @@ const without = (state: State, keys: WriteKeys): State => {
  * other events the scope did not match. A row nothing held still writes is gone. Doc logs of
  * those rows go with them, and are re-recorded from what is kept.
  *
- * It writes no event: the log of every other peer is untouched, and cursors are not lowered. A
+ * It writes no event: the log of every other peer is untouched, and cursors are not lowered; the
+ * held run a custody receipt signs (D32) is, below the lowest event evicted of each author. A
  * later widening is what brings the rows back — it re-pages this device from nothing (D23), and
  * the events, no longer in the log, fold again. Content that reached a row only through a
  * compaction of this device's own log, with no event left, is not rebuilt; that re-page restores
@@ -204,6 +208,8 @@ export function createPurge(deps: PurgeDeps) {
 
           const removed = await scoped.events.evict([...gone]);
           if (removed.isErr()) throw removed.error;
+          // before the commit, which persists it: a holder signs no receipt for what it evicted
+          deps.unhold(evicted.map(({ event }) => event));
           const drafted = rebuilt(getState(), keys, kept, merge);
           const writes = [
             await scoped.state?.remove(keys),

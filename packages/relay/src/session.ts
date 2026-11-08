@@ -6,7 +6,7 @@ import type { Grant } from "@syncmesh/wire";
 import { ownPositionWarning } from "@syncmesh/engine";
 import { Temporal } from "@syncmesh/temporal";
 import { createHoldback, cursorsFrame, eventFrame, grantFrame } from "@syncmesh/transport";
-import { decodeAndVerify, relayEnvelope, signEvent } from "@syncmesh/wire";
+import { decodeAndVerify, signEvent } from "@syncmesh/wire";
 
 import type { RelayFrame } from "./frames.js";
 import type { SessionRefusals } from "./refused.js";
@@ -15,13 +15,9 @@ import type { RelayDial } from "./transport.js";
 
 import { uploadRefusal } from "./blob-channel.js";
 import { decodeRelayFrame } from "./frame-decode.js";
+import { sendOutstanding } from "./outstanding.js";
+import { createRoomCustody } from "./room-custody.js";
 import { scopedCoverage } from "./scoped.js";
-
-/** A stored event as bytes to send: this device signs its own, and relays another's verbatim. */
-const outgoingEnvelope = (entry: StoredEvent, ctx: TransportContext): Uint8Array | undefined =>
-  entry.event.peerId === ctx.identity.peerId
-    ? signEvent(entry.event, ctx.identity).wire
-    : relayEnvelope(entry);
 
 /**
  * A grant this device registered goes to the room; when it is our own and changes what we may
@@ -200,6 +196,7 @@ export function wireSession(
   const { engine, identity, grants } = context;
   const now = context.now ?? (() => Temporal.Now.instant());
   const holdback = createHoldback(engine, 512);
+  const custody = createRoomCustody(context, hooks, now);
   let chain: Promise<unknown> = Promise.resolve();
   let caughtUp = false;
   /** Set once this session has been found to hold cursors from another entitlement; nothing after it is acted on. */
@@ -210,7 +207,7 @@ export function wireSession(
   const release = async (authors: Iterable<PeerId>): Promise<void> => {
     for (const author of authors) {
       const batch = holdback.drain(author);
-      if (batch.length > 0) await engine.receiveBatch(batch);
+      if (batch.length > 0) await custody.fold(batch, author);
     }
   };
 
@@ -248,7 +245,8 @@ export function wireSession(
         }
         authors.add(verified.value.event.peerId);
       }
-      if (straight.length > 0) await engine.receiveBatch(straight);
+      // a re-page's answer below the cursor vouches for no run, but what it parked is said (D32)
+      if (straight.length > 0) await custody.fold(straight);
       await release(authors);
       // a fold that emptied the holdback can be what lets a position held back earlier be said
       if (!abandoned) positions.flush();
@@ -281,28 +279,13 @@ export function wireSession(
   });
 
   /**
-   * Everything this device holds that the relay does not, whoever wrote it.
-   *
-   * Not only what this device authored: a peer with a radio and a network is the only way an
-   * event written where there is no network ever reaches one, and forwarding is the whole of
-   * carrying it. `relayCursors` moves with what is sent so a second call sends the difference
-   * rather than the run again — the relay says where it is on `hello`, and between two of those
-   * this is what we know it has.
+   * Everything this device holds that the relay does not, whoever wrote it. `relayCursors` moves
+   * with what is sent — the relay says where it is on `hello`, and between two of those this is
+   * what we know it has.
    */
   const pushOutstanding = (): void => {
     chain = chain.then(async () => {
-      const entries = await engine.eventsSince(relayCursors);
-      if (entries.isErr()) return;
-      const sent = new Map(relayCursors);
-      for (const entry of entries.value) {
-        const wire = outgoingEnvelope(entry, context);
-        if (wire === undefined) continue;
-        hooks.sendSafe(eventFrame(wire));
-        const at = sent.get(entry.event.peerId);
-        if (at === undefined || entry.event.seqNum > at)
-          sent.set(entry.event.peerId, entry.event.seqNum);
-      }
-      relayCursors = sent;
+      relayCursors = await sendOutstanding(context, relayCursors, hooks.sendSafe);
     });
   };
 
@@ -318,6 +301,7 @@ export function wireSession(
     else if (frame.kind === "cursors") {
       hooks.onPeerHeard?.(frame.from);
       engine.acknowledge(frame.from, frame.cursors, now(), frame.schemaVersion);
+      custody.heard(frame.from);
     } else if (frame.kind === "grant-request") {
       const request = { peerId: frame.peerId };
       if (frame.invite !== undefined) Object.assign(request, { invite: frame.invite });
@@ -372,7 +356,7 @@ export function wireSession(
     } else if (frame.kind === "error") {
       hooks.onRefused(frame.code, frame.floor);
       dialed.close();
-    } else if (frame.kind === "session") onSession(frame.frame);
+    } else if (!custody.take(frame) && frame.kind === "session") onSession(frame.frame);
     // ka and unknown: the rearm above was the whole point
   });
 
@@ -390,7 +374,12 @@ export function wireSession(
    * difference, which is nothing at all when the relay already had it.
    */
   const offFolds = engine.onFoldBatch((batch) => {
+    // a purge lowered a held run (D45): signed for now, so the author's ledger withdraws what was
+    // evicted without waiting for the next remote fold; nothing new is held, so nothing is pushed
+    if (caughtUp && batch.source === "purge") custody.moved();
     if (!caughtUp || batch.source !== "remote") return;
+    // a recovery run or another link folded it: what moved is signed for, to the author seated
+    custody.moved();
     pushOutstanding();
     // our contiguous position, for every other peer's `delivered`; the relay passes it on
     hooks.sendSafe(ownCursorsFrame(engine, identity.peerId));

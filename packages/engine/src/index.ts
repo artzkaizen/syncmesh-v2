@@ -128,6 +128,7 @@ export type {
   EngineError,
   LinkRung,
   MutateError,
+  PolicyRule,
   RevertError,
   ValidationError,
 } from "./errors.js";
@@ -137,6 +138,7 @@ export { createHub } from "./listeners.js";
 export type { Ahead, Coverage, Cursors, SyncDoc, SyncMessage, SyncState } from "./sync.js";
 export {
   EMPTY_COVERAGE,
+  heldRuns,
   coversCursors,
   generateSyncMessage,
   heldAhead,
@@ -160,7 +162,9 @@ export type {
 export { createValidator, policyContext } from "./validate.js";
 export type { Author } from "./validate.js";
 export type { PolicySource } from "./can.js";
-export { can } from "./can.js";
+export { can, why } from "./can.js";
+export type { ExplainedRule, PolicyWhy } from "./policy-why.js";
+export { createPolicyDenied } from "./policy-why.js";
 export type { Installed, Snapshot, SnapshotOptions, SnapshotRow } from "./snapshot.js";
 export { installSnapshot, partitionsIn, stateSnapshot } from "./snapshot.js";
 export type { ChunkDeps, FeedApi, FeedState, FeedTracker } from "./feed.js";
