@@ -139,4 +139,5 @@ export const STATE_TABLES = [
   "capture",
   "doc_log",
   "doc_heads",
+  "doc_snapshots",
 ] as const;

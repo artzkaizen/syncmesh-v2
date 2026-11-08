@@ -4,16 +4,20 @@ export type { DocWrite } from "./tx.js";
 export type {
   DocAddress,
   DocAppend,
+  DocCover,
+  DocEntryRef,
   DocEntryState,
   DocHead,
   DocHeadMode,
   DocLogEntry,
+  DocSnapshot,
   DocStore,
   LiveStates,
 } from "./doc-log.js";
+export { createMemoryDocStore } from "./doc-log-memory.js";
 export {
+  DocCoverStale,
   LIVE_STATES,
-  createMemoryDocStore,
   docAppends,
   docChangeDigest,
   docDigests,
@@ -23,6 +27,7 @@ export {
   nextState,
   recordDocs,
 } from "./doc-log.js";
+export type { DocApi, DocEngineOptions, DocTail, TailUpdate } from "./doc-path.js";
 export type { EventHeader, RecentEvents } from "./recent.js";
 export { DEFAULT_RECENT, headerOf, recentHeaders } from "./recent.js";
 export type { Tx } from "./tx.js";

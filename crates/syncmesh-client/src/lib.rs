@@ -19,6 +19,7 @@ pub mod blobs;
 pub mod coverage;
 pub mod doc_log;
 pub mod doc_rules;
+pub mod docs;
 pub mod engine;
 pub mod grants;
 pub mod holdback;

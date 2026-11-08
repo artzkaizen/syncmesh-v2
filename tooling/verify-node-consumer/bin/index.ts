@@ -123,8 +123,15 @@ function main(): number {
           name: "consumer",
           private: true,
           type: "module",
-          // the peers an app supplies: drizzle-orm for the client, react for the hooks
-          dependencies: { ...specs, "drizzle-orm": "1.0.0-rc.4", react: "^19", "react-dom": "^19" },
+          // the peers an app supplies: drizzle-orm for the client, react for the hooks, Loro for
+          // the loro@1 adapter
+          dependencies: {
+            ...specs,
+            "drizzle-orm": "1.0.0-rc.4",
+            "loro-crdt": "1.17.1",
+            react: "^19",
+            "react-dom": "^19",
+          },
           overrides: specs,
         },
         null,

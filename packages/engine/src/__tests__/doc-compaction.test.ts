@@ -6,7 +6,8 @@ import type { DocWrite } from "../tx.js";
 
 import { openEngine } from "../boot.js";
 import { tableDigests } from "../digest.js";
-import { createMemoryDocStore, docDigests, type DocStore } from "../doc-log.js";
+import { createMemoryDocStore } from "../doc-log-memory.js";
+import { docDigests, type DocStore } from "../doc-log.js";
 import { createLink } from "../link.js";
 import { createMemoryStateStore } from "../state-store.js";
 import {
