@@ -223,6 +223,12 @@ export function rulePredicate(
   return compile(rule);
 }
 
+/**
+ * The open policy `servedReadDdl` gives a table that had no row-level security, so serving it
+ * changes nothing for other roles. {@link rlsDdl} drops it: its own policies are the table's.
+ */
+export const SERVED_OPEN_POLICY = "syncmesh_served_others";
+
 export interface RlsOptions {
   /** The column holding the partition key, pinned when the `partition` setting is set. Default `_partition`; `false` when the table has no such column. */
   readonly partitionColumn?: string | false;
@@ -231,7 +237,8 @@ export interface RlsOptions {
 /**
  * The DDL that puts a table's `read` rule into the database itself: RLS enabled and forced (so
  * the table's owner is filtered too), one SELECT policy from the rule, and open write policies —
- * writes are capture's to judge. Idempotent; superusers and BYPASSRLS roles are outside RLS by
+ * writes are capture's to judge. The open policy a served table was given before ({@link
+ * SERVED_OPEN_POLICY}) is dropped, as it would OR every row back in. Idempotent; superusers and BYPASSRLS roles are outside RLS by
  * Postgres's own rules, so serve the app through a plain role.
  */
 export function rlsDdl(
@@ -253,6 +260,8 @@ export function rlsDdl(
   return [
     `ALTER TABLE ${name} ENABLE ROW LEVEL SECURITY`,
     `ALTER TABLE ${name} FORCE ROW LEVEL SECURITY`,
+    // permissive policies OR together: an open one beside the rule would read every row
+    `DROP POLICY IF EXISTS "${SERVED_OPEN_POLICY}" ON ${name}`,
     `DROP POLICY IF EXISTS "syncmesh_read" ON ${name}`,
     `CREATE POLICY "syncmesh_read" ON ${name} FOR SELECT USING (${predicate})`,
     `DROP POLICY IF EXISTS "syncmesh_insert" ON ${name}`,
