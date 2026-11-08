@@ -84,6 +84,34 @@ const stalled = () => {
   return { store, entered, release: () => release() };
 };
 
+/**
+ * A memory state store whose first `commit` after a `remove` waits to be released: a purge held
+ * open between dropping its rows and writing the rebuilt ones back.
+ */
+const stalledCommit = () => {
+  const inner = createMemoryStateStore();
+  const { promise: entered, resolve: enter } = Promise.withResolvers<void>();
+  const { promise: released, resolve: release } = Promise.withResolvers<void>();
+  let removed = false;
+  let stalled = false;
+  const store = {
+    ...inner,
+    remove: async (keys: Parameters<typeof inner.remove>[0]) => {
+      removed = true;
+      return inner.remove(keys);
+    },
+    commit: async (...args: Parameters<typeof inner.commit>) => {
+      if (removed && !stalled) {
+        stalled = true;
+        enter();
+        await released;
+      }
+      return inner.commit(...args);
+    },
+  } satisfies typeof inner;
+  return { store, entered, release: () => release() };
+};
+
 describe("engine.purge (D45)", () => {
   test("other devices' events in the lost scope leave the log, and their rows go with them", async () => {
     const { a } = await held();
@@ -228,5 +256,38 @@ describe("engine.purge (D45)", () => {
     (await receiving).unwrap();
     expect(readRow(a.engine.state(), NOTES, N8)?.get(TITLE)).toBe("late");
     expect(readRow((await stall.store.loadAll()).unwrap(), NOTES, N8)?.get(TITLE)).toBe("late");
+  });
+
+  test("a snapshot installed while a purge is in flight leaves no purged row on disk", async () => {
+    const stall = stalledCommit();
+    const { a, b } = await held(stall.store);
+    const purging = a.engine.purge(lost(PAYROLL));
+    await stall.entered;
+    // a peer still on the wider grant hands over its snapshot, payroll rows and all
+    const installing = a.engine.installSnapshot(b.engine.snapshot());
+    await new Promise((settled) => setImmediate(settled));
+    stall.release();
+    (await purging).unwrap();
+    await installing;
+    expect(readRow(a.engine.state(), NOTES, N4)).toBeUndefined();
+    const disk = (await stall.store.loadAll()).unwrap();
+    expect(readRow(disk, NOTES, N4)).toBeUndefined();
+    expect(readRow(disk, NOTES, N1)?.get(TITLE)).toBe("acme");
+  });
+
+  test("a repair merged while a purge is in flight leaves no purged row on disk", async () => {
+    const stall = stalledCommit();
+    const { a, b } = await held(stall.store);
+    const purging = a.engine.purge(lost(PAYROLL));
+    await stall.entered;
+    const repairing = a.engine.repairRows(NOTES, b.engine.rowRecords(NOTES, [N1, N4]));
+    await new Promise((settled) => setImmediate(settled));
+    stall.release();
+    (await purging).unwrap();
+    await repairing;
+    expect(readRow(a.engine.state(), NOTES, N4)).toBeUndefined();
+    const disk = (await stall.store.loadAll()).unwrap();
+    expect(readRow(disk, NOTES, N4)).toBeUndefined();
+    expect(readRow(disk, NOTES, N1)?.get(TITLE)).toBe("acme");
   });
 });

@@ -52,6 +52,8 @@ type Transaction = NonNullable<EngineOptions["atomic"]>;
 /**
  * The engine's transaction behind one {@link Gate}: `shared` for writes, `exclusive` for a purge,
  * so no fold lands inside a purge's rebuild (D45). Without `atomic`, each runs on the plain stores.
+ * `turn` is a shared turn with no transaction, for a snapshot install's or a repair's persist: they
+ * write the state store outside `atomic`, but a purge must not drop rows between their writes.
  */
 export function gatedTransactions(
   atomic: EngineOptions["atomic"],
@@ -64,6 +66,7 @@ export function gatedTransactions(
       ? fn(plain)
       : atomic((scoped) => fn(within(scoped)))) satisfies Transaction;
   return {
+    turn: gate.shared,
     shared: ((fn) => gate.shared(() => transaction(fn))) satisfies Transaction,
     exclusive: ((fn) => gate.exclusive(() => transaction(fn))) satisfies Transaction,
   };

@@ -240,7 +240,7 @@ export function createEngine(options: EngineOptions): Engine {
   const docPath = createDocPath(options, peerId, undo);
   const { merge, hasAdapter, store: docStore } = docPath;
   const plain = omitUndefined({ events: store, docs: docStore, state: stateStore });
-  const { shared: atomically, exclusive } = gatedTransactions(atomic, plain, docPath.within);
+  const { shared: atomically, exclusive, turn } = gatedTransactions(atomic, plain, docPath.within);
   const coverage = trackCoverage(boot?.coverage);
   const errors = createHub<EngineError>();
   if (options.onError !== undefined) errors.subscribe(options.onError);
@@ -285,7 +285,8 @@ export function createEngine(options: EngineOptions): Engine {
     setState,
     coverageOf: coverage.current,
     adopt: coverage.adopt,
-    persist: (batch: FoldBatch) => persist(batch, plain),
+    // in a turn, so a purge never runs between a snapshot's state commit and its own (D45)
+    persist: (batch: FoldBatch) => turn(() => persist(batch, plain)),
     notify,
   };
   if (merge !== undefined) Object.assign(snapshotDeps, { merge });
@@ -294,7 +295,7 @@ export function createEngine(options: EngineOptions): Engine {
   const repair = createRepairPath({
     getState,
     mergeInto: (table, key, record) => setState(mergeRecord(getState(), table, key, record, merge)),
-    persist: (batch) => persist(batch, { state: stateStore }),
+    persist: (batch) => turn(() => persist(batch, { state: stateStore })),
     notify,
   });
 
