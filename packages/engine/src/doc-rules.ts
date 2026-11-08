@@ -106,7 +106,7 @@ export function checkCells(
   before: RowLookup,
 ): Result<"policy" | "settled", ValidationError> {
   const declared = docs?.get(change.table) ?? new Map();
-  const columns = checkColumns(table, change, declared);
+  const columns = checkColumns(table, change, declared, event.seqNum === undefined);
   if (columns.isErr()) return columns;
   if (change.kind !== "doc") return Result.ok("policy");
   const doc = checkDoc(table, declared, change, event, index);

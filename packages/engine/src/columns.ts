@@ -44,15 +44,25 @@ export type TableDocs = ReadonlyMap<ColumnName, AdapterId>;
 
 const NO_DOCS: TableDocs = new Map();
 
+/** Whether a table declares the column as derived (RFC-0023 §16.4). Own keys only: a cell named like an inherited property is a column this build does not name. */
+const derivation = (table: Table, column: ColumnName) =>
+  Object.hasOwn(table.columns, column) ? table.columns[column]?.def.derived : undefined;
+
 /**
  * A change against the table it names: a kind this build can fold, cells that pass the columns it
  * knows about, and no row write to a document column. A doc change's own rules are `checkDoc`'s,
  * since they need the event it sits in.
+ *
+ * A derived column is refused only on a `probe` — this device's own write, before it is numbered.
+ * On a numbered event the cell is dropped from the check the way an undeclared one is: history
+ * written before the column was derived, or by a build that does not derive it, still folds, and
+ * the projection never copies the cell into the row (RFC-0023 §12).
  */
 export function checkColumns(
   table: Table,
   change: Change,
   docs: TableDocs = NO_DOCS,
+  probe = true,
 ): Result<void, ValidationError> {
   if (!foldable(change)) {
     const kind = unfoldableKind(change) ?? change.kind;
@@ -67,10 +77,7 @@ export function checkColumns(
   if (change.kind === "delete" || change.kind === "doc") return Result.ok(undefined);
   const cells = change.kind === "insert" ? change.row : change.patch;
   for (const column of cells.keys()) {
-    // own keys only: a cell named like an inherited property is a column this build does not name
-    const derived = Object.hasOwn(table.columns, column)
-      ? table.columns[column]?.def.derived
-      : undefined;
+    const derived = probe ? derivation(table, column) : undefined;
     if (!docs.has(column) && derived === undefined) continue;
     return Result.err(
       new DocColumnWrite({
@@ -84,7 +91,8 @@ export function checkColumns(
       }),
     );
   }
-  const r = checkRow(table, declared(table, cells), change.kind);
+  const checked = new Map([...cells].filter(([name]) => derivation(table, name) === undefined));
+  const r = checkRow(table, declared(table, checked), change.kind);
   return r.isErr()
     ? Result.err(
         new SchemaViolation({

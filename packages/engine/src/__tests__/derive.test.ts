@@ -9,10 +9,11 @@ import { describe, expect, test } from "bun:test";
 import type { FoldBatch } from "../fold.js";
 import type { DerivedRow, StateStore } from "../state-store.js";
 
+import { createLink } from "../link.js";
 import { createMemoryStateStore } from "../state-store.js";
 import { StoreFailure } from "../store.js";
 import { createValidator } from "../validate.js";
-import { N1, NOTES, PEER_A, column, procedure, row, setup } from "./fixtures.js";
+import { N1, NOTES, PEER_A, PEER_B, column, procedure, row, seq, setup } from "./fixtures.js";
 
 /*
  * Derived columns (RFC-0023 §16.4): computed by each replica from its document and written into
@@ -27,14 +28,15 @@ const DOCS = new Map([[NOTES, new Map<ColumnName, typeof LORO>([[CONTENT, LORO]]
 const W1 = parsePartitionKey("workspace:w1").unwrap();
 const EDIT = procedure("notes.edit");
 
+const columns = {
+  id: t.text().primaryKey(),
+  title: t.text(),
+  content: t.blob({ merge: { id: "loro@1" } }).nullable(),
+};
 const schema = syncSchema({
   tables: {
     notes: {
-      columns: {
-        id: t.text().primaryKey(),
-        title: t.text(),
-        content: t.blob({ merge: { id: "loro@1" } }).nullable(),
-      },
+      columns,
       partition: partition("workspace"),
       derive: { title: from("content", (doc: string) => doc) },
       allow: ({ allow }) => ({ $default: allow }),
@@ -42,6 +44,16 @@ const schema = syncSchema({
   },
 });
 const validate = createValidator({ schema, grantFor: null, docs: DOCS });
+/** The same table before `title` was derived: an app write to it is an ordinary cell. */
+const before = syncSchema({
+  tables: {
+    notes: {
+      columns,
+      partition: partition("workspace"),
+      allow: ({ allow }) => ({ $default: allow }),
+    },
+  },
+});
 
 /** A memory state store that also takes derived rows, recording each call and its order. */
 const recording = (fail = false) => {
@@ -100,6 +112,36 @@ describe("a derived column is never written as a value", () => {
     expect(verdict(row({ id: "n1" }), "insert")).toBe("ok");
     expect(verdict(row({ id: "n1", title: "mine" }), "insert")).toBe("DocColumnWrite");
     expect(verdict(row({ title: "mine" }), "update")).toBe("DocColumnWrite");
+  });
+
+  test("a numbered event naming one is admitted: the cell is history, not this device's write", () => {
+    const r = validate.validate(
+      {
+        peerId: PEER_B,
+        seqNum: seq(1),
+        partition: W1,
+        changes: [{ kind: "insert", table: NOTES, key: N1, row: row({ id: "n1", title: 7 }) }],
+      },
+      { row: () => undefined, partition: () => W1 },
+    );
+    expect(r.isOk()).toBe(true);
+  });
+
+  test("a row written before the column was derived still folds on a replica that derives it", async () => {
+    const old = setup(PEER_B, 100, {
+      docs: DOCS,
+      validate: createValidator({ schema: before, grantFor: null, docs: DOCS }),
+    });
+    const current = setup(PEER_A, 100, { docs: DOCS, validate });
+    (
+      await old.engine.mutate(
+        EDIT,
+        (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "old title" })),
+        { partition: W1 },
+      )
+    ).unwrap();
+    (await createLink(old.engine, current.engine).catchUp()).unwrap();
+    expect(current.engine.state().get(NOTES)?.has(N1)).toBe(true);
   });
 });
 
