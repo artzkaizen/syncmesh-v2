@@ -974,8 +974,16 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
      that does not derive it, folds; the cell stays in the kernel record as it arrived and the
      projection never copies it to the row. Capture compares an insert's derived and document
      columns with their SQL `DEFAULT`s, so an app table made by its own migration, with
-     `.default("")` as in §4.1, takes an `INSERT` that leaves them out.
-   - Window and patch clients read kernel cells, so they never see a derived value.
+     `.default("")` as in §4.1, takes an `INSERT` that leaves them out. A row deleted and
+     inserted again in one captured transaction is judged the same way, as an insert.
+   - A cover writes its derived values only when no `tail` entry of its lineage is left on the
+     document once it commits. One left was folded after the snapshot was read: a flush that
+     already wrote newer values, or an edit the next materialisation covers. Without this, a
+     materialisation that read its tail before a flush put the older title back.
+   - Window and patch clients read kernel cells. A current TypeScript writer puts no derived
+     value there, but a numbered event from an older build, a Rust app (its validator has no
+     derived refusal) or a hand-made client can, and that cell is what they, and an `allow` rule
+     evaluated over the record, see. The SQL read filter reads the row's derived value instead.
    Where it departs: the guard is a check in `captureChanges`, not a SQL trigger. It refuses the
    transaction with `DocColumnWrite` as a value, at the same point (capture armed), so a raw
    statement outside capture is not refused, as with a trigger. A remote edit applied to an open
@@ -987,7 +995,12 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    `Derive` computes values and nothing in the crate writes them; it checks names against the
    manifest but not kinds, which the manifest entry does not carry, and `compute` does not
    require `check` to have run. `installProvisional` checks the producer's signature, not
-   whether the producer may update the row (gaps.md U24).
+   whether the producer may update the row (gaps.md U24). A `notNull()` derived column on a
+   table syncmesh created itself (no `NOT NULL` or `DEFAULT` in its DDL) reads `NULL` until a
+   derive runs, so a Drizzle read hands the app `null` for a column typed `string`. A re-inserted
+   row, and a SQLite `INSERT OR REPLACE` (which fires only the insert trigger, and is judged
+   against the defaults), lose the row's derived and document values until the next derive or
+   materialisation, without a refusal.
 5. **Device snapshots — decided 2026-11-08 by Jace: full device snapshots**, as D41 built.
    Shallow-at-the-stable-floor (§8.3) stays available as a future option with its forgotten-peer
    edge; it is not the default.
