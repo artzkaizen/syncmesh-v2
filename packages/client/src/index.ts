@@ -10,6 +10,7 @@ export { BlobQuotaExceeded, NoSuchCapability } from "./blobs.js";
 export type { Peer, Topic, Topics, ValueOf } from "./presence.js";
 export { rowHistory } from "./history.js";
 export type { DeliveredOptions, ReceivedOptions } from "./delivered.js";
+export type { SyncedOptions } from "./synced.js";
 export type {
   Handle,
   HistoryOptions,

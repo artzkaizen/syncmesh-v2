@@ -288,8 +288,13 @@ handler holds exactly one object that can only read, and only what the caller ma
 
 ### 3.1 One constructor
 `createMesh` (`client/src/index.ts:38`) and `createClient` (`orpc/src/client.ts`) both exist and
-both have callers — `apps/issues/src/app/devtools.tsx`, `bench/src/browser-mesh.ts`,
-`packages/devtools`. The book's cut list says one. Mechanical but wide; needs a sequencing call.
+both have callers. `createMesh`'s non-test callers are `orpc/src/client.ts`, `chaos`, `bench`,
+`tooling/verify-node-consumer` and the embedded example; no app calls it
+(`apps/issues/src/app/devtools.tsx` and `packages/devtools` use `createMeshSource` /
+`createMeshControls`, not `createMesh`). The book's cut list says one. Mechanical but wide; needs a sequencing call.
+
+**Decided as D47 B (2026-11-08):** `createClient` is the one public constructor; `createMesh`
+moves to `@syncmesh/client/internal`. Not built yet.
 
 ### 3.2 Schema evolution across a mixed-version fleet
 Zero's answer is deploy order; ours cannot be, because there is no order — a phone six versions
@@ -297,10 +302,10 @@ behind is a valid signer. D13's additive rule and the `unknown-table` park are t
 already have (`engine/src/quarantine.ts`); gap-audit №20 says correction mismatch across
 versions has no mitigation. This is the axis where we are behind the weaker system.
 
-**Drafted as `plan/decisions/D31.md` (2026-09-22, `status: draft`) — awaiting a decision.**
+**Drafted as `plan/decisions/D31.md` (2026-09-22); decided C on 2026-11-08.** Not built yet.
 Recommends C: expand/contract as an operator rule with three pieces of tooling (the additive
 lint D13 asked for and nobody built; a monotone `schemaVersion` in the manifest stamped on
-events under a new core key and trailing on the cursors frame, additive like `ahead`; a fleet
+events under a new core key and at index 5 of the cursors frame (after D46's floor at 4), additive like `ahead`; a fleet
 reading "oldest schema still writing" off `engine.acksAt` via `$inspect`), plus a `retired`
 table/column state — declared, write-refused locally, still folded — so contraction never sends
 old writers' events into quarantine. Rejects an admission floor (B) as a refusal of legitimate
@@ -372,6 +377,10 @@ pending writes — which a device that wrote while dark will have. Only the rela
 (`relay/src/retention.ts`). RFC-0015 §3 and D15 say the peer "rejoins from state"; nothing
 peer-to-peer does it. This is D31's "pin D15's compaction floor for every peer", now with a
 red test naming the exact observed state. Needs a floor on the wire — a decision.
+
+**Decided as D46 A (2026-11-08):** the floor goes at index 4 of the cursors frame and the device below it
+asks for state, adopting unvouched coverage only up to the claimed floor and only with no `trust`. A snapshot
+manifest nobody asked for installs nothing; today one does, which is gaps U20. Not built yet.
 
 ### 3.7 Dedup below the compaction floor
 `receiveBatch` of x's old insert on b reports `folded: 1, skipped: 0` and b's log regains the

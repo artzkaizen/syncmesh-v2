@@ -1,5 +1,5 @@
 import type { Engine, Interest, Unsubscribe } from "@syncmesh/engine";
-import type { PeerId } from "@syncmesh/kernel";
+import type { EventId, PeerId } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
 import type { EventCrypto, GrantRegistry, Identity } from "@syncmesh/wire";
 
@@ -298,6 +298,12 @@ export interface Transport {
    * a medium that has one — a relay room does, a peer-to-peer radio does not.
    */
   readonly visibility?: TransportVisibility;
+  /**
+   * Settles once a store-and-forward hop that keeps its log across a restart holds the event
+   * (D42): the answer `mesh.synced()` waits on. Present only on a medium with such a hop — a relay
+   * room does, a peer-to-peer radio does not — and never settled by a hop whose log is in memory.
+   */
+  readonly durable?: (event: EventId) => Promise<void>;
   readonly onStatus?: (cb: (online: boolean) => void) => Unsubscribe;
   /**
    * Link-level endings as they happen (book ch. 18): proved, refused, closed, dropped, failed.
