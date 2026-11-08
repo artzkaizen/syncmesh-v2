@@ -55,7 +55,11 @@ column's check is weaker here or not run (`Manifest::unported_checks` lists the 
 It is never stricter: `portableSchema` leaves out whatever zod's converter would say stricter
 than zod runs (a `/…/i` regex, a `.catch()`, a coerce, a trimmed string, a UTF-16 `.min(n)`, a
 regex without `u` whose `.` or negated class would count UTF-16 units, a `\b`, a lookbehind or a
-backreference), and a check from a vendor other than zod travels as the flag alone. A schema this
+backreference), and a check from a vendor other than zod travels as the flag alone. A pattern's
+`.`, `\d`, `\w`, `\s` and their negations travel spelled as the sets JavaScript means, because
+the `jsonschema` crate runs a pattern with a lookahead untranslated, where they are Unicode's. A
+match the regex engine stops at its backtrack limit is no refusal: `CheckSchema::accepts` takes
+it, as JavaScript would have finished. A schema this
 build cannot compile leaves its column flagged with no schema, as `unported_checks` lists, and the
 manifest still reads. JSON Schema `format` is an annotation here, never asserted, so a check zod
 runs in code beside a format alone (`z.url()`, `z.jwt()`) is looser here. Register the rest

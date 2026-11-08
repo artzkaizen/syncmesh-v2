@@ -13,6 +13,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use jsonschema::error::ValidationErrorKind;
+
 use syncmesh_core::doc::DocColumns;
 use syncmesh_core::policy::{AllowBlock, RoleSet, parse_allow_block};
 use syncmesh_core::record::JsonValue;
@@ -97,8 +99,18 @@ impl CheckSchema {
     }
 
     /// Whether `value` is one the check accepts.
+    ///
+    /// A match the regex engine stops at its backtrack limit, where JavaScript backtracks to the
+    /// end, is undecided; the check takes what only an undecided match refuses.
     pub fn accepts(&self, value: &serde_json::Value) -> bool {
         self.compiled.is_valid(value)
+            || self.compiled.iter_errors(value).all(|error| {
+                matches!(
+                    error.kind(),
+                    ValidationErrorKind::BacktrackLimitExceeded { .. }
+                        | ValidationErrorKind::RegexEngineFailure { .. }
+                )
+            })
     }
 }
 

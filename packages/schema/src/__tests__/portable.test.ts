@@ -93,6 +93,8 @@ describe("the manifest as a port reads it (gap U3)", () => {
   });
 
   test("a check a port runs is never stricter than the function it says", () => {
+    const DOT = "[^\\n\\r\u2028\u2029]";
+    const SPACE = "\\t\\n\\v\\f\\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff";
     const loose = syncSchema({
       tables: {
         loose: {
@@ -114,6 +116,12 @@ describe("the manifest as a port reads it (gap U3)", () => {
             named: t.text().check(z.string().regex(/^(?<x>a)\k<x>$/)),
             unicode: t.text().check(z.string().regex(/^.{2}$/u)),
             run: t.text().check(z.string().regex(/^a[^b]*b$/)),
+            looked: t.text().check(z.string().regex(/^(?!x)\D*\s*$/)),
+            classed: t.text().check(z.string().regex(/^[\w\s]*$/)),
+            unclassed: t.text().check(z.string().regex(/^[\S]*$/)),
+            counted: t.text().check(z.string().regex(/^a{,2}$/)),
+            templated: t.text().check(z.templateLiteral([z.string().length(2)])),
+            keyed: t.json(z.looseRecord(z.string().regex(/^\w+$/), z.number())),
           },
         },
       },
@@ -147,7 +155,20 @@ describe("the manifest as a port reads it (gap U3)", () => {
     // a backreference is JavaScript's own: a port's engine cannot compile it
     expect(schemaOf("named")).toEqual({ type: "string" });
     // with `u`, and as a `*` run, a pattern takes the same strings in a port
-    expect(schemaOf("unicode")).toEqual({ type: "string", pattern: "^.{2}$" });
+    expect(schemaOf("unicode")).toEqual({ type: "string", pattern: `^${DOT}{2}$` });
     expect(schemaOf("run")).toEqual({ type: "string", pattern: "^a[^b]*b$" });
+    // a port's `\D`, `\s` are Unicode's, and a lookahead skips the crate's translation:
+    // "٣" passes JavaScript's `\D`, so each shorthand travels as the set JavaScript means
+    expect(schemaOf("looked")).toEqual({ type: "string", pattern: `^(?!x)[^0-9]*[${SPACE}]*$` });
+    expect(schemaOf("classed")).toEqual({ type: "string", pattern: `^[A-Za-z0-9_${SPACE}]*$` });
+    // a negated shorthand cannot be spelled inside a class, and `{,2}` is JavaScript's literal
+    expect(schemaOf("unclassed")).toEqual({ type: "string" });
+    expect(schemaOf("counted")).toEqual({ type: "string" });
+    // a template literal's own pattern and a loose record's key patterns are read alike
+    expect(schemaOf("templated")).toEqual({ type: "string" });
+    expect(schemaOf("keyed")).toEqual({
+      type: "object",
+      patternProperties: { "^[A-Za-z0-9_]+$": { type: "number" } },
+    });
   });
 });

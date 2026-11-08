@@ -319,7 +319,7 @@ fn a_manifest_that_does_not_read_is_a_value() {
         manifest.doc_columns()["notes"],
         BTreeMap::from([("content".to_owned(), "loro@1".to_owned())])
     );
-    assert_eq!(manifest.checked_columns().len(), 7);
+    assert_eq!(manifest.checked_columns().len(), 9);
     // a check schema that is not an object is a manifest that does not read
     let mut doc = vectors()["schema"].clone();
     doc["tables"]["checked"]["columns"]["qty"]["checkSchema"] = serde_json::json!("integer");
@@ -748,4 +748,17 @@ fn can_with_no_instance_named_asks_as_the_account_every_link_agrees_on() {
         .expect("a second link");
     assert!(!device.can("settings.read", None, None));
     assert!(device.can("settings.read", None, Some("org:beta")));
+}
+
+#[test]
+fn a_regex_match_past_the_backtrack_limit_is_no_refusal() {
+    // JavaScript backtracks to the end and takes this; fancy-regex stops at its limit first
+    let check = syncmesh_client::CheckSchema::compile(serde_json::json!({
+        "type": "string",
+        "pattern": "^(?:(?!x)a|a)*$|!$",
+    }))
+    .expect("compiles");
+    let costly = format!("{}!", "a".repeat(20));
+    assert!(check.accepts(&Value::String(costly)));
+    assert!(!check.accepts(&serde_json::json!(3)));
 }

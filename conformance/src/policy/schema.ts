@@ -174,6 +174,15 @@ export const policySchema = syncSchema({
           .text()
           .nullable()
           .check(z.string().regex(/^.{2}$/)),
+        // a lookahead runs a port's regex untranslated, where `\D` is Unicode's
+        looked: t
+          .text()
+          .nullable()
+          .check(z.string().regex(/^(?!x)\D*$/)),
+        templated: t
+          .text()
+          .nullable()
+          .check(z.templateLiteral([z.string().length(2)])),
         meta: t
           .json(z.object({ tag: z.enum(["red", "blue"]), n: z.number().optional() }))
           .nullable(),

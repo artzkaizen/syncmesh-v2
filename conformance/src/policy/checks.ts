@@ -18,9 +18,18 @@ export const checks = ({ by }: Authors): Step => ({
     by(MEMBER, [insert("checked", "c6", { code: "ABC", qty: 1, meta: { tag: "green" } })]),
     by(MEMBER, [insert("checked", "c7", { code: "ABC", qty: 1, meta: { tag: "blue", n: "1" } })]),
     by(MEMBER, [insert("checked", "c8", { code: "XYZ", qty: 9, email: null, meta: null })]),
-    // the i flag passes "AB", and "😀" is two UTF-16 units: the function takes each of them
+    // the i flag passes "AB", "😀" is two UTF-16 units and "٣" is no ASCII digit: the function
+    // takes each of them
     by(MEMBER, [
-      insert("checked", "c9", { code: "ABC", qty: 1, folded: "AB", word: "😀", dotted: "😀" }),
+      insert("checked", "c9", {
+        code: "ABC",
+        qty: 1,
+        folded: "AB",
+        word: "😀",
+        dotted: "😀",
+        looked: "٣",
+        templated: "😀",
+      }),
     ]),
     by(MEMBER, [update("checked", "c1", { qty: 0 })]),
     by(MEMBER, [update("checked", "c1", { code: "QRS", meta: { tag: "blue", n: 2 } })]),

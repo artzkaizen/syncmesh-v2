@@ -11,6 +11,7 @@ import { Result } from "@syncmesh/result";
 import type { SchemaEntry } from "./manifest.js";
 import type { Table } from "./table.js";
 
+import { spelledPattern } from "./pattern.js";
 import { shippedColumn, type ShippedColumn, type ShippedTable } from "./shipped.js";
 import { speaksJsonSchema, type StandardSchemaV1 } from "./standard-schema.js";
 
@@ -25,7 +26,8 @@ import { speaksJsonSchema, type StandardSchemaV1 } from "./standard-schema.js";
  * accepts, the part that would refuse is left out: a `.catch()`, a `z.preprocess` or a
  * `z.coerce` accepts any value; a string that is trimmed, case-folded or otherwise rewritten
  * before its checks, or whose regex a port's engine would read otherwise (a flag, a `.` that
- * counts UTF-16 units, a `\b`, a lookbehind), keeps only its type; a `.min(n)`
+ * counts UTF-16 units, a `\b`, a lookbehind), keeps only its type; a pattern's `.`, `\d`, `\w`
+ * and `\s` travel spelled as the sets JavaScript means; a `.min(n)`
  * length (UTF-16 units in JavaScript, code points in JSON Schema) becomes `ceil(n / 2)`; a
  * fractional `multipleOf` is dropped. A check from a vendor other than zod travels as the flag.
  */
@@ -44,119 +46,31 @@ interface ZodNode {
       readonly coerce?: boolean;
       readonly in?: ZodNode;
       readonly checks?: readonly { readonly _zod: { readonly def: { readonly check: string } } }[];
+      /** A record's: `loose` states its key patterns as `patternProperties`. */
+      readonly mode?: string;
+      readonly keyType?: ZodNode;
     };
     readonly bag?: { readonly patterns?: ReadonlySet<RegExp> };
+    /** A template literal's whole pattern, which its JSON Schema states as `pattern`. */
+    readonly pattern?: RegExp;
   };
 }
 
 /** What zod's `override` hook hands over for each node it converts. */
 interface ZodOverride {
   readonly zodSchema: ZodNode;
-  readonly jsonSchema: {
-    minLength?: number;
-    multipleOf?: number;
-    [keyword: string]: JsonValue | undefined;
-  };
+  readonly jsonSchema: ConvertedNode;
 }
 
-/** Regex flags whose meaning a JSON Schema `pattern` cannot carry. */
-const UNSAID_FLAGS = /[imsv]/;
-
-/** Escapes a port's regex reads as JavaScript does, with or without `u`. */
-const SAME_ESCAPES = new Set("dwstnrfvx^$\\.*+?()[]{}|/-");
-
-/** Escapes that match one UTF-16 unit without `u`, half of a character outside the BMP. */
-const UNIT_ESCAPES = new Set("DWS");
-
-/** What may follow `(?` in a pattern a port runs as JavaScript does: a plain group, a lookahead. */
-const SAME_GROUPS = new Set(":=!");
-
-const isSurrogate = (unit: number) => unit >= 0xd800 && unit <= 0xdfff;
-
-/** Where {@link portablePattern} stands in a pattern's source. */
-interface PatternScan {
-  readonly source: string;
-  /** No `u` flag: `.` and its kin match one UTF-16 unit. */
-  readonly units: boolean;
-  at: number;
-  inClass: boolean;
-  /** The open class can match half a surrogate pair. */
-  unitClass: boolean;
-  /** The atom just read can match half a surrogate pair: only `*` may follow it. */
-  unitAtom: boolean;
+/** The keywords of one converted node {@link loosen} rewrites. */
+interface ConvertedNode {
+  minLength?: number;
+  multipleOf?: number;
+  pattern?: string;
+  allOf?: ConvertedNode[];
+  patternProperties?: Record<string, ConvertedNode>;
+  [keyword: string]: JsonValue | ConvertedNode[] | Record<string, ConvertedNode> | undefined;
 }
-
-/** Class-set operators a port's engine reads where JavaScript without `v` reads two literals. */
-const CLASS_SET_OPERATORS = /[&~-]/;
-
-const scannedEscape = (scan: PatternScan) => {
-  scan.at += 1;
-  const escaped = scan.source.charAt(scan.at);
-  if (!UNIT_ESCAPES.has(escaped)) return SAME_ESCAPES.has(escaped);
-  if (scan.units && scan.inClass) scan.unitClass = true;
-  else if (scan.units) scan.unitAtom = true;
-  return true;
-};
-
-const scannedInClass = (scan: PatternScan, char: string) => {
-  const next = scan.source.charAt(scan.at + 1);
-  if (char === "[" || (CLASS_SET_OPERATORS.test(char) && next === char)) return false;
-  if (char === "]") {
-    scan.inClass = false;
-    scan.unitAtom = scan.unitClass;
-  }
-  return true;
-};
-
-const scannedOutside = (scan: PatternScan, char: string) => {
-  const { source, units } = scan;
-  const next = source.charAt(scan.at + 1);
-  if (char === "[") {
-    scan.inClass = true;
-    scan.unitClass = units && next === "^";
-    if (next === "^") scan.at += 1;
-    return source.charAt(scan.at + 1) !== "]";
-  }
-  if (char === "(" && next === "?") return SAME_GROUPS.has(source.charAt(scan.at + 2));
-  if (char === ".") scan.unitAtom = units;
-  return true;
-};
-
-/** Reads one character; `false` when a port's engine could read the pattern otherwise. */
-const scanned = (scan: PatternScan, char: string) => {
-  if (scan.unitAtom) {
-    scan.unitAtom = false;
-    return char === "*";
-  }
-  if (scan.units && isSurrogate(scan.source.charCodeAt(scan.at))) return false;
-  if (char === "\\") return scannedEscape(scan);
-  return scan.inClass ? scannedInClass(scan, char) : scannedOutside(scan, char);
-};
-
-/**
- * Whether a port's regex engine, which counts code points, accepts no less than `regex` does.
- *
- * Without `u` JavaScript matches `.`, a negated class and `\D`, `\W`, `\S` one UTF-16 unit at a
- * time, so `/^.{2}$/` passes "😀". Such an atom is kept only as a `*` run, which takes the same
- * strings either way. A pattern with a literal outside the BMP, a `\b`, a backreference, a
- * named group, a lookbehind, a `\p` or `\u` escape, a nested or empty class, or a flag a
- * pattern cannot carry is not one a port can be trusted to read alike, so it is left out.
- */
-const portablePattern = ({ source, flags }: RegExp) => {
-  if (UNSAID_FLAGS.test(flags)) return false;
-  const scan = {
-    source,
-    units: !flags.includes("u"),
-    at: 0,
-    inClass: false,
-    unitClass: false,
-    unitAtom: false,
-  } satisfies PatternScan;
-  for (; scan.at < source.length; scan.at += 1) {
-    if (!scanned(scan, source.charAt(scan.at))) return false;
-  }
-  return !scan.unitAtom && !scan.inClass;
-};
 
 /** Whether a node accepts values its JSON Schema would refuse: it rewrites or replaces its input. */
 const acceptsAnything = ({ type, coerce, in: input }: ZodNode["_zod"]["def"]) =>
@@ -166,13 +80,43 @@ const clear = (json: ZodOverride["jsonSchema"], keep: readonly string[] = []) =>
   for (const key of Object.keys(json)) if (!keep.includes(key)) delete json[key];
 };
 
+/** The regexes a node's JSON Schema states, each as zod wrote it and as a port reads it. */
+const statedPatterns = ({ def, bag, pattern }: ZodNode["_zod"]) => {
+  const keys = def.type === "record" && def.mode === "loose" ? def.keyType?._zod.bag?.patterns : [];
+  const whole = def.type === "template_literal" && pattern !== undefined ? [pattern] : [];
+  return [...(bag?.patterns ?? []), ...(keys ?? []), ...whole].map(
+    (regex) => [regex.source, spelledPattern(regex)] as const,
+  );
+};
+
+/** Puts each pattern a node's JSON Schema states as a port reads it. */
+const respell = (json: ConvertedNode, spellings: ReadonlyMap<string, string>) => {
+  const spelled = (pattern: string) => spellings.get(pattern) ?? pattern;
+  const { pattern, allOf, patternProperties } = json;
+  if (pattern !== undefined) json.pattern = spelled(pattern);
+  if (allOf !== undefined) {
+    json.allOf = allOf.map((entry) =>
+      entry.pattern === undefined ? entry : { ...entry, pattern: spelled(entry.pattern) },
+    );
+  }
+  if (patternProperties === undefined) return;
+  json.patternProperties = Object.fromEntries(
+    Object.entries(patternProperties).map(([key, value]) => [spelled(key), value]),
+  );
+};
+
 /** Leaves out of one converted node whatever would make it stricter than the zod node it says. */
 const loosen = ({ zodSchema, jsonSchema }: ZodOverride) => {
-  const { def, bag } = zodSchema._zod;
+  const { def } = zodSchema._zod;
   if (acceptsAnything(def)) return clear(jsonSchema);
   const rewrites = def.checks?.some((check) => check._zod.def.check === "overwrite") === true;
-  const unportable = [...(bag?.patterns ?? [])].some((regex) => !portablePattern(regex));
+  const patterns = statedPatterns(zodSchema._zod);
+  const unportable = patterns.some(([, spelled]) => spelled === undefined);
   if (rewrites || unportable) return clear(jsonSchema, ["type"]);
+  const spellings = patterns.flatMap(([source, spelled]) =>
+    spelled === undefined ? [] : [[source, spelled] as const],
+  );
+  respell(jsonSchema, new Map(spellings));
   const { minLength, multipleOf } = jsonSchema;
   if (def.type === "string" && minLength !== undefined && minLength > 1) {
     jsonSchema.minLength = Math.ceil(minLength / 2);
@@ -182,7 +126,7 @@ const loosen = ({ zodSchema, jsonSchema }: ZodOverride) => {
 /* oxlint-enable no-underscore-dangle */
 
 /** The JSON Schema a check says it accepts, or `undefined` when it cannot say. */
-const checkSchemaOf = (check: StandardSchemaV1): JsonObject | undefined => {
+const checkJsonSchema = (check: StandardSchemaV1): JsonObject | undefined => {
   const standard = check["~standard"];
   // only zod's converter lets `loosen` see each node, so only zod's schema can be kept no stricter
   if (standard.vendor !== "zod" || !speaksJsonSchema(standard)) return undefined;
@@ -244,7 +188,7 @@ export interface PortingSchema {
 
 const portableCheck = (check: StandardSchemaV1 | undefined) => {
   if (check === undefined) return {};
-  const checkSchema = checkSchemaOf(check);
+  const checkSchema = checkJsonSchema(check);
   return checkSchema === undefined
     ? { check: true as const }
     : { check: true as const, checkSchema };
