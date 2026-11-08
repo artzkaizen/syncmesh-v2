@@ -30,8 +30,17 @@ export type {
   PresenceTouch,
 } from "./presence.js";
 export { createPresenceStore, presenceSlot } from "./presence.js";
-export type { JoinDeps, JoinExchange, SnapshotInstalled } from "./join.js";
+export type { JoinDeps, JoinExchange, JoinOutcome, JoinPolicy, SnapshotInstalled } from "./join.js";
 export { createJoinExchange } from "./join.js";
+export type {
+  Accepted,
+  BelowFloor,
+  BelowFloorReason,
+  Rejoins,
+  RejoinSession,
+  RejoinSessionDeps,
+} from "./rejoin.js";
+export { belowPeerFloor, createRejoins } from "./rejoin.js";
 export type { SnapshotFrame } from "./snap-frame.js";
 export {
   SNAP,

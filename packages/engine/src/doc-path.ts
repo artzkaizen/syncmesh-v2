@@ -67,6 +67,12 @@ export interface DocTail {
 
 /** What an engine answers about its documents. */
 export interface DocApi {
+  /**
+   * Whether the schema declares any document column. A snapshot carries rows and not the doc
+   * snapshots behind them, so state taken from a peer below its floor cannot stand in for the doc
+   * updates that floor removed (D46).
+   */
+  readonly hasDocColumns: () => boolean;
   /** Every doc-log entry this engine holds (RFC-0023 §6.2). */
   readonly docLog: () => Promise<Result<readonly DocLogEntry[], StoreFailure>>;
   /** Every document's head: its winning lineage and where its tail stands. */
@@ -152,6 +158,7 @@ export function createDocPath(
     hasAdapter: (adapter) => docAdapters?.has(adapter) === true,
     hold,
     api: {
+      hasDocColumns: () => docs !== undefined && docs.size > 0,
       docLog: docStore.entries,
       docHeads: docStore.heads,
       docTail: (doc) => readTail(options.store, docStore, bindings(), doc),

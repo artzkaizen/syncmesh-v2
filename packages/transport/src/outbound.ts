@@ -123,14 +123,22 @@ export function createOutbound(deps: OutboundDeps) {
    * Our position — the contiguous cursors, and what we hold above them — sent once whatever the
    * caller is already doing has finished. The second half only narrows what the far side bothers
    * to send: a peer that ignores it re-sends a run we then skip. `fromNothing`, asked as the frame
-   * leaves, sends no cursors at all, which asks for the whole run (D23).
+   * leaves, sends no cursors at all, which asks for the whole run (D23). The floor this device's
+   * log was compacted below rides along (D46), so a peer under it knows to ask for state.
    */
   const cursorsAfter = (queue: Promise<unknown>, fromNothing?: () => boolean): Promise<void> =>
     queue.then(async () => {
       const cursors = await engine.cursors();
       if (cursors.isErr()) return;
       const at = fromNothing?.() === true ? new Map() : cursors.value;
-      send(KIND.cursors, "cursors", cursorsFrame(identity.peerId, at, engine.ahead()));
+      const floor = engine.floor();
+      const frame = cursorsFrame(
+        identity.peerId,
+        at,
+        engine.ahead(),
+        floor.size === 0 ? undefined : floor,
+      );
+      send(KIND.cursors, "cursors", frame);
     });
 
   return { send, drain, envelopeOf, sendDigest, cursorsAfter };

@@ -11,6 +11,7 @@ import type { EventStore } from "../store.js";
 import { openEngine } from "../boot.js";
 import { dueForCompaction } from "../compaction.js";
 import { refoldable } from "../compaction.js";
+import { unheldBelow } from "../coverage.js";
 import { createLink } from "../link.js";
 import { StateCorrupt, createMemoryStateStore, type StateStore } from "../state-store.js";
 import {
@@ -48,9 +49,10 @@ const cursors = (entries: readonly (readonly [PeerId, SeqNum])[]) => new Map(ent
 const pair = () => {
   const stateA = createMemoryStateStore();
   const a = setup(PEER_A, 100, { stateStore: stateA });
-  const b = setup(PEER_B, 100, { stateStore: createMemoryStateStore() });
+  const stateB = createMemoryStateStore();
+  const b = setup(PEER_B, 100, { stateStore: stateB });
   const link = createLink(a.engine, b.engine, { now: () => T0 });
-  return { a, b, link, stateA };
+  return { a, b, link, stateA, stateB };
 };
 
 describe("compaction — RFC-0015 §2", () => {
@@ -89,6 +91,105 @@ describe("compaction — RFC-0015 §2", () => {
     const afterReboot = (await write(rebooted, "n7", "n7")).unwrap();
     expect(afterReboot.seqNum).toBe(seq(7));
     expect(compareHlc(afterReboot.hlc, next.hlc)).toBe(1);
+  });
+
+  test("the floor a peer is sent is what the store recorded, kept across a reboot (D46)", async () => {
+    const { a, link, stateA } = pair();
+    for (const k of ["n1", "n2", "n3"]) (await write(a.engine, k, k)).unwrap();
+    (await link.catchUp()).unwrap();
+    expect(a.engine.floor().size).toBe(0);
+
+    // asked to compact everything, a run keeps the young: the floor says what was removed
+    const now = at(100 + 60 * 60 * 1000);
+    const young = Temporal.Duration.from({ hours: 2 });
+    (await a.engine.compact({ now, keepAtLeast: young })).unwrap();
+    expect(a.engine.floor().size).toBe(0);
+    (await a.engine.compact({ now })).unwrap();
+    expect(a.engine.floor()).toEqual(cursors([[PEER_A, seq(3)]]));
+
+    const rebooted = (
+      await openEngine({ peerId: PEER_A, clock: fakeClock(1), store: a.store, stateStore: stateA })
+    ).unwrap();
+    expect(rebooted.floor()).toEqual(cursors([[PEER_A, seq(3)]]));
+    // local events never travel, so their half of the floor is not the engine's to send
+    (await write(rebooted, "d1", "d1", true)).unwrap();
+    (await rebooted.compact({ now: T0 })).unwrap();
+    expect(rebooted.floor()).toEqual(cursors([[PEER_A, seq(3)]]));
+  });
+
+  test("coverage a snapshot adopted with no log behind it is a floor too, kept across a reboot (D46)", async () => {
+    const { a, b, link, stateB } = pair();
+    (await write(a.engine, "n1", "n1")).unwrap();
+    (await link.catchUp()).unwrap();
+    link.close();
+    for (const k of ["n2", "n3"]) (await write(a.engine, k, k)).unwrap();
+    // b holds A's first event and joins from state for the rest: its log lacks 2 and 3
+    (await b.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    expect(b.engine.coverage().synced.get(PEER_A)).toBe(seq(3));
+    expect(b.engine.floor()).toEqual(cursors([[PEER_A, seq(3)]]));
+    // persisted with the coverage it qualifies, at once: a restart before the next fold keeps it
+    const right = (
+      await openEngine({ peerId: PEER_B, clock: fakeClock(1), store: b.store, stateStore: stateB })
+    ).unwrap();
+    expect(right.coverage().synced.get(PEER_A)).toBe(seq(3));
+    expect(right.floor()).toEqual(cursors([[PEER_A, seq(3)]]));
+
+    // events after the install are held, so the floor does not move with them
+    (await write(a.engine, "n4", "n4")).unwrap();
+    (await createLink(a.engine, b.engine, { now: () => T0 }).catchUp()).unwrap();
+    expect(b.engine.coverage().synced.get(PEER_A)).toBe(seq(4));
+    expect((await b.store.all()).unwrap().map(({ event }) => event.seqNum)).toEqual([
+      seq(1),
+      seq(4),
+    ]);
+    expect(b.engine.floor()).toEqual(cursors([[PEER_A, seq(3)]]));
+
+    const rebooted = (
+      await openEngine({ peerId: PEER_B, clock: fakeClock(1), store: b.store, stateStore: stateB })
+    ).unwrap();
+    expect(rebooted.floor()).toEqual(cursors([[PEER_A, seq(3)]]));
+  });
+
+  test("coverage a pass-over adopted is no floor, in the session or after a reboot (D46)", async () => {
+    const { a, b, link, stateB } = pair();
+    (await write(a.engine, "n1", "n1")).unwrap();
+    (await link.catchUp()).unwrap();
+    link.close();
+    for (const k of ["n2", "n3"]) (await write(a.engine, k, k)).unwrap();
+    // A:2 was withheld from b and passed over (D24, D40): the relay or the authority has it
+    b.engine.adoptCoverage({ synced: cursors([[PEER_A, seq(2)]]), local: new Map() });
+    const rest = (await a.engine.eventsSince(cursors([[PEER_A, seq(2)]]))).unwrap();
+    (await b.engine.receiveBatch(rest)).unwrap();
+    expect(b.engine.coverage().synced.get(PEER_A)).toBe(seq(3));
+    expect(b.engine.floor().size).toBe(0);
+
+    const rebooted = (
+      await openEngine({ peerId: PEER_B, clock: fakeClock(1), store: b.store, stateStore: stateB })
+    ).unwrap();
+    expect(rebooted.coverage().synced.get(PEER_A)).toBe(seq(3));
+    expect(rebooted.floor().size).toBe(0);
+  });
+
+  test("unheldBelow: the highest sequence in the range the log lacks, or nothing", () => {
+    const to = cursors([
+      [PEER_A, seq(5)],
+      [PEER_C, seq(2)],
+    ]);
+    const held = new Map([
+      [PEER_A, [seq(4), seq(5)]],
+      [PEER_C, [seq(2)]],
+    ]);
+    expect(
+      unheldBelow(
+        cursors([
+          [PEER_A, seq(1)],
+          [PEER_C, seq(1)],
+        ]),
+        to,
+        held,
+      ),
+    ).toEqual(cursors([[PEER_A, seq(3)]]));
+    expect(unheldBelow(cursors([[PEER_A, seq(3)]]), to, held)).toEqual(cursors([[PEER_C, seq(1)]]));
   });
 
   test("keepAtLeast keeps young events whatever the floor says", async () => {

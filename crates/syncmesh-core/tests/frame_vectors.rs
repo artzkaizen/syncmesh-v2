@@ -49,7 +49,7 @@ fn session_frames_decode_to_their_kind_and_reencode_byte_for_byte() {
     assert_eq!(doc["otherId"].as_str(), Some(other.peer_id().as_str()));
 
     let list = doc["vectors"].as_array().unwrap();
-    assert_eq!(list.len(), 20);
+    assert_eq!(list.len(), 22);
     let mut tags: Vec<u8> = Vec::new();
     for v in list {
         let what = v["description"].as_str().unwrap();
@@ -92,6 +92,7 @@ fn session_frames_are_reproduced_from_the_generator_inputs() {
     let (d, o) = (device.peer_id().clone(), other.peer_id().clone());
     let cursors = vec![(d.clone(), seq(7)), (o.clone(), seq(3))];
     let ahead = vec![(o.clone(), vec![seq(5), seq(6)])];
+    let floor = vec![(o.clone(), seq(2))];
     let digests = vec![("notes".to_owned(), Digest::from_u64(0xdeadbeef))];
     let acme = r#"{"partitions":["org:acme"]}"#;
     let now = 1_700_000_000_000_f64;
@@ -108,8 +109,8 @@ fn session_frames_are_reproduced_from_the_generator_inputs() {
         (0, frames::grant_frame(&grant_wire)),
         (1, frames::grant_request_frame(&d, None)),
         (2, frames::grant_request_frame(&d, Some("inv-7"))),
-        (3, frames::cursors_frame(&d, &cursors, None)),
-        (4, frames::cursors_frame(&d, &cursors, Some(&ahead))),
+        (3, frames::cursors_frame(&d, &cursors, None, None)),
+        (4, frames::cursors_frame(&d, &cursors, Some(&ahead), None)),
         (5, frames::event_frame(&event_wire)),
         (7, frames::digest_frame("", &cursors, &digests, None)),
         (
@@ -158,6 +159,12 @@ fn session_frames_are_reproduced_from_the_generator_inputs() {
             19,
             frames::withheld_frame(r#"{"partitions":["org:acme"]}"#, &ahead),
         ),
+        // the sender's compaction floor at index 4, `ahead` always written before it (D46)
+        (20, frames::cursors_frame(&d, &cursors, None, Some(&floor))),
+        (
+            21,
+            frames::cursors_frame(&d, &cursors, Some(&ahead), Some(&floor)),
+        ),
     ];
     for (i, bytes) in expected {
         assert_eq!(to_hex(&bytes), to_hex(&wires[i]), "vector {i}");
@@ -169,10 +176,31 @@ fn session_frames_are_reproduced_from_the_generator_inputs() {
             from,
             cursors: c,
             ahead: a,
+            floor: f,
         } => {
             assert_eq!(from, d);
             assert_eq!(c, cursors);
             assert_eq!(a, Some(ahead.clone()));
+            assert_eq!(f, None);
+        }
+        f => panic!("expected cursors, got {}", f.kind()),
+    }
+    // a floor with nothing ahead: `ahead` read back empty, never absent
+    match frames::decode_frame(&wires[20]).unwrap() {
+        Frame::Cursors {
+            ahead: a, floor: f, ..
+        } => {
+            assert_eq!(a, Some(vec![]));
+            assert_eq!(f, Some(floor.clone()));
+        }
+        f => panic!("expected cursors, got {}", f.kind()),
+    }
+    match frames::decode_frame(&wires[21]).unwrap() {
+        Frame::Cursors {
+            ahead: a, floor: f, ..
+        } => {
+            assert_eq!(a, Some(ahead.clone()));
+            assert_eq!(f, Some(floor.clone()));
         }
         f => panic!("expected cursors, got {}", f.kind()),
     }

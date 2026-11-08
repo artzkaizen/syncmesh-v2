@@ -8,9 +8,10 @@ import type {
 } from "@syncmesh/engine";
 import type { EventId, PeerId } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
-import type { SnapshotInstalled } from "@syncmesh/transport";
+import type { Accepted, BelowFloor, Rejoins, SnapshotInstalled } from "@syncmesh/transport";
 
 import { omitUndefined, Result } from "@syncmesh/result";
+import { createRejoins } from "@syncmesh/transport";
 
 import type { StoreSweep } from "./sweep.js";
 
@@ -76,6 +77,29 @@ export interface RecoveryView {
   readonly stranded: () => Promise<ResultType<readonly StrandedWrites[], StoreFailure>>;
   /** Re-runs admission over everything parked; a no-op when nothing changed since it parked. */
   readonly run: () => Promise<ResultType<ReceiveReport, StoreFailure>>;
+  /**
+   * The peers this device is below the compaction floor of (D46), and why it is still there: the
+   * history it lacks is in no log that peer keeps, so delta sync cannot reach it. Empty once every
+   * author catches up to the floor, however it got there.
+   *
+   * With `trust` set the device asks for state on its own and adopts what the issuer vouched for;
+   * an issue here means that did not finish. With no `trust` nothing can vouch for a snapshot, so
+   * every such peer is an issue until {@link RecoveryView.acceptState} says otherwise.
+   */
+  readonly belowFloor: () => readonly BelowFloor[];
+  /**
+   * Fires when {@link RecoveryView.belowFloor} would answer differently: an issue raised, or one
+   * cleared because an install answered it or its authors caught up. Hands back nothing; read
+   * `belowFloor()` again. `mesh.status` subscribes to it too.
+   */
+  readonly onBelowFloor: (listener: () => void) => Unsubscribe;
+  /**
+   * Takes the peer's state although nothing vouched for it, adopting per author at most the floor
+   * it claimed (D46). Deliberately a call someone makes: in a mesh with no `trust`, a peer lying
+   * about its floor and its rows could otherwise make this device stop fetching an author's real
+   * events. `"deferred"` when no session to that peer is open: the next one asks.
+   */
+  readonly acceptState: (peer: PeerId) => Accepted;
   /**
    * The last resort: take the state from a source that can vouch for it (book ch. 18).
    *
@@ -162,6 +186,8 @@ export interface RecoveryDeps {
   readonly pending: () => number;
   /** The grant-driven store sweep, where the caller holds the set of open stores. */
   readonly stores?: StoreSweep;
+  /** The mesh's record of peers this device is below the floor of (D46). */
+  readonly rejoins?: Rejoins;
 }
 
 /**
@@ -185,10 +211,11 @@ export const recoveryDeps = (
   self: PeerId,
   snapshots: { readonly subscribe: RecoveryDeps["onSnapshot"] },
   sources: RecoveryDeps["sources"],
-): RecoveryDeps => ({
+): RecoveryDeps & { readonly rejoins: Rejoins } => ({
   sources,
   onSnapshot: snapshots.subscribe,
   pending: () => unacknowledged(engine, self),
+  rejoins: createRejoins(),
 });
 
 export function openRecovery(engine: Engine, deps?: RecoveryDeps): RecoveryView {
@@ -223,6 +250,9 @@ export function openRecovery(engine: Engine, deps?: RecoveryDeps): RecoveryView 
     },
     stranded: () => engine.stranded(),
     run: () => engine.retryQuarantined(),
+    belowFloor: () => deps?.rejoins?.issues() ?? [],
+    onBelowFloor: (listener) => deps?.rejoins?.onChange(listener) ?? (() => undefined),
+    acceptState: (peer) => deps?.rejoins?.accept(peer) ?? "nothing-to-accept",
     rebuild: (options = {}) => rebuildFrom(deps, options),
     ...omitUndefined({ stores: deps?.stores }),
   };

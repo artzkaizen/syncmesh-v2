@@ -67,7 +67,11 @@ export function stateSnapshot(
   const { interest } = options;
   // tombstones travel: without them a joiner would resurrect every row anyone deleted
   const rows = [...keyedRecords(state)].filter(({ record }) => rowsIn(record, interest));
-  return interest === undefined ? { rows, coverage } : { rows, coverage, scope: interest };
+  // the floor is this device's own account of its log, never part of what it claims to a joiner
+  const { floor: _ownFloor, ...claimed } = coverage;
+  return interest === undefined
+    ? { rows, coverage: claimed }
+    : { rows, coverage: claimed, scope: interest };
 }
 
 /** What a snapshot install needs of the engine it lands in. */
@@ -76,6 +80,8 @@ export interface InstallDeps {
   readonly setState: (next: State) => void;
   readonly adopt: (coverage: Coverage) => void;
   readonly persist: (batch: FoldBatch) => Promise<void>;
+  /** Commits the coverage just adopted, rows already durable, so neither waits for the next fold. */
+  readonly persistCoverage: () => Promise<void>;
   readonly notify: (batch: FoldBatch) => void;
   readonly merge?: MergeSpec | undefined;
   /** The mesh's doc columns: their cells are checked before anything joins, and their moves relabelled. */
@@ -99,7 +105,7 @@ export async function installSnapshot(
   deps: InstallDeps,
   snapshot: Snapshot,
 ): Promise<Result<Installed, LineageCellRefused>> {
-  const { getState, setState, adopt, persist, notify, merge, docs } = deps;
+  const { getState, setState, adopt, persist, persistCoverage, notify, merge, docs } = deps;
   const checked = docs === undefined ? undefined : parseLineageCells(snapshot.rows, docs);
   if (checked?.isErr() === true) return Result.err(checked.error);
   const before = getState();
@@ -130,6 +136,7 @@ export async function installSnapshot(
       ? snapshot.coverage
       : { ...snapshot.coverage, scope: interestText(snapshot.scope) },
   );
+  await persistCoverage();
   if (snapshot.rows.length > 0) notify(batch);
   return Result.ok({ rows: snapshot.rows.length, batch });
 }

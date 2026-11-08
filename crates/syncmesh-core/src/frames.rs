@@ -180,6 +180,10 @@ pub enum Frame {
         cursors: Cursors,
         /// What they hold above those cursors; absent from an older build, which says nothing.
         ahead: Option<Ahead>,
+        /// Per author, the highest sequence the sender's log no longer holds (D46), at index 4.
+        /// Absent from an older build and from a sender that compacted nothing; an empty one
+        /// reads as absent.
+        floor: Option<Cursors>,
     },
     Event {
         wire: Vec<u8>,
@@ -250,7 +254,8 @@ impl Frame {
                 from,
                 cursors,
                 ahead,
-            } => cursors_frame(from, cursors, ahead.as_deref()),
+                floor,
+            } => cursors_frame(from, cursors, ahead.as_deref(), floor.as_deref()),
             Frame::Event { wire } => bytes_frame(tag::EVENT, wire),
             Frame::Presence { wire } => bytes_frame(tag::PRESENCE, wire),
             Frame::Digest {
@@ -374,14 +379,22 @@ pub fn cursors_frame(
     from: &PeerId,
     cursors: &[(PeerId, SeqNum)],
     ahead: Option<&[(PeerId, Vec<SeqNum>)]>,
+    floor: Option<&[(PeerId, SeqNum)]>,
 ) -> Vec<u8> {
     let mut items = vec![
         tag_value(tag::CURSORS),
         peer_value(from),
         cursor_pairs(cursors),
     ];
-    if let Some(ahead) = ahead {
-        items.push(ahead_pairs(ahead));
+    // the floor sits at index 4 (D46), so `ahead` is sent whenever it is, empty if need be: an
+    // older build reads index 3 strictly as `ahead` and ignores everything after it
+    match (ahead, floor) {
+        (Some(ahead), _) => items.push(ahead_pairs(ahead)),
+        (None, Some(_)) => items.push(ahead_pairs(&[])),
+        (None, None) => {}
+    }
+    if let Some(floor) = floor {
+        items.push(cursor_pairs(floor));
     }
     encode(&Value::Array(items))
 }
@@ -646,10 +659,19 @@ pub fn decode_frame(frame: &[u8]) -> Result<Frame, MalformedFrame> {
                 .get(3)
                 .map(|a| decode_ahead_pairs(Some(a)))
                 .transpose()?;
+            // index 4 means nothing without index 3, which a sender of a floor always writes
+            let floor = match ahead {
+                Some(_) => outer
+                    .get(4)
+                    .map(|f| decode_cursor_pairs(Some(f)))
+                    .transpose()?,
+                None => None,
+            };
             Ok(Frame::Cursors {
                 from,
                 cursors,
                 ahead,
+                floor,
             })
         }
         tag::DIGEST => decode_digest(&outer),
@@ -827,11 +849,37 @@ mod tests {
         let frame = Frame::Cursors {
             from: peer(9),
             cursors: cursors.clone(),
-            ahead: Some(ahead),
+            ahead: Some(ahead.clone()),
+            floor: None,
         };
         let bytes = frame.encode().unwrap();
         assert_eq!(decode_frame(&bytes).unwrap(), frame);
         assert_eq!(class_of(&bytes), Some(tag::CURSORS));
+
+        // D46: a floor with nothing ahead still writes `ahead`, empty, at index 3
+        let floored = Frame::Cursors {
+            from: peer(9),
+            cursors: cursors.clone(),
+            ahead: None,
+            floor: Some(vec![(peer(1), seq(2))]),
+        };
+        let bytes = floored.encode().unwrap();
+        let Frame::Cursors {
+            ahead: read, floor, ..
+        } = decode_frame(&bytes).unwrap()
+        else {
+            panic!("expected cursors");
+        };
+        assert_eq!(read, Some(vec![]));
+        assert_eq!(floor, Some(vec![(peer(1), seq(2))]));
+        let both = Frame::Cursors {
+            from: peer(9),
+            cursors,
+            ahead: Some(ahead),
+            floor: Some(vec![(peer(1), seq(2))]),
+        };
+        let bytes = both.encode().unwrap();
+        assert_eq!(decode_frame(&bytes).unwrap(), both);
     }
 
     #[test]
