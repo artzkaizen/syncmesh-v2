@@ -14,7 +14,7 @@ import type { LiveChange } from "../patch.js";
 
 import { meshDrizzle } from "../index.js";
 import { compareText } from "../order.js";
-import { windowOf } from "../window.js";
+import { windowPlan } from "../window.js";
 
 const jobs = sqliteTable("jobs", {
   id: text().primaryKey(),
@@ -383,9 +383,9 @@ describe("what cannot be maintained re-runs instead", () => {
         .as("ranked");
       return mesh.db.select({ id: ranked.id }).from(ranked).orderBy(asc(ranked.id));
     });
-    expect(windowOf(grouped(), grouped)).toBeUndefined();
-    expect(windowOf(offset(), offset)).toBeUndefined();
-    expect(windowOf(computed(), computed)).toBeUndefined();
+    expect(windowPlan(grouped(), grouped)).toBeUndefined();
+    expect(windowPlan(offset(), offset)).toBeUndefined();
+    expect(windowPlan(computed(), computed)).toBeUndefined();
   });
 
   test("an `ORDER BY` over an expression is read afresh: nothing on the row says what it evaluates to", async () => {
@@ -395,7 +395,7 @@ describe("what cannot be maintained re-runs instead", () => {
         .select()
         .from(jobs)
         .orderBy(sql`${jobs.rank} = 3 desc`, asc(jobs.id));
-    expect(windowOf(build(), build)).toBeUndefined();
+    expect(windowPlan(build(), build)).toBeUndefined();
   });
 
   test("a plain filtered list is maintained, and says which table and limit it is about", async () => {
@@ -407,7 +407,7 @@ describe("what cannot be maintained re-runs instead", () => {
         .where(eq(jobs.status, "open"))
         .orderBy(desc(jobs.rank), asc(jobs.id))
         .limit(20);
-    const plan = windowOf(build(), build);
+    const plan = windowPlan(build(), build);
     expect(plan?.table).toBe("jobs");
     expect(plan?.limit).toBe(20);
     const job = (id: string, rank: number): Job => ({ id, rank, title: id, status: "open" });
@@ -422,9 +422,9 @@ describe("what cannot be maintained re-runs instead", () => {
     // no tiebreak: the row below the limit can sort level with the last one drawn, and nothing
     // in hand says which of the two belongs in the window
     const build = () => mesh.db.select().from(jobs).orderBy(asc(jobs.rank)).limit(10);
-    expect(windowOf(build(), build)).toBeUndefined();
+    expect(windowPlan(build(), build)).toBeUndefined();
     const total = () => mesh.db.select().from(jobs).orderBy(asc(jobs.rank));
-    expect(windowOf(total(), total)?.limit).toBeUndefined();
+    expect(windowPlan(total(), total)?.limit).toBeUndefined();
   });
 });
 

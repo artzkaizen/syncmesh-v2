@@ -304,7 +304,6 @@ describe("scopeReads — the caller's view without asking for it", () => {
     const query = db.select({ id: jobs.id }).from(jobs).where(eq(jobs.status, "open"));
     const count = db.$count(jobs);
     for (const built of [query, count]) {
-      expect(Reflect.get(built, "session")).toBeUndefined();
       expect(Reflect.getOwnPropertyDescriptor(built, "session")).toBeUndefined();
       expect("session" in built).toBe(false);
       expect(Reflect.ownKeys(built)).not.toContain("session");

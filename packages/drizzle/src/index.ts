@@ -17,7 +17,7 @@ export { createLive } from "./live.js";
 export type { LiveChange, Patched } from "./patch.js";
 export { patchWindow } from "./patch.js";
 export type { LiveWindow } from "./window.js";
-export { driverValues, keyOfRows, limitOfRows, windowOf } from "./window.js";
+export { driverValues, keyOfRows, limitOfRows, windowPlan } from "./window.js";
 export { compareCells } from "./order.js";
 export { identityOf, tableIdentity, tablesOf } from "./tree.js";
 export type { ProxyMethod, ProxyResult, ProxySink, WriteNaming } from "./proxy.js";

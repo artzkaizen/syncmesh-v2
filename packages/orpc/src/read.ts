@@ -44,7 +44,7 @@ export function readOf<PC extends PresenceMap>(
 ): QueryCall<unknown> {
   /* thrown, not returned: a live query has no error channel of its own, and the hook has an `error` */
   const runnable = () => running(def, validate<never>(def.schema, input).unwrap(), input);
-  // the real builder the moment there is one: `windowOf` reads a Drizzle query's own config to
+  // the real builder the moment there is one: `windowPlan` reads a Drizzle query's own config to
   // decide whether the query can be maintained, and a stand-in has none to read. Only a call
   // made before the mesh exists gets the wrapper, and that one has nothing to maintain from
   const run = () =>
