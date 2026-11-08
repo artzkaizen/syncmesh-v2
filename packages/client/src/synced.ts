@@ -21,8 +21,9 @@ export interface SyncedOptions {
  * relay keeps its log in memory waits, because that room's acks are not durability.
  *
  * {@link DurabilityLost} once every hop it waited on replaced its log first (D42, decided
- * 2026-11-08): what the old log held is not held by the new one. There is no timeout; a caller that
- * wants one races its own.
+ * 2026-11-08): what the old log held is not held by the new one. A hop that neither acks nor
+ * replaces its log keeps the answer open, so one hop lost and another silent means no answer at
+ * all. There is no timeout; a caller that wants one races its own.
  */
 export function createSynced(
   transports: () => readonly Transport[],
