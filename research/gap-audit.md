@@ -103,7 +103,7 @@ version negotiation). What remains:
     unless re-desire re-requests from an honoured cursor.
 19. E14: the snapshot window is not yet a field of `Interest`.
 20. E16: mixed-version-fleet correction mismatch (RFC-0013 G18) has no mitigation.
-    **2026-11-08: diagnosable, not fixed (D31 C, #PRNUM).** Events carry `schemaVersion` (key 9)
+    **2026-11-08: diagnosable, not fixed (D31 C, #29).** Events carry `schemaVersion` (key 9)
     and cursors frames carry it at index 5, so `mesh.inspect.fleet.oldestSchema()` tells an
     authority, before it corrects a column added in version *n*, which devices are below *n* and
     will fold the reason without the value (`engine/src/__tests__/authority.test.ts`). Digests

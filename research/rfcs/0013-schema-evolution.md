@@ -211,9 +211,9 @@ that log, exactly like the conformance vectors. Pin it, test it, version it.
 | unknown change kind | today: decode **throws** → whole event dropped as `malformed`; MAX-cursors then hide the hole forever — the drop-flavored version of the divergence above |
 | unknown column on known table | today: admission denied (`checkRow` → `UnknownColumn`), event refused — not parked (no B4 overflow) |
 | quarantine store | not built — "denied" is a typed error + refusal; nothing is parked or retried |
-| `schemaVersion` on the wire | built (D31, #PRNUM) — event core key 9, written when the manifest declares one, absent = 1; index 5 of the cursors frame; a reading, never a gate; `conformance/schema-vectors.json` |
-| the verdict table as a lint | built (D31, #PRNUM) — `checkEvolution(shipped, schema)` over the committed `ShippedSchema` file; a value, not a throw |
-| drop = park | built (D31, #PRNUM) — `retired` (folded, refused for local writes) then `dropped` (its own `dropped-table` bucket) |
+| `schemaVersion` on the wire | built (D31, #29) — event core key 9, written when the manifest declares one, absent = 1; index 5 of the cursors frame; a reading, never a gate; `conformance/schema-vectors.json` |
+| the verdict table as a lint | built (D31, #29) — `checkEvolution(shipped, schema)` over the committed `ShippedSchema` file; a value, not a throw |
+| drop = park | built (D31, #29) — `retired` (folded, refused for local writes) then `dropped` (its own `dropped-table` bucket) |
 | upcasters · `syncmesh migrate` | none exist; D13 chose no upcasters |
 
 ## Remaining work

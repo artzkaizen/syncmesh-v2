@@ -302,7 +302,7 @@ behind is a valid signer. D13's additive rule and the `unknown-table` park are t
 already have (`engine/src/quarantine.ts`); gap-audit №20 says correction mismatch across
 versions has no mitigation. This is the axis where we are behind the weaker system.
 
-**Drafted as `plan/decisions/D31.md` (2026-09-22); decided C on 2026-11-08; built in #PRNUM**
+**Drafted as `plan/decisions/D31.md` (2026-09-22); decided C on 2026-11-08; built in #29**
 (its "Built" section names where it departs; G18 digests and the policy-interpreter fallback stay
 open).
 Recommends C: expand/contract as an operator rule with three pieces of tooling (the additive
