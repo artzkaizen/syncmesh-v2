@@ -1,6 +1,6 @@
 import type { PeerId } from "@syncmesh/kernel";
 
-import { createMesh } from "@syncmesh/client";
+import { createClient, sqlite } from "@syncmesh/orpc";
 import { relayTransport, webSocketDial } from "@syncmesh/relay";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { describe, expect, test } from "bun:test";
@@ -22,16 +22,17 @@ const until = async (check: () => boolean | Promise<boolean>, ms = 8000): Promis
 };
 
 /** A phone as `device.ts` builds one: its own SQLite file, its own key, the issuer's id as config. */
-const phone = async (name: string, dialing: string, issuer: PeerId, dir: string) =>
-  (
-    await createMesh({
-      schema: notesSchema(),
-      identity: identityNamed(`device:${name}`),
-      issuer,
-      driver: bunSqliteDriver(join(dir, `device-${name}.db`)),
-      transports: [relayTransport({ dial: webSocketDial(dialing), reconnectMs: 20 })],
-    })
-  ).unwrap();
+const phone = async (name: string, dialing: string, issuer: PeerId, dir: string) => {
+  const client = createClient({
+    schema: notesSchema(),
+    identity: identityNamed(`device:${name}`),
+    storage: sqlite({ driver: bunSqliteDriver(join(dir, `device-${name}.db`)) }),
+    trust: { issuer },
+    transports: [relayTransport({ dial: webSocketDial(dialing), reconnectMs: 20 })],
+  });
+  await client.$ready; // `$mesh` throws until the mesh has opened
+  return client.$mesh;
+};
 
 /** Asks for a grant with the invite and waits until the phone may write. */
 const admitted = async (mesh: Awaited<ReturnType<typeof phone>>): Promise<boolean> => {

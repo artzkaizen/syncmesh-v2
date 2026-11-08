@@ -498,7 +498,7 @@ export const FLOWS: readonly Flow[] = [
     steps: [
       {
         b: "X1",
-        t: "createMesh({ schema, identity }) — durable by default; memory is never a default, you ask for it. Or hand it your own driver and the connection stays yours.",
+        t: "createClient({ schema }) — durable by default; memory is never a default, you ask for it. Or hand it your own driver with storage: sqlite({ driver }) and the connection stays yours.",
         f: "packages/client/src/mesh.ts",
       },
       {

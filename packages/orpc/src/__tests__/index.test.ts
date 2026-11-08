@@ -1,5 +1,6 @@
 import { ORPCError, call } from "@orpc/server";
-import { createMesh } from "@syncmesh/client";
+import { sqlite } from "@syncmesh/client";
+import { createMesh } from "@syncmesh/client/internal";
 import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
@@ -49,11 +50,11 @@ const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const authority = async () => {
   const mesh = (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema,
       identity: serverKey,
-      issuer: issuer.peerId,
       now: () => T0,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { issuer: issuer.peerId },
     })
   ).unwrap();
   mesh.grants

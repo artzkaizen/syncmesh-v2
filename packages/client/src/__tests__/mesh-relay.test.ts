@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
 const org = partition("org", { roles: ladder("owner", "member") });
@@ -39,14 +40,11 @@ const until = async (check: () => Promise<boolean>, ms = 3000): Promise<boolean>
 const owner = async (url: string, identity: Identity, invite: string) => {
   const mesh = (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity,
-      issuer: identity.peerId,
-      issuerKey: identity,
       now: () => T0,
       transports: [relayTransport({ dial: webSocketDial(url), reconnectMs: 20 })],
-      onGrantRequest: ({ peerId, invite: offered }) => {
+      admission: ({ peerId, invite: offered }) => {
         if (offered !== invite) return;
         mesh.grants
           .issue({
@@ -58,6 +56,8 @@ const owner = async (url: string, identity: Identity, invite: string) => {
           })
           .unwrap();
       },
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { issuer: identity.peerId, issuerKey: identity },
     })
   ).unwrap();
   mesh.grants
@@ -75,12 +75,12 @@ const owner = async (url: string, identity: Identity, invite: string) => {
 const staff = async (url: string, identity: Identity, issuer: Identity) =>
   (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity,
-      issuer: issuer.peerId,
       now: () => T0,
       transports: [relayTransport({ dial: webSocketDial(url), reconnectMs: 20 })],
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { issuer: issuer.peerId },
     })
   ).unwrap();
 

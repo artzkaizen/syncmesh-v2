@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const controls = sqliteTable("controls", {
   id: text().primaryKey(),
@@ -43,11 +44,11 @@ const mintFor = (issuer: Identity, account: string, device: Identity, role: stri
 const open = async (identity: Identity, issuer: Identity) =>
   (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity,
-      issuer: issuer.peerId,
       now: () => T0,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { issuer: issuer.peerId },
     })
   ).unwrap();
 
@@ -118,12 +119,11 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
 
     const owner = (
       await createMesh({
-        driver: bunSqliteDriver(":memory:"),
         schema: schema(),
         identity: ownerPhone,
-        issuer: ownerPhone.peerId,
-        issuerKey: ownerPhone,
         now: () => T0,
+        storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+        trust: { issuer: ownerPhone.peerId, issuerKey: ownerPhone },
       })
     ).unwrap();
     owner.grants
@@ -170,24 +170,22 @@ describe("onboarding through the mesh — a grant is bytes, any peer can carry t
       }),
     ).toThrow("issuerKey");
     const mismatched = await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: device,
-      issuer: issuer.peerId,
-      issuerKey: device,
       now: () => T0,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { issuer: issuer.peerId, issuerKey: device },
     }).catch((cause: unknown) => cause);
     expect(mismatched).toBeInstanceOf(Error);
     expect(String(mismatched)).toContain("does not match");
 
     const owner = (
       await createMesh({
-        driver: bunSqliteDriver(":memory:"),
         schema: schema(),
         identity: issuer,
-        issuer: issuer.peerId,
-        issuerKey: issuer,
         now: () => T0,
+        storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+        trust: { issuer: issuer.peerId, issuerKey: issuer },
       })
     ).unwrap();
     const bad = owner.grants.issue({

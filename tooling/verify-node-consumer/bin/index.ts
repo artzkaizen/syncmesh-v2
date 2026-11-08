@@ -81,14 +81,18 @@ const importWithNode = (cwd: string, script: string): string | undefined => {
 };
 
 const clientSmoke = `
-  const { createMesh } = await import("@syncmesh/client");
+  const { sqlite } = await import("@syncmesh/client");
+  // the subpath too: an exports entry Node cannot resolve is exactly what Bun would forgive
+  const { createMesh } = await import("@syncmesh/client/internal");
   const { syncSchema, t } = await import("@syncmesh/schema");
   const { createIdentity } = await import("@syncmesh/wire");
   const { sqliteTable, text } = await import("drizzle-orm/sqlite-core");
   const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
   const schema = syncSchema({ tables: { notes: { columns: { id: t.text().primaryKey(), body: t.text() } } } });
   const identity = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 7 + i)).unwrap();
-  const mesh = (await createMesh({ schema, identity, authority: identity.peerId, dataDir: "./data" })).unwrap();
+  const mesh = (
+    await createMesh({ schema, identity, storage: sqlite({ dir: "./data" }), trust: { authority: identity.peerId } })
+  ).unwrap();
   const { db } = mesh.on().unwrap();
   await db.insert(notes).values({ id: "n1", body: "from node" });
   if ((await db.select().from(notes)).length !== 1) throw new Error("the row did not come back");

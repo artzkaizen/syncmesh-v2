@@ -172,8 +172,9 @@ const inspect = async (
  *
  * @example
  * // worker.ts, inside the elected tab's dedicated worker
- * const mesh = (await createMesh({ … })).unwrap();
- * const host = serveMesh(mesh);
+ * const client = createClient({ schema, storage });
+ * await client.$ready; // `$mesh` throws until the mesh has opened
+ * const host = serveMesh(client.$mesh);
  * host.accept(self);                          // this tab
  * onconnect = (e) => host.accept(e.ports[0]); // every other tab, via the rendezvous
  */

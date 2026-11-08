@@ -1,6 +1,9 @@
 import { TaggedError } from "@syncmesh/result";
 
-/** `createMesh` was given no `store` on a platform that has no durable default yet. */
+/**
+ * `createClient` was given no `storage` on a platform that has no durable default yet: pass
+ * `storage: sqlite({ store })` there, `createMemoryEventStore()` to opt into memory.
+ */
 export class NoDefaultStore extends TaggedError("NoDefaultStore")<{ message: string }> {}
 
 /** `start()` on a mesh that has stopped: a stopped mesh has closed what it opened, for good. */

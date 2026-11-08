@@ -9,6 +9,7 @@ import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import { MeshStopped } from "../errors.js";
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
 const org = partition("org", { roles: ladder("owner", "member") });
@@ -41,15 +42,12 @@ const room = async (options?: { readonly grantStaff?: boolean; readonly start?: 
 
   const owner = (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: ownerId,
-      issuer: ownerId.peerId,
-      issuerKey: ownerId,
       now: () => T0,
       transports: [linkTransport("loopback:owner", () => a)],
       start,
-      onGrantRequest: ({ peerId, invite }) => {
+      admission: ({ peerId, invite }) => {
         if (invite !== "inv-42") return; // Q1: the invite token is the account proof
         owner.grants
           .issue({
@@ -61,6 +59,8 @@ const room = async (options?: { readonly grantStaff?: boolean; readonly start?: 
           })
           .unwrap();
       },
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { issuer: ownerId.peerId, issuerKey: ownerId },
     })
   ).unwrap();
   owner.grants
@@ -75,13 +75,13 @@ const room = async (options?: { readonly grantStaff?: boolean; readonly start?: 
 
   const staff = (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: staffId,
-      issuer: ownerId.peerId,
       now: () => T0,
       transports: [linkTransport("loopback:staff", () => b)],
       start,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { issuer: ownerId.peerId },
     })
   ).unwrap();
   if (options?.grantStaff !== false) {

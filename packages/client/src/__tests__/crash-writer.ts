@@ -4,6 +4,7 @@
  * parent has read from stdout before it sends SIGKILL is what the reopened store must hold.
  */
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 import { notes, notesSchema, writer as device } from "./crash-fixture.js";
 
 const schema = notesSchema();
@@ -12,7 +13,12 @@ const dataDir = process.argv[2];
 if (dataDir === undefined) throw new Error("usage: crash-writer <dataDir>");
 
 const mesh = (
-  await createMesh({ schema, identity: device, authority: device.peerId, dataDir })
+  await createMesh({
+    schema,
+    identity: device,
+    storage: sqlite({ dir: dataDir }),
+    trust: { authority: device.peerId },
+  })
 ).unwrap();
 const handle = mesh.on().unwrap();
 for (let i = 1; ; i += 1) {

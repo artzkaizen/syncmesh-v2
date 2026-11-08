@@ -14,6 +14,7 @@ import { createIdentity, issueGrant, type Identity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const board = partition("board", { roles: ladder("member") });
 const schema = () =>
@@ -62,12 +63,12 @@ const open = async (
 ) =>
   (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity,
-      issuer: ISSUER.peerId,
       now,
       transports,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { issuer: ISSUER.peerId },
     })
   ).unwrap();
 

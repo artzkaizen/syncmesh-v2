@@ -11,6 +11,7 @@ import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 import type { MeshGrants } from "../grants.js";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
 const org = partition("org", { roles: ladder("member") });
@@ -54,11 +55,11 @@ const registerAll = (mesh: { readonly grants: Pick<MeshGrants, "register"> }) =>
 const open = async (device: typeof deviceA) => {
   const mesh = (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: device,
-      issuer: issuer.peerId,
       now: () => T0,
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      trust: { issuer: issuer.peerId },
     })
   ).unwrap();
   registerAll(mesh);

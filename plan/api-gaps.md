@@ -294,7 +294,7 @@ both have callers. `createMesh`'s non-test callers are `orpc/src/client.ts`, `ch
 `createMeshControls`, not `createMesh`). The book's cut list says one. Mechanical but wide; needs a sequencing call.
 
 **Decided as D47 B (2026-11-08):** `createClient` is the one public constructor; `createMesh`
-moves to `@syncmesh/client/internal`. Not built yet.
+moves to `@syncmesh/client/internal`. Built in #PRNUM (see D47's Built note).
 
 ### 3.2 Schema evolution across a mixed-version fleet
 Zero's answer is deploy order; ours cannot be, because there is no order — a phone six versions

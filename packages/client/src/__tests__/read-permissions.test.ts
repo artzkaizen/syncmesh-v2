@@ -11,6 +11,7 @@ import { describe, expect, test } from "bun:test";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 /**
  * D40 end to end, at the app surface: real meshes, a real relay over WebSocket, the relay gated
@@ -55,11 +56,11 @@ const member = async (url: string, identity: Identity, issuer: Identity, grant: 
   const driver = bunSqliteDriver(":memory:");
   const mesh = (
     await createMesh({
-      driver,
       schema: schema(),
       identity,
-      issuer: issuer.peerId,
       transports: [relayTransport({ dial: webSocketDial(url), reconnectMs: 20 })],
+      storage: sqlite({ driver }),
+      trust: { issuer: issuer.peerId },
     })
   ).unwrap();
   // out of band, the way RFC-0024 hands a device its grant: a gated room seats nobody without one
@@ -83,12 +84,11 @@ describe("who may read what, over a gated relay (D40)", () => {
     try {
       const authority = (
         await createMesh({
-          driver: bunSqliteDriver(":memory:"),
           schema: schema(),
           identity: authorityId,
-          issuer: authorityId.peerId,
-          issuerKey: authorityId,
           transports: [relayTransport({ dial: webSocketDial(relay.url), reconnectMs: 20 })],
+          storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+          trust: { issuer: authorityId.peerId, issuerKey: authorityId },
         })
       ).unwrap();
       const mint = (device: Identity, partitions: readonly string[]) =>

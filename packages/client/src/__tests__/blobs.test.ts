@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const schema = () =>
   syncSchema({
@@ -23,11 +24,11 @@ const photo = Uint8Array.from({ length: 4096 }, (_, i) => i % 251);
 const device = async (url: string, n: number) =>
   (
     await createMesh({
-      driver: bunSqliteDriver(":memory:"),
       schema: schema(),
       identity: createIdentity(seed(n)).unwrap(),
       now: () => T0,
       transports: [relayTransport({ dial: webSocketDial(url), reconnectMs: 20 })],
+      storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
     })
   ).unwrap();
 
@@ -130,10 +131,10 @@ describe("a blob through the relay", () => {
   test("a mesh with no transport that carries bytes says so, rather than pretending", async () => {
     const alone = (
       await createMesh({
-        driver: bunSqliteDriver(":memory:"),
         schema: schema(),
         identity: createIdentity(seed(200)).unwrap(),
         now: () => T0,
+        storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
       })
     ).unwrap();
     const put = await alone.blobs.put(photo);

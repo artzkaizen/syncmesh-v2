@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
 const schema = () =>
@@ -22,9 +23,12 @@ const open = (dataDir: string) =>
   createMesh({
     schema: schema(),
     identity: device,
-    authority: device.peerId, // this device may write the global table
-    dataDir,
     now: () => T0,
+    storage: sqlite({
+      // this device may write the global table
+      dir: dataDir,
+    }),
+    trust: { authority: device.peerId },
   });
 
 describe("durable by default", () => {
@@ -56,7 +60,12 @@ describe("durable by default", () => {
   test("a bare event store is yours and carries no SQL: stop leaves it open, on() names the fix", async () => {
     const store = createMemoryEventStore();
     const mesh = (
-      await createMesh({ schema: schema(), identity: device, store, now: () => T0 })
+      await createMesh({
+        schema: schema(),
+        identity: device,
+        now: () => T0,
+        storage: sqlite({ store }),
+      })
     ).unwrap();
     expect(() => mesh.on()).toThrow("no SQL connection");
     await mesh.stop();

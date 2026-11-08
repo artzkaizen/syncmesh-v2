@@ -1,7 +1,7 @@
 {
   "name": "@syncmesh/client",
   "version": "0.0.0",
-  "description": "createMesh: the one constructor an app talks to",
+  "description": "The mesh under createClient: options, surface and engine wiring; createMesh at ./internal for adapters and harnesses",
   "license": "MIT",
   "files": [
     "dist"
@@ -13,6 +13,11 @@
       "@syncmesh/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./internal": {
+      "@syncmesh/source": "./src/harness.ts",
+      "types": "./dist/harness.d.ts",
+      "default": "./dist/harness.js"
     }
   },
   "dependencies": {

@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createMesh } from "../mesh.js";
+import { sqlite } from "../options.js";
 
 /**
  * **A mesh can now be told what its engine found while it was opening.**
@@ -55,11 +56,13 @@ const open = async (
     await createMesh({
       schema: schema(),
       identity: device,
-      // this device may write the global table; what rotates below is the *device* key
-      authority: device.peerId,
-      driver,
       now: () => T0,
       ...omitUndefined({ onError }),
+      storage: sqlite({ driver }),
+      trust: {
+        // this device may write the global table; what rotates below is the *device* key
+        authority: device.peerId,
+      },
     })
   ).unwrap();
   return {

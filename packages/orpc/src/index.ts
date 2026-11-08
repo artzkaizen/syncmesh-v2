@@ -17,8 +17,11 @@ export type { QueuedLink, QueuedLinkOptions, QueuedRequest } from "./queue.js";
 export { AuthorityQueued, queuedLink } from "./queue.js";
 export type { Client } from "./client.js";
 export { createClient } from "./client.js";
-export type { ClientOptions, PostgresStorage, SqliteStorage, Storage, Trust } from "./options.js";
-export { postgres, sqlite } from "./options.js";
+export type { ClientOptions } from "./options.js";
+// declared with the mesh options they fill (`@syncmesh/client`), and exported here too because this
+// is the package an app builds its client from
+export type { PostgresStorage, SqliteStorage, Storage, Trust } from "@syncmesh/client";
+export { postgres, sqlite } from "@syncmesh/client";
 export type {
   Api,
   ApiMesh,

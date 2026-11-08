@@ -1,8 +1,8 @@
 # A · The relay inside the backend you already run
 
 Two function calls in one process (D09-A, API.md §14-A): `startRelay()` serves the room, and
-`createMesh({ store, stateStore })` is the server peer that folds what devices write into _your_
-tables. No second deployment, no queue, no separate sync service.
+`createServer({ storage: sqlite({ store, stateStore }) })` is the server peer that folds what
+devices write into _your_ tables. No second deployment, no queue, no separate sync service.
 
 ```sh
 bun run --cwd examples server
@@ -30,17 +30,18 @@ into `notes` and deletes tombstones, in one transaction with the sidecar that ho
 Restart the server and the API answers immediately: boot reads the state back rather than
 replaying the log.
 
-**Grants, on the real path.** The server holds the issuer key and answers `onGrantRequest`. A
+**Grants, on the real path.** The server holds the issuer key (`trust.issuerKey`) and answers in
+`admission`. A
 device starts with nothing, calls `requestGrant(invite)`, and the signed grant travels back
 through the relay — flow A, over a socket, not a fixture.
 
 ## What it deliberately leaves out
 
-- **The server never writes.** `store` and `stateStore` are two homes for one log, so `createMesh`
-  takes them _instead of_ `driver` — and without a `driver` there is no SQL connection for
-  `mesh.on()` to hand out, so a server built this way reads its tables and folds into them but
+- **The server never writes.** `store` and `stateStore` are two homes for one log, so
+  `sqlite({ … })` takes them _instead of_ `driver` — and without a `driver` there is no SQL
+  connection for `server.mesh.on()` or a procedure body to write through, so a server built this way reads its tables and folds into them but
   cannot write through a handle. A backend that must also write (a correction, a policy publish)
-  passes `driver` instead and lets `openStores` build both, which also gets it the atomic
+  passes `sqlite({ driver })` instead and lets `openStores` build both, which also gets it the atomic
   append-and-materialise that this shape does not have: with stores you built yourself, the engine
   is given no `atomic`, and a crash between the append and the commit is recovered from the log on
   the next boot rather than prevented.
@@ -53,4 +54,4 @@ through the relay — flow A, over a socket, not a fixture.
   folds into your production database instead (E17); it is not wired here.
 - **Everything an operator would add**: a `posture` deciding who may open a socket and onto which
   rooms, TLS, `limits` tuned for the traffic, retention, telemetry, and an approval screen where
-  `onGrantRequest` currently compares one hard-coded invite string.
+  `admission` currently compares one hard-coded invite string.
