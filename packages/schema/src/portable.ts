@@ -73,6 +73,66 @@ const SAME_GROUPS = new Set(":=!");
 
 const isSurrogate = (unit: number) => unit >= 0xd800 && unit <= 0xdfff;
 
+/** Where {@link portablePattern} stands in a pattern's source. */
+interface PatternScan {
+  readonly source: string;
+  /** No `u` flag: `.` and its kin match one UTF-16 unit. */
+  readonly units: boolean;
+  at: number;
+  inClass: boolean;
+  /** The open class can match half a surrogate pair. */
+  unitClass: boolean;
+  /** The atom just read can match half a surrogate pair: only `*` may follow it. */
+  unitAtom: boolean;
+}
+
+/** Class-set operators a port's engine reads where JavaScript without `v` reads two literals. */
+const CLASS_SET_OPERATORS = /[&~-]/;
+
+const scannedEscape = (scan: PatternScan) => {
+  scan.at += 1;
+  const escaped = scan.source.charAt(scan.at);
+  if (!UNIT_ESCAPES.has(escaped)) return SAME_ESCAPES.has(escaped);
+  if (scan.units && scan.inClass) scan.unitClass = true;
+  else if (scan.units) scan.unitAtom = true;
+  return true;
+};
+
+const scannedInClass = (scan: PatternScan, char: string) => {
+  const next = scan.source.charAt(scan.at + 1);
+  if (char === "[" || (CLASS_SET_OPERATORS.test(char) && next === char)) return false;
+  if (char === "]") {
+    scan.inClass = false;
+    scan.unitAtom = scan.unitClass;
+  }
+  return true;
+};
+
+const scannedOutside = (scan: PatternScan, char: string) => {
+  const { source, units } = scan;
+  const next = source.charAt(scan.at + 1);
+  if (char === "[") {
+    scan.inClass = true;
+    scan.unitClass = units && next === "^";
+    if (next === "^") scan.at += 1;
+    return source.charAt(scan.at + 1) !== "]";
+  }
+  if (char === "(" && next === "?") return SAME_GROUPS.has(source.charAt(scan.at + 2));
+  if (char === ".") scan.unitAtom = units;
+  return true;
+};
+
+/** Reads one character; `false` when a port's engine could read the pattern otherwise. */
+const scanned = (scan: PatternScan, char: string) => {
+  if (scan.unitAtom) {
+    scan.unitAtom = false;
+    return char === "*";
+  }
+  if (scan.units && isSurrogate(scan.source.charCodeAt(scan.at))) return false;
+  if (char === "\\") return scannedEscape(scan);
+  return scan.inClass ? scannedInClass(scan, char) : scannedOutside(scan, char);
+};
+
 /**
  * Whether a port's regex engine, which counts code points, accepts no less than `regex` does.
  *
@@ -84,44 +144,18 @@ const isSurrogate = (unit: number) => unit >= 0xd800 && unit <= 0xdfff;
  */
 const portablePattern = ({ source, flags }: RegExp) => {
   if (UNSAID_FLAGS.test(flags)) return false;
-  const units = !flags.includes("u");
-  let inClass = false;
-  let unitClass = false;
-  // the atom just read can match half a surrogate pair: only `*` may follow it
-  let unitAtom = false;
-  for (let at = 0; at < source.length; at += 1) {
-    const char = source.charAt(at);
-    if (unitAtom) {
-      if (char !== "*") return false;
-      unitAtom = false;
-      continue;
-    }
-    if (units && isSurrogate(source.charCodeAt(at))) return false;
-    if (char === "\\") {
-      at += 1;
-      const escaped = source.charAt(at);
-      if (units && UNIT_ESCAPES.has(escaped)) {
-        if (inClass) unitClass = true;
-        else unitAtom = true;
-      } else if (!SAME_ESCAPES.has(escaped) && !UNIT_ESCAPES.has(escaped)) return false;
-    } else if (inClass) {
-      if (char === "[" || (/[&~-]/.test(char) && source.charAt(at + 1) === char)) return false;
-      if (char === "]") {
-        inClass = false;
-        unitAtom = unitClass;
-      }
-    } else if (char === "[") {
-      inClass = true;
-      unitClass = units && source.charAt(at + 1) === "^";
-      if (source.charAt(at + 1) === "^") at += 1;
-      if (source.charAt(at + 1) === "]") return false;
-    } else if (char === "(" && source.charAt(at + 1) === "?") {
-      if (!SAME_GROUPS.has(source.charAt(at + 2))) return false;
-    } else if (char === ".") {
-      unitAtom = units;
-    }
+  const scan = {
+    source,
+    units: !flags.includes("u"),
+    at: 0,
+    inClass: false,
+    unitClass: false,
+    unitAtom: false,
+  } satisfies PatternScan;
+  for (; scan.at < source.length; scan.at += 1) {
+    if (!scanned(scan, source.charAt(scan.at))) return false;
   }
-  return !unitAtom && !inClass;
+  return !scan.unitAtom && !scan.inClass;
 };
 
 /** Whether a node accepts values its JSON Schema would refuse: it rewrites or replaces its input. */
