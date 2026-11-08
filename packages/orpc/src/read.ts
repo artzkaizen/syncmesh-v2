@@ -3,7 +3,7 @@ import type { Runnable } from "@syncmesh/drizzle";
 import type { PresenceMap } from "@syncmesh/schema";
 
 import { LOCAL_ONLY } from "@syncmesh/client";
-import { tablesOf } from "@syncmesh/drizzle";
+import { queryTables } from "@syncmesh/drizzle";
 import { Result } from "@syncmesh/result";
 
 import type { QueryCall, ReadAnswer } from "./api.js";
@@ -51,7 +51,7 @@ export function readOf<PC extends PresenceMap>(
     lazy.current() === undefined ? deferredRunnable(lazy.ready, runnable) : runnable();
   /** Whether the handler's query reads a table the server keeps rather than this device. */
   const isServed = (query: Runnable<unknown>) =>
-    served.size > 0 && [...tablesOf(query)].some((table) => served.has(table));
+    served.size > 0 && [...queryTables(query)].some((table) => served.has(table));
   /** The same rows, read a page at a time from the server (D43). */
   const servedLive = (query: Runnable<unknown>) =>
     windows?.live(path, input, query) ??

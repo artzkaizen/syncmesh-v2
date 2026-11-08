@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { SqlDriver } from "../driver.js";
 
-import { POSTGRES, SQLITE, dialectOf } from "../dialect.js";
+import { POSTGRES, SQLITE, driverDialect } from "../dialect.js";
 import { inTransaction } from "../sql.js";
 
 /** A driver that records the order its transactions opened and closed, and can be held open. */
@@ -75,12 +75,12 @@ describe("inTransaction", () => {
   });
 });
 
-describe("dialectOf", () => {
+describe("driverDialect", () => {
   test("an undeclared dialect is SQLite — the on-device default", () => {
     const bare: SqlDriver = { run: () => Promise.resolve(), all: () => Promise.resolve([]) };
-    expect(dialectOf(bare)).toBe(SQLITE);
-    expect(dialectOf({ ...bare, dialect: "sqlite" })).toBe(SQLITE);
-    expect(dialectOf({ ...bare, dialect: "postgres" })).toBe(POSTGRES);
+    expect(driverDialect(bare)).toBe(SQLITE);
+    expect(driverDialect({ ...bare, dialect: "sqlite" })).toBe(SQLITE);
+    expect(driverDialect({ ...bare, dialect: "postgres" })).toBe(POSTGRES);
   });
 
   test("each dialect owns its statements outright — no string pretends to be both SQLs", () => {

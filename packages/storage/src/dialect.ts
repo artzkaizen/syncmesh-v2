@@ -205,7 +205,7 @@ export interface Dialect {
   readonly schema: SchemaSql;
 }
 
-export const dialectOf = (driver: Pick<SqlDriver, "dialect" | "log">): Dialect => {
+export const driverDialect = (driver: Pick<SqlDriver, "dialect" | "log">): Dialect => {
   if (driver.dialect === "postgres") return POSTGRES;
   return driver.log === "inline" ? SQLITE_INLINE : SQLITE;
 };

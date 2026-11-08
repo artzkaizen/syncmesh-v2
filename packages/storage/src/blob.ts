@@ -6,7 +6,7 @@ import { bytesToHex } from "@syncmesh/wire";
 
 import type { SqlDriver } from "./driver.js";
 
-import { dialectOf, logTable, namespaceDdl, placementOf } from "./dialect.js";
+import { driverDialect, logTable, namespaceDdl, placementOf } from "./dialect.js";
 import { attempt } from "./sql.js";
 
 /**
@@ -171,7 +171,7 @@ export function memoryBlobStore(): BlobStore {
  * that wants its photos back after a restart. The table is the mesh's own, not the app's.
  */
 export function sqlBlobStore(driver: SqlDriver): Promise<Result<BlobStore, BlobError>> {
-  const { placeholder: p, name: dialect } = dialectOf(driver);
+  const { placeholder: p, name: dialect } = driverDialect(driver);
   const TABLE = logTable("blobs", placementOf(driver));
   const bytes = driver.dialect === "postgres" ? "BYTEA" : "BLOB";
   // a put is idempotent because the name is the content: the second one has nothing to change

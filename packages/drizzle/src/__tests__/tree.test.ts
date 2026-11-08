@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { alias, pgSchema, pgTable, text } from "drizzle-orm/pg-core";
 import { drizzle } from "drizzle-orm/postgres-js";
 
-import { tableIdentity, tablesOf } from "../tree.js";
+import { tableIdentity, queryTables } from "../tree.js";
 
 const mail = pgTable("mail", { id: text().primaryKey(), owner: text() });
 const crmMail = pgSchema("crm").table("mail", { id: text().primaryKey() });
@@ -16,12 +16,12 @@ describe("tableIdentity — the table a source is, as the manifest and the chang
       .select({ id: mail.id })
       .from(mail)
       .innerJoin(alias(mail, "m2"), eq(mail.id, mail.id));
-    expect([...tablesOf(query)]).toEqual(["mail"]);
+    expect([...queryTables(query)]).toEqual(["mail"]);
   });
 
   test("outside public a table is schema.table, as the Postgres change feed names its commits", () => {
     expect(tableIdentity(mail)).toBe("mail");
     expect(tableIdentity(crmMail)).toBe("crm.mail");
-    expect([...tablesOf(db.select().from(crmMail))]).toEqual(["crm.mail"]);
+    expect([...queryTables(db.select().from(crmMail))]).toEqual(["crm.mail"]);
   });
 });

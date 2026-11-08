@@ -57,7 +57,7 @@ export const tableIdentity = (table: Table): string => {
 };
 
 /** Every table a query's SQL mentions, through columns, subqueries and nested fragments. */
-export const tablesOf = (query: SQLWrapper): ReadonlySet<string> => {
+export const queryTables = (query: SQLWrapper): ReadonlySet<string> => {
   const names = new Set<string>();
   walkSql(query.getSQL(), (chunk) => {
     if (is(chunk, Table)) names.add(tableIdentity(chunk));
@@ -76,7 +76,7 @@ const BETWEEN = String.fromCharCode(0);
  * what "the same question" means — so it has to separate `assigneeId = alice` from `assigneeId =
  * bob`, which is why the bound params are in it and not only the shape around them.
  */
-export const identityOf = (query: SQLWrapper): string => {
+export const queryIdentity = (query: SQLWrapper): string => {
   const parts: string[] = [];
   walkSql(query.getSQL(), (chunk) => {
     if (is(chunk, Table)) parts.push(`t:${getTableName(chunk)}`);

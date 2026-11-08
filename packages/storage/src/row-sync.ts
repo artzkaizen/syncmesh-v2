@@ -3,7 +3,7 @@ import type { PeerId } from "@syncmesh/kernel";
 
 import type { SqlDialect, SqlDriver } from "./driver.js";
 
-import { dialectOf, namespaceDdl, stateTable } from "./dialect.js";
+import { driverDialect, namespaceDdl, stateTable } from "./dialect.js";
 
 /**
  * Where each row's own write got to, as a table a query can join (book ch. 10).
@@ -75,7 +75,7 @@ export interface RowSync {
 }
 
 export function rowSyncTable(driver: SqlDriver): RowSync {
-  const { placeholder: mark, name: dialect } = dialectOf(driver);
+  const { placeholder: mark, name: dialect } = driverDialect(driver);
   const ROW_SYNC = rowSyncTableName(dialect);
   const ACKED = ackedTableName(dialect);
   const marks = (n: number) => Array.from({ length: n }, (_, i) => mark(i + 1)).join(", ");

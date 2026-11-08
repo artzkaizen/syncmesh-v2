@@ -603,7 +603,7 @@ export const FLOWS: readonly Flow[] = [
       },
       {
         b: "DZ",
-        t: "tablesOf walks the query's own SQL — through columns, subqueries and fragments — for every table it mentions.",
+        t: "queryTables walks the query's own SQL — through columns, subqueries and fragments — for every table it mentions.",
         f: "packages/drizzle/src/live.ts",
       },
       {

@@ -14,7 +14,7 @@ import {
   readPredicate,
   scopeReads,
   tableIdentity,
-  tablesOf,
+  queryTables,
 } from "@syncmesh/drizzle";
 import { Result } from "@syncmesh/result";
 import { SERVED_READ_TIMEOUT, servedReadSettings } from "@syncmesh/storage";
@@ -311,7 +311,7 @@ export function servedReads(options: ServedReadsOptions): PageSource {
       if (row.isErr()) return Result.err(row.error);
       page.push({ key: keyOf(record), row: row.value });
     }
-    return Result.ok({ rows: page, tables: tablesOf(query) });
+    return Result.ok({ rows: page, tables: queryTables(query) });
   };
 
   /**

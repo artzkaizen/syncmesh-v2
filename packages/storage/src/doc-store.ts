@@ -7,7 +7,7 @@ import { Result } from "@syncmesh/result";
 
 import type { SqlDriver, SqlValue } from "./driver.js";
 
-import { dialectOf } from "./dialect.js";
+import { driverDialect } from "./dialect.js";
 import { corrupt, count, decodeEntry, decodeHead, hexOr, idOf, params } from "./doc-rows.js";
 import { attempt, inTransaction } from "./sql.js";
 
@@ -30,7 +30,7 @@ export function sqlDocStore(
   driver: SqlDriver,
   options: SqlDocStoreOptions = {},
 ): Promise<Result<DocStore, StoreFailure>> {
-  const { docs: SQL, migrate } = dialectOf(driver);
+  const { docs: SQL, migrate } = driverDialect(driver);
   const transaction = <T>(fn: () => Promise<T>): Promise<T> =>
     options.nested === true ? fn() : inTransaction(driver, fn);
   const query = (message: string, sql: string, values: readonly SqlValue[] = []) =>

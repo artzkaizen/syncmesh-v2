@@ -11,7 +11,7 @@ import type { SqlDialect, SqlDriver } from "./driver.js";
 import type { ProjectionOptions } from "./projection.js";
 
 import { captureDdlFor, installCapture } from "./capture.js";
-import { ATTACHED_LOG, dialectOf, placementOf } from "./dialect.js";
+import { ATTACHED_LOG, driverDialect, placementOf } from "./dialect.js";
 import { sqlDocStore } from "./doc-store.js";
 import { sqlEventStore } from "./event-store.js";
 import { tablesProjection } from "./projection.js";
@@ -97,7 +97,7 @@ const installed = (
   events: EventStore,
 ): Promise<Result<void, StoreFailure>> =>
   Result.gen(async function* () {
-    const { schema, name: dialect } = dialectOf(driver);
+    const { schema, name: dialect } = driverDialect(driver);
     const rowSyncDdl = rowSyncDdlFor(dialect);
     const wanted = [...captureDdlFor(driver, tables), ...rowSyncDdl].join(";\n");
     const held = yield* Result.await(
