@@ -4,6 +4,8 @@ export const REFUSED = "the relay speaks none of the protocol versions this buil
 export const UNSENT = "the frame did not leave the relay socket";
 export const UNSECURED = "the link is not sealed yet, and nothing but a hello travels before it is";
 export const UNDIALLED = "the relay could not be dialled";
+export const RETAINED =
+  "the relay has trimmed its history below this device's cursors, so it waits for state from a peer before dialling that room again";
 export const REENTITLED =
   "the relay admits this device under a different entitlement, so it re-pages from nothing";
 

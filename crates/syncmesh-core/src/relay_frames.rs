@@ -96,6 +96,9 @@ pub enum RelayFrame {
     Error {
         code: String,
         message: String,
+        /// On a `retention` refusal, the room's floor as the refusal read it (gaps U30); `None`
+        /// on every other refusal and from a relay built before it.
+        floor: Option<Cursors>,
     },
     Ka,
     Ack {
@@ -192,7 +195,16 @@ impl RelayFrame {
                 cursors,
                 floor,
             } => hello_frame(*version, *keepalive_ms, epoch, cursors, floor),
-            RelayFrame::Error { code, message } => error_frame(code, message),
+            RelayFrame::Error {
+                code,
+                message,
+                floor: None,
+            } => error_frame(code, message),
+            RelayFrame::Error {
+                code,
+                message,
+                floor: Some(floor),
+            } => retention_error_frame(code, message, floor),
             RelayFrame::Ka => ka_frame(),
             RelayFrame::Ack { id, offset } => ack_frame(id, *offset),
             RelayFrame::Page {
@@ -300,6 +312,15 @@ pub fn hello_frame(
 
 pub fn error_frame(code: &str, message: &str) -> Vec<u8> {
     tagged(tag::ERROR, vec![Value::text(code), Value::text(message)])
+}
+
+/// A refusal naming a floor: what a `retention` refusal carries as one additive element, so the
+/// device can say what it is below (gaps U30). An older client reads the two before it and stops.
+pub fn retention_error_frame(code: &str, message: &str, floor: &[(PeerId, SeqNum)]) -> Vec<u8> {
+    tagged(
+        tag::ERROR,
+        vec![Value::text(code), Value::text(message), cursor_pairs(floor)],
+    )
 }
 
 pub fn ka_frame() -> Vec<u8> {
@@ -483,10 +504,21 @@ fn decode_control(t: u64, p: &[Option<&Value>; 5]) -> Option<Result<RelayFrame, 
                 floor,
             })
         })(),
-        tag::ERROR => match (text(a), text(b)) {
-            (Some(code), Some(message)) => Ok(RelayFrame::Error { code, message }),
-            _ => shape("error is not [code, message]"),
-        },
+        tag::ERROR => (|| {
+            let (Some(code), Some(message)) = (text(a), text(b)) else {
+                return shape("error is not [code, message]");
+            };
+            // a `retention` refusal names its floor; absent from any other refusal
+            let floor = match c {
+                None => None,
+                Some(_) => Some(decode_cursor_pairs(c)?),
+            };
+            Ok(RelayFrame::Error {
+                code,
+                message,
+                floor,
+            })
+        })(),
         tag::KA => Ok(RelayFrame::Ka),
         tag::ACK => match (text(a), safe_count(b)) {
             (Some(id), Some(offset)) => Ok(RelayFrame::Ack { id, offset }),

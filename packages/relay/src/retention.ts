@@ -6,6 +6,7 @@ import { memoryBlobHomes } from "@syncmesh/storage";
 import { Temporal, addToInstant, durationMs } from "@syncmesh/temporal";
 
 import type { BlobKeeper, BlobKeeperOptions } from "./blob-keeper.js";
+import type { Conversation } from "./state.js";
 
 import { cappedBlobStore } from "./blob-cap.js";
 import { createBlobKeeper } from "./blob-keeper.js";
@@ -214,6 +215,21 @@ export function belowFloor(theirs: Cursors, floor: Cursors): boolean {
     if (Number(theirs.get(author) ?? 0) < Number(seq)) return true;
   }
   return false;
+}
+
+/**
+ * Refuses a join whose cursors are below the room's floor, with a typed `retention` error that
+ * names the floor, so the device can say what it is below and stop dialling (gaps U30). Whether
+ * it refused.
+ */
+export function refusedBelowFloor(
+  refuse: Conversation["refuse"],
+  theirs: Cursors,
+  floor: Cursors,
+): boolean {
+  if (!belowFloor(theirs, floor)) return false;
+  refuse("retention", BELOW_FLOOR, true, floor);
+  return true;
 }
 
 /** A room's blob obligations, told every reference the log already held when it opened. */

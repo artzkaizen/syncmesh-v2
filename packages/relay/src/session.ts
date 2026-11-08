@@ -62,8 +62,8 @@ export interface SessionHooks {
    * the next join must ask from nothing.
    */
   readonly onReentitled?: () => void;
-  /** The relay's typed version refusal is permanent — no reconnect loop against it. */
-  readonly onVersionRefused: () => void;
+  /** A typed refusal: `version` is permanent, and `retention` (with its floor) waits for state (gaps U30). */
+  readonly onRefused: (code: string, floor?: Cursors) => void;
   /** The relay answered a fetch: the bytes, or `undefined` when it holds none under that hash. */
   readonly onBlobAnswer: (hash: string, bytes: Uint8Array | undefined) => void;
   /**
@@ -370,7 +370,7 @@ export function wireSession(
       hooks.onAck?.(frame.id);
       position(frame.offset);
     } else if (frame.kind === "error") {
-      if (frame.code === "version") hooks.onVersionRefused();
+      hooks.onRefused(frame.code, frame.floor);
       dialed.close();
     } else if (frame.kind === "session") onSession(frame.frame);
     // ka and unknown: the rearm above was the whole point

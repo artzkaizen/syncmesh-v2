@@ -104,7 +104,13 @@ export type RelayFrame =
        */
       readonly durable: boolean;
     }
-  | { readonly kind: "error"; readonly code: string; readonly message: string }
+  | {
+      readonly kind: "error";
+      readonly code: string;
+      readonly message: string;
+      /** On a `retention` refusal, the room's floor as the refusal read it (gaps U30). */
+      readonly floor?: Cursors;
+    }
   | { readonly kind: "ka" }
   | { readonly kind: "ack"; readonly id: string; readonly offset: number }
   | {
@@ -213,8 +219,14 @@ export const helloFrame = (
   return encodeCbor(durable ? [...parts, 1] : parts);
 };
 
-export const errorFrame = (code: string, message: string): Uint8Array =>
-  encodeCbor([KIND.error, code, message]);
+/**
+ * A typed refusal. A `retention` refusal carries the floor it was below as one additive element
+ * (gaps U30), so the device can name it; an older client reads the two before it and stops.
+ */
+export const errorFrame = (code: string, message: string, floor?: Cursors): Uint8Array =>
+  encodeCbor(
+    floor === undefined ? [KIND.error, code, message] : [KIND.error, code, message, pairs(floor)],
+  );
 
 export const kaFrame = (): Uint8Array => encodeCbor([KIND.ka]);
 

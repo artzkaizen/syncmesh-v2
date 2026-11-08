@@ -114,9 +114,7 @@ describe("a session below a peer's floor", () => {
     const fourth = sessionWith(rejoins, true, asked);
     fourth.onCursors(far, theirs, floor);
     expect(asked).toHaveLength(3);
-    expect(rejoins.issues().map(({ peer: who, reason }) => ({ who, reason }))).toEqual([
-      { who: far, reason: "unanswered" },
-    ]);
+    expect(rejoins.issues()).toMatchObject([{ peer: far, reason: "unanswered" }]);
     fourth.close();
   });
 
@@ -287,5 +285,26 @@ describe("a session below a peer's floor", () => {
     expect(rejoins.issues()).toEqual([]);
     expect(rejoins.accept(far)).toBe("nothing-to-accept");
     session.close();
+  });
+});
+
+describe("a relay's retention refusal (gaps U30)", () => {
+  test("is listed beside the peers' issues, and goes once the next join would hold the floor", () => {
+    const rejoins = createRejoins();
+    let next = cursors([author, 1]);
+    const told: string[] = [];
+    rejoins.onChange(() => told.push("changed"));
+    rejoins.relayRefused("relay", cursors([author, 4]), () => next);
+    expect(rejoins.issues()).toMatchObject([
+      { relay: "relay", reason: "retention", floor: cursors([author, 4]) },
+    ]);
+    // a relay folds nothing: there is no state to accept from it
+    expect(rejoins.accept(far)).toBe("nothing-to-accept");
+    next = cursors([author, 4]);
+    expect(rejoins.issues()).toEqual([]);
+    rejoins.relayRefused("relay", cursors([author, 6]), () => next);
+    rejoins.relayCleared("relay");
+    expect(rejoins.issues()).toEqual([]);
+    expect(told).toEqual(["changed", "changed", "changed"]);
   });
 });

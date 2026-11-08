@@ -7,7 +7,7 @@ import { isRelayable, relayEnvelope } from "@syncmesh/wire";
 import type { Conversation } from "./state.js";
 
 import { pageFrame } from "./frames.js";
-import { BELOW_FLOOR, belowFloor } from "./retention.js";
+import { refusedBelowFloor } from "./retention.js";
 
 /**
  * What a filtered catch-up hands over at its end (D23): per author, how far the *unfiltered* run
@@ -138,10 +138,7 @@ export function sendCatchUp(
 ): void {
   const { room, sender, refuse } = conversation;
   const scan = async (): Promise<void> => {
-    if (belowFloor(theirs, room.floor())) {
-      refuse("retention", BELOW_FLOOR, true);
-      return;
-    }
+    if (refusedBelowFloor(refuse, theirs, room.floor())) return;
     const [sizes, duration] = await timed(async () => {
       const entries = await room.store.allSince(theirs);
       if (entries.isErr()) {

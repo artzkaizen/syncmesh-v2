@@ -452,9 +452,7 @@ describe("delete-resurrection — plan §3.5, D15, RFC-0015 §3", () => {
     expect(s.back.asked).toHaveLength(1);
     expect(visible(s.x)).toBe(false);
     expect(cursorFor(s.x, s.b)).toBe(0);
-    expect(rejoins.issues().map(({ peer, reason }) => ({ peer, reason }))).toEqual([
-      { peer: s.b.identity.peerId, reason: "unvouched" },
-    ]);
+    expect(rejoins.issues()).toMatchObject([{ peer: s.b.identity.peerId, reason: "unvouched" }]);
     // one request per floor per session, however many cursor exchanges follow
     for (let round = 0; round < 3; round += 1) {
       s.back.bx.resync();

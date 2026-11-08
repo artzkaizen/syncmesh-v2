@@ -36,6 +36,8 @@ export type {
   Accepted,
   BelowFloor,
   BelowFloorReason,
+  BelowPeerFloor,
+  BelowRelayFloor,
   Rejoins,
   RejoinSession,
   RejoinSessionDeps,

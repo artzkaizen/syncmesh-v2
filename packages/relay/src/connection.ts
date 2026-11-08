@@ -1,3 +1,4 @@
+import type { Cursors } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 import type { Grant } from "@syncmesh/wire";
 
@@ -25,7 +26,7 @@ import { eventIntake, isBlobFrame, serveBlob } from "./ingest.js";
 import { createBudget } from "./limits.js";
 import { createViewer } from "./passover.js";
 import { newChallenge, verifyJoinProof } from "./proof.js";
-import { BELOW_FLOOR, belowFloor } from "./retention.js";
+import { refusedBelowFloor } from "./retention.js";
 import { createSeat, type Seat } from "./seat.js";
 import { secureLink } from "./secure.js";
 import { createSender } from "./sender.js";
@@ -201,8 +202,8 @@ export function createConnection(
    * N+1 without N — a hole every later joiner is paged and no author ever re-sends.
    */
   let closed = false;
-  const refuse = (code: string, message: string, fatal = false): void => {
-    sender.send(errorFrame(code, message));
+  const refuse = (code: string, message: string, fatal = false, floor?: Cursors): void => {
+    sender.send(errorFrame(code, message, floor));
     if (fatal) {
       closed = true;
       socket.close(code);
@@ -260,10 +261,7 @@ export function createConnection(
      * so `sendCatchUp` asks the same question again from inside that queue, where the answer is
      * final.
      */
-    if (belowFloor(theirs, room.floor())) {
-      refuse("retention", BELOW_FLOOR, true);
-      return;
-    }
+    if (refusedBelowFloor(refuse, theirs, room.floor())) return;
     // a gated room seats a proven key only under a grant for it (D40): the one already cached
     // from an earlier visit, or the one the device is about to send
     seat.admit(peer, (grant) => {

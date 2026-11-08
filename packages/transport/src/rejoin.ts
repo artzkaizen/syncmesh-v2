@@ -64,13 +64,35 @@ export type BelowFloorReason =
   | "unanswered";
 
 /** A device below a peer's compaction floor, and what is known about why (D46). */
-export interface BelowFloor {
+export interface BelowPeerFloor {
   readonly peer: PeerId;
   /** Per author this device is below, the floor the peer claimed. */
   readonly floor: Cursors;
   readonly reason: BelowFloorReason;
   readonly message: string;
 }
+
+/**
+ * A device a relay refused with `retention`: its join's cursors were below the floor the room
+ * had trimmed to, so the room has no history to page it (gaps U30). A relay folds nothing and
+ * serves no state, so the way out is state from a peer that folds — a peer link's own rejoin, or
+ * `$recovery.rebuild` — and the link does not dial that room again until this device's next join
+ * would be at or above the floor, or something wakes it (`Transport.wake`).
+ */
+export interface BelowRelayFloor {
+  /** The relay transport's name. */
+  readonly relay: string;
+  /** Per author this device's join was below, the floor the room said it had trimmed to. */
+  readonly floor: Cursors;
+  readonly reason: "retention";
+  readonly message: string;
+}
+
+/**
+ * Below a floor, whichever side said so: a peer's cursors frame (D46) or a relay's `retention`
+ * refusal (gaps U30). `reason` tells them apart.
+ */
+export type BelowFloor = BelowPeerFloor | BelowRelayFloor;
 
 /** What {@link Rejoins.accept} did. */
 export type Accepted =
@@ -101,6 +123,14 @@ export interface Rejoins {
   readonly accept: (peer: PeerId) => Accepted;
   /** One session's view of the same record; the bridge builds one per link. */
   readonly session: (deps: RejoinSessionDeps) => RejoinSession;
+  /**
+   * A relay refused this device's join with `retention` (gaps U30): raises its issue, or replaces
+   * it. `ours` reads what the device's next join would send, so the issue clears once that is at
+   * or above the floor.
+   */
+  readonly relayRefused: (relay: string, floor: Cursors, ours: () => Cursors) => void;
+  /** Drops a relay's issue: the link holds the floor, was served, or stopped. */
+  readonly relayCleared: (relay: string) => void;
 }
 
 export interface RejoinSessionDeps {
@@ -116,6 +146,12 @@ export interface RejoinSession {
   /** A cursors frame arrived from `peer`; `floor` absent is an older build or no compaction. */
   readonly onCursors: (peer: PeerId, theirs: Cursors, floor: Cursors | undefined) => void;
   readonly close: () => void;
+}
+
+/** A raised issue, with the reader of the cursors it is judged against. */
+interface Raised<Issue extends BelowFloor> {
+  readonly issue: Issue;
+  readonly ours: () => Cursors;
 }
 
 /** Sessions asked per (peer, floor) before the issue is raised instead of a fourth request. */
@@ -137,10 +173,15 @@ const MESSAGES = {
   unanswered: "asked for state in three sessions and no install completed",
 } satisfies Record<BelowFloorReason, string>;
 
+const RETENTION =
+  "the relay has trimmed its history below these cursors and refused the join: take state from a peer that folds (a peer link, or $recovery.rebuild); the link dials that room again once this device holds the floor, or when it is woken";
+
 export function createRejoins(): Rejoins {
   const changes = createHub<void>();
   /** Raised issues, one per peer, with the coverage reader of the session that raised it. */
-  const raised = new Map<PeerId, { readonly issue: BelowFloor; readonly ours: () => Cursors }>();
+  const raised = new Map<PeerId, Raised<BelowPeerFloor>>();
+  /** Relays that refused this device with `retention`, one issue per relay (gaps U30). */
+  const relays = new Map<string, Raised<BelowRelayFloor>>();
   /** Sessions asked per (peer, floor) with no install completed. */
   const attempts = new Map<string, number>();
   /**
@@ -164,7 +205,7 @@ export function createRejoins(): Rejoins {
   const live = new Map<PeerId, Set<(floor: Cursors) => void>>();
 
   /** Whether any author of the issue is still below its floor. */
-  const stillBelow = ({ issue, ours }: { issue: BelowFloor; ours: () => Cursors }): boolean => {
+  const stillBelow = ({ issue, ours }: Raised<BelowFloor>): boolean => {
     const held = ours();
     return [...issue.floor].some(([author, seq]) => (held.get(author) ?? 0) < seq);
   };
@@ -183,6 +224,8 @@ export function createRejoins(): Rejoins {
     let dropped = false;
     for (const [peer, held] of raised)
       if (!stillBelow(held)) dropped = raised.delete(peer) || dropped;
+    for (const [relay, held] of relays)
+      if (!stillBelow(held)) dropped = relays.delete(relay) || dropped;
     return dropped;
   };
 
@@ -284,7 +327,7 @@ export function createRejoins(): Rejoins {
     issues: () => {
       // read from a getter a renderer calls: the change is told after it, never inside it
       if (sweep()) queueMicrotask(() => changes.emit());
-      return [...raised.values()].map(({ issue }) => issue);
+      return [...raised.values(), ...relays.values()].map(({ issue }) => issue);
     },
     onChange: (listener) => changes.subscribe(() => listener()),
     accept: (peer) => {
@@ -303,5 +346,12 @@ export function createRejoins(): Rejoins {
       return "requested";
     },
     session,
+    relayRefused: (relay, floor, ours) => {
+      relays.set(relay, { issue: { relay, floor, reason: "retention", message: RETENTION }, ours });
+      changes.emit();
+    },
+    relayCleared: (relay) => {
+      if (relays.delete(relay)) changes.emit();
+    },
   };
 }

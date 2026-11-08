@@ -20,11 +20,12 @@ import { createHeard } from "./heard.js";
 import { createLinkReady } from "./link-ready.js";
 import * as said from "./link-reasons.js";
 import { createLinkReport } from "./link-report.js";
-import { createLinkSeal, type LinkSeal } from "./link-seal.js";
+import { createLinkSeal, openedDial, type LinkSeal } from "./link-seal.js";
 import { createLiveness } from "./liveness.js";
 import { proveJoin } from "./proof.js";
 import { createRedial } from "./redial.js";
 import { refusalsOver } from "./refused.js";
+import { createRetained } from "./retained.js";
 import { entitledScope, joinPosition } from "./scoped.js";
 import { wireSession } from "./session.js";
 import { createVisibility } from "./visibility.js";
@@ -79,12 +80,15 @@ export class RelayLink {
   private readonly heard = createHeard();
   /** What the last re-page from nothing refused, across sessions (D45); held from `start`. */
   private refusals: ReturnType<typeof refusalsOver> | undefined;
+  /** Holding off a room that refused this device with `retention` (gaps U30). */
+  private readonly retained: ReturnType<typeof createRetained>;
 
   constructor(options: RelayTransportOptions) {
     this.options = options;
     this.name = options.name ?? "relay";
     this.versions = options.versions ?? RELAY_PROTOCOL_VERSIONS;
     this.report = createLinkReport(this.name, () => this.ctx?.now?.() ?? Temporal.Now.instant());
+    this.retained = createRetained(this.name, this.report, options.interest, () => this.wake());
     this.redial = createRedial(
       omitUndefined({
         dial: options.dial,
@@ -179,19 +183,6 @@ export class RelayLink {
     this.hangUp(why);
   }
 
-  /** The dial as the session sees it: frames already opened, hellos already answered. */
-  private plain(dialed: RelayDial): RelayDial {
-    return {
-      send: dialed.send,
-      onFrame: (cb) =>
-        dialed.onFrame((raw) => {
-          if (this.ctx !== undefined) this.sealing.open(this.ctx.identity, raw, cb);
-        }),
-      onClose: dialed.onClose,
-      close: dialed.close,
-    };
-  }
-
   /**
    * Peers still claimed, with the ones that have gone quiet dropped on the way past.
    *
@@ -250,7 +241,8 @@ export class RelayLink {
         this.status.emit(true);
         this.readiness.hello();
       },
-      onVersionRefused: () => {
+      onRefused: (code) => {
+        if (code !== "version") return;
         this.report.refused(said.REFUSED);
         this.fatal = true;
       },
@@ -272,7 +264,11 @@ export class RelayLink {
     };
     // what a scoped coverage on the last page has to match before this device adopts it
     Object.assign(hooks, { repaging: () => this.repaging });
-    const offs = wireSession(this.ctx, this.plain(dialed), hooks);
+    const offs = wireSession(
+      this.ctx,
+      openedDial(dialed, this.sealing, () => this.ctx?.identity),
+      this.retained.hooks(hooks, this.ctx, () => this.reentitled),
+    );
     const offClose = dialed.onClose(() => {
       this.report.closed();
       this.liveness.clear();
@@ -286,7 +282,7 @@ export class RelayLink {
       }
       if (this.stopped || this.fatal) return;
       this.readiness.rearmLastPage();
-      this.redial.again();
+      if (!this.retained.holding()) this.redial.again();
     });
     this.unsubscribe = [...offs, offClose];
     // no join here: the room speaks first, and its hello or its challenge is what gets answered
@@ -303,6 +299,7 @@ export class RelayLink {
    */
   wake(): void {
     if (this.stopped || this.fatal) return;
+    this.retained.release(); // one dial: a room still above this device refuses it again
     this.redial.cancel();
     this.redial.settled();
     if (this.live === undefined) this.redial.attempt();
@@ -352,6 +349,7 @@ export class RelayLink {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.retained.stop();
     this.redial.cancel();
     this.liveness.clear();
     for (const off of this.unsubscribe) off();

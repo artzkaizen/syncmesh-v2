@@ -72,10 +72,14 @@ const decodeHello: ControlDecoder = (a, b, c, d, e, f) =>
     } as const);
   });
 
-const decodeError: ControlDecoder = (a, b) =>
-  isString(a) && isString(b)
-    ? Result.ok({ kind: "error", code: a, message: b } as const)
-    : malformedFrame("error is not [code, message]");
+const decodeError: ControlDecoder = (a, b, c) =>
+  Result.gen(function* () {
+    if (!isString(a) || !isString(b)) return malformedFrame("error is not [code, message]");
+    const error = { kind: "error", code: a, message: b } as const;
+    // a `retention` refusal names the floor it was below (gaps U30); absent from any other, and
+    // from a relay built before it, which an older client reads past (D14's additive vector)
+    return Result.ok(c === undefined ? error : { ...error, floor: yield* decodeCursorPairs(c) });
+  });
 
 const decodeAck: ControlDecoder = (a, b) =>
   isString(a) && isSafeNonNegative(b)

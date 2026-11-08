@@ -120,6 +120,9 @@ export interface Conversation {
   readonly room: RoomState;
   readonly sender: Sender;
   readonly budget: Budget;
-  /** A typed refusal on the wire; `fatal` also hangs up, for a client there is no point talking to. */
-  readonly refuse: (code: string, message: string, fatal?: boolean) => void;
+  /**
+   * A typed refusal on the wire; `fatal` also hangs up, for a client there is no point talking to.
+   * `floor` rides a `retention` refusal: what the client's cursors were below (gaps U30).
+   */
+  readonly refuse: (code: string, message: string, fatal?: boolean, floor?: Cursors) => void;
 }

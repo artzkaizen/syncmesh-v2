@@ -3,19 +3,21 @@ import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import { createMemoryEventStore, tableDigests } from "@syncmesh/engine";
 import { hashOf, memoryBlobStore } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
-import { eventFrame } from "@syncmesh/transport";
+import { createRejoins, eventFrame } from "@syncmesh/transport";
 import { describe, expect, test } from "bun:test";
 
 import type { RelayRoomOptions } from "../room.js";
 
 import { cappedBlobStore } from "../blob-cap.js";
 import { webSocketDial } from "../dial.js";
-import { blobGetFrame, blobPutFrame, joinFrame } from "../frames.js";
+import { RELAY_PROTOCOL_VERSIONS, blobGetFrame, blobPutFrame, joinFrame } from "../frames.js";
 import { startRelay } from "../serve.js";
 import { relayTransport } from "../transport.js";
 import {
   bodyOf,
+  dialTo,
   entryOf,
+  mintFor,
   fakeSocket,
   filled,
   scriptedRoom,
@@ -380,4 +382,70 @@ describe("a trimmed room diverges nobody", () => {
       await relay.stop();
     }
   }, 30_000);
+});
+
+/**
+ * A device below the room's floor is refused with `retention`, and nothing it can redial changes
+ * that: the room folds nothing and has no state to give. So the refusal is an issue the app can
+ * see, beside the peers' (D46), and the link stops dialling until this device holds the floor.
+ */
+describe("a device the room refuses with retention (gaps U30)", () => {
+  test("raises a $recovery issue naming the floor, stops redialling, and dials again once it holds the floor", async () => {
+    const { a, room, tick: setClock } = await fourEvents(2, { versions: RELAY_PROTOCOL_VERSIONS });
+    setClock(at(KEEP_MS + STEP_MS));
+    await room.sweep();
+    const author = a.identity.peerId;
+    expect(Number(room.floor().get(author))).toBe(2);
+
+    const x = peer(90, "acct_x");
+    const rejoins = createRejoins();
+    const changes: string[] = [];
+    rejoins.onChange(() => changes.push("changed"));
+    const { dial, dials } = dialTo(room);
+    const t = relayTransport({ dial, reconnectMs: 5 });
+    let online = false;
+    t.onStatus?.((up) => void (online = up));
+    await t.start({ ...x.context, rejoins });
+    expect(await until(() => rejoins.issues().length === 1)).toBe(true);
+    expect(online).toBe(false);
+    expect(rejoins.issues()).toMatchObject([
+      { relay: "relay", reason: "retention", floor: new Map([[author, 2]]) },
+    ]);
+    expect(changes).toEqual(["changed"]);
+
+    // a redial meets the same refusal, so there is none: well past several backoffs, one dial
+    await tick(150);
+    expect(dials()).toBe(1);
+    // woken (a network change, the app coming back), it tries once, and holds off again
+    t.wake?.();
+    expect(await until(() => dials() === 2)).toBe(true);
+    await tick(150);
+    expect(dials()).toBe(2);
+    expect(rejoins.issues()).toHaveLength(1);
+
+    // the history below the floor from somewhere that folds: the device now holds the floor, so
+    // the link dials on its own and the room serves the join
+    x.grants.register(mintFor(a.identity, "acct_a")).unwrap();
+    const held = (await a.engine.eventsSince(new Map())).unwrap();
+    (await x.engine.receiveBatch(held.filter(({ event }) => event.seqNum <= 2))).unwrap();
+    expect(await until(() => online)).toBe(true);
+    expect(dials()).toBe(3);
+    expect(rejoins.issues()).toEqual([]);
+    await t.stop();
+    room.close();
+  }, 20_000);
+
+  test("a stopped link leaves no issue behind", async () => {
+    const { room, tick: setClock } = await fourEvents(2, { versions: RELAY_PROTOCOL_VERSIONS });
+    setClock(at(KEEP_MS + STEP_MS));
+    await room.sweep();
+    const x = peer(91, "acct_x");
+    const rejoins = createRejoins();
+    const t = relayTransport({ dial: dialTo(room).dial, reconnectMs: 5 });
+    await t.start({ ...x.context, rejoins });
+    expect(await until(() => rejoins.issues().length === 1)).toBe(true);
+    await t.stop();
+    expect(rejoins.issues()).toEqual([]);
+    room.close();
+  });
 });
