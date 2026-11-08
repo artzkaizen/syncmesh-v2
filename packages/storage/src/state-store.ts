@@ -149,7 +149,10 @@ export function sqlStateStore(
   };
 
   if (options.nested === true) return Promise.resolve(Result.ok(store)); // the owner migrated
-  return attempt("open failed", () => migrate(driver)).then((opened) => opened.map(() => store));
+  return attempt("open failed", async () => {
+    await migrate(driver);
+    await projection?.prepare?.();
+  }).then((opened) => opened.map(() => store));
 }
 
 /** `sqlStateStore` under its SQLite-era name; the store speaks whatever dialect the driver has. */

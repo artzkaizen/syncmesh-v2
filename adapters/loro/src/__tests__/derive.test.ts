@@ -84,6 +84,8 @@ interface NodeOptions {
   readonly schema?: typeof schema;
   readonly driver?: SqlDriver;
   readonly validate?: Validator;
+  /** Default `true`; off where a test rewrites rows outside syncmesh, as an app may (U5). */
+  readonly strict?: boolean;
 }
 
 /** An engine over SQLite stores holding the app's `notes` table, with the document runtime over it. */
@@ -93,7 +95,9 @@ async function storedNode(n: number, options: NodeOptions = {}) {
   let ms = 1_700_000_000_000 + n * 1000;
   const now = () => Temporal.Instant.fromEpochMilliseconds((ms += 1));
   const driver = options.driver ?? bunSqliteDriver(":memory:");
-  const stores = (await openStores(driver, { tables: syncedTables(using) })).unwrap();
+  const stores = (
+    await openStores(driver, { tables: syncedTables(using), strict: options.strict ?? true })
+  ).unwrap();
   const withAdapter = options.adapter !== false;
   const engine = createEngine({
     peerId: identity.peerId,
@@ -577,7 +581,8 @@ describe("derived columns catch up with the document between flushes (gaps U25)"
 
   test("a state rebuilt from the log gets its derived values back when the runtime starts", async () => {
     const driver = bunSqliteDriver(":memory:");
-    const a = await storedNode(28, { driver });
+    // the app below rewrites a row outside syncmesh, which strict capture would refuse (U5)
+    const a = await storedNode(28, { driver, strict: false });
     await insertNote(a);
     const doc = (await a.documents.open<LoroDoc>(DOC)).unwrap();
     type(doc.value, "Rebuilt", "one two");
@@ -622,7 +627,7 @@ describe("an opaque host takes derived values from a device checkpoint (RFC-0023
   /** A device that edited the note, and a host without the adapter that folded the same events. */
   const pair = async (n: number, sealed = false, validate?: Validator) => {
     const using = sealed ? schemaWith(plainTitle, true) : schema;
-    const device = await storedNode(n, { schema: using });
+    const device = await storedNode(n, { schema: using, strict: false });
     const host = await storedNode(n + 50, {
       adapter: false,
       schema: using,
@@ -636,7 +641,8 @@ describe("an opaque host takes derived values from a device checkpoint (RFC-0023
     (await doc.close()).unwrap();
     await link.flush();
     expect(await until(async () => (await host.engine.docLog()).unwrap().length === 1)).toBe(true);
-    // forget the flush's values, so what the device's row holds next is the checkpoint's own work
+    // forget the flush's values, so what the device's row holds next is the checkpoint's own
+    // work: a write behind the mesh's back, which only a device with strict capture off may make
     await device.driver.run(`UPDATE notes SET title = NULL, "wordCount" = NULL`);
     const at = hlcOf(device.now().epochMilliseconds, 0);
     const made = (await device.documents.checkpoint(DOC, device.identity, at)).unwrap();

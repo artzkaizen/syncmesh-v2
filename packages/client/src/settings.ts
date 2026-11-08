@@ -55,6 +55,7 @@ export function bootSettings<C extends ColumnsMap, D extends SqlDialect, PC exte
       store: local?.store,
       stateStore: local?.stateStore,
       rls: served?.rls,
+      strict: storage?.strict,
       undoDepth: options.undoDepth,
       clockDrift: options.clockDrift,
       onError: options.onError,

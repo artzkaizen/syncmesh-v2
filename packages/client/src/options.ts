@@ -8,6 +8,7 @@ import type {
   SqlDriver,
   StoreScope,
   Stores,
+  StrictCapture,
 } from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { Transport, TransportContext } from "@syncmesh/transport";
@@ -183,6 +184,13 @@ export interface SqliteStorage {
   /** Your own connection: tables and capture are installed on it and it becomes the log too. */
   readonly driver?: SqlDriver;
   /**
+   * Refuse a write to a synced table made outside a mesh write — raw SQL on the connection, an
+   * ORM call outside `mesh.write` — rather than let the row change with no event to carry it
+   * (gaps U5). Default `true`; `false`, or `{ except: [table] }` for the tables something else
+   * writes. Applies where the mesh installs the tables: a `driver`, or the platform default.
+   */
+  readonly strict?: StrictCapture;
+  /**
    * Stores someone else opened — what `scopedStores().storeFor(scope)` hands back (D07).
    *
    * This is how a device runs **one mesh per top-level instance, over one database each**: an
@@ -238,6 +246,12 @@ export interface PostgresStorage {
    * or Postgres itself waves it through.
    */
   readonly rls?: boolean;
+  /**
+   * Refuse a write to a synced table made outside a mesh write (gaps U5): a guard trigger raises
+   * on it, and on a `TRUNCATE` of one. Default `true`; `{ except: [table] }` for the tables an
+   * external writer owns. A role that can set `syncmesh.armed` itself can get past it.
+   */
+  readonly strict?: StrictCapture;
   /** Where fetched bytes are cached (D18); absent, an in-memory cache for the process. */
   readonly blobs?: BlobStore;
 }

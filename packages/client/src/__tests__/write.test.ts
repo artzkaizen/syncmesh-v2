@@ -7,6 +7,7 @@ import { ladder, local, partition, syncSchema, t, user } from "@syncmesh/schema"
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { installCapture } from "@syncmesh/storage";
 import { createWriter } from "@syncmesh/storage";
+import { asFold } from "@syncmesh/storage/driver-tests";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, verifyGrant } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -330,7 +331,9 @@ describe("a retired column (D31) through change capture", () => {
   test("a row deleted and inserted again without it keeps the old build's value out of the patch", async () => {
     const { driver, write, lastChange } = await device();
     // the row as an older build's fold left it, before this transaction: not captured
-    await driver.run(`INSERT INTO notes (id, body, owner) VALUES ('n1', 'one', 'ada')`);
+    await asFold(driver, () =>
+      driver.run(`INSERT INTO notes (id, body, owner) VALUES ('n1', 'one', 'ada')`),
+    );
     const r = await write(
       "notes.redo",
       async () => {
