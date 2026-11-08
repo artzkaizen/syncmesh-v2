@@ -5,7 +5,7 @@ import { Result } from "@syncmesh/result";
 
 import type { AtomicStores, Engine, FoldBatch, FoldSource, MutateOptions } from "./engine.js";
 import type { ValidationError } from "./errors.js";
-import type { PersistInto } from "./fold.js";
+import type { FoldPath, PersistInto } from "./fold.js";
 import type { Hub } from "./listeners.js";
 import type { OwnPosition } from "./own-position.js";
 import type { StoredEvent } from "./store.js";
@@ -15,8 +15,9 @@ import type { ProbeEvent, StateLookup, Validator } from "./validate.js";
 
 import { buildEvent, nextSeq } from "./build-event.js";
 import { EmptyMutation } from "./errors.js";
+import { withDerivedKeys } from "./fold.js";
 import { adoptOwnPosition, createOwnFloor, pastFloor } from "./own-position.js";
-import { StoreFailure } from "./store.js";
+import { StoreFailure, orThrow } from "./store.js";
 import { timed } from "./telemetry.js";
 import { record } from "./tx.js";
 import { rowsBefore } from "./undo.js";
@@ -27,12 +28,6 @@ const asStoreFailure = (cause: unknown): StoreFailure =>
     ? cause
     : new StoreFailure({ message: "the write's transaction failed", cause });
 
-/** Inside an `atomic` body a store's `Err` must abort the transaction: thrown as itself, caught above. */
-const orThrow = <T>(result: Result<T, StoreFailure>): T => {
-  if (result.isErr()) throw result.error;
-  return result.value;
-};
-
 /** The verdict a probe gets before a local write is numbered; `undefined` when nothing validates. */
 const probeVerdict = (
   validate: Validator | undefined,
@@ -40,7 +35,7 @@ const probeVerdict = (
   before: StateLookup,
 ): Result<void, ValidationError> | undefined => validate?.validate(probe, before);
 
-const probeOf = (
+const probeEvent = (
   peerId: PeerId,
   changes: ProbeEvent["changes"],
   options: MutateOptions,
@@ -72,6 +67,7 @@ export interface WriteDeps {
   readonly fold: (entries: readonly StoredEvent[], source: FoldSource) => FoldBatch;
   readonly persist: (batch: FoldBatch, into: PersistInto) => Promise<void>;
   readonly notify: (batch: FoldBatch) => void;
+  readonly derive: FoldPath["derive"];
   readonly outbound: Hub<SyncEvent>;
   readonly telemetry: Hub<TelemetryEvent>;
   readonly admitEntries: (
@@ -96,6 +92,7 @@ export function createWritePath(deps: WriteDeps) {
     fold,
     persist,
     notify,
+    derive,
     outbound,
     telemetry,
     admitEntries,
@@ -111,7 +108,7 @@ export function createWritePath(deps: WriteDeps) {
           new EmptyMutation({ procedure, message: `${procedure} changed nothing` }),
         );
       }
-      const verdict = probeVerdict(validate, probeOf(peerId, changes, mutateOptions), before);
+      const verdict = probeVerdict(validate, probeEvent(peerId, changes, mutateOptions), before);
       if (verdict !== undefined) yield* verdict;
       const image = undoDepth > 0 ? rowsBefore(getState(), changes) : [];
       const hlc = clock.tick();
@@ -150,9 +147,11 @@ export function createWritePath(deps: WriteDeps) {
                * them costs a replay rather than a fact.
                */
               await mutateOptions.record?.(event);
+              const derived = mutateOptions.derived ?? [];
               const folded = fold([{ event }], "local");
               await persist(folded, scoped);
-              return { event, folded };
+              await derive(derived, scoped);
+              return { event, folded: withDerivedKeys(folded, derived) };
             }),
           catch: (cause) => asStoreFailure(cause),
         }),

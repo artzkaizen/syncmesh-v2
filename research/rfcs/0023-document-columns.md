@@ -401,19 +401,21 @@ double their content when merged. Syncmesh answers it once:
   child and wins, however late. Plain "oldest genesis ever wins" would make each of those lose
   forever, which is why the rule is a tree and not one cell.
 - **The lineage cell holds the tree, not the winner.** In the kernel's `RowRecord`, the doc
-  column's cell holds every genesis it has seen, keyed by lineage id:
-  `{ lineage → [parent | null, hlc ms, hlc logical, peer] }`. Two cells join by union (a lattice
-  join: commutative, associative, idempotent), and the cell's stamp is the later of the two. The
-  winner is read from the set by the walk (`winningLineage` / `winning_lineage`), never stored, so
-  every arrival order and batching lands on one lineage. Row digests, snapshot pages (RFC-0019),
-  repairs, tombstones and `insert`×`insert` carry the whole set because they carry the cell. The
-  SQL column still holds snapshot bytes. The projection writes the winner to `doc_heads`, not to
-  the column.
+  column's cell holds every genesis it has seen, keyed by lineage id, tagged with the version of
+  the rule that wrote it (the `1` a genesis carries in key 5):
+  `[1, { lineage → [parent | null, hlc ms, hlc logical, peer] }]`. Two cells join by union (a
+  lattice join: commutative, associative, idempotent), and the cell's stamp is the later of the
+  two. The winner is read from the set by the walk (`winningLineage` / `winning_lineage`), never
+  stored, so every arrival order and batching lands on one lineage. Row digests, snapshot pages
+  (RFC-0019), repairs, tombstones and `insert`×`insert` carry the whole set, tag included,
+  because they carry the cell. The SQL column still holds snapshot bytes. The projection writes
+  the winner to `doc_heads`, not to the column.
 - **A genesis whose parent has not arrived waits off the walk.** It is folded into the set, and
   the walk cannot reach it until its parent lands, at which point the winner, and every doc-log
-  label with it, is recomputed. That holds when the parent lands in an event. A parent that lands
-  through a snapshot page or a repair record moves the winner, but the doc-log labels are only
-  recomputed at the next doc append (a known gap, listed for follow-up). Nothing is parked: parking would need cross-author holdback, and
+  label with it, is recomputed. That holds whether the parent lands in an event, a snapshot page
+  or a repair record: an install or a repair that moves a document's winner relabels its doc log
+  and refreshes its head in the same persist step, for a document that holds doc-log entries (one
+  with none has nothing to relabel and gets no head). Nothing is parked: parking would need cross-author holdback, and
   this is how out-of-order delivery looks, exactly as a doc change on a row whose insert has not
   arrived folds (§11). A genesis naming its own lineage as its parent is refused (§10). A longer
   cycle cannot be reached from the root, and the walk stops at any lineage it has already visited.
@@ -455,7 +457,8 @@ DocCheckpoint core = {
   5: covers   { peerId → seq }           every doc change of this doc at or below these is folded in
   6: version  bstr                        adapter-encoded version of the snapshot
   7: snapshot [bstr(32), uint]            blob ref (D18) to the adapter snapshot bytes
-  8: derived  { column → cell }           derive values at this version (for opaque hosts)
+  8: derived  { column → cell }           derive values at this version (for opaque hosts);
+                                          empty for a sealed partition (§7.2)
   9: at       [ms, logical]               HLC of production
 }
 envelope = [core, sig]                    signed by the producer's device key
@@ -570,6 +573,20 @@ when no adapter is configured, and it is forced for sealed partitions.
   publish one after materialising, rate-limited per doc (`checkpointEvery`, default 5 min of
   change). The authority stores the snapshot blob, writes it to the column and the derived values
   to their columns, and records `doc_heads.mode = 'checkpoint'` with the checkpoint's `covers`.
+- **Sealed partitions keep their derived values off the host** (decided 2026-11-08, from review).
+  A derived value is plaintext read out of the document, so a device never puts one in a sealed
+  partition's checkpoint: key 8 is an empty map. The host refuses a sealed partition's checkpoint
+  that carries any, and that partition's derived columns stay unset on the host (`NULL`, or the
+  column's SQL default). Devices holding the partition key compute them as they do everywhere
+  else. The host reads only the checkpoint's signed core, never its snapshot: it holds no adapter,
+  and in a sealed partition the snapshot would be sealed to the partition key (§11). Sealing that
+  blob is not built yet; the rule for derived values does not depend on it.
+- An opaque host installs a device checkpoint **provisionally** (§16.6): it checks the
+  signature, the column's adapter, the winning lineage, the snapshot hash, that `covers` claims
+  nothing it has not folded, that it is not behind the snapshot already held, and that every
+  key 8 value is a declared derived column of a kind that column accepts. It cannot re-derive
+  `version` without the adapter. It moves no `doc_log` entry to `covered`, so no event becomes
+  compactable on a provisional snapshot and the long log stays whole for the audit.
 - SQL over an opaque column is **honestly behind**. `doc_heads.covers` versus the log head says by
   how much, and a query that selects `docStateOf(tables.notes.content)` gets
   `{ mode, behindBy }`, the column sibling of `syncOf`.
@@ -692,14 +709,27 @@ until first `open()`, which is RFC-0019 §3's window rule applied to documents.
 | genesis naming a `parent` this peer does not hold | folds; it waits off the lineage walk until the parent lands (§5.3) | the cell is a set, so the winner is the same whatever arrives first |
 | genesis under the pre-§16.1 rule (`5: true`) at a build of the tree rule | decodes, flagged `legacy`, so a log that holds one still reads; refused at admission → quarantine | the event is never folded by a rule this build does not run, and is kept rather than dropped |
 | genesis under the tree rule (`5: 1`) at a build from before it | refused at decode by that build | that build never folds a tree-rule genesis by the LWW rule |
-
-The version in key 5 covers **events only**. The lineage cell in snapshot pages (RFC-0019),
-repair records and persisted state carries no version. A build of the tree rule reads an old
-build's cell (a lineage id as a string) as the root and drops it, and an old build merges a new
-build's cell (an object of geneses) by LWW. So **every peer of a mesh must upgrade together**
-past §16.1. Doc columns have not shipped in a release, so no deployed mesh is affected.
+| a snapshot page (RFC-0019) or repair record whose doc-column cell is not tagged `1`: untagged (the LWW rule's lineage id, or the tree rule's set before cells were versioned) or another version | the whole snapshot or repair is refused as `LineageCellRefused { table, key, column, version }` before any row joins; no coverage is adopted; the join exchange closes and reports it on the bridge's `onError` | the cell is never read as the root nor merged by another rule; the history behind it still arrives as events |
+| persisted state holding such a cell | TypeScript: reported on `onError`, then the state is rebuilt from the log, as any unreadable state is (`StateCorrupt` when the log is compacted below it). Rust: `Engine::open` refuses with a `StoreError` naming the cell | each runtime treats it as state it cannot read, as it already treats a row that does not decode |
 | adapter cannot parse an update | materialisation marks that `doc_log` row `failed`; the doc stays usable at its last good version; loud in `$inspect` | the fold already happened identically; this only affects materialisation, which is local |
 | minor version skew (`loro-crdt` 1.4 vs 1.16) | allowed: the id's major (`@1`) is the compatibility contract; the adapter package pins a floor and runs the adapter conformance suite (§13) | Loro's own 1.x encoding stability |
+
+Lineage cells are versioned wherever they are kept outside events — snapshot pages, repair
+records and persisted state — with the tag genesis key 5 carries (decided in §16.1), and frozen by
+`doc-vectors.json`'s `lineageCells` in both runtimes. A later rule meets this build's cells, and
+this build meets a later rule's, as a version it does not run. Builds from before the tag (main up
+to `d01bb92`) do not check it and must not share a mesh with this one; doc columns have not shipped
+in a release, so no deployed mesh is affected.
+
+Rebuilding from the log keeps only what the log holds. Rows this device took from an earlier
+snapshot install came with coverage and no events, so a rebuild that refuses a persisted cell loses
+them without a word unless the log is compacted (then it is `StateCorrupt`); the device gets them
+back by joining again. That was already true of any unreadable state; the lineage check is one more
+way to reach it (gaps U22).
+
+The boot check reads only tables that declare a doc column. The state cache decodes a row when it is
+first read, so the other tables stay undecoded until a fold writes them; a doc table is decoded in
+full at open.
 
 A hostile update from a valid author (for example "delete everything") is taxonomy B10: undo it,
 revoke the grant. Adapters must be **total** and bounded. There is a max update size, a
@@ -722,21 +752,31 @@ decompression cap and a time budget, and exceeding them is a `failed` update, ne
   `update` on the row. Blob fetches of doc bytes require custody of the partition (D30's blob
   capability).
 - **Sealed partitions:** doc bytes are inside the sealed core, the authority is structurally
-  opaque (§7.2), and checkpoints are sealed to the partition key.
+  opaque (§7.2), and a checkpoint's snapshot blob is sealed to the partition key (not built yet).
+  The checkpoint's core stays readable to the host, so it carries no derived values: key 8 is
+  empty and the host's derived columns for the partition stay unset (§7.2).
 - **`replace()` has an optional rule of its own** (decided in §16.2): `allow: { replace:
   role("owner") }` beside `read`/`insert`/`update`/`delete`/`$default`. It is the one doc
   operation that can set others' work aside. Absent, a genesis is judged by the row's `update`
   rule exactly as any doc change (`resolveAllow("replace")` falls back to `update`, then `write`,
   then `$default`). The rule is data in the manifest's allow block, so a port reads it as it reads
-  the others. The device validator and the authority share one ladder in TypeScript; the Rust
-  device has no policy port yet, and takes the rule when it gets one.
+  the others. The device validator and the authority share one ladder in TypeScript. The Rust
+  device does not enforce it, and enforcing it alone would be a half validator: the Rust engine
+  has no `allow` ladder at all (`crates/syncmesh-client/src/engine.rs`: "No validator yet"). A
+  `replace` rule is a policy AST (`role`, `owner`, claims and row comparisons) evaluated against
+  the author's grant, the partition kind's roles and the row before the write, and its absence
+  falls back to `update`, then `write`, then `$default`. Checking `replace` exactly where the
+  TypeScript does therefore needs the manifest's allow blocks, the rule evaluator and the author
+  resolution `checkAuthor` does — the whole policy port (gap U3). Built alone, a Rust device
+  would refuse a genesis by `replace` while folding the plain doc edits and row updates the same
+  `update` rule denies. It takes the rule with the policy port.
 
 ## 12 · Schema evolution (RFC-0013)
 
 | Change | Verdict |
 |---|---|
 | add a doc column | fine — existing rows are the empty root lineage; the SQL column is nullable |
-| add or change a `derive` | fine — derived values never travel; the materialiser recomputes on the next tick |
+| add or change a `derive` | fine — derived values never travel; each replica recomputes at its next flush or materialisation. A column that held app writes before it was derived keeps them as history: a numbered event naming it still folds, the cell is ignored, and only this device's own new write to it is refused |
 | turn an `lww` column into a doc column | **refused** (repurposing). Add a new doc column; the authority fills it once with `replace()` from the old value (upcasters are pure over changes and cannot mint adapter bytes deterministically) |
 | move a column to another adapter or major (`loro@1` → `loro@2`, `automerge@3`) | **refused**: a new column + authority `replace()` job, same as above |
 | drop a doc column | park like any column: stop writing, keep the log until the compaction floor passes it |
@@ -754,6 +794,8 @@ columns like any column. `fromDrizzle` already maps pg `bytea` → `blob` and Dr
   - the lineage derivation
   - lineage trees: geneses, the winner, and the lineage cell's record bytes, folded in every
     permutation in both runtimes
+  - lineage cells as snapshot pages, repairs and persisted state carry them: one tagged `1`, read
+    to its winner; an untagged set, an LWW lineage id and a version-2 cell, refused
   - events carrying `action`/`undoOf`
   - a `DocCheckpoint` core + signature
   - a v=1 vector re-verified to prove the new keys did not disturb it
@@ -892,21 +934,28 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    device's winner as its parent, so restores, resets and the undo of a replace still win. A
    genesis naming a parent not yet held folds and waits off the walk (no parking). Genesis key 5
    is now `1`, so an older build refuses a tree-rule genesis event rather than folding it LWW;
-   this build decodes a `true` genesis as `legacy` and quarantines it at admission (§10). That
-   versioning covers events only: lineage cells in snapshot pages, repair records and persisted
-   state carry no version, so all peers must upgrade together. Doc columns are unreleased.
+   this build decodes a `true` genesis as `legacy` and quarantines it at admission (§10).
    **Decided 2026-11-08: the lineage cell is versioned before doc columns ship**, with the same
    `1` tag events carry, in all three places; a build meeting a cell of a version it does not run
-   refuses it as a value rather than reading it as a root or merging it by LWW.
+   refuses it as a value rather than reading it as a root or merging it by LWW. **Built** (§5.3,
+   §10): the cell is `[1, { lineage → genesis }]` in both runtimes; `parseLineageCells` /
+   `parse_lineage_cells` refuse any other cell as `LineageCellRefused` where it enters — a
+   snapshot install and a repair (TypeScript; the Rust device takes neither) and persisted state
+   at boot (both). `doc-vectors.json`'s `lineageCells` freeze the verdicts. A parent that lands
+   through a snapshot page or a repair now relabels the doc log at once, skipping documents with
+   no doc-log entries. At boot only tables that declare a doc column are read for the check, so the
+   lazily decoded state cache leaves every other table undecoded.
    Known limits, accepted: the earliest stamp wins and only *future* clock skew is bounded, so a
    device with a lagging or back-dated clock wins sibling races. That grants no privilege, since
    any replacer can already win by naming the current winner as its parent. The lineage cell
-   grows by about 110 bytes per replace and has no cap. A parent that lands through a snapshot
-   page or repair relabels the doc log only at the next doc append (follow-up, §5.3).
+   grows by about 110 bytes per replace and has no cap: no bound is trivial, because dropping a
+   genesis every peer has not dropped alike changes the walk, and a compaction of the tree needs
+   a floor all peers agree on (gap U21).
 2. **`replace()` permission — decided 2026-11-08 by Jace: an optional `replace` rule, defaulting
    to `update`.** `AllowBlock.replace` beside the other operations; absent, a genesis is judged by
    the row's `update` rule exactly as before (§11). Enforced by the shared validator (device and
-   authority); carried in the manifest for ports.
+   authority); carried in the manifest for ports. Not enforced by the Rust device, which has no
+   policy ladder; §11 says why a `replace`-only check would be a half validator.
 3. **Row undo semantics — decided 2026-11-08 by Jace: compensate only cells that still hold the
    action's stamp.** Built for `revert(eventId)` in TypeScript and Rust (§9): restore each cell
    whose stamp is still the write's (a `counter` by the increment that cancels the write's), report
@@ -925,6 +974,76 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    folds a doc column ships its adapter (TypeScript `@syncmesh/loro`, Rust `syncmesh-loro`), so no
    device is left unable to compute. A Rust app declares its own `from` closures over the same
    manifest names.
+   **Built 2026-11-08** (`feat/doc-derived-columns`):
+   - Schema: `drizzleTable(t, { merge: { content: loro }, derive: { title: from("content", …) } })`;
+     the derive targets are marked on the built table (`ColumnDef.derived`), the manifest entry is
+     `{ column, doc, derive }`, and §4.1's `InvalidDerive` rows refuse at construction.
+     `createDerivers(schema)` runs the functions and turns their values into the column's wire
+     form; a throw or a value the column cannot hold is `DeriveFailed`. An insert need not name a
+     derived column, even a `notNull()` one.
+   - Device: `createDocuments({ …, derive })` computes the row's derived columns from the open
+     replica at every flush and writes them through `MutateOptions.derived` in the flush's own
+     transaction, and the fold batch names the row, so a live query reads the title with the
+     edit. Materialise and checkpoint install compute them from the snapshot and write them with
+     the cover (`DocCover.derived`), in its transaction. A failed derive is reported on `onError`
+     and never fails the write it rides on.
+   - The values land in the app's own table only (`StateStore.derive`, an `UPDATE` with capture at
+     rest). The projection never writes a derived column, capture never carries one, and both the
+     validator and capture refuse an app write to one (`DocColumnWrite`, the same refusal a
+     document column now gets from capture instead of being dropped). Nothing derived is a kernel
+     cell, so digests, snapshot pages, repairs and events never hold one.
+   - Opaque host: `documents.installProvisional(…)` writes key 8's values (§7.2). A sealed
+     partition's checkpoint carries none (§7.2, §11). The sealed kinds ride on
+     `createDerivers(schema)` itself, so a runtime that derives cannot be built without them.
+     `installProvisional` is a library call only: no relay or server calls it yet.
+   - Rust: `syncmesh_client::docs::{Derive, DocColumnEntry}`, a builder of closures checked
+     against the manifest's names, with no macro (§16.8).
+   - A changed derive function changes no table shape (`schemaName` is the same), so it needs no
+     migration; the next flush or materialisation recomputes. Nothing triggers that
+     materialisation, so for a document nobody edits it can be a long time coming.
+   - The validator refuses a derived column only in this device's own write (a probe, not yet
+     numbered). A numbered event naming one, written before the column was derived or by a build
+     that does not derive it, folds; the cell stays in the kernel record as it arrived and the
+     projection never copies it to the row. Capture compares an insert's derived and document
+     columns with their SQL `DEFAULT`s, so an app table made by its own migration, with
+     `.default("")` as in §4.1, takes an `INSERT` that leaves them out. A row deleted and
+     inserted again in one captured transaction is judged the same way, as an insert.
+   - A cover writes its derived values only when no `tail` entry of its lineage is left on the
+     document once it commits, other than ones the values were computed with. One left was
+     folded after the tail was read: a flush that already wrote newer values, or an edit the
+     next materialisation covers. Without this, a materialisation that read its tail before a
+     flush put the older title back. A checkpoint install derives from the snapshot and the
+     tail above its floor this device holds, which stays `tail`, and names those entries on the
+     cover (`DocCover.derivedIncludes`), so a joiner that already holds newer edits gets values
+     that include them instead of none.
+   - A flush computes its derived values from the open document before the write is awaited, so
+     a remote entry delivered in between is not in them; it waits like any remote edit (gaps.md
+     U25). Capture evaluates a column's SQL `DEFAULT` again to judge an insert, so a volatile
+     default such as `now()` on a derived or document column differs from the stored value and
+     refuses the insert. CDC's `meshCells` copies every declared column, derived ones included,
+     so a CDC-published table with derived columns builds changes the validator refuses
+     (gaps.md U28).
+   - Window and patch clients read kernel cells. A current TypeScript writer puts no derived
+     value there, but a numbered event from an older build, a Rust app (its validator has no
+     derived refusal) or a hand-made client can, and that cell is what they, and an `allow` rule
+     evaluated over the record, see. The SQL read filter reads the row's derived value instead.
+   Where it departs: the guard is a check in `captureChanges`, not a SQL trigger. It refuses the
+   transaction with `DocColumnWrite` as a value, at the same point (capture armed), so a raw
+   statement outside capture is not refused, as with a trigger. A remote edit applied to an open
+   document does not recompute its derived columns; they catch up at the next local flush or
+   materialisation. A row whose insert has not arrived gets no derived value until one of those
+   runs after it. Rebuilt rows (a fresh or repaired state file, a snapshot adoption, a row deleted
+   and inserted again) and a closed document that receives remote edits get theirs back the
+   same way (gaps.md U25). The Rust device has no document runtime or app tables yet, so its
+   `Derive` computes values and nothing in the crate writes them; it checks names against the
+   manifest but not kinds, which the manifest entry does not carry, and `compute` does not
+   require `check` to have run. `installProvisional` checks the producer's signature, not
+   whether the producer may update the row (gaps.md U26). A `notNull()` derived column on a
+   table syncmesh created itself (no `NOT NULL` or `DEFAULT` in its DDL) reads `NULL` until a
+   derive runs, so a Drizzle read hands the app `null` for a column typed `string`. A re-inserted
+   row, and a SQLite `INSERT OR REPLACE` (which fires only the insert trigger, and is judged
+   against the defaults), lose the row's derived and document values until the next derive or
+   materialisation, without a refusal.
 5. **Device snapshots — decided 2026-11-08 by Jace: full device snapshots**, as D41 built.
    Shallow-at-the-stable-floor (§8.3) stays available as a future option with its forgotten-peer
    edge; it is not the default.

@@ -12,8 +12,10 @@ export type {
   DocLogEntry,
   DocSnapshot,
   DocStore,
+  LineageMove,
   LiveStates,
 } from "./doc-log.js";
+export { lineageMoves } from "./lineage-moves.js";
 export { createMemoryDocStore } from "./doc-log-memory.js";
 export {
   DocCoverStale,
@@ -26,6 +28,7 @@ export {
   liveStates,
   nextState,
   recordDocs,
+  relabelDocs,
 } from "./doc-log.js";
 export type { DocApi, DocEngineOptions, DocTail, TailUpdate } from "./doc-path.js";
 export type { EventHeader, RecentEvents } from "./recent.js";
@@ -68,13 +71,13 @@ export type { Narrowed, PurgeScope, Purged } from "./purge.js";
 export type { OwnFloor, OwnPosition } from "./own-position.js";
 export { adoptOwnPosition, createOwnFloor, ownPositionWarning } from "./own-position.js";
 export { openEngine } from "./boot.js";
-export type { RowWrite, StateStore, WriteKeys } from "./state-store.js";
+export type { DerivedRow, RowWrite, StateStore, WriteKeys } from "./state-store.js";
 export {
   StateCorrupt,
   allRows,
   createMemoryStateStore,
-  rowsFor,
-  writeKeysOf,
+  rowWrites,
+  eventWriteKeys,
 } from "./state-store.js";
 export type { Ack, CompactError, CompactOptions, Compaction } from "./compaction.js";
 export { clampToHeld, refoldable } from "./compaction.js";
@@ -142,7 +145,7 @@ export type { Author } from "./validate.js";
 export type { PolicySource } from "./can.js";
 export { can } from "./can.js";
 export type { Installed, Snapshot, SnapshotOptions, SnapshotRow } from "./snapshot.js";
-export { installSnapshot, partitionsIn, snapshotOf } from "./snapshot.js";
+export { installSnapshot, partitionsIn, stateSnapshot } from "./snapshot.js";
 export type { ChunkDeps, FeedApi, FeedState, FeedTracker } from "./feed.js";
 export { chunkSince, createFeedPath, receiveChunk, trackFeeds } from "./feed.js";
 export type { Interest, Scope } from "./interest.js";

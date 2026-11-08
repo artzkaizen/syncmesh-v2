@@ -19,6 +19,18 @@ export interface CanDeps {
   readonly kindOf: (table: string) => string | undefined;
 }
 
+/** A manifest entry, as far as {@link tableKinds} reads it. */
+interface Entry {
+  readonly table: { readonly name: string };
+  readonly partition?: string;
+}
+
+/** {@link CanDeps.kindOf} over a manifest's entries: each table's partition kind, by name. */
+export const tableKinds = (entries: readonly Entry[]) => {
+  const byName = new Map(entries.map((e) => [e.table.name, e.partition]));
+  return (table: string) => byName.get(table);
+};
+
 /**
  * The instance a `user` table's rules are looked up in when the caller named none: the account's
  * own, which is the only instance such a row can be written to. Any other table has nothing to

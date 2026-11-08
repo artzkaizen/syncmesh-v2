@@ -8,7 +8,7 @@ import { createHlcClock, parsePeerId } from "@syncmesh/kernel";
 import { pgliteDriver, postgresDriver } from "@syncmesh/postgres";
 import { Result } from "@syncmesh/result";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
-import { openStores, schemaNameFor } from "@syncmesh/storage";
+import { openStores, schemaName } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -79,7 +79,7 @@ const BATCH_EVENTS = 500;
 const JOIN_PAGE = 2_000;
 const AUTHORITY = parsePeerId("f".repeat(64)).unwrap();
 const DEVICE = parsePeerId("e".repeat(64)).unwrap();
-const SCHEMA = schemaNameFor(TABLES);
+const SCHEMA = schemaName(TABLES);
 
 // SAFETY: the five names `tenant.ts` declares, read back off its own table definitions
 const tableName = (value: string) => value as TableName;

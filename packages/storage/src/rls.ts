@@ -9,7 +9,7 @@ import { resolveAllow, scalarKindOf } from "@syncmesh/policy";
 
 import type { SqlDriver, SqlValue } from "./driver.js";
 
-import { columnsOf, quote } from "./identifiers.js";
+import { tableColumns, quote } from "./identifiers.js";
 import { columnScalarKind } from "./read-filter.js";
 import { attempt } from "./sql.js";
 
@@ -120,7 +120,7 @@ export function rulePredicate(
   from: PrincipalSource = SETTINGS,
 ): string {
   const columns = new Map(
-    columnsOf(table).map(([key, name, column]) => [key, { name: quote(name), column }]),
+    tableColumns(table).map(([key, name, column]) => [key, { name: quote(name), column }]),
   );
 
   const equalsLiteral = (key: string, expected: JsonValue | CellValue | undefined): string => {

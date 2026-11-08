@@ -15,20 +15,22 @@ import type {
   TableName,
 } from "@syncmesh/kernel";
 
-import { eventId, parsePeerId, parseSeqNum } from "@syncmesh/kernel";
-import { t, table } from "@syncmesh/schema";
+import { eventId, parsePartitionKey, parsePeerId, parseSeqNum } from "@syncmesh/kernel";
+import { from, syncSchema, t, table } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { encodeEventCore } from "@syncmesh/wire";
 import { grownCore } from "@syncmesh/wire/wire-tests";
 
 import type { SqlDriver, SqlValue } from "../driver.js";
 
-import { logTable, placementOf } from "../namespace.js";
+import { logTable, logPlacement } from "../namespace.js";
 
 export const A = parsePeerId("a".repeat(64)).unwrap();
 export const B = parsePeerId("b".repeat(64)).unwrap();
 
 export const seq = (n: number) => parseSeqNum(n).unwrap();
+/** The partition the suites' rows live in. */
+export const ACME = parsePartitionKey("org:acme").unwrap();
 export const at = (ms: number) => Temporal.Instant.fromEpochMilliseconds(ms);
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- suite fixtures; naming rules are not under test */
@@ -123,6 +125,29 @@ export const DOC_NOTES = table("doc_notes", {
 });
 
 /**
+ * A document column with two columns derived from it (RFC-0023 §4.1, §16.4), built through
+ * `syncSchema` so the table carries the derive marks the projection and capture read. `body` is
+ * an ordinary value column beside them.
+ */
+export const DERIVED_NOTES = syncSchema({
+  tables: {
+    derived_notes: {
+      columns: {
+        id: t.text().primaryKey(),
+        body: t.text().nullable(),
+        title: t.text(),
+        words: t.integer().nullable(),
+        content: t.blob({ merge: { id: "loro@1" } }).nullable(),
+      },
+      derive: {
+        title: from("content", (doc: string) => doc),
+        words: from("content", (doc: string) => doc.split(" ").length),
+      },
+    },
+  },
+}).tables.derived_notes;
+
+/**
  * The mesh's own table names and a one-byte blob literal, as this driver spells them — for the
  * cases that damage the store on purpose and therefore have to name a table directly.
  *
@@ -133,7 +158,7 @@ export const DOC_NOTES = table("doc_notes", {
  * place the naming rule is stated twice.
  */
 export const sqlOf = (driver: Pick<SqlDriver, "dialect" | "log">) => {
-  const log = (name: string) => logTable(name, placementOf(driver));
+  const log = (name: string) => logTable(name, logPlacement(driver));
   return driver.dialect === "postgres"
     ? {
         events: log("events"),

@@ -49,15 +49,16 @@ export type {
 } from "./open-stores.js";
 export {
   attachLog,
-  lockPathFor,
-  schemaNameFor,
-  statePathFor,
+  lockPath,
+  schemaName,
+  statePath,
   openStores,
   scopedStores,
-  storeFilesFor,
-  storeNameFor,
+  storeFiles,
+  storeName,
 } from "./open-stores.js";
 export { DetachRefused, detachScope } from "./detach.js";
+export { NoIntegrityCheck, verifyLog } from "./integrity.js";
 export type { RowSync } from "./row-sync.js";
 export {
   ROW_SYNC_NOUN,

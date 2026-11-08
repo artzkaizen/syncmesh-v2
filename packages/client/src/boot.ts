@@ -269,11 +269,14 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
     }
     return Result.ok({
       ...booted,
-      // a driver or a set of stores you passed stays yours to close; the default store is ours
-      close: () =>
-        (options.driver ?? options.stores) !== undefined
-          ? Promise.resolve()
-          : (owned?.close() ?? Promise.resolve()),
+      // a driver or a set of stores you passed stays yours to close; the default store is ours.
+      // Over your driver the session is still marked as ended cleanly, or every launch after
+      // would check the log page by page as if the last one had crashed (D39)
+      close: () => {
+        if (options.stores !== undefined) return Promise.resolve();
+        if (options.driver !== undefined) return owned?.markClean() ?? Promise.resolve();
+        return owned?.close() ?? Promise.resolve();
+      },
     });
   });
 }

@@ -1,0 +1,47 @@
+import { CRASH_SCHEMA, linesOf, tornTests } from "@syncmesh/storage/driver-tests";
+import { afterAll, describe, test } from "bun:test";
+import {
+  closeSync,
+  copyFileSync,
+  mkdtempSync,
+  openSync,
+  rmSync,
+  statSync,
+  writeSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { nodeSqliteDriver } from "../index.js";
+
+const dir = mkdtempSync(join(tmpdir(), "syncmesh-torn-log-node-"));
+afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+const file = (name: string) => join(dir, `${name}.db`);
+
+describe("@syncmesh/sqlite-node, under Node, refuses a torn log rather than reading around it (D39)", () => {
+  const cases = tornTests({
+    start: (name, mode) => {
+      const child = Bun.spawn(["node", join(import.meta.dir, "crash-child.ts"), dir, name, mode], {
+        stdout: "pipe",
+        stderr: "inherit",
+      });
+      return {
+        lines: linesOf(child.stdout),
+        kill: async () => {
+          child.kill("SIGKILL");
+          await child.exited;
+        },
+      };
+    },
+    openDriver: (name) => Promise.resolve(nodeSqliteDriver(file(name), CRASH_SCHEMA)),
+    copy: (from, to) => copyFileSync(file(from), file(to)),
+    size: (name) => statSync(file(name)).size,
+    zero: (name, offset, length) => {
+      const fd = openSync(file(name), "r+");
+      writeSync(fd, Buffer.alloc(length, 0), 0, length, offset);
+      closeSync(fd);
+    },
+  });
+  for (const c of cases) test(c.name, c.run, 60_000);
+});

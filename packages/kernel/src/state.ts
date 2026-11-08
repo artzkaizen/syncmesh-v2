@@ -16,6 +16,12 @@ export interface KeyedRecord {
 
 export const emptyState = (): State => new Map();
 
+/** Every record of the state, addressed: tombstones and rows not yet written included. */
+export function* keyedRecords(state: State): Generator<KeyedRecord> {
+  for (const [table, records] of state)
+    for (const [key, record] of records) yield { table, key, record };
+}
+
 export function getRecord(state: State, table: TableName, key: RowKey): RowRecord | undefined {
   return state.get(table)?.get(key);
 }

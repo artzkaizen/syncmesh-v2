@@ -21,7 +21,9 @@ const corrupt = (message: string) => new StateCorrupt({ message });
  * hand-edited database produces; what the bytes *contain* is checked when they are decoded, which
  * is now the first time the row is wanted rather than the moment the database opens.
  */
-function addressOf(row: SqlRow): Result<readonly [TableName, RowKey, Uint8Array], StateCorrupt> {
+function parseStateRow(
+  row: SqlRow,
+): Result<readonly [TableName, RowKey, Uint8Array], StateCorrupt> {
   const [table, key, record] = row;
   if (!(record instanceof Uint8Array)) return Result.err(corrupt("record is not a blob"));
   // SAFETY: these columns were written from a TableName and a RowKey by commit()
@@ -83,7 +85,7 @@ export function sqlStateStore(
         const rows = yield* Result.await(query("loadAll failed", SQL.selectRows));
         const stored = new Map<TableName, Map<RowKey, Uint8Array>>();
         for (const row of rows) {
-          const [table, key, record] = yield* addressOf(row);
+          const [table, key, record] = yield* parseStateRow(row);
           const records = stored.get(table) ?? new Map<RowKey, Uint8Array>();
           records.set(key, record);
           stored.set(table, records);
@@ -130,6 +132,9 @@ export function sqlStateStore(
           await projection?.remove(keys);
         }),
       ),
+    ...(projection !== undefined && {
+      derive: (rows) => attempt("derive failed", () => transaction(() => projection.derive(rows))),
+    }),
     clear: () =>
       attempt("clear failed", () =>
         transaction(async () => {

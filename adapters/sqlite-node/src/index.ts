@@ -11,11 +11,11 @@ import { Result } from "@syncmesh/result";
 import {
   ATTACHED_LOG,
   acquireStoreLock,
-  lockPathFor,
+  lockPath,
   openStores,
-  schemaNameFor,
+  schemaName,
   sqliteDriver,
-  statePathFor,
+  statePath,
 } from "@syncmesh/storage";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -28,12 +28,12 @@ import { DatabaseSync } from "node:sqlite";
  * @param logPath The **log's** path — the durable half, attached as `syncmesh`. The derived half
  * hangs off it under a name carrying `schema` and is opened as `main` (RFC-0022). `":memory:"`
  * gives a pair that lives as long as the driver.
- * @param schema Names the derived half; pass `schemaNameFor(tables)` so that changing a column
+ * @param schema Names the derived half; pass `schemaName(tables)` so that changing a column
  * opens an empty file to refold into rather than the previous shape's rows.
  */
-export function nodeSqliteDriver(logPath: string, schema = schemaNameFor([])): SqliteDriver {
+export function nodeSqliteDriver(logPath: string, schema = schemaName([])): SqliteDriver {
   const memory = logPath === ":memory:";
-  const db = new DatabaseSync(memory ? ":memory:" : statePathFor(logPath, schema));
+  const db = new DatabaseSync(memory ? ":memory:" : statePath(logPath, schema));
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA synchronous = NORMAL");
   db.prepare(`ATTACH DATABASE ? AS ${ATTACHED_LOG}`).run(memory ? ":memory:" : logPath);
@@ -72,7 +72,7 @@ export async function defaultStore(
 ): Promise<Result<Stores, StoreFailure | StoreLocked>> {
   mkdirSync(options.dir, { recursive: true });
   const logPath = join(options.dir, `${options.name}.db`);
-  const lockDb = new DatabaseSync(lockPathFor(logPath));
+  const lockDb = new DatabaseSync(lockPath(logPath));
   // over the store, not the file: every file named after `logPath` is held and released together
   const lock = acquireStoreLock({
     path: logPath,
@@ -84,7 +84,7 @@ export async function defaultStore(
   // a file that is not a database throws from the driver's own constructor — before any store
   // has a Result to carry it — and a damaged log has to be refused as a value, never a throw
   const driver = Result.try({
-    try: () => nodeSqliteDriver(logPath, schemaNameFor(options.tables ?? [])),
+    try: () => nodeSqliteDriver(logPath, schemaName(options.tables ?? [])),
     catch: (cause) =>
       new StoreFailure({ message: `the store at ${logPath} would not open`, cause }),
   });

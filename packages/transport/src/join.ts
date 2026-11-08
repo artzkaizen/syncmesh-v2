@@ -1,5 +1,5 @@
 import type { Cursors, Engine, Interest, Snapshot } from "@syncmesh/engine";
-import type { KeyedRecord, PeerId } from "@syncmesh/kernel";
+import type { KeyedRecord, LineageCellRefused, PeerId } from "@syncmesh/kernel";
 
 import {
   decodeSnapshotRows,
@@ -55,6 +55,11 @@ export interface JoinDeps {
   /** Rows per page. Small enough that one page is a reasonable write on a slow radio. */
   readonly rowsPerChunk?: number;
   readonly onSnapshot?: (installed: SnapshotInstalled) => void;
+  /**
+   * A snapshot every page of which arrived, refused whole by the engine — it holds a lineage cell
+   * of a rule this build does not run (RFC-0023 §16.1). Nothing was installed or adopted.
+   */
+  readonly onRefused?: (refused: LineageCellRefused) => void;
   /** Distinguishes one exchange from another; the sender picks it. */
   readonly idPrefix: string;
   /**
@@ -188,7 +193,7 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
    */
   const complete = async (id: string, held: Incoming): Promise<void> => {
     const rows = [...Array(held.chunks).keys()].flatMap((i) => [...(held.pages.get(i) ?? [])]);
-    const vouched = vouchedFor(held, rows);
+    const vouched = certified(held, rows);
     // `local` stays empty: a device's own local-only events never travel, so a snapshot has
     // nothing to say about them and adopting a floor for them would be a claim it cannot make
     const adopts = vouched || unvouchedMayAdopt;
@@ -199,8 +204,10 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
       adopts && held.scope !== undefined ? { ...base, scope: held.scope } : base;
     const installed = await engine.installSnapshot(snapshot);
     incoming.delete(id);
+    // every page came, so the exchange is closed either way: a refused one is not sent again
     send("snap-ack", snapAckFrame(id, []));
-    const report = { rows: installed.rows, provisional: !vouched };
+    if (installed.isErr()) return deps.onRefused?.(installed.error);
+    const report = { rows: installed.value.rows, provisional: !vouched };
     onSnapshot?.(held.scope === undefined ? report : { ...report, scope: held.scope });
   };
 
@@ -209,7 +216,7 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
    * the issuer's, and the rows hash to what it covers — a relayed certificate over altered rows
    * fails the second even though it passes the first.
    */
-  const vouchedFor = (held: Incoming, rows: readonly KeyedRecord[]): boolean => {
+  const certified = (held: Incoming, rows: readonly KeyedRecord[]): boolean => {
     if (held.certificate === undefined || trust === undefined) return false;
     const hashed = rows.map((row) => ({
       table: String(row.table),

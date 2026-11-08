@@ -43,6 +43,16 @@ export class InvalidDerive extends TaggedError("InvalidDerive")<{
 }> {}
 
 /**
+ * A derive function threw, or returned a value its column cannot hold. The document is unharmed:
+ * the derived column keeps its last value until the next computation succeeds.
+ */
+export class DeriveFailed extends TaggedError("DeriveFailed")<{
+  column: string;
+  message: string;
+  cause?: unknown;
+}> {}
+
+/**
  * A column whose value the materialiser computes from a document column of the same table: it
  * never travels and the app never writes it (RFC-0023 §4.1, §6.3).
  *

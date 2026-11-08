@@ -55,7 +55,7 @@ What fixed them:
   asked on every write — stops walking the log.
 
 `engine · fold`, `installSnapshot` and repair all fold through `applyChange`/`mergeRecord`, so the
-first two paths cover them. `tableDigests` and `snapshotOf` scan the whole state, but once per
+first two paths cover them. `tableDigests` and `stateSnapshot` scan the whole state, but once per
 call rather than per change, which is their honest shape. The `localStorage` event store rewrites
 its whole key per append — documented on the store, and bounded by compaction rather than here.
 

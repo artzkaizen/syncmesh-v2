@@ -4,10 +4,7 @@ import { Result } from "@syncmesh/result";
 
 import type { DocAddress, DocHead, DocLogEntry, DocSnapshot, DocStore } from "./doc-log.js";
 
-import { docKey, inTail, nextState } from "./doc-log.js";
-
-const entryId = (e: Pick<DocLogEntry, "author" | "seq" | "index">) =>
-  `${e.author}\u0000${String(e.seq)}\u0000${String(e.index)}`;
+import { docEntryId, docKey, inTail, nextState } from "./doc-log.js";
 
 const byPosition = (a: DocLogEntry, b: DocLogEntry): number =>
   a.author < b.author ? -1 : a.author > b.author ? 1 : a.seq - b.seq || a.index - b.index;
@@ -22,14 +19,15 @@ export function createMemoryDocStore(): DocStore {
 
   return {
     append: (entries) => {
-      for (const entry of entries) if (!log.has(entryId(entry))) log.set(entryId(entry), entry);
+      for (const entry of entries)
+        if (!log.has(docEntryId(entry))) log.set(docEntryId(entry), entry);
       return ok(undefined);
     },
     entries: () => ok([...log.values()].sort(byPosition)),
     relineage: (doc, winner, live) => {
       for (const entry of ofDoc(doc)) {
         const next = nextState(entry, winner, live);
-        if (next !== entry.state) log.set(entryId(entry), { ...entry, state: next });
+        if (next !== entry.state) log.set(docEntryId(entry), { ...entry, state: next });
       }
       return ok(undefined);
     },
@@ -58,8 +56,8 @@ export function createMemoryDocStore(): DocStore {
         [cover.failed ?? [], "failed"],
       ] as const)
         for (const ref of refs) {
-          const held = log.get(entryId(ref));
-          if (held !== undefined) log.set(entryId(ref), { ...held, state });
+          const held = log.get(docEntryId(ref));
+          if (held !== undefined) log.set(docEntryId(ref), { ...held, state });
         }
       const tail = ofDoc(doc).filter((e) => e.lineage === cover.lineage && inTail(e.state));
       heads.set(docKey(doc), {

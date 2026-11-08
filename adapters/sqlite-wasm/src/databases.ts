@@ -9,7 +9,7 @@
 import type { Database, Sqlite3Static } from "@sqlite.org/sqlite-wasm";
 
 import { Result } from "@syncmesh/result";
-import { ATTACHED_LOG, statePathFor } from "@syncmesh/storage";
+import { ATTACHED_LOG, statePath } from "@syncmesh/storage";
 
 import type { HeldPool, PoolFailure } from "./pool.js";
 import type { OpenedDatabase, OptionalVfs, VfsOptions, WasmStorage } from "./vfs.js";
@@ -110,7 +110,7 @@ export const memoryDatabase = (sqlite3: Sqlite3Static, options: VfsOptions): Ope
   const log = `/${dbFile(options.name)}`;
   const logUri = `file:${log}?vfs=memdb`;
   // the derived half is a second memory database, kept open for the same reason the log is
-  const stateUri = `file:${statePathFor(log, options.schema)}?vfs=memdb`;
+  const stateUri = `file:${statePath(log, options.schema)}?vfs=memdb`;
   for (const held of [stateUri, logUri])
     if (!keepers.has(held)) keepers.set(held, new sqlite3.oo1.DB(held, "c"));
   const db = new sqlite3.oo1.DB(stateUri, "c");
@@ -162,7 +162,7 @@ export const sahPoolDatabase = async (
   const opened = Result.try({
     try: () => ({
       db: attached(
-        durably(new pool.util.OpfsSAHPoolDb(statePathFor(log, options.schema)), "opfs-sahpool"),
+        durably(new pool.util.OpfsSAHPoolDb(statePath(log, options.schema)), "opfs-sahpool"),
         log,
         "opfs-sahpool",
       ),
@@ -187,11 +187,7 @@ export const opfsDatabaseIn = (
   const log = `${options.directory}/db/${dbFile(options.name)}`;
   return Result.try({
     try: () => ({
-      db: attached(
-        durably(new OpfsDb(statePathFor(log, options.schema), "c"), "opfs"),
-        log,
-        "opfs",
-      ),
+      db: attached(durably(new OpfsDb(statePath(log, options.schema), "c"), "opfs"), log, "opfs"),
       storage: "opfs" as const,
       release: () => {},
     }),

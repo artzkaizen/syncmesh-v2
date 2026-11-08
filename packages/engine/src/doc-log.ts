@@ -7,6 +7,7 @@ import type {
   Hlc,
   LineageId,
   PeerId,
+  Row,
   RowKey,
   SeqNum,
   SyncEvent,
@@ -101,6 +102,10 @@ export interface DocAppend {
 /** One doc-log entry by its place: author, sequence and the change's index in the event. */
 export type DocEntryRef = Pick<DocLogEntry, "author" | "seq" | "index">;
 
+/** One text per entry, for sets and maps keyed by it. */
+export const docEntryId = (e: DocEntryRef) =>
+  `${e.author}\u0000${String(e.seq)}\u0000${String(e.index)}`;
+
 /** A document's last persisted snapshot, of the lineage it was taken on. */
 export interface DocSnapshot {
   readonly lineage?: LineageId;
@@ -129,6 +134,13 @@ export interface DocCover {
   readonly covered: readonly DocEntryRef[];
   /** Entries the adapter refused; they become `failed`, and the document stays at its last good version. */
   readonly failed?: readonly DocEntryRef[];
+  /** The row's derived columns at this snapshot, written to the row in the same commit (§16.4). */
+  readonly derived?: Row;
+  /**
+   * Entries left `tail` that `derived` was computed with as well: the snapshot does not hold them,
+   * the values do. Any other `tail` entry left on the document makes the values older than it.
+   */
+  readonly derivedIncludes?: readonly DocEntryRef[];
 }
 
 /**
@@ -226,7 +238,7 @@ export function docAppends(
     event.changes.forEach((change, index) => {
       if (change.kind !== "doc") return;
       appends.push({
-        entry: entryOf(event, change, index, hasAdapter),
+        entry: docLogEntry(event, change, index, hasAdapter),
         adapter: change.adapter,
         update: change.update,
       });
@@ -235,7 +247,7 @@ export function docAppends(
   return appends;
 }
 
-function entryOf(
+function docLogEntry(
   event: SyncEvent,
   change: DocChange,
   index: number,
@@ -310,23 +322,53 @@ export const inTail = (state: DocEntryState): boolean =>
 
 /**
  * Appends a fold's doc entries and brings each touched document's labels and head up to date —
- * the doc log's half of a fold's persist step, and the one place it is written from. Re-running
- * it is harmless: the append is idempotent and the rest is recomputed from what is held.
+ * the doc log's half of a fold's persist step. Re-running it is harmless: the append is
+ * idempotent and the rest is recomputed from what is held.
  */
 export function recordDocs(
   store: DocStore,
   appends: readonly DocAppend[],
-  winnerOf: (doc: DocAddress) => LineageId | undefined,
+  docWinner: (doc: DocAddress) => LineageId | undefined,
   hasAdapter: (adapter: AdapterId) => boolean,
 ): Promise<Result<void, StoreFailure>> {
   return Result.gen(async function* () {
     if (appends.length === 0) return Result.ok(undefined);
     yield* Result.await(store.append(appends.map((a) => a.entry)));
-    const touched = new Map<string, DocAppend>();
-    for (const append of appends) touched.set(docKey(append.entry), append);
-    for (const { entry, adapter } of touched.values()) {
-      const doc = { table: entry.table, key: entry.key, column: entry.column };
-      const winner = winnerOf(doc);
+    const touched = new Map<string, LineageMove>();
+    for (const { entry, adapter } of appends)
+      touched.set(docKey(entry), {
+        table: entry.table,
+        key: entry.key,
+        column: entry.column,
+        adapter,
+      });
+    return Result.ok(
+      yield* Result.await(relabelDocs(store, [...touched.values()], docWinner, hasAdapter)),
+    );
+  });
+}
+
+/**
+ * A document whose lineage cell joined without a doc change behind it — from a snapshot page or a
+ * repair record — and whose winning lineage moved; with the adapter its column is declared with.
+ */
+export interface LineageMove extends DocAddress {
+  readonly adapter: AdapterId;
+}
+
+/**
+ * Relabels each document's entries against the lineage that now wins, and refreshes its head —
+ * the one place the doc log follows a winner, whether a doc change or a joined cell moved it.
+ */
+export function relabelDocs(
+  store: DocStore,
+  docs: readonly LineageMove[],
+  docWinner: (doc: DocAddress) => LineageId | undefined,
+  hasAdapter: (adapter: AdapterId) => boolean,
+): Promise<Result<void, StoreFailure>> {
+  return Result.gen(async function* () {
+    for (const { adapter, ...doc } of docs) {
+      const winner = docWinner(doc);
       yield* Result.await(store.relineage(doc, winner, liveStates(hasAdapter(adapter))));
       yield* Result.await(store.refreshHead(doc, adapter, winner));
     }

@@ -1,4 +1,4 @@
-import type { RowWrite, WriteKeys } from "@syncmesh/engine";
+import type { DerivedRow, RowWrite, WriteKeys } from "@syncmesh/engine";
 import type { Table } from "@syncmesh/schema";
 
 import { counterValue, isVisible } from "@syncmesh/kernel";
@@ -7,13 +7,19 @@ import type { SqlDriver } from "./driver.js";
 import type { RowSync } from "./row-sync.js";
 
 import { driverDialect } from "./dialect.js";
-import { quote, valueColumns } from "./identifiers.js";
+import { tableColumns, quote, valueColumns } from "./identifiers.js";
 
 /** A cell in the form the column's SQL type holds it on SQLite — what the fold writes and what a compiled rule compares against. */
 
 /** What the fold writes into the app's tables: the state store's projection, applied inside its own commit. */
 export interface Projection {
   readonly apply: (rows: readonly RowWrite[]) => Promise<void>;
+  /**
+   * Sets a row's derived columns (RFC-0023 §16.4), guard at rest: an `UPDATE` of the existing row,
+   * so a row the fold has not written yet is left alone. Values for a column the table does not
+   * derive are not written.
+   */
+  readonly derive: (rows: readonly DerivedRow[]) => Promise<void>;
   readonly clear: () => Promise<void>;
   /** Deletes these rows from the app's tables and their sync state, as a purge does (D45). */
   readonly remove: (keys: WriteKeys) => Promise<void>;
@@ -63,7 +69,12 @@ export function tablesProjection(
         .join(", ");
       const upsert = `INSERT INTO ${quote(table.name)} (${names.join(", ")}) VALUES (${marks}) ON CONFLICT(${key}) DO UPDATE SET ${updates}`;
       const remove = `DELETE FROM ${quote(table.name)} WHERE ${key} = ${dialect.placeholder(1)}`;
-      return [String(table.name), { columns, upsert, remove }] as const;
+      const derived = new Map(
+        tableColumns(table)
+          .filter(([, , column]) => column.def.derived !== undefined)
+          .map(([, name, column]) => [name, column] as const),
+      );
+      return [String(table.name), { columns, upsert, remove, key, derived }] as const;
     }),
   );
   const rowSync = options.rowSync;
@@ -86,6 +97,26 @@ export function tablesProjection(
         });
         if (partitionColumn !== false) values.push(record.partition ?? null);
         await driver.run(plan.upsert, values);
+      }
+    },
+    derive: async (rows) => {
+      for (const { table, key, values } of rows) {
+        const plan = statements.get(String(table));
+        const set = [...values].flatMap(([name, value]) => {
+          const column = plan?.derived.get(name);
+          return column === undefined ? [] : [[name, column, value] as const];
+        });
+        if (plan === undefined || set.length === 0) continue;
+        const assignments = set
+          .map(
+            ([name, column], i) =>
+              `${quote(name)} = ${dialect.placeholder(i + 1, column.def.kind)}`,
+          )
+          .join(", ");
+        await driver.run(
+          `UPDATE ${quote(table)} SET ${assignments} WHERE ${plan.key} = ${dialect.placeholder(set.length + 1)}`,
+          [...set.map(([, column, value]) => dialect.cell(column.def.kind, value)), String(key)],
+        );
       }
     },
     clear: async () => {

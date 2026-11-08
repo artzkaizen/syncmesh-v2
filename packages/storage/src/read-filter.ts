@@ -8,7 +8,7 @@ import { claimAt, resolveAllow, roleAtLeast, scalarKindOf } from "@syncmesh/poli
 import type { SqlDialect, SqlValue } from "./driver.js";
 
 import { POSTGRES, SQLITE } from "./dialect.js";
-import { columnsOf, quote } from "./identifiers.js";
+import { tableColumns, quote } from "./identifiers.js";
 
 /**
  * A `read` rule compiled to a SQL predicate over the table's own columns (D20 §2): what
@@ -96,7 +96,9 @@ function compileRule(
 
   const ALWAYS = always(options);
   const NEVER: Compiled = { sql: dialect.name === "postgres" ? "FALSE" : "0", params: [] };
-  const columns = new Map(columnsOf(table).map(([key, name, column]) => [key, { name, column }]));
+  const columns = new Map(
+    tableColumns(table).map(([key, name, column]) => [key, { name, column }]),
+  );
 
   /** `column = value` as evaluate() would compare it, or a constant when it never could. */
   const equals = (key: string, value: JsonValue | CellValue | undefined): Compiled => {

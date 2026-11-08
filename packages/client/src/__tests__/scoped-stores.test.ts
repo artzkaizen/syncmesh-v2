@@ -3,7 +3,7 @@ import type { StoreScope } from "@syncmesh/storage";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
-import { scopedStores, storeNameFor } from "@syncmesh/storage";
+import { scopedStores, storeName } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
@@ -71,7 +71,7 @@ describe("one mesh per top-level instance, over one database each (D07)", () => 
       expect((await acme.on().unwrap().db.select().from(notes))[0]?.body).toBe("acme's");
       expect((await globex.on().unwrap().db.select().from(notes))[0]?.body).toBe("globex's");
 
-      expect(existsSync(join(dir, `${storeNameFor(ACME)}.db`))).toBe(true);
+      expect(existsSync(join(dir, `${storeName(ACME)}.db`))).toBe(true);
       expect(fileFor(ACME)).not.toBe(fileFor(GLOBEX));
 
       await acme.stop();
@@ -99,7 +99,7 @@ describe("one mesh per top-level instance, over one database each (D07)", () => 
       const gone = fileFor(ACME);
       if (gone !== undefined) unlinkSync(gone);
       expect(set.opened()).toEqual([GLOBEX]);
-      expect(existsSync(join(dir, `${storeNameFor(ACME)}.db`))).toBe(false);
+      expect(existsSync(join(dir, `${storeName(ACME)}.db`))).toBe(false);
 
       // and nothing of the other org went with it — the whole point of a file per scope
       expect((await globex.on().unwrap().db.select().from(notes))[0]?.body).toBe("still here");

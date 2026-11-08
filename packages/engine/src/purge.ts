@@ -23,7 +23,7 @@ import type { StoredEvent } from "./store.js";
 
 import { foldable } from "./columns.js";
 import { docAppends, recordDocs } from "./doc-log.js";
-import { rowsFor } from "./state-store.js";
+import { rowWrites } from "./state-store.js";
 import { StoreFailure } from "./store.js";
 
 /**
@@ -89,7 +89,7 @@ export interface PurgeApi {
 
 export interface PurgeDeps {
   readonly peerId: PeerId;
-  readonly merge?: MergeSpec;
+  readonly merge?: MergeSpec | undefined;
   readonly hasAdapter: (adapter: AdapterId) => boolean;
   readonly parked: QuarantineStore;
   readonly coverageOf: CoverageTracker["current"];
@@ -207,7 +207,7 @@ export function createPurge(deps: PurgeDeps) {
           const drafted = rebuilt(getState(), keys, kept, merge);
           const writes = [
             await scoped.state?.remove(keys),
-            await scoped.state?.commit(rowsFor(drafted, keys), coverageOf()),
+            await scoped.state?.commit(rowWrites(drafted, keys), coverageOf()),
             await scoped.docs?.forget(keys),
             scoped.docs === undefined
               ? undefined
@@ -223,7 +223,7 @@ export function createPurge(deps: PurgeDeps) {
           // or a repair merged in while the stores were written is kept, outside the touched rows
           const current = getState();
           setState(rebuilt(current, keys, kept, merge));
-          return { events: removed.value, keys, before: rowsFor(current, keys) };
+          return { events: removed.value, keys, before: rowWrites(current, keys) };
         }),
       catch: (cause) =>
         cause instanceof StoreFailure

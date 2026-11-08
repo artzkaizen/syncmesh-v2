@@ -8,8 +8,8 @@ import type { SqliteDriver } from "../driver.js";
 import type { StoreScope } from "../open-stores.js";
 
 import { A, B, event } from "../driver-tests/fixtures.js";
-import { scopedStores, storeNameFor } from "../open-stores.js";
-import { storeFilesFor } from "../open-stores.js";
+import { scopedStores, storeName } from "../open-stores.js";
+import { storeFiles } from "../open-stores.js";
 import { openPair } from "./pair.js";
 
 const ACME = parsePartitionKey("org:acme").unwrap();
@@ -21,19 +21,19 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 // one pair per scope: the log at `path`, with its state file hanging off it
 const driver = (logPath: string): Promise<SqliteDriver> => openPair(logPath);
 
-const pathFor = (scope: StoreScope) => join(dir, `${storeNameFor(scope)}.db`);
+const pathFor = (scope: StoreScope) => join(dir, `${storeName(scope)}.db`);
 const set = scopedStores({ driverFor: (scope) => driver(pathFor(scope)) });
 const storesFor = async (scope: StoreScope) => (await set.storeFor(scope)).unwrap();
 
 describe("a scope names one database", () => {
   test("kind and id, never a colon — and no two scopes can name the same file", () => {
-    expect(storeNameFor("user")).toBe("user");
-    expect(storeNameFor(ACME)).toBe("org-acme");
+    expect(storeName("user")).toBe("user");
+    expect(storeName(ACME)).toBe("org-acme");
     // the id is escaped and the kind cannot hold a `-`, so the first one is always the seam:
     // `org:a-b` and a kind `org_a` with id `b` are different names, not the same file
-    expect(storeNameFor(parsePartitionKey("org:a-b").unwrap())).toBe("org-a-b");
-    expect(storeNameFor(parsePartitionKey("org_a:b").unwrap())).toBe("org_a-b");
-    expect(storeNameFor(parsePartitionKey("org:a/b").unwrap())).toBe("org-a%2Fb");
+    expect(storeName(parsePartitionKey("org:a-b").unwrap())).toBe("org-a-b");
+    expect(storeName(parsePartitionKey("org_a:b").unwrap())).toBe("org_a-b");
+    expect(storeName(parsePartitionKey("org:a/b").unwrap())).toBe("org-a%2Fb");
   });
 });
 
@@ -57,7 +57,7 @@ describe("one engine's storage per scope", () => {
     await set.forget(ACME);
     // both files, because a store is two now and the log is the half that holds the events —
     // deleting only the first leaves every one of them to be found again on the next join
-    for (const file of storeFilesFor(pathFor(ACME), "test")) unlinkSync(file);
+    for (const file of storeFiles(pathFor(ACME), "test")) unlinkSync(file);
 
     expect(set.opened()).toEqual([GLOBEX]);
     expect(existsSync(pathFor(ACME))).toBe(false);

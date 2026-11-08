@@ -11,3 +11,6 @@ export const CONTENT = "content" as ColumnName;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 
 export const LORO = parseAdapterId("loro@1").unwrap();
+
+/** The one doc column every vector declares: `notes.content`, merged by `loro@1`. */
+export const DOCS = new Map([[NOTES, new Map([[CONTENT, LORO]])]]);

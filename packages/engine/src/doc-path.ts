@@ -22,12 +22,14 @@ import type {
   DocStore,
 } from "./doc-log.js";
 import type { AtomicStores } from "./engine.js";
-import type { EventStore, StoreFailure } from "./store.js";
+import type { FoldPath } from "./fold.js";
+import type { EventStore } from "./store.js";
 import type { Cursors } from "./sync.js";
 import type { Undo } from "./undo.js";
 
 import { createMemoryDocStore } from "./doc-log-memory.js";
-import { DocCoverStale, docKey } from "./doc-log.js";
+import { DocCoverStale, docEntryId, docKey } from "./doc-log.js";
+import { StoreFailure, orThrow } from "./store.js";
 
 /** How an engine is told about documents. */
 export interface DocEngineOptions {
@@ -73,7 +75,8 @@ export interface DocApi {
   readonly docTail: (doc: DocAddress) => Promise<Result<DocTail, StoreFailure>>;
   /**
    * Commits a materialised snapshot or an installed checkpoint, in the write transaction when the
-   * engine has one (RFC-0023 §6.3). The entries it covers become compactable (§8.3).
+   * engine has one (RFC-0023 §6.3). The entries it covers become compactable (§8.3). The cover's
+   * derived values land in the row in the same commit, and a live query reading them re-runs.
    */
   readonly coverDoc: (
     doc: DocAddress,
@@ -86,6 +89,9 @@ export interface DocBindings {
   readonly getState: () => State;
   readonly synced: () => ReadonlyMap<PeerId, SeqNum>;
   readonly atomically: <T>(fn: (scoped: AtomicStores) => Promise<T>) => Promise<T>;
+  /** Writes a cover's derived values into the row, inside its transaction (RFC-0023 §16.4). */
+  readonly derive: FoldPath["derive"];
+  readonly notifyDerived: FoldPath["notifyDerived"];
 }
 
 type DocOptions = DocEngineOptions & { readonly merge?: MergeSpec | undefined };
@@ -150,12 +156,37 @@ export function createDocPath(
       docHeads: docStore.heads,
       docTail: (doc) => readTail(options.store, docStore, bindings(), doc),
       coverDoc: (doc, cover) => {
+        const derived =
+          cover.derived === undefined
+            ? []
+            : [{ table: doc.table, key: doc.key, values: cover.derived }];
         // one at a time, so no cover reads a head another is about to move
-        const next = covering.then(() =>
-          bindings().atomically((scoped) =>
-            coverIfCurrent(scoped.docs ?? docStore, bindings(), doc, cover),
-          ),
-        );
+        const next = covering
+          .then(() =>
+            Result.tryPromise({
+              try: () =>
+                bindings().atomically(async (scoped) => {
+                  const store = scoped.docs ?? docStore;
+                  const done = await coverIfCurrent(store, bindings(), doc, cover);
+                  if (done.isErr()) return Result.err(done.error);
+                  // a tail entry folded since the snapshot was read is newer than its values
+                  const whole = orThrow(await coversTail(store, doc, cover));
+                  const written = whole ? derived : [];
+                  await bindings().derive(written, scoped);
+                  return Result.ok(written);
+                }),
+              // a store failure inside the transaction, rolling the cover back
+              catch: (cause) =>
+                cause instanceof StoreFailure
+                  ? cause
+                  : new StoreFailure({ message: "the cover's transaction failed", cause }),
+            }),
+          )
+          .then((done) => {
+            const covered = done.andThen((inner) => inner);
+            if (covered.isOk()) bindings().notifyDerived(covered.value);
+            return covered.map(() => {});
+          });
         covering = next.then(settled, settled);
         return next;
       },
@@ -201,6 +232,29 @@ function coverIfCurrent(
       );
     return Result.ok(yield* Result.await(docStore.cover(doc, cover)));
   });
+}
+
+/**
+ * Whether `cover`, now committed, leaves no `tail` entry of its lineage on `doc` that its derived
+ * values were not computed with. One left was folded after the tail was read — a flush that wrote
+ * newer derived values, or an edit the next materialisation covers — so the cover's own values
+ * would be older than the document.
+ */
+function coversTail(
+  docStore: DocStore,
+  doc: DocAddress,
+  cover: DocCover,
+): Promise<Result<boolean, StoreFailure>> {
+  const included = new Set(cover.derivedIncludes?.map(docEntryId));
+  return docStore
+    .entriesOf(doc)
+    .then((read) =>
+      read.map((entries) =>
+        entries.every(
+          (e) => e.state !== "tail" || e.lineage !== cover.lineage || included.has(docEntryId(e)),
+        ),
+      ),
+    );
 }
 
 const settled = () => {};

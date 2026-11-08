@@ -6,7 +6,7 @@ import { Result } from "@syncmesh/result";
 import type { BlobHash } from "./blob.js";
 import type { SqlDriver } from "./driver.js";
 
-import { driverDialect, logTable, namespaceDdl, placementOf } from "./dialect.js";
+import { driverDialect, logTable, namespaceDdl, logPlacement } from "./dialect.js";
 import { attempt } from "./sql.js";
 
 /**
@@ -68,7 +68,7 @@ const UNPINNED = "";
  */
 export async function sqlBlobHomes(driver: SqlDriver): Promise<Result<BlobHomes, StoreFailure>> {
   const { placeholder: p, name: dialect } = driverDialect(driver);
-  const TABLE = logTable("blob_homes", placementOf(driver));
+  const TABLE = logTable("blob_homes", logPlacement(driver));
   const insert =
     driver.dialect === "postgres"
       ? `INSERT INTO ${TABLE} (hash, home) VALUES ($1, $2) ON CONFLICT (hash, home) DO NOTHING`

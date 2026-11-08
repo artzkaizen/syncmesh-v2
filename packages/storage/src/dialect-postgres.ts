@@ -1,17 +1,16 @@
-import type { CellValue } from "@syncmesh/kernel";
-import type { ColumnKind, Table } from "@syncmesh/schema";
-
 import type { CaptureSql, Dialect } from "./dialect.js";
-import type { SqlValue } from "./driver.js";
 import type { Rung } from "./ladder.js";
 
 import { POSTGRES_DOCS, POSTGRES_DOC_SNAPSHOTS, POSTGRES_DOC_TABLES } from "./dialect-docs.js";
+import { POSTGRES_GAPS, POSTGRES_GAP_TABLES } from "./dialect-gaps.js";
 import { POSTGRES_OPERATIONS } from "./dialect-operations.js";
-import { columnsOf, literal, quote } from "./identifiers.js";
+import { postgresCell, sqlType } from "./dialect-postgres-cells.js";
+import { tableColumns, literal, quote, type TableColumns } from "./identifiers.js";
 import { ladder } from "./ladder.js";
 import { namespaceDdl } from "./namespace.js";
 
 const CHANGES = "syncmesh.changes";
+const META_DDL = `CREATE TABLE IF NOT EXISTS syncmesh.meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`;
 
 /**
  * Where the schema's position is kept: a row, because a schema has no `user_version` to put it
@@ -20,9 +19,7 @@ const CHANGES = "syncmesh.changes";
  */
 const VERSION: Rung = {
   read: async (driver) => {
-    await driver.run(
-      `CREATE TABLE IF NOT EXISTS syncmesh.meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
-    );
+    await driver.run(META_DDL);
     const [row] = await driver.all(`SELECT value FROM syncmesh.meta WHERE key = 'version'`);
     return Number(row?.[0] ?? 0);
   },
@@ -34,29 +31,9 @@ const VERSION: Rung = {
     ),
 };
 
-/** What a Drizzle `pg-core` column of the kind would be, so a mesh-created table reads like the app's own. */
-const sqlType = (kind: ColumnKind): string => {
-  switch (kind) {
-    case "integer":
-      return "BIGINT";
-    case "float":
-      return "DOUBLE PRECISION";
-    case "boolean":
-      return "BOOLEAN";
-    case "timestamp":
-      return "TIMESTAMPTZ";
-    case "json":
-      return "JSONB";
-    case "blob":
-      return "BYTEA";
-    default:
-      return "TEXT";
-  }
-};
-
 /** The logged image in the shared shape: hex bytes, epoch-millisecond timestamps, JSON as text. */
-const image = (table: Table, alias: "NEW" | "OLD"): string =>
-  `json_build_object(${columnsOf(table)
+const image = (columns: TableColumns, alias: string): string =>
+  `json_build_object(${columns
     .map(([, name, column]) => {
       const cell = `${alias}.${quote(name)}`;
       const logged =
@@ -76,7 +53,7 @@ const ARMED = `COALESCE(NULLIF(current_setting('syncmesh.armed', true), ''), '0'
 
 const capture: CaptureSql = {
   tableDdl: (table) => {
-    const columns = columnsOf(table).map(([key, name, column]) => {
+    const columns = tableColumns(table).map(([key, name, column]) => {
       const constraint = key === table.primaryKey ? " PRIMARY KEY" : "";
       return `${quote(name)} ${sqlType(column.def.kind)}${constraint}`;
     });
@@ -98,11 +75,11 @@ const capture: CaptureSql = {
         BEGIN
           IF ${ARMED} THEN
             IF TG_OP = 'INSERT' THEN
-              ${log(`NEW.${quote(pk)}::text, 'insert', NULL, ${image(table, "NEW")}`)}
+              ${log(`NEW.${quote(pk)}::text, 'insert', NULL, ${image(tableColumns(table), "NEW")}`)}
             ELSIF TG_OP = 'UPDATE' THEN
-              ${log(`NEW.${quote(pk)}::text, 'update', ${image(table, "OLD")}, ${image(table, "NEW")}`)}
+              ${log(`NEW.${quote(pk)}::text, 'update', ${image(tableColumns(table), "OLD")}, ${image(tableColumns(table), "NEW")}`)}
             ELSE
-              ${log(`OLD.${quote(pk)}::text, 'delete', ${image(table, "OLD")}, NULL`)}
+              ${log(`OLD.${quote(pk)}::text, 'delete', ${image(tableColumns(table), "OLD")}, NULL`)}
             END IF;
           END IF;
           RETURN NULL;
@@ -118,6 +95,12 @@ const capture: CaptureSql = {
   clearLog: `DELETE FROM ${CHANGES}`,
   stampPartition: (table, pk, partitionColumn) =>
     `UPDATE ${quote(table)} SET "${partitionColumn.replaceAll('"', '""')}" = $1 WHERE ${quote(pk)} = $2`,
+  selectDefaults:
+    "SELECT a.attname, pg_get_expr(d.adbin, d.adrelid) FROM pg_attrdef d JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum WHERE d.adrelid = to_regclass(quote_ident($1)) AND a.attgenerated = ''",
+  defaultImage: (columns, defaults) =>
+    `SELECT ${image(columns, "d")} FROM (SELECT ${columns
+      .map(([, name]) => `${defaults.get(name) ?? "NULL"} AS ${quote(name)}`)
+      .join(", ")}) AS d`,
 };
 
 /** The floor a cursor map sets for this author, from the JSON the caller binds. */
@@ -170,26 +153,9 @@ const POSTGRES_MIGRATIONS: readonly (readonly string[])[] = [
   ],
   POSTGRES_DOC_TABLES,
   POSTGRES_DOC_SNAPSHOTS,
+  // the holes the log was written with (D39): `dialect-gaps.ts`
+  POSTGRES_GAP_TABLES,
 ];
-
-const postgresCell = (kind: ColumnKind, cell: CellValue): SqlValue => {
-  if (cell === null) return null;
-  if (cell instanceof Uint8Array) return cell;
-  switch (kind) {
-    case "boolean":
-      return cell === true;
-    case "json":
-      return JSON.stringify(cell);
-    case "timestamp":
-      return new Date(Number(cell));
-    case "integer":
-    case "float":
-      return Number(cell);
-    default:
-      // SAFETY: a text or uuid cell passed the column's kind check when it was written, so it is a string
-      return cell as string;
-  }
-};
 
 export const POSTGRES: Dialect = {
   name: "postgres",
@@ -250,6 +216,7 @@ export const POSTGRES: Dialect = {
     clearScope: `DELETE FROM syncmesh.scope`,
     deleteRow: `DELETE FROM syncmesh.state_rows WHERE tbl = $1 AND key = $2`,
   },
+  gaps: POSTGRES_GAPS,
   docs: POSTGRES_DOCS,
   capture,
   operations: POSTGRES_OPERATIONS,
@@ -258,7 +225,7 @@ export const POSTGRES: Dialect = {
   placeholder: (position, kind) => (kind === "json" ? `$${position}::text::jsonb` : `$${position}`),
   cell: postgresCell,
   schema: {
-    ddl: `CREATE TABLE IF NOT EXISTS syncmesh.meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+    ddl: META_DDL,
     read: `SELECT value FROM syncmesh.meta WHERE key = 'schema'`,
     write: `INSERT INTO syncmesh.meta (key, value) VALUES ('schema', $1)
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,

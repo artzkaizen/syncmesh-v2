@@ -174,7 +174,7 @@ function frozenBase(dataType: string): string {
   }
 }
 
-function kindFor(info: DrizzleColumnInfo): ColumnKind {
+function columnKind(info: DrizzleColumnInfo): ColumnKind {
   if (isRefused(info.columnType)) panic(`${info.name}: ${REFUSED[info.columnType]}`);
   if (info.generated !== undefined || info.generatedIdentity !== undefined)
     panic(`${info.name}: generated columns have no value to sync`);
@@ -202,12 +202,12 @@ function kindFor(info: DrizzleColumnInfo): ColumnKind {
   }
 }
 
-function defFor(
+function drizzleDef(
   info: DrizzleColumnInfo,
   merge: StrategyName | DocumentAdapter | undefined,
   warn: (message: string) => void,
 ): ColumnDef {
-  const kind = kindFor(info);
+  const kind = columnKind(info);
   const def: ColumnDef = {
     kind,
     nullable: !info.primary && !info.notNull,
@@ -246,7 +246,9 @@ export function fromDrizzle<const D extends DrizzleTableLike>(
     options.merge ?? {};
   const mapped: Record<string, Column<AppValue, boolean, boolean>> = {};
   for (const [key, info] of Object.entries(runtime[COLUMNS])) {
-    const def = defFor(info, rules[key], (message) => options.onWarn?.({ column: key, message }));
+    const def = drizzleDef(info, rules[key], (message) =>
+      options.onWarn?.({ column: key, message }),
+    );
     mapped[key] = columnFromDef(def);
   }
   for (const key of Object.keys(rules))
@@ -282,6 +284,12 @@ function readRuntime(drizzle: DrizzleTableLike): DrizzleRuntime {
  *   merge: { stock: "counter" },
  *   allow: ({ role }) => ({ read: role("viewer"), $default: role("editor") }),
  * }),
+ * notes: drizzleTable(notes, {
+ *   partition: workspace,
+ *   merge: { content: loro },
+ *   derive: { title: from("content", (d: LoroDoc) => d.getText("title").toString()) },
+ *   allow: ({ role }) => ({ $default: role("editor") }),
+ * }),
  * ```
  *
  * **The wrapper names its ORM, so there is no second declaration to drift from it**, and it is a
@@ -297,11 +305,12 @@ function readRuntime(drizzle: DrizzleTableLike): DrizzleRuntime {
 export function drizzleTable<const D extends DrizzleTableLike>(
   drizzle: D,
   options: DrizzleTableReserved<D>,
-): DrizzleEntry<D> & Pick<DrizzleTableReserved<D>, "partition" | "sync">;
+): DrizzleEntry<D> & Pick<DrizzleTableReserved<D>, "partition" | "derive" | "sync">;
 export function drizzleTable<const D extends DrizzleTableLike, N extends string, R extends string>(
   drizzle: D,
   options: DrizzleTableInKind<D, N, R>,
-): DrizzleEntry<D> & Pick<DrizzleTableInKind<D, N, R>, "partition" | "allow" | "fields" | "sync">;
+): DrizzleEntry<D> &
+  Pick<DrizzleTableInKind<D, N, R>, "partition" | "allow" | "fields" | "derive" | "sync">;
 // the derivation-only form stays last: it is all-optional, so a literal that also names `merge` or
 // `onWarn` survives the first overload pass, and `allow` would be typed by it — as `any` — before
 // the kind form is tried
@@ -313,10 +322,11 @@ export function drizzleTable<const D extends DrizzleTableLike>(
   drizzle: D,
   options: DrizzleTableOptions<D> = {},
 ) {
-  const { partition, allow, fields, sync, ...derive } = options;
-  const columns = fromDrizzle(drizzle, derive);
+  const { partition, allow, fields, derive, sync, ...mapping } = options;
+  const columns = fromDrizzle(drizzle, mapping);
   if (partition === undefined) return { columns };
   const ruled = allow === undefined ? { columns, partition } : { columns, partition, allow };
-  const entry = fields === undefined ? ruled : { ...ruled, fields };
+  const fielded = fields === undefined ? ruled : { ...ruled, fields };
+  const entry = derive === undefined ? fielded : { ...fielded, derive };
   return sync === undefined ? entry : { ...entry, sync };
 }

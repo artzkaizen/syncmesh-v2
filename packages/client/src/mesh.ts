@@ -17,14 +17,14 @@ import { openAccounts } from "./accounts.js";
 import { openAuth } from "./auth.js";
 import { openBlobs } from "./blobs.js";
 import { openMeshEngine } from "./boot.js";
-import { createCan } from "./can.js";
+import { createCan, tableKinds } from "./can.js";
 import { createDelivered, createReceived } from "./delivered.js";
 import { createDrafts } from "./drafts.js";
 import { createFlush } from "./flush.js";
 import { openGrants, restoreGrants, type MeshGrants, type MeshGrantsOptions } from "./grants.js";
 import { openHandles, readableWith } from "./handles.js";
 import { historyView } from "./history-view.js";
-import { createHandleTally, linksAcross, meterHandles } from "./inspect.js";
+import { createHandleTally, linksAcross, meterHandles, verifyStore } from "./inspect.js";
 import { openInternal } from "./internal.js";
 import { joinIfEmpty } from "./join.js";
 import { narrowingFor, type watchNarrowing } from "./narrowing.js";
@@ -128,9 +128,6 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
   const { schema, identity } = options;
   const { grants, now, booted, blobStore, narrowing } = deps;
   const { engine } = booted;
-  const entriesByTable = new Map<string, (typeof schema.entries)[number]>(
-    schema.entries.map((e) => [e.table.name, e]),
-  );
 
   const tally = createHandleTally();
   const auth = openAuth(options.auth, now, async () => {
@@ -237,7 +234,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
       schema,
       engine,
       author,
-      kindOf: (table) => entriesByTable.get(table)?.partition,
+      kindOf: tableKinds(schema.entries),
     }),
     delivered: createDelivered(engine, identity.peerId),
     received: createReceived(engine),
@@ -257,6 +254,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     }),
     inspect: {
       handles: () => tally.counts(linksAcross(links.list())),
+      verify: () => verifyStore(booted.driver),
     },
     flush,
     onTelemetry: (listener) => tally.wrap("subscriptions", telemetry(listener)),

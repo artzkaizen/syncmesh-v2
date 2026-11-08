@@ -4,22 +4,27 @@ import type { Result } from "@syncmesh/result";
 import { applyChange, getRecord, docLineage, stampOf } from "@syncmesh/kernel";
 
 import type { CoverageTracker } from "./coverage.js";
-import type { DocStore } from "./doc-log.js";
-import type { DocAppend } from "./doc-log.js";
+import type { DocAddress, DocAppend, DocStore, LineageMove } from "./doc-log.js";
 import type { EngineError } from "./errors.js";
 import type { FeedTracker } from "./feed.js";
 import type { Hub } from "./listeners.js";
-import type { StateStore } from "./state-store.js";
+import type { DerivedRow, StateStore } from "./state-store.js";
 import type { StoreFailure, StoredEvent } from "./store.js";
 import type { TelemetryEvent } from "./telemetry.js";
 
 import { foldable } from "./columns.js";
 import { docAppends, recordDocs } from "./doc-log.js";
-import { rowsFor, writeKeysOf } from "./state-store.js";
+import { relabelMoved } from "./lineage-moves.js";
+import { rowWrites, eventWriteKeys } from "./state-store.js";
 import { timed } from "./telemetry.js";
 
-/** Where a batch came from; `repair` carries no cursors (RFC-0014), `snapshot` adopts them last (RFC-0019), `purge` dropped rows this device may no longer read (D45). */
-export type FoldSource = "local" | "remote" | "boot" | "repair" | "snapshot" | "purge";
+/**
+ * Where a batch came from; `repair` carries no cursors (RFC-0014), `snapshot` adopts them last
+ * (RFC-0019), `purge` dropped rows this device may no longer read (D45). `derive` folds no event:
+ * a replica wrote derived columns it computed from a document (RFC-0023 §16.4), and only the rows'
+ * app tables moved.
+ */
+export type FoldSource = "local" | "remote" | "boot" | "repair" | "snapshot" | "purge" | "derive";
 
 /** One notification per fold, however many events it covered. `writeKeys` is exact: live queries trust it. */
 export interface FoldBatch {
@@ -32,6 +37,12 @@ export interface FoldBatch {
    * none. A document handle watches these for remote updates — a doc edit moves no `writeKeys`.
    */
   readonly docs?: readonly DocAppend[];
+  /**
+   * The documents whose winning lineage a snapshot or repair moved by joining their lineage
+   * cells, with no doc change behind it; absent when there were none. Their doc log is relabelled
+   * in the batch's persist step (RFC-0023 §5.3).
+   */
+  readonly lineageMoves?: readonly LineageMove[];
 }
 
 export interface FoldDeps {
@@ -84,15 +95,42 @@ export interface FoldPath {
   readonly persist: (batch: FoldBatch, into: PersistInto) => Promise<void>;
   /** After the transaction, so a listener that re-reads the tables (D20) sees committed rows. */
   readonly notify: (batch: FoldBatch) => void;
+  /**
+   * Writes derived values into the app's rows (RFC-0023 §16.4), reported as `persist` reports: a
+   * failure inside `atomic` fails the transaction, outside it reaches `onError`.
+   */
+  readonly derive: (rows: readonly DerivedRow[], into: PersistInto) => Promise<void>;
+  /** After the derived write's transaction: one `derive` batch naming the rows it wrote. */
+  readonly notifyDerived: (rows: readonly DerivedRow[]) => void;
 }
+
+/** The keys derived values were written under, joined onto what a fold already touched. */
+export function withDerivedKeys(batch: FoldBatch, rows: readonly DerivedRow[]): FoldBatch {
+  if (rows.length === 0) return batch;
+  const keys = new Map([...batch.writeKeys].map(([table, set]) => [table, new Set(set)]));
+  for (const { table, key } of rows) keys.set(table, (keys.get(table) ?? new Set()).add(key));
+  return { ...batch, writeTables: new Set(keys.keys()), writeKeys: keys };
+}
+
+const NO_KEYS: FoldBatch = {
+  source: "derive",
+  eventCount: 0,
+  writeTables: new Set(),
+  writeKeys: new Map(),
+};
 
 export function createFoldPath(deps: FoldDeps): FoldPath {
   const { merge, coverage, feeds, folds, telemetry, errors, atomic, initial, hasAdapter } = deps;
   let state = initial;
+  const report = (written: Result<void, StoreFailure>) => {
+    if (written.isOk()) return;
+    if (atomic) throw written.error;
+    errors.emit(written.error);
+  };
 
   const fold = (entries: readonly StoredEvent[], source: FoldSource): FoldBatch => {
     const [batch, duration] = timed((): FoldBatch => {
-      const writeKeys = writeKeysOf(entries.map((entry) => entry.event));
+      const writeKeys = eventWriteKeys(entries.map((entry) => entry.event));
       for (const entry of entries) {
         const { event } = entry;
         coverage.note(event);
@@ -129,25 +167,24 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
     fold,
     persist: async (batch, into) => {
       if (batch.eventCount === 0 || into === undefined) return;
-      const report = (written: Result<void, StoreFailure>) => {
-        if (written.isOk()) return;
-        if (atomic) throw written.error;
-        errors.emit(written.error);
-      };
       if (into.state !== undefined)
-        report(await into.state.commit(rowsFor(state, batch.writeKeys), coverage.current()));
+        report(await into.state.commit(rowWrites(state, batch.writeKeys), coverage.current()));
+      const docWinner = (doc: DocAddress) =>
+        docLineage(getRecord(state, doc.table, doc.key), doc.column);
       if (into.docs !== undefined && batch.docs !== undefined)
-        report(
-          await recordDocs(
-            into.docs,
-            batch.docs,
-            (doc) => docLineage(getRecord(state, doc.table, doc.key), doc.column),
-            hasAdapter,
-          ),
-        );
+        report(await recordDocs(into.docs, batch.docs, docWinner, hasAdapter));
+      if (into.docs !== undefined && batch.lineageMoves !== undefined)
+        report(await relabelMoved(into.docs, batch.lineageMoves, docWinner, hasAdapter));
     },
     notify: (batch) => {
       if (batch.eventCount > 0) folds.emit(batch);
+    },
+    derive: async (rows, into) => {
+      const derive = into.state?.derive;
+      if (rows.length > 0 && derive !== undefined) report(await derive(rows));
+    },
+    notifyDerived: (rows) => {
+      if (rows.length > 0) folds.emit(withDerivedKeys(NO_KEYS, rows));
     },
   };
 }

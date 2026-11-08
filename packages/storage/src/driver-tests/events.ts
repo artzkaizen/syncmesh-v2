@@ -67,6 +67,21 @@ const evictCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       equal((await store.has(gone.event.id)).unwrap(), true, "stored again after eviction");
     },
   },
+  {
+    name: "events: evicting from the middle of a run leaves a log that still reads (D45, D39)",
+    run: async () => {
+      const store = await open(await openDriver("events-evict-middle"));
+      const [first, middle, last] = [entry(B, 1, 100), entry(B, 2, 101), entry(B, 3, 102)];
+      (await store.appendBatch([first, middle, last])).unwrap();
+      equal((await store.evict([middle.event.id])).unwrap(), 1, "evicted");
+      const read = await store.all();
+      check(read.isOk(), "the hole an eviction leaves is recorded, not read as damage");
+      equal(ids(read.unwrap()), ids([first, last]), "the rest of the run");
+      // stored again, it fills the hole it left
+      (await store.append(middle)).unwrap();
+      equal(ids((await store.all()).unwrap()), ids([first, middle, last]), "the run is whole");
+    },
+  },
 ];
 
 export const eventCases = (openDriver: OpenDriver): readonly SuiteCase[] => [

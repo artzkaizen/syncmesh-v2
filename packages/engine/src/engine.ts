@@ -17,7 +17,7 @@ import type { RepairApi } from "./digest.js";
 import type { DocApi } from "./doc-path.js";
 import type { FeedApi } from "./feed.js";
 import type { Interest } from "./interest.js";
-import type { EngineOptions } from "./options.js";
+import type { EngineOptions, MutateOptions } from "./options.js";
 import type { Parked } from "./quarantine.js";
 import type { EventHeader, RecentEvents } from "./recent.js";
 import type { SnapshotApi } from "./snapshot.js";
@@ -53,19 +53,7 @@ import { type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
 import { createRevert, type Reverted, type Undo } from "./undo.js";
 import { createWritePath, type OwnPositionApi } from "./writes.js";
 
-export type { AtomicStores, EngineOptions } from "./options.js";
-
-/** Where a write goes, and the action it belongs to (event keys 10 and 11, RFC-0023 §5.2). */
-export interface MutateOptions extends Pick<SyncEvent, "action" | "undoOf"> {
-  readonly partition?: PartitionKey;
-  readonly local?: boolean;
-  /**
-   * Runs inside the same transaction as the append, once the event is built — the operation
-   * record's seat (book ch. 10): record and event land together or neither does. A throw here
-   * rolls the whole write back.
-   */
-  readonly record?: (event: SyncEvent) => Promise<void>;
-}
+export type { AtomicStores, EngineOptions, MutateOptions } from "./options.js";
 
 export type { FoldBatch, FoldSource } from "./fold.js";
 
@@ -260,7 +248,7 @@ export function createEngine(options: EngineOptions): Engine {
     cursors: () => coverage.current().synced,
   });
 
-  const { getState, setState, fold, persist, notify } = createFoldPath({
+  const foldPath = createFoldPath({
     merge,
     coverage,
     feeds,
@@ -271,7 +259,8 @@ export function createEngine(options: EngineOptions): Engine {
     initial: boot?.state ?? emptyState(),
     hasAdapter,
   });
-  docPath.bind({ getState, synced: () => coverage.current().synced, atomically });
+  const { getState, setState, fold, persist, notify, derive } = foldPath;
+  docPath.bind({ ...foldPath, synced: () => coverage.current().synced, atomically });
   fold(boot?.replay ?? [], "boot");
 
   const before = {
@@ -280,23 +269,23 @@ export function createEngine(options: EngineOptions): Engine {
     partition: (table, key) => getRecord(getState(), table, key)?.partition,
   } satisfies StateLookup;
 
-  const snapshotDeps = {
-    getState,
-    setState,
-    coverageOf: coverage.current,
+  // what the snapshot install and the purge both read and replace
+  const held = { getState, setState, coverageOf: coverage.current, merge };
+  const snapshots = createSnapshotPath({
+    ...held,
     adopt: coverage.adopt,
     // in a turn, so a purge never runs between a snapshot's state commit and its own (D45)
     persist: (batch: FoldBatch) => turn(() => persist(batch, plain)),
     notify,
-  };
-  if (merge !== undefined) Object.assign(snapshotDeps, { merge });
-  const snapshots = createSnapshotPath(snapshotDeps);
+    docs: options.docs,
+  });
 
   const repair = createRepairPath({
     getState,
     mergeInto: (table, key, record) => setState(mergeRecord(getState(), table, key, record, merge)),
-    persist: (batch) => turn(() => persist(batch, { state: stateStore })),
+    persist: (batch) => turn(() => persist(batch, plain)),
     notify,
+    docs: options.docs,
   });
 
   const { receiveBatch, ...writes } = createWritePath({
@@ -311,6 +300,7 @@ export function createEngine(options: EngineOptions): Engine {
     fold,
     persist,
     notify,
+    derive,
     outbound,
     telemetry,
     admitEntries: (entries) =>
@@ -372,7 +362,7 @@ export function createEngine(options: EngineOptions): Engine {
     retryQuarantined: () => retryQuarantined(parked, receiveAndRetry),
     onQuarantine: quarantine.subscribe,
     stranded: () => strandedWrites(store, peerId),
-    purge: createPurge({ ...snapshotDeps, peerId, parked, folds, hasAdapter, exclusive }),
+    purge: createPurge({ ...held, peerId, parked, folds, hasAdapter, exclusive }),
     onTelemetry: telemetry.subscribe,
     ...docPath.api,
   };

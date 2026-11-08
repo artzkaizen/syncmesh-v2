@@ -1,4 +1,4 @@
-import type { EventId, PeerId, Procedure } from "@syncmesh/kernel";
+import type { EventId, LineageCellRefused, PeerId, Procedure } from "@syncmesh/kernel";
 import type { RowError } from "@syncmesh/schema";
 
 import { TaggedError } from "@syncmesh/result";
@@ -32,7 +32,8 @@ export type RevertError = CannotRevert | MutateError;
 
 /**
  * Reported through `onError`: a listener threw, the state cache refused a commit, the quarantine
- * dropped an event it was holding, or the log was found holding writes nobody here can send —
+ * dropped an event it was holding, the log was found holding writes nobody here can send, or the
+ * state cache held a lineage cell of a rule this build does not run and was rebuilt from the log —
  * the things that go wrong beside a call rather than inside one, so no caller is standing there
  * to be handed a `Result`.
  */
@@ -41,7 +42,8 @@ export type EngineError =
   | StoreFailure
   | QuarantineEvicted
   | UnreadableEvent
-  | StrandedWrites;
+  | StrandedWrites
+  | LineageCellRefused;
 
 export class NoGrant extends TaggedError("NoGrant")<{ peer: PeerId; message: string }> {}
 export class GrantDeviceMismatch extends TaggedError("GrantDeviceMismatch")<{
@@ -132,9 +134,10 @@ export class DocChangeRefused extends TaggedError("DocChangeRefused")<{
 }> {}
 
 /**
- * A row write naming a document column (RFC-0023 §6.4). The column's cell is the lineage cell and
- * its SQL column the materialised snapshot; neither is a value a row write may set, and letting one
- * through would have a row rule join a cell only the lineage rule may.
+ * A row write naming a document column (RFC-0023 §6.4) or a column derived from one (§4.1). A
+ * document column's cell is the lineage cell and its SQL column the materialised snapshot; a
+ * derived column is computed by every replica and never travels. None is a value a row write may
+ * set.
  */
 export class DocColumnWrite extends TaggedError("DocColumnWrite")<{
   table: string;

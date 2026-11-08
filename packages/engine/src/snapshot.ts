@@ -1,12 +1,23 @@
-import type { KeyedRecord, PartitionKey, RowKey, State, TableName } from "@syncmesh/kernel";
+import type {
+  DocColumns,
+  KeyedRecord,
+  LineageCellRefused,
+  MergeSpec,
+  PartitionKey,
+  RowKey,
+  State,
+  TableName,
+} from "@syncmesh/kernel";
 
-import { mergeRecord } from "@syncmesh/kernel";
+import { keyedRecords, mergeRecord, parseLineageCells } from "@syncmesh/kernel";
+import { Result } from "@syncmesh/result";
 
 import type { FoldBatch } from "./engine.js";
 import type { Interest } from "./interest.js";
 import type { Coverage } from "./sync.js";
 
 import { interestText, rowsIn } from "./interest.js";
+import { lineageMoves } from "./lineage-moves.js";
 
 /**
  * State instead of history (RFC-0019). A device joining a room with 300k events does not want
@@ -45,22 +56,17 @@ export interface SnapshotOptions {
  * The rows a peer holds, as one transferable value.
  *
  * ```ts
- * const snap = snapshotOf(engine.state(), engine.coverage(), { interest: { partitions: [board] } })
+ * const snap = stateSnapshot(engine.state(), engine.coverage(), { interest: { partitions: [board] } })
  * ```
  */
-export function snapshotOf(
+export function stateSnapshot(
   state: State,
   coverage: Coverage,
   options: SnapshotOptions = {},
 ): Snapshot {
   const { interest } = options;
-  const rows: SnapshotRow[] = [];
-  for (const [table, records] of state) {
-    for (const [key, record] of records) {
-      // tombstones travel: without them a joiner would resurrect every row anyone deleted
-      if (rowsIn(record, interest)) rows.push({ table, key, record });
-    }
-  }
+  // tombstones travel: without them a joiner would resurrect every row anyone deleted
+  const rows = [...keyedRecords(state)].filter(({ record }) => rowsIn(record, interest));
   return interest === undefined ? { rows, coverage } : { rows, coverage, scope: interest };
 }
 
@@ -71,7 +77,9 @@ export interface InstallDeps {
   readonly adopt: (coverage: Coverage) => void;
   readonly persist: (batch: FoldBatch) => Promise<void>;
   readonly notify: (batch: FoldBatch) => void;
-  readonly merge?: Parameters<typeof mergeRecord>[4];
+  readonly merge?: MergeSpec | undefined;
+  /** The mesh's doc columns: their cells are checked before anything joins, and their moves relabelled. */
+  readonly docs?: DocColumns | undefined;
 }
 
 /**
@@ -80,11 +88,22 @@ export interface InstallDeps {
  * interleave with live events, and unable to resurrect a tombstone: a delete stamp already newer
  * than the snapshot's write simply wins, as it would from any other source.
  *
+ * A page holding a lineage cell of a rule this build does not run is refused whole, before any
+ * row joins: nothing is installed and no coverage is adopted, so the history behind it still
+ * arrives as events (RFC-0023 §16.1). A document whose winning lineage the rows move has its doc
+ * log relabelled in the same persist step.
+ *
  * One fold batch for the whole snapshot, so a joining device renders once rather than per row.
  */
-export async function installSnapshot(deps: InstallDeps, snapshot: Snapshot): Promise<Installed> {
-  const { getState, setState, adopt, persist, notify, merge } = deps;
-  let state = getState();
+export async function installSnapshot(
+  deps: InstallDeps,
+  snapshot: Snapshot,
+): Promise<Result<Installed, LineageCellRefused>> {
+  const { getState, setState, adopt, persist, notify, merge, docs } = deps;
+  const checked = docs === undefined ? undefined : parseLineageCells(snapshot.rows, docs);
+  if (checked?.isErr() === true) return Result.err(checked.error);
+  const before = getState();
+  let state = before;
   const writeKeys = new Map<TableName, Set<RowKey>>();
   for (const { table, key, record } of snapshot.rows) {
     state = mergeRecord(state, table, key, record, merge);
@@ -93,11 +112,13 @@ export async function installSnapshot(deps: InstallDeps, snapshot: Snapshot): Pr
     writeKeys.set(table, keys);
   }
   setState(state);
+  const moves = docs === undefined ? [] : lineageMoves(before, state, snapshot.rows, docs);
   const batch: FoldBatch = {
     source: "snapshot",
     eventCount: snapshot.rows.length,
     writeTables: new Set(writeKeys.keys()),
     writeKeys,
+    ...(moves.length > 0 && { lineageMoves: moves }),
   };
   await persist(batch);
   // the coverage is adopted last and only here: until the rows are durable, claiming to hold
@@ -110,7 +131,7 @@ export async function installSnapshot(deps: InstallDeps, snapshot: Snapshot): Pr
       : { ...snapshot.coverage, scope: interestText(snapshot.scope) },
   );
   if (snapshot.rows.length > 0) notify(batch);
-  return { rows: snapshot.rows.length, batch };
+  return Result.ok({ rows: snapshot.rows.length, batch });
 }
 
 /** The instances a snapshot's rows actually came from — what a receiver checks its own pin against. */
@@ -124,7 +145,7 @@ export const partitionsIn = (snapshot: Snapshot): readonly PartitionKey[] => {
 /** What an engine offers for joining by state rather than by history (RFC-0019). */
 export interface SnapshotApi {
   readonly snapshot: (options?: SnapshotOptions) => Snapshot;
-  readonly installSnapshot: (snapshot: Snapshot) => Promise<Installed>;
+  readonly installSnapshot: (snapshot: Snapshot) => Promise<Result<Installed, LineageCellRefused>>;
 }
 
 /** Both halves against one engine's state, so `createEngine` states the wiring once. */
@@ -132,7 +153,7 @@ export function createSnapshotPath(
   deps: InstallDeps & { readonly coverageOf: () => Coverage },
 ): SnapshotApi {
   return {
-    snapshot: (options) => snapshotOf(deps.getState(), deps.coverageOf(), options),
+    snapshot: (options) => stateSnapshot(deps.getState(), deps.coverageOf(), options),
     installSnapshot: (snap) => installSnapshot(deps, snap),
   };
 }

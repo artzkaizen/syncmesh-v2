@@ -142,7 +142,7 @@ No listeners anywhere — kernel/temporal/result are pure. Injection seams: `now
 
 **Ports:**
 - `EventStore` — `append, appendBatch, has, all, allSince(cursors, scope), lastSeq(peer, scope), maxHlc, compactBelow(floor, scope, olderThan), compactedBelow`. `StoredEvent {event, sig?}` — relayed events keep their author's signature. `SeqScope = "synced"|"local"` (local events number in their own namespace). `createMemoryEventStore`.
-- `StateStore` — `isEmpty, loadAll, loadCursors, commit(rows, coverage), clear`. `writeKeysOf/rowsFor/allRows` helpers. `StateCorrupt` → cleared + refolded, unless the log is compacted below it → boot fails ("rejoin from a peer").
+- `StateStore` — `isEmpty, loadAll, loadCursors, commit(rows, coverage), clear`, and optional `derive(rows)` (derived columns into the app's rows, RFC-0023 §16.4). `eventWriteKeys/rowWrites/allRows` helpers. `StateCorrupt` → cleared + refolded, unless the log is compacted below it → boot fails ("rejoin from a peer").
 
 **Boot** (`openEngine`): load cache (or clear-if-corrupt-and-uncompacted) → replay log tail since coverage (both scopes) → `clock.receive(maxHlc)` **before** any write can be numbered → construct → write back rows.
 

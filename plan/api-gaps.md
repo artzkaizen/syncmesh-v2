@@ -92,8 +92,8 @@ named after it is `{}`. `apps/issues/src/schema.ts:82-98` is the proof.
 **What nesting was for, and what it does.** D07-A decided *"a top-level kind gets its own
 store per instance, a nested kind lives in its parent's"* — storage co-location, with D07's
 own watch-out naming the axis: *partition (what the event belongs to) vs storage scope (which
-file it lives in)*. **It was never implemented.** `storeNameFor` builds the filename straight
-from `kind:id` with no parent lookup (`storage/src/open-stores.ts:247-251`), so every kind
+file it lives in)*. **It was never implemented.** `storeName` builds the filename straight
+from `kind:id` with no parent lookup (`storage/src/open-stores.ts`), so every kind
 gets its own store, nested or not. `parentOf` drifted to exactly one consumer — `rolesFor`.
 So `within:` today means "inherit the parent's role ladder" and nothing else, which no
 decision ever asked for.
