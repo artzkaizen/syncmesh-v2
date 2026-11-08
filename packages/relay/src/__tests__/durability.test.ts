@@ -92,7 +92,7 @@ describe("one link's record of what a durable room holds (D42)", () => {
     expect((await again).isOk()).toBe(true);
   });
 
-  test("a new epoch drops what the old lineage held, and the waiter settles on the new log's answer", async () => {
+  test("a new epoch drops what the old lineage held, and a waiter begun after it settles on the new log's acks", async () => {
     const held = createDurability();
     held.hello("epoch-1", true, new Map());
     held.acked(id(1));

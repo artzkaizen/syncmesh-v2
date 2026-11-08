@@ -11,6 +11,8 @@ export type { Peer, Topic, Topics, ValueOf } from "./presence.js";
 export { rowHistory } from "./history.js";
 export type { DeliveredOptions, ReceivedOptions } from "./delivered.js";
 export type { SyncedOptions } from "./synced.js";
+// what `mesh.synced()` can refuse with, so an app narrowing it needs no import of the transport
+export { DurabilityLost } from "@syncmesh/transport";
 export type {
   Handle,
   HistoryOptions,
