@@ -72,10 +72,18 @@ export interface GapSql {
   readonly deleteBelow: string;
   /**
    * Holds one author's run in one scope until the transaction ends: binds `(peer, local)`. Only
-   * where two connections can append to the same log at once (Postgres); a SQLite writer that
-   * read a stale head is refused at its write instead.
+   * where two connections can append to the same log at once (Postgres); SQLite appends take the
+   * driver's turn one at a time, and a second connection that read a stale head is refused at
+   * its write. A driver with no `transaction` gets neither, and relies on its
+   * caller to append one batch at a time.
    */
   readonly lock?: string;
+  /**
+   * The first statement of a read that must see the entries and the gaps at one instant, where a
+   * transaction alone does not give that (Postgres reads each statement afresh under READ
+   * COMMITTED). SQLite's read transaction already holds one snapshot.
+   */
+  readonly snapshot?: string;
 }
 
 export interface StateSql {

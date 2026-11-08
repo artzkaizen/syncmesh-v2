@@ -115,6 +115,34 @@ export const holeCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   },
   {
     /**
+     * A read takes the entries, then the floors and the gaps. A late event that lands between
+     * them fills its gap and deletes the row, so the entries miss it and the gaps no longer say
+     * why: the log is sound, and the read must say so.
+     */
+    name: "holes: a late event that fills its gap mid-read leaves the read whole",
+    run: async () => {
+      const driver = await openDriver("holes-fill-mid-read");
+      const store = (await sqlEventStore(driver)).unwrap();
+      (await store.appendBatch([entry(A, 1, 10), entry(A, 2, 20), entry(A, 4, 40)])).unwrap();
+      let armed = false;
+      const racing: SqlDriver = {
+        ...driver,
+        all: async (sql, values) => {
+          const rows = await driver.all(sql, values);
+          if (armed) {
+            armed = false;
+            (await store.append(entry(A, 3, 30))).unwrap();
+          }
+          return rows;
+        },
+      };
+      const reader = (await sqlEventStore(racing)).unwrap();
+      armed = true;
+      equal((await reader.allSince(new Map())).unwrap().length, 4, "allSince with a fill mid-read");
+    },
+  },
+  {
+    /**
      * The whole path a scoped device takes (D23, D40): events with holes folded through the
      * engine, a coverage adopted past what was filtered, anti-entropy answering a peer, and the
      * state rebuilt from the log alone — every one of them reads, until a page goes.

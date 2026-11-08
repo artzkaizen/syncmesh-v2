@@ -15,37 +15,45 @@ const pause = (duration: Temporal.Duration) =>
   new Promise((resolve) => setTimeout(resolve, duration.total("milliseconds")));
 
 /**
- * Two processes appending one author's events to one Postgres log (D39). Each reads the author's
- * head before it records the gap its event makes; read concurrently, both start their gap from
- * the same head and the second row is dropped on the key, so a healthy log reads as torn.
+ * Two connections on one Postgres log (D39). Two writers each read the author's head before they
+ * record the gap their event makes; read concurrently, both start their gap from the same head and
+ * the second row is dropped on the key. A reader takes the entries and the gaps in separate
+ * statements, and a writer filling a gap between them deletes the row the reader needed. Either
+ * way a healthy log reads as torn.
  */
-describe.if(url !== "")("@syncmesh/postgres: two writers on one log", () => {
-  const database = `syncmesh_race_${Date.now().toString(36)}`;
-  const at = new URL(url);
-  at.pathname = `/${database}`;
+describe.if(url !== "")("@syncmesh/postgres: two connections on one log", () => {
+  const stamp = Date.now().toString(36);
+  const databases: string[] = [];
   const clients: { end: () => Promise<void> }[] = [];
 
-  const open = async () => {
+  /** A fresh database for one case, and a way to open connections on it. */
+  const fresh = async (name: string) => {
+    const database = `syncmesh_${name}_${stamp}`;
     const { default: postgres } = await import("postgres");
-    const client = postgres(at.toString(), { max: 1, onnotice: console.log });
-    clients.push(client);
-    return { client, driver: postgresDriver(client) };
+    const root = postgres(url, { max: 1 });
+    await root.unsafe(`CREATE DATABASE "${database}"`);
+    await root.end();
+    databases.push(database);
+    const at = new URL(url);
+    at.pathname = `/${database}`;
+    return async () => {
+      const client = postgres(at.toString(), { max: 1, onnotice: console.log });
+      clients.push(client);
+      return { client, driver: postgresDriver(client) };
+    };
   };
 
   afterAll(async () => {
     await Promise.all(clients.map((client) => client.end()));
     const { default: postgres } = await import("postgres");
     const root = postgres(url, { max: 1 });
-    await root.unsafe(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
+    for (const database of databases)
+      await root.unsafe(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
     await root.end();
   });
 
   test("record every gap when one appends while the other has read the head", async () => {
-    const { default: postgres } = await import("postgres");
-    const root = postgres(url, { max: 1 });
-    await root.unsafe(`CREATE DATABASE "${database}"`);
-    await root.end();
-
+    const open = await fresh("race");
     const first = await open();
     const s1 = (await sqlEventStore(first.driver)).unwrap();
     (await s1.appendBatch([1, 2, 3, 4].map((n) => entry(CRASH_AUTHOR, n, n * 10)))).unwrap();
@@ -93,5 +101,31 @@ describe.if(url !== "")("@syncmesh/postgres: two writers on one log", () => {
       [5, 6],
       [8, 9],
     ]);
+  });
+
+  test("a read that finds a hole looks again with the entries and the gaps from one snapshot", async () => {
+    const open = await fresh("reread");
+    const writer = await open();
+    const ws = (await sqlEventStore(writer.driver)).unwrap();
+    (await ws.appendBatch([1, 2, 4, 6].map((n) => entry(CRASH_AUTHOR, n, n * 10)))).unwrap();
+
+    // the writer fills a gap right after each read of the entries: 3 after the first read, which
+    // then shows a hole, and 5 after the second, which is inside the reader's snapshot
+    const reader = await open();
+    const fills = [3, 5];
+    const racing: SqlDriver = {
+      ...reader.driver,
+      all: async (sql, values) => {
+        const rows = await reader.driver.all(sql, values);
+        const fill = sql.startsWith("SELECT e.core") ? fills.shift() : undefined;
+        if (fill !== undefined) (await ws.append(entry(CRASH_AUTHOR, fill, fill * 10))).unwrap();
+        return rows;
+      },
+    };
+    const rs = (await sqlEventStore(racing)).unwrap();
+    const read = await rs.allSince(new Map());
+    const seen = [1, 2, 3, 4, 6].map((n) => entry(CRASH_AUTHOR, n, n * 10).event.id);
+    expect(read.isOk() ? read.value.map((e) => e.event.id) : read.error.message).toEqual(seen);
+    expect(fills).toEqual([]);
   });
 });

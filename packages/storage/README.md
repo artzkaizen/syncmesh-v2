@@ -70,9 +70,11 @@ than read around:
 - `allSince` and `all` answer `StoreFailure("log has a hole: …")` when an author's run is missing
   events below a later one. Holes the log was written with — a scoped catch-up, a withheld run, a
   snapshot join, a parked or late event — are recorded in the log's `gaps` table as each append
-  makes them, and read fine.
+  makes them, and read fine. A read that finds a hole looks again with the entries and the gaps
+  from one snapshot before it refuses, so an append landing mid-read does not make a sound log
+  look torn.
 - `verifyLog(driver)` checks the log's pages: `PRAGMA quick_check` on a device's SQLite, `amcheck`
-  on Postgres where the extension is installed and the role may execute it, `NoIntegrityCheck`
+  on Postgres where the extension is installed and the role may execute the overloads it calls, `NoIntegrityCheck`
   where there is no check to run. `mesh.inspect.verify()` is the same call from a mesh.
 - `openStores` runs that check once when the last session over the log did not end in
   `Stores.close()` or `Stores.markClean()`. Call `markClean()` when you keep the connection open

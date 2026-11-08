@@ -49,4 +49,27 @@ describe("@syncmesh/postgres checks its log's pages with amcheck", () => {
     await driver.run(`RESET ROLE`);
     await db.close();
   });
+
+  test("a grant on another overload of amcheck's functions is not a grant on the one it calls", async () => {
+    const db = new PGlite({ extensions: { amcheck } });
+    await db.exec("CREATE EXTENSION amcheck");
+    const driver = pgliteDriver(db);
+    const stores = (await openStores(driver)).unwrap();
+    (await stores.events.appendBatch([entry(CRASH_AUTHOR, 1, 10)])).unwrap();
+    await driver.run(`CREATE ROLE syncmesh_app NOLOGIN`);
+    await driver.run(`GRANT USAGE ON SCHEMA syncmesh TO syncmesh_app`);
+    await driver.run(`GRANT SELECT ON ALL TABLES IN SCHEMA syncmesh TO syncmesh_app`);
+    await driver.run(`GRANT EXECUTE ON FUNCTION verify_heapam TO syncmesh_app`);
+    await driver.run(`GRANT EXECUTE ON FUNCTION bt_index_check(regclass) TO syncmesh_app`);
+    await driver.run(`SET ROLE syncmesh_app`);
+    const narrow = await verifyLog(driver);
+    expect(narrow.isErr() && narrow.error._tag).toBe("NoIntegrityCheck");
+    await driver.run(`RESET ROLE`);
+    await driver.run(`GRANT EXECUTE ON FUNCTION bt_index_check(regclass, boolean) TO syncmesh_app`);
+    await driver.run(`SET ROLE syncmesh_app`);
+    const granted = await verifyLog(driver);
+    expect(granted.isOk() ? "ok" : granted.error.message).toBe("ok");
+    await driver.run(`RESET ROLE`);
+    await db.close();
+  });
 });

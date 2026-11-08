@@ -7,6 +7,7 @@ import { Result } from "@syncmesh/result";
 import { decodeEventCore, encodeEventCore } from "@syncmesh/wire";
 
 import type { SqlDriver, SqlRow, SqlValue } from "./driver.js";
+import type { Hole } from "./holes.js";
 
 import { driverDialect } from "./dialect.js";
 import { readHoles, unaccounted } from "./holes.js";
@@ -155,24 +156,64 @@ export function sqlEventStore(
   };
 
   /**
-   * The entries a read returned, or `StoreFailure("log has a hole")` when a run is missing below
-   * a later event of the same author that neither compaction nor the gap table accounts for.
+   * The holes in `entries` that neither compaction nor the gap table accounts for: the floors
+   * and the gaps are read only when the entries themselves show a hole.
+   */
+  const torn = (
+    entries: readonly StoredEvent[],
+    start: Parameters<typeof readHoles>[1],
+  ): Promise<Result<readonly Hole[], StoreFailure>> =>
+    Result.gen(async function* () {
+      const holes = readHoles(entries, start);
+      if (holes.length === 0) return Result.ok([]);
+      const floors = yield* Result.await(store.compactedBelow());
+      const gaps = yield* Result.await(query("reading the log's gaps failed", GAPS.selectAll));
+      return Result.ok(unaccounted(holes, floors, gaps));
+    });
+
+  /**
+   * Runs `fn` where every statement sees the log at one instant: in one transaction, in the
+   * driver's turn, under the dialect's `GapSql.snapshot`. A nested store reads in its caller's
+   * transaction as it stands.
+   */
+  const atOnce = <T>(fn: () => Promise<Result<T, StoreFailure>>) =>
+    options.nested === true
+      ? fn()
+      : attempt("reading the log at one instant failed", () =>
+          inTransaction(driver, async () => {
+            if (GAPS.snapshot !== undefined) await driver.run(GAPS.snapshot);
+            return fn();
+          }),
+        ).then((read) => read.andThen((result) => result));
+
+  /**
+   * What `select` reads, or `StoreFailure("log has a hole")` when a run is missing below a later
+   * event of the same author that neither compaction nor the gap table accounts for.
    *
-   * A healthy log costs nothing here beyond the walk: the floors and the gaps are read only when
-   * the entries themselves show a hole.
+   * The first read takes the entries, the floors and the gaps as three statements, and an append
+   * between them can show a sound log as torn: a late event that fills a gap deletes its row after
+   * the entries were read without it. So a hole is refused only when a second read, of all three
+   * at one instant ({@link atOnce}), still finds it. A healthy log pays nothing for that, and a
+   * log whose holes are all recorded pays only the floors and the gaps.
    */
   const whole = (
-    entries: readonly StoredEvent[],
+    select: () => Promise<Result<readonly StoredEvent[], StoreFailure>>,
     start: Parameters<typeof readHoles>[1],
   ): Promise<Result<readonly StoredEvent[], StoreFailure>> =>
     Result.gen(async function* () {
-      const holes = readHoles(entries, start);
-      if (holes.length === 0) return Result.ok(entries);
-      const floors = yield* Result.await(store.compactedBelow());
-      const gaps = yield* Result.await(query("reading the log's gaps failed", GAPS.selectAll));
-      const missing = unaccounted(holes, floors, gaps);
+      const entries = yield* Result.await(select());
+      const seen = yield* Result.await(torn(entries, start));
+      if (seen.length === 0) return Result.ok(entries);
+      const [again, missing] = yield* Result.await(
+        atOnce(() =>
+          Result.gen(async function* () {
+            const read = yield* Result.await(select());
+            return Result.ok([read, yield* Result.await(torn(read, start))] as const);
+          }),
+        ),
+      );
       const [first] = missing;
-      if (first === undefined) return Result.ok(entries);
+      if (first === undefined) return Result.ok(again);
       const scope = first.local ? "local" : "synced";
       return Result.err(
         new StoreFailure({
@@ -202,11 +243,10 @@ export function sqlEventStore(
         return Result.ok(rows.length > 0);
       }),
     all: () =>
-      Result.gen(async function* () {
-        const rows = yield* Result.await(query("all failed", SQL.selectAll));
-        const entries = yield* decodeRows(rows);
-        return Result.ok(yield* Result.await(whole(entries, () => 0)));
-      }),
+      whole(
+        () => query("all failed", SQL.selectAll).then((rows) => rows.andThen(decodeRows)),
+        () => 0,
+      ),
     recent: (options) =>
       Result.gen(async function* () {
         const bind = [...stampBound(options.before), options.limit ?? DEFAULT_RECENT];
@@ -218,14 +258,14 @@ export function sqlEventStore(
         const rows = yield* Result.await(query("stranded failed", SQL.selectStranded, [mine]));
         return decodeRows(rows);
       }),
-    allSince: (cursors, scope = "synced") =>
-      Result.gen(async function* () {
-        const floor = JSON.stringify(Object.fromEntries(cursors));
-        const local = scope === "local" ? 1 : 0;
-        const rows = yield* Result.await(query("allSince failed", SQL.selectSince, [local, floor]));
-        const entries = yield* decodeRows(rows);
-        return Result.ok(yield* Result.await(whole(entries, (peer) => cursors.get(peer) ?? 0)));
-      }),
+    allSince: (cursors, scope = "synced") => {
+      const bind = [scope === "local" ? 1 : 0, JSON.stringify(Object.fromEntries(cursors))];
+      return whole(
+        () =>
+          query("allSince failed", SQL.selectSince, bind).then((rows) => rows.andThen(decodeRows)),
+        (peer) => cursors.get(peer) ?? 0,
+      );
+    },
     lastSeq: (peer, scope) =>
       Result.gen(async function* () {
         const local = scope === "local" ? 1 : 0;

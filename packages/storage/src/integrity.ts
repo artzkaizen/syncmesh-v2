@@ -33,6 +33,11 @@ const quickCheck = (driver: SqlDriver): Promise<Result<void, StoreFailure>> =>
     return Result.err(damaged(`${shown}${found.length > 3 ? ` (${found.length} problems)` : ""}`));
   });
 
+/** The `verify_heapam` overload `verify_heapam($1::regclass)` resolves to, its defaults filled. */
+const VERIFY_HEAPAM = "verify_heapam(regclass,boolean,boolean,text,bigint,bigint)";
+/** The `bt_index_check` overload the heap-lookup check calls. */
+const BT_INDEX_CHECK = "bt_index_check(regclass,boolean)";
+
 /**
  * `amcheck` over the log's tables: `verify_heapam` on each, `bt_index_check` with every heap tuple
  * looked up on each of their b-tree indexes. Only where the extension is installed and this role
@@ -54,23 +59,21 @@ const amcheck = (driver: SqlDriver): Promise<Result<void, StoreFailure | NoInteg
         }),
       );
     // `amcheck`'s functions are revoked from PUBLIC: a role that cannot run them learns nothing
-    // about the log, which is not the same as the log failing them
-    const allowed = yield* Result.await(
+    // about the log, which is not the same as the log failing them. The check names the overloads
+    // the calls below resolve to, by the same search path: a grant on another one does not count
+    const [allowed] = yield* Result.await(
       attempt("could not read this role's privileges on amcheck", () =>
         driver.all(
-          `SELECT DISTINCT p.proname FROM pg_proc p
-            JOIN pg_depend d ON d.objid = p.oid AND d.deptype = 'e'
-            JOIN pg_extension x ON x.oid = d.refobjid AND x.extname = 'amcheck'
-            WHERE p.proname IN ('verify_heapam', 'bt_index_check')
-              AND has_function_privilege(p.oid, 'EXECUTE')`,
+          `SELECT COALESCE(has_function_privilege(to_regprocedure($1), 'EXECUTE'), false)
+            AND COALESCE(has_function_privilege(to_regprocedure($2), 'EXECUTE'), false)`,
+          [VERIFY_HEAPAM, BT_INDEX_CHECK],
         ),
       ),
     );
-    if (allowed.length < 2)
+    if (allowed?.[0] !== true)
       return Result.err(
         new NoIntegrityCheck({
-          message:
-            "this role may not run amcheck's verify_heapam and bt_index_check: `GRANT EXECUTE` on them to let the store verify its log",
+          message: `this role may not run amcheck's ${VERIFY_HEAPAM} and ${BT_INDEX_CHECK}: \`GRANT EXECUTE\` on them to let the store verify its log`,
         }),
       );
     for (const name of LOG_TABLES) {
