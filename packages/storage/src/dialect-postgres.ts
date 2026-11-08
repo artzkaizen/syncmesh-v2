@@ -13,6 +13,7 @@ import { ladder } from "./ladder.js";
 import { namespaceDdl } from "./namespace.js";
 
 const CHANGES = "syncmesh.changes";
+const META_DDL = `CREATE TABLE IF NOT EXISTS syncmesh.meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`;
 
 /**
  * Where the schema's position is kept: a row, because a schema has no `user_version` to put it
@@ -21,9 +22,7 @@ const CHANGES = "syncmesh.changes";
  */
 const VERSION: Rung = {
   read: async (driver) => {
-    await driver.run(
-      `CREATE TABLE IF NOT EXISTS syncmesh.meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
-    );
+    await driver.run(META_DDL);
     const [row] = await driver.all(`SELECT value FROM syncmesh.meta WHERE key = 'version'`);
     return Number(row?.[0] ?? 0);
   },
@@ -266,7 +265,7 @@ export const POSTGRES: Dialect = {
   placeholder: (position, kind) => (kind === "json" ? `$${position}::text::jsonb` : `$${position}`),
   cell: postgresCell,
   schema: {
-    ddl: `CREATE TABLE IF NOT EXISTS syncmesh.meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+    ddl: META_DDL,
     read: `SELECT value FROM syncmesh.meta WHERE key = 'schema'`,
     write: `INSERT INTO syncmesh.meta (key, value) VALUES ('schema', $1)
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
