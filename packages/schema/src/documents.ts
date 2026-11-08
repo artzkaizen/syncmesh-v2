@@ -184,9 +184,7 @@ export function checkDerivedRules(
   derive: DeriveBlock<Columns>,
   allow: AllowBlock,
 ): void {
-  const derived = new Set(
-    Object.keys(derive).flatMap((key) => [key, String(tbl.columnNames[key] ?? key)]),
-  );
+  const derived = new Set(Object.keys(derive).flatMap((key) => [key, tbl.columnNames[key] ?? key]));
   for (const op of FOLDED_OPS) {
     const read = columnsRead(resolveAllow(allow, op)).find((column) => derived.has(column));
     if (read === undefined) continue;
