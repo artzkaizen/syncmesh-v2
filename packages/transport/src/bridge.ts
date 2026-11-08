@@ -10,10 +10,12 @@ import { decodeAndVerify } from "@syncmesh/wire";
 import type { CustodyDeps } from "./custody.js";
 import type { Divergence } from "./divergence.js";
 import type { FrameClass } from "./frame-parts.js";
-import type { JoinDeps, JoinExchange, SnapshotInstalled } from "./join.js";
+import type { CursorsFrame } from "./frame.js";
+import type { SnapshotInstalled } from "./join.js";
 import type { FrameLink } from "./link.js";
 import type { BridgeError } from "./outbound.js";
 import type { ReadGate } from "./read-gate.js";
+import type { Rejoins } from "./rejoin.js";
 import type { RouteTable } from "./routes.js";
 import type { SnapshotFrame } from "./snap-frame.js";
 
@@ -23,11 +25,11 @@ import { answerDigest } from "./divergence.js";
 import { KIND } from "./frame-parts.js";
 import { decodeFrame, grantFrame, grantRequestFrame, presenceFrame } from "./frame.js";
 import { createHoldback } from "./holdback.js";
-import { createJoinExchange } from "./join.js";
 import { createOutbound, outboundFor } from "./outbound.js";
 import { presenceSlot } from "./presence.js";
 import { createRepage } from "./repage.js";
 import { createRouteExchange } from "./route-exchange.js";
+import { createSessionJoin } from "./session-join.js";
 import { type Withheld } from "./withheld.js";
 import { offerEvent, sendOwed, takeWithheld } from "./withhold.js";
 
@@ -112,6 +114,11 @@ export interface BridgeOptions {
   /** Whose checkpoint this device will believe; absent, every snapshot install stays provisional. */
   readonly trust?: PeerId;
   /**
+   * The mesh's record of peers this device is below the compaction floor of (D46), shared so the
+   * count of requests outlives each session. Absent, this bridge keeps its own.
+   */
+  readonly rejoins?: Rejoins;
+  /**
    * The far side's fingerprints disagreed with ours for these tables, over a slice we both
    * named (RFC-0014). Repair is the caller's to run — `rowDigests` narrows it to rows.
    */
@@ -139,28 +146,6 @@ export interface Bridge {
   readonly flush: () => Promise<void>;
   readonly close: () => void;
 }
-
-/** The join exchange for one session, carrying only the options the caller actually set. */
-const createSessionJoin = (
-  options: BridgeOptions,
-  send: JoinDeps["send"],
-  reader: () => PeerId | undefined,
-  onRefused: NonNullable<JoinDeps["onRefused"]>,
-): JoinExchange => {
-  const { engine, identity, rowsPerChunk, onSnapshot, certificate, trust } = options;
-  const { readGate, withheld } = options;
-  // a snapshot is rows in the clear: served only under what the asker may read (D40)
-  const served =
-    readGate === undefined
-      ? {}
-      : { serves: (asked?: Interest) => readGate.serves(reader(), asked) };
-  const base = { engine, send, onRefused, idPrefix: identity.peerId.slice(0, 8), ...served };
-  const gated = withheld === undefined ? base : { ...base, withheld };
-  const paged = rowsPerChunk === undefined ? gated : { ...gated, rowsPerChunk };
-  const reported = onSnapshot === undefined ? paged : { ...paged, onSnapshot };
-  const vouching = certificate === undefined ? reported : { ...reported, certificate };
-  return createJoinExchange(trust === undefined ? vouching : { ...vouching, trust });
-};
 
 /** Folds one batch, reporting a failure: whether it is durable now. */
 const foldInto =
@@ -213,7 +198,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
   // every frame of the exchange travels under the one snapshot tag, so they stay in the order
   // the exchange needs — a page ahead of the manifest that names it is a page thrown away
   const sendSnapshot = (what: string, bytes: Uint8Array) => send(KIND.snapshot, what, bytes);
-  const join = createSessionJoin(options, sendSnapshot, reader, errors.emit);
+  const { join, rejoin } = createSessionJoin(options, sendSnapshot, reader, errors.emit);
 
   const holdback = createHoldback(engine, gapLimit);
   const fold = foldInto(engine, errors.emit);
@@ -241,11 +226,8 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     });
   };
 
-  const onCursors = (
-    from: PeerId,
-    theirs: ReadonlyMap<PeerId, SeqNum>,
-    theirAhead: Ahead | undefined,
-  ): void => {
+  const onCursors = (frame: CursorsFrame): void => {
+    const { from, cursors: theirs, ahead: theirAhead, floor } = frame;
     // the far side names itself in its cursors; that is how this link learns whose it is
     farSide = from;
     engine.acknowledge(from, theirs, now());
@@ -268,6 +250,9 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
         sentCursors = true;
         sendCursors();
       }
+      // below their floor, nothing above can reach us: state is the only answer (D46). The
+      // proved peer where there is one, the named one otherwise — as the read gate judges
+      rejoin.onCursors(reader() ?? from, theirs, floor);
     });
   };
 
@@ -381,6 +366,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
       offOutbound();
       offFolds();
       offRoutes();
+      rejoin.close();
       // this link is gone, so every route that went through it is: the next attempt re-routes
       routing.lost();
       link.close?.();

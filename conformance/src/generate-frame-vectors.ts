@@ -6,11 +6,6 @@
  * the four-byte length prefix is how a byte stream carries them. A port that reproduces these
  * bytes from the same inputs, and decodes each back to the named kind, speaks the session.
  */
-import type { PeerId, SeqNum } from "@syncmesh/kernel";
-import type { RouteAdWire } from "@syncmesh/transport";
-
-import { parsePartitionKey, type ColumnName } from "@syncmesh/kernel";
-import { Temporal } from "@syncmesh/temporal";
 import {
   DEFAULT_MAX_FRAME_BYTES,
   LENGTH_BYTES,
@@ -29,17 +24,10 @@ import {
   snapManifestFrame,
   snapRequestFrame,
 } from "@syncmesh/transport";
-import { bytesToHex, createIdentity, encodeCbor, hexToBytes, signPresence } from "@syncmesh/wire";
+import { bytesToHex } from "@syncmesh/wire";
 
-import { grantVectors } from "./generate-grant-vectors.js";
-import { receiptVectors } from "./generate-receipt-vectors.js";
-import { refusalVectors } from "./generate-refusal-vectors.js";
-import { wireVectors } from "./vectors.js";
+import { ACME, frameInputs } from "./frame-inputs.js";
 
-const DEVICE_SEED = Uint8Array.from({ length: 32 }, (_, i) => 200 + i);
-const OTHER_SEED = Uint8Array.from({ length: 32 }, (_, i) => 121 + i);
-const NOW = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
-const ACME = parsePartitionKey("org:acme").unwrap();
 const ACME_ONLY = { partitions: [ACME] } as const;
 const PAYLOAD = Uint8Array.from({ length: 8 }, (_, i) => 0xa0 + i);
 
@@ -50,66 +38,6 @@ const framed = (frame: Uint8Array): Uint8Array => {
   out.set(frame, LENGTH_BYTES);
   return out;
 };
-
-/** The fixed inputs the session frames are built from: two identities, and the frozen payloads. */
-function frameInputs() {
-  const device = createIdentity(DEVICE_SEED).unwrap();
-  const other = createIdentity(OTHER_SEED).unwrap();
-  /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- sequences are branded integers and columns branded text; documented literals */
-  const cursors = new Map<PeerId, SeqNum>([
-    [device.peerId, 7 as SeqNum],
-    [other.peerId, 3 as SeqNum],
-  ]);
-  const ahead = new Map<PeerId, readonly SeqNum[]>([[other.peerId, [5 as SeqNum, 6 as SeqNum]]]);
-  const value = new Map<ColumnName, number>([
-    ["x" as ColumnName, 12],
-    ["y" as ColumnName, 40],
-  ]);
-  /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
-
-  // the payloads other vectors already froze, carried here under their frame tags
-  const event = wireVectors.vectors[0];
-  if (event === undefined) throw new Error("the event vectors are empty");
-  const eventWire = encodeCbor([
-    hexToBytes(event.coreHex).unwrap(),
-    hexToBytes(event.sigHex).unwrap(),
-  ]);
-  const grantWire = hexToBytes(grantVectors().vectors[0]?.wireHex ?? "").unwrap();
-  const receiptWire = hexToBytes(receiptVectors().vectors[0]?.wireHex ?? "").unwrap();
-  const refusalWire = hexToBytes(refusalVectors().vectors[0]?.wireHex ?? "").unwrap();
-  const presence = signPresence(
-    {
-      v: 1,
-      peerId: device.peerId,
-      topic: "cursor",
-      partition: ACME,
-      session: "s-1",
-      count: 3,
-      value,
-      expires: NOW.epochMilliseconds + 60_000,
-    },
-    device,
-  ).wire;
-  const ads: RouteAdWire[] = [
-    { to: String(other.peerId), hops: 2, expiresAtMs: NOW.epochMilliseconds + 60_000 },
-  ];
-  const digests = new Map<string, bigint>([["notes", 0xdeadbeefn]]);
-  const certificate = Uint8Array.from({ length: 4 }, (_, i) => 0xc0 + i);
-  return {
-    device,
-    other,
-    cursors,
-    ahead,
-    eventWire,
-    grantWire,
-    receiptWire,
-    refusalWire,
-    presence,
-    ads,
-    digests,
-    certificate,
-  };
-}
 
 /** One case per frame kind and shape, built from {@link frameInputs}. */
 function frameCases(fx: ReturnType<typeof frameInputs>) {
@@ -234,6 +162,20 @@ function frameCases(fx: ReturnType<typeof frameInputs>) {
       kind: "withheld",
       tag: 10,
       wire: withheldFrame('{"partitions":["org:acme"]}', fx.ahead),
+    },
+    // D46: the sender's compaction floor at index 4, with `ahead` always present at index 3 so an
+    // older build, which reads index 3 strictly and ignores the rest, still takes the frame
+    {
+      description: "cursors with a compaction floor and nothing held above them (D46)",
+      kind: "cursors",
+      tag: 2,
+      wire: cursorsFrame(fx.device.peerId, fx.cursors, undefined, fx.floor),
+    },
+    {
+      description: "cursors with what is held above them and a compaction floor (D46)",
+      kind: "cursors",
+      tag: 2,
+      wire: cursorsFrame(fx.device.peerId, fx.cursors, fx.ahead, fx.floor),
     },
   ];
   return cases;

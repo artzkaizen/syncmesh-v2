@@ -1,0 +1,63 @@
+{
+  "self": "1111111111111111111111111111111111111111111111111111111111111111",
+  "vectors": [
+    {
+      "description": "below one author's floor",
+      "ours": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1]],
+      "theirs": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 9]],
+      "floor": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 5]],
+      "below": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 5]]
+    },
+    {
+      "description": "exactly at the floor is not below: everything removed is already held",
+      "ours": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 5]],
+      "theirs": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 9]],
+      "floor": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 5]],
+      "below": []
+    },
+    {
+      "description": "an author this device holds nothing of is below any floor",
+      "ours": [],
+      "theirs": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 9]],
+      "floor": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 2]],
+      "below": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 2]]
+    },
+    {
+      "description": "a floor above the sender's own cursor is ignored",
+      "ours": [],
+      "theirs": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 3]],
+      "floor": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 5]],
+      "below": []
+    },
+    {
+      "description": "a frame with no cursors, a repage's, ignores every floor",
+      "ours": [],
+      "theirs": [],
+      "floor": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 5]],
+      "below": []
+    },
+    {
+      "description": "this device's own author is never a reason to ask for state",
+      "ours": [],
+      "theirs": [["1111111111111111111111111111111111111111111111111111111111111111", 9]],
+      "floor": [["1111111111111111111111111111111111111111111111111111111111111111", 5]],
+      "below": []
+    },
+    {
+      "description": "two authors, one below, in the floor's order",
+      "ours": [
+        ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 7],
+        ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 1]
+      ],
+      "theirs": [
+        ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 4],
+        ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 9]
+      ],
+      "floor": [
+        ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 3],
+        ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 6]
+      ],
+      "below": [["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 3]]
+    }
+  ]
+}

@@ -25,10 +25,9 @@ import type { StoreFailure, StoredEvent } from "./store.js";
 import type { Ahead, Coverage, Cursors } from "./sync.js";
 import type { Tx } from "./tx.js";
 import type { StateLookup } from "./validate.js";
-import type { MutateCaptured } from "./writes.js";
 
 import { admit } from "./admit.js";
-import { compactLog } from "./compaction.js";
+import { createCompaction } from "./compaction.js";
 import { trackCoverage } from "./coverage.js";
 import { createRepairPath } from "./digest.js";
 import { createDocPath } from "./doc-path.js";
@@ -52,7 +51,7 @@ import { strandedWrites, type StrandedWrites } from "./stranded.js";
 import { mergeAhead } from "./sync.js";
 import { type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
 import { createRevert, type Reverted, type Undo } from "./undo.js";
-import { createWritePath, type OwnPositionApi } from "./writes.js";
+import { createWritePath, type WritePathApi } from "./writes.js";
 
 export type { AtomicStores, EngineOptions, MutateOptions } from "./options.js";
 
@@ -71,7 +70,7 @@ export interface Quarantined {
   readonly reason: ValidationError;
 }
 
-export interface Engine extends FeedApi, RepairApi, SnapshotApi, DocApi, OwnPositionApi, PurgeApi {
+export interface Engine extends FeedApi, RepairApi, SnapshotApi, DocApi, WritePathApi, PurgeApi {
   readonly peerId: PeerId;
   /** Records, stamps, numbers, appends, folds, then hands the event to `onOutbound` — a write is real once appended. */
   readonly mutate: (
@@ -79,12 +78,6 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi, DocApi, OwnPosi
     fn: (tx: Tx) => void,
     options?: MutateOptions,
   ) => Promise<Result<SyncEvent, MutateError>>;
-  /**
-   * `mutate` for a write made by statements: `capture` runs first inside the write's transaction
-   * and hands back what they changed (D20), so those rows, the event, its operation record and
-   * the state commit land together; a refusal rolls the statements back with the rest.
-   */
-  readonly mutateCaptured: MutateCaptured;
   /** Folds entries once each; already-stored events are skipped, and an own event only when unsigned (G7: a signed own event the log lacks is a write it lost). A relayed event keeps its author's signature — pass it. */
   readonly receiveBatch: (
     entries: readonly StoredEvent[],
@@ -166,6 +159,16 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi, DocApi, OwnPosi
   readonly onAcknowledge: (listener: (peer: PeerId) => void) => Unsubscribe;
   /** Removes events every counted peer has acked and the state store has persisted; unobservable to peers. See RFC-0015 §2. */
   readonly compact: (options: CompactOptions) => Promise<Result<Compaction, CompactError>>;
+  /**
+   * Per author, the highest synced sequence at or below this device's coverage that its log does
+   * not hold: what compaction removed, and what a snapshot install adopted with no events behind
+   * it. A peer below it cannot be sent that history from here and needs state instead (D46), so
+   * links send it on every cursors frame. Raised by each compaction run and each install, and
+   * never lowered: the install half is persisted with the coverage (`Coverage.floor`), the
+   * compaction half is what the store recorded. Coverage adopted by a pass-over (D24, D40) or
+   * left by a purge (D45) is not in it: the relay or the authority fills that gap, not state. The local half never travels, so it is not here.
+   */
+  readonly floor: () => Cursors;
   /**
    * Synced events the holder of `theirs` lacks, narrowed to what they asked for. The
    * filter runs **here**, at the sender, so an uninterested event never becomes bytes — and it
@@ -266,7 +269,7 @@ export function createEngine(options: EngineOptions): Engine {
     initial: boot?.state ?? emptyState(),
     hasAdapter,
   });
-  const { getState, setState, fold, persist, notify, derive } = foldPath;
+  const { getState, setState, fold, persist, persistCoverage, notify } = foldPath;
   docPath.bind({ ...foldPath, synced: () => coverage.current().synced, atomically });
   fold(boot?.replay ?? [], "boot");
 
@@ -278,11 +281,14 @@ export function createEngine(options: EngineOptions): Engine {
 
   // what the snapshot install and the purge both read and replace
   const held = { getState, setState, coverageOf: coverage.current, merge };
+  const compactDeps = { store, stateStore, acks, ...docPath.compaction };
+  const compaction = createCompaction(compactDeps, coverage, boot?.compacted);
   const snapshots = createSnapshotPath({
     ...held,
-    adopt: coverage.adopt,
+    adopt: coverage.adoptUnheld,
     // in a turn, so a purge never runs between a snapshot's state commit and its own (D45)
     persist: (batch: FoldBatch) => turn(() => persist(batch, plain)),
+    persistCoverage: () => turn(() => persistCoverage(plain)),
     notify,
     docs: options.docs,
   });
@@ -296,6 +302,8 @@ export function createEngine(options: EngineOptions): Engine {
   });
 
   const { receiveBatch, ...writes } = createWritePath({
+    // `getState`, `fold`, `persist`, `notify` and `derive`, as `docPath.bind` takes them
+    ...foldPath,
     peerId,
     clock,
     validate,
@@ -304,11 +312,6 @@ export function createEngine(options: EngineOptions): Engine {
     undo,
     atomically,
     atomic: atomic !== undefined,
-    getState,
-    fold,
-    persist,
-    notify,
-    derive,
     outbound,
     telemetry,
     admitEntries: (entries) =>
@@ -358,7 +361,7 @@ export function createEngine(options: EngineOptions): Engine {
     acks: () => new Map([...acks].map(([peer, ack]) => [peer, ack.cursors])),
     acksAt: () => new Map(acks),
     onAcknowledge: ackHub.subscribe,
-    compact: (options) => compactLog({ store, stateStore, acks, ...docPath.compaction }, options),
+    ...compaction,
     ...snapshots,
     eventsSince: (theirs, interest) => eventsWanted(store, theirs, interest),
     recentEvents: (options = {}) => store.recent?.(options) ?? recentHeaders(store, options),

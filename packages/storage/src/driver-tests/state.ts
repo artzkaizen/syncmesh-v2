@@ -95,6 +95,24 @@ export const stateCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
     },
   },
   {
+    name: "state: the floor a snapshot left is stored with the cursors, and survives a reopen (D46)",
+    run: async () => {
+      const first = await openDriver("state-floor");
+      const store = await open(first);
+      equal((await store.loadCursors()).unwrap().floor === undefined, true, "no floor until told");
+      (await write(store, "a", 1, { ...coverage, floor: new Map([[A, seq(2)]]) })).unwrap();
+      await first.close?.();
+      const reopened = (await (await open(await openDriver("state-floor"))).loadCursors()).unwrap();
+      equal(reopened.floor?.get(A), seq(2), "floor read back");
+      // a floor row is not a cursor: the numbers it qualifies are what they were
+      equal(
+        [reopened.synced.get(A), reopened.synced.get(B), reopened.local.get(A)],
+        [seq(3), seq(1), seq(2)],
+        "cursors untouched",
+      );
+    },
+  },
+  {
     name: "state: durable — write, close, reopen the same name, read",
     run: async () => {
       const first = await openDriver("state-durable");

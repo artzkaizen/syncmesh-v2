@@ -107,6 +107,16 @@ export interface OwnPositionApi {
   readonly adoptOwnPosition: (room: SeqNum) => Promise<Result<OwnPosition, StoreFailure>>;
 }
 
+/** {@link Engine} members the write path adds beside `mutate` and `receiveBatch`. */
+export interface WritePathApi extends OwnPositionApi {
+  /**
+   * `mutate` for a write made by statements: `capture` runs first inside the write's transaction
+   * and hands back what they changed (D20), so those rows, the event, its operation record and
+   * the state commit land together; a refusal rolls the statements back with the rest.
+   */
+  readonly mutateCaptured: MutateCaptured;
+}
+
 export interface WriteDeps {
   readonly peerId: PeerId;
   readonly clock: HlcClock;
