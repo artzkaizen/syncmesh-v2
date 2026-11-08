@@ -468,6 +468,34 @@ describe("visibility: authority — admission at the relay (D24-A)", () => {
     await memory.stop();
   });
 
+  test("a purge through the mesh that rejects is said, and the purges after it still run (D45)", async () => {
+    const authority = gatedPeer(7);
+    (await writeConsult(authority, "x", "a")).unwrap();
+    const [entry] = (await authority.engine.eventsSince(new Map())).unwrap();
+    if (entry === undefined) throw new Error("the authority wrote x");
+    const b = gatedPeer(43);
+    (await b.engine.receiveBatch([signEvent(entry.event, authority.identity)])).unwrap();
+    const drops: string[] = [];
+    let asked = 0;
+    const context = {
+      ...b.context,
+      purge: () => {
+        asked += 1;
+        return Promise.reject(new Error("the disk is full"));
+      },
+    };
+    const memory = refusalsOver(context, (why) => void drops.push(why));
+    const scoped = { ...b.engine.coverage(), scope: "clinics:a" };
+    // a re-page that did not send x again: x is refused, and the purge of it rejects
+    await memory.session().repaged(scoped, { sent: undefined, entitled: undefined });
+    expect(asked).toBe(1);
+    expect(drops.some((why) => why.includes("could not be purged"))).toBe(true);
+    // and the next re-page still purges
+    await memory.session().repaged(scoped, { sent: undefined, entitled: undefined });
+    expect(asked).toBe(2);
+    await memory.stop();
+  });
+
   test("a re-entitlement that only widens purges nothing", async () => {
     const room = await gatedRoom();
     await seeded(room);

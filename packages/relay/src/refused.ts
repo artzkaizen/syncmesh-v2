@@ -12,6 +12,7 @@ import type { TransportContext } from "@syncmesh/transport";
 
 import { entitles, matchesInterest } from "@syncmesh/engine";
 import { compareHlc, getRecord, eventStamp } from "@syncmesh/kernel";
+import { Result } from "@syncmesh/result";
 import { withholds } from "@syncmesh/transport";
 import { decodeEventCore, splitEnvelope } from "@syncmesh/wire";
 
@@ -124,7 +125,10 @@ export function refusalsOver(context: TransportContext, dropped: (why: string) =
       rows: (record) => carries(record, what.stamps),
     } satisfies PurgeScope;
     if (context.purge !== undefined) {
-      await context.purge({ partitions: [], tables }, scope);
+      const { purge: viaMesh } = context;
+      // said like the engine's failure below: a rejection would stop every later purge after it
+      const purged = await Result.tryPromise(() => viaMesh({ partitions: [], tables }, scope));
+      if (purged.isErr()) dropped(`what was refused could not be purged: ${purged.error.message}`);
       return;
     }
     const purged = await context.engine.purge(scope);
