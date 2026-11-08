@@ -90,7 +90,7 @@ export function sqlDocStore(
           attempt("doc cover failed", () =>
             transaction(async () => {
               for (const bind of moved) await driver.run(SQL.updateState, bind);
-              await driver.run(SQL.coverHead, [...head, cover.mode, cover.at]);
+              await driver.run(SQL.coverHead, [...head, cover.mode, cover.at.epochMilliseconds]);
               await driver.run(SQL.upsertSnapshot, [
                 ...where,
                 hexOr(cover.lineage),

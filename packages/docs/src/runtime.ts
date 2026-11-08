@@ -79,11 +79,7 @@ export function createDocuments(options: DocumentsOptions) {
   const materialiseAt = (address: DocAddress) =>
     Result.gen(async function* () {
       const adapter = yield* adapterAt(address);
-      return Result.ok(
-        yield* Result.await(
-          materialise(engine, adapter, address, fresh(), now().epochMilliseconds),
-        ),
-      );
+      return Result.ok(yield* Result.await(materialise(engine, adapter, address, fresh(), now())));
     });
 
   // one materialisation per document at a time; a fold that lands meanwhile is picked up next
@@ -128,16 +124,7 @@ export function createDocuments(options: DocumentsOptions) {
         const adapter = yield* adapterAt(address);
         return Result.ok(
           yield* Result.await(
-            installCheckpoint(
-              engine,
-              adapter,
-              address,
-              wire,
-              producer,
-              snapshot,
-              fresh(),
-              now().epochMilliseconds,
-            ),
+            installCheckpoint(engine, adapter, address, wire, producer, snapshot, fresh(), now()),
           ),
         );
       }),

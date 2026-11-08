@@ -73,7 +73,7 @@ const coverCase = (openDriver: OpenDriver): SuiteCase => ({
       version: Uint8Array.of(1, 2),
       snapshot,
       mode: "materialised",
-      at: 1234,
+      at: at(1234),
       covered: [entry(A, 1)],
       failed: [entry(A, 2)],
     } as const;
@@ -82,7 +82,13 @@ const coverCase = (openDriver: OpenDriver): SuiteCase => ({
     equal(states, ["covered", "failed", "adapter-missing"], "entry states");
     const [head] = (await docs.heads()).unwrap();
     equal(
-      [head?.mode, head?.materialisedAt, head?.covers.get(A), head?.tailCount, head?.tailBytes],
+      [
+        head?.mode,
+        head?.materialisedAt?.epochMilliseconds,
+        head?.covers.get(A),
+        head?.tailCount,
+        head?.tailBytes,
+      ],
       ["materialised", 1234, seq(1), 1, 3],
       "head",
     );

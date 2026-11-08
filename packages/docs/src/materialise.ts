@@ -8,6 +8,7 @@ import type {
   TailUpdate,
 } from "@syncmesh/engine";
 import type { Hlc, PeerId, SeqNum } from "@syncmesh/kernel";
+import type { Temporal } from "@syncmesh/temporal";
 
 import { sha256 } from "@noble/hashes/sha2.js";
 import { docKey } from "@syncmesh/engine";
@@ -115,7 +116,7 @@ export async function materialise<D>(
   adapter: DocumentAdapter<D>,
   address: DocAddress,
   replica: bigint,
-  at: number,
+  at: Temporal.Instant,
 ): Promise<
   Result<Materialised, UpdateRejected | DocTooLarge | DocPending | StoreFailure | DocCoverStale>
 > {
@@ -178,7 +179,7 @@ export async function produceCheckpoint<D>(
   at: Hlc,
 ) {
   return Result.gen(async function* () {
-    yield* Result.await(materialise(engine, adapter, address, replica, at[0].epochMilliseconds));
+    yield* Result.await(materialise(engine, adapter, address, replica, at[0]));
     const tail = yield* Result.await(engine.docTail(address));
     const snapshot = tail.snapshot?.bytes ?? adapter.snapshot(adapter.create(replica));
     const signed = signCheckpoint(
@@ -266,7 +267,7 @@ export async function installCheckpoint<D>(
   producer: PeerId,
   snapshot: Uint8Array,
   replica: bigint,
-  at: number,
+  at: Temporal.Instant,
 ) {
   return Result.gen(async function* () {
     const { checkpoint, doc } = yield* verified(
@@ -281,10 +282,8 @@ export async function installCheckpoint<D>(
     const tail = yield* Result.await(engine.docTail(address));
     // a snapshot this device already holds may hold what the checkpoint does not, and the
     // entries behind it may be compacted away: installing over it would lose them
-    const held = tail.snapshot === undefined ? new Map<PeerId, SeqNum>() : tail.head?.covers;
-    const behind = [...(held ?? [])].some(
-      ([author, seq]) => (checkpoint.covers.get(author) ?? 0) < seq,
-    );
+    const held = tail.snapshot === undefined ? [] : [...(tail.head?.covers ?? [])];
+    const behind = held.some(([author, seq]) => (checkpoint.covers.get(author) ?? 0) < seq);
     if (behind) return refuse("the checkpoint is behind the snapshot this device holds");
     const below = tail.updates.filter(
       ({ entry }) => entry.seq <= (checkpoint.covers.get(entry.author) ?? 0),

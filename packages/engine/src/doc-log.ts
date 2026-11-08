@@ -122,8 +122,8 @@ export interface DocCover {
    * was built on none. A head that has moved since refuses the cover ({@link DocCoverStale}).
    */
   readonly base?: Uint8Array;
-  /** Epoch milliseconds, as `DocHead.materialisedAt` reads it back. */
-  readonly at: number;
+  /** When the snapshot was taken, as `DocHead.materialisedAt` reads it back. */
+  readonly at: Temporal.Instant;
   /** Entries the snapshot includes; they become `covered`, and compaction may take them. */
   readonly covered: readonly DocEntryRef[];
   /** Entries the adapter refused; they become `failed`, and the document stays at its last good version. */
