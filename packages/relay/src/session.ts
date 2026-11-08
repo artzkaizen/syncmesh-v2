@@ -291,10 +291,6 @@ export function wireSession(
     if (own !== undefined) chain = chain.then(() => adoptOwnRun(engine, own, hooks.onDropped));
   };
 
-  /** Our contiguous position, for every other peer's `delivered`; the relay passes it on. */
-  const sendCursors = (): void =>
-    hooks.sendSafe(cursorsFrame(identity.peerId, engine.coverage().synced));
-
   const onSession = (frame: Extract<RelayFrame, { kind: "session" }>["frame"]): void => {
     if (frame.kind === "presence") context.onPresence?.(frame.wire);
     else if (frame.kind === "grant") void grants.register(frame.wire);
@@ -375,7 +371,8 @@ export function wireSession(
   const offFolds = engine.onFoldBatch((batch) => {
     if (!caughtUp || batch.source !== "remote") return;
     pushOutstanding();
-    sendCursors();
+    // our contiguous position, for every other peer's `delivered`; the relay passes it on
+    hooks.sendSafe(cursorsFrame(identity.peerId, engine.coverage().synced));
   });
   return [offFrame, offOutbound, offRegistered, offFolds];
 }

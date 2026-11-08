@@ -147,13 +147,19 @@ export function watchNarrowing(deps: NarrowingDeps) {
     queue = queue.then(() => purgeQuietly(partitionsOut(late)));
   });
 
+  let then: () => Promise<void> = () => Promise.resolve();
   return {
     purge,
     /** Settles once every narrowing found so far has been purged — what persisting a grant waits on. */
     idle: (): Promise<void> => queue,
-    stop: (): void => {
+    /** What {@link close} waits for after the last purge: the grant writes queued behind them. */
+    closeAfter: (last: () => Promise<void>): void => void (then = last),
+    /** Stops watching, and settles once every purge and whatever {@link closeAfter} named is done. */
+    close: async (): Promise<void> => {
       offGrants();
       offFolds();
+      await queue;
+      await then();
     },
   };
 }

@@ -79,6 +79,6 @@ describe("an event of a lost partition that arrives after the purge (D45)", () =
     (await device.engine.receiveBatch(await write("after"))).unwrap();
     await watch.idle();
     expect(holds("after")).toBe(true);
-    watch.stop();
+    await watch.close();
   });
 });

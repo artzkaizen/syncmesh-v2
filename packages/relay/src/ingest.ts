@@ -1,5 +1,5 @@
 import type { StoreFailure } from "@syncmesh/engine";
-import type { EventId, PartitionKey } from "@syncmesh/kernel";
+import type { EventId } from "@syncmesh/kernel";
 import type { BlobHash } from "@syncmesh/storage";
 import type { WireError } from "@syncmesh/wire";
 
@@ -9,6 +9,7 @@ import { Temporal, durationMs } from "@syncmesh/temporal";
 import { decodeAndVerify } from "@syncmesh/wire";
 
 import type { RelayFrame } from "./frames.js";
+import type { Seat } from "./seat.js";
 import type { Conversation, RoomState } from "./state.js";
 
 import {
@@ -176,6 +177,12 @@ async function absorbAndAck(conversation: Conversation, wire: Uint8Array): Promi
   conversation.sender.send(ackFrame(id, room.offset()));
 }
 
+/** A frame that puts or asks for bytes by name (D18). */
+export const isBlobFrame = (
+  frame: RelayFrame,
+): frame is Extract<RelayFrame, { kind: "blob-put" | "blob-get" }> =>
+  frame.kind === "blob-put" || frame.kind === "blob-get";
+
 /**
  * Bytes by name (D18). A put is verified before it is stored, so junk cannot squat a hash, and
  * answered — `blob-stored`, or `blob-refused` when its partition's quota would pass, which is how
@@ -190,15 +197,16 @@ async function absorbAndAck(conversation: Conversation, wire: Uint8Array): Promi
  * held, so a refusal does not tell the asker the hash exists. A row naming the hash authorises
  * nothing: any socket can write a hash it has seen into a row of its own.
  *
- * @param partitions - What the socket's grant names; `undefined` in an open room, which checks
- *   neither half.
+ * @param seat - The socket's seat, read as the frame arrives: what its grant names, or `undefined`
+ *   in an open room, which checks neither half.
  */
 export function serveBlob(
   conversation: Conversation,
   frame: Extract<RelayFrame, { kind: "blob-put" | "blob-get" }>,
-  partitions: readonly PartitionKey[] | undefined,
+  seat: Pick<Seat, "blobPartitions">,
 ): void {
   const { room, sender, refuse } = conversation;
+  const partitions = seat.blobPartitions();
   room.enqueue(async () => {
     // SAFETY: a hash off the wire is opaque here; the store verifies it against the bytes
     const hash = frame.hash as BlobHash;

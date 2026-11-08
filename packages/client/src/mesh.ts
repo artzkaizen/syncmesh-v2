@@ -91,10 +91,15 @@ export async function createMesh<
   // a peer that reconnects first would meet a device that had forgotten who everyone is
   const remembered = await restoreGrants(registry, booted.value.driver, narrowing.idle);
   if (remembered.isErr()) return remembered;
-  const saved = remembered.value;
-  return Result.ok(
-    assemble(options, { grants, now, booted: booted.value, blobStore, narrowing, saved }),
-  );
+  narrowing.closeAfter(remembered.value);
+  // the grant writes queue behind purges (D45): closing the database under them would lose a
+  // revocation or a renewal the app already made, so the close waits for both
+  const close = async (): Promise<void> => {
+    await narrowing.close();
+    await booted.value.close();
+  };
+  const held = { ...booted.value, close };
+  return Result.ok(assemble(options, { grants, now, booted: held, blobStore, narrowing }));
 }
 
 interface Assembled {
@@ -103,8 +108,6 @@ interface Assembled {
   readonly booted: Booted;
   readonly blobStore: BlobStore;
   readonly narrowing: ReturnType<typeof watchNarrowing>;
-  /** Settles once every grant change so far is on disk. */
-  readonly saved: () => Promise<void>;
 }
 
 /** `mesh.transports`: the running links' add, remove, list, events and route forcing. */
@@ -123,7 +126,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
   deps: Assembled,
 ): Mesh<D, PC> {
   const { schema, identity } = options;
-  const { grants, now, booted, blobStore, narrowing, saved } = deps;
+  const { grants, now, booted, blobStore, narrowing } = deps;
   const { engine } = booted;
   const entriesByTable = new Map<string, (typeof schema.entries)[number]>(
     schema.entries.map((e) => [e.table.name, e]),
@@ -272,7 +275,6 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     },
     transports: transportsSurface(links),
     stop: async () => {
-      narrowing.stop();
       swept.stop();
       wired.stop();
       syncStates.stop();
@@ -281,9 +283,6 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
       // what a process exiting loses, and closing first would lose it every time
       await flush();
       await links.stop();
-      // the grant writes queue behind purges (D45): closing the database under them would lose
-      // a revocation or a renewal the app already made
-      await narrowing.idle().then(saved);
       await booted.close();
     },
   };
