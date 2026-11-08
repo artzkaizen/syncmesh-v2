@@ -59,11 +59,31 @@ fn cell(value: impl Strategy<Value = CellValue>) -> impl Strategy<Value = Cell> 
 }
 
 /// Three cells of one column as a log can hold them: a stamp and its peer name one write, so two
-/// cells sharing both carry that write's one value — the first one drawn for it.
+/// cells sharing both carry that write's one value — the first one drawn for it. Two independent
+/// stamps almost never collide, so `b` and `c` are often given an earlier cell's stamp outright.
 fn writes<S: Strategy<Value = CellValue>>(
     value: impl Fn() -> S,
 ) -> impl Strategy<Value = (Cell, Cell, Cell)> {
-    (cell(value()), cell(value()), cell(value())).prop_map(|(a, b, c)| {
+    (cell(value()), cell(value()), cell(value()), 0..4u8, 0..4u8).prop_map(|(a, b, c, rb, rc)| {
+        let b = if rb == 0 {
+            Cell {
+                stamp: a.stamp.clone(),
+                ..b
+            }
+        } else {
+            b
+        };
+        let c = match rc {
+            0 => Cell {
+                stamp: a.stamp.clone(),
+                ..c
+            },
+            1 => Cell {
+                stamp: b.stamp.clone(),
+                ..c
+            },
+            _ => c,
+        };
         let one_value =
             |cell: Cell, earlier: &[&Cell]| match earlier.iter().find(|e| e.stamp == cell.stamp) {
                 Some(first) => Cell {
