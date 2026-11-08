@@ -58,6 +58,26 @@ fn cell(value: impl Strategy<Value = CellValue>) -> impl Strategy<Value = Cell> 
     (value, stamp()).prop_map(|(value, stamp)| Cell { value, stamp })
 }
 
+/// Three cells of one column as a log can hold them: a stamp and its peer name one write, so two
+/// cells sharing both carry that write's one value — the first one drawn for it.
+fn writes<S: Strategy<Value = CellValue>>(
+    value: impl Fn() -> S,
+) -> impl Strategy<Value = (Cell, Cell, Cell)> {
+    (cell(value()), cell(value()), cell(value())).prop_map(|(a, b, c)| {
+        let one_value =
+            |cell: Cell, earlier: &[&Cell]| match earlier.iter().find(|e| e.stamp == cell.stamp) {
+                Some(first) => Cell {
+                    value: first.value.clone(),
+                    ..cell
+                },
+                None => cell,
+            };
+        let b = one_value(b, &[&a]);
+        let c = one_value(c, &[&a, &b]);
+        (a, b, c)
+    })
+}
+
 fn laws(name: StrategyName, a: Cell, b: Cell, c: Cell) {
     let j = |x: Cell, y: Cell| join(name, x, Some(y));
     assert_eq!(
@@ -75,7 +95,7 @@ fn laws(name: StrategyName, a: Cell, b: Cell, c: Cell) {
 
 proptest! {
     #[test]
-    fn lww_max_min_are_lattices(a in cell(scalar()), b in cell(scalar()), c in cell(scalar())) {
+    fn lww_max_min_are_lattices((a, b, c) in writes(scalar)) {
         for name in [StrategyName::Lww, StrategyName::Max, StrategyName::Min] {
             laws(name, a.clone(), b.clone(), c.clone());
         }
