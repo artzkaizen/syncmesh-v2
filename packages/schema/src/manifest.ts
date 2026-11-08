@@ -9,7 +9,7 @@ import type { DeriveBlock, DocColumnEntry } from "./documents.js";
 
 import { combinators } from "./bind.js";
 import { columnFromDef, columnStrategy } from "./column.js";
-import { docColumnEntries } from "./documents.js";
+import { checkDerivedRules, docColumnEntries } from "./documents.js";
 import { sourceName } from "./from-drizzle.js";
 import {
   RESERVED,
@@ -205,7 +205,8 @@ export function syncSchema<
       partition,
       visibility: entry.visibility ?? "partition",
     };
-    const ruled = entry.allow === undefined ? base : { ...base, allow: entry.allow(combinators()) };
+    const allow = allowBlock(name, tbl, entry);
+    const ruled = allow === undefined ? base : { ...base, allow };
     const fields = entry.allow === undefined ? undefined : fieldRules(name, tbl, entry.fields);
     const fielded = fields === undefined ? ruled : { ...ruled, fields };
     const derived = entry.derive === undefined ? fielded : { ...fielded, derive: entry.derive };
@@ -229,6 +230,18 @@ export function syncSchema<
     sealedKinds: new Set([...declared.values()].filter((p) => p.sealed).map((p) => p.name)),
     rolesFor: (kind) => declared.get(kind)?.roles ?? NO_ROLES,
   };
+}
+
+/**
+ * A table's `allow` rules as data, refusing a write rule that reads a derived column.
+ *
+ * @throws {InvalidDerive}
+ */
+function allowBlock(name: string, tbl: Table, entry: TableEntry): AllowBlock | undefined {
+  const allow = entry.allow?.(combinators());
+  if (allow !== undefined && entry.derive !== undefined)
+    checkDerivedRules(name, tbl, entry.derive, allow);
+  return allow;
 }
 
 /**
