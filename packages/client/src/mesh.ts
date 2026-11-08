@@ -24,7 +24,7 @@ import { createFlush } from "./flush.js";
 import { openGrants, restoreGrants, type MeshGrants, type MeshGrantsOptions } from "./grants.js";
 import { openHandles, readableWith } from "./handles.js";
 import { historyView } from "./history-view.js";
-import { createHandleTally, linksAcross, meterHandles } from "./inspect.js";
+import { createHandleTally, linksAcross, meterHandles, verifyStore } from "./inspect.js";
 import { openInternal } from "./internal.js";
 import { joinIfEmpty } from "./join.js";
 import { wireOperations } from "./operations.js";
@@ -242,6 +242,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     }),
     inspect: {
       handles: () => tally.counts(linksAcross(links.list())),
+      verify: () => verifyStore(booted.driver),
     },
     flush,
     onTelemetry: (listener) => tally.wrap("subscriptions", telemetry(listener)),

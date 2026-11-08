@@ -2,10 +2,10 @@ import { createMesh } from "@syncmesh/client";
 import { relayTransport, startRelay, webSocketDial } from "@syncmesh/relay";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import {
-  schemaNameFor,
+  schemaName,
   sqlEventStore,
   sqlStateStore,
-  statePathFor,
+  statePath,
   tableDdl,
   tablesProjection,
 } from "@syncmesh/storage";
@@ -45,7 +45,7 @@ export async function openBackend(options: BackendOptions) {
    * one: the log file holds no table of yours.
    */
   const logFile = `${dataDir}/app.db`;
-  const tablesFile = statePathFor(logFile, schemaNameFor([]));
+  const tablesFile = statePath(logFile, schemaName([]));
 
   // 1 · the relay, in this process. Its room log is its own SQLite under dataDir — the relay is
   // a peer, and this is its copy.

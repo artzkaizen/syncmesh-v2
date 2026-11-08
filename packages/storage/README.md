@@ -62,6 +62,26 @@ change capture, the app's tables and the compiled read filter. Reopening the sam
 reach the same database, because half the cases close and reopen it. It passes, or the driver
 is not one.
 
+## A damaged log is refused (D39)
+
+The log is the half nothing can recompute, so a page the disk lost is refused as a value rather
+than read around:
+
+- `allSince` and `all` answer `StoreFailure("log has a hole: …")` when an author's run is missing
+  events below a later one. Holes the log was written with — a scoped catch-up, a withheld run, a
+  snapshot join, a parked or late event — are recorded in the log's `gaps` table as each append
+  makes them, and read fine. A read that finds a hole looks again with the entries and the gaps
+  from one snapshot before it refuses, so an append landing mid-read does not make a sound log
+  look torn.
+- `verifyLog(driver)` checks the log's pages: `PRAGMA quick_check` on a device's SQLite, `amcheck`
+  on Postgres where the extension is installed and the role may execute the overloads it calls, `NoIntegrityCheck`
+  where there is no check to run. `mesh.inspect.verify()` is the same call from a mesh.
+- `openStores` runs that check once when the last session over the log did not end in
+  `Stores.close()` or `Stores.markClean()`. Call `markClean()` when you keep the connection open
+  past the stores, or every launch after looks like one after a crash. An app killed in the
+  background or a closed tab never reaches either, so on phones and in browsers the check runs at
+  most launches today.
+
 ## Serving `sync: "window"` reads from Postgres (D43)
 
 A `sync: "window"` table stays on the server, and `servedReads` (in `@syncmesh/orpc`) runs a

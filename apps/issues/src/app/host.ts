@@ -10,7 +10,7 @@ import { createClient, httpLink, sqlite } from "@syncmesh/orpc";
 import { Result, serializeTagged } from "@syncmesh/result";
 import { syncedTables } from "@syncmesh/schema";
 import { wasmSqliteDriver } from "@syncmesh/sqlite-wasm";
-import { schemaNameFor } from "@syncmesh/storage";
+import { schemaName } from "@syncmesh/storage";
 
 import type { Procedures } from "../procedures.js";
 import type { IssuesPresence } from "../schema.js";
@@ -150,7 +150,7 @@ const openDriver = () =>
     name: DATABASE,
     // the log keeps `DATABASE`; the folded half is named after the schema, so a deploy that adds
     // a column opens an empty file and refolds into it rather than migrating a tab's rows
-    schema: schemaNameFor(syncedTables(issuesSchema())),
+    schema: schemaName(syncedTables(issuesSchema())),
     whenHeld: "wait",
   });
 

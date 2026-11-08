@@ -89,7 +89,7 @@ export interface OpenedDatabase {
 export interface VfsOptions {
   readonly name: string;
   /**
-   * Names the derived half of the pair — `schemaNameFor(tables)`, so that changing a column opens
+   * Names the derived half of the pair — `schemaName(tables)`, so that changing a column opens
    * an empty file to refold into rather than the previous shape's rows (RFC-0022). The log keeps
    * the store's own name, because it is what everything else is named after.
    */

@@ -62,7 +62,7 @@ export const sqliteLogIndex =
  * name either way. On SQLite it is the driver's to answer, because it is the driver that knows
  * whether it was able to attach a second database at all — see {@link SqlDriver.log}.
  */
-export const placementOf = (driver: Pick<SqlDriver, "dialect" | "log">): LogPlacement =>
+export const logPlacement = (driver: Pick<SqlDriver, "dialect" | "log">): LogPlacement =>
   driver.dialect !== "postgres" && driver.log === "inline" ? "inline" : "attached";
 
 /**
@@ -120,6 +120,7 @@ export const namespaceDdl = (dialect: SqlDialect): readonly string[] =>
 export const LOG_TABLES = [
   "events",
   "compaction",
+  "gaps",
   "scope",
   "operations",
   "receipts",

@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { SqlRow, SqliteDriver } from "../driver.js";
 
-import { SQLITE, SQLITE_INLINE, driverDialect, logTable, placementOf } from "../dialect.js";
+import { SQLITE, SQLITE_INLINE, driverDialect, logTable, logPlacement } from "../dialect.js";
 import { A, entry } from "../driver-tests/fixtures.js";
 import { sqlEventStore } from "../event-store.js";
 import { sqliteDriver } from "../sqlite-driver.js";
@@ -61,9 +61,9 @@ describe("a runtime with no ATTACH still gets the namespace", () => {
 
   test("the driver picks the spelling, and one database is enough to open a store", async () => {
     const driver = oneDatabase();
-    expect(placementOf(driver)).toBe("inline");
+    expect(logPlacement(driver)).toBe("inline");
     expect(driverDialect(driver)).toBe(SQLITE_INLINE);
-    expect(logTable("events", placementOf(driver))).toBe("syncmesh_events");
+    expect(logTable("events", logPlacement(driver))).toBe("syncmesh_events");
 
     const store = (await sqlEventStore(driver)).unwrap();
     (await store.appendBatch([entry(A, 1, 100), entry(A, 2, 200)])).unwrap();
@@ -75,9 +75,9 @@ describe("a runtime with no ATTACH still gets the namespace", () => {
   });
 
   test("a device is unaffected: the same driver without the flag attaches as before", () => {
-    expect(placementOf({ dialect: "sqlite" })).toBe("attached");
-    expect(placementOf({})).toBe("attached");
+    expect(logPlacement({ dialect: "sqlite" })).toBe("attached");
+    expect(logPlacement({})).toBe("attached");
     // postgres has a real schema, so the flag is not its question to answer
-    expect(placementOf({ dialect: "postgres", log: "inline" })).toBe("attached");
+    expect(logPlacement({ dialect: "postgres", log: "inline" })).toBe("attached");
   });
 });

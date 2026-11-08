@@ -4,11 +4,17 @@
  * reference stays in the count instead of silently dying — the chaos epilogue asserts zeros.
  */
 import type { Live, LiveQuery } from "@syncmesh/drizzle";
-import type { SqlDialect } from "@syncmesh/storage";
+import type { StoreFailure } from "@syncmesh/engine";
+import type { SqlDialect, SqlDriver } from "@syncmesh/storage";
 import type { Transport } from "@syncmesh/transport";
+
+import { Result } from "@syncmesh/result";
+import { verifyLog } from "@syncmesh/storage";
 
 import type { Blobs } from "./blobs.js";
 import type { Handle, OpenHandle } from "./handles.js";
+
+import { NoSuchCapability } from "./errors.js";
 
 /** What still holds a seat, by kind. `operations` stays 0 until durable operation records land (Phase 1). */
 export interface HandleCounts {
@@ -27,6 +33,20 @@ export interface HandleCounts {
 export interface Inspect {
   /** Live counts, cheap to call; all zeros (links aside) after a clean teardown. */
   readonly handles: () => HandleCounts;
+  /**
+   * Checks the log's pages for damage an ordinary read cannot see (D39): `PRAGMA quick_check` on
+   * a device's SQLite, `amcheck` on Postgres. O(log size), so it runs when asked and at boot after
+   * an unclean shutdown, never on its own.
+   *
+   * Damage is a `StoreFailure` naming what the database reported. `NoSuchCapability` is a mesh
+   * whose log offers no check: a bare event store, a runtime that refuses `PRAGMA`, a Postgres
+   * without `amcheck`.
+   *
+   * @example
+   * const verified = await mesh.inspect.verify();
+   * if (verified.isErr()) console.error(verified.error.message);
+   */
+  readonly verify: () => Promise<Result<void, StoreFailure | NoSuchCapability>>;
 }
 
 /** A teardown that is also `Disposable`: call it, or `using` it — a second call is a no-op. */
@@ -142,4 +162,21 @@ export function meterBlobs(tally: HandleTally, blobs: Blobs): Blobs {
 /** Reachable `(transport, peer)` pairs right now — read live from the radios, never tracked. */
 export function linksAcross(transports: readonly Transport[]): number {
   return transports.reduce((n, t) => n + (t.reaches?.().size ?? 0), 0);
+}
+
+/**
+ * `mesh.inspect.verify()` over the connection the log lives on: the storage check, with a log
+ * that offers none answered as the capability it lacks.
+ */
+export async function verifyStore(
+  driver: SqlDriver | undefined,
+): Promise<Result<void, StoreFailure | NoSuchCapability>> {
+  const unavailable = (message: string) =>
+    Result.err(new NoSuchCapability({ capability: "verify", message }));
+  if (driver === undefined)
+    return unavailable("this mesh runs over a bare event store, which has no pages to check");
+  const verified = await verifyLog(driver);
+  if (verified.isOk()) return Result.ok(undefined);
+  const { error } = verified;
+  return error._tag === "StoreFailure" ? Result.err(error) : unavailable(error.message);
 }

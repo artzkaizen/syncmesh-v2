@@ -80,9 +80,9 @@ describe("the shipped ladders", () => {
     (await openStores(driver, { tables: TABLES })).unwrap();
     const log = Number((await driver.all(`PRAGMA syncmesh.user_version`, []))[0]?.[0]);
     const state = Number((await driver.all(`PRAGMA main.user_version`, []))[0]?.[0]);
-    expect([log, state]).toEqual([1, 3]);
+    expect([log, state]).toEqual([2, 3]);
     (await openStores(driver, { tables: TABLES })).unwrap();
-    expect(Number((await driver.all(`PRAGMA syncmesh.user_version`, []))[0]?.[0])).toBe(1);
+    expect(Number((await driver.all(`PRAGMA syncmesh.user_version`, []))[0]?.[0])).toBe(2);
     expect(Number((await driver.all(`PRAGMA main.user_version`, []))[0]?.[0])).toBe(3);
     await driver.close?.();
   });

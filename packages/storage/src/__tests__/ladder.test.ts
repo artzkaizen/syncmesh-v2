@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { openStores, schemaNameFor } from "../open-stores.js";
+import { openStores, schemaName } from "../open-stores.js";
 import { openPair } from "./pair.js";
 
 const dir = mkdtempSync(join(tmpdir(), "syncmesh-ladder-"));
@@ -26,23 +26,23 @@ describe("a database past the top of the ladder", () => {
     db.run("PRAGMA user_version = 4");
     db.close();
 
-    const driver = await openPair(log, schemaNameFor(TABLES));
+    const driver = await openPair(log, schemaName(TABLES));
     const opened = await openStores(driver, { tables: TABLES });
     expect(opened.isErr() && opened.error._tag).toBe("StoreFailure");
     // the number it is at and the number there are, because "your database is too new" without
     // either of them is a message you cannot act on
-    expect(opened.isErr() && String(opened.error.cause)).toMatch(/step 4 of a schema that has 1/);
+    expect(opened.isErr() && String(opened.error.cause)).toMatch(/step 4 of a schema that has 2/);
     await driver.close?.();
   });
 
   test("but the top itself opens, and opens again", async () => {
     const log = join(dir, "current.db");
-    const first = await openPair(log, schemaNameFor(TABLES));
+    const first = await openPair(log, schemaName(TABLES));
     (await openStores(first, { tables: TABLES })).unwrap();
     await first.close?.();
 
     // reopening is the case the guard must not catch: the ladder is at its top, not past it
-    const again = await openPair(log, schemaNameFor(TABLES));
+    const again = await openPair(log, schemaName(TABLES));
     (await openStores(again, { tables: TABLES })).unwrap();
     await again.close?.();
   });

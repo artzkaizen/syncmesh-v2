@@ -8,10 +8,11 @@ import { compactionCases } from "./compaction.js";
 import { docColumnCases } from "./doc-columns.js";
 import { docCases } from "./docs.js";
 import { eventCases } from "./events.js";
+import { holeCases } from "./holes.js";
 import { readFilterCases } from "./read-filter.js";
 
 export { LADDER, PRINCIPALS, ROWS, RULES, asCells } from "./read-filter.js";
-export { COUNTERS, JOBS } from "./fixtures.js";
+export { COUNTERS, JOBS, entry } from "./fixtures.js";
 export {
   CRASH_AUTHOR,
   CRASH_BATCH,
@@ -24,6 +25,7 @@ export {
   type CrashHarness,
   type CrashMode,
 } from "./crash.js";
+export { tornTests, type TornHarness } from "./torn.js";
 import { stateCases } from "./state.js";
 import { tablesCases } from "./tables.js";
 
@@ -43,6 +45,7 @@ export type { SuiteCase as DriverCase } from "@syncmesh/engine";
 export function storeTests(openDriver: OpenDriver): readonly SuiteCase[] {
   return [
     ...eventCases(openDriver),
+    ...holeCases(openDriver),
     ...stateCases(openDriver),
     ...compactionCases(openDriver),
     ...blobCases(openDriver),

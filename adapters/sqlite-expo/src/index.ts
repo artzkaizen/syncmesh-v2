@@ -5,10 +5,10 @@ import type { OpenStoresOptions, SqliteDriver, StoreLocked, Stores } from "@sync
 import {
   acquireStoreLock,
   attachLog,
-  lockPathFor,
+  lockPath,
   openStores,
-  schemaNameFor,
-  statePathFor,
+  schemaName,
+  statePath,
 } from "@syncmesh/storage";
 import { openDatabaseSync } from "expo-sqlite";
 
@@ -62,7 +62,7 @@ export async function defaultStore(
   options: DefaultStoreOptions,
 ): Promise<Result<Stores, StoreFailure | StoreLocked>> {
   const logPath = `${options.name}.db`;
-  const lockDb: ExpoDatabase = openDatabaseSync(lockPathFor(logPath));
+  const lockDb: ExpoDatabase = openDatabaseSync(lockPath(logPath));
   // over the store, not the file: every file named after `logPath` is held and released together
   const lock = acquireStoreLock({
     path: logPath,
@@ -71,7 +71,7 @@ export async function defaultStore(
   });
   if (lock.isErr()) return lock;
   // the app's schema names the derived half, so a changed column refolds instead of migrating
-  const driver = expoSqliteDriver(statePathFor(logPath, schemaNameFor(options.tables ?? [])));
+  const driver = expoSqliteDriver(statePath(logPath, schemaName(options.tables ?? [])));
   await attachLog(driver, logPath);
   const stores = await openStores(driver, options);
   if (stores.isErr()) {
