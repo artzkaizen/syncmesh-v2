@@ -85,7 +85,8 @@ gone. It bootstraps, and per §1 every fresh joiner should too.
 
 **How a peer learns it is below [built, D46].** A sender's floor (per author, the highest
 sequence at or below its coverage that its log does not hold: what it compacted, and what it
-adopted from a snapshot with no events behind it) rides at index 4 of every cursors frame, `ahead` always at 3
+adopted from a snapshot with no events behind it, never coverage a pass-over adopted for events
+withheld from it) rides at index 4 of every cursors frame, `ahead` always at 3
 before it. A device whose cursor for some author is strictly under that floor asks that peer for
 state once per floor per session. With `trust` set it adopts only what the issuer vouched for;
 with no `trust` it asks nothing and raises a `$recovery` issue until the app accepts the state
