@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 
 use crate::cbor::{MAX_SAFE_INTEGER, MalformedCbor, Value, decode, encode};
-use crate::event::{InvalidId, PeerId, SeqNum};
+use crate::event::{InvalidId, PeerId, SchemaVersion, SeqNum};
 use crate::hex::to_hex;
 
 /// Wire tags; the tag is also the traffic class (grants and cursors ahead of events).
@@ -180,6 +180,9 @@ pub enum Frame {
         cursors: Cursors,
         /// What they hold above those cursors; absent from an older build, which says nothing.
         ahead: Option<Ahead>,
+        /// The app schema the sender's build declares (D31), at index 5: a reading, never a gate.
+        /// Absent from a build that declares none, and from an older one.
+        schema_version: Option<SchemaVersion>,
     },
     Event {
         wire: Vec<u8>,
@@ -250,7 +253,8 @@ impl Frame {
                 from,
                 cursors,
                 ahead,
-            } => cursors_frame(from, cursors, ahead.as_deref()),
+                schema_version,
+            } => cursors_frame(from, cursors, ahead.as_deref(), *schema_version),
             Frame::Event { wire } => bytes_frame(tag::EVENT, wire),
             Frame::Presence { wire } => bytes_frame(tag::PRESENCE, wire),
             Frame::Digest {
@@ -370,18 +374,30 @@ pub fn grant_request_frame(peer_id: &PeerId, invite: Option<&str>) -> Vec<u8> {
     encode(&Value::Array(items))
 }
 
+/// Where the sender stands: `[kind, from, cursors, ahead?, floor?, schemaVersion?]`.
+///
+/// The schema version sits at index 5 (D31), after D46's compaction floor at 4. An older build
+/// reads index 3 strictly as `ahead` pairs and ignores the rest, so a sender with a version sends
+/// `ahead` and the floor too, each as an empty array when it has nothing to say there.
 pub fn cursors_frame(
     from: &PeerId,
     cursors: &[(PeerId, SeqNum)],
     ahead: Option<&[(PeerId, Vec<SeqNum>)]>,
+    schema_version: Option<SchemaVersion>,
 ) -> Vec<u8> {
     let mut items = vec![
         tag_value(tag::CURSORS),
         peer_value(from),
         cursor_pairs(cursors),
     ];
-    if let Some(ahead) = ahead {
-        items.push(ahead_pairs(ahead));
+    match (ahead, schema_version) {
+        (Some(ahead), _) => items.push(ahead_pairs(ahead)),
+        (None, Some(_)) => items.push(ahead_pairs(&[])),
+        (None, None) => {}
+    }
+    if let Some(version) = schema_version {
+        items.push(cursor_pairs(&[]));
+        items.push(Value::Int(version.get() as i64));
     }
     encode(&Value::Array(items))
 }
@@ -646,10 +662,17 @@ pub fn decode_frame(frame: &[u8]) -> Result<Frame, MalformedFrame> {
                 .get(3)
                 .map(|a| decode_ahead_pairs(Some(a)))
                 .transpose()?;
+            // index 5 reads as nothing unless it is a positive integer, as an older build reads
+            // it: the cursors beside it are what the frame is for (D31)
+            let schema_version = match outer.get(5) {
+                Some(Value::Int(n)) if *n >= 0 => SchemaVersion::parse(*n as u64),
+                _ => None,
+            };
             Ok(Frame::Cursors {
                 from,
                 cursors,
                 ahead,
+                schema_version,
             })
         }
         tag::DIGEST => decode_digest(&outer),
@@ -827,11 +850,38 @@ mod tests {
         let frame = Frame::Cursors {
             from: peer(9),
             cursors: cursors.clone(),
-            ahead: Some(ahead),
+            ahead: Some(ahead.clone()),
+            schema_version: None,
         };
         let bytes = frame.encode().unwrap();
         assert_eq!(decode_frame(&bytes).unwrap(), frame);
         assert_eq!(class_of(&bytes), Some(tag::CURSORS));
+
+        // D31: a version with nothing ahead still writes `ahead` and the floor, empty, before it
+        let versioned = Frame::Cursors {
+            from: peer(9),
+            cursors: cursors.clone(),
+            ahead: None,
+            schema_version: SchemaVersion::parse(4),
+        };
+        let bytes = versioned.encode().unwrap();
+        let Frame::Cursors {
+            ahead: read,
+            schema_version,
+            ..
+        } = decode_frame(&bytes).unwrap()
+        else {
+            panic!("expected cursors");
+        };
+        assert_eq!(read, Some(vec![]));
+        assert_eq!(schema_version, SchemaVersion::parse(4));
+        let both = Frame::Cursors {
+            from: peer(9),
+            cursors,
+            ahead: Some(ahead),
+            schema_version: SchemaVersion::parse(4),
+        };
+        assert_eq!(decode_frame(&both.encode().unwrap()).unwrap(), both);
     }
 
     #[test]

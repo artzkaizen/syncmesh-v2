@@ -1,4 +1,11 @@
-import type { HlcClock, MergeSpec, PartitionKey, PeerId, SyncEvent } from "@syncmesh/kernel";
+import type {
+  HlcClock,
+  MergeSpec,
+  PartitionKey,
+  PeerId,
+  SchemaVersion,
+  SyncEvent,
+} from "@syncmesh/kernel";
 
 import type { Boot } from "./boot.js";
 import type { DocStore } from "./doc-log.js";
@@ -25,6 +32,11 @@ export interface EngineOptions extends DocEngineOptions {
   readonly merge?: MergeSpec;
   /** How many of this engine's own writes stay revertable. Default 0. */
   readonly undoDepth?: number;
+  /**
+   * The app schema this build declares (D31): stamped on every event it writes (key 9) and sent
+   * on its cursors frame. A reading for the fleet, never a gate; absent, nothing is stamped.
+   */
+  readonly schemaVersion?: SchemaVersion;
   /** Runs on a probe before a local write gets a sequence number, and on every received event before it is stored. */
   readonly validate?: Validator;
   /**

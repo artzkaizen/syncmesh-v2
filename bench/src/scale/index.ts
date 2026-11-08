@@ -23,7 +23,7 @@ import {
   applyChange,
   emptyState,
   mergeRecord,
-  stampOf,
+  eventStamp,
   eventId,
   parseSeqNum,
   parsePeerId,
@@ -81,10 +81,10 @@ await runScale([
       for (let seq = 1; seq <= rows; seq += 1) {
         const e = event(seq, rows);
         for (const change of e.changes)
-          state = applyChange(state, change, stampOf(e), undefined, undefined);
+          state = applyChange(state, change, eventStamp(e), undefined, undefined);
       }
       const next = event(rows + 1, rows);
-      return { state, change: next.changes[0]!, stamp: stampOf(next) };
+      return { state, change: next.changes[0]!, stamp: eventStamp(next) };
     },
     run: ({ state, change, stamp }) => applyChange(state, change, stamp, undefined, undefined),
   }),
@@ -100,13 +100,13 @@ await runScale([
       for (let seq = 1; seq <= rows; seq += 1) {
         const e = event(seq, rows);
         for (const change of e.changes)
-          state = applyChange(state, change, stampOf(e), undefined, undefined);
+          state = applyChange(state, change, eventStamp(e), undefined, undefined);
       }
       const next = event(rows + 1, rows);
       const record = applyChange(
         emptyState(),
         next.changes[0]!,
-        stampOf(next),
+        eventStamp(next),
         undefined,
         undefined,
       )
@@ -173,7 +173,7 @@ await runScale([
     // built through the fold, as every row the engine holds is: a hand-made plain `Map` would be
     // copied on its first write — once per row loaded at boot, not once per change
     prepare: (columns) => {
-      const stamp = stampOf(event(1, 1));
+      const stamp = eventStamp(event(1, 1));
       const wide = new Map<ColumnName, CellValue>();
       for (let i = 0; i < columns; i += 1) wide.set(column(`c${i}`), i);
       const state = applyChange(

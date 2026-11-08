@@ -1,7 +1,8 @@
 import type { Ahead, Cursors } from "@syncmesh/engine";
-import type { PeerId } from "@syncmesh/kernel";
+import type { PeerId, SchemaVersion } from "@syncmesh/kernel";
 import type { CborValue } from "@syncmesh/wire";
 
+import { parseSchemaVersion } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { decodeCbor, encodeCbor, hexToBytes, isSafeNonNegative, isString } from "@syncmesh/wire";
 
@@ -30,6 +31,12 @@ export type Frame =
       readonly cursors: Cursors;
       /** What they hold above those cursors; absent from an older build, which says nothing. */
       readonly ahead?: Ahead;
+      /**
+       * The app schema the sender's build declares (D31), at index 5: a reading for
+       * `oldestSchema()`, never a gate. Absent from a build that declares none, and from an older
+       * one.
+       */
+      readonly schemaVersion?: SchemaVersion;
     }
   | { readonly kind: "event"; readonly wire: Uint8Array }
   /** The ephemeral tier (D16): signed, never stored, dropped rather than queued. */
@@ -96,12 +103,25 @@ export const grantRequestFrame = (peerId: PeerId, invite?: string): Uint8Array =
       : [KIND.grantRequest, peerBytes(peerId), invite],
   );
 
-export const cursorsFrame = (from: PeerId, cursors: Cursors, ahead?: Ahead): Uint8Array =>
-  encodeCbor(
-    ahead === undefined
-      ? [KIND.cursors, peerBytes(from), cursorPairs(cursors)]
-      : [KIND.cursors, peerBytes(from), cursorPairs(cursors), aheadPairs(ahead)],
-  );
+/**
+ * Where the sender stands: `[kind, from, cursors, ahead?, floor?, schemaVersion?]`.
+ *
+ * The schema version sits at index 5 (D31), after D46's compaction floor at 4. An older build
+ * reads index 3 strictly as `ahead` pairs and ignores the rest, so a sender with a version sends
+ * `ahead` and the floor too, each as an empty array when it has nothing to say there — which a
+ * receiver reads exactly as nothing said.
+ */
+export const cursorsFrame = (
+  from: PeerId,
+  cursors: Cursors,
+  ahead?: Ahead,
+  schemaVersion?: SchemaVersion,
+): Uint8Array => {
+  const base: CborValue[] = [KIND.cursors, peerBytes(from), cursorPairs(cursors)];
+  if (schemaVersion !== undefined)
+    return encodeCbor([...base, aheadPairs(ahead ?? new Map()), [], schemaVersion]);
+  return encodeCbor(ahead === undefined ? base : [...base, aheadPairs(ahead)]);
+};
 
 export const eventFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.event, wire]);
 
@@ -182,7 +202,7 @@ function decodeTagged(
   outer: readonly CborValue[],
 ): Result<Frame | { readonly kind: "unknown" }, MalformedFrame> {
   if (kind === KIND.grantRequest) return decodeRequest(payload, extra);
-  if (kind === KIND.cursors) return decodeCursors(payload, extra, outer[3]);
+  if (kind === KIND.cursors) return decodeCursors(payload, extra, outer[3], outer[5]);
   if (kind === KIND.digest) return decodeDigest(payload, extra, outer[3], outer[4]);
   if (kind === KIND.routes) return decodeRoutes(payload);
   if (kind === KIND.snapshot) return decodeSnapshotFrame(outer);
@@ -239,10 +259,19 @@ function decodeDigest(
   return ahead.isErr() ? Result.err(ahead.error) : Result.ok({ ...base, ahead: ahead.value });
 }
 
+/**
+ * Index 5 as this build reads it: a positive integer, or nothing. A value that is neither reads
+ * as nothing rather than refusing the frame, as an older build reads it — the cursors beside it
+ * are what the frame is for, and a reading is not worth losing them over.
+ */
+const frameSchemaVersion = (value: CborValue | undefined): SchemaVersion | undefined =>
+  isSafeNonNegative(value) ? parseSchemaVersion(value).unwrapOr(undefined) : undefined;
+
 function decodeCursors(
   payload: CborValue | undefined,
   extra: CborValue | undefined,
   above: CborValue | undefined,
+  declared: CborValue | undefined,
 ): Result<Frame, MalformedFrame> {
   return Result.gen(function* () {
     const from = yield* asPeer(payload);
@@ -250,6 +279,9 @@ function decodeCursors(
     const base = { kind: "cursors", from, cursors } as const;
     if (above === undefined) return Result.ok(base);
     const ahead = yield* decodeAheadPairs(above);
-    return Result.ok({ ...base, ahead });
+    const schemaVersion = frameSchemaVersion(declared);
+    return Result.ok(
+      schemaVersion === undefined ? { ...base, ahead } : { ...base, ahead, schemaVersion },
+    );
   });
 }

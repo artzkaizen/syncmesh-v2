@@ -48,16 +48,20 @@ export type {
   ParsedEventId,
   Procedure,
   ProtocolVersion,
+  SchemaVersion,
   SeqNum,
   SyncEvent,
 } from "./event.js";
 export {
   InvalidEventId,
+  InvalidSchemaVersion,
   InvalidSeqNum,
   eventId,
+  eventSchemaVersion,
+  eventStamp,
   parseEventId,
+  parseSchemaVersion,
   parseSeqNum,
-  stampOf,
 } from "./event.js";
 export type { PartitionKey } from "./partition.js";
 export { InvalidPartitionKey, PARTITION_KEY, kindOf, parsePartitionKey } from "./partition.js";

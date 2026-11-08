@@ -1,4 +1,4 @@
-import type { HlcClock, PeerId, SeqNum, State } from "@syncmesh/kernel";
+import type { HlcClock, PeerId, SchemaVersion, SeqNum, State } from "@syncmesh/kernel";
 
 import { getRecord, docLineage, type Procedure, type SyncEvent } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
@@ -57,6 +57,8 @@ export interface OwnPositionApi {
 
 export interface WriteDeps {
   readonly peerId: PeerId;
+  /** Stamped on each event this device writes (D31); absent, none is. */
+  readonly schemaVersion: SchemaVersion | undefined;
   readonly clock: HlcClock;
   readonly validate?: Validator | undefined;
   readonly before: StateLookup;
@@ -82,6 +84,7 @@ export interface WriteDeps {
 export function createWritePath(deps: WriteDeps) {
   const {
     peerId,
+    schemaVersion,
     clock,
     validate,
     before,
@@ -123,7 +126,7 @@ export function createWritePath(deps: WriteDeps) {
               // a write every peer drops as a duplicate, silently (G7). Local writes never travel,
               // so their run is this log's alone
               const floor = scope === "synced" ? ownFloor.get() : 0;
-              const event = buildEvent(
+              const numbered = buildEvent(
                 peerId,
                 procedure,
                 hlc,
@@ -132,6 +135,7 @@ export function createWritePath(deps: WriteDeps) {
                 mutateOptions,
                 (doc) => docLineage(getRecord(getState(), doc.table, doc.key), doc.column),
               );
+              const event = schemaVersion === undefined ? numbered : { ...numbered, schemaVersion };
               (await scoped.events.append({ event })).unwrap();
               /**
                * **The ledger row belongs to the durable half, so it lands with the event.**

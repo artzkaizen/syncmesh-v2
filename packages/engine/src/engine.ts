@@ -1,5 +1,4 @@
 import type { PeerId, Row, RowKey, Stamp, State, TableName } from "@syncmesh/kernel";
-import type { Temporal } from "@syncmesh/temporal";
 
 import {
   emptyState,
@@ -12,10 +11,11 @@ import {
 import { type EventId, type PartitionKey, type Procedure, type SyncEvent } from "@syncmesh/kernel";
 import { Result, omitUndefined } from "@syncmesh/result";
 
-import type { Ack, CompactError, CompactOptions, Compaction } from "./compaction.js";
+import type { CompactError, CompactOptions, Compaction } from "./compaction.js";
 import type { RepairApi } from "./digest.js";
 import type { DocApi } from "./doc-path.js";
 import type { FeedApi } from "./feed.js";
+import type { FleetApi } from "./fleet.js";
 import type { Interest } from "./interest.js";
 import type { EngineOptions, MutateOptions } from "./options.js";
 import type { Parked } from "./quarantine.js";
@@ -39,6 +39,7 @@ import {
   type RevertError,
 } from "./errors.js";
 import { createFeedPath, trackFeeds } from "./feed.js";
+import { createFleet } from "./fleet.js";
 import { createFoldPath, type FoldBatch } from "./fold.js";
 import { gatedTransactions } from "./gate.js";
 import { eventsWanted } from "./interest.js";
@@ -70,7 +71,8 @@ export interface Quarantined {
   readonly reason: ValidationError;
 }
 
-export interface Engine extends FeedApi, RepairApi, SnapshotApi, DocApi, OwnPositionApi, PurgeApi {
+export interface Engine
+  extends FeedApi, RepairApi, SnapshotApi, DocApi, OwnPositionApi, PurgeApi, FleetApi {
   readonly peerId: PeerId;
   /** Records, stamps, numbers, appends, folds, then hands the event to `onOutbound` — a write is real once appended. */
   readonly mutate: (
@@ -141,22 +143,6 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi, DocApi, OwnPosi
    * filtered out — the only thing that can move a cursor past a hole nobody is going to fill.
    */
   readonly adoptCoverage: (coverage: Coverage) => void;
-  /** Records what `peer` holds, as of `at`; links call it on every cursor exchange. Feeds `compact`. */
-  readonly acknowledge: (peer: PeerId, cursors: Cursors, at: Temporal.Instant) => void;
-  /** What each peer was last acknowledged as holding. */
-  readonly acks: () => ReadonlyMap<PeerId, Cursors>;
-  /**
-   * The same answer with the time it was given, which is the difference between "that peer is
-   * behind" and "that peer has not been heard from since Tuesday". Both readings are diagnoses
-   * and only one of them is about sync.
-   *
-   * {@link Engine.acks} stays as it is because nothing that consumes it — the compaction floor,
-   * the link budget, churn — has any use for the stamp, and a Map they have to unwrap is a cost
-   * paid on every sweep for one reader's benefit.
-   */
-  readonly acksAt: () => ReadonlyMap<PeerId, Ack>;
-  /** Fires after `acknowledge` records what a peer holds. */
-  readonly onAcknowledge: (listener: (peer: PeerId) => void) => Unsubscribe;
   /** Removes events every counted peer has acked and the state store has persisted; unobservable to peers. See RFC-0015 §2. */
   readonly compact: (options: CompactOptions) => Promise<Result<Compaction, CompactError>>;
   /**
@@ -214,6 +200,7 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi, DocApi, OwnPosi
 export function createEngine(options: EngineOptions): Engine {
   const {
     peerId,
+    schemaVersion,
     clock,
     store,
     undoDepth = 0,
@@ -238,8 +225,8 @@ export function createEngine(options: EngineOptions): Engine {
   const outbound = createHub<SyncEvent>(report("onOutbound"));
   const telemetry = createHub<TelemetryEvent>();
   const quarantine = createHub<Quarantined>();
-  const ackHub = createHub<PeerId>(report("onAcknowledge"));
-  const acks = new Map<PeerId, Ack>();
+  // the acks and the schema each peer was seen on (D31): every folded event is a reading
+  const fleet = createFleet(schemaVersion, report("onAcknowledge"));
   // declared before the fold path, which advances an author's chain as its events land
   const feeds = trackFeeds();
   const parked = createQuarantine({
@@ -259,7 +246,11 @@ export function createEngine(options: EngineOptions): Engine {
     initial: boot?.state ?? emptyState(),
     hasAdapter,
   });
-  const { getState, setState, fold, persist, notify, derive } = foldPath;
+  const { getState, setState, persist, notify, derive } = foldPath;
+  const fold: typeof foldPath.fold = (entries, source) => {
+    for (const { event } of entries) fleet.note(event);
+    return foldPath.fold(entries, source);
+  };
   docPath.bind({ ...foldPath, synced: () => coverage.current().synced, atomically });
   fold(boot?.replay ?? [], "boot");
 
@@ -290,6 +281,7 @@ export function createEngine(options: EngineOptions): Engine {
 
   const { receiveBatch, ...writes } = createWritePath({
     peerId,
+    schemaVersion,
     clock,
     validate,
     before,
@@ -313,6 +305,7 @@ export function createEngine(options: EngineOptions): Engine {
         quarantine,
         errors,
         unknownHandling,
+        noteParked: fleet.note,
       }),
   });
 
@@ -343,14 +336,9 @@ export function createEngine(options: EngineOptions): Engine {
     holding: () => mergeAhead(coverage.ahead(), parked.ahead()),
     coverage: coverage.current,
     adoptCoverage: coverage.adopt,
-    acknowledge: (peer, cursors, at) => {
-      acks.set(peer, { cursors, at });
-      ackHub.emit(peer);
-    },
-    acks: () => new Map([...acks].map(([peer, ack]) => [peer, ack.cursors])),
-    acksAt: () => new Map(acks),
-    onAcknowledge: ackHub.subscribe,
-    compact: (options) => compactLog({ store, stateStore, acks, ...docPath.compaction }, options),
+    ...fleet.api,
+    compact: (options) =>
+      compactLog({ store, stateStore, acks: fleet.acks, ...docPath.compaction }, options),
     ...snapshots,
     eventsSince: (theirs, interest) => eventsWanted(store, theirs, interest),
     recentEvents: (options = {}) => store.recent?.(options) ?? recentHeaders(store, options),

@@ -1,4 +1,4 @@
-import type { Cursors, StoredEvent, Unsubscribe } from "@syncmesh/engine";
+import type { Cursors, Engine, StoredEvent, Unsubscribe } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import type { BlobRefusal, TransportContext } from "@syncmesh/transport";
 import type { Grant } from "@syncmesh/wire";
@@ -170,6 +170,19 @@ const adoptOwnRun = async (
   if (warning !== undefined) dropped(warning);
 };
 
+/**
+ * Our contiguous position, for every other peer's `delivered`, with the schema this build
+ * declares (D31) for their fleet reading. Index 5 needs index 3 written, so a versioned frame
+ * says what is held above the cursors too, truthfully; an undeclared one is the frame it was.
+ */
+const ownCursorsFrame = (engine: Engine, self: PeerId): Uint8Array => {
+  const { schemaVersion } = engine;
+  const at = engine.coverage().synced;
+  return schemaVersion === undefined
+    ? cursorsFrame(self, at)
+    : cursorsFrame(self, at, engine.ahead(), schemaVersion);
+};
+
 /** Everything one session subscribes to; the returned unsubscribes are the session's teardown. */
 export function wireSession(
   context: TransportContext,
@@ -296,7 +309,7 @@ export function wireSession(
     else if (frame.kind === "grant") void grants.register(frame.wire);
     else if (frame.kind === "cursors") {
       hooks.onPeerHeard?.(frame.from);
-      engine.acknowledge(frame.from, frame.cursors, now());
+      engine.acknowledge(frame.from, frame.cursors, now(), frame.schemaVersion);
     } else if (frame.kind === "grant-request") {
       const request = { peerId: frame.peerId };
       if (frame.invite !== undefined) Object.assign(request, { invite: frame.invite });
@@ -372,7 +385,7 @@ export function wireSession(
     if (!caughtUp || batch.source !== "remote") return;
     pushOutstanding();
     // our contiguous position, for every other peer's `delivered`; the relay passes it on
-    hooks.sendSafe(cursorsFrame(identity.peerId, engine.coverage().synced));
+    hooks.sendSafe(ownCursorsFrame(engine, identity.peerId));
   });
   return [offFrame, offOutbound, offRegistered, offFolds];
 }

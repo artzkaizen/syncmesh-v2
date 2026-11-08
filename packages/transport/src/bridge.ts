@@ -18,13 +18,13 @@ import type { RouteTable } from "./routes.js";
 import type { SnapshotFrame } from "./snap-frame.js";
 
 import { controlFrames, createBridgeCustody } from "./custody.js";
-import { createDispatch } from "./dispatch.js";
+import { createDispatch, type FrameHandlers } from "./dispatch.js";
 import { answerDigest } from "./divergence.js";
 import { KIND } from "./frame-parts.js";
 import { decodeFrame, grantFrame, grantRequestFrame, presenceFrame } from "./frame.js";
 import { createHoldback } from "./holdback.js";
 import { createJoinExchange } from "./join.js";
-import { createOutbound, outboundFor } from "./outbound.js";
+import { createOutbound, outboundDeps } from "./outbound.js";
 import { presenceSlot } from "./presence.js";
 import { createRepage } from "./repage.js";
 import { createRouteExchange } from "./route-exchange.js";
@@ -206,7 +206,7 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
   const repage = createRepage({ engine, gate: options.readGate, interest, peer: reader });
 
   const routing = createRouteExchange({ farSide: () => farSide, routes });
-  const out = createOutbound(outboundFor(link, options, scope, errors));
+  const out = createOutbound(outboundDeps(link, options, scope, errors));
   const { send, drain, envelopeOf, sendDigest, cursorsAfter } = out;
   const sendCursors = (): void => void (queue = cursorsAfter(queue, repage.asks));
 
@@ -241,14 +241,10 @@ export function bridgeFramedLink(link: FrameLink, options: BridgeOptions): Bridg
     });
   };
 
-  const onCursors = (
-    from: PeerId,
-    theirs: ReadonlyMap<PeerId, SeqNum>,
-    theirAhead: Ahead | undefined,
-  ): void => {
+  const onCursors: FrameHandlers["onCursors"] = (from, theirs, theirAhead, schemaVersion) => {
     // the far side names itself in its cursors; that is how this link learns whose it is
     farSide = from;
-    engine.acknowledge(from, theirs, now());
+    engine.acknowledge(from, theirs, now(), schemaVersion);
     queue = queue.then(async () => {
       const entries = await engine.eventsSince(theirs);
       if (entries.isErr()) {

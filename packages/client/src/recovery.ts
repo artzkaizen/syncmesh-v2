@@ -145,6 +145,8 @@ const nextStep = (issue: RecoveryIssue): string => {
       return "The grant names a different device than the one that signed: re-issue it for this device.";
     case "PartitionNotGranted":
       return "The author's grant does not cover this instance: widen it, or leave the write where it is.";
+    case "TableDropped":
+      return `${issue.author.slice(0, 8)} is on an older build that still writes a table this build dropped: upgrade that device. Nothing here will fold it.`;
     default:
       return "The event failed the schema's own rules. A later build or policy may read it differently; nothing an operator does now will.";
   }

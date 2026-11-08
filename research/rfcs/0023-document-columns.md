@@ -782,8 +782,8 @@ decompression cap and a time budget, and exceeding them is a `failed` update, ne
 | drop a doc column | park like any column: stop writing, keep the log until the compaction floor passes it |
 | rename a doc column | only with an upcaster rewriting `data.0` (column) — pure, allowed |
 
-Tag 6 and keys 10/11 are additive and need no `v` bump. `schemaVersion` (key 9) gates doc
-columns like any column. `fromDrizzle` already maps pg `bytea` → `blob` and Drizzle 1.0 SQLite
+Tag 6 and keys 10/11 are additive and need no `v` bump. `schemaVersion` (key 9, D31) is a
+reading for doc columns as for any column, never a gate. `fromDrizzle` already maps pg `bytea` → `blob` and Drizzle 1.0 SQLite
 `blob()` without a mode → `json`. The binary check reads those same frozen kinds.
 
 ## 13 · Conformance and cross-runtime tests

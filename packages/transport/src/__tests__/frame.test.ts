@@ -1,7 +1,8 @@
-import { parsePeerId, parseSeqNum } from "@syncmesh/kernel";
-import { encodeCbor } from "@syncmesh/wire";
+import { parsePeerId, parseSchemaVersion, parseSeqNum } from "@syncmesh/kernel";
+import { decodeCbor, encodeCbor, hexToBytes } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
+import { KIND } from "../frame-parts.js";
 import {
   cursorsFrame,
   decodeFrame,
@@ -64,6 +65,39 @@ describe("the frame codec", () => {
     );
     expect(decodeFrame(cursorsFrame(A, cursors)).unwrap()).not.toHaveProperty("ahead");
     expect(decodeFrame(digestFrame("s", cursors, digests)).unwrap()).not.toHaveProperty("ahead");
+  });
+
+  test("the sender's schema version rides index 5, behind an ahead and a floor it always writes (D31)", () => {
+    const cursors = new Map([[A, seq(3)]]);
+    const four = parseSchemaVersion(4).unwrap();
+    const bare = decodeCbor(cursorsFrame(A, cursors, undefined, four)).unwrap();
+    // index 3 is read strictly as `ahead` pairs by every build, so it is there, empty, and so is
+    // D46's floor at 4: an older build reads the frame as cursors with nothing above them
+    expect(Array.isArray(bare) && bare.slice(3)).toEqual([[], [], 4]);
+    expect(decodeFrame(cursorsFrame(A, cursors, undefined, four)).unwrap()).toEqual({
+      kind: "cursors",
+      from: A,
+      cursors,
+      ahead: new Map(),
+      schemaVersion: four,
+    });
+    const ahead = new Map([[B, [seq(9)]]]);
+    expect(decodeFrame(cursorsFrame(A, cursors, ahead, four)).unwrap()).toMatchObject({
+      ahead,
+      schemaVersion: four,
+    });
+    // a sender that declares none sends the frame it always did
+    expect(cursorsFrame(A, cursors, ahead)).toEqual(
+      encodeCbor([
+        KIND.cursors,
+        hexToBytes(A).unwrap(),
+        [[hexToBytes(A).unwrap(), 3]],
+        [[hexToBytes(B).unwrap(), [9]]],
+      ]),
+    );
+    // and an index 5 that is not a positive integer reads as nothing, never as a broken frame
+    const odd = encodeCbor([...(Array.isArray(bare) ? bare.slice(0, 5) : []), 0]);
+    expect(decodeFrame(odd).unwrap()).not.toHaveProperty("schemaVersion");
   });
 
   test("garbage and unknown tags are values, never throws", () => {

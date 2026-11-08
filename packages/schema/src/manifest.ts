@@ -1,6 +1,13 @@
-import type { ColumnName, MergeSpec, StrategyName, TableName } from "@syncmesh/kernel";
+import type {
+  ColumnName,
+  MergeSpec,
+  SchemaVersion,
+  StrategyName,
+  TableName,
+} from "@syncmesh/kernel";
 import type { AllowBlock, PolicyNode, RoleSet } from "@syncmesh/policy";
 
+import { parseSchemaVersion } from "@syncmesh/kernel";
 import { NO_ROLES } from "@syncmesh/policy";
 import { panic } from "@syncmesh/result";
 
@@ -11,6 +18,7 @@ import { combinators } from "./bind.js";
 import { columnFromDef, columnStrategy } from "./column.js";
 import { docColumnEntries } from "./documents.js";
 import { sourceName } from "./from-drizzle.js";
+import { parseTableName } from "./names.js";
 import {
   RESERVED,
   global,
@@ -50,6 +58,11 @@ export type TableEntry<C extends Columns = Columns> =
        * (D43). Absent, the table replicates.
        */
       readonly sync?: "window";
+      /**
+       * `true`: the table is retired (D31) — still declared, read and folded from peers, refused
+       * for this device's own writes. The step before it moves to {@link Manifest.dropped}.
+       */
+      readonly retired?: true;
     }
   | {
       readonly columns: Columns;
@@ -64,6 +77,11 @@ export type TableEntry<C extends Columns = Columns> =
        * (D43). Absent, the table replicates.
        */
       readonly sync?: "window";
+      /**
+       * `true`: the table is retired (D31) — still declared, read and folded from peers, refused
+       * for this device's own writes. The step before it moves to {@link Manifest.dropped}.
+       */
+      readonly retired?: true;
     }
   | {
       readonly columns: C;
@@ -73,6 +91,11 @@ export type TableEntry<C extends Columns = Columns> =
       readonly allow?: undefined;
       readonly derive?: DeriveBlock<C>;
       readonly sync?: undefined;
+      /**
+       * `true`: the table is retired (D31) — still declared, read and folded from peers, refused
+       * for this device's own writes. The step before it moves to {@link Manifest.dropped}.
+       */
+      readonly retired?: true;
     };
 
 export type ColumnsMap = Readonly<Record<string, Columns>>;
@@ -82,6 +105,19 @@ export interface Manifest<C extends ColumnsMap, PC extends PresenceMap = Record<
   readonly tables: { readonly [K in keyof C]: TableEntry<C[K]> };
   /** The ephemeral tier (D16): topics that never touch the log, the snapshot or a cursor. */
   readonly presence?: PresenceBlock<PC>;
+  /**
+   * Which shape of the data model this is (D31): a positive integer, raised whenever the shape
+   * changes. Stamped on every event this build writes and sent on the cursors frame, so a fleet
+   * can read which builds are still writing; absent, nothing is stamped and peers read `1`.
+   * `checkEvolution` refuses a lower one, and an unchanged one over a changed shape.
+   */
+  readonly schemaVersion?: number;
+  /**
+   * The tables this app declared once and has since dropped (D31's contract step). Kept so a
+   * write to one from an older build parks under its own bucket, `dropped-table`, and never in
+   * `unknown-table` beside a newer build's tables. A name here can never be declared again.
+   */
+  readonly dropped?: readonly string[];
 }
 
 export interface SchemaEntry {
@@ -97,6 +133,8 @@ export interface SchemaEntry {
   readonly derive?: DeriveBlock<Columns>;
   /** `"window"` for a table the server serves pages of instead of replicating; absent, it replicates. */
   readonly sync?: "window";
+  /** Present on a retired table (D31): read and folded from peers, refused for local writes. */
+  readonly retired?: true;
 }
 
 export type TablesOf<C extends ColumnsMap> = {
@@ -120,6 +158,10 @@ export interface Schema<C extends ColumnsMap, PC extends PresenceMap = Record<st
   readonly sealedKinds: ReadonlySet<string>;
   /** The roles that apply in a kind and whether they are ordered; {@link NO_ROLES} for a reserved or unknown one. */
   readonly rolesFor: (kind: string) => RoleSet;
+  /** What {@link Manifest.schemaVersion} declared; absent when it declared none. */
+  readonly schemaVersion?: SchemaVersion;
+  /** {@link Manifest.dropped}; empty for a manifest that dropped nothing. */
+  readonly dropped: ReadonlySet<string>;
 }
 
 /**
@@ -200,22 +242,17 @@ export function syncSchema<
         : table(name, derivedColumns(entry.columns, entry.derive));
     const partition = declarePartition(name, entry, declare);
     built[name] = tbl;
-    const base: SchemaEntry = {
-      table: tbl,
-      partition,
-      visibility: entry.visibility ?? "partition",
-    };
-    const ruled = entry.allow === undefined ? base : { ...base, allow: entry.allow(combinators()) };
-    const fields = entry.allow === undefined ? undefined : fieldRules(name, tbl, entry.fields);
-    const fielded = fields === undefined ? ruled : { ...ruled, fields };
-    const derived = entry.derive === undefined ? fielded : { ...fielded, derive: entry.derive };
-    entries.push(entry.sync === undefined ? derived : { ...derived, sync: entry.sync });
+    entries.push(schemaEntry(name, tbl, partition, entry));
     const rules = mergeRules(name, tbl);
     if (rules.size > 0) merge.set(tbl.name, rules);
     if (documents.length > 0) docs.set(tbl.name, documents);
   }
   const presence = presenceTopics<PC>(manifest.presence, declare);
+  const dropped = droppedTables(manifest.dropped ?? [], tables);
+  const version = declaredVersion(manifest.schemaVersion);
   return {
+    ...(version !== undefined && { schemaVersion: version }),
+    dropped,
     // SAFETY: built has exactly the keys of T, each the table its entry describes
     tables: built as Schema<C, PC>["tables"],
     presence,
@@ -229,6 +266,41 @@ export function syncSchema<
     sealedKinds: new Set([...declared.values()].filter((p) => p.sealed).map((p) => p.name)),
     rolesFor: (kind) => declared.get(kind)?.roles ?? NO_ROLES,
   };
+}
+
+/** One table's entry as the schema hands it out: its rules as data, and each optional part it declares. */
+function schemaEntry(name: string, tbl: Table, partition: string, entry: TableEntry): SchemaEntry {
+  const base: SchemaEntry = { table: tbl, partition, visibility: entry.visibility ?? "partition" };
+  const ruled = entry.allow === undefined ? base : { ...base, allow: entry.allow(combinators()) };
+  const fields = entry.allow === undefined ? undefined : fieldRules(name, tbl, entry.fields);
+  const fielded = fields === undefined ? ruled : { ...ruled, fields };
+  const derived = entry.derive === undefined ? fielded : { ...fielded, derive: entry.derive };
+  const served = entry.sync === undefined ? derived : { ...derived, sync: entry.sync };
+  return entry.retired === true ? { ...served, retired: true } : served;
+}
+
+/** The manifest's `schemaVersion`, checked: a definition mistake throws at module load. */
+function declaredVersion(version: number | undefined): SchemaVersion | undefined {
+  if (version === undefined) return undefined;
+  const parsed = parseSchemaVersion(version);
+  if (parsed.isErr()) panic(`schemaVersion: ${version} is not a positive integer`);
+  return parsed.value;
+}
+
+/**
+ * The dropped names, checked the way the types cannot: each a table name, none declared again —
+ * a write from an older build would otherwise fold into a different table under the old name.
+ */
+function droppedTables(
+  names: readonly string[],
+  tables: Readonly<Record<string, TableEntry>>,
+): ReadonlySet<string> {
+  for (const name of names) {
+    if (parseTableName(name).isErr()) panic(`dropped: "${name}" is not a table name`);
+    if (Object.hasOwn(tables, name))
+      panic(`dropped: "${name}" is declared too; a dropped table name is never reused`);
+  }
+  return new Set(names);
 }
 
 /**

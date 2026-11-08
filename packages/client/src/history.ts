@@ -12,7 +12,7 @@ import type { Row, Table } from "@syncmesh/schema";
 import type { Temporal } from "@syncmesh/temporal";
 
 import { foldable } from "@syncmesh/engine";
-import { applyChange, compareStamp, emptyState, readRow, stampOf } from "@syncmesh/kernel";
+import { applyChange, compareStamp, emptyState, readRow, eventStamp } from "@syncmesh/kernel";
 import { fromWirePatch, fromWireRow } from "@syncmesh/schema";
 
 /** One write in a row's timeline: who set what, and the row as of that write. */
@@ -60,7 +60,7 @@ export function rowHistory<T extends Table>(
     const changes = event.changes.filter((c) => c.table === table.name && c.key === key);
     if (changes.length > 0) touching.push({ event, changes });
   }
-  touching.sort((a, b) => compareStamp(stampOf(a.event), stampOf(b.event)));
+  touching.sort((a, b) => compareStamp(eventStamp(a.event), eventStamp(b.event)));
 
   let state = emptyState();
   const revisions: Revision<T>[] = [];
@@ -69,7 +69,7 @@ export function rowHistory<T extends Table>(
       // a change this build cannot fold still belongs in the history — a write happened here, and
       // saying so is more use to a person than a gap where one was (D22-A)
       if (foldable(change))
-        state = applyChange(state, change, stampOf(event), options.merge, event.partition);
+        state = applyChange(state, change, eventStamp(event), options.merge, event.partition);
       const cells = readRow(state, table.name, key);
       revisions.push({
         at: event.hlc[0],

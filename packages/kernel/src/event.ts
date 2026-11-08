@@ -17,6 +17,13 @@ export type EventId = Brand<string, "EventId">;
 
 export type Procedure = Brand<string, "Procedure">;
 
+/**
+ * Which app schema an event was written against (D31): a positive integer the manifest declares
+ * and raises with each change to its shape. A reading, never a gate — no build refuses an event
+ * for it. An event without one came from a build that declared none, and reads as `1`.
+ */
+export type SchemaVersion = Brand<number, "SchemaVersion">;
+
 /** One local write as every peer will see it. Unsigned: the wire envelope carries the signature. See RFC-0002. */
 export interface SyncEvent {
   readonly v: ProtocolVersion;
@@ -35,6 +42,11 @@ export interface SyncEvent {
   /** The action this event compensates (event key 11): an undo, and a redo is the undo of an undo. */
   readonly undoOf?: ActionId;
   /**
+   * The app schema the author's build declared (event key 9, D31); absent from a build that
+   * declared none. What `oldestSchema()` reads; nothing refuses an event for it.
+   */
+  readonly schemaVersion?: SchemaVersion;
+  /**
    * This event's content is sealed and this device holds no key for it (book ch. 14), so
    * `changes` is empty because there is nothing readable — not because nothing was written.
    *
@@ -52,6 +64,11 @@ export class InvalidSeqNum extends TaggedError("InvalidSeqNum")<{
   message: string;
 }> {}
 
+export class InvalidSchemaVersion extends TaggedError("InvalidSchemaVersion")<{
+  input: number;
+  message: string;
+}> {}
+
 export class InvalidEventId extends TaggedError("InvalidEventId")<{
   input: string;
   message: string;
@@ -64,6 +81,21 @@ export function parseSeqNum(input: number): Result<SeqNum, InvalidSeqNum> {
   // SAFETY: checked positive safe integer, which is the SeqNum invariant
   return Result.ok(input as SeqNum);
 }
+
+/** The version a schema declares: a positive safe integer, so "older" is a comparison. */
+export function parseSchemaVersion(input: number): Result<SchemaVersion, InvalidSchemaVersion> {
+  if (!Number.isSafeInteger(input) || input < 1)
+    return Result.err(
+      new InvalidSchemaVersion({ input, message: "expected a positive safe integer" }),
+    );
+  // SAFETY: checked positive safe integer, which is the SchemaVersion invariant
+  return Result.ok(input as SchemaVersion);
+}
+
+/** What an event's author declared, `1` for an author that declared nothing (D31). */
+export const eventSchemaVersion = (event: Pick<SyncEvent, "schemaVersion">): SchemaVersion =>
+  // SAFETY: 1 is a positive safe integer, the SchemaVersion invariant
+  event.schemaVersion ?? (1 as SchemaVersion);
 
 /** `${peerId}-${seqNum}`, or `${peerId}-L${seqNum}` for a local write — the two sequences never share an id. */
 export function eventId(peerId: PeerId, seqNum: SeqNum, local = false): EventId {
@@ -93,4 +125,4 @@ export function parseEventId(input: string): Result<ParsedEventId, InvalidEventI
   }).mapError(() => new InvalidEventId({ input, message: "expected <peerId>-[L]<seqNum>" }));
 }
 
-export const stampOf = (event: SyncEvent): Stamp => ({ hlc: event.hlc, peer: event.peerId });
+export const eventStamp = (event: SyncEvent): Stamp => ({ hlc: event.hlc, peer: event.peerId });

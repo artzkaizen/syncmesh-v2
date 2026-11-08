@@ -3,6 +3,7 @@ import type { Change, Hlc, Logical, RowKey, SyncEvent, TableName } from "@syncme
 import {
   eventId,
   parsePeerId,
+  parseSchemaVersion,
   parseSeqNum,
   type PartitionKey,
   type Procedure,
@@ -22,10 +23,9 @@ import { rowFromCbor, rowToCbor } from "./row-codec.js";
 export class MalformedEvent extends TaggedError("MalformedEvent")<{ message: string }> {}
 
 /**
- * Event core map keys, frozen by the vectors (RFC-0002). 4 was never used and stays retired;
- * 9 is `schemaVersion` on the branch that claims it. `action` and `undoOf` (RFC-0023 §5.2)
- * drive history and undo only: a build that skips them folds the event identically, which is
- * why neither needs a `v` bump.
+ * Event core map keys, frozen by the vectors (RFC-0002). 4 was never used and stays retired.
+ * `schemaVersion` (D31) and `action` and `undoOf` (RFC-0023 §5.2) are readings: a build that
+ * skips them folds the event identically, which is why none of them needs a `v` bump.
  */
 const KEY = {
   v: 0,
@@ -42,6 +42,12 @@ const KEY = {
    * nothing in it, which is what a carrier does anyway.
    */
   sealed: 8,
+  /**
+   * The app schema the author declared (D31; `schema-vectors.json`). Written only when the
+   * manifest declares one, so every event from a build that declares none is the bytes it
+   * always was.
+   */
+  schemaVersion: 9,
   action: 10,
   undoOf: 11,
 } as const;
@@ -80,6 +86,7 @@ export function encodeEventCore(event: SyncEvent, crypto?: EventCrypto): Uint8Ar
     [KEY.procedure, event.procedure],
   ]);
   if (event.partition !== undefined) core.set(KEY.partition, event.partition);
+  if (event.schemaVersion !== undefined) core.set(KEY.schemaVersion, event.schemaVersion);
   if (event.action !== undefined) core.set(KEY.action, hexToBytes(event.action).unwrap());
   if (event.undoOf !== undefined) core.set(KEY.undoOf, hexToBytes(event.undoOf).unwrap());
   const changes = event.changes.map(encodeChange);
@@ -139,6 +146,7 @@ function decodeEventValue(
   const partition = m.get(KEY.partition);
   const action = wireActionId(m.get(KEY.action));
   const undoOf = wireActionId(m.get(KEY.undoOf));
+  const schemaVersion = wireSchemaVersion(m.get(KEY.schemaVersion));
   const under = m.get(KEY.sealed);
   if (partition !== undefined && !isString(partition)) return malformed("partition is not text");
   if (!Array.isArray(hlc) || hlc.length !== 2) return malformed("hlc is not a pair");
@@ -172,10 +180,22 @@ function decodeEventValue(
       ...(partition !== undefined && { partition: asPartition(partition) }),
       ...(action !== undefined && { action }),
       ...(undoOf !== undefined && { undoOf }),
+      ...(schemaVersion !== undefined && { schemaVersion }),
     };
     return Result.ok(base);
   });
 }
+
+/**
+ * Key 9 as this build reads it: a positive integer, or nothing.
+ *
+ * Anything else reads as absent rather than malformed. A build from before D31 skips the key
+ * whatever it holds, and refusing here would make the newer build drop an event the older one
+ * folds — a verdict that depends on the build, which is the one thing a reading must never be.
+ * The signed bytes keep whatever was written, so nothing is lost by not naming it.
+ */
+const wireSchemaVersion = (value: CborValue | undefined) =>
+  isSafeNonNegative(value) ? parseSchemaVersion(value).unwrapOr(undefined) : undefined;
 
 /**
  * The changes this device can read: the plaintext list, the list behind a seal it holds the key

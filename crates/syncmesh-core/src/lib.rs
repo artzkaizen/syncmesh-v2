@@ -32,7 +32,7 @@ pub use doc::{
 };
 pub use doc_checkpoint::{DocCheckpoint, decode_doc_checkpoint, sign_doc_checkpoint};
 pub use envelope::{VerifiedEvent, decode_and_verify, sign_event, split_envelope};
-pub use event::{Change, PeerId, SyncEvent, event_id};
+pub use event::{Change, PeerId, SchemaVersion, SyncEvent, event_id};
 pub use event_codec::{decode_event_core, encode_event_core};
 pub use hex::{from_hex, to_hex};
 pub use hlc::{DEFAULT_MAX_DRIFT_MS, Hlc, HlcClock};

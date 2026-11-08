@@ -1,6 +1,6 @@
 import type { Procedure, TableName } from "@syncmesh/kernel";
 
-import { stampOf } from "@syncmesh/kernel";
+import { eventStamp } from "@syncmesh/kernel";
 
 import type { Ledger } from "./ledger.js";
 import type { Outcome, SwitchState } from "./switches.js";
@@ -191,7 +191,7 @@ async function writeOnce(
     key: id,
     op,
     values: op === "delete" ? {} : op === "insert" ? { id, title, ownerId } : { title },
-    stamp: stampText(stampOf(written.value)),
+    stamp: stampText(eventStamp(written.value)),
     eventId: written.value.id,
     author: written.value.peerId,
     seqNum: written.value.seqNum,

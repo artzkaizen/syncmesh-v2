@@ -21,7 +21,7 @@ import {
   getRecord,
   isVisible,
   readRow,
-  stampOf,
+  eventStamp,
 } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
@@ -239,7 +239,7 @@ const NOTHING_WRITTEN: Written = { deleted: false, columns: new Map() };
  * of the engine the write was made on.
  */
 export function compensate(state: State, { event, before }: Undo, merge?: MergeSpec): Compensation {
-  const mine = stampOf(event);
+  const mine = eventStamp(event);
   const changes: Change[] = [];
   const skipped = event.changes.flatMap((c): Skipped[] =>
     c.kind === "doc" ? [{ table: c.table, key: c.key, column: c.column, reason: "document" }] : [],

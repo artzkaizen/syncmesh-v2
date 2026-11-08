@@ -44,8 +44,10 @@ export interface OperationsView {
    * *nobody has this yet*, never *syncing…*, which would be a spinner that cannot stop — unless
    * the row carries `refusals` (D32), when it can say the stronger true thing: *peer 3f2a… refused
    * this (GrantStale)*, or for `unknown-table`/`unknown-kind`, *3f2a… is on an older build and
-   * cannot read this yet* — never "refused". Learned over direct links only: a relay does not
-   * carry refusals, as it does not carry receipts.
+   * cannot read this yet* — never "refused". A `refused` row with the verdict `TableDropped` is
+   * the opposite case (D31): *3f2a… is on a newer build that dropped this table*, and upgrading
+   * this device is the remedy. Learned over direct links only: a relay does not carry refusals,
+   * as it does not carry receipts.
    */
   readonly unsettled: () => Promise<Result<readonly OperationRow[], StoreFailure>>;
   /**
