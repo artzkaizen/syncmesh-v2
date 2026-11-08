@@ -21,20 +21,23 @@
 > RFC-0023), #5 (scale), #6 (windowed sync, D43), #7 (authority visibility, D24), #8 (Postgres
 > logical replication), #9 (this sweep), #10 (proof), #11 (loro adapter), #12 (read permissions,
 > D40). A row's status says only what those PRs' descriptions and the tree show.
+>
+> **Decisions, 2026-11-08.** Jace delegated the remaining calls. Every row in the Decisions table
+> now names a decided record; a decided row that is not built yet reads `open`.
 
 ## Decisions
 
 | # | Gap | Where | Owner | Status |
 |---|---|---|---|---|
-| D1 | **D31** schema evolution across a mixed-version fleet: `retired` state, `schemaVersion` stamp, additive lint; also gap-audit №20 (correction mismatch across versions) and E16 | `plan/decisions/D31.md` (`status: draft`), `engine/src/quarantine.ts`, `engine/src/validate.ts:118` | Unowned | decision |
-| D2 | **D38** a CRDT inside a cell | `plan/decisions/D38.md` (`status: draft`); document columns (RFC-0023) landed beside it in #2 and #3, and the loro@1 adapter in #11 under **D41, decided A** (2026-11-08); D38 itself is still draft | S6 | decision |
+| D1 | **D31** schema evolution across a mixed-version fleet: `retired` state, `schemaVersion` stamp, additive lint; also gap-audit №20 (correction mismatch across versions) and E16 | **D31 decided C** (2026-11-08): expand → wait for the fleet → retire → contract; the additive lint, the `unknown-table` / retired split, `schemaVersion` on event key 9 and the cursors frame as a reading, never a gate. `engine/src/quarantine.ts`, `engine/src/validate.ts`, `schema/src` | Unowned | open |
+| D2 | **D38** a CRDT inside a cell | **D38 decided D** (2026-11-08): RFC-0023's document columns are the answer, not a lattice the kernel folds; Loro first under **D41, decided A**. Built so far: #2, #3, #11; the rest is E30's open boxes (P4–P7) | S6 | open |
 | D3 | **D32** quarantine report on the wire | `plan/decisions/D32.md` — **decided C by the owner 2026-11-07** in this thread | This | built (#9; see B9) |
 | D4 | Relay durability `ack` as a mesh-level `synced()` — needs a way to name the relay in `engine.acknowledge` (gap-audit P0 №4) | `plan/epics/E12.md:37`; **D42 decided A** (2026-11-08): a `durable` transport capability, not an acknowledgement | Unowned | open |
-| D5 | A returning device does not rejoin from state on its own — needs a compaction floor on the wire (D31's "pin D15's floor for every peer") | `transport/src/__tests__/resurrection.test.ts:272` (`test.todo`), `transport/src/outbound.ts` `cursorsAfter`, `api-gaps.md` §3.6 | Unowned | decision |
-| D6 | One constructor: `createMesh` and `createClient` both exist with callers | `client/src/mesh.ts:55`, `orpc/src/client.ts`, `api-gaps.md` §3.1 | Unowned | decision (sequencing) |
+| D5 | A returning device does not rejoin from state on its own — needs a compaction floor on the wire (D31's "pin D15's floor for every peer") | **D46 decided A** (2026-11-08): the sender's floor trails the cursors frame, a device below it requests state once per floor, and a `$recovery` issue when nothing vouches for the install. `transport/src/__tests__/resurrection.test.ts` (`test.todo`), `transport/src/outbound.ts` `cursorsAfter`, `api-gaps.md` §3.6 | Unowned | open |
+| D6 | One constructor: `createMesh` and `createClient` both exist with callers | **D47 decided B** (2026-11-08): `createClient` is the one public constructor, as the book's cut list agreed; `createMesh` moves to `@syncmesh/client/internal` for harnesses and adapters, and `flatten` goes. `client/src/index.ts`, `orpc/src/client.ts`, `orpc/src/options.ts`, `api-gaps.md` §3.1 | Unowned | open |
 | D7 | Confidentiality posture written into RFC-0017 ("a room name is a bearer secret" or `verifyJoin` + per-partition encryption) — gap-audit P0 №2 | **D40 decided C** (grant-gated rooms plus sealed kinds); RFC-0017 carries the posture and the hosted presets refuse to start without `trust` or `open: true` | S4 | built (#12) |
 | D8 | E27 thin client: supported shape or demo — gap-audit P0 №3 | **D43 decided B**: a supported shape, served by the peer that holds the rows | S5 | built (#6) |
-| D9 | D17: may relay telemetry variants carry peer identity | `plan/epics/E24.md:22` | Unowned | decision |
+| D9 | D17: may relay telemetry variants carry peer identity | **D48 decided A** (2026-11-08): no — `relay.*` variants carry no peer id, room name or event id; the doc comments and E24 cite it, and a test pins it. `engine/src/telemetry.ts`, `relay/src/telemetry.ts`, `plan/epics/E24.md` | Unowned | open |
 | D10 | **D39** a damaged log is refused, not read around: a torn page in the log reads back a silent subset (29 of 40 tears in #10's test, pinned as `test.failing`) | **D39 decided C** (2026-11-08): contiguity check on read, `quick_check` on demand and after an unclean shutdown | Unowned | open |
 
 ## Built by the sweep (merged in #9)
@@ -68,7 +71,7 @@
 | O11 | E24 versioned row patches (`epoch` + monotone id, resnapshot-on-gap) | `plan/epics/E24.md:24` | S5 | built (#6) |
 | O12 | E27 `ClientView`, `desire / undesire / rows` frames, engine-less patch client | `plan/epics/E27.md:31-37` | S5 | built (#6): `createServerWindows` (was `ClientView`), relay tags 32–34, a store-less patch client (D43) |
 | O13 | E14 snapshot window is not a field of `Interest` (gap-audit №19); E13 an interest change leaves a permanent gap | `plan/epics/E14.md:43`, `plan/epics/E13.md:53` | S5 | open |
-| O14 | Collaborative text / doc branch merge (D04's open door, D38) | `research/crdt-cells.md` | S6 | partly built: document columns (#2, #3) and the loro@1 adapter under TipTap (#11); D38 and D41 are still draft |
+| O14 | Collaborative text / doc branch merge (D04's open door, D38) | `research/crdt-cells.md` | S6 | partly built: document columns (#2, #3) and the loro@1 adapter under TipTap (#11); D41 decided A and D38 decided D (both 2026-11-08); E30's open boxes remain |
 | O15 | Chaos in CI on a small seed; grant propagation under fault; blobs and retention-floor refusals in the schedule (gap-audit №10–12) | `chaos/`, `.github/workflows/ci.yml` | S7 | built (#10): an invariant check after every run, and new `--grants fault`, `--blobs` and `--retention` switches (`--retention` and a soak loop nightly only, in `nightly.yml`); the bugs it found are `test.todo` replays |
 | O16 | Crash safety and format migration: `kill -9` mid-fold / mid-append, torn writes, `_syncmesh_meta` upgrades (gap-audit №13) | `storage/` | S7 | partly built (#10): kill -9 mid-append and mid-fold on `bun:sqlite`, `node:sqlite` and PGlite, and the migration ladder now commits per step; a torn log page is D39 (D10 above), and the Durable Object, OPFS and expo drivers are not covered |
 | O17 | 10M-event test; threat model (RFC-0017) | — | S7 | partly built (#10): the 10M ladder runs nightly and **does not hold** (SQLite abandoned at 795k rows after 30 min); the threat model is `plan/security/threat-model.md`, with findings N1–N26 |
@@ -90,7 +93,7 @@
 | U11 | Browser: two tabs cannot share one database; a second tab is refused `OpfsPoolHeld` | `plan/epics/E04.md:41`, `adapters/sqlite-wasm` | open |
 | U12 | `@syncmesh/docs` is a scaffold whose only test is the template's `test.todo` | `packages/docs/src/__tests__/index.test.ts:4` | open |
 | U13 | `describeRoom` reports the host's key, not the room's when a `RoomStore` supplies its own identity (the Durable Object host does, and mounts no describe yet); the Rivet host sidesteps it by opening its host over the stored key | `relay/src/describe.ts` (`host.peerId`), `relay/src/host.ts` (`RoomStore.identity`) | open (latent) |
-| U14 | D31's two "now" fixes: split `unknown-table` from the retired-table case sharing its 128-slot bucket; pin D15's compaction floor for every peer | `engine/src/quarantine.ts` | open (waits on D1) |
+| U14 | D31's two "now" fixes: split `unknown-table` from the retired-table case sharing its 128-slot bucket; pin D15's compaction floor for every peer | `engine/src/quarantine.ts` | open (D31 decided C, 2026-11-08) |
 | U16 | **main's CI had failed on every push since 2026-09-28.** #9 fixed the formatting, the undeclared `@syncmesh/transport` in `adapters/browser` and the private `@syncmesh/ble` (`3bfa67a`); #2 fixed the `apps/issues-native` bulk; #15 cleared the last ten file-size, complexity and type errors, so `vp check` reports none | `vp lint`; `.github/workflows/ci.yml` | built (#15) |
 | U17 | Refusals and receipts are not carried by the relay (D32 limit: direct links only); React `refused-by` rendering (`plan/react-api.md` G12) unbuilt | `relay/src/session.ts` | open |
 | U18 | Blob sweep limits: a reference is kept for the life of the instance (log trims do not release it, since a trimmed insert is still a live row), so deleting a row never frees its blob and only uploads no row ever named are swept; a room that has seen a sealed event stops sweeping; only blobs put since the room opened are swept or billed; no telemetry on a sweep; the Rust client ignores the put answer | `relay/src/blob-keeper.ts` | open |

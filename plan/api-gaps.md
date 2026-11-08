@@ -291,13 +291,16 @@ handler holds exactly one object that can only read, and only what the caller ma
 both have callers — `apps/issues/src/app/devtools.tsx`, `bench/src/browser-mesh.ts`,
 `packages/devtools`. The book's cut list says one. Mechanical but wide; needs a sequencing call.
 
+**Decided as D47 B (2026-11-08):** `createClient` is the one public constructor; `createMesh`
+moves to `@syncmesh/client/internal`. Not built yet.
+
 ### 3.2 Schema evolution across a mixed-version fleet
 Zero's answer is deploy order; ours cannot be, because there is no order — a phone six versions
 behind is a valid signer. D13's additive rule and the `unknown-table` park are the floor we
 already have (`engine/src/quarantine.ts`); gap-audit №20 says correction mismatch across
 versions has no mitigation. This is the axis where we are behind the weaker system.
 
-**Drafted as `plan/decisions/D31.md` (2026-09-22, `status: draft`) — awaiting a decision.**
+**Drafted as `plan/decisions/D31.md` (2026-09-22); decided C on 2026-11-08.** Not built yet.
 Recommends C: expand/contract as an operator rule with three pieces of tooling (the additive
 lint D13 asked for and nobody built; a monotone `schemaVersion` in the manifest stamped on
 events under a new core key and trailing on the cursors frame, additive like `ahead`; a fleet
@@ -372,6 +375,9 @@ pending writes — which a device that wrote while dark will have. Only the rela
 (`relay/src/retention.ts`). RFC-0015 §3 and D15 say the peer "rejoins from state"; nothing
 peer-to-peer does it. This is D31's "pin D15's compaction floor for every peer", now with a
 red test naming the exact observed state. Needs a floor on the wire — a decision.
+
+**Decided as D46 A (2026-11-08):** the floor trails the cursors frame and the device below it
+asks for state. Not built yet.
 
 ### 3.7 Dedup below the compaction floor
 `receiveBatch` of x's old insert on b reports `folded: 1, skipped: 0` and b's log regains the
