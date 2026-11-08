@@ -1,3 +1,7 @@
+import { panic } from "@syncmesh/result";
+
+import type { RoomTrust } from "./trust.js";
+
 /**
  * Who gets in, split the way automerge-repo's share policy splits it: **announce** — may a name
  * nobody told us about become a room at all — separate from **access**, the operator's word on
@@ -5,8 +9,10 @@
  * happy to serve the rooms it was told about while refusing to invent new ones on a stranger's
  * say-so, and no single predicate can say that.
  *
- * None of this is confidentiality. The relay holds no keys and reads no payloads, so a posture
- * decides who may open a socket, never what the bytes on it mean (RFC-0017).
+ * Then **trust**, the read gate (D40): the issuer keys whose grants seat a device, and through
+ * them which partitions each socket is served. The relay still holds no private key and reads no
+ * payload; a gated room narrows by the partition every event core carries in the clear, and a
+ * partition whose content the operator must not read is sealed besides (RFC-0017).
  */
 export interface RelayPosture {
   /**
@@ -31,6 +37,42 @@ export interface RelayPosture {
    * costs the room a connection.
    */
   readonly verifyJoin?: (request: Request, room: string) => boolean | Promise<boolean>;
+  /**
+   * The issuers whose grants seat a device, which makes every room grant-gated (D40): a joiner is
+   * served only the partitions its verified grant names, and a grant that narrows or lapses hangs
+   * up on its socket.
+   */
+  readonly trust?: RoomTrust;
+  /**
+   * Says, on purpose, that this relay gates nothing: a room name is a bearer secret. The hosted
+   * presets refuse to start with neither this nor {@link trust}; the in-process `startRelay` is
+   * open by default and needs neither.
+   */
+  readonly open?: boolean;
+}
+
+/** What an open relay says once, at start (D40), in the words RFC-0017 uses. */
+export const BEARER_SECRET = "a room name is a bearer secret";
+
+/**
+ * The hosted presets' posture check (D40): a definition mistake, so it throws. A relay that will
+ * face the internet states who reads it — `trust`, or `open: true` — rather than inheriting
+ * "everyone" from a default nobody chose. `announce` defaults to off on the same presets, so a
+ * name nobody listed in `rooms` is not opened on a stranger's say-so; `own` lists the rooms a host
+ * serves by construction — a Durable Object's own name.
+ */
+export function hostedPosture(
+  posture: RelayPosture | undefined,
+  own: readonly string[] = [],
+): RelayPosture {
+  if (posture?.trust === undefined && posture?.open !== true)
+    panic(
+      `a hosted relay needs posture.trust (the issuers whose grants seat a device) or posture.open: true, and open means ${BEARER_SECRET}`,
+    );
+  // said once, at start, where an operator reads it: the one posture that gates nothing
+  if (posture.trust === undefined)
+    console.warn(`syncmesh relay: posture is open — ${BEARER_SECRET}`);
+  return { announce: false, ...posture, rooms: [...(posture.rooms ?? []), ...own] };
 }
 
 /** The posture as the questions one upgrade has to pass, in the order they get cheaper to fail. */

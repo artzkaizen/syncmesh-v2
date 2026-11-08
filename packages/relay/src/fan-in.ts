@@ -2,6 +2,7 @@ import type { RoomState } from "./state.js";
 
 import { decodeRelayFrame } from "./frames.js";
 import { absorbEvent } from "./ingest.js";
+import { admitGrant } from "./trust.js";
 
 /**
  * A frame from another instance serving the same room (D09-B).
@@ -40,7 +41,7 @@ export function fanIn(room: RoomState): (frame: Uint8Array) => void {
     const inner = value.frame;
     if (inner.kind === "grant") {
       // the cache a joiner's first page is built from, on this instance as much as on that one
-      if (room.grants.admit(inner.wire)) room.toClients(frame);
+      if (admitGrant(room, inner.wire)) room.toClients(frame);
       return;
     }
     // presence and the peer-to-peer facts pass through byte-identical, as they do from a socket

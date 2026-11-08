@@ -8,7 +8,9 @@ use syncmesh_core::frames::{self, Digest, Frame, RouteAd, SnapshotFrame, class_o
 use syncmesh_core::framing::{self, FrameReader};
 use syncmesh_core::identity::Identity;
 use syncmesh_core::join_proof::{prove_join, verify_join_proof};
-use syncmesh_core::relay_frames::{self, RELAY_PROTOCOL_VERSIONS, RelayFrame, decode_relay_frame};
+use syncmesh_core::relay_frames::{
+    self, PageScope, RELAY_PROTOCOL_VERSIONS, RelayFrame, decode_relay_frame,
+};
 use syncmesh_core::{from_hex, to_hex};
 
 fn vectors(name: &str) -> serde_json::Value {
@@ -47,7 +49,7 @@ fn session_frames_decode_to_their_kind_and_reencode_byte_for_byte() {
     assert_eq!(doc["otherId"].as_str(), Some(other.peer_id().as_str()));
 
     let list = doc["vectors"].as_array().unwrap();
-    assert_eq!(list.len(), 19);
+    assert_eq!(list.len(), 20);
     let mut tags: Vec<u8> = Vec::new();
     for v in list {
         let what = v["description"].as_str().unwrap();
@@ -151,6 +153,11 @@ fn session_frames_are_reproduced_from_the_generator_inputs() {
             }]),
         ),
         (18, frames::refusal_frame(&refusal_wire)),
+        // what a peer's grant kept back, named by sequence (D40)
+        (
+            19,
+            frames::withheld_frame(r#"{"partitions":["org:acme"]}"#, &ahead),
+        ),
     ];
     for (i, bytes) in expected {
         assert_eq!(to_hex(&bytes), to_hex(&wires[i]), "vector {i}");
@@ -379,6 +386,41 @@ fn relay_control_frames_are_reproduced_from_the_generator_inputs() {
         (
             26,
             relay_frames::blob_refused_frame(hash, "quota", 1024, 1000, None),
+        ),
+        // the grant-gated room's refusals and its live skip notice (D40)
+        (
+            27,
+            relay_frames::error_frame(
+                "ungranted",
+                "no grant from an issuer this room trusts names this device",
+            ),
+        ),
+        (
+            28,
+            relay_frames::error_frame(
+                "revoked",
+                "this device's grant no longer covers what it was served",
+            ),
+        ),
+        (
+            29,
+            relay_frames::error_frame(
+                "regranted",
+                "this device was granted more; join again to be served it",
+            ),
+        ),
+        (
+            30,
+            relay_frames::page_frame(
+                &[],
+                &[],
+                false,
+                9,
+                Some(&PageScope {
+                    synced: cursors.clone(),
+                    scope: r#"{"partitions":["org:acme"]}"#.to_owned(),
+                }),
+            ),
         ),
     ];
     for (i, b) in expected {

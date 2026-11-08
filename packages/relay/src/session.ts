@@ -1,6 +1,7 @@
-import type { Cursors, Interest, StoredEvent, Unsubscribe } from "@syncmesh/engine";
+import type { Cursors, StoredEvent, Unsubscribe } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import type { BlobRefusal, TransportContext } from "@syncmesh/transport";
+import type { Grant } from "@syncmesh/wire";
 
 import { ownPositionWarning } from "@syncmesh/engine";
 import { omitUndefined } from "@syncmesh/result";
@@ -9,6 +10,7 @@ import { createHoldback, cursorsFrame, eventFrame, grantFrame } from "@syncmesh/
 import { decodeAndVerify, relayEnvelope, signEvent } from "@syncmesh/wire";
 
 import type { RelayFrame } from "./frames.js";
+import type { JoinedScope } from "./scoped.js";
 import type { RelayDial } from "./transport.js";
 
 import { decodeRelayFrame } from "./frames.js";
@@ -19,6 +21,17 @@ const envelopeOf = (entry: StoredEvent, ctx: TransportContext): Uint8Array | und
   entry.event.peerId === ctx.identity.peerId
     ? signEvent(entry.event, ctx.identity).wire
     : relayEnvelope(entry);
+
+/**
+ * A grant this device registered goes to the room; when it is our own and changes what we may
+ * read, the session re-joins so the room serves the new slice (D40).
+ */
+const passOn =
+  (hooks: SessionHooks, self: PeerId) =>
+  (grant: Grant, wire: Uint8Array): void => {
+    hooks.sendSafe(grantFrame(wire));
+    if (grant.device === self && hooks.regranted()) hooks.rejoin();
+  };
 
 /** What one wired session may ask of the transport shell around it. */
 export interface SessionHooks {
@@ -73,8 +86,10 @@ export interface SessionHooks {
    * protocol, or one forwarding a peer's forgery, is silent without this.
    */
   readonly onDropped: (why: string) => void;
-  /** What this session joined with, so a coverage scoped to something else is not adopted. */
-  readonly interest?: Interest;
+  /** What this session last joined with, so a coverage scoped to anything else is not adopted. */
+  readonly joined: () => JoinedScope;
+  /** This device's own grant changed what it may read since the last join (D40). */
+  readonly regranted: () => boolean;
   /**
    * This join asked from nothing because the interest widened past what our cursors describe
    * (D23). The pages coming back are a repair, not a tail.
@@ -243,7 +258,7 @@ export function wireSession(
   const lastPage = scopedCoverage({
     engine,
     holdback,
-    interest: hooks.interest,
+    joined: hooks.joined,
     after,
     release,
     reentitled: () => {
@@ -316,11 +331,12 @@ export function wireSession(
       adoptOwn(frame.cursors);
       hooks.onHello(frame.keepaliveMs, frame.epoch);
     } else if (frame.kind === "page") {
+      const asked = hooks.joined();
       for (const wire of frame.grants) void grants.register(wire);
       const repaging = hooks.repaging?.() === true;
       fold(frame.events, repaging);
       if (!frame.more) {
-        lastPage(frame.scoped, repaging);
+        lastPage(frame.scoped, repaging, asked);
         // only here: every page carries the room's tail, and only the last has delivered up to it
         position(frame.offset);
         // a pass-over (an empty last page after the first) moves a cursor and nothing else
@@ -349,7 +365,7 @@ export function wireSession(
     // pre-catch-up writes are already in the store; the push after the last page covers them
     if (caughtUp) hooks.sendSafe(eventFrame(signEvent(event, identity).wire));
   });
-  const offRegistered = grants.onRegistered((_grant, wire) => hooks.sendSafe(grantFrame(wire)));
+  const offRegistered = grants.onRegistered(passOn(hooks, identity.peerId));
   /**
    * A fold of peers' events moved our position: say so, and hand over what moved it.
    *

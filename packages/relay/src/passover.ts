@@ -1,7 +1,7 @@
 import type { Interest } from "@syncmesh/engine";
-import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
+import type { PartitionKey, PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 
-import { matchesInterest, scopeText } from "@syncmesh/engine";
+import { entitledInterest, matchesInterest, scopeText } from "@syncmesh/engine";
 
 import type { Entitlement } from "./admission.js";
 import type { CatchUpViewer } from "./catchup.js";
@@ -18,15 +18,24 @@ export interface Viewing {
   /** Whether the socket has already hung up, so an answer arriving after it is dropped. */
   readonly closed: () => boolean;
   readonly refuse: (code: string, message: string, fatal?: boolean) => void;
+  /**
+   * In a grant-gated room (D40), the seat's own answer — the grant it sat down under, which may
+   * have lapsed since — and the partitions that grant names, which the scope is cut to. Absent in
+   * an open room.
+   */
+  readonly seat?: {
+    readonly wants: (event: SyncEvent) => boolean;
+    readonly partitions: readonly PartitionKey[];
+  };
 }
 
 /**
- * One socket's view of the room (D23, D24): which events it is sent, which it is withheld, and
+ * One socket's view of the room (D23, D24, D40): which events it is sent, which it is withheld, and
  * how it is told that the relay passed over what it was withheld — so the author's later events
  * are not held behind a hole nothing will fill. One per join; a re-join starts a fresh one.
  */
 export function createViewer(room: RoomState, sender: Sender, viewing: Viewing) {
-  const { peer, interest } = viewing;
+  const { peer, interest, seat } = viewing;
   /**
    * What the authority said this socket may read of the gated tables; `undefined` until it has
    * said, and every gated event is withheld until then — the catch-up that follows the answer
@@ -71,13 +80,14 @@ export function createViewer(room: RoomState, sender: Sender, viewing: Viewing) 
   };
 
   /**
-   * Live fan-out obeys the same interest and the same gate the catch-up did. An `admits` that
+   * Live fan-out obeys the same interest, grant and gate the catch-up did. An `admits` that
    * throws refuses the socket, so nothing after it — no page, no pass-over — claims the event as
    * held, and the join that follows asks again from the device's cursor. A socket already refused
    * wants nothing, so a broken `admits` costs one warning per join and not one per event.
    */
   const wants = (event: SyncEvent): boolean =>
     !viewing.closed() &&
+    (seat === undefined || seat.wants(event)) &&
     (interest === undefined || matchesInterest(interest, event)) &&
     admitted(room.gate, entitlement, event).match({
       ok: (yes) => yes,
@@ -92,10 +102,25 @@ export function createViewer(room: RoomState, sender: Sender, viewing: Viewing) 
       },
     });
 
+  /**
+   * A sent event that filled a hole under events already in the room: the author's run now
+   * reaches past it, and what this socket was passed over above it — in its catch-up, or live
+   * before the hole filled — is owed a pass-over too, since the one it got stopped at the hole and
+   * nothing else would say it again (D40).
+   */
+  const fills = (event: SyncEvent): void => {
+    const run = room.cursors().get(event.peerId);
+    if (run === undefined || run <= event.seqNum) return;
+    const before = withheld.get(event.peerId);
+    if (before === undefined || run > before) withheld.set(event.peerId, run);
+  };
+
+  /** What a grant-gated room serves this socket: the interest cut to its grant (D40). */
+  const served = seat === undefined ? interest : entitledInterest(interest, seat.partitions);
   const scope = (): string | undefined =>
-    interest === undefined && entitlement === undefined
+    served === undefined && entitlement === undefined
       ? undefined
-      : scopeText(interest, entitlement?.scope);
+      : scopeText(served, entitlement?.scope);
 
   const catchUp: CatchUpViewer = {
     entitle: () => {
@@ -133,6 +158,7 @@ export function createViewer(room: RoomState, sender: Sender, viewing: Viewing) 
     offer: (frame: Uint8Array, event: SyncEvent): Offered => {
       if (wants(event)) {
         sender.send(frame);
+        if (paged) fills(event);
         return { sent: true, frames: 1 + (withheld.has(event.peerId) ? passOver() : 0) };
       }
       // before the catch-up the scan covers it, and its coverage says so; a pass-over sent then
