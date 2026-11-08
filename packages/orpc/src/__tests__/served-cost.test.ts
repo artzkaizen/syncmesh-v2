@@ -15,6 +15,10 @@ const QUIET = Temporal.Duration.from({ milliseconds: 200 });
 const reads = (statements: readonly Statement[]) =>
   statements.filter((statement) => / limit /i.test(statement.sql)).length;
 
+/** The statements that start a served read's transaction: one per transaction. */
+const entries = (statements: readonly Statement[]) =>
+  statements.filter((statement) => statement.sql.includes("syncmesh_served")).length;
+
 suite("what a commit costs a socket's windows (D43)", () => {
   let fx: Awaited<ReturnType<typeof served>>;
   beforeAll(async () => {
@@ -64,6 +68,14 @@ suite("what a commit costs a socket's windows (D43)", () => {
     const servers = await open(4, 16, () => ({ limit: 50 }));
     // four sockets, one read each: not 64
     expect(await commit(servers, 1)).toBe(4);
+  });
+
+  test("a commit re-reads every window of a socket in one transaction, not one each", async () => {
+    const servers = await open(1, 16, (w) => ({ limit: 50, after: after(10_000 - w * 100) }));
+    const count = await commit(servers, 1);
+    expect(count).toBe(16);
+    // a commit the feed hands over in two pieces is two passes, never sixteen
+    expect(entries(fx.statements)).toBeLessThanOrEqual(2);
   });
 
   test("a burst of commits is at most two re-reads of each window, not one per commit", async () => {

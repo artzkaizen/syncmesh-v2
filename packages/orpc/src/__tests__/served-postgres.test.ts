@@ -1,7 +1,8 @@
 import type { ColumnName } from "@syncmesh/kernel";
 import type { WindowRow } from "@syncmesh/window";
 
-import { ReadRefused, createServerWindows, decodeWindowFrame } from "@syncmesh/window";
+import { Temporal } from "@syncmesh/temporal";
+import { ReadFailed, ReadRefused, createServerWindows, decodeWindowFrame } from "@syncmesh/window";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { alias, pgSchema, text } from "drizzle-orm/pg-core";
@@ -13,7 +14,6 @@ import {
   ALICE,
   BOB,
   POSTGRES_URL,
-  READER,
   SERVER,
   after,
   eventually,
@@ -289,7 +289,9 @@ suite("what a served handler cannot reach, however it asks (D43, E13)", () => {
       principal: ALICE,
       self: SERVER,
       onCommit: () => () => undefined,
-      readRole: options.readRole ?? READER,
+      readRole: options.readRole ?? fx.roles.reader,
+      // a refusal here is the read's own fault, not a deploy still running
+      grace: Temporal.Duration.from({ seconds: 0 }),
     });
     const page = await source.readPage({ path: "r", input: {} });
     return page.map((p) => p.rows.map((r) => Object.fromEntries(r.row)));
@@ -433,5 +435,171 @@ suite("what a served handler cannot reach, however it asks (D43, E13)", () => {
       const page = await source.readPage({ path, input: {} });
       expect(page.isErr() && page.error.message).toBe(`no read ${path}`);
     }
+  });
+
+  /** Bob's mail as alice's read counts it, while the fragment claims to be bob. */
+  const spoofed = (claim: ReturnType<typeof sql>) => {
+    const m = fx.mail;
+    return read(({ db }) =>
+      db
+        .select({
+          id: m.id,
+          bob: sql<string>`(select count(*)::text from ${m} x where x.owner = 'bob' and ${claim} is not null)`,
+          seen: sql<string>`(select count(*)::text from (select ${claim} a) s cross join lateral (select 1 from ${m} y where y.owner = 'bob') z)`,
+        })
+        .from(m)
+        .orderBy(m.id)
+        .limit(1),
+    );
+  };
+
+  test("a fragment that sets the reader's account to bob's reads none of bob's rows", async () => {
+    for (const claim of [
+      sql`set_config('syncmesh.account', 'bob', true)`,
+      sql`set_config('syncmesh.role', 'owner', true)`,
+      sql`set_config('syncmesh.claims', '{"account":"bob"}', true)`,
+    ]) {
+      const rows = await spoofed(claim);
+      expect(rows.unwrap()).toEqual([{ id: "m-0000001", bob: "0", seen: "0" }]);
+    }
+  });
+
+  test("a fragment that goes back to its login, then reads, still reads as the reader", async () => {
+    const m = fx.mail;
+    const back = sql`set_config('role', 'none', true)`;
+    const mine = await read(({ db }) =>
+      db
+        .select({
+          id: m.id,
+          back,
+          all: sql<string>`query_to_xml(${`select subject from ${fx.names.mail}`}, true, false, '')::text`,
+        })
+        .from(m)
+        .orderBy(m.id)
+        .limit(1),
+    );
+    expect(mine.isOk()).toBe(true);
+    expect(leaks(mine.unwrap())).toBe(false);
+    const hidden = await read(({ db }) =>
+      db
+        .select({
+          id: m.id,
+          back,
+          all: sql<string>`query_to_xml(${`select secret from ${PRIVATE}`}, true, false, '')::text`,
+        })
+        .from(m)
+        .orderBy(m.id)
+        .limit(1),
+    );
+    expect(hidden.isErr() && hidden.error.message).toStartWith("permission denied for table");
+  });
+
+  test("a fragment cannot name a second principal: the transaction is read-only by then", async () => {
+    const m = fx.mail;
+    const rows = await read(({ db }) =>
+      db
+        .select({
+          id: m.id,
+          again: sql<string>`syncmesh_served.enter(${fx.roles.reader}, '{"account":"bob","role":"owner","claims":{}}')::text`,
+        })
+        .from(m)
+        .orderBy(m.id)
+        .limit(1),
+    );
+    expect(rows.isErr() && rows.error.message).toBe(
+      "cannot execute INSERT in a read-only transaction",
+    );
+  });
+
+  test("a query a handler runs while building its own runs read-only, as the reader", async () => {
+    const m = fx.mail;
+    const ran = Promise.withResolvers<unknown>();
+    const rows = await read(({ db }) => {
+      db.select({
+        user: sql<string>`current_user`,
+        readOnly: sql<string>`current_setting('transaction_read_only')`,
+      })
+        .from(sql`(select 1) z`)
+        .then(ran.resolve, ran.resolve);
+      return db.select().from(m).orderBy(m.id).limit(1);
+    });
+    expect(rows.isOk()).toBe(true);
+    expect(await ran.promise).toEqual([{ user: fx.roles.reader, readOnly: "on" }]);
+  });
+
+  test("a built query hands a handler no session to run statements of its own on", async () => {
+    const m = fx.mail;
+    const found: unknown[] = [];
+    const rows = await read(({ db }) => {
+      const q = db.select().from(m).orderBy(m.id).limit(1);
+      found.push(q.session, Reflect.getOwnPropertyDescriptor(q, "session"), "session" in q);
+      return q;
+    });
+    expect(rows.isOk()).toBe(true);
+    expect(found).toEqual([undefined, undefined, false]);
+  });
+
+  test("a handler that throws is refused, not read again", async () => {
+    const rows = await read(() => {
+      throw new Error("no such folder");
+    });
+    expect(rows.isErr() && ReadRefused.is(rows.error)).toBe(true);
+    expect(rows.isErr() && rows.error.message).toBe("r threw building its query: no such folder");
+  });
+
+  test("a statement past the timeout is cancelled, and the read fails rather than is refused", async () => {
+    const m = fx.mail;
+    const router = {
+      r: query.input(z.object({})).handler(({ db }) =>
+        db
+          .select({ id: m.id, slow: sql<string>`pg_sleep(2)::text` })
+          .from(m)
+          .orderBy(m.id)
+          .limit(1),
+      ),
+    };
+    const source = servedReads({
+      router,
+      schema: fx.schema,
+      db: fx.db,
+      principal: ALICE,
+      self: SERVER,
+      onCommit: () => () => undefined,
+      readRole: fx.roles.reader,
+      timeout: Temporal.Duration.from({ milliseconds: 50 }),
+    });
+    const page = await source.readPage({ path: "r", input: {} });
+    expect(page.isErr() && ReadFailed.is(page.error)).toBe(true);
+    expect(page.isErr() && page.error.message).toBe("canceling statement due to statement timeout");
+  });
+
+  test("a table the role may not read fails for the grace a deploy takes, then is refused", async () => {
+    const m = fx.mail;
+    const router = {
+      r: query.input(z.object({})).handler(({ db }) =>
+        db
+          .select({ id: m.id, peek: sql<string>`(select count(*) from ${sql.raw(PRIVATE)})` })
+          .from(m)
+          .orderBy(m.id)
+          .limit(1),
+      ),
+    };
+    const grace = Temporal.Duration.from({ milliseconds: 100 });
+    const source = servedReads({
+      router,
+      schema: fx.schema,
+      db: fx.db,
+      principal: ALICE,
+      self: SERVER,
+      onCommit: () => () => undefined,
+      readRole: fx.roles.reader,
+      grace,
+    });
+    const first = await source.readPage({ path: "r", input: {} });
+    expect(first.isErr() && ReadFailed.is(first.error)).toBe(true);
+    await Bun.sleep(grace.total("milliseconds") * 2);
+    const later = await source.readPage({ path: "r", input: {} });
+    expect(later.isErr() && ReadRefused.is(later.error)).toBe(true);
+    expect(later.isErr() && later.error.message).toStartWith("permission denied for table");
   });
 });

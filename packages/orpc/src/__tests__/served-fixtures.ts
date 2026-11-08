@@ -157,10 +157,34 @@ export const BOB = { account: "bob", role: "owner", claims: {} } as const;
 export const SERVER = "server-peer" as PeerId;
 
 /**
- * The role served reads run as. Roles are the cluster's, not one database's, so every run
- * shares it; its grants and policies are per table, and every run's tables are its own.
+ * The role served reads run as, and the login they connect as, for one run. Roles are the
+ * cluster's, not one database's, so each run makes its own and drops them at the end: a run that
+ * swept another's grants would fail it.
  */
-export const READER = "syncmesh_served_reader";
+export const rolesFor = (id: string) => ({
+  reader: `syncmesh_reader_${id}`,
+  login: `syncmesh_reads_${id}`,
+  password: `reads-${id}`,
+});
+
+/** A connection URL for `user`, on the suite's server. */
+export const urlAs = (user: string, password: string) => {
+  const url = new URL(POSTGRES_URL ?? "postgres://localhost");
+  url.username = user;
+  url.password = password;
+  return url.toString();
+};
+
+/** Drops a run's read role and login, and whatever was granted to them in this database. */
+export const dropRoles = async (pg: postgres.Sql, roles: ReturnType<typeof rolesFor>) => {
+  for (const role of [roles.login, roles.reader]) {
+    const exists = await pg.unsafe(`SELECT 1 FROM pg_roles WHERE rolname = $1`, [role]);
+    if (exists.length === 0) continue;
+    await pg.unsafe(`DROP OWNED BY "${role}"`);
+    await pg.unsafe(`DROP ROLE "${role}"`);
+  }
+  await pg.unsafe(`DELETE FROM syncmesh_served.login WHERE login = $1`, [roles.login]);
+};
 
 /** Every statement the server's Drizzle sent, so a test can explain what a page read cost. */
 export interface Statement {
@@ -178,16 +202,24 @@ export async function served(
 ) {
   const id = runId();
   const names = { mail: `mail_${id}`, open: `open_${id}` };
+  const roles = rolesFor(id);
   const pg = postgres(POSTGRES_URL ?? "", { max: 4, onnotice: (notice) => console.log(notice) });
+  await pg.unsafe(`CREATE ROLE "${roles.login}" LOGIN PASSWORD '${roles.password}'`);
   await pg.unsafe(MAIL_DDL(names.mail));
   await pg.unsafe(MAIL_DDL(names.open));
   await options.seed?.(pg, names.mail);
   await pg.unsafe(`ANALYZE ${names.mail}`);
   const schema = schemaFor(names.mail, names.open);
-  for (const statement of servedReadDdl(schema, READER)) await pg.unsafe(statement);
+  for (const statement of servedReadDdl(schema, { role: roles.reader, grantTo: roles.login }))
+    await pg.unsafe(statement);
   const statements: Statement[] = [];
+  // the served reads' own connection, logged in as the login the DDL granted the read role
+  const reads = postgres(urlAs(roles.login, roles.password), {
+    max: 4,
+    onnotice: (notice) => console.log(notice),
+  });
   const db = drizzle({
-    client: pg,
+    client: reads,
     logger: { logQuery: (text, params) => void statements.push({ sql: text, params }) },
   });
   /** While set, the replication connection cannot be made: the database is unreachable. */
@@ -234,11 +266,12 @@ export async function served(
       self: SERVER,
       onCommit: feed.onCommit,
       onFeed: feed.onFeed,
-      readRole: READER,
+      readRole: roles.reader,
     });
   return {
     pg,
     db,
+    roles,
     names,
     mail,
     open,
@@ -269,6 +302,8 @@ export async function served(
       await source.drop();
       await pg.unsafe(`DROP PUBLICATION IF EXISTS pub_${id}`);
       await pg.unsafe(`DROP TABLE IF EXISTS ${names.mail}, ${names.open}`);
+      await reads.end();
+      await dropRoles(pg, roles);
       await pg.end();
     },
   };

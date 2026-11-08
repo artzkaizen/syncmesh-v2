@@ -691,6 +691,7 @@
         "@syncmesh/result": "workspace:*",
         "@syncmesh/schema": "workspace:*",
         "@syncmesh/storage": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
         "@syncmesh/window": "workspace:*",
       },
       "devDependencies": {
@@ -701,7 +702,6 @@
         "@syncmesh/postgres": "workspace:*",
         "@syncmesh/relay": "workspace:*",
         "@syncmesh/sqlite-bun": "workspace:*",
-        "@syncmesh/temporal": "workspace:*",
         "@syncmesh/wire": "workspace:*",
         "@types/bun": "catalog:",
         "drizzle-orm": "catalog:",
