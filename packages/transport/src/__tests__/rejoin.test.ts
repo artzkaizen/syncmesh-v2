@@ -1,6 +1,7 @@
 import type { Cursors, Interest } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
+import { LineageCellRefused } from "@syncmesh/kernel";
 import { describe, expect, test } from "bun:test";
 
 import type { JoinPolicy } from "../join.js";
@@ -147,15 +148,97 @@ describe("a session below a peer's floor", () => {
     expect(rejoins.issues().map(({ reason }) => reason)).toEqual(["untrusted"]);
     first.close();
 
-    // no session open to that peer: the acceptance waits for one
+    // no session open to that peer: the acceptance waits for one, and the device is still below
     expect(rejoins.accept(far)).toBe("deferred");
-    expect(rejoins.issues()).toEqual([]);
+    expect(rejoins.issues().map(({ reason }) => reason)).toEqual(["untrusted"]);
     const second = sessionWith(rejoins, false, asked);
     second.onCursors(far, theirs, floor);
     expect(asked.map(({ policy }) => ({ ...policy, settled: undefined }))).toEqual([
       { adoptUnvouched: true, floor, settled: undefined },
     ]);
     second.close();
+  });
+
+  test("a refused install is an unanswered ask: it does not reset the count, and three raise the issue", () => {
+    const rejoins = createRejoins();
+    const asked: Parameters<typeof sessionWith>[2] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const session = sessionWith(rejoins, true, asked);
+      session.onCursors(far, theirs, floor);
+      asked.at(-1)?.policy.settled?.({
+        kind: "refused",
+        refused: new LineageCellRefused({
+          table: "notes",
+          key: "n1",
+          column: "body",
+          version: null,
+          message: "bad cell",
+        }),
+      });
+      expect(rejoins.issues()).toEqual([]);
+      session.close();
+    }
+    const fourth = sessionWith(rejoins, true, asked);
+    fourth.onCursors(far, theirs, floor);
+    expect(asked).toHaveLength(3);
+    expect(rejoins.issues().map(({ reason }) => reason)).toEqual(["unanswered"]);
+    fourth.close();
+  });
+
+  test("an install that left the device below one floor is not asked again by a later session", () => {
+    const rejoins = createRejoins();
+    const asked: Parameters<typeof sessionWith>[2] = [];
+    const first = sessionWith(rejoins, true, asked);
+    first.onCursors(far, theirs, floor);
+    asked[0]?.policy.settled?.({
+      kind: "installed",
+      installed: { rows: 3, provisional: true },
+      vouched: false,
+    });
+    first.close();
+    expect(rejoins.issues().map(({ reason }) => reason)).toEqual(["unvouched"]);
+    const second = sessionWith(rejoins, true, asked);
+    second.onCursors(far, theirs, floor);
+    expect(asked).toHaveLength(1);
+    // a floor that moved is a new claim and is asked for
+    second.onCursors(far, theirs, cursors([author, 7]));
+    expect(asked).toHaveLength(2);
+    second.close();
+  });
+
+  test("two links to one peer put one request on the wire, and count it once", () => {
+    const rejoins = createRejoins();
+    const asked: Parameters<typeof sessionWith>[2] = [];
+    const lan = sessionWith(rejoins, true, asked);
+    const radio = sessionWith(rejoins, true, asked);
+    lan.onCursors(far, theirs, floor);
+    radio.onCursors(far, theirs, floor);
+    expect(asked).toHaveLength(1);
+    // the asking link dropped: the other one asks, as the second of three
+    lan.close();
+    radio.onCursors(far, theirs, floor);
+    expect(asked).toHaveLength(2);
+    radio.close();
+    const third = sessionWith(rejoins, true, asked);
+    third.onCursors(far, theirs, floor);
+    expect(asked).toHaveLength(3);
+    third.close();
+  });
+
+  test("a change is told when an issue is raised and when it clears on its own", async () => {
+    const rejoins = createRejoins();
+    const own = peer(82, "acct_z");
+    let told = 0;
+    const off = rejoins.onChange(() => (told += 1));
+    const session = sessionWith(rejoins, false, [], own.engine);
+    session.onCursors(far, cursors([author, 9]), cursors([author, 5]));
+    expect(told).toBe(1);
+    own.engine.adoptCoverage({ synced: cursors([author, 5]), local: new Map() });
+    expect(rejoins.issues()).toEqual([]);
+    await Promise.resolve();
+    expect(told).toBe(2);
+    off();
+    session.close();
   });
 
   test("an issue clears on its own once this device is no longer below", () => {

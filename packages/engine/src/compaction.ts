@@ -3,10 +3,11 @@ import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { Temporal, addToInstant } from "@syncmesh/temporal";
 
+import type { CoverageTracker } from "./coverage.js";
 import type { DocStore } from "./doc-log.js";
 import type { StateCorrupt, StateStore } from "./state-store.js";
 import type { EventStore, StoreFailure } from "./store.js";
-import type { Coverage, Cursors } from "./sync.js";
+import type { Ahead, Coverage, Cursors } from "./sync.js";
 
 import { createMemoryDocStore } from "./doc-log-memory.js";
 import { docAppends } from "./doc-log.js";
@@ -205,18 +206,58 @@ export function compactLog(
 }
 
 /**
- * {@link compactLog} with the floor it leaves kept as a plain value (D46): read at boot, replaced
- * after each run from what the store recorded — a run removes only events old enough, so what was
- * asked for is not what was removed.
+ * Per author, the highest sequence in `(from, to]` this device holds no event for — coverage it
+ * claims with no log behind it, which a snapshot install leaves (D46). `held` lists, per author,
+ * the sequences in that range the log does hold; an author whose whole range is held is absent.
+ *
+ * @example
+ * unheldBelow(new Map([[a, 1]]), new Map([[a, 5]]), new Map([[a, [4, 5]]])) // Map { a => 3 }
+ */
+export function unheldBelow(from: Cursors, to: Cursors, held: Ahead): Cursors {
+  const unheld = new Map<PeerId, SeqNum>();
+  for (const [author, top] of to) {
+    const bottom = from.get(author) ?? 0;
+    const have = new Set<number>(held.get(author));
+    let gap = 0;
+    while (top - gap > bottom && have.has(top - gap)) gap += 1;
+    if (top - gap <= bottom) continue;
+    // SAFETY: above `bottom`, which is at least zero, so a positive sequence number
+    unheld.set(author, (top - gap) as SeqNum);
+  }
+  return unheld;
+}
+
+/** Per author, the higher of the two floors: a floor only ever rises. */
+export const higherFloor = (a: Cursors, b: Cursors): Cursors => {
+  const out = new Map(a);
+  for (const [author, seq] of b) if (seq > (out.get(author) ?? 0)) out.set(author, seq);
+  return out;
+};
+
+/**
+ * {@link compactLog} with the floor this device advertises kept as a plain value (D46): per
+ * author the highest synced sequence its log does not hold below its coverage. Two things put
+ * one there — a compaction run, read back from what the store recorded (a run removes only events
+ * old enough, so what was asked for is not what was removed), and coverage adopted with no log
+ * behind it, which a snapshot install leaves.
  */
 export function createCompaction(deps: CompactDeps, initial: Cursors | undefined) {
   let floor: Cursors = initial ?? new Map();
   return {
     floor: () => floor,
+    /** `coverage.adopt` for a snapshot: what it adopts has no log behind it, bar what was folded past a gap. */
+    adoptInto:
+      (coverage: CoverageTracker) =>
+      (taken: Coverage): void => {
+        const from = coverage.current().synced;
+        const ahead = coverage.ahead();
+        coverage.adopt(taken);
+        floor = higherFloor(floor, unheldBelow(from, coverage.current().synced, ahead));
+      },
     compact: (options: CompactOptions): Promise<Result<Compaction, CompactError>> =>
       Result.gen(async function* () {
         const ran = yield* Result.await(compactLog(deps, options));
-        floor = (yield* Result.await(deps.store.compactedBelow())).synced;
+        floor = higherFloor(floor, (yield* Result.await(deps.store.compactedBelow())).synced);
         return Result.ok(ran);
       }),
   };

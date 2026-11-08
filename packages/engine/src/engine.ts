@@ -160,11 +160,11 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi, DocApi, OwnPosi
   /** Removes events every counted peer has acked and the state store has persisted; unobservable to peers. See RFC-0015 §2. */
   readonly compact: (options: CompactOptions) => Promise<Result<Compaction, CompactError>>;
   /**
-   * Per author, the highest synced sequence this device's log no longer holds — what compaction
-   * removed, read at boot and replaced after each run. A peer whose cursor for an author is below
-   * it cannot be sent that history from here and needs state instead (D46), which is why links
-   * send it on every cursors frame. Empty on a log that never compacted. The local half never
-   * travels, so it is not here.
+   * Per author, the highest synced sequence at or below this device's coverage that its log does
+   * not hold: what compaction removed, and what a snapshot install adopted with no events behind
+   * it. A peer below it cannot be sent that history from here and needs state instead (D46), so
+   * links send it on every cursors frame. Recomputed at boot, raised by each compaction run and
+   * each install, never lowered in between. The local half never travels, so it is not here.
    */
   readonly floor: () => Cursors;
   /**
@@ -279,9 +279,11 @@ export function createEngine(options: EngineOptions): Engine {
 
   // what the snapshot install and the purge both read and replace
   const held = { getState, setState, coverageOf: coverage.current, merge };
+  const compactDeps = { store, stateStore, acks, ...docPath.compaction };
+  const { adoptInto, ...compaction } = createCompaction(compactDeps, boot?.floor);
   const snapshots = createSnapshotPath({
     ...held,
-    adopt: coverage.adopt,
+    adopt: adoptInto(coverage),
     // in a turn, so a purge never runs between a snapshot's state commit and its own (D45)
     persist: (batch: FoldBatch) => turn(() => persist(batch, plain)),
     notify,
@@ -358,7 +360,7 @@ export function createEngine(options: EngineOptions): Engine {
     acks: () => new Map([...acks].map(([peer, ack]) => [peer, ack.cursors])),
     acksAt: () => new Map(acks),
     onAcknowledge: ackHub.subscribe,
-    ...createCompaction({ store, stateStore, acks, ...docPath.compaction }, boot?.floor),
+    ...compaction,
     ...snapshots,
     eventsSince: (theirs, interest) => eventsWanted(store, theirs, interest),
     recentEvents: (options = {}) => store.recent?.(options) ?? recentHeaders(store, options),

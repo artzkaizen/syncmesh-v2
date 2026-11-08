@@ -77,25 +77,40 @@ describe("$recovery below a peer's compaction floor (D46)", () => {
     await settle();
     expect(asked).toHaveLength(2);
 
+    // a status subscriber is told, not left polling: the health it reads next is blocked
+    const heard: string[] = [];
+    const offStatus = mesh.status.subscribe(() => heard.push(mesh.status.get().health));
+    const offFloor = mesh.recovery.onBelowFloor(() => heard.push("below-floor"));
+
     // it answers with no rows and no certificate: nothing vouched, so nothing is adopted
     a.send(snapManifestFrame("far:1", 0, 0, new Map([[author, at(9)]])));
     await settle();
+    expect(heard).toEqual(["blocked-recovery", "below-floor"]);
     expect(mesh.engine.coverage().synced.get(author)).toBeUndefined();
     expect(mesh.recovery.belowFloor()).toEqual([
       { peer: far.peerId, floor, reason: "unvouched", message: expect.any(String) },
     ]);
     expect(mesh.status.get().health).toBe("blocked-recovery");
 
-    // the operator takes it anyway: the request goes out on the open session, and the answer
-    // adopts the floor and no further
+    // the operator takes it anyway (an override a trusted mesh allows too): the request goes out
+    // on the open session, the issue stays until it is answered, and the answer adopts the floor
+    // and no further
     expect(mesh.recovery.acceptState(far.peerId)).toBe("requested");
     await settle();
     expect(asked).toHaveLength(3);
+    expect(mesh.recovery.belowFloor()).toHaveLength(1);
     a.send(snapManifestFrame("far:2", 0, 0, new Map([[author, at(9)]])));
     await settle();
     expect(Number(mesh.engine.coverage().synced.get(author))).toBe(5);
     expect(mesh.recovery.belowFloor()).toEqual([]);
     expect(mesh.status.get().health).not.toBe("blocked-recovery");
+    // and told again when the issue went
+    expect(heard.slice(2, 4)).toEqual([
+      expect.not.stringMatching("blocked-recovery"),
+      "below-floor",
+    ]);
+    offStatus();
+    offFloor();
     await mesh.stop();
   });
 

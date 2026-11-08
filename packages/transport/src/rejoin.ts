@@ -18,9 +18,12 @@ import type { JoinOutcome, JoinPolicy } from "./join.js";
  * adopts up to the claimed floor for the authors below it (decided 2026-11-08).
  *
  * **How often.** At most once per (peer, floor) per session, so a floor that does not move is
- * one request and not one per cursor exchange. A request still open when its session ends counts
- * as never made; three sessions asked with no install completed raise the issue instead of a
- * fourth request. That count is kept here, by the mesh, and not persisted.
+ * one request and not one per cursor exchange, and one at a time across every link to that peer.
+ * A request still open when its session ends, or answered with state that was refused, counts as
+ * unanswered; three sessions asked with no install completed raise the issue instead of a fourth
+ * request. An install that completes and leaves the device below a floor ends the asking for that
+ * floor in every later session too: the next request is the app's ({@link Rejoins.accept}) or a
+ * floor that moved. All of it is kept here, by the mesh, and not persisted.
  */
 
 /**
@@ -57,7 +60,7 @@ export type BelowFloorReason =
   | "unvouched"
   /** An install completed and some authors are still below: withheld tables, a scoped sender, doc columns. */
   | "incomplete"
-  /** Three sessions asked and no install completed. */
+  /** Three sessions asked and no install completed (the link dropped, or the state was refused). */
   | "unanswered";
 
 /** A device below a peer's compaction floor, and what is known about why (D46). */
@@ -85,14 +88,15 @@ export type Accepted =
 export interface Rejoins {
   /** The peers this device is still below, with why; an issue clears once its authors catch up. */
   readonly issues: () => readonly BelowFloor[];
-  /** Fires when an issue is raised, cleared or accepted. */
+  /** Fires when an issue is raised or cleared, including one that cleared because its authors caught up. */
   readonly onChange: (listener: () => void) => Unsubscribe;
   /**
    * Takes state from this peer although nothing vouched for it, adopting per author at most the
    * floor it claimed. The app's or the operator's call, never this library's: in a mesh with no
    * `trust` a peer that lies about its floor and its rows could otherwise make this device stop
    * fetching an author's real events. Applies to the floor named in the issue only; a peer that
-   * moves its floor raises a new issue.
+   * moves its floor raises a new issue. Works in a mesh with `trust` too, on an `unvouched` issue:
+   * the same override, the same cap. The issue stays raised until an install answers it.
    */
   readonly accept: (peer: PeerId) => Accepted;
   /** One session's view of the same record; the bridge builds one per link. */
@@ -139,6 +143,10 @@ export function createRejoins(): Rejoins {
   const raised = new Map<PeerId, { readonly issue: BelowFloor; readonly ours: () => Cursors }>();
   /** Sessions asked per (peer, floor) with no install completed. */
   const attempts = new Map<string, number>();
+  /** (peer, floor) pairs with a request on the wire, so a second link to that peer waits for it. */
+  const inflight = new Set<string>();
+  /** (peer, floor) pairs an install left below: no later session asks again on its own. */
+  const halted = new Set<string>();
   /** Floors the app accepted unvouched, by (peer, floor). */
   const accepted = new Set<string>();
   /** Open sessions per peer, each able to send an accepted request now. */
@@ -159,6 +167,14 @@ export function createRejoins(): Rejoins {
     if (raised.delete(peer)) changes.emit();
   };
 
+  /** Drops every issue whose authors caught up; whether any went. */
+  const sweep = (): boolean => {
+    let dropped = false;
+    for (const [peer, held] of raised)
+      if (!stillBelow(held)) dropped = raised.delete(peer) || dropped;
+    return dropped;
+  };
+
   const session = (deps: RejoinSessionDeps): RejoinSession => {
     const { engine, interest, trusted, request } = deps;
     const self = engine.peerId;
@@ -167,44 +183,65 @@ export function createRejoins(): Rejoins {
     const acted = new Set<string>();
     /** Peers this session stopped asking: an install left it below, and the issue says so. */
     const stopped = new Set<PeerId>();
+    /** Requests this session put on the wire and has not heard back on. */
+    const mine = new Set<string>();
     const registered = new Map<PeerId, (floor: Cursors) => void>();
+    // an author's run can reach this device some other way; its issue goes when it does
+    const offFolds = engine.onFoldBatch(() => {
+      if (sweep()) changes.emit();
+    });
 
     const ask = (peer: PeerId, below: Cursors, adoptUnvouched: boolean): void => {
       const key = floorKey(peer, below);
+      inflight.add(key);
+      mine.add(key);
       const settled = (outcome: JoinOutcome): void => {
+        inflight.delete(key);
+        mine.delete(key);
+        // a refused install merged nothing and completed nothing: it stays an unanswered ask
+        if (outcome.kind === "refused") return;
         attempts.delete(key);
         accepted.delete(key);
         const left = belowPeerFloor(self, ours(), below, below);
         if (left.size === 0) return clear(peer);
         stopped.add(peer);
-        const vouched = outcome.kind === "installed" && outcome.vouched;
-        const reason = vouched || adoptUnvouched ? "incomplete" : "unvouched";
+        halted.add(key);
+        const reason = outcome.vouched || adoptUnvouched ? "incomplete" : "unvouched";
         raise(peer, left, reason, ours);
       };
       request(interest, { adoptUnvouched, floor: below, settled });
     };
 
+    /** Makes this session one `accept` can send an accepted request over now. */
+    const register = (peer: PeerId): void => {
+      if (registered.has(peer)) return;
+      const now = (below: Cursors) => {
+        acted.add(floorKey(peer, below));
+        ask(peer, below, true);
+      };
+      registered.set(peer, now);
+      const sessions = live.get(peer) ?? new Set();
+      sessions.add(now);
+      live.set(peer, sessions);
+    };
+
     const onCursors = (peer: PeerId, theirs: Cursors, floor: Cursors | undefined): void => {
-      if (!registered.has(peer)) {
-        const now = (below: Cursors) => {
-          acted.add(floorKey(peer, below));
-          ask(peer, below, true);
-        };
-        registered.set(peer, now);
-        const sessions = live.get(peer) ?? new Set();
-        sessions.add(now);
-        live.set(peer, sessions);
-      }
+      register(peer);
       const held = raised.get(peer);
       if (held !== undefined && !stillBelow(held)) clear(peer);
-      if (floor === undefined || floor.size === 0 || stopped.has(peer)) return;
+      if (floor === undefined || floor.size === 0) return;
       const below = belowPeerFloor(self, ours(), theirs, floor);
       // nothing below, or every entry ignored (a repage frame carries no cursors): no guard used
       if (below.size === 0) return;
       const key = floorKey(peer, below);
-      if (acted.has(key)) return;
+      // another link to the same peer already asked: its answer is this one's too
+      if (acted.has(key) || inflight.has(key)) return;
+      if (accepted.has(key)) {
+        acted.add(key);
+        return ask(peer, below, true);
+      }
+      if (stopped.has(peer) || halted.has(key)) return;
       acted.add(key);
-      if (accepted.has(key)) return ask(peer, below, true);
       if (!trusted) return raise(peer, below, "untrusted", ours);
       const asked = attempts.get(key) ?? 0;
       if (asked >= ASKS_PER_FLOOR) return raise(peer, below, "unanswered", ours);
@@ -215,6 +252,10 @@ export function createRejoins(): Rejoins {
     return {
       onCursors,
       close: () => {
+        offFolds();
+        // a request still open when its session ends counts as never answered
+        for (const key of mine) inflight.delete(key);
+        mine.clear();
         for (const [peer, now] of registered) {
           const sessions = live.get(peer);
           sessions?.delete(now);
@@ -227,7 +268,8 @@ export function createRejoins(): Rejoins {
 
   return {
     issues: () => {
-      for (const [peer, held] of raised) if (!stillBelow(held)) raised.delete(peer);
+      // read from a getter a renderer calls: the change is told after it, never inside it
+      if (sweep()) queueMicrotask(() => changes.emit());
       return [...raised.values()].map(({ issue }) => issue);
     },
     onChange: (listener) => changes.subscribe(() => listener()),
@@ -239,8 +281,7 @@ export function createRejoins(): Rejoins {
       }
       const { floor } = held.issue;
       accepted.add(floorKey(peer, floor));
-      raised.delete(peer);
-      changes.emit();
+      // the issue stays until an install answers it: accepting is not yet being caught up
       const sessions = live.get(peer);
       const first = sessions === undefined ? undefined : [...sessions][0];
       if (first === undefined) return "deferred";

@@ -88,6 +88,12 @@ export interface RecoveryView {
    */
   readonly belowFloor: () => readonly BelowFloor[];
   /**
+   * Fires when {@link RecoveryView.belowFloor} would answer differently: an issue raised, or one
+   * cleared because an install answered it or its authors caught up. Hands back nothing; read
+   * `belowFloor()` again. `mesh.status` subscribes to it too.
+   */
+  readonly onBelowFloor: (listener: () => void) => Unsubscribe;
+  /**
    * Takes the peer's state although nothing vouched for it, adopting per author at most the floor
    * it claimed (D46). Deliberately a call someone makes: in a mesh with no `trust`, a peer lying
    * about its floor and its rows could otherwise make this device stop fetching an author's real
@@ -245,6 +251,7 @@ export function openRecovery(engine: Engine, deps?: RecoveryDeps): RecoveryView 
     stranded: () => engine.stranded(),
     run: () => engine.retryQuarantined(),
     belowFloor: () => deps?.rejoins?.issues() ?? [],
+    onBelowFloor: (listener) => deps?.rejoins?.onChange(listener) ?? (() => undefined),
     acceptState: (peer) => deps?.rejoins?.accept(peer) ?? "nothing-to-accept",
     rebuild: (options = {}) => rebuildFrom(deps, options),
     ...omitUndefined({ stores: deps?.stores }),

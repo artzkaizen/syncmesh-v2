@@ -38,7 +38,10 @@ export interface MeshStatus {
 
 export interface Status {
   readonly get: () => MeshStatus;
-  /** Fires when a source changes state; the reading is cheap, so it hands back no snapshot. */
+  /**
+   * Fires when a source changes state or a below-floor issue is raised or cleared (D46); the
+   * reading is cheap, so it hands back no snapshot.
+   */
   readonly subscribe: (listener: () => void) => () => void;
 }
 
@@ -96,7 +99,10 @@ export function createStatus(deps: StatusDeps): Status {
     },
     subscribe: (listener) => {
       listeners.add(listener);
-      const offs = deps.transports().map((t) => t.onStatus?.(changed) ?? (() => undefined));
+      const offs = [
+        ...deps.transports().map((t) => t.onStatus?.(changed) ?? (() => undefined)),
+        deps.recovery.onBelowFloor(changed),
+      ];
       return () => {
         listeners.delete(listener);
         for (const off of offs) off();

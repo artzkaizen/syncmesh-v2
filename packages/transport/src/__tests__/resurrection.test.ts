@@ -397,6 +397,50 @@ describe("delete-resurrection — plan §3.5, D15, RFC-0015 §3", () => {
   });
 
   /**
+   * The floor one hop on. x joined from a's state and holds a's coverage with none of a's log
+   * behind it, so x cannot send that history either: its cursors frame says so, and y, behind
+   * both, is told to ask for state rather than delta-syncing into a hole nothing fills.
+   *
+   * Before the fix, observed with this scenario: x's floor was empty, y's cursor for a stayed 1,
+   * n2 never reached y and no issue was raised.
+   */
+  test("a device that joined from state advertises the coverage it holds no log for", async () => {
+    const a = peerWithState(40, "acct_x", 100);
+    const x = peerWithState(80, "acct_b", 500);
+    const y = peerWithState(120, "acct_c", 900);
+    const found: Divergence[] = [];
+    const report = (d: Divergence) => void found.push(d);
+    const ay = bridge(a, y, () => T0, report);
+    (await write(a, "n1", "from a")).unwrap();
+    await ay.settle();
+    ay.close();
+    for (const k of ["n2", "n3"]) (await write(a, k, `from a ${k}`)).unwrap();
+    (await x.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    expect(cursorFor(x, a)).toBe(3);
+    expect(await logHolds(x, a)).toBe(0);
+
+    const rejoins = createRejoins();
+    const yx = bridge(y, x, () => T0, report, { x: () => ({ rejoins }) });
+    await yx.settle();
+    expect(cursorFor(y, a)).toBe(1);
+    expect(rejoins.issues()).toEqual([
+      {
+        peer: x.identity.peerId,
+        // SAFETY: a's third write
+        floor: new Map([[a.identity.peerId, 3 as SeqNum]]),
+        reason: "untrusted",
+        message: expect.any(String),
+      },
+    ]);
+    expect(rejoins.accept(x.identity.peerId)).toBe("requested");
+    await yx.settle();
+    expect(cursorFor(y, a)).toBe(3);
+    expect(visible(y, key("n2"))).toBe(true);
+    expect(rejoins.issues()).toEqual([]);
+    yx.close();
+  });
+
+  /**
    * With `trust` set and nothing vouching for b's state, x asks once, merges the rows — the
    * deleted row goes — adopts nothing, and says why it is still stalled.
    */
