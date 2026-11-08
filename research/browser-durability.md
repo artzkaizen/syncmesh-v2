@@ -253,14 +253,15 @@ about this:
    SQLite is touched, so it is a plain yes/no rather than a `DOMException` about writable streams
    thrown from halfway through an install. `apps/issues` shows "Another tab owns the database"
    instead of "Memory — not saved".
-2. **Not done.** `Mesh` and `Api` over a `MessagePort`, with live-query subscriptions crossing it;
+2. **Done** (§7; proved in Chromium by `adapters/browser/src/__tests__/two-tabs.test.ts`, U11).
+   `Mesh` and `Api` over a `MessagePort`, with live-query subscriptions crossing it;
    the worker entry that constructs the mesh; the `SharedWorker` rendezvous that hands a follower a
    port to the leader's dedicated worker; `navigator.locks` election and re-plumbing of followers
    on failover; and the single-tab fallback, named on screen, where there is no `SharedWorker`.
    This is the work E04 left open as "concurrency, not storage", and it is a week, not an
    afternoon.
 
-Until stage 2, exactly one tab of an origin is durable and every other tab says so in the header.
+Before stage 2, exactly one tab of an origin was durable and every other tab said so in the header.
 That is worse than two live tabs and much better than two tabs that look alike while one quietly
 keeps nothing — which is what shipped before, and is what stage 1 fixed.
 

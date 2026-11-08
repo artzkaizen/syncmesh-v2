@@ -119,12 +119,14 @@ export interface Tab {
 
 /**
  * A tab: a page, its own dedicated worker running the real {@link hostOn}, and a place in the
- * origin's rendezvous. `rendezvous: false` is the Chrome-on-Android case, where there is none.
+ * origin's rendezvous. `rendezvous: false` is the Chrome-on-Android case, where there is none;
+ * `serve` is what the worker does with a port if it wins, an echo of its name unless a test says.
  */
 export async function openTab(
   where: ReturnType<typeof origin>,
   id: string,
   shared = true,
+  serve: (port: WirePort) => void = echo(id),
 ): Promise<Tab> {
   const control = new MessageChannel();
   const owner = { tab: id };
@@ -134,7 +136,7 @@ export async function openTab(
     navigator: { locks: where.room.elector(owner) },
   };
   control.port2.onmessage = (event) => scope.onmessage?.(event);
-  hostOn(scope, echo(id));
+  hostOn(scope, serve);
   const joined = await joinMesh({
     worker: () => control.port1,
     rendezvous: shared ? () => where.connect() : false,

@@ -1,4 +1,6 @@
+import type { Knock } from "@syncmesh/client";
 import type { Router } from "@syncmesh/orpc";
+import type { Transport } from "@syncmesh/transport";
 
 import { sqlite } from "@syncmesh/client";
 import { createMesh } from "@syncmesh/client/internal";
@@ -63,7 +65,13 @@ export interface MeshOrigin {
   readonly stop: () => Promise<void>;
 }
 
-const openMesh = async () => {
+/** What the origin's mesh is built with beyond the fixture: what knocks on it, and its media. */
+export interface OriginMedia {
+  readonly knocks?: readonly Knock[];
+  readonly transports?: readonly Transport[];
+}
+
+const openMesh = async (media: OriginMedia = {}) => {
   const mesh = (
     await createMesh({
       schema,
@@ -71,6 +79,8 @@ const openMesh = async () => {
       now: () => T0,
       storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
       trust: { issuer: issuer.peerId },
+      knocks: [...(media.knocks ?? [])],
+      transports: [...(media.transports ?? [])],
     })
   ).unwrap();
   mesh.grants
@@ -89,8 +99,11 @@ const openMesh = async () => {
   return mesh;
 };
 
-export async function meshOrigin(options: ServeOptions = {}): Promise<MeshOrigin> {
-  const mesh = await openMesh();
+export async function meshOrigin(
+  options: ServeOptions = {},
+  media: OriginMedia = {},
+): Promise<MeshOrigin> {
+  const mesh = await openMesh(media);
   const host = serveMesh(mesh, options);
   return {
     mesh,
