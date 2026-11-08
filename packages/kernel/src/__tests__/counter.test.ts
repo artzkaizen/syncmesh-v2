@@ -67,4 +67,17 @@ describe("counter — the cell lww merges wrong (book ch. 2)", () => {
     expect(held).toEqual({ p: { [String(PEER_A)]: 5 }, n: {} });
     expect(stockOf(state)).toBe(5);
   });
+
+  test("an increment that also carries totals converges in either order", () => {
+    // The schema admits `{"+": 3, p: {…}}`: it checks `+` and nothing else. The totals a
+    // first arrival carries must never be read as what the cell already held.
+    const crafted = update({ stock: { "+": 3, p: { [String(PEER_A)]: 10 } } }, a1);
+    const forward = applyAll([crafted, inc(1, b1)], COUNTER);
+    const backward = applyAll([inc(1, b1), crafted], COUNTER);
+    expect(canonicalState(forward)).toBe(canonicalState(backward));
+    expect(getRecord(forward, NOTES, N1)?.cells.get(STOCK)?.value).toEqual({
+      p: { [String(PEER_A)]: 3, [String(PEER_B)]: 1 },
+      n: {},
+    });
+  });
 });

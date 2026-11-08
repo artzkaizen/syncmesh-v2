@@ -137,4 +137,6 @@ export const STATE_TABLES = [
   "acked",
   "changes",
   "capture",
+  "doc_log",
+  "doc_heads",
 ] as const;

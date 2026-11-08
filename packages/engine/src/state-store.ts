@@ -32,11 +32,15 @@ export interface StateStore {
 
 export type WriteKeys = ReadonlyMap<TableName, ReadonlySet<RowKey>>;
 
-/** Every (table, key) the events touch. */
+/**
+ * Every (table, key) whose record the events can move. A doc change counts only as a genesis —
+ * the one kind that sets a cell — so a document edit never re-runs a live query (RFC-0023 §4.2).
+ */
 export function writeKeysOf(events: readonly SyncEvent[]): WriteKeys {
   const keys = new Map<TableName, Set<RowKey>>();
   for (const event of events) {
     for (const change of event.changes) {
+      if (change.kind === "doc" && change.genesis !== true) continue;
       const set = keys.get(change.table) ?? new Set<RowKey>();
       set.add(change.key);
       keys.set(change.table, set);

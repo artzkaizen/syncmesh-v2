@@ -1,4 +1,4 @@
-import type { EventStore, StateStore } from "@syncmesh/engine";
+import type { DocStore, EventStore, StateStore } from "@syncmesh/engine";
 import type { PartitionKey } from "@syncmesh/kernel";
 import type { Table } from "@syncmesh/schema";
 
@@ -12,16 +12,19 @@ import type { ProjectionOptions } from "./projection.js";
 
 import { captureDdlFor, installCapture } from "./capture.js";
 import { ATTACHED_LOG, dialectOf, placementOf } from "./dialect.js";
+import { sqlDocStore } from "./doc-store.js";
 import { sqlEventStore } from "./event-store.js";
 import { tablesProjection } from "./projection.js";
 import { rowSyncDdlFor, rowSyncTable, type RowSync } from "./row-sync.js";
 import { attempt, inTransaction } from "./sql.js";
 import { sqlStateStore } from "./state-store.js";
 
-/** The log and the state as one transaction sees them: what `Stores.atomic` hands its callback. */
+/** The log, the state and the doc log as one transaction sees them: what `Stores.atomic` hands its callback. */
 export interface ScopedStores {
   readonly events: EventStore;
   readonly state: StateStore;
+  /** The doc log and heads (RFC-0023 §6.2): appended in the same transaction as the events they index. */
+  readonly docs: DocStore;
 }
 
 /** The event log and the persisted state over one database, closed together. */
@@ -214,14 +217,17 @@ export function openStores(
       });
     }
     const state = yield* Result.await(sqlStateStore(driver, stateOptions));
+    const docs = yield* Result.await(sqlDocStore(driver));
     const scoped: ScopedStores = {
       events: yield* Result.await(sqlEventStore(driver, { nested: true })),
       state: yield* Result.await(sqlStateStore(driver, { ...stateOptions, nested: true })),
+      docs: yield* Result.await(sqlDocStore(driver, { nested: true })),
     };
     const atomic: Stores["atomic"] = (fn) => inTransaction(driver, () => fn(scoped));
     const opened = {
       events,
       state,
+      docs,
       driver,
       atomic,
       close: () => driver.close?.() ?? Promise.resolve(),

@@ -157,6 +157,19 @@ describe("construction refuses — RFC-0023 §4.1's error table", () => {
     );
   });
 
+  test("DocColumnConstraint: a column that is not nullable", () => {
+    // A row write never carries a document column, so a new row always holds none.
+    expect(() =>
+      table("notes", { id: t.uuid().primaryKey(), content: t.blob({ merge: loro }) }),
+    ).toThrow("notes.content: a document column must be nullable");
+    const required = pgTable("notes", { id: uuid().primaryKey(), content: bytea().notNull() });
+    expect(() => table("notes", fromDrizzle(required, { merge: { content: loro } }))).toThrow(
+      DocColumnConstraint,
+    );
+    const optional = pgTable("notes", { id: uuid().primaryKey(), content: bytea() });
+    expect(() => table("notes", fromDrizzle(optional, { merge: { content: loro } }))).not.toThrow();
+  });
+
   test("MergeKindMismatch: max/min on a document column, an adapter on a non-document kind", () => {
     const both = columnFromDef({
       kind: "blob",
@@ -174,6 +187,10 @@ describe("construction refuses — RFC-0023 §4.1's error table", () => {
     ).toThrow("notes.n: a document adapter needs a byte column, not integer");
     expect(() =>
       table("notes", { id: t.uuid().primaryKey(), c: t.blob({ merge: cast({ id: "loro" }) }) }),
+    ).toThrow("neither a rule nor a document adapter");
+    // the kernel's AdapterId: a major starts at 1, or no doc change could ever name the column
+    expect(() =>
+      table("notes", { id: t.uuid().primaryKey(), c: t.blob({ merge: cast({ id: "loro@0" }) }) }),
     ).toThrow("neither a rule nor a document adapter");
     // D25's backstop is the same error now
     expect(() =>

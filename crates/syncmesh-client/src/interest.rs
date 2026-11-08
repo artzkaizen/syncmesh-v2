@@ -187,6 +187,8 @@ mod tests {
             partition,
             changes: vec![],
             sealed: false,
+            action: None,
+            undo_of: None,
         };
         let acme = Interest::partitions([key("org:acme")]);
         assert!(matches_interest(
