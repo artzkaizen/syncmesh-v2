@@ -32,7 +32,8 @@ import type { RelayRoom, RelayRoomOptions } from "../room.js";
 import type { RelaySocket, SendOutcome } from "../sender.js";
 import type { RelayDial } from "../transport.js";
 
-import { decodeRelayFrame, joinCore, joinFrame } from "../frames.js";
+import { decodeRelayFrame } from "../frame-decode.js";
+import { joinCore, joinFrame } from "../frames.js";
 import { createRelayHost } from "../host.js";
 import { proveJoin } from "../proof.js";
 import { openRelayRoom } from "../room.js";

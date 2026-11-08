@@ -4,6 +4,7 @@ import { parsePartitionKey } from "@syncmesh/kernel";
 import { bytesToHex, createIdentity, decodeCbor, encodeCbor, hexToBytes } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
+import { decodeRelayFrame } from "../frame-decode.js";
 import {
   RELAY_PROTOCOL_VERSIONS,
   ackFrame,
@@ -12,7 +13,6 @@ import {
   blobMissingFrame,
   blobPutFrame,
   challengeFrame,
-  decodeRelayFrame,
   errorFrame,
   helloFrame,
   joinCore,

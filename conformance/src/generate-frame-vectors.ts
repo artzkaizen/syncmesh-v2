@@ -51,7 +51,8 @@ const framed = (frame: Uint8Array): Uint8Array => {
   return out;
 };
 
-export function frameVectors() {
+/** The fixed inputs the session frames are built from: two identities, and the frozen payloads. */
+function frameInputs() {
   const device = createIdentity(DEVICE_SEED).unwrap();
   const other = createIdentity(OTHER_SEED).unwrap();
   /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- sequences are branded integers and columns branded text; documented literals */
@@ -94,61 +95,78 @@ export function frameVectors() {
   ];
   const digests = new Map<string, bigint>([["notes", 0xdeadbeefn]]);
   const certificate = Uint8Array.from({ length: 4 }, (_, i) => 0xc0 + i);
+  return {
+    device,
+    other,
+    cursors,
+    ahead,
+    eventWire,
+    grantWire,
+    receiptWire,
+    refusalWire,
+    presence,
+    ads,
+    digests,
+    certificate,
+  };
+}
 
+/** One case per frame kind and shape, built from {@link frameInputs}. */
+function frameCases(fx: ReturnType<typeof frameInputs>) {
   const cases: readonly { description: string; kind: string; tag: number; wire: Uint8Array }[] = [
     {
       description: "grant, carrying a frozen grant wire",
       kind: "grant",
       tag: 0,
-      wire: grantFrame(grantWire),
+      wire: grantFrame(fx.grantWire),
     },
     {
       description: "grant-request, no invite",
       kind: "grant-request",
       tag: 1,
-      wire: grantRequestFrame(device.peerId),
+      wire: grantRequestFrame(fx.device.peerId),
     },
     {
       description: "grant-request with an invite",
       kind: "grant-request",
       tag: 1,
-      wire: grantRequestFrame(device.peerId, "inv-7"),
+      wire: grantRequestFrame(fx.device.peerId, "inv-7"),
     },
     {
       description: "cursors, two authors",
       kind: "cursors",
       tag: 2,
-      wire: cursorsFrame(device.peerId, cursors),
+      wire: cursorsFrame(fx.device.peerId, fx.cursors),
     },
     {
       description: "cursors with what is held above them (D13)",
       kind: "cursors",
       tag: 2,
-      wire: cursorsFrame(device.peerId, cursors, ahead),
+      wire: cursorsFrame(fx.device.peerId, fx.cursors, fx.ahead),
     },
     {
       description: "event, carrying a frozen event wire",
       kind: "event",
       tag: 3,
-      wire: eventFrame(eventWire),
+      wire: eventFrame(fx.eventWire),
     },
     {
       description: "presence, a signed cursor position",
       kind: "presence",
       tag: 4,
-      wire: presenceFrame(presence),
+      wire: presenceFrame(fx.presence),
     },
     {
       description: "digest of the whole state",
       kind: "digest",
       tag: 5,
-      wire: digestFrame("", cursors, digests),
+      wire: digestFrame("", fx.cursors, fx.digests),
     },
     {
       description: "digest of one partition, with ahead",
       kind: "digest",
       tag: 5,
-      wire: digestFrame(JSON.stringify(ACME_ONLY), cursors, digests, ahead),
+      wire: digestFrame(JSON.stringify(ACME_ONLY), fx.cursors, fx.digests, fx.ahead),
     },
     {
       description: "snapshot request, everything",
@@ -166,13 +184,13 @@ export function frameVectors() {
       description: "snapshot manifest, whole state, no certificate",
       kind: "snap-manifest",
       tag: 6,
-      wire: snapManifestFrame("snap-1", 2, 5, cursors),
+      wire: snapManifestFrame("snap-1", 2, 5, fx.cursors),
     },
     {
       description: "snapshot manifest, one partition, with a certificate",
       kind: "snap-manifest",
       tag: 6,
-      wire: snapManifestFrame("snap-1", 2, 5, cursors, ACME_ONLY, certificate),
+      wire: snapManifestFrame("snap-1", 2, 5, fx.cursors, ACME_ONLY, fx.certificate),
     },
     {
       description: "snapshot chunk",
@@ -196,29 +214,35 @@ export function frameVectors() {
       description: "receipt, carrying a frozen custody receipt",
       kind: "receipt",
       tag: 7,
-      wire: receiptFrame(receiptWire),
+      wire: receiptFrame(fx.receiptWire),
     },
     {
       description: "routes, one destination two hops away",
       kind: "routes",
       tag: 8,
-      wire: routesFrame(ads),
+      wire: routesFrame(fx.ads),
     },
     {
       description: "refusal, carrying a frozen refusal receipt (D32)",
       kind: "refusal",
       tag: 9,
-      wire: refusalFrame(refusalWire),
+      wire: refusalFrame(fx.refusalWire),
     },
     {
       description:
         "withheld, two sequences of one author the receiver's grant does not cover, under its entitlement (D40)",
       kind: "withheld",
       tag: 10,
-      wire: withheldFrame('{"partitions":["org:acme"]}', ahead),
+      wire: withheldFrame('{"partitions":["org:acme"]}', fx.ahead),
     },
   ];
+  return cases;
+}
 
+export function frameVectors() {
+  const fx = frameInputs();
+  const cases = frameCases(fx);
+  const { device, other } = fx;
   const example = grantRequestFrame(device.peerId, "inv-7");
   return {
     deviceId: device.peerId,
