@@ -5,7 +5,7 @@ import { type Table } from "@syncmesh/schema";
 import { deriveLineage } from "@syncmesh/wire";
 
 import type { TableDocs } from "./columns.js";
-import type { ProbeEvent } from "./validate.js";
+import type { ProbeEvent, RowLookup } from "./validate.js";
 
 import { checkColumns } from "./columns.js";
 import { DocChangeRefused, type DocRung, type ValidationError } from "./errors.js";
@@ -13,9 +13,9 @@ import { DocChangeRefused, type DocRung, type ValidationError } from "./errors.j
 const refuse = (change: DocChange, rung: DocRung, message: string) =>
   Result.err(
     new DocChangeRefused({
-      table: String(change.table),
-      key: String(change.key),
-      column: String(change.column),
+      table: change.table,
+      key: change.key,
+      column: change.column,
       rung,
       message,
     }),
@@ -43,13 +43,13 @@ export function checkDoc(
   if (event.local === true)
     return refuse(change, "local", "a document lives on a synced row, never in a local write");
   const declaredAdapter = docs.get(change.column);
-  if (declaredAdapter === undefined && String(change.column) in table.columns)
-    return refuse(change, "column", `${String(change.column)} is not a document column`);
+  if (declaredAdapter === undefined && Object.hasOwn(table.columns, change.column))
+    return refuse(change, "column", `${change.column} is not a document column`);
   if (declaredAdapter !== undefined && declaredAdapter !== change.adapter)
     return refuse(
       change,
       "adapter",
-      `${String(change.column)} is merged by ${declaredAdapter}, not ${change.adapter}`,
+      `${change.column} is merged by ${declaredAdapter}, not ${change.adapter}`,
     );
   if (change.genesis !== true) return Result.ok(undefined);
   const twice = event.changes.some(
@@ -70,12 +70,14 @@ export function checkDoc(
     : refuse(change, "lineage", "the genesis names a lineage its place in the log does not derive");
 }
 
-const rowId = (change: Change): string => `${String(change.table)}\u0000${String(change.key)}`;
+const rowId = (change: Change): string => `${change.table}\u0000${change.key}`;
 
 /**
  * A change's cells against its table (`checkColumns`), and a doc change against the rules only
  * a document has. `"settled"` when nothing is left for the policy rung to say: a doc change on a
- * row the same event inserts is judged as part of that insert (RFC-0023 §11).
+ * row the same event inserts is judged as part of that insert (RFC-0023 §11). A row `before`
+ * already holds is not being inserted, whatever the event says, so its doc change is still the
+ * update of that row the policy rung judges.
  */
 export function checkCells(
   table: Table,
@@ -83,6 +85,7 @@ export function checkCells(
   change: Change,
   event: ProbeEvent,
   index: number,
+  before: RowLookup,
 ): Result<"policy" | "settled", ValidationError> {
   const declared = docs?.get(change.table) ?? new Map();
   const columns = checkColumns(table, change, declared);
@@ -90,6 +93,7 @@ export function checkCells(
   if (change.kind !== "doc") return Result.ok("policy");
   const doc = checkDoc(table, declared, change, event, index);
   if (doc.isErr()) return doc;
+  if (before(change.table, change.key) !== undefined) return Result.ok("policy");
   const inserts = event.changes.some((c) => c.kind === "insert" && rowId(c) === rowId(change));
   return Result.ok(inserts ? "settled" : "policy");
 }
@@ -111,8 +115,8 @@ export const refuseReservedDoc = (table: string, change: DocChange) =>
   Result.err(
     new DocChangeRefused({
       table,
-      key: String(change.key),
-      column: String(change.column),
+      key: change.key,
+      column: change.column,
       rung: "column",
       message: `${table} has no document columns`,
     }),

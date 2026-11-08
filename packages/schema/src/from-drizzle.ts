@@ -4,6 +4,7 @@ import type { Temporal } from "@syncmesh/temporal";
 import { panic } from "@syncmesh/result";
 
 import type { AppValue } from "./convert.js";
+import type { DocumentAdapter } from "./documents.js";
 import type {
   DrizzleEntry,
   DrizzleTableInKind,
@@ -14,6 +15,7 @@ import type { Columns } from "./table.js";
 
 import {
   columnFromDef,
+  mergeDef,
   type Column,
   type ColumnDef,
   type ColumnKind,
@@ -103,7 +105,10 @@ type DrizzleValue<C extends DrizzleColumnLike> = C["_"]["data"] extends Date
   : C["_"]["data"];
 
 export interface FromDrizzleOptions<D extends DrizzleTableLike> {
-  /** Merge rules for an imported table, typed against its columns like `t.integer({ merge })` is. */
+  /**
+   * Merge rules for an imported table, typed against its columns like `t.integer({ merge })` is.
+   * A byte column (`bytea()`, `blob({ mode: "buffer" })`) may name a document adapter instead.
+   */
   readonly merge?: {
     readonly [K in keyof ColumnsFromDrizzle<D>]?: MergeFor<
       NonNullable<Value<ColumnsFromDrizzle<D>[K]>>
@@ -199,7 +204,7 @@ function kindFor(info: DrizzleColumnInfo): ColumnKind {
 
 function defFor(
   info: DrizzleColumnInfo,
-  strategy: string | undefined,
+  merge: StrategyName | DocumentAdapter | undefined,
   warn: (message: string) => void,
 ): ColumnDef {
   const kind = kindFor(info);
@@ -219,8 +224,7 @@ function defFor(
         ? "defaults do not sync: an omitted column reads as null, never the default"
         : "defaults do not sync: every peer must see the inserted value, so the column is required",
     );
-  // SAFETY: strategy came from FromDrizzleOptions.merge, typed per column as MergeFor<Value>
-  return strategy === undefined ? def : { ...def, merge: strategy as StrategyName };
+  return { ...def, ...mergeDef(merge) };
 }
 
 // SAFETY: a unique symbol type can only be declared, so the registry symbol is asserted onto it
@@ -238,7 +242,8 @@ export function fromDrizzle<const D extends DrizzleTableLike>(
   options: FromDrizzleOptions<D> = {},
 ): ColumnsFromDrizzle<D> {
   const runtime = readRuntime(drizzle);
-  const rules: Readonly<Record<string, string | undefined>> = options.merge ?? {};
+  const rules: Readonly<Record<string, StrategyName | DocumentAdapter | undefined>> =
+    options.merge ?? {};
   const mapped: Record<string, Column<AppValue, boolean, boolean>> = {};
   for (const [key, info] of Object.entries(runtime[COLUMNS])) {
     const def = defFor(info, rules[key], (message) => options.onWarn?.({ column: key, message }));
@@ -292,11 +297,11 @@ function readRuntime(drizzle: DrizzleTableLike): DrizzleRuntime {
 export function drizzleTable<const D extends DrizzleTableLike>(
   drizzle: D,
   options: DrizzleTableReserved<D>,
-): DrizzleEntry<D> & Pick<DrizzleTableReserved<D>, "partition">;
+): DrizzleEntry<D> & Pick<DrizzleTableReserved<D>, "partition" | "sync">;
 export function drizzleTable<const D extends DrizzleTableLike, N extends string, R extends string>(
   drizzle: D,
   options: DrizzleTableInKind<D, N, R>,
-): DrizzleEntry<D> & Pick<DrizzleTableInKind<D, N, R>, "partition" | "allow">;
+): DrizzleEntry<D> & Pick<DrizzleTableInKind<D, N, R>, "partition" | "allow" | "sync">;
 // the derivation-only form stays last: it is all-optional, so a literal that also names `merge` or
 // `onWarn` survives the first overload pass, and `allow` would be typed by it — as `any` — before
 // the kind form is tried
@@ -308,8 +313,9 @@ export function drizzleTable<const D extends DrizzleTableLike>(
   drizzle: D,
   options: DrizzleTableOptions<D> = {},
 ) {
-  const { partition, allow, ...derive } = options;
+  const { partition, allow, sync, ...derive } = options;
   const columns = fromDrizzle(drizzle, derive);
   if (partition === undefined) return { columns };
-  return allow === undefined ? { columns, partition } : { columns, partition, allow };
+  const entry = allow === undefined ? { columns, partition } : { columns, partition, allow };
+  return sync === undefined ? entry : { ...entry, sync };
 }

@@ -60,11 +60,13 @@ describe("the durable half and the derived half", () => {
       expect({ [name]: inState.has(`syncmesh_${name}`) }).toEqual({ [name]: true });
     }
 
-    // nothing of ours in `main` that neither list claims
-    const claimed = STATE_TABLES.map((name) => `syncmesh_${name}`);
-    const strays = [...inState].filter(
-      (table) => table.startsWith("syncmesh_") && !claimed.includes(table),
-    );
+    // nothing in `main` but the app's own tables and the ones the derived list claims, so an
+    // engine table that forgot its prefix is a stray here rather than a name an app can take
+    const claimed = new Set<string>([
+      ...STATE_TABLES.map((name) => `syncmesh_${name}`),
+      ...schema.entries.map((e) => e.table.name),
+    ]);
+    const strays = [...inState].filter((table) => !claimed.has(table));
     expect(strays).toEqual([]);
   });
 

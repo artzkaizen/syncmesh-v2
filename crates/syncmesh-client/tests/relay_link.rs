@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use syncmesh_client::relay::{Action, REFUSED, RelayLink, RelayOptions, UNPINNED};
+use syncmesh_client::relay::{Action, REENTITLED, REFUSED, RelayLink, RelayOptions, UNPINNED};
 use syncmesh_client::room::{Room, RoomAction, RoomOptions, SocketId};
 use syncmesh_client::{Engine, EngineOptions, Interest, MemoryEventStore, StoredEvent};
 use syncmesh_core::cbor::{Key, Value};
@@ -15,7 +15,8 @@ use syncmesh_core::grant::{GrantRequest, issue_grant};
 use syncmesh_core::identity::Identity;
 use syncmesh_core::record::CellValue;
 use syncmesh_core::relay_frames::{
-    RelayFrame, blob_get_frame, blob_put_frame, decode_relay_frame, relayed_frame,
+    PageScope, RelayFrame, blob_get_frame, blob_put_frame, decode_relay_frame, page_frame,
+    relayed_frame,
 };
 
 fn identity(n: u8) -> Identity {
@@ -726,7 +727,7 @@ fn presence_grants_and_blobs_pass_through_the_room() {
     let hash = syncmesh_core::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(&bytes));
     let actions = net.devices[a]
         .link
-        .send_raw_frame(blob_put_frame(&hash, &bytes));
+        .send_raw_frame(blob_put_frame(&hash, &bytes, None));
     net.apply_device(a, actions);
     net.pump();
     assert_eq!(net.room.blob(&hash), Some(bytes.as_slice()));
@@ -757,7 +758,7 @@ fn presence_grants_and_blobs_pass_through_the_room() {
     // up (every error frame does), and a link that is down claims nobody
     let actions = net.devices[a]
         .link
-        .send_raw_frame(blob_put_frame("00ff", &bytes));
+        .send_raw_frame(blob_put_frame("00ff", &bytes, None));
     net.apply_device(a, actions);
     net.pump();
     assert!(net.room.blob("00ff").is_none());
@@ -893,6 +894,71 @@ fn a_scoped_interest_receives_its_slice_carries_the_scope_and_widening_repages_f
     let joins = net.joins_sent(b);
     assert_eq!(joins[0].cursors.len(), 1);
     assert_eq!(Net::folded_count(&net.take_facts(b)), 0);
+}
+
+/// What a gated TypeScript relay sends (D24): a pass-over whose scope names the entitlement as
+/// well as the interest, exactly as `scopeText` writes it.
+#[test]
+fn a_pass_over_naming_an_entitlement_is_adopted_and_a_changed_one_repages_from_nothing() {
+    let mut net = Net::new(room_with(vec![1, 2], 15_000));
+    let b = net.add(
+        2,
+        RelayOptions {
+            interest: Some(Interest::partitions([acme()])),
+            ..v2_options()
+        },
+    );
+    net.dial(b);
+    net.take_facts(b);
+    // an author nobody is connected to: c2 is withheld from b, and c3 waits behind the hole
+    let mut c = engine(9);
+    let run: Vec<StoredEvent> = (1..=3)
+        .map(|n| write(&mut c, &format!("c{n}"), "x", None))
+        .collect();
+    let relayed = |n: usize| relayed_frame(&run[n - 1].envelope().unwrap(), n as u64);
+    net.feed(b, &relayed(1));
+    net.feed(b, &relayed(3));
+    assert_eq!(net.devices[b].engine.cursors()[c.peer_id()].get(), 1);
+    net.take_facts(b);
+
+    let pass_over = |entitlement: &str| {
+        let scope = PageScope {
+            synced: vec![(c.peer_id().clone(), run[2].event.seq_num)],
+            scope: format!(r#"{{"partitions":["org:acme"],"entitlement":"{entitlement}"}}"#),
+        };
+        page_frame(&[], &[], false, 3, Some(&scope))
+    };
+    net.feed(b, &pass_over("clinic:a"));
+    let facts = net.take_facts(b);
+    // c3 folded out of the holdback, the cursor past the hole, and no second catch-up announced
+    assert_eq!(Net::folded_count(&facts), 1, "{facts:?}");
+    assert!(!facts.contains(&Action::CaughtUp), "{facts:?}");
+    assert_eq!(net.devices[b].engine.cursors()[c.peer_id()].get(), 3);
+    assert_eq!(
+        net.devices[b].engine.coverage().scope.as_deref(),
+        Some(r#"{"partitions":["org:acme"],"entitlement":"clinic:a"}"#)
+    );
+
+    // another entitlement: the cursors may skip what the old one withheld, so the link hangs up
+    // and the join after it asks from nothing
+    net.devices[b].sent.clear();
+    let actions = {
+        let d = &mut net.devices[b];
+        d.link
+            .on_bytes(&mut d.engine, &pass_over("clinic:b"), net.now)
+    };
+    assert!(
+        actions.contains(&Action::Close {
+            reason: REENTITLED.to_owned()
+        }),
+        "{actions:?}"
+    );
+    net.apply_device(b, actions);
+    net.pump();
+    net.advance(60_000);
+    let joins = net.joins_sent(b);
+    assert_eq!(joins.len(), 1, "{joins:?}");
+    assert!(joins[0].cursors.is_empty(), "{:?}", joins[0].cursors);
 }
 
 #[test]

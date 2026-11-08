@@ -15,6 +15,7 @@ use syncmesh_core::event::{AccountId, PartitionKey, PeerId, SeqNum};
 use syncmesh_core::grant::{self, GrantError, GrantRequest};
 use syncmesh_core::receipt::{self, ReceiptRequest};
 use syncmesh_core::record::JsonValue;
+use syncmesh_core::refusal::{self, QuarantineReason, RefusalRequest};
 use syncmesh_core::{Identity, from_hex, to_hex};
 
 const NOW: i64 = 1_700_000_000_000;
@@ -148,6 +149,57 @@ fn grant_vectors_verify_decode_reencode_and_remint() {
         assert_eq!(
             grant::verify_grant(wire, &device_id, NOW),
             Err(GrantError::BadSignature)
+        );
+    }
+}
+
+#[test]
+fn refusal_vectors_verify_under_the_named_refuser_and_remint() {
+    let doc = vectors("refusal-vectors.json");
+    let refuser_id = peer(&doc, "refuserId");
+    let author_id = peer(&doc, "authorId");
+    let (refuser, author) = (seed(21), seed(121));
+    assert_eq!(refuser.peer_id(), &refuser_id);
+    assert_eq!(author.peer_id(), &author_id);
+
+    let list = doc["vectors"].as_array().unwrap();
+    assert_eq!(list.len(), 4);
+    for v in list {
+        let description = text(v, "description");
+        let wire = from_hex(text(v, "wireHex")).unwrap();
+        let signed =
+            refusal::verify_refusal(&wire).unwrap_or_else(|e| panic!("{description}: {e}"));
+        let r = &signed.value;
+        let seq = v["seq"].as_u64().unwrap();
+        let reason = QuarantineReason::parse(text(v, "reason")).expect("reason");
+        assert_eq!(r.refuser, refuser_id, "{description}");
+        assert_eq!(r.author, author_id, "{description}");
+        assert_eq!(r.seq.get(), seq, "{description}");
+        assert_eq!(r.reason, reason, "{description}");
+        assert_eq!(r.verdict, text(v, "verdict"), "{description}");
+        assert_eq!(r.issued_at_ms, NOW, "{description}");
+        assert_eq!(
+            to_hex(&refusal::encode_refusal(r)),
+            to_hex(&signed.core),
+            "{description}: re-encode"
+        );
+        let request = RefusalRequest {
+            author: author_id.clone(),
+            seq: SeqNum::parse(seq).unwrap(),
+            reason,
+            verdict: text(v, "verdict").to_owned(),
+            now_ms: NOW,
+        };
+        assert_eq!(
+            to_hex(&refusal::issue_refusal(&refuser, &request)),
+            to_hex(&wire),
+            "{description}: Rust mints the frozen bytes"
+        );
+        // the author re-signing the refuser's core is refused: the core names its verifier
+        let forged = envelope(&signed.core, &author.sign(&signed.core));
+        assert_eq!(
+            refusal::verify_refusal(&forged),
+            Err(receipt::ReceiptError::BadSignature)
         );
     }
 }

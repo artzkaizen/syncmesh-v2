@@ -92,6 +92,18 @@ export function createRevert(deps: RevertDeps): Engine["revert"] {
         ),
       );
     }
+    if (entry.inverse.length === 0 && entry.event.changes.some((c) => c.kind === "doc")) {
+      // nothing but document updates, which only their adapter can compensate: refuse before the
+      // ring gives up the slot, so the write is still revertable once document undo lands
+      return Promise.resolve(
+        Result.err(
+          new CannotRevert({
+            eventId: id,
+            message: "a write of document updates alone is undone by its adapter (RFC-0023 §9)",
+          }),
+        ),
+      );
+    }
     undo.splice(index, 1);
     const { partition, local } = entry.event;
     const options: MutateOptions = {};

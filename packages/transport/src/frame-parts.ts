@@ -29,6 +29,8 @@ export const KIND = {
   receipt: 7,
   /** What this peer can reach, and how far away it is (book ch. 17); additive like the rest. */
   routes: 8,
+  /** A signed refusal of one event, back to its author (D32); additive like the rest. */
+  refusal: 9,
 } as const;
 
 /**
@@ -48,7 +50,7 @@ export type FrameClass = (typeof KIND)[keyof typeof KIND];
  * `undefined` for anything that is not one of ours, which the caller treats as the ordinary
  * class rather than as a refusal — a frame nobody sends is divergence, not routing.
  */
-export const classOf = (frame: Uint8Array): FrameClass | undefined => {
+export const frameClass = (frame: Uint8Array): FrameClass | undefined => {
   const header = frame[0];
   const tag = frame[1];
   // 0x80 is CBOR's array major type; a tag above 23 would not be one byte, and none of ours is

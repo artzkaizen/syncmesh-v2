@@ -5,12 +5,25 @@ import type { SqlDriver } from "../driver.js";
 import { blobCases } from "./blobs.js";
 import { captureCases, captureRuleCases } from "./capture.js";
 import { compactionCases } from "./compaction.js";
+import { docColumnCases } from "./doc-columns.js";
 import { docCases } from "./docs.js";
 import { eventCases } from "./events.js";
 import { readFilterCases } from "./read-filter.js";
 
 export { LADDER, PRINCIPALS, ROWS, RULES, asCells } from "./read-filter.js";
 export { COUNTERS, JOBS } from "./fixtures.js";
+export {
+  CRASH_AUTHOR,
+  CRASH_BATCH,
+  CRASH_SCHEMA,
+  CRASH_TABLES,
+  crashChild,
+  crashTests,
+  linesOf,
+  type CrashChild,
+  type CrashHarness,
+  type CrashMode,
+} from "./crash.js";
 import { stateCases } from "./state.js";
 import { tablesCases } from "./tables.js";
 
@@ -42,7 +55,12 @@ export function storeTests(openDriver: OpenDriver): readonly SuiteCase[] {
  * path — the fold into real tables, and the app's own statements back out as changes.
  */
 export function captureTests(openDriver: OpenDriver): readonly SuiteCase[] {
-  return [...captureCases(openDriver), ...captureRuleCases(openDriver), ...tablesCases(openDriver)];
+  return [
+    ...captureCases(openDriver),
+    ...captureRuleCases(openDriver),
+    ...tablesCases(openDriver),
+    ...docColumnCases(openDriver),
+  ];
 }
 
 /**

@@ -59,7 +59,8 @@ export function rowsIn(record: RowRecord, interest: Interest | undefined): boole
   const partitions = interest?.partitions;
   if (partitions === undefined) return true;
   const held = record.partition;
-  return held !== undefined && partitions.includes(held);
+  // an unpinned row is in no instance, so a clause about instances says nothing about it (D24)
+  return held === undefined || partitions.includes(held);
 }
 
 /**
@@ -129,12 +130,57 @@ const within = (
  * The whole of the filter now: an event belongs to exactly one instance, and an interest names
  * the instances this device wants bytes for. There is nothing to say about its tables or its
  * cells, because a device holds a partition entire or not at all (ch. 3).
+ *
+ * An **unpinned** event matches every interest (D24). It is about the mesh rather than about an
+ * instance — a `global` row, an authority-visibility row — so *"only rows in these instances"*
+ * says nothing about it, and two devices with different interests both receive it.
  */
 export const matchesInterest = (interest: Interest | undefined, event: SyncEvent): boolean => {
   const partitions = interest?.partitions;
-  if (partitions === undefined) return true;
-  return event.partition !== undefined && partitions.includes(event.partition);
+  if (partitions === undefined || event.partition === undefined) return true;
+  return partitions.includes(event.partition);
 };
+
+/**
+ * What a filtered catch-up's coverage is true for (D23, D24): the interest the device asked
+ * with, and the entitlement the relay admitted it under. Absent `entitlement` is exactly
+ * {@link interestText}, so a relay with no admission gate writes what it always wrote.
+ *
+ * @example
+ * scopeText({ partitions: [acme] }, "clinic:a") // '{"partitions":["org:acme"],"entitlement":"clinic:a"}'
+ */
+export const scopeText = (interest: Interest | undefined, entitlement?: string): string =>
+  entitlement === undefined ? interestText(interest) : JSON.stringify({ ...interest, entitlement });
+
+/** The two halves of a scope as {@link scopeText} wrote them; junk reads as no scope at all. */
+export interface Scope {
+  readonly interest: Interest | undefined;
+  /** The entitlement the cursors were earned under; absent, the relay withheld nothing. */
+  readonly entitlement: string | undefined;
+}
+
+/**
+ * A scope's two halves back. An interest-only text — every scope written before D24 — reads as
+ * `{ interest, entitlement: undefined }`, so a cursor scoped under the old rule keeps its meaning.
+ */
+export const scopeFrom = (text: string | undefined): Scope => {
+  // SAFETY: `scopeText` is the one writer of this key, and it writes a string or nothing; the
+  // interest half is read exactly as `interestFrom` reads it
+  const parsed = interestFrom(text) as (Interest & { readonly entitlement?: string }) | undefined;
+  if (parsed === undefined) return { interest: undefined, entitlement: undefined };
+  const { entitlement, ...interest } = parsed;
+  // `{}` beside an entitlement is the relay writing back "no interest", not an interest of `{}`
+  const asked =
+    entitlement !== undefined && interest.partitions === undefined ? undefined : interest;
+  return { interest: asked, entitlement };
+};
+
+/**
+ * Whether two interests ask for the same slice, however they were spelled — `undefined` and
+ * {@link EVERYTHING} are one request, and so are two partition lists in different orders.
+ */
+export const sameInterest = (a: Interest | undefined, b: Interest | undefined): boolean =>
+  interestKey(a ?? EVERYTHING) === interestKey(b ?? EVERYTHING);
 
 /**
  * The events above `theirs` that the asker actually wants. The filter runs at the **sender**, so

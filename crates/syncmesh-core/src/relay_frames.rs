@@ -1,5 +1,5 @@
 //! The relay's control vocabulary (`relay/src/frames.ts`, D14, D33): its own additive tag space,
-//! 8–19, above the session frames, so grants and events pass through a relay byte-identical
+//! 8–21, above the session frames, so grants and events pass through a relay byte-identical
 //! under their existing tags and a later version adds tags without renumbering these.
 //!
 //! Tag 8 is `routes` among the session frames and `join` here. The relay decoder asks its own
@@ -7,7 +7,7 @@
 //! peer-to-peer frame and never cross a relay.
 
 use crate::cbor::{Value, decode, encode};
-use crate::event::{PeerId, SeqNum};
+use crate::event::{PartitionKey, PeerId, SeqNum};
 use crate::frames::{
     Cursors, Frame, MalformedFrame, as_peer, as_text, cursor_pairs, decode_cursor_pairs,
     decode_frame, interest_text, peer_value, safe_count, shape, uint,
@@ -26,6 +26,8 @@ pub mod tag {
     pub const BLOB: u8 = 17;
     pub const BLOB_MISSING: u8 = 18;
     pub const CHALLENGE: u8 = 19;
+    pub const BLOB_STORED: u8 = 20;
+    pub const BLOB_REFUSED: u8 = 21;
 }
 
 /// The protocol this build speaks; `join` offers, `hello` picks the highest in common.
@@ -112,9 +114,12 @@ pub enum RelayFrame {
         offset: u64,
     },
     /// Bytes offered under their own hash; the relay verifies before it stores (D18).
+    /// `partition` is whose byte budget they are billed to — an additive element, absent for the
+    /// budget of puts that named none.
     BlobPut {
         hash: String,
         bytes: Vec<u8>,
+        partition: Option<PartitionKey>,
     },
     BlobGet {
         hash: String,
@@ -126,6 +131,19 @@ pub enum RelayFrame {
     /// Nobody here holds them — a value, and recoverable.
     BlobMissing {
         hash: String,
+    },
+    /// The relay kept the bytes put under this name.
+    BlobStored {
+        hash: String,
+    },
+    /// The relay would not keep them, and stored nothing; `quota` carries the partition's budget
+    /// and spend. A code this build does not know is still a refusal.
+    BlobRefused {
+        hash: String,
+        code: String,
+        limit: u64,
+        used: u64,
+        partition: Option<PartitionKey>,
     },
     /// A tag this build does not know; ignored, never an error (D14).
     Unknown,
@@ -148,6 +166,8 @@ impl RelayFrame {
             RelayFrame::BlobGet { .. } => "blob-get",
             RelayFrame::Blob { .. } => "blob",
             RelayFrame::BlobMissing { .. } => "blob-missing",
+            RelayFrame::BlobStored { .. } => "blob-stored",
+            RelayFrame::BlobRefused { .. } => "blob-refused",
             RelayFrame::Unknown => "unknown",
         }
     }
@@ -183,10 +203,22 @@ impl RelayFrame {
                 scoped,
             } => page_frame(grants, events, *more, *offset, scoped.as_ref()),
             RelayFrame::Relayed { wire, offset } => relayed_frame(wire, *offset),
-            RelayFrame::BlobPut { hash, bytes } => blob_put_frame(hash, bytes),
+            RelayFrame::BlobPut {
+                hash,
+                bytes,
+                partition,
+            } => blob_put_frame(hash, bytes, partition.as_ref()),
             RelayFrame::BlobGet { hash } => blob_get_frame(hash),
             RelayFrame::Blob { hash, bytes } => blob_frame(hash, bytes),
             RelayFrame::BlobMissing { hash } => blob_missing_frame(hash),
+            RelayFrame::BlobStored { hash } => blob_stored_frame(hash),
+            RelayFrame::BlobRefused {
+                hash,
+                code,
+                limit,
+                used,
+                partition,
+            } => blob_refused_frame(hash, code, *limit, *used, partition.as_ref()),
             RelayFrame::Unknown => return None,
         })
     }
@@ -313,11 +345,12 @@ pub fn relayed_frame(wire: &[u8], offset: u64) -> Vec<u8> {
     )
 }
 
-pub fn blob_put_frame(hash: &str, bytes: &[u8]) -> Vec<u8> {
-    tagged(
-        tag::BLOB_PUT,
-        vec![Value::text(hash), Value::Bytes(bytes.to_vec())],
-    )
+pub fn blob_put_frame(hash: &str, bytes: &[u8], partition: Option<&PartitionKey>) -> Vec<u8> {
+    let mut parts = vec![Value::text(hash), Value::Bytes(bytes.to_vec())];
+    if let Some(partition) = partition {
+        parts.push(Value::text(partition.as_str()));
+    }
+    tagged(tag::BLOB_PUT, parts)
 }
 
 pub fn blob_get_frame(hash: &str) -> Vec<u8> {
@@ -333,6 +366,44 @@ pub fn blob_frame(hash: &str, bytes: &[u8]) -> Vec<u8> {
 
 pub fn blob_missing_frame(hash: &str) -> Vec<u8> {
     tagged(tag::BLOB_MISSING, vec![Value::text(hash)])
+}
+
+pub fn blob_stored_frame(hash: &str) -> Vec<u8> {
+    tagged(tag::BLOB_STORED, vec![Value::text(hash)])
+}
+
+/// `[hash, code, limit, used, partition?]` — the partition last, absent for the unnamed budget.
+pub fn blob_refused_frame(
+    hash: &str,
+    code: &str,
+    limit: u64,
+    used: u64,
+    partition: Option<&PartitionKey>,
+) -> Vec<u8> {
+    let mut parts = vec![
+        Value::text(hash),
+        Value::text(code),
+        uint(limit),
+        uint(used),
+    ];
+    if let Some(partition) = partition {
+        parts.push(Value::text(partition.as_str()));
+    }
+    tagged(tag::BLOB_REFUSED, parts)
+}
+
+/// An optional partition element: absent is the unnamed budget, anything else must parse.
+fn optional_partition(
+    v: Option<&Value>,
+    malformed: &'static str,
+) -> Result<Option<PartitionKey>, MalformedFrame> {
+    match v {
+        None => Ok(None),
+        Some(value) => as_text(Some(value))
+            .and_then(|text| PartitionKey::parse(text).ok())
+            .map(Some)
+            .ok_or(MalformedFrame::Shape(malformed)),
+    }
 }
 
 fn as_wires(v: Option<&Value>) -> Result<Vec<Vec<u8>>, MalformedFrame> {
@@ -451,8 +522,34 @@ fn decode_control(t: u64, p: &[Option<&Value>; 5]) -> Option<Result<RelayFrame, 
             _ => shape("relayed is not [wire, offset]"),
         },
         tag::BLOB_PUT => match (text(a), bytes(b)) {
-            (Some(hash), Some(bytes)) => Ok(RelayFrame::BlobPut { hash, bytes }),
+            (Some(hash), Some(bytes)) => {
+                optional_partition(c, "blob-put partition is not a partition key").map(
+                    |partition| RelayFrame::BlobPut {
+                        hash,
+                        bytes,
+                        partition,
+                    },
+                )
+            }
             _ => shape("blob-put is not [hash, bytes]"),
+        },
+        tag::BLOB_STORED => match text(a) {
+            Some(hash) => Ok(RelayFrame::BlobStored { hash }),
+            None => shape("blob-stored is not [hash]"),
+        },
+        tag::BLOB_REFUSED => match (text(a), text(b), safe_count(c), safe_count(d)) {
+            (Some(hash), Some(code), Some(limit), Some(used)) => {
+                optional_partition(e, "blob-refused partition is not a partition key").map(
+                    |partition| RelayFrame::BlobRefused {
+                        hash,
+                        code,
+                        limit,
+                        used,
+                        partition,
+                    },
+                )
+            }
+            _ => shape("blob-refused is not [hash, code, limit, used]"),
         },
         tag::BLOB => match (text(a), bytes(b)) {
             (Some(hash), Some(bytes)) => Ok(RelayFrame::Blob { hash, bytes }),

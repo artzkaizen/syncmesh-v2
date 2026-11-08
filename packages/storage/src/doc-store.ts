@@ -17,9 +17,10 @@ export interface SqlDocStoreOptions {
 }
 
 /**
- * The doc log and heads (RFC-0023 §6.2) in the database behind `driver`, beside the event log and
- * the state: `doc_log`/`doc_heads` on a device, `_syncmesh_doc_log`/`_syncmesh_doc_heads` in an
- * app's Postgres. What an engine's `docStore` takes, and `openStores` opens.
+ * The doc log, heads and snapshots (RFC-0023 §6.1–6.2) in the database behind `driver`, beside
+ * the event log and the state: `syncmesh_doc_log`/`syncmesh_doc_heads`/`syncmesh_doc_snapshots` on
+ * a device, `syncmesh.doc_log`/`syncmesh.doc_heads`/`syncmesh.doc_snapshots` in an app's Postgres.
+ * What an engine's `docStore` takes, and `openStores` opens.
  *
  * @example
  * const docs = (await sqlDocStore(driver)).unwrap();

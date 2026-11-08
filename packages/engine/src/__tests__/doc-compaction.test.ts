@@ -4,12 +4,25 @@ import { describe, expect, test } from "bun:test";
 
 import type { DocWrite } from "../tx.js";
 
+import { openEngine } from "../boot.js";
 import { tableDigests } from "../digest.js";
 import { createMemoryDocStore } from "../doc-log-memory.js";
 import { docDigests, type DocStore } from "../doc-log.js";
 import { createLink } from "../link.js";
 import { createMemoryStateStore } from "../state-store.js";
-import { CREATE, N1, NOTES, PEER_A, PEER_B, column, key, row, seq, setup } from "./fixtures.js";
+import {
+  CREATE,
+  N1,
+  NOTES,
+  PEER_A,
+  PEER_B,
+  column,
+  fakeClock,
+  key,
+  row,
+  seq,
+  setup,
+} from "./fixtures.js";
 
 const CONTENT = column("content");
 const LORO = parseAdapterId("loro@1").unwrap();
@@ -81,6 +94,34 @@ describe("compaction with documents — RFC-0023 §8.3", () => {
     expect(done.removed).toBe(1);
     const held = (await a.store.all()).unwrap().map((e) => e.event.seqNum);
     expect(held).toEqual([2, 3, 4, 5].map(seq));
+  });
+
+  test("a reopened engine whose doc log was in memory still holds its doc changes back", async () => {
+    // state persists, the doc log does not: the reopened engine's doc log starts empty
+    const stateStore = createMemoryStateStore();
+    const a = setup(PEER_A, 100, { stateStore, docs: DOCS });
+    (
+      await a.engine.mutate(CREATE, (tx) => tx.insert(NOTES, key("n1"), row({ id: "n1" })))
+    ).unwrap();
+    (await a.engine.mutate(CREATE, (tx) => tx.doc(NOTES, N1, edit))).unwrap();
+    (
+      await a.engine.mutate(CREATE, (tx) => tx.insert(NOTES, key("n2"), row({ id: "n2" })))
+    ).unwrap();
+    const reopened = (
+      await openEngine({
+        peerId: PEER_A,
+        clock: fakeClock(200),
+        store: a.store,
+        stateStore,
+        docs: DOCS,
+      })
+    ).unwrap();
+    const b = setup(PEER_B, 100, { stateStore: createMemoryStateStore(), docs: DOCS });
+    (await createLink(reopened, b.engine, { now: () => T0 }).catchUp()).unwrap();
+    const done = (await reopened.compact({ now: T0 })).unwrap();
+    expect(done.floor.synced.get(PEER_A)).toBe(seq(1));
+    const held = (await a.store.all()).unwrap().map((e) => e.event.seqNum);
+    expect(held).toEqual([2, 3].map(seq));
   });
 
   test("once covered, the doc changes compact like any event", async () => {

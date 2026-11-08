@@ -32,7 +32,7 @@ const radio = (name: string, opens: { count: number }, reaches?: () => ReadonlyS
   return { ...transport, reaches } satisfies Transport;
 };
 
-const device = async (transports: readonly Transport[]) =>
+const device = async (transports: readonly Transport[], start = true) =>
   (
     await createMesh({
       driver: bunSqliteDriver(":memory:"),
@@ -40,6 +40,7 @@ const device = async (transports: readonly Transport[]) =>
       identity: createIdentity(seed(11)).unwrap(),
       now: () => T0,
       transports,
+      start,
     })
   ).unwrap();
 
@@ -88,6 +89,22 @@ describe("forcing a medium into a condition a laptop cannot produce (book ch. 18
     (await mesh.transports.release("nearby")).unwrap();
     expect(opens.count).toBe(2); // the same instance, through the same `start` an `add` runs
     expect(mesh.status.get().sources.get("nearby")?.condition).toBe("ok");
+    await mesh.stop();
+  });
+
+  test("forcing and releasing before start() opens nothing until start() (E24)", async () => {
+    const opens = { count: 0 };
+    const mesh = await device([radio("nearby", opens)], false);
+
+    (await mesh.transports.force("nearby", "radio-off")).unwrap();
+    (await mesh.transports.release("nearby")).unwrap();
+    // the medium has its seat back, and nothing has been dialled
+    expect(mesh.transports.list().map((held) => held.name)).toEqual(["nearby"]);
+    expect(opens.count).toBe(0);
+
+    mesh.start().unwrap();
+    await mesh.ready();
+    expect(opens.count).toBe(1); // opened once, by start(), not a second time by the release
     await mesh.stop();
   });
 

@@ -144,7 +144,7 @@ export function createValidator(options: ValidatorOptions): Validator {
           new WrongPartition({ table, expected: held, message: `the row belongs to ${held}` }),
         );
       }
-      const cells = checkCells(entry.table, options.docs, change, event, index);
+      const cells = checkCells(entry.table, options.docs, change, event, index, before.row);
       if (cells.isErr()) return cells;
       if (cells.value === "settled") continue;
       const rules = syncedRules(entry.table.name, event.partition, before.row) ?? entry.allow;

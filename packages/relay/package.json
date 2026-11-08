@@ -23,6 +23,7 @@
     "@syncmesh/storage": "workspace:*",
     "@syncmesh/temporal": "workspace:*",
     "@syncmesh/transport": "workspace:*",
+    "@syncmesh/window": "workspace:*",
     "@syncmesh/wire": "workspace:*"
   },
   "devDependencies": {

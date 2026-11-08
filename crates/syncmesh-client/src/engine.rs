@@ -145,8 +145,9 @@ pub struct EngineOptions {
     /// Parked events kept before the oldest is dropped. Default 1000.
     pub quarantine_limit: usize,
     /// The mesh's doc columns and the adapter each declares (RFC-0023 §4.1): their cells join by
-    /// the lineage rule, and doc changes are judged against them. `None` judges nothing — the
-    /// Rust counterpart of a TypeScript engine with no validator.
+    /// the lineage rule, and doc changes are judged against them. `None` declares none, and the
+    /// rungs that need no declaration still run: a genesis must name the lineage its place in the
+    /// log derives, once per document per event, so every peer parks the same forged one.
     pub docs: Option<DocColumns>,
     /// The adapters this device can materialise, by id. Empty is the `adapter-missing` mode: doc
     /// changes fold, are kept and forwarded exactly as with one, and are only labelled differently.
@@ -188,7 +189,8 @@ pub struct Engine {
     acks: BTreeMap<PeerId, Ack>,
     parked: Vec<StoredEvent>,
     quarantine_limit: usize,
-    docs: Option<DocColumns>,
+    /// Empty when none were declared: the genesis rungs still run, as they do in TypeScript.
+    docs: DocColumns,
     doc_adapters: BTreeSet<String>,
     doc_store: Box<dyn DocStore + Send>,
     /// The highest sequence of this device's own author known to exist outside this log — what a
@@ -267,7 +269,7 @@ impl Engine {
             acks: BTreeMap::new(),
             parked: Vec::new(),
             quarantine_limit: options.quarantine_limit,
-            docs: options.docs,
+            docs: options.docs.unwrap_or_default(),
             doc_adapters: options.doc_adapters,
             doc_store: options
                 .doc_store
@@ -358,7 +360,7 @@ impl Engine {
             action,
             undo_of,
         };
-        if let Some(reason) = self.docs.as_ref().and_then(|d| doc_refusal(&event, d)) {
+        if let Some(reason) = doc_refusal(&event, &self.docs) {
             return Err(MutateError::DocRefused {
                 procedure: procedure.to_owned(),
                 reason,
@@ -403,10 +405,7 @@ impl Engine {
                 .changes
                 .iter()
                 .any(|c| matches!(c, Change::Unknown { .. }))
-                || self
-                    .docs
-                    .as_ref()
-                    .is_some_and(|d| doc_refusal(&entry.event, d).is_some())
+                || doc_refusal(&entry.event, &self.docs).is_some()
             {
                 quarantined += 1;
                 self.park(entry);

@@ -102,8 +102,10 @@ describe("an interest is partitions and nothing finer (book ch. 3)", () => {
   test("an event belongs to one instance, and that is the whole of the filter", () => {
     expect(matchesInterest({ partitions: [ACME] }, inserted(1))).toBe(true);
     expect(matchesInterest({ partitions: [GLOBEX] }, inserted(1))).toBe(false);
-    // a global write belongs to no instance, so an interest that names any does not want it
-    expect(matchesInterest({ partitions: [ACME] }, unpinnedOf(inserted(1)))).toBe(false);
+    // a global write belongs to no instance, so a clause about instances says nothing about it:
+    // it reaches every interest, or the devices that narrowed are the ones it never reaches (D24)
+    expect(matchesInterest({ partitions: [ACME] }, unpinnedOf(inserted(1)))).toBe(true);
+    expect(matchesInterest({ partitions: [] }, unpinnedOf(inserted(1)))).toBe(true);
     expect(matchesInterest(EVERYTHING, unpinnedOf(inserted(1)))).toBe(true);
   });
 });

@@ -144,7 +144,7 @@ when:
 | Mistake | Error |
 |---|---|
 | adapter on a non-binary column (`text`, `json`, or SQLite `blob()` without `mode: "buffer"`, which Drizzle 1.0 maps to JSON) | `DocColumnNotBinary` — "use `bytea()` / `blob({ mode: \"buffer\" })`" |
-| adapter on the primary key, a `unique()` column, a `check`, or an `immutable` column | `DocColumnConstraint` |
+| adapter on the primary key, a `unique()` column, a `check`, an `immutable` column, or a column that is not nullable (a row write never carries a doc column, so a new row holds none) | `DocColumnConstraint` |
 | `max`/`min`/`counter` named on a doc column, or an adapter on a non-doc column type | `MergeKindMismatch` (D25's runtime backstop, extended) |
 | `derive` target that is the key, a doc column, missing, or also written by `merge` rules the app writes | `InvalidDerive` |
 | `derive` source that is not a doc column of the same table | `InvalidDerive` |
@@ -403,7 +403,9 @@ double their content when merged. Syncmesh answers it once:
   headroom. Blob-carried updates follow D18: the author holds the bytes until a relay
   acknowledges them, the relay holds them while any retained log entry references the hash, and
   BLE refuses bulk by default. A change whose bytes have not arrived still **folds**. Its log
-  entry is `bytes-missing` and the doc's status is `"behind"` until the blob lands.
+  entry is `bytes-missing` and the doc's status is `"behind"` until the blob lands. The
+  threshold is the authoring flush's choice (P3). Until §16.7 settles the number, neither the
+  decoder nor the validator refuses an inline update by size.
 - **Catch-up** uses RFC-0002's hash-chained chunks unchanged. Doc changes are ordinary events,
   so a 10k-update backlog costs one signature check per author and compresses with the rest.
   Receivers import each doc's backlog with one `apply(&[..])` batch.
@@ -450,13 +452,18 @@ lands in the tail. §7.3 covers who is trusted to sign one.
 ### 6.2 Engine tables, declared once in Drizzle 1.0
 
 Two new tables per dialect, declared as Drizzle 1.0 table objects in `packages/storage`
-(`doc-tables.ts`: `pgTable` + `sqliteTable`, used for typed statements). They are created by one
-new step in each dialect's migration list. A test compares the migration DDL with the Drizzle
-declarations, so the two cannot drift. Names follow today's convention (`_syncmesh_*` on
-Postgres, bare on the device, `sm_*` in the Rust device) until RFC-0022's namespace lands.
+(`doc-tables.ts`: `pgSchema("syncmesh").table` + `sqliteTable`, used for typed statements). They
+are created by one new step in each dialect's migration list. A test compares the migration DDL
+with the Drizzle declarations, so the two cannot drift. Names follow RFC-0022's namespace
+(`namespace.ts`): `syncmesh.doc_log` and `syncmesh.doc_heads` in Postgres's own schema,
+`syncmesh_doc_log` and `syncmesh_doc_heads` beside the app's tables in a device's `main`, and
+`sm_*` in the Rust device, whose own tables all take that prefix. On a device both sit in the
+derived half (`STATE_TABLES`), not the attached log: an entry's `state` moves in the same
+transaction as its head and the column snapshot, which live in `main`, and a rebuild of that half
+starts all three over together.
 
 ```ts
-export const docLog = pgTable("_syncmesh_doc_log", {          // the LOG half (RFC-0022)
+export const docLog = pgSchema("syncmesh").table("doc_log", {   // indexes the LOG (RFC-0022)
   author: text().notNull(), seq: bigint({ mode: "number" }).notNull(), idx: integer().notNull(),
   tbl: text().notNull(), key: text().notNull(), col: text().notNull(),
   lineage: bytea(),                                  // NULL = root
@@ -468,7 +475,7 @@ export const docLog = pgTable("_syncmesh_doc_log", {          // the LOG half (R
 }, (t) => [primaryKey({ columns: [t.author, t.seq, t.idx] }),
            index().on(t.tbl, t.key, t.col, t.state)]);
 
-export const docHeads = pgTable("_syncmesh_doc_heads", {      // the STATE half
+export const docHeads = pgSchema("syncmesh").table("doc_heads", { // the STATE half
   tbl: text().notNull(), key: text().notNull(), col: text().notNull(),
   adapter: text().notNull(), lineage: bytea(),
   covers: text().notNull(),         // cursor map JSON: the snapshot's floor
@@ -580,6 +587,11 @@ is compactable only when all of these hold:
    `clampToPersisted`).
 3. It is not among this principal's last `undoDepth` actions. Undo needs those updates (§9).
 
+Clause 2 reads the doc log. An engine given no `docStore` keeps that log in memory, and after a
+restart over a persisted state it starts empty, so the clamp then reads the doc changes from the
+events themselves and treats every one as uncovered. Until P3 nothing marks an entry `covered`,
+so in P2 each author's log stops below their first doc change on every node, relays included.
+
 Snapshots on a device are **shallow at the stable floor**: the doc version that every known
 writer of the partition has acknowledged, computed from the same ack maps compaction uses. Below
 it, no concurrent update can still arrive from a known peer. A **forgotten** peer (D15) that
@@ -644,8 +656,11 @@ decompression cap and a time budget, and exceeding them is a `failed` update, ne
   inserted in the same event is judged as part of the `insert`.
 - **Read** follows custody: doc changes travel only inside the row's partition, like its row
   events. There is no separate document ACL, and nothing narrower than a partition (v3 §4).
-- A doc change on a row that does not exist (and is not inserted in the same event) is parked
-  `missing-dependency`, as any update of an unknown row is today.
+- A doc change on a row that does not exist (and is not inserted in the same event) folds the
+  way any update of an unknown row does today: the record gains cells but no write stamp, so
+  the row stays invisible until its insert arrives, and the doc log keeps the entry meanwhile.
+  Nothing is parked. A row the device already holds is never "inserted in the same event", so
+  an event that repeats a held row's insert does not make its doc change an insert.
 - `DocCheckpoint`s are accepted only from the authority or from a device whose grant allows
   `update` on the row. Blob fetches of doc bytes require custody of the partition (D30's blob
   capability).

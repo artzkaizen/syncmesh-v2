@@ -1,6 +1,14 @@
 export type { StandardIssue, StandardResult, StandardSchemaV1, Output } from "./standard-schema.js";
-export type { AnyColumn, Column, ColumnDef, ColumnKind, Value } from "./column.js";
+export type { AnyColumn, Column, ColumnDef, ColumnKind, MergeFor, Value } from "./column.js";
 export { columnFromDef, strategyOf, t } from "./column.js";
+export type { Derivation, DeriveBlock, DocColumnEntry, DocumentAdapter } from "./documents.js";
+export {
+  DocColumnConstraint,
+  DocColumnNotBinary,
+  InvalidDerive,
+  MergeKindMismatch,
+  from,
+} from "./documents.js";
 export type { ColumnError } from "./check.js";
 export {
   CheckFailed,
@@ -37,7 +45,7 @@ export type {
 } from "./manifest.js";
 export type { AllowFn, Combinators } from "./bind.js";
 export { combinators } from "./bind.js";
-export { syncSchema, syncedTables } from "./manifest.js";
+export { authorityTables, servedTables, syncSchema, syncedTables } from "./manifest.js";
 export type { RoleSet } from "@syncmesh/policy";
 export type { Partition, ReservedPartition, RolesOf } from "./partition.js";
 export { flat, global, isPartition, ladder, local, partition, user } from "./partition.js";

@@ -1969,8 +1969,14 @@ storing, so junk cannot squat a hash, and the client verifies on fetch. Neither
 has to trust the other. A raw radio has no blob channel, and `NoSuchCapability`
 is a fact about the medium rather than a missing feature.
 
-**Not built:** a persistent local blob store (memory only today), range fetch,
-refcount GC over live rows, and per-partition quotas. RFC-0015 has the open
+A relay may sweep blobs no event has ever referenced for `keepUnreferencedBlobsFor`, and
+refuse a put past `maxBlobBytesPerPartition`: `mesh.blobs.put(bytes, { partition })`
+then answers `BlobQuotaExceeded { partition, limit, used }` and the relay stored nothing.
+A swept hash fetches as `BlobNotFound` — put the bytes back and it works again.
+
+**Not built:** range fetch, and GC over *visible* rows — a relay cannot fold, so a
+reference it has seen holds for the life of the instance, through log trims, and
+deleting a row frees nothing. RFC-0015 has the open
 questions — chiefly *who is obliged to keep a blob*, and what happens when a
 delete races an offline reference.
 
@@ -2046,6 +2052,9 @@ mesh.transports.remove("relay")       // [design]
 Also absent: `mesh.start()`. Engines and their transports start eagerly at
 construction, so there is a `stop()` with no matching `start()`. Asymmetric, and
 worth fixing at the same time.
+
+> Built (2026-11-07): `mesh.transports.add/remove`, and `createMesh({ start: false })`
+> with `mesh.start()` — idempotent, `MeshStopped` as a value after `stop()`.
 
 ## 25 · Not built yet
 

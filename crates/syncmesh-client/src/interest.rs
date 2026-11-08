@@ -69,11 +69,61 @@ pub fn interest_from(text: Option<&str>) -> Option<Interest> {
 }
 
 /// Whether one event is in the partitions the asker named.
+///
+/// An **unpinned** event matches every interest (D24), as `matchesInterest` does: it is about the
+/// mesh rather than about an instance — a `global` row, an authority-visibility row — so "only
+/// rows in these instances" says nothing about it.
 pub fn matches_interest(interest: Option<&Interest>, event: &SyncEvent) -> bool {
-    match interest.and_then(|i| i.partitions.as_ref()) {
-        None => true,
-        Some(list) => event.partition.as_ref().is_some_and(|p| list.contains(p)),
+    match (
+        interest.and_then(|i| i.partitions.as_ref()),
+        &event.partition,
+    ) {
+        (None, _) | (_, None) => true,
+        (Some(list), Some(p)) => list.contains(p),
     }
+}
+
+/// The two halves of a scope as the TypeScript relay's `scopeText` writes them (D23, D24): the
+/// interest the device asked with, and the entitlement the relay admitted it under.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Scope {
+    pub interest: Option<Interest>,
+    /// The entitlement the cursors were earned under; `None`, the relay withheld nothing.
+    pub entitlement: Option<String>,
+}
+
+/// A scope's two halves back (`scopeFrom`). An interest-only text — every scope written before
+/// D24 — reads as that interest and no entitlement; junk reads as no scope at all.
+pub fn scope_from(text: Option<&str>) -> Scope {
+    let interest = interest_from(text);
+    let entitlement = text
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok())
+        .and_then(|v| v.get("entitlement")?.as_str().map(str::to_owned));
+    // `{}` beside an entitlement is the relay writing back "no interest", not an interest of `{}`
+    let interest = match (&entitlement, interest) {
+        (Some(_), Some(Interest { partitions: None })) => None,
+        (_, interest) => interest,
+    };
+    Scope {
+        interest,
+        entitlement,
+    }
+}
+
+/// Whether two interests ask for the same slice however they were spelled (`sameInterest`):
+/// `None` and [`Interest::EVERYTHING`] are one request, and so are one list in two orders.
+pub fn same_interest(a: Option<&Interest>, b: Option<&Interest>) -> bool {
+    fn key(i: Option<&Interest>) -> Option<Vec<&str>> {
+        let mut sorted: Vec<&str> = i?
+            .partitions
+            .as_ref()?
+            .iter()
+            .map(PartitionKey::as_str)
+            .collect();
+        sorted.sort_unstable();
+        Some(sorted)
+    }
+    key(a) == key(b)
 }
 
 /// Whether `next` provably admits nothing `previous` did not — the test that lets a device keep a
@@ -123,6 +173,76 @@ mod tests {
         assert_eq!(interest_from(Some("")), None);
         assert_eq!(interest_from(Some("not json")), None);
         assert_eq!(interest_from(None), None);
+    }
+
+    #[test]
+    fn an_unpinned_event_matches_every_interest() {
+        use syncmesh_core::event::{PeerId, SeqNum};
+        use syncmesh_core::hlc::Hlc;
+        let pinned = |partition: Option<PartitionKey>| SyncEvent {
+            peer_id: PeerId::parse(&syncmesh_core::to_hex(&[1; 32])).unwrap(),
+            seq_num: SeqNum::parse(1).unwrap(),
+            hlc: Hlc::new(1, 0),
+            procedure: "t".into(),
+            partition,
+            changes: vec![],
+            sealed: false,
+            action: None,
+            undo_of: None,
+        };
+        let acme = Interest::partitions([key("org:acme")]);
+        assert!(matches_interest(
+            Some(&acme),
+            &pinned(Some(key("org:acme")))
+        ));
+        assert!(!matches_interest(
+            Some(&acme),
+            &pinned(Some(key("org:globex")))
+        ));
+        assert!(matches_interest(Some(&acme), &pinned(None)));
+        assert!(matches_interest(
+            Some(&Interest::partitions([])),
+            &pinned(None)
+        ));
+        assert!(matches_interest(None, &pinned(None)));
+    }
+
+    #[test]
+    fn scope_reads_both_halves_as_the_typescript_writes_them() {
+        let acme = Interest::partitions([key("org:acme")]);
+        assert_eq!(
+            scope_from(Some(
+                r#"{"partitions":["org:acme"],"entitlement":"clinic:a"}"#
+            )),
+            Scope {
+                interest: Some(acme.clone()),
+                entitlement: Some("clinic:a".into()),
+            }
+        );
+        assert_eq!(
+            scope_from(Some(r#"{"entitlement":"clinic:a"}"#)),
+            Scope {
+                interest: None,
+                entitlement: Some("clinic:a".into()),
+            }
+        );
+        assert_eq!(
+            scope_from(Some(r#"{"partitions":["org:acme"]}"#)),
+            Scope {
+                interest: Some(acme),
+                entitlement: None,
+            }
+        );
+        assert_eq!(scope_from(None), Scope::default());
+    }
+
+    #[test]
+    fn same_interest_ignores_spelling() {
+        let ab = Interest::partitions([key("org:a"), key("org:b")]);
+        let ba = Interest::partitions([key("org:b"), key("org:a")]);
+        assert!(same_interest(Some(&ab), Some(&ba)));
+        assert!(same_interest(None, Some(&Interest::EVERYTHING)));
+        assert!(!same_interest(Some(&ab), None));
     }
 
     #[test]

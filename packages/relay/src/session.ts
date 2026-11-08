@@ -1,8 +1,9 @@
-import type { Coverage, Cursors, Interest, StoredEvent, Unsubscribe } from "@syncmesh/engine";
-import type { PeerId } from "@syncmesh/kernel";
-import type { TransportContext } from "@syncmesh/transport";
+import type { Cursors, Interest, StoredEvent, Unsubscribe } from "@syncmesh/engine";
+import type { PeerId, SeqNum } from "@syncmesh/kernel";
+import type { BlobRefusal, TransportContext } from "@syncmesh/transport";
 
-import { interestText, ownPositionWarning } from "@syncmesh/engine";
+import { ownPositionWarning } from "@syncmesh/engine";
+import { omitUndefined } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { createHoldback, cursorsFrame, eventFrame, grantFrame } from "@syncmesh/transport";
 import { decodeAndVerify, relayEnvelope, signEvent } from "@syncmesh/wire";
@@ -11,6 +12,7 @@ import type { RelayFrame } from "./frames.js";
 import type { RelayDial } from "./transport.js";
 
 import { decodeRelayFrame } from "./frames.js";
+import { scopedCoverage } from "./scoped.js";
 
 /** A stored event as bytes to send: this device signs its own, and relays another's verbatim. */
 const envelopeOf = (entry: StoredEvent, ctx: TransportContext): Uint8Array | undefined =>
@@ -27,11 +29,30 @@ export interface SessionHooks {
   readonly rejoin: () => void;
   /** A challenging room's first frame: what a v2 join has to sign (D33). A sealed link never sends one (D36). */
   readonly onChallenge: (nonce: Uint8Array) => void;
-  readonly onHello: (keepaliveMs: number) => void;
+  /** The room said hello: its keepalive, and the lineage of the log it is serving (RFC-0020 §3.2). */
+  readonly onHello: (keepaliveMs: number, epoch: string) => void;
+  /**
+   * The room's log runs at least to `offset`, and everything this device was sent below it has
+   * been folded into rows — what `visibleAt` settles on. Called behind the fold chain, never beside
+   * it, and held back while the holdback keeps any event behind a hole.
+   */
+  readonly onPosition?: (offset: number) => void;
+  /**
+   * The room admits this device under an entitlement other than the one its cursors were earned
+   * under (D24). Its cursors may skip what it was refused before, so the session is abandoned and
+   * the next join must ask from nothing.
+   */
+  readonly onReentitled?: () => void;
   /** The relay's typed version refusal is permanent — no reconnect loop against it. */
   readonly onVersionRefused: () => void;
   /** The relay answered a fetch: the bytes, or `undefined` when it holds none under that hash. */
   readonly onBlobAnswer: (hash: string, bytes: Uint8Array | undefined) => void;
+  /**
+   * The relay answered a put: `undefined` when it kept the bytes, the refusal when it would not.
+   * A refusal under a code this build does not know settles as `undefined` too — not kept, but
+   * nothing an older client can name, which is what it heard before the answer existed (D14).
+   */
+  readonly onBlobSettled: (hash: string, refusal: BlobRefusal | undefined) => void;
   /** The last catch-up page has landed: this source has nothing more to hand over right now. */
   readonly onCaughtUp: () => void;
   /**
@@ -61,6 +82,91 @@ export interface SessionHooks {
   readonly repaging?: () => boolean;
 }
 
+/**
+ * What a put's answer means to the upload waiting on it: nothing for `blob-stored`, the budget
+ * for a `quota` refusal — and nothing for any other code, `no-store` from a room that keeps no
+ * blobs or one this build cannot name (D14), which is what that upload heard before the answer
+ * existed.
+ */
+const uploadRefusal = (
+  frame: Extract<RelayFrame, { kind: "blob-stored" | "blob-refused" }>,
+): BlobRefusal | undefined =>
+  frame.kind === "blob-refused" && frame.code === "quota"
+    ? omitUndefined({
+        reason: "quota",
+        limit: frame.limit,
+        used: frame.used,
+        partition: frame.partition,
+      } as const)
+    : undefined;
+
+/** The four frames that answer a blob fetch or put (D18). */
+type BlobAnswer = Extract<
+  RelayFrame,
+  { kind: "blob" | "blob-missing" | "blob-stored" | "blob-refused" }
+>;
+
+const BLOB_ANSWERS = new Set<RelayFrame["kind"]>([
+  "blob",
+  "blob-missing",
+  "blob-stored",
+  "blob-refused",
+]);
+
+const isBlobAnswer = (frame: RelayFrame): frame is BlobAnswer => BLOB_ANSWERS.has(frame.kind);
+
+/** The relay answered a fetch or a put: handed to the hook that waits on that hash. */
+const answerBlob = (hooks: SessionHooks, frame: BlobAnswer): void => {
+  if (frame.kind === "blob") hooks.onBlobAnswer(frame.hash, frame.bytes);
+  else if (frame.kind === "blob-missing") hooks.onBlobAnswer(frame.hash, undefined);
+  else hooks.onBlobSettled(frame.hash, uploadRefusal(frame));
+};
+
+/**
+ * The furthest offset a session's frames have carried, said only once the holdback keeps nothing
+ * back. Behind the fold chain alone is not enough: an event folded into the holdback was sent but
+ * is not a row yet, and a wanted event that a burst puts ahead of its author's pass-over is
+ * exactly that until the pass-over lands (D24).
+ */
+const heldPosition = (
+  holdback: ReturnType<typeof createHoldback>,
+  say: ((offset: number) => void) | undefined,
+) => {
+  let unsaid: number | undefined;
+  return {
+    /** A frame carried `offset`, and everything sent below it has been through the fold chain. */
+    reached: (offset: number): void => {
+      if (unsaid === undefined || offset > unsaid) unsaid = offset;
+    },
+    /** Says what was reached, once the holdback has let go of every event it was handed. */
+    flush: (): void => {
+      if (unsaid === undefined || !holdback.empty()) return;
+      const offset = unsaid;
+      unsaid = undefined;
+      say?.(offset);
+    },
+  };
+};
+
+/**
+ * The room's run of our own author, from its `hello`: never number at or below it (RFC 0024 G7).
+ * A write this log numbered inside that run is said — it reuses a pair the room holds for another
+ * event.
+ */
+const adoptOwnRun = async (
+  engine: TransportContext["engine"],
+  own: SeqNum,
+  dropped: (why: string) => void,
+): Promise<void> => {
+  const position = await engine.adoptOwnPosition(own);
+  if (position.isErr()) {
+    dropped(`the store could not say what this device last wrote: ${position.error.message}`);
+    return;
+  }
+  const warning = ownPositionWarning(position.value);
+  if (warning !== undefined) dropped(warning);
+};
+
 /** Everything one session subscribes to; the returned unsubscribes are the session's teardown. */
 export function wireSession(
   context: TransportContext,
@@ -72,6 +178,8 @@ export function wireSession(
   const holdback = createHoldback(engine, 512);
   let chain: Promise<unknown> = Promise.resolve();
   let caughtUp = false;
+  /** Set once this session has been found to hold cursors from another entitlement; nothing after it is acted on. */
+  let abandoned = false;
   let relayCursors: Cursors = new Map();
 
   /** Everything the holdback can let go of for these authors, in run order. */
@@ -115,48 +223,34 @@ export function wireSession(
       }
       if (straight.length > 0) await engine.receiveBatch(straight);
       await release(authors);
+      // a fold that emptied the holdback can be what lets a position held back earlier be said
+      if (!abandoned) positions.flush();
     });
   };
 
-  /**
-   * Takes on the coverage a filtered catch-up ended with (D23) — behind the fold chain, so the
-   * events it accounts for are folded before this device claims to hold them, exactly as
-   * `installSnapshot` adopts a snapshot's coverage only after its rows.
-   *
-   * A coverage scoped to something other than what we asked with is dropped rather than adopted.
-   * It would be a claim about a slice this device did not request, and adopting it is precisely
-   * how a cursor comes to describe events nobody will ever send again.
-   */
-  const adoptScoped = (scoped: Coverage): void => {
-    if (scoped.scope !== interestText(hooks.interest)) return;
+  const positions = heldPosition(holdback, hooks.onPosition);
+
+  /** Behind the fold chain, and not at all once this session is abandoned. */
+  const after = (work: () => Promise<void> | void): void => {
     chain = chain.then(async () => {
-      // fold what the coverage is about to claim *before* claiming it — the order
-      // `installSnapshot` keeps for its rows, and for the same reason. These are events the pages
-      // did deliver, which the holdback kept behind a hole the filter made and nothing will fill
-      for (const [author, seq] of scoped.synced) {
-        const held = holdback.upTo(author, Number(seq));
-        if (held.length > 0) await engine.receiveBatch(held);
-      }
-      engine.adoptCoverage(scoped);
-      // and then whatever sat above it, which the moved cursor has just made contiguous
-      await release(scoped.synced.keys());
+      if (abandoned) return;
+      await work();
+      positions.flush();
     });
   };
-
-  /**
-   * After a widening re-page that the relay did not filter: the cursors this device holds are
-   * now true for the wider interest, because the repair ran from nothing and delivered the whole
-   * run. Saying so is what stops the next join re-paging the same history again.
-   */
-  const rescope = (): void => {
-    chain = chain.then(() => {
-      const { synced, local } = engine.coverage();
-      const scope = interestText(hooks.interest);
-      // rebuilt rather than spread, so an interest that widened all the way back to everything
-      // drops the old scope instead of carrying it forward
-      engine.adoptCoverage(scope === "" ? { synced, local } : { synced, local, scope });
-    });
-  };
+  /** Behind the fold chain: everything sent below `offset` is a row by the time it is said. */
+  const position = (offset: number): void => after(() => positions.reached(offset));
+  const lastPage = scopedCoverage({
+    engine,
+    holdback,
+    interest: hooks.interest,
+    after,
+    release,
+    reentitled: () => {
+      abandoned = true;
+      hooks.onReentitled?.();
+    },
+  });
 
   /**
    * Everything this device holds that the relay does not, whoever wrote it.
@@ -184,25 +278,10 @@ export function wireSession(
     });
   };
 
-  /**
-   * The room's run of our own author, from its `hello`: never number at or below it (RFC 0024
-   * G7). On the chain, ahead of the pages this hello precedes and the push after them. A write
-   * this log numbered inside that run is said — it reuses a pair the room holds for another event.
-   */
+  /** The room's run of our own author, on the chain ahead of the pages its hello precedes. */
   const adoptOwn = (cursors: Cursors): void => {
     const own = cursors.get(identity.peerId);
-    if (own === undefined) return;
-    chain = chain.then(async () => {
-      const position = await engine.adoptOwnPosition(own);
-      if (position.isErr()) {
-        hooks.onDropped(
-          `the store could not say what this device last wrote: ${position.error.message}`,
-        );
-        return;
-      }
-      const warning = ownPositionWarning(position.value);
-      if (warning !== undefined) hooks.onDropped(warning);
-    });
+    if (own !== undefined) chain = chain.then(() => adoptOwnRun(engine, own, hooks.onDropped));
   };
 
   /** Our contiguous position, for every other peer's `delivered`; the relay passes it on. */
@@ -223,6 +302,7 @@ export function wireSession(
   };
 
   const offFrame = dialed.onFrame((bytes) => {
+    if (abandoned) return;
     hooks.rearm();
     const decoded = decodeRelayFrame(bytes);
     if (decoded.isErr()) {
@@ -234,25 +314,30 @@ export function wireSession(
     else if (frame.kind === "hello") {
       relayCursors = frame.cursors;
       adoptOwn(frame.cursors);
-      hooks.onHello(frame.keepaliveMs);
+      hooks.onHello(frame.keepaliveMs, frame.epoch);
     } else if (frame.kind === "page") {
       for (const wire of frame.grants) void grants.register(wire);
       const repaging = hooks.repaging?.() === true;
       fold(frame.events, repaging);
       if (!frame.more) {
-        if (frame.scoped !== undefined) adoptScoped(frame.scoped);
-        else if (repaging) rescope();
+        lastPage(frame.scoped, repaging);
+        // only here: every page carries the room's tail, and only the last has delivered up to it
+        position(frame.offset);
+        // a pass-over (an empty last page after the first) moves a cursor and nothing else
+        if (caughtUp && frame.events.length === 0 && frame.grants.length === 0) return;
         caughtUp = true;
         pushOutstanding();
         // behind the chain, not beside it: `fold` and `pushOutstanding` queue their work, so
         // announcing here would announce a pass that has not folded a single event of its last
         // page. What the hook means is "nothing more to hand over right now", and the moment that
         // becomes true is the moment this chain drains
-        chain = chain.then(() => hooks.onCaughtUp());
+        after(() => hooks.onCaughtUp());
       }
-    } else if (frame.kind === "blob") hooks.onBlobAnswer(frame.hash, frame.bytes);
-    else if (frame.kind === "blob-missing") hooks.onBlobAnswer(frame.hash, undefined);
-    else if (frame.kind === "relayed") fold([frame.wire]);
+    } else if (isBlobAnswer(frame)) answerBlob(hooks, frame);
+    else if (frame.kind === "relayed") {
+      fold([frame.wire]);
+      position(frame.offset);
+    } else if (frame.kind === "ack") position(frame.offset);
     else if (frame.kind === "error") {
       if (frame.code === "version") hooks.onVersionRefused();
       dialed.close();

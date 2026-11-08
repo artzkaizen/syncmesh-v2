@@ -27,17 +27,21 @@ interface Publishable {
   readonly dir: string;
   /** Declares `engines.bun` and not `engines.node`: installable everywhere, importable only on Bun. */
   readonly bunOnly: boolean;
-  /** Peers on React Native or Expo: installable everywhere, importable only in a native runtime. */
+  /**
+   * Peers on `react-native` or `expo-sqlite`: installable everywhere, importable only under a React
+   * Native runtime, whose own entry points are Flow source that plain `node` cannot parse.
+   */
   readonly nativeOnly: boolean;
 }
 
 const bunOnly = (manifest: Manifest): boolean =>
   manifest.engines?.bun !== undefined && manifest.engines.node === undefined;
 
+/** The runtimes whose packages do not load in plain `node`, named by the peer that brings them. */
+const NATIVE_PEERS = ["react-native", "expo-sqlite"] as const;
+
 const nativeOnly = (manifest: Manifest): boolean =>
-  Object.keys(manifest.peerDependencies ?? {}).some(
-    (peer) => peer === "react-native" || peer.startsWith("expo"),
-  );
+  NATIVE_PEERS.some((peer) => manifest.peerDependencies?.[peer] !== undefined);
 
 const publishable = (): readonly Publishable[] =>
   ["packages", "adapters"].flatMap((group) =>
@@ -145,7 +149,7 @@ function main(): number {
         continue;
       }
       if (onNative) {
-        process.stdout.write(`native   ${name} (installed, not imported: peers on React Native)\n`);
+        process.stdout.write(`rn-only  ${name} (installed, not imported: a React Native peer)\n`);
         continue;
       }
       const failure = importWithNode(project, `await import(${JSON.stringify(name)})`);

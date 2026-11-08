@@ -237,20 +237,30 @@ export function secureLink(link: FrameLink, options: SessionOptions): FrameLink 
   const greeted = put(self.frame);
   if (greeted.isErr()) fail(greeted.error);
 
-  return {
-    send: (frame) => {
-      if (failure !== undefined) throw failure;
-      if (keys === undefined) {
-        if (pending.length >= maxPending)
-          throw new HandshakeFailed({
-            message: `held ${maxPending} frames and the peer never said hello`,
-          });
-        pending.push(frame);
-        return;
-      }
-      const sent = put(seal(keys.seal, frame, nonce()));
-      if (sent.isErr()) throw sent.error;
-    },
+  /** Sealed, then handed on — by `sendLatest` when there is a slot and the link below keeps one. */
+  const send = (frame: Uint8Array, slot?: string): void => {
+    if (failure !== undefined) throw failure;
+    if (keys === undefined) {
+      if (pending.length >= maxPending)
+        throw new HandshakeFailed({
+          message: `held ${maxPending} frames and the peer never said hello`,
+        });
+      pending.push(frame);
+      return;
+    }
+    // sealed per frame under a fresh random nonce, so a sealed frame the link below supersedes
+    // leaves no gap the far side could notice
+    const sealed = seal(keys.seal, frame, nonce());
+    const latest = link.sendLatest;
+    const sent =
+      slot === undefined || latest === undefined
+        ? put(sealed)
+        : Result.try({ try: () => latest(slot, sealed), catch: (cause) => cause });
+    if (sent.isErr()) throw sent.error;
+  };
+
+  const secured: FrameLink = {
+    send: (frame) => send(frame),
     onFrame: (cb) => {
       listeners.add(cb);
       return () => void listeners.delete(cb);
@@ -262,4 +272,7 @@ export function secureLink(link: FrameLink, options: SessionOptions): FrameLink 
       link.close?.();
     },
   };
+  if (link.sendLatest !== undefined)
+    Object.assign(secured, { sendLatest: (slot: string, frame: Uint8Array) => send(frame, slot) });
+  return secured;
 }

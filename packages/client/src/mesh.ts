@@ -11,6 +11,7 @@ import { createGrantRegistry } from "@syncmesh/wire";
 import type { Booted, MeshOpenError } from "./boot.js";
 import type { MeshOptions } from "./options.js";
 import type { Mesh } from "./surface.js";
+import type { RunningTransports } from "./transports.js";
 
 import { openAccounts } from "./accounts.js";
 import { openAuth } from "./auth.js";
@@ -37,6 +38,7 @@ import { createSyncStates } from "./sync-state.js";
 import { followTelemetry } from "./telemetry.js";
 import { keyRingFor, transportContextFor } from "./transport-context.js";
 import { runTransports } from "./transports.js";
+import { createMeshVisibility, gatedFor } from "./visibility.js";
 
 export type { MeshOptions } from "./options.js";
 export type { Handle, OnOptions } from "./handles.js";
@@ -90,6 +92,17 @@ interface Assembled {
   readonly now: () => Temporal.Instant;
   readonly booted: Booted;
 }
+
+/** `mesh.transports`: the running links' add, remove, list, events and route forcing. */
+const transportsSurface = (links: RunningTransports) => ({
+  add: links.add,
+  remove: links.remove,
+  list: links.list,
+  onLinkEvent: links.onLinkEvent,
+  force: links.force,
+  release: links.release,
+  forced: links.forced,
+});
 
 function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends PresenceMap>(
   options: MeshOptions<C, D, PC>,
@@ -145,9 +158,15 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     // the two halves of signed custody (D28): what this device can vouch for out of its own
     // store, and where a peer's vouch for this device's writes lands. A mesh over a bare event
     // store has neither, and passes neither, rather than passing a sink with nowhere to write
-    ...omitUndefined({ incarnation: booted.incarnation, onReceipt: wired.vouched }),
+    ...omitUndefined({
+      incarnation: booted.incarnation,
+      onReceipt: wired.vouched,
+      onRefusal: wired.refused,
+    }),
     onSnapshot: (installed) => snapshots.emit(installed),
     servesAuthority: options.authority === identity.peerId,
+    // the gated tables, which reach a device only through the authority's gate (D24)
+    ...gatedFor(schema, options.authority),
     keys,
     // our own partitions, which is what the door's grant-derived default compares against
     partitions: () => (grants.grantFor(identity.peerId)?.partitions ?? []).map(String),
@@ -166,6 +185,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     transportContext,
     options.mesh ?? {},
     options.knocks ?? [],
+    omitUndefined({ start: options.start }),
   );
   // a device holding nothing asks for state instead of history; one that holds coverage does not
   void joinIfEmpty(engine, { ready: links.ready, list: links.list });
@@ -187,6 +207,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
       return presence.at<PC>(partition.value);
     },
     blobs,
+    visibility: createMeshVisibility(() => links.list()),
     accounts,
     corrections: internal.corrections,
     can: createCan({
@@ -223,19 +244,12 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
       now,
     }),
     running: links.running,
+    start: links.start,
     requestGrant: (invite) => {
       swept.asked();
       links.requestGrant(invite);
     },
-    transports: {
-      add: links.add,
-      remove: links.remove,
-      list: links.list,
-      onLinkEvent: links.onLinkEvent,
-      force: links.force,
-      release: links.release,
-      forced: links.forced,
-    },
+    transports: transportsSurface(links),
     stop: async () => {
       swept.stop();
       wired.stop();

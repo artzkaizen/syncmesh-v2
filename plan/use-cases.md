@@ -474,7 +474,8 @@ device that lies about its own verdict is quarantined by everyone else.
   (`mesh.on(instance, { as })`, or Postgres RLS), and what a reviewer reads to know who may see a
   row. Narrowing what a device is *sent* is `interest` (RFC-0019, carried by D23's scoped
   cursors) — `relayTransport({ interest })` — and today an interest is what a device asks for, not
-  an entitlement an authority imposes. The imposed version is §4's tier, and it is not built.
+  an entitlement an authority imposes. The imposed version is §4's tier: the relay's admission
+  gate (D24-A).
 - **Entity access is a snapshot.** A member removed from an entity keeps the rows their last
   grant admitted until it is replaced or expires. That is why `validFor` is hours here, and why
   `grants.expiring` / `grants.renew` exist rather than a timer this library owns. Live revocation
@@ -563,13 +564,16 @@ honest answer on a device that was never given a network. On the server the same
 implemented over `withMesh(mesh)`, acting as the caller your own auth established, so the schema
 stays the only permission model.
 
-**What is not built.** The relay-side half — the gate that decides, from the app's own database,
-which gated rows reach which device — does not exist. E08 records the attempt and its rejection;
-D24 decides the framing (admission, not validation) and settles what an admitted subset costs on
-the wire: a scoped cursor whose scope names the *entitlement*, or a device whose entitlement
-widens keeps a cursor that silently skips what it was not allowed to see when it was narrower.
-Until that lands, a `visibility: "authority"` table declares its intent, refuses device writes,
-and is replicated like any other authority-written table.
+**The relay-side half.** The gate that decides, from the app's own database, which gated rows
+reach which device is `startRelay(port, { admission: { tables: authorityTables(schema), entitle }
+})`. `entitle({ peer, room })` is the authority's answer, asked once per join — an `Entitlement {
+scope, admits(event) }` — and it filters catch-up and every live fan-out alike. What an admitted
+subset costs on the wire is D24's scoped cursor: the coverage a device adopts names the
+entitlement as well as the interest, and a device whose entitlement's name has changed re-pages
+from nothing instead of keeping a cursor that skips what it was refused before. When the
+authority's database changes under a connected device, `room.reentitle([peer])` sends it round
+again. A withheld event never stalls the authority's stream: the relay tells the device it passed
+over it, in the same frame a filtered catch-up ends with.
 
 The three tiers, side by side:
 
@@ -581,10 +585,58 @@ The three tiers, side by side:
 
 **What the design does not do, said plainly**
 
-- An authority-visibility row cannot be obtained peer-to-peer (over BLE, say) from a device that
-  has it unless the authority admitted the receiver first. That is correct: a clinic phone must
-  not be able to pull a patient's record from another clinic's phone because the two happened to
-  meet.
+- An authority-visibility row cannot be obtained peer-to-peer (over BLE, say) at all — not from
+  the authority's own device, and not from a phone that was admitted to it. That is correct: a
+  clinic phone must not be able to pull a patient's record from another clinic's phone because the
+  two happened to meet, and no device can tell whether the far side was admitted; only the
+  authority can, and it answers through the relay. A direct link carries none of the events,
+  serves none of the rows in a snapshot, and leaves the tables out of the digest it compares.
+  *Unless the authority admitted the receiver first* would need the authority to vouch for an
+  entitlement in a form a peer can check offline — a grant claim — and nothing asks for it yet.
+- Over a radio alone, the authority's events after a gated one wait behind it until the device
+  next reaches the relay, whose scoped coverage releases them. A `global` catalog update can
+  therefore arrive later over Bluetooth than it would have without the tier; it never arrives
+  wrong, and it never stalls once the relay has been reached. Writing gated rows under a second
+  authority key would remove the wait and is additive if a case needs it. Memory stays bounded
+  while it waits: a link holds at most `gapLimit` (512) events per author behind a hole, and past
+  that it drops them and asks again from its cursor — which re-sends the same run and still cannot
+  fill the hole, so the cost of a long radio-only stretch is bytes sent twice, not a growing buffer.
+- A narrowed socket is sent a pass-over for what it was withheld: one empty last page per burst of
+  withheld events (queued on the room, so ten events arriving together cost one frame), and one
+  straight after a wanted event of an author it was owed a pass-over for. This is the price of not
+  stalling an author's stream — interest-only rooms pay it too, since D23's live path had the same
+  stall — and the writer is charged for it like any other send it caused (gap audit №7).
+- A device whose cursors were earned under one entitlement re-pages from nothing the first time it
+  joins a relay that names another one — or that gates nothing at all. That is correct, since the
+  old cursors may skip what the old gate withheld, and it costs a full catch-up once per change.
+- The authority has `ENTITLE_DEADLINE` (10 seconds) to answer a join. The question is asked off
+  the room's queue, so a slow answer delays only the device that asked; one that never comes is
+  refused as `EntitlementFailed`, and the device reconnects on its backoff and asks again.
+- An `admits` that throws is not read as a no. A no is withheld and passed over, and a pass-over
+  claims the device holds everything below it, so a throw read that way would skip the row on that
+  device for good. Instead that device's join is refused with code `admission` and the relay warns
+  once, naming the event; its next join is paged from its own cursor and asks again. The room
+  carries on for everyone else. An `admits` that always throws on some row keeps that one device
+  reconnecting on its backoff, and the warning repeats once per join, until the app is fixed.
+- A narrowed entitlement withholds what comes next, not what is already held. `reentitle` re-pages
+  a device under its new entitlement, but the gated rows it was admitted to before stay on its
+  disk; nothing is sent to take them back. That is the same snapshot rule entity access follows
+  (§ *Entity access is a snapshot*), and a purge on narrowing is not built.
+- `reentitle` is a method of one `RelayRoom`, reached through `createRelayHost().acquire()`.
+  `startRelay`'s handle does not offer it, and it closes sockets on the instance it is called on
+  alone: a fleet behind a load balancer broadcasts it to every instance itself.
+- The gate is the relay's, and the relay cannot read the schema. A relay started without
+  `admission` sends a `visibility: "authority"` table's rows to every device that asks — and since
+  an unpinned row now matches every interest, a narrowed device asks too. Nothing warns.
+- A room that lists protocol version 1 accepts a join that proves no key (D33), so a joiner can
+  name any peer and be asked about as that peer. The default list (`[3]`) refuses it; a room given
+  `admission` should never list 1.
+- Rows pinned to no partition match every interest now, but a device's scope text did not change
+  with that rule, so a device narrowed before it keeps cursors that may have skipped such rows and
+  is not re-paged for them; across a link between the two builds, digests of those rows differ.
+  Acceptable before 1.0; a device that must have them re-joins from nothing once.
+- `hello` and cursor frames still carry the authority's whole run, gated events included, to
+  every device. No row leaks, but how many gated writes the authority has made does.
 - The tier gives up the offline *write*, and only that. The use-case table above never promised
   one: it promises reads held offline once the authority has spoken. Optimistic local writes plus
   an authority refusal is the split D24 rejected, and it becomes available only once the

@@ -5,6 +5,7 @@ import type { State, TableState } from "./state.js";
 import type { MergeSpec } from "./strategy.js";
 
 import { cellRules, lineageCell, type CellRule, type DocChange } from "./doc.js";
+import { withEntry } from "./persistent-map.js";
 import { compareStamp, type Stamp } from "./stamp.js";
 
 type ColumnStrategies = ReadonlyMap<ColumnName, CellRule> | undefined;
@@ -105,14 +106,15 @@ function mergeCells(
   incoming: ReadonlyMap<ColumnName, Cell>,
   columnStrategies: ColumnStrategies,
 ): ReadonlyMap<ColumnName, Cell> {
-  const cells = new Map(current);
+  // one write per incoming column, never a copy of the others: a wide row pays for what changed
+  let cells = current;
   for (const [column, candidate] of incoming) {
     const existing = cells.get(column);
     const strategy = cellRules[columnStrategies?.get(column) ?? "lww"];
-    // Joining a first arrival with itself is the identity for `lww`, `max` and `min`, and puts a
-    // `counter` cell into its normal form. Storing it raw instead would leave the shape a
-    // sender happened to send in the state, and two peers would digest the same set differently.
-    cells.set(column, strategy(candidate, existing ?? candidate));
+    // A first arrival passes `undefined` so `counter` can tell an increment landing on nothing
+    // from one landing on totals; storing the sender's raw shape instead would leave two peers
+    // digesting the same cell differently.
+    cells = withEntry(cells, column, strategy(candidate, existing));
   }
   return cells;
 }
@@ -127,16 +129,11 @@ function stampFields(
   return {};
 }
 
-function withRecord(
+/** The state with one record replaced — O(1), sharing everything else with `state` (see `withEntry`). */
+const withRecord = (
   state: State,
   name: TableName,
   table: TableState,
   key: RowKey,
   record: RowRecord,
-): State {
-  const nextTable = new Map(table);
-  nextTable.set(key, record);
-  const nextState = new Map(state);
-  nextState.set(name, nextTable);
-  return nextState;
-}
+): State => withEntry(state, name, withEntry(table, key, record));

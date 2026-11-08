@@ -15,19 +15,21 @@ import { Temporal } from "@syncmesh/temporal";
 import { createPresenceStore } from "@syncmesh/transport";
 import { createIdentity, isRelayable, randomBytes, type Identity } from "@syncmesh/wire";
 
+import type { RelayAdmission } from "./admission.js";
 import type { ConnectionOptions, RelayConnection } from "./connection.js";
 import type { Fanout } from "./fanout.js";
 import type { GrantCache } from "./grant-cache.js";
 import type { RelayLimits } from "./limits.js";
 import type { RelayRetention } from "./retention.js";
 import type { RelaySocket } from "./sender.js";
-import type { Client, RoomState } from "./state.js";
+import type { Client, Fanned, RoomState } from "./state.js";
 
+import { createGate } from "./admission.js";
 import { createConnection } from "./connection.js";
 import { fanIn } from "./fan-in.js";
 import { HANDSHAKE_VERSION, RELAY_PROTOCOL_VERSIONS, kaFrame, speaksHandshake } from "./frames.js";
 import { createGrantCache } from "./grant-cache.js";
-import { DEFAULT_LIMITS } from "./limits.js";
+import { DEFAULT_LIMITS, createBudget } from "./limits.js";
 import { roomRetention } from "./retention.js";
 
 export type { ConnectionOptions, RelayConnection } from "./connection.js";
@@ -85,6 +87,12 @@ export interface RelayRoomOptions {
   /** The room's clock, for rate limiting and presence expiry. Default the wall clock. */
   readonly now?: () => Temporal.Instant;
   /**
+   * The authority-visibility gate (D24-A): which tables are gated and what each device is
+   * entitled to read of them. Applied to catch-up and to every live fan-out, the one from another
+   * instance included. Absent, the room withholds nothing a device did not narrow away itself.
+   */
+  readonly admission?: RelayAdmission;
+  /**
    * A telemetry listener from the first frame on. `onTelemetry` on the room subscribes just as
    * well, but a host that opens rooms lazily has no handle to subscribe through before the first
    * socket has already been served (D17).
@@ -116,7 +124,7 @@ export interface RelayRoom {
   readonly floor: () => Cursors;
   /**
    * One retention pass now, rather than at the room's own cadence. The room sweeps on a timer
-   * whenever `keepEventsFor` is set; this is the same pass, for a host whose scheduler is the
+   * whenever `keepEventsFor` or `keepUnreferencedBlobsFor` is set; this is the same pass, for a host whose scheduler is the
    * platform's (a Durable Object alarm) and for a test that will not wait a minute.
    */
   readonly sweep: () => Promise<void>;
@@ -126,6 +134,12 @@ export interface RelayRoom {
    * peer id, a room name or a byte of payload.
    */
   readonly onTelemetry: (listener: TelemetryListener) => Unsubscribe;
+  /**
+   * The authority's answer for these devices has changed — a clinic membership, a consult window
+   * (D24). Their sockets are closed, and the join each makes next is asked again; a device whose
+   * entitlement's name moved re-pages from nothing, so nothing it was refused before stays skipped.
+   */
+  readonly reentitle: (peers: readonly PeerId[]) => void;
   readonly close: () => void;
 }
 
@@ -189,6 +203,7 @@ export async function openRelayRoom(
     blobs: options.blobs,
     ceiling: () => coverage.current().synced,
     booted: trimmed.value.synced,
+    held: boot.value,
     now,
     // caught rather than left on the queue: a rejected `queue` is a room that silently stops
     // appending, and a retention pass must never be able to do that to the traffic beside it
@@ -208,17 +223,24 @@ export async function openRelayRoom(
       if (client.peer !== except) client.sender.send(frame);
     }
   };
-  const toInterested = (frame: Uint8Array, event: SyncEvent, except?: PeerId): number => {
+  const toInterested = (frame: Uint8Array, event: SyncEvent, except?: PeerId): Fanned => {
     let receivers = 0;
+    let frames = 0;
     for (const client of clients.values()) {
-      if (client.peer !== except && client.wants(event)) {
-        client.sender.send(frame);
-        receivers += 1;
-      }
+      if (client.peer === except) continue;
+      const offered = client.offer(frame, event);
+      if (offered.sent) receivers += 1;
+      frames += offered.frames;
     }
-    return receivers;
+    return { receivers, frames };
   };
   const fan = options.fanout?.connect(name);
+  const limits = { ...DEFAULT_LIMITS, ...options.limits };
+  // the same bucket a socket spends from, priced at the room's rate rather than one socket's
+  const budget = createBudget(
+    { ...limits, rates: { ...limits.rates, fanout: limits.roomFanout } },
+    now,
+  );
   const keepalive = setInterval(() => toClients(kaFrame()), keepaliveMs);
 
   const state: RoomState = {
@@ -229,8 +251,10 @@ export async function openRelayRoom(
     maxBacklog,
     versions,
     identity,
-    limits: { ...DEFAULT_LIMITS, ...options.limits },
+    limits,
+    budget,
     blobs: retention.blobs,
+    keeper: retention.keeper,
     grants,
     presence,
     clients,
@@ -242,11 +266,13 @@ export async function openRelayRoom(
     offset: () => offset,
     appended: (entry) => {
       offset += 1;
+      retention.keeper?.note(entry.event);
       if (servable(entry)) coverage.note(entry.event);
     },
     enqueue: (work) => void (queue = queue.then(work)),
     now,
     report: telemetry.emit,
+    gate: options.admission === undefined ? undefined : createGate(options.admission, name),
   };
   // subscribed after the state exists, because a fanned-in frame is ingested through it
   const offFan = fan?.onFrame(fanIn(state));
@@ -268,6 +294,9 @@ export async function openRelayRoom(
     floor: retention.floor,
     sweep: retention.sweep,
     onTelemetry: telemetry.subscribe,
+    reentitle: (peers) => {
+      for (const peer of peers) clients.get(peer)?.socket.close("entitlement changed");
+    },
     close: () => {
       clearInterval(keepalive);
       retention.stop();

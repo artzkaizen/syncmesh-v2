@@ -129,13 +129,15 @@ function wrap(transport: Transport, watch: Observing): Transport {
     const { blobs } = transport;
     add({
       blobs: {
-        upload: async (hash, bytes) => {
-          const [, duration] = await timed(async () => blobs.upload(hash, bytes));
+        upload: async (hash, bytes, options) => {
+          const [refusal, duration] = await timed(async () => blobs.upload(hash, bytes, options));
           watch.emit({ type: "mesh.blob.put", sizes: { bytes: bytes.length }, duration });
+          return refusal;
         },
         download: async (hash, options) => {
           const [answer, duration] = await timed(async () => blobs.download(hash, options));
-          watch.emit({ type: "mesh.blob.fetch", sizes: { bytes: answer?.length ?? 0 }, duration });
+          const got = answer instanceof Uint8Array ? answer.length : 0;
+          watch.emit({ type: "mesh.blob.fetch", sizes: { bytes: got }, duration });
           return answer;
         },
       },

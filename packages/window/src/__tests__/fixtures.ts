@@ -1,0 +1,133 @@
+import type { ColumnName, JsonValue, Row } from "@syncmesh/kernel";
+
+import { encodeCbor } from "@syncmesh/wire";
+
+import type { WindowRow } from "../frames.js";
+import type { ReadRequest } from "../request.js";
+import type { ServerWindowsOptions } from "../server.js";
+import type { MemoryPageSourceOptions } from "../testing.js";
+
+import { createWindowClient } from "../client.js";
+import { WINDOW_TAGS } from "../frames.js";
+import { createServerWindows } from "../server.js";
+import { createMemoryPageSource } from "../testing.js";
+
+/* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- test fixtures */
+export const AT = "at" as ColumnName;
+export const FOLDER = "folder" as ColumnName;
+export const SUBJECT = "subject" as ColumnName;
+/* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
+export const MAIL = "mail";
+/** A table no read in these tests touches. */
+export const CALLS = "calls";
+/** Mail at `at` is `m-<at>`, zero-padded so keys sort as the numbers do. */
+export const mailKey = (at: number) => `m-${String(at).padStart(8, "0")}`;
+
+export const mail = (at: number, folder = "inbox"): Row =>
+  new Map<ColumnName, string | number>([
+    [AT, at],
+    [FOLDER, folder],
+    [SUBJECT, `subject ${at}`],
+  ]);
+
+/* oxlint-disable anti-slop/no-runtime-typeof -- a test read parses its own input */
+const field = (input: JsonValue, name: string): JsonValue | undefined =>
+  typeof input === "object" && input !== null && !Array.isArray(input)
+    ? // SAFETY: a JSON value that is an object and not an array is a JSON object
+      (input as { readonly [key: string]: JsonValue })[name]
+    : undefined;
+/* oxlint-enable anti-slop/no-runtime-typeof */
+
+const atOf = (row: WindowRow) => Number(row.row.get(AT));
+
+/**
+ * `mail.inbox`, as an app would write it: newest first, `limit` rows strictly after the `after`
+ * mail, in one folder when the input names one.
+ */
+const inbox = (rows: readonly WindowRow[], input: JsonValue) => {
+  const folder = field(input, "folder");
+  const after = field(input, "after");
+  return rows
+    .filter((r) => folder === undefined || r.row.get(FOLDER) === folder)
+    .filter((r) => after === undefined || atOf(r) < Number(after))
+    .sort((a, b) => atOf(b) - atOf(a))
+    .slice(0, Number(field(input, "limit")));
+};
+
+/** A call to `mail.inbox`. */
+export const newest = (
+  limit: number,
+  over: { readonly folder?: string; readonly after?: number } = {},
+): ReadRequest => ({ path: "mail.inbox", input: { limit, ...over } });
+
+/** A frame tagged `rows` whose body is not a patch. */
+const GARBLED = encodeCbor([WINDOW_TAGS.rows, "garbled"]);
+
+/**
+ * `count` mails at 1..count in a memory source, one socket's server windows over it and one thin
+ * client, joined by a pipe that can lose or garble the server's next frames on purpose, and
+ * hold the client's back.
+ */
+export function harness(
+  count: number,
+  options: Partial<ServerWindowsOptions> & MemoryPageSourceOptions = {},
+) {
+  const { canRead, ...serving } = options;
+  const source = createMemoryPageSource(
+    { "mail.inbox": { table: MAIL, page: inbox } },
+    canRead === undefined ? {} : { canRead },
+  );
+  source.load(
+    MAIL,
+    Array.from({ length: count }, (_, i) => ({ key: mailKey(i + 1), row: mail(i + 1) })),
+  );
+  const client = createWindowClient();
+  const frames: Uint8Array[] = [];
+  /** What happens to the server's frame at each index instead of reaching the client whole. */
+  const faults = new Map<number, "lose" | "garble">();
+  const server = createServerWindows({
+    source,
+    send: (frame) => {
+      const fault = faults.get(frames.length);
+      frames.push(frame);
+      if (fault === "garble") client.receive(GARBLED);
+      else if (fault === undefined) client.receive(frame);
+    },
+    ...serving,
+  });
+  /** The client's frames not yet read by the server, while {@link queueUp} holds them. */
+  let upstream: Uint8Array[] | undefined;
+  client.attach((frame) => (upstream === undefined ? server.receive(frame) : upstream.push(frame)));
+  return {
+    source,
+    server,
+    client,
+    frames,
+    /** The server's next `n` frames never reach the client. */
+    loseNext: (n = 1) => {
+      for (let i = 0; i < n; i++) faults.set(frames.length + i, "lose");
+    },
+    /**
+     * Spoils the server's frames at these offsets from the next one: each is lost, or arrives as
+     * a `rows` frame that does not read as one.
+     */
+    spoil: (fault: "lose" | "garble", ...offsets: number[]) => {
+      for (const offset of offsets) faults.set(frames.length + offset, fault);
+    },
+    /** The client's next frames wait on the socket until {@link deliver}. */
+    queueUp: () => {
+      upstream ??= [];
+    },
+    /** The server reads every frame the client queued, and later ones as they are sent. */
+    deliver: () => {
+      const queued = upstream ?? [];
+      upstream = undefined;
+      for (const frame of queued) server.receive(frame);
+    },
+  };
+}
+
+export const ats = (rows: readonly { readonly row: Row }[]) => rows.map((r) => r.row.get(AT));
+
+/** `n` numbers counting down from `from`: the `at`s a newest-first window shows. */
+export const down = (from: number, n: number) => Array.from({ length: n }, (_, i) => from - i);

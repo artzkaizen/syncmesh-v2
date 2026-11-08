@@ -1,5 +1,7 @@
 import type { Identity } from "@syncmesh/wire";
 
+import { createMemoryEventStore } from "@syncmesh/engine";
+import { Temporal } from "@syncmesh/temporal";
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,7 +10,8 @@ import { join as joinPath } from "node:path";
 import type { RelayFrame } from "../frames.js";
 
 import { webSocketDial } from "../dial.js";
-import { startRelay } from "../serve.js";
+import { DEFAULT_IDLE_AFTER } from "../rooms.js";
+import { hostTuning, startRelay } from "../serve.js";
 import { relayTransport } from "../transport.js";
 import { bodyOf, peer, secureProbe, tick, write } from "./fixtures.js";
 
@@ -141,4 +144,21 @@ describe("startRelay — D09-A, the embedded host", () => {
       rmSync(dataDir, { recursive: true, force: true });
     }
   }, 20_000);
+});
+
+describe("idle eviction by default on a durable host", () => {
+  const opener = async () => {
+    throw new Error("not opened: only the resolved options are under test");
+  };
+
+  test("over its own dataDir a room nobody is on is evicted after DEFAULT_IDLE_AFTER", () => {
+    expect(hostTuning({}, opener).idleAfter).toBe(DEFAULT_IDLE_AFTER);
+    expect(DEFAULT_IDLE_AFTER.total({ unit: "minutes" })).toBe(15);
+  });
+
+  test("a caller-supplied store keeps no eviction, and a caller's own idleAfter wins", () => {
+    expect(hostTuning({ store: createMemoryEventStore() }, opener).idleAfter).toBeUndefined();
+    const idleAfter = Temporal.Duration.from({ minutes: 1 });
+    expect(hostTuning({ idleAfter }, opener).idleAfter).toBe(idleAfter);
+  });
 });

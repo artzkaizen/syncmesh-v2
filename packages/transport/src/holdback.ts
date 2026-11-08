@@ -65,6 +65,21 @@ export function createHoldback(engine: Engine, gapLimit: number) {
       if (buffer.size === 0) held.delete(author);
       return ready;
     },
+    /**
+     * Whether no event this device was sent waits behind a hole, for any author.
+     *
+     * An entry the device already holds by another route — a second transport filled the hole —
+     * is dropped first rather than counted: `drain` starts above it, so nothing would ever take it
+     * out, and it would answer `false` here until the session ended.
+     */
+    empty: (): boolean => {
+      for (const [author, buffer] of held) {
+        const at = through(author);
+        for (const seq of buffer.keys()) if (seq <= at) buffer.delete(seq);
+        if (buffer.size === 0) held.delete(author);
+      }
+      return held.size === 0;
+    },
     /** The contiguous run above what the engine holds, in order. */
     drain: (author: PeerId): readonly StoredEvent[] => {
       const buffer = held.get(author);

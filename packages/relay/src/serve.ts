@@ -5,6 +5,7 @@ import type { Identity } from "@syncmesh/wire";
 
 import { omitUndefined, panic } from "@syncmesh/result";
 
+import type { RelayAdmission } from "./admission.js";
 import type { Fanout } from "./fanout.js";
 import type { RelayHost, RoomStore, RelayHostOptions, SocketSession } from "./host.js";
 import type { RelayLimits } from "./limits.js";
@@ -14,6 +15,7 @@ import type { RelaySocket, SendOutcome } from "./sender.js";
 
 import { describeRoom, requestRoom } from "./describe.js";
 import { createRelayHost, durableRoomStore } from "./host.js";
+import { DEFAULT_IDLE_AFTER } from "./rooms.js";
 
 export interface StartRelayOptions {
   /** Where the durable room logs live, one SQLite file per room. Default `.syncmesh/relay`. */
@@ -35,8 +37,9 @@ export interface StartRelayOptions {
   readonly retention?: RelayRetention;
   /**
    * How long a room with no socket on it is kept open before it is closed and its log handle
-   * released. Absent, a room opened once is held for the life of the process. Its grant cache
-   * outlives the eviction either way — see `createRoomTable` for why that one cannot be rebuilt.
+   * released. Absent, `DEFAULT_IDLE_AFTER` over `dataDir`, and never with your own `store`. Its
+   * grant cache outlives the eviction either way — see `createRoomTable` for why that one
+   * cannot be rebuilt.
    */
   readonly idleAfter?: Temporal.Duration;
   /** Who may open a socket, and onto which rooms: announce apart from access. */
@@ -46,6 +49,11 @@ export interface StartRelayOptions {
   readonly fanout?: Fanout;
   /** Serve blobs from the room's own database (D18). Default true; `false` for a log-only relay. */
   readonly blobs?: boolean;
+  /**
+   * The authority-visibility gate every room here applies (D24): catch-up and fan-out alike, so no
+   * path into a device's log walks around it. Absent, no table is gated.
+   */
+  readonly admission?: RelayAdmission;
 }
 
 export interface RunningRelay {
@@ -96,10 +104,12 @@ export const hostTuning = (
     identity: options.identity,
     limits: options.limits,
     retention: options.retention,
-    idleAfter: options.idleAfter,
+    // a room over its own file is a handle worth giving back; a caller's store lends none
+    idleAfter: options.idleAfter ?? (options.store === undefined ? DEFAULT_IDLE_AFTER : undefined),
     posture: options.posture,
     onTelemetry: options.onTelemetry,
     fanout: options.fanout,
+    admission: options.admission,
   });
 /**
  * Whether a request is asking to become a socket at all. A plain `GET` on a room's path is

@@ -16,12 +16,12 @@ import { Result, TaggedError } from "@syncmesh/result";
  * CDC-backed table is not offline-writable, because an offline write against a database we do
  * not own is a promise we cannot keep.
  *
- * `manualChangeSource` is the only source shipped. **Postgres logical replication is follow-on
- * work, deliberately not started**: it is a slot, a `pgoutput` decoder and a keepalive protocol
- * behind this same seam, and a half-built one would be a source that acks what it has not
- * decoded — the one failure the port exists to make impossible. Everything above it — the
- * transaction fold, the watermark, the backfill, the alarms — is already written against the
- * port and needs nothing from it but these two types.
+ * Two sources ship: `manualChangeSource` here, and `postgresChangeSource` in
+ * `@syncmesh/postgres` — a logical replication slot read through `pgoutput`, whose standby
+ * status updates move the slot only past transactions that were decoded whole **and** acked.
+ * That is the one failure the port exists to make impossible: a source that acks what it has
+ * not decoded. Everything above the port — the transaction fold, the watermark, the backfill,
+ * the alarms — needs nothing from a source but these two types.
  */
 
 /**
@@ -62,6 +62,9 @@ export type SourceRow = Readonly<Record<string, CellValue>>;
  * Transaction-framed, because that framing is already our event boundary (D1): everything
  * between `begin` and `commit` is one committed transaction, and one committed transaction
  * becomes one signed event per partition it touched.
+ *
+ * A `begin` discards anything received since the last `commit`. That is how a source that lost
+ * its connection half-way through a transaction sends it again: from its `begin`, whole.
  */
 export type ChangeMessage =
   | { readonly t: "begin" }

@@ -39,6 +39,18 @@ const schema = syncSchema({
       columns: { id: t.text().primaryKey(), content: t.blob().nullable() },
       partition: local,
     },
+    boards: {
+      columns: { id: t.text().primaryKey(), title: t.text(), content: t.blob().nullable() },
+      partition: workspace,
+      // anyone may start a board, only an editor may change one
+      allow: ({ role }) => ({
+        $default: role("owner"),
+        read: role("viewer"),
+        insert: role("viewer"),
+        update: role("editor"),
+        delete: role("owner"),
+      }),
+    },
   },
 });
 
@@ -49,6 +61,7 @@ const LORO = parseAdapterId("loro@1").unwrap();
 const DOCS = new Map([
   [NOTES, new Map([[CONTENT, LORO]])],
   [table("drafts"), new Map([[CONTENT, LORO]])],
+  [table("boards"), new Map([[CONTENT, LORO]])],
 ]);
 
 const issuer = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 50 + i)).unwrap();
@@ -119,6 +132,9 @@ describe("a doc change against the schema (RFC-0023 §10)", () => {
 
   test("a column the table does not declare at all is let through, like a newer build's cell", () => {
     expect(verdict([doc({ column: column("addedLater") })])).toBe("ok");
+    // a name the columns object inherits is still not a column the table declares
+    expect(verdict([doc({ column: column("constructor") })])).toBe("ok");
+    expect(verdict([doc({ column: column("toString") })])).toBe("ok");
   });
 
   test("a genesis must name the lineage derived from its place in the log", () => {
@@ -185,6 +201,21 @@ describe("a doc change against the policy (RFC-0023 §11)", () => {
       NONE,
     );
     expect(r.isErr() && "op" in r.error && r.error.op).toBe("insert");
+  });
+
+  test("an insert of a row the device already holds does not make its doc change an insert", () => {
+    const boards = { table: table("boards") } as const;
+    const insert: Change = { kind: "insert", ...boards, key: N1, row: existing };
+    const probe = (changes: readonly Change[], before: StateLookup) =>
+      validator.validate({ peerId: viewer.peerId, partition: W1, changes }, before);
+    // the viewer may start a board and write its first content
+    expect(probe([insert, doc(boards)], NONE).isOk()).toBe(true);
+    // but repeating the held row's values is no way to edit, or replace, its document
+    for (const change of [doc(boards), doc({ ...boards, genesis: true })]) {
+      const r = probe([insert, change], HELD);
+      expect(r.isErr() && r.error._tag).toBe("PolicyDenied");
+      expect(r.isErr() && "op" in r.error && r.error.op).toBe("update");
+    }
   });
 
   test("a doc change against another partition's row is WrongPartition, like any change", () => {

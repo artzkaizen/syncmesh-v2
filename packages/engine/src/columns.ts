@@ -37,7 +37,7 @@ export const unfoldableKind = (change: Change): string | undefined =>
  * shows whichever columns its own schema names.
  */
 const declared = (table: Table, cells: Row): WireRow =>
-  Object.fromEntries([...cells].filter(([name]) => String(name) in table.columns));
+  Object.fromEntries([...cells].filter(([name]) => Object.hasOwn(table.columns, name)));
 
 /** A table's doc columns and the adapter each declares; empty for a table without any. */
 export type TableDocs = ReadonlyMap<ColumnName, AdapterId>;
@@ -58,9 +58,9 @@ export function checkColumns(
     const kind = unfoldableKind(change) ?? change.kind;
     return Result.err(
       new UnknownChangeKind({
-        table: String(table.name),
+        table: table.name,
         kind,
-        message: `${String(table.name)}: this build has no fold for a ${kind} change`,
+        message: `${table.name}: this build has no fold for a ${kind} change`,
       }),
     );
   }
@@ -70,10 +70,10 @@ export function checkColumns(
     if (!docs.has(column)) continue;
     return Result.err(
       new DocColumnWrite({
-        table: String(table.name),
-        key: String(change.key),
-        column: String(column),
-        message: `${String(table.name)}.${String(column)} is a document: it is opened and edited, never written as a value`,
+        table: table.name,
+        key: change.key,
+        column,
+        message: `${table.name}.${column} is a document: it is opened and edited, never written as a value`,
       }),
     );
   }
@@ -81,8 +81,8 @@ export function checkColumns(
   return r.isErr()
     ? Result.err(
         new SchemaViolation({
-          table: String(table.name),
-          key: String(change.key),
+          table: table.name,
+          key: change.key,
           cause: r.error,
           message: r.error.message,
         }),
