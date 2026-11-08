@@ -25,6 +25,13 @@ const READS = new Set(["select", "selectDistinct", "with", "$with", "$count", "$
 type Builder = Record<string | symbol, unknown>;
 
 /**
+ * What a builder carries that a handler must not reach: its `session` runs any statement on the
+ * caller's connection (a `COMMIT`, a write) outside every fence here. Drizzle's own methods still
+ * reach it, as they run on the builder itself.
+ */
+const HIDDEN = new Set<string | symbol>(["session"]);
+
+/**
  * Wraps one builder so every source it is handed goes through `scope` first, **whatever was
  * chained before it**.
  *
@@ -39,7 +46,12 @@ type Builder = Record<string | symbol, unknown>;
  */
 const wrap = <B>(builder: B, scope: (source: unknown) => unknown): B => {
   const proxy: B = new Proxy(builder as Builder, {
+    has: (target, property) => !HIDDEN.has(property) && Reflect.has(target, property),
+    ownKeys: (target) => Reflect.ownKeys(target).filter((key) => !HIDDEN.has(key)),
+    getOwnPropertyDescriptor: (target, property) =>
+      HIDDEN.has(property) ? undefined : Reflect.getOwnPropertyDescriptor(target, property),
     get(target, property, receiver) {
+      if (HIDDEN.has(property)) return undefined;
       const value = Reflect.get(target, property, receiver);
       if (typeof value !== "function") return value;
       const method = value.bind(target);
@@ -86,7 +98,8 @@ export const scopeReads = <Db extends object>(db: Db, read: (table: never) => un
       const method = value.bind(target);
       // `$count(table)` names its source directly, with no `from` to intercept
       if (property === "$count")
-        return (source: unknown, ...rest: readonly unknown[]) => method(scope(source), ...rest);
+        return (source: unknown, ...rest: readonly unknown[]) =>
+          wrap(method(scope(source), ...rest), scope);
       // `$with(alias).as(qb => …)` hands the callback a fresh builder of Drizzle's own
       if (property === "$with")
         return (...args: readonly unknown[]) => {

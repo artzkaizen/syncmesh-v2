@@ -297,6 +297,23 @@ describe("scopeReads — the caller's view without asking for it", () => {
     expect(await db.$count(jobs, eq(jobs.status, "open"))).toBe(1);
   });
 
+  test("a built query, or a count, hands out no session to run statements of its own on", async () => {
+    const seeded = await seedTwo();
+    const face = await acting(seeded, tech7);
+    const db = scopeReads(face.db, face.read);
+    const query = db.select({ id: jobs.id }).from(jobs).where(eq(jobs.status, "open"));
+    const count = db.$count(jobs);
+    for (const built of [query, count]) {
+      expect(Reflect.get(built, "session")).toBeUndefined();
+      expect(Reflect.getOwnPropertyDescriptor(built, "session")).toBeUndefined();
+      expect("session" in built).toBe(false);
+      expect(Reflect.ownKeys(built)).not.toContain("session");
+    }
+    // still runnable: Drizzle reaches its own session from inside its methods
+    expect((await query).map((r) => r.id)).toEqual(["j1"]);
+    expect(await count).toBe(1);
+  });
+
   test("a CTE built by $with's callback reads through the caller's view too", async () => {
     const seeded = await seedTwo();
     const face = await acting(seeded, tech7);
