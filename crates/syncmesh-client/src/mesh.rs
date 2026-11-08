@@ -183,6 +183,21 @@ impl Mesh {
         Ok(mutated)
     }
 
+    /// [`Engine::mutate_local`]: a local-only write, folded here and never handed to the link.
+    pub fn mutate_local(
+        &self,
+        procedure: &str,
+        changes: Vec<Change>,
+        partition: Option<PartitionKey>,
+    ) -> Result<Mutated, MutateError> {
+        lock(&self.engine).mutate_local(procedure, changes, partition)
+    }
+
+    /// [`Engine::can`] (`mesh.can`): may this device do `"table.op"` on `row`, in `instance`.
+    pub fn can(&self, what: &str, row: Option<&Row>, instance: Option<&str>) -> bool {
+        lock(&self.engine).can(what, row, instance)
+    }
+
     /// [`Engine::revert`], with the compensating write handed to the link like any other.
     pub fn revert(&self, event_id: &str) -> Result<Reverted, RevertError> {
         let reverted = lock(&self.engine).revert(event_id)?;

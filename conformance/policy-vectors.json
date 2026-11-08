@@ -422,6 +422,148 @@
           }
         }
       },
+      "checked": {
+        "partition": "org",
+        "visibility": "partition",
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "code": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false,
+            "check": true,
+            "checkSchema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "pattern": "^[A-Z]{3}$"
+            }
+          },
+          "qty": {
+            "kind": "integer",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false,
+            "check": true,
+            "checkSchema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9
+            }
+          },
+          "email": {
+            "kind": "text",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false,
+            "check": true,
+            "checkSchema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "format": "email",
+              "pattern": "^(?!\\.)(?![^\\n\\r  ]*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+            }
+          },
+          "folded": {
+            "kind": "text",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false,
+            "check": true,
+            "checkSchema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string"
+            }
+          },
+          "word": {
+            "kind": "text",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false,
+            "check": true,
+            "checkSchema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "dotted": {
+            "kind": "text",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false,
+            "check": true,
+            "checkSchema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string"
+            }
+          },
+          "looked": {
+            "kind": "text",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false,
+            "check": true,
+            "checkSchema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "pattern": "^(?!x)[^0-9]*$"
+            }
+          },
+          "templated": {
+            "kind": "text",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false,
+            "check": true,
+            "checkSchema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string"
+            }
+          },
+          "meta": {
+            "kind": "json",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false,
+            "check": true,
+            "checkSchema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "object",
+              "properties": {
+                "tag": {
+                  "type": "string",
+                  "enum": ["red", "blue"]
+                },
+                "n": {
+                  "type": "number"
+                }
+              },
+              "required": ["tag"]
+            }
+          }
+        },
+        "allow": {
+          "$default": {
+            "kind": "role",
+            "role": "admin"
+          },
+          "insert": {
+            "kind": "role",
+            "role": "member"
+          },
+          "update": {
+            "kind": "role",
+            "role": "member"
+          }
+        }
+      },
       "settings": {
         "partition": "global",
         "visibility": "partition",
@@ -2696,6 +2838,342 @@
               "rung": "columns"
             }
           ]
+        },
+        {
+          "description": "a column's check(), as the JSON Schema it says it accepts",
+          "events": [
+            "825891a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902185b03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400000167636865636b65640262633103a564636f64656341424365656d61696c666140622e636f626964626331646d657461a1637461676372656463717479035840329aeaa5615eeca5df2beb3315c1648b2dff19ba229ea49cdb64d5d97bd1cc0a71d018a52afbee9dc459c438e8f83acbc04fb3e5c23ef515c396f70e59647902",
+            "825876a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902185c03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400000167636865636b65640262633203a364636f64656361626362696462633263717479035840a50b53a5fe041d6b0696ccfea80334faec1acee2af11f31017e91e5d29af4982fa587fc34484383b0a54fe251cd2c498ab5f8333cdebd48e8d6519c89c058e09",
+            "825876a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902185d03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400000167636865636b65640262633303a364636f646563414243626964626333637174790a58404c80e21a474ada66f73f1aaa9208eb152cc2c25292aa1b006032299ffb3a8d02100898404bfe9097fc20dd8b667741bc7bd576f4928aabd6d689866f00053d04",
+            "82587ea70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902185e03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400000167636865636b65640262633403a364636f64656341424362696462633463717479fb40040000000000005840c99f642ddecc428203000e33b032aa1e85ce57b0d966ce54ab2dd71a88099a16d75ec79a69e1670d0cde146a0f57e55593ca920b649116682eee57a0250d3907",
+            "82588ba70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902185f03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400000167636865636b65640262633503a464636f64656341424365656d61696c6e6e6f7420616e206164647265737362696462633563717479015840381083389e8782e7cfca80ef2558082fdb770c7d258ba57b21022c0f0ed704127a67a9eff798c89969f90459c235fa5e788e09008cbf214068f5dbd87deecd09",
+            "825886a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186003821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400000167636865636b65640262633603a464636f646563414243626964626336646d657461a16374616765677265656e63717479015840043be1c12c6bdf67c72ccd9f040fe0c276054b5488ca3ca7ce67469128d99cc1c5d316472fca843e748c93504ac5a8fbf9d1a40ed37867e225ee9c090ea10509",
+            "825889a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186103821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400000167636865636b65640262633703a464636f646563414243626964626337646d657461a2616e61316374616764626c7565637174790158404f57bf809984ff2eccdfff204b8677632d33882fdba034b3453b3cc54a7b830b0368ef9b9e83dbd0cd90cb78fe06a8f7462d55ecceb53de8d9c795f697ef9907",
+            "825883a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186203821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400000167636865636b65640262633803a564636f64656358595a65656d61696cf6626964626338646d657461f663717479095840d72bc39d1d9e9ed3770b91bd0cb246b18802a42fc4116d9fb0ea8c00cae7a6f6924e647c99bab02e535b5428f8fc673e56089f471f3203c45b03405cb1ffc406",
+            "8258afa70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186303821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400000167636865636b65640262633903a864636f64656341424366646f7474656464f09f988066666f6c646564624142626964626339666c6f6f6b656462d9a363717479016974656d706c6174656464f09f988064776f726464f09f98805840c2cff2001814f94b806103b93e2b6b984b861d32bd45e4e8dda79599dbd76f387c820e5e3505157c3815b044c6908d2a7782aa992aacee2affed188764aed00e",
+            "825867a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186403821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400010167636865636b65640262633103a163717479005840cc05e152bf718e5d1fbd9a5226804770f2baf94c7dc4f59e1c751d680d63342a42e4e833391c6ce1a819e78b3d7ff1960f59ee28bd66119da9c4f19d784da00a",
+            "82587da70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186503821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400010167636865636b65640262633103a264636f646563515253646d657461a2616e026374616764626c756558408aaef9890e86202529cd106a034c06b2d2c4c7ca7a8a91fa097c43d5772dc93f768f2db05f53888679b88614520a0d9b02143d28691833704cc7ee342024b305"
+          ],
+          "report": {
+            "folded": 4,
+            "skipped": 0,
+            "quarantined": 7
+          },
+          "parked": [
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-13",
+              "reason": "unknown-table",
+              "verdict": "UnknownTable"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-39",
+              "reason": "unknown-table",
+              "verdict": "UnknownTable"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-14",
+              "reason": "dropped-table",
+              "verdict": "TableDropped"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-16",
+              "reason": "unknown-kind",
+              "verdict": "UnknownChangeKind"
+            },
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-1",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "7529c456d938d2b8fe90fa6ccf916d346770a64bcbb7b5323b687acde20cd00c-1",
+              "reason": "refused",
+              "verdict": "NoGrant"
+            },
+            {
+              "id": "6c8d14b047593d7117dc445957d8bdd6772c303d064297fdc8e329927d370bda-1",
+              "reason": "refused",
+              "verdict": "PartitionNotGranted"
+            },
+            {
+              "id": "ed54a59fb1ac3a51239351362941b868e85a60e3d7b2485d828821dc7a69c279-2",
+              "reason": "refused",
+              "verdict": "GrantRevoked"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-2",
+              "reason": "refused",
+              "verdict": "GrantStale"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-3",
+              "reason": "refused",
+              "verdict": "ClockAhead"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-6",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-7",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-8",
+              "reason": "refused",
+              "verdict": "ReadOnlyPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-10",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-11",
+              "reason": "refused",
+              "verdict": "LocalOnly"
+            },
+            {
+              "id": "6c28fd058c18c88c6cce2af981d2d11c851b123ed5b69b7876773ed099ea3f83-1",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-12",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-18",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-19",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-20",
+              "reason": "refused",
+              "verdict": "DocColumnWrite"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-23",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-24",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-25",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-26",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-29",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-30",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-31",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "column"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-32",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "adapter"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-33",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-34",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-35",
+              "reason": "refused",
+              "verdict": "DocChangeRefused",
+              "rung": "lineage"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-1",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-37",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "replace"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-38",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-2",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "replace"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-3",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-5",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-9",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-10",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-43",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "delete"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-13",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-15",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-16",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "update"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-46",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "delete"
+            },
+            {
+              "id": "0b47823e71095dd59be78ac271c576ef389f87b64561ab07cf9a4ebcd02d2041-19",
+              "reason": "refused",
+              "verdict": "PolicyDenied",
+              "op": "insert"
+            },
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-5",
+              "reason": "refused",
+              "verdict": "WrongPartition"
+            },
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-6",
+              "reason": "refused",
+              "verdict": "LinkRefused",
+              "rung": "author"
+            },
+            {
+              "id": "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd-8",
+              "reason": "refused",
+              "verdict": "LinkRefused",
+              "rung": "columns"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-92",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-93",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-94",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-95",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-96",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-97",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            },
+            {
+              "id": "020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b29-100",
+              "reason": "refused",
+              "verdict": "SchemaViolation"
+            }
+          ]
         }
       ],
       "rows": {
@@ -2709,6 +3187,7 @@
         ],
         "archive": ["a1"],
         "boards": ["b1"],
+        "checked": ["c1", "c8", "c9"],
         "feed": ["f1"],
         "notes": ["c2", "dv1", "g2", "late", "n1", "p1", "q1", "q2", "r1"],
         "profiles": ["me"],
@@ -2720,22 +3199,22 @@
       "probes": [
         {
           "description": "a retired table refuses this device's own write",
-          "event": "825870a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902185b03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400000167617263686976650262613203a2626964626132657469746c65617858402b9bdc622f32ecc2f664217768d20a7e2184ce9321477cd1521d7e61d092710b3ad0dc3d42115d9f3db057bd1a75a678a7f1117e98154665c8a935cc88087601",
+          "event": "825870a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186603821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400000167617263686976650262613203a2626964626132657469746c6561785840247551b005f6cc87aae334dbe92bb5a8f6291ad332b5d729b7a46c1ff50627d7611623496ed453aa807cfe27ed97513184434a9d8cca9f67f872ebd9068d340f",
           "verdict": "RetiredWrite"
         },
         {
           "description": "a retired column too, null included",
-          "event": "825868a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902185c03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000101656e6f74657302626e3103a1666c6567616379f65840a7275a1cedae0bb51b5dd82957037004c3c1d7a1f5ca13796d54325b59bc29b54193a79f261d445369b47da7868a767d646405aea507a0139c014c1978817e02",
+          "event": "825868a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186703821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000101656e6f74657302626e3103a1666c6567616379f65840f9ab28d63f2241a953cb98f74f55074ff32676a8adccafd21cec8ca67f30878a8528d7d309e7e9881d394ae3d5f9a94ef87b83bca95e151563543ec58074c40a",
           "verdict": "RetiredWrite"
         },
         {
           "description": "a derived column is never written",
-          "event": "82586aa70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902185d03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000101656e6f74657302626e3103a16773756d6d617279617858402e795a950f9f5826bfb3490118c9a83a72c4fdf57994833e18695a2fdceb82bedf17ad839bc018b121344d383f69e2adce3700d7c18013a4e90fc870dedca600",
+          "event": "82586aa70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186803821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000101656e6f74657302626e3103a16773756d6d617279617858406c56608ff2150e069ed1c781ab6652983fb570a7f65482b4892709f8d8327f8ae3c8ef9ae1e25d962fc7ded78ddcf41335cd01936f91a44a02225b2f00ce8805",
           "verdict": "DocColumnWrite"
         },
         {
           "description": "an owner's edit",
-          "event": "82586ba70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902185e03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000101656e6f74657302626e3103a1657469746c65646564697458403ac3f6e60580ddfcb67c3a0805d470a06cbeb55325fe99a05d4514dc7d3891f85434f1c4a2904e5e075526062a003983adec4f90b8484ff6ff7b6a5e50b8a606",
+          "event": "82586ba70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186903821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000101656e6f74657302626e3103a1657469746c656465646974584084534d5e620c0d04c1a3009753d9b247acf84d22e5177de2e6f7bc0cf8c30145c27a1bd384093a5783d50871628ec007111340c2a6eb0db51ef3994160e2b200",
           "verdict": null
         },
         {
@@ -2745,19 +3224,304 @@
         },
         {
           "description": "an owner may edit and not replace",
-          "event": "82588ba70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902185f03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000601656e6f74657302626e3103a50067636f6e74656e7401666c6f726f4031025060baec5c0a5beb9b13e47b3bc39013f603446c6f726f05015840180a13f8dec431ff3747939fc953a5254f302a2c4f2e99358703febdba1d52551facd402f84626f42f3bad6c86cb761d3f5c07d1842b3e7641f96e415d8ff10b",
+          "event": "82588ba70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186a03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000601656e6f74657302626e3103a50067636f6e74656e7401666c6f726f40310250ada37e95985880233ef75f765238f58b03446c6f726f05015840eec13c45de99c84534fc068fb3f3c75f8ea0c33a0b05f8d38958850506f15b8faa8401f90e061e0517b4e012382fb5be28b68615cea77af01b146ab08fa4bb0b",
           "verdict": "PolicyDenied",
           "op": "replace"
         },
         {
           "description": "a local table's write is not local here",
-          "event": "825864a60001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186003821b0000018bcfe47da000056d706f6c6963792e766563746f720781a4000001666472616674730262643203a264626f647961786269646264325840aca65ef2117c46434448ba74dceb8f11496e0e1dd2e5fdcfda7fd9dbdd35426199562aad8df35e64e6161b3db92150d563fb92558c2052f142ba828433ca560b",
+          "event": "825864a60001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186b03821b0000018bcfe47da000056d706f6c6963792e766563746f720781a4000001666472616674730262643203a264626f647961786269646264325840c5ba1713ff13fa40f2deac16e9e46003588f79f096349d94c823b6b69208ac90ef67dc879639fa93be8e3ab24af59df1056e5bc23a1b0e6a17ed061a4e978c0b",
           "verdict": "LocalOnly"
         },
         {
+          "description": "a local table takes this device's own local-only write",
+          "event": "825864a60001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186c03821b0000018bcfe47da000056d706f6c6963792e766563746f720781a4000001666472616674730262643303a264626f6479617862696462643358402f339fe5cb46ab4bfb6f50ea4331d9d45ffcbf2c52cd03879843cae3847a7cf213cfd8485678fecdb2749fb87b1e6c59a3b1e1ae372b14199e2e34ddbea6b10c",
+          "local": true,
+          "verdict": null
+        },
+        {
+          "description": "a document never rides a local-only write",
+          "event": "825877a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186d03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a4000601656e6f74657302626e3103a30067636f6e74656e7401666c6f726f403103446c6f726f584075c805e86d944a0c245a6dbeecbdebc34d24b4608deb7283408ae3936ed97f9494524020e954b4849ff18f1c9de675516bb81ea279a73f8c10671e39342af901",
+          "local": true,
+          "verdict": "DocChangeRefused",
+          "rung": "local"
+        },
+        {
+          "description": "a local-only write to a synced table is judged as any other",
+          "event": "825867a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186e03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400010167636865636b65640262633103a16371747904584096e8d4f0084ba0b181112ee9eb058f4be0d35cf37bf45567d9d1a03373a2accf20014c6aa9ef2d4aca7a00492d804a909576108a24aab7698dd3ca54af6b960a",
+          "local": true,
+          "verdict": null
+        },
+        {
+          "description": "a check refuses this device's own write too",
+          "event": "825877a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186f03821b0000018bcfe47da000056d706f6c6963792e766563746f7206686f72673a61636d650781a400000167636865636b65640262633903a364636f6465644142434462696462633963717479015840ced8500f6c8e41cbdf0b718f0ecd453acfd06ecf66395706395c002d9b381a672d8059ce4b761dd7fa6e1f4ececcbb72f6388a33f570d9daf766b4f29d6cc603",
+          "verdict": "SchemaViolation"
+        },
+        {
           "description": "a stale grant is judged against now",
-          "event": "825884a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902186103821b0000018bcfe47da000056d706f6c6963792e766563746f72066a6f72673a7374726963740781a4000001656e6f7465730262673303a3626964626733676f776e657249646b616363745f6d656d626572657469746c6561785840e7aa019517e92d15f27620fdc8842e4f6ba01f30282c5e8f57f4f2d3f724bea713bbd9b4ecbeb678619e886dcaaed07af3324de67d1d69c6483050a574485e09",
+          "event": "825884a70001015820020bd427446b723424d80d2cad352ba3df3649d0ef8faae0ca7eb25443941b2902187003821b0000018bcfe47da000056d706f6c6963792e766563746f72066a6f72673a7374726963740781a4000001656e6f7465730262673303a3626964626733676f776e657249646b616363745f6d656d626572657469746c65617858408bca54d61a97f49e6ad03416d6db230643ff5e9495e1187e9f62defa10486b48c72805490b64a3e79ae8c1e82ed43b9a58d1b238726b0f1ab08444b83d3fa507",
           "verdict": "GrantStale"
+        }
+      ],
+      "can": [
+        {
+          "description": "a member may insert a note",
+          "principal": {
+            "account": "acct_member",
+            "role": "member"
+          },
+          "what": "notes.insert",
+          "answer": true
+        },
+        {
+          "description": "a viewer may not",
+          "principal": {
+            "account": "acct_viewer",
+            "role": "viewer",
+            "claims": {
+              "projects": ["p1", "p2"],
+              "permissions": {
+                "tasks": ["relabel"]
+              },
+              "team": "red"
+            }
+          },
+          "what": "notes.insert",
+          "answer": false
+        },
+        {
+          "description": "a viewer may read",
+          "principal": {
+            "account": "acct_viewer",
+            "role": "viewer",
+            "claims": {
+              "projects": ["p1", "p2"],
+              "permissions": {
+                "tasks": ["relabel"]
+              },
+              "team": "red"
+            }
+          },
+          "what": "notes.read",
+          "answer": true
+        },
+        {
+          "description": "an owner's update, by the row",
+          "principal": {
+            "account": "acct_member",
+            "role": "member"
+          },
+          "what": "notes.update",
+          "row": {
+            "ownerId": "acct_member"
+          },
+          "answer": true
+        },
+        {
+          "description": "someone else's row is not the member's",
+          "principal": {
+            "account": "acct_member",
+            "role": "member"
+          },
+          "what": "notes.update",
+          "row": {
+            "ownerId": "acct_admin"
+          },
+          "answer": false
+        },
+        {
+          "description": "replace is the admin's",
+          "principal": {
+            "account": "acct_member",
+            "role": "member"
+          },
+          "what": "notes.replace",
+          "answer": false
+        },
+        {
+          "description": "an admin may replace",
+          "principal": {
+            "account": "acct_admin",
+            "role": "admin"
+          },
+          "what": "notes.replace",
+          "answer": true
+        },
+        {
+          "description": "with no replace rule, replace is judged as update",
+          "principal": {
+            "account": "acct_member",
+            "role": "member"
+          },
+          "what": "boards.replace",
+          "answer": true
+        },
+        {
+          "description": "the synced _policy for org:beta overrules the manifest",
+          "principal": {
+            "account": "acct_viewer",
+            "role": "viewer",
+            "claims": {
+              "projects": ["p1", "p2"],
+              "permissions": {
+                "tasks": ["relabel"]
+              },
+              "team": "red"
+            }
+          },
+          "what": "notes.update",
+          "partition": "org:beta",
+          "answer": true
+        },
+        {
+          "description": "an instance with no synced _policy reads the manifest",
+          "principal": {
+            "account": "acct_viewer",
+            "role": "viewer",
+            "claims": {
+              "projects": ["p1", "p2"],
+              "permissions": {
+                "tasks": ["relabel"]
+              },
+              "team": "red"
+            }
+          },
+          "what": "notes.update",
+          "partition": "org:acme",
+          "answer": false
+        },
+        {
+          "description": "a claim the rule names",
+          "principal": {
+            "account": "acct_viewer",
+            "role": "viewer",
+            "claims": {
+              "projects": ["p1", "p2"],
+              "permissions": {
+                "tasks": ["relabel"]
+              },
+              "team": "red"
+            }
+          },
+          "what": "tasks.update",
+          "row": {
+            "archived": false
+          },
+          "patch": {
+            "label": "x"
+          },
+          "answer": true
+        },
+        {
+          "description": "a patch confined to its columns",
+          "principal": {
+            "account": "acct_member",
+            "role": "member"
+          },
+          "what": "tasks.update",
+          "row": {
+            "archived": false
+          },
+          "patch": {
+            "done": true
+          },
+          "answer": true
+        },
+        {
+          "description": "the same patch on an archived row",
+          "principal": {
+            "account": "acct_member",
+            "role": "member"
+          },
+          "what": "tasks.update",
+          "row": {
+            "archived": true
+          },
+          "patch": {
+            "done": true
+          },
+          "answer": false
+        },
+        {
+          "description": "a custom operation",
+          "principal": {
+            "account": "acct_admin",
+            "role": "admin"
+          },
+          "what": "tasks.archive",
+          "answer": true
+        },
+        {
+          "description": "a deny default",
+          "principal": {
+            "account": "acct_member",
+            "role": "member"
+          },
+          "what": "tasks.archive",
+          "answer": false
+        },
+        {
+          "description": "a ranked comparison",
+          "principal": {
+            "account": "acct_member",
+            "role": "member"
+          },
+          "what": "ranks.insert",
+          "patch": {
+            "score": 12
+          },
+          "answer": true
+        },
+        {
+          "description": "a global table is read by anyone",
+          "principal": {
+            "account": "acct_member",
+            "role": "member"
+          },
+          "what": "settings.read",
+          "answer": true
+        },
+        {
+          "description": "and written by nobody's rule",
+          "principal": {
+            "account": "acct_admin",
+            "role": "admin"
+          },
+          "what": "settings.insert",
+          "answer": false
+        },
+        {
+          "description": "a user table is the account's to write",
+          "principal": {
+            "account": "acct_member",
+            "role": "member"
+          },
+          "what": "profiles.insert",
+          "answer": true
+        },
+        {
+          "description": "a local table is this device's",
+          "principal": {
+            "account": "acct_member",
+            "role": "member"
+          },
+          "what": "drafts.insert",
+          "answer": true
+        },
+        {
+          "description": "a table the manifest lacks",
+          "principal": {
+            "account": "acct_admin",
+            "role": "admin"
+          },
+          "what": "nothing.read",
+          "answer": false
+        },
+        {
+          "description": "no principal, no answer but no",
+          "principal": null,
+          "what": "notes.read",
+          "answer": false
         }
       ]
     },

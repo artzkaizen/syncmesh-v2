@@ -52,14 +52,18 @@ pub mod receipt;
 pub mod record_codec;
 pub mod refusal;
 pub mod signed;
+pub mod snapshot_codec;
 
 pub use account::{AccountCore, LinkOp, sign_link, verify_link};
 pub use checkpoint::{CheckpointCertificate, CheckpointRow, checkpoint_hash, verify_checkpoint};
 pub use grant::{Grant, issue_grant, verify_grant};
 pub use receipt::{CustodyReceipt, issue_receipt, verify_receipt};
-pub use record_codec::{decode_record, encode_record};
+pub use record_codec::{decode_record, encode_record, encode_record_in};
 pub use refusal::{QuarantineReason, RefusalReceipt, issue_refusal, verify_refusal};
 pub use signed::Signed;
+pub use snapshot_codec::{
+    MalformedSnapshot, SnapshotRow, decode_snapshot_rows, encode_snapshot_rows,
+};
 
 // Session frames, length framing, relay control frames, the join proof and the link handshake
 // (D35 slice 4).

@@ -191,6 +191,24 @@ export interface Step {
 export interface Probe {
   readonly description: string;
   readonly event: string;
+  /** Judged as this device's own local-only write (`MutateOptions.local`). */
+  readonly local?: true;
+}
+
+/** One `can` question, asked of the shared rules after the mesh's steps (`engine/src/can.ts`). */
+export interface CanCase {
+  readonly description: string;
+  /** Whose question; `null` is no principal at all. */
+  readonly principal: {
+    readonly account: string;
+    readonly role?: string;
+    readonly claims?: Readonly<Record<string, JsonValue>>;
+  } | null;
+  readonly what: `${string}.${string}`;
+  readonly row?: Readonly<Record<string, CellValue>>;
+  readonly patch?: Readonly<Record<string, CellValue>>;
+  /** The instance whose synced `_policy` row is read; absent, the manifest's rules alone. */
+  readonly partition?: string;
 }
 
 export interface Mesh {
@@ -200,6 +218,7 @@ export interface Mesh {
   readonly accounts: boolean;
   readonly steps: readonly Step[];
   readonly probes: readonly Probe[];
+  readonly can?: readonly CanCase[];
 }
 
 /** Every author's signer, and `by`: the same, in `org:acme` unless told otherwise (`null`: none). */

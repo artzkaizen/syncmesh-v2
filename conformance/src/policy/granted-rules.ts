@@ -7,6 +7,7 @@ import { deriveLineage } from "@syncmesh/wire";
 import type { Authors, Mesh, Step } from "./changes.js";
 
 import { createAuthors, doc, insert, linkRow, remove, update } from "./changes.js";
+import { canCases, checks } from "./checks.js";
 import { firstSteps } from "./granted-cells.js";
 import {
   ACCOUNT,
@@ -135,6 +136,7 @@ export function grantedMesh(): Mesh {
       updateBeforeRow(authors),
       rowLands(authors),
       links(authors),
+      checks(authors),
     ],
     probes: [
       {
@@ -166,9 +168,29 @@ export function grantedMesh(): Mesh {
         event: by(MEMBER, [insert("drafts", "d2", { body: "x" })], null),
       },
       {
+        description: "a local table takes this device's own local-only write",
+        event: by(MEMBER, [insert("drafts", "d3", { body: "x" })], null),
+        local: true,
+      },
+      {
+        description: "a document never rides a local-only write",
+        event: by(MEMBER, [doc("notes", "n1")]),
+        local: true,
+      },
+      {
+        description: "a local-only write to a synced table is judged as any other",
+        event: by(MEMBER, [update("checked", "c1", { qty: 4 })]),
+        local: true,
+      },
+      {
+        description: "a check refuses this device's own write too",
+        event: by(MEMBER, [insert("checked", "c9", { code: "ABCD", qty: 1 })]),
+      },
+      {
         description: "a stale grant is judged against now",
         event: by(MEMBER, [insert("notes", "g3", { title: "x", ownerId: "acct_member" })], STRICT),
       },
     ],
+    can: canCases,
   };
 }
