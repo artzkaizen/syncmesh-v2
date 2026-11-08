@@ -18,8 +18,8 @@ import { docAppends, recordDocs } from "./doc-log.js";
 import { rowsFor, writeKeysOf } from "./state-store.js";
 import { timed } from "./telemetry.js";
 
-/** Where a batch came from; `repair` carries no cursors (RFC-0014), `snapshot` adopts them last (RFC-0019). */
-export type FoldSource = "local" | "remote" | "boot" | "repair" | "snapshot";
+/** Where a batch came from; `repair` carries no cursors (RFC-0014), `snapshot` adopts them last (RFC-0019), `purge` dropped rows this device may no longer read (D45). */
+export type FoldSource = "local" | "remote" | "boot" | "repair" | "snapshot" | "purge";
 
 /** One notification per fold, however many events it covered. `writeKeys` is exact: live queries trust it. */
 export interface FoldBatch {

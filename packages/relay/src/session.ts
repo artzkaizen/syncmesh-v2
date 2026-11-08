@@ -14,6 +14,7 @@ import type { RelayDial } from "./transport.js";
 
 import { uploadRefusal } from "./blob-channel.js";
 import { decodeRelayFrame } from "./frame-decode.js";
+import { refusedOnRepage } from "./refused.js";
 import { scopedCoverage } from "./scoped.js";
 
 /** A stored event as bytes to send: this device signs its own, and relays another's verbatim. */
@@ -178,6 +179,8 @@ export function wireSession(
   /** Set once this session has been found to hold cursors from another entitlement; nothing after it is acted on. */
   let abandoned = false;
   let relayCursors: Cursors = new Map();
+  /** What a re-page from nothing delivers, and what it proves this device is now refused (D45). */
+  const refusals = refusedOnRepage(context, hooks.onDropped);
 
   /** Everything the holdback can let go of for these authors, in run order. */
   const release = async (authors: Iterable<PeerId>): Promise<void> => {
@@ -208,6 +211,7 @@ export function wireSession(
           hooks.onDropped(verified.error.message);
           continue;
         }
+        if (hooks.repaging?.() === true) refusals.delivered(verified.value.event.id);
         if (direct) {
           straight.push(verified.value);
           continue;
@@ -247,6 +251,7 @@ export function wireSession(
       abandoned = true;
       hooks.onReentitled?.();
     },
+    repaged: refusals.repaged,
   });
 
   /**

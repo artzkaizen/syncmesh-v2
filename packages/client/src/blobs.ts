@@ -10,7 +10,6 @@ import {
   BlobQuotaExceeded,
   BlobTimeout,
   hashOf,
-  memoryBlobStore,
   verifyBlob,
 } from "@syncmesh/storage";
 import { BLOB_MISSING } from "@syncmesh/transport";
@@ -198,14 +197,11 @@ export function createBlobs(deps: BlobsDeps): Blobs {
 export { BlobNotFound, BlobNotGranted, BlobQuotaExceeded, NoSuchCapability };
 
 /**
- * The blob surface, metered, over whichever transports can carry bytes out of band (D18).
- *
- * Assembled here rather than in the mesh because the default store is a fact about blobs: a mesh
- * given none keeps them in memory, which is the right answer for a process that has not said
- * where else they should go and the wrong one to restate at every call site.
+ * The blob surface, metered, over whichever transports can carry bytes out of band (D18), on the
+ * cache the mesh opened — the same one a purge drops from (D45).
  */
 export const openBlobs = (
   tally: Parameters<typeof meterBlobs>[0],
-  store: BlobStore | undefined,
+  store: BlobStore,
   transports: () => readonly Transport[],
-) => meterBlobs(tally, createBlobs({ store: store ?? memoryBlobStore(), transports }));
+) => meterBlobs(tally, createBlobs({ store, transports }));

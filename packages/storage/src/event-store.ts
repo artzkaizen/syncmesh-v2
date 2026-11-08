@@ -184,6 +184,22 @@ export function sqlEventStore(
       ),
     maxHlc: () =>
       query("maxHlc failed", SQL.selectMaxHlc).then((rows) => rows.andThen((r) => hlcRow(r[0]))),
+    evict: (ids) =>
+      Result.gen(async function* () {
+        const parsed = yield* Result.all(ids.map(parseEventId)).mapError(
+          failure("malformed event id"),
+        );
+        const removed = yield* Result.await(
+          attempt("evict failed", () =>
+            transaction(async () => {
+              for (const { peerId, seqNum, local } of parsed)
+                await driver.run(SQL.deleteEvent, [peerId, seqNum, local ? 1 : 0]);
+              return parsed.length;
+            }),
+          ),
+        );
+        return Result.ok(removed);
+      }),
   };
 
   if (options.nested === true) return Promise.resolve(Result.ok(store)); // the owner migrated

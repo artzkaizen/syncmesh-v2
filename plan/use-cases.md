@@ -477,7 +477,8 @@ device that lies about its own verdict is quarantined by everyone else.
   an entitlement an authority imposes. The imposed version is §4's tier: the relay's admission
   gate (D24-A).
 - **Entity access is a snapshot.** A member removed from an entity keeps the rows their last
-  grant admitted until it is replaced or expires. That is why `validFor` is hours here, and why
+  grant admitted until it is replaced or expires; a replacement naming fewer partitions purges
+  the rows of the ones it dropped from the device (D45). That is why `validFor` is hours here, and why
   `grants.expiring` / `grants.renew` exist rather than a timer this library owns. Live revocation
   is E21.
 - **Entities are not partitions.** A partition is the unit of *replication*; an entity is a
@@ -618,10 +619,11 @@ The three tiers, side by side:
   once, naming the event; its next join is paged from its own cursor and asks again. The room
   carries on for everyone else. An `admits` that always throws on some row keeps that one device
   reconnecting on its backoff, and the warning repeats once per join, until the app is fixed.
-- A narrowed entitlement withholds what comes next, not what is already held. `reentitle` re-pages
-  a device under its new entitlement, but the gated rows it was admitted to before stay on its
-  disk; nothing is sent to take them back. That is the same snapshot rule entity access follows
-  (§ *Entity access is a snapshot*), and a purge on narrowing is decided (D45 A) but not built.
+- A narrowed entitlement purges what is already held (D45). `reentitle` re-pages a device from
+  nothing under its new entitlement; the gated rows of other devices that the re-page did not
+  send again are dropped from its rows and its log, and a later widening re-pages them back. Its
+  own writes stay. The relay's `admission` is the only place this is found, so a device that
+  never re-joins that relay keeps what it holds.
 - `reentitle` is a method of one `RelayRoom`, reached through `createRelayHost().acquire()`.
   `startRelay`'s handle does not offer it, and it closes sockets on the instance it is called on
   alone: a fleet behind a load balancer broadcasts it to every instance itself.

@@ -86,6 +86,13 @@ export interface EventStore {
   ) => Promise<Result<number, StoreFailure>>;
   /** Per author and scope, the highest sequence number compaction has removed; empty until the first compaction. */
   readonly compactedBelow: () => Promise<Result<Coverage, StoreFailure>>;
+  /**
+   * Deletes these events and remembers nothing of them — what a purge does when this device may
+   * no longer read them (D45). Unlike compaction it records no floor: an evicted event is one this
+   * device does not hold, so a later delivery of it is stored and folded again. Never asked for
+   * this device's own writes, so `lastSeq` for its own author does not move. Answers how many went.
+   */
+  readonly evict: (ids: readonly EventId[]) => Promise<Result<number, StoreFailure>>;
 }
 
 /** What compaction removed for one author in one scope: the highest sequence and stamp gone. */
@@ -163,6 +170,7 @@ export function createMemoryEventStore(): EventStore {
         synced: new Map([...floors.synced].map(([peer, f]) => [peer, f.seq])),
         local: new Map([...floors.local].map(([peer, f]) => [peer, f.seq])),
       }),
+    evict: (ids) => ok(ids.filter((id) => events.delete(id)).length),
     maxHlc: () => {
       let max: Hlc | undefined;
       const consider = (hlc: Hlc) => {

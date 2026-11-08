@@ -109,6 +109,15 @@ export function sqlDocStore(
         );
         return Result.ok(undefined);
       }),
+    forget: (keys) =>
+      attempt("doc forget failed", () =>
+        transaction(async () => {
+          for (const [table, set] of keys)
+            for (const key of set)
+              for (const sql of [SQL.forgetEntries, SQL.forgetHeads, SQL.forgetSnapshots])
+                await driver.run(sql, [table, key]);
+        }),
+      ),
     snapshotOf: (doc) =>
       query("doc snapshot failed", SQL.selectSnapshot, [doc.table, doc.key, doc.column]).then(
         (rows) =>

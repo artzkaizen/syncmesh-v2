@@ -21,8 +21,7 @@ import type { AtomicStores, EngineOptions } from "./options.js";
 import type { Parked } from "./quarantine.js";
 import type { EventHeader, RecentEvents } from "./recent.js";
 import type { SnapshotApi } from "./snapshot.js";
-import type { StoredEvent } from "./store.js";
-import type { StoreFailure } from "./store.js";
+import type { StoreFailure, StoredEvent } from "./store.js";
 import type { Ahead, Coverage, Cursors } from "./sync.js";
 import type { Tx } from "./tx.js";
 import type { StateLookup } from "./validate.js";
@@ -43,6 +42,7 @@ import { createFeedPath, trackFeeds } from "./feed.js";
 import { createFoldPath, type FoldBatch } from "./fold.js";
 import { eventsWanted } from "./interest.js";
 import { createHub, type Unsubscribe } from "./listeners.js";
+import { type PurgeApi, createPurge } from "./purge.js";
 import { createQuarantine, retryQuarantined, withRetry } from "./quarantine.js";
 import { recentHeaders } from "./recent.js";
 import { createSnapshotPath } from "./snapshot.js";
@@ -81,7 +81,7 @@ export interface Quarantined {
   readonly reason: ValidationError;
 }
 
-export interface Engine extends FeedApi, RepairApi, SnapshotApi, DocApi, OwnPositionApi {
+export interface Engine extends FeedApi, RepairApi, SnapshotApi, DocApi, OwnPositionApi, PurgeApi {
   readonly peerId: PeerId;
   /** Records, stamps, numbers, appends, folds, then hands the event to `onOutbound` — a write is real once appended. */
   readonly mutate: (
@@ -371,6 +371,7 @@ export function createEngine(options: EngineOptions): Engine {
     retryQuarantined: () => retryQuarantined(parked, receiveAndRetry),
     onQuarantine: quarantine.subscribe,
     stranded: () => strandedWrites(store, peerId),
+    purge: createPurge({ ...snapshotDeps, peerId, store, parked, folds, atomically, hasAdapter }),
     onTelemetry: telemetry.subscribe,
     ...docPath.api,
   };

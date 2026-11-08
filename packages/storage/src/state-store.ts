@@ -122,6 +122,14 @@ export function sqlStateStore(
           await projection?.apply(rows);
         }),
       ),
+    remove: (keys) =>
+      attempt("remove failed", () =>
+        transaction(async () => {
+          for (const [table, set] of keys)
+            for (const key of set) await driver.run(SQL.deleteRow, [table, key]);
+          await projection?.remove(keys);
+        }),
+      ),
     clear: () =>
       attempt("clear failed", () =>
         transaction(async () => {

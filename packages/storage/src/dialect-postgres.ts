@@ -228,6 +228,7 @@ export const POSTGRES: Dialect = {
           ELSE syncmesh.compaction.hlc_logical END,
         hlc_ms = GREATEST(syncmesh.compaction.hlc_ms, excluded.hlc_ms)`,
     selectFloors: `SELECT peer, local, seq FROM syncmesh.compaction`,
+    deleteEvent: `DELETE FROM syncmesh.events WHERE peer = $1 AND seq = $2 AND local = $3`,
     selectMaxHlc: `SELECT hlc_ms, hlc_logical FROM (
       SELECT hlc_ms, hlc_logical FROM syncmesh.events
       UNION ALL SELECT hlc_ms, hlc_logical FROM syncmesh.compaction) AS u
@@ -247,6 +248,7 @@ export const POSTGRES: Dialect = {
     upsertScope: `INSERT INTO syncmesh.scope (id, scope) VALUES (0, $1)
       ON CONFLICT (id) DO UPDATE SET scope = excluded.scope`,
     clearScope: `DELETE FROM syncmesh.scope`,
+    deleteRow: `DELETE FROM syncmesh.state_rows WHERE tbl = $1 AND key = $2`,
   },
   docs: POSTGRES_DOCS,
   capture,

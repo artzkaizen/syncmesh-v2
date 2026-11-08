@@ -32,6 +32,20 @@ const cursorsOf = async (store: StateStore) => {
 
 export const stateCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   {
+    name: "state: remove drops a row and keeps the cursors (D45)",
+    run: async () => {
+      const store = await open(await openDriver("state-remove"));
+      (await write(store, "a", 1)).unwrap();
+      (await store.remove(new Map([[NOTES, new Set([N1])]]))).unwrap();
+      equal(
+        (await store.loadAll()).unwrap().get(NOTES)?.has(N1) === true,
+        false,
+        "the row is gone",
+      );
+      equal(await cursorsOf(store), [seq(3), seq(1), seq(2)], "cursors untouched");
+    },
+  },
+  {
     name: "state: commit lands rows and coverage together; loadAll and loadCursors read them back",
     run: async () => {
       const store = await open(await openDriver("state-roundtrip"));

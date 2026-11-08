@@ -256,6 +256,7 @@ const sqliteDialect = (log: LogPlacement): Dialect => {
             ELSE hlc_logical END,
           hlc_ms = MAX(hlc_ms, excluded.hlc_ms)`,
       selectFloors: `SELECT peer, local, seq FROM ${t("compaction")}`,
+      deleteEvent: `DELETE FROM ${t("events")} WHERE peer = ? AND seq = ? AND local = ?`,
       selectMaxHlc: `SELECT hlc_ms, hlc_logical FROM (
         SELECT hlc_ms, hlc_logical FROM ${t("events")} UNION ALL SELECT hlc_ms, hlc_logical FROM ${t("compaction")})
         ORDER BY hlc_ms DESC, hlc_logical DESC LIMIT 1`,
@@ -271,6 +272,7 @@ const sqliteDialect = (log: LogPlacement): Dialect => {
       selectScope: `SELECT scope FROM ${t("scope")}`,
       upsertScope: `INSERT OR REPLACE INTO ${t("scope")} (id, scope) VALUES (0, ?)`,
       clearScope: `DELETE FROM ${t("scope")}`,
+      deleteRow: `DELETE FROM syncmesh_state_rows WHERE tbl = ? AND key = ?`,
     },
     docs: SQLITE_DOCS,
     capture,

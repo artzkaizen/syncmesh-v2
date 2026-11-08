@@ -101,8 +101,33 @@ const coverCase = (openDriver: OpenDriver): SuiteCase => ({
   },
 });
 
+/** What a purge asks of the doc log (D45): a row's documents go, and nothing else does. */
+const forgetCase = (openDriver: OpenDriver): SuiteCase => ({
+  name: "docs: forget drops a row's entries and head, and leaves other rows' (D45)",
+  run: async () => {
+    const docs = await open(await openDriver("docs-forget"));
+    // SAFETY: a suite fixture; any spelling is a row key
+    const other = { table: NOTES, key: "n2" as typeof N1, column: CONTENT };
+    (await docs.append([entry(A, 1), { ...entry(A, 2), ...other }])).unwrap();
+    (await docs.refreshHead(DOC, LORO, undefined)).unwrap();
+    (await docs.refreshHead(other, LORO, undefined)).unwrap();
+    (await docs.forget(new Map([[NOTES, new Set([N1])]]))).unwrap();
+    equal(
+      (await docs.entries()).unwrap().map((e) => e.key),
+      [other.key],
+      "only the other row's entry is left",
+    );
+    equal(
+      (await docs.heads()).unwrap().map((h) => h.key),
+      [other.key],
+      "only the other row's head is left",
+    );
+  },
+});
+
 export const docCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   ddlCase(openDriver),
+  forgetCase(openDriver),
   {
     name: "docs: entries round-trip every field; append is idempotent and ordered by author, seq, index",
     run: async () => {

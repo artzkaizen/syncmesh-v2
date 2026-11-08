@@ -1,5 +1,5 @@
 import type { ColumnsMap, PresenceMap } from "@syncmesh/schema";
-import type { SqlDialect, SqlValue, TxReceipt } from "@syncmesh/storage";
+import type { BlobStore, SqlDialect, SqlValue, TxReceipt } from "@syncmesh/storage";
 import type { SnapshotInstalled } from "@syncmesh/transport";
 
 import { createHub } from "@syncmesh/engine";
@@ -27,6 +27,7 @@ import { historyView } from "./history-view.js";
 import { createHandleTally, linksAcross, meterHandles } from "./inspect.js";
 import { openInternal } from "./internal.js";
 import { joinIfEmpty } from "./join.js";
+import { narrowingFor, type watchNarrowing } from "./narrowing.js";
 import { wireOperations } from "./operations.js";
 import { createPeers } from "./peers.js";
 import { openPresence } from "./presence.js";
@@ -82,17 +83,27 @@ export async function createMesh<
   });
   if (booted.isErr()) return booted;
   bind(booted.value.engine);
+  // before the grants are restored, so the restored own grant is the baseline a narrowing is
+  // measured from, never a narrowing itself
+  const { blobStore, narrowing } = narrowingFor(booted.value.engine, registry, options);
   // after boot, because the grants live in the database boot opens; before any session, because
   // a peer that reconnects first would meet a device that had forgotten who everyone is
-  const remembered = await restoreGrants(registry, booted.value.driver);
+  const remembered = await restoreGrants(registry, booted.value.driver, narrowing.idle);
   if (remembered.isErr()) return remembered;
-  return Result.ok(assemble(options, { grants, now, booted: booted.value }));
+  const saved = remembered.value;
+  return Result.ok(
+    assemble(options, { grants, now, booted: booted.value, blobStore, narrowing, saved }),
+  );
 }
 
 interface Assembled {
   readonly grants: MeshGrants;
   readonly now: () => Temporal.Instant;
   readonly booted: Booted;
+  readonly blobStore: BlobStore;
+  readonly narrowing: ReturnType<typeof watchNarrowing>;
+  /** Settles once every grant change so far is on disk. */
+  readonly saved: () => Promise<void>;
 }
 
 /** `mesh.transports`: the running links' add, remove, list, events and route forcing. */
@@ -111,7 +122,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
   deps: Assembled,
 ): Mesh<D, PC> {
   const { schema, identity } = options;
-  const { grants, now, booted } = deps;
+  const { grants, now, booted, blobStore, narrowing, saved } = deps;
   const { engine } = booted;
   const entryOf = new Map(schema.entries.map((e) => [String(e.table.name), e]));
 
@@ -149,7 +160,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
   const presence = openPresence(identity, schema.presence, { now, accountOf }, (wire) =>
     links.sendPresence(wire),
   );
-  const blobs = openBlobs(tally, options.blobStore, () => links.withBlobs());
+  const blobs = openBlobs(tally, blobStore, () => links.withBlobs());
   const telemetry = followTelemetry(engine);
   const transportContext = transportContextFor({
     engine,
@@ -169,6 +180,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     servesAuthority: options.authority === identity.peerId,
     // the gated tables, which reach a device only through the authority's gate (D24)
     ...gatedFor(schema, options.authority),
+    purge: narrowing.purge,
     keys,
     sealedKinds: schema.sealedKinds,
     // our own partitions, which is what the door's grant-derived default compares against
@@ -256,6 +268,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     },
     transports: transportsSurface(links),
     stop: async () => {
+      narrowing.stop();
       swept.stop();
       wired.stop();
       syncStates.stop();
@@ -264,6 +277,9 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
       // what a process exiting loses, and closing first would lose it every time
       await flush();
       await links.stop();
+      // the grant writes queue behind purges (D45): closing the database under them would lose
+      // a revocation or a renewal the app already made
+      await narrowing.idle().then(saved);
       await booted.close();
     },
   };

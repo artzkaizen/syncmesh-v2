@@ -28,6 +28,12 @@ export interface StateStore {
     coverage: Coverage,
   ) => Promise<Result<void, StoreFailure>>;
   readonly clear: () => Promise<Result<void, StoreFailure>>;
+  /**
+   * Drops these rows — from the cache and from whatever the store projects them into — as if no
+   * event had ever written them. What a purge does to rows this device may no longer read (D45);
+   * a key with no row is skipped.
+   */
+  readonly remove: (keys: WriteKeys) => Promise<Result<void, StoreFailure>>;
 }
 
 export type WriteKeys = ReadonlyMap<TableName, ReadonlySet<RowKey>>;
@@ -91,6 +97,10 @@ export function createMemoryStateStore(): StateStore {
     clear: () => {
       tables.clear();
       coverage = EMPTY_COVERAGE;
+      return ok(undefined);
+    },
+    remove: (keys) => {
+      for (const [table, set] of keys) for (const key of set) tables.get(table)?.delete(key);
       return ok(undefined);
     },
   };

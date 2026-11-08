@@ -27,6 +27,7 @@ const fakeStateStore = () => {
         return Promise.resolve(Result.ok(undefined));
       },
       clear: () => Promise.resolve(Result.ok(undefined)),
+      remove: () => Promise.resolve(Result.ok(undefined)),
     },
   };
 };

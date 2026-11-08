@@ -70,6 +70,8 @@ export function transportContextFor(base: {
   readonly sealedKinds?: ReadonlySet<string>;
   /** The authority-visibility tables (D24), which no peer-to-peer link here carries. */
   readonly withheld?: TransportContext["withheld"];
+  /** Tells the app, then purges, what a transport found this device is now refused (D45). */
+  readonly purge?: TransportContext["purge"];
 }): TransportContext & { readonly routes: RouteTable } {
   const routes = createRouteTable({ self: base.identity.peerId, now: base.now });
   if (base.servesAuthority) routes.serve("authority");
@@ -108,6 +110,7 @@ export function transportContextFor(base: {
   if (base.onReceipt !== undefined) Object.assign(context, { onReceipt: base.onReceipt });
   if (base.onRefusal !== undefined) Object.assign(context, { onRefusal: base.onRefusal });
   if (base.withheld !== undefined) Object.assign(context, { withheld: base.withheld });
+  if (base.purge !== undefined) Object.assign(context, { purge: base.purge });
   if (base.issuer !== undefined) {
     const sealedKinds = base.sealedKinds ?? new Set<string>();
     const readGate = createReadGate({

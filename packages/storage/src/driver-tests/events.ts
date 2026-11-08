@@ -48,8 +48,30 @@ const coreCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   },
 ];
 
+/** What a purge asks of the log (D45): exactly the events named go, and no floor is recorded. */
+const evictCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
+  {
+    name: "events: evict deletes exactly the events named and records no floor (D45)",
+    run: async () => {
+      const store = await open(await openDriver("events-evict"));
+      const kept = entry(A, 1, 100, { partition: ACME });
+      const gone = entry(B, 1, 101, { partition: ACME });
+      const alsoGone = entry(B, 2, 102);
+      (await store.appendBatch([kept, gone, alsoGone])).unwrap();
+      equal((await store.evict([gone.event.id, alsoGone.event.id])).unwrap(), 2, "evicted");
+      equal(ids((await store.all()).unwrap()), ids([kept]), "only the kept event is left");
+      equal((await store.has(gone.event.id)).unwrap(), false, "an evicted event is not held");
+      equal((await store.compactedBelow()).unwrap().synced.size, 0, "no floor recorded");
+      // so a later delivery of it is stored again
+      (await store.append(gone)).unwrap();
+      equal((await store.has(gone.event.id)).unwrap(), true, "stored again after eviction");
+    },
+  },
+];
+
 export const eventCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   ...coreCases(openDriver),
+  ...evictCases(openDriver),
   {
     name: "events: core bytes survive, an absent partition stays absent, local survives",
     run: async () => {
