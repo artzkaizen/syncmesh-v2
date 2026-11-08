@@ -844,6 +844,7 @@ impl RelayLink {
             synced: cursors_to_map(&scoped.synced),
             local: Cursors::new(),
             scope: Some(scoped.scope),
+            floor: Cursors::new(),
         };
         for (author, seq) in &coverage.synced {
             let Some(live) = self.live.as_mut() else {
@@ -885,6 +886,7 @@ impl RelayLink {
             synced,
             local,
             scope: if scope.is_empty() { None } else { Some(scope) },
+            floor: Cursors::new(),
         });
     }
 

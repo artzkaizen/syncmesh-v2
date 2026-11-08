@@ -10,8 +10,8 @@
 //!
 //! The `column` rung — a doc change on a column the table declares as something else — needs the
 //! table's columns, which only a validator's manifest has ([`crate::validate`]); with none, a doc
-//! change on an undeclared column is let through here as there (D13's additive rule). This crate
-//! writes no local events, so the `local` rung is the validator's alone too.
+//! change on an undeclared column is let through here as there (D13's additive rule). The `local`
+//! rung needs no manifest: a document lives on a synced row, never in a local-only write.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -80,6 +80,8 @@ pub struct DocEvent<'a> {
     /// engine derives itself.
     pub seq: Option<SeqNum>,
     pub changes: &'a [Change],
+    /// A local-only write (`Engine::mutate_local`), which no document change may ride.
+    pub local: bool,
 }
 
 const fn refuse(rung: DocRung, message: &'static str) -> Option<DocRefusal> {
@@ -95,6 +97,12 @@ pub fn check_doc(
     declared: Option<&String>,
     other_column: bool,
 ) -> Option<DocRefusal> {
+    if event.local {
+        return refuse(
+            DocRung::Local,
+            "a document lives on a synced row, never in a local write",
+        );
+    }
     if declared.is_none() && other_column {
         return refuse(DocRung::Column, "the column is not a document column");
     }
@@ -143,7 +151,7 @@ pub fn check_doc(
 
 /// The verdict an engine with no validator reaches: a change kind this build has no fold for,
 /// then the rungs that need no manifest. `None` when it folds.
-pub fn doc_verdict(event: &SyncEvent, docs: &DocColumns) -> Option<ValidationError> {
+pub fn doc_verdict(event: &SyncEvent, docs: &DocColumns, local: bool) -> Option<ValidationError> {
     if let Some(unfoldable) = unfoldable(event) {
         return Some(unfoldable);
     }
@@ -151,6 +159,7 @@ pub fn doc_verdict(event: &SyncEvent, docs: &DocColumns) -> Option<ValidationErr
         peer: &event.peer_id,
         seq: Some(event.seq_num),
         changes: &event.changes,
+        local,
     };
     event
         .changes
@@ -186,8 +195,8 @@ pub fn doc_verdict(event: &SyncEvent, docs: &DocColumns) -> Option<ValidationErr
 
 /// Why a write is refused by the doc rungs, said as a sentence — [`doc_verdict`] for
 /// `MutateError::DocRefused`.
-pub fn doc_refusal(event: &SyncEvent, docs: &DocColumns) -> Option<&'static str> {
-    doc_verdict(event, docs).map(|verdict| match verdict {
+pub fn doc_refusal(event: &SyncEvent, docs: &DocColumns, local: bool) -> Option<&'static str> {
+    doc_verdict(event, docs, local).map(|verdict| match verdict {
         ValidationError::DocChangeRefused { message, .. } => message,
         ValidationError::UnknownChangeKind { .. } => "a change this build has no fold for",
         _ => "a document column is opened and edited, never written as a value",

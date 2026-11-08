@@ -594,6 +594,27 @@ fn persisted_state_holding_another_rules_lineage_cell_is_rebuilt_from_the_log() 
 }
 
 #[test]
+fn unreadable_state_holding_rows_a_snapshot_installed_is_refused_not_rebuilt() {
+    // the same refused cell, with a floor in the coverage: rows a snapshot installed are in no log
+    let (mut store, log) = persisted_with(|tagged| match tagged {
+        CellValue::Array(items) => CellValue::from(items[1].clone()),
+        other => other,
+    });
+    let mut coverage = store.load_coverage().unwrap();
+    let author = Identity::from_seed(&[9; 32]).peer_id().clone();
+    coverage
+        .synced
+        .insert(author.clone(), SeqNum::parse(4).unwrap());
+    coverage.floor.insert(author, SeqNum::parse(4).unwrap());
+    store.commit(&[], &coverage).unwrap();
+    let refused = match open_over((store, log)) {
+        Ok(_) => panic!("a state the log cannot rebuild was rebuilt"),
+        Err(e) => e,
+    };
+    assert!(refused.message.starts_with("StateCorrupt"), "{refused}");
+}
+
+#[test]
 fn a_local_write_naming_a_derived_column_is_refused_and_a_numbered_one_folds() {
     let manifest = r#"[{ "column": "content", "doc": "loro@1", "derive": ["title"] }]"#;
     let entries = DocColumnEntry::parse_list(manifest).unwrap();

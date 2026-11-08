@@ -56,6 +56,7 @@ fn engine_as(who: u8, grants: Option<Box<dyn GrantSource + Send>>, undo_depth: u
                 grants,
                 authority: None,
                 accounts: false,
+                checks: Default::default(),
             }),
             ..EngineOptions::default()
         },
@@ -316,7 +317,12 @@ fn a_manifest_that_does_not_read_is_a_value() {
         manifest.doc_columns()["notes"],
         BTreeMap::from([("content".to_owned(), "loro@1".to_owned())])
     );
-    assert!(manifest.checked_columns().is_empty());
+    assert_eq!(manifest.checked_columns().len(), 4);
+    // a check schema this build cannot compile is a manifest it cannot read
+    let mut doc = vectors()["schema"].clone();
+    doc["tables"]["checked"]["columns"]["qty"]["checkSchema"] = serde_json::json!({ "type": 3 });
+    let unreadable = Manifest::from_json(&doc).expect_err("a schema that does not compile");
+    assert_eq!(unreadable.path, "tables.checked.columns.qty.checkSchema");
 }
 
 #[test]
@@ -336,6 +342,7 @@ fn doc_columns_the_engine_is_handed_are_the_ones_the_ladder_judges_by() {
                 grants: Some(Box::new(registry())),
                 authority: None,
                 accounts: false,
+                checks: Default::default(),
             }),
             ..EngineOptions::default()
         },
@@ -353,4 +360,212 @@ fn doc_columns_the_engine_is_handed_are_the_ones_the_ladder_judges_by() {
         .expect("a member inserts");
     let verdict = refused(member.mutate("notes.edit", vec![content("n1", false)], acme()));
     assert_eq!(verdict.tag(), "DocChangeRefused");
+}
+
+fn drafts(key: &str) -> Change {
+    Change::Insert {
+        table: "drafts".into(),
+        key: key.into(),
+        row: Row::from([
+            ("id".to_owned(), CellValue::text(key)),
+            ("body".to_owned(), CellValue::text("x")),
+        ]),
+    }
+}
+
+#[test]
+fn a_local_table_takes_local_only_writes_numbered_apart_and_never_sent() {
+    let mut e = granted(MEMBER);
+    // through the synced path a local table refuses, as a peer's event does
+    let refused = e.mutate("drafts.new", vec![drafts("d1")], None);
+    assert!(matches!(
+        refused,
+        Err(MutateError::Refused {
+            verdict: ValidationError::LocalOnly { .. },
+            ..
+        })
+    ));
+    let first = e
+        .mutate_local("drafts.new", vec![drafts("d1")], None)
+        .unwrap();
+    let second = e
+        .mutate_local("drafts.new", vec![drafts("d2")], None)
+        .unwrap();
+    assert!(first.entry.local && first.entry.envelope().is_none());
+    assert_eq!(first.entry.id(), format!("{}-L1", e.peer_id()));
+    assert_eq!(second.entry.event.seq_num.get(), 2);
+    assert!(e.state().read_row("drafts", "d2").is_some());
+    // its own run: the synced one starts at 1, and nothing local is offered to a peer
+    let acme = Some(PartitionKey::parse("org:acme").unwrap());
+    let note = Change::Insert {
+        table: "notes".into(),
+        key: "n1".into(),
+        row: Row::from([
+            ("id".to_owned(), CellValue::text("n1")),
+            ("title".to_owned(), CellValue::text("t")),
+            ("ownerId".to_owned(), CellValue::text("acct_member")),
+        ]),
+    };
+    let synced = e.mutate("notes.create", vec![note], acme).unwrap();
+    assert_eq!(synced.entry.event.seq_num.get(), 1);
+    let offered = e.events_since(&Default::default(), None).unwrap();
+    assert_eq!(offered.len(), 1);
+    assert!(!offered[0].local);
+    assert_eq!(e.coverage().local[e.peer_id()].get(), 2);
+    assert_eq!(e.cursors()[e.peer_id()].get(), 1);
+}
+
+#[test]
+fn a_document_never_rides_a_local_only_write() {
+    let mut e = granted(MEMBER);
+    let doc = Change::Doc(DocChange {
+        table: "notes".into(),
+        key: "n1".into(),
+        column: "content".into(),
+        adapter: "loro@1".into(),
+        lineage: None,
+        update: DocUpdate::Bytes(vec![1]),
+        genesis: false,
+        legacy: false,
+        parent: None,
+    });
+    let acme = Some(PartitionKey::parse("org:acme").unwrap());
+    let refused = e.mutate_local("notes.edit", vec![doc.clone()], acme);
+    assert!(matches!(
+        refused,
+        Err(MutateError::Refused {
+            verdict: ValidationError::DocChangeRefused { .. },
+            ..
+        })
+    ));
+    // with no validator the doc rungs still say so
+    let mut bare = Engine::open(
+        identity(MEMBER),
+        Box::new(MemoryEventStore::new()),
+        None,
+        EngineOptions::default(),
+    )
+    .unwrap();
+    assert!(matches!(
+        bare.mutate_local("notes.edit", vec![doc], None),
+        Err(MutateError::DocRefused { .. })
+    ));
+}
+
+#[test]
+fn a_local_only_write_is_replayed_at_open_and_reverted_locally() {
+    use syncmesh_client::EventStore;
+    let mut e = engine_as(MEMBER, Some(Box::new(registry())), 2);
+    let written = e
+        .mutate_local("drafts.new", vec![drafts("d1")], None)
+        .unwrap();
+    let id = written.entry.id();
+    assert!(e.can_revert(&id));
+    let reverted = e.revert(&id).unwrap().mutated.expect("a compensation");
+    assert!(
+        reverted.entry.local,
+        "a local write is compensated by a local write"
+    );
+    assert_eq!(reverted.entry.event.seq_num.get(), 2);
+    assert!(e.state().read_row("drafts", "d1").is_none());
+
+    let mut log = MemoryEventStore::new();
+    for entry in e.all_events().unwrap() {
+        log.append(&entry).unwrap();
+    }
+    let reopened = Engine::open(
+        identity(MEMBER),
+        Box::new(log),
+        None,
+        EngineOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(reopened.coverage().local[reopened.peer_id()].get(), 2);
+    assert!(reopened.state().record("drafts", "d1").is_some());
+    assert!(reopened.state().read_row("drafts", "d1").is_none());
+}
+
+#[test]
+fn a_host_check_runs_where_the_manifest_carries_no_schema_and_wins_where_it_does() {
+    let doc = vectors();
+    let now = doc["nowMs"].as_i64().expect("now");
+    let mut manifest = Manifest::from_json(&doc["schema"]).expect("manifest");
+    assert!(
+        manifest.unported_checks().is_empty(),
+        "every vector check said itself as JSON Schema"
+    );
+    // as a `.refine()` leaves it: the column flagged, its schema weaker than the function
+    let code = manifest
+        .tables
+        .get_mut("checked")
+        .and_then(|t| t.columns.get_mut("code"))
+        .expect("checked.code");
+    code.check_schema = None;
+    assert_eq!(manifest.unported_checks(), vec![("checked", "code")]);
+    let mut checks = syncmesh_client::ColumnChecks::new();
+    checks.insert(
+        ("checked".to_owned(), "qty".to_owned()),
+        Box::new(|v: &CellValue| matches!(v, CellValue::Number(n) if *n != 7.0)),
+    );
+    let mut e = Engine::open(
+        identity(MEMBER),
+        Box::new(MemoryEventStore::new()),
+        None,
+        EngineOptions {
+            now_ms: Some(Box::new(move || now)),
+            validator: Some(ValidatorOptions {
+                checks,
+                grants: Some(Box::new(registry())),
+                ..ValidatorOptions::new(manifest)
+            }),
+            ..EngineOptions::default()
+        },
+    )
+    .unwrap();
+    let acme = Some(PartitionKey::parse("org:acme").unwrap());
+    let row = |code: &str, qty: f64| Change::Insert {
+        table: "checked".into(),
+        key: format!("{code}{qty}"),
+        row: Row::from([
+            ("id".to_owned(), CellValue::text(&format!("{code}{qty}"))),
+            ("code".to_owned(), CellValue::text(code)),
+            ("qty".to_owned(), CellValue::Number(qty)),
+        ]),
+    };
+    // no schema and no host check for `code`: nothing to run
+    assert!(e.mutate("c", vec![row("lower", 3.0)], acme.clone()).is_ok());
+    // the host's check replaces the manifest's schema for `qty`: 12 passes it, 7 does not
+    assert!(e.mutate("c", vec![row("ABC", 12.0)], acme.clone()).is_ok());
+    assert!(matches!(
+        e.mutate("c", vec![row("ABC", 7.0)], acme),
+        Err(MutateError::Refused {
+            verdict: ValidationError::SchemaViolation { .. },
+            ..
+        })
+    ));
+}
+
+#[test]
+fn can_answers_for_this_device_by_its_own_grant_and_the_rows_it_holds() {
+    let member = granted(MEMBER);
+    assert!(member.can("notes.insert", None, Some("org:acme")));
+    assert!(!member.can("notes.replace", None, Some("org:acme")));
+    let mine = Row::from([("ownerId".to_owned(), CellValue::text("acct_member"))]);
+    assert!(member.can("notes.update", Some(&mine), Some("org:acme")));
+    // a user table is asked in the account's own instance
+    assert!(member.can("profiles.insert", None, None));
+    // an instance that does not parse is no instance: the manifest's rules
+    assert!(member.can("notes.insert", None, Some("not an instance")));
+    // no grant, no principal: no
+    let stranger = engine_as(1, Some(Box::new(registry())), 0);
+    assert!(!stranger.can("notes.read", None, None));
+    // no validator: nothing could say yes
+    let bare = Engine::open(
+        identity(MEMBER),
+        Box::new(MemoryEventStore::new()),
+        None,
+        EngineOptions::default(),
+    )
+    .unwrap();
+    assert!(!bare.can("notes.read", None, None));
 }

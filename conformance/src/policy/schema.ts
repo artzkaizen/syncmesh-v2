@@ -15,6 +15,7 @@ import { parseAdapterId } from "@syncmesh/kernel";
 import { flat, from, ladder, local, partition, syncSchema, t, user } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
+import { z } from "zod";
 
 export const NOW_MS = 1_700_000_000_000;
 export const NOW = Temporal.Instant.fromEpochMilliseconds(NOW_MS);
@@ -155,6 +156,24 @@ export const policySchema = syncSchema({
       partition: org,
       retired: true,
       allow: ({ allow }) => ({ $default: allow }),
+    },
+    // each check says itself as JSON Schema, so a port runs it (gap U3)
+    checked: {
+      columns: {
+        id: t.text().primaryKey(),
+        code: t.text().check(z.string().regex(/^[A-Z]{3}$/)),
+        qty: t.integer().check(z.number().int().min(1).max(9)),
+        email: t.text().nullable().check(z.email()),
+        meta: t
+          .json(z.object({ tag: z.enum(["red", "blue"]), n: z.number().optional() }))
+          .nullable(),
+      },
+      partition: org,
+      allow: ({ role }) => ({
+        $default: role("admin"),
+        insert: role("member"),
+        update: role("member"),
+      }),
     },
     settings: { columns: { id: t.text().primaryKey(), value: t.text() } },
     profiles: { columns: { id: t.text().primaryKey(), name: t.text() }, partition: user },

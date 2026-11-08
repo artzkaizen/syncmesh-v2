@@ -2,12 +2,16 @@
 //! columns and partition kinds, each table's `allow` block, every kind's roles, and the tables the
 //! app dropped. The TypeScript writes it with `portableSchema(schema)`; this reads it back.
 //!
-//! What is not in it, because it has no data form: a column's `check()` schema is a JavaScript
-//! function (a Standard Schema validator), so this port cannot run it. The manifest says which
-//! columns carry one ([`Manifest::checked_columns`]); a write that only such a check refuses is
-//! refused by a TypeScript peer and folded here.
+//! A column's `check()` is a JavaScript function (a Standard Schema validator). Where it can say
+//! itself as JSON Schema (the Standard JSON Schema extension, which zod 4 carries) the manifest
+//! holds that as `checkSchema`, and the validator runs it ([`CheckSchema`]). What JSON Schema
+//! cannot say — a `.refine()`, a `z.custom` — is not in it: such a column is flagged `check` with no
+//! schema, or with a schema weaker than the function, and a host that needs the TypeScript's
+//! verdict there registers a check of its own (`ValidatorOptions::checks`).
+//! [`Manifest::unported_checks`] lists the columns flagged with no schema.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use syncmesh_core::doc::DocColumns;
 use syncmesh_core::policy::{AllowBlock, RoleSet, parse_allow_block};
@@ -58,8 +62,53 @@ pub struct ColumnDef {
     pub derived: Option<String>,
     /// Retired (D31): read and folded from peers, refused for this device's own writes.
     pub retired: bool,
-    /// A `check()` schema guards it in TypeScript; this port cannot run it.
+    /// A `check()` schema guards it in TypeScript.
     pub check: bool,
+    /// That check as JSON Schema, which the validator runs; `None` when it could not say itself
+    /// as one.
+    pub check_schema: Option<CheckSchema>,
+}
+
+/// A column's `check()` as the JSON Schema (draft 2020-12) it said it accepts, compiled once.
+#[derive(Clone)]
+pub struct CheckSchema {
+    json: serde_json::Value,
+    compiled: Arc<jsonschema::Validator>,
+}
+
+impl CheckSchema {
+    /// Compiles a schema; one this build cannot compile is a manifest it cannot read.
+    pub fn compile(json: serde_json::Value) -> Result<CheckSchema, String> {
+        let compiled = jsonschema::draft202012::new(&json).map_err(|e| e.to_string())?;
+        Ok(CheckSchema {
+            json,
+            compiled: Arc::new(compiled),
+        })
+    }
+
+    /// The schema as the manifest wrote it.
+    pub fn json(&self) -> &serde_json::Value {
+        &self.json
+    }
+
+    /// Whether `value` is one the check accepts.
+    pub fn accepts(&self, value: &serde_json::Value) -> bool {
+        self.compiled.is_valid(value)
+    }
+}
+
+impl PartialEq for CheckSchema {
+    fn eq(&self, other: &CheckSchema) -> bool {
+        self.json == other.json
+    }
+}
+
+impl Eq for CheckSchema {}
+
+impl std::fmt::Debug for CheckSchema {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("CheckSchema").field(&self.json).finish()
+    }
 }
 
 /// Who writes a table's rows.
@@ -196,6 +245,14 @@ fn column(value: &serde_json::Value, path: &str) -> Result<ColumnDef, ManifestUn
         derived: optional_text(o, "derived", path)?,
         retired: flag(o, "retired", path)?,
         check: flag(o, "check", path)?,
+        check_schema: match o.get("checkSchema") {
+            None => None,
+            Some(schema @ serde_json::Value::Object(_)) => Some(
+                CheckSchema::compile(schema.clone())
+                    .or_else(|e| unreadable(&format!("{path}.checkSchema"), e))?,
+            ),
+            Some(_) => return unreadable(&format!("{path}.checkSchema"), "expected an object"),
+        },
     })
 }
 
@@ -364,16 +421,25 @@ impl Manifest {
             .collect()
     }
 
-    /// `(table, column)` for every column a `check()` guards in TypeScript: the one rule this port
-    /// does not run, so a write only it refuses folds here.
+    /// `(table, column)` for every column a `check()` guards in TypeScript.
     pub fn checked_columns(&self) -> Vec<(&str, &str)> {
+        self.columns_where(|def| def.check)
+    }
+
+    /// `(table, column)` for every checked column whose check did not travel as JSON Schema: the
+    /// ones a write only the check refuses folds at, unless the host registers a check for it.
+    pub fn unported_checks(&self) -> Vec<(&str, &str)> {
+        self.columns_where(|def| def.check && def.check_schema.is_none())
+    }
+
+    fn columns_where(&self, keep: impl Fn(&ColumnDef) -> bool) -> Vec<(&str, &str)> {
         self.tables
             .iter()
             .flat_map(|(name, table)| {
                 table
                     .columns
                     .iter()
-                    .filter(|(_, def)| def.check)
+                    .filter(|(_, def)| keep(def))
                     .map(move |(c, _)| (name.as_str(), c.as_str()))
             })
             .collect()

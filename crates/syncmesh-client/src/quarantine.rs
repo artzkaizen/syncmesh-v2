@@ -136,6 +136,7 @@ mod tests {
                 event,
                 core: None,
                 sig: None,
+                local: false,
             },
             reason: verdict.reason(),
             verdict,

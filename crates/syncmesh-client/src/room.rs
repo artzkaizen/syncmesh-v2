@@ -167,9 +167,10 @@ pub fn scanned_coverage(
         synced: theirs.clone(),
         local: Cursors::new(),
         scope: None,
+        floor: Cursors::new(),
     });
     for entry in passable(entries, interest) {
-        tracker.note(&entry.event);
+        tracker.note(&entry.event, false);
     }
     PageScope {
         synced: cursors_to_pairs(&tracker.cursors()),
@@ -233,7 +234,7 @@ impl Room {
         for entry in &boot {
             // servable: a signature was stored, so catch-up can hand the entry over
             if entry.sig.is_some() {
-                coverage.note(&entry.event);
+                coverage.note(&entry.event, false);
             }
         }
         Ok(Room {
@@ -722,7 +723,7 @@ impl Room {
                 return;
             }
             self.offset += 1;
-            self.coverage.note(&entry.event);
+            self.coverage.note(&entry.event, false);
             let relayed = relayed_frame(wire, self.offset);
             self.to_interested(&relayed, &entry.event, Some(&entry.event.peer_id), out);
         }
@@ -769,6 +770,7 @@ mod tests {
             },
             core: None,
             sig,
+            local: false,
         }
     }
 

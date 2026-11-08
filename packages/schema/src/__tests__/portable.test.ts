@@ -16,6 +16,7 @@ const schema = syncSchema({
         id: t.text().primaryKey(),
         hours: t.integer().check(z.number().int().min(0)),
         legacy: t.text().nullable().retired(),
+        code: t.text().check(z.custom<string>(() => true)),
       },
       partition: team,
       allow: ({ role, any, owner }) => ({
@@ -46,7 +47,7 @@ describe("the manifest as a port reads it (gap U3)", () => {
     expect(portable.tables["settings"]?.partition).toBe("global");
   });
 
-  test("a column says what a port cannot run, and the roles say whether they are a ladder", () => {
+  test("a check travels as JSON Schema where it can say itself as one, and as a flag where not", () => {
     const columns = portable.tables["shifts"]?.columns;
     expect(columns?.["hours"]).toEqual({
       kind: "integer",
@@ -54,7 +55,25 @@ describe("the manifest as a port reads it (gap U3)", () => {
       primaryKey: false,
       unique: false,
       check: true,
+      checkSchema: {
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        type: "integer",
+        minimum: 0,
+        maximum: 9007199254740991,
+      },
     });
+    // `z.custom` has no JSON Schema: the column says a check guards it, and a port knows it cannot run it
+    expect(columns?.["code"]).toEqual({
+      kind: "text",
+      nullable: false,
+      primaryKey: false,
+      unique: false,
+      check: true,
+    });
+  });
+
+  test("a column says what shipped, and the roles say whether they are a ladder", () => {
+    const columns = portable.tables["shifts"]?.columns;
     expect(columns?.["legacy"]?.retired).toBe(true);
     expect(portable.roles).toEqual({ team: { names: ["lead", "ops"], ordered: false } });
     expect(portable.dropped).toEqual(["memos"]);

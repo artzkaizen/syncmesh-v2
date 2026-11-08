@@ -2,20 +2,45 @@
  * A manifest as the data another runtime's validator reads (gap U3): every fact the shared ladder
  * judges an event by, with nothing a port would have to run JavaScript to know.
  */
+import type { JsonObject, JsonValue } from "@syncmesh/kernel";
 import type { AllowBlock, RoleSet } from "@syncmesh/policy";
+
+import { jsonObject } from "@syncmesh/kernel";
+import { Result } from "@syncmesh/result";
 
 import type { SchemaEntry } from "./manifest.js";
 import type { Table } from "./table.js";
 
 import { shippedColumn, type ShippedColumn, type ShippedTable } from "./shipped.js";
+import { speaksJsonSchema, type StandardSchemaV1 } from "./standard-schema.js";
 
 /**
  * One column as a port reads it: what shipped, and whether a `check()` schema guards it. The
- * schema is a function, so a port cannot run it; the flag says where its verdict is the weaker one.
+ * schema is a function; where it can say itself as JSON Schema (the Standard JSON Schema
+ * extension, which zod 4 carries) `checkSchema` holds that, draft 2020-12, and a port runs it.
+ * What JSON Schema cannot say — a `.refine()`, a transform — is not in it, so there a port's
+ * verdict is the weaker one unless the port registers a check of its own.
  */
 export interface PortableColumn extends ShippedColumn {
   readonly check?: true;
+  /** The check's input as JSON Schema (draft 2020-12); absent when it cannot say itself as one. */
+  readonly checkSchema?: JsonObject;
 }
+
+/** The JSON Schema a check says it accepts, or `undefined` when it cannot say. */
+const checkSchemaOf = (check: StandardSchemaV1): JsonObject | undefined => {
+  const standard = check["~standard"];
+  if (!speaksJsonSchema(standard)) return undefined;
+  // a converter throws on what JSON Schema cannot express (`z.custom`, a transform's output)
+  const converted = Result.try(() => standard.jsonSchema.input({ target: "draft-2020-12" }));
+  if (converted.isErr()) return undefined;
+  // a round trip through JSON keeps only what the format can carry: the manifest is JSON
+  const json = Result.try(
+    // SAFETY: `JSON.parse` answers `any`, and JSON text parses to exactly a JsonValue
+    () => JSON.parse(JSON.stringify(converted.value)) as JsonValue,
+  );
+  return json.isOk() ? jsonObject(json.value) : undefined;
+};
 
 /** One table as a port reads it: its shape, and its rules as the data `allow` returned. */
 export interface PortableTable extends Omit<ShippedTable, "columns" | "dropped"> {
@@ -57,13 +82,21 @@ export interface PortingSchema {
   readonly dropped: ReadonlySet<string>;
 }
 
+const portableCheck = (check: StandardSchemaV1 | undefined) => {
+  if (check === undefined) return {};
+  const checkSchema = checkSchemaOf(check);
+  return checkSchema === undefined
+    ? { check: true as const }
+    : { check: true as const, checkSchema };
+};
+
 const portableColumns = (table: Table): Readonly<Record<string, PortableColumn>> =>
   Object.fromEntries(
     Object.entries(table.columns).map(([name, column]) => [
       name,
       {
         ...shippedColumn(column.def),
-        ...(column.def.check !== undefined && { check: true as const }),
+        ...portableCheck(column.def.check),
       },
     ]),
   );

@@ -6,9 +6,11 @@
 //! reserved tables → table → partition → the row's partition → cells and documents → policy.
 //! `conformance/policy-vectors.json` freezes its verdicts and both runtimes replay them.
 //!
-//! Not ported, because the TypeScript has it only as a function: a column's `check()` schema
-//! ([`Manifest::checked_columns`]). And not reachable here: a local write (this crate writes
-//! none), so a write to a `local` table is always `LocalOnly`, as a remote one is in TypeScript.
+//! A column's `check()` runs as the JSON Schema the manifest carries for it (`checkSchema`), or as
+//! the host's own [`ColumnCheck`] where one is registered, which wins; a check that said itself as
+//! no schema and has no host check is not run ([`Manifest::unported_checks`]). A `local` table
+//! takes this device's own local-only writes (`Engine::mutate_local`) and refuses every other
+//! write as `LocalOnly`, as the TypeScript does.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -28,6 +30,13 @@ use syncmesh_core::state::{State, TableState};
 use crate::doc_rules::{DocEvent, DocRung, check_doc};
 use crate::grants::GrantRegistry;
 use crate::manifest::{ColumnDef, ColumnKind, Manifest, TableDef, Visibility};
+
+/// A host's own check for one column: what its TypeScript `check()` says and JSON Schema cannot
+/// (a `.refine()`, a `z.custom`). `true` accepts the value.
+pub type ColumnCheck = Box<dyn Fn(&CellValue) -> bool + Send + Sync>;
+
+/// The host's checks, per `(table, column)`; each replaces the manifest's `checkSchema` there.
+pub type ColumnChecks = BTreeMap<(String, String), ColumnCheck>;
 use crate::quarantine::ParkReason;
 
 /// Why a link row is refused — the TypeScript's `LinkRung`.
@@ -294,6 +303,40 @@ pub struct ValidatorOptions {
     /// Resolves an author to the account a `_links` row binds it to, where no grant is held
     /// (D21). Shipped config on every peer, never a capability.
     pub accounts: bool,
+    /// Checks the host runs for columns whose `check()` JSON Schema cannot carry; empty runs the
+    /// manifest's `checkSchema`s alone.
+    pub checks: ColumnChecks,
+}
+
+impl ValidatorOptions {
+    /// Ungranted, with no authority, no accounts and no host checks.
+    pub fn new(manifest: Manifest) -> ValidatorOptions {
+        ValidatorOptions {
+            manifest,
+            grants: None,
+            authority: None,
+            accounts: false,
+            checks: ColumnChecks::new(),
+        }
+    }
+}
+
+/// Who a policy question is asked for (`Principal` in `engine/src/validate.ts`): a grant's
+/// account, role and claims, or an account a `_links` row binds a device to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Principal {
+    pub account: String,
+    pub role: Option<String>,
+    pub claims: BTreeMap<String, JsonValue>,
+}
+
+/// Where the rules that bind a [`Validator::can`] question are found: the instance whose
+/// `_policy` row governs it, and the rows this device holds to read that row from. Withheld,
+/// `can` answers from the manifest alone.
+#[derive(Clone, Copy)]
+pub struct PolicySource<'a> {
+    pub partition: &'a PartitionKey,
+    pub rows: &'a dyn StateLookup,
 }
 
 /// The event as validation reads it. A probe — this device's own write before it is numbered —
@@ -305,6 +348,9 @@ pub struct Probe<'a> {
     pub changes: &'a [Change],
     pub seq: Option<SeqNum>,
     pub hlc: Option<Hlc>,
+    /// This device's own local-only write (`Engine::mutate_local`): what a `local` table takes,
+    /// and what no document change rides. A numbered event from a peer never is one.
+    pub local: bool,
 }
 
 impl<'a> Probe<'a> {
@@ -316,6 +362,7 @@ impl<'a> Probe<'a> {
             changes: &event.changes,
             seq: Some(event.seq_num),
             hlc: Some(event.hlc),
+            local: false,
         }
     }
 }
@@ -388,6 +435,7 @@ pub struct Validator {
     grants: Option<Box<dyn GrantSource + Send>>,
     authority: Option<PeerId>,
     accounts: bool,
+    checks: ColumnChecks,
     /// Every `_links` wire whose signature was checked, and whether it held: an Ed25519 verify
     /// per wire, not per wire per event judged (`accounts.ts` keeps the same per-wire memo).
     signed: Mutex<BTreeMap<Vec<u8>, bool>>,
@@ -401,6 +449,7 @@ impl Validator {
             grants: options.grants,
             authority: options.authority,
             accounts: options.accounts,
+            checks: options.checks,
             signed: Mutex::default(),
         }
     }
@@ -439,6 +488,77 @@ impl Validator {
             .get(table)
             .and_then(|t| t.columns.get(column))
             .is_some_and(|c| c.retired)
+    }
+
+    /// Who `peer` writes as in `partition`, as the ladder would resolve it: its live grant where
+    /// this validator reads grants, else the instance's `_links` row in an accounts mesh, else
+    /// nobody. What [`Validator::can`] is asked for on this device's behalf.
+    pub fn principal(
+        &self,
+        peer: &PeerId,
+        partition: Option<&PartitionKey>,
+        before: &dyn StateLookup,
+        now_ms: i64,
+    ) -> Option<Principal> {
+        let author = match &self.grants {
+            Some(grants) => grants
+                .grant_for(peer, now_ms)
+                .filter(|g| &g.device == peer)
+                .map(Author::from),
+            None if self.accounts => {
+                let probe = Probe {
+                    peer_id: peer,
+                    partition,
+                    changes: &[],
+                    seq: None,
+                    hlc: None,
+                    local: false,
+                };
+                linked_author(&probe, before, &|wire| self.link_signed(wire))
+            }
+            None => None,
+        }?;
+        Some(Principal {
+            account: author.account,
+            role: author.role,
+            claims: author.claims,
+        })
+    }
+
+    /// The UI's question (`engine/src/can.ts`), answered by the rule the receivers enforce:
+    /// `"table.op"` against a row, for a principal. Given a `source`, the instance's synced
+    /// `_policy` doc is preferred over the manifest's block exactly as validation prefers it, so a
+    /// button that lights up is a write that lands. A table with no rules at all is readable by
+    /// anyone who holds it and writable only where its kind says so (`user`, `local`).
+    pub fn can(
+        &self,
+        principal: Option<&Principal>,
+        what: &str,
+        row: Option<&Row>,
+        patch: Option<&Row>,
+        source: Option<PolicySource<'_>>,
+    ) -> bool {
+        let Some((table, op)) = what.split_once('.') else {
+            return false;
+        };
+        let (Some(entry), Some(principal)) = (self.manifest.tables.get(table), principal) else {
+            return false;
+        };
+        let synced = source.and_then(|s| synced_rules(table, Some(s.partition), s.rows));
+        let Some(rules) = synced.as_ref().or(entry.allow.as_ref()) else {
+            return op == "read" || entry.partition == "user" || entry.partition == "local";
+        };
+        let ctx = PolicyContext {
+            grant: PolicyGrant {
+                account: &principal.account,
+                role: principal.role.as_deref(),
+                claims: &principal.claims,
+            },
+            roles: self.manifest.roles(&entry.partition),
+            row,
+            patch,
+        };
+        evaluate(rules.resolve(op), &ctx)
     }
 
     /// The ladder's verdict on one event against what the device holds. `clock` absent, no stamp
@@ -556,7 +676,20 @@ impl Validator {
                 message: "the manifest's own tables have no document columns",
             });
         }
-        check_columns(table, columns, change, None, true)
+        check_columns(table, columns, change, None, true, &|_, _, _| true)
+    }
+
+    /// Whether `value` passes the column's `check()`: the host's check where one is registered,
+    /// else the manifest's JSON Schema, else nothing to run.
+    fn passes_check(&self, table: &str, column: &str, def: &ColumnDef, value: &CellValue) -> bool {
+        if let Some(host) = self.checks.get(&(table.to_owned(), column.to_owned())) {
+            return host(value);
+        }
+        match (&def.check_schema, cell_json(value)) {
+            (Some(schema), Some(json)) => schema.accepts(&json),
+            // bytes have no JSON form: a blob column's check is the host's to run
+            _ => true,
+        }
     }
 
     /// The entry a change's table has, as this build may write it.
@@ -601,9 +734,13 @@ impl Validator {
             };
         }
         if kind == "local" {
-            return Err(ValidationError::LocalOnly {
-                table: table.to_owned(),
-            });
+            return if event.local {
+                Ok(())
+            } else {
+                Err(ValidationError::LocalOnly {
+                    table: table.to_owned(),
+                })
+            };
         }
         if kind == "global" {
             return if by_authority {
@@ -654,7 +791,17 @@ impl Validator {
         before: &dyn StateLookup,
     ) -> Result<Cells, ValidationError> {
         let declared = self.docs.get(table);
-        check_columns(table, &entry.columns, change, declared, event.seq.is_none())?;
+        let check = |column: &str, def: &ColumnDef, value: &CellValue| {
+            self.passes_check(table, column, def, value)
+        };
+        check_columns(
+            table,
+            &entry.columns,
+            change,
+            declared,
+            event.seq.is_none(),
+            &check,
+        )?;
         let Change::Doc(d) = change else {
             return Ok(Cells::Policy);
         };
@@ -662,6 +809,7 @@ impl Validator {
             peer: event.peer_id,
             seq: event.seq,
             changes: event.changes,
+            local: event.local,
         };
         let adapter = declared.and_then(|cols| cols.get(&d.column));
         if let Some(refused) =
@@ -882,6 +1030,7 @@ fn check_columns(
     change: &Change,
     docs: Option<&BTreeMap<String, String>>,
     probe: bool,
+    check: &dyn Fn(&str, &ColumnDef, &CellValue) -> bool,
 ) -> Result<(), ValidationError> {
     if let Change::Unknown { tag, .. } = change {
         return Err(unknown_kind(table, *tag));
@@ -935,12 +1084,14 @@ fn check_columns(
             if value.is_none() && (def.nullable || def.derived.is_some()) {
                 continue;
             }
-            check_value(def, value).map_err(|m| violation(column, m))?;
+            check_value(def, value, |v| check(column, def, v)).map_err(|m| violation(column, m))?;
         }
         return Ok(());
     }
     for (column, value) in cells.iter().filter(|(c, _)| checked(c)) {
-        check_value(&columns[column], Some(value)).map_err(|m| violation(column, m))?;
+        let def = &columns[column];
+        check_value(def, Some(value), |v| check(column, def, v))
+            .map_err(|m| violation(column, m))?;
     }
     Ok(())
 }
@@ -982,9 +1133,48 @@ fn accepts_counter(value: &CellValue) -> bool {
         })
 }
 
-/// One wire value against its column: nullability, then the kind. A `check()` is not run here
-/// (it is a function, and the manifest only says it exists).
-fn check_value(column: &ColumnDef, value: Option<&CellValue>) -> Result<(), &'static str> {
+/// A cell as the JSON a check reads; `None` for bytes, which have no JSON form. A whole number is
+/// written as an integer, as JavaScript holds no difference between `3` and `3.0`.
+fn cell_json(value: &CellValue) -> Option<serde_json::Value> {
+    fn json(value: &JsonValue) -> serde_json::Value {
+        match value {
+            JsonValue::Null => serde_json::Value::Null,
+            JsonValue::Bool(b) => serde_json::Value::Bool(*b),
+            JsonValue::Number(n) => number(*n),
+            JsonValue::Text(s) => serde_json::Value::String(s.clone()),
+            JsonValue::Array(a) => serde_json::Value::Array(a.iter().map(json).collect()),
+            JsonValue::Object(o) => {
+                serde_json::Value::Object(o.iter().map(|(k, v)| (k.clone(), json(v))).collect())
+            }
+        }
+    }
+    fn number(n: f64) -> serde_json::Value {
+        if is_safe_integer(n) {
+            serde_json::Value::from(n as i64)
+        } else {
+            serde_json::Number::from_f64(n)
+                .map_or(serde_json::Value::Null, serde_json::Value::Number)
+        }
+    }
+    match value {
+        CellValue::Bytes(_) => None,
+        CellValue::Null => Some(serde_json::Value::Null),
+        CellValue::Bool(b) => Some(serde_json::Value::Bool(*b)),
+        CellValue::Number(n) => Some(number(*n)),
+        CellValue::Text(s) => Some(serde_json::Value::String(s.clone())),
+        CellValue::Array(a) => Some(serde_json::Value::Array(a.iter().map(json).collect())),
+        CellValue::Object(o) => Some(serde_json::Value::Object(
+            o.iter().map(|(k, v)| (k.clone(), json(v))).collect(),
+        )),
+    }
+}
+
+/// One wire value against its column: nullability, the kind, then its `check()` (`passes`).
+fn check_value(
+    column: &ColumnDef,
+    value: Option<&CellValue>,
+    passes: impl FnOnce(&CellValue) -> bool,
+) -> Result<(), &'static str> {
     let value = match value {
         None => {
             return Err(if column.nullable {
@@ -1013,9 +1203,12 @@ fn check_value(column: &ColumnDef, value: Option<&CellValue>) -> Result<(), &'st
         ColumnKind::Blob => matches!(value, CellValue::Bytes(_)),
         ColumnKind::Uuid => matches!(value, CellValue::Text(s) if is_canonical_uuid(s)),
     };
-    accepted
+    if !accepted {
+        return Err("the value is not of the column's kind");
+    }
+    passes(value)
         .then_some(())
-        .ok_or("the value is not of the column's kind")
+        .ok_or("the value fails the column's check()")
 }
 
 /// What `instance:device:digest` names, sliced as the TypeScript slices it: by UTF-16 code unit

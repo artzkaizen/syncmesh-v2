@@ -31,6 +31,15 @@ pub struct RowBefore {
 pub struct Undo {
     pub event: SyncEvent,
     pub before: Vec<RowBefore>,
+    /// A local-only write, compensated by a local-only write.
+    pub local: bool,
+}
+
+impl Undo {
+    /// The written event's id, `peer-Lseq` for a local-only one.
+    pub fn id(&self) -> String {
+        syncmesh_core::event::event_id(&self.event.peer_id, self.event.seq_num, self.local)
+    }
 }
 
 /// Why a revert did not simply take something back.

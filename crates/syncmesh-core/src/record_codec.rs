@@ -45,12 +45,22 @@ fn optional(stamp: Option<&Stamp>) -> Value {
 }
 
 pub fn encode_record(record: &RowRecord) -> Vec<u8> {
-    let cells = record
+    let cells: Vec<(&str, &Cell)> = record
         .cells
+        .iter()
+        .map(|(c, cell)| (c.as_str(), cell))
+        .collect();
+    encode_record_in(&cells, record)
+}
+
+/// [`encode_record`] with the cells in the order given, as the TypeScript writes a record whose
+/// `Map` holds them in that order; the stamps and partition are `record`'s.
+pub fn encode_record_in(cells: &[(&str, &Cell)], record: &RowRecord) -> Vec<u8> {
+    let cells = cells
         .iter()
         .map(|(column, cell)| {
             Value::Array(vec![
-                Value::Text(column.clone()),
+                Value::Text((*column).to_owned()),
                 cell_to_cbor(&cell.value),
                 stamp_to_cbor(&cell.stamp),
             ])

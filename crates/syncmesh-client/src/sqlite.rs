@@ -1,9 +1,9 @@
 //! The stores an app ships (`storage/src/event-store.ts`, `state-store.ts`): the log, the folded
 //! rows and a blob shelf, each over one `rusqlite` connection. A port of the *contract* in
-//! [`crate::store`], not of the SQL — the TypeScript's tables carry a `local` scope, a compaction
-//! floor and an attached-database dialect this crate has no writes for yet, so the shape here is
-//! the smaller one a Rust device needs today, namespaced `sm_` so it can share a file with an
-//! app's own tables.
+//! [`crate::store`], not of the SQL — the TypeScript's tables carry an attached-database dialect
+//! and a compaction this crate has no writes for, so the shape here is the smaller one a Rust
+//! device needs today (its `local` scope a column of the log, its floor a field of the stored
+//! coverage), namespaced `sm_` so it can share a file with an app's own tables.
 //!
 //! One connection per store, and two connections when the two stores share a file: SQLite's
 //! writer lock serialises them and WAL lets a read run under a write. A host that wants the log
@@ -85,10 +85,29 @@ CREATE TABLE IF NOT EXISTS sm_events (
     hlc_logical INTEGER,
     partition   TEXT,
     core        BLOB,
-    sig         BLOB
+    sig         BLOB,
+    local       INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS sm_events_peer_seq ON sm_events (peer, seq);
 ";
+
+/// A log written before local-only writes existed has no `local` column; every row in it is
+/// synced, which is what the column's default says.
+fn add_local_column(conn: &Connection) -> Result<(), StoreError> {
+    let has: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sm_events') WHERE name = 'local'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .map_err(failed("migrate"))?;
+    if has {
+        return Ok(());
+    }
+    conn.execute_batch("ALTER TABLE sm_events ADD COLUMN local INTEGER NOT NULL DEFAULT 0")
+        .map_err(failed("migrate"))
+}
 
 /// The append-only log in SQLite. Idempotent by event id at the statement (`INSERT OR IGNORE`),
 /// so a re-arrival that slipped past the engine's `has` still lands once.
@@ -120,6 +139,7 @@ impl SqliteEventStore {
 
     fn over(conn: Connection) -> Result<SqliteEventStore, StoreError> {
         conn.execute_batch(EVENTS_DDL).map_err(failed("migrate"))?;
+        add_local_column(&conn)?;
         Ok(SqliteEventStore { conn })
     }
 
@@ -136,6 +156,18 @@ impl SqliteEventStore {
         Ok(self.len()? == 0)
     }
 
+    fn last(&self, peer: &PeerId, local: bool) -> Result<Option<SeqNum>, StoreError> {
+        let max: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT MAX(seq) FROM sm_events WHERE peer = ?1 AND local = ?2",
+                params![peer.as_str(), i64::from(local)],
+                |r| r.get(0),
+            )
+            .map_err(failed("last_seq"))?;
+        max.map(seq_from_sql).transpose()
+    }
+
     fn select(&self, sql: &str, floor: Option<&str>) -> Result<Vec<StoredEvent>, StoreError> {
         let mut statement = self.conn.prepare_cached(sql).map_err(failed("prepare"))?;
         let rows = match floor {
@@ -143,12 +175,18 @@ impl SqliteEventStore {
             None => statement.query([]),
         }
         .map_err(failed("query"))?;
-        rows.and_then(|row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)))
-            .map(|row| {
-                row.map_err(failed("read"))
-                    .and_then(|(c, s)| decode_stored(c, s))
-            })
-            .collect()
+        rows.and_then(|row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Option<Vec<u8>>>(1)?,
+                row.get::<_, i64>(2)? != 0,
+            ))
+        })
+        .map(|row| {
+            row.map_err(failed("read"))
+                .and_then(|(c, s, local)| decode_stored(c, s, local))
+        })
+        .collect()
     }
 }
 
@@ -160,8 +198,9 @@ fn insert_event(conn: &Connection, entry: &StoredEvent) -> Result<(), StoreError
         None => encode_event_core(event),
     };
     conn.execute(
-        "INSERT OR IGNORE INTO sm_events (id, peer, seq, hlc_ms, hlc_logical, partition, core, sig)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT OR IGNORE INTO sm_events
+             (id, peer, seq, hlc_ms, hlc_logical, partition, core, sig, local)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             entry.id(),
             event.peer_id.as_str(),
@@ -171,6 +210,7 @@ fn insert_event(conn: &Connection, entry: &StoredEvent) -> Result<(), StoreError
             event.partition.as_ref().map(|p| p.as_str()),
             core,
             entry.sig.as_deref(),
+            i64::from(entry.local),
         ],
     )
     .map_err(failed("append"))?;
@@ -180,13 +220,19 @@ fn insert_event(conn: &Connection, entry: &StoredEvent) -> Result<(), StoreError
 /// A `(core, sig)` row back to the entry that was stored. The core comes back as the entry's
 /// `core`, which is what a relay forwards; a row that decodes no longer is a store fault, because
 /// a log that skips rows would move every cursor past events nobody folded.
-fn decode_stored(core: Vec<u8>, sig: Option<Vec<u8>>) -> Result<StoredEvent, StoreError> {
+fn decode_stored(
+    core: Vec<u8>,
+    sig: Option<Vec<u8>>,
+    local: bool,
+) -> Result<StoredEvent, StoreError> {
     let event = decode_event_core(&core)
         .map_err(|e| StoreError::new(format!("stored event does not decode: {e}")))?;
+    // a local-only write was never signed, and its core is kept only so the log can read it back
     Ok(StoredEvent {
         event,
-        core: Some(core),
+        core: (!local).then_some(core),
         sig,
+        local,
     })
 }
 
@@ -236,28 +282,38 @@ impl EventStore for SqliteEventStore {
     }
 
     fn all(&self) -> Result<Vec<StoredEvent>, StoreError> {
-        self.select("SELECT core, sig FROM sm_events ORDER BY peer, seq", None)
+        self.select(
+            "SELECT core, sig, local FROM sm_events ORDER BY peer, local, seq",
+            None,
+        )
     }
 
     fn all_since(&self, cursors: &Cursors) -> Result<Vec<StoredEvent>, StoreError> {
         self.select(
-            "SELECT core, sig FROM sm_events
-             WHERE seq > COALESCE((SELECT value FROM json_each(?1) WHERE key = sm_events.peer), 0)
+            "SELECT core, sig, local FROM sm_events
+             WHERE local = 0
+               AND seq > COALESCE((SELECT value FROM json_each(?1) WHERE key = sm_events.peer), 0)
+             ORDER BY peer, seq",
+            Some(&floor_json(cursors)),
+        )
+    }
+
+    fn local_since(&self, cursors: &Cursors) -> Result<Vec<StoredEvent>, StoreError> {
+        self.select(
+            "SELECT core, sig, local FROM sm_events
+             WHERE local = 1
+               AND seq > COALESCE((SELECT value FROM json_each(?1) WHERE key = sm_events.peer), 0)
              ORDER BY peer, seq",
             Some(&floor_json(cursors)),
         )
     }
 
     fn last_seq(&self, peer: &PeerId) -> Result<Option<SeqNum>, StoreError> {
-        let max: Option<i64> = self
-            .conn
-            .query_row(
-                "SELECT MAX(seq) FROM sm_events WHERE peer = ?1",
-                params![peer.as_str()],
-                |r| r.get(0),
-            )
-            .map_err(failed("last_seq"))?;
-        max.map(seq_from_sql).transpose()
+        self.last(peer, false)
+    }
+
+    fn last_local_seq(&self, peer: &PeerId) -> Result<Option<SeqNum>, StoreError> {
+        self.last(peer, true)
     }
 
     fn max_hlc(&self) -> Result<Option<Hlc>, StoreError> {
@@ -298,7 +354,8 @@ CREATE TABLE IF NOT EXISTS sm_meta (
 
 /// The folded rows in SQLite: one record blob per `(table, key)` in the record codec's shape, and
 /// the coverage they reflect as one JSON value in `sm_meta` —
-/// `{"synced":{"<peer>":seq,…},"local":{},"scope":"…"|null}`. Rows and coverage land in one
+/// `{"synced":{"<peer>":seq,…},"local":{…},"scope":"…"|null,"floor":{…}}` (a coverage written
+/// before the floor existed reads as having none). Rows and coverage land in one
 /// transaction, because a coverage that survived a commit its rows did not (or the other way
 /// round) is the mismatch D23 exists to prevent.
 pub struct SqliteStateStore {
@@ -339,6 +396,7 @@ fn coverage_json(coverage: &Coverage) -> String {
         "synced": cursors(&coverage.synced),
         "local": cursors(&coverage.local),
         "scope": coverage.scope,
+        "floor": cursors(&coverage.floor),
     })
     .to_string()
 }
@@ -381,6 +439,7 @@ fn coverage_from_json(text: &str) -> Result<Coverage, StoreError> {
         synced: cursors("synced")?,
         local: cursors("local")?,
         scope,
+        floor: cursors("floor")?,
     })
 }
 
@@ -874,7 +933,38 @@ mod tests {
             },
             core: None,
             sig: None,
+            local: false,
         }
+    }
+
+    #[test]
+    fn a_local_only_write_is_kept_apart_and_an_older_log_gains_the_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        // the log as it was before local-only writes: no `local` column
+        conn.execute_batch(
+            "CREATE TABLE sm_events (id TEXT PRIMARY KEY, peer TEXT NOT NULL, seq INTEGER NOT NULL,
+             hlc_ms INTEGER, hlc_logical INTEGER, partition TEXT, core BLOB, sig BLOB);",
+        )
+        .unwrap();
+        let mut log = SqliteEventStore::over(conn).unwrap();
+        log.append(&unsigned(1, 1)).unwrap();
+        let mut local = unsigned(1, 1);
+        local.local = true;
+        log.append(&local).unwrap();
+        assert_eq!(log.len().unwrap(), 2);
+        assert!(
+            log.has("0101010101010101010101010101010101010101010101010101010101010101-L1")
+                .unwrap()
+        );
+        let synced = log.all_since(&Cursors::new()).unwrap();
+        assert_eq!(synced.len(), 1);
+        assert!(!synced[0].local);
+        let kept = log.local_since(&Cursors::new()).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].local);
+        assert_eq!(kept[0].envelope(), None);
+        assert_eq!(log.last_local_seq(&peer(1)).unwrap(), SeqNum::parse(1));
+        assert_eq!(log.last_seq(&peer(2)).unwrap(), None);
     }
 
     #[test]
@@ -899,6 +989,7 @@ mod tests {
     fn coverage_json_round_trips_and_refuses_what_it_cannot_read() {
         let mut coverage = Coverage::default();
         coverage.synced.insert(peer(1), SeqNum::parse(7).unwrap());
+        coverage.floor.insert(peer(1), SeqNum::parse(3).unwrap());
         coverage.synced.insert(peer(2), SeqNum::parse(1).unwrap());
         coverage.scope = Some(r#"{"partitions":["org:a"]}"#.into());
         let text = coverage_json(&coverage);
