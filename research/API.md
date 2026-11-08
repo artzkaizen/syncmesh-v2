@@ -1984,6 +1984,15 @@ refuse a put past `maxBlobBytesPerPartition`: `mesh.blobs.put(bytes, { partition
 then answers `BlobQuotaExceeded { partition, limit, used }` and the relay stored nothing.
 A swept hash fetches as `BlobNotFound` — put the bytes back and it works again.
 
+In a grant-gated room (D44) the partition is checked: a put into one the device's grant does
+not name answers `BlobNotGranted { partition }`, and a fetch is served only to a device whose
+grant names a partition the bytes were put into (or for bytes put with none). Name the
+partition the row lives in, and only its members can fetch the bytes.
+
+When a device's entitlement narrows (D45), `createMesh({ onNarrowed })` hears
+`{ partitions, tables }` first, and then the device drops the rows, the other devices' events
+behind them, their doc logs and the cached blobs only they named. Its own writes stay.
+
 **Not built:** range fetch, and GC over *visible* rows — a relay cannot fold, so a
 reference it has seen holds for the life of the instance, through log trims, and
 deleting a row frees nothing. RFC-0015 has the open
