@@ -7,7 +7,7 @@ import { isSafeNonNegative, isString } from "@syncmesh/wire";
 import type { SqlDriver, SqlRow, SqlValue } from "./driver.js";
 
 import { driverDialect } from "./dialect.js";
-import { attempt, failure, parseCoverage } from "./sql.js";
+import { attempt, failure, onConnection, parseCoverage } from "./sql.js";
 
 /** The `installed` value in `meta`: a JSON list of `[peer, seq]` pairs, or no row at all. */
 const parseInstalled = (value: SqlValue | undefined): Result<Cursors, StoreFailure> =>
@@ -48,6 +48,12 @@ export function createFloorReads(
   floors: () => Promise<Result<Coverage, StoreFailure>>,
 ): Pick<EventStore, "compacted" | "installedBelow" | "recordInstalled"> {
   const { events, gaps } = driverDialect(driver);
+  // a driver with no transaction (a Durable Object's) still takes its turn, so two raises in one
+  // process run one after the other
+  const exclusive =
+    driver.transaction === undefined
+      ? <T>(fn: () => Promise<T>) => onConnection(driver, fn)
+      : transaction;
   const query = (message: string, statement: string, values: readonly SqlValue[] = []) =>
     attempt(message, () => driver.all(statement, values));
   const installedBelow = () =>
@@ -75,7 +81,7 @@ export function createFloorReads(
     // would otherwise both read the old floor, and the second write would drop the first's raise
     recordInstalled: (floor) =>
       attempt("recordInstalled failed", () =>
-        transaction(async () => {
+        exclusive(async () => {
           if (gaps.lockInstalled !== undefined) await driver.run(gaps.lockInstalled, []);
           const rows = await driver.all(gaps.selectInstalled, []);
           const held = parseInstalled(rows[0]?.[0]);
