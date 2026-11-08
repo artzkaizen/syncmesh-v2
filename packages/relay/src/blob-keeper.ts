@@ -7,6 +7,7 @@ import type {
   BlobHomes,
   BlobLedger,
   BlobStore,
+  BlobWindow,
 } from "@syncmesh/storage";
 
 import { Result } from "@syncmesh/result";
@@ -56,7 +57,10 @@ export interface BlobKeeperOptions {
  * rows named is kept in a {@link BlobLedger} beside the blobs, saved before every trim
  * ({@link BlobKeeper.save}); a room reopened over a trimmed log reads it back. With a ledger that
  * has seen the whole log, the blobs an earlier run left on disk are read from the store's
- * inventory at open and billed and swept like any other, from the moment the room opened.
+ * inventory at open and billed and swept like any other. Each blob's window — when its put, or
+ * the delete that released it, started it — is saved with the rows, so a room that reopens more
+ * often than the window still sweeps; a blob the ledger never saw put is given one from the open
+ * that first found it, and a window moved after the last save starts over from the next open.
  *
  * **Sealed events.** One names nothing the relay can read, so a reference it cannot see may be in
  * any blob put into that event's partition: those blobs, and those put into no partition, which
@@ -142,6 +146,39 @@ const billedHome = (homes: readonly BlobHome[]): PartitionKey | undefined =>
 const later = (a: Temporal.Instant, b: Temporal.Instant): Temporal.Instant =>
   Temporal.Instant.compare(a, b) >= 0 ? a : b;
 
+/** Whether a sealed event's partition may name this blob, so no reference to it is provable. */
+async function blinded(
+  hash: BlobHash,
+  sealed: ReadonlySet<BlobHome>,
+  homes: BlobHomes,
+): Promise<boolean> {
+  if (sealed.size === 0) return false;
+  if (sealed.has(undefined)) return true;
+  const found = await homes.of(hash);
+  // a home that cannot be read is no proof of anything: keep it
+  if (found.isErr()) return true;
+  const where = found.value;
+  return where.length === 0 || where.some((home) => home === undefined || sealed.has(home));
+}
+
+/** Window starts not yet saved to the ledger; `undefined` for a blob that left. */
+function createUnsavedWindows() {
+  const fresh = new Map<BlobHash, Temporal.Instant | undefined>();
+  return {
+    mark: (hash: BlobHash, since: Temporal.Instant | undefined): void =>
+      void fresh.set(hash, since),
+    take: (): readonly BlobWindow[] => {
+      const out = [...fresh].map(([hash, since]) => ({ hash, since }));
+      fresh.clear();
+      return out;
+    },
+    /** A save failed: these go again, unless a newer start was marked while it was out. */
+    retake: (windows: readonly BlobWindow[]): void => {
+      for (const { hash, since } of windows) if (!fresh.has(hash)) fresh.set(hash, since);
+    },
+  };
+}
+
 export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
   const { store, homes, quota, keepUnreferencedFor, now } = options;
   const ledger = options.ledger ?? memoryBlobLedger();
@@ -155,12 +192,20 @@ export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
   const sealedFresh = new Set<BlobHome>();
   /** Whether the references held have seen the whole log; settled at `open`. */
   let complete: boolean | undefined;
+  const unsaved = createUnsavedWindows();
+
+  /** Starts this blob's window at `at`, unless it already started later. */
+  const restart = (hash: BlobHash, entry: Held, at: Temporal.Instant): void => {
+    entry.since = later(entry.since, at);
+    unsaved.mark(hash, entry.since);
+  };
 
   const unbill = (hash: BlobHash): void => {
     const entry = held.get(hash);
     if (entry === undefined) return;
     held.delete(hash);
     used.set(entry.partition, (used.get(entry.partition) ?? 0) - entry.bytes);
+    unsaved.mark(hash, undefined);
   };
 
   const bill = (
@@ -171,17 +216,7 @@ export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
   ): void => {
     held.set(hash, { bytes, partition, since });
     used.set(partition, (used.get(partition) ?? 0) + bytes);
-  };
-
-  /** Whether a sealed event's partition may name this blob, so no reference to it is provable. */
-  const blinded = async (hash: BlobHash): Promise<boolean> => {
-    if (sealed.size === 0) return false;
-    if (sealed.has(undefined)) return true;
-    const found = await homes.of(hash);
-    // a home that cannot be read is no proof of anything: keep it
-    if (found.isErr()) return true;
-    const where = found.value;
-    return where.length === 0 || where.some((home) => home === undefined || sealed.has(home));
+    unsaved.mark(hash, since);
   };
 
   const note = (event: SyncEvent): void => {
@@ -194,12 +229,17 @@ export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
     // the window of a blob a delete just released starts now, not at its put (D18)
     for (const hash of references.note(event)) {
       const entry = held.get(hash);
-      if (entry !== undefined) entry.since = later(entry.since, at);
+      if (entry !== undefined) restart(hash, entry, at);
     }
   };
 
-  /** An earlier run's blobs, billed and given a window from now — only with a ledger that saw them. */
-  const seed = async (): Promise<Result<void, StoreFailure>> => {
+  /**
+   * An earlier run's blobs, billed — only with a ledger that saw them — each with the window the
+   * ledger kept for it, or one from now for a blob it never saw put.
+   */
+  const seed = async (
+    windows: ReadonlyMap<BlobHash, Temporal.Instant>,
+  ): Promise<Result<void, StoreFailure>> => {
     if (complete !== true || ledger.stored === undefined) return Result.ok(undefined);
     const inventory = await ledger.stored();
     if (inventory.isErr()) return Result.err(inventory.error);
@@ -207,7 +247,7 @@ export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
     for (const [hash, bytes] of inventory.value) {
       const where = await homes.of(hash);
       if (where.isErr()) return Result.err(where.error);
-      bill(hash, bytes, billedHome(where.value), at);
+      bill(hash, bytes, billedHome(where.value), windows.get(hash) ?? at);
     }
     return Result.ok(undefined);
   };
@@ -220,8 +260,13 @@ export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
       for (const home of loaded.value.sealed) sealed.add(home);
       // a ledger starting now has seen everything only if nothing was trimmed before it
       complete = loaded.value.complete ?? options.trimmedBefore !== true;
-      const seeded = await seed();
+      const windows = new Map<BlobHash, Temporal.Instant>();
+      for (const { hash, since } of loaded.value.windows)
+        if (since !== undefined) windows.set(hash, since);
+      const seeded = await seed(windows);
       if (seeded.isErr()) return seeded;
+      // a release the ledger saved is no release here — the restored row is already deleted — so
+      // only one made after the last save starts its blob's window over, from now
       for (const entry of log) note(entry.event);
       return Result.ok(undefined);
     },
@@ -248,7 +293,7 @@ export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
       const homed = await homes.add(hash, partition);
       if (homed.isErr()) return homed;
       // read again, not `spent`: the ceiling may have evicted, and unbilled, during the put
-      if (known !== undefined) known.since = at;
+      if (known !== undefined) restart(hash, known, at);
       else if (fresh) bill(hash, bytes.byteLength, partition, at);
       return stored;
     },
@@ -262,10 +307,12 @@ export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
       const rows = references.taken();
       const fresh = [...sealedFresh];
       sealedFresh.clear();
-      const saved = await ledger.save({ rows, sealed: fresh, complete });
+      const windows = unsaved.take();
+      const saved = await ledger.save({ rows, windows, sealed: fresh, complete });
       if (saved.isErr()) {
         references.retake(rows);
         for (const home of fresh) sealedFresh.add(home);
+        unsaved.retake(windows);
       }
       return saved;
     },
@@ -284,7 +331,7 @@ export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
           .map(([hash, entry]) => [hash, entry.bytes] as const);
         const due: (readonly [BlobHash, number])[] = [];
         for (const candidate of candidates) {
-          if (await blinded(candidate[0])) report.sealed += 1;
+          if (await blinded(candidate[0], sealed, homes)) report.sealed += 1;
           else due.push(candidate);
         }
         for (const [hash] of due) unbill(hash);

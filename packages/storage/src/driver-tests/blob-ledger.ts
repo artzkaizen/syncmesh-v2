@@ -3,6 +3,7 @@ import type { PartitionKey, RowKey, TableName } from "@syncmesh/kernel";
 
 import { equal } from "@syncmesh/engine";
 import { hlcOf, parsePeerId } from "@syncmesh/kernel";
+import { Temporal } from "@syncmesh/temporal";
 
 import type { OpenDriver } from "./index.js";
 
@@ -21,7 +22,7 @@ const [N1, N2] = ["n1" as RowKey, "n2" as RowKey];
 /** What a relay keeps about its blobs' references (gaps U18): it survives a reopen, in both dialects. */
 export const blobLedgerCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   {
-    name: "blob ledger: rows, sealed partitions and completeness survive a reopen, and the inventory sizes what is held",
+    name: "blob ledger: rows, windows, sealed partitions and completeness survive a reopen, and the inventory sizes what is held",
     run: async () => {
       const driver = await openDriver("blob-ledger");
       const store = (await sqlBlobStore(driver)).unwrap();
@@ -39,12 +40,29 @@ export const blobLedgerCases = (openDriver: OpenDriver): readonly SuiteCase[] =>
         deleted: undefined,
       };
       const gone = { table: NOTES, key: N2, hashes: [hash], written, deleted };
+      const since = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_789);
+      const left = hashOf(Uint8Array.of(1, 2, 3));
       (
-        await ledger.save({ rows: [live, gone], sealed: [ACME, undefined], complete: true })
+        await ledger.save({
+          rows: [live, gone],
+          windows: [
+            { hash, since },
+            { hash: left, since },
+          ],
+          sealed: [ACME, undefined],
+          complete: true,
+        })
       ).unwrap();
-      // a row saved again is written over, not added beside
+      // a row saved again is joined with what was kept, not added beside it nor written over it:
+      // the later delete lands, the older write and the missing name do not undo anything
+      const older = { hlc: hlcOf(1_600_000_000_000, 0), peer: PEER };
       (
-        await ledger.save({ rows: [{ ...live, deleted }], sealed: [ACME], complete: true })
+        await ledger.save({
+          rows: [{ ...live, hashes: [], written: older, deleted }],
+          windows: [{ hash: left, since: undefined }],
+          sealed: [ACME],
+          complete: true,
+        })
       ).unwrap();
 
       await driver.close?.();
@@ -69,7 +87,17 @@ export const blobLedgerCases = (openDriver: OpenDriver): readonly SuiteCase[] =>
         [1_700_000_000_456, 1_700_000_000_456],
         "the later save's delete stamp",
       );
+      equal(
+        rows.map((row) => row.written?.hlc[0].epochMilliseconds),
+        [1_700_000_000_123, 1_700_000_000_123],
+        "an older write saved later does not move the stamp back",
+      );
       equal(rows[0]?.written?.hlc[1], 4, "the logical half of a stamp");
+      equal(
+        state.windows.map((window) => [window.hash, window.since?.epochMilliseconds]),
+        [[hash, 1_700_000_000_789]],
+        "a window kept, and one forgotten when its blob left",
+      );
       equal(String(rows[0]?.written?.peer), String(PEER), "and its peer");
       const sizes = (await again.stored?.())?.unwrap();
       equal(sizes?.get(hashOf(photo)), photo.byteLength, "the inventory sizes what is held");

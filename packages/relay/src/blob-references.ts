@@ -2,7 +2,7 @@ import type { Change, RowKey, Stamp, SyncEvent, TableName } from "@syncmesh/kern
 import type { BlobHash, BlobRow } from "@syncmesh/storage";
 
 import { compareStamp, eventStamp } from "@syncmesh/kernel";
-import { blobNamesIn } from "@syncmesh/storage";
+import { blobNamesIn, laterStamp } from "@syncmesh/storage";
 
 /** One row that has named a blob, as this relay has seen it written and deleted. */
 interface Tracked {
@@ -12,10 +12,6 @@ interface Tracked {
   written: Stamp | undefined;
   deleted: Stamp | undefined;
 }
-
-/** The later of two stamps; either may be absent. */
-const latest = (a: Stamp | undefined, b: Stamp): Stamp =>
-  a === undefined || compareStamp(b, a) > 0 ? b : a;
 
 /** Live as the kernel's record is: written, and written after its latest delete. */
 const isLive = (row: Tracked): boolean =>
@@ -73,8 +69,8 @@ export function createBlobReferences() {
       for (const row of saved) {
         const held = track(row.table, row.key);
         for (const hash of row.hashes) held.hashes.add(hash);
-        if (row.written !== undefined) held.written = latest(held.written, row.written);
-        if (row.deleted !== undefined) held.deleted = latest(held.deleted, row.deleted);
+        held.written = laterStamp(held.written, row.written);
+        held.deleted = laterStamp(held.deleted, row.deleted);
       }
     },
     /**
@@ -92,8 +88,8 @@ export function createBlobReferences() {
         const row = track(change.table, change.key);
         const was = isLive(row);
         for (const name of names) row.hashes.add(name);
-        if (change.kind === "delete") row.deleted = latest(row.deleted, stamp);
-        else row.written = latest(row.written, stamp);
+        if (change.kind === "delete") row.deleted = laterStamp(row.deleted, stamp);
+        else row.written = laterStamp(row.written, stamp);
         dirty.add(id);
         if (was && !isLive(row)) released.push(...row.hashes);
       }

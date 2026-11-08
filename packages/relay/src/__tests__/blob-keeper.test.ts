@@ -403,6 +403,42 @@ describe("references follow rows, across trims and restarts (gaps U18)", () => {
     second.room.close();
   });
 
+  test("a room that reopens more often than the window still sweeps: the window is saved, not restarted", async () => {
+    const driver = bunSqliteDriver(":memory:");
+    const durable = async () => ({
+      store: (await sqliteEventStore(driver)).unwrap(),
+      blobs: (await sqlBlobStore(driver)).unwrap(),
+      blobHomes: (await sqlBlobHomes(driver)).unwrap(),
+      blobLedger: (await sqlBlobLedger(driver)).unwrap(),
+    });
+    const retention = { keepUnreferencedBlobsFor: DAY };
+    const orphan = filled(23, 16); // an upload whose row never arrives
+    const [photo, kept] = [filled(24, 16), filled(25, 16)];
+    const twentyHours = Temporal.Duration.from({ hours: 20 });
+    let clock = T0;
+    const present: boolean[] = [];
+    for (let run = 0; run < 3; run += 1) {
+      const r = await blobRoom(retention, await durable(), clock);
+      if (run === 0) {
+        await r.put(orphan);
+        await r.put(photo);
+        await r.reference(photo, "n1");
+        await r.unreference("n1"); // released in this run, and saved by its first pass
+        await r.put(kept);
+        await r.reference(kept, "n2");
+      }
+      r.later(HOUR);
+      await r.room.sweep();
+      present.push(await r.blobs.has(hashOf(orphan)), await r.blobs.has(hashOf(photo)));
+      r.later(twentyHours);
+      clock = r.clock();
+      expect(await r.blobs.has(hashOf(kept))).toBe(true); // a live row still names it
+      r.room.close();
+    }
+    // 1 h, 22 h and 43 h after the put and the delete: gone a day after them, whatever the reopens
+    expect(present).toEqual([true, true, true, true, false, false]);
+  });
+
   test("a room whose log was trimmed before it had a ledger keeps an earlier run's blobs", async () => {
     let clock = T0;
     const store = memoryBlobStore();
