@@ -2,7 +2,10 @@
 
 import type { Unsubscribe } from "@syncmesh/engine";
 
+import type { InspectAnswer, InspectBody } from "./protocol.js";
 import type { MeshWire } from "./wire.js";
+
+import { NoInspector } from "./protocol.js";
 
 /**
  * What a host must be handed before any tab of this origin can inspect the mesh.
@@ -73,3 +76,22 @@ export function remoteInspect(wire: MeshWire): RemoteInspect {
     onForced: (listener) => wire.listen("forced", listener),
   };
 }
+
+/**
+ * A named read of the device, or the reason there is nothing to read.
+ *
+ * The answer is wrapped rather than returned bare because the host never opens it: what is
+ * inside is the inspector's vocabulary and the tab's to decode, and an envelope keeps
+ * {@link Answered} a closed union instead of the `unknown` that would swallow it.
+ */
+export const answerInspect = async (
+  inspector: MeshInspector | undefined,
+  body: InspectBody,
+): Promise<InspectAnswer> => {
+  if (inspector === undefined)
+    throw new NoInspector({
+      read: body.read,
+      message: "this origin's host was built without an inspector, so it serves no readings",
+    });
+  return { inspected: await inspector.read(body.read, body.args) };
+};

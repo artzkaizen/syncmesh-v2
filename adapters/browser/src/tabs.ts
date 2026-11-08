@@ -1,12 +1,16 @@
+import type { AppPhase } from "@syncmesh/client";
+
 import { Result } from "@syncmesh/result";
 
 import type { Control, Standing } from "./election.js";
 import type { MeshLinkFailure } from "./errors.js";
 import type { DirectLink, MeshLink } from "./link.js";
+import type { PhaseBody } from "./protocol.js";
 import type { CarrierPort, Rendezvous } from "./rendezvous.js";
 
 import { HostWorkerUnavailable, NoElection, NoRendezvous } from "./errors.js";
 import { linkOver } from "./link.js";
+import { pagePhase } from "./phases.js";
 import { rendezvousOver } from "./rendezvous.js";
 
 /** The OPFS root `wasmSqliteDriver` defaults to; one election per tree of databases. */
@@ -26,7 +30,7 @@ const RENDEZVOUS = "syncmesh-rendezvous";
  * holds, and be refused by its own success. They release together anyway, because they are held
  * by one context and that context is a tab.
  */
-const lockFor = (scope: string) => `syncmesh-mesh:${scope}`;
+const lockName = (scope: string) => `syncmesh-mesh:${scope}`;
 
 const NO_SHARED_WORKER =
   "this browser has no SharedWorker, so an origin has no singleton to introduce tabs through " +
@@ -108,7 +112,7 @@ const packagedRendezvous = (): CarrierPort =>
     name: RENDEZVOUS,
   }).port;
 
-const busFor = (make: MeshLinkOptions["rendezvous"]): Result<Rendezvous, NoRendezvous> => {
+const resolveBus = (make: MeshLinkOptions["rendezvous"]): Result<Rendezvous, NoRendezvous> => {
   if (make === false)
     return Result.err(new NoRendezvous({ reason: "declined", message: DECLINED }));
   const start = make ?? (browser.SharedWorker === undefined ? undefined : packagedRendezvous);
@@ -159,7 +163,7 @@ const contend = (control: CarrierPort, lock: string, promoted: () => void) =>
   });
 
 /** Every link made before this moment is talking to a worker that is no longer the host. */
-const turnoverOf = (tab: Tab) => () => {
+const createTurnover = (tab: Tab) => () => {
   for (const link of tab.links) link.lost();
   tab.links.clear();
 };
@@ -187,15 +191,15 @@ const startTab = async (options: MeshLinkOptions): Promise<Result<Tab, MeshLinkF
   });
   if (started.isErr()) return started;
   const pending = promotion();
-  const standing = await contend(started.value, lockFor(options.scope ?? SCOPE), pending.fire);
+  const standing = await contend(started.value, lockName(options.scope ?? SCOPE), pending.fire);
   if (standing.isErr()) return standing;
   const tab = {
     control: started.value,
-    bus: busFor(options.rendezvous),
+    bus: resolveBus(options.rendezvous),
     links: new Set<DirectLink>(),
     leader: standing.value,
   };
-  const turnover = turnoverOf(tab);
+  const turnover = createTurnover(tab);
   if (tab.bus.isOk()) attach(tab, tab.bus.value, turnover);
   if (tab.leader) await claim(tab, turnover);
   else
@@ -233,12 +237,33 @@ const hold = (tab: Tab, port: MessagePort, role: MeshLink["role"]): MeshLink => 
   };
   browser.addEventListener?.("pagehide", farewell);
 
+  /**
+   * This page's phase, to the host, now and whenever it changes (D39, U32).
+   *
+   * The host is a worker and has no `document`, so the only way the origin's mesh learns that
+   * every window is hidden — the moment a browser may end the process — is a window saying so.
+   * Said at once as well as on change, because a tab opened in the background, or one relinking
+   * after a handover while hidden, would otherwise count as shown until it was next looked at.
+   */
+  const tell = (phase: AppPhase) => {
+    try {
+      port.postMessage({ kind: "phase", phase } satisfies PhaseBody);
+    } catch {
+      // a port already closed by the other end; the host has stopped counting this window
+    }
+  };
+  const page = pagePhase();
+  if (page !== undefined) tell(page.now());
+  const unwatch = page?.watch(tell) ?? (() => undefined);
+  link.onLost(unwatch);
+
   return {
     port,
     role,
     onLost: (listener) => link.onLost(listener),
     lost: () => link.lost(),
     close: () => {
+      unwatch();
       browser.removeEventListener?.("pagehide", farewell);
       tab.links.delete(link);
       link.close();
@@ -284,7 +309,7 @@ export async function joinMesh(
     open: () => (tab.leader ? leaderLink(tab) : followerLink(tab)),
     leave: () => {
       if (tab.bus.isOk()) tab.bus.value.leave();
-      turnoverOf(tab)();
+      createTurnover(tab)();
     },
   }));
 }

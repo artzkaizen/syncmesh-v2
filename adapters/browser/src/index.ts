@@ -19,6 +19,7 @@ export type {
   LinkReading,
   MediumReading,
   OpenHandleBody,
+  PhaseBody,
   RouteReading,
   SqlBody,
   Topic,
@@ -47,6 +48,8 @@ export type { ConnectOptions, FollowerClient, FollowerMesh } from "./client.js";
 export { connectMesh } from "./client.js";
 export type { HostCensus, HostMesh, MeshHost, ServeOptions } from "./host.js";
 export { serveMesh } from "./host.js";
+export type { TabPhases } from "./phases.js";
+export { createTabPhases } from "./phases.js";
 
 export type { MeshLinkFailure } from "./errors.js";
 export { HostWorkerUnavailable, NoElection, NoRendezvous } from "./errors.js";
