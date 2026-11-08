@@ -284,7 +284,7 @@ not separate the app from the engine.
 ```
 medium  ──▶ length prefix (stream media) │ BLE fragment header (8 B)
         ──▶ link handshake: HELLO 0x01 / SEALED 0x02  (raw bytes, not CBOR)
-        ──▶ CBOR frame [tag, …]  session tags 0–8 │ relay tags 8–19
+        ──▶ CBOR frame [tag, …]  session tags 0–8 │ relay tags 8–22
         ──▶ signed envelope [core, sig] inside (event, grant, receipt, presence, link, checkpoint)
 ```
 
@@ -302,7 +302,7 @@ medium  ──▶ length prefix (stream media) │ BLE fragment header (8 B)
     (`adapters/relay-node/src/index.ts:127`; `packages/relay/src/serve.ts:50-57`). See N13.
 - **Frozen vectors.** The 2026-09-26 audit line "vectors cover event cores, receipts, grants and
   accounts only" is **stale**. `conformance/` now holds `account`, `checkpoint`, `feed`, `fragment`,
-  `frame` (18), `grant`, `handshake`, `join`, `presence`, `receipt`, `relay` (21), `resume`,
+  `frame` (18), `grant`, `handshake`, `join`, `presence`, `receipt`, `relay` (33), `refusal`, `resume`,
   `sealing` and `wire` vectors (E24.md:30, :33). What is still missing is listed per row below and
   summarized in §5.7.
 
@@ -352,7 +352,7 @@ first (`frames.ts:360-365`). The comment at `frames.ts:353-355` says the two spa
 claim one", and that is no longer true (N24). The Rust crate documents the overlap
 (`crates/syncmesh-core/src/relay_frames.rs:5-7`).
 
-### 5.4 Relay control frames (tags 8–19; `packages/relay/src/frames.ts:22-35`, decoders `:233-350`)
+### 5.4 Relay control frames (tags 8–22; `packages/relay/src/frames.ts:22-35`, decoders `:233-350`)
 
 On protocol v3 all of these travel sealed, so the link key authenticates the sender. Nothing
 inside them is signed except the v2 join proof.
@@ -371,7 +371,10 @@ inside them is signed except the v2 join proof.
 | 17  | `blob`         | room → client                           | the hash is checked by the client (`packages/client/src/blobs.ts:89`)                                                        | —                                                                                                                                                                                                                                                        | `frames.ts:318-323`               | `relay`       |
 | 18  | `blob-missing` | room → client                           | nothing                                                                                                                      | A malicious relay can deny blobs.                                                                                                                                                                                                                        | `frames.ts:326-329`               | `relay`       |
 | 19  | `challenge`    | room → client (v2 rooms only)           | 32 random bytes (`proof.ts:25`)                                                                                              | Exact length (`frames.ts:268-271`).                                                                                                                                                                                                                      | `frames.ts:268-271`               | `relay`, `join` |
-| 0–7 | `session`      | client ↔ room                           | as in §5.3                                                                                                                   | The room acts on event, grant and presence, and forwards grant-request and cursors (`connection.ts:239-245`). Snapshot, digest, receipt and routes from a client are ignored.                                                                              | `frames.ts:369-376`               | —             |
+| 20 | `blob-stored` | room → client | link key | The quota answer to a put (D18); a malicious relay can claim it stored a blob it did not. | `frames.ts:268-271`               | `relay`, `join` |
+| 21 | `blob-refused` | room → client | link key | The quota refusal (D18); a malicious relay can refuse a put it could take. | `frames.ts:268-271`               | `relay`, `join` |
+| 22 | `refusal` | any joined device → room → author | the refuser's Ed25519 signature over the refusal core; the room verifies it and requires the signer to be the joined key (`custody-route.ts`) | Handed byte-identical to the author's socket alone and published to the room's other instances (D32, U17). A refusal is advisory: it gates nothing. | `frames.ts:268-271`               | `relay`, `join` |
+| 0–7 | `session`      | client ↔ room                           | as in §5.3                                                                                                                   | The room acts on event, grant and presence, and forwards grant-request, and cursors only when `from` is the joined key. A receipt is verified, its signer held to the joined key, and handed to its author alone (`custody-route.ts`, U17). Snapshot, digest and routes from a client are ignored.                                                                              | `frames.ts:369-376`               | —             |
 
 Per-connection decode order (`connection.ts:252-303`): size cap → unseal → **CBOR decode** →
 token bucket → fanout debt → join-first. A frame that fails to decode returns `malformed` without
