@@ -398,6 +398,13 @@ wire today (`eventsSince` sends only above the receiver's cursor), reachable thr
 or a peer with regressed cursors. The resurrection tests assert the observable guarantee, so a
 dedup fix will not break them.
 
+**Built (gaps U1, 2026-11-08; decided 2026-11-08, Jace delegated the call).** `admit` asks
+`EventStore.compacted(event)` for an event at or below its author's compaction floor that the log
+does not hold, and skips one compaction took. "Took" is exact, not the floor alone: a run below the
+floor the log never held (withheld, scoped out, or evicted by a purge) is still taken when it
+arrives. The SQL log reads that off its gap table, which compaction no longer prunes below the
+floor; the memory and `localStorage` stores keep the same runs (`createFloorHoles`).
+
 ## 4 · Verified *not* gaps — do not re-do these
 
 The book's ch. 25 audit is two weeks stale in this direction:
