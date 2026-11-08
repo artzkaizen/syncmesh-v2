@@ -99,13 +99,24 @@ type Handlers = {
 };
 
 /**
- * One compiler per node, mirroring `evaluate`'s handler table, so the two cannot drift apart
- * silently. The principal is read from `from`: the transaction's settings unless told otherwise.
+ * The table's `read` rule as SQL: one compiler per node, mirroring `evaluate`'s handler table, so
+ * the two cannot drift apart silently. The principal is read from `from`: the transaction's
+ * settings unless told otherwise.
  */
 export function policyPredicate(
   table: Table,
   roles: RoleSet,
   allow: AllowBlock,
+  from: PrincipalSource = SETTINGS,
+): string {
+  return rulePredicate(table, roles, resolveAllow(allow, "read"), from);
+}
+
+/** One rule as SQL — a table's resolved `read` rule, or a column's field rule (E06, D40). */
+export function rulePredicate(
+  table: Table,
+  roles: RoleSet,
+  rule: PolicyNode,
   from: PrincipalSource = SETTINGS,
 ): string {
   const columns = new Map(
@@ -209,7 +220,7 @@ export function policyPredicate(
     not: (node) => `(NOT ${compile(node.of)})`,
   };
 
-  return compile(resolveAllow(allow, "read"));
+  return compile(rule);
 }
 
 export interface RlsOptions {

@@ -1,10 +1,26 @@
 import type { Principal, ValidatorSchema } from "@syncmesh/engine";
+import type { PolicyNode } from "@syncmesh/policy";
 
 import { Temporal, durationMs } from "@syncmesh/temporal";
 
 import type { PrincipalSource, PrincipalStatement } from "./rls.js";
 
-import { policyPredicate, str } from "./rls.js";
+import { policyPredicate, rulePredicate, str } from "./rls.js";
+import {
+  SERVED,
+  block,
+  definerWarnings,
+  ident,
+  loginDdl,
+  readableWarnings,
+  roleDdl,
+  servedView,
+  sweepDdl,
+  viewDdl,
+  viewName,
+} from "./served-ddl.js";
+
+export { SERVED, servedView } from "./served-ddl.js";
 
 /**
  * The server half of D43's served reads: a Postgres role that may read the `sync: "window"`
@@ -22,12 +38,6 @@ import { policyPredicate, str } from "./rls.js";
  * transaction back to its login whatever role it was switched to. So a served read logs in as a
  * login that is a member of the read role alone; going back to that login gains nothing.
  */
-
-/** The schema holding the principal rows and the two functions that write and read them. */
-export const SERVED = "syncmesh_served";
-
-/** A role or schema name as a quoted identifier: named by the host, never by a caller. */
-const ident = (name: string): string => `"${name.replaceAll('"', '""')}"`;
 
 /** `mail` → `"public"."mail"`, `crm.mail` → `"crm"."mail"`: a manifest name as the table it names. */
 const qualified = (name: string) => {
@@ -51,6 +61,7 @@ export const SERVED_PRINCIPAL = {
 export interface ServedManifest {
   readonly entries: readonly (ValidatorSchema["entries"][number] & {
     readonly sync?: "window";
+    readonly fields?: Readonly<Record<string, PolicyNode>>;
   })[];
   readonly rolesFor: ValidatorSchema["rolesFor"];
 }
@@ -88,17 +99,36 @@ const servedHome = (): readonly string[] => {
     `CREATE OR REPLACE FUNCTION ${home}."enter"(reader_role name, principal_json jsonb) RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $f$
 DECLARE
   who oid := (SELECT oid FROM pg_roles WHERE rolname = session_user);
-  held name;
+  reader oid := (SELECT oid FROM pg_roles WHERE rolname = reader_role);
+  here oid := (SELECT oid FROM pg_database WHERE datname = current_database());
+  held text;
 BEGIN
   IF NOT EXISTS (SELECT FROM ${home}."login" l WHERE l.login = session_user AND l.reader = reader_role) THEN
     RAISE EXCEPTION 'syncmesh: served reads log in as %, which servedReadDdl did not give the read role % (grantTo)', session_user, reader_role USING ERRCODE = 'insufficient_privilege';
   END IF;
-  IF (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE oid = who) THEN
-    RAISE EXCEPTION 'syncmesh: served reads log in as %, which row-level security does not hold', session_user USING ERRCODE = 'insufficient_privilege';
+  IF (SELECT bool_or(rolsuper OR rolbypassrls) FROM pg_roles WHERE oid IN (who, reader)) THEN
+    RAISE EXCEPTION 'syncmesh: served reads log in as % with the read role %, and row-level security does not hold one of them', session_user, reader_role USING ERRCODE = 'insufficient_privilege';
   END IF;
-  SELECT r.rolname INTO held FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid WHERE m.member = who AND r.rolname <> reader_role LIMIT 1;
+  -- every role whose privileges the login has, directly or through another: only itself and the reader
+  SELECT string_agg(r.rolname, ', ' ORDER BY r.rolname) INTO held FROM pg_roles r
+    WHERE r.oid NOT IN (who, reader) AND pg_has_role(who, r.oid, 'MEMBER');
   IF held IS NOT NULL THEN
-    RAISE EXCEPTION 'syncmesh: served reads log in as %, which is also a member of %, and a read can take that role', session_user, held USING ERRCODE = 'insufficient_privilege';
+    RAISE EXCEPTION 'syncmesh: served reads log in as %, which has the privileges of % too, and a read can use them', session_user, held USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  -- what the login owns or was granted here: a read that goes back to it with set_config('role', 'none', true) has it
+  SELECT string_agg(DISTINCT pg_describe_object(d.classid, d.objid, d.objsubid), ', ') INTO held FROM pg_shdepend d
+    WHERE d.refclassid = 'pg_authid'::regclass AND d.refobjid = who AND d.dbid = here
+      AND (d.deptype = 'o' OR d.classid IN ('pg_class'::regclass, 'pg_proc'::regclass));
+  IF held IS NOT NULL THEN
+    RAISE EXCEPTION 'syncmesh: served reads log in as %, which owns or was granted %', session_user, held USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  -- what the reader was granted besides what servedReadDdl gave it: a table it serves, or a view of one
+  SELECT string_agg(DISTINCT d.objid::regclass::text, ', ') INTO held FROM pg_shdepend d JOIN pg_class c ON c.oid = d.objid
+    WHERE d.refclassid = 'pg_authid'::regclass AND d.refobjid = reader AND d.dbid = here AND d.classid = 'pg_class'::regclass
+      AND c.relnamespace <> '${home}'::regnamespace
+      AND NOT EXISTS (SELECT FROM pg_policy p WHERE p.polrelid = d.objid AND p.polname = 'syncmesh_served_rule' AND reader = ANY (p.polroles));
+  IF held IS NOT NULL THEN
+    RAISE EXCEPTION 'syncmesh: the read role % was granted %, which servedReadDdl does not serve', reader_role, held USING ERRCODE = 'insufficient_privilege';
   END IF;
   INSERT INTO ${home}."principal" VALUES (pg_current_xact_id(), principal_json);
 END $f$`,
@@ -107,128 +137,6 @@ END $f$`,
     `GRANT USAGE ON SCHEMA ${home} TO PUBLIC`,
     `GRANT EXECUTE ON FUNCTION ${home}."enter"(name, jsonb) TO PUBLIC`,
   ];
-};
-
-/** `DO $$ … $$` for a block whose literals are all {@link str}-quoted names. */
-const block = (body: string): string => `DO $syncmesh$ ${body} $syncmesh$`;
-
-/** The role, created unless told it exists, and refused if it could read past the policies. */
-const roleDdl = (role: string, create: boolean): string => {
-  const name = str(role);
-  const made = create
-    ? `IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = ${name}) THEN
-    BEGIN
-      CREATE ROLE ${ident(role)} NOLOGIN;
-    EXCEPTION WHEN insufficient_privilege THEN
-      RAISE EXCEPTION 'syncmesh: % may not create the read role %', current_user, ${name}
-        USING ERRCODE = 'insufficient_privilege',
-        HINT = format('Have a role with CREATEROLE run CREATE ROLE %I NOLOGIN, then pass createRole: false.', ${name});
-    END;
-  END IF;`
-    : `IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = ${name}) THEN
-    RAISE EXCEPTION 'syncmesh: the read role % does not exist, and createRole: false says it was made already', ${name}
-      USING ERRCODE = 'undefined_object';
-  END IF;`;
-  return block(`BEGIN
-  ${made}
-  IF (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = ${name}) THEN
-    RAISE EXCEPTION 'syncmesh: the read role % is a superuser or bypasses row-level security', ${name}
-      USING ERRCODE = 'insufficient_privilege';
-  END IF;
-END`);
-};
-
-/** `login` made a member of `role`, and refused if it holds anything a read could take back. */
-const loginDdl = (role: string, login: string): string => {
-  const [name, reader] = [str(login), str(role)];
-  return block(`DECLARE
-  who oid := (SELECT oid FROM pg_roles WHERE rolname = ${name});
-  held text;
-BEGIN
-  IF who IS NULL THEN
-    RAISE EXCEPTION 'syncmesh: the login % does not exist', ${name}
-      USING ERRCODE = 'undefined_object',
-      HINT = format('Create it with CREATE ROLE %I LOGIN PASSWORD ''…'' before granting it the read role.', ${name});
-  END IF;
-  IF NOT EXISTS (SELECT FROM pg_auth_members m WHERE m.member = who AND m.roleid = (SELECT oid FROM pg_roles WHERE rolname = ${reader})) THEN
-    BEGIN
-      GRANT ${ident(role)} TO ${ident(login)};
-    EXCEPTION WHEN insufficient_privilege THEN
-      RAISE EXCEPTION 'syncmesh: % may not grant the read role % to %', current_user, ${reader}, ${name}
-        USING ERRCODE = 'insufficient_privilege',
-        HINT = format('Have the role''s admin run GRANT %I TO %I.', ${reader}, ${name});
-    END;
-  END IF;
-  IF (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE oid = who) THEN
-    RAISE EXCEPTION 'syncmesh: the login % is a superuser or bypasses row-level security', ${name}
-      USING ERRCODE = 'insufficient_privilege';
-  END IF;
-  SELECT string_agg(r.rolname, ', ' ORDER BY r.rolname) INTO held FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid
-    WHERE m.member = who AND r.rolname <> ${reader};
-  IF held IS NOT NULL THEN
-    RAISE EXCEPTION 'syncmesh: the login % is also a member of %, which a served read could take with set_config(''role'', …)', ${name}, held
-      USING ERRCODE = 'insufficient_privilege',
-      HINT = 'Give served reads a login that holds the read role and nothing else.';
-  END IF;
-  SELECT string_agg(c.oid::regclass::text, ', ' ORDER BY c.relname) INTO held FROM pg_class c
-    WHERE c.relowner = who OR EXISTS (SELECT FROM aclexplode(c.relacl) a WHERE a.grantee = who);
-  IF held IS NOT NULL THEN
-    RAISE EXCEPTION 'syncmesh: the login % owns or is granted %, which a served read could read after set_config(''role'', ''none'', true)', ${name}, held
-      USING ERRCODE = 'insufficient_privilege',
-      HINT = 'Give served reads a login that holds the read role and nothing else.';
-  END IF;
-END`);
-};
-
-/**
- * Takes back what the role was given for a table that is no longer served with a rule: its
- * `SELECT`, its policies, and `USAGE` on a schema with no served table left.
- */
-const sweepDdl = (role: string, tables: readonly string[], schemas: readonly string[]): string => {
-  const reader = str(role);
-  const kept = `array_remove(ARRAY[${tables.map((t) => `to_regclass(${str(t)})::oid`).join(", ")}]::oid[], NULL)`;
-  const keptSchemas = `ARRAY[${[...new Set([SERVED, ...schemas])].map(str).join(", ")}]::name[]`;
-  return block(`DECLARE
-  who oid := (SELECT oid FROM pg_roles WHERE rolname = ${reader});
-  gone record;
-BEGIN
-  FOR gone IN SELECT c.oid::regclass AS t FROM pg_class c
-    WHERE EXISTS (SELECT FROM aclexplode(c.relacl) a WHERE a.grantee = who) AND NOT c.oid = ANY (${kept})
-  LOOP
-    EXECUTE format('REVOKE ALL ON %s FROM %I', gone.t, ${reader});
-  END LOOP;
-  FOR gone IN SELECT DISTINCT p.polrelid::regclass AS t FROM pg_policy p
-    WHERE p.polname IN ('syncmesh_served_read', 'syncmesh_served_rule') AND who = ANY (p.polroles) AND NOT p.polrelid = ANY (${kept})
-  LOOP
-    EXECUTE format('DROP POLICY IF EXISTS syncmesh_served_read ON %s', gone.t);
-    EXECUTE format('DROP POLICY IF EXISTS syncmesh_served_rule ON %s', gone.t);
-  END LOOP;
-  FOR gone IN SELECT n.nspname AS s FROM pg_namespace n
-    WHERE EXISTS (SELECT FROM aclexplode(n.nspacl) a WHERE a.grantee = who) AND NOT n.nspname = ANY (${keptSchemas})
-  LOOP
-    EXECUTE format('REVOKE USAGE ON SCHEMA %I FROM %I', gone.s, ${reader});
-  END LOOP;
-END`);
-};
-
-/**
- * A `WARNING` for each `SECURITY DEFINER` function the role can run: it runs as its owner, so a
- * served read could read through it whatever the role may read. Postgres grants `EXECUTE` to
- * `PUBLIC` by default, which is not the role's to give back, so the fix is the app's.
- */
-const definerWarnings = (role: string): string => {
-  const reader = str(role);
-  return block(`DECLARE f record;
-BEGIN
-  FOR f IN SELECT p.oid::regprocedure AS fn, pg_get_userbyid(p.proowner) AS owner FROM pg_proc p
-    JOIN pg_namespace n ON n.oid = p.pronamespace
-    WHERE p.prosecdef AND n.nspname NOT IN ('pg_catalog', 'information_schema', ${str(SERVED)})
-      AND has_schema_privilege(${reader}, n.oid, 'USAGE') AND has_function_privilege(${reader}, p.oid, 'EXECUTE')
-  LOOP
-    RAISE WARNING 'syncmesh: the read role % can run %, a SECURITY DEFINER function that runs as %', ${reader}, f.fn, f.owner
-      USING HINT = format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC, then grant it to the roles that call it.', f.fn);
-  END LOOP;
-END`);
 };
 
 /**
@@ -270,6 +178,9 @@ export function servedReadDdl(
     (entry) => entry.sync === "window" && entry.allow !== undefined,
   );
   const tables = served.map((entry) => qualified(entry.table.name));
+  const views = served.flatMap((entry) =>
+    servedView(entry) === undefined ? [] : [viewName(entry.table.name)],
+  );
   const statements = [
     roleDdl(role, createRole),
     ...servedHome(),
@@ -282,25 +193,28 @@ export function servedReadDdl(
     `GRANT EXECUTE ON FUNCTION ${home}."principal"() TO ${who}`,
     sweepDdl(
       role,
-      tables.map((t) => t.table),
+      [...tables.map((t) => t.table), ...views],
       tables.map((t) => t.schema),
     ),
   ];
   for (const [n, entry] of served.entries()) {
     const name = tables[n];
     if (name === undefined || entry.allow === undefined) continue;
-    const rule = policyPredicate(
-      entry.table,
-      schema.rolesFor(entry.partition),
-      entry.allow,
-      SERVED_PRINCIPAL,
-    );
+    const roles = schema.rolesFor(entry.partition);
+    const rule = policyPredicate(entry.table, roles, entry.allow, SERVED_PRINCIPAL);
+    const view = servedView(entry) === undefined ? undefined : viewName(entry.table.name);
     statements.push(
       // `public` is usable by everyone already: granting it again only says no privilege was granted
       block(
         `BEGIN IF NOT has_schema_privilege(${str(role)}, ${str(name.schema)}, 'USAGE') THEN GRANT USAGE ON SCHEMA ${ident(name.schema)} TO ${who}; END IF; END`,
       ),
-      `GRANT SELECT ON ${name.table} TO ${who}`,
+      // a table with a ruled column is granted column by column, with its view
+      ...(view === undefined
+        ? [
+            `DROP VIEW IF EXISTS ${viewName(entry.table.name)}`,
+            `GRANT SELECT ON ${name.table} TO ${who}`,
+          ]
+        : []),
       block(
         `BEGIN IF NOT (SELECT relrowsecurity FROM pg_class WHERE oid = ${str(name.table)}::regclass) THEN ALTER TABLE ${name.table} ENABLE ROW LEVEL SECURITY; CREATE POLICY "syncmesh_served_others" ON ${name.table} FOR ALL TO PUBLIC USING (TRUE) WITH CHECK (TRUE); END IF; END`,
       ),
@@ -309,8 +223,19 @@ export function servedReadDdl(
       `DROP POLICY IF EXISTS "syncmesh_served_rule" ON ${name.table}`,
       `CREATE POLICY "syncmesh_served_rule" ON ${name.table} AS RESTRICTIVE FOR SELECT TO ${who} USING (${rule})`,
     );
+    if (view === undefined) continue;
+    const hidden = Object.fromEntries(
+      Object.entries(entry.fields ?? {}).map(([key, field]) => [
+        String(entry.table.columnNames[key] ?? key),
+        rulePredicate(entry.table, roles, field, SERVED_PRINCIPAL),
+      ]),
+    );
+    statements.push(viewDdl(role, name.table, view, rule, hidden));
   }
-  statements.push(definerWarnings(role));
+  statements.push(
+    definerWarnings(role),
+    readableWarnings(role, [...tables.map((t) => t.table), ...views]),
+  );
   return statements;
 }
 
@@ -337,7 +262,9 @@ export function servedReadSettings(
 ): PrincipalStatement {
   const who = { account: principal.account, role: principal.role, claims: principal.claims };
   return {
-    sql: `SELECT ${ident(SERVED)}."enter"($1, $2::jsonb), set_config('role', $3, TRUE), set_config('transaction_read_only', 'on', TRUE), set_config('statement_timeout', $4, TRUE)`,
+    // the principal binds as text: a client whose jsonb serializer is `JSON.stringify` and one
+    // Drizzle wrapped send it alike. `pid` and `began` name this transaction to a cancel
+    sql: `SELECT ${ident(SERVED)}."enter"($1, $2::text::jsonb), set_config('role', $3, TRUE), set_config('transaction_read_only', 'on', TRUE), set_config('statement_timeout', $4, TRUE), pg_backend_pid() AS pid, (EXTRACT(EPOCH FROM now()) * 1000000)::bigint::text AS began`,
     params: [role, JSON.stringify(who), role, `${Math.max(1, Math.ceil(durationMs(timeout)))}`],
   };
 }

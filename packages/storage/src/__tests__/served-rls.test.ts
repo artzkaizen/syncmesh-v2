@@ -1,7 +1,7 @@
 import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { describe, expect, test } from "bun:test";
 
-import { servedReadDdl, servedReadSettings } from "../served-rls.js";
+import { servedReadDdl, servedReadSettings, servedView } from "../served-rls.js";
 
 const mailbox = partition("mailbox", { roles: ladder("owner") });
 const columns = { id: t.text().primaryKey(), owner: t.text() };
@@ -49,7 +49,8 @@ describe("servedReadDdl — what the read role is given (D43)", () => {
       'GRANT SELECT ON "public"."mail" TO "reader"',
       'GRANT SELECT ON "public"."notes" TO "reader"',
     ]);
-    const sweep = ddl.find((s) => s.includes("FROM pg_policy")) ?? "";
+    const sweep =
+      ddl.find((s) => s.includes("DROP POLICY IF EXISTS syncmesh_served_rule ON %s")) ?? "";
     expect(sweep).toContain(`to_regclass('"public"."notes"')`);
     expect(sweep).not.toContain('"open"');
   });
@@ -58,6 +59,39 @@ describe("servedReadDdl — what the read role is given (D43)", () => {
     const made = servedReadDdl(schema, { role: "reader", grantTo: "reads", createRole: false });
     expect(made.join("\n")).not.toContain('CREATE ROLE "reader"');
     expect(made[0]).toContain("createRole: false says it was made already");
+  });
+});
+
+describe("servedReadDdl — a table with a ruled column (D43, E06)", () => {
+  const ruled = syncSchema({
+    tables: {
+      mail: {
+        columns: { ...columns, subject: t.text() },
+        partition: mailbox,
+        allow: ({ owner, deny }) => ({ $default: deny, read: owner("owner") }),
+        fields: ({ role }) => ({ subject: role("owner") }),
+        sync: "window",
+      },
+    },
+  });
+  const made = servedReadDdl(ruled, { role: "reader", grantTo: "reads" });
+
+  test("is read through a security-barrier view, and the role is granted no whole table", () => {
+    expect(servedView(ruled.entries[0] ?? { table: { name: "" } })).toEqual({
+      schema: "syncmesh_served",
+      name: "read:mail",
+    });
+    expect(made.filter((s) => s.startsWith("GRANT SELECT"))).toEqual([]);
+    const view = made.find((s) => s.includes("WITH (security_barrier)")) ?? "";
+    expect(view).toContain(`'"syncmesh_served"."read:mail"'`);
+    // the rule is the column's own, read off the principal row; the table keeps its other columns
+    expect(view).toContain(`"subject":"COALESCE(array_position(`);
+    expect(view).toContain("GRANT SELECT (%s) ON %s TO %I");
+  });
+
+  test("a table with no ruled column drops a view it once had", () => {
+    expect(ddl).toContain('DROP VIEW IF EXISTS "syncmesh_served"."read:mail"');
+    expect(servedView({ table: { name: "mail" } })).toBeUndefined();
   });
 });
 

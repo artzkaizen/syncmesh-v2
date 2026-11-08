@@ -92,7 +92,13 @@ export { columnScalarKind } from "./read-filter.js";
 export type { PrincipalStatement, RlsOptions } from "./rls.js";
 export { installRls, principalSettings, rlsDdl } from "./rls.js";
 export type { ServedManifest, ServedReadDdlOptions } from "./served-rls.js";
-export { SERVED, SERVED_READ_TIMEOUT, servedReadDdl, servedReadSettings } from "./served-rls.js";
+export {
+  SERVED,
+  SERVED_READ_TIMEOUT,
+  servedReadDdl,
+  servedReadSettings,
+  servedView,
+} from "./served-rls.js";
 export { inTransaction, onConnection } from "./sql.js";
 export { compileField, compileRead } from "./read-filter.js";
 export type {
