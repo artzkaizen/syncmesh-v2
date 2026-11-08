@@ -9,7 +9,6 @@ import {
   BlobNotGranted,
   BlobQuotaExceeded,
   BlobTimeout,
-  hashOf,
   verifyBlob,
 } from "@syncmesh/storage";
 import { BLOB_MISSING } from "@syncmesh/transport";
@@ -141,9 +140,10 @@ export function createBlobs(deps: BlobsDeps): Blobs {
 
   return {
     put: async (bytes, options = {}) => {
-      const hash = hashOf(bytes);
-      const stored = await store.putAt(hash, bytes);
+      // `put`, not `putAt`: this device made these bytes, so the store records them as `mine`
+      const stored = await store.put(bytes);
       if (stored.isErr()) return R.err(stored.error);
+      const hash = stored.value;
       const carriers = transports();
       if (carriers.length === 0) return noCapability("carry");
       const answers = await Promise.all(

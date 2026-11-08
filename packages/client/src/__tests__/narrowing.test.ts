@@ -97,6 +97,7 @@ const member = async (
   issuer: Identity,
   grant: Uint8Array,
   onNarrowed?: (narrowed: Narrowed) => Promise<void> | void,
+  cache: "sql" | "default" = "sql",
 ) => {
   const driver = bunSqliteDriver(":memory:");
   const blobStore = (await sqlBlobStore(driver)).unwrap();
@@ -106,7 +107,7 @@ const member = async (
       schema: schema(),
       identity,
       issuer: issuer.peerId,
-      blobStore,
+      ...(cache === "sql" && { blobStore }),
       onNarrowed: onNarrowed ?? (() => undefined),
       transports: [relayTransport({ dial: webSocketDial(url), reconnectMs: 20 })],
     })
@@ -142,6 +143,10 @@ describe("a narrowed entitlement purges what the device may no longer read (D45)
         },
       );
       expect(await until(async () => (await bodies(alice.mesh)).length === 2)).toBe(true);
+      // bytes she put into payroll, which the authority's row then names (the oRPC shape)
+      const upload = (await alice.mesh.blobs.put(photo, { partition: payrollKey })).unwrap();
+      await hp.db.insert(notes).values({ id: "p2", body: upload });
+      expect(await until(async () => (await bodies(alice.mesh)).includes(upload))).toBe(true);
       // her own payroll note, and the payslip fetched into her cache
       await alice.mesh.on(PAYROLL).unwrap().db.insert(notes).values({ id: "a1", body: "mine" });
       expect((await alice.mesh.blobs.fetch(blob, { timeoutMs: 3000 })).unwrap()).toEqual(payslip);
@@ -156,14 +161,62 @@ describe("a narrowed entitlement purges what the device may no longer read (D45)
       // the authority's payroll row and the cached payslip are gone; her own note is her own
       expect(await bodies(alice.mesh)).toEqual(["mine", "spec"]);
       expect(await alice.blobStore.has(blob)).toBe(false);
+      // the bytes she made are kept, though only a purged row named them
+      expect(await alice.blobStore.has(upload)).toBe(true);
 
       // the widening re-pages her, and the events fold again
       await nextMillisecond();
       alice.mesh.grants.register(mint(aliceId, [CHECKOUT, PAYROLL])).unwrap();
       expect(await until(async () => (await bodies(alice.mesh)).includes(blob))).toBe(true);
-      expect(await held(alice.driver, PAYROLL)).toBe(2);
+      expect(await held(alice.driver, PAYROLL)).toBe(3);
 
       await Promise.all([authority.stop(), alice.mesh.stop()]);
+    } finally {
+      await relay.stop();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe("a narrowed device on the default blob cache (D45)", () => {
+  test("a payslip fetched before the narrowing is not served from the cache after it", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "syncmesh-narrowing-memory-"));
+    const { relay, authority, authorityId, mint } = await gatedWorld(dataDir);
+    try {
+      const payrollKey = parsePartitionKey(PAYROLL).unwrap();
+      await authority.ready();
+      const blob = (await authority.blobs.put(payslip, { partition: payrollKey })).unwrap();
+      await authority.on(PAYROLL).unwrap().db.insert(notes).values({ id: "p1", body: blob });
+
+      const carolId = createIdentity(seed(61)).unwrap();
+      const carol = await member(
+        relay.url,
+        carolId,
+        authorityId,
+        mint(carolId, [CHECKOUT, PAYROLL]),
+        undefined,
+        "default",
+      );
+      expect(await until(async () => (await bodies(carol.mesh)).includes(blob))).toBe(true);
+      const upload = (await carol.mesh.blobs.put(photo, { partition: payrollKey })).unwrap();
+      await authority.on(PAYROLL).unwrap().db.insert(notes).values({ id: "p2", body: upload });
+      expect(await until(async () => (await bodies(carol.mesh)).includes(upload))).toBe(true);
+      expect((await carol.mesh.blobs.fetch(blob, { timeoutMs: 3000 })).unwrap()).toEqual(payslip);
+
+      await nextMillisecond();
+      carol.mesh.grants.register(mint(carolId, [CHECKOUT])).unwrap();
+      expect(await until(async () => !(await carol.mesh.blobs.has(blob)))).toBe(true);
+      expect(await bodies(carol.mesh)).toEqual([]);
+      // and the gated room will not serve it to her again, once her session carries the new grant
+      const refused = async () => {
+        const asked = await carol.mesh.blobs.fetch(blob, { timeoutMs: 500 });
+        return asked.isErr() && asked.error._tag === "BlobNotFound";
+      };
+      expect(await until(refused)).toBe(true);
+      // what she made is still in her cache
+      expect(await carol.mesh.blobs.has(upload)).toBe(true);
+
+      await Promise.all([authority.stop(), carol.mesh.stop()]);
     } finally {
       await relay.stop();
       rmSync(dataDir, { recursive: true, force: true });

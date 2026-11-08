@@ -136,8 +136,9 @@ export interface BlobStore {
   /**
    * Where these bytes came from, which is the whole of what may be dropped and what may not.
    *
-   * `undefined` for bytes this store does not hold. A store with no answer — the in-memory one —
-   * reports everything as `mine`, which is the safe direction: it never licenses an eviction.
+   * `undefined` for bytes this store does not hold. Bytes stored by `put` stay `mine` when the
+   * same bytes arrive again through `putAt`. A store with no record of origin must answer `mine`,
+   * the safe direction: it never licenses an eviction.
    */
   readonly origin: (hash: BlobHash) => Promise<BlobOrigin | undefined>;
   /**
@@ -166,10 +167,13 @@ const missing = (hash: BlobHash) =>
 /** A store that lives as long as the process: a device's cache, and what tests run against. */
 export function memoryBlobStore(): BlobStore {
   const held = new Map<string, Uint8Array>();
+  // the hashes `put` stored; an echo through `putAt` does not demote one, as in `sqlBlobStore`
+  const mine = new Set<string>();
   return {
     put: (bytes) => {
       const hash = hashOf(bytes);
       held.set(hash, Uint8Array.from(bytes));
+      mine.add(hash);
       return Promise.resolve(Result.ok(hash));
     },
     putAt: (hash, bytes) =>
@@ -183,17 +187,14 @@ export function memoryBlobStore(): BlobStore {
     has: (hash) => Promise.resolve(held.has(hash)),
     delete: (hash) => {
       held.delete(hash);
+      mine.delete(hash);
       return Promise.resolve();
     },
-    /**
-     * This store keeps no origin, so it answers the only safe way: everything it holds is
-     * irreplaceable. A cache that wrongly says "you can drop this" loses bytes; one that wrongly
-     * says "keep it" costs space, and only one of those is recoverable.
-     */
-    origin: (hash) => Promise.resolve(held.has(hash) ? "mine" : undefined),
+    origin: (hash) =>
+      Promise.resolve(held.has(hash) ? (mine.has(hash) ? "mine" : "cached") : undefined),
     irreplaceable: () =>
-      // SAFETY: the keys are the hashes `put`/`putAt` stored them under
-      Promise.resolve([...held.keys()] as BlobHash[]),
+      // SAFETY: the keys are the hashes `put` stored them under
+      Promise.resolve([...mine] as BlobHash[]),
   };
 }
 
