@@ -1,5 +1,5 @@
 import type { EventId } from "@syncmesh/kernel";
-import type { Transport } from "@syncmesh/transport";
+import type { DurabilityLost, Transport } from "@syncmesh/transport";
 
 import { Result } from "@syncmesh/result";
 
@@ -19,10 +19,15 @@ export interface SyncedOptions {
  * `engine.acknowledge`, and no reader of `mesh.peers` or the sync column ever sees a relay as a
  * peer. A mesh with no such transport answers {@link NoSuchCapability} at once; one whose only
  * relay keeps its log in memory waits, because that room's acks are not durability.
+ *
+ * {@link DurabilityLost} once every hop it waited on replaced its log first (D42, decided
+ * 2026-11-08): what the old log held is not held by the new one. A hop that neither acks nor
+ * replaces its log keeps the answer open, so one hop lost and another silent means no answer at
+ * all. There is no timeout; a caller that wants one races its own.
  */
 export function createSynced(
   transports: () => readonly Transport[],
-): (options: SyncedOptions) => Promise<Result<void, NoSuchCapability>> {
+): (options: SyncedOptions) => Promise<Result<void, NoSuchCapability | DurabilityLost>> {
   return async ({ event }) => {
     // a local id panics here, as it does for `delivered`: it never travels, so nothing could hold it
     eventTarget(event);
@@ -36,7 +41,20 @@ export function createSynced(
           message: "no transport here keeps a log that outlives it",
         }),
       );
-    await Promise.race(answers);
-    return Result.ok(undefined);
+    return firstHeld(answers);
   };
 }
+
+/** The first hop to hold the event, or the last loss once every hop has lost it. */
+const firstHeld = (
+  answers: readonly Promise<Result<void, DurabilityLost>>[],
+): Promise<Result<void, DurabilityLost>> =>
+  new Promise((resolve) => {
+    let lost = 0;
+    for (const answer of answers)
+      void answer.then((held) => {
+        if (held.isOk()) return resolve(held);
+        lost += 1;
+        if (lost === answers.length) resolve(held);
+      });
+  });

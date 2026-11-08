@@ -1,7 +1,7 @@
 import type { PeerId } from "@syncmesh/kernel";
 import type { Transport } from "@syncmesh/transport";
 
-import { createMemoryEventStore } from "@syncmesh/engine";
+import { createMemoryEventStore, scopeFrom } from "@syncmesh/engine";
 import { authorityTables } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import { eventFrame } from "@syncmesh/transport";
@@ -18,7 +18,7 @@ import {
   writeConsult,
   type GatedPeer,
 } from "@syncmesh/transport/test-fixtures";
-import { signEvent } from "@syncmesh/wire";
+import { encodeCbor, signEvent } from "@syncmesh/wire";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 
 import type { Entitlement, RelayAdmission } from "../admission.js";
@@ -27,6 +27,7 @@ import type { RelayRoom } from "../room.js";
 import { createGate } from "../admission.js";
 import { memoryFanout } from "../fanout.js";
 import { joinFrame } from "../frames.js";
+import { refusalsOver } from "../refused.js";
 import { hostTuning } from "../serve.js";
 import { relayTransport } from "../transport.js";
 import {
@@ -340,6 +341,159 @@ describe("visibility: authority — admission at the relay (D24-A)", () => {
     expect(await until(() => holds(b, CONSULTS, "x"), 3000)).toBe(true);
     expect(idsIn(b, CONSULTS)).toEqual(["x", "y"]);
     room.close();
+  });
+
+  test("a refused row that arrives again after the purge is purged on arrival (D45)", async () => {
+    const room = await gatedRoom();
+    const authority = await seeded(room);
+    const b = gatedPeer(43);
+    clinics.set(b.identity.peerId, ["a", "b"]);
+    await attach(b, dialTo(room).dial);
+    expect(idsIn(b, CONSULTS)).toEqual(["x", "y"]);
+
+    clinics.set(b.identity.peerId, ["b"]);
+    room.reentitle([b.identity.peerId]);
+    expect(await until(() => !holds(b, CONSULTS, "x"), 3000)).toBe(true);
+
+    // a source still on the old answer hands the row over as state: purged as it lands
+    (await b.engine.installSnapshot(authority.engine.snapshot())).unwrap();
+    expect(await until(() => !holds(b, CONSULTS, "x"), 3000)).toBe(true);
+    expect(holds(b, CONSULTS, "y")).toBe(true);
+    // and as the event, in flight from before the narrowing
+    const x = (await authority.engine.eventsSince(new Map()))
+      .unwrap()
+      .filter(({ event }) => event.changes.some((c) => c.table === CONSULTS))
+      .map(({ event }) => signEvent(event, authority.identity))
+      .slice(0, 1);
+    (await b.engine.receiveBatch(x)).unwrap();
+    expect(await until(() => !holds(b, CONSULTS, "x"), 3000)).toBe(true);
+    expect(idsIn(b, CONSULTS)).toEqual(["y"]);
+
+    // a widening admits it again, and the memory of the refusal does not purge what it re-pages
+    clinics.set(b.identity.peerId, ["a", "b"]);
+    room.reentitle([b.identity.peerId]);
+    expect(await until(() => holds(b, CONSULTS, "x"), 3000)).toBe(true);
+    await tick(100);
+    expect(idsIn(b, CONSULTS)).toEqual(["x", "y"]);
+    room.close();
+  });
+
+  test("an event the room holds and cannot send is not taken as refused (D45)", async () => {
+    // the authority's own log holds its writes unsigned: what a room holding one cannot relay
+    const authority = gatedPeer(7);
+    await writeCatalog(authority, "c1", "aspirin");
+    (await writeConsult(authority, "x", "a")).unwrap();
+    (await writeConsult(authority, "y", "b")).unwrap();
+    const own = (await authority.engine.eventsSince(new Map())).unwrap();
+    const signed = own.map(({ event }) => signEvent(event, authority.identity));
+    // written second: catalog, x, y
+    const store = createMemoryEventStore();
+    for (const [i, entry] of own.entries())
+      (await store.append(i === 1 ? { event: entry.event } : (signed[i] ?? entry))).unwrap();
+    const room = await gatedRoom({ store });
+
+    const b = gatedPeer(43);
+    clinics.set(b.identity.peerId, ["a", "b"]);
+    await attach(b, dialTo(room).dial);
+    // b comes by x from a peer: the room admits b to it, and can never send it
+    (await b.engine.receiveBatch(signed)).unwrap();
+    expect(idsIn(b, CONSULTS)).toEqual(["x", "y"]);
+    const purges: number[] = [];
+    b.engine.onFoldBatch((batch) => {
+      if (batch.source === "purge") purges.push(batch.eventCount);
+    });
+    // a new entitlement re-pages b from nothing, and the room's scan cannot stand above x
+    clinics.set(b.identity.peerId, ["a", "b", "c"]);
+    room.reentitle([b.identity.peerId]);
+    expect(
+      await until(() => scopeFrom(b.engine.coverage().scope).entitlement === "clinics:a,b,c", 3000),
+    ).toBe(true);
+    await tick(100);
+    expect(idsIn(b, CONSULTS)).toEqual(["x", "y"]);
+    expect(purges).toEqual([]);
+    room.close();
+  });
+
+  test("a re-page over a room whose copy of an event does not verify keeps the event (D45)", async () => {
+    const authority = gatedPeer(7);
+    await writeCatalog(authority, "c1", "aspirin");
+    (await writeConsult(authority, "x", "a")).unwrap();
+    (await writeConsult(authority, "y", "b")).unwrap();
+    const own = (await authority.engine.eventsSince(new Map())).unwrap();
+    const signed = own.map(({ event }) => signEvent(event, authority.identity));
+    // the room holds x under a signature that does not verify: it sends it, and b cannot take it
+    const store = createMemoryEventStore();
+    for (const [i, entry] of signed.entries())
+      (await store.append(i === 1 ? { ...entry, sig: new Uint8Array(64) } : entry)).unwrap();
+    const room = await gatedRoom({ store });
+
+    const b = gatedPeer(43);
+    clinics.set(b.identity.peerId, ["a", "b"]);
+    await attach(b, dialTo(room).dial);
+    (await b.engine.receiveBatch(signed)).unwrap();
+    expect(idsIn(b, CONSULTS)).toEqual(["x", "y"]);
+    const purges: number[] = [];
+    b.engine.onFoldBatch((batch) => {
+      if (batch.source === "purge") purges.push(batch.eventCount);
+    });
+    clinics.set(b.identity.peerId, ["a", "b", "c"]);
+    room.reentitle([b.identity.peerId]);
+    expect(
+      await until(() => scopeFrom(b.engine.coverage().scope).entitlement === "clinics:a,b,c", 3000),
+    ).toBe(true);
+    await tick(100);
+    expect(idsIn(b, CONSULTS)).toEqual(["x", "y"]);
+    expect(purges).toEqual([]);
+    room.close();
+  });
+
+  test("an event the re-page sent that fails to verify here is kept and said, not purged as refused (D45)", async () => {
+    const authority = gatedPeer(7);
+    (await writeConsult(authority, "x", "a")).unwrap();
+    const [entry] = (await authority.engine.eventsSince(new Map())).unwrap();
+    if (entry === undefined) throw new Error("the authority wrote x");
+    const signed = signEvent(entry.event, authority.identity);
+    const b = gatedPeer(43);
+    (await b.engine.receiveBatch([signed])).unwrap();
+    const drops: string[] = [];
+    const memory = refusalsOver(b.context, (why) => void drops.push(why));
+    const session = memory.session();
+    // the room sent x again, and the bytes that arrived do not verify
+    const forged = encodeCbor([signed.core, new Uint8Array(64)]);
+    session.unverified(forged);
+    const scoped = { ...b.engine.coverage(), scope: "clinics:a" };
+    await session.repaged(scoped, { sent: undefined, entitled: undefined });
+    expect(holds(b, CONSULTS, "x")).toBe(true);
+    expect(drops.some((why) => why.includes("failed to verify"))).toBe(true);
+    await memory.stop();
+  });
+
+  test("a purge through the mesh that rejects is said, and the purges after it still run (D45)", async () => {
+    const authority = gatedPeer(7);
+    (await writeConsult(authority, "x", "a")).unwrap();
+    const [entry] = (await authority.engine.eventsSince(new Map())).unwrap();
+    if (entry === undefined) throw new Error("the authority wrote x");
+    const b = gatedPeer(43);
+    (await b.engine.receiveBatch([signEvent(entry.event, authority.identity)])).unwrap();
+    const drops: string[] = [];
+    let asked = 0;
+    const context = {
+      ...b.context,
+      purge: () => {
+        asked += 1;
+        return Promise.reject(new Error("the disk is full"));
+      },
+    };
+    const memory = refusalsOver(context, (why) => void drops.push(why));
+    const scoped = { ...b.engine.coverage(), scope: "clinics:a" };
+    // a re-page that did not send x again: x is refused, and the purge of it rejects
+    await memory.session().repaged(scoped, { sent: undefined, entitled: undefined });
+    expect(asked).toBe(1);
+    expect(drops.some((why) => why.includes("could not be purged"))).toBe(true);
+    // and the next re-page still purges
+    await memory.session().repaged(scoped, { sent: undefined, entitled: undefined });
+    expect(asked).toBe(2);
+    await memory.stop();
   });
 
   test("a re-entitlement that only widens purges nothing", async () => {

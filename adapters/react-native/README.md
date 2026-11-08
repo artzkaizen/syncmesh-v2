@@ -30,6 +30,14 @@ everything a person does to fix their connection ends with them coming back to t
 drops and returns while the app stays in front. It keys on `isInternetReachable`, not `isConnected`,
 because a phone on an access point with no route is connected and useless.
 
+`foreground()` also says when the app goes to the `background`, which wakes nothing: the mesh marks
+its log's session clean there and open again on `active` (D39), so an app the system ends in the
+background is not taken for one that crashed, and the next launch skips the page-by-page log check.
+On iOS, swiping an app away from the app switcher often ends it from `inactive` with no
+`background` change first. That session was never marked clean, so the next launch runs the check:
+slower, never wrong. `inactive` is not taken as background because it also passes for a
+notification shade or an incoming call.
+
 ## The signer — `@syncmesh/react-native/crypto`
 
 ```ts

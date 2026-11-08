@@ -4,18 +4,27 @@ import type {
   ReceiveReport,
   StoreFailure,
   StrandedWrites,
+  TornRun,
   Unsubscribe,
 } from "@syncmesh/engine";
 import type { EventId, PeerId } from "@syncmesh/kernel";
 import type { Result as ResultType } from "@syncmesh/result";
-import type { Accepted, BelowFloor, Rejoins, SnapshotInstalled } from "@syncmesh/transport";
+import type {
+  Accepted,
+  BelowFloor,
+  Rejoins,
+  SnapshotInstalled,
+  Transport,
+} from "@syncmesh/transport";
 
 import { omitUndefined, Result } from "@syncmesh/result";
 import { createRejoins } from "@syncmesh/transport";
 
 import type { StoreSweep } from "./sweep.js";
+import type { TornIssue, TornWatch } from "./torn.js";
 
 import { HistoryUnavailable, RebuildRefused } from "./errors.js";
+import { watchTorn } from "./torn.js";
 
 /**
  * What is stuck and why, as stable causes (book ch. 18): the quarantine's parked events read
@@ -100,6 +109,24 @@ export interface RecoveryView {
    * events. `"deferred"` when no session to that peer is open: the next one asks.
    */
   readonly acceptState: (peer: PeerId) => Accepted;
+  /**
+   * Runs of events this device's log held and a read found gone — a page the disk lost (D39) — and
+   * where getting each back stands. The mesh rejoins on its own: once a linked peer's cursors say
+   * it holds a run, the run is reopened and asked for again, and the issue clears when it is held.
+   * Empty on a log nothing has torn, which is almost all of them.
+   */
+  readonly torn: () => readonly TornIssue[];
+  /** Fires when {@link RecoveryView.torn} would answer differently; read it again. `mesh.status` subscribes too. */
+  readonly onTorn: (listener: () => void) => Unsubscribe;
+  /**
+   * Takes a torn run as gone for good, so the log reads again without it: what a `lost` run (this
+   * device's local-only events, which nothing else held) needs before anything else can read the
+   * log, and what a synced run no peer will ever send can be given. Deliberately a call someone
+   * makes. The issue is dropped either way, so the status stops blocking; a synced run accepted
+   * this way is still asked for as a hole. `false` when no such run is an issue, or the log could
+   * not record it.
+   */
+  readonly acceptTorn: (run: TornRun) => Promise<boolean>;
   /**
    * The last resort: take the state from a source that can vouch for it (book ch. 18).
    *
@@ -190,6 +217,8 @@ export interface RecoveryDeps {
   readonly stores?: StoreSweep;
   /** The mesh's record of peers this device is below the floor of (D46). */
   readonly rejoins?: Rejoins;
+  /** The mesh's watch over a torn log (D39). */
+  readonly torn?: TornWatch;
 }
 
 /**
@@ -212,12 +241,14 @@ export const recoveryDeps = (
   engine: Engine,
   self: PeerId,
   snapshots: { readonly subscribe: RecoveryDeps["onSnapshot"] },
-  sources: RecoveryDeps["sources"],
-): RecoveryDeps & { readonly rejoins: Rejoins } => ({
+  sources: () => readonly Transport[],
+): RecoveryDeps & { readonly rejoins: Rejoins; readonly torn: TornWatch } => ({
   sources,
   onSnapshot: snapshots.subscribe,
   pending: () => unacknowledged(engine, self),
   rejoins: createRejoins(),
+  // a log a read finds torn is an issue, and a rejoin from whichever linked peer holds it (D39)
+  torn: watchTorn({ engine, transports: sources }),
 });
 
 export function openRecovery(engine: Engine, deps?: RecoveryDeps): RecoveryView {
@@ -255,6 +286,9 @@ export function openRecovery(engine: Engine, deps?: RecoveryDeps): RecoveryView 
     belowFloor: () => deps?.rejoins?.issues() ?? [],
     onBelowFloor: (listener) => deps?.rejoins?.onChange(listener) ?? (() => undefined),
     acceptState: (peer) => deps?.rejoins?.accept(peer) ?? "nothing-to-accept",
+    torn: () => deps?.torn?.list() ?? [],
+    onTorn: (listener) => deps?.torn?.onChange(listener) ?? (() => undefined),
+    acceptTorn: (run) => deps?.torn?.accept(run) ?? Promise.resolve(false),
     rebuild: (options = {}) => rebuildFrom(deps, options),
     ...omitUndefined({ stores: deps?.stores }),
   };

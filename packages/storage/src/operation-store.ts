@@ -170,14 +170,25 @@ const decodeOp = (row: SqlRow): ResultType<OperationRow, StoreFailure> => {
   return Result.ok(base);
 };
 
+/** How {@link operationStore} writes. */
+export interface OperationStoreOptions {
+  /**
+   * Run before each write — `record`, `acknowledge`, `vouch`, `refuse`, `correct`. The ledger
+   * lives in the log's file, so over opened stores this is their `beforeWrite`: a receipt that
+   * lands while the app is in the background marks the session open first (D39).
+   */
+  readonly beforeWrite?: () => Promise<void>;
+}
+
 /**
  * Opens (and creates, idempotently) the operation and receipt tables on this connection.
  *
  * @example
- * const operations = (await operationStore(driver)).unwrap();
+ * const operations = (await operationStore(stores.driver, { beforeWrite: stores.beforeWrite })).unwrap();
  */
 export function operationStore(
   driver: SqlDriver,
+  options: OperationStoreOptions = {},
 ): Promise<ResultType<OperationStore, StoreFailure>> {
   const sql = driverDialect(driver).operations;
   return Result.gen(async function* () {
@@ -190,6 +201,13 @@ export function operationStore(
     );
     const rows = (query: string, params: readonly (string | number)[]) =>
       attempt("operation store read failed", () => driver.all(query, params));
+    const { beforeWrite } = options;
+    /** One write, after `beforeWrite` has settled. */
+    const write = (message: string, statements: () => Promise<void>) =>
+      attempt(message, async () => {
+        await beforeWrite?.();
+        await statements();
+      });
     const { refusalsAt, refused, allRefused } = createRefusalReads({
       rows,
       decodeOp,
@@ -198,7 +216,7 @@ export function operationStore(
     });
     const store: OperationStore = {
       record: (op) =>
-        attempt("operation record failed", () =>
+        write("operation record failed", () =>
           driver.run(sql.insertOp, [
             op.id,
             op.peer,
@@ -226,11 +244,11 @@ export function operationStore(
           return Result.ok(yield* Result.await(allRefused(held)));
         }),
       acknowledge: (holder, author, throughSeq, atMs) =>
-        attempt("receipt insert failed", () =>
+        write("receipt insert failed", () =>
           driver.run(sql.insertReceiptsThrough, [holder, atMs, author, throughSeq]),
         ),
       vouch: (holder, author, throughSeq, incarnation, atMs) =>
-        attempt("vouch insert failed", async () => {
+        write("vouch insert failed", async () => {
           await driver.run(sql.deleteStaleVouches, [holder, incarnation]);
           await driver.run(sql.deleteCoveredRefusals, [holder, author, throughSeq]);
           await driver.run(sql.insertVouchesThrough, [
@@ -259,7 +277,7 @@ export function operationStore(
           return Result.ok(yield* Result.await(allRefused(held)));
         }),
       refuse: (refuser, author, seq, { reason, verdict }, atMs) =>
-        attempt("refusal insert failed", () =>
+        write("refusal insert failed", () =>
           driver.run(sql.insertRefusal, [refuser, reason, verdict, atMs, author, seq, refuser]),
         ),
       refusals: (peer, seq) => refusalsAt(peer, seq),
@@ -276,7 +294,7 @@ export function operationStore(
           );
         }),
       correct: (peer, seq, by, reason) =>
-        attempt("correction mark failed", () =>
+        write("correction mark failed", () =>
           driver.run(sql.markCorrected, [by, reason, peer, seq]),
         ),
     };
