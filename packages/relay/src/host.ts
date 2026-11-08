@@ -4,7 +4,7 @@ import type { BlobHomes, BlobStore, SqlDriver, Stores } from "@syncmesh/storage"
 import type { Identity } from "@syncmesh/wire";
 
 import { omitUndefined, panic } from "@syncmesh/result";
-import { sqlBlobHomes, sqlBlobStore } from "@syncmesh/storage";
+import { sqlBlobStore } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { bytesToHex, createIdentity, hexToBytes, randomBytes } from "@syncmesh/wire";
 
@@ -14,6 +14,7 @@ import type { RelayConnection, RelayRoomOptions } from "./room.js";
 import type { HeldRoom, OpenedRoom } from "./rooms.js";
 import type { RelaySocket } from "./sender.js";
 
+import { openBlobHomes } from "./blob-keeper.js";
 import { DEFAULT_LIMITS } from "./limits.js";
 import { createRoomAccess } from "./posture.js";
 import { openRelayRoom } from "./room.js";
@@ -209,8 +210,7 @@ export async function durableRoomStore(
   if (options.blobs !== false) {
     const opened = await sqlBlobStore(driver);
     if (opened.isOk()) blobs = opened.value;
-    const homes = await sqlBlobHomes(driver);
-    if (homes.isOk()) blobHomes = homes.value;
+    blobHomes = await openBlobHomes(driver);
   }
   return {
     store: stores.events,

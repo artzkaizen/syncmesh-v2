@@ -74,6 +74,14 @@ describe("an event of a lost partition that arrives after the purge (D45)", () =
     expect(holds("late")).toBe(false);
     expect(told.length).toBe(1); // told once, not once per late event
 
+    // a peer still on the wider grant hands over a snapshot carrying the lost partition's rows
+    await write("snapshotted");
+    await device.engine.installSnapshot(author.engine.snapshot());
+    await watch.idle();
+    expect(holds("snapshotted")).toBe(false);
+    expect(holds("before")).toBe(false);
+    expect(told.length).toBe(1);
+
     // granted again: an arrival is kept
     grants.register(grantOf([ACME, PAYROLL], 2)).unwrap();
     (await device.engine.receiveBatch(await write("after"))).unwrap();

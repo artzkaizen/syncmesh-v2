@@ -118,7 +118,12 @@ export interface MeshOptions<
    * names fewer partitions, or the authority's gate re-paged it and withheld rows of these tables.
    * Runs before anything is removed — tell the person — and is awaited; a throw is warned about
    * and the purge goes ahead. Then the device drops those rows, the events of other devices that
-   * wrote them, their doc logs and the cached blobs only they named. Its own writes are kept.
+   * wrote them, their doc logs, and the cached blobs only those rows named unless this device
+   * made them. Its own writes are kept.
+   *
+   * Return promptly: a row narrowing found by a relay re-page waits on this hook inside that
+   * relay session, so sync from it stalls until the hook settles. Show the notice and return;
+   * do not wait for the person to dismiss it.
    *
    * Hygiene on an honest device, not a security boundary: a modified client keeps what it was
    * sent. A later widening brings the rows back by re-paging.

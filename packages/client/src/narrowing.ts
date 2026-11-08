@@ -57,6 +57,27 @@ function rescope(engine: Engine, partitions: readonly PartitionKey[]): void {
   engine.adoptCoverage({ synced: coverage.synced, local: coverage.local, scope });
 }
 
+/** A purge of every held row and event of these partitions. */
+const partitionsOut = (lost: ReadonlySet<PartitionKey>): PurgeScope => {
+  const out = (partition: PartitionKey | undefined): boolean =>
+    partition !== undefined && lost.has(partition);
+  return { events: (event) => out(event.partition), rows: (record) => out(record.partition) };
+};
+
+/** Folds that bring rows from elsewhere: a late one of a lost partition is purged on arrival. */
+const ARRIVALS = new Set<FoldBatch["source"]>(["remote", "snapshot", "repair"]);
+
+/** Whether a fold wrote any row of these partitions. */
+const wroteInto = (engine: Engine, batch: FoldBatch, lost: ReadonlySet<PartitionKey>): boolean => {
+  const state = engine.state();
+  for (const [table, keys] of batch.writeKeys)
+    for (const key of keys) {
+      const partition = getRecord(state, table, key)?.partition;
+      if (partition !== undefined && lost.has(partition)) return true;
+    }
+  return false;
+};
+
 /**
  * What a narrowed entitlement does on this device (D45): the app hears it first, then the device
  * purges what it may no longer read and the cached blobs only those rows named.
@@ -70,24 +91,6 @@ function rescope(engine: Engine, partitions: readonly PartitionKey[]): void {
  * purges on the next session that carries the grant. A failure is a warning, not a stop: the
  * device keeps working, and the next narrowing it learns of tries again.
  */
-/** A purge of every held row and event of these partitions. */
-const partitionsOut = (lost: ReadonlySet<PartitionKey>): PurgeScope => {
-  const out = (partition: PartitionKey | undefined): boolean =>
-    partition !== undefined && lost.has(partition);
-  return { events: (event) => out(event.partition), rows: (record) => out(record.partition) };
-};
-
-/** Whether a fold wrote any row of these partitions. */
-const wroteInto = (engine: Engine, batch: FoldBatch, lost: ReadonlySet<PartitionKey>): boolean => {
-  const state = engine.state();
-  for (const [table, keys] of batch.writeKeys)
-    for (const key of keys) {
-      const partition = getRecord(state, table, key)?.partition;
-      if (partition !== undefined && lost.has(partition)) return true;
-    }
-  return false;
-};
-
 export function watchNarrowing(deps: NarrowingDeps) {
   const { engine, self, grants } = deps;
   let held = grants.all().find((grant) => grant.device === self)?.partitions;
@@ -142,7 +145,7 @@ export function watchNarrowing(deps: NarrowingDeps) {
   });
 
   const offFolds = engine.onFoldBatch((batch) => {
-    if (batch.source !== "remote" || lost.size === 0 || !wroteInto(engine, batch, lost)) return;
+    if (!ARRIVALS.has(batch.source) || lost.size === 0 || !wroteInto(engine, batch, lost)) return;
     const late = new Set(lost);
     queue = queue.then(() => purgeQuietly(partitionsOut(late)));
   });

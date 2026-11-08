@@ -1,9 +1,9 @@
 import type { StoreFailure } from "@syncmesh/engine";
 import type { PartitionKey, SyncEvent } from "@syncmesh/kernel";
-import type { BlobError, BlobHash, BlobHomes, BlobStore } from "@syncmesh/storage";
+import type { BlobError, BlobHash, BlobHomes, BlobStore, SqlDriver } from "@syncmesh/storage";
 
-import { Result } from "@syncmesh/result";
-import { BlobQuotaExceeded, blobNamesIn } from "@syncmesh/storage";
+import { Result, panic } from "@syncmesh/result";
+import { BlobQuotaExceeded, blobNamesIn, sqlBlobHomes } from "@syncmesh/storage";
 import { Temporal, addToInstant } from "@syncmesh/temporal";
 
 /** What a room lends the blobs it keeps: where they live, its budget and window, and its clock. */
@@ -174,3 +174,13 @@ export function createBlobKeeper(options: BlobKeeperOptions): BlobKeeper {
     },
   };
 }
+
+/**
+ * A durable room's blob homes on its own database, or a stop: a gated room that fell back to
+ * homes in memory would answer every fetch `blob-missing` after its next restart, unsaid (D44).
+ */
+export const openBlobHomes = async (driver: SqlDriver): Promise<BlobHomes> =>
+  (await sqlBlobHomes(driver)).match({
+    ok: (homes) => homes,
+    err: (failure) => panic(`the room's blob homes failed to open: ${failure.message}`),
+  });

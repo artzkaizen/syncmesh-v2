@@ -16,11 +16,12 @@ import {
   createRelayHost,
   decodeRelayFrame,
   hostedPosture,
+  openBlobHomes,
   relayIdentity,
   relayEpoch,
 } from "@syncmesh/relay";
 import { omitUndefined, panic } from "@syncmesh/result";
-import { sqlBlobHomes, sqlBlobStore, sqliteEventStore } from "@syncmesh/storage";
+import { sqlBlobStore, sqliteEventStore } from "@syncmesh/storage";
 
 import type { DurableSqlStorage } from "./driver.js";
 import type { DurableWebSocket } from "./socket.js";
@@ -151,10 +152,7 @@ export function relayDurableHost(
       err: (failure) => panic(`the room's log failed to open: ${failure.message}`),
     });
     const blobs = options.blobs === false ? undefined : await openBlobs(driver);
-    const blobHomes =
-      options.blobs === false
-        ? undefined
-        : (await sqlBlobHomes(driver)).match({ ok: (value) => value, err: () => undefined });
+    const blobHomes = options.blobs === false ? undefined : await openBlobHomes(driver);
     return {
       store,
       epoch: await relayEpoch(driver),
