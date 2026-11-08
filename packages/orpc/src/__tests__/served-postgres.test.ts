@@ -557,7 +557,7 @@ suite("what a served handler cannot reach, however it asks (D43, E13)", () => {
     const router = {
       r: query.input(z.object({})).handler(({ db }) =>
         db
-          .select({ id: m.id, slow: sql<string>`pg_sleep(2)::text` })
+          .select({ id: m.id, slow: sql<string>`pg_sleep(10)::text` })
           .from(m)
           .orderBy(m.id)
           .limit(1),
@@ -571,7 +571,9 @@ suite("what a served handler cannot reach, however it asks (D43, E13)", () => {
       self: SERVER,
       onCommit: () => () => undefined,
       readRole: fx.roles.reader,
-      timeout: Temporal.Duration.from({ milliseconds: 50 }),
+      // the statement's own timeout, well before the watchdog's twice that: a loaded machine
+      // that starts the statement late must not let the watchdog's cancel arrive first
+      timeout: Temporal.Duration.from({ milliseconds: 500 }),
     });
     const page = await source.readPage({ path: "r", input: {} });
     expect(page.isErr() && ReadFailed.is(page.error)).toBe(true);
@@ -763,26 +765,187 @@ suite("what a served read leaves behind, and what its login may hold (D43)", () 
     expect(await locks(key)).toEqual({ n: 0 });
   });
 
-  test("a fragment that turns its statement_timeout off is still cancelled once the pass is late", async () => {
+  test("a setting one read changes is undone before the next read of its pass", async () => {
     const source = sourceOver(
       fx,
       {
         off: beside(sql`set_config('statement_timeout', '0', true)`),
         slow: beside(sql`pg_sleep(10)::text`),
       },
-      { timeout: Temporal.Duration.from({ milliseconds: 100 }) },
+      // the watchdog's cancel is three timeouts away: the statement's own comes first
+      { timeout: Temporal.Duration.from({ milliseconds: 500 }) },
     );
-    const started = Temporal.Now.instant();
     const pages = await source.readPages?.([
       { path: "off", input: {} },
       { path: "slow", input: {} },
     ]);
-    const took = Temporal.Now.instant().since(started);
     expect(pages?.[0]?.isOk()).toBe(true);
     const slow = pages?.[1];
     expect(slow?.isErr() && ReadFailed.is(slow.error)).toBe(true);
-    expect(slow?.isErr() && slow.error.message).toBe("canceling statement due to user request");
-    expect(Temporal.Duration.compare(took, { seconds: 3 })).toBe(-1);
+    expect(slow?.isErr() && slow.error.message).toBe(
+      "canceling statement due to statement timeout",
+    );
+  });
+
+  /** A read that turns its own timeout off with a statement beside its query, then sleeps. */
+  const untimed: Handler = ({ db }) => {
+    void db
+      .select({ off: sql<string>`set_config('statement_timeout', '0', true)` })
+      .from(sql`(select 1) z`)
+      .then(
+        () => undefined,
+        () => undefined,
+      );
+    return beside(sql`pg_sleep(10)::text`)({ db });
+  };
+
+  /** What each of `sources` answered to `untimed`, read at once, and how long that took. */
+  const cancelled = async (sources: readonly ReturnType<typeof sourceOver>[]) => {
+    const started = Temporal.Now.instant();
+    const pages = await Promise.all(
+      sources.map((source) => source.readPage({ path: "untimed", input: {} })),
+    );
+    const took = Temporal.Now.instant().since(started);
+    return {
+      answers: pages.map((page) => (page.isErr() ? page.error.message : "read")),
+      quick: Temporal.Duration.compare(took, { seconds: 3 }) < 0,
+    };
+  };
+
+  test("a read that turns its timeout off is cancelled, though the pool has no connection free", async () => {
+    const timeout = Temporal.Duration.from({ milliseconds: 100 });
+    const one = postgres(urlAs(fx.roles.login, fx.roles.password), { max: 1 });
+    const alone = sourceOver(fx, { untimed }, { timeout, db: drizzle({ client: one }) });
+    // one connection, held by the read the watchdog has to stop
+    expect(await cancelled([alone])).toEqual({
+      answers: ["canceling statement due to user request"],
+      quick: true,
+    });
+    await one.end();
+    // four sockets on a pool of four: every connection is one of the reads
+    const full = Array.from({ length: 4 }, () => sourceOver(fx, { untimed }, { timeout }));
+    expect(await cancelled(full)).toEqual({
+      answers: Array.from({ length: 4 }, () => "canceling statement due to user request"),
+      quick: true,
+    });
+  });
+
+  test("a statement a handler left running fails no other read of its pass, and leaks no lock", async () => {
+    const key = 5000 + Math.floor(Math.random() * 1000);
+    const m = fx.mail;
+    const source = sourceOver(fx, {
+      // a statement started beside the query, and another when it lands: it fails after the rows
+      stray: ({ db }) => {
+        void db
+          .select({ id: m.id })
+          .from(m)
+          .then(() => db.select({ x: sql<string>`(1 / 0)::text` }).from(sql`(select 1) z`))
+          .then(
+            () => undefined,
+            () => undefined,
+          );
+        return beside(sql`pg_advisory_lock(${key}::bigint)::text`)({ db });
+      },
+      after: beside(sql`'after'`),
+    });
+    const pages = await source.readPages?.([
+      { path: "stray", input: {} },
+      { path: "after", input: {} },
+    ]);
+    expect(pages?.map((page) => (page.isOk() ? "read" : page.error.message))).toEqual([
+      "read",
+      "read",
+    ]);
+    expect(await locks(key)).toEqual({ n: 0 });
+  });
+
+  test("a prepared query whose text a handler rewrites sends one read, or nothing", async () => {
+    const m = fx.mail;
+    const bob = `'{"account":"bob","role":"owner","claims":{}}'`;
+    const sent: Promise<string>[] = [];
+    const source = sourceOver(fx, {
+      rewrite: ({ db }) => {
+        for (const text of [
+          `ROLLBACK; BEGIN; SELECT syncmesh_served.enter('${fx.roles.reader}', ${bob})`,
+          `SELECT 1; ROLLBACK; BEGIN; SELECT syncmesh_served.enter('${fx.roles.reader}', ${bob})`,
+          "COMMIT",
+        ]) {
+          const prepared = db
+            .select({ id: m.id })
+            .from(m)
+            .limit(1)
+            .prepare(`rewritten_${sent.length}`);
+          prepared.query.sql = text;
+          prepared.query.params = [];
+          sent.push(
+            prepared.execute().then(
+              () => "sent",
+              // Drizzle names the query it failed; what refused it is the cause
+              (error: Error) =>
+                error.cause instanceof Error ? error.cause.message : error.message,
+            ),
+          );
+        }
+        return beside(sql`'rewritten'`)({ db });
+      },
+      who: beside(
+        sql`(select syncmesh_served.principal() ->> 'account') || '/' || current_setting('transaction_read_only')`,
+      ),
+    });
+    const pages = await source.readPages?.([
+      { path: "rewrite", input: {} },
+      { path: "who", input: {} },
+    ]);
+    expect(await Promise.all(sent)).toEqual([
+      "a served read sends one SELECT at a time, and this is no SELECT",
+      "cannot insert multiple commands into a prepared statement",
+      "a served read sends one SELECT at a time, and this is no SELECT",
+    ]);
+    const who = pages?.[1];
+    expect(who?.isOk() && who.value.rows.map((row) => Object.fromEntries(row.row)["x"])).toEqual([
+      "alice/on",
+    ]);
+  });
+
+  test("an executor one reader kept by reflection never runs in the next reader's transaction", async () => {
+    const one = postgres(urlAs(fx.roles.login, fx.roles.password), { max: 1 });
+    const db = drizzle({ client: one });
+    const m = fx.mail;
+    let executor: any;
+    let late = Promise.resolve("unsent");
+    const routes = {
+      a: (({ db: mine }) => {
+        const prepared = mine
+          .select({
+            s: sql<string>`(select string_agg(subject, '|') from ${sql.raw(fx.names.mail)})`,
+          })
+          .from(sql`(select 1) z`)
+          .prepare("kept_by_reflection");
+        executor = Object.getOwnPropertyDescriptor(prepared, "executor")?.value;
+        return mine.select().from(m).orderBy(m.id).limit(1);
+      }) satisfies Handler,
+      b: (({ db: mine }) => {
+        late = (executor?.([]) ?? Promise.resolve("no executor")).then(
+          (rows: unknown) => JSON.stringify(rows),
+          (error: Error) => error.message,
+        );
+        return mine
+          .select({ id: m.id, x: sql<string>`pg_sleep(0.2)::text` })
+          .from(m)
+          .orderBy(m.id)
+          .limit(1);
+      }) satisfies Handler,
+    };
+    expect((await sourceOver(fx, routes, { db }).readPage({ path: "a", input: {} })).isOk()).toBe(
+      true,
+    );
+    const bob = await sourceOver(fx, routes, { db, principal: BOB }).readPage({
+      path: "b",
+      input: {},
+    });
+    expect(bob.isOk()).toBe(true);
+    expect(await late).toBe("a used its db after its read ended: a handler's db is for that read");
+    await one.end();
   });
 
   /** Runs `grant`, reads, takes it back with `revoke`, and answers what the read said. */

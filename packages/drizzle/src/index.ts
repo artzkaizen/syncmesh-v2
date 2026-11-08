@@ -25,6 +25,7 @@ export type { ProxyMethod, ProxyResult, ProxySink, WriteNaming } from "./proxy.j
 export type { ReadSchema, ReadScope } from "./read.js";
 export { readColumns, readPredicate, readScope } from "./read.js";
 export type { ReadOnlyDb } from "./scoped.js";
+export type { DriverClient } from "./scoped.js";
 export { readOnly, revocable, scopeReads } from "./scoped.js";
 export type { SyncState } from "./sync-of.js";
 export { ROW_SYNC_TABLE, columns, operationOf, syncOf } from "./sync-of.js";

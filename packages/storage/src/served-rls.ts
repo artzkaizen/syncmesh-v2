@@ -5,7 +5,7 @@ import { Temporal, durationMs } from "@syncmesh/temporal";
 
 import type { PrincipalSource, PrincipalStatement } from "./rls.js";
 
-import { policyPredicate, rulePredicate, str } from "./rls.js";
+import { SERVED_OPEN_POLICY, policyPredicate, rulePredicate, str } from "./rls.js";
 import {
   SERVED,
   block,
@@ -152,7 +152,8 @@ END $f$`,
  *
  * The rule's policy is restrictive, so another policy on the table that is open to `PUBLIC` does
  * not widen what `role` reads. A table that had no row-level security is given an open policy
- * for every role, so enabling it here changes nothing for them. A table that is no longer served
+ * for every role, so enabling it here changes nothing for them; `rlsDdl`, run before or after,
+ * drops that policy, so the app's own read rule holds in either order. A table that is no longer served
  * with a rule loses its grant and its policies.
  *
  * The DDL warns about every `SECURITY DEFINER` function `role` can run. It refuses a login that
@@ -216,7 +217,7 @@ export function servedReadDdl(
           ]
         : []),
       block(
-        `BEGIN IF NOT (SELECT relrowsecurity FROM pg_class WHERE oid = ${str(name.table)}::regclass) THEN ALTER TABLE ${name.table} ENABLE ROW LEVEL SECURITY; CREATE POLICY "syncmesh_served_others" ON ${name.table} FOR ALL TO PUBLIC USING (TRUE) WITH CHECK (TRUE); END IF; END`,
+        `BEGIN IF NOT (SELECT relrowsecurity FROM pg_class WHERE oid = ${str(name.table)}::regclass) THEN ALTER TABLE ${name.table} ENABLE ROW LEVEL SECURITY; CREATE POLICY "${SERVED_OPEN_POLICY}" ON ${name.table} FOR ALL TO PUBLIC USING (TRUE) WITH CHECK (TRUE); END IF; END`,
       ),
       `DROP POLICY IF EXISTS "syncmesh_served_read" ON ${name.table}`,
       `CREATE POLICY "syncmesh_served_read" ON ${name.table} AS PERMISSIVE FOR SELECT TO ${who} USING (TRUE)`,
@@ -263,8 +264,8 @@ export function servedReadSettings(
   const who = { account: principal.account, role: principal.role, claims: principal.claims };
   return {
     // the principal binds as text: a client whose jsonb serializer is `JSON.stringify` and one
-    // Drizzle wrapped send it alike. `pid` and `began` name this transaction to a cancel
-    sql: `SELECT ${ident(SERVED)}."enter"($1, $2::text::jsonb), set_config('role', $3, TRUE), set_config('transaction_read_only', 'on', TRUE), set_config('statement_timeout', $4, TRUE), pg_backend_pid() AS pid, (EXTRACT(EPOCH FROM now()) * 1000000)::bigint::text AS began`,
+    // Drizzle wrapped send it alike
+    sql: `SELECT ${ident(SERVED)}."enter"($1, $2::text::jsonb), set_config('role', $3, TRUE), set_config('transaction_read_only', 'on', TRUE), set_config('statement_timeout', $4, TRUE)`,
     params: [role, JSON.stringify(who), role, `${Math.max(1, Math.ceil(durationMs(timeout)))}`],
   };
 }

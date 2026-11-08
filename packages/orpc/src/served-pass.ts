@@ -2,11 +2,9 @@ import type { readColumns } from "@syncmesh/drizzle";
 import type { PrincipalStatement } from "@syncmesh/storage";
 import type { SQL, Table } from "drizzle-orm";
 
-import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { ReadFailed, ReadRefused } from "@syncmesh/window";
 import { sql } from "drizzle-orm";
-import { z } from "zod";
 
 /* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns, anti-slop/no-runtime-typeof -- this module is where a driver's error is read for its SQLSTATE: whatever a driver throws arrives as `unknown`, and its `code` is checked before it is trusted; a transaction hands back what a Drizzle statement answers, which the caller parses */
 
@@ -46,6 +44,9 @@ const REFUSING = new Set(["42", "22", "0A", "25"]);
  */
 const DEPLOYING = new Set(["42501", "42P01"]);
 
+/** `25P02`: the transaction was already aborted when the statement arrived. */
+const IN_FAILED_TRANSACTION = "25P02";
+
 /** The driver's own error under Drizzle's wrapper, and its SQLSTATE: what Postgres said, not the query it said it about. */
 const driverError = (cause: unknown) => {
   for (let at = cause; at instanceof Error; at = at.cause) {
@@ -83,6 +84,8 @@ export const failures = (grace: Temporal.Duration) => {
         message: cause instanceof Error ? cause.message : "the read failed",
       });
     if (DEPLOYING.has(driver.state)) return deploying(key, driver.message);
+    // aborted by a statement before this one, as a handler's floating one can: not this read's fault
+    if (driver.state === IN_FAILED_TRANSACTION) return new ReadFailed({ message: driver.message });
     return REFUSING.has(driver.state.slice(0, 2))
       ? refused(driver.message)
       : new ReadFailed({ message: driver.message });
@@ -99,38 +102,27 @@ export const drizzleStatement = ({ sql: text, params }: PrincipalStatement): SQL
       .map((part, i) => (i % 2 === 0 ? sql.raw(part) : sql`${params[Number(part) - 1] ?? null}`)),
   );
 
-/** What `servedReadSettings` answers: the backend the transaction runs on, and when it began. */
-const Entered = z.tuple([z.object({ pid: z.number(), began: z.string() })], z.unknown());
-
 /**
- * Cancels the transaction `entered` names once `reads` have had `timeout` each and one more:
- * a fragment can turn its own `statement_timeout` off, and this it cannot reach. Sent from
- * another connection of `db`'s pool, and only while that backend is still in this transaction.
- * Answers the stop, which settles once a cancel it sent has.
+ * Calls `cancel` once `reads` have had `timeout` each and one more, then every `timeout` until
+ * stopped: a fragment can turn its own `statement_timeout` off, and this it cannot reach.
+ * `cancel` is the pass's own (`servedClient`), which needs no connection of the pool to send.
+ * Answers the stop, which settles once every cancel it sent has.
  */
 export const watchdog = (
-  db: ServedDb,
   timeout: Temporal.Duration,
-  entered: unknown,
   reads: number,
+  cancel: () => Promise<unknown>,
 ) => {
-  const named = Entered.safeParse(entered);
-  if (!named.success) return () => Promise.resolve();
-  const [{ pid, began }] = named.data;
   let sent: Promise<unknown> = Promise.resolve();
-  const timer = setTimeout(
-    () => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const arm = (after: number) => {
+    timer = setTimeout(() => {
       // a cancel that cannot be sent leaves the read to its statement_timeout, as before
-      sent = Result.tryPromise({
-        try: async () =>
-          db.execute(
-            sql`SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE pid = ${pid} AND (EXTRACT(EPOCH FROM xact_start) * 1000000)::bigint = ${began}::bigint`,
-          ),
-        catch: (cause) => cause,
-      });
-    },
-    timeout.total("milliseconds") * (reads + 1),
-  );
+      sent = Promise.all([sent, cancel()]);
+      arm(timeout.total("milliseconds"));
+    }, after);
+  };
+  arm(timeout.total("milliseconds") * (reads + 1));
   return () => {
     clearTimeout(timer);
     return sent;

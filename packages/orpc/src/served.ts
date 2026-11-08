@@ -26,6 +26,7 @@ import type { QueryContext, QueryDef, Router } from "./procedures.js";
 import type { ServedDb, ServedTx } from "./served-pass.js";
 
 import { isDef } from "./procedures.js";
+import { isPostgresJs, servedClient } from "./served-client.js";
 import { SNAPSHOT, drizzleStatement, failures, refused, watchdog } from "./served-pass.js";
 import { toRow } from "./served-row.js";
 import { validate } from "./validate.js";
@@ -41,8 +42,8 @@ export interface ServedReadsOptions {
     readonly entries: readonly (ValidatorSchema["entries"][number] & Pick<SchemaEntry, "sync">)[];
   };
   /**
-   * A Drizzle over the Postgres that holds the served tables, **logged in as a login of its
-   * own**: one `servedReadDdl` granted the read role to (`grantTo`), and that holds nothing
+   * A postgres.js Drizzle (`drizzle-orm/postgres-js`; any other throws) over the Postgres that
+   * holds the served tables, **logged in as a login of its own**: one `servedReadDdl` granted the read role to (`grantTo`), and that holds nothing
    * else. Not the app's own connection: a read can always switch back to the role it logged in
    * as, so whatever that login may read, a served read may too. A login the DDL did not grant
    * the role is refused at the first read.
@@ -191,6 +192,11 @@ export function servedReads(options: ServedReadsOptions): PageSource {
     timeout = SERVED_READ_TIMEOUT,
     grace = GRACE,
   } = options;
+  // the watchdog and the statement gate are postgres.js's: a read they cannot hold is not served
+  if (!isPostgresJs(options))
+    throw new TypeError(
+      "servedReads needs a postgres.js Drizzle (drizzle-orm/postgres-js): a served read's statements are checked and cancelled through postgres.js",
+    );
   // SAFETY: `db` is a Postgres Drizzle, which has `transaction`; its transaction has `execute`,
   // `rollback` and the select chain every dialect has, and the subquery goes straight back into
   // the handler's own chain
@@ -251,30 +257,28 @@ export function servedReads(options: ServedReadsOptions): PageSource {
     return Result.ok({ rows: page, tables: queryTables(query) });
   };
 
-  /**
-   * One read, built and run on a `db` that is revoked once its rows are in, and whether Postgres
-   * refused its statement, which leaves the transaction aborted.
-   */
+  /** One read, built and run on a `db` that is revoked once its rows are in. */
   const runRead = async (
     tx: ServedTx,
     read: Planned,
-  ): Promise<{ readonly answer: Answer; readonly aborted: boolean }> => {
-    const fence = revocable(tx, () =>
-      refused(`${read.path} used its db after its read ended: a handler's db is for that read`),
+    guard: Parameters<typeof revocable>[2],
+  ): Promise<Answer> => {
+    const fence = revocable(
+      tx,
+      () =>
+        refused(`${read.path} used its db after its read ended: a handler's db is for that read`),
+      guard,
     );
     try {
       const built = build(fence.db, read);
-      if (built.isErr()) return { answer: Result.err(built.error), aborted: false };
+      if (built.isErr()) return Result.err(built.error);
       const { query, keyOf } = built.value;
       const rows = await Result.tryPromise({
         // SAFETY: a handler's select runs on await, and answers its rows
         try: async () => (await query) as readonly unknown[],
         catch: (cause) => classifyFailure(read.key, cause),
       });
-      return {
-        answer: rows.andThen((found) => toPage(query, found, keyOf)),
-        aborted: rows.isErr(),
-      };
+      return rows.andThen((found) => toPage(query, found, keyOf));
     } finally {
       fence.revoke();
     }
@@ -282,34 +286,30 @@ export function servedReads(options: ServedReadsOptions): PageSource {
 
   /**
    * Runs `reads` in one transaction, in order, after the statement that makes it this reader's.
-   * A statement Postgres refuses ends the transaction, so the reads after it run in the next one.
+   * Each read ends with a rollback to before the reads, once every statement its handler started
+   * has settled: whatever one did, a refused statement or a setting included, the next does not
+   * inherit.
    *
-   * Before the rollback, the session-level advisory locks a read took are let go: a rollback
-   * keeps them, and the pool hands the connection to the next pass still holding them.
+   * Before the transaction's rollback, the session-level advisory locks a read took are let go: a
+   * rollback keeps them, and the pool hands the connection to the next pass still holding them.
    */
   const pass = async (reads: readonly Planned[]): Promise<readonly Answer[]> => {
     const answers: Answer[] = [];
+    const client = servedClient();
     let stop = () => Promise.resolve<unknown>(undefined);
     const ended = await Result.tryPromise({
       try: () =>
         db.transaction(
           async (tx) => {
-            stop = watchdog(
-              db,
-              timeout,
-              await tx.execute(drizzleStatement(settings)),
-              reads.length,
-            );
+            await tx.execute(drizzleStatement(settings));
+            stop = watchdog(timeout, reads.length, client.cancel);
             await tx.execute(sql`SAVEPOINT syncmesh_reads`);
-            let aborted = false;
             for (const read of reads) {
-              const ran = await runRead(tx, read);
-              answers.push(ran.answer);
-              aborted = ran.aborted;
-              if (aborted) break;
+              const from = client.mark();
+              answers.push(await runRead(tx, read, client.guard));
+              await client.settled(from);
+              await tx.execute(sql`ROLLBACK TO SAVEPOINT syncmesh_reads`);
             }
-            // a statement that failed left the transaction aborted: back to before the reads
-            if (aborted) await tx.execute(sql`ROLLBACK TO SAVEPOINT syncmesh_reads`);
             await tx.execute(sql`SELECT pg_advisory_unlock_all()`);
             // nothing a read does is kept: the principal's row least of all
             tx.rollback();
@@ -330,8 +330,7 @@ export function servedReads(options: ServedReadsOptions): PageSource {
       const key = reads[n]?.key;
       if (key !== undefined && answer.isOk()) settled(key);
     }
-    if (answers.length === reads.length) return answers;
-    return [...answers, ...(await pass(reads.slice(answers.length)))];
+    return answers;
   };
 
   const readPages = async (requests: readonly ReadRequest[]): Promise<readonly Answer[]> => {

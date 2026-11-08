@@ -53,6 +53,26 @@ describe("revocable — a db that stops reaching the connection", () => {
     expect(sent.length).toBe(before);
   });
 
+  test("what reflection reaches of a fence, a kept executor or the client itself, is refused after revoke", async () => {
+    const { db, sent } = await counted();
+    const fence = revocable(db, ended);
+    const prepared = fence.db.select().from(notes).prepare("reflected");
+    const executor = Reflect.getOwnPropertyDescriptor(prepared, "executor")?.value;
+    const session = Reflect.getOwnPropertyDescriptor(fence.db, "session")?.value;
+    const client = session.client;
+    expect(await client.query("select 1 as one")).toMatchObject({ rows: [{ one: 1 }] });
+    fence.revoke();
+    const before = sent.length;
+    expect(await outcome(executor([]))).toBe("this read has ended");
+    // the text a prepared query sends is read when it is sent, so changing it changes nothing
+    Object.assign(Object.getOwnPropertyDescriptor(prepared, "query")?.value, {
+      sql: "select 'rewritten'",
+    });
+    expect(await outcome(prepared.execute())).toBe("this read has ended");
+    expect(() => client.query("select 1")).toThrow("this read has ended");
+    expect(sent.length).toBe(before);
+  });
+
   test("revoking one fence leaves the db it fenced, and another fence over it, working", async () => {
     const { db } = await counted();
     const first = revocable(db, ended);

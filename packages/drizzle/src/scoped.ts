@@ -20,7 +20,7 @@ const SOURCES = new Set([
 /** The read verbs a query handler keeps; everything absent from this set is a write (§2.4). */
 const READS = new Set(["select", "selectDistinct", "with", "$with", "$count", "$dynamic"]);
 
-/* oxlint-disable anti-slop/no-unsafe-dictionary-type, anti-slop/require-safety-comment-for-type-assertion, anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns, anti-slop/no-reflect-get, anti-slop/no-runtime-typeof, typescript/no-unsafe-return -- this module is a forwarding layer over Drizzle's builders, which are chained class instances with no public interface to narrow to and no declared shape to parse into. Every value here came *from* Drizzle and goes straight back *to* Drizzle; the one thing this code inspects is whether a source is a `Table`, and it does that with Drizzle's own `is()` rather than by guessing. Parsing anything else would mean inventing a domain type for a builder we deliberately do not model. The seam is narrow on purpose: two `get` traps, one method-name set each. */
+/* oxlint-disable anti-slop/no-unsafe-dictionary-type, anti-slop/require-safety-comment-for-type-assertion, anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns, anti-slop/no-reflect-get, anti-slop/no-runtime-typeof, typescript/no-unsafe-return -- this module is a forwarding layer over Drizzle's builders, which are chained class instances with no public interface to narrow to and no declared shape to parse into. Every value here came *from* Drizzle and goes straight back *to* Drizzle; the one thing this code inspects is whether a source is a `Table`, and it does that with Drizzle's own `is()` rather than by guessing. Parsing anything else would mean inventing a domain type for a builder we deliberately do not model. The seam is narrow on purpose: two `get` traps, one method-name set each, and the fence's views of a session and its client. */
 
 type Builder = Record<string | symbol, unknown>;
 
@@ -120,39 +120,104 @@ export const scopeReads = <Db extends object>(db: Db, read: (table: never) => un
 };
 
 /**
+ * `target` as a `Proxy` that answers every property through `view`, read directly or through
+ * its descriptor, so reflection reaches nothing `view` did not hand out. A function `view`
+ * returns is called with the proxy as `this`, so what it reads from `this` is viewed too.
+ */
+const sealed = <T extends object>(
+  target: T,
+  view: (value: unknown, property: string | symbol, self: T) => unknown,
+  before: () => void = () => undefined,
+): T => {
+  const proxy: T = new Proxy(target, {
+    get: (at, property) => view(Reflect.get(at, property, proxy), property, proxy),
+    getOwnPropertyDescriptor: (at, property) => {
+      const own = Reflect.getOwnPropertyDescriptor(at, property);
+      // a non-configurable property must be reported as it is: none of Drizzle's are
+      if (own === undefined || !("value" in own) || own.configurable !== true) return own;
+      return { ...own, value: view(own.value, property, proxy) };
+    },
+    // only a callable target is ever called: a driver's client can be, as postgres.js's `sql` is
+    apply: (at, self, args) => {
+      before();
+      return (at as (...a: readonly unknown[]) => unknown).apply(self, args);
+    },
+  });
+  return proxy;
+};
+
+/** A driver's client as a fence sees it: what Drizzle's session sends each statement through. */
+export type DriverClient = Builder;
+
+/**
  * `db`, until `revoke()`: from then on every statement it would send is refused before it reaches
- * the connection, whether it comes from `db` itself, a builder made from it, or a query prepared
- * from it. A refused statement answers a rejected promise carrying `refusal()`.
+ * the connection, whether it comes from `db` itself, a builder made from it, a query prepared
+ * from it, or a function kept from any of them. A refused statement answers a rejected promise
+ * carrying `refusal()`, or throws it where the driver is called.
  *
  * A Drizzle sends every statement through its `session`, which every builder copies when it is
- * made; so the fence is the session, and a builder made before `revoke()` is refused after it.
- * This is what keeps a handler that kept its `db` (a timer, a cache, a closure) from running a
- * statement on whatever transaction holds that connection by then, or on none at all.
+ * made, and the session sends it through its `client` when it runs. Both are fenced: the session's
+ * verbs refuse once revoked, and so does each function of the client, checked when it is called,
+ * so a statement whose text was changed after it was built, or an executor kept by reflection,
+ * is refused too. `guard` wraps the client first, for a caller that checks each statement itself.
+ * This keeps a handler that kept its `db` (a timer, a cache, a closure) from running a statement
+ * on whatever transaction holds that connection by then, or on none at all.
  *
  * @example
  * const { db: handlerDb, revoke } = revocable(tx, () => new Error("this read has ended"));
  * try { rows = await handler({ db: handlerDb }); } finally { revoke(); }
  */
-export const revocable = <Db extends object>(db: Db, refusal: () => Error) => {
+export const revocable = <Db extends object>(
+  db: Db,
+  refusal: () => Error,
+  guard: (client: DriverClient) => DriverClient = (client) => client,
+) => {
   let revoked = false;
+  const live = () => {
+    if (revoked) throw refusal();
+  };
+  /** The driver's client: each of its functions checks the fence when it is called. */
+  const client = (raw: DriverClient) => {
+    const at = guard(raw);
+    return sealed(
+      at,
+      (value) =>
+        typeof value === "function"
+          ? (...args: readonly unknown[]) => {
+              live();
+              return value.apply(at, args);
+            }
+          : value,
+      live,
+    );
+  };
+  const clients = new WeakMap<DriverClient, DriverClient>();
+  /** A session, or what it prepares: its verbs refuse once revoked, and its client is fenced. */
   const fence = <T extends object>(target: T): T =>
-    new Proxy(target as Builder, {
-      get(at, property) {
-        const value = Reflect.get(at, property);
-        if (typeof value !== "function") return value;
-        return (...args: readonly unknown[]) => {
-          // preparing sends nothing; what it prepares is fenced like the session it came from
-          if (property === "prepareQuery") return fence(value.apply(at, args));
-          if (revoked) return Promise.reject(refusal());
-          return value.apply(at, args);
-        };
-      },
-    }) as T;
+    sealed(target, (value, property, self) => {
+      if (property === "client" && (typeof value === "object" || typeof value === "function")) {
+        if (value === null) return value;
+        // SAFETY: a session's client is the driver's own object, read here only by property
+        const raw = value as DriverClient;
+        const fenced = clients.get(raw) ?? client(raw);
+        clients.set(raw, fenced);
+        return fenced;
+      }
+      if (typeof value !== "function") return value;
+      return (...args: readonly unknown[]) => {
+        // preparing sends nothing; what it prepares is fenced like the session it came from
+        if (property === "prepareQuery") return fence(value.apply(self, args));
+        if (revoked) return Promise.reject(refusal());
+        return value.apply(self, args);
+      };
+    });
   const session = Reflect.get(db, "session");
+  const fencedSession =
+    typeof session === "object" && session !== null ? fence(session) : undefined;
   const fenced =
-    typeof session === "object" && session !== null
-      ? (Object.create(db, { session: { value: fence(session) } }) as Db)
-      : fence(db);
+    fencedSession === undefined
+      ? fence(db)
+      : sealed(db, (value, property) => (property === "session" ? fencedSession : value));
   return {
     db: fenced,
     revoke: () => {
