@@ -1,11 +1,11 @@
-import type { HlcClock, MergeSpec, PeerId } from "@syncmesh/kernel";
+import type { HlcClock, MergeSpec, PartitionKey, PeerId, SyncEvent } from "@syncmesh/kernel";
 
 import type { Boot } from "./boot.js";
 import type { DocStore } from "./doc-log.js";
 import type { DocEngineOptions } from "./doc-path.js";
 import type { EngineError } from "./errors.js";
 import type { UnknownHandling } from "./quarantine.js";
-import type { StateStore } from "./state-store.js";
+import type { DerivedRow, StateStore } from "./state-store.js";
 import type { EventStore } from "./store.js";
 import type { Validator } from "./validate.js";
 
@@ -74,4 +74,22 @@ export interface AtomicStores {
   readonly events: EventStore;
   readonly state?: StateStore;
   readonly docs?: DocStore;
+}
+
+/** Where a write goes, and the action it belongs to (event keys 10 and 11, RFC-0023 §5.2). */
+export interface MutateOptions extends Pick<SyncEvent, "action" | "undoOf"> {
+  readonly partition?: PartitionKey;
+  readonly local?: boolean;
+  /**
+   * Runs inside the same transaction as the append, once the event is built — the operation
+   * record's seat (book ch. 10): record and event land together or neither does. A throw here
+   * rolls the whole write back.
+   */
+  readonly record?: (event: SyncEvent) => Promise<void>;
+  /**
+   * Derived columns the writer computed from the document it is flushing (RFC-0023 §6.3,
+   * §16.4): written to the app's rows in the write's transaction, never into the event, and
+   * named in the fold batch so a live query reads them with the write.
+   */
+  readonly derived?: readonly DerivedRow[];
 }

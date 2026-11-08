@@ -16,6 +16,12 @@ export class StoreFailure extends TaggedError("StoreFailure")<{
   cause?: unknown;
 }> {}
 
+/** Inside an `atomic` body a store's `Err` must abort the transaction: thrown as itself, caught above. */
+export const orThrow = <T>(result: Result<T, StoreFailure>): T => {
+  if (result.isErr()) throw result.error;
+  return result.value;
+};
+
 export type SeqScope = "synced" | "local";
 
 /**

@@ -7,6 +7,7 @@ import type {
   Hlc,
   LineageId,
   PeerId,
+  Row,
   RowKey,
   SeqNum,
   SyncEvent,
@@ -100,6 +101,10 @@ export interface DocAppend {
 /** One doc-log entry by its place: author, sequence and the change's index in the event. */
 export type DocEntryRef = Pick<DocLogEntry, "author" | "seq" | "index">;
 
+/** One text per entry, for sets and maps keyed by it. */
+export const docEntryId = (e: DocEntryRef) =>
+  `${e.author}\u0000${String(e.seq)}\u0000${String(e.index)}`;
+
 /** A document's last persisted snapshot, of the lineage it was taken on. */
 export interface DocSnapshot {
   readonly lineage?: LineageId;
@@ -128,6 +133,13 @@ export interface DocCover {
   readonly covered: readonly DocEntryRef[];
   /** Entries the adapter refused; they become `failed`, and the document stays at its last good version. */
   readonly failed?: readonly DocEntryRef[];
+  /** The row's derived columns at this snapshot, written to the row in the same commit (§16.4). */
+  readonly derived?: Row;
+  /**
+   * Entries left `tail` that `derived` was computed with as well: the snapshot does not hold them,
+   * the values do. Any other `tail` entry left on the document makes the values older than it.
+   */
+  readonly derivedIncludes?: readonly DocEntryRef[];
 }
 
 /**
@@ -220,7 +232,7 @@ export function docAppends(
     event.changes.forEach((change, index) => {
       if (change.kind !== "doc") return;
       appends.push({
-        entry: logEntry(event, change, index, hasAdapter),
+        entry: docLogEntry(event, change, index, hasAdapter),
         adapter: change.adapter,
         update: change.update,
       });
@@ -229,7 +241,7 @@ export function docAppends(
   return appends;
 }
 
-function logEntry(
+function docLogEntry(
   event: SyncEvent,
   change: DocChange,
   index: number,

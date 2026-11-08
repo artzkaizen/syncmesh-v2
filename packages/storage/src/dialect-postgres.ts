@@ -1,5 +1,5 @@
 import type { CellValue } from "@syncmesh/kernel";
-import type { ColumnKind, Table } from "@syncmesh/schema";
+import type { ColumnKind } from "@syncmesh/schema";
 
 import type { CaptureSql, Dialect } from "./dialect.js";
 import type { SqlValue } from "./driver.js";
@@ -8,11 +8,12 @@ import type { Rung } from "./ladder.js";
 import { POSTGRES_DOCS, POSTGRES_DOC_SNAPSHOTS, POSTGRES_DOC_TABLES } from "./dialect-docs.js";
 import { POSTGRES_GAPS, POSTGRES_GAP_TABLES } from "./dialect-gaps.js";
 import { POSTGRES_OPERATIONS } from "./dialect-operations.js";
-import { columnsOf, literal, quote } from "./identifiers.js";
+import { tableColumns, literal, quote, type TableColumns } from "./identifiers.js";
 import { ladder } from "./ladder.js";
 import { namespaceDdl } from "./namespace.js";
 
 const CHANGES = "syncmesh.changes";
+const META_DDL = `CREATE TABLE IF NOT EXISTS syncmesh.meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`;
 
 /**
  * Where the schema's position is kept: a row, because a schema has no `user_version` to put it
@@ -21,9 +22,7 @@ const CHANGES = "syncmesh.changes";
  */
 const VERSION: Rung = {
   read: async (driver) => {
-    await driver.run(
-      `CREATE TABLE IF NOT EXISTS syncmesh.meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
-    );
+    await driver.run(META_DDL);
     const [row] = await driver.all(`SELECT value FROM syncmesh.meta WHERE key = 'version'`);
     return Number(row?.[0] ?? 0);
   },
@@ -56,8 +55,8 @@ const sqlType = (kind: ColumnKind): string => {
 };
 
 /** The logged image in the shared shape: hex bytes, epoch-millisecond timestamps, JSON as text. */
-const image = (table: Table, alias: "NEW" | "OLD"): string =>
-  `json_build_object(${columnsOf(table)
+const image = (columns: TableColumns, alias: string): string =>
+  `json_build_object(${columns
     .map(([, name, column]) => {
       const cell = `${alias}.${quote(name)}`;
       const logged =
@@ -77,7 +76,7 @@ const ARMED = `COALESCE(NULLIF(current_setting('syncmesh.armed', true), ''), '0'
 
 const capture: CaptureSql = {
   tableDdl: (table) => {
-    const columns = columnsOf(table).map(([key, name, column]) => {
+    const columns = tableColumns(table).map(([key, name, column]) => {
       const constraint = key === table.primaryKey ? " PRIMARY KEY" : "";
       return `${quote(name)} ${sqlType(column.def.kind)}${constraint}`;
     });
@@ -99,11 +98,11 @@ const capture: CaptureSql = {
         BEGIN
           IF ${ARMED} THEN
             IF TG_OP = 'INSERT' THEN
-              ${log(`NEW.${quote(pk)}::text, 'insert', NULL, ${image(table, "NEW")}`)}
+              ${log(`NEW.${quote(pk)}::text, 'insert', NULL, ${image(tableColumns(table), "NEW")}`)}
             ELSIF TG_OP = 'UPDATE' THEN
-              ${log(`NEW.${quote(pk)}::text, 'update', ${image(table, "OLD")}, ${image(table, "NEW")}`)}
+              ${log(`NEW.${quote(pk)}::text, 'update', ${image(tableColumns(table), "OLD")}, ${image(tableColumns(table), "NEW")}`)}
             ELSE
-              ${log(`OLD.${quote(pk)}::text, 'delete', ${image(table, "OLD")}, NULL`)}
+              ${log(`OLD.${quote(pk)}::text, 'delete', ${image(tableColumns(table), "OLD")}, NULL`)}
             END IF;
           END IF;
           RETURN NULL;
@@ -119,6 +118,12 @@ const capture: CaptureSql = {
   clearLog: `DELETE FROM ${CHANGES}`,
   stampPartition: (table, pk, partitionColumn) =>
     `UPDATE ${quote(table)} SET "${partitionColumn.replaceAll('"', '""')}" = $1 WHERE ${quote(pk)} = $2`,
+  selectDefaults:
+    "SELECT a.attname, pg_get_expr(d.adbin, d.adrelid) FROM pg_attrdef d JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum WHERE d.adrelid = to_regclass(quote_ident($1)) AND a.attgenerated = ''",
+  defaultImage: (columns, defaults) =>
+    `SELECT ${image(columns, "d")} FROM (SELECT ${columns
+      .map(([, name]) => `${defaults.get(name) ?? "NULL"} AS ${quote(name)}`)
+      .join(", ")}) AS d`,
 };
 
 /** The floor a cursor map sets for this author, from the JSON the caller binds. */
@@ -260,7 +265,7 @@ export const POSTGRES: Dialect = {
   placeholder: (position, kind) => (kind === "json" ? `$${position}::text::jsonb` : `$${position}`),
   cell: postgresCell,
   schema: {
-    ddl: `CREATE TABLE IF NOT EXISTS syncmesh.meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+    ddl: META_DDL,
     read: `SELECT value FROM syncmesh.meta WHERE key = 'schema'`,
     write: `INSERT INTO syncmesh.meta (key, value) VALUES ('schema', $1)
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,

@@ -35,7 +35,7 @@ export type MergeFor<T> = [T] extends [number]
     : "lww";
 
 /** What the fold merges the column by; absent is {@link StrategyName}'s own default. */
-export const strategyOf = (def: ColumnDef): StrategyName | undefined => def.merge;
+export const columnStrategy = (def: ColumnDef): StrategyName | undefined => def.merge;
 
 /** What every `t.*` builder takes: how the column merges, and nothing else. */
 export interface ColumnOptions<T> {
@@ -51,6 +51,11 @@ export interface ColumnDef {
   readonly merge?: StrategyName;
   /** Present on a document column: which adapter's bytes it holds. The fold never reads it. */
   readonly doc?: { readonly adapter: string };
+  /**
+   * Present on a derived column (RFC-0023 §4.1): the document column of the same table it is
+   * computed from. Every replica computes it; the app never writes it and it never travels.
+   */
+  readonly derived?: { readonly from: string };
 }
 
 const NUMERIC = new Set<ColumnKind>(["integer", "float"]);

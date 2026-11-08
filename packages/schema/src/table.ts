@@ -164,8 +164,14 @@ export function checkRow(
     if (column === undefined) continue;
     const value = row[key];
     // omitted on an insert: a nullable column means `null`, a lattice column means its empty state,
-    // and an absent lattice cell reads as that empty state on every peer alike
-    if (mode === "insert" && value === undefined && column.def.nullable) continue;
+    // and an absent lattice cell reads as that empty state on every peer alike. A derived column is
+    // never written at all: each replica computes it from the document (RFC-0023 §4.1)
+    if (
+      mode === "insert" &&
+      value === undefined &&
+      (column.def.nullable || column.def.derived !== undefined)
+    )
+      continue;
     const r = checkValue(column, value);
     if (r.isErr())
       return Result.err(

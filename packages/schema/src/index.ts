@@ -1,14 +1,17 @@
 export type { StandardIssue, StandardResult, StandardSchemaV1, Output } from "./standard-schema.js";
 export type { AnyColumn, Column, ColumnDef, ColumnKind, MergeFor, Value } from "./column.js";
-export { columnFromDef, strategyOf, t } from "./column.js";
+export { columnFromDef, columnStrategy, t } from "./column.js";
 export type { Derivation, DeriveBlock, DocColumnEntry, DocumentAdapter } from "./documents.js";
 export {
+  DeriveFailed,
   DocColumnConstraint,
   DocColumnNotBinary,
   InvalidDerive,
   MergeKindMismatch,
   from,
 } from "./documents.js";
+export type { DocDeriver, Derivers } from "./derive.js";
+export { createDerivers } from "./derive.js";
 export type { ColumnError } from "./check.js";
 export {
   CheckFailed,

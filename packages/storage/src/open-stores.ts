@@ -10,7 +10,7 @@ import { bytesToHex } from "@syncmesh/wire";
 import type { SqlDialect, SqlDriver } from "./driver.js";
 import type { ProjectionOptions } from "./projection.js";
 
-import { captureDdlFor, installCapture } from "./capture.js";
+import { captureStatements, installCapture } from "./capture.js";
 import { ATTACHED_LOG, driverDialect, logPlacement } from "./dialect.js";
 import { sqlDocStore } from "./doc-store.js";
 import { sqlEventStore } from "./event-store.js";
@@ -74,10 +74,9 @@ export interface OpenStoresOptions extends ProjectionOptions {
  * shapes on one device over its life, not a corpus.
  */
 export const schemaName = (tables: readonly Table[], dialect: SqlDialect = "sqlite"): string =>
-  bytesToHex(sha256(new TextEncoder().encode(captureDdlFor({ dialect }, tables).join(";")))).slice(
-    0,
-    12,
-  );
+  bytesToHex(
+    sha256(new TextEncoder().encode(captureStatements({ dialect }, tables).join(";"))),
+  ).slice(0, 12);
 
 /**
  * The app's tables and their capture, installed **only when this database has not got them.**
@@ -107,7 +106,7 @@ const installed = (
   Result.gen(async function* () {
     const { schema, name: dialect } = driverDialect(driver);
     const rowSyncDdl = rowSyncDdlFor(dialect);
-    const wanted = [...captureDdlFor(driver, tables), ...rowSyncDdl].join(";\n");
+    const wanted = [...captureStatements(driver, tables), ...rowSyncDdl].join(";\n");
     const held = yield* Result.await(
       attempt("could not read the installed schema", async () => {
         await driver.run(schema.ddl);

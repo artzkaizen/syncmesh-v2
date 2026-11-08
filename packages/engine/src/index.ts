@@ -70,13 +70,13 @@ export { StrandedWrites, isStranded, strandedWrites } from "./stranded.js";
 export type { OwnFloor, OwnPosition } from "./own-position.js";
 export { adoptOwnPosition, createOwnFloor, ownPositionWarning } from "./own-position.js";
 export { openEngine } from "./boot.js";
-export type { RowWrite, StateStore, WriteKeys } from "./state-store.js";
+export type { DerivedRow, RowWrite, StateStore, WriteKeys } from "./state-store.js";
 export {
   StateCorrupt,
   allRows,
   createMemoryStateStore,
-  rowsFor,
-  writeKeysOf,
+  rowWrites,
+  eventWriteKeys,
 } from "./state-store.js";
 export type { Ack, CompactError, CompactOptions, Compaction } from "./compaction.js";
 export { clampToHeld, refoldable } from "./compaction.js";

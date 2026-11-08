@@ -8,7 +8,7 @@ import { Temporal } from "@syncmesh/temporal";
 import type { AnyAdapter, UpdateRejected } from "./adapter.js";
 import type { DocStatus, Entry, FlushError } from "./entry.js";
 import type { AdapterMissing, NotADocColumn } from "./errors.js";
-import type { DocsEngine } from "./materialise.js";
+import type { Derive, DocsEngine } from "./materialise.js";
 
 import { columnAdapter } from "./adapter.js";
 import { clearTimers, deliver, flush } from "./entry.js";
@@ -53,6 +53,8 @@ export interface OpenDeps {
   readonly procedure: Procedure;
   readonly pacing: Pacing;
   readonly nonce: () => Uint8Array;
+  /** The row's derived columns from a document at `address`; absent when it derives nothing. */
+  readonly derive: (address: DocAddress) => Derive<unknown> | undefined;
   /** Where a paced flush that failed goes; the handle's status says it too. */
   readonly onError?: (error: FlushError) => void;
 }
@@ -67,7 +69,7 @@ export function createHandles(deps: OpenDeps) {
   const ms = (d: Temporal.Duration) => d.total({ unit: "milliseconds" });
 
   const flushEntry = (address: DocAddress, entry: Entry) =>
-    flush(engine, deps.procedure, address, entry);
+    flush(engine, deps.procedure, address, entry, deps.derive(address));
 
   const schedule = (address: DocAddress, entry: Entry) => {
     if (entry.timers.idle !== undefined) clearTimeout(entry.timers.idle);

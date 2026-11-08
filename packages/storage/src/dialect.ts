@@ -2,6 +2,7 @@ import type { CellValue, ColumnName, TableName } from "@syncmesh/kernel";
 import type { ColumnKind, Table } from "@syncmesh/schema";
 
 import type { SqlDialect, SqlDriver, SqlValue } from "./driver.js";
+import type { TableColumns } from "./identifiers.js";
 
 import { POSTGRES } from "./dialect-postgres.js";
 import { SQLITE, SQLITE_INLINE } from "./dialect-sqlite.js";
@@ -162,6 +163,14 @@ export interface CaptureSql {
   readonly clearLog: string;
   /** Stamps the partition (bind 1) onto the row with this key (bind 2), guard at rest. */
   readonly stampPartition: (table: TableName, pk: ColumnName, partitionColumn: string) => string;
+  /** `name, expression` for each column of the table (bind 1) that declares a SQL `DEFAULT`, as the database stores the expression. */
+  readonly selectDefaults: string;
+  /**
+   * One row, one cell: the image the triggers would log for these columns holding their defaults,
+   * in the same encoding. The expressions are the catalog's own text from `selectDefaults`, never
+   * a caller's; a column missing from `defaults` reads as `NULL`.
+   */
+  readonly defaultImage: (columns: TableColumns, defaults: ReadonlyMap<string, string>) => string;
 }
 
 /**

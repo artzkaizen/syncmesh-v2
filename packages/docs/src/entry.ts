@@ -6,7 +6,7 @@ import { Result } from "@syncmesh/result";
 import { bytesEqual } from "@syncmesh/wire";
 
 import type { AnyAdapter, UpdateRejected } from "./adapter.js";
-import type { DocsEngine } from "./materialise.js";
+import type { Derive, DocsEngine } from "./materialise.js";
 
 import { FlushRefused, HandleInvalidated, UpdateTooLarge } from "./errors.js";
 
@@ -84,12 +84,17 @@ const invalidate = (entry: Entry) => {
   notify(entry);
 };
 
-/** Sends what the handle committed since its last flush as one event: a doc change per stashed part. */
+/**
+ * Sends what the handle committed since its last flush as one event: a doc change per stashed
+ * part. The row's derived columns, computed from the replica that holds exactly what is sent, land
+ * in the same write's transaction (RFC-0023 §6.3), so a live query reads the title with the edit.
+ */
 export async function flush(
   engine: DocsEngine,
   procedure: Procedure,
   address: DocAddress,
   entry: Entry,
+  derive?: Derive<unknown>,
 ): Promise<Result<SyncEvent | undefined, FlushError>> {
   clearTimers(entry);
   if (entry.status === "invalidated")
@@ -124,6 +129,7 @@ export async function flush(
   }
   const record = getRecord(engine.state(), address.table, address.key);
   const { lineage } = entry;
+  const derived = derive?.(entry.doc);
   const written = await engine.mutate(
     procedure,
     (tx) => {
@@ -135,7 +141,12 @@ export async function flush(
           ...(lineage !== undefined && { lineage }),
         });
     },
-    partitionOf(record?.partition),
+    {
+      ...partitionOption(record?.partition),
+      ...(derived !== undefined && {
+        derived: [{ table: address.table, key: address.key, values: derived }],
+      }),
+    },
   );
   if (written.isErr()) {
     invalidate(entry);
@@ -152,5 +163,5 @@ export const clearTimers = (entry: Entry) => {
   entry.timers = {};
 };
 
-const partitionOf = (partition: PartitionKey | undefined) =>
+const partitionOption = (partition: PartitionKey | undefined) =>
   partition === undefined ? {} : { partition };

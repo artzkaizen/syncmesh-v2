@@ -82,6 +82,27 @@ than read around:
   background or a closed tab never reaches either, so on phones and in browsers the check runs at
   most launches today.
 
+## Document and derived columns in the app's tables (RFC-0023)
+
+A document column (`merge: { content: loro }`) and a column derived from one
+(`derive: { title: from("content", …) }`) are real columns of the app's table, but neither is a
+value the fold carries:
+
+- The projection never writes them. A derived column is set by `StateStore.derive(rows)`, an
+  `UPDATE` of the row the fold already wrote, which the document runtime calls after each flush
+  and with each materialisation. A row that is not there yet is left alone.
+- Capture never carries them, and a transaction that sets one is refused with `DocColumnWrite`
+  and rolled back. Every replica computes its own derived values from its own document, so a
+  value the app wrote would never reach anyone else. An `INSERT` that leaves them out is no
+  write to them, even where the app's own migration gave one a SQL `DEFAULT`: capture compares
+  an inserted row's guarded columns with their defaults, not with null. A row inserted and
+  then updated, or deleted and inserted again, in one transaction is judged the same way, as an
+  insert.
+- Neither is a kernel cell, so neither is in a digest, a snapshot page or an event.
+
+Changing a derive function changes no table shape, so `schemaName` keeps the state file and
+the next flush or materialisation writes the new values.
+
 ## Serving `sync: "window"` reads from Postgres (D43)
 
 A `sync: "window"` table stays on the server, and `servedReads` (in `@syncmesh/orpc`) runs a

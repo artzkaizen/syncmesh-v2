@@ -1,7 +1,10 @@
 //! The document-adapter SPI (RFC-0023 §2.8): what syncmesh needs from a CRDT library to carry and
 //! store its documents, mirroring `DocumentAdapter` in `@syncmesh/docs`.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
 use sha2::{Digest, Sha256};
+use syncmesh_core::record::{CellValue, Row};
 
 /// The bounds an adapter holds every document to (RFC-0023 §5.4, §8.2, §10). Exceeding one is a
 /// value, never a crash.
@@ -94,4 +97,198 @@ pub fn replica_id(peer: &[u8; 32], nonce: &[u8]) -> u64 {
     let mut head = [0u8; 8];
     head.copy_from_slice(&hash[..8]);
     u64::from_be_bytes(head) & (u64::MAX >> 1)
+}
+
+/// One document column as the manifest's shareable half carries it (RFC-0023 §4.1):
+/// `{ "column": "content", "doc": "loro@1", "derive": ["title", "wordCount"] }`. The TypeScript
+/// schema writes it (`JSON.stringify(schema.docs.get(table))`); the derive functions themselves
+/// never leave the runtime that declared them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocColumnEntry {
+    pub column: String,
+    /// The adapter id, `name@major`.
+    pub doc: String,
+    /// The columns derived from this one, in declaration order.
+    pub derive: Vec<String>,
+}
+
+impl DocColumnEntry {
+    /// Reads one table's entries from the manifest's JSON: an array of
+    /// `{ column, doc, derive }` objects. Anything else is [`InvalidDerive`].
+    pub fn parse_list(json: &str) -> Result<Vec<DocColumnEntry>, InvalidDerive> {
+        let refuse = |message: &str| InvalidDerive {
+            column: String::new(),
+            message: format!("manifest: {message}"),
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(json).map_err(|e| refuse(&e.to_string()))?;
+        let entries = value.as_array().ok_or_else(|| refuse("not an array"))?;
+        entries
+            .iter()
+            .map(|entry| {
+                let text = |key: &str| {
+                    entry
+                        .get(key)
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                        .ok_or_else(|| refuse(&format!("`{key}` is not text")))
+                };
+                let derive = entry
+                    .get("derive")
+                    .and_then(serde_json::Value::as_array)
+                    .ok_or_else(|| refuse("`derive` is not a list"))?
+                    .iter()
+                    .map(|name| {
+                        name.as_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| refuse("a derived column is not text"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(DocColumnEntry {
+                    column: text("column")?,
+                    doc: text("doc")?,
+                    derive,
+                })
+            })
+            .collect()
+    }
+}
+
+/// A derive declaration that does not fit the manifest, or a manifest that cannot be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidDerive {
+    pub column: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for InvalidDerive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for InvalidDerive {}
+
+/// A derive closure panicked. The document is unharmed; the derived column keeps its last value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeriveFailed {
+    pub column: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for DeriveFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DeriveFailed {}
+
+type DeriveFn<D> = Box<dyn Fn(&D) -> CellValue + Send + Sync>;
+
+/// The derived columns of one document column, as a Rust app declares them (RFC-0023 §16.4,
+/// §16.8): a builder over the manifest's names, no macro. Every replica computes its own values
+/// from its own document; they are written to the local row only, never sent as cells.
+///
+/// # Examples
+///
+/// ```
+/// use syncmesh_client::core::record::CellValue;
+/// use syncmesh_client::docs::{Derive, DocColumnEntry};
+///
+/// let manifest = r#"[{ "column": "content", "doc": "loro@1", "derive": ["title"] }]"#;
+/// let entry = &DocColumnEntry::parse_list(manifest).unwrap()[0];
+/// let derive = Derive::<String>::new("notes", "content")
+///     .with("title", |doc: &String| CellValue::text(doc.lines().next().unwrap_or("")));
+/// derive.check(entry).unwrap();
+/// let row = derive.compute(&"Q3 plan\nbody".to_owned()).unwrap();
+/// assert_eq!(row.get("title"), Some(&CellValue::text("Q3 plan")));
+/// ```
+pub struct Derive<D> {
+    table: String,
+    column: String,
+    targets: Vec<(String, DeriveFn<D>)>,
+}
+
+impl<D> Derive<D> {
+    /// No derived columns yet, for the document column `column` of `table`.
+    pub fn new(table: impl Into<String>, column: impl Into<String>) -> Self {
+        Self {
+            table: table.into(),
+            column: column.into(),
+            targets: Vec::new(),
+        }
+    }
+
+    /// Declares how `target` is computed from the document.
+    pub fn with(
+        mut self,
+        target: impl Into<String>,
+        derive: impl Fn(&D) -> CellValue + Send + Sync + 'static,
+    ) -> Self {
+        self.targets.push((target.into(), Box::new(derive)));
+        self
+    }
+
+    /// The derived columns this declares, in the order they were declared.
+    pub fn columns(&self) -> impl Iterator<Item = &str> {
+        self.targets.iter().map(|(name, _)| name.as_str())
+    }
+
+    /// Refuses a declaration that does not match the manifest's entry for this column: another
+    /// column, a target the manifest does not derive, one it derives that has no closure here, or
+    /// one declared twice. Two runtimes computing different column sets would disagree on rows.
+    pub fn check(&self, entry: &DocColumnEntry) -> Result<(), InvalidDerive> {
+        let at = |name: &str| format!("{}.{name}", self.table);
+        let refuse = |name: &str, why: &str| {
+            Err(InvalidDerive {
+                column: at(name),
+                message: format!("{}: {why}", at(name)),
+            })
+        };
+        if entry.column != self.column {
+            return refuse(
+                &self.column,
+                &format!("the manifest entry is for {}", entry.column),
+            );
+        }
+        for (index, (name, _)) in self.targets.iter().enumerate() {
+            if self.targets[..index].iter().any(|(other, _)| other == name) {
+                return refuse(name, "derived twice");
+            }
+            if !entry.derive.contains(name) {
+                return refuse(
+                    name,
+                    &format!("the manifest does not derive it from {}", self.column),
+                );
+            }
+        }
+        match entry
+            .derive
+            .iter()
+            .find(|name| !self.targets.iter().any(|(target, _)| target == *name))
+        {
+            Some(missing) => refuse(
+                missing,
+                "the manifest derives it, and no closure computes it",
+            ),
+            None => Ok(()),
+        }
+    }
+
+    /// Runs every closure over `doc`: the row's derived values. A closure that panics is
+    /// [`DeriveFailed`], and nothing is half-computed.
+    pub fn compute(&self, doc: &D) -> Result<Row, DeriveFailed> {
+        self.targets
+            .iter()
+            .map(|(name, derive)| {
+                catch_unwind(AssertUnwindSafe(|| derive(doc)))
+                    .map(|value| (name.clone(), value))
+                    .map_err(|_| DeriveFailed {
+                        column: format!("{}.{name}", self.table),
+                        message: format!("{}.{name}: the derive closure panicked", self.table),
+                    })
+            })
+            .collect()
+    }
 }

@@ -8,7 +8,7 @@ import type { AllowFn, FieldsFn } from "./bind.js";
 import type { DeriveBlock, DocColumnEntry } from "./documents.js";
 
 import { combinators } from "./bind.js";
-import { strategyOf } from "./column.js";
+import { columnFromDef, columnStrategy } from "./column.js";
 import { docColumnEntries } from "./documents.js";
 import { sourceName } from "./from-drizzle.js";
 import {
@@ -192,8 +192,13 @@ export function syncSchema<
     const source = sourceName(entry.columns);
     if (source !== undefined && source !== name)
       panic(`${name}: imported columns come from the Drizzle table "${source}"`);
-    const tbl = table(name, entry.columns);
-    const partition = partitionOf(name, entry, declare);
+    const written = table(name, entry.columns);
+    const documents = docColumnEntries(name, written, entry.derive ?? {});
+    const tbl =
+      entry.derive === undefined
+        ? written
+        : table(name, derivedColumns(entry.columns, entry.derive));
+    const partition = declarePartition(name, entry, declare);
     built[name] = tbl;
     const base: SchemaEntry = {
       table: tbl,
@@ -201,13 +206,12 @@ export function syncSchema<
       visibility: entry.visibility ?? "partition",
     };
     const ruled = entry.allow === undefined ? base : { ...base, allow: entry.allow(combinators()) };
-    const fields = entry.allow === undefined ? undefined : fieldsOf(name, tbl, entry.fields);
+    const fields = entry.allow === undefined ? undefined : fieldRules(name, tbl, entry.fields);
     const fielded = fields === undefined ? ruled : { ...ruled, fields };
     const derived = entry.derive === undefined ? fielded : { ...fielded, derive: entry.derive };
     entries.push(entry.sync === undefined ? derived : { ...derived, sync: entry.sync });
-    const rules = mergeRulesFor(name, tbl);
+    const rules = mergeRules(name, tbl);
     if (rules.size > 0) merge.set(tbl.name, rules);
-    const documents = docColumnEntries(name, tbl, entry.derive ?? {});
     if (documents.length > 0) docs.set(tbl.name, documents);
   }
   const presence = presenceTopics<PC>(manifest.presence, declare);
@@ -232,7 +236,7 @@ export function syncSchema<
  * column the table has, and none names the primary key — a row whose identity reads as `null` is
  * not a row anything can address, update or delete.
  */
-function fieldsOf(
+function fieldRules(
   name: string,
   tbl: Table,
   fields: FieldsFn<Columns, string> | undefined,
@@ -252,7 +256,7 @@ function fieldsOf(
 }
 
 /** The kind a table's rows live in, with the two `allow` guards the types cannot express for a value. */
-function partitionOf(
+function declarePartition(
   name: string,
   entry: TableEntry,
   declare: (value: Partition) => string,
@@ -271,12 +275,31 @@ function partitionOf(
 }
 
 /** The strategies the fold needs: `lww` is the default and is left out, so an empty map means no rules. */
-function mergeRulesFor(name: string, tbl: Table): Map<ColumnName, StrategyName> {
+function mergeRules(name: string, tbl: Table): Map<ColumnName, StrategyName> {
   const rules = new Map<ColumnName, StrategyName>();
   for (const [key, column] of Object.entries(tbl.columns)) {
-    const strategy = strategyOf(column.def);
+    const strategy = columnStrategy(column.def);
     if (strategy !== undefined && strategy !== "lww")
       rules.set(tbl.columnNames[key] ?? panic(`${name}.${key}: unnamed column`), strategy);
   }
   return rules;
+}
+
+/**
+ * The columns with every derive target marked by the document column it reads, so the projection,
+ * capture and the validator tell a derived column apart from the table alone. Runs after
+ * {@link docColumnEntries} has refused what a materialiser could not honour.
+ */
+function derivedColumns(columns: Columns, derive: DeriveBlock<Columns>): Columns {
+  return Object.fromEntries(
+    Object.entries(columns).map(([key, column]) => {
+      const derivation = derive[key];
+      return [
+        key,
+        derivation === undefined
+          ? column
+          : columnFromDef({ ...column.def, derived: { from: derivation.from } }),
+      ];
+    }),
+  );
 }

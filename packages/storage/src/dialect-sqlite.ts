@@ -1,5 +1,5 @@
 import type { CellValue } from "@syncmesh/kernel";
-import type { ColumnKind, Table } from "@syncmesh/schema";
+import type { ColumnKind } from "@syncmesh/schema";
 
 import type { CaptureSql, Dialect } from "./dialect.js";
 import type { LogPlacement, SqlValue } from "./driver.js";
@@ -8,7 +8,7 @@ import type { Rung } from "./ladder.js";
 import { SQLITE_DOCS, SQLITE_DOC_SNAPSHOTS, SQLITE_DOC_TABLES } from "./dialect-docs.js";
 import { sqliteGapTables, sqliteGaps } from "./dialect-gaps.js";
 import { sqliteOperations } from "./dialect-operations.js";
-import { columnsOf, literal, quote } from "./identifiers.js";
+import { tableColumns, literal, quote, type TableColumns } from "./identifiers.js";
 import { ladder } from "./ladder.js";
 import { logTable, sqliteLogIndex } from "./namespace.js";
 
@@ -34,8 +34,8 @@ const sqlType = (kind: ColumnKind): string => {
  * The logged image of a row as one JSON object. Bytes travel as hex, since JSON cannot hold a
  * BLOB; a NULL stays NULL rather than becoming `hex(NULL)`, the empty string.
  */
-const image = (table: Table, alias: "NEW" | "OLD"): string =>
-  `json_object(${columnsOf(table)
+const image = (columns: TableColumns, alias: string): string =>
+  `json_object(${columns
     .map(([, name, column]) => {
       const cell = `${alias}.${quote(name)}`;
       // lower(): SQLite's hex() is uppercase and the wire's hex codec is lowercase-only
@@ -50,7 +50,7 @@ const image = (table: Table, alias: "NEW" | "OLD"): string =>
 /** Triggers fire only while a guard row is armed, so the fold's own UPSERTs are never re-captured. */
 const capture: CaptureSql = {
   tableDdl: (table) => {
-    const columns = columnsOf(table).map(([key, name, column]) => {
+    const columns = tableColumns(table).map(([key, name, column]) => {
       const constraint = key === table.primaryKey ? " PRIMARY KEY" : "";
       return `${quote(name)} ${sqlType(column.def.kind)}${constraint}`;
     });
@@ -71,12 +71,18 @@ const capture: CaptureSql = {
       const trigger = (op: "insert" | "update" | "delete", body: string) =>
         `CREATE TRIGGER IF NOT EXISTS "_syncmesh_${String(table.name)}_${op}" AFTER ${op.toUpperCase()} ON ${quote(table.name)} WHEN ${armed} BEGIN INSERT INTO ${CHANGES} (tbl, key, op, old, new) VALUES (${body}); END`;
       statements.push(
-        trigger("insert", `${name}, ${key("NEW")}, 'insert', NULL, ${image(table, "NEW")}`),
+        trigger(
+          "insert",
+          `${name}, ${key("NEW")}, 'insert', NULL, ${image(tableColumns(table), "NEW")}`,
+        ),
         trigger(
           "update",
-          `${name}, ${key("NEW")}, 'update', ${image(table, "OLD")}, ${image(table, "NEW")}`,
+          `${name}, ${key("NEW")}, 'update', ${image(tableColumns(table), "OLD")}, ${image(tableColumns(table), "NEW")}`,
         ),
-        trigger("delete", `${name}, ${key("OLD")}, 'delete', ${image(table, "OLD")}, NULL`),
+        trigger(
+          "delete",
+          `${name}, ${key("OLD")}, 'delete', ${image(tableColumns(table), "OLD")}, NULL`,
+        ),
       );
     }
     return statements;
@@ -87,6 +93,11 @@ const capture: CaptureSql = {
   clearLog: `DELETE FROM ${CHANGES}`,
   stampPartition: (table, pk, partitionColumn) =>
     `UPDATE ${quote(table)} SET "${partitionColumn.replaceAll('"', '""')}" = ? WHERE ${quote(pk)} = ?`,
+  selectDefaults: "SELECT name, dflt_value FROM pragma_table_info(?) WHERE dflt_value IS NOT NULL",
+  defaultImage: (columns, defaults) =>
+    `SELECT ${image(columns, "d")} FROM (SELECT ${columns
+      .map(([, name]) => `${defaults.get(name) ?? "NULL"} AS ${quote(name)}`)
+      .join(", ")}) AS d`,
 };
 
 /**
