@@ -200,10 +200,18 @@ cannot commit second. What shipped keeps one transaction and makes its split rec
    journal entry the log has not reached into the log, before anything reads either file. The
    other direction (log committed, `main` not) is the log ahead of the cursor, which boot already
    replays. A transaction that writes one file is not journaled.
-3. **What it does not cover.** A write made on the bare driver you passed to `openStores`
-   rather than `Stores.driver` is not journaled; `createMesh` and `meshDrizzle` use the stores'
-   driver. A state file swapped for another schema's and swapped back after a crash compares its
-   journal number with a log that has moved on, and does not replay. Statements are journaled by
+3. **What it does not cover.** A log write made on the bare driver you passed to `openStores`
+   rather than `Stores.driver` is not journaled. The app's own statements write `main` and are
+   safe on either; what is not is an `OperationStore` built on the bare driver, whose ledger rows
+   are the log's — `createMesh` builds it on the stores' driver, and `meshDrizzle`'s `operations`
+   says to. A state file swapped for another schema's and swapped back after a crash compares its
+   journal number with a log that has moved on, and does not replay. Nor does a tear followed by
+   an app update that changes the schema: the state file is per schema (`statePath(log,
+   schemaName(tables))`), so the next open refolds into a new file, and the journal entry and the
+   app's row stay in the old one; the write is lost, as it was before U29. A replay that fails
+   (a statement the upgraded log no longer accepts, below) refuses the open with a `StoreFailure`,
+   and every later open the same way; the store opens again only once that state file is deleted
+   and refolded, which loses the torn write. Statements are journaled by
    their target (`syncmesh.<table>`), which holds for every statement this repo writes and is
    pinned by `journal.test.ts`. A journal entry is replayed after both ladders climb, so a tear
    whose next open is also an upgrade that moves the log ladder replays statements written for
@@ -214,7 +222,10 @@ cannot commit second. What shipped keeps one transaction and makes its split rec
    every later transaction on that connection, refused as a `StoreFailure`, while the journal is
    ahead of the log, so the entry is not overwritten before an open replays it. Every wrapper over
    one connection counts from one number, so two `openStores` on one driver cannot journal under
-   the same number and skip a replay.
+   the same number and skip a replay; they share the transaction in flight too, so a log
+   statement through one inside the other's transaction is journaled with it; and the replay
+   runs in the connection's turn, so a second `openStores` never begins it inside another
+   store's open transaction.
 5. **What it costs.** Every transaction that writes both files writes its log statements twice:
    once into the log and once, CBOR-encoded with their parameters (event bytes included), into
    the one journal row in `main`. A received batch is held twice in memory while it commits. Not
@@ -230,6 +241,10 @@ is replayed into the log at the next open` case does the same on an adapter's ow
 case exercises the replay only where the log is an attached second file (`bun:sqlite`,
 `node:sqlite`, sqlite-wasm over `memdb`, the expo driver over its test fake); on Postgres and
 PGlite it returns early, because one database has nothing to journal.
+
+Under load, `client/src/__tests__/crash.test.ts` passed 20 runs of 20 on 2026-11-08 (Apple
+silicon, bun 1.4.4: four `bun test` processes at a time beside four busy-loop processes), where
+"kill -9 mid-write" had failed about 1 run in 10 before U29.
 
 ## The shape
 

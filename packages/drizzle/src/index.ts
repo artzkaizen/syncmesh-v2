@@ -62,7 +62,11 @@ export interface MeshDrizzleOptions<D extends SqlDialect = "sqlite"> {
    * write their rules deny is refused before COMMIT. The events stay the device's.
    */
   readonly as?: Principal;
-  /** Writes each synced commit's durable operation record inside the transaction (book ch. 10). */
+  /**
+   * Writes each synced commit's durable operation record inside the transaction (book ch. 10).
+   * Build it on `Stores.driver`, the same driver as `driver`: on a device its rows are the log's,
+   * and only that driver journals them with the write (RFC-0022).
+   */
   readonly operations?: OperationStore;
   readonly now?: () => Temporal.Instant;
 }
