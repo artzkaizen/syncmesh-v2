@@ -1,10 +1,10 @@
 //! The event core: a CBOR map with the keys the vectors froze (RFC-0002).
 //! `v`0 `peerId`1 `seq`2 `hlc`3 `procedure`5 `partition`6 `changes`7 `sealed`8, and RFC-0023's
-//! `action`10 `undoOf`11. Key 9 is reserved for `schemaVersion` and never written here.
+//! `schemaVersion`9 (D31), `action`10 `undoOf`11.
 
 use crate::cbor::{Key, MalformedCbor, Value, decode, encode};
 use crate::doc::{doc_data_to_cbor, doc_from_cbor, id16};
-use crate::event::{Change, PartitionKey, PeerId, SeqNum, SyncEvent};
+use crate::event::{Change, PartitionKey, PeerId, SchemaVersion, SeqNum, SyncEvent};
 use crate::hex::to_hex;
 use crate::hlc::Hlc;
 use crate::row_codec::{row_from_cbor, row_to_cbor};
@@ -17,6 +17,9 @@ const KEY_PROCEDURE: i64 = 5;
 const KEY_PARTITION: i64 = 6;
 const KEY_CHANGES: i64 = 7;
 const KEY_SEALED: i64 = 8;
+/// Written only when the author's manifest declares a version (D31), so every event from a
+/// build that declares none is the bytes it always was.
+const KEY_SCHEMA_VERSION: i64 = 9;
 const KEY_ACTION: i64 = 10;
 const KEY_UNDO_OF: i64 = 11;
 
@@ -103,6 +106,12 @@ pub fn encode_event_core_with(event: &SyncEvent, sealed: Option<Vec<u8>>) -> Vec
     ];
     if let Some(p) = &event.partition {
         core.push((Key::Int(KEY_PARTITION), Value::Text(p.as_str().to_owned())));
+    }
+    if let Some(version) = event.schema_version {
+        core.push((
+            Key::Int(KEY_SCHEMA_VERSION),
+            Value::Int(version.get() as i64),
+        ));
     }
     if let Some(action) = event.action {
         core.push((Key::Int(KEY_ACTION), Value::Bytes(action.to_vec())));
@@ -258,5 +267,9 @@ pub fn decode_event_core_with(
         // over a malformed one would park what every old peer folded
         action: id16(m.get(&Key::Int(KEY_ACTION))),
         undo_of: id16(m.get(&Key::Int(KEY_UNDO_OF))),
+        // the same leniency, for the same reason: a build from before D31 skips the key whatever
+        // it holds, so anything but a positive integer reads as no version at all
+        schema_version: safe_non_negative(m.get(&Key::Int(KEY_SCHEMA_VERSION)))
+            .and_then(SchemaVersion::parse),
     })
 }

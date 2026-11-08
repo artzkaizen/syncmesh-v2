@@ -1,8 +1,9 @@
 import type { Change, SyncEvent } from "@syncmesh/kernel";
 
-import { parsePartitionKey, readRow } from "@syncmesh/kernel";
+import { parsePartitionKey, parseSchemaVersion, readRow } from "@syncmesh/kernel";
+import { Result } from "@syncmesh/result";
 import { syncSchema, t, user } from "@syncmesh/schema";
-import { decodeEventCore, encodeEventCore } from "@syncmesh/wire";
+import { decodeCbor, decodeEventCore, encodeEventCore } from "@syncmesh/wire";
 import { grownCore } from "@syncmesh/wire/wire-tests";
 import { describe, expect, test } from "bun:test";
 
@@ -11,7 +12,19 @@ import type { EngineError } from "../errors.js";
 import type { ProbeEvent, Validator } from "../validate.js";
 
 import { createValidator } from "../validate.js";
-import { CREATE, N1, PEER_A, PEER_B, column, key, row, setup } from "./fixtures.js";
+import {
+  CREATE,
+  N1,
+  PEER_A,
+  PEER_B,
+  PEER_C,
+  column,
+  key,
+  row,
+  seq,
+  setup,
+  table,
+} from "./fixtures.js";
 
 const USER = parsePartitionKey("user:acct_a").unwrap();
 
@@ -493,5 +506,204 @@ describe("the additive rule (D13)", () => {
     } satisfies ProbeEvent;
     const held = { row: () => row({ id: "n1", body: "one" }), partition: () => USER };
     expect(validatorFor(oldSchema).validate(event, held).isOk()).toBe(true);
+  });
+});
+
+/**
+ * D31's rule, one build per step: v1 writes `memos` and `notes.owner`; v2 retires both; v3 drops
+ * `memos` and removes `owner`; v4 is a newer build still, with a table v3 has never seen.
+ */
+const shipped = {
+  v1: syncSchema({
+    schemaVersion: 1,
+    tables: {
+      notes: {
+        columns: { id: t.text().primaryKey(), body: t.text(), owner: t.text().nullable() },
+        partition: user,
+      },
+      memos: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: user },
+    },
+  }),
+  v2: syncSchema({
+    schemaVersion: 2,
+    tables: {
+      notes: {
+        columns: {
+          id: t.text().primaryKey(),
+          body: t.text(),
+          owner: t.text().nullable().retired(),
+        },
+        partition: user,
+      },
+      memos: {
+        columns: { id: t.text().primaryKey(), body: t.text() },
+        partition: user,
+        retired: true,
+      },
+    },
+  }),
+  v3: syncSchema({
+    schemaVersion: 3,
+    dropped: ["memos"],
+    tables: {
+      notes: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: user },
+    },
+  }),
+  v4: syncSchema({
+    schemaVersion: 4,
+    dropped: ["memos"],
+    tables: {
+      notes: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: user },
+      tasks: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: user },
+    },
+  }),
+};
+
+const builtOn = (schema: (typeof shipped)[keyof typeof shipped]) =>
+  createValidator({ schema, grantFor: null });
+
+const memoBy = (author: Engine, n: number) =>
+  author.mutate(
+    CREATE,
+    (tx) => tx.insert(MEMOS, key(`m${n}`), row({ id: `m${n}`, body: `m-${n}` })),
+    { partition: USER },
+  );
+
+describe("retired: declared, read and folded, never written here (D31)", () => {
+  test("this device's own write to a retired table is a typed value, and nothing is numbered", async () => {
+    const device = peer(PEER_A, { validate: builtOn(shipped.v2) });
+    const written = await memoBy(device, 1);
+    expect(written.isErr() && written.error._tag).toBe("RetiredWrite");
+    expect(written.isErr() && written.error).toMatchObject({ table: "memos" });
+    expect(await device.recentEvents()).toEqual(Result.ok([]));
+  });
+
+  test("a retired column is refused on insert and update; the rest of the row is not", async () => {
+    const device = peer(PEER_A, { validate: builtOn(shipped.v2) });
+    const owned = await device.mutate(
+      CREATE,
+      (tx) => tx.insert(NOTES, key("n1"), row({ id: "n1", body: "one", owner: "ada" })),
+      { partition: USER },
+    );
+    expect(owned.isErr() && owned.error).toMatchObject({
+      _tag: "RetiredWrite",
+      table: "notes",
+      column: "owner",
+    });
+    const plain = await device.mutate(
+      CREATE,
+      (tx) => tx.insert(NOTES, key("n1"), row({ id: "n1", body: "one" })),
+      { partition: USER },
+    );
+    expect(plain.isOk()).toBe(true);
+    const patched = await device.mutate(
+      CREATE,
+      (tx) => tx.update(NOTES, key("n1"), row({ owner: "ada" })),
+      { partition: USER },
+    );
+    expect(patched.isErr() && patched.error._tag).toBe("RetiredWrite");
+  });
+
+  test("an older build's writes to both still fold, so retiring strands nobody", async () => {
+    const older = peer(PEER_B, { validate: builtOn(shipped.v1) });
+    const memo = (await memoBy(older, 1)).unwrap();
+    const note = (
+      await older.mutate(
+        CREATE,
+        (tx) => tx.insert(NOTES, key("n1"), row({ id: "n1", body: "one", owner: "ada" })),
+        { partition: USER },
+      )
+    ).unwrap();
+
+    const device = peer(PEER_A, { validate: builtOn(shipped.v2) });
+    const report = (await device.receiveBatch(entriesOf([memo, note]))).unwrap();
+    expect(report).toEqual({ folded: 2, skipped: 0, quarantined: 0 });
+    expect(device.quarantine()).toEqual([]);
+    expect(cursorOf(device)).toBe(2);
+    expect(readRow(device.state(), NOTES, key("n1"))?.get(column("owner"))).toBe("ada");
+    expect(digestOf(device)).toEqual(digestOf(older));
+  });
+
+  test("undoing a delete brings the row back, its retired cell included, without writing it", async () => {
+    const older = peer(PEER_B, { validate: builtOn(shipped.v1) });
+    const note = (
+      await older.mutate(
+        CREATE,
+        (tx) => tx.insert(NOTES, key("n1"), row({ id: "n1", body: "one", owner: "ada" })),
+        { partition: USER },
+      )
+    ).unwrap();
+    const device = peer(PEER_A, { validate: builtOn(shipped.v2), undoDepth: 5 });
+    (await device.receive({ event: note })).unwrap();
+    const deleted = (
+      await device.mutate(CREATE, (tx) => tx.delete(NOTES, key("n1")), { partition: USER })
+    ).unwrap();
+
+    const reverted = (await device.revert(deleted.id)).unwrap();
+    expect(reverted.skipped).toEqual([]);
+    const [change] = reverted.event?.changes ?? [];
+    expect(change?.kind === "insert" && [...change.row.keys()].map(String)).toEqual(["id", "body"]);
+    const back = readRow(device.state(), NOTES, key("n1"));
+    expect(back?.get(column("owner"))).toBe("ada");
+    expect(back?.get(column("body"))).toBe("one");
+  });
+});
+
+describe("a dropped table parks in a bucket of its own (D31)", () => {
+  test("an old fleet's writes to a dropped table cannot evict a newer build's parked event", async () => {
+    const newer = peer(PEER_C, { validate: builtOn(shipped.v4) });
+    const task = (
+      await newer.mutate(
+        CREATE,
+        (tx) => tx.insert(table("tasks"), key("t1"), row({ id: "t1", body: "later" })),
+        { partition: USER },
+      )
+    ).unwrap();
+    const older = peer(PEER_B, { validate: builtOn(shipped.v1) });
+    const memos: SyncEvent[] = [];
+    for (const n of [1, 2, 3]) memos.push((await memoBy(older, n)).unwrap());
+
+    const middle = peer(PEER_A, { validate: builtOn(shipped.v3), quarantineLimit: 2 });
+    const raised: EngineError[] = [];
+    middle.onError((e) => void raised.push(e));
+    (await middle.receiveBatch(entriesOf([task]))).unwrap();
+    (await middle.receiveBatch(entriesOf(memos))).unwrap();
+
+    // the newer build's event is still held for the upgrade; only the old fleet's oldest went
+    const held = middle.quarantine().map((p) => [p.reason, p.verdict._tag]);
+    expect(held).toEqual([
+      ["unknown-table", "UnknownTable"],
+      ["dropped-table", "TableDropped"],
+      ["dropped-table", "TableDropped"],
+    ]);
+    expect(raised).toEqual([expect.objectContaining({ reason: "dropped-table", seqNum: seq(1) })]);
+  });
+
+  test("it warns whatever unknownHandling says: the build that dropped it is the later one", async () => {
+    const older = peer(PEER_B, { validate: builtOn(shipped.v1) });
+    const memo = (await memoBy(older, 1)).unwrap();
+    const device = peer(PEER_A, { validate: builtOn(shipped.v3), unknownHandling: "ignore" });
+    const warned: string[] = [];
+    device.onQuarantine(({ reason }) => void warned.push(reason._tag));
+    (await device.receive({ event: memo })).unwrap();
+    expect(warned).toEqual(["TableDropped"]);
+  });
+});
+
+describe("schemaVersion is stamped on what this build writes (D31)", () => {
+  test("declared, every event carries it under key 9; undeclared, the bytes are what they were", async () => {
+    const stamped = peer(PEER_A, { schemaVersion: parseSchemaVersion(3).unwrap() });
+    const [event] = await threeNotes(stamped);
+    expect<number | undefined>(event?.schemaVersion).toBe(3);
+    const core = decodeCbor(encodeEventCore(event!)).unwrap();
+    expect(core instanceof Map && core.get(9)).toBe(3);
+    expect(decodeEventCore(encodeEventCore(event!)).unwrap().schemaVersion).toBe(
+      event!.schemaVersion,
+    );
+
+    const [bare] = await threeNotes(peer(PEER_B));
+    expect(bare).not.toHaveProperty("schemaVersion");
+    const bareCore = decodeCbor(encodeEventCore(bare!)).unwrap();
+    expect(bareCore instanceof Map && bareCore.has(9)).toBe(false);
   });
 });

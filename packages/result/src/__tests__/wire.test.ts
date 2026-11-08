@@ -8,6 +8,11 @@ class NameTaken extends TaggedError("NameTaken")<{
   cause?: unknown;
   message?: string;
 }> {}
+class CellRefused extends TaggedError("CellRefused")<{
+  readonly table: string;
+  readonly column?: string;
+  message?: string;
+}> {}
 class Unreachable extends TaggedError("Unreachable")<{
   readonly triedRoutes: number;
   message?: string;
@@ -23,6 +28,16 @@ describe("tagged errors across the wire", () => {
     expect(revived?._tag).toBe("NameTaken");
     expect(revived instanceof NameTaken && revived.room).toBe("ward-3");
     expect(revived?.message).toBe("already reserved");
+  });
+
+  test("a declared `column` crosses, and the runtime's own position never does", () => {
+    // JavaScriptCore gives every Error unenumerable `line` and `column` numbers of its own
+    const wire = serializeTagged(new CellRefused({ table: "notes", column: "owner" }));
+    expect(wire.column).toBe("owner");
+    const revived = createTaggedCatalog([CellRefused]).revive(JSON.parse(JSON.stringify(wire)));
+    expect(revived instanceof CellRefused && revived.column).toBe("owner");
+    const bare = serializeTagged(new CellRefused({ table: "notes" }));
+    expect(["line", "column"].filter((key) => key in bare)).toEqual([]);
   });
 
   test("the stack stays home and the cause flattens to its message", () => {

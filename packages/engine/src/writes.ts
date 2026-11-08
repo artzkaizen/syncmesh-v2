@@ -1,4 +1,4 @@
-import type { Change, Hlc, HlcClock, PeerId, SeqNum, State } from "@syncmesh/kernel";
+import type { Change, Hlc, HlcClock, PeerId, SchemaVersion, SeqNum, State } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
 import { getRecord, docLineage, type Procedure, type SyncEvent } from "@syncmesh/kernel";
@@ -119,6 +119,8 @@ export interface WritePathApi extends OwnPositionApi {
 
 export interface WriteDeps {
   readonly peerId: PeerId;
+  /** Stamped on each event this device writes (D31); absent, none is. */
+  readonly schemaVersion: SchemaVersion | undefined;
   readonly clock: HlcClock;
   readonly validate?: Validator | undefined;
   readonly before: StateLookup;
@@ -194,7 +196,7 @@ export function createWritePath(deps: WriteDeps) {
     // this log's alone
     const floor = scope === "synced" ? ownFloor.get() : 0;
     const event = buildEvent(
-      peerId,
+      deps,
       procedure,
       hlc,
       nextSeq(pastFloor(last, floor)),

@@ -55,7 +55,6 @@ export const GRANDFATHERED: ReadonlySet<string> = new Set([
   "scopeOf",
   "sqlOf",
   "sqlValueOf",
-  "stampOf",
   "standInFor",
   "standingOf",
   "stateOf",

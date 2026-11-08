@@ -211,7 +211,10 @@ that log, exactly like the conformance vectors. Pin it, test it, version it.
 | unknown change kind | today: decode **throws** → whole event dropped as `malformed`; MAX-cursors then hide the hole forever — the drop-flavored version of the divergence above |
 | unknown column on known table | today: admission denied (`checkRow` → `UnknownColumn`), event refused — not parked (no B4 overflow) |
 | quarantine store | not built — "denied" is a typed error + refusal; nothing is parked or retried |
-| `schemaVersion` on the wire · upcasters · `syncmesh migrate` | none exist |
+| `schemaVersion` on the wire | built (D31, #29) — event core key 9, written when the manifest declares one, absent = 1; index 5 of the cursors frame; a reading, never a gate; `conformance/schema-vectors.json` |
+| the verdict table as a lint | built (D31, #29) — `checkEvolution(shipped, schema)` over the committed `ShippedSchema` file; a value, not a throw |
+| drop = park | built (D31, #29) — `retired` (folded, refused for local writes) then `dropped` (its own `dropped-table` bucket) |
+| upcasters · `syncmesh migrate` | none exist; D13 chose no upcasters |
 
 ## Remaining work
 
@@ -225,7 +228,7 @@ that log, exactly like the conformance vectors. Pin it, test it, version it.
 ## Open questions
 
 - G18: state digests / dev-mode fold hashes across mixed versions — a peer that upcast an event and one that applied it natively (or holds columns the other parked in `_smx`) can hold legitimately different rows, so digest mismatch ≠ divergence; compare per-version, or digest a common-subset projection?
-- Is `schemaVersion` one global uint per event, or per-table — apps evolve tables independently.
+- ~~Is `schemaVersion` one global uint per event, or per-table?~~ One app-wide integer per event (D31): a device runs one build, and a table is retired per table under that one version.
 - Version-stranded bound: how large may quarantine grow before the honest answer is forced upgrade or snapshot re-bootstrap?
 - How long must an upcaster chain be supported before snapshot re-bootstrap replaces replay?
 - Does the policy AST interpreter version ride `v`, or bump independently?

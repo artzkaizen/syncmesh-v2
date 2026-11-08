@@ -24,6 +24,8 @@ export interface AdmitDeps extends Hubs {
   readonly before: StateLookup;
   readonly parked: QuarantineStore;
   readonly unknownHandling: UnknownHandling;
+  /** A parked event is still an author writing: what the fleet reading counts it as (D31). */
+  readonly noteParked?: (event: SyncEvent) => void;
 }
 
 /**
@@ -177,6 +179,7 @@ const park = (deps: AdmitDeps, entry: StoredEvent, verdict: ValidationError): vo
     .list()
     .some((held) => held.entry.event.id === entry.event.id && held.verdict._tag === verdict._tag);
   deps.parked.park({ entry, reason, verdict });
+  deps.noteParked?.(entry.event);
   const handling = isUnknown(reason) ? deps.unknownHandling : "warn";
   if (handling !== "ignore" && !known)
     deps.quarantine.emit({ event: entry.event, reason: verdict });

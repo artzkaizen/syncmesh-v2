@@ -1,6 +1,6 @@
 import type { CustodyReceipt, RefusalReceipt } from "@syncmesh/wire";
 
-import { createEngine, createMemoryEventStore } from "@syncmesh/engine";
+import { createEngine, createMemoryEventStore, createValidator } from "@syncmesh/engine";
 import { createHlcClock, parseSeqNum, type PeerId } from "@syncmesh/kernel";
 import { Temporal } from "@syncmesh/temporal";
 import { createGrantRegistry, createIdentity, issueRefusal } from "@syncmesh/wire";
@@ -14,7 +14,19 @@ import { bridgeFramedLink } from "../bridge.js";
 import { KIND } from "../frame-parts.js";
 import { refusalFrame } from "../frame.js";
 import { loopbackPair } from "../link.js";
-import { ACME, CREATE, ID, ISSUER, T0, key, mintFor, peer, seed, write } from "./fixtures.js";
+import {
+  ACME,
+  CREATE,
+  ID,
+  ISSUER,
+  T0,
+  fixtureSchema,
+  key,
+  mintFor,
+  peer,
+  seed,
+  write,
+} from "./fixtures.js";
 
 /**
  * Two bridged peers where the holder signs what it stores. The author keeps every receipt that
@@ -154,6 +166,25 @@ const writeTask = (p: Side) =>
     { partition: ACME },
   );
 
+/** A granted holder whose build dropped `tasks` (D31): what a newer build than the author's is. */
+const droppingTasks = (n: number, account: string) => {
+  const identity = createIdentity(seed(n)).unwrap();
+  const grants = createGrantRegistry({ issuer: ISSUER.peerId, now: () => T0 });
+  grants.register(mintFor(identity, account)).unwrap();
+  let ms = 100;
+  const clock = createHlcClock({ now: () => Temporal.Instant.fromEpochMilliseconds(ms++) });
+  const engine = createEngine({
+    peerId: identity.peerId,
+    clock,
+    store: createMemoryEventStore(),
+    validate: createValidator({
+      schema: fixtureSchema(["tasks"]),
+      grantFor: (p) => grants.grantFor(p),
+    }),
+  });
+  return { identity, grants, engine };
+};
+
 describe("refusal receipts — the refusing twin of custody (D32)", () => {
   test("a direct peer that parks the author's event says so, signed, naming itself", async () => {
     const author = ungranted(41);
@@ -201,6 +232,22 @@ describe("refusal receipts — the refusing twin of custody (D32)", () => {
 
     expect(link.heard.at(0)?.reason).toBe("unknown-table");
     expect(link.heard.at(0)?.verdict).toBe("UnknownTable");
+    link.close();
+  });
+
+  test("a table the refuser's build dropped reports refused with TableDropped, never its local bucket (D31)", async () => {
+    const author = ungranted(43, mintFor(createIdentity(seed(43)).unwrap(), "acct_x"));
+    const holder = droppingTasks(81, "acct_y");
+    (await writeTask(author)).unwrap();
+
+    const link = refusing(author, holder);
+    await link.settle();
+
+    // parked in its own bucket here, and named on the wire in words every build can verify
+    expect(holder.engine.quarantine().map((p) => p.reason)).toEqual(["dropped-table"]);
+    expect(link.heard.at(0)?.reason).toBe("refused");
+    expect(link.heard.at(0)?.verdict).toBe("TableDropped");
+    expect(link.errors).toEqual([]);
     link.close();
   });
 

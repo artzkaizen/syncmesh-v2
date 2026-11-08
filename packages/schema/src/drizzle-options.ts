@@ -27,6 +27,8 @@ export interface DrizzleTableInKind<
   readonly derive?: DeriveBlock<ColumnsFromDrizzle<D>>;
   /** `"window"`: served a page at a time by the server, never replicated (D43). */
   readonly sync?: "window";
+  /** `true`: retired (D31) — read and folded from older builds, refused for local writes. */
+  readonly retired?: true;
 }
 
 /** A table in `global`, `user` or `local`: what the kind is *is* its rule, so it takes no `allow`. */
@@ -40,6 +42,8 @@ export interface DrizzleTableReserved<D extends DrizzleTableLike> extends FromDr
   readonly derive?: DeriveBlock<ColumnsFromDrizzle<D>>;
   /** `"window"`: served a page at a time by the server, never replicated (D43). */
   readonly sync?: "window";
+  /** `true`: retired (D31) — read and folded from older builds, refused for local writes. */
+  readonly retired?: true;
 }
 
 /** Every option `drizzleTable` reads, as the implementation sees them; the overloads narrow this per form. */
@@ -49,6 +53,7 @@ export interface DrizzleTableOptions<D extends DrizzleTableLike> extends FromDri
   readonly fields?: FieldsFn<ColumnsFromDrizzle<D>, string> | undefined;
   readonly derive?: DeriveBlock<ColumnsFromDrizzle<D>> | undefined;
   readonly sync?: "window";
+  readonly retired?: true;
 }
 
 /** The derived half every form of `drizzleTable` returns. */

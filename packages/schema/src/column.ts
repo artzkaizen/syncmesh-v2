@@ -56,6 +56,11 @@ export interface ColumnDef {
    * computed from. Every replica computes it; the app never writes it and it never travels.
    */
   readonly derived?: { readonly from: string };
+  /**
+   * Present on a retired column (D31): still declared, still read and still folded from peers,
+   * refused for this device's own writes. The step before a column is removed from the manifest.
+   */
+  readonly retired?: true;
 }
 
 const NUMERIC = new Set<ColumnKind>(["integer", "float"]);
@@ -140,6 +145,15 @@ export interface Column<T, Nullable extends boolean = false, PrimaryKey extends 
   readonly check: <S extends StandardSchemaV1>(
     schema: S,
   ) => Column<Output<S> & T, Nullable, PrimaryKey>;
+  /**
+   * Marks the column retired (D31): this device stops writing it, older builds' writes to it
+   * still fold, and it reads as before. Gone on a key, which every row needs; `table()` refuses
+   * a retired column that is not nullable, since an older build refuses the inserts that omit it.
+   * A write that names it is `RetiredWrite`, `null` included, so a row read back whole and written
+   * again must leave the column out. Undoing a delete, `withNulls`, a captured `INSERT` that sets
+   * no value for it, and a CDC row (which always carries it) leave it out on their own.
+   */
+  readonly retired: PrimaryKey extends true ? never : () => Column<T, Nullable, false>;
   /** Phantom: carries `T` for inference; never set. */
   readonly __value?: T;
   readonly __nullable?: Nullable;
@@ -168,6 +182,7 @@ export function columnFromDef<T extends AppValue, N extends boolean, P extends b
     primaryKey: () => next<T, false, true>({ primaryKey: true }),
     unique: () => next<T, N, P>({ unique: true }),
     check: <S extends StandardSchemaV1>(schema: S) => next<Output<S> & T, N, P>({ check: schema }),
+    retired: () => next<T, N, false>({ retired: true }),
   };
   // SAFETY: the runtime column always carries every method; the Column type erases the ones whose
   // combination is meaningless (nullable on a key, primaryKey on a nullable column, any of

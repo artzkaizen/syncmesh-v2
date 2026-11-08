@@ -1,14 +1,17 @@
 import type { Engine } from "@syncmesh/engine";
 import type { Change } from "@syncmesh/kernel";
 
+import { createEngine, createMemoryEventStore, createValidator } from "@syncmesh/engine";
+import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { describe, expect, test } from "bun:test";
 
 import type { ChangeMessage } from "../source.js";
 
-import { heldRows } from "../apply.js";
+import { applyPlan, heldRows } from "../apply.js";
 import { meshCells, rowKey } from "../mapping.js";
 import { planTransaction } from "../plan.js";
-import { ACME, TASKS, authority, mappings, peerAt, WRITE } from "./fixtures.js";
+import { cdcAllow } from "../rules.js";
+import { ACME, TASKS, authority, clock, grants, mappings, peerAt, WRITE } from "./fixtures.js";
 
 const plan = (engine: Engine, messages: readonly ChangeMessage[]) =>
   planTransaction({ mappings, held: heldRows(engine) }, messages).unwrap();
@@ -96,5 +99,67 @@ describe("what a row's net effect is", () => {
     ]);
 
     expect(planned).toEqual([]);
+  });
+});
+
+describe("a retired column (D31) the database still holds", () => {
+  /** v2 retired `legacy`; Postgres keeps it until the contract step, so every row still carries it. */
+  const org = partition("org", { roles: ladder("system", "admin", "viewer") });
+  const retiring = syncSchema({
+    schemaVersion: 2,
+    tables: {
+      tasks: {
+        columns: {
+          id: t.text().primaryKey(),
+          orgId: t.text(),
+          title: t.text(),
+          legacy: t.text().nullable().retired(),
+        },
+        partition: org,
+        allow: ({ role }) => cdcAllow({ read: role("viewer"), writer: "system" }),
+      },
+    },
+  });
+  const retiredMappings = {
+    tasks: { collection: retiring.tables.tasks, partition: mappings.tasks.partition },
+  };
+
+  test("is left out of every CDC insert and update, so the authority's writes are not refused", async () => {
+    const engine = createEngine({
+      peerId: authority.peerId,
+      clock: clock(),
+      store: createMemoryEventStore(),
+      merge: retiring.merge,
+      validate: createValidator({
+        schema: retiring,
+        grantFor: (peer) => grants.get(peer),
+        authority: authority.peerId,
+      }),
+    });
+    const planOf = (messages: readonly ChangeMessage[]) =>
+      planTransaction({ mappings: retiredMappings, held: heldRows(engine) }, messages).unwrap();
+    const apply = (messages: readonly ChangeMessage[]) =>
+      applyPlan({ engine, source: "pg", procedure: WRITE }, planOf(messages), null);
+
+    const inserted = [
+      { t: "insert", table: "tasks", row: { id: "t1", orgId: "acme", title: "a", legacy: "x" } },
+    ] satisfies ChangeMessage[];
+    expect(netEffect(planOf(inserted)[0]?.changes ?? [])).toEqual([
+      { kind: "insert", columns: ["id", "orgId", "title"] },
+    ]);
+    expect((await apply(inserted)).isOk()).toBe(true);
+
+    const updated = [
+      {
+        t: "update",
+        table: "tasks",
+        key: "t1",
+        after: { id: "t1", orgId: "acme", title: "b", legacy: "x" },
+      },
+    ] satisfies ChangeMessage[];
+    expect(netEffect(planOf(updated)[0]?.changes ?? [])).toEqual([
+      { kind: "update", columns: ["id", "orgId", "title"] },
+    ]);
+    expect((await apply(updated)).isOk()).toBe(true);
   });
 });

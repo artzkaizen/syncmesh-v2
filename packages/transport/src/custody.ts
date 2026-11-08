@@ -3,6 +3,7 @@ import type { PeerId } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 import type { CustodyReceipt, Identity, RefusalReceipt } from "@syncmesh/wire";
 
+import { wireReason } from "@syncmesh/engine";
 import { issueReceipt, issueRefusal, verifyReceipt, verifyRefusal } from "@syncmesh/wire";
 
 import type { BridgeOptions } from "./bridge.js";
@@ -69,7 +70,8 @@ export function createCustody(deps: CustodyDeps): Custody {
       const wire = issueRefusal(identity, {
         author,
         seq,
-        reason,
+        // a bucket only this build has goes out as `refused`, its verdict tag naming it (D31)
+        reason: wireReason(reason),
         verdict: verdict._tag,
         now: now(),
       });

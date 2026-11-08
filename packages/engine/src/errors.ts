@@ -82,6 +82,24 @@ export class LinkRefused extends TaggedError("LinkRefused")<{
 }> {}
 export class UnknownTable extends TaggedError("UnknownTable")<{ table: string; message: string }> {}
 /**
+ * A table this build declared once and has since dropped (D31's contract step) — an older build's
+ * write, still arriving. Its own tag and its own bucket, `dropped-table`, rather than
+ * `UnknownTable`: that one is what a *newer* build's table looks like, which an upgrade clears,
+ * and this one no upgrade ever will. A receipt names it with this tag under `refused`.
+ */
+export class TableDropped extends TaggedError("TableDropped")<{ table: string; message: string }> {}
+/**
+ * This device's own write to a table or column the schema marks `retired` (D31). Refused before
+ * the write is numbered, as a value; the same change arriving from an older build still folds,
+ * which is what lets a fleet retire something without a cliff.
+ */
+export class RetiredWrite extends TaggedError("RetiredWrite")<{
+  table: string;
+  /** Absent when the whole table is retired. */
+  column?: string;
+  message: string;
+}> {}
+/**
  * A change kind the kernel here has no fold for — a newer build's change arriving at an older
  * one (D13). Its own tag and not `SchemaViolation`: this is the refusal an upgrade is expected
  * to reverse, so it has to be distinguishable from the refusals that no upgrade will.
@@ -178,6 +196,8 @@ export type ValidationError =
   | GrantRevoked
   | GrantStale
   | UnknownTable
+  | TableDropped
+  | RetiredWrite
   | PartitionNotGranted
   | WrongPartition
   | LocalOnly

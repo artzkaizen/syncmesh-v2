@@ -368,7 +368,8 @@ invariant 4).
 
 The event core's keys are `v` 0, `peerId` 1, `seq` 2, `hlc` 3, `procedure` 5, `partition` 6,
 `changes` 7 and `sealed` 8. Key 4 was never used and stays retired. RFC-0013 still needs a fresh
-key for `schemaVersion`, so 9 is **reserved for it**. This RFC claims:
+key for `schemaVersion`, so 9 is **reserved for it** (D31 now writes it there; see
+`plan/decisions/D31.md`). This RFC claims:
 
 | Key | Name | Type | Meaning |
 |---|---|---|---|
@@ -782,8 +783,8 @@ decompression cap and a time budget, and exceeding them is a `failed` update, ne
 | drop a doc column | park like any column: stop writing, keep the log until the compaction floor passes it |
 | rename a doc column | only with an upcaster rewriting `data.0` (column) — pure, allowed |
 
-Tag 6 and keys 10/11 are additive and need no `v` bump. `schemaVersion` (key 9) gates doc
-columns like any column. `fromDrizzle` already maps pg `bytea` → `blob` and Drizzle 1.0 SQLite
+Tag 6 and keys 10/11 are additive and need no `v` bump. `schemaVersion` (key 9, D31) is a
+reading for doc columns as for any column, never a gate. `fromDrizzle` already maps pg `bytea` → `blob` and Drizzle 1.0 SQLite
 `blob()` without a mode → `json`. The binary check reads those same frozen kinds.
 
 ## 13 · Conformance and cross-runtime tests
@@ -1051,7 +1052,7 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    with later audit** (§7.2, §7.3). A materialising authority is not required for a partition
    with doc columns.
 7. **Numbers — decided 2026-11-08 by Jace: as proposed.** Change tag 6, event keys 10/11 (9 stays
-   reserved for `schemaVersion`), 64 KiB inline threshold, 300/1000 ms flush pacing. (§16.1 added
+   reserved for `schemaVersion`, which D31 now writes there), 64 KiB inline threshold, 300/1000 ms flush pacing. (§16.1 added
    data key 6, `parent`, inside tag 6's map.)
 8. **Package shape — decided 2026-11-08 by Jace: the `@syncmesh/docs` SPI, and a builder only.**
    The SPI lives in `@syncmesh/docs` (D41), not a new `@syncmesh/documents`; Rust's is

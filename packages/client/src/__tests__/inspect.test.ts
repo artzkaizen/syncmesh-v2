@@ -1,6 +1,8 @@
+import type { Procedure, RowKey } from "@syncmesh/kernel";
+
 import { createMemoryEventStore } from "@syncmesh/engine";
 import { seed } from "@syncmesh/kernel/test-fixtures";
-import { syncSchema, t } from "@syncmesh/schema";
+import { local, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
@@ -16,6 +18,10 @@ const schema = () =>
     tables: { notes: { columns: { id: t.text().primaryKey(), body: t.text() } } },
   });
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
+// SAFETY: test fixtures; the naming rules are not what these tests are about
+const procedureName = (name: string) => name as Procedure;
+// SAFETY: as above, a row key is opaque text
+const rowKey = (key: string) => key as RowKey;
 
 const device = async () =>
   (
@@ -116,5 +122,45 @@ describe("inspect.verify", () => {
     await mesh.stop();
     // without this the next launch would check every page as if the last one had crashed (D39)
     expect(await ended()).toEqual([["closed"]]);
+  });
+});
+
+describe("inspect.fleet (D31)", () => {
+  test("the manifest's schemaVersion is stamped on what this device writes, and read back", async () => {
+    const versioned = syncSchema({
+      schemaVersion: 2,
+      tables: {
+        drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: local },
+      },
+    });
+    const mesh = (
+      await createMesh({
+        schema: versioned,
+        identity: createIdentity(seed(8)).unwrap(),
+        now: () => T0,
+        storage: sqlite({ driver: bunSqliteDriver(":memory:") }),
+      })
+    ).unwrap();
+    const drafts = versioned.tables.drafts;
+    const written = await mesh.engine.mutate(
+      procedureName("drafts.create"),
+      (tx) =>
+        tx.insert(
+          drafts.name,
+          rowKey("d1"),
+          new Map([
+            [drafts.columnNames.id, "d1"],
+            [drafts.columnNames.body, "x"],
+          ]),
+        ),
+      { local: true },
+    );
+    expect<number | undefined>(written.unwrap().schemaVersion).toBe(2);
+    const self = mesh.engine.peerId;
+    expect<number | undefined>(mesh.inspect.fleet.oldestSchema().get(self)?.version).toBe(2);
+    // within a window the reading is judged by the event's own stamp, against the mesh's clock
+    const minute = Temporal.Duration.from({ minutes: 1 });
+    expect(mesh.inspect.fleet.oldestSchema({ within: minute }).has(self)).toBe(true);
+    await mesh.stop();
   });
 });

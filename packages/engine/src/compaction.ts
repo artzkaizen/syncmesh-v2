@@ -1,4 +1,4 @@
-import type { PeerId, SeqNum } from "@syncmesh/kernel";
+import type { PeerId, SchemaVersion, SeqNum } from "@syncmesh/kernel";
 
 import { Result } from "@syncmesh/result";
 import { Temporal, addToInstant } from "@syncmesh/temporal";
@@ -19,6 +19,8 @@ import { EMPTY_COVERAGE } from "./sync.js";
 export interface Ack {
   readonly cursors: Cursors;
   readonly at: Temporal.Instant;
+  /** The schema the peer's build declared on that cursors frame (D31); absent when it declared none. */
+  readonly schemaVersion?: SchemaVersion;
 }
 
 export interface CompactOptions {

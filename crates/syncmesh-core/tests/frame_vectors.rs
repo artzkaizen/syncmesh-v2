@@ -109,8 +109,11 @@ fn session_frames_are_reproduced_from_the_generator_inputs() {
         (0, frames::grant_frame(&grant_wire)),
         (1, frames::grant_request_frame(&d, None)),
         (2, frames::grant_request_frame(&d, Some("inv-7"))),
-        (3, frames::cursors_frame(&d, &cursors, None, None)),
-        (4, frames::cursors_frame(&d, &cursors, Some(&ahead), None)),
+        (3, frames::cursors_frame(&d, &cursors, None, None, None)),
+        (
+            4,
+            frames::cursors_frame(&d, &cursors, Some(&ahead), None, None),
+        ),
         (5, frames::event_frame(&event_wire)),
         (7, frames::digest_frame("", &cursors, &digests, None)),
         (
@@ -160,10 +163,13 @@ fn session_frames_are_reproduced_from_the_generator_inputs() {
             frames::withheld_frame(r#"{"partitions":["org:acme"]}"#, &ahead),
         ),
         // the sender's compaction floor at index 4, `ahead` always written before it (D46)
-        (20, frames::cursors_frame(&d, &cursors, None, Some(&floor))),
+        (
+            20,
+            frames::cursors_frame(&d, &cursors, None, Some(&floor), None),
+        ),
         (
             21,
-            frames::cursors_frame(&d, &cursors, Some(&ahead), Some(&floor)),
+            frames::cursors_frame(&d, &cursors, Some(&ahead), Some(&floor), None),
         ),
     ];
     for (i, bytes) in expected {
@@ -177,11 +183,13 @@ fn session_frames_are_reproduced_from_the_generator_inputs() {
             cursors: c,
             ahead: a,
             floor: f,
+            schema_version,
         } => {
             assert_eq!(from, d);
             assert_eq!(c, cursors);
             assert_eq!(a, Some(ahead.clone()));
             assert_eq!(f, None);
+            assert_eq!(schema_version, None);
         }
         f => panic!("expected cursors, got {}", f.kind()),
     }
