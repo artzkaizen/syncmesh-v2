@@ -16,6 +16,7 @@ export type {
   OperationRefusal,
   OperationRow,
   OperationStore,
+  OperationStoreOptions,
   ReceiptRow,
   RefusalRow,
   VouchRow,

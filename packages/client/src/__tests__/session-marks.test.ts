@@ -1,14 +1,17 @@
 import type { Transport } from "@syncmesh/transport";
 
+import { parseSeqNum } from "@syncmesh/kernel";
 import { seed } from "@syncmesh/kernel/test-fixtures";
 import { syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
+import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
 import { afterEach, describe, expect, test } from "bun:test";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 import type { AppPhase, Knock } from "../transports.js";
 
+import { openMeshEngine } from "../boot.js";
 import { createMesh } from "../mesh.js";
 import { sqlite } from "../options.js";
 
@@ -112,6 +115,34 @@ describe("the log's session follows the app into the background and back (D39)",
     platform.say("background");
     expect(await until(async () => (await session()) === "closed")).toBe(true);
     await mesh.stop();
+  });
+
+  test("a receipt the ledger writes in the background marks the session open again first", async () => {
+    const driver = bunSqliteDriver(":memory:");
+    const booted = (
+      await openMeshEngine({
+        schema: schema(),
+        identity: WRITER,
+        driver,
+        dataDir: "",
+        now: () => Temporal.Now.instant(),
+        grantFor: () => undefined,
+      })
+    ).unwrap();
+    const session = async () =>
+      (await driver.all(`SELECT value FROM syncmesh.meta WHERE key = 'session'`))[0]?.[0];
+    await booted.session?.clean();
+    expect(await session()).toBe("closed");
+
+    // the ledger's tables are in the log's file: a peer's receipt arriving now writes that file
+    const holder = createIdentity(seed(8)).unwrap().peerId;
+    const through = parseSeqNum(1).unwrap();
+    const at = Temporal.Now.instant().epochMilliseconds;
+    expect((await booted.operations?.acknowledge(holder, WRITER.peerId, through, at))?.isOk()).toBe(
+      true,
+    );
+    expect(await session()).toBe("open");
+    await booted.close();
   });
 });
 

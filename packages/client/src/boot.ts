@@ -17,7 +17,7 @@ import type { Grant, Identity } from "@syncmesh/wire";
 
 import { createValidator, openEngine } from "@syncmesh/engine";
 import { DEFAULT_MAX_DRIFT, createHlcClock, parseAdapterId } from "@syncmesh/kernel";
-import { Result, panic } from "@syncmesh/result";
+import { Result, omitUndefined, panic } from "@syncmesh/result";
 import { syncedTables } from "@syncmesh/schema";
 import { installRls, openStores, operationStore } from "@syncmesh/storage";
 
@@ -267,7 +267,10 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
     yield* Result.await(installPolicies(options, driver));
     if (driver !== undefined) {
       Object.assign(booted, { driver });
-      const operations = yield* Result.await(operationStore(driver));
+      // the ledger lives in the log's file: a receipt that lands in the background opens it (D39)
+      const operations = yield* Result.await(
+        operationStore(driver, omitUndefined({ beforeWrite: owned?.beforeWrite })),
+      );
       Object.assign(booted, { operations });
       /*
        * Beside the device key, in the same table and for the same reason: both are true of this

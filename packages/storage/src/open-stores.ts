@@ -60,6 +60,12 @@ export interface Stores extends ScopedStores {
    * session clean when it went to the background (D39). A crash after it is seen at the next open.
    */
   readonly markOpen: () => Promise<void>;
+  /**
+   * Marks the session open again when it is marked clean, and settles once it is; settles at once
+   * when it is open. What every write through these stores runs first (D39), for a write on
+   * {@link Stores.driver} that does not go through them — the write ledger's, or your own.
+   */
+  readonly beforeWrite: () => Promise<void>;
   /** {@link Stores.markClean}, then closes the connection. */
   readonly close: () => Promise<void>;
 }
@@ -321,6 +327,7 @@ export function openStores(
       atomic,
       markClean,
       markOpen,
+      beforeWrite: openBeforeWrite,
       close: async () => {
         await markClean();
         await driver.close?.();
