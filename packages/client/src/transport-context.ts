@@ -72,6 +72,12 @@ export function transportContextFor(base: {
   readonly withheld?: TransportContext["withheld"];
   /** Tells the app, then purges, what a transport found this device is now refused (D45). */
   readonly purge?: TransportContext["purge"];
+  /** The mesh's record of peers this device is below the compaction floor of (D46). */
+  readonly rejoins?: TransportContext["rejoins"];
+  /** Whose checkpoint certificate this device believes: what lets a snapshot be vouched for. */
+  readonly trust?: TransportContext["trust"];
+  /** The checkpoint this device relays with any state it serves. */
+  readonly certificate?: TransportContext["certificate"];
 }): TransportContext & { readonly routes: RouteTable } {
   const routes = createRouteTable({ self: base.identity.peerId, now: base.now });
   if (base.servesAuthority) routes.serve("authority");
@@ -111,6 +117,10 @@ export function transportContextFor(base: {
   if (base.onRefusal !== undefined) Object.assign(context, { onRefusal: base.onRefusal });
   if (base.withheld !== undefined) Object.assign(context, { withheld: base.withheld });
   if (base.purge !== undefined) Object.assign(context, { purge: base.purge });
+  if (base.rejoins !== undefined) Object.assign(context, { rejoins: base.rejoins });
+  // both were passed here and dropped before D46: no snapshot a mesh took was ever vouched for
+  if (base.trust !== undefined) Object.assign(context, { trust: base.trust });
+  if (base.certificate !== undefined) Object.assign(context, { certificate: base.certificate });
   if (base.issuer !== undefined) {
     const sealedKinds = base.sealedKinds ?? new Set<string>();
     const readGate = createReadGate({

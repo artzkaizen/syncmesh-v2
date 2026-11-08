@@ -12,7 +12,7 @@ import { Result } from "@syncmesh/result";
 import type { Engine, EngineOptions } from "./engine.js";
 import type { StateStore } from "./state-store.js";
 import type { EventStore, StoreFailure, StoredEvent } from "./store.js";
-import type { Coverage } from "./sync.js";
+import type { Coverage, Cursors } from "./sync.js";
 
 import { docAppends, recordDocs } from "./doc-log.js";
 import { createEngine } from "./engine.js";
@@ -35,6 +35,8 @@ export interface Boot {
   readonly coverage: Coverage;
   /** Entries, not events: the feed chain a boot rebuilds is over the bytes each author signed. */
   readonly replay: readonly StoredEvent[];
+  /** Per author, the highest synced sequence compaction removed (`compactedBelow`); absent is none. */
+  readonly compacted?: Cursors;
 }
 
 interface Cached {
@@ -71,8 +73,9 @@ export function openEngine(
     const replay = [...synced, ...local];
     const max = yield* Result.await(store.maxHlc());
     if (max !== undefined) clock.receive(max);
+    const compacted = (yield* Result.await(store.compactedBelow())).synced;
 
-    const engine = createEngine({ ...options, boot: { state, coverage, replay } });
+    const engine = createEngine({ ...options, boot: { state, coverage, replay, compacted } });
     if (stateStore !== undefined) {
       const rows =
         cached === undefined

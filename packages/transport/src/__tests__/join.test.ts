@@ -1,19 +1,27 @@
 import type { Interest } from "@syncmesh/engine";
-import type { PeerId } from "@syncmesh/kernel";
+import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
 import { LineageCellRefused, readRow } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
-import { checkpointHash, createIdentity, encodeRecord, issueCheckpoint } from "@syncmesh/wire";
+import {
+  checkpointHash,
+  createIdentity,
+  encodeRecord,
+  encodeSnapshotRows,
+  issueCheckpoint,
+} from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import type { BridgeError, BridgeOptions } from "../bridge.js";
-import type { SnapshotInstalled } from "../join.js";
+import type { JoinExchange, JoinOutcome, JoinPolicy, SnapshotInstalled } from "../join.js";
 import type { Peer } from "./fixtures.js";
 
 import { bridgeFramedLink } from "../bridge.js";
-import { decodeFrame } from "../frame.js";
+import { cursorsFrame, decodeFrame } from "../frame.js";
+import { createJoinExchange } from "../join.js";
 import { loopbackPair } from "../link.js";
-import { ACME, BODY, GLOBEX, NOTES, T0, key, peer, write } from "./fixtures.js";
+import { snapChunkFrame, snapManifestFrame } from "../snap-frame.js";
+import { ACME, BODY, GLOBEX, NOTES, T0, key, mintFor, peer, write } from "./fixtures.js";
 
 interface JoinOptions {
   /** Pages of this size, so a test can prove the paging rather than assume it. */
@@ -85,6 +93,16 @@ const connect = (holder: Peer, joiner: Peer, options: JoinOptions = {}) => {
     close: () => [held.close(), joined.close()],
   };
 };
+
+/** The rows a holder is about to send, hashed the way a receiver will hash them. */
+const stateOf = (holder: Peer) =>
+  [...holder.engine.state()].flatMap(([table, rows]) =>
+    [...rows].map(([key, record]) => ({
+      table: String(table),
+      key: String(key),
+      record: encodeRecord(record),
+    })),
+  );
 
 describe("the join exchange", () => {
   test("state instead of history: the rows arrive and the coverage comes with them", async () => {
@@ -221,16 +239,6 @@ describe("the join exchange", () => {
 });
 
 describe("who vouches for a snapshot (book ch. 4)", () => {
-  /** The rows the holder is about to send, hashed the way a receiver will hash them. */
-  const stateOf = (holder: Peer) =>
-    [...holder.engine.state()].flatMap(([table, rows]) =>
-      [...rows].map(([key, record]) => ({
-        table: String(table),
-        key: String(key),
-        record: encodeRecord(record),
-      })),
-    );
-
   test("a verified certificate makes the install no longer provisional", async () => {
     const authority = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 7 + i)).unwrap();
     const holder = peer(40, "acct_x");
@@ -314,5 +322,213 @@ describe("who vouches for a snapshot (book ch. 4)", () => {
     expect(joiner.engine.coverage().synced.size).toBe(0);
     expect(link.chunkCount()).toBe(1); // the ack closed the exchange: no page was sent again
     link.close();
+  });
+});
+
+describe("only an answer is taken (D46, gaps U20)", () => {
+  /** A victim bridge whose far side is raw: whatever the test writes there arrives as-is. */
+  const rawFarSide = (victim: Peer, trust?: PeerId) => {
+    const { a, b, control } = loopbackPair();
+    const installed: SnapshotInstalled[] = [];
+    const options: BridgeOptions = {
+      engine: victim.engine,
+      identity: victim.identity,
+      grants: victim.grants,
+      now: () => T0,
+      onSnapshot: (report) => void installed.push(report),
+    };
+    const bridge = bridgeFramedLink(b, trust === undefined ? options : { ...options, trust });
+    const settle = async () => {
+      for (let round = 0; round < 4; round += 1) {
+        await control.flush();
+        await bridge.flush();
+      }
+    };
+    return { send: (bytes: Uint8Array) => a.send(bytes), installed, settle, bridge };
+  };
+
+  for (const trusted of [false, true]) {
+    test(`a manifest nobody asked for installs nothing and adopts nothing (trust ${trusted ? "set" : "absent"})`, async () => {
+      const authority = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 7 + i)).unwrap();
+      const victim = peer(80, "acct_y");
+      const author = peer(40, "acct_x");
+      (await write(victim, "mine", "kept")).unwrap();
+      const before = victim.engine.coverage().synced;
+      const far = rawFarSide(victim, trusted ? authority.peerId : undefined);
+      await far.settle();
+
+      // no snap-req was ever sent: an empty manifest with a huge `at`, and one with a page of rows
+      // SAFETY: test fixture; a sequence far past any the author wrote
+      const huge = new Map([[author.identity.peerId, 1_000_000 as SeqNum]]);
+      far.send(snapManifestFrame("evil:1", 0, 0, huge));
+      (await write(author, "forged", "planted")).unwrap();
+      const rows = author.engine.snapshot().rows;
+      far.send(snapManifestFrame("evil:2", 1, rows.length, huge));
+      far.send(snapChunkFrame("evil:2", 0, encodeSnapshotRows(rows)));
+      await far.settle();
+
+      expect(far.installed).toEqual([]);
+      expect(victim.engine.coverage().synced.get(author.identity.peerId)).toBeUndefined();
+      expect(victim.engine.coverage().synced).toEqual(before);
+      expect(readRow(victim.engine.state(), NOTES, key("forged"))).toBeUndefined();
+      far.bridge.close();
+    });
+  }
+
+  for (const asking of ["a floor", "a cold join"] as const)
+    test(`a vouched answer to ${asking} adopts what the certificate signs, not the manifest's \`at\``, async () => {
+      const authority = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 7 + i)).unwrap();
+      const victim = peer(80, "acct_y");
+      const author = peer(40, "acct_x");
+      for (let i = 1; i <= 3; i += 1) (await write(author, `n${i}`, `body ${i}`)).unwrap();
+      const rows = author.engine.snapshot().rows;
+      const a = author.identity.peerId;
+      // a genuine certificate over the author's real rows, covering its three events
+      const certificate = issueCheckpoint(authority, {
+        stateHash: checkpointHash(stateOf(author)),
+        coverage: new Map([[a, 3]]),
+        now: T0,
+      });
+      const far = rawFarSide(victim, authority.peerId);
+      await far.settle();
+
+      // SAFETY: test fixture; a sequence far past any the author wrote
+      const huge = new Map([[a, 1_000_000 as SeqNum]]);
+      // the victim asks, prompted by a claimed floor or as `joinIfEmpty` does; the far side answers
+      // with the genuine certificate over the genuine rows, and an `at` nobody signed
+      if (asking === "a floor") far.send(cursorsFrame(a, huge, new Map(), huge));
+      else far.bridge.requestSnapshot(undefined, false);
+      await far.settle();
+      far.send(snapManifestFrame("evil:1", 1, rows.length, huge, undefined, certificate));
+      far.send(snapChunkFrame("evil:1", 0, encodeSnapshotRows(rows)));
+      await far.settle();
+
+      expect(far.installed).toEqual([{ rows: 3, provisional: false }]);
+      expect(Number(victim.engine.coverage().synced.get(a))).toBe(3);
+      if (asking === "a floor") expect(Number(victim.engine.floor().get(a))).toBe(3);
+      far.bridge.close();
+    });
+
+  test("two requests overlapping on one bridge each install under their own policy", async () => {
+    const holder = peer(40, "acct_x");
+    const joiner = peer(80, "acct_y");
+    for (let i = 1; i <= 3; i += 1) (await write(holder, `n${i}`, `body ${i}`)).unwrap();
+
+    const link = connect(holder, joiner);
+    // a rebuild that takes unvouched state, then a cold join that does not, both in flight: the
+    // first manifest answers the first ask. One shared variable made both installs take the last
+    link.request(undefined, true);
+    link.request(undefined, false);
+    await link.settle();
+
+    expect(link.installed).toEqual([
+      { rows: 3, provisional: true },
+      { rows: 3, provisional: true },
+    ]);
+    expect(Number(joiner.engine.coverage().synced.get(holder.identity.peerId))).toBe(3);
+    link.close();
+  });
+});
+
+describe("what an install below a floor adopts (D46)", () => {
+  /** Two join exchanges wired back to back, the joiner asking under a whole policy. */
+  const exchanges = (holder: Peer, joiner: Peer, joinerEngine = joiner.engine) => {
+    const queue: (() => Promise<void>)[] = [];
+    const route = (to: () => JoinExchange) => (_what: string, bytes: Uint8Array) => {
+      const frame = decodeFrame(bytes).unwrap();
+      if (frame.kind.startsWith("snap-"))
+        // SAFETY: a frame whose kind starts with "snap-" is a SnapshotFrame (`dispatch.ts`)
+        queue.push(() => to().dispatch(frame as Parameters<JoinExchange["dispatch"]>[0]));
+    };
+    const outcomes: JoinOutcome[] = [];
+    const held: JoinExchange = createJoinExchange({
+      engine: holder.engine,
+      send: route(() => joined),
+      idPrefix: "holder",
+    });
+    const joined: JoinExchange = createJoinExchange({
+      engine: joinerEngine,
+      send: route(() => held),
+      idPrefix: "joiner",
+    });
+    const settle = async () => {
+      while (queue.length > 0) await queue.shift()?.();
+    };
+    const ask = (policy: Omit<JoinPolicy, "settled">, interest?: Interest) =>
+      joined.requestUnder(interest, {
+        ...policy,
+        settled: (outcome) => void outcomes.push(outcome),
+      });
+    return { ask, settle, outcomes };
+  };
+
+  test("unvouched and accepted: per author at most the claimed floor, and nothing for the rest", async () => {
+    const holder = peer(40, "acct_x");
+    const other = peer(120, "acct_z");
+    const joiner = peer(80, "acct_y");
+    for (let i = 1; i <= 5; i += 1) (await write(holder, `n${i}`, `body ${i}`)).unwrap();
+    for (let i = 1; i <= 3; i += 1) (await write(other, `o${i}`, `other ${i}`)).unwrap();
+    holder.grants.register(mintFor(other.identity, "acct_z")).unwrap();
+    (
+      await holder.engine.receiveBatch((await other.engine.eventsSince(new Map())).unwrap())
+    ).unwrap();
+    expect(Number(holder.engine.coverage().synced.get(other.identity.peerId))).toBe(3);
+    const x = holder.identity.peerId;
+
+    const pair = exchanges(holder, joiner);
+    // SAFETY: test fixture; x wrote five, so 2 is one of its sequences
+    pair.ask({ adoptUnvouched: true, floor: new Map([[x, 2 as SeqNum]]) });
+    await pair.settle();
+
+    expect(pair.outcomes.map(({ kind }) => kind)).toEqual(["installed"]);
+    expect(joiner.engine.state().get(NOTES)?.size).toBe(8);
+    // the holder claimed x:5 and z:3; the floor named x:2 and nothing for z
+    expect(Number(joiner.engine.coverage().synced.get(x))).toBe(2);
+    expect(joiner.engine.coverage().synced.get(other.identity.peerId)).toBeUndefined();
+  });
+
+  test("unvouched and not accepted: the rows merge and the coverage stays this device's own", async () => {
+    const holder = peer(40, "acct_x");
+    const joiner = peer(80, "acct_y");
+    for (let i = 1; i <= 3; i += 1) (await write(holder, `n${i}`, `body ${i}`)).unwrap();
+    const pair = exchanges(holder, joiner);
+    // SAFETY: test fixture; the holder wrote three
+    pair.ask({ adoptUnvouched: false, floor: new Map([[holder.identity.peerId, 3 as SeqNum]]) });
+    await pair.settle();
+    expect(joiner.engine.state().get(NOTES)?.size).toBe(3);
+    expect(joiner.engine.coverage().synced.size).toBe(0);
+  });
+
+  test("a schema with document columns adopts nothing below a floor: no doc snapshot rides along", async () => {
+    const holder = peer(40, "acct_x");
+    const joiner = peer(80, "acct_y");
+    for (let i = 1; i <= 3; i += 1) (await write(holder, `n${i}`, `body ${i}`)).unwrap();
+    const withDocs = { ...joiner.engine, hasDocColumns: () => true };
+    const pair = exchanges(holder, joiner, withDocs);
+    // SAFETY: test fixture; the holder wrote three
+    pair.ask({ adoptUnvouched: true, floor: new Map([[holder.identity.peerId, 3 as SeqNum]]) });
+    await pair.settle();
+    expect(joiner.engine.state().get(NOTES)?.size).toBe(3);
+    expect(joiner.engine.coverage().synced.size).toBe(0);
+  });
+
+  test("a sender scoped to another slice claims no coverage for the one asked", async () => {
+    const holder = peer(40, "acct_x");
+    const joiner = peer(80, "acct_y");
+    (await write(holder, "g1", "globex", GLOBEX)).unwrap();
+    // the holder joined org:acme only (D23): its cursors are true of that slice and no other
+    holder.engine.adoptCoverage({
+      ...holder.engine.coverage(),
+      scope: JSON.stringify({ partitions: [ACME] }),
+    });
+    const pair = exchanges(holder, joiner);
+    pair.ask(
+      // SAFETY: test fixture; the holder wrote one
+      { adoptUnvouched: true, floor: new Map([[holder.identity.peerId, 1 as SeqNum]]) },
+      { partitions: [GLOBEX] },
+    );
+    await pair.settle();
+    expect(pair.outcomes.map(({ kind }) => kind)).toEqual(["installed"]);
+    expect(joiner.engine.coverage().synced.size).toBe(0);
   });
 });

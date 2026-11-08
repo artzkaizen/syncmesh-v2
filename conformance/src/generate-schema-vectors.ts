@@ -131,7 +131,7 @@ function frameCases() {
   const ahead = new Map<PeerId, readonly SeqNum[]>([[other.peerId, [5 as SeqNum, 6 as SeqNum]]]);
   /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
   const four = parseSchemaVersion(4).unwrap();
-  const versioned = cursorsFrame(device.peerId, cursors, ahead, four);
+  const versioned = cursorsFrame(device.peerId, cursors, ahead, undefined, four);
   const outer = decodeCbor(versioned).unwrap();
   if (!Array.isArray(outer)) throw new Error("fixture: a frame is an array");
   const odd = encodeCbor([...outer.slice(0, 5), "four"]);
@@ -144,7 +144,7 @@ function frameCases() {
     },
     {
       description: "cursors with schemaVersion 4 and nothing ahead: ahead and the floor go empty",
-      wireHex: bytesToHex(cursorsFrame(device.peerId, cursors, undefined, four)),
+      wireHex: bytesToHex(cursorsFrame(device.peerId, cursors, undefined, undefined, four)),
       schemaVersion: 4,
       ahead: false,
     },

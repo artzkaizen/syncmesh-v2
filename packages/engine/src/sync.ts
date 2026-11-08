@@ -64,6 +64,13 @@ export interface Coverage {
    * old filter dropped, forever, so the scope travels with the number that needs it.
    */
   readonly scope?: string;
+  /**
+   * Per author, the highest synced sequence at or below `synced` this device holds no event for,
+   * because a snapshot install adopted it (D46); absent is none. Persisted with the cursors it
+   * qualifies, and never adopted from anyone: a peer is told the engine's floor
+   * (`Engine.floor`), which adds what compaction removed.
+   */
+  readonly floor?: Cursors;
 }
 
 export const EMPTY_COVERAGE: Coverage = { synced: new Map(), local: new Map() };

@@ -56,8 +56,8 @@ export const seqOf = (value: SqlValue | undefined): Result<SeqNum | undefined, S
 /** A `(peer, local, seq)` row of a cursor table; damage is `StateCorrupt`. */
 function decodeCursor(
   row: SqlRow,
-): Result<readonly [PeerId, boolean, SeqNum], StateCorrupt | StoreFailure> {
-  const [peer, local, seq] = row;
+): Result<readonly [PeerId, SqlValue | undefined, SeqNum], StateCorrupt | StoreFailure> {
+  const [peer, kind, seq] = row;
   return Result.gen(function* () {
     const peerId = yield* parsePeerId(String(peer)).mapError(
       (e) => new StateCorrupt({ message: e.message }),
@@ -65,20 +65,29 @@ function decodeCursor(
     const seqNum = yield* seqOf(seq);
     if (seqNum === undefined)
       return Result.err(new StateCorrupt({ message: "cursor without a sequence number" }));
-    return Result.ok([peerId, local === 1, seqNum] as const);
+    return Result.ok([peerId, kind, seqNum] as const);
   });
 }
 
-/** Folds `(peer, local, seq)` rows into a Coverage. */
+/**
+ * The `local` column of a cursor row that holds `Coverage.floor` rather than a cursor (D46): 0 is
+ * synced, 1 is local. A build from before D46 reads such a row as a synced cursor at or below the
+ * real one, which only ever makes it ask again for what it holds.
+ */
+export const CURSOR_FLOOR = 2;
+
+/** Folds `(peer, local, seq)` rows into a Coverage; a floor row lands in `floor`. */
 export function coverageOf(rows: readonly SqlRow[]): Result<Coverage, StateCorrupt | StoreFailure> {
   return Result.gen(function* () {
     const synced = new Map<PeerId, SeqNum>();
     const local = new Map<PeerId, SeqNum>();
+    const floor = new Map<PeerId, SeqNum>();
     for (const row of rows) {
-      const [peer, isLocal, seq] = yield* decodeCursor(row);
-      (isLocal ? local : synced).set(peer, seq);
+      const [peer, kind, seq] = yield* decodeCursor(row);
+      const into = kind === 1 ? local : kind === CURSOR_FLOOR ? floor : synced;
+      into.set(peer, seq);
     }
-    return Result.ok({ synced, local });
+    return Result.ok(floor.size === 0 ? { synced, local } : { synced, local, floor });
   });
 }
 

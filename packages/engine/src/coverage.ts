@@ -1,6 +1,6 @@
 import type { PeerId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 
-import { EMPTY_COVERAGE, type Ahead, type Coverage } from "./sync.js";
+import { EMPTY_COVERAGE, type Ahead, type Coverage, type Cursors } from "./sync.js";
 
 /**
  * One author's position on this device: everything at or below `contiguous` has landed, and
@@ -46,6 +46,13 @@ export interface CoverageTracker {
    * is the honest direction — everything below N unqualified is the stronger claim.
    */
   readonly adopt: (coverage: Coverage) => void;
+  /**
+   * {@link CoverageTracker.adopt} for a snapshot install, which also raises the floor: what it
+   * adopts has no log behind it, bar what was folded past a gap (D46). A pass-over or a purge
+   * adopts with `adopt` and raises no floor — a relay or the authority fills that gap, not state.
+   */
+  readonly adoptUnheld: (coverage: Coverage) => void;
+  /** The cursors, their scope, and the floor when there is one; what the state store persists. */
   readonly current: () => Coverage;
   /** Per author, what this device holds above its contiguous cursor: the far side of every gap. */
   readonly ahead: () => Ahead;
@@ -55,6 +62,8 @@ export function trackCoverage(initial: Coverage = EMPTY_COVERAGE): CoverageTrack
   const scopes = { synced: new Map<PeerId, Chain>(), local: new Map<PeerId, Chain>() };
   // set only by `adopt`: folding an event is evidence of that event and of nothing about a slice
   let scope = initial.scope;
+  // raised only by `adoptUnheld`, never lowered: the log does not say which holes a snapshot left
+  let floor: Cursors = initial.floor ?? new Map();
   const seed = (chains: Map<PeerId, Chain>, cursors: Coverage["synced"]) => {
     for (const [peer, seq] of cursors) chains.set(peer, { contiguous: seq, ahead: new Map() });
   };
@@ -76,6 +85,24 @@ export function trackCoverage(initial: Coverage = EMPTY_COVERAGE): CoverageTrack
     return cursors;
   };
 
+  const ahead = (): Ahead => {
+    const out = new Map<PeerId, readonly SeqNum[]>();
+    for (const [peer, chain] of scopes.synced) {
+      if (chain.ahead.size === 0) continue;
+      out.set(
+        peer,
+        [...chain.ahead.entries()].sort(([a], [b]) => a - b).map(([, seq]) => seq),
+      );
+    }
+    return out;
+  };
+
+  const adopt = (adopted: Coverage): void => {
+    for (const [peer, seq] of adopted.synced) raise(scopes.synced, peer, seq);
+    for (const [peer, seq] of adopted.local) raise(scopes.local, peer, seq);
+    scope = adopted.scope;
+  };
+
   return {
     note: (event) => {
       const chain = authorChain(event.local === true ? scopes.local : scopes.synced, event.peerId);
@@ -84,28 +111,48 @@ export function trackCoverage(initial: Coverage = EMPTY_COVERAGE): CoverageTrack
       chain.ahead.set(at, event.seqNum);
       close(chain);
     },
-    adopt: (adopted) => {
-      for (const [peer, seq] of adopted.synced) raise(scopes.synced, peer, seq);
-      for (const [peer, seq] of adopted.local) raise(scopes.local, peer, seq);
-      scope = adopted.scope;
+    adopt,
+    adoptUnheld: (adopted) => {
+      const from = contiguousCursors(scopes.synced);
+      const held = ahead();
+      adopt(adopted);
+      floor = higherFloor(floor, unheldBelow(from, contiguousCursors(scopes.synced), held));
     },
-    current: () => {
-      const coverage = {
-        synced: contiguousCursors(scopes.synced),
-        local: contiguousCursors(scopes.local),
-      };
-      return scope === undefined ? coverage : { ...coverage, scope };
-    },
-    ahead: () => {
-      const ahead = new Map<PeerId, readonly SeqNum[]>();
-      for (const [peer, chain] of scopes.synced) {
-        if (chain.ahead.size === 0) continue;
-        ahead.set(
-          peer,
-          [...chain.ahead.entries()].sort(([a], [b]) => a - b).map(([, seq]) => seq),
-        );
-      }
-      return ahead;
-    },
+    current: () => ({
+      synced: contiguousCursors(scopes.synced),
+      local: contiguousCursors(scopes.local),
+      ...(scope !== undefined && { scope }),
+      ...(floor.size > 0 && { floor }),
+    }),
+    ahead,
   };
 }
+
+/**
+ * Per author, the highest sequence in `(from, to]` this device holds no event for — coverage it
+ * claims with no log behind it, which a snapshot install leaves (D46). `held` lists, per author,
+ * the sequences in that range the log does hold; an author whose whole range is held is absent.
+ *
+ * @example
+ * unheldBelow(new Map([[a, 1]]), new Map([[a, 5]]), new Map([[a, [4, 5]]])) // Map { a => 3 }
+ */
+export function unheldBelow(from: Cursors, to: Cursors, held: Ahead): Cursors {
+  const unheld = new Map<PeerId, SeqNum>();
+  for (const [author, top] of to) {
+    const bottom = from.get(author) ?? 0;
+    const have = new Set<number>(held.get(author));
+    let gap = 0;
+    while (top - gap > bottom && have.has(top - gap)) gap += 1;
+    if (top - gap <= bottom) continue;
+    // SAFETY: above `bottom`, which is at least zero, so a positive sequence number
+    unheld.set(author, (top - gap) as SeqNum);
+  }
+  return unheld;
+}
+
+/** Per author, the higher of the two floors: a floor only ever rises. */
+export const higherFloor = (a: Cursors, b: Cursors): Cursors => {
+  const out = new Map(a);
+  for (const [author, seq] of b) if (seq > (out.get(author) ?? 0)) out.set(author, seq);
+  return out;
+};

@@ -99,6 +99,7 @@ fn the_cursors_frame_carries_the_version_at_index_5() {
             from,
             cursors: read,
             ahead: above,
+            floor,
             schema_version,
         } = decode_frame(&wire).unwrap_or_else(|e| panic!("{what}: {e:?}"))
         else {
@@ -107,6 +108,8 @@ fn the_cursors_frame_carries_the_version_at_index_5() {
         assert_eq!(&from, device.peer_id(), "{what}");
         assert_eq!(read, cursors, "{what}");
         assert_eq!(schema_version, version(v), "{what}");
+        // D46's floor sits between them, sent empty by a sender that compacted nothing
+        assert_eq!(floor, Some(vec![]), "{what}");
         let held = v["ahead"].as_bool().unwrap();
         assert_eq!(
             above.as_ref().is_some_and(|a| !a.is_empty()),
@@ -119,6 +122,7 @@ fn the_cursors_frame_carries_the_version_at_index_5() {
                 device.peer_id(),
                 &cursors,
                 held.then_some(ahead.as_slice()),
+                None,
                 Some(declared),
             );
             assert_eq!(

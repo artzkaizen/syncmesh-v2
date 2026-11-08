@@ -76,6 +76,11 @@ export interface TransportContext {
    */
   readonly trust?: BridgeOptions["trust"];
   /**
+   * The mesh's record of peers this device is below the compaction floor of (D46), handed to
+   * every bridge so the count of requests outlives each session and an issue reaches the app.
+   */
+  readonly rejoins?: BridgeOptions["rejoins"];
+  /**
    * Whether this transport is the one to carry a frame (E28). The mesh supplies it from
    * `pickRoutes`; a transport running without one carries everything, which is what every
    * transport did before link admission existed.
@@ -431,6 +436,7 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
             onSnapshot: ctx.onSnapshot,
             certificate: ctx.certificate,
             trust: ctx.trust,
+            rejoins: ctx.rejoins,
             // the same key ring and the same gate on every link: what a device can read, and what
             // it may hand on, do not depend on the medium (book ch. 14, D24)
             crypto: ctx.crypto,

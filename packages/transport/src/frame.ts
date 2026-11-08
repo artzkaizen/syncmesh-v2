@@ -32,6 +32,12 @@ export type Frame =
       /** What they hold above those cursors; absent from an older build, which says nothing. */
       readonly ahead?: Ahead;
       /**
+       * Per author, the highest sequence the sender's log no longer holds (D46): a receiver whose
+       * cursor is below it cannot be sent that history and needs state. Absent from an older
+       * build and from a sender that compacted nothing; an empty one reads as absent.
+       */
+      readonly floor?: Cursors;
+      /**
        * The app schema the sender's build declares (D31), at index 5: a reading for
        * `oldestSchema()`, never a gate. Absent from a build that declares none, and from an older
        * one.
@@ -72,6 +78,9 @@ export type Frame =
   /** A tag this build does not know; ignored, never an error. */
   | { readonly kind: "unknown" };
 
+/** Where a sender stands: its cursors, what it holds above them, and its compaction floor. */
+export type CursorsFrame = Extract<Frame, { readonly kind: "cursors" }>;
+
 const peerBytes = (peer: PeerId): Uint8Array => hexToBytes(peer).unwrap();
 
 export const grantFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.grant, wire]);
@@ -106,20 +115,23 @@ export const grantRequestFrame = (peerId: PeerId, invite?: string): Uint8Array =
 /**
  * Where the sender stands: `[kind, from, cursors, ahead?, floor?, schemaVersion?]`.
  *
- * The schema version sits at index 5 (D31), after D46's compaction floor at 4. An older build
- * reads index 3 strictly as `ahead` pairs and ignores the rest, so a sender with a version sends
- * `ahead` and the floor too, each as an empty array when it has nothing to say there — which a
- * receiver reads exactly as nothing said.
+ * The floor sits at index 4 (D46) and the schema version at 5 (D31). An older build reads index
+ * 3 strictly as `ahead` pairs and ignores everything after it, so a sender with either sends
+ * `ahead` too, and a sender with a version sends the floor, each as an empty array when it has
+ * nothing to say there — which a receiver reads exactly as nothing said.
  */
 export const cursorsFrame = (
   from: PeerId,
   cursors: Cursors,
   ahead?: Ahead,
+  floor?: Cursors,
   schemaVersion?: SchemaVersion,
 ): Uint8Array => {
   const base: CborValue[] = [KIND.cursors, peerBytes(from), cursorPairs(cursors)];
-  if (schemaVersion !== undefined)
-    return encodeCbor([...base, aheadPairs(ahead ?? new Map()), [], schemaVersion]);
+  if (floor !== undefined || schemaVersion !== undefined) {
+    const extended = [...base, aheadPairs(ahead ?? new Map()), cursorPairs(floor ?? new Map())];
+    return encodeCbor(schemaVersion === undefined ? extended : [...extended, schemaVersion]);
+  }
   return encodeCbor(ahead === undefined ? base : [...base, aheadPairs(ahead)]);
 };
 
@@ -202,7 +214,7 @@ function decodeTagged(
   outer: readonly CborValue[],
 ): Result<Frame | { readonly kind: "unknown" }, MalformedFrame> {
   if (kind === KIND.grantRequest) return decodeRequest(payload, extra);
-  if (kind === KIND.cursors) return decodeCursors(payload, extra, outer[3], outer[5]);
+  if (kind === KIND.cursors) return decodeCursors(payload, extra, outer[3], outer[4], outer[5]);
   if (kind === KIND.digest) return decodeDigest(payload, extra, outer[3], outer[4]);
   if (kind === KIND.routes) return decodeRoutes(payload);
   if (kind === KIND.snapshot) return decodeSnapshotFrame(outer);
@@ -271,6 +283,7 @@ function decodeCursors(
   payload: CborValue | undefined,
   extra: CborValue | undefined,
   above: CborValue | undefined,
+  compacted: CborValue | undefined,
   declared: CborValue | undefined,
 ): Result<Frame, MalformedFrame> {
   return Result.gen(function* () {
@@ -280,8 +293,10 @@ function decodeCursors(
     if (above === undefined) return Result.ok(base);
     const ahead = yield* decodeAheadPairs(above);
     const schemaVersion = frameSchemaVersion(declared);
-    return Result.ok(
-      schemaVersion === undefined ? { ...base, ahead } : { ...base, ahead, schemaVersion },
-    );
+    const read =
+      schemaVersion === undefined ? { ...base, ahead } : { ...base, ahead, schemaVersion };
+    if (compacted === undefined) return Result.ok(read);
+    const floor = yield* decodeCursorPairs(compacted);
+    return Result.ok({ ...read, floor });
   });
 }

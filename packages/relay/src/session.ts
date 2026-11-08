@@ -180,7 +180,7 @@ const ownCursorsFrame = (engine: Engine, self: PeerId): Uint8Array => {
   const at = engine.coverage().synced;
   return schemaVersion === undefined
     ? cursorsFrame(self, at)
-    : cursorsFrame(self, at, engine.ahead(), schemaVersion);
+    : cursorsFrame(self, at, engine.ahead(), undefined, schemaVersion);
 };
 
 /** Everything one session subscribes to; the returned unsubscribes are the session's teardown. */

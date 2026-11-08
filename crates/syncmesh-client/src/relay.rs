@@ -888,7 +888,7 @@ impl RelayLink {
         let version = engine.schema_version();
         let ahead: Vec<(PeerId, Vec<SeqNum>)> = engine.ahead().into_iter().collect();
         let held = version.map(|_| ahead.as_slice());
-        let frame = cursors_frame(self.identity.peer_id(), &pairs, held, version);
+        let frame = cursors_frame(self.identity.peer_id(), &pairs, held, None, version);
         self.send_safe(frame, out);
     }
 

@@ -38,7 +38,10 @@ export interface MeshStatus {
 
 export interface Status {
   readonly get: () => MeshStatus;
-  /** Fires when a source changes state; the reading is cheap, so it hands back no snapshot. */
+  /**
+   * Fires when a source changes state or a below-floor issue is raised or cleared (D46); the
+   * reading is cheap, so it hands back no snapshot.
+   */
   readonly subscribe: (listener: () => void) => () => void;
 }
 
@@ -74,7 +77,8 @@ export function createStatus(deps: StatusDeps): Status {
 
   const health = (sources: ReadonlyMap<string, SourceStatus>): MeshHealth => {
     // an operator has to act: say so ahead of anything a reconnect would fix on its own
-    if (deps.recovery.list().length > 0) return "blocked-recovery";
+    if (deps.recovery.list().length > 0 || deps.recovery.belowFloor().length > 0)
+      return "blocked-recovery";
     const carrying = [...sources.values()].some((source) => source.condition === "ok");
     if (!carrying) return "offline";
     return caughtUp ? "local-ready" : "catching-up";
@@ -95,7 +99,10 @@ export function createStatus(deps: StatusDeps): Status {
     },
     subscribe: (listener) => {
       listeners.add(listener);
-      const offs = deps.transports().map((t) => t.onStatus?.(changed) ?? (() => undefined));
+      const offs = [
+        ...deps.transports().map((t) => t.onStatus?.(changed) ?? (() => undefined)),
+        deps.recovery.onBelowFloor(changed),
+      ];
       return () => {
         listeners.delete(listener);
         for (const off of offs) off();

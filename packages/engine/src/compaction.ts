@@ -3,11 +3,13 @@ import type { PeerId, SchemaVersion, SeqNum } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { Temporal, addToInstant } from "@syncmesh/temporal";
 
+import type { CoverageTracker } from "./coverage.js";
 import type { DocStore } from "./doc-log.js";
 import type { StateCorrupt, StateStore } from "./state-store.js";
 import type { EventStore, StoreFailure } from "./store.js";
 import type { Coverage, Cursors } from "./sync.js";
 
+import { higherFloor } from "./coverage.js";
 import { createMemoryDocStore } from "./doc-log-memory.js";
 import { docAppends } from "./doc-log.js";
 import { CompactionRefused } from "./errors.js";
@@ -204,4 +206,28 @@ export function compactLog(
     const b = yield* Result.await(store.compactBelow(local, "local", olderThan));
     return Result.ok({ removed: a + b, floor: { synced, local } });
   });
+}
+
+/**
+ * {@link compactLog} with the floor this device advertises kept as a plain value (D46): per
+ * author the higher of what compaction removed — read back from what the store recorded, since a
+ * run removes only events old enough and what was asked for is not what was removed — and the
+ * floor a snapshot install left in the coverage ({@link CoverageTracker.adoptUnheld}), which the
+ * state store persists with the cursors.
+ */
+export function createCompaction(
+  deps: CompactDeps,
+  coverage: CoverageTracker,
+  compacted: Cursors | undefined,
+) {
+  let removed: Cursors = compacted ?? new Map();
+  return {
+    floor: () => higherFloor(removed, coverage.current().floor ?? new Map()),
+    compact: (options: CompactOptions): Promise<Result<Compaction, CompactError>> =>
+      Result.gen(async function* () {
+        const ran = yield* Result.await(compactLog(deps, options));
+        removed = higherFloor(removed, (yield* Result.await(deps.store.compactedBelow())).synced);
+        return Result.ok(ran);
+      }),
+  };
 }

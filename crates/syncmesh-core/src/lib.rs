@@ -65,6 +65,7 @@ pub mod frames;
 pub mod framing;
 pub mod handshake;
 pub mod join_proof;
+pub mod rejoin;
 pub mod relay_frames;
 
 pub use frames::{Frame, MalformedFrame, SnapshotFrame, decode_frame};
@@ -73,4 +74,5 @@ pub use handshake::{
     HandshakeFailed, Hello, SessionKeys, read_hello, seal, session_keys, unseal, write_hello,
 };
 pub use join_proof::{prove_join, verify_join_proof};
+pub use rejoin::below_peer_floor;
 pub use relay_frames::{Join, RELAY_PROTOCOL_VERSIONS, RelayFrame, decode_relay_frame, join_core};

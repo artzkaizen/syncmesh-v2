@@ -17,6 +17,32 @@ const B = parsePeerId("b".repeat(64)).unwrap();
 const seq = (n: number) => parseSeqNum(n).unwrap();
 
 describe("the frame codec", () => {
+  test("a compaction floor rides at index 4, with ahead always before it (D46)", () => {
+    const cursors = new Map([[A, seq(9)]]);
+    const floor = new Map([[A, seq(5)]]);
+    const bytes = cursorsFrame(B, cursors, undefined, floor);
+    expect(decodeFrame(bytes).unwrap()).toEqual({
+      kind: "cursors",
+      from: B,
+      cursors,
+      ahead: new Map(),
+      floor,
+    });
+    // what an older build reads: the first four elements, so the frame still counts as cursors
+    const older = decodeCbor(bytes).unwrap();
+    expect(Array.isArray(older) && older.length).toBe(5);
+    const prefix = Array.isArray(older) ? encodeCbor(older.slice(0, 4)) : bytes;
+    expect(decodeFrame(prefix).unwrap()).toEqual({
+      kind: "cursors",
+      from: B,
+      cursors,
+      ahead: new Map(),
+    });
+    // and a floor that is not a list of cursor pairs is refused, not read as no floor
+    const bad = Array.isArray(older) ? encodeCbor([...older.slice(0, 4), "nope"]) : bytes;
+    expect(decodeFrame(bad).isErr()).toBe(true);
+  });
+
   test("all four kinds round-trip", () => {
     const bytes = Uint8Array.of(1, 2, 3);
     expect(decodeFrame(grantFrame(bytes)).unwrap()).toEqual({ kind: "grant", wire: bytes });
@@ -70,19 +96,26 @@ describe("the frame codec", () => {
   test("the sender's schema version rides index 5, behind an ahead and a floor it always writes (D31)", () => {
     const cursors = new Map([[A, seq(3)]]);
     const four = parseSchemaVersion(4).unwrap();
-    const bare = decodeCbor(cursorsFrame(A, cursors, undefined, four)).unwrap();
+    const bare = decodeCbor(cursorsFrame(A, cursors, undefined, undefined, four)).unwrap();
     // index 3 is read strictly as `ahead` pairs by every build, so it is there, empty, and so is
     // D46's floor at 4: an older build reads the frame as cursors with nothing above them
     expect(Array.isArray(bare) && bare.slice(3)).toEqual([[], [], 4]);
-    expect(decodeFrame(cursorsFrame(A, cursors, undefined, four)).unwrap()).toEqual({
+    expect(decodeFrame(cursorsFrame(A, cursors, undefined, undefined, four)).unwrap()).toEqual({
       kind: "cursors",
       from: A,
       cursors,
       ahead: new Map(),
+      floor: new Map(),
       schemaVersion: four,
     });
     const ahead = new Map([[B, [seq(9)]]]);
-    expect(decodeFrame(cursorsFrame(A, cursors, ahead, four)).unwrap()).toMatchObject({
+    // a real floor and a version together: each at its own index, neither in the other's way
+    const floor = new Map([[B, seq(2)]]);
+    expect(decodeFrame(cursorsFrame(A, cursors, undefined, floor, four)).unwrap()).toMatchObject({
+      floor,
+      schemaVersion: four,
+    });
+    expect(decodeFrame(cursorsFrame(A, cursors, ahead, undefined, four)).unwrap()).toMatchObject({
       ahead,
       schemaVersion: four,
     });

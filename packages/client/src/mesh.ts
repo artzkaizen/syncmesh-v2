@@ -154,10 +154,8 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
   const flush = createFlush({ transports: () => links.list() });
   const snapshots = createHub<SnapshotInstalled>();
   const swept = sweepFor({ self: identity.peerId, grants, over: deps.sweep });
-  const recovery = openRecovery(engine, {
-    ...recoveryDeps(engine, identity.peerId, snapshots, () => links.list()),
-    ...omitUndefined({ stores: swept.stores }),
-  });
+  const rescue = recoveryDeps(engine, identity.peerId, snapshots, () => links.list());
+  const recovery = openRecovery(engine, { ...rescue, ...omitUndefined({ stores: swept.stores }) });
   const internal = openInternal({ engine, self: identity.peerId });
 
   // the watermark behind the `syncOf` column: one update per acknowledgement, however many rows
@@ -194,6 +192,8 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     // the gated tables, which reach a device only through the authority's gate (D24)
     ...gatedFor(schema, trust?.authority),
     purge: narrowing.purge,
+    // one record for every session, so a request count outlives the link it was made on (D46)
+    rejoins: rescue.rejoins,
     keys,
     sealedKinds: schema.sealedKinds,
     // our own partitions, which is what the door's grant-derived default compares against
