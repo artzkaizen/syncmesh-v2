@@ -1,5 +1,5 @@
 import { parsePeerId, parseSeqNum } from "@syncmesh/kernel";
-import { encodeCbor } from "@syncmesh/wire";
+import { decodeCbor, encodeCbor } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
 import {
@@ -16,6 +16,32 @@ const B = parsePeerId("b".repeat(64)).unwrap();
 const seq = (n: number) => parseSeqNum(n).unwrap();
 
 describe("the frame codec", () => {
+  test("a compaction floor rides at index 4, with ahead always before it (D46)", () => {
+    const cursors = new Map([[A, seq(9)]]);
+    const floor = new Map([[A, seq(5)]]);
+    const bytes = cursorsFrame(B, cursors, undefined, floor);
+    expect(decodeFrame(bytes).unwrap()).toEqual({
+      kind: "cursors",
+      from: B,
+      cursors,
+      ahead: new Map(),
+      floor,
+    });
+    // what an older build reads: the first four elements, so the frame still counts as cursors
+    const older = decodeCbor(bytes).unwrap();
+    expect(Array.isArray(older) && older.length).toBe(5);
+    const prefix = Array.isArray(older) ? encodeCbor(older.slice(0, 4)) : bytes;
+    expect(decodeFrame(prefix).unwrap()).toEqual({
+      kind: "cursors",
+      from: B,
+      cursors,
+      ahead: new Map(),
+    });
+    // and a floor that is not a list of cursor pairs is refused, not read as no floor
+    const bad = Array.isArray(older) ? encodeCbor([...older.slice(0, 4), "nope"]) : bytes;
+    expect(decodeFrame(bad).isErr()).toBe(true);
+  });
+
   test("all four kinds round-trip", () => {
     const bytes = Uint8Array.of(1, 2, 3);
     expect(decodeFrame(grantFrame(bytes)).unwrap()).toEqual({ kind: "grant", wire: bytes });

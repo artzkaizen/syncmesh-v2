@@ -27,7 +27,7 @@ import type { Tx } from "./tx.js";
 import type { StateLookup } from "./validate.js";
 
 import { admit } from "./admit.js";
-import { compactLog } from "./compaction.js";
+import { createCompaction } from "./compaction.js";
 import { trackCoverage } from "./coverage.js";
 import { createRepairPath } from "./digest.js";
 import { createDocPath } from "./doc-path.js";
@@ -159,6 +159,14 @@ export interface Engine extends FeedApi, RepairApi, SnapshotApi, DocApi, OwnPosi
   readonly onAcknowledge: (listener: (peer: PeerId) => void) => Unsubscribe;
   /** Removes events every counted peer has acked and the state store has persisted; unobservable to peers. See RFC-0015 §2. */
   readonly compact: (options: CompactOptions) => Promise<Result<Compaction, CompactError>>;
+  /**
+   * Per author, the highest synced sequence this device's log no longer holds — what compaction
+   * removed, read at boot and replaced after each run. A peer whose cursor for an author is below
+   * it cannot be sent that history from here and needs state instead (D46), which is why links
+   * send it on every cursors frame. Empty on a log that never compacted. The local half never
+   * travels, so it is not here.
+   */
+  readonly floor: () => Cursors;
   /**
    * Synced events the holder of `theirs` lacks, narrowed to what they asked for. The
    * filter runs **here**, at the sender, so an uninterested event never becomes bytes — and it
@@ -350,7 +358,7 @@ export function createEngine(options: EngineOptions): Engine {
     acks: () => new Map([...acks].map(([peer, ack]) => [peer, ack.cursors])),
     acksAt: () => new Map(acks),
     onAcknowledge: ackHub.subscribe,
-    compact: (options) => compactLog({ store, stateStore, acks, ...docPath.compaction }, options),
+    ...createCompaction({ store, stateStore, acks, ...docPath.compaction }, boot?.floor),
     ...snapshots,
     eventsSince: (theirs, interest) => eventsWanted(store, theirs, interest),
     recentEvents: (options = {}) => store.recent?.(options) ?? recentHeaders(store, options),

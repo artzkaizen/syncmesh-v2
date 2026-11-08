@@ -30,6 +30,12 @@ export type Frame =
       readonly cursors: Cursors;
       /** What they hold above those cursors; absent from an older build, which says nothing. */
       readonly ahead?: Ahead;
+      /**
+       * Per author, the highest sequence the sender's log no longer holds (D46): a receiver whose
+       * cursor is below it cannot be sent that history and needs state. Absent from an older
+       * build and from a sender that compacted nothing; an empty one reads as absent.
+       */
+      readonly floor?: Cursors;
     }
   | { readonly kind: "event"; readonly wire: Uint8Array }
   /** The ephemeral tier (D16): signed, never stored, dropped rather than queued. */
@@ -65,6 +71,9 @@ export type Frame =
   /** A tag this build does not know; ignored, never an error. */
   | { readonly kind: "unknown" };
 
+/** Where a sender stands: its cursors, what it holds above them, and its compaction floor. */
+export type CursorsFrame = Extract<Frame, { readonly kind: "cursors" }>;
+
 const peerBytes = (peer: PeerId): Uint8Array => hexToBytes(peer).unwrap();
 
 export const grantFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.grant, wire]);
@@ -96,12 +105,24 @@ export const grantRequestFrame = (peerId: PeerId, invite?: string): Uint8Array =
       : [KIND.grantRequest, peerBytes(peerId), invite],
   );
 
-export const cursorsFrame = (from: PeerId, cursors: Cursors, ahead?: Ahead): Uint8Array =>
-  encodeCbor(
-    ahead === undefined
-      ? [KIND.cursors, peerBytes(from), cursorPairs(cursors)]
-      : [KIND.cursors, peerBytes(from), cursorPairs(cursors), aheadPairs(ahead)],
-  );
+/**
+ * Where the sender stands: `[kind, from, cursors, ahead?, floor?]`.
+ *
+ * The floor sits at index 4 (D46), so whenever it is sent `ahead` is sent too, as an empty array
+ * when nothing is held above the cursors: an older build reads index 3 strictly as `ahead` and
+ * ignores everything after it.
+ */
+export const cursorsFrame = (
+  from: PeerId,
+  cursors: Cursors,
+  ahead?: Ahead,
+  floor?: Cursors,
+): Uint8Array => {
+  const base: CborValue[] = [KIND.cursors, peerBytes(from), cursorPairs(cursors)];
+  if (floor !== undefined)
+    return encodeCbor([...base, aheadPairs(ahead ?? new Map()), cursorPairs(floor)]);
+  return encodeCbor(ahead === undefined ? base : [...base, aheadPairs(ahead)]);
+};
 
 export const eventFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.event, wire]);
 
@@ -182,7 +203,7 @@ function decodeTagged(
   outer: readonly CborValue[],
 ): Result<Frame | { readonly kind: "unknown" }, MalformedFrame> {
   if (kind === KIND.grantRequest) return decodeRequest(payload, extra);
-  if (kind === KIND.cursors) return decodeCursors(payload, extra, outer[3]);
+  if (kind === KIND.cursors) return decodeCursors(payload, extra, outer[3], outer[4]);
   if (kind === KIND.digest) return decodeDigest(payload, extra, outer[3], outer[4]);
   if (kind === KIND.routes) return decodeRoutes(payload);
   if (kind === KIND.snapshot) return decodeSnapshotFrame(outer);
@@ -243,6 +264,7 @@ function decodeCursors(
   payload: CborValue | undefined,
   extra: CborValue | undefined,
   above: CborValue | undefined,
+  compacted: CborValue | undefined,
 ): Result<Frame, MalformedFrame> {
   return Result.gen(function* () {
     const from = yield* asPeer(payload);
@@ -250,6 +272,8 @@ function decodeCursors(
     const base = { kind: "cursors", from, cursors } as const;
     if (above === undefined) return Result.ok(base);
     const ahead = yield* decodeAheadPairs(above);
-    return Result.ok({ ...base, ahead });
+    if (compacted === undefined) return Result.ok({ ...base, ahead });
+    const floor = yield* decodeCursorPairs(compacted);
+    return Result.ok({ ...base, ahead, floor });
   });
 }

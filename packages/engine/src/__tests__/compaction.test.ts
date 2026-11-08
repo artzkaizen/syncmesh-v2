@@ -91,6 +91,30 @@ describe("compaction — RFC-0015 §2", () => {
     expect(compareHlc(afterReboot.hlc, next.hlc)).toBe(1);
   });
 
+  test("the floor a peer is sent is what the store recorded, kept across a reboot (D46)", async () => {
+    const { a, link, stateA } = pair();
+    for (const k of ["n1", "n2", "n3"]) (await write(a.engine, k, k)).unwrap();
+    (await link.catchUp()).unwrap();
+    expect(a.engine.floor().size).toBe(0);
+
+    // asked to compact everything, a run keeps the young: the floor says what was removed
+    const now = at(100 + 60 * 60 * 1000);
+    const young = Temporal.Duration.from({ hours: 2 });
+    (await a.engine.compact({ now, keepAtLeast: young })).unwrap();
+    expect(a.engine.floor().size).toBe(0);
+    (await a.engine.compact({ now })).unwrap();
+    expect(a.engine.floor()).toEqual(cursors([[PEER_A, seq(3)]]));
+
+    const rebooted = (
+      await openEngine({ peerId: PEER_A, clock: fakeClock(1), store: a.store, stateStore: stateA })
+    ).unwrap();
+    expect(rebooted.floor()).toEqual(cursors([[PEER_A, seq(3)]]));
+    // local events never travel, so their half of the floor is not the engine's to send
+    (await write(rebooted, "d1", "d1", true)).unwrap();
+    (await rebooted.compact({ now: T0 })).unwrap();
+    expect(rebooted.floor()).toEqual(cursors([[PEER_A, seq(3)]]));
+  });
+
   test("keepAtLeast keeps young events whatever the floor says", async () => {
     const { a, link } = pair();
     for (const k of ["n1", "n2"]) (await write(a.engine, k, k)).unwrap();

@@ -1,7 +1,6 @@
 import type { Ahead, Cursors } from "@syncmesh/engine";
-import type { PeerId } from "@syncmesh/kernel";
 
-import type { Frame } from "./frame.js";
+import type { CursorsFrame, Frame } from "./frame.js";
 import type { RouteExchange } from "./route-exchange.js";
 import type { SnapshotFrame } from "./snap-frame.js";
 
@@ -14,7 +13,7 @@ import type { SnapshotFrame } from "./snap-frame.js";
  */
 export interface FrameHandlers {
   readonly queued: (run: () => Promise<void> | void) => void;
-  readonly onCursors: (from: PeerId, cursors: Cursors, ahead: Ahead | undefined) => void;
+  readonly onCursors: (frame: CursorsFrame) => void;
   readonly onEvent: (wire: Uint8Array) => void;
   readonly onPresence?: (wire: Uint8Array) => void;
   readonly onDigest: (
@@ -41,7 +40,7 @@ export function createDispatch(handlers: FrameHandlers): (frame: Frame) => void 
     }
     switch (frame.kind) {
       case "cursors":
-        return handlers.onCursors(frame.from, frame.cursors, frame.ahead);
+        return handlers.onCursors(frame);
       case "event":
         return handlers.onEvent(frame.wire);
       case "presence":

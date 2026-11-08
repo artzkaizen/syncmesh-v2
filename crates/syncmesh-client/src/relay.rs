@@ -883,7 +883,10 @@ impl RelayLink {
     /// Our contiguous position, for every other peer's `delivered`; the relay passes it on.
     fn send_cursors(&mut self, engine: &Engine, out: &mut Vec<Action>) {
         let pairs = cursors_to_pairs(&engine.coverage().synced);
-        self.send_safe(cursors_frame(self.identity.peer_id(), &pairs, None), out);
+        self.send_safe(
+            cursors_frame(self.identity.peer_id(), &pairs, None, None),
+            out,
+        );
     }
 
     // --- outbound -----------------------------------------------------------------------------

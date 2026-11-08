@@ -74,7 +74,8 @@ export function createStatus(deps: StatusDeps): Status {
 
   const health = (sources: ReadonlyMap<string, SourceStatus>): MeshHealth => {
     // an operator has to act: say so ahead of anything a reconnect would fix on its own
-    if (deps.recovery.list().length > 0) return "blocked-recovery";
+    if (deps.recovery.list().length > 0 || deps.recovery.belowFloor().length > 0)
+      return "blocked-recovery";
     const carrying = [...sources.values()].some((source) => source.condition === "ok");
     if (!carrying) return "offline";
     return caughtUp ? "local-ready" : "catching-up";

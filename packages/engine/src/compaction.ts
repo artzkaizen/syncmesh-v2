@@ -203,3 +203,21 @@ export function compactLog(
     return Result.ok({ removed: a + b, floor: { synced, local } });
   });
 }
+
+/**
+ * {@link compactLog} with the floor it leaves kept as a plain value (D46): read at boot, replaced
+ * after each run from what the store recorded — a run removes only events old enough, so what was
+ * asked for is not what was removed.
+ */
+export function createCompaction(deps: CompactDeps, initial: Cursors | undefined) {
+  let floor: Cursors = initial ?? new Map();
+  return {
+    floor: () => floor,
+    compact: (options: CompactOptions): Promise<Result<Compaction, CompactError>> =>
+      Result.gen(async function* () {
+        const ran = yield* Result.await(compactLog(deps, options));
+        floor = (yield* Result.await(deps.store.compactedBelow())).synced;
+        return Result.ok(ran);
+      }),
+  };
+}

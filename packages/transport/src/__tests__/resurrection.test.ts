@@ -1,5 +1,5 @@
 import type { EngineOptions, FoldBatch } from "@syncmesh/engine";
-import type { Procedure } from "@syncmesh/kernel";
+import type { Procedure, SeqNum } from "@syncmesh/kernel";
 
 import {
   createEngine,
@@ -10,15 +10,25 @@ import {
 } from "@syncmesh/engine";
 import { createHlcClock, readRow } from "@syncmesh/kernel";
 import { Temporal, addToInstant } from "@syncmesh/temporal";
-import { createGrantRegistry, createIdentity } from "@syncmesh/wire";
+import {
+  checkpointHash,
+  createGrantRegistry,
+  createIdentity,
+  encodeRecord,
+  issueCheckpoint,
+} from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 
+import type { BridgeOptions } from "../bridge.js";
 import type { Divergence } from "../divergence.js";
+import type { SnapshotInstalled } from "../join.js";
 import type { TransportContext } from "../transport.js";
 
 import { bridgeFramedLink } from "../bridge.js";
 import { divergenceAgainst, tableNames } from "../divergence.js";
+import { decodeFrame } from "../frame.js";
 import { loopbackPair } from "../link.js";
+import { createRejoins } from "../rejoin.js";
 import { ACME, ISSUER, NOTES, T0, key, mintFor, schema, seed, write } from "./fixtures.js";
 
 /**
@@ -73,24 +83,42 @@ interface Sighting {
   readonly visible: boolean;
 }
 
+/** What each side of one session runs with beyond the basics, given the peer it runs on. */
+interface Sides {
+  readonly x?: (self: Peer) => Partial<BridgeOptions>;
+  readonly y?: (self: Peer) => Partial<BridgeOptions>;
+}
+
 /** One loopback session between two peers; `now` is read per exchange so acks age. */
 const bridge = (
   x: Peer,
   y: Peer,
   now: () => Temporal.Instant,
   onDivergence: (report: Divergence) => void,
+  sides: Sides = {},
 ) => {
   const { a, b, control } = loopbackPair();
-  const side = (p: Peer, link: typeof a) =>
+  /** Every snapshot request x sent on this session. */
+  const asked: string[] = [];
+  const counting = {
+    ...a,
+    send: (bytes: Uint8Array) => {
+      const frame = decodeFrame(bytes);
+      if (frame.isOk() && frame.value.kind === "snap-req") asked.push(frame.value.kind);
+      a.send(bytes);
+    },
+  };
+  const side = (p: Peer, link: typeof a, extra: Partial<BridgeOptions> = {}) =>
     bridgeFramedLink(link, {
       engine: p.engine,
       identity: p.identity,
       grants: p.grants,
       now,
       onDivergence,
+      ...extra,
     });
-  const bx = side(x, a);
-  const by = side(y, b);
+  const bx = side(x, counting, sides.x?.(x));
+  const by = side(y, b, sides.y?.(y));
   const settle = async () => {
     for (let round = 0; round < 8; round += 1) {
       await control.flush();
@@ -98,7 +126,7 @@ const bridge = (
       await by.flush();
     }
   };
-  return { bx, by, settle, close: () => [bx.close(), by.close()] };
+  return { bx, by, settle, asked, close: () => [bx.close(), by.close()] };
 };
 
 const visible = (p: Peer, k = N1) => readRow(p.engine.state(), NOTES, k) !== undefined;
@@ -114,7 +142,7 @@ const logHolds = async (p: Peer, author: Peer) =>
  * Hands back the peers, every fold on b or c that touched the row since the delete, every
  * divergence any bridge reported, and the x—b session x rejoined on.
  */
-const rejoinBelowTheFloor = async () => {
+const rejoinBelowTheFloor = async (sides: Sides = {}) => {
   const x = peerWithState(40, "acct_x", 100);
   const b = peerWithState(80, "acct_b", 500);
   const c = peerWithState(120, "acct_c", 900);
@@ -162,12 +190,23 @@ const rejoinBelowTheFloor = async () => {
   expect([b, c].map((p) => visible(p))).toEqual([false, false]);
 
   // x comes back on a fresh session, below b's floor
-  const back = bridge(x, b, clock, report);
+  const back = bridge(x, b, clock, report, sides);
   await back.settle();
   await bc.settle();
   await back.settle();
 
-  return { x, b, c, back, bc, found, sightings, close: () => [back.close(), bc.close()] };
+  return {
+    x,
+    b,
+    c,
+    back,
+    bc,
+    found,
+    sightings,
+    clock,
+    report,
+    close: () => [back.close(), bc.close()],
+  };
 };
 
 describe("delete-resurrection — plan §3.5, D15, RFC-0015 §3", () => {
@@ -258,21 +297,127 @@ describe("delete-resurrection — plan §3.5, D15, RFC-0015 §3", () => {
   });
 
   /**
-   * The gap: RFC-0015 §3 and D15 say a peer that returns below the floor "rejoins from state",
-   * but nothing on the device does so of its own accord. The bridge's cursor frame carries no
-   * floor, `divergenceAgainst` declines the comparison, and the holdback buffers b's tail for
-   * ever; `joinIfEmpty` only fires on empty coverage and `$recovery.rebuild` is a manual call.
+   * RFC-0015 §3 and D15 say a peer that returns below the floor "rejoins from state", and D46 is
+   * what makes a device do so of its own accord: b's cursors frame carries its compaction floor,
+   * x sees its cursor for b under it and asks b for state, and the issuer's certificate over b's
+   * rows lets x adopt b's coverage.
    *
-   * Observed, with the scenario above and no explicit `requestSnapshot`: after three settle
-   * rounds x still reads `n1` (`visible(x) === true`), x's cursor for b is `0`, b's cursor for
-   * x is `1`, no bridge reported a divergence and no snapshot was requested by anyone. The only
-   * peer that knows about floors is the relay (`relay/src/retention.ts` refuses a below-floor
-   * join with a typed `retention` error); device to device, x simply keeps the row.
+   * Before D46, observed with this scenario: x still read `n1`, its cursor for b stayed `0`, no
+   * bridge reported a divergence and nobody requested a snapshot.
    */
-  test.todo("x rejoining below the floor drops the row on its own — observed: x still holds n1, its cursor for b stays 0, nobody requests a snapshot", async () => {
-    const s = await rejoinBelowTheFloor();
-    expect(cursorFor(s.x, s.b)).toBe(1);
+  test("x rejoining below a vouched floor drops the row on its own and syncs again", async () => {
+    const certified = (holder: Peer) => () =>
+      issueCheckpoint(ISSUER, {
+        stateHash: checkpointHash(
+          holder.engine.snapshot().rows.map(({ table, key, record }) => ({
+            table: String(table),
+            key: String(key),
+            record: encodeRecord(record),
+          })),
+        ),
+        coverage: holder.engine.coverage().synced,
+        now: T0,
+      });
+    const installed: SnapshotInstalled[] = [];
+    const trusting = {
+      trust: ISSUER.peerId,
+      onSnapshot: (report: SnapshotInstalled) => void installed.push(report),
+    };
+    // the certificate is b's to relay, as a peer relays the authority's checkpoint
+    const t = await rejoinBelowTheFloor({
+      x: () => trusting,
+      y: (b) => ({ certificate: certified(b) }),
+    });
+    expect(t.back.asked).toHaveLength(1);
+    expect(installed).toEqual([{ rows: 1, provisional: false }]);
+    expect(visible(t.x)).toBe(false);
+    expect(t.x.engine.deletedAt(NOTES, N1)).toBeDefined();
+    expect(cursorFor(t.x, t.b)).toBe(1);
+
+    // and the ordinary path is open again: b's next write arrives as an event
+    (await write(t.b, "n2", "from b")).unwrap();
+    await t.back.settle();
+    expect(cursorFor(t.x, t.b)).toBe(2);
+    expect(visible(t.x, key("n2"))).toBe(true);
+    expect(t.back.asked).toHaveLength(1);
+    expect(t.found).toEqual([]);
+    t.close();
+  });
+
+  /**
+   * With no `trust` nothing can vouch for b's state, so x does not take it on b's word: it raises
+   * the issue naming b and the floor and waits (decided 2026-11-08). Accepting the issue is what
+   * asks, and what that install adopts is capped at the floor b claimed.
+   */
+  test("with no trust, x raises the issue and rejoins only once the app accepts it", async () => {
+    const rejoins = createRejoins();
+    const cursorsAtInstall: number[] = [];
+    const s = await rejoinBelowTheFloor({ x: () => ({ rejoins }) });
+    // b moves on past its floor while x waits: the snapshot will claim b:2, the floor says 1
+    (await write(s.b, "n2", "from b")).unwrap();
+    await s.back.settle();
+
+    expect(s.back.asked).toEqual([]);
+    expect(visible(s.x)).toBe(true);
+    expect(cursorFor(s.x, s.b)).toBe(0);
+    expect(rejoins.issues()).toEqual([
+      {
+        peer: s.b.identity.peerId,
+        // SAFETY: b's own delete was its first write
+        floor: new Map([[s.b.identity.peerId, 1 as SeqNum]]),
+        reason: "untrusted",
+        message: expect.any(String),
+      },
+    ]);
+    // and asking again on every cursors exchange is not how it waits
+    s.back.bx.resync();
+    s.back.by.resync();
+    await s.back.settle();
+    expect(s.back.asked).toEqual([]);
+
+    const off = s.x.engine.onFoldBatch((batch) => {
+      if (batch.source === "snapshot") cursorsAtInstall.push(cursorFor(s.x, s.b));
+    });
+    expect(rejoins.accept(s.b.identity.peerId)).toBe("requested");
+    await s.back.settle();
+    off();
+    expect(s.back.asked).toHaveLength(1);
     expect(visible(s.x)).toBe(false);
+    // the install adopted b's claimed floor, 1, not the b:2 the snapshot claimed
+    expect(cursorsAtInstall).toEqual([1]);
+    expect(rejoins.issues()).toEqual([]);
+    expect(rejoins.accept(s.b.identity.peerId)).toBe("nothing-to-accept");
+
+    // and from there the ordinary path delivers b's write above the floor
+    s.back.bx.resync();
+    await s.back.settle();
+    expect(cursorFor(s.x, s.b)).toBe(2);
+    expect(visible(s.x, key("n2"))).toBe(true);
+    s.close();
+  });
+
+  /**
+   * With `trust` set and nothing vouching for b's state, x asks once, merges the rows — the
+   * deleted row goes — adopts nothing, and says why it is still stalled.
+   */
+  test("with trust and no certificate, the rows merge, nothing is adopted, and the issue says so", async () => {
+    const rejoins = createRejoins();
+    const s = await rejoinBelowTheFloor({
+      x: () => ({ rejoins, trust: ISSUER.peerId }),
+    });
+    expect(s.back.asked).toHaveLength(1);
+    expect(visible(s.x)).toBe(false);
+    expect(cursorFor(s.x, s.b)).toBe(0);
+    expect(rejoins.issues().map(({ peer, reason }) => ({ peer, reason }))).toEqual([
+      { peer: s.b.identity.peerId, reason: "unvouched" },
+    ]);
+    // one request per floor per session, however many cursor exchanges follow
+    for (let round = 0; round < 3; round += 1) {
+      s.back.bx.resync();
+      s.back.by.resync();
+      await s.back.settle();
+    }
+    expect(s.back.asked).toHaveLength(1);
     s.close();
   });
 });
