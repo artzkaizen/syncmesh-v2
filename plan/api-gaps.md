@@ -305,7 +305,7 @@ versions has no mitigation. This is the axis where we are behind the weaker syst
 **Drafted as `plan/decisions/D31.md` (2026-09-22); decided C on 2026-11-08.** Not built yet.
 Recommends C: expand/contract as an operator rule with three pieces of tooling (the additive
 lint D13 asked for and nobody built; a monotone `schemaVersion` in the manifest stamped on
-events under a new core key and trailing on the cursors frame, additive like `ahead`; a fleet
+events under a new core key and at index 5 of the cursors frame (after D46's floor at 4), additive like `ahead`; a fleet
 reading "oldest schema still writing" off `engine.acksAt` via `$inspect`), plus a `retired`
 table/column state — declared, write-refused locally, still folded — so contraction never sends
 old writers' events into quarantine. Rejects an admission floor (B) as a refusal of legitimate
@@ -379,7 +379,8 @@ peer-to-peer does it. This is D31's "pin D15's compaction floor for every peer",
 red test naming the exact observed state. Needs a floor on the wire — a decision.
 
 **Decided as D46 A (2026-11-08):** the floor goes at index 4 of the cursors frame and the device below it
-asks for state. Not built yet.
+asks for state, adopting unvouched coverage only up to the claimed floor and only with no `trust`.
+Not built yet.
 
 ### 3.7 Dedup below the compaction floor
 `receiveBatch` of x's old insert on b reports `folded: 1, skipped: 0` and b's log regains the
