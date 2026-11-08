@@ -34,8 +34,11 @@ let engine = Engine::open(identity, store, state_store, EngineOptions {
 })?;
 ```
 
-`docs` and `merge` default to the manifest's own. Under `Mesh`, the validator is granted, over the
-mesh's registry, exactly when `MeshOptions.issuer` is set.
+`docs` and `merge` default to the manifest's own; `docs` given is what the ladder judges documents
+by too. Under `Mesh`, a validator with no `grants` of its own is granted, over the mesh's registry,
+when `MeshOptions.issuer` is set; the mesh's link registers every grant that arrives before the
+events beside it fold. A host driving `RelayLink` itself gets the same with
+`RelayLink::with_grants(registry)`, given the registry its validator reads.
 
 The rungs, first failure wins: clock (`ClockAhead`), grant (`NoGrant`, `GrantDeviceMismatch`,
 `GrantRevoked`, `GrantStale`), the manifest's own tables (`_policy`, `_corrections`,

@@ -285,6 +285,8 @@ pub struct ValidatorOptions {
     pub manifest: Manifest,
     /// `None` is ungranted mode: grant and policy rungs are skipped; schema never is. So a `deny`
     /// rule is not enforced — there is nobody to deny, because no write names a grant.
+    /// Under a `Mesh` with an issuer, `None` is filled with the mesh's own
+    /// registry, which its link registers arriving grants into; a source given here is kept.
     pub grants: Option<Box<dyn GrantSource + Send>>,
     /// The one peer whose events may write `global`, authority and the authority's reserved
     /// tables; checked against the event's author. `None`, those are read-only everywhere.
@@ -386,6 +388,9 @@ pub struct Validator {
     grants: Option<Box<dyn GrantSource + Send>>,
     authority: Option<PeerId>,
     accounts: bool,
+    /// Every `_links` wire whose signature was checked, and whether it held: an Ed25519 verify
+    /// per wire, not per wire per event judged (`accounts.ts` keeps the same per-wire memo).
+    signed: Mutex<BTreeMap<Vec<u8>, bool>>,
 }
 
 impl Validator {
@@ -396,16 +401,35 @@ impl Validator {
             grants: options.grants,
             authority: options.authority,
             accounts: options.accounts,
+            signed: Mutex::default(),
         }
+    }
+
+    /// Whether the account signed this link, checked once per wire.
+    fn link_signed(&self, wire: &[u8]) -> bool {
+        let mut signed = self.signed.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(&held) = signed.get(wire) {
+            return held;
+        }
+        let held = verify_link(wire).is_ok();
+        signed.insert(wire.to_vec(), held);
+        held
     }
 
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
     }
 
-    /// The doc columns the manifest declares — what the engine's fold joins by the lineage rule.
+    /// The doc columns the ladder judges by — the manifest's own, unless the engine was handed
+    /// others, and always what the engine's fold joins by the lineage rule.
     pub fn doc_columns(&self) -> &DocColumns {
         &self.docs
+    }
+
+    /// Judges doc changes against `docs` rather than the manifest's: the engine's own, when its
+    /// options name them.
+    pub(crate) fn judge_docs(&mut self, docs: DocColumns) {
+        self.docs = docs;
     }
 
     /// Whether the manifest marks the column retired (D31): what a compensation leaves out.
@@ -471,7 +495,7 @@ impl Validator {
     ) -> Result<Option<Author>, ValidationError> {
         let Some(grants) = &self.grants else {
             return Ok(if self.accounts {
-                linked_author(event, before)
+                linked_author(event, before, &|wire| self.link_signed(wire))
             } else {
                 None
             });
@@ -517,7 +541,7 @@ impl Validator {
             });
         }
         if table == LINKS {
-            check_link(change, event)?;
+            check_link(change, event, &|wire| self.link_signed(wire))?;
         } else if self.authority.as_ref() != Some(event.peer_id) {
             return Err(ValidationError::ReadOnlyPartition {
                 table: table.to_owned(),
@@ -686,7 +710,8 @@ impl Validator {
                 if d.genesis { "replace" } else { "update" },
                 Some(Row::from([(d.column.clone(), CellValue::Null)])),
             ),
-            Change::Unknown { .. } => unreachable!("check_columns refused it"),
+            // check_columns refuses it first; said as a value all the same, never a panic
+            Change::Unknown { tag, .. } => return Err(unknown_kind(table, *tag)),
         };
         let row = before.row(table, change.key());
         let ctx = PolicyContext {
@@ -721,12 +746,17 @@ enum Cells {
 /// cell — and with no validator too, because the crash it prevents is the fold's (D22-A).
 pub fn unfoldable(event: &SyncEvent) -> Option<ValidationError> {
     event.changes.iter().find_map(|change| match change {
-        Change::Unknown { tag, table, .. } => Some(ValidationError::UnknownChangeKind {
-            table: table.clone(),
-            kind: format!("unknown({tag})"),
-        }),
+        Change::Unknown { tag, table, .. } => Some(unknown_kind(table, *tag)),
         _ => None,
     })
+}
+
+/// The refusal of a change kind this build has no fold for, named as the TypeScript names it.
+fn unknown_kind(table: &str, tag: u64) -> ValidationError {
+    ValidationError::UnknownChangeKind {
+        table: table.to_owned(),
+        kind: format!("unknown({tag})"),
+    }
 }
 
 /// A stamp further ahead of `now` than the bound is `ClockAhead`. A probe carries no stamp and is
@@ -854,10 +884,7 @@ fn check_columns(
     probe: bool,
 ) -> Result<(), ValidationError> {
     if let Change::Unknown { tag, .. } = change {
-        return Err(ValidationError::UnknownChangeKind {
-            table: table.to_owned(),
-            kind: format!("unknown({tag})"),
-        });
+        return Err(unknown_kind(table, *tag));
     }
     if probe {
         let named: Vec<&String> = match change {
@@ -1023,7 +1050,11 @@ fn refuse_link(key: &str, rung: LinkRung, message: &'static str) -> ValidationEr
 }
 
 /// Whether a `_links` change is one every peer should fold, with the Ed25519 verify last.
-fn check_link(change: &Change, event: &Probe<'_>) -> Result<(), ValidationError> {
+fn check_link(
+    change: &Change,
+    event: &Probe<'_>,
+    signed: &dyn Fn(&[u8]) -> bool,
+) -> Result<(), ValidationError> {
     let key = change.key();
     let cells = match change {
         Change::Delete { .. } => {
@@ -1074,13 +1105,14 @@ fn check_link(change: &Change, event: &Probe<'_>) -> Result<(), ValidationError>
             "a device may claim only itself",
         ));
     }
-    resolve_link(key, |name| cells.get(name)).map(|_| ())
+    resolve_link(key, |name| cells.get(name), signed).map(|_| ())
 }
 
 /// What a row's own bytes say, once its columns have been proved to say the same thing.
 fn resolve_link<'a>(
     key: &str,
     cell: impl Fn(&str) -> Option<&'a CellValue>,
+    signed: &dyn Fn(&[u8]) -> bool,
 ) -> Result<AccountCore, ValidationError> {
     let Some(CellValue::Bytes(wire)) = cell("wire") else {
         return Err(refuse_link(
@@ -1117,13 +1149,14 @@ fn resolve_link<'a>(
             "this row is not filed under its own core",
         ));
     }
-    match verify_link(wire) {
-        Ok(_) => Ok(stated),
-        Err(_) => Err(refuse_link(
+    if signed(wire) {
+        Ok(stated)
+    } else {
+        Err(refuse_link(
             key,
             LinkRung::Signature,
             "the account did not sign this link",
-        )),
+        ))
     }
 }
 
@@ -1172,7 +1205,11 @@ fn beats(a: &AccountCore, b: &AccountCore) -> bool {
 
 /// The account this device answers to in this instance, when a standing link says so and the
 /// row's own bytes still agree. No role and no partitions: a link signs neither.
-fn linked_author(event: &Probe<'_>, before: &dyn StateLookup) -> Option<Author> {
+fn linked_author(
+    event: &Probe<'_>,
+    before: &dyn StateLookup,
+    signed: &dyn Fn(&[u8]) -> bool,
+) -> Option<Author> {
     let partition = event.partition?;
     let rows = before.records(LINKS)?;
     let mut standing: Option<AccountCore> = None;
@@ -1180,7 +1217,8 @@ fn linked_author(event: &Probe<'_>, before: &dyn StateLookup) -> Option<Author> 
         if record.delete_stamp.is_some() {
             continue;
         }
-        let Ok(core) = resolve_link(key, |name| record.cells.get(name).map(|c| &c.value)) else {
+        let Ok(core) = resolve_link(key, |name| record.cells.get(name).map(|c| &c.value), signed)
+        else {
             continue;
         };
         if &core.partition != partition || &core.device != event.peer_id {

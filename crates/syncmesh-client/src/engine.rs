@@ -222,7 +222,7 @@ pub struct EngineOptions {
     /// A reading for the fleet, never a gate; `None` stamps nothing.
     pub schema_version: Option<SchemaVersion>,
     /// The shared ladder over a manifest (gap U3); `None` runs none. When `docs` or `merge` is
-    /// `None`, the manifest's own are used.
+    /// `None`, the manifest's own are used; `docs` given is what the ladder judges by too.
     pub validator: Option<ValidatorOptions>,
 }
 
@@ -328,10 +328,14 @@ impl Engine {
             Some(s) if !s.is_empty()? => (s.load_all()?, s.load_coverage()?),
             _ => (State::new(), Coverage::default()),
         };
-        let validator = options.validator.map(Validator::new);
+        let mut validator = options.validator.map(Validator::new);
         let docs = options
             .docs
             .or_else(|| validator.as_ref().map(|v| v.doc_columns().clone()));
+        // the ladder judges doc changes against the columns the fold joins, never other ones
+        if let (Some(validator), Some(docs)) = (validator.as_mut(), &docs) {
+            validator.judge_docs(docs.clone());
+        }
         let merge = options
             .merge
             .or_else(|| validator.as_ref().map(|v| v.manifest().merge()));

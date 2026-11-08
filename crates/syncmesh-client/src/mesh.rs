@@ -26,7 +26,6 @@ use crate::presence::{PresenceEntry, PresenceTier, PresenceTouch};
 use crate::random;
 use crate::relay::{RelayLink, RelayOptions};
 use crate::store::{EventStore, StateStore, StoreError};
-use crate::validate::GrantSource;
 
 pub struct MeshOptions {
     pub identity: Identity,
@@ -39,8 +38,9 @@ pub struct MeshOptions {
     /// This device's blob cache; memory when absent.
     pub blob_store: Option<Box<dyn BlobStore + Send>>,
     /// Whose grants to believe; this device's own key when absent (a mesh with no authority).
-    /// With `engine.validator` set, it also decides the validator's mode: granted, over this
-    /// mesh's registry, exactly when an issuer is given; ungranted otherwise.
+    /// With `engine.validator` set and its `grants` left `None`, it also decides the validator's
+    /// mode: granted, over this mesh's registry, when an issuer is given; ungranted otherwise. A
+    /// `grants` source the caller supplied is kept, and learns nothing from the link.
     pub issuer: Option<PeerId>,
 }
 
@@ -105,12 +105,14 @@ impl Mesh {
         let grants = Arc::new(Mutex::new(GrantRegistry::new(
             issuer.clone().unwrap_or_else(|| identity.peer_id().clone()),
         )));
-        if let Some(validator) = engine.validator.as_mut() {
-            // granted exactly when an issuer is configured, as the TypeScript client decides: the
-            // validator reads the registry the link fills as grants arrive
-            validator.grants = issuer
-                .is_some()
-                .then(|| Box::new(grants.clone()) as Box<dyn GrantSource + Send>);
+        if let Some(validator) = engine.validator.as_mut()
+            && validator.grants.is_none()
+            && issuer.is_some()
+        {
+            // granted when an issuer is configured, as the TypeScript client decides: the
+            // validator reads the registry the link fills as grants arrive. A source the caller
+            // supplied is kept as given.
+            validator.grants = Some(Box::new(grants.clone()));
         }
         let engine = Arc::new(Mutex::new(Engine::open(
             identity.clone(),
@@ -129,7 +131,7 @@ impl Mesh {
         let (commands, command_rx) = mpsc::channel(256);
         let (link_tx, link_rx) = mpsc::channel(256);
         let (event_tx, events) = mpsc::channel(256);
-        let link = RelayLink::new(identity.clone(), relay);
+        let link = RelayLink::new(identity.clone(), relay).with_grants(grants.clone());
         let tasks = vec![
             handle.spawn(run_link(link, engine.clone(), url, command_rx, link_tx)),
             handle.spawn(pump(
@@ -296,8 +298,8 @@ impl Mesh {
     }
 }
 
-/// Link facts to mesh events: presence into the tier, grants into the registry, blob answers to
-/// their waiters, everything else forwarded.
+/// Link facts to mesh events: presence into the tier, blob answers to their waiters, everything
+/// else forwarded.
 async fn pump(
     mut link: mpsc::Receiver<LinkEvent>,
     events: mpsc::Sender<MeshEvent>,
@@ -336,10 +338,8 @@ async fn pump(
                     .map(MeshEvent::Presence)
                     .collect()
             }
-            LinkEvent::Grant(wire) => {
-                let _ = lock(&grants).register(&wire, now_ms());
-                Vec::new()
-            }
+            // the link registered it before folding anything that arrived beside it
+            LinkEvent::Grant(_) => Vec::new(),
             LinkEvent::GrantRequest { peer_id, invite } => {
                 vec![MeshEvent::GrantRequest { peer_id, invite }]
             }

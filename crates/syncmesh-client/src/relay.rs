@@ -20,6 +20,7 @@
 //! `Dropped` and the join that follows the handshake re-sends every grant anyway.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use syncmesh_core::envelope::decode_and_verify;
 use syncmesh_core::event::{PeerId, SeqNum};
@@ -38,6 +39,7 @@ use syncmesh_core::relay_frames::{
 };
 
 use crate::engine::{Engine, FoldBatch};
+use crate::grants::GrantRegistry;
 use crate::holdback::Holdback;
 use crate::interest::{Interest, interest_text, narrows, same_interest, scope_from};
 use crate::store::{Coverage, Cursors, StoredEvent};
@@ -270,6 +272,8 @@ pub struct RelayLink {
     heard: BTreeMap<PeerId, i64>,
     /// Every grant wire the host registered, re-sent straight after every join.
     grant_wires: Vec<Vec<u8>>,
+    /// Where a grant that arrives is registered before anything beside it folds.
+    grants: Option<Arc<Mutex<GrantRegistry>>>,
 }
 
 impl std::fmt::Debug for RelayLink {
@@ -297,7 +301,35 @@ impl RelayLink {
             online: false,
             heard: BTreeMap::new(),
             grant_wires: Vec::new(),
+            grants: None,
         }
+    }
+
+    /// Registers every grant that arrives into `registry` before the events beside it fold, as
+    /// the TypeScript session does — so a validator reading the same registry admits an event
+    /// whose author's grant came on the same page. Without it a grant is only reported, as
+    /// [`Action::Grant`], and a host that registers it then has already seen the event refused.
+    ///
+    /// ```ignore
+    /// let registry = Arc::new(Mutex::new(GrantRegistry::new(issuer)));
+    /// let link = RelayLink::new(identity, options).with_grants(registry.clone());
+    /// ```
+    pub fn with_grants(mut self, registry: Arc<Mutex<GrantRegistry>>) -> RelayLink {
+        self.grants = Some(registry);
+        self
+    }
+
+    /// The grant into the registry, when the link has one, and then reported either way.
+    fn grant_arrived(&self, wire: Vec<u8>, now_ms: i64, out: &mut Vec<Action>) {
+        if let Some(registry) = &self.grants {
+            let mut registry = registry.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Err(e) = registry.register(&wire, now_ms) {
+                out.push(Action::Dropped(format!(
+                    "a grant from the room was refused: {e}"
+                )));
+            }
+        }
+        out.push(Action::Grant(wire));
     }
 
     pub fn name(&self) -> &str {
@@ -595,8 +627,10 @@ impl RelayLink {
                 ..
             } => {
                 let grants_empty = grants.is_empty();
+                // registered before the page folds: an event whose author's grant rides the same
+                // page is judged with that grant held (`session.ts` onPage)
                 for wire in grants {
-                    out.push(Action::Grant(wire));
+                    self.grant_arrived(wire, now_ms, out);
                 }
                 let repaging = self.repaging;
                 // an overflow re-joins and abandons the rest of this page's events; the last-page
@@ -676,7 +710,7 @@ impl RelayLink {
     ) {
         match frame {
             Frame::Presence { wire } => out.push(Action::Presence(wire)),
-            Frame::Grant { wire } => out.push(Action::Grant(wire)),
+            Frame::Grant { wire } => self.grant_arrived(wire, now_ms, out),
             Frame::Cursors { from, cursors, .. } => {
                 // cursors rather than events, deliberately: a relayed event may be history from a
                 // device that left hours ago, while cursors are a live peer reporting now

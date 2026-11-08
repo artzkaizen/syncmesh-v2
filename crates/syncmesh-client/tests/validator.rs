@@ -318,3 +318,39 @@ fn a_manifest_that_does_not_read_is_a_value() {
     );
     assert!(manifest.checked_columns().is_empty());
 }
+
+#[test]
+fn doc_columns_the_engine_is_handed_are_the_ones_the_ladder_judges_by() {
+    let doc = vectors();
+    let now = doc["nowMs"].as_i64().expect("now");
+    // the engine declares no doc columns, though the manifest gives notes.content one
+    let mut member = Engine::open(
+        identity(MEMBER),
+        Box::new(MemoryEventStore::new()),
+        None,
+        EngineOptions {
+            now_ms: Some(Box::new(move || now)),
+            docs: Some(BTreeMap::new()),
+            validator: Some(ValidatorOptions {
+                manifest: Manifest::from_json(&doc["schema"]).expect("manifest"),
+                grants: Some(Box::new(registry())),
+                authority: None,
+                accounts: false,
+            }),
+            ..EngineOptions::default()
+        },
+    )
+    .expect("open");
+    assert!(
+        member
+            .validator()
+            .expect("validator")
+            .doc_columns()
+            .is_empty()
+    );
+    member
+        .mutate("notes.create", vec![note("n1", "acct_member")], acme())
+        .expect("a member inserts");
+    let verdict = refused(member.mutate("notes.edit", vec![content("n1", false)], acme()));
+    assert_eq!(verdict.tag(), "DocChangeRefused");
+}
