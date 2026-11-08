@@ -15,12 +15,25 @@ const keystore = {
       .open(hexToBytes(sealedHex).unwrap())
       .then(bytesToHex, (cause: unknown) => `refused: ${String(cause)}`),
   /** What a script on the page would try: read the key's bytes out of the browser. */
-  exportKey: async () => {
-    const key = await createIndexedDbKeyHolder().get();
+  exportKey: async (sealedHex: string) => {
+    // the first 16 bytes of the sealed seed name its key
+    const key = await createIndexedDbKeyHolder().get(`device-seed.${sealedHex.slice(0, 32)}`);
     if (key === undefined) return "no key";
     return crypto.subtle.exportKey("raw", key).then(
       () => "exported",
       (cause: unknown) => `refused: ${String(cause)}`,
+    );
+  },
+  /** Two seals at once, as two tabs' first boots are, each opened after both have finished. */
+  sealTogether: async (seedHex: string) => {
+    const seed = hexToBytes(seedHex).unwrap();
+    const sealed = await Promise.all([vault().seal(seed), vault().seal(seed)]);
+    return Promise.all(
+      sealed.map((bytes) =>
+        vault()
+          .open(bytes)
+          .then(bytesToHex, (cause: unknown) => `refused: ${String(cause)}`),
+      ),
     );
   },
   /** Clears the keystore the way clearing the site's IndexedDB would. */

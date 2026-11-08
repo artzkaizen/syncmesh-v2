@@ -249,7 +249,9 @@ export interface PostgresStorage {
   /**
    * Refuse a write to a synced table made outside a mesh write (gaps U5): a guard trigger raises
    * on it, and on a `TRUNCATE` of one. Default `true`; `{ except: [table] }` for the tables an
-   * external writer owns. A role that can set `syncmesh.armed` itself can get past it.
+   * external writer owns. A role that can set `syncmesh.armed` itself can get past it. The
+   * triggers are `ENABLE ALWAYS`, which needs the table's owner at install, and a data-only
+   * `pg_restore` or a `COPY` into a synced table needs `--disable-triggers`.
    */
   readonly strict?: StrictCapture;
   /** Where fetched bytes are cached (D18); absent, an in-memory cache for the process. */

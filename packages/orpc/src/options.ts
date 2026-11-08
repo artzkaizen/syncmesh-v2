@@ -65,6 +65,11 @@ export interface ClientOptions<
    * development.
    */
   readonly vault?: SeedVault;
+  /**
+   * Where the vault's boot notice and a plaintext seed's migration report go when `identity` is
+   * absent (see `deviceIdentity`). Default `console.warn`.
+   */
+  readonly onNotice?: (message: string) => void;
   /** Carries `authority` calls. Absent, one fails naming itself rather than pretending. */
   readonly link?: AuthorityLink;
   /**
@@ -96,10 +101,10 @@ export const named = async <R extends Router, C extends ColumnsMap, PC extends P
     panic(
       "no identity and nowhere to keep one: pass `storage: sqlite({ driver })` so the device key can live beside the log it signs, or pass `identity` from your own key store",
     );
-  const minted = await deviceIdentity(
-    driver,
-    options.vault === undefined ? {} : { vault: options.vault },
-  );
+  const minted = await deviceIdentity(driver, {
+    ...(options.vault !== undefined && { vault: options.vault }),
+    ...(options.onNotice !== undefined && { onNotice: options.onNotice }),
+  });
   if (minted.isErr()) panic(minted.error.message, minted.error);
   return { ...options, identity: minted.value };
 };

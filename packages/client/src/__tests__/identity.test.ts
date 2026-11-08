@@ -56,9 +56,30 @@ const storedRow = async (path: string) => {
 
 /** The seed a secret-store vault sealed, opened with the store's key the way an attacker holding both would. */
 const sealedSeed = (row: string, store: ReturnType<typeof memoryStore>) => {
-  const key = hexToBytes(store.held.get("syncmesh.device-seed-key") ?? "").unwrap();
   const sealed = hexToBytes(row.slice("sealed:secret-store:".length)).unwrap();
-  return openPayload(key, sealed, new TextEncoder().encode("syncmesh/device-seed/v1")).unwrap();
+  // the first 16 bytes name the seal's own key in the store
+  const name = `syncmesh.device-seed-key.${bytesToHex(sealed.slice(0, 16))}`;
+  const key = hexToBytes(store.held.get(name) ?? "").unwrap();
+  return openPayload(
+    key,
+    sealed.slice(16),
+    new TextEncoder().encode("syncmesh/device-seed/v1"),
+  ).unwrap();
+};
+
+/** Long enough for the faster of two concurrent boots to seal and write its row. */
+const slowerKeychain = () => new Promise((resolve) => setTimeout(resolve, 30));
+
+/** `store`, with every write after the first landing late, as a slower keychain's would. */
+const slowSecondWrite = (store: SecretStore): SecretStore => {
+  let writes = 0;
+  return {
+    get: (name) => store.get(name),
+    set: async (name, value) => {
+      if (writes++ > 0) await slowerKeychain();
+      return store.set(name, value);
+    },
+  };
 };
 
 describe("deviceIdentity", () => {
@@ -234,6 +255,47 @@ describe("the seed at rest (U4)", () => {
     expect(await driver.all(`SELECT * FROM "_device"`)).toEqual([]);
   });
 
+  test("two first boots at once on one device keep a key each opens", async () => {
+    // two databases over one keychain, booting together: the slower boot's write of a key must
+    // not replace the key the faster one already sealed its row under
+    const dir = freshDir();
+    const vault = createSecretStoreVault(slowSecondWrite(memoryStore()));
+    const [a, b] = await Promise.all([
+      deviceIdentity(driverOn(join(dir, "a.db")), { vault }),
+      deviceIdentity(driverOn(join(dir, "b.db")), { vault }),
+    ]);
+    const again = await Promise.all([
+      deviceIdentity(driverOn(join(dir, "a.db")), { vault }),
+      deviceIdentity(driverOn(join(dir, "b.db")), { vault }),
+    ]);
+    expect(again.map((opened) => opened.unwrap().peerId)).toEqual([
+      a.unwrap().peerId,
+      b.unwrap().peerId,
+    ]);
+  });
+
+  test("two first boots at once on one database: one wins, and its seed still opens", async () => {
+    // two tabs over one file: the loser's insert fails, as before U4, and the winner's key stays
+    const path = join(freshDir(), "tabs.db");
+    const vault = createSecretStoreVault(slowSecondWrite(memoryStore()));
+    const boots = await Promise.all([
+      deviceIdentity(driverOn(path), { vault }),
+      deviceIdentity(driverOn(path), { vault }),
+    ]);
+    const won = boots.filter((opened) => opened.isOk()).map((opened) => opened.value.peerId);
+    const reboot = (await deviceIdentity(driverOn(path), { vault })).unwrap();
+    expect(won).toEqual([reboot.peerId]);
+  });
+
+  test("a vault whose kind the row cannot carry is refused before anything is written", async () => {
+    const colon = { ...createSecretStoreVault(memoryStore()), kind: "os:keychain" };
+    const driver = driverOn(":memory:");
+    const opened = await deviceIdentity(driver, { vault: colon });
+    expect(opened.isErr()).toBe(true);
+    if (opened.isErr()) expect(opened.error.message).toContain("letters, digits and -");
+    expect(await driver.all(`SELECT name FROM sqlite_master WHERE name = '_device'`)).toEqual([]);
+  });
+
   test("a store that keeps nothing fails the first boot", async () => {
     const leaky = { get: () => Promise.resolve(undefined), set: () => Promise.resolve() };
     const opened = await deviceIdentity(driverOn(":memory:"), {
@@ -246,13 +308,39 @@ describe("the seed at rest (U4)", () => {
 describe("createWebCryptoVault", () => {
   /** A key holder in memory, where a browser has IndexedDB: the key object, never its bytes. */
   const heldKeys = () => {
-    let key: CryptoKey | undefined;
+    const keys = new Map<string, CryptoKey>();
+    let writes = 0;
     return {
-      key: () => key,
-      get: () => Promise.resolve(key),
-      put: (next: CryptoKey) => Promise.resolve(void (key = next)),
+      keys,
+      get: (name: string) => Promise.resolve(keys.get(name)),
+      put: async (name: string, key: CryptoKey, slow = false) => {
+        if (slow && writes++ > 0) await slowerKeychain();
+        keys.set(name, key);
+      },
     };
   };
+
+  test("two first boots at once on one origin keep a key each opens", async () => {
+    const holder = heldKeys();
+    const slow = {
+      get: holder.get,
+      put: (name: string, key: CryptoKey) => holder.put(name, key, true),
+    };
+    const dir = freshDir();
+    const vault = createWebCryptoVault(slow);
+    const [a, b] = await Promise.all([
+      deviceIdentity(driverOn(join(dir, "a.db")), { vault }),
+      deviceIdentity(driverOn(join(dir, "b.db")), { vault }),
+    ]);
+    const again = await Promise.all([
+      deviceIdentity(driverOn(join(dir, "a.db")), { vault }),
+      deviceIdentity(driverOn(join(dir, "b.db")), { vault }),
+    ]);
+    expect(again.map((opened) => opened.unwrap().peerId)).toEqual([
+      a.unwrap().peerId,
+      b.unwrap().peerId,
+    ]);
+  });
 
   test("seals under a key no script can read, and opens across boots", async () => {
     const holder = heldKeys();
@@ -261,7 +349,7 @@ describe("createWebCryptoVault", () => {
       await deviceIdentity(driverOn(path), { vault: createWebCryptoVault(holder) })
     ).unwrap();
     expect((await storedRow(path)).startsWith("sealed:webcrypto:")).toBe(true);
-    const key = holder.key();
+    const [key] = holder.keys.values();
     expect(key?.extractable).toBe(false);
     // the attack a script on the page would try: export the key and take it with the database
     if (key !== undefined) expect(crypto.subtle.exportKey("raw", key)).rejects.toThrow();

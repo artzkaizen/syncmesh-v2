@@ -89,6 +89,9 @@ export interface DeviceIdentityOptions {
 /** What the `"seed"` row holds when a vault sealed it: `sealed:<kind>:<hex>`. Bare hex is plaintext. */
 const SEALED = "sealed:";
 
+/** A {@link SeedVault.kind}: what `sealed:<kind>:` can carry and {@link parseSeedRow} split back. */
+const VAULT_KIND = /^[A-Za-z0-9-]+$/;
+
 const sealedRow = (vault: SeedVault, sealed: Uint8Array) =>
   vault.kind === PLAINTEXT_VAULT
     ? bytesToHex(sealed)
@@ -229,7 +232,10 @@ export function deviceIdentity(
   driver: SqlDriver,
   options: DeviceIdentityOptions = {},
 ): Promise<ResultType<Identity, DeviceKeyUnavailable>> {
-  const notice = options.onNotice ?? ((message: string) => console.warn(`[syncmesh] ${message}`));
+  const notice =
+    options.onNotice ??
+    // oxlint-disable-next-line no-console -- the default for an app that routes no onNotice: a plaintext key must be said somewhere
+    ((message: string) => console.warn(`[syncmesh] ${message}`));
   return Result.gen(async function* () {
     const vault = options.vault ?? platformVault();
     if (vault === undefined)
@@ -237,6 +243,12 @@ export function deviceIdentity(
         new DeviceKeyUnavailable({
           message:
             "no keystore on this platform for the device key: pass `vault` (@syncmesh/react-native/keystore, createSecretStoreVault over an OS keychain), or createPlaintextVault() for tests and development",
+        }),
+      );
+    if (!VAULT_KIND.test(vault.kind))
+      return Result.err(
+        new DeviceKeyUnavailable({
+          message: `a vault's kind is letters, digits and - only, and "${vault.kind}" is not: the row it sealed could not be read back`,
         }),
       );
     if (vault.notice !== undefined) notice(vault.notice);

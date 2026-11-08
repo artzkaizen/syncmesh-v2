@@ -17,7 +17,8 @@ interface KeystoreSurface {
   readonly kind: () => string | undefined;
   readonly seal: (seedHex: string) => Promise<string>;
   readonly open: (sealedHex: string) => Promise<string>;
-  readonly exportKey: () => Promise<string>;
+  readonly exportKey: (sealedHex: string) => Promise<string>;
+  readonly sealTogether: (seedHex: string) => Promise<readonly string[]>;
   readonly clear: () => Promise<void>;
 }
 
@@ -82,8 +83,13 @@ describe("createWebCryptoVault in a browser (U4)", () => {
       const again = await load();
       expect(await again.evaluate((bytes) => keystore.open(bytes), sealed)).toBe(SEED);
       // the key the origin keeps cannot be read out by any script on it
-      expect(await again.evaluate(() => keystore.exportKey())).toStartWith("refused");
+      expect(await again.evaluate((bytes) => keystore.exportKey(bytes), sealed)).toStartWith(
+        "refused",
+      );
       // a cleared keystore opens nothing, so the next boot refuses rather than reads
+      // two first boots at once on this origin: each seal still opens after both have written
+      const together = await again.evaluate((seed) => keystore.sealTogether(seed), SEED);
+      expect(together).toEqual([SEED, SEED]);
       await again.evaluate(() => keystore.clear());
       expect(await again.evaluate((bytes) => keystore.open(bytes), sealed)).toStartWith("refused");
     },

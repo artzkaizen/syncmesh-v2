@@ -51,9 +51,9 @@ describe("createSecureStoreVault", () => {
     const { createSecureStoreVault } = await withModule(phone);
     const driver = bunSqliteDriver(":memory:");
     const first = (await deviceIdentity(driver, { vault: createSecureStoreVault() })).unwrap();
-    expect(phone.written).toEqual([
-      { key: "syncmesh.device-seed-key", options: { keychainAccessible: 7 } },
-    ]);
+    expect(phone.written).toHaveLength(1);
+    expect(phone.written[0]?.key).toMatch(/^syncmesh\.device-seed-key\.[0-9a-f]{32}$/);
+    expect(phone.written[0]?.options).toEqual({ keychainAccessible: 7 });
     const [row] = await driver.all(`SELECT "value" FROM "_device" WHERE "key" = 'seed'`);
     expect(String(row?.[0]).startsWith("sealed:secure-store:")).toBe(true);
     const again = (await deviceIdentity(driver, { vault: createSecureStoreVault() })).unwrap();
