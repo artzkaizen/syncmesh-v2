@@ -53,7 +53,7 @@ import { createSnapshotPath } from "./snapshot.js";
 import { strandedWrites, type StrandedWrites } from "./stranded.js";
 import { mergeAhead } from "./sync.js";
 import { type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
-import { createWritePath, type OwnPositionApi } from "./writes.js";
+import { createWritePath, type WritePathApi } from "./writes.js";
 
 export type { AtomicStores, EngineOptions, MutateOptions } from "./options.js";
 
@@ -73,7 +73,7 @@ export interface Quarantined {
 }
 
 export interface Engine
-  extends FeedApi, RepairApi, SnapshotApi, DocApi, OwnPositionApi, PurgeApi, FleetApi {
+  extends FeedApi, RepairApi, SnapshotApi, DocApi, WritePathApi, PurgeApi, FleetApi {
   readonly peerId: PeerId;
   /** Records, stamps, numbers, appends, folds, then hands the event to `onOutbound` — a write is real once appended. */
   readonly mutate: (
@@ -257,7 +257,7 @@ export function createEngine(options: EngineOptions): Engine {
     initial: boot?.state ?? emptyState(),
     hasAdapter,
   });
-  const { getState, setState, persist, persistCoverage, notify, derive } = foldPath;
+  const { getState, setState, persist, persistCoverage, notify } = foldPath;
   const fold: typeof foldPath.fold = (entries, source) => {
     for (const { event } of entries) fleet.note(event);
     return foldPath.fold(entries, source);
@@ -294,6 +294,10 @@ export function createEngine(options: EngineOptions): Engine {
   });
 
   const { receiveBatch, ...writes } = createWritePath({
+    // `getState`, `persist`, `notify` and `derive`, as `docPath.bind` takes them; `fold` notes
+    // each event's schema stamp first (D31)
+    ...foldPath,
+    fold,
     peerId,
     schemaVersion,
     clock,
@@ -302,11 +306,7 @@ export function createEngine(options: EngineOptions): Engine {
     undoDepth,
     undo,
     atomically,
-    getState,
-    fold,
-    persist,
-    notify,
-    derive,
+    atomic: atomic !== undefined,
     outbound,
     telemetry,
     admitEntries: (entries) =>

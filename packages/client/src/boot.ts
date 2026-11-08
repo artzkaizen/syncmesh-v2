@@ -249,7 +249,9 @@ export function openMeshEngine(options: BootOptions): Promise<Result<Booted, Mes
     );
     const booted = { engine, store, validate };
     if (owned?.rowSync !== undefined) Object.assign(booted, { rowSync: owned.rowSync });
-    const driver = options.driver ?? owned?.driver;
+    // the stores' own connection over yours: on a device it journals a write across both files,
+    // and a ledger on the bare driver would write its log rows past the journal (RFC-0022)
+    const driver = owned?.driver ?? options.driver;
     yield* Result.await(installPolicies(options, driver));
     if (driver !== undefined) {
       Object.assign(booted, { driver });

@@ -100,3 +100,34 @@ describe("EngineOptions.atomic — the log and the state as one write", () => {
     expect(notified).toBe(0);
   });
 });
+
+describe("Engine.mutateCaptured without atomic", () => {
+  test("refuses to run a capture with nothing to roll it back, and runs one given `around`", async () => {
+    const engine = createEngine({
+      peerId: PEER_A,
+      clock: fakeClock(100),
+      store: createMemoryEventStore(),
+    });
+    let captured = 0;
+    const capture = () => {
+      captured += 1;
+      return Promise.resolve(
+        Result.ok({
+          procedure: CREATE,
+          changes: [{ kind: "insert" as const, table: NOTES, key: N1, row: row({ title: "a" }) }],
+        }),
+      );
+    };
+    // a refusal could not take back statements that have already committed on their own
+    expect(() => engine.mutateCaptured(capture)).toThrow(/settings\.around/);
+    expect(captured).toBe(0);
+
+    const opened: string[] = [];
+    const around = async <T>(fn: () => Promise<T>) => {
+      opened.push("around");
+      return fn();
+    };
+    (await engine.mutateCaptured(capture, { around })).unwrap();
+    expect({ captured, opened }).toEqual({ captured: 1, opened: ["around"] });
+  });
+});

@@ -141,4 +141,7 @@ export const STATE_TABLES = [
   "doc_log",
   "doc_heads",
   "doc_snapshots",
+  // the log half of the last transaction that wrote both files, replayed into a log it never
+  // reached (`journal.ts`); it belongs to this file, and goes with it
+  "journal",
 ] as const;

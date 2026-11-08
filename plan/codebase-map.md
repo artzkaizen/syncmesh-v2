@@ -200,7 +200,7 @@ No listeners anywhere — kernel/temporal/result are pure. Injection seams: `now
 - **`delivered({event?, to?})`** — resolves when a cursor exchange shows a peer holds the write (via `acks` + `onAcknowledge`); **`received({event})`** — inbound mirror (via `coverage` + `onFoldBatch`).
 - **Grants**: `mesh.grants = GrantRegistry + issue(request)` (panics without `issuerKey`); `requestGrant(invite?)` over transports; `onGrantRequest` handler.
 - **`can("table.op", row?)`**, `revert/canRevert`, `ready/running/stop`.
-- **D20 writer** (`write.ts` + uncommitted diff): `createWriter({engine, validate, driver, tables, actor?, schema?})` → `write(label, fn, {partition?, local?})` — captureChanges around the app's own SQL; actor's `can` verdict per change (new) then validator, inside the transaction; replayed into `engine.mutate` as one event.
+- **D20 writer** (`write.ts` + uncommitted diff): `createWriter({engine, validate, driver, tables, actor?, schema?})` → `write(label, fn, {partition?, local?})` — `captureWithin` around the app's own SQL, run by `engine.mutateCaptured` inside the engine's own write transaction (U29): the app's statements, the event, its ledger row and the state commit are one transaction; actor's `can` verdict per change then validator, inside it; a refusal rolls the app's statements back.
 
 Errors: `NoActivePartition, UnknownPartitionKind, NoSuchRow, NoDefaultStore, CrossPartitionTx` + unions `WriteError/TxError/HistoryError/MeshRevertError`.
 

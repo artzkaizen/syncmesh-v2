@@ -13,7 +13,8 @@ import type { Hole } from "./holes.js";
 import { driverDialect } from "./dialect.js";
 import { evictEvents } from "./evict.js";
 import { readHoles, unaccounted } from "./holes.js";
-import { attempt, coverageOf, failure, headerRow, hlcRow, inTransaction, seqOf } from "./sql.js";
+import { attempt, failure, headerRow, hlcRow, inTransaction } from "./sql.js";
+import { parseCoverage, parseSeqCell } from "./sql.js";
 
 /**
  * The `core` column holds the bytes the author's signature covers, not a re-encode of what this
@@ -297,7 +298,7 @@ export function sqlEventStore(
       Result.gen(async function* () {
         const local = scope === "local" ? 1 : 0;
         const rows = yield* Result.await(query("lastSeq failed", SQL.selectLastSeq, [peer, local]));
-        return seqOf(rows[0]?.[0]);
+        return parseSeqCell(rows[0]?.[0]);
       }),
     compactBelow: (floor, scope, olderThan) =>
       attempt("compactBelow failed", () =>
@@ -330,7 +331,7 @@ export function sqlEventStore(
     compactedBelow: () =>
       query("compactedBelow failed", SQL.selectFloors).then((rows) =>
         rows
-          .andThen(coverageOf)
+          .andThen(parseCoverage)
           .mapError((e) =>
             e._tag === "StateCorrupt" ? new StoreFailure({ message: e.message }) : e,
           ),

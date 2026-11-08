@@ -10,7 +10,7 @@ import type { Projection } from "./projection.js";
 
 import { driverDialect } from "./dialect.js";
 import { lazyTable } from "./lazy-state.js";
-import { CURSOR_FLOOR, attempt, coverageOf, inTransaction, scopeOf } from "./sql.js";
+import { CURSOR_FLOOR, attempt, parseCoverage, inTransaction, rowScope } from "./sql.js";
 
 const corrupt = (message: string) => new StateCorrupt({ message });
 
@@ -102,9 +102,9 @@ export function sqlStateStore(
     loadCursors: () =>
       Result.gen(async function* () {
         const rows = yield* Result.await(query("loadCursors failed", SQL.selectCursors));
-        const coverage = yield* coverageOf(rows);
+        const coverage = yield* parseCoverage(rows);
         const scoped = yield* Result.await(query("loadScope failed", SQL.selectScope));
-        const scope = scopeOf(scoped);
+        const scope = rowScope(scoped);
         // the numbers and the interest that makes them true load together or the cursor is a lie
         return Result.ok<Coverage>(scope === undefined ? coverage : { ...coverage, scope });
       }),
