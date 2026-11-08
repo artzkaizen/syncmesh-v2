@@ -113,6 +113,8 @@ export function relayRivetActor(options: RelayRivetActorOptions = {}): RelayRive
       return {
         store,
         epoch: await relayEpoch(driver),
+        // the platform's own database, which outlives every eviction (D42)
+        durable: true,
         ...omitUndefined({ blobs }),
         // the actor's storage is the platform's to close; nothing was borrowed
         release: () => undefined,

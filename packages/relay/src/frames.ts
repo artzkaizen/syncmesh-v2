@@ -97,6 +97,12 @@ export type RelayFrame =
        * thing: nothing has been taken away.
        */
       readonly floor: Cursors;
+      /**
+       * Whether this room's log outlives the process serving it (D42): only then is its `ack` an
+       * answer to `synced()`. An additive element — a relay built before it sends nothing here,
+       * which decodes as `false`, so an older room's acks are never taken for durability.
+       */
+      readonly durable: boolean;
     }
   | { readonly kind: "error"; readonly code: string; readonly message: string }
   | { readonly kind: "ka" }
@@ -200,8 +206,12 @@ export const helloFrame = (
   epoch: string,
   cursors: Cursors,
   floor: Cursors = NO_CURSORS,
-): Uint8Array =>
-  encodeCbor([KIND.hello, version, keepaliveMs, epoch, pairs(cursors), pairs(floor)]);
+  durable = false,
+): Uint8Array => {
+  const parts = [KIND.hello, version, keepaliveMs, epoch, pairs(cursors), pairs(floor)];
+  // absent rather than `0` for a log that dies with the process: the same bytes it always was
+  return encodeCbor(durable ? [...parts, 1] : parts);
+};
 
 export const errorFrame = (code: string, message: string): Uint8Array =>
   encodeCbor([KIND.error, code, message]);
