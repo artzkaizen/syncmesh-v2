@@ -90,6 +90,12 @@ export function allRows(state: State): readonly RowWrite[] {
   return rows;
 }
 
+/**
+ * A state store held in memory, for tests and for a mesh whose log is in memory too.
+ *
+ * Never pair it with a persistent log: after one snapshot install the log records the install's
+ * floor, and every later boot finds this store empty over it and refuses with `StateCorrupt`.
+ */
 export function createMemoryStateStore(): StateStore {
   const tables = new Map<TableName, Map<RowKey, RowRecord>>();
   let coverage = EMPTY_COVERAGE;

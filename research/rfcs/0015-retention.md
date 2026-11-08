@@ -99,7 +99,12 @@ is told `ungranted` and never the floor), and the device raises the same `$recov
 (`reason: "retention"`, keyed by the relay transport's name) and stops dialling that room until
 its next join would be at or above the floor, or something wakes the link; a relay folds nothing
 and serves no state, so the history comes from a peer (gaps U30, built; decided 2026-11-08, Jace
-delegated the call).
+delegated the call). Two dials are still refused by design: `wake()` releases the hold every time,
+and the client wakes every transport on each foreground and network-change knock, so a device
+still below the floor makes one refused dial per knock; and the hold lives in memory, so every
+boot makes one refused dial before it holds off again. Both are bounded by events the device sees,
+never by a timer. Only a `retention` refusal's third element is read as a floor; another code's is
+read past, and a floor that does not decode leaves the refusal standing without one.
 
 ```
 joiner    → snapshot-request { have?: { stateHash, floorCursors } }

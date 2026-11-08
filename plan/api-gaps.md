@@ -405,6 +405,18 @@ floor the log never held (withheld, scoped out, or evicted by a purge) is still 
 arrives. The SQL log reads that off its gap table, which compaction no longer prunes below the
 floor; the memory and `localStorage` stores keep the same runs (`createFloorHoles`).
 
+Where it departs: compaction no longer bounds the gap state. A run below the floor the log never
+held is kept until an event in it arrives, and adjacent runs merge, but nothing else removes one.
+On a device that is sent only some partitions (D23, D40), every run of an author's events in
+partitions it is never sent becomes a permanent gap row (SQL) or hole (memory, `localStorage`'s
+`<name>.below`, which is rewritten whole on every write that moves it), so this state grows with
+the number of such runs in the history, even though compaction removes the events. Kept on purpose
+(decided 2026-11-08, Jace delegated the call): the runs are what tells "withheld" from "compacted"
+when a widened grant re-pages that history, and pruning them reintroduces the re-admit U1 closes.
+Bounding it needs a rule for which partitions a device can never be granted, which no layer here
+knows. A log compacted by a build from before this change has already pruned those rows, so an
+event withheld or evicted below that older floor reads as compacted (pre-release logs only).
+
 ## 4 · Verified *not* gaps — do not re-do these
 
 The book's ch. 25 audit is two weeks stale in this direction:

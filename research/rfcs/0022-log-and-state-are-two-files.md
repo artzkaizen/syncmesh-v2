@@ -285,6 +285,14 @@ to migrate it in place or to rejoin from a peer — neither of which is "no migr
 That is a real limit on the borrowed idea rather than a detail. A young replica gets the clean
 version; an old one gets a migration or a rejoin, and has to be told which.
 
+The same limit reaches every device that joined by snapshot, and joining by snapshot is the
+normal path for a new device (gaps U33): its log records the install's floor, so `refoldable` is
+`false` from its first boot and a table-shape schema change refuses with "Keep the previous
+schema, or rejoin from a peer" exactly as it does over a compacted log. So "young replica" means
+"filled by events", not "new". A migration that copies rows from the old state file into the new
+one is what lets these devices take a schema change in place; it is planned, not built
+(decided 2026-11-08, Jace delegated the call: refusing is the safe default until it exists).
+
 This is what makes the fingerprint added in `syncmesh_meta` this week
 *mostly* redundant: it compares DDL text and then reinstalls in place, which
 works for adding a table and not for anything needing data moved. The filename
