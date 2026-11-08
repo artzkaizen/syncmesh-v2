@@ -122,8 +122,9 @@ export interface RecoveryView {
    * Takes a torn run as gone for good, so the log reads again without it: what a `lost` run (this
    * device's local-only events, which nothing else held) needs before anything else can read the
    * log, and what a synced run no peer will ever send can be given. Deliberately a call someone
-   * makes. A synced run accepted this way is still asked for as a hole. `false` when no such run
-   * is an issue, or the log could not record it.
+   * makes. The issue is dropped either way, so the status stops blocking; a synced run accepted
+   * this way is still asked for as a hole. `false` when no such run is an issue, or the log could
+   * not record it.
    */
   readonly acceptTorn: (run: TornRun) => Promise<boolean>;
   /**

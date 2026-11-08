@@ -111,6 +111,9 @@ describe("a torn log, on a running mesh (D39)", () => {
     if (issue === undefined) throw new Error("the tear is an issue");
 
     expect(await device.mesh.recovery.acceptTorn(issue.run)).toBe(true);
+    // given up on: the issue is gone and the status no longer blocks on it
+    expect(device.mesh.recovery.torn()).toEqual([]);
+    expect(device.mesh.status.get().health).not.toBe("blocked-recovery");
     const read = await device.mesh.engine.eventsSince(new Map());
     expect(read.isOk() && read.value.length).toBe(2);
     // still asked for as a hole: the cursor stands below it until something sends it

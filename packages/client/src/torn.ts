@@ -121,8 +121,10 @@ export function watchTorn(deps: TornDeps) {
     /** Fires when {@link list} would answer differently. */
     onChange: (listener: () => void): Unsubscribe => changed.subscribe(listener),
     /**
-     * Records a run as gone for good and drops the issue: the log reads again without it. For a
-     * `lost` run, or a synced one no peer will ever send. `false` when no such run is an issue.
+     * Records a run as gone for good and drops the issue: the log reads again without it, and the
+     * run no longer blocks the status. For a `lost` run, or a synced one no peer will ever send —
+     * that one stays a hole the cursor stands below, so a peer that does hold it still sends it.
+     * `false` when no such run is an issue.
      */
     accept: async (run: TornRun): Promise<boolean> => {
       const key = runKey(run);
@@ -130,11 +132,9 @@ export function watchTorn(deps: TornDeps) {
       if (issue === undefined) return false;
       const reopened = await engine.reopen([issue.run]);
       if (reopened.isErr()) return false;
-      // a synced run is now asked for like any other hole; a local one is simply gone
-      if (issue.run.local) issues.delete(key);
-      else set({ run: issue.run, state: "rejoining" });
+      // given up on: the issue goes either way; a synced run's lowered cursor still asks for it
+      issues.delete(key);
       changed.emit();
-      settle();
       return true;
     },
     stop: async (): Promise<void> => {
