@@ -81,7 +81,8 @@ than read around:
   past the stores, or every launch after looks like one after a crash. `Stores.markOpen()` marks
   it open again without the check: a mesh marks the session clean when the app goes to the
   background and open when it comes back (D39), so an app killed in the background or a closed
-  tab is not taken for a crash.
+  tab is not taken for a crash. A clean mark holds only until the next log write through the
+  stores (`events.append`, `events.appendBatch`, `atomic`), which marks the session open first.
 - The refusal's cause is `LogTorn { runs }` (`tornRuns` in `@syncmesh/engine`): the runs a peer
   would have to send again. A mesh raises them as `$recovery.torn()` and rejoins from a linked peer
   that holds them by itself.

@@ -44,7 +44,8 @@ export interface Stores extends ScopedStores {
   /**
    * Records that this session over the log ended cleanly, without closing the connection: what a
    * caller that owns the driver runs where `close` would close what is not its own. A session that
-   * ends without it is checked page by page at the next open (D39).
+   * ends without it is checked page by page at the next open (D39). The mark holds only until the
+   * next write through these stores, which marks the session open again before it lands.
    */
   readonly markClean: () => Promise<void>;
   /**
@@ -238,21 +239,50 @@ export function openStores(
       state: yield* Result.await(sqlStateStore(driver, { ...stateOptions, nested: true })),
       docs: yield* Result.await(sqlDocStore(driver, { nested: true })),
     };
-    const atomic: Stores["atomic"] = (fn) => inTransaction(driver, () => fn(scoped));
+    // whether the session is marked clean now: the first write after the mark opens it again
+    // before it lands, so a crash under a write made while backgrounded is still checked (D39)
+    let clean = false;
+    let opening = Promise.resolve();
     // a mark that does not land costs one check at the next open, which is the safe direction —
     // so it is said, not thrown, and the connection still closes
     const markClean = async () => {
+      clean = true;
       const marked = await closeSession(driver);
-      if (marked.isErr()) console.warn(`[syncmesh] ${marked.error.message}`);
+      if (marked.isErr()) {
+        clean = false;
+        console.warn(`[syncmesh] ${marked.error.message}`);
+      }
     };
     // the unsafe direction: a session left marked clean skips the check after a crash, so a
-    // failure is said as loudly, and the next background-and-back tries again
+    // failure is said as loudly, and the next write or foreground tries again
     const markOpen = async () => {
+      clean = false;
       const marked = await reopenSession(driver);
-      if (marked.isErr()) console.warn(`[syncmesh] ${marked.error.message}`);
+      if (marked.isErr()) {
+        clean = true;
+        console.warn(`[syncmesh] ${marked.error.message}`);
+      }
+    };
+    const openBeforeWrite = (): Promise<void> => {
+      if (clean) opening = markOpen();
+      return opening;
+    };
+    const atomic: Stores["atomic"] = async (fn) => {
+      await openBeforeWrite();
+      return inTransaction(driver, () => fn(scoped));
     };
     const opened = {
-      events,
+      events: {
+        ...events,
+        append: async (entry) => {
+          await openBeforeWrite();
+          return events.append(entry);
+        },
+        appendBatch: async (entries) => {
+          await openBeforeWrite();
+          return events.appendBatch(entries);
+        },
+      } satisfies EventStore,
       state,
       docs,
       driver,
