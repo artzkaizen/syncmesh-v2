@@ -455,7 +455,8 @@ DocCheckpoint core = {
   5: covers   { peerId → seq }           every doc change of this doc at or below these is folded in
   6: version  bstr                        adapter-encoded version of the snapshot
   7: snapshot [bstr(32), uint]            blob ref (D18) to the adapter snapshot bytes
-  8: derived  { column → cell }           derive values at this version (for opaque hosts)
+  8: derived  { column → cell }           derive values at this version (for opaque hosts);
+                                          empty for a sealed partition (§7.2)
   9: at       [ms, logical]               HLC of production
 }
 envelope = [core, sig]                    signed by the producer's device key
@@ -570,6 +571,20 @@ when no adapter is configured, and it is forced for sealed partitions.
   publish one after materialising, rate-limited per doc (`checkpointEvery`, default 5 min of
   change). The authority stores the snapshot blob, writes it to the column and the derived values
   to their columns, and records `doc_heads.mode = 'checkpoint'` with the checkpoint's `covers`.
+- **Sealed partitions keep their derived values off the host** (decided 2026-11-08, from review).
+  A derived value is plaintext read out of the document, so a device never puts one in a sealed
+  partition's checkpoint: key 8 is an empty map. The host refuses a sealed partition's checkpoint
+  that carries any, and that partition's derived columns stay unset on the host (`NULL`, or the
+  column's SQL default). Devices holding the partition key compute them as they do everywhere
+  else. The host reads only the checkpoint's signed core, never its snapshot: it holds no adapter,
+  and in a sealed partition the snapshot would be sealed to the partition key (§11). Sealing that
+  blob is not built yet; the rule for derived values does not depend on it.
+- An opaque host installs a device checkpoint **provisionally** (§16.6): it checks the
+  signature, the column's adapter, the winning lineage, the snapshot hash, that `covers` claims
+  nothing it has not folded, that it is not behind the snapshot already held, and that every
+  key 8 value is a declared derived column of a kind that column accepts. It cannot re-derive
+  `version` without the adapter. It moves no `doc_log` entry to `covered`, so no event becomes
+  compactable on a provisional snapshot and the long log stays whole for the audit.
 - SQL over an opaque column is **honestly behind**. `doc_heads.covers` versus the log head says by
   how much, and a query that selects `docStateOf(tables.notes.content)` gets
   `{ mode, behindBy }`, the column sibling of `syncOf`.
@@ -722,7 +737,9 @@ decompression cap and a time budget, and exceeding them is a `failed` update, ne
   `update` on the row. Blob fetches of doc bytes require custody of the partition (D30's blob
   capability).
 - **Sealed partitions:** doc bytes are inside the sealed core, the authority is structurally
-  opaque (§7.2), and checkpoints are sealed to the partition key.
+  opaque (§7.2), and a checkpoint's snapshot blob is sealed to the partition key (not built yet).
+  The checkpoint's core stays readable to the host, so it carries no derived values: key 8 is
+  empty and the host's derived columns for the partition stay unset (§7.2).
 - **`replace()` has an optional rule of its own** (decided in §16.2): `allow: { replace:
   role("owner") }` beside `read`/`insert`/`update`/`delete`/`$default`. It is the one doc
   operation that can set others' work aside. Absent, a genesis is judged by the row's `update`
@@ -925,6 +942,37 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    folds a doc column ships its adapter (TypeScript `@syncmesh/loro`, Rust `syncmesh-loro`), so no
    device is left unable to compute. A Rust app declares its own `from` closures over the same
    manifest names.
+   **Built 2026-11-08** (`feat/doc-derived-columns`):
+   - Schema: `drizzleTable(t, { merge: { content: loro }, derive: { title: from("content", …) } })`;
+     the derive targets are marked on the built table (`ColumnDef.derived`), the manifest entry is
+     `{ column, doc, derive }`, and §4.1's `InvalidDerive` rows refuse at construction.
+     `createDerivers(schema)` runs the functions and turns their values into the column's wire
+     form; a throw or a value the column cannot hold is `DeriveFailed`. An insert need not name a
+     derived column, even a `notNull()` one.
+   - Device: `createDocuments({ …, derive })` computes the row's derived columns from the open
+     replica at every flush and writes them through `MutateOptions.derived` in the flush's own
+     transaction, and the fold batch names the row, so a live query reads the title with the
+     edit. Materialise and checkpoint install compute them from the snapshot and write them with
+     the cover (`DocCover.derived`), in its transaction. A failed derive is reported on `onError`
+     and never fails the write it rides on.
+   - The values land in the app's own table only (`StateStore.derive`, an `UPDATE` with capture at
+     rest). The projection never writes a derived column, capture never carries one, and both the
+     validator and capture refuse an app write to one (`DocColumnWrite`, the same refusal a
+     document column now gets from capture instead of being dropped). Nothing derived is a kernel
+     cell, so digests, snapshot pages, repairs and events never hold one.
+   - Opaque host: `documents.installProvisional(…)` writes key 8's values (§7.2). A sealed
+     partition's checkpoint carries none (§7.2, §11).
+   - Rust: `syncmesh_client::docs::{Derive, DocColumnEntry}`, a builder of closures checked
+     against the manifest's names, with no macro (§16.8).
+   - A changed derive function changes no table shape (`schemaNameFor` is the same), so it needs no
+     migration; the next flush or materialisation recomputes.
+   Where it departs: the guard is a check in `captureChanges`, not a SQL trigger. It refuses the
+   transaction with `DocColumnWrite` as a value, at the same point (capture armed), so a raw
+   statement outside capture is not refused, as with a trigger. A remote edit applied to an open
+   document does not recompute its derived columns; they catch up at the next local flush or
+   materialisation. A row whose insert has not arrived gets no derived value until one of those
+   runs after it. The Rust device has no document runtime or app tables yet, so its `Derive`
+   computes values and nothing in the crate writes them.
 5. **Device snapshots — decided 2026-11-08 by Jace: full device snapshots**, as D41 built.
    Shallow-at-the-stable-floor (§8.3) stays available as a future option with its forgotten-peer
    edge; it is not the default.
