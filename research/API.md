@@ -1995,11 +1995,12 @@ When a device's entitlement narrows (D45), `createClient({ onNarrowed })` hears
 `{ partitions, tables }` first, and then the device drops the rows, the other devices' events
 behind them, their doc logs and the cached blobs only they named. Its own writes stay.
 
-**Not built:** range fetch, and GC over *visible* rows — a relay cannot fold, so a
-reference it has seen holds for the life of the instance, through log trims, and
-deleting a row frees nothing. RFC-0015 has the open
-questions — chiefly *who is obliged to keep a blob*, and what happens when a
-delete races an offline reference.
+**Not built:** range fetch. GC follows rows (gaps U18): a relay cannot fold cells, but it
+follows whether a row exists, so deleting the row that named a blob frees it a
+`keepUnreferencedBlobsFor` window after the delete; the references outlive log trims in a
+ledger beside the blobs. A cell written over still holds its old blob until the row is
+deleted. RFC-0015 has the open questions — chiefly *who is obliged to keep a blob*, and what
+happens when a delete races an offline reference.
 
 ## 23 · Transport lifecycle — starting, stopping, switching
 

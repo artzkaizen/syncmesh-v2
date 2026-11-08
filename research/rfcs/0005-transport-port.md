@@ -49,6 +49,11 @@ again on the row-patch path in RFC-0020 §5):
 The backlog drains before the slots. Presence starved during a cold join is
 correct: nothing about a cursor is useful to a client that has no rows yet.
 
+Built for BLE as `FrameLink.sendLatest`, and for the relay (gaps U19) as `Sender.sendLatest`
+on the room's side — a slot keyed `(topic, instance, peer)`, held while the socket has a backlog
+or buffered since its last drain — and, on the device's side, a hold keyed the same way while
+the dial's `buffered()` (a WebSocket's `bufferedAmount`) is above zero.
+
 **A liveness timeout belongs at this seam too** `[built for the relay link]`. A
 link that stops delivering without closing is indistinguishable from a quiet one
 unless the port says otherwise: the peer advertises its keepalive interval and
