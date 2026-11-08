@@ -2,6 +2,7 @@ import type { DocAddress, DocEntryRef, DocTail, TailUpdate } from "@syncmesh/eng
 import type { PeerId } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
+import { getRecord } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { bytesEqual } from "@syncmesh/wire";
 
@@ -10,8 +11,17 @@ import type { Derive, DocsEngine } from "./materialise.js";
 
 import { behindHeld, refuseCheckpoint, resolveCheckpoint } from "./checkpoint.js";
 import { entryRef } from "./materialise.js";
+import { openSnapshot, type SealingKeys } from "./sealed-snapshot.js";
 
-/** What a checkpoint is checked against before the log is: its signature, bytes and version. */
+/** How a sealed partition's snapshot is opened: its keys, or none held. */
+interface Unsealing {
+  readonly keys: SealingKeys | undefined;
+}
+
+/**
+ * What a checkpoint is checked against before the log is: its signature and the bytes it names,
+ * then — opened from its partition's seal when `unsealing` is given — the snapshot's version.
+ */
 function verified<D>(
   engine: DocsEngine,
   adapter: DocumentAdapter<D>,
@@ -20,18 +30,25 @@ function verified<D>(
   producer: PeerId,
   snapshot: Uint8Array,
   replica: bigint,
+  unsealing: Unsealing | undefined,
 ) {
   return resolveCheckpoint(engine, adapter.id, address, wire, producer, snapshot).andThen(
     (checkpoint) => {
+      const partition = getRecord(engine.state(), address.table, address.key)?.partition;
+      const plain =
+        unsealing === undefined || partition === undefined
+          ? Result.ok(snapshot)
+          : openSnapshot(unsealing.keys, partition, address, checkpoint.lineage, snapshot);
+      if (plain.isErr()) return Result.err(plain.error);
       const doc = adapter.create(replica);
-      const parsed = adapter.apply(doc, [snapshot]);
+      const parsed = adapter.apply(doc, [plain.value]);
       if (parsed.isErr())
         return refuseCheckpoint("the adapter cannot read the snapshot", parsed.error);
       if (!bytesEqual(adapter.version(doc), checkpoint.version))
         return refuseCheckpoint(
           "the snapshot does not reproduce the version the checkpoint claims",
         );
-      return Result.ok({ checkpoint, doc });
+      return Result.ok({ checkpoint, doc, plain: plain.value });
     },
   );
 }
@@ -83,6 +100,10 @@ function aboveFloor<D>(
  * claims is refused, whoever signed it. A checkpoint of another document than `address`, one
  * behind the snapshot this device already holds, or one whose floor claims tail updates the
  * snapshot does not hold, is refused too. Trust in the producer is the caller's question (§7.3).
+ *
+ * With `sealed` the row's partition is a sealed one (§11, gaps U24): the snapshot must be sealed
+ * to it and is opened with `keys` before anything reads it, and kept in the clear on this device,
+ * which holds the key. A plain one, or one this device has no key for, is refused.
  */
 export async function installCheckpoint<D>(
   engine: DocsEngine,
@@ -94,9 +115,11 @@ export async function installCheckpoint<D>(
   replica: bigint,
   at: Temporal.Instant,
   derive?: Derive<D>,
+  sealed = false,
+  keys?: SealingKeys,
 ) {
   return Result.gen(async function* () {
-    const { checkpoint, doc } = yield* verified(
+    const { checkpoint, doc, plain } = yield* verified(
       engine,
       adapter,
       address,
@@ -104,6 +127,7 @@ export async function installCheckpoint<D>(
       producer,
       snapshot,
       replica,
+      sealed ? { keys } : undefined,
     );
     const tail = yield* Result.await(engine.docTail(address));
     if (behindHeld(tail, checkpoint))
@@ -124,7 +148,7 @@ export async function installCheckpoint<D>(
         adapter: adapter.id,
         covers: checkpoint.covers,
         version: checkpoint.version,
-        snapshot,
+        snapshot: plain,
         mode: "checkpoint",
         ...(tail.head?.version !== undefined && { base: tail.head.version }),
         at,
