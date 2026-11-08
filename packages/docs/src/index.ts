@@ -12,8 +12,16 @@ export {
   NotADocColumn,
   UpdateTooLarge,
 } from "./errors.js";
-export type { DocsEngine, Loaded, Materialised, ProducedCheckpoint } from "./materialise.js";
+export type {
+  Derive,
+  DocsEngine,
+  Loaded,
+  Materialised,
+  ProducedCheckpoint,
+} from "./materialise.js";
 export { installCheckpoint, load, materialise, produceCheckpoint } from "./materialise.js";
+export type { ProvisionalChecks } from "./checkpoint.js";
+export { installProvisional } from "./checkpoint.js";
 export { replicaId } from "./replica.js";
 export type { BackgroundError, Documents, DocumentsOptions, MaintainError } from "./runtime.js";
 export { createDocuments } from "./runtime.js";

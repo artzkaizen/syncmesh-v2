@@ -5,6 +5,7 @@ import type { SqlDriver } from "../driver.js";
 import { blobCases } from "./blobs.js";
 import { captureCases, captureRuleCases } from "./capture.js";
 import { compactionCases } from "./compaction.js";
+import { derivedColumnCases } from "./derived-columns.js";
 import { docColumnCases } from "./doc-columns.js";
 import { docCases } from "./docs.js";
 import { eventCases } from "./events.js";
@@ -60,6 +61,7 @@ export function captureTests(openDriver: OpenDriver): readonly SuiteCase[] {
     ...captureRuleCases(openDriver),
     ...tablesCases(openDriver),
     ...docColumnCases(openDriver),
+    ...derivedColumnCases(openDriver),
   ];
 }
 

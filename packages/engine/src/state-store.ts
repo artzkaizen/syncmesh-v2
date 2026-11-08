@@ -1,4 +1,4 @@
-import type { RowKey, RowRecord, State, SyncEvent, TableName } from "@syncmesh/kernel";
+import type { Row, RowKey, RowRecord, State, SyncEvent, TableName } from "@syncmesh/kernel";
 
 import { Result, TaggedError } from "@syncmesh/result";
 
@@ -16,6 +16,16 @@ export interface RowWrite {
   readonly record: RowRecord;
 }
 
+/**
+ * Values a replica computed from a document for one row's derived columns (RFC-0023 §16.4). They
+ * land in the app's row only: never a cell, never in a digest, never on the wire.
+ */
+export interface DerivedRow {
+  readonly table: TableName;
+  readonly key: RowKey;
+  readonly values: Row;
+}
+
 /** Materialised rows and the coverage they reflect, so boot opens state instead of refolding the log. A cache: the log stays the truth. See RFC-0004. */
 export interface StateStore {
   readonly isEmpty: () => Promise<Result<boolean, StoreFailure>>;
@@ -28,6 +38,11 @@ export interface StateStore {
     coverage: Coverage,
   ) => Promise<Result<void, StoreFailure>>;
   readonly clear: () => Promise<Result<void, StoreFailure>>;
+  /**
+   * Writes derived values into the app's rows, outside the record and outside capture; a row not
+   * there yet is skipped. Absent where there are no app tables to write them to.
+   */
+  readonly derive?: (rows: readonly DerivedRow[]) => Promise<Result<void, StoreFailure>>;
 }
 
 export type WriteKeys = ReadonlyMap<TableName, ReadonlySet<RowKey>>;
@@ -36,7 +51,7 @@ export type WriteKeys = ReadonlyMap<TableName, ReadonlySet<RowKey>>;
  * Every (table, key) whose record the events can move. A doc change counts only as a genesis —
  * the one kind that sets a cell — so a document edit never re-runs a live query (RFC-0023 §4.2).
  */
-export function writeKeysOf(events: readonly SyncEvent[]): WriteKeys {
+export function eventWriteKeys(events: readonly SyncEvent[]): WriteKeys {
   const keys = new Map<TableName, Set<RowKey>>();
   for (const event of events) {
     for (const change of event.changes) {
@@ -50,7 +65,7 @@ export function writeKeysOf(events: readonly SyncEvent[]): WriteKeys {
 }
 
 /** The records currently held for `keys`; a key with no record is skipped. */
-export function rowsFor(state: State, keys: WriteKeys): readonly RowWrite[] {
+export function rowWrites(state: State, keys: WriteKeys): readonly RowWrite[] {
   const rows: RowWrite[] = [];
   for (const [table, set] of keys) {
     const records = state.get(table);

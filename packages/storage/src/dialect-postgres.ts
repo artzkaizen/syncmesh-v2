@@ -7,7 +7,7 @@ import type { Rung } from "./ladder.js";
 
 import { POSTGRES_DOCS, POSTGRES_DOC_SNAPSHOTS, POSTGRES_DOC_TABLES } from "./dialect-docs.js";
 import { POSTGRES_OPERATIONS } from "./dialect-operations.js";
-import { columnsOf, literal, quote } from "./identifiers.js";
+import { tableColumns, literal, quote } from "./identifiers.js";
 import { ladder } from "./ladder.js";
 import { namespaceDdl } from "./namespace.js";
 
@@ -56,7 +56,7 @@ const sqlType = (kind: ColumnKind): string => {
 
 /** The logged image in the shared shape: hex bytes, epoch-millisecond timestamps, JSON as text. */
 const image = (table: Table, alias: "NEW" | "OLD"): string =>
-  `json_build_object(${columnsOf(table)
+  `json_build_object(${tableColumns(table)
     .map(([, name, column]) => {
       const cell = `${alias}.${quote(name)}`;
       const logged =
@@ -76,7 +76,7 @@ const ARMED = `COALESCE(NULLIF(current_setting('syncmesh.armed', true), ''), '0'
 
 const capture: CaptureSql = {
   tableDdl: (table) => {
-    const columns = columnsOf(table).map(([key, name, column]) => {
+    const columns = tableColumns(table).map(([key, name, column]) => {
       const constraint = key === table.primaryKey ? " PRIMARY KEY" : "";
       return `${quote(name)} ${sqlType(column.def.kind)}${constraint}`;
     });

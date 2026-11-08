@@ -7,31 +7,28 @@ import type {
   StoreFailure,
   TailUpdate,
 } from "@syncmesh/engine";
-import type { Hlc, PeerId, SeqNum } from "@syncmesh/kernel";
+import type { Hlc, PeerId, Row, SeqNum } from "@syncmesh/kernel";
 import type { Temporal } from "@syncmesh/temporal";
 
-import { sha256 } from "@noble/hashes/sha2.js";
-import { docKey } from "@syncmesh/engine";
-import { getRecord, docLineage } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
-import {
-  bytesEqual,
-  bytesToHex,
-  decodeCheckpoint,
-  signCheckpoint,
-  type Identity,
-  type SignedCheckpoint,
-} from "@syncmesh/wire";
+import { bytesEqual, signCheckpoint, type Identity, type SignedCheckpoint } from "@syncmesh/wire";
 
 import type { DocumentAdapter, UpdateRejected } from "./adapter.js";
 
-import { CheckpointRefused, DocPending, DocTooLarge } from "./errors.js";
+import { behindHeld, refuseCheckpoint, resolveCheckpoint, snapshotHash } from "./checkpoint.js";
+import { DocPending, DocTooLarge } from "./errors.js";
 
 /** What the runtime asks of an engine: the write path, the fold feed and the doc log. */
 export type DocsEngine = Pick<
   Engine,
-  "peerId" | "mutate" | "onFoldBatch" | "docTail" | "coverDoc" | "docHeads" | "state"
+  "peerId" | "mutate" | "onFoldBatch" | "docTail" | "coverDoc" | "docHeads" | "state" | "cursors"
 >;
+
+/**
+ * A row's derived columns computed from the adapter's document (RFC-0023 §16.4); `undefined` when
+ * the column derives nothing or the computation failed, which the runtime has already reported.
+ */
+export type Derive<D> = (doc: D) => Row | undefined;
 
 /** A document rebuilt from its snapshot and tail, and which tail updates it could import. */
 export interface Loaded<D> {
@@ -81,7 +78,7 @@ const ref = ({ entry }: TailUpdate): DocEntryRef => ({
  * The floor a snapshot can claim: per author, the highest sequence below which every one of their
  * updates to this document is in it — never past an update whose bytes are still missing.
  */
-function floorOf(tail: DocTail, settled: readonly TailUpdate[]): Map<PeerId, SeqNum> {
+function snapshotFloor(tail: DocTail, settled: readonly TailUpdate[]): Map<PeerId, SeqNum> {
   const floor = new Map(tail.head?.covers ?? []);
   const done = new Set(settled.map((u) => u.entry));
   const stopped = new Set<PeerId>();
@@ -117,6 +114,7 @@ export async function materialise<D>(
   address: DocAddress,
   replica: bigint,
   at: Temporal.Instant,
+  derive?: Derive<D>,
 ): Promise<
   Result<Materialised, UpdateRejected | DocTooLarge | DocPending | StoreFailure | DocCoverStale>
 > {
@@ -139,10 +137,12 @@ export async function materialise<D>(
         }),
       );
     const settled = [...loaded.applied, ...loaded.failed];
+    const derived = derive?.(loaded.doc);
     yield* Result.await(
       engine.coverDoc(address, {
+        ...(derived !== undefined && { derived }),
         adapter: adapter.id,
-        covers: floorOf(tail, settled),
+        covers: snapshotFloor(tail, settled),
         version: adapter.version(loaded.doc),
         snapshot,
         mode: "materialised",
@@ -161,15 +161,18 @@ export async function materialise<D>(
   });
 }
 
-const hashOf = (bytes: Uint8Array) => bytesToHex(sha256(bytes));
-
 /** A signed checkpoint and the snapshot bytes it names by hash (RFC-0023 §5.5). */
 export interface ProducedCheckpoint {
   readonly signed: SignedCheckpoint;
   readonly snapshot: Uint8Array;
 }
 
-/** Materialises, then signs what the snapshot is: the record a joiner below the floor installs. */
+/**
+ * Materialises, then signs what the snapshot is: the record a joiner below the floor installs, and
+ * the one an opaque host takes the derived values from (key 8, RFC-0023 §7.2). A `sealed`
+ * partition's derived values are plaintext read out of sealed content, so they never leave the
+ * devices that hold its key (§11): key 8 is then empty, while this device's own row still gets them.
+ */
 export async function produceCheckpoint<D>(
   engine: DocsEngine,
   adapter: DocumentAdapter<D>,
@@ -177,19 +180,24 @@ export async function produceCheckpoint<D>(
   producer: Identity,
   replica: bigint,
   at: Hlc,
+  derive?: Derive<D>,
+  sealed = false,
 ) {
   return Result.gen(async function* () {
-    yield* Result.await(materialise(engine, adapter, address, replica, at[0]));
+    yield* Result.await(materialise(engine, adapter, address, replica, at[0], derive));
     const tail = yield* Result.await(engine.docTail(address));
     const snapshot = tail.snapshot?.bytes ?? adapter.snapshot(adapter.create(replica));
+    const held = adapter.create(replica);
+    const withheld = sealed || derive === undefined || adapter.apply(held, [snapshot]).isErr();
+    const derived = withheld ? undefined : derive(held);
     const signed = signCheckpoint(
       {
         ...address,
         adapter: adapter.id,
         covers: tail.head?.covers ?? new Map(),
         version: tail.head?.version ?? adapter.version(adapter.create(replica)),
-        snapshot: { hash: hashOf(snapshot), size: snapshot.length },
-        derived: new Map(),
+        snapshot: { hash: snapshotHash(snapshot), size: snapshot.length },
+        derived: derived ?? new Map(),
         at,
         ...(tail.lineage !== undefined && { lineage: tail.lineage }),
       },
@@ -198,9 +206,6 @@ export async function produceCheckpoint<D>(
     return Result.ok<ProducedCheckpoint>({ signed, snapshot });
   });
 }
-
-const refuse = (message: string, cause?: unknown) =>
-  Result.err(new CheckpointRefused({ message, ...(cause !== undefined && { cause }) }));
 
 /** What a checkpoint is checked against before the log is: its signature, bytes and version. */
 function verified<D>(
@@ -212,23 +217,19 @@ function verified<D>(
   snapshot: Uint8Array,
   replica: bigint,
 ) {
-  const decoded = decodeCheckpoint(wire, producer);
-  if (decoded.isErr()) return refuse("not a checkpoint signed by that producer", decoded.error);
-  const { checkpoint } = decoded.value;
-  if (checkpoint.adapter !== adapter.id) return refuse(`merged by ${checkpoint.adapter}`);
-  if (checkpoint.snapshot.size !== snapshot.length || checkpoint.snapshot.hash !== hashOf(snapshot))
-    return refuse("the snapshot bytes are not the ones the checkpoint names");
-  if (docKey(checkpoint) !== docKey(address))
-    return refuse("the checkpoint is of another document");
-  const winner = docLineage(getRecord(engine.state(), address.table, address.key), address.column);
-  if (winner !== checkpoint.lineage)
-    return refuse("the checkpoint is of a lineage that does not win here");
-  const doc = adapter.create(replica);
-  const parsed = adapter.apply(doc, [snapshot]);
-  if (parsed.isErr()) return refuse("the adapter cannot read the snapshot", parsed.error);
-  if (!bytesEqual(adapter.version(doc), checkpoint.version))
-    return refuse("the snapshot does not reproduce the version the checkpoint claims");
-  return Result.ok({ checkpoint, doc });
+  return resolveCheckpoint(engine, adapter.id, address, wire, producer, snapshot).andThen(
+    (checkpoint) => {
+      const doc = adapter.create(replica);
+      const parsed = adapter.apply(doc, [snapshot]);
+      if (parsed.isErr())
+        return refuseCheckpoint("the adapter cannot read the snapshot", parsed.error);
+      if (!bytesEqual(adapter.version(doc), checkpoint.version))
+        return refuseCheckpoint(
+          "the snapshot does not reproduce the version the checkpoint claims",
+        );
+      return Result.ok({ checkpoint, doc });
+    },
+  );
 }
 
 /**
@@ -268,6 +269,7 @@ export async function installCheckpoint<D>(
   snapshot: Uint8Array,
   replica: bigint,
   at: Temporal.Instant,
+  derive?: Derive<D>,
 ) {
   return Result.gen(async function* () {
     const { checkpoint, doc } = yield* verified(
@@ -280,19 +282,19 @@ export async function installCheckpoint<D>(
       replica,
     );
     const tail = yield* Result.await(engine.docTail(address));
-    // a snapshot this device already holds may hold what the checkpoint does not, and the
-    // entries behind it may be compacted away: installing over it would lose them
-    const held = tail.snapshot === undefined ? [] : [...(tail.head?.covers ?? [])];
-    const behind = held.some(([author, seq]) => (checkpoint.covers.get(author) ?? 0) < seq);
-    if (behind) return refuse("the checkpoint is behind the snapshot this device holds");
+    if (behindHeld(tail, checkpoint))
+      return refuseCheckpoint("the checkpoint is behind the snapshot this device holds");
     const below = tail.updates.filter(
       ({ entry }) => entry.seq <= (checkpoint.covers.get(entry.author) ?? 0),
     );
     const holds = heldBy(adapter, doc, below, replica);
     if (holds === undefined)
-      return refuse("the snapshot lacks updates the checkpoint's floor claims");
+      return refuseCheckpoint("the snapshot lacks updates the checkpoint's floor claims");
+    // computed here, never taken from key 8: every replica that can read the document derives it
+    const derived = derive?.(doc);
     yield* Result.await(
       engine.coverDoc(address, {
+        ...(derived !== undefined && { derived }),
         adapter: adapter.id,
         covers: checkpoint.covers,
         version: checkpoint.version,

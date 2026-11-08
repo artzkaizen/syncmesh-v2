@@ -7,6 +7,7 @@ import type {
   Hlc,
   LineageId,
   PeerId,
+  Row,
   RowKey,
   SeqNum,
   SyncEvent,
@@ -128,6 +129,8 @@ export interface DocCover {
   readonly covered: readonly DocEntryRef[];
   /** Entries the adapter refused; they become `failed`, and the document stays at its last good version. */
   readonly failed?: readonly DocEntryRef[];
+  /** The row's derived columns at this snapshot, written to the row in the same commit (§16.4). */
+  readonly derived?: Row;
 }
 
 /**
@@ -220,7 +223,7 @@ export function docAppends(
     event.changes.forEach((change, index) => {
       if (change.kind !== "doc") return;
       appends.push({
-        entry: entryOf(event, change, index, hasAdapter),
+        entry: docLogEntry(event, change, index, hasAdapter),
         adapter: change.adapter,
         update: change.update,
       });
@@ -229,7 +232,7 @@ export function docAppends(
   return appends;
 }
 
-function entryOf(
+function docLogEntry(
   event: SyncEvent,
   change: DocChange,
   index: number,

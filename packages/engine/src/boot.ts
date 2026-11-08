@@ -10,7 +10,7 @@ import type { Coverage } from "./sync.js";
 
 import { docAppends, recordDocs } from "./doc-log.js";
 import { createEngine } from "./engine.js";
-import { StateCorrupt, allRows, rowsFor, writeKeysOf } from "./state-store.js";
+import { StateCorrupt, allRows, rowWrites, eventWriteKeys } from "./state-store.js";
 import { strandedWrites } from "./stranded.js";
 import { EMPTY_COVERAGE } from "./sync.js";
 
@@ -62,7 +62,7 @@ export function openEngine(
       const rows =
         cached === undefined
           ? allRows(engine.state())
-          : rowsFor(engine.state(), writeKeysOf(replay.map((entry) => entry.event)));
+          : rowWrites(engine.state(), eventWriteKeys(replay.map((entry) => entry.event)));
       if (cached === undefined || rows.length > 0)
         yield* Result.await(stateStore.commit(rows, engine.coverage()));
     }

@@ -22,12 +22,14 @@ import type {
   DocStore,
 } from "./doc-log.js";
 import type { AtomicStores } from "./engine.js";
-import type { EventStore, StoreFailure } from "./store.js";
+import type { FoldPath } from "./fold.js";
+import type { EventStore } from "./store.js";
 import type { Cursors } from "./sync.js";
 import type { Undo } from "./undo.js";
 
 import { createMemoryDocStore } from "./doc-log-memory.js";
 import { DocCoverStale, docKey } from "./doc-log.js";
+import { StoreFailure } from "./store.js";
 
 /** How an engine is told about documents. */
 export interface DocEngineOptions {
@@ -73,7 +75,8 @@ export interface DocApi {
   readonly docTail: (doc: DocAddress) => Promise<Result<DocTail, StoreFailure>>;
   /**
    * Commits a materialised snapshot or an installed checkpoint, in the write transaction when the
-   * engine has one (RFC-0023 §6.3). The entries it covers become compactable (§8.3).
+   * engine has one (RFC-0023 §6.3). The entries it covers become compactable (§8.3). The cover's
+   * derived values land in the row in the same commit, and a live query reading them re-runs.
    */
   readonly coverDoc: (
     doc: DocAddress,
@@ -86,6 +89,9 @@ export interface DocBindings {
   readonly getState: () => State;
   readonly synced: () => ReadonlyMap<PeerId, SeqNum>;
   readonly atomically: <T>(fn: (scoped: AtomicStores) => Promise<T>) => Promise<T>;
+  /** Writes a cover's derived values into the row, inside its transaction (RFC-0023 §16.4). */
+  readonly derive: FoldPath["derive"];
+  readonly notifyDerived: FoldPath["notifyDerived"];
 }
 
 type DocOptions = DocEngineOptions & { readonly merge?: MergeSpec | undefined };
@@ -150,12 +156,37 @@ export function createDocPath(
       docHeads: docStore.heads,
       docTail: (doc) => readTail(options.store, docStore, bindings(), doc),
       coverDoc: (doc, cover) => {
+        const derived =
+          cover.derived === undefined
+            ? []
+            : [{ table: doc.table, key: doc.key, values: cover.derived }];
         // one at a time, so no cover reads a head another is about to move
-        const next = covering.then(() =>
-          bindings().atomically((scoped) =>
-            coverIfCurrent(scoped.docs ?? docStore, bindings(), doc, cover),
-          ),
-        );
+        const next = covering
+          .then(() =>
+            Result.tryPromise({
+              try: () =>
+                bindings().atomically(async (scoped) => {
+                  const done = await coverIfCurrent(
+                    scoped.docs ?? docStore,
+                    bindings(),
+                    doc,
+                    cover,
+                  );
+                  if (done.isOk()) await bindings().derive(derived, scoped);
+                  return done;
+                }),
+              // a derived write the store refused inside the transaction, rolling the cover back
+              catch: (cause) =>
+                cause instanceof StoreFailure
+                  ? cause
+                  : new StoreFailure({ message: "the cover's transaction failed", cause }),
+            }),
+          )
+          .then((done) => {
+            const covered = done.andThen((inner) => inner);
+            if (covered.isOk()) bindings().notifyDerived(derived);
+            return covered;
+          });
         covering = next.then(settled, settled);
         return next;
       },

@@ -62,6 +62,23 @@ change capture, the app's tables and the compiled read filter. Reopening the sam
 reach the same database, because half the cases close and reopen it. It passes, or the driver
 is not one.
 
+## Document and derived columns in the app's tables (RFC-0023)
+
+A document column (`merge: { content: loro }`) and a column derived from one
+(`derive: { title: from("content", …) }`) are real columns of the app's table, but neither is a
+value the fold carries:
+
+- The projection never writes them. A derived column is set by `StateStore.derive(rows)`, an
+  `UPDATE` of the row the fold already wrote, which the document runtime calls after each flush
+  and with each materialisation. A row that is not there yet is left alone.
+- Capture never carries them, and a transaction that sets one is refused with `DocColumnWrite`
+  and rolled back. Every replica computes its own derived values from its own document, so a
+  value the app wrote would never reach anyone else.
+- Neither is a kernel cell, so neither is in a digest, a snapshot page or an event.
+
+Changing a derive function changes no table shape, so `schemaNameFor` keeps the state file and
+the next flush or materialisation writes the new values.
+
 ## Serving `sync: "window"` reads from Postgres (D43)
 
 A `sync: "window"` table stays on the server, and `servedReads` (in `@syncmesh/orpc`) runs a

@@ -67,13 +67,20 @@ export function checkColumns(
   if (change.kind === "delete" || change.kind === "doc") return Result.ok(undefined);
   const cells = change.kind === "insert" ? change.row : change.patch;
   for (const column of cells.keys()) {
-    if (!docs.has(column)) continue;
+    // own keys only: a cell named like an inherited property is a column this build does not name
+    const derived = Object.hasOwn(table.columns, column)
+      ? table.columns[column]?.def.derived
+      : undefined;
+    if (!docs.has(column) && derived === undefined) continue;
     return Result.err(
       new DocColumnWrite({
         table: table.name,
         key: change.key,
         column,
-        message: `${table.name}.${column} is a document: it is opened and edited, never written as a value`,
+        message:
+          derived === undefined
+            ? `${table.name}.${column} is a document: it is opened and edited, never written as a value`
+            : `${table.name}.${column} is derived from ${derived.from}: every replica computes it, nothing writes it`,
       }),
     );
   }

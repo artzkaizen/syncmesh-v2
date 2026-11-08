@@ -71,23 +71,33 @@ export interface DocumentAdapter<D> {
 // oxlint-disable-next-line typescript/no-explicit-any -- the registry is heterogeneous by design; each open() names its D
 export type AnyAdapter = DocumentAdapter<any>;
 
+/** The adapter id a document column declares, whether or not this runtime holds the adapter. */
+export function resolveAdapterId(
+  docs: DocColumns,
+  address: DocAddress,
+): Result<AdapterId, NotADocColumn> {
+  const id = docs.get(address.table)?.get(address.column);
+  return id === undefined
+    ? Result.err(
+        new NotADocColumn({
+          table: address.table,
+          column: address.column,
+          message: "the mesh declares no document column there",
+        }),
+      )
+    : Result.ok(id);
+}
+
 /** The adapter a document column declares, as this runtime holds it. */
 export function columnAdapter(
   docs: DocColumns,
   adapters: ReadonlyMap<AdapterId, AnyAdapter>,
   address: DocAddress,
 ): Result<AnyAdapter, NotADocColumn | AdapterMissing> {
-  const id = docs.get(address.table)?.get(address.column);
-  if (id === undefined)
-    return Result.err(
-      new NotADocColumn({
-        table: address.table,
-        column: address.column,
-        message: "the mesh declares no document column there",
-      }),
-    );
-  const adapter = adapters.get(id);
-  return adapter === undefined
-    ? Result.err(new AdapterMissing({ adapter: id, message: `no adapter for ${id}` }))
-    : Result.ok(adapter);
+  return resolveAdapterId(docs, address).andThen((id) => {
+    const adapter = adapters.get(id);
+    return adapter === undefined
+      ? Result.err(new AdapterMissing({ adapter: id, message: `no adapter for ${id}` }))
+      : Result.ok(adapter);
+  });
 }

@@ -1,17 +1,20 @@
 import type { DocAddress, DocCoverStale, FoldBatch, StoreFailure } from "@syncmesh/engine";
 import type { DocColumns, Hlc, PeerId, Procedure } from "@syncmesh/kernel";
+import type { DeriveFailed, Derivers } from "@syncmesh/schema";
 import type { Identity } from "@syncmesh/wire";
 
 import { docKey } from "@syncmesh/engine";
+import { getRecord, kindOf } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 
 import type { AnyAdapter } from "./adapter.js";
 import type { FlushError, OpenDoc, OpenError, Pacing } from "./documents.js";
 import type { DocPending, DocTooLarge } from "./errors.js";
-import type { DocsEngine } from "./materialise.js";
+import type { Derive, DocsEngine } from "./materialise.js";
 
-import { columnAdapter } from "./adapter.js";
+import { columnAdapter, resolveAdapterId } from "./adapter.js";
+import { installProvisional } from "./checkpoint.js";
 import { DEFAULT_PACING, createHandles } from "./documents.js";
 import { installCheckpoint, materialise, produceCheckpoint } from "./materialise.js";
 import { replicaId } from "./replica.js";
@@ -19,8 +22,11 @@ import { replicaId } from "./replica.js";
 /** What a background materialisation can fail with. */
 export type MaintainError = OpenError | DocTooLarge | DocPending | DocCoverStale | StoreFailure;
 
-/** What the runtime's own work — a materialisation, a paced flush — can fail with. */
-export type BackgroundError = MaintainError | FlushError;
+/**
+ * What the runtime's own work — a materialisation, a paced flush, a derive function — can fail
+ * with. A failed derive never fails the write it rides on: the column keeps its last value.
+ */
+export type BackgroundError = MaintainError | FlushError | DeriveFailed;
 
 export interface DocumentsOptions {
   readonly engine: DocsEngine;
@@ -30,6 +36,17 @@ export interface DocumentsOptions {
   readonly docs: DocColumns;
   /** The procedure every flush is recorded under. */
   readonly procedure: Procedure;
+  /**
+   * The schema's derive functions (`createDerivers(schema)`, RFC-0023 §16.4): after every flush of
+   * an open document and every materialisation, the row's derived columns are computed here and
+   * written to the local row. Absent, no column is derived.
+   */
+  readonly derive?: Derivers;
+  /**
+   * The schema's sealed partition kinds (`schema.sealedKinds`): a checkpoint of a document in one
+   * carries no derived values, since they would be plaintext read out of sealed content (§11).
+   */
+  readonly sealedKinds?: ReadonlySet<string>;
   readonly pacing?: Pacing;
   /**
    * Materialise a document once its tail passes the adapter's `snapshotEvery`/`snapshotEveryBytes`
@@ -64,7 +81,23 @@ export function createDocuments(options: DocumentsOptions) {
   const now = options.now ?? (() => Temporal.Now.instant());
   const nonce = options.nonce ?? (() => crypto.getRandomValues(new Uint8Array(16)));
   const fresh = () => replicaId(engine.peerId, nonce());
+  const deriverAt = (address: DocAddress) =>
+    options.derive?.get(address.table)?.get(address.column);
+  const derive = (address: DocAddress): Derive<unknown> | undefined => {
+    const deriver = deriverAt(address);
+    if (deriver === undefined) return undefined;
+    return (doc) => {
+      const computed = deriver.compute(doc);
+      if (computed.isErr()) options.onError?.(computed.error);
+      return computed.isOk() ? computed.value : undefined;
+    };
+  };
+  const sealed = (address: DocAddress) => {
+    const partition = getRecord(engine.state(), address.table, address.key)?.partition;
+    return partition !== undefined && options.sealedKinds?.has(kindOf(partition)) === true;
+  };
   const handles = createHandles({
+    derive,
     engine,
     docs,
     adapters,
@@ -79,7 +112,9 @@ export function createDocuments(options: DocumentsOptions) {
   const materialiseAt = (address: DocAddress) =>
     Result.gen(async function* () {
       const adapter = yield* adapterAt(address);
-      return Result.ok(yield* Result.await(materialise(engine, adapter, address, fresh(), now())));
+      return Result.ok(
+        yield* Result.await(materialise(engine, adapter, address, fresh(), now(), derive(address))),
+      );
     });
 
   // one materialisation per document at a time; a fold that lands meanwhile is picked up next
@@ -115,7 +150,18 @@ export function createDocuments(options: DocumentsOptions) {
       Result.gen(async function* () {
         const adapter = yield* adapterAt(address);
         return Result.ok(
-          yield* Result.await(produceCheckpoint(engine, adapter, address, producer, fresh(), at)),
+          yield* Result.await(
+            produceCheckpoint(
+              engine,
+              adapter,
+              address,
+              producer,
+              fresh(),
+              at,
+              derive(address),
+              sealed(address),
+            ),
+          ),
         );
       }),
     /** Installs a checkpoint `producer` signed, with the snapshot it names (see {@link installCheckpoint}). */
@@ -124,7 +170,41 @@ export function createDocuments(options: DocumentsOptions) {
         const adapter = yield* adapterAt(address);
         return Result.ok(
           yield* Result.await(
-            installCheckpoint(engine, adapter, address, wire, producer, snapshot, fresh(), now()),
+            installCheckpoint(
+              engine,
+              adapter,
+              address,
+              wire,
+              producer,
+              snapshot,
+              fresh(),
+              now(),
+              derive(address),
+            ),
+          ),
+        );
+      }),
+    /**
+     * What an opaque host — no adapter, or a sealed partition — does with a device's checkpoint
+     * (see {@link installProvisional}): keeps its snapshot and writes the derived values key 8
+     * carries, unverified beyond what a host without the adapter can check.
+     */
+    installProvisional: (
+      wire: Uint8Array,
+      producer: PeerId,
+      snapshot: Uint8Array,
+      address: DocAddress,
+    ) =>
+      Result.gen(async function* () {
+        const adapter = yield* resolveAdapterId(docs, address);
+        const deriver = deriverAt(address);
+        return Result.ok(
+          yield* Result.await(
+            installProvisional(engine, address, wire, producer, snapshot, now(), {
+              adapter,
+              sealed: sealed(address),
+              ...(deriver !== undefined && { deriver }),
+            }),
           ),
         );
       }),

@@ -1,4 +1,5 @@
 import type { AllowFn, FieldsFn } from "./bind.js";
+import type { DeriveBlock } from "./documents.js";
 import type { ColumnsFromDrizzle, DrizzleTableLike, FromDrizzleOptions } from "./from-drizzle.js";
 import type { Partition, ReservedPartition } from "./partition.js";
 
@@ -19,6 +20,11 @@ export interface DrizzleTableInKind<
   readonly allow: AllowFn<ColumnsFromDrizzle<D>, R>;
   /** Field-level read rules, honoured where an authority serves rows (E06, D40). */
   readonly fields?: FieldsFn<ColumnsFromDrizzle<D>, R>;
+  /**
+   * Columns every replica computes from a document column of this table, never written by the app
+   * and never sent: `derive: { title: from("content", (d: LoroDoc) => …) }` (RFC-0023 §4.1).
+   */
+  readonly derive?: DeriveBlock<ColumnsFromDrizzle<D>>;
   /** `"window"`: served a page at a time by the server, never replicated (D43). */
   readonly sync?: "window";
 }
@@ -27,6 +33,11 @@ export interface DrizzleTableInKind<
 export interface DrizzleTableReserved<D extends DrizzleTableLike> extends FromDrizzleOptions<D> {
   readonly partition: ReservedPartition;
   readonly allow?: undefined;
+  /**
+   * Columns every replica computes from a document column of this table, never written by the app
+   * and never sent: `derive: { title: from("content", (d: LoroDoc) => …) }` (RFC-0023 §4.1).
+   */
+  readonly derive?: DeriveBlock<ColumnsFromDrizzle<D>>;
   /** `"window"`: served a page at a time by the server, never replicated (D43). */
   readonly sync?: "window";
 }
@@ -36,6 +47,7 @@ export interface DrizzleTableOptions<D extends DrizzleTableLike> extends FromDri
   readonly partition?: Partition;
   readonly allow?: AllowFn<ColumnsFromDrizzle<D>, string> | undefined;
   readonly fields?: FieldsFn<ColumnsFromDrizzle<D>, string> | undefined;
+  readonly derive?: DeriveBlock<ColumnsFromDrizzle<D>> | undefined;
   readonly sync?: "window";
 }
 

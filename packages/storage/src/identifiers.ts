@@ -11,16 +11,25 @@ export const quote = (name: TableName | ColumnName) => `"${String(name).replaceA
 export const literal = (name: TableName) => `'${String(name).replaceAll("'", "''")}'`;
 
 /** The table's columns as `[key, brand, column]`; a key `table()` did not validate has no brand and is skipped. */
-export const columnsOf = (table: Table) =>
+export const tableColumns = (table: Table) =>
   Object.entries(table.columns).flatMap(([key, column]) => {
     const name = table.columnNames[key];
     return name === undefined ? [] : [[key, name, column] as const];
   });
 
 /**
- * The columns whose values the fold carries: every column but a document's. A document column's
- * cell holds its lineage (RFC-0023 §6.1), not the bytes the app reads, so the projection never
- * writes it and capture never logs a change to it — the materialiser owns that column.
+ * The columns whose values the fold carries: every column but a document's and those derived from
+ * one. A document column's cell holds its lineage (RFC-0023 §6.1), not the bytes the app reads,
+ * and a derived column is computed by each replica (§16.4), so the projection never writes either
+ * and capture never logs a change to them — the materialiser owns those columns.
  */
 export const valueColumns = (table: Table) =>
-  columnsOf(table).filter(([, , column]) => column.def.doc === undefined);
+  tableColumns(table).filter(
+    ([, , column]) => column.def.doc === undefined && column.def.derived === undefined,
+  );
+
+/** The columns a row write may never set: documents and the columns derived from them. */
+export const guardedColumns = (table: Table) =>
+  tableColumns(table).filter(
+    ([, , column]) => column.def.doc !== undefined || column.def.derived !== undefined,
+  );

@@ -7,7 +7,7 @@ import type { Rung } from "./ladder.js";
 
 import { SQLITE_DOCS, SQLITE_DOC_SNAPSHOTS, SQLITE_DOC_TABLES } from "./dialect-docs.js";
 import { sqliteOperations } from "./dialect-operations.js";
-import { columnsOf, literal, quote } from "./identifiers.js";
+import { tableColumns, literal, quote } from "./identifiers.js";
 import { ladder } from "./ladder.js";
 import { logTable, sqliteLogIndex } from "./namespace.js";
 
@@ -34,7 +34,7 @@ const sqlType = (kind: ColumnKind): string => {
  * BLOB; a NULL stays NULL rather than becoming `hex(NULL)`, the empty string.
  */
 const image = (table: Table, alias: "NEW" | "OLD"): string =>
-  `json_object(${columnsOf(table)
+  `json_object(${tableColumns(table)
     .map(([, name, column]) => {
       const cell = `${alias}.${quote(name)}`;
       // lower(): SQLite's hex() is uppercase and the wire's hex codec is lowercase-only
@@ -49,7 +49,7 @@ const image = (table: Table, alias: "NEW" | "OLD"): string =>
 /** Triggers fire only while a guard row is armed, so the fold's own UPSERTs are never re-captured. */
 const capture: CaptureSql = {
   tableDdl: (table) => {
-    const columns = columnsOf(table).map(([key, name, column]) => {
+    const columns = tableColumns(table).map(([key, name, column]) => {
       const constraint = key === table.primaryKey ? " PRIMARY KEY" : "";
       return `${quote(name)} ${sqlType(column.def.kind)}${constraint}`;
     });

@@ -17,7 +17,7 @@ import type { RepairApi } from "./digest.js";
 import type { DocApi } from "./doc-path.js";
 import type { FeedApi } from "./feed.js";
 import type { Interest } from "./interest.js";
-import type { AtomicStores, EngineOptions } from "./options.js";
+import type { AtomicStores, EngineOptions, MutateOptions } from "./options.js";
 import type { Parked } from "./quarantine.js";
 import type { EventHeader, RecentEvents } from "./recent.js";
 import type { SnapshotApi } from "./snapshot.js";
@@ -52,19 +52,7 @@ import { type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
 import { createRevert, type Reverted, type Undo } from "./undo.js";
 import { createWritePath, type OwnPositionApi } from "./writes.js";
 
-export type { AtomicStores, EngineOptions } from "./options.js";
-
-/** Where a write goes, and the action it belongs to (event keys 10 and 11, RFC-0023 §5.2). */
-export interface MutateOptions extends Pick<SyncEvent, "action" | "undoOf"> {
-  readonly partition?: PartitionKey;
-  readonly local?: boolean;
-  /**
-   * Runs inside the same transaction as the append, once the event is built — the operation
-   * record's seat (book ch. 10): record and event land together or neither does. A throw here
-   * rolls the whole write back.
-   */
-  readonly record?: (event: SyncEvent) => Promise<void>;
-}
+export type { AtomicStores, EngineOptions, MutateOptions } from "./options.js";
 
 export type { FoldBatch, FoldSource } from "./fold.js";
 
@@ -260,7 +248,7 @@ export function createEngine(options: EngineOptions): Engine {
     cursors: () => coverage.current().synced,
   });
 
-  const { getState, setState, fold, persist, notify } = createFoldPath({
+  const foldPath = createFoldPath({
     merge,
     coverage,
     feeds,
@@ -271,7 +259,8 @@ export function createEngine(options: EngineOptions): Engine {
     initial: boot?.state ?? emptyState(),
     hasAdapter,
   });
-  docPath.bind({ getState, synced: () => coverage.current().synced, atomically });
+  const { getState, setState, fold, persist, notify, derive } = foldPath;
+  docPath.bind({ ...foldPath, synced: () => coverage.current().synced, atomically });
   fold(boot?.replay ?? [], "boot");
 
   const before = {
@@ -310,6 +299,7 @@ export function createEngine(options: EngineOptions): Engine {
     fold,
     persist,
     notify,
+    derive,
     outbound,
     telemetry,
     admitEntries: (entries) =>

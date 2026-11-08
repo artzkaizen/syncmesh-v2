@@ -1,25 +1,19 @@
-import type { Coverage, RowWrite, SuiteCase } from "@syncmesh/engine";
-import type { RowRecord, RowKey } from "@syncmesh/kernel";
+import type { RowWrite, SuiteCase } from "@syncmesh/engine";
+import type { RowRecord } from "@syncmesh/kernel";
 
-import { equal } from "@syncmesh/engine";
-import { parsePartitionKey } from "@syncmesh/kernel";
+import { EMPTY_COVERAGE as NONE, equal } from "@syncmesh/engine";
 
 import type { OpenDriver } from "./index.js";
 
 import { captureChanges, installCapture } from "../capture.js";
 import { openStores } from "../open-stores.js";
-import { DOC_NOTES, sqlText, stamp } from "./fixtures.js";
+import { ACME, DOC_NOTES, N1, sqlText, stamp } from "./fixtures.js";
 
 /*
  * A document column in the app's table (RFC-0023 §6.1): the kernel's cell holds the lineage, the
  * SQL column the snapshot only the materialiser writes. Neither direction of the D20 write path —
  * the fold into the table, the app's statements back out — may touch it.
  */
-
-const NONE: Coverage = { synced: new Map(), local: new Map() };
-const ACME = parsePartitionKey("org:acme").unwrap();
-// SAFETY: suite fixture; keys are opaque strings
-const N1 = "n1" as RowKey;
 
 export const docColumnCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   {
@@ -52,34 +46,41 @@ export const docColumnCases = (openDriver: OpenDriver): readonly SuiteCase[] => 
     },
   },
   {
-    name: "capture: a document column is never a row change — the app does not write its snapshot",
+    name: "capture: a document column is never a row change, and the app's write to one is refused",
     run: async () => {
       const driver = await openDriver("capture-doc");
       const L = sqlText(driver);
       (await installCapture(driver, [DOC_NOTES])).unwrap();
       const changes = (
-        await captureChanges(driver, [DOC_NOTES], async () => {
-          await driver.run(`INSERT INTO doc_notes (id, title) VALUES (${L.p(1)}, ${L.p(2)})`, [
+        await captureChanges(driver, [DOC_NOTES], () =>
+          driver.run(`INSERT INTO doc_notes (id, title) VALUES (${L.p(1)}, ${L.p(2)})`, [
             "n1",
             "t",
-          ]);
-          await driver.run(
-            `INSERT INTO doc_notes (id, title, content) VALUES (${L.p(1)}, ${L.p(2)}, ${L.p(3)})`,
-            ["n2", "u", Uint8Array.of(1)],
-          );
-        })
+          ]),
+        )
       ).unwrap();
       equal(
         changes.map((change) => (change.kind === "insert" ? [...change.row.keys()].join(",") : "")),
-        ["id,title", "id,title"],
+        ["id,title"],
         "values only",
       );
-      const touched = (
-        await captureChanges(driver, [DOC_NOTES], () =>
-          driver.run(`UPDATE doc_notes SET content = ${L.p(1)}`, [Uint8Array.of(2)]),
-        )
-      ).unwrap();
-      equal(touched.length, 0, "a snapshot write alone changes nothing that travels");
+      const inserted = await captureChanges(driver, [DOC_NOTES], () =>
+        driver.run(
+          `INSERT INTO doc_notes (id, title, content) VALUES (${L.p(1)}, ${L.p(2)}, ${L.p(3)})`,
+          ["n2", "u", Uint8Array.of(1)],
+        ),
+      );
+      equal(inserted.isErr() ? inserted.error._tag : "ok", "DocColumnWrite", "an insert naming it");
+      const touched = await captureChanges(driver, [DOC_NOTES], () =>
+        driver.run(`UPDATE doc_notes SET content = ${L.p(1)}`, [Uint8Array.of(2)]),
+      );
+      equal(touched.isErr() ? touched.error._tag : "ok", "DocColumnWrite", "an update of it");
+      const rows = await driver.all(`SELECT id, content FROM doc_notes`);
+      equal(
+        rows.map(([id, content]) => [String(id), content === null ? null : "bytes"]),
+        [["n1", null]],
+        "both refusals rolled back",
+      );
     },
   },
 ];
