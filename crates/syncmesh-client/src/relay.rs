@@ -103,6 +103,10 @@ pub enum Action {
         hash: String,
         refusal: Option<PutRefusal>,
     },
+    /// A put that could not leave — no live, keyed link — so no answer to it will come.
+    BlobPutUnsent {
+        hash: String,
+    },
     /// Another device spoke through this relay, so the relay demonstrably carries it.
     PeerHeard(PeerId),
     /// Bytes that became nothing, said: a frame this build cannot decode, an event whose
@@ -1100,6 +1104,17 @@ impl RelayLink {
     pub fn send_raw_frame(&mut self, plain: Vec<u8>) -> Vec<Action> {
         let mut out = Vec::new();
         self.send_safe(plain, &mut out);
+        out
+    }
+
+    /// A `blob-put` frame for `hash`, sealed and sent as [`RelayLink::send_raw_frame`] sends one;
+    /// one that cannot leave is said at once ([`Action::BlobPutUnsent`]), so the put that asked
+    /// does not wait out an answer that cannot come.
+    pub fn send_blob_put(&mut self, hash: String, plain: Vec<u8>) -> Vec<Action> {
+        let mut out = self.send_raw_frame(plain);
+        if !out.iter().any(|action| matches!(action, Action::Send(_))) {
+            out.push(Action::BlobPutUnsent { hash });
+        }
         out
     }
 }

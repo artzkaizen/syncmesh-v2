@@ -200,6 +200,23 @@ async fn two_devices_converge_through_the_rust_room_with_presence_and_blobs() {
 }
 
 #[tokio::test]
+async fn a_put_made_with_no_link_answers_at_once_rather_than_waiting_for_a_room() {
+    let port = {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        probe.local_addr().unwrap().port()
+    };
+    // nothing listens: the frame has no socket to leave on, so no answer to it can come
+    let url = format!("ws://127.0.0.1:{port}/licnep");
+    let a = device(1, &url, &Identity::from_seed(&[9; 32]).peer_id().clone());
+    let hash = timeout(Duration::from_secs(2), a.blob_put(b"kept here", None))
+        .await
+        .expect("an offline put waited out an answer no room could give")
+        .unwrap();
+    assert!(a.blob_has(&hash), "the bytes are still this device's");
+    a.stop().await;
+}
+
+#[tokio::test]
 async fn a_peer_sees_presence_set_before_the_link_came_up() {
     let port = {
         let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

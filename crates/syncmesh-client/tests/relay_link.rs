@@ -1342,3 +1342,14 @@ fn a_grant_is_registered_before_the_events_that_arrive_beside_it_fold() {
     );
     assert!(facts.contains(&Action::Grant(foreign)));
 }
+
+#[test]
+fn a_blob_put_with_no_live_link_is_said_unsent_at_once() {
+    let mut link = RelayLink::new(identity(1), RelayOptions::default());
+    let bytes = b"the bytes of a blob".to_vec();
+    let hash = syncmesh_core::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(&bytes));
+    assert_eq!(
+        link.send_blob_put(hash.clone(), blob_put_frame(&hash, &bytes, None)),
+        vec![Action::BlobPutUnsent { hash }]
+    );
+}

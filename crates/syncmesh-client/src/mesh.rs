@@ -282,7 +282,9 @@ impl Mesh {
     /// not name the partition — either way the room stored nothing and this device is still the
     /// holder. A room that keeps no blobs (`no-store`), a code this build cannot name, and a relay
     /// that says nothing for [`BLOB_ANSWER_WAIT`] are not refusals: the bytes are here, and the put
-    /// succeeds, as it did before rooms answered at all.
+    /// succeeds, as it did before rooms answered at all. A put made while the link is not up
+    /// answers at once, the same way: the frame could not leave, so nothing will answer it, and it
+    /// is not sent again on the next session — put it again once [`MeshEvent::Online`] says so.
     pub async fn blob_put(
         &self,
         bytes: &[u8],
@@ -295,7 +297,14 @@ impl Mesh {
             .entry(hash.clone())
             .or_default()
             .push(Upload { partition, settle });
-        let _ = self.commands.try_send(LinkCommand::RawFrame(frame));
+        let command = LinkCommand::BlobPut {
+            hash: hash.clone(),
+            frame,
+        };
+        if self.commands.try_send(command).is_err() {
+            // the link is gone or its queue is full: the frame never left, so nothing will answer
+            settle_uploads(&self.waits.uploads, &hash, None);
+        }
         match tokio::time::timeout(BLOB_ANSWER_WAIT, answer).await {
             Ok(Ok(Some(refusal))) => Err(refusal.into_error(&hash)),
             Ok(_) => Ok(hash),
@@ -441,6 +450,10 @@ async fn pump(
             }
             LinkEvent::BlobPutAnswer { hash, refusal } => {
                 settle_uploads(&waits.uploads, &hash, refusal);
+                Vec::new()
+            }
+            LinkEvent::BlobPutUnsent { hash } => {
+                settle_uploads(&waits.uploads, &hash, None);
                 Vec::new()
             }
             LinkEvent::PeerHeard(peer) => vec![MeshEvent::PeerHeard(peer)],

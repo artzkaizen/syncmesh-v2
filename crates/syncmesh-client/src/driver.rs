@@ -30,8 +30,13 @@ pub enum LinkCommand {
     Write(StoredEvent),
     Presence(Vec<u8>),
     Grants(Vec<Vec<u8>>),
-    /// A plaintext relay or session frame to seal and send — a blob put or get, say.
+    /// A plaintext relay or session frame to seal and send — a blob get, say.
     RawFrame(Vec<u8>),
+    /// A `blob-put` frame for `hash`; the link says when it could not leave.
+    BlobPut {
+        hash: String,
+        frame: Vec<u8>,
+    },
     /// Something folded from another source; push what the relay lacks and report our cursors.
     RemoteFold,
     Resync,
@@ -59,6 +64,9 @@ pub enum LinkEvent {
         hash: String,
         refusal: Option<PutRefusal>,
     },
+    BlobPutUnsent {
+        hash: String,
+    },
     PeerHeard(PeerId),
     Dropped(String),
     /// Permanent; the task ends after this.
@@ -80,6 +88,7 @@ impl LinkEvent {
             Action::GrantRequest { peer_id, invite } => LinkEvent::GrantRequest { peer_id, invite },
             Action::BlobAnswer { hash, bytes } => LinkEvent::BlobAnswer { hash, bytes },
             Action::BlobPutAnswer { hash, refusal } => LinkEvent::BlobPutAnswer { hash, refusal },
+            Action::BlobPutUnsent { hash } => LinkEvent::BlobPutUnsent { hash },
             Action::PeerHeard(peer) => LinkEvent::PeerHeard(peer),
             Action::Dropped(why) => LinkEvent::Dropped(why),
             Action::Refused { reason } => LinkEvent::Refused(reason),
@@ -127,6 +136,7 @@ fn apply(link: &mut RelayLink, engine: &Arc<Mutex<Engine>>, command: LinkCommand
         LinkCommand::Presence(wire) => link.send_presence(&wire),
         LinkCommand::Grants(wires) => link.send_grants(wires),
         LinkCommand::RawFrame(plain) => link.send_raw_frame(plain),
+        LinkCommand::BlobPut { hash, frame } => link.send_blob_put(hash, frame),
         LinkCommand::RemoteFold => {
             let engine = engine.lock().unwrap_or_else(PoisonError::into_inner);
             link.on_remote_fold(&engine)
