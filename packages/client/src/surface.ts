@@ -10,7 +10,7 @@ import type { Auth } from "./auth.js";
 import type { Blobs } from "./blobs.js";
 import type { DeliveredOptions, ReceivedOptions } from "./delivered.js";
 import type { Drafts } from "./drafts.js";
-import type { MeshStopped, PartitionSealed } from "./errors.js";
+import type { MeshStopped, NoSuchCapability, PartitionSealed } from "./errors.js";
 import type { MeshGrants } from "./grants.js";
 import type { Handle, OnOptions } from "./handles.js";
 import type { HistoryViewOptions, RevisionView } from "./history-view.js";
@@ -22,6 +22,7 @@ import type { Topics } from "./presence.js";
 import type { ReadCoverageView } from "./read-coverage.js";
 import type { RecoveryView } from "./recovery.js";
 import type { Status } from "./status.js";
+import type { SyncedOptions } from "./synced.js";
 import type { MeshTelemetrySeam } from "./telemetry.js";
 import type { RunningTransports } from "./transports.js";
 import type { MeshVisibility } from "./visibility.js";
@@ -130,6 +131,16 @@ export interface Mesh<
   readonly delivered: (options?: DeliveredOptions) => Promise<void>;
   /** Resolves once this device has folded the event — the inbound mirror of `delivered`. */
   readonly received: (options: ReceivedOptions) => Promise<void>;
+  /**
+   * Resolves once a relay room whose log outlives it holds the event (D42) — the answer to *may I
+   * close the laptop?*. `NoSuchCapability` on a mesh with no transport declaring `durable`; a
+   * relay over a memory log never settles it, because a restart would lose the write.
+   *
+   * @example
+   * const event = (await mesh.engine.mutate(procedure, write)).unwrap();
+   * (await mesh.synced({ event: event.id })).unwrap();
+   */
+  readonly synced: (options: SyncedOptions) => Promise<Result<void, NoSuchCapability>>;
   readonly revert: (id: EventId) => Promise<Result<unknown, unknown>>;
   readonly canRevert: (id: EventId) => boolean;
   /**
