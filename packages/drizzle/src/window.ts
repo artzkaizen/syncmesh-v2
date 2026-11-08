@@ -12,6 +12,8 @@ import {
   inArray,
   is,
 } from "drizzle-orm";
+import { PgColumn } from "drizzle-orm/pg-core";
+import { postgresJsCodecs } from "drizzle-orm/postgres-js/codecs";
 
 import type { Runnable } from "./live.js";
 import type { Cell, Cells } from "./order.js";
@@ -257,6 +259,27 @@ export const limitOfRows = (query: SQLWrapper): number | undefined => {
 };
 
 /**
+ * How a Postgres column's driver value becomes what the column's own mapping takes: the
+ * driver's codec for the column's type (`timestamptz` text to a `Date`), or the value as it is
+ * for a type that has none. Drizzle decodes there before `mapFromDriverValue`, so a row read off
+ * the wire has to as well. The served reads' server is postgres-js, so its table is the one.
+ */
+const normalizerOf = (column: Column): ((value: unknown) => unknown) | undefined => {
+  if (!is(column, PgColumn)) return undefined;
+  // `codec` is Drizzle's own (internal) name for the column's type in the codec tables
+  const type: unknown = "codec" in column ? column.codec : undefined;
+  if (typeof type !== "string" || !Object.hasOwn(postgresJsCodecs, type)) return undefined;
+  // SAFETY: `type` is one of the table's own keys, checked just above
+  const codec = postgresJsCodecs[type as keyof typeof postgresJsCodecs];
+  const { dimensions } = column;
+  if (dimensions !== undefined && dimensions > 0) {
+    const normalize = codec?.normalizeArray;
+    return normalize === undefined ? undefined : (value) => normalize(value, dimensions);
+  }
+  return codec?.normalize;
+};
+
+/**
  * A row of this query as its columns' driver values, and back: what a row is on the wire.
  *
  * Drizzle hands back mapped values — a `Date` for a timestamp, a parsed object for JSON — and a
@@ -268,6 +291,10 @@ export const driverValues = (query: SQLWrapper) => {
   const column = (field: string) => {
     const found = fields[field];
     return is(found, Column) ? found : undefined;
+  };
+  const fromDriver = (at: Column, value: unknown) => {
+    const normalize = normalizerOf(at);
+    return at.mapFromDriverValue(normalize === undefined ? value : normalize(value));
   };
   return {
     /** The row's fields as the database stores them. */
@@ -283,7 +310,7 @@ export const driverValues = (query: SQLWrapper) => {
       Object.fromEntries(
         Object.entries(row).map(([field, value]) => {
           const at = column(field);
-          return [field, at === undefined || value === null ? value : at.mapFromDriverValue(value)];
+          return [field, at === undefined || value === null ? value : fromDriver(at, value)];
         }),
       ),
   };
