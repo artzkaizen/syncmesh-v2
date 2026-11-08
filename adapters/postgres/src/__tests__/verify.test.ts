@@ -32,4 +32,21 @@ describe("@syncmesh/postgres checks its log's pages with amcheck", () => {
     expect(verified.isOk()).toBe(true);
     await db.close();
   });
+
+  test("a role that may not run amcheck is told so, and a sound log is not called damaged", async () => {
+    const db = new PGlite({ extensions: { amcheck } });
+    await db.exec("CREATE EXTENSION amcheck");
+    const driver = pgliteDriver(db);
+    const stores = (await openStores(driver)).unwrap();
+    (await stores.events.appendBatch([entry(CRASH_AUTHOR, 1, 10)])).unwrap();
+    // what an app's role has by default: the log's schema, and no grant on amcheck's functions
+    await driver.run(`CREATE ROLE syncmesh_app NOLOGIN`);
+    await driver.run(`GRANT USAGE ON SCHEMA syncmesh TO syncmesh_app`);
+    await driver.run(`GRANT SELECT ON ALL TABLES IN SCHEMA syncmesh TO syncmesh_app`);
+    await driver.run(`SET ROLE syncmesh_app`);
+    const verified = await verifyLog(driver);
+    expect(verified.isErr() && verified.error._tag).toBe("NoIntegrityCheck");
+    await driver.run(`RESET ROLE`);
+    await db.close();
+  });
 });

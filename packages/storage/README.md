@@ -72,11 +72,13 @@ than read around:
   snapshot join, a parked or late event — are recorded in the log's `gaps` table as each append
   makes them, and read fine.
 - `verifyLog(driver)` checks the log's pages: `PRAGMA quick_check` on a device's SQLite, `amcheck`
-  on Postgres where the extension is installed, `NoIntegrityCheck` where there is no check to run.
-  `mesh.inspect.verify()` is the same call from a mesh.
+  on Postgres where the extension is installed and the role may execute it, `NoIntegrityCheck`
+  where there is no check to run. `mesh.inspect.verify()` is the same call from a mesh.
 - `openStores` runs that check once when the last session over the log did not end in
   `Stores.close()` or `Stores.markClean()`. Call `markClean()` when you keep the connection open
-  past the stores, or every launch after looks like one after a crash.
+  past the stores, or every launch after looks like one after a crash. An app killed in the
+  background or a closed tab never reaches either, so on phones and in browsers the check runs at
+  most launches today.
 
 ## Serving `sync: "window"` reads from Postgres (D43)
 

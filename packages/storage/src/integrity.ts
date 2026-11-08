@@ -8,7 +8,8 @@ import { attempt } from "./sql.js";
 
 /**
  * This database gives the store no integrity check it can run: a runtime that refuses `PRAGMA`
- * (a Durable Object, a Rivet actor), or a Postgres without the `amcheck` extension.
+ * (a Durable Object, a Rivet actor), a Postgres without the `amcheck` extension, or a role there
+ * that may not execute its functions.
  *
  * A fact about the database, not damage: the log may be perfectly sound, and nothing here can say.
  */
@@ -34,8 +35,9 @@ const quickCheck = (driver: SqlDriver): Promise<Result<void, StoreFailure>> =>
 
 /**
  * `amcheck` over the log's tables: `verify_heapam` on each, `bt_index_check` with every heap tuple
- * looked up on each of their b-tree indexes. Only where the extension is installed: creating it is
- * the operator's call, not a side effect of a read.
+ * looked up on each of their b-tree indexes. Only where the extension is installed and this role
+ * may execute both: creating it and granting it are the operator's calls, not side effects of a
+ * read.
  */
 const amcheck = (driver: SqlDriver): Promise<Result<void, StoreFailure | NoIntegrityCheck>> =>
   Result.gen(async function* () {
@@ -49,6 +51,26 @@ const amcheck = (driver: SqlDriver): Promise<Result<void, StoreFailure | NoInteg
         new NoIntegrityCheck({
           message:
             "this Postgres has no amcheck extension: `CREATE EXTENSION amcheck` to let the store verify its log",
+        }),
+      );
+    // `amcheck`'s functions are revoked from PUBLIC: a role that cannot run them learns nothing
+    // about the log, which is not the same as the log failing them
+    const allowed = yield* Result.await(
+      attempt("could not read this role's privileges on amcheck", () =>
+        driver.all(
+          `SELECT DISTINCT p.proname FROM pg_proc p
+            JOIN pg_depend d ON d.objid = p.oid AND d.deptype = 'e'
+            JOIN pg_extension x ON x.oid = d.refobjid AND x.extname = 'amcheck'
+            WHERE p.proname IN ('verify_heapam', 'bt_index_check')
+              AND has_function_privilege(p.oid, 'EXECUTE')`,
+        ),
+      ),
+    );
+    if (allowed.length < 2)
+      return Result.err(
+        new NoIntegrityCheck({
+          message:
+            "this role may not run amcheck's verify_heapam and bt_index_check: `GRANT EXECUTE` on them to let the store verify its log",
         }),
       );
     for (const name of LOG_TABLES) {

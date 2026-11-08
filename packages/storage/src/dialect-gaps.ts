@@ -81,4 +81,7 @@ export const POSTGRES_GAPS: GapSql = {
   delete: `DELETE FROM syncmesh.gaps WHERE peer = $1 AND local = $2 AND from_seq = $3`,
   selectAll: `SELECT peer, local, from_seq, to_seq FROM syncmesh.gaps ORDER BY peer, local, from_seq`,
   deleteBelow: `DELETE FROM syncmesh.gaps WHERE peer = $1 AND local = $2 AND to_seq <= $3`,
+  // two writers that both read an author's head before either commits would each record a gap
+  // from it, and the second row is dropped on the key: the head is read under this lock instead
+  lock: `SELECT pg_advisory_xact_lock(hashtext('syncmesh.gaps:' || $1::text), $2::int)`,
 };

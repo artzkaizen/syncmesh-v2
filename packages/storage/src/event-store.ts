@@ -77,6 +77,27 @@ const stampBound = (before: Hlc | undefined): readonly SqlValue[] =>
   before === undefined ? [Number.MAX_SAFE_INTEGER, 0] : [before[0].epochMilliseconds, before[1]];
 
 /**
+ * Takes the dialect's per-author lock (`GapSql.lock`) for every author in `entries`, in one order,
+ * before any head is read: two batches naming the same authors queue rather than deadlock.
+ */
+const hold = async (
+  driver: SqlDriver,
+  lock: string | undefined,
+  entries: readonly StoredEvent[],
+) => {
+  if (lock === undefined) return;
+  const authors = new Map<string, readonly [string, number]>();
+  for (const { event } of entries) {
+    const local = event.local === true ? 1 : 0;
+    authors.set(`${local}:${event.peerId}`, [event.peerId, local]);
+  }
+  for (const key of [...authors.keys()].sort()) {
+    const author = authors.get(key);
+    if (author !== undefined) await driver.run(lock, author);
+  }
+};
+
+/**
  * Opens the event log in the database behind `driver`, creating or migrating its tables in the
  * driver's dialect — `events` on a device's SQLite, `_syncmesh_events` in an app's Postgres.
  *
@@ -160,15 +181,16 @@ export function sqlEventStore(
       );
     });
 
+  const appendAll = async (entries: readonly StoredEvent[]) => {
+    await hold(driver, GAPS.lock, entries);
+    const heads = new Map<string, number>();
+    for (const entry of entries) await insert(entry, heads);
+  };
+
   const store: EventStore = {
-    append: (entry) => attempt("append failed", () => transaction(() => insert(entry, new Map()))),
+    append: (entry) => attempt("append failed", () => transaction(() => appendAll([entry]))),
     appendBatch: (entries) =>
-      attempt("appendBatch failed", () =>
-        transaction(async () => {
-          const heads = new Map<string, number>();
-          for (const entry of entries) await insert(entry, heads);
-        }),
-      ),
+      attempt("appendBatch failed", () => transaction(() => appendAll(entries))),
     has: (id) =>
       Result.gen(async function* () {
         const { peerId, seqNum, local } = yield* parseEventId(id).mapError(

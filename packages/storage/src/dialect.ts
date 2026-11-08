@@ -70,6 +70,12 @@ export interface GapSql {
   readonly selectAll: string;
   /** Gaps compaction has put wholly below the floor: binds `(peer, local, floor)`. */
   readonly deleteBelow: string;
+  /**
+   * Holds one author's run in one scope until the transaction ends: binds `(peer, local)`. Only
+   * where two connections can append to the same log at once (Postgres); a SQLite writer that
+   * read a stale head is refused at its write instead.
+   */
+  readonly lock?: string;
 }
 
 export interface StateSql {
