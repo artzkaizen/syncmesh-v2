@@ -447,7 +447,8 @@ impl Engine {
     /// event's partition, as the TypeScript's `revert` (RFC-0023 §9, decided in §16.3): each cell
     /// still holding the write's stamp goes back to its value before the write, and a cell someone
     /// changed since is left as they left it and reported in `skipped`. When nothing of the write
-    /// still stands, nothing is written.
+    /// still stands, nothing is written; a compensation the engine refuses leaves the write
+    /// revertable.
     pub fn revert(&mut self, event_id: &str) -> Result<Reverted, RevertError> {
         let Some(index) = self.undo.iter().position(|u| u.event.id() == event_id) else {
             return Err(RevertError::NotRevertable {
@@ -468,20 +469,24 @@ impl Engine {
         let Some(undo) = self.undo.remove(index) else {
             unreachable!("the index was just found in the ring")
         };
-        let (changes, skipped) = compensate(&self.state, &undo);
+        let (changes, skipped) = compensate(&self.state, &undo, self.merge.as_ref());
         if changes.is_empty() {
             return Ok(Reverted {
                 mutated: None,
                 skipped,
             });
         }
-        let mutated = self
-            .mutate("revert", changes, undo.event.partition.clone())
-            .map_err(RevertError::Mutate)?;
-        Ok(Reverted {
-            mutated: Some(mutated),
-            skipped,
-        })
+        match self.mutate("revert", changes, undo.event.partition.clone()) {
+            Ok(mutated) => Ok(Reverted {
+                mutated: Some(mutated),
+                skipped,
+            }),
+            Err(e) => {
+                // a refused compensation wrote nothing, so the write is still there to revert
+                self.undo.insert(index.min(self.undo.len()), undo);
+                Err(RevertError::Mutate(e))
+            }
+        }
     }
 
     /// Folds entries once each; already-stored events are skipped, and events this build has no

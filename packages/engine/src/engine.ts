@@ -325,7 +325,7 @@ export function createEngine(options: EngineOptions): Engine {
       }),
   });
 
-  const revert = createRevert({ undo, undoDepth, getState, mutate: writes.mutate });
+  const revert = createRevert({ undo, undoDepth, getState, merge, mutate: writes.mutate });
 
   const chains = createFeedPath({ store, feeds, receiveBatch });
 

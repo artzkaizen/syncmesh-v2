@@ -36,7 +36,7 @@ export {
   withDocColumns,
 } from "./doc.js";
 export type { MergeSpec, Strategy, StrategyName } from "./strategy.js";
-export { compareValue, counterValue, strategies } from "./strategy.js";
+export { compareValue, counterDelta, counterValue, strategies } from "./strategy.js";
 export type { KeyedRecord, State, TableState } from "./state.js";
 export { emptyState, getRecord, readRow } from "./state.js";
 export { applyChange, mergeRecord } from "./apply.js";

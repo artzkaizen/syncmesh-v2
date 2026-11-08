@@ -1,15 +1,37 @@
-import { parseAdapterId, readRow } from "@syncmesh/kernel";
+import {
+  counterValue,
+  getRecord,
+  lineageOf,
+  parseAdapterId,
+  parsePartitionKey,
+  readRow,
+  type CellRule,
+  type ColumnName,
+  type MergeSpec,
+} from "@syncmesh/kernel";
+import { Result } from "@syncmesh/result";
+import { partition, syncSchema, t } from "@syncmesh/schema";
 import { describe, expect, test } from "bun:test";
 
+import type { EngineOptions } from "../options.js";
+
 import { createEngine } from "../engine.js";
+import { UnknownTable } from "../errors.js";
 import { createMemoryEventStore } from "../store.js";
+import { createValidator, type Validator } from "../validate.js";
 import { CREATE, column, fakeClock, key, N1, NOTES, PEER_A, PEER_B, row } from "./fixtures.js";
 
 const N2 = key("n2");
 
-const withUndo = (undoDepth = 3) => {
+const withUndo = (undoDepth = 3, extra: Partial<EngineOptions> = {}) => {
   const store = createMemoryEventStore();
-  const engine = createEngine({ peerId: PEER_A, clock: fakeClock(100), store, undoDepth });
+  const engine = createEngine({
+    peerId: PEER_A,
+    clock: fakeClock(100),
+    store,
+    undoDepth,
+    ...extra,
+  });
   return { engine, store };
 };
 
@@ -218,5 +240,139 @@ describe("revert compensates only the cells that still hold the write (RFC-0023 
     const r = (await engine.revert(e.id)).unwrap();
     expect(readRow(engine.state(), NOTES, N1)).toEqual(row({ title: "t" }));
     expect(r.skipped).toEqual([{ table: NOTES, key: N1, column: content, reason: "document" }]);
+  });
+});
+
+describe("revert by the column's merge rule, and of what is already gone", () => {
+  const VIEWS = column("views");
+  const SCORE = column("score");
+  const RULES: MergeSpec = new Map([
+    [
+      NOTES,
+      new Map<ColumnName, CellRule>([
+        [VIEWS, "counter"],
+        [SCORE, "max"],
+      ]),
+    ],
+  ]);
+
+  test("a counter increment is undone by the increment that cancels it", async () => {
+    const { engine } = withUndo(3, { merge: RULES });
+    (
+      await engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ views: { "+": 2 } })))
+    ).unwrap();
+    const e = (
+      await engine.mutate(CREATE, (tx) => tx.update(NOTES, N1, row({ views: { "+": 5 } })))
+    ).unwrap();
+    const views = () => counterValue(readRow(engine.state(), NOTES, N1)?.get(VIEWS) ?? null);
+    expect(views()).toBe(7);
+    const r = (await engine.revert(e.id)).unwrap();
+    expect(views()).toBe(2);
+    expect(r.skipped).toEqual([]);
+    expect(r.event?.changes).toEqual([
+      { kind: "update", table: NOTES, key: N1, patch: row({ views: { "+": -5 } }) },
+    ]);
+  });
+
+  test("a max cell the write raised cannot come back down, and says so", async () => {
+    const { engine } = withUndo(3, { merge: RULES });
+    (
+      await engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ title: "t", score: 3 })))
+    ).unwrap();
+    const e = (
+      await engine.mutate(CREATE, (tx) => tx.update(NOTES, N1, row({ title: "x", score: 9 })))
+    ).unwrap();
+    const r = (await engine.revert(e.id)).unwrap();
+    expect(r.skipped).toEqual([{ table: NOTES, key: N1, column: SCORE, reason: "merge" }]);
+    expect(r.event?.changes).toEqual([
+      { kind: "update", table: NOTES, key: N1, patch: row({ title: "t" }) },
+    ]);
+    expect(readRow(engine.state(), NOTES, N1)).toEqual(row({ title: "t", score: 9 }));
+  });
+
+  test("an insert whose row is gone already writes nothing, and reports the row superseded", async () => {
+    const { engine } = withUndo();
+    const ins = (
+      await engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ title: "t" })))
+    ).unwrap();
+    (await engine.mutate(CREATE, (tx) => tx.delete(NOTES, N1))).unwrap();
+    const r = (await engine.revert(ins.id)).unwrap();
+    expect(r.event).toBeUndefined();
+    expect(r.skipped).toEqual([{ table: NOTES, key: N1, reason: "superseded" }]);
+  });
+
+  test("an insert a colleague edited since is deleted, and their cells are reported overridden", async () => {
+    const { a, b, deliver, back } = pair();
+    const ins = (
+      await a.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ title: "t" })))
+    ).unwrap();
+    await deliver(Result.ok(ins));
+    await back(await b.mutate(CREATE, (tx) => tx.update(NOTES, N1, row({ body: "theirs" }))));
+    const r = (await a.revert(ins.id)).unwrap();
+    expect(readRow(a.state(), NOTES, N1)).toBeUndefined();
+    expect(r.skipped).toEqual([
+      { table: NOTES, key: N1, column: column("body"), reason: "overridden" },
+    ]);
+  });
+
+  test("a compensation the engine refuses leaves the write revertable", async () => {
+    let refusing = false;
+    const validate: Validator = {
+      validate: () =>
+        refusing
+          ? Result.err(new UnknownTable({ table: "notes", message: "refused for the test" }))
+          : Result.ok(undefined),
+    };
+    const { engine } = withUndo(3, { validate });
+    (await engine.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ title: "t" })))).unwrap();
+    const e = (
+      await engine.mutate(CREATE, (tx) => tx.update(NOTES, N1, row({ title: "x" })))
+    ).unwrap();
+    refusing = true;
+    expect((await engine.revert(e.id)).isErr()).toBe(true);
+    expect(engine.canRevert(e.id)).toBe(true);
+    refusing = false;
+    (await engine.revert(e.id)).unwrap();
+    expect(readRow(engine.state(), NOTES, N1)).toEqual(row({ title: "t" }));
+  });
+});
+
+describe("revert of a row that holds a document", () => {
+  const CONTENT = column("content");
+  const LORO = parseAdapterId("loro@1").unwrap();
+  const DOCS = new Map([[NOTES, new Map([[CONTENT, LORO]])]]);
+  const W1 = parsePartitionKey("workspace:w1").unwrap();
+  const schema = syncSchema({
+    tables: {
+      notes: {
+        columns: { id: t.text().primaryKey(), title: t.text(), content: t.blob().nullable() },
+        partition: partition("workspace"),
+        allow: ({ allow }) => ({ $default: allow }),
+      },
+    },
+  });
+
+  test("a delete of a replaced document's row comes back with its lineage, never a value write", async () => {
+    const validate = createValidator({ schema, grantFor: null, docs: DOCS });
+    const { engine } = withUndo(5, { docs: DOCS, validate, docAdapters: new Set([LORO]) });
+    const write = async (fn: Parameters<typeof engine.mutate>[1]) =>
+      (await engine.mutate(CREATE, fn, { partition: W1 })).unwrap();
+    await write((tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+    await write((tx) =>
+      tx.doc(NOTES, N1, {
+        column: CONTENT,
+        adapter: LORO,
+        update: { bytes: Uint8Array.of(1) },
+        genesis: true,
+      }),
+    );
+    const lineage = lineageOf(getRecord(engine.state(), NOTES, N1), CONTENT);
+    const del = await write((tx) => tx.delete(NOTES, N1));
+    const r = (await engine.revert(del.id)).unwrap();
+    expect(r.event?.changes).toEqual([
+      { kind: "insert", table: NOTES, key: N1, row: row({ id: "n1", title: "t" }) },
+    ]);
+    expect(lineageOf(getRecord(engine.state(), NOTES, N1), CONTENT)).toBe(lineage);
+    expect(engine.canRevert(del.id)).toBe(false);
   });
 });

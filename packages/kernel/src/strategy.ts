@@ -95,8 +95,11 @@ interface Contributions {
 }
 
 /* oxlint-disable anti-slop/no-runtime-typeof -- CellValue is a closed union; typeof is its discriminant */
-/** `{"+": n}` — the shape an increment travels in (book ch. 2); anything else is normal form. */
-const deltaOf = (value: CellValue): number | undefined =>
+/**
+ * The `n` of `{"+": n}` — the shape an increment travels in (book ch. 2) — or `undefined` for
+ * anything else, which is normal form.
+ */
+export const counterDelta = (value: CellValue): number | undefined =>
   value !== null &&
   typeof value === "object" &&
   !(value instanceof Uint8Array) &&
@@ -106,7 +109,7 @@ const deltaOf = (value: CellValue): number | undefined =>
     ? value["+"]
     : undefined;
 
-const contributionsOf = (value: CellValue): Contributions => {
+const counterContributions = (value: CellValue): Contributions => {
   if (value === null || typeof value !== "object" || value instanceof Uint8Array)
     return { p: {}, n: {} };
   // SAFETY: a counter cell in normal form was written by `counter` below, as exactly this shape
@@ -131,12 +134,12 @@ const joinTotals = (a: AuthorTotals, b: AuthorTotals): AuthorTotals => {
  * because each author's totals only ever grow. The read lives in {@link counterValue}.
  */
 const counter: Strategy = (incoming, current) => {
-  const held = current === undefined ? { p: {}, n: {} } : contributionsOf(current.value);
+  const held = current === undefined ? { p: {}, n: {} } : counterContributions(current.value);
   const stamp =
     current === undefined || compareStamp(incoming.stamp, current.stamp) > 0
       ? incoming.stamp
       : current.stamp;
-  const delta = deltaOf(incoming.value);
+  const delta = counterDelta(incoming.value);
   if (delta !== undefined) {
     const author = String(incoming.stamp.peer);
     const side = delta >= 0 ? "p" : "n";
@@ -144,13 +147,13 @@ const counter: Strategy = (incoming, current) => {
     const value = side === "p" ? { p: grown, n: held.n } : { p: held.p, n: grown };
     return { value, stamp };
   }
-  const arrived = contributionsOf(incoming.value);
+  const arrived = counterContributions(incoming.value);
   return { value: { p: joinTotals(held.p, arrived.p), n: joinTotals(held.n, arrived.n) }, stamp };
 };
 
 /** What a `counter` cell reads as: every author's ups minus every author's downs. */
 export function counterValue(value: CellValue): number {
-  const { p, n } = contributionsOf(value);
+  const { p, n } = counterContributions(value);
   const sum = (totals: Readonly<Record<string, number>>) =>
     Object.values(totals).reduce((held, total) => held + total, 0);
   return sum(p) - sum(n);
