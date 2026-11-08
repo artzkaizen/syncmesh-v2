@@ -17,6 +17,46 @@ import { ACME, DERIVED_NOTES, N1, sqlText, stamp } from "./fixtures.js";
  * document itself.
  */
 
+/** A delete and an insert of the same row in one transaction nets to an update, judged as the insert it ends with. */
+const reinsertedRow = (openDriver: OpenDriver) =>
+  ({
+    name: "capture: a row deleted and inserted again in one transaction is judged as an insert",
+    run: async () => {
+      const driver = await openDriver("capture-derived-reinsert");
+      const L = sqlText(driver);
+      const { state } = (await openStores(driver, { tables: [DERIVED_NOTES] })).unwrap();
+      (
+        await captureChanges(driver, [DERIVED_NOTES], () =>
+          driver.run(`INSERT INTO derived_notes (id, body) VALUES (${L.p(1)}, ${L.p(2)})`, [
+            "n1",
+            "b",
+          ]),
+        )
+      ).unwrap();
+      const { title } = DERIVED_NOTES.columnNames;
+      const derive = state.derive ?? panic("a store with tables writes derived columns");
+      (
+        await derive([{ table: DERIVED_NOTES.name, key: N1, values: new Map([[title, "T"]]) }])
+      ).unwrap();
+      const reinsert = (named: string) =>
+        captureChanges(driver, [DERIVED_NOTES], async () => {
+          await driver.run(`DELETE FROM derived_notes WHERE id = ${L.p(1)}`, ["n1"]);
+          await driver.run(`INSERT INTO derived_notes (${named}) VALUES (${L.p(1)}, ${L.p(2)})`, [
+            "n1",
+            "c",
+          ]);
+        });
+      const again = await reinsert("id, body");
+      equal(
+        again.isOk() ? again.value.map((change) => change.kind) : again.error._tag,
+        ["update"],
+        "an insert that leaves the derived column out writes none",
+      );
+      const forged = await reinsert("id, title");
+      equal(forged.isErr() ? forged.error._tag : "ok", "DocColumnWrite", "a re-insert naming one");
+    },
+  }) satisfies SuiteCase;
+
 export const derivedColumnCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   {
     name: "tables: a derived column is the replica's — derive sets it, a fold keeps it, a missing row stays missing",
@@ -147,4 +187,5 @@ export const derivedColumnCases = (openDriver: OpenDriver): readonly SuiteCase[]
       equal(named.isErr() ? named.error._tag : "ok", "DocColumnWrite", "an insert naming one");
     },
   },
+  reinsertedRow(openDriver),
 ];
