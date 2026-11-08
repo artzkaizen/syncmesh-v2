@@ -414,6 +414,39 @@ describe("visibility: authority — admission at the relay (D24-A)", () => {
     room.close();
   });
 
+  test("a re-page over a room whose copy of an event does not verify keeps the event (D45)", async () => {
+    const authority = gatedPeer(7);
+    await writeCatalog(authority, "c1", "aspirin");
+    (await writeConsult(authority, "x", "a")).unwrap();
+    (await writeConsult(authority, "y", "b")).unwrap();
+    const own = (await authority.engine.eventsSince(new Map())).unwrap();
+    const signed = own.map(({ event }) => signEvent(event, authority.identity));
+    // the room holds x under a signature that does not verify: it sends it, and b cannot take it
+    const store = createMemoryEventStore();
+    for (const [i, entry] of signed.entries())
+      (await store.append(i === 1 ? { ...entry, sig: new Uint8Array(64) } : entry)).unwrap();
+    const room = await gatedRoom({ store });
+
+    const b = gatedPeer(43);
+    clinics.set(b.identity.peerId, ["a", "b"]);
+    await attach(b, dialTo(room).dial);
+    (await b.engine.receiveBatch(signed)).unwrap();
+    expect(idsIn(b, CONSULTS)).toEqual(["x", "y"]);
+    const purges: number[] = [];
+    b.engine.onFoldBatch((batch) => {
+      if (batch.source === "purge") purges.push(batch.eventCount);
+    });
+    clinics.set(b.identity.peerId, ["a", "b", "c"]);
+    room.reentitle([b.identity.peerId]);
+    expect(
+      await until(() => scopeFrom(b.engine.coverage().scope).entitlement === "clinics:a,b,c", 3000),
+    ).toBe(true);
+    await tick(100);
+    expect(idsIn(b, CONSULTS)).toEqual(["x", "y"]);
+    expect(purges).toEqual([]);
+    room.close();
+  });
+
   test("an event the re-page sent that fails to verify here is kept and said, not purged as refused (D45)", async () => {
     const authority = gatedPeer(7);
     (await writeConsult(authority, "x", "a")).unwrap();
