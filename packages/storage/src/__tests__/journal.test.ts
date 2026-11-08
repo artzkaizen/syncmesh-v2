@@ -10,11 +10,12 @@ import { copyFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { SqlDriver } from "../driver.js";
+import type { SqlDriver, SqliteDriver } from "../driver.js";
 
 import { decodeStatements, statementTarget } from "../journal.js";
 import { openStores, schemaName, statePath } from "../open-stores.js";
 import { operationStore } from "../operation-store.js";
+import { rootConnection } from "../sql.js";
 import { createWriter } from "../writer.js";
 import { openPair } from "./pair.js";
 
@@ -210,6 +211,77 @@ describe("a write split between the two files' commits", () => {
         events: 2,
         cursor: 2,
       });
+      await driver.close?.();
+    } finally {
+      files.done();
+    }
+  });
+
+  test("two stores open on one connection journal under one count, so a tear in either replays", async () => {
+    const files = scratch();
+    try {
+      const first = await openPair(files.log, schemaName(tables));
+      const a = (await openStores(first, { tables })).unwrap();
+      const b = (await openStores(first, { tables })).unwrap();
+      // one statement in each file, through each store's own journaling driver
+      const both = (stores: typeof a, id: string) =>
+        stores.driver.transaction?.(async () => {
+          await stores.driver.run(`INSERT INTO notes (id, body) VALUES (?, ?)`, [id, id]);
+          await stores.driver.run(`INSERT INTO syncmesh.meta (key, value) VALUES (?, ?)`, [id, id]);
+        });
+      await both(a, "x1");
+      const restore = snapshot(files.log);
+      await both(b, "x2");
+      const mark = `SELECT value FROM syncmesh.meta WHERE key = 'journal'`;
+      expect((await first.all(mark))[0]?.[0]).toBe("2");
+      await first.close?.();
+      restore();
+
+      const driver = await openPair(files.log, schemaName(tables));
+      (await openStores(driver, { tables })).unwrap();
+      const keys = await driver.all(
+        `SELECT key FROM syncmesh.meta WHERE key LIKE 'x%' ORDER BY key`,
+      );
+      expect(keys.map(([key]) => key)).toEqual(["x1", "x2"]);
+      await driver.close?.();
+    } finally {
+      files.done();
+    }
+  });
+
+  test("a commit that fails after `main` landed holds further writes until an open replays it", async () => {
+    const files = scratch();
+    try {
+      const real = await openPair(files.log, schemaName(tables));
+      // a log file that refuses its half of the next commit, the way a full disk would: the
+      // statements bound for it never land, `main` commits, and the commit reports the error
+      let refuse = false;
+      const { transaction } = real;
+      if (transaction === undefined) throw new Error("a SQLite pair has transactions");
+      const flaky: SqliteDriver = {
+        ...real,
+        run: (sql, params) =>
+          refuse && statementTarget(sql) === "log" ? Promise.resolve() : real.run(sql, params),
+        transaction: async (fn) => {
+          const out = await transaction(fn);
+          if (!refuse) return out;
+          refuse = false;
+          throw new Error("disk I/O error on the log");
+        },
+      };
+      rootConnection(flaky, real);
+      const { insert } = await device(flaky);
+      (await insert("n1")).unwrap();
+      refuse = true;
+      expect((await insert("n2")).isErr()).toBe(true);
+      // the journal entry for n2 is the only copy of its log half: nothing may overwrite it
+      const held = await insert("n3");
+      expect(held.isErr() && held.error.message).toContain("reopen the store");
+      await real.close?.();
+
+      const driver = await openPair(files.log, schemaName(tables));
+      const notes = `SELECT COUNT(*) FROM notes`;
+      expect(await agreement(driver, DEVICE, notes)).toEqual({ rows: 2, events: 2, cursor: 2 });
       await driver.close?.();
     } finally {
       files.done();

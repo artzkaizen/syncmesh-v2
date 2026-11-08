@@ -5,7 +5,7 @@ import { decodeCbor, encodeCbor, isNumber, isString, type CborValue } from "@syn
 import type { SqlDriver, SqlValue } from "./driver.js";
 
 import { ATTACHED_LOG, logPlacement, logTable } from "./namespace.js";
-import { attempt, rootConnection } from "./sql.js";
+import { attempt, rootConnection, underlyingConnection } from "./sql.js";
 import { bindSqlite } from "./sqlite-driver.js";
 
 /**
@@ -133,14 +133,10 @@ const numberCell = (value: SqlValue | undefined): number =>
 export function recoverJournal(driver: SqlDriver): Promise<Result<number, StoreFailure>> {
   if (!journaled(driver)) return Promise.resolve(Result.ok(0));
   return Result.gen(async function* () {
-    const [row, mark] = yield* Result.await(
-      attempt("could not read the write journal", async () => {
-        const [held] = await driver.all(READ_JOURNAL);
-        const [marked] = await driver.all(READ_MARK);
-        return [held, numberCell(marked?.[0])] as const;
-      }),
+    const [row, n, mark] = yield* Result.await(
+      attempt("could not read the write journal", () => journalAndMark(driver)),
     );
-    if (row === undefined || numberCell(row[0]) <= mark) return Result.ok(0);
+    if (row === undefined || n <= mark) return Result.ok(0);
     const bytes = row[1];
     if (!(bytes instanceof Uint8Array))
       return Result.err(new StoreFailure({ message: "the journal's statements are not bytes" }));
@@ -167,9 +163,34 @@ interface Open {
 }
 
 /**
+ * What every journaling wrapper over one connection shares: the number the last journaled
+ * transaction took, so two wrappers never journal under one number, and whether a transaction
+ * that wrote its journal entry then failed, so its `COMMIT` may have landed in `main` alone.
+ */
+interface Counter {
+  n: number;
+  /** The number of a journaled transaction whose commit has not resolved yet. */
+  pending: number | undefined;
+}
+const counters = new WeakMap<SqlDriver, Counter>();
+
+/** The two numbers {@link recoverJournal} compares: the journal's and the log's mark. */
+const journalAndMark = async (driver: SqlDriver) => {
+  const [held] = await driver.all(READ_JOURNAL);
+  const [marked] = await driver.all(READ_MARK);
+  return [held, numberCell(held?.[0]), numberCell(marked?.[0])] as const;
+};
+
+/**
  * `driver`, with every transaction that writes both files journaled into `main` before it commits
  * (see {@link recoverJournal}). Statements outside a transaction, and transactions that write one
- * file, run as they are. Shares `driver`'s turn ({@link onConnection}).
+ * file, run as they are. Shares `driver`'s turn ({@link onConnection}), and its count: every
+ * wrapper over one connection numbers from one counter.
+ *
+ * A transaction that wrote its journal entry and then failed may have committed `main` and not the
+ * log (a full disk or an I/O error on the log file, not a crash). The next transaction on the
+ * connection checks for that before it runs, and refuses with a `StoreFailure` while the journal
+ * is ahead of the log, so the entry is not overwritten before an open replays it.
  *
  * @param last The number the log or the journal last recorded; the next transaction takes the one
  * after it.
@@ -177,7 +198,10 @@ interface Open {
 export function journalingDriver(driver: SqlDriver, last: number): SqlDriver {
   const { transaction } = driver;
   if (!journaled(driver) || transaction === undefined) return driver;
-  let n = last;
+  const connection = underlyingConnection(driver);
+  const counter = counters.get(connection) ?? { n: last, pending: undefined };
+  counter.n = Math.max(counter.n, last);
+  counters.set(connection, counter);
   let open: Open | undefined;
   const note = (sql: string, params: readonly SqlValue[]) => {
     if (open === undefined) return;
@@ -195,24 +219,40 @@ export function journalingDriver(driver: SqlDriver, last: number): SqlDriver {
       note(sql, params);
       return driver.all(sql, params);
     },
-    transaction: (fn) =>
-      transaction(async () => {
+    transaction: async (fn) => {
+      let taken: number | undefined;
+      const result = await transaction(async () => {
+        if (counter.pending !== undefined) {
+          const [, n, mark] = await journalAndMark(driver);
+          if (n > mark)
+            throw new StoreFailure({
+              message:
+                "a commit failed after the state file landed and before the log did: reopen the store to replay its log half",
+            });
+          counter.pending = undefined;
+        }
         const mine: Open = { statements: [], main: false };
         open = mine;
         try {
-          const result = await fn();
+          const inner = await fn();
           if (mine.main && mine.statements.length > 0) {
-            n += 1;
-            const marked = String(n);
+            counter.n += 1;
+            const marked = String(counter.n);
             mine.statements.push([WRITE_MARK, [marked]]);
             await driver.run(WRITE_MARK, [marked]);
-            await driver.run(WRITE_JOURNAL, [n, encodeStatements(mine.statements)]);
+            await driver.run(WRITE_JOURNAL, [counter.n, encodeStatements(mine.statements)]);
+            // cleared once the commit resolves; a commit that fails leaves it for the next turn
+            taken = counter.n;
+            counter.pending = taken;
           }
-          return result;
+          return inner;
         } finally {
           open = undefined;
         }
-      }),
+      });
+      if (taken !== undefined && counter.pending === taken) counter.pending = undefined;
+      return result;
+    },
   };
   rootConnection(tapped, driver);
   return tapped;

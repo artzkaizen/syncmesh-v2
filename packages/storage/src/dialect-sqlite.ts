@@ -236,9 +236,10 @@ const sqliteDialect = (log: LogPlacement): Dialect => {
     SQLITE_DOC_TABLES,
     // The column snapshots (§6.1): a step of their own, for a database already at the one above.
     SQLITE_DOC_SNAPSHOTS,
-    // The write journal (`journal.ts`): only where the log is a second file whose commit can land
-    // apart from this one's
-    ...(log === "attached" ? [[JOURNAL_DDL]] : []),
+    // The write journal (`journal.ts`). Used only where the log is a second file whose commit can
+    // land apart from this one's, and created on every placement, so a rung after it sits at the
+    // same position whichever way the log is placed
+    [JOURNAL_DDL],
   ];
 
   return {

@@ -23,6 +23,9 @@ export const rootConnection = (wrapper: SqlDriver, root: SqlDriver): void => {
   roots.set(wrapper, roots.get(root) ?? root);
 };
 
+/** The connection `driver` runs on: the driver it wraps ({@link rootConnection}), or itself. */
+export const underlyingConnection = (driver: SqlDriver): SqlDriver => roots.get(driver) ?? driver;
+
 /**
  * Runs `fn` in this driver's turn: later callers wait for earlier ones, in call order, whatever
  * the earlier one settled as. A driver wrapping another ({@link rootConnection}) shares its turn. A connection does one thing at a time, and this is the one queue
@@ -32,7 +35,7 @@ export const rootConnection = (wrapper: SqlDriver, root: SqlDriver): void => {
  * A body must not take a second turn on the same driver: it would wait for itself.
  */
 export const onConnection = <T>(driver: SqlDriver, fn: () => Promise<T>): Promise<T> => {
-  const connection = roots.get(driver) ?? driver;
+  const connection = underlyingConnection(driver);
   const turn = (queues.get(connection) ?? Promise.resolve()).then(fn, fn);
   queues.set(
     connection,

@@ -51,6 +51,8 @@ describe("a runtime with no ATTACH still gets the namespace", () => {
     const created = statements.filter((sql) => sql.includes("CREATE TABLE"));
     expect(created.some((sql) => sql.includes("syncmesh_events"))).toBe(true);
     expect(created.some((sql) => sql.includes("syncmesh_state_rows"))).toBe(true);
+    // the journal is unused inline, and still a rung, so later rungs number the same both ways
+    expect(created.some((sql) => sql.includes("syncmesh_journal"))).toBe(true);
   });
 
   test("the attached dialect still uses both, which is what makes the two different", async () => {
