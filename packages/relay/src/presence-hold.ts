@@ -20,7 +20,8 @@ export interface PresenceHold {
  * socket's `buffered` says it still holds unsent bytes, a value is held in its `(topic, instance,
  * peer)` slot in place of the one before it, and the newest per slot leaves as a presence frame
  * once the buffer is empty — rechecked every {@link PRESENCE_RECHECK}, since a browser WebSocket
- * fires no drain event.
+ * fires no drain event. A browser's `bufferedAmount` is often above zero for a moment after any
+ * send, so a value offered just after an event write can wait up to one recheck on a healthy link.
  *
  * What is held is for the socket it was held on: once `socket` answers another one, or none,
  * every held value is dropped — a fresh socket is announced to afresh. A dial that cannot say how
