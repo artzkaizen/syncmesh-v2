@@ -1,6 +1,6 @@
 import { PGlite } from "@electric-sql/pglite";
 import { captureTests, storeTests } from "@syncmesh/storage/driver-tests";
-import { describe, test } from "bun:test";
+import { afterEach, describe, test } from "bun:test";
 
 import { pgliteDriver, postgresDriver } from "../index.js";
 
@@ -14,6 +14,13 @@ describe("@syncmesh/postgres over PGlite passes the store contract", () => {
     const driver = pgliteDriver(db);
     return Promise.resolve({ ...driver, close: () => Promise.resolve() });
   };
+  // each case's clusters are closed when it ends: left open, the whole suite's held 11 GB at its
+  // peak, which a CI runner running another package's tests beside it did not survive
+  afterEach(async () => {
+    const open = [...databases.values()];
+    databases.clear();
+    await Promise.all(open.map((db) => db.close()));
+  });
   for (const c of [...storeTests(openDriver), ...captureTests(openDriver)]) test(c.name, c.run);
 });
 

@@ -1,6 +1,6 @@
 import type { RoomState } from "./state.js";
 
-import { decodeRelayFrame } from "./frames.js";
+import { decodeRelayFrame } from "./frame-decode.js";
 import { absorbEvent } from "./ingest.js";
 import { admitGrant } from "./trust.js";
 

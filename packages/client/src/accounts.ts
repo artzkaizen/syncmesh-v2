@@ -50,7 +50,7 @@ export interface MeshAccounts {
 
 /**
  * The shipped half, read off `MeshOptions` unchanged. `issuer` decides the arm, not a separate
- * flag: it is the same test `validatorFor` makes when it passes `grantFor: null`, and two tests
+ * flag: it is the same test `validatorSettings` makes when it passes `grantFor: null`, and two tests
  * for one question is how `can` and `validate` drift apart.
  */
 export interface AccountsConfig {
@@ -69,7 +69,7 @@ export interface AccountsDeps {
 }
 
 /** The state the validator reads, read the same way — nothing here sees a state it does not. */
-const lookupOf = (engine: Engine): StateLookup => ({
+const engineLookup = (engine: Engine): StateLookup => ({
   row: (table, key) => readRow(engine.state(), table, key),
   partition: (table, key) => getRecord(engine.state(), table, key)?.partition,
   records: (table) => engine.state().get(table),
@@ -84,7 +84,7 @@ export function openAccounts(config: AccountsConfig, deps: AccountsDeps) {
   const { identity, accountKey } = config;
   const granted = config.issuer !== undefined;
   const accounts = config.accounts === true;
-  const lookup = lookupOf(engine);
+  const lookup = engineLookup(engine);
 
   /**
    * The account this device's own links agree on, verified row by row.

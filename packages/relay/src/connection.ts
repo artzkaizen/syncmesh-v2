@@ -13,9 +13,9 @@ import type { RelaySocket } from "./sender.js";
 import type { Client, Conversation, RoomState } from "./state.js";
 
 import { sendCatchUp } from "./catchup.js";
+import { decodeRelayFrame } from "./frame-decode.js";
 import {
   challengeFrame,
-  decodeRelayFrame,
   errorFrame,
   helloFrame,
   selectVersion,
@@ -84,7 +84,7 @@ const sealing = (socket: RelaySocket, link: SecureLink): RelaySocket => ({
 });
 
 /** Which bucket a frame spends from: bulk is priced apart from everything else. */
-const trafficOf = (kind: RelayFrame["kind"]): TrafficClass =>
+const trafficClass = (kind: RelayFrame["kind"]): TrafficClass =>
   kind === "blob-put" || kind === "blob-get" ? "blob" : "event";
 
 /**
@@ -329,7 +329,7 @@ export function createConnection(
     }
     const frame = decoded.value;
     // an unknown tag spends a token too: it cost a decode, whatever this build made of it
-    const traffic = trafficOf(frame.kind);
+    const traffic = trafficClass(frame.kind);
     if (!conversation.budget.take(traffic)) {
       refuse("rate", `this socket is over its ${traffic} rate`, true);
       return;

@@ -98,6 +98,25 @@ export const groupFrom = (
   return bytes.value.subarray(HINT_CHARS / 2, HINT_CHARS / 2 + GROUP_TAG_BYTES);
 };
 
+/**
+ * Whether an advertisement is one of ours, when it says.
+ *
+ * Abstains rather than refuses when it does not: an older build advertises no group, and a
+ * platform that surfaces only the local name drops the field entirely. Refusing on a field that
+ * may simply not have arrived would make a working fleet invisible to itself. With no group of
+ * our own (`ours` absent), every fleet is ours.
+ */
+export const inFleet = (
+  advert: Pick<BleAdvertisement, "serviceDataBase64">,
+  ours: Uint8Array | undefined,
+  serviceUuid: string,
+): boolean => {
+  if (ours === undefined) return true;
+  const theirs = groupFrom(advert, serviceUuid);
+  if (theirs === undefined) return true;
+  return theirs.every((byte, at) => byte === ours[at]);
+};
+
 /** The hint a scan result carries, from whichever field arrived; `undefined` for anyone else's. */
 export const hintFrom = (
   advert: Pick<BleAdvertisement, "localName" | "serviceDataBase64">,

@@ -1,5 +1,5 @@
 import type { Coverage, Engine, Interest } from "@syncmesh/engine";
-import type { PeerId } from "@syncmesh/kernel";
+import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import type { TransportContext, createHoldback } from "@syncmesh/transport";
 
 import { entitledInterest, interestText, narrows, sameInterest, scopeFrom } from "@syncmesh/engine";
@@ -153,3 +153,27 @@ export function scopedCoverage(deps: ScopedDeps) {
     else ungated();
   };
 }
+
+/**
+ * The position a join asks from — ours, unless our cursors describe a slice this device has since
+ * widened past (D23).
+ *
+ * A scoped cursor means *"everything below N that I asked for"*. Widen the interest and the
+ * same number silently claims events the old filter dropped and the new one wants, so nothing
+ * would ever offer them again. Asking from nothing instead re-pages the run under the new
+ * interest, and the events that arrive are folded normally — the engine dedups on what it has
+ * stored, not on what its cursor claims, so the repair is complete.
+ *
+ * Narrowing keeps the cursor, because a cursor true for a wider slice is true for a smaller
+ * one. So does an unscoped cursor, whose plain meaning is already the stronger claim. A device
+ * the room re-entitled (D24) re-pages too, whatever its interest.
+ */
+export const joinPosition = (
+  context: TransportContext,
+  interest: Interest | undefined,
+  reentitled: boolean,
+) => {
+  const coverage = context.engine.coverage();
+  const repaging = reentitled || !covers(context, interest, scopeFrom(coverage.scope).interest);
+  return { cursors: repaging ? new Map<PeerId, SeqNum>() : coverage.synced, repaging };
+};

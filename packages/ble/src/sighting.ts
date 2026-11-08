@@ -1,3 +1,11 @@
+import type { Backoff } from "@syncmesh/transport";
+
+import type { discovery } from "./dial.js";
+import type { BleAdvertisement } from "./radio.js";
+
+import { hintFrom, inFleet } from "./advert.js";
+import { shouldDial } from "./dial.js";
+
 /**
  * What this radio decided about one advertisement, and which rung decided it.
  *
@@ -97,4 +105,43 @@ export const judge = (hint: string | undefined, self: string, rungs: Rungs): Ble
   if (hint !== undefined && !rungs.mine()) return "theirs-to-dial";
   if (!rungs.ready()) return "backing-off";
   return hint === undefined ? "dialling-unnamed" : "dialling";
+};
+
+/** One advertisement judged, with the key its link is known by. */
+export const judgeAdvert = (
+  advert: BleAdvertisement,
+  on: {
+    readonly self: string;
+    readonly serviceUuid: string;
+    readonly ours: Uint8Array | undefined;
+    readonly seen: ReturnType<typeof discovery>;
+    readonly backoff: Backoff;
+  },
+) => {
+  const hint = hintFrom(advert, on.serviceUuid);
+  /**
+   * What this link is known by: the hint where one arrived, the peripheral id where none
+   * did — a backgrounded iPhone announces no readable name (`./sighting.ts`), and keying
+   * it by the only identifier it did supply is what keeps it dialable.
+   */
+  const key = hint ?? advert.peripheralId;
+  /**
+   * The rungs, named rather than fallen through.
+   *
+   * Each was a bare `return`, which made every way of finding nobody look the same from
+   * outside — see `./sighting.ts`. The order and the short-circuiting are unchanged:
+   * `fresh` records as it answers, so a stranger's phone must be refused above it.
+   */
+  const verdict = judge(hint, on.self, {
+    // said *something*, whether or not we could read it — which is what separates
+    // somebody's headphones from an iPhone that has gone quiet behind a lock screen
+    announced: () => advert.localName !== undefined || advert.serviceDataBase64 !== undefined,
+    // the only refusal this medium has room for: another fleet's phone is not a threat,
+    // merely not ours to spend a connection and a handshake on
+    ours: () => inFleet(advert, on.ours, on.serviceUuid),
+    fresh: () => on.seen.sighted(key, advert.peripheralId),
+    mine: () => hint !== undefined && shouldDial(on.self, hint),
+    ready: () => on.backoff.ready(key),
+  });
+  return { hint, key, verdict };
 };

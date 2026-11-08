@@ -1,18 +1,18 @@
 import type { PeerId } from "@syncmesh/kernel";
-import type { Transport, Upgraded } from "@syncmesh/transport";
+import type { Transport, TransportContext, Upgraded } from "@syncmesh/transport";
 
 import { Result, omitUndefined } from "@syncmesh/result";
 import { createBackoff, createFrameTransport, createLiveness } from "@syncmesh/transport";
 
-import type { LinkOptions } from "./link.js";
-import type { BleAdvertisement, BleRadio, Unsubscribe } from "./radio.js";
+import type { BleRadio, Unsubscribe } from "./radio.js";
 import type { BleSighting } from "./sighting.js";
 
-import { advertisement, groupFrom, groupTag, hintFrom, hintOf } from "./advert.js";
-import { discovery, shouldDial } from "./dial.js";
+import { advertisement, groupTag, hintOf } from "./advert.js";
+import { discovery } from "./dial.js";
+import { createRestart, stopRadio, watchPower } from "./lifecycle.js";
 import { bleLink } from "./link.js";
-import { notifyLimit as notifyLimitOf, subscriberLimit, writeLimit } from "./radio.js";
-import { judge } from "./sighting.js";
+import { notifyLimit, subscriberLimit, writeLimit } from "./radio.js";
+import { judgeAdvert } from "./sighting.js";
 
 /**
  * BLE as a `FrameTransport`.
@@ -116,35 +116,10 @@ const dropPeer = (
   for (const [hint, id] of proven) if (id === peer) close(hint);
 };
 
-/**
- * One restart at a time, and never one fewer than was asked for.
- *
- * Two reasons to restart arrive within a tick of each other — the adapter announcing `poweredOn`
- * and a `wake()` from the app are the same recovery reaching this transport by two routes — and
- * run interleaved they are worse than either alone: the second teardown takes down the links the
- * first had just finished building.
- *
- * A request arriving mid-restart is *owed one more pass* rather than dropped. Dropping it assumes
- * the running restart already saw what the new request knows, and the case that assumption loses
- * is exactly the one that matters: a restart that began while the adapter was still off.
- */
-const serialise = () => {
-  let running: Promise<void> | undefined;
-  let owed = false;
-  return (stop: () => Promise<void>, start: () => Promise<void>): Promise<void> => {
-    if (running !== undefined) {
-      owed = true;
-      return running;
-    }
-    running = (async () => {
-      do {
-        owed = false;
-        await stop();
-        await start();
-      } while (owed);
-    })().finally(() => (running = undefined));
-    return running;
-  };
+/** The one link nobody dialled, when the platform will not say which central wrote. */
+const onlyInbound = (held: ReadonlyMap<string, Held>): string | undefined => {
+  const inbound = [...held].filter(([, entry]) => entry.connectionId === undefined);
+  return inbound.length === 1 ? inbound[0]?.[0] : undefined;
 };
 
 /**
@@ -213,7 +188,7 @@ export function bleTransport(options: BleOptions): Transport {
    */
   const proven = new Map<string, PeerId>();
   const drop = (why: string) => options.onDropped?.(why);
-  let notifyLimit = notifyLimitOf(undefined);
+  let notifySize = notifyLimit(undefined);
 
   /**
    * Forgets a link, and the peer with it.
@@ -225,8 +200,8 @@ export function bleTransport(options: BleOptions): Transport {
   let closeLink = (hint: string): void => void hint;
   /** The link deadline's timer, let go on close so a stopped radio leaves nothing running. */
   let stopLiveness: (() => void) | undefined;
-  /** Holds the two reasons to restart to one at a time. See {@link serialise}. */
-  const restart = serialise();
+  /** Holds the two reasons to restart to one at a time. See {@link createRestart}. */
+  const restart = createRestart<TransportContext>();
 
   /**
    * What `open` was called with, kept so the radio coming back can repeat it.
@@ -262,30 +237,12 @@ export function bleTransport(options: BleOptions): Transport {
      */
     route: () => ({ direct: true, bandwidthBps: BLE_BANDWIDTH_BPS }),
     open: async (ctx, _attach, upgrade) => {
-      reopen = () =>
-        restart(
-          () => transport.stop(),
-          () => transport.start(ctx),
-        );
-      /**
-       * The radio telling us it came back, which is the only way this recovers on its own.
-       *
-       * `wake()` exists for something outside to knock; this is the medium knocking for itself, and
-       * it is the difference between "Bluetooth works again once you relaunch" and "Bluetooth works
-       * again". `poweredOn` arriving after anything else means the adapter was off, refused or
-       * resetting and now is not — every one of which tore down discovery underneath us.
-       *
-       * The first `poweredOn` is skipped: `open` is already doing that work, and restarting the
-       * transport from inside its own `open` would be a loop rather than a recovery.
-       */
-      let wasOn = true;
+      reopen = () => restart(transport, ctx);
+      // the first `poweredOn` is skipped: `open` is already doing that work (see `watchPower`)
       watchAdapter?.();
-      watchAdapter = radio.onAdapterStateChanged?.((state) => {
-        const on = state === "poweredOn";
-        if (on && !wasOn) void reopen?.().catch((cause: unknown) => drop(String(cause)));
-        wasOn = on;
+      watchAdapter = watchPower(radio, () => {
+        void reopen?.().catch((cause: unknown) => drop(String(cause)));
       });
-      const self = hintOf(ctx.identity.peerId);
       /**
        * A peer that will not connect is re-advertised every second or so, and dialling each
        * sighting spends the controller on a link that is not going to open. Keyed by hint,
@@ -298,21 +255,15 @@ export function bleTransport(options: BleOptions): Transport {
         probe: () => transport.resync?.(),
       });
       stopLiveness = alive.stop;
-      /**
-       * Whether an advertisement is one of ours, when it says.
-       *
-       * Abstains rather than refuses when it does not: an older build advertises no group, and a
-       * platform that surfaces only the local name drops the field entirely. Refusing on a field
-       * that may simply not have arrived would make a working fleet invisible to itself.
-       */
-      const ours = options.group === undefined ? undefined : groupTag(options.group);
-      const ourFleet = (advert: BleAdvertisement): boolean => {
-        if (ours === undefined) return true;
-        const theirs = groupFrom(advert, serviceUuid);
-        if (theirs === undefined) return true;
-        return theirs.every((byte, at) => byte === ours[at]);
-      };
       const seen = discovery(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs });
+      const judging = {
+        self: hintOf(ctx.identity.peerId),
+        serviceUuid,
+        // our fleet's group tag, which `inFleet` holds an advertisement to
+        ours: options.group === undefined ? undefined : groupTag(options.group),
+        seen,
+        backoff,
+      };
 
       closeLink = (hint) => {
         const link = held.get(hint);
@@ -333,24 +284,24 @@ export function bleTransport(options: BleOptions): Transport {
        * boundaries the medium already has.
        */
       const hold = (hint: string, connectionId: string | undefined, mtu?: number): Held => {
-        const wiring: LinkOptions = {
+        const end = (why: string): void => {
+          drop(why);
+          closeLink(hint);
+        };
+        const link = bleLink({
           radio,
           serviceUuid,
           characteristicUuid,
           peer: hint,
+          // its presence is the role: a link with a connection writes, one without notifies
+          connectionId,
           // read per send, not captured: a notification's size is renegotiated as subscribers change
-          limit: () => (connectionId === undefined ? notifyLimit : writeLimit(mtu)),
+          limit: () => (connectionId === undefined ? notifySize : writeLimit(mtu)),
           onDropped: drop,
           // a write that did not leave ends the link; the next advertisement rebuilds it, and
           // the bridge resyncs from its cursors, which is the recovery every loud failure uses
-          onFailed: (cause) => {
-            drop(`the link to ${hint} failed: ${String(cause)}`);
-            closeLink(hint);
-          },
-        };
-        // its presence is the role: a link with a connection writes, one without notifies
-        if (connectionId !== undefined) Object.assign(wiring, { connectionId });
-        const link = bleLink(wiring);
+          onFailed: (cause) => end(`the link to ${hint} failed: ${String(cause)}`),
+        });
         const session = upgrade.frames(link, {
           onProven: (peer) => void proven.set(hint, peer),
           /**
@@ -362,10 +313,7 @@ export function bleTransport(options: BleOptions): Transport {
            * sustains six links and runs on a battery is the difference that matters.
            */
           onRefused: () => backoff.failed(hint),
-          onClosed: (why) => {
-            drop(why);
-            closeLink(hint);
-          },
+          onClosed: end,
         });
         const entry: Held = { link, session, connectionId };
         held.set(hint, entry);
@@ -391,85 +339,44 @@ export function bleTransport(options: BleOptions): Transport {
         services: [{ uuid: serviceUuid, characteristics: [{ uuid: characteristicUuid }] }],
       });
       await radio.startAdvertising(advertisement(ctx.identity.peerId, serviceUuid, options.group));
+      // nothing awaited between the scan starting and the listeners below: what is already in the
+      // air arrives a tick later, and a listener not yet subscribed would miss it
       await radio.startScan({ serviceUuids: [serviceUuid] });
 
       listening.push(
         radio.onScanResult((advert) => {
-          const hint = hintFrom(advert, serviceUuid);
-          /**
-           * What this link is known by: the hint where one arrived, the peripheral id where none
-           * did — a backgrounded iPhone announces no readable name (`./sighting.ts`), and keying
-           * it by the only identifier it did supply is what keeps it dialable.
-           */
-          const key = hint ?? advert.peripheralId;
-          /**
-           * The rungs, named rather than fallen through.
-           *
-           * Each was a bare `return`, which made every way of finding nobody look the same from
-           * outside — see `./sighting.ts`. The order and the short-circuiting are unchanged:
-           * `fresh` records as it answers, so a stranger's phone must be refused above it.
-           */
-          const verdict = judge(hint, self, {
-            // said *something*, whether or not we could read it — which is what separates
-            // somebody's headphones from an iPhone that has gone quiet behind a lock screen
-            announced: () =>
-              advert.localName !== undefined || advert.serviceDataBase64 !== undefined,
-            // the only refusal this medium has room for: another fleet's phone is not a threat,
-            // merely not ours to spend a connection and a handshake on
-            ours: () => ourFleet(advert),
-            fresh: () => seen.sighted(key, advert.peripheralId),
-            mine: () => hint !== undefined && shouldDial(self, hint),
-            ready: () => backoff.ready(key),
-          });
+          const { hint, key, verdict } = judgeAdvert(advert, judging);
           options.onSighting?.({ hint, peripheralId: advert.peripheralId, verdict });
           if (verdict !== "dialling" && verdict !== "dialling-unnamed") return;
           void dial(key, advert.peripheralId);
         }),
-      );
-
-      listening.push(
         radio.onCharacteristicValueChanged((event) => {
           const hint = byConnection.get(event.connectionId);
           if (hint === undefined) return drop("a notification arrived on no link of ours");
           alive.heard(hint);
           held.get(hint)?.link.accept(event.valueBase64);
         }),
-      );
-
-      listening.push(
         radio.onCharacteristicWriteRequested((event) => {
           // the dialled side: whoever wrote is the peer, and this is the first we hear of them.
           // A platform that does not name the central leaves one inbound link the only answer —
           // stated rather than guessed at, because guessing would cross two peers' frames
-          const hint = event.centralId ?? onlyInbound();
+          const hint = event.centralId ?? onlyInbound(held);
           if (hint === undefined) return drop("a write arrived and no peer could be named for it");
           const entry = held.get(hint) ?? hold(hint, undefined);
           alive.heard(hint);
           entry.link.accept(event.valueBase64);
         }),
-      );
-
-      // one number for every notification this peripheral sends, which is how the platform
-      // reports it; a link reads it per send rather than holding a copy that could go stale
-      listening.push(
+        // one number for every notification this peripheral sends, which is how the platform
+        // reports it; a link reads it per send rather than holding a copy that could go stale
         radio.onSubscribersChanged((event) => {
-          notifyLimit = subscriberLimit(event.maximumUpdateValueLength);
+          notifySize = subscriberLimit(event.maximumUpdateValueLength);
         }),
-      );
-
-      listening.push(
         radio.onConnectionStateChanged((event) => {
           if (event.state === "connected") return;
           const hint = byConnection.get(event.connectionId);
           if (hint !== undefined) closeLink(hint);
         }),
       );
-
-      /** The one link nobody dialled, when the platform will not say which central wrote. */
-      const onlyInbound = (): string | undefined => {
-        const inbound = [...held].filter(([, entry]) => entry.connectionId === undefined);
-        return inbound.length === 1 ? inbound[0]?.[0] : undefined;
-      };
     },
     close: async () => {
       stopLiveness?.();
@@ -485,14 +392,7 @@ export function bleTransport(options: BleOptions): Transport {
       byConnection.clear();
       proven.clear(); // a stopped radio reaches nobody, whatever it proved while it was up
       // a radio that will not stop is already gone; there is nobody left to report it to
-      const stopped = await Result.tryPromise({
-        try: async () => {
-          await radio.stopScan();
-          await radio.stopAdvertising();
-          await radio.unpublishServices();
-        },
-        catch: (cause) => cause,
-      });
+      const stopped = await stopRadio(radio);
       if (stopped.isErr()) drop(`the radio did not shut down cleanly: ${String(stopped.error)}`);
     },
   });
