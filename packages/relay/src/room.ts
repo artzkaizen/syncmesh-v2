@@ -27,14 +27,8 @@ import type { RoomTrust } from "./trust.js";
 
 import { createGate } from "./admission.js";
 import { createConnection } from "./connection.js";
-import { fanIn } from "./fan-in.js";
-import {
-  HANDSHAKE_VERSION,
-  RELAY_PROTOCOL_VERSIONS,
-  helloFrame,
-  kaFrame,
-  speaksHandshake,
-} from "./frames.js";
+import { fanIn, fleetGreeting } from "./fan-in.js";
+import { HANDSHAKE_VERSION, RELAY_PROTOCOL_VERSIONS, kaFrame, speaksHandshake } from "./frames.js";
 import { createGrantCache } from "./grant-cache.js";
 import { DEFAULT_LIMITS, createBudget } from "./limits.js";
 import { roomRetention } from "./retention.js";
@@ -310,8 +304,14 @@ export async function openRelayRoom(
     gate: options.admission === undefined ? undefined : createGate(options.admission, name),
   };
   // subscribed after the state exists, because a fanned-in frame is ingested through it
-  const offFan = await hearFleet(fan, fanIn(state), () =>
-    helloFrame(Math.max(...versions), keepaliveMs, epoch, cursors(), retention.floor()),
+  const offFan = await hearFleet(fan, fanIn(state), (maxFrame) =>
+    fleetGreeting({
+      version: Math.max(...versions),
+      keepaliveMs,
+      epoch,
+      cursors: cursors(),
+      maxFrame,
+    }),
   );
 
   // said once, at open, and never again: which rooms grow forever is a thing an operator should
@@ -362,12 +362,12 @@ export async function openRelayRoom(
 async function hearFleet(
   fan: FanoutLink | undefined,
   deliver: (frame: Uint8Array) => void,
-  greeting: () => Uint8Array,
+  greeting: (maxFrame: number | undefined) => Uint8Array,
 ): Promise<(() => void) | undefined> {
   if (fan === undefined) return undefined;
   const off = fan.onFrame(deliver);
   await fan.heard?.();
-  fan.publish(greeting());
+  fan.publish(greeting(fan.maxFrame));
   return off;
 }
 

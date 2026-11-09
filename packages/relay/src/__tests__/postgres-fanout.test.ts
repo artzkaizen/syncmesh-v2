@@ -1,4 +1,4 @@
-import { createMemoryEventStore } from "@syncmesh/engine";
+import { createMemoryEventStore, type EventStore } from "@syncmesh/engine";
 import { grantFrame } from "@syncmesh/transport";
 import { describe, expect, test } from "bun:test";
 
@@ -6,7 +6,7 @@ import { relayedFrame } from "../frames.js";
 import { createGrantCache } from "../grant-cache.js";
 import { postgresFanout } from "../postgres-fanout.js";
 import { openRelayRoom } from "../room.js";
-import { mintFor, peer, until, write } from "./fixtures.js";
+import { entryOf, mintFor, peer, until, write } from "./fixtures.js";
 
 /** Postgres in one object: every listener on a channel hears every notify, the notifier included. */
 const fakePostgres = () => {
@@ -221,4 +221,30 @@ describe("a room opened over postgresFanout", () => {
     for (const room of [serving, opened]) room.close();
     third.close();
   });
+
+  test("is answered when its log names more authors than one notification holds (gaps U41)", async () => {
+    const pg = fakePostgres();
+    const oversize: number[] = [];
+    const fanout = postgresFanout({
+      client: pg.client,
+      onOversize: (bytes) => oversize.push(bytes),
+    });
+    // 250 authors at 40-odd bytes of cursor each: a whole greeting is past Postgres's 8000 bytes
+    const authors = Array.from({ length: 250 }, (_, i) => peer(3 + i, `acct_${i}`));
+    const first = await Promise.all(authors.map((author, i) => write(author, `n${i}`, "held")));
+    const missed = await write(authors[0]!, "late", "missed");
+    const holding = async (wires: readonly Uint8Array[]) => {
+      const store = createMemoryEventStore();
+      (await store.appendBatch(wires.map(entryOf))).unwrap();
+      return store;
+    };
+    const open = (store: EventStore) =>
+      openRelayRoom({ name: "main", store, epoch: "e", keepaliveMs: 60_000, fanout });
+    const serving = (await open(await holding([...first, missed]))).unwrap();
+
+    const opened = (await open(await holding(first))).unwrap();
+    expect(await until(() => opened.offset() === 251, 20_000)).toBe(true);
+    expect(oversize).toEqual([]);
+    for (const room of [serving, opened]) room.close();
+  }, 60_000); // 250 signing identities take seconds to derive before a room opens
 });

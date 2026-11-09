@@ -7,7 +7,7 @@ import type { RoomState } from "./state.js";
 
 import { routeCustody } from "./custody-route.js";
 import { decodeRelayFrame } from "./frame-decode.js";
-import { relayedFrame } from "./frames.js";
+import { helloFrame, relayedFrame } from "./frames.js";
 import { absorbEvent } from "./ingest.js";
 import { admitGrant } from "./trust.js";
 
@@ -29,7 +29,8 @@ import { admitGrant } from "./trust.js";
  * Best-effort stays best-effort: a frame the transport drops while both instances hold the room
  * is not recovered by this. What recovers it is a device that holds the event joining this
  * instance and pushing everything above the cursors the `hello` advertised — or this instance
- * opening the room afresh, after an idle eviction, and greeting the fleet again.
+ * opening the room afresh, after an idle eviction, and greeting the fleet again
+ * ({@link fleetGreeting}, cut to what the transport carries).
  */
 export function fanIn(room: RoomState): (frame: Uint8Array) => void {
   return (frame) => {
@@ -95,7 +96,12 @@ export function fanIn(room: RoomState): (frame: Uint8Array) => void {
  * hold: a `has` each, deduplicated by id, which is the price of a port with no addressing.
  * Published straight from the log, one frame per event, on the room's queue — so a room with a
  * long history spends its fan-out rate on it, and an event too large for the transport goes as
- * the transport's own gap signal, exactly as it does live.
+ * the transport's own gap signal, exactly as it does live. Unpaced and outside the room's
+ * `roomFanout` budget: a greeting with few cursors on a long log is answered with all of it, by
+ * every instance holding the room.
+ *
+ * The answer is this log as it stands, floor and all: an answerer trimmed above the opener's
+ * cursors sends what it still holds, and the hole below it waits for a device join to fill.
  */
 async function catchUpInstance(room: RoomState, theirs: Cursors): Promise<void> {
   const entries = await room.store.allSince(theirs);
@@ -106,4 +112,47 @@ async function catchUpInstance(room: RoomState, theirs: Cursors): Promise<void> 
     const wire = relayEnvelope(entry);
     if (wire !== undefined) room.publish(relayedFrame(wire, room.offset()));
   }
+}
+
+/** What {@link fleetGreeting} is built from. */
+export interface FleetGreeting {
+  /** The highest protocol version the room speaks. */
+  readonly version: number;
+  readonly keepaliveMs: number;
+  readonly epoch: string;
+  /** Where the opening room's log stands. */
+  readonly cursors: Cursors;
+  /** The largest frame the fan-out carries as itself (`FanoutLink.maxFrame`); absent, no limit. */
+  readonly maxFrame?: number | undefined;
+}
+
+/**
+ * The `hello` a room opening on an instance publishes on the fan-out, for every instance already
+ * holding the room to answer (gaps U41).
+ *
+ * Its cursors and no floor, since {@link fanIn} reads only the cursors. Past `maxFrame` it names
+ * the authors furthest along and leaves the rest out: an author left out is answered from its
+ * first event, which costs the opener duplicates it drops by id and never a gap. A frame the
+ * fan-out could not carry would be no greeting at all.
+ *
+ * @example
+ * ```ts
+ * fan.publish(fleetGreeting({ version: 4, keepaliveMs: 15_000, epoch, cursors, maxFrame: fan.maxFrame }));
+ * ```
+ */
+export function fleetGreeting(greeting: FleetGreeting): Uint8Array {
+  const { version, keepaliveMs, epoch, cursors, maxFrame } = greeting;
+  const hello = (named: Cursors) => helloFrame(version, keepaliveMs, epoch, named);
+  const whole = hello(cursors);
+  if (maxFrame === undefined || whole.length <= maxFrame) return whole;
+  const furthest = [...cursors].sort(([, a], [, b]) => b - a);
+  // the longest prefix that fits: every entry costs about the same, so a bisection over it
+  let fits = 0;
+  let over = furthest.length;
+  while (over - fits > 1) {
+    const mid = Math.floor((fits + over) / 2);
+    if (hello(new Map(furthest.slice(0, mid))).length <= maxFrame) fits = mid;
+    else over = mid;
+  }
+  return hello(new Map(furthest.slice(0, fits)));
 }

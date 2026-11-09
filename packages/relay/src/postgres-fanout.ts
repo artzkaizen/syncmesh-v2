@@ -157,6 +157,7 @@ export function postgresFanout(options: PostgresFanoutOptions): Fanout {
           return () => void listeners.delete(listener);
         },
         heard: () => subscribed,
+        maxFrame: MAX_FRAME,
         close: () => {
           listeners.clear();
           const off = stop;
