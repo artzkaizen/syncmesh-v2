@@ -206,7 +206,11 @@ devices that joined with different scopes converge once their interests meet.
 - Should a windowed snapshot advertise its window boundary, so the client
   knows where backfill must start rather than guessing?
   (Still open after O13: the window is a count, `{ newest }`, carried in the
-  scope; no boundary stamp travels, and no backfill request exists.)
+  scope; no boundary stamp travels, and no backfill request exists. Until it
+  does, an update to a row outside a device's window folds onto nothing and
+  leaves that row visible with only the patched cells; such a device claims
+  no coverage for any snapshot it serves, so the part-held row never spreads
+  as whole. D23 "Built".)
 - Does a provisional (unsigned) snapshot need to be marked in state, so a UI
   can distinguish "verified" from "shown pending audit"?
 - Backfill by key range or by time range? Time is what users scroll by; keys
