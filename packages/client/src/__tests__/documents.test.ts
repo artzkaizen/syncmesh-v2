@@ -1,6 +1,7 @@
 import { append, oplog, values, type OpLog } from "@syncmesh/docs/testing";
 import { createLink } from "@syncmesh/engine";
 import { parsePartitionKey, type Procedure, type RowKey } from "@syncmesh/kernel";
+import { relayTransport, startRelay, webSocketDial } from "@syncmesh/relay";
 import { drizzleTable, from, partition, syncSchema, type DocumentAdapter } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { isBlobHash, sqlBlobStore } from "@syncmesh/storage";
@@ -8,6 +9,9 @@ import { Temporal } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import { blob, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { createMesh } from "../mesh.js";
 import { sqlite } from "../options.js";
@@ -42,7 +46,12 @@ const FAST = {
   max: Temporal.Duration.from({ milliseconds: 20 }),
 };
 
-const open = async (n: number, documents = true, withBlobs = false) => {
+const open = async (
+  n: number,
+  documents = true,
+  withBlobs = false,
+  transports: Parameters<typeof createMesh>[0]["transports"] = [],
+) => {
   let ms = T0.epochMilliseconds + n;
   const driver = bunSqliteDriver(":memory:");
   const blobs = withBlobs ? (await sqlBlobStore(driver)).unwrap() : undefined;
@@ -53,6 +62,7 @@ const open = async (n: number, documents = true, withBlobs = false) => {
       now: () => Temporal.Instant.fromEpochMilliseconds((ms += 1)),
       storage: sqlite({ driver, ...(blobs !== undefined && { blobs }) }),
       ...(documents && { documents: { adapters: [oplog()], pacing: FAST } }),
+      transports,
     })
   ).unwrap();
 };
@@ -138,6 +148,44 @@ describe("documents through a mesh (RFC-0023 §4.3)", () => {
     expect(await a.blobs.has(parseBlobHash(ref?.hash))).toBe(true);
     await a.stop();
   });
+
+  test("a burst put offline reaches a peer once the author has a carrier", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "syncmesh-docblobs-"));
+    const relay = await startRelay(0, { dataDir, keepaliveMs: 60_000 });
+    const carrier = () => relayTransport({ dial: webSocketDial(relay.url), reconnectMs: 20 });
+    try {
+      const a = await open(44, true, true);
+      const { name: table, columnNames } = schema().tables.notes;
+      const address = { table, key: N1, column: columnNames.content };
+      const pasted = "q".repeat(70 * 1024); // past the 64 KiB inline bound
+      (
+        await (a.docs ?? panicked()).mutate(
+          CREATE,
+          (tx, writes) => {
+            tx.insert(table, address.key, new Map([[columnNames.id, "n1"]]));
+            writes.change<OpLog>(address, (doc) => append(doc, pasted));
+          },
+          { partition: W1 },
+        )
+      ).unwrap();
+      // no transport at all: the bytes stay here, and nothing refused the write
+      (await a.transports.add(carrier())).unwrap();
+      const b = await open(94, true, true, [carrier()]);
+      const docs = b.docs ?? panicked();
+      const reads = async () => {
+        const doc = (await docs.open<OpLog>(address)).unwrap();
+        const read = values(doc.value);
+        (await doc.close()).unwrap();
+        return read;
+      };
+      expect(await until(async () => (await reads())[0] === pasted, 8000)).toBe(true);
+      await a.stop();
+      await b.stop();
+    } finally {
+      await relay.stop();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   test("without `documents` a mesh folds and keeps the column, and has no runtime to open it", async () => {
     const a = await open(41);
