@@ -81,8 +81,8 @@ const rowsOf = (
  * the durable half and the derived one is unaffected: it says which tables a backup must include,
  * not which file they sit in (RFC-0022).
  *
- * The migration ladder moves with it. `PRAGMA` is refused here too, so the position is a row in
- * `syncmesh_meta` rather than a `user_version`.
+ * The migration ladder moves with it. `PRAGMA user_version` is refused here (workerd allows
+ * `quick_check` and little else, D39), so the position is a row in `syncmesh_meta`.
  *
  * @example
  * const store = (await sqliteEventStore(doSqliteDriver(ctx.storage.sql))).unwrap();

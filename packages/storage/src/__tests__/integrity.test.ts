@@ -62,4 +62,11 @@ describe("verifyLog on an inline log (D39)", () => {
     const verified = await verifyLog(driver);
     expect(verified.isErr() && verified.error._tag).toBe("StoreFailure");
   });
+
+  test("a garbled header SQLite calls an unsupported file format is damage, not a refusal", async () => {
+    const driver = inline(/^PRAGMA/, "unsupported file format");
+    (await sqliteEventStore(driver)).unwrap();
+    const verified = await verifyLog(driver);
+    expect(verified.isErr() && verified.error._tag).toBe("StoreFailure");
+  });
 });

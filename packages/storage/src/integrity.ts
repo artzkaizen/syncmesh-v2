@@ -45,9 +45,10 @@ const quickCheck = (driver: SqlDriver): Promise<Result<void, StoreFailure>> =>
  * How a runtime says it will not run a statement: SQLite's authorizer, which is workerd's answer
  * to most `PRAGMA`s, and the plain words another runtime's own gate would use. Anything else a
  * check throws is the check failing: workerd reports a torn page it reads as an assertion
- * (`false == true`), not as `SQLITE_CORRUPT`, so damage cannot be matched by name.
+ * (`false == true`), not as `SQLITE_CORRUPT`, so damage cannot be matched by name. Not
+ * "unsupported": SQLite says "unsupported file format" of a garbled header, which is damage.
  */
-const REFUSED = /not authorized|SQLITE_AUTH|not allowed|not permitted|not supported|unsupported/i;
+const REFUSED = /not authorized|SQLITE_AUTH|not allowed|not permitted|not supported/i;
 
 /**
  * `PRAGMA quick_check(<table>)` over each log table of a log that shares its database with the
@@ -168,8 +169,9 @@ const amcheck = (driver: SqlDriver): Promise<Result<void, StoreFailure | NoInteg
 
 /**
  * Checks the log's pages for damage a read cannot see (D39): `PRAGMA quick_check` on a device's
- * SQLite log and on each log table of an inline one (a Durable Object), `amcheck` on Postgres. O(log size), so it runs on demand — `mesh.inspect.verify()`
- * — and at boot after an unclean shutdown, never on an ordinary launch.
+ * SQLite log and on each log table of an inline one (a Durable Object), `amcheck` on Postgres.
+ * O(log size), so it runs on demand — `mesh.inspect.verify()` — and at boot after an unclean
+ * shutdown, never on an ordinary launch.
  *
  * Damage is a `StoreFailure` naming what the database reported; a database that offers no check
  * answers {@link NoIntegrityCheck}.
@@ -199,7 +201,8 @@ const sessioned = (driver: SqlDriver): boolean =>
  * marks the session open, so a crash before the next clean close is seen at the next start.
  *
  * Only on a device's SQLite. A Postgres log is shared by every process that opens it and is
- * recovered by its own server; an inline log has no check to run.
+ * recovered by its own server. An inline log shares its database with the state and has no
+ * unclean session of its own to see; {@link verifyLog} still checks it on demand.
  */
 export function openSession(driver: SqlDriver): Promise<Result<void, StoreFailure>> {
   if (!sessioned(driver)) return Promise.resolve(Result.ok(undefined));
