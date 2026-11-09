@@ -74,7 +74,7 @@ export const installSchema = (
       return Result.err(
         new StoreFailure({
           message:
-            "the app's tables changed shape and this log cannot rebuild every row — it has been compacted, or rows came from a snapshot install with no events behind them, and those exist only in the state file the previous shape wrote, so there is nothing left to refold them from. Keep the previous schema, or rejoin from a peer.",
+            "the app's tables changed shape and this log cannot rebuild every row — it has been compacted, and the rows below its floor exist only in the state file the previous shape wrote, so there is nothing left to refold them from. Keep the previous schema, or rejoin from a peer.",
         }),
       );
     }
