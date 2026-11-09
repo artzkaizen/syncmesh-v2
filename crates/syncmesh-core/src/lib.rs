@@ -63,7 +63,8 @@ pub use record_codec::{decode_record, encode_record};
 pub use refusal::{QuarantineReason, RefusalReceipt, issue_refusal, verify_refusal};
 pub use signed::Signed;
 pub use snapshot_codec::{
-    MalformedSnapshot, SnapshotRow, decode_snapshot_rows, encode_snapshot_rows,
+    MalformedSnapshot, PageCheckpoint, PageDocs, SnapshotPage, SnapshotRow, decode_snapshot_page,
+    decode_snapshot_rows, encode_snapshot_page, encode_snapshot_rows,
 };
 
 // Session frames, BLE fragments, length framing, relay control frames, the join proof and the

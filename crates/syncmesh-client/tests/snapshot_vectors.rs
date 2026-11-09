@@ -312,3 +312,50 @@ fn a_rust_joiner_reaches_the_typescripts_coverage_under_every_policy() {
         assert_eq!(got, case["settled"], "{what}: settled");
     }
 }
+
+/// The pages a set of served frames carries, decoded.
+fn pages(frames: &Value) -> Vec<(Vec<u8>, syncmesh_core::SnapshotPage)> {
+    frames
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|hex| match snapshot(hex) {
+            SnapshotFrame::Chunk { bytes, .. } => {
+                let page = syncmesh_core::decode_snapshot_page(&bytes).expect("a page");
+                Some((bytes, page))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_rust_reader_takes_the_typescripts_pages_with_documents_byte_for_byte() {
+    // E30 P5: a holder with a document runtime serves version 2 pages, each carrying its rows'
+    // checkpoints and whether the page holds all of them; a Rust reader decodes each to the same
+    // rows a holder without documents serves, and re-encodes it to the bytes that were sent
+    let doc = vectors();
+    let documented = pages(&doc["served"]["documented"]["frames"]);
+    let plain = pages(&doc["served"]["everything"]["frames"]);
+    assert_eq!(documented.len(), plain.len());
+    let issuer = PeerId::parse(doc["issuer"].as_str().unwrap()).unwrap();
+    let mut flags = Vec::new();
+    for ((sent, page), (_, rows_only)) in documented.iter().zip(&plain) {
+        assert!(rows_only.docs.is_none());
+        assert_eq!(page.rows, rows_only.rows);
+        let docs = page.docs.as_ref().expect("a version 2 page");
+        assert_eq!(docs.checkpoints.len(), page.rows.len());
+        for (entry, row) in docs.checkpoints.iter().zip(&page.rows) {
+            assert_eq!(entry.producer, issuer);
+            assert_eq!(entry.snapshot, row.key.as_bytes());
+        }
+        let tombstoned = page.rows.iter().any(|r| r.record.delete_stamp.is_some());
+        assert_eq!(docs.complete, !tombstoned);
+        flags.push(docs.complete);
+        assert_eq!(
+            &syncmesh_core::encode_snapshot_page(&page.rows, Some(docs)),
+            sent
+        );
+    }
+    assert!(flags.contains(&true) && flags.contains(&false));
+}

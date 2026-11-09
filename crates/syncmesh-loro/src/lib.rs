@@ -7,9 +7,10 @@
 
 pub use loro;
 
+use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use loro::{ExportMode, LoroDoc, LoroResult, VersionVector};
+use loro::{Counter, ExportMode, Frontiers, ID, LoroDoc, LoroResult, PeerID, VersionVector};
 use syncmesh_client::docs::{DocLimits, DocumentAdapter, UpdateRejected};
 
 /// `loro@1`: the major is the compatibility contract (RFC-0023 §10): Loro's own 1.x snapshots and
@@ -99,6 +100,61 @@ pub fn decode_version(bytes: &[u8]) -> Result<VersionVector, UpdateRejected> {
     Ok(vv)
 }
 
+/// Per peer, the counters `[start, end)` the updates' operations span: what a write made.
+fn spans(updates: &[&[u8]]) -> Result<BTreeMap<PeerID, (Counter, Counter)>, String> {
+    let mut out: BTreeMap<PeerID, (Counter, Counter)> = BTreeMap::new();
+    for update in updates {
+        let meta = LoroDoc::decode_import_blob_meta(update, false).map_err(|e| e.to_string())?;
+        for (&peer, &end) in meta.partial_end_vv.iter() {
+            let start = meta.partial_start_vv.get(&peer).copied().unwrap_or(0);
+            if end <= start {
+                continue;
+            }
+            out.entry(peer)
+                .and_modify(|span| *span = (span.0.min(start), span.1.max(end)))
+                .or_insert((start, end));
+        }
+    }
+    Ok(out)
+}
+
+/// The compensation of `updates` in `doc` (RFC-0023 §9), as `@syncmesh/loro` makes it: on a fork
+/// at the version the write left, the diff back to the version before it, applied as `replica`'s
+/// edit and exported. `None` when importing it would change nothing.
+fn compensation(doc: &LoroDoc, updates: &[&[u8]], replica: u64) -> Result<Option<Vec<u8>>, String> {
+    let made = spans(updates)?;
+    if made.is_empty() {
+        return Ok(None);
+    }
+    let after: Frontiers = made
+        .iter()
+        .map(|(&peer, &(_, end))| ID::new(peer, end - 1))
+        .collect();
+    let mut before = doc
+        .frontiers_to_vv(&after)
+        .ok_or_else(|| "the write is not in this document".to_owned())?;
+    for (&peer, &(start, _)) in &made {
+        before.insert(peer, start);
+    }
+    let before = doc.vv_to_frontiers(&before);
+    let fork = doc.fork_at(&after).map_err(|e| e.to_string())?;
+    fork.set_peer_id(replica).map_err(|e| e.to_string())?;
+    let from = fork.oplog_vv();
+    let back = fork.diff(&after, &before).map_err(|e| e.to_string())?;
+    fork.apply_diff(back).map_err(|e| e.to_string())?;
+    fork.commit();
+    if fork.oplog_vv() == from {
+        return Ok(None);
+    }
+    let update = fork
+        .export(ExportMode::updates(&from))
+        .map_err(|e| e.to_string())?;
+    // the write's effect may be gone already: undone, or overwritten by everyone since
+    let probe = doc.fork();
+    probe.import(&update).map_err(|e| e.to_string())?;
+    Ok((probe.get_deep_value() != doc.get_deep_value()).then_some(update))
+}
+
 impl DocumentAdapter for LoroAdapter {
     type Doc = LoroDoc;
 
@@ -164,6 +220,17 @@ impl DocumentAdapter for LoroAdapter {
             doc.export(ExportMode::updates(&from))
         })
     }
+
+    fn compensate(
+        &self,
+        doc: &LoroDoc,
+        updates: &[&[u8]],
+        replica: u64,
+    ) -> Result<Option<Vec<u8>>, UpdateRejected> {
+        guarded("loro could not compensate those updates", || {
+            compensation(doc, updates, replica)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -175,6 +242,42 @@ mod tests {
         doc.get_text("body").insert(0, text).unwrap();
         doc.commit();
         doc
+    }
+
+    #[test]
+    fn an_edit_is_compensated_under_later_edits_and_the_compensation_is_redone() {
+        let adapter = LoroAdapter::default();
+        let a = adapter.create(1);
+        a.get_text("body").insert(0, "Hello").unwrap();
+        a.commit();
+        let before = a.oplog_vv();
+        a.get_text("body").insert(5, " world").unwrap();
+        a.get_map("meta").insert("tone", "warm").unwrap();
+        a.commit();
+        let action = a.export(ExportMode::updates(&before)).unwrap();
+        // b writes after the action, around it
+        let b = adapter.create(2);
+        adapter
+            .apply(&b, &[&adapter.snapshot(&a).unwrap()])
+            .unwrap();
+        b.get_text("body").insert(0, "> ").unwrap();
+        b.get_text("body").insert(13, "!").unwrap();
+        b.commit();
+        adapter
+            .apply(&a, &[&adapter.since(&b, &adapter.version(&a)).unwrap()])
+            .unwrap();
+        assert_eq!(a.get_text("body").to_string(), "> Hello world!");
+        let undo = adapter.compensate(&a, &[&action], 3).unwrap().unwrap();
+        adapter.apply(&a, &[&undo]).unwrap();
+        assert_eq!(a.get_text("body").to_string(), "> Hello!");
+        assert!(a.get_map("meta").get("tone").is_none());
+        // nothing of the action shows any more
+        assert_eq!(adapter.compensate(&a, &[&action], 4).unwrap(), None);
+        let redo = adapter.compensate(&a, &[&undo], 5).unwrap().unwrap();
+        adapter.apply(&a, &[&redo]).unwrap();
+        assert_eq!(a.get_text("body").to_string(), "> Hello world!");
+        // foreign bytes are a value
+        assert!(adapter.compensate(&a, &[&b"\xff\x00junk"[..]], 6).is_err());
     }
 
     #[test]

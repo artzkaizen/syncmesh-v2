@@ -83,6 +83,17 @@ pub trait DocumentAdapter {
     fn version(&self, doc: &Self::Doc) -> Vec<u8>;
     /// One update holding every operation the document has past `version`.
     fn since(&self, doc: &Self::Doc, version: &[u8]) -> Result<Vec<u8>, UpdateRejected>;
+    /// One update, made as `replica`, that takes back what `updates` did to `doc` — the undo of a
+    /// write (RFC-0023 §9). `doc` holds `updates` and whatever was written after them; the
+    /// compensation is made against the document as `updates` left it and merges with everything
+    /// since as a concurrent edit would, so later edits by anyone stand. `None` when nothing of
+    /// `updates` still shows in `doc`. Compensating a compensation is redo.
+    fn compensate(
+        &self,
+        doc: &Self::Doc,
+        updates: &[&[u8]],
+        replica: u64,
+    ) -> Result<Option<Vec<u8>>, UpdateRejected>;
 }
 
 const REPLICA_DOMAIN: &[u8] = b"syncmesh/doc-replica";
