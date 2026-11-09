@@ -326,6 +326,7 @@ pub trait DocumentAdapter: Send + Sync + 'static {
     fn version(&self, doc: &Self::Doc) -> Version;
     /// Everything since `since`, or None when nothing is new — what a flush exports.
     fn updates_since(&self, doc: &Self::Doc, since: &Version) -> Result<Option<Vec<u8>>, AdapterError>;
+    /// Built as `compensate(doc, updates, replica)` (E30 P6): see the Loro mapping below.
     /// One update that undoes exactly the effect of `action`'s updates on the current document,
     /// leaving concurrent and later edits by others in place. None when nothing remains to undo.
     fn compensating_update(&self, doc: &mut Self::Doc, action: &[&[u8]]) -> Result<Option<Vec<u8>>, AdapterError>;
@@ -348,7 +349,7 @@ registry holds. The TypeScript SPI (`@syncmesh/documents`) has the same six oper
 | `snapshot(floor)` | `export(ShallowSnapshot(floor))`, or `export(Snapshot)` when `floor` is None |
 | `version` | `oplog_vv().encode()` |
 | `updates_since` | `export(Updates { from: vv })` |
-| `compensating_update` | fork at the action's dependencies, import only the action's updates, `diff(after, before)`, `apply_diff` onto the live doc, export the resulting local update |
+| `compensating_update` | fork at the action's dependencies, import only the action's updates, `diff(after, before)`, `apply_diff` onto the live doc, export the resulting local update. **Built as `compensate(doc, updates, replica)` (E30 P6, 2026-11-09):** the replica id is an argument, the diff back is applied on a fork at the version the action left (not the live doc) as that replica's edit, and the fork's export is the update, so it merges with later edits as a concurrent one |
 | `watch_local` | `subscribe_local_update` |
 
 **Replica ids.** Loro corrupts history when two concurrent writers share a peer id, or when a
@@ -528,8 +529,15 @@ checkpoint there. A page spends at most half a frame on checkpoints; one that do
 out and the page is marked incomplete. A sender without a document runtime sends version 1, byte
 for byte as before. The joiner installs the checkpoints after the rows, and below a peer's floor
 adopts the coverage only when every page was complete and every checkpoint's floor is held
-(D46's doc-column rule, lifted). Departs: the snapshot does not ride the bulk profile as a blob;
-`DocRef.status` is not `behind` during a join, since the bytes arrive with the rows.
+(D46's doc-column rule, lifted). The joiner checks `complete` rather than take it: every row of
+the pages whose cell names a lineage must have come with a checkpoint (PR #49 fix round 1). A
+document still on its first lineage, never replaced, leaves no mark in its row, so for it the
+joiner still takes the sender's word.
+Departs: the snapshot does not ride the bulk profile as a blob; `DocRef.status` is not `behind`
+during a join, since the bytes arrive with the rows; there is no page-version negotiation, so a
+build from before version 2 cannot read a documented page, counts it missing and asks again
+without end (accepted before 1.0); each snapshot request makes the server materialise and sign a
+checkpoint per document, with no cache or rate limit.
 
 ## 6 · Storage
 
@@ -551,7 +559,9 @@ adopts the coverage only when every page was complete and every checkpoint's flo
   leave it behind: a row inserted, re-inserted, or rewritten by a snapshot, repair or purge, and a
   document whose winning lineage moved; when the snapshot held is of a lineage that no longer
   wins, the column is `NULL` until the winner is materialised. `doc_snapshots` stays the engine's
-  own copy. Departs: devices write full snapshots, not shallow ones (D41 choice 3), and the Rust
+  own copy. A boot that rebuilds the state from the log, or folds a log tail, writes each
+  committed row's columns back from the held snapshot of the winning lineage the same way (PR #49
+  fix round 1). Departs: devices write full snapshots, not shallow ones (D41 choice 3), and the Rust
   device projects no document column yet (P7).
 
 ### 6.2 Engine tables, declared once in Drizzle 1.0
