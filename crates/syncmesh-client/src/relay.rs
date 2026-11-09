@@ -349,13 +349,40 @@ impl RelayLink {
     }
 
     /// The grant into the registry, when the link has one, and then reported either way.
-    fn grant_arrived(&self, wire: Vec<u8>, now_ms: i64, out: &mut Vec<Action>) {
+    ///
+    /// A grant that becomes the one the registry holds is followed by [`Engine::retry_author`]
+    /// for the device it names (gaps U42): an event of that device's that arrived first — over
+    /// another relay instance, or another transport — sits parked `NoGrant`, and the grant landing
+    /// is new state no fold announces. A grant the registry already held, or held a newer mint
+    /// than, retries nothing. A link with no registry leaves both to the host that registers the
+    /// [`Action::Grant`].
+    fn grant_arrived(
+        &self,
+        engine: &mut Engine,
+        wire: Vec<u8>,
+        now_ms: i64,
+        out: &mut Vec<Action>,
+    ) {
         if let Some(registry) = &self.grants {
-            let mut registry = registry.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Err(e) = registry.register(&wire, now_ms) {
-                out.push(Action::Dropped(format!(
+            // released before the retry: the validator reads the same registry
+            let registered = registry
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .register_newer(&wire, now_ms);
+            match registered {
+                Ok(None) => {}
+                Ok(Some(device)) => match engine.retry_author(&device) {
+                    Ok(received) if received.batch.event_count > 0 => {
+                        out.push(Action::Folded(received.batch));
+                    }
+                    Ok(_) => {}
+                    Err(e) => out.push(Action::Dropped(format!(
+                        "events parked for a granted device could not be retried: {e}"
+                    ))),
+                },
+                Err(e) => out.push(Action::Dropped(format!(
                     "a grant from the room was refused: {e}"
-                )));
+                ))),
             }
         }
         out.push(Action::Grant(wire));
@@ -672,7 +699,7 @@ impl RelayLink {
                 // registered before the page folds: an event whose author's grant rides the same
                 // page is judged with that grant held (`session.ts` onPage)
                 for wire in grants {
-                    self.grant_arrived(wire, now_ms, out);
+                    self.grant_arrived(engine, wire, now_ms, out);
                 }
                 let repaging = self.repaging;
                 // an overflow re-joins and abandons the rest of this page's events; the last-page
@@ -781,7 +808,7 @@ impl RelayLink {
     ) {
         match frame {
             Frame::Presence { wire } => out.push(Action::Presence(wire)),
-            Frame::Grant { wire } => self.grant_arrived(wire, now_ms, out),
+            Frame::Grant { wire } => self.grant_arrived(engine, wire, now_ms, out),
             Frame::Cursors { from, cursors, .. } => {
                 // cursors rather than events, deliberately: a relayed event may be history from a
                 // device that left hours ago, while cursors are a live peer reporting now

@@ -182,6 +182,23 @@ impl ValidationError {
         }
     }
 
+    /// Whether the author's grant decides this verdict — the capability half of the ladder, as
+    /// against its rules (`CAPABILITY_VERDICTS` in `engine/src/quarantine.ts`). A newer grant for
+    /// the author is new state for exactly these, which is what [`Engine::retry_author`]
+    /// re-offers on.
+    ///
+    /// [`Engine::retry_author`]: crate::engine::Engine::retry_author
+    pub fn is_capability(&self) -> bool {
+        matches!(
+            self,
+            ValidationError::NoGrant { .. }
+                | ValidationError::GrantStale { .. }
+                | ValidationError::GrantRevoked { .. }
+                | ValidationError::GrantDeviceMismatch { .. }
+                | ValidationError::PartitionNotGranted { .. }
+        )
+    }
+
     /// The bucket the verdict parks in.
     pub fn reason(&self) -> ParkReason {
         match self {

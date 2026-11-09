@@ -71,6 +71,19 @@ export const isUnknown = (reason: ParkReason): boolean =>
 const clearedByState = (reason: ParkReason): boolean => reason === "refused";
 
 /**
+ * The verdicts the author's grant decides — the capability half of the ladder, as against its
+ * rules. A newer grant for the author is new state for exactly these, which is what
+ * {@link retryAuthor} re-offers on.
+ */
+export const CAPABILITY_VERDICTS = new Set<ValidationError["_tag"]>([
+  "NoGrant",
+  "GrantStale",
+  "GrantRevoked",
+  "GrantDeviceMismatch",
+  "PartitionNotGranted",
+]);
+
+/**
  * One parked event: what arrived, and the verdict this build reached about it.
  *
  * `entry` is the {@link StoredEvent} as it was handed in — the author's own signature over the
@@ -151,7 +164,7 @@ export function createQuarantine(options: QuarantineOptions): QuarantineStore {
   // an eviction order taken from wall time would differ between two devices holding the same
   // events, and this store is already the last place that should depend on one
   const buckets = new Map<ParkReason, Map<string, Parked>>();
-  const bucketOf = (reason: ParkReason): Map<string, Parked> => {
+  const ensureBucket = (reason: ParkReason): Map<string, Parked> => {
     const held = buckets.get(reason) ?? new Map<string, Parked>();
     buckets.set(reason, held);
     return held;
@@ -159,7 +172,7 @@ export function createQuarantine(options: QuarantineOptions): QuarantineStore {
 
   return {
     park: (parked) => {
-      const bucket = bucketOf(parked.reason);
+      const bucket = ensureBucket(parked.reason);
       bucket.delete(parked.entry.event.id);
       bucket.set(parked.entry.event.id, parked);
       while (bucket.size > limit) {
@@ -221,14 +234,45 @@ export function createQuarantine(options: QuarantineOptions): QuarantineStore {
  * every time a batch lands. `refused` is the ladder's verdict on the state at the time, and
  * state moves: the row an update patches may have arrived in the batch that just folded.
  */
-export async function retryRefused(
+export function retryRefused(
   parked: QuarantineStore,
   receive: (entries: readonly StoredEvent[]) => Promise<Result<ReceiveReport, StoreFailure>>,
 ): Promise<Result<ReceiveReport, StoreFailure>> {
+  return retryWhere(parked, ({ reason }) => clearedByState(reason), receive);
+}
+
+/**
+ * One author's events parked on a {@link CAPABILITY_VERDICTS capability verdict}, re-offered; the
+ * rest left where they are. What a grant registering for that author calls (gaps U42).
+ *
+ * An event that arrives before its author's grant is parked `NoGrant`, and the grant is new state
+ * that no fold announces: over any path where grants and events travel separately — two relay
+ * instances, a relay and a radio — the grant can land second, and in a quiet room no later batch
+ * would ever run {@link withRetry} for it. Only the capability verdicts are re-offered, because
+ * a grant decides nothing else; whatever the ladder still refuses is parked again.
+ */
+export function retryAuthor(
+  parked: QuarantineStore,
+  author: PeerId,
+  receive: (entries: readonly StoredEvent[]) => Promise<Result<ReceiveReport, StoreFailure>>,
+): Promise<Result<ReceiveReport, StoreFailure>> {
+  return retryWhere(
+    parked,
+    ({ entry, verdict }) => entry.event.peerId === author && CAPABILITY_VERDICTS.has(verdict._tag),
+    receive,
+  );
+}
+
+/** The parked events `which` picks, re-offered; the store keeps the rest, and the picked ones if the batch fails. */
+async function retryWhere(
+  parked: QuarantineStore,
+  which: (held: Parked) => boolean,
+  receive: (entries: readonly StoredEvent[]) => Promise<Result<ReceiveReport, StoreFailure>>,
+): Promise<Result<ReceiveReport, StoreFailure>> {
   const held = parked.take();
-  const retry = held.filter(({ reason }) => clearedByState(reason));
+  const retry = held.filter(which);
   // back first, so a store emptied by `take` is whole again before anything can fail
-  for (const entry of held) if (!clearedByState(entry.reason)) parked.park(entry);
+  for (const entry of held) if (!which(entry)) parked.park(entry);
   if (retry.length === 0) return Result.ok({ folded: 0, skipped: 0, quarantined: 0 });
   const report = await receive(retry.map(({ entry }) => reread(entry)));
   if (report.isErr()) for (const entry of retry) parked.park(entry);
@@ -245,6 +289,15 @@ export async function retryQuarantined(
   if (report.isErr()) for (const entry of held) parked.park(entry);
   return report;
 }
+
+/** The engine's two re-offers over one store: every parked event, and one author's capability verdicts. */
+export const createRetries = (
+  parked: QuarantineStore,
+  receive: (entries: readonly StoredEvent[]) => Promise<Result<ReceiveReport, StoreFailure>>,
+) => ({
+  retryQuarantined: () => retryQuarantined(parked, receive),
+  retryAuthor: (author: PeerId) => retryAuthor(parked, author, receive),
+});
 
 /**
  * The entry as *this* build reads it, rather than as the build that parked it did.

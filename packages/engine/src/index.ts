@@ -67,11 +67,13 @@ export type {
   UnknownHandling,
 } from "./quarantine.js";
 export {
+  CAPABILITY_VERDICTS,
   QuarantineEvicted,
   UnreadableEvent,
   createQuarantine,
   isUnknown,
   quarantineReason,
+  retryAuthor,
   retryQuarantined,
   retryRefused,
   wireReason,

@@ -172,6 +172,36 @@ export async function restoreGrants(
 }
 
 /**
+ * Re-offers what a device's grant refused once that grant registers (gaps U42): an event that
+ * arrived ahead of its author's grant is parked `NoGrant`, and the grant landing later is new
+ * state no fold announces. Each retry queues behind the last, and `close` waits for them, so a
+ * mesh never closes its log under one.
+ *
+ * A retry that fails is said, as a grant write that fails is: the events stay parked, and the
+ * next batch that folds, the next grant for the author or `$recovery.run()` offers them again.
+ */
+function createGrantRetry(engine: Engine, registry: GrantRegistry) {
+  let retries: Promise<void> = Promise.resolve();
+  const off = registry.onRegistered((grant) => {
+    retries = retries.then(async () => {
+      // a rejection is a panic, and it is said here: left on the chain it would skip every later
+      // retry and reject `close`
+      const tried = await Result.tryPromise(() => engine.retryAuthor(grant.device));
+      const retried = tried.andThen((settled) => settled);
+      if (retried.isErr())
+        console.warn(`events parked for ${grant.device} could not be retried:`, retried.error);
+    });
+  });
+  return {
+    /** Stops listening, and settles once every retry already queued has run. */
+    close: async (): Promise<void> => {
+      off();
+      await retries;
+    },
+  };
+}
+
+/**
  * The two synced facts renewal needs, read off whichever engine exists by the time it is asked.
  * Before boot there is none and both answer "nothing known", which is the honest answer for a
  * mesh that has not opened its log yet — and renewal cannot run before then anyway.
@@ -193,7 +223,8 @@ const createStanding = (engineOf: () => Engine | undefined): StandingOf => ({
  * The registry plus its renewal seams, and the one call that closes the loop once an engine
  * exists. Grants are built before the engine that holds the rows renewal must consult — the
  * validator needs `grantFor` to boot — so the dependency runs backwards for exactly that window,
- * and `bind` is where it is repaid rather than a construction order nobody can follow.
+ * and `bind` is where it is repaid rather than a construction order nobody can follow. `bind`
+ * also starts {@link createGrantRetry} on that engine, and answers what closes it.
  */
 export function openGrants(registry: GrantRegistry, options: MeshGrantsOptions) {
   let engine: Engine | undefined;
@@ -201,7 +232,11 @@ export function openGrants(registry: GrantRegistry, options: MeshGrantsOptions) 
     ...options,
     standing: createStanding(() => engine),
   });
-  return { grants, bind: (booted: Engine) => void (engine = booted) };
+  const bind = (booted: Engine) => {
+    engine = booted;
+    return createGrantRetry(booted, registry);
+  };
+  return { grants, bind };
 }
 
 export function createMeshGrants(registry: GrantRegistry, options: MeshGrantsOptions): MeshGrants {
