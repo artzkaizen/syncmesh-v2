@@ -12,10 +12,10 @@ import { sqliteDriver } from "../sqlite-driver.js";
  * `bun:sqlite` database, with `refuse` standing in for a runtime's authorizer: a statement it
  * matches is turned away the way workerd turns away a `PRAGMA` it does not allow.
  */
-const inline = (refuse?: RegExp): SqliteDriver => {
+const inline = (refuse?: RegExp, answer = "not authorized: SQLITE_AUTH"): SqliteDriver => {
   const db = new Database(":memory:", { strict: true });
   const authorize = (sql: string) => {
-    if (refuse?.test(sql)) throw new Error("not authorized: SQLITE_AUTH");
+    if (refuse?.test(sql)) throw new Error(answer);
   };
   return {
     ...sqliteDriver({
@@ -47,5 +47,19 @@ describe("verifyLog on an inline log (D39)", () => {
     (await sqliteEventStore(driver)).unwrap();
     const verified = await verifyLog(driver);
     expect(verified.isErr() && verified.error._tag).toBe("NoIntegrityCheck");
+  });
+
+  test("a refusal in a runtime's own words is still NoIntegrityCheck, not damage", async () => {
+    const driver = inline(/^PRAGMA/, "PRAGMA statements are not supported by this actor");
+    (await sqliteEventStore(driver)).unwrap();
+    const verified = await verifyLog(driver);
+    expect(verified.isErr() && verified.error._tag).toBe("NoIntegrityCheck");
+  });
+
+  test("a check that reads damaged pages is damage", async () => {
+    const driver = inline(/^PRAGMA/, "database disk image is malformed (SQLITE_CORRUPT)");
+    (await sqliteEventStore(driver)).unwrap();
+    const verified = await verifyLog(driver);
+    expect(verified.isErr() && verified.error._tag).toBe("StoreFailure");
   });
 });
