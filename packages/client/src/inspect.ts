@@ -46,12 +46,12 @@ export interface Inspect {
   readonly handles: () => HandleCounts;
   /**
    * Checks the log's pages for damage an ordinary read cannot see (D39): `PRAGMA quick_check` on
-   * a device's SQLite, `amcheck` on Postgres. O(log size), so it runs when asked and at boot after
-   * an unclean shutdown, never on its own.
+   * a device's SQLite and a Durable Object's, `amcheck` on Postgres. O(log size), so it runs when
+   * asked and at boot after an unclean shutdown, never on its own.
    *
    * Damage is a `StoreFailure` naming what the database reported. `NoSuchCapability` is a mesh
-   * whose log offers no check: a bare event store, a runtime that refuses `PRAGMA`, a Postgres
-   * without `amcheck`.
+   * whose log offers no check: a bare event store, a runtime that refuses `PRAGMA quick_check`, a
+   * Postgres without `amcheck`.
    *
    * @example
    * const verified = await mesh.inspect.verify();

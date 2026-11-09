@@ -7,9 +7,9 @@ import { ATTACHED_LOG, LOG_TABLES, logTable, logPlacement } from "./dialect.js";
 import { attempt } from "./sql.js";
 
 /**
- * This database gives the store no integrity check it can run: a runtime that refuses `PRAGMA`
- * (a Durable Object, a Rivet actor), a Postgres without the `amcheck` extension, or a role there
- * that may not execute its functions.
+ * This database gives the store no integrity check it can run: a runtime whose authorizer refuses
+ * `PRAGMA quick_check`, a Postgres without the `amcheck` extension, or a role there that may not
+ * execute its functions. A Durable Object is not one: workerd allows `quick_check`.
  *
  * A fact about the database, not damage: the log may be perfectly sound, and nothing here can say.
  */
@@ -18,7 +18,15 @@ export class NoIntegrityCheck extends TaggedError("NoIntegrityCheck")<{ message:
 const damaged = (detail: string) =>
   new StoreFailure({ message: `the log failed its integrity check: ${detail}` });
 
-/** `PRAGMA quick_check` over the attached log file: one row `ok`, or one row per problem. */
+/** SQLite's `quick_check` answer: one row `ok`, or one row per problem, headed by the database's name. */
+const verdict = (rows: readonly (readonly unknown[])[]): Result<void, StoreFailure> => {
+  const found = rows.map((row) => String(row[0])).filter((line) => !line.startsWith("***"));
+  if (found.length === 1 && found[0] === "ok") return Result.ok(undefined);
+  const shown = found.slice(0, 3).join("; ");
+  return Result.err(damaged(`${shown}${found.length > 3 ? ` (${found.length} problems)` : ""}`));
+};
+
+/** `PRAGMA quick_check` over the attached log file. */
 const quickCheck = (driver: SqlDriver): Promise<Result<void, StoreFailure>> =>
   Result.gen(async function* () {
     const rows = yield* Result.await(
@@ -26,11 +34,51 @@ const quickCheck = (driver: SqlDriver): Promise<Result<void, StoreFailure>> =>
         driver.all(`PRAGMA ${ATTACHED_LOG}.quick_check`),
       ),
     );
-    // SQLite heads its report with the database's name; the rest is one problem per row
-    const found = rows.map((row) => String(row[0])).filter((line) => !line.startsWith("***"));
-    if (found.length === 1 && found[0] === "ok") return Result.ok(undefined);
-    const shown = found.slice(0, 3).join("; ");
-    return Result.err(damaged(`${shown}${found.length > 3 ? ` (${found.length} problems)` : ""}`));
+    return verdict(rows);
+  });
+
+/** What SQLite's authorizer says when a runtime will not run a statement: workerd's answer to most `PRAGMA`s. */
+const NOT_AUTHORIZED = /not authorized|SQLITE_AUTH/;
+
+/**
+ * `PRAGMA quick_check(<table>)` over each log table of a log that shares its database with the
+ * state (`log: "inline"`): a Durable Object, which allows this one `PRAGMA`, and a Rivet actor.
+ * A runtime whose authorizer refuses it answers {@link NoIntegrityCheck}; any other failure is
+ * the database failing the check.
+ */
+const inlineQuickCheck = (
+  driver: SqlDriver,
+): Promise<Result<void, StoreFailure | NoIntegrityCheck>> =>
+  Result.gen(async function* () {
+    const names = LOG_TABLES.map((name) => logTable(name, "inline"));
+    const present = yield* Result.await(
+      attempt("the log failed its integrity check", () =>
+        driver.all(
+          `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${names.map(() => "?").join(", ")})`,
+          names,
+        ),
+      ),
+    );
+    const held = new Set(present.map(([name]) => name));
+    for (const table of names.filter((name) => held.has(name))) {
+      const rows = yield* Result.await(
+        Result.tryPromise({
+          try: () => driver.all(`PRAGMA quick_check(${table})`),
+          catch: (cause) =>
+            cause instanceof Error && NOT_AUTHORIZED.test(cause.message)
+              ? new NoIntegrityCheck({
+                  message:
+                    "this runtime refuses PRAGMA quick_check, so the log's pages cannot be checked from here",
+                })
+              : new StoreFailure({
+                  message: `the log failed its integrity check on ${table}`,
+                  cause,
+                }),
+        }),
+      );
+      yield* verdict(rows);
+    }
+    return Result.ok(undefined);
   });
 
 /** The `verify_heapam` overload `verify_heapam($1::regclass)` resolves to, its defaults filled. */
@@ -110,7 +158,7 @@ const amcheck = (driver: SqlDriver): Promise<Result<void, StoreFailure | NoInteg
 
 /**
  * Checks the log's pages for damage a read cannot see (D39): `PRAGMA quick_check` on a device's
- * SQLite log, `amcheck` on Postgres. O(log size), so it runs on demand — `mesh.inspect.verify()`
+ * SQLite log and on each log table of an inline one (a Durable Object), `amcheck` on Postgres. O(log size), so it runs on demand — `mesh.inspect.verify()`
  * — and at boot after an unclean shutdown, never on an ordinary launch.
  *
  * Damage is a `StoreFailure` naming what the database reported; a database that offers no check
@@ -124,14 +172,7 @@ export function verifyLog(
   driver: SqlDriver,
 ): Promise<Result<void, StoreFailure | NoIntegrityCheck>> {
   if (driver.dialect === "postgres") return amcheck(driver);
-  if (logPlacement(driver) === "inline")
-    return Promise.resolve(
-      Result.err(
-        new NoIntegrityCheck({
-          message: "this runtime refuses PRAGMA, so the log's pages cannot be checked from here",
-        }),
-      ),
-    );
+  if (logPlacement(driver) === "inline") return inlineQuickCheck(driver);
   return quickCheck(driver);
 }
 
