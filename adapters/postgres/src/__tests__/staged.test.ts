@@ -65,6 +65,7 @@ describe.if(url !== "")(
   () => {
     const stamp = Date.now().toString(36);
     const databases: string[] = [];
+    const roles: string[] = [];
     const clients: { end: () => Promise<void> }[] = [];
 
     /** A fresh database for one case, and a way to open connections on it. */
@@ -90,6 +91,7 @@ describe.if(url !== "")(
       const root = postgres(url, { max: 1 });
       for (const database of databases)
         await root.unsafe(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
+      for (const role of roles) await root.unsafe(`DROP ROLE IF EXISTS "${role}"`);
       await root.end();
     });
 
@@ -160,6 +162,34 @@ describe.if(url !== "")(
       const [row] = await own.client`SELECT status, "_partition" FROM tasks WHERE id = 't1'`;
       expect([row?.["status"], row?.["_partition"]]).toEqual(["last", "org:acme"]);
       expect(new Set(filed(sent).map((line) => line.split(" ")[0]))).toEqual(new Set(["org:acme"]));
+    });
+
+    test("a service whose role may write only the table has its writes staged", async () => {
+      const open = await fresh("staged_role");
+      const own = open();
+      const { sent, running, status } = await authority(own.driver);
+      const role = `syncmesh_svc_${stamp}`;
+      roles.push(role);
+      await own.client.unsafe(`CREATE ROLE "${role}"`);
+      await own.client.unsafe(`GRANT SELECT, INSERT, UPDATE, DELETE ON tasks TO "${role}"`);
+      // a hardened database: no role but the authority's may name the log or the queue
+      await own.client.unsafe(`REVOKE ALL ON SCHEMA syncmesh FROM PUBLIC`);
+      const outside = open().client;
+      await outside.unsafe(`SET ROLE "${role}"`);
+
+      await outside`INSERT INTO tasks (id, "orgId", title, status) VALUES ('t1', 'acme', 'one', 'open')`;
+      await eventually(() => status("t1") === "open", "the service's insert");
+      await outside`UPDATE tasks SET status = 'done' WHERE id = 't1'`;
+      await eventually(() => status("t1") === "done", "the service's update");
+      running.stop();
+      (await running.done).unwrap();
+      expect(filed(sent)).toEqual(["org:acme insert t1", "org:acme update t1"]);
+      // the staging function runs as its owner, and only its trigger may run it
+      const [callable] = await own.client.unsafe(
+        `SELECT has_function_privilege($1, 'syncmesh."stage_tasks"()', 'EXECUTE') AS run`,
+        [role],
+      );
+      expect(callable?.["run"]).toBe(false);
     });
 
     test("an update committed before the fold placed its row is filed in the row's instance", async () => {

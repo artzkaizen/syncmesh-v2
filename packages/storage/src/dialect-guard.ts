@@ -183,7 +183,11 @@ const pgTruncateGuard = (on: string) => [
   `ALTER TABLE ${on} ENABLE ALWAYS TRIGGER ${PG_TRUNCATE}`,
 ];
 
-/** The function and trigger that file a staged table's unarmed row writes. */
+/**
+ * The function and trigger that file a staged table's unarmed row writes. The function runs as the
+ * role that installed it, so a service whose role may write only the table still files its writes
+ * — it needs no grant on the `syncmesh` schema, its queue or the queue's sequence.
+ */
 const pgStaging = (table: Table, image: Image): readonly string[] => {
   const pk = table.columnNames[table.primaryKey];
   if (pk === undefined) return [];
@@ -192,7 +196,8 @@ const pgStaging = (table: Table, image: Image): readonly string[] => {
   const file = (values: string) =>
     `INSERT INTO ${PG_STAGED} (tbl, op, key, part, old, new) VALUES (${literal(table.name)}, ${values});`;
   return [
-    `CREATE OR REPLACE FUNCTION ${pgStageFunction(table.name)}() RETURNS trigger LANGUAGE plpgsql AS $$
+    `CREATE OR REPLACE FUNCTION ${pgStageFunction(table.name)}() RETURNS trigger LANGUAGE plpgsql
+    SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
     BEGIN
       IF ${PG_ARMED} = '0' THEN
         IF TG_OP = 'INSERT' THEN
@@ -205,6 +210,8 @@ const pgStaging = (table: Table, image: Image): readonly string[] => {
       END IF;
       RETURN NULL;
     END $$`,
+    // a trigger fires its function whatever the writer may run, so nobody needs to call it
+    `REVOKE EXECUTE ON FUNCTION ${pgStageFunction(table.name)}() FROM PUBLIC`,
     `CREATE OR REPLACE TRIGGER ${PG_STAGE} AFTER INSERT OR UPDATE OR DELETE ON ${on} FOR EACH ROW EXECUTE FUNCTION ${pgStageFunction(table.name)}()`,
     `ALTER TABLE ${on} ENABLE ALWAYS TRIGGER ${PG_STAGE}`,
   ];
