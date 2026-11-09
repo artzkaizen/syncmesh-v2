@@ -25,8 +25,10 @@ export interface Sender {
    * Sends a value that a newer one for the same `slot` supersedes — presence. While the socket is
    * behind (a backlog, or a send the socket only buffered since its last drain) nothing goes into
    * the socket: the newest value per slot is held in its place, behind every ordinary frame, and
-   * leaves on the next drain. Held values count towards neither ceiling, since there is at most
-   * one per slot however fast they arrive. An absent slot — bytes that name none — is a `send`.
+   * leaves on the next drain. A newer value for a held slot counts towards neither ceiling, since
+   * there is at most one per slot however fast they arrive; a distinct slot past `maxBacklog` of
+   * them closes the socket, as a frame past the backlog does. An absent slot — bytes that name
+   * none — is a `send`.
    */
   readonly sendLatest: (slot: string | undefined, frame: Uint8Array) => void;
   /** The host's socket drained: flush the backlog in order, then the newest value per slot. */
@@ -101,6 +103,11 @@ export function createSender(socket: RelaySocket, maxBacklog: number, maxBytes?:
       if (dead) return;
       // a slot already held keeps its place in line: a newer value takes the older one's
       if (pressured || queued.length > 0 || latest.size > 0) {
+        // the slots are minted by whoever signs a presence, so their count is a ceiling too
+        if (!latest.has(slot) && latest.size >= maxBacklog) {
+          overflow();
+          return;
+        }
         latest.set(slot, frame);
         return;
       }

@@ -77,7 +77,7 @@ describe("Sender.sendLatest (D16)", () => {
     expect(sender.held()).toBe(0);
   });
 
-  test("held values count towards no ceiling: a 60 Hz cursor never closes a stalled socket", () => {
+  test("a newer value for a held slot counts towards no ceiling: a 60 Hz cursor never closes a stalled socket", () => {
     let closed = false;
     const sender = createSender(
       {
@@ -91,5 +91,25 @@ describe("Sender.sendLatest (D16)", () => {
     expect(closed).toBe(false);
     expect(sender.held()).toBe(1);
     expect(sender.backlog()).toBe(0);
+  });
+
+  test("distinct slots past the backlog ceiling close a stalled socket; a held slot still updates", () => {
+    let closed = false;
+    const sender = createSender(
+      {
+        send: () => "dropped",
+        close: () => void (closed = true),
+      },
+      3,
+      64,
+    );
+    for (const slot of ["a", "b", "c"]) sender.sendLatest(slot, bytes(1));
+    sender.sendLatest("a", bytes(2));
+    expect(closed).toBe(false);
+    expect(sender.held()).toBe(3);
+    sender.sendLatest("d", bytes(1));
+    expect(closed).toBe(true);
+    expect(sender.alive()).toBe(false);
+    expect(sender.held()).toBe(0);
   });
 });
