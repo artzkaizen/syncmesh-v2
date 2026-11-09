@@ -65,9 +65,10 @@ const FRAME = 0x01;
 const WAKE = 0x00;
 const HEADER = TAG_BYTES + 1;
 
-/** What Postgres will carry in one notification, and what base64 leaves of it. */
+/** What Postgres will carry in one notification (shorter than 8000), and what base64 leaves of it. */
 const NOTIFY_LIMIT = 8000;
-const MAX_FRAME = Math.floor(((NOTIFY_LIMIT - 1) * 3) / 4) - HEADER;
+// base64 writes whole groups of four characters, three bytes each, so a partial group costs four
+const MAX_FRAME = Math.floor((NOTIFY_LIMIT - 1) / 4) * 3 - HEADER;
 
 /**
  * A room as a channel name.
@@ -157,6 +158,7 @@ export function postgresFanout(options: PostgresFanoutOptions): Fanout {
           return () => void listeners.delete(listener);
         },
         heard: () => subscribed,
+        maxFrame: MAX_FRAME,
         close: () => {
           listeners.clear();
           const off = stop;

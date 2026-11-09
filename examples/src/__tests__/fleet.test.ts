@@ -25,7 +25,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { openBackend } from "../embedded/backend.js";
+import { identityNamed } from "../identity.js";
 import { INSTANCE, ROOM, notes, notesSchema } from "../notes.js";
+import { admitted, phone } from "../phone.js";
 
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
 const seed = (n: number) => Uint8Array.from({ length: 32 }, (_, i) => n + i);
@@ -50,6 +53,40 @@ const lossyFanout = (inner: Fanout) => {
         return {
           ...link,
           publish: (frame: Uint8Array) => void (delivering && link.publish(frame)),
+        };
+      },
+    } satisfies Fanout,
+  };
+};
+
+/**
+ * The fan-out with the grants held back: from `hold()` until `release()`, a grant crossing between
+ * instances waits while everything else crosses at once — the race of two paths, one of them slow.
+ */
+const grantsHeldBack = (inner: Fanout) => {
+  let holding = false;
+  const held: (() => void)[] = [];
+  const isGrant = (frame: Uint8Array): boolean => {
+    const decoded = decodeRelayFrame(frame);
+    return (
+      decoded.isOk() && decoded.value.kind === "session" && decoded.value.frame.kind === "grant"
+    );
+  };
+  return {
+    hold: () => void (holding = true),
+    release: () => {
+      holding = false;
+      for (const send of held.splice(0)) send();
+    },
+    fanout: {
+      connect: (room: string) => {
+        const link = inner.connect(room);
+        return {
+          ...link,
+          publish: (frame: Uint8Array) => {
+            if (holding && isGrant(frame)) held.push(() => link.publish(frame));
+            else link.publish(frame);
+          },
         };
       },
     } satisfies Fanout,
@@ -228,6 +265,94 @@ describe("the Redis-fleet shape in one process: two relays, one fan-out (D09-B, 
       expect(await noteCount(near)).toBe(0);
       for (const mesh of [writer, near, far, witness]) await mesh.stop();
     } finally {
+      for (const relay of [one, two]) await relay.stop();
+      dirs.close();
+    }
+  }, 30_000);
+
+  test("an instance opening the room hears what was fanned out before it did (gaps U41)", async () => {
+    const dirs = scratch();
+    const fanout = memoryFanout();
+    const one = await startRelay(0, { dataDir: dirs.dir(), fanout, keepaliveMs: 60_000 });
+    const two = await startRelay(0, { dataDir: dirs.dir(), fanout, keepaliveMs: 60_000 });
+    try {
+      const a = await device(one, 7);
+      await a.ready();
+      await a
+        .on(INSTANCE)
+        .unwrap()
+        .db.insert(notes)
+        .values({ id: "n1", body: "before", author: "a" });
+      await a.flush();
+      expect(await until(async () => (await eventsInLog(one, 40)) === 1)).toBe(true);
+      // nobody has been on instance two, so the frame went out while it was not listening for it
+
+      // its first socket opens the room there, and the room asks the fleet what it missed; `a`
+      // stays where it is, so no device pushes the note to instance two on a join
+      const b = await device(two, 160);
+      await b.ready();
+      expect(await until(async () => (await noteCount(b)) === 1)).toBe(true);
+      expect(await eventsInLog(two, 41)).toBe(1);
+      expect(tableDigests(b.engine.state())).toEqual(tableDigests(a.engine.state()));
+      await a.stop();
+      await b.stop();
+    } finally {
+      for (const relay of [one, two]) await relay.stop();
+      dirs.close();
+    }
+  }, 30_000);
+
+  test("a note that crosses ahead of its author's grant folds once the grant arrives (gaps U42)", async () => {
+    const dirs = scratch();
+    const held = grantsHeldBack(memoryFanout());
+    const one = await startRelay(0, {
+      dataDir: dirs.dir(),
+      fanout: held.fanout,
+      keepaliveMs: 60_000,
+    });
+    const two = await startRelay(0, {
+      dataDir: dirs.dir(),
+      fanout: held.fanout,
+      keepaliveMs: 60_000,
+    });
+    const dir = dirs.dir();
+    // the server peer, holding the issuer key, on instance one
+    const backend = await openBackend({ dataDir: dir, relayUrl: `${one.url}/${ROOM}` });
+    const phones: Awaited<ReturnType<typeof phone>>[] = [];
+    try {
+      const alice = await phone("alice", `${two.url}/${ROOM}`, backend.issuer, dir);
+      phones.push(alice);
+      expect(await admitted(alice)).toBe(true);
+
+      // dave is granted on instance one while grants are slow to cross to instance two
+      held.hold();
+      const dave = await phone("dave", `${one.url}/${ROOM}`, backend.issuer, dir);
+      phones.push(dave);
+      expect(await admitted(dave)).toBe(true);
+      await dave
+        .on(INSTANCE)
+        .unwrap()
+        .db.insert(notes)
+        .values({ id: "d1", body: "ahead of my grant", author: "dave" });
+      await dave.flush();
+
+      const daveId = identityNamed("device:dave").peerId;
+      const parked = () => alice.engine.quarantine().filter((p) => p.entry.event.peerId === daveId);
+      expect(await until(async () => parked().length === 1)).toBe(true);
+      expect(parked()[0]?.verdict._tag).toBe("NoGrant");
+      const count = async () => (await alice.on(INSTANCE).unwrap().db.select().from(notes)).length;
+      expect(await count()).toBe(0);
+
+      // the grant crosses; nothing else folds on alice's side, so only the grant can release it
+      held.release();
+      expect(await until(() => Promise.resolve(alice.grants.grantFor(daveId) !== undefined))).toBe(
+        true,
+      );
+      expect(await until(async () => (await count()) === 1)).toBe(true);
+      expect(parked()).toEqual([]);
+    } finally {
+      for (const mesh of phones) await mesh.stop();
+      await backend.stop();
       for (const relay of [one, two]) await relay.stop();
       dirs.close();
     }

@@ -1,7 +1,7 @@
 import { Result, TaggedError } from "@syncmesh/result";
 
 import type { RowKey, TableName } from "./change.js";
-import type { SettledLineage } from "./lineage-cell.js";
+import type { GENESIS_RULE, SETTLED_RULE, SettledLineage } from "./lineage-cell.js";
 import type { Brand } from "./primitives.js";
 import type { ColumnName } from "./record.js";
 
@@ -98,14 +98,21 @@ export interface DocChange {
    */
   readonly legacy?: true;
   /**
+   * Only on a genesis written under an earlier version of the lineage rule than
+   * {@link LINEAGE_RULE} — key 5 `1` or `2`. Folded exactly as a genesis of the current rule (the
+   * genesis means the same under each; only the cell's join changed, gaps U39), and kept so the
+   * event re-encodes as it was signed. Absent on everything this build writes.
+   */
+  readonly rule?: typeof GENESIS_RULE | typeof SETTLED_RULE;
+  /**
    * Only on a genesis: the lineage it replaces — the one that won on the authoring device when it
    * was written. Absent is the root. What {@link winningLineage} walks.
    */
   readonly parent?: LineageId;
   /**
-   * Only on a genesis, and written under {@link SETTLED_RULE}: where the authoring device settled
-   * the walk as it wrote it — a lineage on its walk replaced long enough before — so every genesis
-   * stamped at or below the anchor leaves the cell (gaps U21). Data key 7.
+   * Only on a genesis of {@link LINEAGE_RULE} or {@link SETTLED_RULE}: where the authoring device
+   * settled the walk as it wrote it — a lineage on its walk replaced long enough before — so every
+   * genesis stamped at or below the anchor leaves the cell (gaps U21). Data key 7.
    */
   readonly settles?: SettledLineage;
 }

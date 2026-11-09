@@ -1,10 +1,20 @@
-import { createMemoryEventStore } from "@syncmesh/engine";
+import { createMemoryEventStore, type EventStore } from "@syncmesh/engine";
+import { grantFrame } from "@syncmesh/transport";
 import { describe, expect, test } from "bun:test";
 
+import { relayedFrame } from "../frames.js";
+import { createGrantCache } from "../grant-cache.js";
 import { postgresFanout } from "../postgres-fanout.js";
 import { openRelayRoom } from "../room.js";
+import { entryOf, mintFor, peer, until, write } from "./fixtures.js";
 
-/** Postgres in one object: every listener on a channel hears every notify, the notifier included. */
+/** Postgres refuses a `NOTIFY` payload this long or longer. */
+const NOTIFY_LIMIT = 8000;
+
+/**
+ * Postgres in one object: every listener on a channel hears every notify, the notifier included,
+ * and a payload of 8000 characters or more is refused, as Postgres refuses it by default.
+ */
 const fakePostgres = () => {
   const channels = new Map<string, Set<(payload: string) => void>>();
   const notified: string[] = [];
@@ -19,6 +29,8 @@ const fakePostgres = () => {
         return Promise.resolve(() => void held.delete(onPayload));
       },
       notify: (channel: string, payload: string) => {
+        if (payload.length >= NOTIFY_LIMIT)
+          return Promise.reject(new Error("payload string too long"));
         notified.push(channel);
         for (const listener of [...(channels.get(channel) ?? [])]) listener(payload);
         return Promise.resolve();
@@ -95,6 +107,24 @@ describe("postgresFanout", () => {
 
     a.publish(Uint8Array.of(1));
     expect(heard).toEqual([1]); // and the link still works afterwards
+  });
+
+  test("a frame of maxFrame bytes, and of every size just under it, fits one notification", async () => {
+    const pg = fakePostgres();
+    const fanout = postgresFanout({ client: pg.client });
+    const a = fanout.connect("r");
+    const b = fanout.connect("r");
+    const heard: number[] = [];
+    b.onFrame((f) => void heard.push(f.length));
+    await Promise.resolve();
+
+    // base64 pads to whole groups of four: a limit counted in bytes alone lets the last two
+    // sizes through as payloads of exactly 8000 characters, which Postgres refuses unseen
+    const max = a.maxFrame ?? 0;
+    const sizes = [max - 3, max - 2, max - 1, max];
+    for (const size of sizes) a.publish(new Uint8Array(size));
+    await Promise.resolve();
+    expect(heard).toEqual(sizes);
   });
 
   test("a wake is not mistaken for a frame, and never reaches its own sender", async () => {
@@ -188,4 +218,59 @@ describe("a room opened over postgresFanout", () => {
     expect(opened).toBe(true);
     room.close();
   });
+
+  test("hears what was fanned out before it opened, from the instance already serving it (gaps U41)", async () => {
+    const pg = fakePostgres();
+    const fanout = postgresFanout({ client: pg.client });
+    const open = (store = createMemoryEventStore(), grants = createGrantCache()) =>
+      openRelayRoom({ name: "main", store, grants, epoch: "e", keepaliveMs: 60_000, fanout });
+    const serving = (await open()).unwrap();
+
+    // a third instance fans out a grant and an event; only the room already open hears them
+    const alice = peer(2, "acct_alice");
+    const grant = mintFor(alice.identity, "acct_alice");
+    const event = await write(alice, "n1", "before");
+    const third = fanout.connect("main");
+    third.onFrame(() => undefined);
+    third.publish(grantFrame(grant));
+    third.publish(relayedFrame(event, 1));
+    expect(await until(() => serving.offset() === 1)).toBe(true);
+
+    const store = createMemoryEventStore();
+    const grants = createGrantCache();
+    const opened = (await open(store, grants)).unwrap();
+    expect(await until(() => opened.offset() === 1)).toBe(true);
+    expect((await store.all()).unwrap().map((entry) => entry.event.id)).toHaveLength(1);
+    expect(grants.all()).toEqual([grant]);
+    // and the room already serving took nothing twice from the answer it overheard
+    expect(serving.offset()).toBe(1);
+    for (const room of [serving, opened]) room.close();
+    third.close();
+  });
+
+  test("is answered when its log names more authors than one notification holds (gaps U41)", async () => {
+    const pg = fakePostgres();
+    const oversize: number[] = [];
+    const fanout = postgresFanout({
+      client: pg.client,
+      onOversize: (bytes) => oversize.push(bytes),
+    });
+    // 250 authors at 40-odd bytes of cursor each: a whole greeting is past Postgres's 8000 bytes
+    const authors = Array.from({ length: 250 }, (_, i) => peer(3 + i, `acct_${i}`));
+    const first = await Promise.all(authors.map((author, i) => write(author, `n${i}`, "held")));
+    const missed = await write(authors[0]!, "late", "missed");
+    const holding = async (wires: readonly Uint8Array[]) => {
+      const store = createMemoryEventStore();
+      (await store.appendBatch(wires.map(entryOf))).unwrap();
+      return store;
+    };
+    const open = (store: EventStore) =>
+      openRelayRoom({ name: "main", store, epoch: "e", keepaliveMs: 60_000, fanout });
+    const serving = (await open(await holding([...first, missed]))).unwrap();
+
+    const opened = (await open(await holding(first))).unwrap();
+    expect(await until(() => opened.offset() === 251, 20_000)).toBe(true);
+    expect(oversize).toEqual([]);
+    for (const room of [serving, opened]) room.close();
+  }, 60_000); // 250 signing identities take seconds to derive before a room opens
 });

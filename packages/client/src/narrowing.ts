@@ -198,7 +198,7 @@ export function watchNarrowing(deps: NarrowingDeps) {
  * The blob cache a mesh runs on — the one it was given, or memory — and the watch over it: one
  * store, because a purge drops from the cache the blob surface reads (D45).
  */
-export function narrowingFor(
+export function createNarrowing(
   engine: Engine,
   grants: GrantRegistry,
   options: {

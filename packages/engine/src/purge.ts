@@ -93,7 +93,7 @@ export interface PurgeDeps {
   readonly merge?: MergeSpec | undefined;
   readonly hasAdapter: (adapter: AdapterId) => boolean;
   readonly parked: QuarantineStore;
-  readonly coverageOf: CoverageTracker["current"];
+  readonly coverageNow: CoverageTracker["current"];
   /** Takes the evicted events out of the held run, so the commit below persists it lowered. */
   readonly unhold: CoverageTracker["evict"];
   readonly getState: () => State;
@@ -183,7 +183,7 @@ const without = (state: State, keys: WriteKeys): State => {
  * whatever its source still holds.
  */
 export function createPurge(deps: PurgeDeps) {
-  const { peerId, merge, hasAdapter, parked, coverageOf, getState, setState } = deps;
+  const { peerId, merge, hasAdapter, parked, coverageNow, getState, setState } = deps;
 
   return async (scope: PurgeScope): Promise<Result<Purged, StoreFailure>> => {
     const theirs = (event: SyncEvent): boolean =>
@@ -213,7 +213,7 @@ export function createPurge(deps: PurgeDeps) {
           const drafted = rebuilt(getState(), keys, kept, merge);
           const writes = [
             await scoped.state?.remove(keys),
-            await scoped.state?.commit(rowWrites(drafted, keys), coverageOf()),
+            await scoped.state?.commit(rowWrites(drafted, keys), coverageNow()),
             await scoped.docs?.forget(keys),
             scoped.docs === undefined
               ? undefined

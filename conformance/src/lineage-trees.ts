@@ -9,29 +9,27 @@ import {
   getRecord,
   hlcOf,
   docLineage,
-  isJsonArray,
-  parseLineageCells,
   parseLineageId,
-  type CellValue,
   type LineageId,
   type PeerId,
-  type RowRecord,
   type SettledLineage,
 } from "@syncmesh/kernel";
 import { bytesToHex, encodeRecord } from "@syncmesh/wire";
 
-import { CONTENT, DOCS, LORO, N1, NOTES, T0 } from "./doc-names.js";
+import { CONTENT, LORO, N1, NOTES, T0 } from "./doc-names.js";
 
-const id16 = (fill: string): LineageId => parseLineageId(fill.repeat(16)).unwrap();
+/** A lineage id of one repeated byte, written as two hex characters. */
+export const id16 = (fill: string): LineageId => parseLineageId(fill.repeat(16)).unwrap();
 
 type Who = "author" | "producer";
 
 /**
  * Geneses of one document as `[lineage fill, parent fill | undefined, ms after T0, author,
- * anchor?]` — the anchor a genesis of rule 2 settles the walk at, `[lineage fill, ms after T0,
- * author]` (gaps U21) — and the lineage the first-genesis tree settles on (RFC-0023 §16.1). Each
- * is folded in the order listed; both runtimes also fold every permutation and must land on the
- * same record bytes.
+ * anchor?]` — the anchor a genesis settles the walk at, `[lineage fill, ms after T0, author]`
+ * (gaps U21) — and the lineage the first-genesis tree settles on (RFC-0023 §16.1). A fill listed
+ * twice is an author that signed two geneses of one lineage (gaps U39). Each tree is folded in
+ * the order listed; both runtimes also fold every permutation and must land on the same record
+ * bytes.
  */
 const LINEAGE_TREES: readonly {
   readonly description: string;
@@ -108,6 +106,37 @@ const LINEAGE_TREES: readonly {
     geneses: [["d1", "c1", 20, "author", ["c1", 9, "producer"]]],
     winner: "d1",
   },
+  {
+    description:
+      "an author signed two geneses of one lineage, one each side of an anchor: the later copy stands in every order (gaps U39)",
+    geneses: [
+      ["c1", undefined, 4, "producer"],
+      ["e1", "c1", 3, "author"],
+      ["e1", "c1", 6, "author"],
+      ["d1", "c1", 10, "producer", ["c1", 4, "producer"]],
+    ],
+    winner: "e1",
+  },
+  {
+    description:
+      "two copies of one lineage under different parents: the later copy places it (gaps U39)",
+    geneses: [
+      ["a1", undefined, 1, "producer"],
+      ["e1", undefined, 2, "author"],
+      ["e1", "a1", 5, "author"],
+    ],
+    winner: "e1",
+  },
+  {
+    description:
+      "two copies of one lineage at one stamp: the copy under a parent goes after the root's and stands (gaps U39)",
+    geneses: [
+      ["a1", undefined, 1, "producer"],
+      ["e1", undefined, 5, "author"],
+      ["e1", "a1", 5, "author"],
+    ],
+    winner: "e1",
+  },
 ];
 
 interface HeldGenesis {
@@ -183,77 +212,3 @@ export const lineageTreeVectors = (author: PeerId, producer: PeerId) =>
       recordHex: record === undefined ? "" : bytesToHex(encodeRecord(record)),
     };
   });
-
-/** The tag at the head of a lineage cell's value. */
-const cellVersion = (value: CellValue | undefined) => {
-  const [version] = isJsonArray(value) ? value : [];
-  /* oxlint-disable-next-line anti-slop/no-runtime-typeof -- reading back a cell this file wrote */
-  return typeof version === "number" ? version : undefined;
-};
-
-/** The record with its lineage cell's value replaced, stamp and all else kept. */
-const withCell = (record: RowRecord, value: CellValue): RowRecord => {
-  const cell = record.cells.get(CONTENT);
-  if (cell === undefined) throw new Error("the record holds no lineage cell");
-  return { ...record, cells: new Map(record.cells).set(CONTENT, { ...cell, value }) };
-};
-
-/**
- * Lineage cells as snapshot pages, repair records and persisted state carry them (RFC-0023
- * §16.1, gaps U21): one of each version this build runs, read — rule 1's, and rule 2's with its
- * anchor — and four it refuses: an untagged cell from before cells were versioned, the lineage id
- * the last-writer-wins rule kept, a rule-2 cell with no anchor, and a cell of a version after
- * both. Both runtimes decode each record and must reach the same verdict.
- */
-export const lineageCellVectors = (author: PeerId, producer: PeerId) => {
-  const held = getRecord(
-    foldGeneses([
-      { lineage: id16("a1"), parent: undefined, ms: T0 + 1, logical: 0, peer: author },
-      { lineage: id16("c1"), parent: id16("a1"), ms: T0 + 3, logical: 0, peer: producer },
-    ]),
-    NOTES,
-    N1,
-  );
-  const value = held?.cells.get(CONTENT)?.value;
-  if (held === undefined || !isJsonArray(value)) throw new Error("the fold wrote no tagged cell");
-  const [, geneses = null] = value;
-  const settled = getRecord(
-    foldGeneses([
-      { lineage: id16("a1"), parent: undefined, ms: T0 + 1, logical: 0, peer: author },
-      {
-        lineage: id16("c1"),
-        parent: id16("a1"),
-        ms: T0 + 3,
-        logical: 0,
-        peer: producer,
-        settles: { lineage: id16("a1"), stamp: { hlc: hlcOf(T0 + 1, 0), peer: author } },
-      },
-    ]),
-    NOTES,
-    N1,
-  );
-  if (settled === undefined) throw new Error("the fold wrote no settled cell");
-  const cells = [
-    ["a cell of rule 1: read, and walked to its winner", held],
-    ["a cell of rule 2: read, and walked from its anchor", settled],
-    ["an untagged cell, written before cells were versioned: refused", withCell(held, geneses)],
-    ["the last-writer-wins rule's cell, a bare lineage id: refused", withCell(held, id16("a1"))],
-    [
-      "a cell tagged 2 with no anchor: refused, a shape rule 2 never writes",
-      withCell(held, [2, geneses]),
-    ],
-    ["a cell of version 3: refused, never read as the root", withCell(held, [3, geneses])],
-  ] as const;
-  return cells.map(([description, record]) => {
-    const parsed = parseLineageCells([{ table: NOTES, key: N1, record }], DOCS);
-    return {
-      description,
-      recordHex: bytesToHex(encodeRecord(record)),
-      refused: parsed.isErr(),
-      version: parsed.isErr()
-        ? parsed.error.version
-        : (cellVersion(record.cells.get(CONTENT)?.value) ?? null),
-      winner: parsed.isErr() ? null : (docLineage(record, CONTENT) ?? null),
-    };
-  });
-};

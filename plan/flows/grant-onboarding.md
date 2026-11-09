@@ -93,7 +93,9 @@ sequenceDiagram
     Note over B: ✓ validated → folded
 ```
 
-Quarantine is refusal without loss: cursors re-request what was refused once the grant lands.
+Quarantine is refusal without loss: cursors re-request what was refused once the grant lands. An
+event B parked rather than dropped is re-offered by the grant registering itself (gaps U42), so it
+folds without waiting for the resync.
 Note the relay property: B can hold and forward a grant for an author it has **never met**.
 
 ---

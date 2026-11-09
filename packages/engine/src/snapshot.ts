@@ -254,7 +254,7 @@ export interface SnapshotApi {
 export function createSnapshotPath(
   /** The engine's doc columns, and its validator, whose `localTable` names the `local` kind. */
   settings: { readonly docs?: DocColumns | undefined; readonly validate?: Validator | undefined },
-  deps: Omit<InstallDeps, "docs"> & { readonly coverageOf: () => Coverage },
+  deps: Omit<InstallDeps, "docs"> & { readonly coverageNow: () => Coverage },
 ): SnapshotApi {
   const installing = { ...deps, docs: settings.docs };
   const localTable = settings.validate?.localTable;
@@ -262,7 +262,7 @@ export function createSnapshotPath(
     snapshot: (options) =>
       stateSnapshot(
         deps.getState(),
-        deps.coverageOf(),
+        deps.coverageNow(),
         localTable === undefined ? options : { localTable, ...options },
       ),
     installSnapshot: (snap) => installSnapshot(installing, snap),

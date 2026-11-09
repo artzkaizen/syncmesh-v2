@@ -40,19 +40,37 @@ impl GrantRegistry {
     /// mint for its device. An older re-registration is not an error: the grant now held is
     /// returned, since that is the one the caller should be reasoning from.
     pub fn register(&mut self, wire: &[u8], now_ms: i64) -> Result<&Grant, GrantError> {
+        self.hold(wire, now_ms).map(|(_, grant)| grant)
+    }
+
+    /// [`GrantRegistry::register`], answering with the device the grant names when it became
+    /// the one held, and `None` when the registry already held it or a newer mint. What a link
+    /// re-offers parked events on (gaps U42): a grant that changed nothing clears nothing.
+    pub(crate) fn register_newer(
+        &mut self,
+        wire: &[u8],
+        now_ms: i64,
+    ) -> Result<Option<PeerId>, GrantError> {
+        self.hold(wire, now_ms)
+            .map(|(newer, grant)| newer.then(|| grant.device.clone()))
+    }
+
+    /// The grant held for the device after `wire` is offered, and whether `wire` became it.
+    fn hold(&mut self, wire: &[u8], now_ms: i64) -> Result<(bool, &Grant), GrantError> {
         let signed = verify_grant(wire, &self.issuer, now_ms)?;
         let device = signed.value.device.clone();
         match self.held.entry(device) {
             Entry::Occupied(mut current) => {
-                if signed.value.issued_at_ms > current.get().value.issued_at_ms {
+                let newer = signed.value.issued_at_ms > current.get().value.issued_at_ms;
+                if newer {
                     current.insert(signed);
                     self.registered.push(wire.to_vec());
                 }
-                Ok(&current.into_mut().value)
+                Ok((newer, &current.into_mut().value))
             }
             Entry::Vacant(slot) => {
                 self.registered.push(wire.to_vec());
-                Ok(&slot.insert(signed).value)
+                Ok((true, &slot.insert(signed).value))
             }
         }
     }
@@ -228,6 +246,28 @@ mod tests {
         assert!(!registry.revoke(device.peer_id()), "already gone");
         assert!(registry.all().is_empty());
         assert_eq!(registry.grant_for(device.peer_id(), NOW), None);
+    }
+
+    #[test]
+    fn registry_names_the_device_only_when_its_grant_became_current() {
+        let (issuer, device) = (seed(1), seed(101));
+        let mut registry = GrantRegistry::new(issuer.peer_id().clone());
+        let first = mint(&issuer, &device, &["org:acme", "shelf:s1"], NOW);
+        let second = mint(&issuer, &device, &["org:acme"], NOW + 1_000);
+        let named = Some(device.peer_id().clone());
+
+        assert_eq!(registry.register_newer(&first, NOW), Ok(named.clone()));
+        assert_eq!(
+            registry.register_newer(&first, NOW),
+            Ok(None),
+            "the same grant again"
+        );
+        assert_eq!(registry.register_newer(&second, NOW + 1_000), Ok(named));
+        assert_eq!(
+            registry.register_newer(&first, NOW + 1_000),
+            Ok(None),
+            "an older mint"
+        );
     }
 
     #[test]

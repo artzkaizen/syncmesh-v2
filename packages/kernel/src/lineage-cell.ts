@@ -17,8 +17,8 @@ import {
 import { compareStamp, type Stamp } from "./stamp.js";
 
 /**
- * The lineage cell as it is kept (RFC-0023 §5.3, §16.1; gaps U21): its geneses and anchor, the
- * versions it is tagged with, how a foreign one is read and refused, and its normal form.
+ * The lineage cell as it is kept (RFC-0023 §5.3, §16.1; gaps U21, U39): its geneses and anchor, the
+ * version it is tagged with, how a foreign one is read and refused, and its normal form.
  *
  * @module
  */
@@ -65,20 +65,30 @@ const isCount = (n: JsonValue | undefined, max = Number.MAX_SAFE_INTEGER): n is 
   Number.isSafeInteger(n) && Number(n) >= 0 && Number(n) <= max;
 
 /**
- * The version of the lineage rule (RFC-0023 §16.1): `1` is the first-genesis tree. A genesis
- * carries it in key 5, and a lineage cell carries it as its tag wherever the cell is kept outside
- * events — snapshot pages, repair records, persisted state — so a build meets another rule's
- * geneses as a version it does not run, never as a root or a value to merge by LWW.
+ * The first version of the lineage rule (RFC-0023 §16.1): the first-genesis tree. A genesis
+ * written under it carries `1` in key 5, and this build still reads and folds one — the genesis
+ * means the same under every version — but a lineage cell tagged `1` was joined by a rule that
+ * keeps an equivocated lineage's first copy (gaps U39), so {@link parseLineageCells} refuses it.
  */
 export const GENESIS_RULE = 1;
 
 /**
  * The first-genesis tree with a settled anchor (gaps U21): what a genesis that carries
- * {@link DocChange.settles} writes in key 5, and the tag of a cell holding an anchor,
- * `[2, { lineage → genesis }, [lineage, ms, logical, peer]]`. A build of {@link GENESIS_RULE}
- * alone refuses both, rather than fold the genesis without trimming what its peers trim.
+ * {@link DocChange.settles} wrote in key 5 before {@link LINEAGE_RULE}. Read and folded like
+ * {@link GENESIS_RULE}'s geneses; a cell tagged `2` is refused for the same reason.
  */
 export const SETTLED_RULE = 2;
+
+/**
+ * The lineage rule this build runs and writes (gaps U39): the first-genesis tree with an optional
+ * settled anchor, where one lineage held twice — an author that signed two geneses at one
+ * sequence — keeps its **later** copy, so the cell is a function of the set of geneses whatever
+ * order they meet an anchor in. Every genesis this build writes carries `3` in key 5, with or
+ * without an anchor in key 7, and every lineage cell it keeps outside events is `[3, geneses]` or
+ * `[3, geneses, anchor]`. A build of an earlier version refuses both rather than join them by its
+ * own rule.
+ */
+export const LINEAGE_RULE = 3;
 
 /** A stamp from an entry's `ms, logical, peer`, or `undefined` for anything else. */
 function entryStamp(
@@ -127,24 +137,22 @@ function cellVersion(value: CellValue | undefined): number | null {
   return isCount(version) ? version : null;
 }
 
-/** A cell of a rule this build runs, its geneses still as stored. */
+/** A cell of the rule this build runs, its geneses still as stored. */
 interface StoredCell {
   readonly geneses: JsonObject;
   readonly settled?: SettledLineage;
 }
 
 /**
- * A cell tagged {@link GENESIS_RULE} (`[1, geneses]`) or {@link SETTLED_RULE} (`[2, geneses,
- * anchor]`), or `undefined` for any other value: another version, no tag, or a shape neither
- * version writes.
+ * A cell tagged {@link LINEAGE_RULE}, `[3, geneses]` or `[3, geneses, anchor]`, or `undefined` for
+ * any other value: an earlier or later version, no tag, or a shape this version never writes.
  */
 function storedCell(value: CellValue | undefined): StoredCell | undefined {
-  if (!isJsonArray(value)) return undefined;
-  const version = cellVersion(value);
+  if (!isJsonArray(value) || cellVersion(value) !== LINEAGE_RULE) return undefined;
   const geneses = jsonObject(value[1]);
   if (geneses === undefined) return undefined;
-  if (version === GENESIS_RULE && value.length === 2) return { geneses };
-  if (version !== SETTLED_RULE || value.length !== 3) return undefined;
+  if (value.length === 2) return { geneses };
+  if (value.length !== 3) return undefined;
   const settled = entryAnchor(value[2]);
   return settled === undefined ? undefined : { geneses, settled };
 }
@@ -189,10 +197,12 @@ export class LineageCellRefused extends TaggedError("LineageCellRefused")<{
 }> {}
 
 /**
- * Checks every doc column's cell in `rows` against the lineage rules this build runs, and hands
- * the rows back when each one is a cell of {@link GENESIS_RULE} or {@link SETTLED_RULE}. The first
- * that is not is refused, so a caller joins none of the rows rather than read that cell as the
- * root or merge it by another rule. A column absent from a record is the root and passes.
+ * Checks every doc column's cell in `rows` against the lineage rule this build runs, and hands the
+ * rows back when each one is a cell of {@link LINEAGE_RULE}. The first that is not is refused —
+ * a cell of {@link GENESIS_RULE} or {@link SETTLED_RULE} too, whose join may have kept the copy of
+ * an equivocated lineage this rule drops (gaps U39) — so a caller joins none of the rows rather
+ * than read that cell as the root or merge it by another rule. A column absent from a record is
+ * the root and passes.
  *
  * @example
  * parseLineageCells(snapshot.rows, docs).isErr(); // true when a page carries another rule's cell
@@ -210,7 +220,7 @@ export function parseLineageCells(
       const found =
         version === null
           ? "a lineage cell with no version"
-          : version === GENESIS_RULE || version === SETTLED_RULE
+          : version === LINEAGE_RULE
             ? `a lineage cell tagged ${version} in a shape that version never writes`
             : `a lineage cell of version ${version}`;
       return Result.err(
@@ -219,7 +229,7 @@ export function parseLineageCells(
           key: row.key,
           column,
           version,
-          message: `${row.table}/${row.key}.${column}: ${found}; this build runs versions ${GENESIS_RULE} and ${SETTLED_RULE}`,
+          message: `${row.table}/${row.key}.${column}: ${found}; this build runs version ${LINEAGE_RULE}`,
         }),
       );
     }
@@ -228,14 +238,19 @@ export function parseLineageCells(
   return Result.ok(checked);
 }
 
-/** Which of two geneses goes first: the smaller stamp, then the smaller lineage, then the root parent. */
+/**
+ * Which of two geneses goes first: the smaller stamp, then the smaller lineage, then the root
+ * parent. Of two siblings the first wins the walk; of two copies of one lineage the cell keeps
+ * the later (see {@link writeCell}).
+ */
 export const firstGenesis = (a: Genesis, b: Genesis): Ordering => {
   const byStamp = compareStamp(a.stamp, b.stamp);
   if (byStamp !== 0) return byStamp;
   if (a.lineage !== b.lineage) return a.lineage < b.lineage ? -1 : 1;
   if (a.parent === b.parent) return 0;
   if (a.parent === undefined) return -1;
-  return b.parent === undefined || a.parent < b.parent ? -1 : 1;
+  if (b.parent === undefined) return 1;
+  return a.parent < b.parent ? -1 : 1;
 };
 
 /** Of two anchors, the one settled later: the larger stamp, then the larger lineage. */
@@ -262,8 +277,16 @@ export const passed = (genesis: Genesis, settled: SettledLineage | undefined) =>
 
 /**
  * A cell's value from its geneses and anchor, in normal form: a genesis the anchor passed is
- * dropped, one lineage appearing twice keeps its first by {@link firstGenesis}, and the tag says
- * which rule it holds — `[1, geneses]` with no anchor, `[2, geneses, anchor]` with one.
+ * dropped, one lineage appearing twice keeps its later copy by {@link firstGenesis} (gaps U39),
+ * and the tag is {@link LINEAGE_RULE} — `[3, geneses]` with no anchor, `[3, geneses, anchor]` with
+ * one.
+ *
+ * Keeping the later copy is what makes the cell a function of the set. Dropping takes every
+ * genesis at or below the anchor's stamp, so it removes a lineage's earlier copy no later than its
+ * later one: the latest copy above the anchor is the same whether the copies were narrowed to one
+ * before the anchor arrived or after. Keeping the earlier copy instead lets a peer that met the
+ * anchor between the two hold the later one, while a peer that met both copies first loses the
+ * lineage altogether.
  */
 export function writeCell(
   geneses: Iterable<Genesis>,
@@ -273,7 +296,7 @@ export function writeCell(
   for (const genesis of geneses) {
     if (passed(genesis, settled)) continue;
     const kept = held.get(genesis.lineage);
-    if (kept === undefined || firstGenesis(genesis, kept) < 0) held.set(genesis.lineage, genesis);
+    if (kept === undefined || firstGenesis(genesis, kept) > 0) held.set(genesis.lineage, genesis);
   }
   const entries = Object.fromEntries(
     [...held.keys()].sort().map((lineage) => {
@@ -283,6 +306,6 @@ export function writeCell(
     }),
   );
   return settled === undefined
-    ? [GENESIS_RULE, entries]
-    : [SETTLED_RULE, entries, anchorEntry(settled)];
+    ? [LINEAGE_RULE, entries]
+    : [LINEAGE_RULE, entries, anchorEntry(settled)];
 }

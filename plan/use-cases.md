@@ -674,7 +674,8 @@ grant *for* the laptop's peerId under the same account.
 
 Ordering is the part the transport owns: events from an author you hold no grant for quarantine on
 `NoGrant` and are never stored; a session sends grants before any event, and when the grant lands
-a resync converges. All four scenarios are pinned by
+a resync converges. Events parked on the verdict are re-offered when the grant registers (gaps
+U42), so a quiet room needs no resync to release them. All four scenarios are pinned by
 `packages/client/src/__tests__/onboarding.test.ts`, which drives two engines over an in-process
 link; `examples/src/rounds` runs the same shape over a framed transport with an offline switch,
 and nothing above the link changes between them.

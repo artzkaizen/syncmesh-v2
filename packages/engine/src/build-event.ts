@@ -82,7 +82,8 @@ export const replacesAt =
  * a receiver recomputes the derivation and refuses a genesis that names anything else (RFC-0023
  * §5.3, §10) — and, as its parent, the lineage that wins on this device as it is written, which is
  * what a replace replaces (§16.1), and the anchor this device settles the walk at, when one has
- * been replaced long enough ago (gaps U21). Every other change goes out as recorded.
+ * been replaced long enough ago (gaps U21). It is written under this build's rule, never an
+ * earlier one a write named (`rule`, gaps U39). Every other change goes out as recorded.
  */
 function withLineage(
   change: Change,
@@ -92,7 +93,7 @@ function withLineage(
   replaces: Replaces,
 ): Change {
   if (change.kind !== "doc" || change.genesis !== true) return change;
-  const { parent: _written, settles: _settled, ...rest } = change;
+  const { parent: _written, settles: _settled, rule: _earlier, ...rest } = change;
   const { parent, settles } = replaces(change);
   return {
     ...rest,

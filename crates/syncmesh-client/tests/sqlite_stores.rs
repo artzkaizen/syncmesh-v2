@@ -439,6 +439,7 @@ fn a_log_holding_a_legacy_genesis_still_reads() {
         update: DocUpdate::Bytes(vec![1]),
         genesis: true,
         legacy: true,
+        rule: None,
         parent: None,
         settles: None,
     }));

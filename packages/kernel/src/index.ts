@@ -25,6 +25,7 @@ export { InvalidDocId, parseActionId, parseAdapterId, parseLineageId } from "./d
 export type { Genesis, LineageCell, SettledLineage } from "./lineage-cell.js";
 export {
   GENESIS_RULE,
+  LINEAGE_RULE,
   SETTLED_RULE,
   LineageCellRefused,
   cellGeneses,

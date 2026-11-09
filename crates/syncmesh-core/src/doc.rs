@@ -3,8 +3,8 @@
 //! `conformance/doc-vectors.json`, which the TypeScript generates and this reproduces.
 //!
 //! `data` map keys: `column`0 `adapter`1 `lineage`2 `bytes`3 `blob`4 `genesis`5 `parent`6
-//! `settles`7. Exactly one of `bytes` and `blob`; key 7 only on a genesis of [`SETTLED_RULE`];
-//! unknown keys are skipped and never re-emitted.
+//! `settles`7. Exactly one of `bytes` and `blob`; key 7 only on a genesis of [`LINEAGE_RULE`]
+//! (optional) or [`SETTLED_RULE`] (required); unknown keys are skipped and never re-emitted.
 
 use std::collections::BTreeMap;
 
@@ -27,20 +27,27 @@ const DOC_GENESIS: i64 = 5;
 const DOC_PARENT: i64 = 6;
 const DOC_SETTLES: i64 = 7;
 
-/// The version of the lineage rule, `1` for the first-genesis tree (RFC-0023 §16.1), as the
-/// TypeScript's `GENESIS_RULE`. A genesis carries it in key 5 — the last-writer-wins rule before it
-/// wrote `true`, which this build decodes as [`DocChange::legacy`] and refuses at admission — and a
-/// lineage cell carries it as its tag wherever the cell is kept outside events (snapshot pages,
-/// repair records, persisted state), so a build meets another rule's cell as a version it does
-/// not run ([`LineageCellRefused`]), never as the root.
+/// The first version of the lineage rule (RFC-0023 §16.1), the first-genesis tree, as the
+/// TypeScript's `GENESIS_RULE`. A genesis written under it carries `1` in key 5 — the
+/// last-writer-wins rule before it wrote `true`, which this build decodes as [`DocChange::legacy`]
+/// and refuses at admission — and this build still reads and folds one, kept as
+/// [`DocChange::rule`]: the genesis means the same under every version. A lineage cell tagged `1`
+/// was joined by a rule that keeps an equivocated lineage's first copy (gaps U39), so
+/// [`parse_lineage_cells`] refuses it ([`LineageCellRefused`]).
 pub const GENESIS_RULE: i64 = 1;
 
 /// The first-genesis tree with a settled anchor (gaps U21), as the TypeScript's `SETTLED_RULE`:
-/// what a genesis carrying [`DocChange::settles`] writes in key 5, and the tag of a cell holding an
-/// anchor, `[2, { lineage → genesis }, [lineage, ms, logical, peer]]`. A build of
-/// [`GENESIS_RULE`] alone refuses both, rather than fold the genesis without trimming what its
-/// peers trim.
+/// what a genesis carrying [`DocChange::settles`] wrote in key 5 before [`LINEAGE_RULE`]. Read and
+/// folded like [`GENESIS_RULE`]'s geneses; a cell tagged `2` is refused for the same reason.
 pub const SETTLED_RULE: i64 = 2;
+
+/// The lineage rule this build runs and writes (gaps U39), as the TypeScript's `LINEAGE_RULE`: the
+/// first-genesis tree with an optional settled anchor, where one lineage held twice — an author
+/// that signed two geneses at one sequence — keeps its **later** copy, so the cell is a function
+/// of the set of geneses whatever order they meet an anchor in. Every genesis this build writes
+/// carries `3` in key 5, with or without an anchor in key 7, and every lineage cell it keeps outside
+/// events is `[3, geneses]` or `[3, geneses, anchor]`.
+pub const LINEAGE_RULE: i64 = 3;
 
 /// Where a document's lineage walk is settled (gaps U21), as the TypeScript's `SettledLineage`: a
 /// lineage on the walk and its genesis's stamp. Every genesis stamped at or below it, the anchor's
@@ -128,10 +135,15 @@ pub struct DocChange {
     /// than [`GENESIS_RULE`]. Decoded so a log that holds one still reads; refused at admission, and
     /// never folded.
     pub legacy: bool,
+    /// Only on a genesis written under an earlier version of the lineage rule than
+    /// [`LINEAGE_RULE`] — key 5 [`GENESIS_RULE`] or [`SETTLED_RULE`]. Folded exactly as a genesis
+    /// of the current rule (only the cell's join changed, gaps U39) and kept so the event
+    /// re-encodes as it was signed. `None` on everything this build writes.
+    pub rule: Option<i64>,
     /// Only on a genesis: the lineage it replaces, the one that won where it was written. `None`
     /// is the root. What [`winning_lineage`] walks.
     pub parent: Option<Id16>,
-    /// Only on a genesis of [`SETTLED_RULE`]: where the authoring device settled the walk as it
+    /// Only on a genesis of [`LINEAGE_RULE`] or [`SETTLED_RULE`]: where the authoring device settled the walk as it
     /// wrote it, so every genesis stamped at or below the anchor leaves the cell (gaps U21).
     pub settles: Option<Settled>,
 }
@@ -225,10 +237,10 @@ pub fn doc_data_to_cbor(change: &DocChange) -> Value {
     if change.genesis {
         data.push((
             Key::Int(DOC_GENESIS),
-            match (change.legacy, &change.settles) {
-                (true, _) => Value::Bool(true),
-                (false, None) => Value::Int(GENESIS_RULE),
-                (false, Some(_)) => Value::Int(SETTLED_RULE),
+            if change.legacy {
+                Value::Bool(true)
+            } else {
+                Value::Int(change.rule.unwrap_or(LINEAGE_RULE))
             },
         ));
     }
@@ -283,9 +295,9 @@ fn settles_from_cbor(v: &Value) -> Result<Settled, &'static str> {
 
 /// A doc change from its `data` map. Refuses what no fold could take — no column, a malformed
 /// adapter id, both or neither payload, a lineage or parent that is not 16 bytes, a `genesis` that
-/// is neither [`GENESIS_RULE`], [`SETTLED_RULE`] (with its anchor, key 7) nor the `true` of the
-/// rule before them, a parent or an anchor on anything but a genesis — and skips keys it has no
-/// name for. A `true` genesis decodes as `legacy`, so a stored
+/// is neither [`LINEAGE_RULE`], an earlier version ([`GENESIS_RULE`], [`SETTLED_RULE`] with its
+/// anchor, key 7) nor the `true` of the rule before them, a parent or an anchor on anything but a
+/// genesis — and skips keys it has no name for. A `true` genesis decodes as `legacy`, so a stored
 /// log that holds one still reads; admission is what refuses it. Never panics.
 pub fn doc_from_cbor(
     table: String,
@@ -311,18 +323,27 @@ pub fn doc_from_cbor(
         _ => return Err("a doc change carries exactly one of bytes and blob"),
     };
     let settles = m.get(&Key::Int(DOC_SETTLES));
-    let (genesis, legacy, settles) = match (m.get(&Key::Int(DOC_GENESIS)), settles) {
-        (Some(Value::Int(SETTLED_RULE)), Some(anchor)) => {
-            (true, false, Some(settles_from_cbor(anchor)?))
-        }
+    let (genesis, legacy, rule, settles) = match (m.get(&Key::Int(DOC_GENESIS)), settles) {
+        (Some(Value::Int(LINEAGE_RULE)), anchor) => (
+            true,
+            false,
+            None,
+            anchor.map(settles_from_cbor).transpose()?,
+        ),
+        (Some(Value::Int(SETTLED_RULE)), Some(anchor)) => (
+            true,
+            false,
+            Some(SETTLED_RULE),
+            Some(settles_from_cbor(anchor)?),
+        ),
         (Some(Value::Int(SETTLED_RULE)), None) => {
             return Err("a genesis of rule 2 names the lineage it settles");
         }
-        (_, Some(_)) => return Err("only a genesis of rule 2 settles the walk"),
-        (None, None) => (false, false, None),
-        (Some(Value::Bool(true)), None) => (true, true, None),
-        (Some(Value::Int(GENESIS_RULE)), None) => (true, false, None),
-        (Some(_), None) => return Err("genesis is 1 or 2, the lineage rule's version"),
+        (_, Some(_)) => return Err("only a genesis of rule 2 or 3 settles the walk"),
+        (None, None) => (false, false, None, None),
+        (Some(Value::Bool(true)), None) => (true, true, None, None),
+        (Some(Value::Int(GENESIS_RULE)), None) => (true, false, Some(GENESIS_RULE), None),
+        (Some(_), None) => return Err("genesis is 1, 2 or 3, the lineage rule's version"),
     };
     let lineage = match m.get(&Key::Int(DOC_LINEAGE)) {
         None => None,
@@ -344,6 +365,7 @@ pub fn doc_from_cbor(
         update,
         genesis,
         legacy,
+        rule,
         parent,
         settles,
     })
@@ -360,6 +382,8 @@ pub struct Genesis {
 
 impl Genesis {
     /// Which of two goes first: the smaller stamp, then the smaller lineage, then the root parent.
+    /// Of two siblings the first wins the walk; of two copies of one lineage the cell keeps the
+    /// later (see [`write_cell`]).
     fn first(&self, other: &Genesis) -> std::cmp::Ordering {
         self.stamp
             .cmp(&other.stamp)
@@ -456,8 +480,9 @@ fn cell_version(value: &CellValue) -> Option<i64> {
     count(items.first()?, MAX_SAFE_INTEGER as f64).map(|n| n as i64)
 }
 
-/// A cell tagged [`GENESIS_RULE`] (`[1, geneses]`) or [`SETTLED_RULE`] (`[2, geneses, anchor]`),
-/// its geneses as stored, or `None` for any other value.
+/// A cell tagged [`LINEAGE_RULE`] (`[3, geneses]` or `[3, geneses, anchor]`), its geneses as
+/// stored, or `None` for any other value: an earlier or later version, no tag, or a shape this
+/// version never writes.
 fn stored_cell(value: &CellValue) -> Option<(&BTreeMap<String, JsonValue>, Option<Settled>)> {
     let CellValue::Array(items) = value else {
         return None;
@@ -466,8 +491,8 @@ fn stored_cell(value: &CellValue) -> Option<(&BTreeMap<String, JsonValue>, Optio
         return None;
     };
     match (cell_version(value), items.len()) {
-        (Some(GENESIS_RULE), 2) => Some((held, None)),
-        (Some(SETTLED_RULE), 3) => Some((held, Some(anchor_of(&items[2])?))),
+        (Some(LINEAGE_RULE), 2) => Some((held, None)),
+        (Some(LINEAGE_RULE), 3) => Some((held, Some(anchor_of(&items[2])?))),
         _ => None,
     }
 }
@@ -518,14 +543,14 @@ impl std::fmt::Display for LineageCellRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let found = match self.version {
             None => "a lineage cell with no version".to_owned(),
-            Some(v @ (GENESIS_RULE | SETTLED_RULE)) => {
+            Some(v @ LINEAGE_RULE) => {
                 format!("a lineage cell tagged {v} in a shape that version never writes")
             }
             Some(v) => format!("a lineage cell of version {v}"),
         };
         write!(
             f,
-            "{}/{}.{}: {found}; this build runs versions {GENESIS_RULE} and {SETTLED_RULE}",
+            "{}/{}.{}: {found}; this build runs version {LINEAGE_RULE}",
             self.table, self.key, self.column
         )
     }
@@ -533,11 +558,12 @@ impl std::fmt::Display for LineageCellRefused {
 
 impl std::error::Error for LineageCellRefused {}
 
-/// Checks every declared doc column's cell in `rows` against the lineage rules this build runs, as
-/// the TypeScript's `parseLineageCells`: the first cell that is neither a [`GENESIS_RULE`] nor a
-/// [`SETTLED_RULE`] cell is refused, so
-/// a caller joins none of the rows rather than read it as the root or merge it by another rule. A
-/// column absent from a record is the root and passes.
+/// Checks every declared doc column's cell in `rows` against the lineage rule this build runs, as
+/// the TypeScript's `parseLineageCells`: the first cell that is not a [`LINEAGE_RULE`] cell is
+/// refused — a [`GENESIS_RULE`] or [`SETTLED_RULE`] cell too, whose join may have kept the copy of
+/// an equivocated lineage this rule drops (gaps U39) — so a caller joins none of the rows rather
+/// than read it as the root or merge it by another rule. A column absent from a record is the
+/// root and passes.
 pub fn parse_lineage_cells<'a>(
     rows: impl IntoIterator<Item = (&'a str, &'a str, &'a RowRecord)>,
     docs: &DocColumns,
@@ -621,7 +647,10 @@ pub fn settle_walk(value: Option<&CellValue>, cutoff_ms: i64) -> Option<Settled>
 }
 
 /// A cell's value in normal form, as the TypeScript's `writeCell`: a genesis the anchor passed is
-/// dropped, one lineage appearing twice keeps its first, and the tag says which rule it holds.
+/// dropped, one lineage appearing twice keeps its later copy (gaps U39), and the tag is
+/// [`LINEAGE_RULE`]. Dropping takes every genesis at or below the anchor's stamp, so it removes a
+/// lineage's earlier copy no later than its later one, and the copy kept is the same whether the
+/// anchor arrived before the copies met or after.
 fn write_cell(geneses: impl IntoIterator<Item = Genesis>, settled: Option<Settled>) -> CellValue {
     let mut held: BTreeMap<Id16, Genesis> = BTreeMap::new();
     for genesis in geneses {
@@ -629,7 +658,7 @@ fn write_cell(geneses: impl IntoIterator<Item = Genesis>, settled: Option<Settle
             continue;
         }
         match held.get(&genesis.lineage) {
-            Some(kept) if genesis.first(kept) != std::cmp::Ordering::Less => {}
+            Some(kept) if genesis.first(kept) != std::cmp::Ordering::Greater => {}
             _ => {
                 held.insert(genesis.lineage, genesis);
             }
@@ -640,20 +669,18 @@ fn write_cell(geneses: impl IntoIterator<Item = Genesis>, settled: Option<Settle
             .map(|g| (lineage_text(&g.lineage), g.entry()))
             .collect(),
     );
+    let tag = JsonValue::Number(LINEAGE_RULE as f64);
     match settled {
-        None => CellValue::Array(vec![JsonValue::Number(GENESIS_RULE as f64), entries]),
-        Some(anchor) => CellValue::Array(vec![
-            JsonValue::Number(SETTLED_RULE as f64),
-            entries,
-            anchor.entry(),
-        ]),
+        None => CellValue::Array(vec![tag, entries]),
+        Some(anchor) => CellValue::Array(vec![tag, entries, anchor.entry()]),
     }
 }
 
 /// How two lineage cells join: the union of their geneses by lineage id under the later of their
-/// anchors, every genesis that anchor passed dropped, the first by stamp kept where one lineage
-/// appears twice; the cell's stamp is the later of the two. A lattice join, as the TypeScript's
-/// `lineageRule`.
+/// anchors, every genesis that anchor passed dropped, the later copy kept where one lineage
+/// appears twice (equivocation, gaps U39); the cell's stamp is the later of the two. A lattice
+/// join, as the TypeScript's `lineageRule`, so the cell and its winner are the same in every order
+/// the geneses and anchors meet in.
 pub fn lineage_rule(incoming: Cell, current: Option<Cell>) -> Cell {
     let held = read_lineage_cell(current.as_ref().map(|c| &c.value));
     let arriving = read_lineage_cell(Some(&incoming.value));
@@ -740,8 +767,25 @@ mod tests {
             panic!("a lineage cell is tagged with its rule's version");
         };
         let geneses = CellValue::from(tagged[1].clone());
-        let version_two = CellValue::Array(vec![JsonValue::Number(2.0), tagged[1].clone()]);
-        let version_three = CellValue::Array(vec![JsonValue::Number(3.0), tagged[1].clone()]);
+        let tagged_as =
+            |version: f64| CellValue::Array(vec![JsonValue::Number(version), tagged[1].clone()]);
+        let anchor = Settled {
+            lineage: [0xb2; 16],
+            stamp: held.stamp.clone(),
+        }
+        .entry();
+        // rules 1 and 2 kept an equivocated lineage's first copy: their cells are refused (U39)
+        let version_two = CellValue::Array(vec![
+            JsonValue::Number(2.0),
+            tagged[1].clone(),
+            anchor.clone(),
+        ]);
+        let three_misshapen = CellValue::Array(vec![
+            JsonValue::Number(3.0),
+            tagged[1].clone(),
+            anchor.clone(),
+            anchor,
+        ]);
         let with = |value: CellValue| RowRecord {
             cells: BTreeMap::from([(
                 "content".to_owned(),
@@ -761,8 +805,10 @@ mod tests {
         for (value, version) in [
             (geneses, None),
             (CellValue::text(&lineage_text(&[0xa1; 16])), None),
-            (version_two, Some(2)),
-            (version_three, Some(3)),
+            (tagged_as(1.0), Some(GENESIS_RULE)),
+            (version_two, Some(SETTLED_RULE)),
+            (three_misshapen, Some(LINEAGE_RULE)),
+            (tagged_as(4.0), Some(4)),
         ] {
             assert!(geneses_of(Some(&value)).is_empty());
             assert_eq!(verdict(value), Err(version));
@@ -815,7 +861,11 @@ mod tests {
                 .is_ok_and(|d| d.genesis && d.legacy)
         );
         assert!(with(vec![(Key::Int(DOC_GENESIS), Value::Int(2))]).is_err());
-        assert!(with(vec![(Key::Int(DOC_GENESIS), Value::Int(3))]).is_err());
+        assert!(with(vec![(Key::Int(DOC_GENESIS), Value::Int(4))]).is_err());
+        assert!(
+            with(vec![(Key::Int(DOC_GENESIS), Value::Int(3))])
+                .is_ok_and(|d| d.genesis && d.rule.is_none() && d.settles.is_none())
+        );
         let anchor = || {
             Value::Array(vec![
                 Value::Bytes(vec![9; 16]),
@@ -830,9 +880,24 @@ mod tests {
                 (Key::Int(DOC_SETTLES), anchor())
             ])
             .is_ok_and(|d| d.genesis
+                && d.rule == Some(SETTLED_RULE)
                 && d.settles
                     .as_ref()
                     .is_some_and(|s| s.lineage == [9; 16] && s.stamp.hlc == Hlc::new(5, 1)))
+        );
+        assert!(
+            with(vec![
+                (Key::Int(DOC_GENESIS), Value::Int(3)),
+                (Key::Int(DOC_SETTLES), anchor())
+            ])
+            .is_ok_and(|d| d.genesis && d.rule.is_none() && d.settles.is_some())
+        );
+        assert!(
+            with(vec![
+                (Key::Int(DOC_GENESIS), Value::Bool(true)),
+                (Key::Int(DOC_SETTLES), anchor())
+            ])
+            .is_err()
         );
         assert!(
             with(vec![
@@ -857,7 +922,10 @@ mod tests {
             ])
             .is_err()
         );
-        assert!(with(vec![(Key::Int(DOC_GENESIS), Value::Int(1))]).is_ok_and(|d| d.genesis));
+        assert!(
+            with(vec![(Key::Int(DOC_GENESIS), Value::Int(1))])
+                .is_ok_and(|d| d.genesis && d.rule == Some(GENESIS_RULE))
+        );
         assert!(with(vec![(Key::Int(DOC_PARENT), Value::Bytes(vec![0; 16]))]).is_err());
         assert!(
             with(vec![

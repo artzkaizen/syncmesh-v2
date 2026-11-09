@@ -633,6 +633,8 @@ impl Engine {
                     let record = self.state.record(&d.table, &d.key);
                     d.lineage = Some(derive_lineage(&peer_id, seq_num, index as u32));
                     d.parent = lineage_of(record, &d.column);
+                    // written under this build's rule, never an earlier one the write named (U39)
+                    d.rule = None;
                     // the anchor this write settles the walk at (gaps U21)
                     d.settles = settle_walk(
                         record
@@ -907,6 +909,34 @@ impl Engine {
         let entries = parked.iter().map(|p| p.entry.clone()).collect();
         self.receive_batch(entries).inspect_err(|_| {
             for p in parked {
+                self.parked.park(p);
+            }
+        })
+    }
+
+    /// Re-offers the events of one author that its grant refused — `NoGrant`, `GrantStale` and
+    /// the rest of [`ValidationError::is_capability`] — and leaves everything else parked. What a
+    /// grant registering for that author is followed by (gaps U42): an event can arrive before
+    /// the grant that vouches for it, and in a room where no later batch folds nothing else would
+    /// offer it again. What the ladder still refuses is parked again.
+    pub fn retry_author(&mut self, author: &PeerId) -> Result<Received, StoreError> {
+        let refused = |p: &Parked| &p.entry.event.peer_id == author && p.verdict.is_capability();
+        // nothing of theirs is parked: no re-park of the rest, and no empty write to the store
+        if !self.parked.list().any(refused) {
+            return Ok(Received {
+                report: ReceiveReport::default(),
+                batch: self.fold(&[], FoldSource::Remote),
+            });
+        }
+        let (retry, kept): (Vec<Parked>, Vec<Parked>) =
+            self.parked.take().into_iter().partition(|p| refused(p));
+        // back first, so a store emptied by `take` is whole again before anything can fail
+        for parked in kept {
+            self.parked.park(parked);
+        }
+        let entries = retry.iter().map(|p| p.entry.clone()).collect();
+        self.receive_batch(entries).inspect_err(|_| {
+            for p in retry {
                 self.parked.park(p);
             }
         })
