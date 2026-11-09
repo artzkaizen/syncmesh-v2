@@ -11,7 +11,7 @@ deps: ["0004", "0013", "0021", "0022"]
 # RFC-0025 — External writers
 
 > **Decided 2026-11-08 (Jace delegated the call).** Closes gap-audit №31 and `plan/gaps.md` O3.
-> Built in the same change: the `stage` guard mode and `stagedChangeSource`. What is not built is
+> Built in #41: the `stage` guard mode and `stagedChangeSource`. What is not built is
 > listed under "Left", one line each.
 
 ## Purpose
