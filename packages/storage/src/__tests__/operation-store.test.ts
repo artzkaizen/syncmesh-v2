@@ -171,6 +171,28 @@ describe("operationStore", () => {
     expect((await store.soleCustody()).unwrap().map((op) => op.id)).toEqual(["op-2", "op-3"]);
   });
 
+  test("a late receipt from a lost store withdraws the rebuilt lineage too, until it signs again", async () => {
+    const { store } = await open();
+    for (const n of [1, 2, 3])
+      (await store.record({ id: `op-${n}`, peer: A, seq: seq(n), label: "l", atMs: n })).unwrap();
+    (await store.vouch(B, A, seq(3), "inc-2", 20)).unwrap();
+
+    // a receipt B's lost store signed reaches us after the rebuilt one's: two clocks give no
+    // order, so neither claim counts, and the late one is not written
+    (await store.vouch(B, A, seq(3), "inc-1", 10)).unwrap();
+    expect((await store.vouchesOf(A, seq(3))).unwrap()).toEqual([]);
+    expect((await store.soleCustody()).unwrap().map((op) => op.id)).toEqual([
+      "op-1",
+      "op-2",
+      "op-3",
+    ]);
+
+    (await store.vouch(B, A, seq(3), "inc-2", 30)).unwrap();
+    expect((await store.vouchesOf(A, seq(3))).unwrap()).toEqual([
+      { holder: B, incarnation: "inc-2", atMs: 30 },
+    ]);
+  });
+
   test("a vouch whose insert fails leaves the holder's earlier claim whole", async () => {
     const driver = await openPair();
     let failing = false;

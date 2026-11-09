@@ -105,7 +105,9 @@ export interface OperationStore {
    * written at all: it neither withdraws what the newer one signed nor puts back what the newer
    * one withdrew. One that arrives after a newer vouch of that holder under another incarnation
    * withdraws that lineage's vouches and is not written either: a rebuilt store's clock may run
-   * behind the lost one's, so neither claim counts until the holder signs again.
+   * behind the lost one's, so neither claim counts until the holder signs again. A late receipt
+   * from the lost store stamped above every vouch the rebuilt one has written is taken as the
+   * newer claim, since the store keeps no record of which incarnations a holder has retired.
    *
    * The order is the whole of it: a peer that lost its store and rebuilt arrives with a new
    * lineage, and the vouches it made with the store it lost have to stop counting before the new
