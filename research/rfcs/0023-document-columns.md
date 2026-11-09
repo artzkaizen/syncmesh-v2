@@ -763,7 +763,7 @@ until first `open()`, which is RFC-0019 §3's window rule applied to documents.
 | genesis under the pre-§16.1 rule (`5: true`) at a build of the tree rule | decodes, flagged `legacy`, so a log that holds one still reads; refused at admission → quarantine | the event is never folded by a rule this build does not run, and is kept rather than dropped |
 | genesis under the tree rule (`5: 1`) at a build from before it | refused at decode by that build | that build never folds a tree-rule genesis by the LWW rule |
 | a snapshot page (RFC-0019) or repair record whose doc-column cell is not tagged `1`: untagged (the LWW rule's lineage id, or the tree rule's set before cells were versioned) or another version | the whole snapshot or repair is refused as `LineageCellRefused { table, key, column, version }` before any row joins; no coverage is adopted; the join exchange closes and reports it on the bridge's `onError` | the cell is never read as the root nor merged by another rule; the history behind it still arrives as events |
-| persisted state holding such a cell | reported (TypeScript: `onError`; Rust: `Engine::refused_at_open`), then the state is rebuilt from the log, as any unreadable state is — `StateCorrupt` instead when the log is compacted below it or the state holds rows a snapshot installed (its cursors carry a floor, and the log records it) | each runtime treats it as state it cannot read, as it already treats a row that does not decode |
+| persisted state holding such a cell | reported (TypeScript: `onError`; Rust: `Engine::refused_at_open`), then the state is rebuilt from the log, as any unreadable state is — `StateCorrupt` instead when the log is compacted below it; rows a snapshot installed (its cursors carry a floor, and the log records it) are named by `Engine.rebuiltBelow` and raised as a `$recovery` issue (gaps U33; Rust still refuses, U45) | each runtime treats it as state it cannot read, as it already treats a row that does not decode |
 | adapter cannot parse an update | materialisation marks that `doc_log` row `failed`; the doc stays usable at its last good version; loud in `$inspect` | the fold already happened identically; this only affects materialisation, which is local |
 | minor version skew (`loro-crdt` 1.4 vs 1.16) | allowed: the id's major (`@1`) is the compatibility contract; the adapter package pins a floor and runs the adapter conformance suite (§13) | Loro's own 1.x encoding stability |
 
@@ -777,16 +777,16 @@ in a release, so no deployed mesh is affected.
 Rebuilding from the log keeps only what the log holds. Rows this device took from an earlier
 snapshot install came with coverage and no events, and the install raised the floor persisted with
 the cursors (D46). So when the state cannot be read — a refused persisted cell or a row that does
-not decode — and its cursors carry a floor, boot refuses with `StateCorrupt` ("rejoin from a peer")
-instead of rebuilding without them, as it refuses over a compacted log; nothing is cleared (gaps
-U22). Rust takes no snapshots and never compacts, so its log always holds what its state
-stood for, and it rebuilds. The install's floor is kept in the log as well
-(`EventStore.installedBelow`, gaps U33, built; decided 2026-11-08, Jace delegated the call), so the
-two ways round it are closed too: cursors that cannot be read either are refused by the log's copy
-of the floor, and a state file that is not read at all — a schema change opening a new one
-(RFC-0022), an operator deleting it — finds the log not `refoldable` and boot refuses an empty
-state over it with `StateCorrupt`, as over a compacted log. A state installed before the log kept
-the floor gives it to the log the first time it boots readable.
+not decode — and its cursors carry a floor, the rebuild does not happen without a word (gaps U22).
+The install's floor is kept in the log as well (`EventStore.installedBelow`, gaps U33), so it
+outlives cursors that cannot be read and a state file that is not read at all — a schema change
+opening a new one (RFC-0022), an operator deleting it. Boot rebuilds from the log in each case
+(copying a cursors-only floor into the log first), and `Engine.rebuiltBelow()` names the authors
+whose coverage is below the floor; the mesh raises them as D46's `$recovery` issue
+(`BelowInstalledFloor`, reason `rebuilt`) until peers' events or state bring them back (decided
+2026-11-09, Jace delegated the call; #34 refused with `StateCorrupt` instead). A compacted log is
+still refused. A state installed before the log kept the floor gives it to the log the first time
+it boots readable. Rust still refuses with `StateCorrupt` (U37; its half of this is U45).
 
 The boot check reads only tables that declare a doc column. The state cache decodes a row when it is
 first read, so the other tables stay undecoded until a fold writes them; a doc table is decoded in
@@ -1090,7 +1090,7 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    `[3, geneses]` and `[3, geneses, anchor]` wherever they are kept outside events, and a cell
    tagged `1` or `2` is refused as `LineageCellRefused` (`version` 1 or 2) where it enters — a
    snapshot install or a repair, and persisted state at boot, which is rebuilt from the log as
-   for any other refused cell, or refused as `StateCorrupt` when a snapshot installed rows the
+   for any other refused cell, raising a `$recovery` issue when a snapshot installed rows the
    log does not hold (§10). A genesis of rule 1 or 2 still decodes and folds under rule 3 and
    re-encodes byte for byte (`DocChange.rule`, Rust `DocChange::rule`), so a log written before
    rule 3 still reads. `doc-vectors.json` is regenerated: its lineage trees' records (rule 1's

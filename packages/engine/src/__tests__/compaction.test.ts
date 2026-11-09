@@ -397,39 +397,66 @@ describe("below the floor (gaps U1, U33)", () => {
     expect((await b.engine.receiveBatch([first, third])).unwrap().folded).toBe(1);
   });
 
-  test("a state that is not read at all does not rebuild without the rows a snapshot installed (U33)", async () => {
-    const { a, b } = pair();
+  test("a state that is not read at all is rebuilt from the log and names what the install brought (U33)", async () => {
+    const { a, b, link } = pair();
+    // the rows reach b only as the snapshot, never as events
+    link.close();
     for (const k of ["n1", "n2", "n3"]) (await write(a.engine, k, k)).unwrap();
     (await b.engine.installSnapshot(a.engine.snapshot())).unwrap();
     expect((await b.store.installedBelow()).unwrap()).toEqual(cursors([[PEER_A, seq(3)]]));
-    expect((await refoldable(b.store)).unwrap()).toBe(false);
+    // the state that took the install holds its rows: nothing is lacking
+    expect(b.engine.rebuiltBelow().size).toBe(0);
+    // the log is whole above the install's floor, so a new state file may be folded from it
+    expect((await refoldable(b.store)).unwrap()).toBe(true);
     // a schema change that opens a new state file, or an operator deleting it
-    const fresh = await openEngine({
-      peerId: PEER_B,
-      clock: fakeClock(1),
-      store: b.store,
-      stateStore: createMemoryStateStore(),
-    });
-    expect(fresh.isErr() && fresh.error).toBeInstanceOf(StateCorrupt);
-    expect(fresh.isErr() && fresh.error.message).toContain("installed from a snapshot");
+    const fresh = (
+      await openEngine({
+        peerId: PEER_B,
+        clock: fakeClock(1),
+        store: b.store,
+        stateStore: createMemoryStateStore(),
+      })
+    ).unwrap();
+    expect(bodies(fresh)).toEqual([]);
+    expect(fresh.rebuiltBelow()).toEqual(cursors([[PEER_A, seq(3)]]));
+    // the events themselves bring it back, as they would a new device
+    (await fresh.receiveBatch((await a.store.all()).unwrap())).unwrap();
+    expect(new Set(bodies(fresh))).toEqual(new Set(["n1", "n2", "n3"]));
+    expect(fresh.rebuiltBelow().size).toBe(0);
   });
 
-  test("a state whose rows and cursors both cannot be read is refused, not rebuilt from the log (U33)", async () => {
-    const { a, b, stateB } = pair();
+  test("a state whose rows and cursors both cannot be read is rebuilt, and names what it lacks (U33)", async () => {
+    const { a, b, link, stateB } = pair();
+    link.close();
     for (const k of ["n1", "n2"]) (await write(a.engine, k, k)).unwrap();
     (await b.engine.installSnapshot(a.engine.snapshot())).unwrap();
     const unreadable = () =>
       Promise.resolve(Result.err(new StateCorrupt({ message: "the cache does not decode" })));
     const broken: StateStore = { ...stateB, loadAll: unreadable, loadCursors: unreadable };
-    const booted = await openEngine({
-      peerId: PEER_B,
-      clock: fakeClock(1),
-      store: b.store,
-      stateStore: broken,
-    });
-    expect(booted.isErr() && booted.error.message).toContain("installed from a snapshot");
-    // nothing was cleared: the rows are still where a rejoin can find them
-    expect((await stateB.loadAll()).unwrap().get(NOTES)?.size).toBe(2);
+    const booted = (
+      await openEngine({ peerId: PEER_B, clock: fakeClock(1), store: b.store, stateStore: broken })
+    ).unwrap();
+    expect(booted.rebuiltBelow()).toEqual(cursors([[PEER_A, seq(2)]]));
+  });
+
+  test("a state whose cursors alone carry the install's floor gives it to the log before the rebuild (U33)", async () => {
+    const { a, b, link, stateB } = pair();
+    link.close();
+    (await write(a.engine, "n1", "n1")).unwrap();
+    (await b.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    // a log from a build that kept the floor only with the state's cursors, under rows that do not read
+    const store = createMemoryEventStore();
+    (await store.appendBatch((await b.store.all()).unwrap())).unwrap();
+    const broken: StateStore = {
+      ...stateB,
+      loadAll: () =>
+        Promise.resolve(Result.err(new StateCorrupt({ message: "the cache does not decode" }))),
+    };
+    const booted = (
+      await openEngine({ peerId: PEER_B, clock: fakeClock(1), store, stateStore: broken })
+    ).unwrap();
+    expect((await store.installedBelow()).unwrap()).toEqual(cursors([[PEER_A, seq(1)]]));
+    expect(booted.rebuiltBelow()).toEqual(cursors([[PEER_A, seq(1)]]));
   });
 
   test("a crash between an install's rows and its cursors still reopens (U33)", async () => {

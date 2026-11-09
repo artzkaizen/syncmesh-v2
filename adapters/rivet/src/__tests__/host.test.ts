@@ -8,7 +8,7 @@ import { relayTransport, startRelay, webSocketDial } from "@syncmesh/relay";
 import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { Temporal } from "@syncmesh/temporal";
-import { createIdentity } from "@syncmesh/wire";
+import { createIdentity, createPlaintextVault } from "@syncmesh/wire";
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
@@ -34,6 +34,8 @@ const schema = () =>
   });
 
 const T0 = Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000);
+// the room's key beside its log, kept plaintext here: these tests are about the actor (N26)
+const vault = createPlaintextVault();
 type Dial = () => Promise<RelayDial> | RelayDial;
 
 const until = async (check: () => Promise<boolean>, ms = 5000): Promise<boolean> => {
@@ -90,7 +92,7 @@ describe("the room in a Rivet actor (D09-C, E25)", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "syncmesh-rivet-host-"));
     const actor = rivetActor(
       new Database(":memory:"),
-      relayRivetActor({ keepaliveMs: 60_000, pageSize: 2 }),
+      relayRivetActor({ vault, keepaliveMs: 60_000, pageSize: 2 }),
       ["acme"],
     );
     const relay = await startRelay(0, { dataDir, keepaliveMs: 60_000, pageSize: 2 });
@@ -109,9 +111,11 @@ describe("the room in a Rivet actor (D09-C, E25)", () => {
   }, 30_000);
 
   test("an actor that sleeps wakes as the same room: same key, same lineage, same log", async () => {
-    const actor = rivetActor(new Database(":memory:"), relayRivetActor({ keepaliveMs: 60_000 }), [
-      "acme",
-    ]);
+    const actor = rivetActor(
+      new Database(":memory:"),
+      relayRivetActor({ vault, keepaliveMs: 60_000 }),
+      ["acme"],
+    );
     const ask = new Request("http://rivet.local/actors/room/http/");
     const before = await described(await actor.describe(ask));
     expect(before.room).toBe("acme");
@@ -133,7 +137,7 @@ describe("the room in a Rivet actor (D09-C, E25)", () => {
   test("the posture is asked with the upgrade request in hand, before the room is", async () => {
     const actor = rivetActor(
       new Database(":memory:"),
-      relayRivetActor({ posture: { allowedOrigins: ["https://app.example"] } }),
+      relayRivetActor({ vault, posture: { allowedOrigins: ["https://app.example"] } }),
       ["acme"],
     );
     const from = (origin: string) =>
@@ -155,7 +159,7 @@ describe("the room in a Rivet actor (D09-C, E25)", () => {
   test("a socket handed over without its upgrade request is refused when a posture is set", async () => {
     const actor = rivetActor(
       new Database(":memory:"),
-      relayRivetActor({ posture: { verifyJoin: () => true } }),
+      relayRivetActor({ vault, posture: { verifyJoin: () => true } }),
       ["acme"],
     );
     let closed = false;
@@ -170,7 +174,7 @@ describe("the room in a Rivet actor (D09-C, E25)", () => {
   test("the room's socket cap holds with or without the upgrade request", async () => {
     const actor = rivetActor(
       new Database(":memory:"),
-      relayRivetActor({ limits: { maxRoomConnections: 1 } }),
+      relayRivetActor({ vault, limits: { maxRoomConnections: 1 } }),
       ["acme"],
     );
     let spoke = false;
@@ -189,6 +193,7 @@ describe("the room in a Rivet actor (D09-C, E25)", () => {
     const actor = rivetActor(
       new Database(":memory:"),
       relayRivetActor({
+        vault,
         posture: { allowedOrigins: ["https://app.example"] },
         limits: { maxRoomConnections: 1 },
       }),
@@ -214,7 +219,7 @@ describe("the room in a Rivet actor (D09-C, E25)", () => {
   test("a socket that closes while its room is opening holds no seat", async () => {
     const actor = rivetActor(
       new Database(":memory:"),
-      relayRivetActor({ limits: { maxRoomConnections: 1 } }),
+      relayRivetActor({ vault, limits: { maxRoomConnections: 1 } }),
       ["acme"],
     );
     actor.dial().close(); // gone before the cold actor has opened its SQLite
@@ -229,7 +234,7 @@ describe("the room in a Rivet actor (D09-C, E25)", () => {
   });
 
   test("an instance that sleeps while its room is opening does not stay cached", async () => {
-    const relay = relayRivetActor({});
+    const relay = relayRivetActor({ vault });
     const base = rivetDbOver(new Database(":memory:"));
     let queries = 0;
     const db = {
@@ -258,7 +263,7 @@ describe("the room in a Rivet actor (D09-C, E25)", () => {
   test("a room that cannot open closes its socket, and the failure still surfaces", async () => {
     const codes: (number | undefined)[] = [];
     const broken = new Error("disk gone");
-    const opening = relayRivetActor({}).onWebSocket(
+    const opening = relayRivetActor({ vault }).onWebSocket(
       {
         actorId: "actor-broken",
         key: ["acme"],
@@ -287,5 +292,12 @@ describe("closeReason", () => {
     expect(new TextEncoder().encode(reason).byteLength).toBeLessThanOrEqual(123);
     expect(reason).toBe("é".repeat(61));
     expect(closeReason("short")).toBe("short");
+  });
+});
+
+describe("the room's key at rest (N26)", () => {
+  test("an actor given no vault is a definition error", () => {
+    // @ts-expect-error -- the type requires a vault; this is the plain-JavaScript caller
+    expect(() => relayRivetActor({})).toThrow("pass `vault`");
   });
 });

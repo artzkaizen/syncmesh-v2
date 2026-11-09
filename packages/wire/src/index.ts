@@ -146,3 +146,23 @@ export { createPartitionKeys } from "./partition-keys.js";
 export type { Entropy } from "./entropy.js";
 export { NoSecureRandomness, randomBytes, supplyEntropy } from "./entropy.js";
 export { supplySigner, type Signer } from "./signing.js";
+export type {
+  CryptoKeyHolder,
+  KeyStoreFactory,
+  SecretStore,
+  SecretStoreVaultOptions,
+  SeedVault,
+} from "./vault.js";
+export {
+  PLAINTEXT_VAULT,
+  VAULT_KIND,
+  createIndexedDbKeyHolder,
+  createKeyVault,
+  createPlaintextVault,
+  createSecretStoreVault,
+  createWebCryptoVault,
+  parseSealedText,
+  platformVault,
+  sealChecked,
+  sealedText,
+} from "./vault.js";

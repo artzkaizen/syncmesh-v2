@@ -98,13 +98,17 @@ export interface RecoveryView {
   readonly run: () => Promise<ResultType<ReceiveReport, StoreFailure>>;
   /**
    * Where this device is below a floor, and why it is still there: the history it lacks is in no
-   * log that side keeps, so delta sync cannot reach it. Two kinds, told apart by `reason` — narrow
+   * log that side keeps, so delta sync cannot reach it. Three kinds, told apart by `reason` — narrow
    * on it before reading `.peer` or `.relay`:
    *
    * - `BelowPeerFloor`: a peer this device is below the compaction floor of (D46).
    * - `BelowRelayFloor` (`reason: "retention"`): a relay that refused the join because its room
    *   trimmed below the cursors it sent (gaps U30). A relay serves no state, so `acceptState`
    *   answers `nothing-to-accept` for it.
+   * - `BelowInstalledFloor` (`reason: "rebuilt"`): this device's state was rebuilt from its log
+   *   without rows a snapshot install had brought — the state file deleted, unreadable, or new
+   *   under a changed schema (gaps U33). Raised at open; peers' events, a peer's state or
+   *   {@link RecoveryView.rebuild} bring them back. `acceptState` answers `nothing-to-accept`.
    *
    * Empty once every author catches up to the floor, however it got there.
    *
@@ -263,14 +267,20 @@ export const recoveryDeps = (
   self: PeerId,
   snapshots: { readonly subscribe: RecoveryDeps["onSnapshot"] },
   sources: () => readonly Transport[],
-): RecoveryDeps & { readonly rejoins: Rejoins; readonly torn: TornWatch } => ({
-  sources,
-  onSnapshot: snapshots.subscribe,
-  pending: () => unacknowledged(engine, self),
-  rejoins: createRejoins(),
-  // a log a read finds torn is an issue, and a rejoin from whichever linked peer holds it (D39)
-  torn: watchTorn({ engine, transports: sources }),
-});
+): RecoveryDeps & { readonly rejoins: Rejoins; readonly torn: TornWatch } => {
+  const rejoins = createRejoins();
+  // a state rebuilt from the log without what a snapshot install brought says so (gaps U33)
+  const lost = engine.rebuiltBelow();
+  if (lost.size > 0) rejoins.rebuilt(lost, () => engine.coverage().synced);
+  return {
+    sources,
+    onSnapshot: snapshots.subscribe,
+    pending: () => unacknowledged(engine, self),
+    rejoins,
+    // a log a read finds torn is an issue, and a rejoin from whichever linked peer holds it (D39)
+    torn: watchTorn({ engine, transports: sources }),
+  };
+};
 
 export function openRecovery(engine: Engine, deps?: RecoveryDeps): RecoveryView {
   const parkedIssue = ({

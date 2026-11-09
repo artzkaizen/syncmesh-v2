@@ -3,7 +3,15 @@ import type { CborValue } from "@syncmesh/wire";
 
 import { parsePeerId } from "@syncmesh/kernel";
 import { omitUndefined } from "@syncmesh/result";
-import { bytesToHex, decodeCbor, encodeCbor, hexToBytes } from "@syncmesh/wire";
+import {
+  FIRST_EPOCH,
+  bytesToHex,
+  decodeCbor,
+  encodeCbor,
+  hexToBytes,
+  openPayload,
+  sealPayload,
+} from "@syncmesh/wire";
 
 import type { DurableWebSocket } from "./socket.js";
 
@@ -46,6 +54,53 @@ export interface Restored {
 
 const NOTHING: Restored = { nonce: undefined, offer: undefined, session: undefined, frames: [] };
 
+/** What the link secrets in an attachment are bound to, so they cannot be taken for anything else. */
+const LINK_AAD = new TextEncoder().encode("syncmesh/do-link-secret/v1");
+
+/**
+ * The link secrets an attachment keeps (the offered secret, the session's two keys), sealed under
+ * the object's attachment key (N26): the platform stores attachments at rest, and the bare keys
+ * would open every frame of the session they belong to. The attachment key itself is sealed by the
+ * host's vault in the object's SQLite (`relaySecret`).
+ */
+export interface LinkSealer {
+  readonly seal: (secret: Uint8Array) => Uint8Array;
+  /** `undefined` when the bytes do not open under this key: the socket wakes without that state. */
+  readonly open: (sealed: Uint8Array) => Uint8Array | undefined;
+}
+
+/**
+ * A {@link LinkSealer} over the object's 32-byte attachment key. `nonce` draws each seal's 24-byte
+ * nonce; absent, a random one. Given only where the bytes must be the same every run (vectors).
+ */
+export const linkSealer = (key: Uint8Array, nonce?: () => Uint8Array): LinkSealer => ({
+  seal: (secret) =>
+    nonce === undefined
+      ? sealPayload(key, secret, LINK_AAD)
+      : sealPayload(key, secret, LINK_AAD, FIRST_EPOCH, nonce()),
+  open: (sealed) => {
+    const opened = openPayload(key, sealed, LINK_AAD);
+    return opened.isOk() ? opened.value : undefined;
+  },
+});
+
+/** A secret in the head: boxed as `[sealed]`, so a reader tells it from the bare bytes an earlier build wrote. */
+const sealedSlot = (sealer: LinkSealer, secret: Uint8Array | undefined): CborValue =>
+  secret === undefined ? null : [sealer.seal(secret)];
+
+/** A secret back out of the head: opened when boxed, taken as it is when an earlier build left it bare. */
+const secretAt = (
+  sealer: LinkSealer,
+  head: readonly CborValue[],
+  at: number,
+): Uint8Array | undefined => {
+  const value = head[at];
+  if (value instanceof Uint8Array) return value;
+  if (!Array.isArray(value)) return undefined;
+  const [sealed] = value;
+  return sealed instanceof Uint8Array ? sealer.open(sealed) : undefined;
+};
+
 /** The elements of a decoded script that are frames; anything else in there was never one. */
 const framesOf = (decoded: readonly CborValue[]): readonly Uint8Array[] =>
   decoded.filter((element): element is Uint8Array => element instanceof Uint8Array);
@@ -53,17 +108,17 @@ const framesOf = (decoded: readonly CborValue[]): readonly Uint8Array[] =>
 /**
  * The head of the script, boxed so a reader can tell it from a frame — every frame is bytes and
  * the box is an array — with the link's state at fixed positions: the challenge, the offered
- * secret and hello, the two session keys and the peer they were agreed with. A position with
- * nothing in it is `null`; trailing nulls are not written, so a room that only challenges writes
- * the head it always wrote.
+ * secret and hello, the two session keys and the peer they were agreed with. The secret and the
+ * keys are sealed ({@link LinkSealer}). A position with nothing in it is `null`; trailing nulls
+ * are not written, so a room that only challenges writes the head it always wrote.
  */
-const headOf = (resume: Resume): CborValue => {
+const headOf = (resume: Resume, sealer: LinkSealer): CborValue => {
   const slots: CborValue[] = [
     resume.nonce ?? null,
-    resume.offer?.secret ?? null,
+    sealedSlot(sealer, resume.offer?.secret),
     resume.offer?.hello ?? null,
-    resume.session?.keys.seal ?? null,
-    resume.session?.keys.open ?? null,
+    sealedSlot(sealer, resume.session?.keys.seal),
+    sealedSlot(sealer, resume.session?.keys.open),
     resume.session === undefined ? null : hexToBytes(resume.session.peer).unwrap(),
   ];
   while (slots.length > 0 && slots[slots.length - 1] === null) slots.pop();
@@ -79,8 +134,8 @@ const bytesAt = (head: readonly CborValue[], at: number): Uint8Array | undefined
  * The script as attachment bytes, trimmed from the oldest grant until it fits. `undefined` when
  * even the bare `join` is too wide to keep — that socket wakes bound and silent, as it did before.
  */
-export function encodeResume(resume: Resume): Uint8Array | undefined {
-  const head = headOf(resume);
+export function encodeResume(resume: Resume, sealer: LinkSealer): Uint8Array | undefined {
+  const head = headOf(resume, sealer);
   const join = resume.join === undefined ? [] : [resume.join];
   for (let dropped = 0; dropped <= resume.grants.length; dropped += 1) {
     const bytes = encodeCbor([head, ...join, ...resume.grants.slice(dropped)]);
@@ -90,7 +145,7 @@ export function encodeResume(resume: Resume): Uint8Array | undefined {
 }
 
 /** What the attachment kept: the link's state and the frames to replay, in the order first received. */
-export function decodeResume(attachment: Uint8Array | null): Restored {
+export function decodeResume(attachment: Uint8Array | null, sealer: LinkSealer): Restored {
   if (attachment === null) return NOTHING;
   const decoded = decodeCbor(attachment);
   if (decoded.isErr() || !Array.isArray(decoded.value)) return NOTHING;
@@ -98,11 +153,11 @@ export function decodeResume(attachment: Uint8Array | null): Restored {
   // a script written before there was a head starts with a frame
   if (!Array.isArray(head)) return { ...NOTHING, frames: framesOf(decoded.value) };
   const nonce = bytesAt(head, 0);
-  const secret = bytesAt(head, 1);
+  const secret = secretAt(sealer, head, 1);
   const hello = bytesAt(head, 2);
   const offer = secret !== undefined && hello !== undefined ? { secret, hello } : undefined;
-  const seal = bytesAt(head, 3);
-  const open = bytesAt(head, 4);
+  const seal = secretAt(sealer, head, 3);
+  const open = secretAt(sealer, head, 4);
   const peer = bytesAt(head, 5);
   const parsed = peer === undefined ? undefined : parsePeerId(bytesToHex(peer));
   const session =
@@ -117,12 +172,12 @@ export function decodeResume(attachment: Uint8Array | null): Restored {
  * Memory, like everything else here: an eviction drops it, and the attachments it wrote are what
  * put it back.
  */
-export function trackResume() {
+export function trackResume(sealer: () => LinkSealer) {
   const scripts = new Map<DurableWebSocket, Resume>();
 
   const write = (ws: DurableWebSocket, next: Resume): void => {
     scripts.set(ws, next);
-    const bytes = encodeResume(next);
+    const bytes = encodeResume(next, sealer());
     if (bytes !== undefined) ws.serializeAttachment(bytes);
   };
 

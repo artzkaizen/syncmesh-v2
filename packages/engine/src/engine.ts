@@ -250,8 +250,9 @@ export function createEngine(options: EngineOptions): Engine {
     for (const { event } of entries) fleet.note(event);
     return foldPath.fold(entries, source);
   };
-  const covered = createCoveragePath({ coverage, store, turn, errors }, () =>
-    persistCoverage(plain),
+  const covered = createCoveragePath(
+    { coverage, store, turn, errors, installed: boot?.installed },
+    () => persistCoverage(plain),
   );
   docPath.bind({ ...foldPath, coverage: coverage.current, atomically });
   fold(boot?.replay ?? [], "boot");

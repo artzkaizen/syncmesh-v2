@@ -35,7 +35,9 @@ export interface RoomTableOptions {
   readonly open: (name: string, grants: GrantCache) => Promise<OpenedRoom>;
   /**
    * How long a room with no socket on it is kept open. Absent, a room opened once is held for
-   * the life of the host, which is what this table did before the option existed.
+   * the life of the host, which is what this table did before the option existed. Zero closes a
+   * room on its last release, with no sweep timer: what a host that must go quiet to hibernate
+   * (a Durable Object) needs, since a timer left running keeps it awake.
    */
   readonly idleAfter?: Temporal.Duration;
   readonly now: () => Temporal.Instant;
@@ -145,7 +147,7 @@ export function createRoomTable(options: RoomTableOptions): RoomTable {
   // checked no less often than the deadline itself, or a short `idleAfter` would be rounded up to
   // the sweep it happens to land in rather than being the bound it says it is
   const every = Math.min(durationMs(DEFAULT_SWEEP), idleMs ?? Infinity);
-  const timer = idleMs === undefined ? undefined : setInterval(sweep, every);
+  const timer = idleMs === undefined || idleMs === 0 ? undefined : setInterval(sweep, every);
 
   return {
     acquire: async (name) => {
@@ -160,7 +162,10 @@ export function createRoomTable(options: RoomTableOptions): RoomTable {
           if (done) return;
           done = true;
           entry.sockets -= 1;
-          if (entry.sockets === 0) entry.idleSince = options.now();
+          if (entry.sockets > 0) return;
+          entry.idleSince = options.now();
+          // a zero window closes the room now: no sweep runs to close it later
+          if (idleMs === 0 && entries.get(name) === entry) evict(name, entry);
         },
       };
     },

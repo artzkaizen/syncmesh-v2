@@ -286,9 +286,11 @@ export interface OperationSql {
    */
   readonly deleteStaleVouches: string;
   /**
-   * `holder, author, at_ms`: a row when this holder already vouched for `author` after `at_ms`.
-   * Every receipt re-stamps each vouch up to its `throughSeq`, so any such row is a newer receipt,
-   * and the older one arriving late is not written (D32).
+   * `holder, at_ms, author, incarnation`: the incarnations this holder vouched under after `at_ms`,
+   * for `author` or under another incarnation. Every receipt re-stamps each vouch up to its
+   * `throughSeq`, so a row under the same incarnation is a newer receipt and the older one arriving
+   * late is not written; a row under another one is a lineage the incoming receipt contradicts,
+   * whose clock is no order between them (D32).
    */
   readonly selectNewerVouch: string;
   /**
