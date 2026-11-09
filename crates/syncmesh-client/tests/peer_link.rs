@@ -606,6 +606,32 @@ fn an_event_that_arrives_before_its_authors_grant_folds_when_the_grant_does() {
     // the same grant again changes nothing and retries nothing
     let again = s.on_frame(&mut judge, &grant_frame(&grant), NOW);
     assert!(!again.iter().any(|a| matches!(a, PeerAction::Folded(_))));
+
+    // one the registry refuses (another issuer's) is said dropped, never reported as a grant
+    let forged = issue_grant(
+        &identity(101),
+        &GrantRequest {
+            account: "acct_a".to_owned(),
+            device: identity(1).peer_id().clone(),
+            role: Some("member".to_owned()),
+            partitions: Vec::new(),
+            claims: std::collections::BTreeMap::new(),
+            keys: Vec::new(),
+            valid_for_ms: 86_400_000,
+            now_ms: NOW,
+        },
+    );
+    let refused = s.on_frame(&mut judge, &grant_frame(&forged), NOW);
+    assert!(
+        refused
+            .iter()
+            .any(|a| matches!(a, PeerAction::Dropped(why) if why.contains("refused"))),
+        "{refused:?}"
+    );
+    assert!(
+        !refused.iter().any(|a| matches!(a, PeerAction::Grant(_))),
+        "{refused:?}"
+    );
 }
 
 #[test]

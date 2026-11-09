@@ -219,7 +219,8 @@ pub enum PeerAction {
     Folded(FoldBatch),
     /// An inbound presence wire for the ephemeral tier (D16).
     Presence(Vec<u8>),
-    /// An inbound grant wire; registered already when the session has a registry.
+    /// An inbound grant wire; registered already when the session has a registry, and never one
+    /// that registry refused.
     Grant(Vec<u8>),
     GrantRequest {
         peer_id: PeerId,
@@ -513,7 +514,8 @@ impl PeerSession {
     }
 
     /// Verifies, holds back, folds; then the receipt, the refusals, and our cursors.
-    /// The grant into the registry, when the session has one, and then reported either way. A
+    /// The grant into the registry, when the session has one, and then reported unless the
+    /// registry refused it (said as [`PeerAction::Dropped`] instead). A
     /// grant that becomes the one the registry holds re-offers its device's events parked on a
     /// capability verdict ([`Engine::retry_author`], gaps U42), and what folds is announced as
     /// any fold is; one the registry already held, or held newer, retries nothing.
@@ -539,9 +541,13 @@ impl PeerSession {
                         "events parked for a granted device could not be retried: {e}"
                     ))),
                 },
-                Err(e) => out.push(PeerAction::Dropped(format!(
-                    "a peer's grant was refused: {e}"
-                ))),
+                Err(e) => {
+                    // refused, so not reported as a grant: the host would take it as registered
+                    out.push(PeerAction::Dropped(format!(
+                        "a peer's grant was refused: {e}"
+                    )));
+                    return;
+                }
             }
         }
         out.push(PeerAction::Grant(wire));
