@@ -87,7 +87,7 @@ export interface RelayDurableHostOptions {
    * one vault is refused by another, and one a changed key no longer opens is refused, never
    * replaced.
    */
-  readonly vault?: SeedVault;
+  readonly vault: SeedVault;
   /** Where the plaintext vault's notice and a migration's report go. Default `console.warn`. */
   readonly onNotice?: (message: string) => void;
 }
@@ -135,7 +135,8 @@ export interface RelayDurableHost {
  * are sealed at rest by `vault` (N26).
  *
  * The room closes when its last socket leaves, keepalive and all, so the platform can hibernate
- * the object; the next socket opens it again from the same SQLite.
+ * the object; the next socket opens it again from the same SQLite. While any socket is connected
+ * the room's keepalive runs, so an object with idle sockets on it stays awake.
  *
  * @example
  * export class Relay extends DurableObject<Env> {
@@ -162,9 +163,11 @@ export interface RelayDurableHost {
  */
 export function relayDurableHost(
   ctx: DurableRelayContext,
-  options: RelayDurableHostOptions = {},
+  options: RelayDurableHostOptions,
 ): RelayDurableHost {
-  const { vault } = options;
+  // SAFETY: a widening only — the type requires `vault`, and this reads it as possibly absent
+  // because a caller in plain JavaScript can still reach here without one
+  const { vault } = options as Partial<RelayDurableHostOptions>;
   if (vault === undefined)
     panic(
       "a Durable Object relay keeps its room key and its sockets' link keys at rest: pass `vault` — createKeyVault over a Worker secret, or createPlaintextVault() for tests and development (N26)",

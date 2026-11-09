@@ -297,6 +297,7 @@ describe("closeReason", () => {
 
 describe("the room's key at rest (N26)", () => {
   test("an actor given no vault is a definition error", () => {
+    // @ts-expect-error -- the type requires a vault; this is the plain-JavaScript caller
     expect(() => relayRivetActor({})).toThrow("pass `vault`");
   });
 });

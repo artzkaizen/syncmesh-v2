@@ -57,7 +57,7 @@ export interface RelayRivetActorOptions {
    * over a key the deployment provides, `createSecretStoreVault` over a keychain, or
    * `createPlaintextVault()` for tests and development, which every open says.
    */
-  readonly vault?: SeedVault;
+  readonly vault: SeedVault;
   /** Where the plaintext vault's notice and a migration's report go. Default `console.warn`. */
   readonly onNotice?: (message: string) => void;
 }
@@ -108,8 +108,10 @@ const roomName = (key: readonly string[]): string => (key.length === 0 ? "main" 
  *   onRequest: (c, request) => relay.onRequest(c, request),
  * });
  */
-export function relayRivetActor(options: RelayRivetActorOptions = {}): RelayRivetActor {
-  const { vault } = options;
+export function relayRivetActor(options: RelayRivetActorOptions): RelayRivetActor {
+  // SAFETY: a widening only — the type requires `vault`, and this reads it as possibly absent
+  // because a caller in plain JavaScript can still reach here without one
+  const { vault } = options as Partial<RelayRivetActorOptions>;
   if (vault === undefined)
     panic(
       "a Rivet relay actor keeps its room key at rest: pass `vault` — createKeyVault over a key the deployment provides, or createPlaintextVault() for tests and development (N26)",

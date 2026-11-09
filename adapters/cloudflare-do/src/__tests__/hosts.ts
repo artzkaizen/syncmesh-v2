@@ -80,7 +80,11 @@ function dialOne(to: Delivery): RelayDial {
  * A Durable Object as the platform runs one: SQLite that outlives the instance, a list of
  * accepted sockets that outlives it too, and an instance that does not.
  */
-export function durableRelay(db: Database, given: RelayDurableHostOptions = {}) {
+export function durableRelay(
+  db: Database,
+  given: Omit<RelayDurableHostOptions, "vault"> &
+    Partial<Pick<RelayDurableHostOptions, "vault">> = {},
+) {
   // a hosted preset states who reads it (D40) and what seals its secrets (N26); these tests are
   // about the object, so it is open and its secrets plaintext unless a test says otherwise
   const options = {

@@ -62,6 +62,7 @@ describe("a socket's link secrets at rest (N26)", () => {
       acceptWebSocket: () => undefined,
       getWebSockets: () => [],
     };
+    // @ts-expect-error -- the type requires a vault; this is the plain-JavaScript caller
     expect(() => relayDurableHost(ctx, { posture: { open: true } })).toThrow("pass `vault`");
   });
 });
