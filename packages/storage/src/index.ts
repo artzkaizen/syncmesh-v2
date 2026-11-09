@@ -11,6 +11,7 @@ export { asyncSqliteDriver, bindSqlite, sqliteDriver } from "./sqlite-driver.js"
 export { sqlEventStore, sqliteEventStore, type SqlEventStoreOptions } from "./event-store.js";
 export { sqlDocStore, type SqlDocStoreOptions } from "./doc-store.js";
 export { LogCorrupt } from "./local-log.js";
+export { overwritePlaintext } from "./overwrite.js";
 export type {
   OperationOutcome,
   OperationRefusal,

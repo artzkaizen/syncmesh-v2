@@ -4,6 +4,7 @@ import type { Identity } from "@syncmesh/wire";
 import type { SeedVault } from "@syncmesh/wire";
 
 import { Result, TaggedError } from "@syncmesh/result";
+import { overwritePlaintext } from "@syncmesh/storage";
 import {
   PLAINTEXT_VAULT,
   VAULT_KIND,
@@ -101,32 +102,6 @@ const sealSeed = (vault: SeedVault, seed: Uint8Array) =>
     ),
   );
 
-const SECURE_DELETE = "PRAGMA secure_delete";
-
-/**
- * Overwrites a plaintext seed with its sealed form, with SQLite's `secure_delete` on for the one
- * statement so the old bytes are zeroed in the page rather than left in free space, and then
- * checkpoints the WAL so no frame still holds them. Answers what it could not make sure of.
- */
-async function replacePlaintext(driver: SqlDriver, row: string): Promise<string | undefined> {
-  const before = await Result.tryPromise({
-    try: async () => (await driver.all(SECURE_DELETE))[0]?.[0],
-    catch: (cause) => cause,
-  });
-  if (before.isOk()) await driver.run(`${SECURE_DELETE} = ON`);
-  await driver.run(UPDATE, [row, "seed"]);
-  if (before.isOk()) await driver.run(`${SECURE_DELETE} = ${Number(before.value ?? 0)}`);
-  const checkpoint = await Result.tryPromise({
-    try: () => driver.all("PRAGMA wal_checkpoint(TRUNCATE)"),
-    catch: (cause) => cause,
-  });
-  if (before.isErr())
-    return "this database refuses PRAGMA secure_delete, so the plaintext seed's old bytes may stay in its free pages until they are reused";
-  if (checkpoint.isErr() || Number(checkpoint.value[0]?.[0] ?? 0) !== 0)
-    return "the WAL could not be checkpointed, so a frame of it may hold the plaintext seed until the next checkpoint";
-  return undefined;
-}
-
 /**
  * The seed behind this install's `"seed"` row, minted and sealed on the first boot, and moved out
  * of plaintext when the row predates the vault.
@@ -166,7 +141,8 @@ async function rememberedSeed(
       const sealed = yield* Result.await(sealSeed(vault, stored.bytes));
       const residue = yield* Result.await(
         Result.tryPromise({
-          try: () => replacePlaintext(driver, sealedText(vault, sealed)),
+          try: () =>
+            overwritePlaintext(driver, UPDATE, [sealedText(vault, sealed), "seed"], "seed"),
           catch: unavailable(
             "this install's plaintext device key could not be replaced by its sealed form",
           ),

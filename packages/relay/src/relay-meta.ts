@@ -2,6 +2,7 @@ import type { SqlDriver } from "@syncmesh/storage";
 import type { Identity, SeedVault } from "@syncmesh/wire";
 
 import { Result, panic } from "@syncmesh/result";
+import { overwritePlaintext } from "@syncmesh/storage";
 import {
   PLAINTEXT_VAULT,
   VAULT_KIND,
@@ -58,7 +59,8 @@ const sealed = async (vault: SeedVault, secret: Uint8Array, what: string) => {
 
 /**
  * A 32-byte secret kept in `_relay_meta` under `key`, sealed by `vault` (N26): minted and sealed
- * on the first open, sealed in place when an earlier build left it as plaintext hex, and opened
+ * on the first open, sealed in place when an earlier build left it as plaintext hex (with its old
+ * bytes scrubbed from free pages and the WAL, or a notice saying they may remain), and opened
  * on every open after. Throws when it cannot be: a secret sealed by another vault kind, or one
  * this vault's key no longer opens, is refused rather than replaced, since a replaced key is a
  * new name for the room and a new key for every link it resumes.
@@ -91,9 +93,16 @@ export async function relaySecret(
   if (parsed.isErr()) panic(`the relay's stored ${key} is not a sealed or a hex secret`);
   const stored = parsed.value;
   if (stored.kind === PLAINTEXT_VAULT && vault.kind !== PLAINTEXT_VAULT) {
-    // a secret from before the vault: sealed now, and the plaintext row overwritten in place
-    await driver.run(UPDATE, [sealedText(vault, await sealed(vault, stored.bytes, key)), key]);
+    // a secret from before the vault: sealed now, the plaintext row overwritten in place, and its
+    // old bytes scrubbed from free pages and the WAL where the database lets them be
+    const residue = await overwritePlaintext(
+      driver,
+      UPDATE,
+      [sealedText(vault, await sealed(vault, stored.bytes, key)), key],
+      `relay ${key}`,
+    );
     notice(`moved the relay's ${key} out of plaintext, sealed by the ${vault.kind} vault`);
+    if (residue !== undefined) notice(residue);
     return stored.bytes;
   }
   if (stored.kind !== vault.kind)
