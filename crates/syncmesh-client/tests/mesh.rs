@@ -588,13 +588,28 @@ async fn a_fold_from_one_peer_link_reaches_another_that_shares_its_name() {
     right.attach_peer(StreamMedium::new(y), quiet(), &handle);
     assert_eq!(to_left.name(), to_right.name());
     assert_ne!(to_left.id(), to_right.id());
-    for link in [to_left.id(), to_right.id()] {
-        until(&mut hub, |e| {
-            matches!(e, MeshEvent::Peer { link: l, fact: PeerAction::Established(_), .. }
-                if *l == link)
+    // either link may open first, and a wait drops what it does not match
+    let mut open = std::collections::BTreeSet::new();
+    while open.len() < 2 {
+        if let MeshEvent::Peer {
+            link,
+            fact: PeerAction::Established(_),
+            ..
+        } = until(&mut hub, |e| {
+            matches!(
+                e,
+                MeshEvent::Peer {
+                    fact: PeerAction::Established(_),
+                    ..
+                }
+            )
         })
-        .await;
+        .await
+        {
+            open.insert(link);
+        }
     }
+    assert!(open.contains(&to_left.id()) && open.contains(&to_right.id()));
     until(&mut right, |e| {
         matches!(
             e,
@@ -925,4 +940,100 @@ async fn a_mesh_stops_while_its_host_holds_a_handle_and_reads_no_events() {
     assert!(a_link.is_closed());
     done.send(()).unwrap();
     draining.await.unwrap();
+}
+
+/// One end of a cable whose app froze: once `frozen`, it reads nothing and never closes, and the
+/// stream behind it outlives it, so the far side's writes fill the pipe and stay there.
+struct Frozen {
+    inner: std::mem::ManuallyDrop<tokio::io::DuplexStream>,
+    frozen: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl tokio::io::AsyncRead for Frozen {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.frozen.load(std::sync::atomic::Ordering::SeqCst) {
+            return std::task::Poll::Pending;
+        }
+        std::pin::Pin::new(&mut *self.inner).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for Frozen {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut *self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut *self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn a_mesh_stops_a_link_whose_far_side_stays_connected_but_stops_reading() {
+    let url = nowhere().await;
+    let key = Identity::from_seed(&[9; 32]).peer_id().clone();
+    let handle = tokio::runtime::Handle::current();
+    let mut a = device(1, &url, &key);
+    let mut b = device(2, &url, &key);
+    let lively = || PeerOptions {
+        keepalive_ms: Some(1_000),
+        ..PeerOptions::default()
+    };
+    let (x, y) = tokio::io::duplex(1_024);
+    let frozen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let y = Frozen {
+        inner: std::mem::ManuallyDrop::new(y),
+        frozen: frozen.clone(),
+    };
+    let a_link = a.attach_peer(StreamMedium::new(x), lively(), &handle);
+    b.attach_peer(StreamMedium::new(y), lively(), &handle);
+    let established = |e: &MeshEvent| {
+        matches!(
+            e,
+            MeshEvent::Peer {
+                fact: PeerAction::Established(_),
+                ..
+            }
+        )
+    };
+    until(&mut a, established).await;
+    until(&mut b, established).await;
+    // b's app freezes on an open socket; a writes more than the pipe holds, so its write half
+    // parks inside a write that never finishes
+    frozen.store(true, std::sync::atomic::Ordering::SeqCst);
+    for n in 0..60 {
+        a.mutate(
+            "notes.create",
+            vec![insert(&format!("n{n}"), &"x".repeat(200))],
+            None,
+        )
+        .unwrap();
+    }
+    // a's liveness gives up on the silent peer
+    until(&mut a, |e| {
+        matches!(e, MeshEvent::Peer { link, fact: PeerAction::Ended { .. }, .. } if *link == a_link.id())
+    })
+    .await;
+    timeout(STEP, a.stop())
+        .await
+        .expect("stop ended a link whose write was parked on a peer that stopped reading");
+    b.stop().await;
 }

@@ -72,7 +72,8 @@ pub enum MeshEvent {
     /// The issues [`Mesh::below_floor`] lists changed: a relay refused this device below its floor
     /// (gaps U37), a peer link found it below the peer's floor (D46, answered with
     /// [`PeerCommand::AcceptFloor`] through that link's [`PeerHandle`]), a join a peer link asked
-    /// for settled, or one of those is over.
+    /// for settled, or the relay or a link cleared its issue. An issue that lapses on its own, or
+    /// that a fold from elsewhere settles, is not said here: [`Mesh::below_floor`] reads it.
     Recovery,
     /// The link is over for good: a refusal, or `stop`.
     Ended(String),
@@ -210,8 +211,9 @@ impl Peers {
     }
 
     /// Hands `command` to every running peer link but `except`, forgetting the ones that have
-    /// ended. A link whose queue is full loses it, said as [`MeshEvent::Dropped`]; its next cursor
-    /// exchange carries what the command would have.
+    /// ended. A link whose queue is full loses it, said as [`MeshEvent::Dropped`]: the link's next
+    /// cursor exchange carries a lost write or fold, and the next heartbeat or set a lost presence
+    /// value.
     fn hand(&self, except: Option<PeerLinkId>, command: &PeerCommand) {
         let mut full = Vec::new();
         lock(&self.links).retain(|(id, tx)| {
@@ -222,9 +224,13 @@ impl Peers {
             }
             !tx.is_closed()
         });
+        let restores = match command {
+            PeerCommand::Presence(_) => "the next heartbeat or set restores the value",
+            _ => "its next cursor exchange carries it",
+        };
         for id in full {
             let _ = self.said.try_send(MeshEvent::Dropped(format!(
-                "{id} had no room for a command; its next cursor exchange carries it"
+                "{id} had no room for a command; {restores}"
             )));
         }
     }
@@ -937,8 +943,14 @@ mod tests {
         assert!(events.try_recv().is_err(), "the first fit");
         peers.hand(None, &PeerCommand::Resync);
         assert!(
-            matches!(events.try_recv(), Ok(MeshEvent::Dropped(why)) if why.contains("peer-link-0")),
+            matches!(events.try_recv(), Ok(MeshEvent::Dropped(why))
+                if why.contains("peer-link-0") && why.contains("cursor exchange")),
             "the second was lost, and said"
+        );
+        peers.hand(None, &PeerCommand::Presence(Vec::new()));
+        assert!(
+            matches!(events.try_recv(), Ok(MeshEvent::Dropped(why)) if why.contains("heartbeat")),
+            "a lost presence value waits on the next heartbeat, not a cursor exchange"
         );
         // the link a fact came from is not handed it, so nothing is lost there
         peers.hand(Some(PeerLinkId(0)), &PeerCommand::Resync);

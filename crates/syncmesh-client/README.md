@@ -230,8 +230,11 @@ link.try_send(PeerCommand::AcceptFloor)?;
 Grants cross a peer link when it opens and when sent through its handle; the mesh forwards none
 between links (the TypeScript sends every newly registered grant to every link). A command the
 mesh hands a link whose queue is full is lost and said as `MeshEvent::Dropped`; the link's next
-cursor exchange carries what it would have. `Mesh::stop` drops the events nobody read and waits
-for each link to take its close, so it ends even while the host holds a handle and reads nothing.
+cursor exchange carries a lost write or fold, and the next heartbeat or set a lost presence value.
+`Mesh::stop` drops the events nobody read and waits for each link to take its close, so it ends
+even while the host holds a handle and reads nothing. A link that is over gives its last frames
+`driver::CLOSE_GRACE` to leave and then drops the medium, so a far side that stays connected but
+stopped reading cannot hold it, or `stop`, open.
 
 What it does not do, as a TypeScript bridge with neither does not: no read gate (D40), so it
 carries everything to every peer, and no route table, so a `routes` frame is ignored. Frames

@@ -694,7 +694,9 @@ pub async fn run_peer<M: PeerMedium>(
     let outgoing = Outgoing::default();
     let (failed_tx, mut failed) = tokio::sync::oneshot::channel();
     let drain = outgoing.clone().drain(writer, failed_tx);
-    let drive = async {
+    // owns what it reads: the command queue closes when the link is over, not when the last
+    // write leaves
+    let drive = async move {
         let (mut link, first) = PeerLink::open(identity, options, now_ms());
         let mut actions = first;
         let mut write_failed = false;
@@ -748,6 +750,23 @@ pub async fn run_peer<M: PeerMedium>(
         for fact in link.on_closed(&reason) {
             let _ = events.send(fact).await;
         }
+        flush
     };
-    tokio::join!(drive, drain);
+    let mut drain = std::pin::pin!(drain);
+    let mut drive = std::pin::pin!(drive);
+    let mut drained = false;
+    let flush = loop {
+        tokio::select! {
+            flush = &mut drive => break flush,
+            () = &mut drain, if !drained => drained = true,
+        }
+    };
+    // a write parked on a far side that stopped reading never finishes on its own: what is left
+    // gets a grace when the link asked for it, and dropping the writer ends the rest
+    if !drained && flush {
+        let _ = tokio::time::timeout(CLOSE_GRACE, drain).await;
+    }
 }
+
+/// How long a closing peer link waits for its last frames to leave before it drops the medium.
+pub const CLOSE_GRACE: Duration = Duration::from_secs(5);

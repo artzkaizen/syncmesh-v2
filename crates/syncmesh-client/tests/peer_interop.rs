@@ -45,6 +45,11 @@ fn repo_root() -> PathBuf {
         .expect("the crate sits two levels below the repo root")
 }
 
+/// Whether the workspace's packages are installed, which the TypeScript reference imports.
+fn installed() -> bool {
+    repo_root().join("node_modules").is_dir()
+}
+
 fn find_bun() -> Option<PathBuf> {
     let on_path = std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path)
@@ -67,7 +72,9 @@ async fn next_json(
             .await
             .expect("the TypeScript device went quiet")
             .expect("reading the TypeScript device's stdout")
-            .expect("the TypeScript device ended early");
+            .expect(
+                "the TypeScript device ended early (is the workspace built? `vp run -r build`)",
+            );
         let value: serde_json::Value = match serde_json::from_str(&line) {
             Ok(value) => value,
             Err(_) => continue,
@@ -407,8 +414,11 @@ async fn next_ended(events: &mut mpsc::Receiver<PeerAction>) -> PeerAction {
 
 #[tokio::test]
 async fn a_rust_device_and_a_typescript_device_converge_over_the_lan_transport() {
-    let Some(bun) = find_bun() else {
-        eprintln!("skipping: `bun` is not on PATH, and the TypeScript reference runs on it");
+    let Some(bun) = find_bun().filter(|_| installed()) else {
+        eprintln!(
+            "skipping: the TypeScript reference needs `bun` on PATH and an installed workspace \
+             (`vp install`, then `vp run -r build`)"
+        );
         return;
     };
     let ts = Typescript::start(&bun, "lan").await;
@@ -425,8 +435,11 @@ async fn a_rust_device_and_a_typescript_device_converge_over_the_lan_transport()
 
 #[tokio::test]
 async fn a_rust_device_and_a_typescript_device_converge_over_ble_fragments() {
-    let Some(bun) = find_bun() else {
-        eprintln!("skipping: `bun` is not on PATH, and the TypeScript reference runs on it");
+    let Some(bun) = find_bun().filter(|_| installed()) else {
+        eprintln!(
+            "skipping: the TypeScript reference needs `bun` on PATH and an installed workspace \
+             (`vp install`, then `vp run -r build`)"
+        );
         return;
     };
     let ts = Typescript::start(&bun, "ble").await;
