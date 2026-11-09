@@ -4,6 +4,7 @@ import {
   isJsonArray,
   parseAdapterId,
   parsePartitionKey,
+  readLineageCell,
   type CellValue,
   type ColumnName,
   type LineageId,
@@ -624,5 +625,45 @@ describe("a lineage read back for a restore (RFC-0023 §5.3)", () => {
     (await c.engine.installSnapshot(a.engine.snapshot())).unwrap();
     expect((await held(c, first)).lost).toBe(1);
     expect((await held(c, undefined)).lost).toBe(1);
+  });
+
+  test("lost on a joiner when an anchor trimmed the lineage's genesis and its event never came", async () => {
+    const DAY = 86_400_000;
+    const a = node(PEER_A, 100, true);
+    const b = node(PEER_B, 50, true);
+    const c = node(PEER_C, 300, true);
+    const held = async (n: Node, lineage: LineageId | undefined) =>
+      (await n.engine.docLineageLog(DOC, lineage)).unwrap();
+    const send = async (to: Node, event: SyncEvent) =>
+      (await to.engine.receive({ event })).unwrap();
+    await send(b, await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" }))));
+    a.clock.set(100 + DAY);
+    await write(a, (tx) => tx.doc(NOTES, N1, replace(1)));
+    // B replaces the root it holds: a sibling of A's first replace, which loses to it
+    b.clock.set(100 + 1.5 * DAY);
+    const sibling = await write(b, (tx) => tx.doc(NOTES, N1, replace(2)));
+    const orphan = sibling.changes[0]?.kind === "doc" ? sibling.changes[0].lineage : undefined;
+    await send(a, sibling);
+    a.clock.set(100 + 2 * DAY);
+    await write(a, (tx) => tx.doc(NOTES, N1, replace(3)));
+    // settles at the replace of day 2, so the sibling, stamped before it, leaves the cell
+    a.clock.set(100 + 40 * DAY);
+    await write(a, (tx) => tx.doc(NOTES, N1, replace(4)));
+    expect(
+      readLineageCell(
+        getRecord(a.engine.state(), NOTES, N1)?.cells.get(CONTENT)?.value,
+      ).geneses.some((g) => g.lineage === orphan),
+    ).toBe(false);
+    expect((await held(a, orphan)).lost).toBe(0);
+    // B, still apart, keeps editing what it replaced
+    b.clock.set(100 + 41 * DAY);
+    const late = await write(b, (tx) => tx.doc(NOTES, N1, edit(5, orphan)));
+
+    // a joiner takes A's state, then only B's late edit: the replace's snapshot never reached it
+    (await c.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    await send(c, late);
+    const read = await held(c, orphan);
+    expect(read.updates).toHaveLength(1);
+    expect(read.lost).toBeGreaterThan(0);
   });
 });

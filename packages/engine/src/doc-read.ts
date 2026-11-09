@@ -1,4 +1,4 @@
-import type { LineageId, SeqNum } from "@syncmesh/kernel";
+import type { DocChange, LineageId, SeqNum } from "@syncmesh/kernel";
 
 import { compareHlc, docLineage, getRecord, readLineageCell } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
@@ -41,12 +41,12 @@ export function readTail(
   });
 }
 
-/** The updates `entries` index, read back from the events that carry them, in the entries' order. */
-export function readUpdates(
+/** Each of `entries` with the doc change its event carries, in the entries' order; one whose event is gone is left out. */
+function readChanges(
   events: EventStore,
   { coverage }: DocBindings,
   entries: readonly DocLogEntry[],
-): Promise<Result<readonly TailUpdate[], StoreFailure>> {
+): Promise<Result<readonly (readonly [DocLogEntry, DocChange])[], StoreFailure>> {
   return Result.gen(async function* () {
     if (entries.length === 0) return Result.ok([]);
     // one read of the log: every author the entries name from just below their first one, and
@@ -61,17 +61,29 @@ export function readUpdates(
     const found = yield* Result.await(events.allSince(floor));
     const byId = new Map(found.map((s) => [`${s.event.peerId}\u0000${String(s.event.seqNum)}`, s]));
     return Result.ok(
-      entries.flatMap((entry): TailUpdate[] => {
+      entries.flatMap((entry): (readonly [DocLogEntry, DocChange])[] => {
         const change = byId.get(`${entry.author}\u0000${String(entry.seq)}`)?.event.changes[
           entry.index
         ];
-        if (change?.kind !== "doc") return [];
-        const { update } = change;
-        return update.bytes !== undefined
-          ? [{ entry, bytes: update.bytes }]
-          : [{ entry, blob: update.blob }];
+        return change?.kind === "doc" ? [[entry, change]] : [];
       }),
     );
+  });
+}
+
+/** What one read change carries: its bytes inline, or the blob that holds them. */
+const tailUpdate = ([entry, { update }]: readonly [DocLogEntry, DocChange]): TailUpdate =>
+  update.bytes !== undefined ? { entry, bytes: update.bytes } : { entry, blob: update.blob };
+
+/** The updates `entries` index, read back from the events that carry them, in the entries' order. */
+export function readUpdates(
+  events: EventStore,
+  bindings: DocBindings,
+  entries: readonly DocLogEntry[],
+): Promise<Result<readonly TailUpdate[], StoreFailure>> {
+  return Result.gen(async function* () {
+    const read = yield* Result.await(readChanges(events, bindings, entries));
+    return Result.ok(read.map(tailUpdate));
   });
 }
 
@@ -103,7 +115,8 @@ export function readLineageLog(
       const updates = yield* Result.await(readUpdates(events, bindings, rest));
       return Result.ok({ snapshot, updates, lost: rest.length - updates.length });
     }
-    const updates = yield* Result.await(readUpdates(events, bindings, entries));
+    const read = yield* Result.await(readChanges(events, bindings, entries));
+    const updates = read.map(tailUpdate);
     const gone = entries.length - updates.length;
     if (lineage === undefined) {
       // an installed snapshot adopted history with no events behind it: the root's may be in it
@@ -113,11 +126,13 @@ export function readLineageLog(
     const genesis = readLineageCell(
       getRecord(bindings.getState(), doc.table, doc.key)?.cells.get(doc.column)?.value,
     ).geneses.find((g) => g.lineage === lineage);
+    // a genesis an anchor passed has left the cell, so its event is the only proof it arrived
     const started =
-      genesis === undefined ||
-      entries.some(
-        (e) => e.author === genesis.stamp.peer && compareHlc(e.hlc, genesis.stamp.hlc) === 0,
-      );
+      genesis === undefined
+        ? read.some(([, change]) => change.genesis === true)
+        : entries.some(
+            (e) => e.author === genesis.stamp.peer && compareHlc(e.hlc, genesis.stamp.hlc) === 0,
+          );
     return Result.ok({ updates, lost: gone + (started ? 0 : 1) });
   });
 }
