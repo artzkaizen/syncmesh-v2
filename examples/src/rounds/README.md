@@ -35,7 +35,8 @@ Three files, and only one of them is the API.
 ```ts
 const api = createClient({ schema: roundsSchema(), procedures, … });
 
-api.observations.record({ practiceId, patientId: "p1", code: "BP", value: "128/84", … });
+(await api.observations.record({ practiceId, patientId: "p1", code: "BP", value: "128/84", … })
+  .committed).unwrap();
 const rows = (await api.observations.forPatient({ practiceId, patientId: "p1" })).unwrap().data;
 ```
 
