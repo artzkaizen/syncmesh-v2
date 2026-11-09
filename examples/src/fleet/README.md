@@ -72,8 +72,10 @@ cursors — and every instance already holding the room answers with the grants 
 events above those cursors (gaps U41). The answer is best-effort like everything else here: an
 instance that had the room evicted for idleness answers nothing, and a fleet where no instance
 holds the room open has nobody to answer, which is the same as a room nobody has written to since.
-Each answering instance sends the whole difference, so a room with a long history pays for it in
-fan-out traffic once per instance that opens it.
+Each answering instance sends the whole difference, unpaced, so a room with a long history pays for
+it in fan-out traffic once per instance that opens it. A greeting naming more authors than one
+notification holds (about 150) names the ones furthest along, and the rest are sent from their
+first event.
 
 **A note can arrive before its author's grant**, because the two travel separately between
 instances. It is parked, and the grant registering re-offers it (gaps U42), so `check.ts` writes as
