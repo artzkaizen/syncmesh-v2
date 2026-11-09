@@ -196,6 +196,8 @@ impl Reassembler {
                 held,
                 why: Abandoned::TooLarge,
             });
+            // its marker holds a slot like any partial, so the bound holds on this path too
+            self.make_room(message);
             return None;
         }
         self.make_room(message);
@@ -301,6 +303,33 @@ mod tests {
         assert_eq!(gone[0].message, 0);
         assert_eq!(gone[0].why, Abandoned::Evicted);
         assert_eq!(reader.pending(), 2);
+    }
+
+    #[test]
+    fn markers_for_messages_past_the_size_cap_count_against_the_bound_too() {
+        let mut reader = Reassembler::new(100, 2);
+        let live = fragment(&[5; 150], 60, 1).unwrap();
+        assert_eq!(reader.accept(&live[0]), None);
+        // oversized at their first fragment: each given up on at once and kept as a marker
+        for message in 2..5u32 {
+            let parts = fragment(&[5; 1000], 185, message).unwrap();
+            assert_eq!(reader.accept(&parts[0]), None);
+        }
+        let gone: Vec<_> = reader
+            .take_abandoned()
+            .into_iter()
+            .map(|a| (a.message, a.why))
+            .collect();
+        assert_eq!(
+            gone,
+            vec![
+                (2, Abandoned::TooLarge),
+                (3, Abandoned::TooLarge),
+                (1, Abandoned::Evicted),
+                (4, Abandoned::TooLarge),
+            ]
+        );
+        assert!(reader.held.len() <= 2);
     }
 
     #[test]
