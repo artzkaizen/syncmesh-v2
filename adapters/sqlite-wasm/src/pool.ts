@@ -253,6 +253,17 @@ const poolFailure =
     });
   };
 
+/**
+ * The VFS name a directory's pool registers under: one per directory.
+ *
+ * `installOpfsSAHPoolVfs` keeps one pool per VFS **name** and answers a second install under the
+ * same name with the first pool, whatever directory it was asked for. Under the one default name,
+ * a thread that opened a second directory was handed the first one's pool: the second mesh
+ * wrote into the first one's files, and closing either paused both. The name is a thread's
+ * registration, not anything on disk, so the files a pool already holds are unaffected.
+ */
+const poolVfs = (directory: string) => `opfs-sahpool:${directory}`;
+
 function poolIn(
   install: NonNullable<OptionalVfs["installOpfsSAHPoolVfs"]>,
   directory: string,
@@ -261,8 +272,16 @@ function poolIn(
   const current = pools.get(directory);
   if (current !== undefined) return current;
   // a refused install is not remembered: the tab holding it may let go a second later
+  // a refused install is remembered under its name unless told otherwise, and the next open would
+  // be handed the same refusal however long it waited; the option is documented and untyped
+  const options = {
+    directory,
+    initialCapacity: capacity,
+    name: poolVfs(directory),
+    forceReinitIfPreviouslyFailed: true,
+  };
   const installing = Result.tryPromise({
-    try: () => install({ directory, initialCapacity: capacity }),
+    try: () => install(options),
     catch: poolFailure(directory),
   }).then((result) => {
     if (result.isErr()) pools.delete(directory);
@@ -275,32 +294,97 @@ function poolIn(
 /** Long enough to be past a reap, short enough that nobody watches a spinner for it. */
 const REAP_PAUSE = 100;
 
+/** sqlite-wasm's own child of a pool's directory, holding one file per slot (its `OPAQUE_DIR_NAME`). */
+const SLOTS = ".opaque";
+
+/** The two calls of the File System API the probe below makes, on the thread that has them. */
+interface SlotHandle {
+  readonly kind: "file" | "directory";
+  readonly createSyncAccessHandle?: () => Promise<{ readonly close: () => void }>;
+}
+interface SlotDirectory {
+  readonly getDirectoryHandle: (name: string) => Promise<SlotDirectory>;
+  readonly values: () => AsyncIterable<SlotHandle>;
+}
+
 /**
- * The lease is ours and the handles are not — yet.
+ * Whether another context still holds any of `directory`'s slots, asked by opening each one's
+ * access handle and closing it again.
  *
- * Holding the lock and still being refused the files is a real window and not a contradiction: the
+ * **Asked before SQLite is, because SQLite cannot be asked twice.** sqlite-wasm takes a pool's
+ * handles all at once, and when one is refused it gives back those it had while the rest are still
+ * arriving: the late ones stay held by this thread, the VFS stays unregistered, and the pool then
+ * reads as awake (`isPaused()` is false) with nothing behind it. Every later open on it fails, and
+ * the close that follows throws. A failed install is remembered under its name the same way. So the
+ * pool is taken only once nothing else holds a slot: the lease says no other context will take
+ * one, and this says the last one has let go of what it held.
+ *
+ * Holding the lease and still finding a slot held is a real window, not a contradiction: the
  * browser releases a dead context's Web Locks and its file handles independently, and nothing
- * orders the two. So a caller that asked to wait waits here too, rather than being handed the one
- * failure it said it did not want an answer to. It is the only loop left, it is entered only under
- * `"wait"`, and it ends when the browser finishes reaping — which it always does.
+ * orders the two. A slot refused for any other reason is not contention, and is left for the
+ * install to report.
  */
-const installPool = async (
-  install: NonNullable<OptionalVfs["installOpfsSAHPoolVfs"]>,
-  directory: string,
-  capacity: number,
-  when: WhenPoolHeld,
-): Promise<Result<HeldPool, PoolFailure>> => {
-  const held = await poolIn(install, directory, capacity);
-  if (held.isOk() || when === "refuse" || held.error._tag !== "OpfsPoolHeld") return held;
-  await new Promise((wake) => setTimeout(wake, REAP_PAUSE));
-  return installPool(install, directory, capacity, when);
+const slotsHeld = async (directory: string): Promise<boolean> => {
+  if (host.navigator?.storage?.getDirectory === undefined) return false;
+  // a browser that refuses the origin its file system refuses this too: the install says so
+  const root = await Result.tryPromise({
+    // SAFETY: the origin's root as the two calls this probe makes; the slot calls exist on the
+    // worker that asks, and a thread without them never installs a pool
+    /* oxlint-disable-next-line anti-slop/no-chained-type-assertions -- there is no type to keep:
+       the precise types are `lib.webworker.d.ts`'s, which this package does not compile against,
+       and the two calls in `SlotDirectory` are the whole of what is claimed */
+    try: async () => (await navigator.storage.getDirectory()) as unknown as SlotDirectory,
+    catch: (cause) => cause,
+  });
+  if (root.isErr()) return false;
+  let at = root.value;
+  for (const part of [...directory.split("/").filter((name) => name !== ""), SLOTS]) {
+    const next = await Result.tryPromise(() => at.getDirectoryHandle(part));
+    // no directory yet is no pool yet, and nothing of it can be held
+    if (next.isErr()) return false;
+    at = next.value;
+  }
+  for await (const slot of at.values()) {
+    const take = slot.createSyncAccessHandle;
+    if (slot.kind !== "file" || take === undefined) continue;
+    const handle = await Result.tryPromise({
+      try: () => take.call(slot),
+      catch: (cause) => cause,
+    });
+    if (handle.isOk()) handle.value.close();
+    else if (handle.error instanceof Error && CONTENDED.has(handle.error.name)) return true;
+  }
+  return false;
 };
 
 /**
- * Takes a reference on the pool, waking it if the last driver on it went away. `pauseVfs` drops
- * the access handles without touching the files, so a worker that has closed its stores stops
- * blocking every other browsing context of the origin; `unpauseVfs` takes them back, which is why
- * an open is async on a path that looks synchronous.
+ * Waits, under `"wait"`, until no other context holds a slot of `directory`'s pool; under
+ * `"refuse"`, answers {@link OpfsPoolHeld} at once if one does.
+ */
+const reaped = async (
+  directory: string,
+  when: WhenPoolHeld,
+): Promise<Result<void, OpfsPoolHeld>> => {
+  if (!(await slotsHeld(directory))) return Result.ok(undefined);
+  if (when === "refuse")
+    return Result.err(new OpfsPoolHeld({ directory, message: HELD_ELSEWHERE }));
+  await new Promise((wake) => setTimeout(wake, REAP_PAUSE));
+  return reaped(directory, when);
+};
+
+/** Whether this thread holds `directory`'s pool awake: its own handles, which the probe would find held. */
+const awake = async (directory: string) => {
+  const current = pools.get(directory);
+  if (current === undefined) return false;
+  const held = await current;
+  return held.isOk() && !held.value.util.isPaused();
+};
+
+/**
+ * Takes a reference on the pool, waking it if the last driver on it went away, and only then
+ * reserving its slots. `pauseVfs` drops the access handles without touching the files, so a
+ * worker that has closed its stores stops blocking every other browsing context of the origin;
+ * `unpauseVfs` takes them back, which is why an open is async on a path that looks synchronous.
  *
  * **`initialCapacity` is initial**, and a pool that exists already keeps the slot count it was
  * created with — so raising the default does nothing for an origin that has ever run the app, and
@@ -316,20 +400,21 @@ export async function holdPool(
   const when = options.whenHeld ?? "refuse";
   const leased = await takeLease(directory, when);
   if (leased.isErr()) return leased;
-  const held = await installPool(install, directory, options.capacity, when);
+  if (!(await awake(directory))) {
+    const free = await reaped(directory, when);
+    if (free.isErr()) {
+      dropLease(directory);
+      return free;
+    }
+  }
+  const held = await poolIn(install, directory, options.capacity);
   if (held.isErr()) {
     dropLease(directory);
     return held;
   }
   const pool = held.value;
-  const reserved = await Result.tryPromise({
-    try: () => pool.util.reserveMinimumCapacity(options.capacity),
-    catch: poolFailure(directory),
-  });
-  if (reserved.isErr()) {
-    dropLease(directory);
-    return reserved;
-  }
+  // woken before it is measured: a paused pool holds no handles and so counts no slots, and asked
+  // for its minimum then it adds a full set of new ones, and still has its VFS unregistered
   if (pool.util.isPaused()) {
     const woken = await Result.tryPromise({
       try: () => pool.util.unpauseVfs(),
@@ -339,6 +424,14 @@ export async function holdPool(
       dropLease(directory);
       return woken;
     }
+  }
+  const reserved = await Result.tryPromise({
+    try: () => pool.util.reserveMinimumCapacity(options.capacity),
+    catch: poolFailure(directory),
+  });
+  if (reserved.isErr()) {
+    dropLease(directory);
+    return reserved;
   }
   pool.open += 1;
   return held;

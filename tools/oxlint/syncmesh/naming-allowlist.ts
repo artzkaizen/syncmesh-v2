@@ -8,7 +8,6 @@
  */
 export const GRANDFATHERED: ReadonlySet<string> = new Set([
   "accountOf",
-  "bindingFor",
   "bodyOf",
   "challengeOf",
   "channelsFor",

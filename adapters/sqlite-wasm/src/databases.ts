@@ -28,7 +28,7 @@ const dbFile = (name: string) => `${encodeURIComponent(name)}.db`;
  * in the URI or the attached file opens on the build's default one, which is not persistent.
  * That failure has no symptom until a reload.
  */
-const attached = (db: Database, path: string, vfs: WasmStorage): Database => {
+const attached = (db: Database, path: string, vfs: string): Database => {
   db.exec(`ATTACH DATABASE 'file:${path}?vfs=${vfs}' AS ${ATTACHED_LOG}`);
   return db;
 };
@@ -88,13 +88,14 @@ const durably = (db: Database, storage: WasmStorage): Database => {
  * without WAL is a working database; a database that will not open is not.** So both refusals
  * land in the same place, and the caller learns the same thing from each: no.
  */
-const walTaken = (db: Database): boolean =>
+const walTaken = (db: Database, schema = "main"): boolean =>
   Result.try({
     try: () => {
-      db.exec("PRAGMA locking_mode = exclusive");
-      db.exec("PRAGMA journal_mode = WAL");
+      // the main database's lock is set unprefixed, so the log attached later takes it too
+      if (schema === "main") db.exec("PRAGMA locking_mode = exclusive");
+      db.exec(`PRAGMA ${schema}.journal_mode = WAL`);
       const answered = db.exec({
-        sql: "PRAGMA journal_mode",
+        sql: `PRAGMA ${schema}.journal_mode`,
         rowMode: "array",
         returnValue: "resultRows",
       });
@@ -105,6 +106,47 @@ const walTaken = (db: Database): boolean =>
     },
     catch: (cause) => cause,
   }).unwrapOr(false);
+
+/**
+ * The log's own journal, once it is attached: WAL and `synchronous = NORMAL`, as the derived half.
+ *
+ * **Not inherited.** `locking_mode` set without a schema covers databases attached later;
+ * `journal_mode` does not, so the log was left on the rollback journal (U44). On the access-handle
+ * pool that is not only slower but unsafe: its VFS answers every reserved-lock check with "held",
+ * so SQLite never takes a journal left by a writer that died mid-transaction for a hot one, never
+ * rolls it back, and the next open reads the half-written pages as `SQLITE_CORRUPT`. WAL recovers
+ * from its own frames and asks no lock. A log that declines it keeps the rollback journal, and
+ * that risk with it; the derived half's refusal (locking back to normal) is inherited the same way.
+ */
+const logDurably = (db: Database): Database => {
+  if (walTaken(db, ATTACHED_LOG)) db.exec(`PRAGMA ${ATTACHED_LOG}.synchronous = NORMAL`);
+  return db;
+};
+
+/**
+ * The pair on a durable VFS: the derived half opened and made {@link durably} so, then the log
+ * attached on the VFS registered as `vfs` — the pool's own name, not the storage's.
+ *
+ * **A log that will not attach closes the half that did open.** A log whose schema page the disk
+ * lost answers `SQLITE_CORRUPT` to the `ATTACH`, and the derived half is already open by then. Left
+ * open, it holds its access handle, so giving the pool back (`pauseVfs`) throws instead — and the
+ * refusal the caller should have had as a value arrived as a panic.
+ */
+const pairOn = (
+  open: () => Database,
+  log: string,
+  storage: Exclude<WasmStorage, "memory">,
+  vfs: string,
+): Result<Database, unknown> =>
+  Result.try({ try: open, catch: (cause) => cause }).andThen((db) =>
+    Result.try({
+      try: () => logDurably(attached(durably(db, storage), log, vfs)),
+      catch: (cause) => cause,
+    }).tapError(
+      // a close that fails too has nothing to add to the refusal it is cleaning up after
+      () => Result.try({ try: () => db.close(), catch: (cause) => cause }).unwrapOr(undefined),
+    ),
+  );
 
 export const memoryDatabase = (sqlite3: Sqlite3Static, options: VfsOptions): OpenedDatabase => {
   const log = `/${dbFile(options.name)}`;
@@ -159,23 +201,21 @@ export const sahPoolDatabase = async (
   const pool = held.value;
   const log = `/${dbFile(options.name)}`;
   const release = releaseOnce(pool, directory);
-  const opened = Result.try({
-    try: () => ({
-      db: attached(
-        durably(new pool.util.OpfsSAHPoolDb(statePath(log, options.schema)), "opfs-sahpool"),
-        log,
-        "opfs-sahpool",
-      ),
-      storage: "opfs-sahpool" as const,
-      release,
-    }),
-    catch: (cause) =>
-      new OpfsUnavailable({
-        requested: "opfs-sahpool",
-        message: "the access-handle pool installed, and SQLite would not open a database on it",
-        cause,
-      }),
-  });
+  const opened = pairOn(
+    () => new pool.util.OpfsSAHPoolDb(statePath(log, options.schema)),
+    log,
+    "opfs-sahpool",
+    pool.util.vfsName,
+  )
+    .map((db) => ({ db, storage: "opfs-sahpool" as const, release }))
+    .mapError(
+      (cause) =>
+        new OpfsUnavailable({
+          requested: "opfs-sahpool",
+          message: "the access-handle pool installed, and SQLite would not open a database on it",
+          cause,
+        }),
+    );
   if (opened.isErr()) release();
   return opened;
 };
@@ -185,17 +225,14 @@ export const opfsDatabaseIn = (
   options: VfsOptions,
 ): Result<OpenedDatabase, OpfsUnavailable> => {
   const log = `${options.directory}/db/${dbFile(options.name)}`;
-  return Result.try({
-    try: () => ({
-      db: attached(durably(new OpfsDb(statePath(log, options.schema), "c"), "opfs"), log, "opfs"),
-      storage: "opfs" as const,
-      release: () => {},
-    }),
-    catch: (cause) =>
-      new OpfsUnavailable({
-        requested: "opfs",
-        message: "the OPFS VFS is installed, and SQLite would not open a database on it",
-        cause,
-      }),
-  });
+  return pairOn(() => new OpfsDb(statePath(log, options.schema), "c"), log, "opfs", "opfs")
+    .map((db) => ({ db, storage: "opfs" as const, release: () => {} }))
+    .mapError(
+      (cause) =>
+        new OpfsUnavailable({
+          requested: "opfs",
+          message: "the OPFS VFS is installed, and SQLite would not open a database on it",
+          cause,
+        }),
+    );
 };

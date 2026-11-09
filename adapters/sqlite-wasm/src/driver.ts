@@ -7,7 +7,7 @@ import type { SqliteWasmUnavailable } from "./module.js";
 import type { WirePort } from "./protocol.js";
 import type { PoolFailure, VfsOptions, WasmStorage, WhenPoolHeld } from "./vfs.js";
 
-import { bindingFor } from "./binding.js";
+import { databaseBinding } from "./binding.js";
 import { loadSqlite } from "./module.js";
 import { connectSqlite } from "./remote.js";
 import { openDatabase, originHasOpfs, threadHasSyncAccessHandles } from "./vfs.js";
@@ -123,7 +123,7 @@ const inThread = (storage: WasmStorage | "auto", where: VfsOptions) =>
   Result.gen(async function* () {
     const sqlite3 = yield* Result.await(loadSqlite());
     const opened = yield* Result.await(openDatabase(sqlite3, storage, where));
-    return Result.ok({ ...sqliteDriver(bindingFor(opened)), storage: opened.storage });
+    return Result.ok({ ...sqliteDriver(databaseBinding(opened)), storage: opened.storage });
   });
 
 const inWorker = (
