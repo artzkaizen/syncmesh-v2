@@ -19,6 +19,7 @@ import type {
   Transport,
 } from "@syncmesh/transport";
 
+import { CAPABILITY_VERDICTS } from "@syncmesh/engine";
 import { ruleText } from "@syncmesh/policy";
 import { omitUndefined, Result } from "@syncmesh/result";
 import { createRejoins } from "@syncmesh/transport";
@@ -190,14 +191,6 @@ export interface RebuildReport {
   /** This device's own writes no peer has acknowledged — untouched, and re-offered from here. */
   readonly pending: number;
 }
-
-const CAPABILITY_VERDICTS = new Set([
-  "NoGrant",
-  "GrantStale",
-  "GrantRevoked",
-  "GrantDeviceMismatch",
-  "PartitionNotGranted",
-]);
 
 const REFUSED_BY_RULES =
   "The event failed the schema's own rules. A later build or policy may read it differently; nothing an operator does now will.";

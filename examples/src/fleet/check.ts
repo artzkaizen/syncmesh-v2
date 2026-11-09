@@ -45,30 +45,35 @@ const backend = await openBackend({ dataDir: dir, relayUrl: dialing(0), readyWit
 // empty until the phones open, so the element type has nothing to be inferred from
 const phones: Phone[] = [];
 try {
-  // every phone on before any asks: an instance opens a room at its first socket, and a grant
-  // fanned out before that is a frame it never hears and nobody sends again (README, "What this
-  // shape still cannot promise")
+  // one phone at a time, each granted before the next opens: an instance a phone is the first
+  // on opens the room then, and asks the fleet for what it missed — the grants fanned out before
+  // it was listening included (gaps U41)
   const names = ["alice", "bob", "carol"];
-  for (const [n, name] of names.entries())
-    phones.push(await phone(name, dialing(n + 1), backend.issuer, dir, JOINED));
-  // joined, not merely open: a phone's socket is dialled after its mesh opens, and the room on
-  // its instance opens only when that socket arrives. With `JOINED`, `settled()` waits for the
-  // relay's hello and catch-up instead of giving up on them after a second
-  for (const mesh of phones) await mesh.settled();
-  for (const [n, mesh] of phones.entries())
-    check(
-      await admitted(mesh, WAIT),
-      `${names[n]} is granted by the server peer through the fleet`,
-    );
-  // each phone holds every other's grant before anyone writes: an event that arrives ahead of
-  // its author's grant is parked until something else folds (gaps U42), and that race is the
-  // client's, not the fleet's
+  for (const [n, name] of names.entries()) {
+    const mesh = await phone(name, dialing(n + 1), backend.issuer, dir, JOINED);
+    phones.push(mesh);
+    check(await admitted(mesh, WAIT), `${name} is granted by the server peer through the fleet`);
+  }
+  const [alice, bob, carol] = phones;
+  if (alice === undefined || bob === undefined || carol === undefined)
+    throw new Error("three phones were opened");
+  // a phone with no grant cannot write: there is nothing further to check
+  if (process.exitCode === 1) throw new Error("the fleet granted nobody; its logs say why");
+
+  // written without waiting for alice's grant to reach every phone: a note that lands ahead of
+  // its author's grant is parked, and the grant arriving re-offers it (gaps U42)
+  await alice
+    .on(INSTANCE)
+    .unwrap()
+    .db.insert(notes)
+    .values({ id: "a1", body: "from alice", author: "alice" });
+  await alice.flush();
+  // the fan-out is best-effort (README): a grant one instance did not hear is asked for again,
+  // which mints a newer one and fans it out afresh. Each ask is said, so a run that needed one
+  // shows it
   const peers = names.map((name) => identityNamed(`device:${name}`).peerId);
   const lacks = (peer: (typeof peers)[number]) =>
     phones.some((mesh) => mesh.grants.grantFor(peer) === undefined);
-  // the fan-out is best-effort (README): a grant one instance did not hear is asked for again,
-  // which mints a newer one and fans it out afresh — the repair the README names. Each ask is
-  // said, so a run that needed one shows it
   const spread = await until(async () => {
     if (!(await until(() => peers.every((peer) => !lacks(peer)), 5_000))) {
       for (const [n, peer] of peers.entries())
@@ -89,18 +94,6 @@ try {
     if (missing.length > 0)
       console.log(`      ${names[n]} holds no grant for ${missing.join(", ")}`);
   }
-  const [alice, bob, carol] = phones;
-  if (alice === undefined || bob === undefined || carol === undefined)
-    throw new Error("three phones were opened");
-  // a phone with no grant cannot write: there is nothing further to check
-  if (process.exitCode === 1) throw new Error("the fleet granted nobody; its logs say why");
-
-  await alice
-    .on(INSTANCE)
-    .unwrap()
-    .db.insert(notes)
-    .values({ id: "a1", body: "from alice", author: "alice" });
-  await alice.flush();
   const count = (mesh: typeof alice) => async () =>
     (await mesh.on(INSTANCE).unwrap().db.select().from(notes)).length;
   for (const [name, mesh] of [

@@ -467,6 +467,11 @@ impl Mesh {
             .collect()
     }
 
+    /// The grant registry the validator reads. A grant the room sends is registered by the link,
+    /// which then re-offers that device's events parked on a capability verdict (gaps U42). A
+    /// grant registered here by hand is not: follow it with
+    /// `mesh.engine().retry_author(&device)`, after this guard is dropped, to fold what its device
+    /// wrote ahead of it.
     pub fn grants(&self) -> MutexGuard<'_, GrantRegistry> {
         lock(&self.grants)
     }

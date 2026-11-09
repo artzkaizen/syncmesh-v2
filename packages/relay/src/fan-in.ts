@@ -1,13 +1,49 @@
-import { presenceSlot } from "@syncmesh/transport";
-import { decodeAndVerifyPresence } from "@syncmesh/wire";
+import type { Cursors } from "@syncmesh/engine";
 
+import { grantFrame, presenceSlot } from "@syncmesh/transport";
+import { decodeAndVerifyPresence, relayEnvelope } from "@syncmesh/wire";
+
+import type { FanoutLink } from "./fanout.js";
 import type { RoomState } from "./state.js";
 
 import { routeCustody } from "./custody-route.js";
 import { decodeRelayFrame } from "./frame-decode.js";
-import { seatedSlot } from "./frames.js";
+import { helloFrame, relayedFrame, seatedSlot } from "./frames.js";
 import { absorbEvent } from "./ingest.js";
 import { admitGrant } from "./trust.js";
+
+/**
+ * Subscribes a room to the rest of the fleet through {@link fanIn}, waits until it hears it, and
+ * then greets it with {@link fleetGreeting} (gaps U41). Returns the unsubscribe, or `undefined`
+ * for a room with no fan-out.
+ *
+ * Served before it hears, the room would miss what another instance publishes meanwhile. And what
+ * was published before this instance opened the room at all reached it as nothing, so the room
+ * says where its log stands — a `hello` on the fan-out, carrying its cursors — and every instance
+ * already holding the room answers with what lies above them. It is the join's cursor exchange,
+ * run between instances, rather than a subscription to every room at boot.
+ *
+ * Nothing waits for the answers: they are best-effort like everything else on the port, may come
+ * from no instance at all, and land as live traffic on whatever sockets have joined by then.
+ */
+export async function hearFleet(
+  fan: FanoutLink | undefined,
+  room: RoomState,
+): Promise<(() => void) | undefined> {
+  if (fan === undefined) return undefined;
+  const off = fan.onFrame(fanIn(room));
+  await fan.heard?.();
+  fan.publish(
+    fleetGreeting({
+      version: Math.max(...room.versions),
+      keepaliveMs: room.keepaliveMs,
+      epoch: room.epoch,
+      cursors: room.cursors(),
+      maxFrame: fan.maxFrame,
+    }),
+  );
+  return off;
+}
 
 /**
  * A frame from another instance serving the same room (D09-B).
@@ -19,13 +55,16 @@ import { admitGrant } from "./trust.js";
  * narrowed its interest was sent whatever the other instance happened to relay, because a forward
  * goes to every socket and an ingest goes to the ones that asked.
  *
- * Nothing is published from here. The frame already reached every other instance from the one
- * that first sent it, so re-publishing would multiply one write by the size of the fleet.
+ * Nothing heard is published again. The frame already reached every other instance from the one
+ * that first sent it, so re-publishing would multiply one write by the size of the fleet. The one
+ * thing published from here is an answer: another instance's `hello`, sent when it opens the room,
+ * is answered with what this log holds above it (gaps U41).
  *
- * Best-effort stays best-effort: a frame the transport drops is not recovered by this. What
- * recovers it is a device that holds the event joining this instance and pushing everything above
- * the cursors the `hello` advertised — which is only possible because the log here is now the set
- * of events this instance actually heard, rather than nothing at all.
+ * Best-effort stays best-effort: a frame the transport drops while both instances hold the room
+ * is not recovered by this. What recovers it is a device that holds the event joining this
+ * instance and pushing everything above the cursors the `hello` advertised — or this instance
+ * opening the room afresh, after an idle eviction, and greeting the fleet again
+ * ({@link fleetGreeting}, cut to what the transport carries).
  */
 export function fanIn(room: RoomState): (frame: Uint8Array) => void {
   return (frame) => {
@@ -40,6 +79,11 @@ export function fanIn(room: RoomState): (frame: Uint8Array) => void {
         // the instance that sent it still holds the event for whoever asks it next
         if (absorbed.isErr()) return;
       });
+      return;
+    }
+    // another instance has just opened this room and says where its log stands (gaps U41)
+    if (value.kind === "hello") {
+      room.enqueue(() => catchUpInstance(room, value.cursors));
       return;
     }
     // a receipt or a refusal is for its author alone, here as from a socket (D32)
@@ -75,4 +119,79 @@ export function fanIn(room: RoomState): (frame: Uint8Array) => void {
     // the peer-to-peer facts pass through byte-identical, as they do from a socket
     room.toClients(frame);
   };
+}
+
+/**
+ * What another instance missed before it opened this room, sent back over the fan-out: every
+ * grant this room holds, then every event above the cursors its greeting named (gaps U41).
+ *
+ * The cursor exchange a device runs on every join, run between instances. An instance hears a
+ * room only from the moment it opens it, so what was fanned out before then reached it as
+ * nothing; this re-pages it from the instances that were listening. Grants go first, so the
+ * events they vouch for land after them on the opening instance's sockets.
+ *
+ * Every instance holding the room answers and every one hears the answers, so the opening
+ * instance takes each event once per answering instance and the rest take events they already
+ * hold: a `has` each, deduplicated by id, which is the price of a port with no addressing.
+ * Published straight from the log, one frame per event, on the room's queue — so a room with a
+ * long history spends its fan-out rate on it, and an event too large for the transport goes as
+ * the transport's own gap signal, exactly as it does live. Unpaced and outside the room's
+ * `roomFanout` budget: a greeting with few cursors on a long log is answered with all of it, by
+ * every instance holding the room.
+ *
+ * The answer is this log as it stands, floor and all: an answerer trimmed above the opener's
+ * cursors sends what it still holds, and the hole below it waits for a device join to fill.
+ */
+async function catchUpInstance(room: RoomState, theirs: Cursors): Promise<void> {
+  const entries = await room.store.allSince(theirs);
+  // nothing to send it from: the opening instance still has whatever devices push on their joins
+  if (entries.isErr()) return;
+  for (const wire of room.grants.all()) room.publish(grantFrame(wire));
+  for (const entry of entries.value) {
+    const wire = relayEnvelope(entry);
+    if (wire !== undefined) room.publish(relayedFrame(wire, room.offset()));
+  }
+}
+
+/** What {@link fleetGreeting} is built from. */
+export interface FleetGreeting {
+  /** The highest protocol version the room speaks. */
+  readonly version: number;
+  readonly keepaliveMs: number;
+  readonly epoch: string;
+  /** Where the opening room's log stands. */
+  readonly cursors: Cursors;
+  /** The largest frame the fan-out carries as itself (`FanoutLink.maxFrame`); absent, no limit. */
+  readonly maxFrame?: number | undefined;
+}
+
+/**
+ * The `hello` a room opening on an instance publishes on the fan-out, for every instance already
+ * holding the room to answer (gaps U41).
+ *
+ * Its cursors and no floor, since {@link fanIn} reads only the cursors. Past `maxFrame` it names
+ * the authors furthest along and leaves the rest out: an author left out is answered from its
+ * first event, which costs the opener duplicates it drops by id and never a gap. A frame the
+ * fan-out could not carry would be no greeting at all.
+ *
+ * @example
+ * ```ts
+ * fan.publish(fleetGreeting({ version: 4, keepaliveMs: 15_000, epoch, cursors, maxFrame: fan.maxFrame }));
+ * ```
+ */
+export function fleetGreeting(greeting: FleetGreeting): Uint8Array {
+  const { version, keepaliveMs, epoch, cursors, maxFrame } = greeting;
+  const hello = (named: Cursors) => helloFrame(version, keepaliveMs, epoch, named);
+  const whole = hello(cursors);
+  if (maxFrame === undefined || whole.length <= maxFrame) return whole;
+  const furthest = [...cursors].sort(([, a], [, b]) => b - a);
+  // the longest prefix that fits: every entry costs about the same, so a bisection over it
+  let fits = 0;
+  let over = furthest.length;
+  while (over - fits > 1) {
+    const mid = Math.floor((fits + over) / 2);
+    if (hello(new Map(furthest.slice(0, mid))).length <= maxFrame) fits = mid;
+    else over = mid;
+  }
+  return hello(new Map(furthest.slice(0, fits)));
 }

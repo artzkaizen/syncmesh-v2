@@ -1400,6 +1400,78 @@ fn a_grant_is_registered_before_the_events_that_arrive_beside_it_fold() {
 }
 
 #[test]
+fn an_event_that_arrives_before_its_authors_grant_folds_when_the_grant_does() {
+    let mut net = Net::new(room_with(vec![3], 15_000));
+    let now = net.now;
+    let registry = Arc::new(Mutex::new(GrantRegistry::new(
+        identity(100).peer_id().clone(),
+    )));
+    let link = RelayLink::new(identity(3), RelayOptions::default()).with_grants(registry.clone());
+    let c = net.add_device(link, granted_engine(3, now, &registry));
+    let d = net.add_device(
+        RelayLink::new(identity(4), RelayOptions::default()),
+        Engine::open(
+            identity(4),
+            Box::new(MemoryEventStore::new()),
+            None,
+            EngineOptions {
+                now_ms: Some(Box::new(move || now)),
+                ..EngineOptions::default()
+            },
+        )
+        .unwrap(),
+    );
+    net.dial(c);
+    net.dial(d);
+
+    // the event first, the grant that vouches for it second: two paths, the slow one carrying
+    // the grant (gaps U42)
+    let wrote = net.devices[d]
+        .engine
+        .mutate("notes.create", vec![note("n1")], Some(acme()))
+        .unwrap()
+        .entry;
+    let actions = net.devices[d].link.on_local_write(&wrote);
+    net.apply_device(d, actions);
+    net.pump();
+    let parked: Vec<_> = net.devices[c]
+        .engine
+        .quarantine()
+        .iter()
+        .map(|p| p.verdict.tag())
+        .collect();
+    assert_eq!(parked, vec!["NoGrant"]);
+    assert!(
+        net.devices[c]
+            .engine
+            .state()
+            .read_row("notes", "n1")
+            .is_none()
+    );
+
+    // nothing else folds on c's side: only the grant arriving can let the event in
+    net.take_facts(c);
+    let actions = net.devices[d]
+        .link
+        .send_grants(vec![grant_wire(&identity(4))]);
+    net.apply_device(d, actions);
+    net.pump();
+    assert!(net.devices[c].engine.quarantine().is_empty());
+    assert!(
+        net.devices[c]
+            .engine
+            .state()
+            .read_row("notes", "n1")
+            .is_some()
+    );
+    let facts = net.take_facts(c);
+    assert!(
+        facts.iter().any(|f| matches!(f, Action::Folded(_))),
+        "{facts:?}"
+    );
+}
+
+#[test]
 fn a_blob_put_with_no_live_link_is_said_unsent_at_once() {
     let mut link = RelayLink::new(identity(1), RelayOptions::default());
     let bytes = b"the bytes of a blob".to_vec();
