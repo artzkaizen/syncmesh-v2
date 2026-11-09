@@ -169,17 +169,29 @@ export function tornTests(harness: TornHarness): readonly SuiteCase[] {
     {
       name: "torn: a torn tail — `lastSeq` refuses it as a value, and no read throws",
       run: async () => {
-        await fill(harness, "torn-tail", 2_000);
+        const whole = await fill(harness, "torn-tail", 2_000);
         await harness.zero("torn-tail", (await harness.size("torn-tail")) - PAGE / 2, PAGE / 2);
         const driver = await harness.openDriver("torn-tail");
-        const stores = (await openStores(driver, { tables: CRASH_TABLES })).unwrap();
-        // a tear that takes an author's newest events leaves no later event to show the hole, so
-        // the reads may answer either way (D39 B); what is pinned is that they answer, not throw
-        await stores.events.all();
-        await stores.events.allSince(new Map<PeerId, never>(), "synced");
-        const last = await stores.events.lastSeq(CRASH_AUTHOR, "synced");
-        check(last.isErr() && last.error._tag === "StoreFailure", "lastSeq read past a torn tail");
-        await driver.close?.();
+        try {
+          const stores = (await openStores(driver, { tables: CRASH_TABLES })).unwrap();
+          // a tear that takes an author's newest events leaves no later event to show the hole, so
+          // the reads may answer either way (D39 B); what is pinned is that they answer, not throw
+          const all = await stores.events.all();
+          const since = await stores.events.allSince(new Map<PeerId, never>(), "synced");
+          const last = await stores.events.lastSeq(CRASH_AUTHOR, "synced");
+          // where the file's last page is the log's newest events (a device's log file) `lastSeq`
+          // refuses it; where it is another table's (a WAL-checkpointed log, a Durable Object's one
+          // file) every read still answers the whole log. Never a shorter one
+          const answered = last.isOk() ? Number(last.value ?? 0) : undefined;
+          check(
+            (last.isErr() && last.error._tag === "StoreFailure") ||
+              (answered === whole &&
+                [all, since].every((read) => read.isErr() || read.value.length === whole)),
+            `lastSeq read past a torn tail: ${answered} of ${whole}`,
+          );
+        } finally {
+          await driver.close?.();
+        }
       },
     },
   ];
