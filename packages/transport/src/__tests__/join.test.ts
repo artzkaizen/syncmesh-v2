@@ -14,7 +14,7 @@ import {
 import { describe, expect, test } from "bun:test";
 
 import type { BridgeError, BridgeOptions } from "../bridge.js";
-import type { SnapshotDocs } from "../join-docs.js";
+import type { SnapshotDocs, SnapshotDocsFailed } from "../join-docs.js";
 import type { JoinExchange, JoinOutcome, JoinPolicy, SnapshotInstalled } from "../join.js";
 import type { Peer } from "./fixtures.js";
 
@@ -473,16 +473,22 @@ describe("what an install below a floor adopts (D46)", () => {
         queue.push(() => to().dispatch(frame as Parameters<JoinExchange["dispatch"]>[0]));
     };
     const outcomes: JoinOutcome[] = [];
+    const failed = {
+      holder: new Array<SnapshotDocsFailed>(),
+      joiner: new Array<SnapshotDocsFailed>(),
+    };
     const held: JoinExchange = createJoinExchange({
       engine: holder.engine,
       send: route(() => joined),
       idPrefix: "holder",
+      onError: (error) => void failed.holder.push(error),
       ...(docs.holder !== undefined && { docs: docs.holder }),
     });
     const joined: JoinExchange = createJoinExchange({
       engine: joinerEngine,
       send: route(() => held),
       idPrefix: "joiner",
+      onError: (error) => void failed.joiner.push(error),
       ...(docs.joiner !== undefined && { docs: docs.joiner }),
     });
     const settle = async () => {
@@ -493,7 +499,7 @@ describe("what an install below a floor adopts (D46)", () => {
         ...policy,
         settled: (outcome) => void outcomes.push(outcome),
       });
-    return { ask, settle, outcomes };
+    return { ask, settle, outcomes, failed };
   };
 
   test("unvouched and accepted: per author at most the claimed floor, and nothing for the rest", async () => {
@@ -664,6 +670,28 @@ describe("what an install below a floor adopts (D46)", () => {
       expect(pair.outcomes.map(({ kind }) => kind)).toEqual(["installed"]);
       expect(joiner.engine.state().get(NOTES)?.size).toBe(3);
       expect(joiner.engine.coverage().synced.size).toBe(0);
+      // and the holder hears its document runtime failed
+      expect(pair.failed.holder.map(({ step }) => step)).toEqual(["serve"]);
+    });
+
+    test("a joiner whose documents fail to install still settles, adopting no floor, and says why", async () => {
+      const holder = peer(40, "acct_x");
+      const joiner = peer(80, "acct_y");
+      for (let i = 1; i <= 3; i += 1) (await write(holder, `n${i}`, `body ${i}`)).unwrap();
+      const withDocs = { ...joiner.engine, hasDocColumns: () => true };
+      const { holderDocs } = documented(holder, true);
+      const joinerDocs: SnapshotDocs = {
+        serve: () => Promise.resolve({ checkpoints: [], complete: false }),
+        install: () => Promise.reject(new Error("the doc store is gone")),
+      };
+      const pair = exchanges(holder, joiner, withDocs, { holder: holderDocs, joiner: joinerDocs });
+      // SAFETY: test fixture; the holder wrote three
+      pair.ask({ adoptUnvouched: true, floor: new Map([[holder.identity.peerId, 3 as SeqNum]]) });
+      await pair.settle();
+      expect(pair.outcomes.map(({ kind }) => kind)).toEqual(["installed"]);
+      expect(joiner.engine.state().get(NOTES)?.size).toBe(3);
+      expect(joiner.engine.coverage().synced.size).toBe(0);
+      expect(pair.failed.joiner.map(({ step }) => step)).toEqual(["install"]);
     });
 
     test("a joiner that takes no documents adopts nothing below a floor, whatever the pages carried", async () => {

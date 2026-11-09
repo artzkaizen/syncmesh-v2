@@ -1,6 +1,6 @@
 import type { KeyedRecord } from "@syncmesh/kernel";
 
-import { Result } from "@syncmesh/result";
+import { Result, TaggedError } from "@syncmesh/result";
 import {
   encodeSnapshotPage,
   type PageCheckpoint,
@@ -38,12 +38,42 @@ export interface SnapshotDocs {
 /** What a page carries of its documents when serving them failed: nothing, and not complete. */
 export const NO_DOCS = { checkpoints: [], complete: false } satisfies PageDocs;
 
+/** A device's document runtime rejected serving (`serve`) or installing (`install`) a snapshot's documents. */
+export class SnapshotDocsFailed extends TaggedError("SnapshotDocsFailed")<{
+  step: "serve" | "install";
+  message: string;
+  cause: unknown;
+}> {}
+
+/** Where a {@link SnapshotDocsFailed} goes; nowhere when absent. */
+type DocsReport = ((error: SnapshotDocsFailed) => void) | undefined;
+
+/** Runs one step of `docs`, turning a rejection into `fallback` after reporting it. */
+const docsStep = async <T>(
+  step: SnapshotDocsFailed["step"],
+  work: () => Promise<T>,
+  fallback: T,
+  onError: DocsReport,
+): Promise<T> => {
+  const done = await Result.tryPromise({
+    try: work,
+    catch: (cause) =>
+      new SnapshotDocsFailed({ step, message: `snapshot documents: ${step} failed`, cause }),
+  });
+  if (done.isErr()) onError?.(done.error);
+  return done.unwrapOr(fallback);
+};
+
 /**
- * `docs.serve(rows)`, or no checkpoints and an incomplete page when it rejects: the pages still go
- * out, so the joiner's exchange closes, and it adopts no floor for the documents it was not sent.
+ * `docs.serve(rows)`, or no checkpoints and an incomplete page when it rejects, reported to
+ * `onError`: the pages still go out, so the joiner's exchange closes, and it adopts no floor for
+ * the documents it was not sent.
  */
-export const servedDocs = (docs: SnapshotDocs, rows: readonly KeyedRecord[]): Promise<PageDocs> =>
-  Result.tryPromise(() => docs.serve(rows)).then((served) => served.unwrapOr(NO_DOCS));
+export const servedDocs = (
+  docs: SnapshotDocs,
+  rows: readonly KeyedRecord[],
+  onError?: DocsReport,
+): Promise<PageDocs> => docsStep("serve", () => docs.serve(rows), NO_DOCS, onError);
 
 /**
  * The most a page spends on its documents' checkpoints: half a frame, so a page of rows and
@@ -91,14 +121,18 @@ export function fittedPage(rows: readonly KeyedRecord[], docs: PageDocs): Uint8A
  * The documents follow the rows they are columns of, since a checkpoint is checked against the
  * lineage its row's cell names; the checkpoints of an incomplete page are installed too. Whether
  * this device now holds every document the pages stood for: pages that said they were incomplete
- * stand for none, and a device that takes no documents holds none.
+ * stand for none, a device that takes no documents holds none, and an install that rejects holds
+ * none and is reported to `onError`.
  */
 const installDocs = async (
   docs: SnapshotDocs | undefined,
   rows: readonly KeyedRecord[],
   carried: PageDocs,
+  onError: DocsReport,
 ): Promise<boolean> =>
-  docs !== undefined && (await docs.install(rows, carried.checkpoints)) && carried.complete;
+  docs !== undefined &&
+  (await docsStep("install", () => docs.install(rows, carried.checkpoints), false, onError)) &&
+  carried.complete;
 
 /**
  * Every checkpoint a snapshot's pages carried, and whether each page said it carried all of its
@@ -110,17 +144,18 @@ export const carriedDocs = (pages: readonly SnapshotPage[], takes: boolean): Pag
 });
 
 /**
- * Installs the documents the pages carried, then, when the adoption was `gated` on them and they
+ * Installs the documents the pages carried with the `joiner`'s `docs`, then, when the adoption was `gated` on them and they
  * all held, runs `adopt`: the coverage after the documents it waited on. `adopt` installs no rows,
- * so only the store refuses it; nothing to adopt is `Ok(undefined)`.
+ * so only the store refuses it; nothing to adopt is `Ok(undefined)`. A `docs.install` that rejects
+ * goes to the `joiner`'s `onError`, and nothing is adopted after it.
  */
 export async function adoptAfterDocs<T, E>(
-  docs: SnapshotDocs | undefined,
+  joiner: { readonly docs?: SnapshotDocs | undefined; readonly onError?: DocsReport },
   rows: readonly KeyedRecord[],
   carried: PageDocs,
   gated: boolean,
   adopt: () => Promise<Result<T, E>>,
 ): Promise<Result<T | undefined, E>> {
-  const held = await installDocs(docs, rows, carried);
+  const held = await installDocs(joiner.docs, rows, carried, joiner.onError);
   return held && gated ? adopt() : Result.ok(undefined);
 }

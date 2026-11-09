@@ -5,6 +5,7 @@ import { omitUndefined } from "@syncmesh/result";
 
 import type { BridgeOptions } from "./bridge.js";
 import type { JoinDeps } from "./join.js";
+import type { BridgeError } from "./outbound.js";
 
 import { createJoinExchange } from "./join.js";
 import { createRejoins } from "./rejoin.js";
@@ -17,7 +18,7 @@ export const createSessionJoin = (
   options: BridgeOptions,
   send: JoinDeps["send"],
   reader: () => PeerId | undefined,
-  onRefused: NonNullable<JoinDeps["onRefused"]>,
+  report: (error: BridgeError) => void,
 ) => {
   const { engine, identity, rowsPerChunk, onSnapshot, certificate, trust } = options;
   const { readGate, withheld } = options;
@@ -26,7 +27,15 @@ export const createSessionJoin = (
     readGate === undefined
       ? {}
       : { serves: (asked?: Interest) => readGate.serves(reader(), asked) };
-  const base = { engine, send, onRefused, idPrefix: identity.peerId.slice(0, 8), ...served };
+  // a refused snapshot and a document runtime that failed it are both the session's errors
+  const base = {
+    engine,
+    send,
+    onRefused: report,
+    onError: report,
+    idPrefix: identity.peerId.slice(0, 8),
+    ...served,
+  };
   const gated = withheld === undefined ? base : { ...base, withheld };
   const paged = rowsPerChunk === undefined ? gated : { ...gated, rowsPerChunk };
   const reported = onSnapshot === undefined ? paged : { ...paged, onSnapshot };

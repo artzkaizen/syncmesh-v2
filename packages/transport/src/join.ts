@@ -10,7 +10,7 @@ import {
   type SnapshotPage,
 } from "@syncmesh/wire";
 
-import type { SnapshotDocs } from "./join-docs.js";
+import type { SnapshotDocs, SnapshotDocsFailed } from "./join-docs.js";
 import type { SnapshotFrame } from "./snap-frame.js";
 import type { Withheld } from "./withheld.js";
 
@@ -71,6 +71,12 @@ export interface JoinDeps {
    * of a rule this build does not run (RFC-0023 §16.1). Nothing was installed or adopted.
    */
   readonly onRefused?: (refused: LineageCellRefused) => void;
+  /**
+   * The document runtime behind `docs` rejected serving or installing a snapshot's documents. The
+   * exchange goes on without them: a page served is sent with none and marked incomplete, and an
+   * install adopts no coverage it gated on them.
+   */
+  readonly onError?: (error: SnapshotDocsFailed) => void;
   /** Distinguishes one exchange from another; the sender picks it. */
   readonly idPrefix: string;
   /**
@@ -219,22 +225,22 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
       return undefined;
     }
     return Promise.all(
-      pages.map(async (rows) => fittedPage(rows, await servedDocs(docs, rows))),
+      pages.map(async (rows) => fittedPage(rows, await servedDocs(docs, rows, deps.onError))),
     ).then(sendPages);
   };
 
-  const onManifest = (frame: Extract<SnapshotFrame, { kind: "snap-manifest" }>): void => {
+  const onManifest = (frame: Extract<SnapshotFrame, { kind: "snap-manifest" }>) => {
     const policy = asked.shift();
     // nobody asked: nothing installs and nothing is adopted, and the pages that follow find no
     // exchange to land in (gaps U20)
-    if (policy === undefined) return;
+    if (policy === undefined) return undefined;
     const base = { chunks: frame.chunks, at: frame.at, pages: new Map(), policy };
     const started =
       frame.certificate === undefined ? base : { ...base, certificate: frame.certificate };
     const held: Incoming = frame.scope === undefined ? started : { ...started, scope: frame.scope };
     incoming.set(frame.id, held);
     // an empty snapshot has no pages to wait for, so it is already complete
-    if (frame.chunks === 0) void complete(frame.id, held);
+    return frame.chunks === 0 ? complete(frame.id, held) : undefined;
   };
 
   const onChunk = async (frame: Extract<SnapshotFrame, { kind: "snap-chunk" }>): Promise<void> => {
@@ -289,7 +295,7 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
       held.policy.settled?.({ kind: "refused", refused: installed.error });
       return deps.onRefused?.(installed.error);
     }
-    const adoption = await adoptAfterDocs(deps.docs, rows, carried, gated, () =>
+    const adoption = await adoptAfterDocs(deps, rows, carried, gated, () =>
       installRows(held, wanted, []),
     );
     if (adoption.isErr()) deps.onRefused?.(adoption.error);
