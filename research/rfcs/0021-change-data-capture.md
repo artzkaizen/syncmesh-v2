@@ -122,6 +122,38 @@ Between `begin` and `commit`, changes accumulate. On `commit`, the authority
 folds them into **one signed event per partition touched** (one event is one
 partition, M6), commits them, writes the watermark, and only then acks it.
 
+`partition(row)` places a row the engine does not hold yet. An update to a row
+it holds goes to the instance the engine holds it in, which is where the kernel
+keeps a row whatever a later event names (`cdc/src/plan.ts`). The mapping is
+still asked:
+
+- When it cannot place the update (it returns `undefined`, or a name that is not
+  `kind:id`), the update goes where the row lives. An update may carry only the
+  columns it changed (TOAST, a staged sweep, RFC-0025).
+- When it names the held instance, nothing is in question.
+- When it names a different instance, capture stops with `RowMoved` (`held`,
+  `named`). The database changed the column the mapping reads, so the row
+  moved. Following it would send the update to peers that never held the row.
+  Filing it where the row lives would keep sending a row the database says is
+  another tenant's to the old tenant's peers. Moving a row between instances is
+  not something CDC does, so the stop is loud and the watermark stays put.
+
+A stop on `RowMoved` or `RowUnplaceable` is a liveness stop: the transaction is
+unacked, and a restart replays it and stops again. Fixing the row in the
+database does not help, since the replay carries the images as they were
+committed. The way out is the mapping. Restart with one that returns the held
+instance, or `undefined`, for that row and the update is filed where the row
+lives; one that names an instance for a row it could not place before files it
+there. Then move the row deliberately, as a delete in the old instance and an
+insert in the new one. On `main` before this change, a row whose tenant column
+changed was filed silently wherever the mapping named, so the stop is new
+behaviour for logical replication too. Decided 2026-11-08 (Jace delegated the
+call).
+
+Added 2026-11-08 (Jace delegated the call) with RFC-0025. In the first version,
+a moved row's updates were filed in the old instance without a word; a review
+caught that this leaks across tenants, and the stop replaced it.
+
 ## Direction is fixed, and that is the whole design
 
 **DB → mesh only.** A CDC-backed collection is **read-only on devices**, and the
@@ -149,7 +181,11 @@ what we avoid by refusing two-way.
 The cost, stated plainly: **a CDC-backed table is not offline-writable.** That is
 a real limitation and it is the correct trade — the database is authoritative, so
 an offline write against it is a promise we cannot keep. Tables that must be
-offline-writable stay mesh-native, where the local commit is the truth.
+offline-writable stay mesh-native, where the local commit is the truth. A
+mesh-native table that another service also writes is RFC-0025's class c: the
+outside write is staged by a trigger and swept into an event, not replicated from
+the WAL — logical decoding cannot tell the projection's own writes from the outside
+writer's, so a table the authority projects into the same database would echo.
 
 ## Consequences worth knowing before building
 
@@ -290,7 +326,7 @@ restart through `startCapture`, ending with the mesh equal to the table.
 |---|---|
 | `ChangeSource` / `ChangeStream` port | **implemented** — `packages/cdc/src/source.ts` |
 | `postgresChangeSource` (logical replication) | **implemented** — `adapters/postgres/src/replication.ts` |
-| `sqliteChangeSource` (triggers + outbox) | proposed |
+| triggers + outbox, SQLite and Postgres | **implemented** — `stagedChangeSource` in `@syncmesh/storage` (RFC-0025): the strict guard's `stage` mode files an outside write, a sweep is one transaction |
 | `manualChangeSource` (app calls us) | **implemented** — `packages/cdc/src/manual.ts` |
 | transaction → one signed event per partition | **implemented** — `plan.ts`, `apply.ts` |
 | durable watermark in `_cdc` | **implemented** — its own unpinned event, last |

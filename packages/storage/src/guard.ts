@@ -4,6 +4,7 @@ import type { Table } from "@syncmesh/schema";
 import { Result } from "@syncmesh/result";
 import { parseTableName } from "@syncmesh/schema";
 
+import type { GuardMode } from "./dialect.js";
 import type { SqlDriver } from "./driver.js";
 
 import { driverDialect } from "./dialect.js";
@@ -15,26 +16,42 @@ import { attempt } from "./sql.js";
  * `true`, the default: a guard trigger raises on it, because the row would change and no event
  * would carry the change — the device diverges from every peer and nothing says so. `false` lets
  * such writes through, as before. `{ except }` guards every table but the ones named: a table an
- * external writer owns, whose changes reach the mesh some other way (CDC, a sweeper).
+ * external writer owns, whose changes reach the mesh some other way (CDC, RFC-0021).
+ *
+ * `{ stage }` names the tables something outside the mesh writes alongside it (RFC-0025's class
+ * c): such a write is not refused but filed, its row's before and after, in the staged-changes
+ * queue, and `stagedChangeSource` sweeps the queue into events the authority signs. A `TRUNCATE`
+ * of a staged table is still refused on Postgres. A table named in both lists is staged.
  *
  * Only the fold's own writes pass the guard (`CaptureSql.fold`). A role that sets the capture
  * setting itself can get past it: this guards against mistakes, not against a hostile writer
  * holding the same connection.
+ *
+ * @example
+ * ```ts
+ * openStores(driver, { tables, strict: { stage: ["tasks"] } })
+ * ```
  */
-export type StrictCapture = boolean | { readonly except: readonly string[] };
+export type StrictCapture =
+  | boolean
+  | { readonly except?: readonly string[]; readonly stage?: readonly string[] };
 
-/** The tables a {@link StrictCapture} setting guards. */
-export const strictGuards =
+/** What a {@link StrictCapture} setting does with each table's unarmed writes. */
+export const strictMode =
   (strict: StrictCapture = true) =>
-  (table: Table): boolean =>
-    strict === true || strict === false ? strict : !strict.except.includes(table.name);
+  (table: Table): GuardMode => {
+    if (strict === true) return "refuse";
+    if (strict === false) return "off";
+    if (strict.stage?.includes(table.name) === true) return "stage";
+    return strict.except?.includes(table.name) === true ? "off" : "refuse";
+  };
 
 /** Exactly what the strict guard's install runs for these tables, in order. */
 export const guardStatements = (
   driver: Pick<SqlDriver, "dialect">,
   tables: readonly Table[],
   strict?: StrictCapture,
-): readonly string[] => driverDialect(driver).capture.guardDdl(tables, strictGuards(strict));
+): readonly string[] => driverDialect(driver).capture.guardDdl(tables, strictMode(strict));
 
 /**
  * Runs the guard's install for these tables, then drops it from every table that carries one and
@@ -58,8 +75,8 @@ export async function applyGuard(
 }
 
 /**
- * Installs or drops the strict-capture guard on these tables ({@link StrictCapture}), and drops it
- * from any table outside them that still carries one.
+ * Installs, stages or drops the strict-capture guard on these tables ({@link StrictCapture}), and
+ * drops it from any table outside them that still carries one.
  */
 export function installGuard(
   driver: SqlDriver,

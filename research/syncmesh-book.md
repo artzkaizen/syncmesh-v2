@@ -1066,11 +1066,18 @@ this partition's ladder and `rowIs`/`patchOnly` accept only this table's columns
 | `any(…)` / `all(…)` / `not(…)` | — | composition |
 | `deny(rule, { because })` | — | explicit refusal with a human reason that rides the policy row and surfaces in the typed refusal error |
 
-Reuse is plain TypeScript — rules are values, so named aliases need no feature:
+Reuse is plain TypeScript — rules are values, so named aliases need no feature. A named rule
+is a function of the combinators it reads, typed by the columns and roles it needs; any table
+that has them passes its own combinators in, and one that lacks the column does not compile
+(`packages/schema/README.md`, "Named rules"; `schema/bind.test`, decided 2026-11-08, Jace
+delegated the call):
 
 ```ts
-const isLiveEditor = (c: AllowCtx<typeof docs>) =>
-  c.all(c.role("editor"), c.rowIs("archived", false));
+const isOwner = ({ owner }: Combinators<{ createdBy: AnyColumn }, never>) => owner("createdBy");
+const isLiveEditor = (c: Combinators<{ archived: AnyColumn }, "editor">) =>
+  c.all(c.role("editor"), c.rowIs({ archived: false }));
+
+allow: (c) => ({ update: c.any(isOwner(c), isLiveEditor(c)) })
 ```
 
 ### The grant: shape and verbs

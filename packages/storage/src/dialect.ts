@@ -180,6 +180,33 @@ export interface SchemaSql {
   readonly installed: string;
 }
 
+/**
+ * What the strict guard does with a write to one synced table made with capture at rest:
+ * `refuse` it, `stage` it for `stagedChangeSource` to sweep into an event (RFC-0025), or let it
+ * through unseen (`off`).
+ */
+export type GuardMode = "refuse" | "stage" | "off";
+
+/**
+ * The staged-changes queue (RFC-0025): one row per unarmed write to a staged table — `tbl, op,
+ * key, part, old, new`, the images in the capture log's encoding — numbered in arrival order and
+ * marked with the sweep that took it.
+ */
+export interface StagedSql {
+  /** The queue and its index, where they are missing; idempotent. */
+  readonly ddl: readonly string[];
+  /** Deletes every row a sweep at or below bind 1 took: those are in the log. */
+  readonly forget: string;
+  /** The newest sweep any row in the queue carries, or `NULL`. */
+  readonly newest: string;
+  /** Marks every row no sweep has taken with sweep bind 1. */
+  readonly claim: string;
+  /** `tbl, op, key, part, old, new, sweep` of every row a sweep above bind 1 took, by sweep then arrival. */
+  readonly read: string;
+  /** How many rows the queue holds, taken or not. */
+  readonly depth: string;
+}
+
 export interface CaptureSql {
   /** `CREATE TABLE IF NOT EXISTS` for a synced table: its columns plus `_partition`, only the key constrained. */
   readonly tableDdl: (table: Table) => string;
@@ -189,13 +216,14 @@ export interface CaptureSql {
   readonly arm: string;
   readonly disarm: string;
   /**
-   * The strict-capture guard (gaps U5): one trigger set per table that refuses a write made with
-   * capture at rest — and on Postgres a `TRUNCATE` at any time but the fold's — or, for a table
-   * the guard leaves out, the statements that drop it. Run after {@link CaptureSql.captureDdl}.
+   * The strict-capture guard (gaps U5): per table, by its {@link GuardMode}, a trigger set that
+   * refuses a write made with capture at rest — and on Postgres a `TRUNCATE` at any time but the
+   * fold's — or one that files it in the staged-changes queue (RFC-0025), or the statements that
+   * drop both. Run after {@link CaptureSql.captureDdl}.
    */
   readonly guardDdl: (
     tables: readonly Table[],
-    guarded: (table: Table) => boolean,
+    mode: (table: Table) => GuardMode,
   ) => readonly string[];
   /** Drops the strict guard from one table, whether or not it carries one. */
   readonly unguardDdl: (table: TableName) => readonly string[];
@@ -209,6 +237,8 @@ export interface CaptureSql {
   readonly unfold: string;
   /** What `fold` and `unfold` need to exist, for a projection over tables capture was never installed on. */
   readonly guardRow: readonly string[];
+  /** The staged-changes queue a staged table's guard files into (RFC-0025). */
+  readonly staged: StagedSql;
   /** `tbl, key, op, old, new` in log order. */
   readonly selectLog: string;
   readonly clearLog: string;

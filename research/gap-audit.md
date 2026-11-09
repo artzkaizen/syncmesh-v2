@@ -167,6 +167,11 @@ version negotiation). What remains:
 31. The external-writer story (table classes a/b/c, staged-changes sweeper, WAL
     capture as last resort) and the `syncmesh` pg schema for bookkeeping — wants an
     RFC; both slot into E24/E25.
+    **2026-11-08: RFC-0025, decided (Jace delegated the call).** Class a mesh-owned
+    (the strict guard refuses), b database-owned (CDC, RFC-0021), c shared (the guard
+    stages the write, `stagedChangeSource` sweeps it). WAL capture is out for class c:
+    it cannot tell the fold's writes from the outside writer's. The `syncmesh` schema
+    already held the bookkeeping; `staged` joins it.
 
 ## Reconciliation with the book (added 2026-09-11)
 

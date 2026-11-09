@@ -12,6 +12,7 @@ export { meshCells, meshKey, partitionOf } from "./mapping.js";
 export type { CaptureError } from "./errors.js";
 export {
   EventRefused,
+  RowMoved,
   RowUnplaceable,
   RowUnreadable,
   SchemaDrift,

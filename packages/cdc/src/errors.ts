@@ -48,6 +48,25 @@ export class RowUnplaceable extends TaggedError("RowUnplaceable")<{
   message: string;
 }> {}
 
+/**
+ * An update to a row the engine holds in one instance, which the mapping now places in another:
+ * the database changed the column the mapping reads. Refused rather than followed — a row keeps
+ * the instance it was born in (the kernel files it there), so the update could reach only peers
+ * that never held the row; and refused rather than filed where the row lives, which would keep
+ * sending a row the database says is another tenant's to the old one's peers. The stop is unacked
+ * and a restart replays it; restart with a mapping that returns the held instance, or
+ * `undefined`, for the row to file the update where the row lives.
+ */
+export class RowMoved extends TaggedError("RowMoved")<{
+  table: string;
+  key: string;
+  /** The instance the engine holds the row in. */
+  held: string;
+  /** The instance the mapping names for the update. */
+  named: string;
+  message: string;
+}> {}
+
 /** A source row that is not a row of the collection it feeds: a missing key, a wrong kind. */
 export class RowUnreadable extends TaggedError("RowUnreadable")<{
   table: string;
@@ -78,6 +97,7 @@ export type CaptureError =
   | SchemaDrift
   | TruncateRefused
   | RowUnplaceable
+  | RowMoved
   | RowUnreadable
   | EventRefused
   | SourceFailed

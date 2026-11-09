@@ -200,7 +200,10 @@ export interface SqliteStorage {
    * Refuse a write to a synced table made outside a mesh write — raw SQL on the connection, an
    * ORM call outside `mesh.write` — rather than let the row change with no event to carry it
    * (gaps U5). Default `true`; `false`, or `{ except: [table] }` for the tables something else
-   * writes. Applies where the mesh installs the tables: a `driver`, or the platform default.
+   * writes, or `{ stage: [table] }` to file such writes for `stagedChangeSource` (RFC-0025).
+   * Applies where the mesh installs the tables: a `driver`, or the platform default. Staging is
+   * for an authority's store: the events a sweep becomes are signed by the engine that runs
+   * `startCapture`, so on a device they carry the device's signature and its grants.
    */
   readonly strict?: StrictCapture;
   /**
@@ -262,7 +265,10 @@ export interface PostgresStorage {
   /**
    * Refuse a write to a synced table made outside a mesh write (gaps U5): a guard trigger raises
    * on it, and on a `TRUNCATE` of one. Default `true`; `{ except: [table] }` for the tables an
-   * external writer owns. A role that can set `syncmesh.armed` itself can get past it. The
+   * external writer owns, whose writes then reach no peer; `{ stage: [table] }` for a table it
+   * writes alongside the mesh, whose writes `stagedChangeSource` sweeps into events (RFC-0025);
+   * the writer's role needs only its grants on the table, since the filing function runs as the
+   * role that installed it. A role that can set `syncmesh.armed` itself can get past it. The
    * triggers are `ENABLE ALWAYS`, which needs the table's owner at install, and a data-only
    * `pg_restore` or a `COPY` into a synced table needs `--disable-triggers`.
    */
