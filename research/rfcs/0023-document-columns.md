@@ -239,7 +239,14 @@ tables do not yet hand one back in place of the column), and `useDoc(ref)` in `@
 is the hook. `mesh.docs.lineages(address)` lists every history with its winner,
 `openLineage(address, lineage)` rebuilds one that lost on a detached replica, and
 `restore(address, lineage)` brings it back as a replace on top of the current winner (§5.3's
-"recover the other version").
+"recover the other version"). A lineage is rebuilt from the snapshot this device holds of it,
+when the one held is of it, then every update of it that snapshot does not hold. What can no
+longer be read back is counted as `lost` — updates whose events compaction took once a later
+materialisation replaced that lineage's snapshot, a genesis never received, or a root whose
+history an installed snapshot adopted without events — and `restore` refuses a lineage with
+anything `lost` or `missing` (`LineageIncomplete`) rather than publish part of it. Combining two
+lineages into one is not offered: an app that wants both versions merged opens both and writes
+the result as a replace (decided 2026-11-08, Jace delegated the call).
 
 ### 4.4 Actions, undo, history (TypeScript)
 
@@ -467,7 +474,12 @@ double their content when merged. Syncmesh answers it once:
   passes `mesh.blobs` when its storage has one) sends a burst or a `replace()` past the adapter's
   `maxUpdateBytes` as a blob reference, up to `maxSnapshotBytes`; with none it is refused
   (`UpdateTooLarge`) as before. An offline author keeps the bytes in its own store, so going
-  offline is not a refusal. A blob-carried update is fetched before it is applied to an open
+  offline is not a refusal, and a mesh offers them again each time a link is proven until a
+  carrier took them; after a restart it re-offers, on its first link, every blob-carried update
+  it authored that its store holds as its own. A carrier that stays silent past D18's answer wait
+  is counted as having kept them, as for every blob a mesh puts (`BLOB_ANSWER_WAIT`). The Rust
+  device has no document runtime yet (P7): it folds a blob-carried update and labels it
+  `bytes-missing`, as it labels any update it cannot read yet. A blob-carried update is fetched before it is applied to an open
   replica (which is `behind` meanwhile), loaded, materialised or checkpointed; one no carrier
   holds leaves the document `behind`. The relay's retention of those bytes is D18's, unchanged.
 - **Catch-up** uses RFC-0002's hash-chained chunks unchanged. Doc changes are ordinary events,
@@ -1025,7 +1037,16 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    geneses stamped after it — about one settle window's worth before the latest replace —
    whatever the document's age
    (`engine/doc-fold.test`, "a lineage cell stays bounded"). Rust's `Engine` writes anchors under
-   the same rule.
+   the same rule. Every peer trusts the anchor a device writes, so a window shorter than one hour
+   (`MIN_LINEAGE_SETTLE_AFTER`, Rust `MIN_LINEAGE_SETTLE_AFTER_MS`) is taken as one hour — the
+   validator checks only that an anchor is older than its event, so a build without the floor
+   can still write a shorter one, and peers trust it — and only
+   a genesis may carry key 7: the validators of both runtimes refuse it on an edit, as the codecs
+   do. **Known gap:** an author that signs two geneses at one sequence (equivocation) puts one
+   lineage in the cell twice; the join keeps the first by stamp, and with an anchor between the
+   two stamps the result depends on the order the three meet. Only a Byzantine author reaches
+   it; keeping the later stamp per lineage would make the join associative again, and changes
+   rule 1's frozen vectors, so it waits for a rule version.
 2. **`replace()` permission — decided 2026-11-08 by Jace: an optional `replace` rule, defaulting
    to `update`.** `AllowBlock.replace` beside the other operations; absent, a genesis is judged by
    the row's `update` rule exactly as before (§11). Enforced by the shared validator (device and
