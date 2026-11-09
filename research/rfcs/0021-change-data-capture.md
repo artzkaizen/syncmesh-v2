@@ -149,7 +149,11 @@ what we avoid by refusing two-way.
 The cost, stated plainly: **a CDC-backed table is not offline-writable.** That is
 a real limitation and it is the correct trade — the database is authoritative, so
 an offline write against it is a promise we cannot keep. Tables that must be
-offline-writable stay mesh-native, where the local commit is the truth.
+offline-writable stay mesh-native, where the local commit is the truth. A
+mesh-native table that another service also writes is RFC-0025's class c: the
+outside write is staged by a trigger and swept into an event, not replicated from
+the WAL — logical decoding cannot tell the projection's own writes from the outside
+writer's, so a table the authority projects into the same database would echo.
 
 ## Consequences worth knowing before building
 
@@ -290,7 +294,7 @@ restart through `startCapture`, ending with the mesh equal to the table.
 |---|---|
 | `ChangeSource` / `ChangeStream` port | **implemented** — `packages/cdc/src/source.ts` |
 | `postgresChangeSource` (logical replication) | **implemented** — `adapters/postgres/src/replication.ts` |
-| `sqliteChangeSource` (triggers + outbox) | proposed |
+| triggers + outbox, SQLite and Postgres | **implemented** — `stagedChangeSource` in `@syncmesh/storage` (RFC-0025): the strict guard's `stage` mode files an outside write, a sweep is one transaction |
 | `manualChangeSource` (app calls us) | **implemented** — `packages/cdc/src/manual.ts` |
 | transaction → one signed event per partition | **implemented** — `plan.ts`, `apply.ts` |
 | durable watermark in `_cdc` | **implemented** — its own unpinned event, last |

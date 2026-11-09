@@ -82,7 +82,37 @@ openStores(driver, { tables, strict: { except: ["imports"] } }); // every table 
 `sqlite({ strict })` and `postgres({ strict })` take the same setting. Changing it is no shape
 change, so it never renames the state file. A table taken out of `tables` loses its guard at the
 next open. The guard catches mistakes, not a hostile writer: a role that sets the capture setting
-itself gets past it.
+itself gets past it. A write `except` lets through reaches no peer: use it for a table the mesh
+does not sync from this database, never for one it does.
+
+## A table something else writes too (RFC-0025)
+
+A table devices write offline and another service also writes on the authority's database is
+**staged**: the guard files an outside write in the staged-changes queue instead of refusing it,
+and `stagedChangeSource` hands each sweep of the queue to the CDC bridge, which signs it as the
+authority's event. Only the columns the outside writer changed travel, so a device's concurrent
+edit to another column survives.
+
+```ts
+const stores = (await openStores(driver, { tables, strict: { stage: ["tasks"] } })).unwrap();
+const source = stagedChangeSource({ name: "staged", driver: stores.driver, tables });
+await startCapture({
+  engine,
+  source,
+  mappings: {
+    tasks: {
+      collection: schema.tables.tasks,
+      // the row's own partition, or one for a row the outside writer inserted
+      partition: (row) => scalarText(row._partition) ?? `org:${String(row.orgId)}`,
+    },
+  },
+});
+```
+
+The fold's own writes are not filed, so a sweep never echoes. A `TRUNCATE` of a staged table is
+still refused on Postgres. One sweeper per database; `source.pending()` is the backlog.
+`research/rfcs/0025-external-writers.md` has the three table classes and why the numbering is
+safe.
 
 ## A damaged log is refused (D39)
 
