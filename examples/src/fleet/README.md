@@ -65,12 +65,19 @@ drops a frame, and no cursor exchange happens by itself to close the gap. A depl
 the stronger promise gives the instances a shared log — Postgres Streams or the Postgres event store
 — rather than a shared bus, which is D09's other half and is not what this example is.
 
-**An instance hears nothing for a room before its first socket in that room.** It opens a room,
-and so subscribes to the room's channel, when a device first connects to it. A grant fanned out
-before then never reaches it, and no peer sends it again, so a phone that lands there later holds
-the other phones' events unvouched. `check.ts` connects every phone before any asks for a grant
-for that reason (gaps U41). Once a room is open, the instance does not seat a socket in it until
-its `LISTEN` is acknowledged, so nothing published after that is missed.
+**An instance catches up on a room when it opens it, not before.** It subscribes to a room's
+channel when a device first connects to it there, so what was fanned out before then never reached
+it. Once its `LISTEN` is acknowledged it greets the fleet — a `hello` on the fan-out carrying its
+cursors — and every instance already holding the room answers with the grants it holds and the
+events above those cursors (gaps U41). The answer is best-effort like everything else here: an
+instance that had the room evicted for idleness answers nothing, and a fleet where no instance
+holds the room open has nobody to answer, which is the same as a room nobody has written to since.
+Each answering instance sends the whole difference, so a room with a long history pays for it in
+fan-out traffic once per instance that opens it.
+
+**A note can arrive before its author's grant**, because the two travel separately between
+instances. It is parked, and the grant registering re-offers it (gaps U42), so `check.ts` writes as
+soon as each phone is granted rather than waiting for every grant to spread.
 
 ## What it deliberately leaves out
 
