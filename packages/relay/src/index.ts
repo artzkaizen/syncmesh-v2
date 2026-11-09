@@ -22,6 +22,7 @@ export {
   pageFrame,
   relayedFrame,
   roomRefusalFrame,
+  seatedFrame,
 } from "./frames.js";
 export { NONCE_BYTES, newChallenge, proveJoin, verifyJoinProof } from "./proof.js";
 export type { LinkOffer, LinkSession, SecureLink, SecureLinkOptions } from "./secure.js";
@@ -38,6 +39,8 @@ export { createConnection } from "./connection.js";
 export type { Budget, RateLimit, RelayLimits, TrafficClass } from "./limits.js";
 export { DEFAULT_LIMITS, createBudget } from "./limits.js";
 export type { RelayRetention } from "./retention.js";
+export type { RoomCustodyOptions } from "./room-receipts.js";
+export { ROOM_CUSTODY_EVERY } from "./room-receipts.js";
 export {
   BELOW_FLOOR,
   DEFAULT_MAX_BLOB_BYTES,

@@ -25,7 +25,7 @@ const ORG = parsePartitionKey("org:acme").unwrap();
 const fileDriver = (path: string) => openPair(path);
 
 describe("detach — a partition leaves whole, or not at all", () => {
-  test("unsent intent refuses; a receipt clears it; the file is gone after", async () => {
+  test("intent only this device holds refuses; a cursor ack does not clear it, a signed receipt does; the file is gone after", async () => {
     const dir = mkdtempSync(join(tmpdir(), "syncmesh-detach-"));
     const pathOf = (name: string) => join(dir, `${name}.db`);
     const set = scopedStores({ driverFor: (_scope, name) => fileDriver(pathOf(name)) });
@@ -39,7 +39,13 @@ describe("detach — a partition leaves whole, or not at all", () => {
       expect(error?._tag).toBe("DetachRefused");
       expect(error?._tag === "DetachRefused" && error.unsent).toEqual(["op-1"]);
 
+      // a peer's cursor says it has the write, which is a claim, and a claim licenses no deletion
       (await ledger.acknowledge(B, A, seq(1), 5)).unwrap();
+      const claimed = await detachScope(set, ORG);
+      expect(claimed.isErr() && claimed.error._tag).toBe("DetachRefused");
+
+      // signed custody under a live incarnation does (D28)
+      (await ledger.vouch(B, A, seq(1), "lineage-1", 6)).unwrap();
       const file = pathOf(storeName(ORG));
       expect(existsSync(file)).toBe(true);
       (

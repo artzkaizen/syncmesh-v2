@@ -53,6 +53,8 @@ export function transportContextFor(base: {
   readonly onReceipt?: TransportContext["onReceipt"];
   /** Where a peer's signed refusal of this device's own writes lands (D32). */
   readonly onRefusal?: TransportContext["onRefusal"];
+  /** Where a holder's proven lineage lands, retiring what it signed out of another (D28 §2). */
+  readonly onLineage?: TransportContext["onLineage"];
   /** This device answers for the authority itself; every other learns the way to one. */
   readonly servesAuthority: boolean;
   /** What this device can read of the sealed partitions (book ch. 14). */
@@ -112,9 +114,9 @@ export function transportContextFor(base: {
   };
   if (base.onGrantRequest !== undefined)
     Object.assign(context, { onGrantRequest: base.onGrantRequest });
-  if (base.incarnation !== undefined) Object.assign(context, { incarnation: base.incarnation });
-  if (base.onReceipt !== undefined) Object.assign(context, { onReceipt: base.onReceipt });
-  if (base.onRefusal !== undefined) Object.assign(context, { onRefusal: base.onRefusal });
+  // the custody half (D28, D32): each given or left out whole, never passed as `undefined`
+  const { incarnation, onReceipt, onRefusal, onLineage } = base;
+  Object.assign(context, omitUndefined({ incarnation, onReceipt, onRefusal, onLineage }));
   if (base.withheld !== undefined) Object.assign(context, { withheld: base.withheld });
   if (base.purge !== undefined) Object.assign(context, { purge: base.purge });
   if (base.rejoins !== undefined) Object.assign(context, { rejoins: base.rejoins });

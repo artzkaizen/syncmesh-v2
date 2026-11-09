@@ -3,13 +3,47 @@ import type { Cursors } from "@syncmesh/engine";
 import { grantFrame, presenceSlot } from "@syncmesh/transport";
 import { decodeAndVerifyPresence, relayEnvelope } from "@syncmesh/wire";
 
+import type { FanoutLink } from "./fanout.js";
 import type { RoomState } from "./state.js";
 
 import { routeCustody } from "./custody-route.js";
 import { decodeRelayFrame } from "./frame-decode.js";
-import { helloFrame, relayedFrame } from "./frames.js";
+import { helloFrame, relayedFrame, seatedSlot } from "./frames.js";
 import { absorbEvent } from "./ingest.js";
 import { admitGrant } from "./trust.js";
+
+/**
+ * Subscribes a room to the rest of the fleet through {@link fanIn}, waits until it hears it, and
+ * then greets it with {@link fleetGreeting} (gaps U41). Returns the unsubscribe, or `undefined`
+ * for a room with no fan-out.
+ *
+ * Served before it hears, the room would miss what another instance publishes meanwhile. And what
+ * was published before this instance opened the room at all reached it as nothing, so the room
+ * says where its log stands — a `hello` on the fan-out, carrying its cursors — and every instance
+ * already holding the room answers with what lies above them. It is the join's cursor exchange,
+ * run between instances, rather than a subscription to every room at boot.
+ *
+ * Nothing waits for the answers: they are best-effort like everything else on the port, may come
+ * from no instance at all, and land as live traffic on whatever sockets have joined by then.
+ */
+export async function hearFleet(
+  fan: FanoutLink | undefined,
+  room: RoomState,
+): Promise<(() => void) | undefined> {
+  if (fan === undefined) return undefined;
+  const off = fan.onFrame(fanIn(room));
+  await fan.heard?.();
+  fan.publish(
+    fleetGreeting({
+      version: Math.max(...room.versions),
+      keepaliveMs: room.keepaliveMs,
+      epoch: room.epoch,
+      cursors: room.cursors(),
+      maxFrame: fan.maxFrame,
+    }),
+  );
+  return off;
+}
 
 /**
  * A frame from another instance serving the same room (D09-B).
@@ -55,6 +89,11 @@ export function fanIn(room: RoomState): (frame: Uint8Array) => void {
     // a receipt or a refusal is for its author alone, here as from a socket (D32)
     if (value.kind === "refusal") {
       routeCustody(room, frame, value, "fleet");
+      return;
+    }
+    // a joiner sat down on another instance: the holders here say again what of theirs they refused
+    if (value.kind === "seated") {
+      room.toClientsLatest(seatedSlot(value.peer), frame, value.peer);
       return;
     }
     if (value.kind !== "session") return; // a control frame belongs to one socket, not to a room

@@ -27,7 +27,7 @@ use syncmesh_core::join_proof::verify_join_proof;
 use syncmesh_core::relay_frames::{
     HANDSHAKE_VERSION, Join, PageScope, RELAY_PROTOCOL_VERSIONS, RelayFrame, ack_frame, blob_frame,
     blob_missing_frame, blob_stored_frame, challenge_frame, decode_relay_frame, error_frame,
-    hello_frame, ka_frame, page_frame, relayed_frame, select_version,
+    hello_frame, ka_frame, page_frame, relayed_frame, seated_frame, select_version,
 };
 
 use crate::coverage::CoverageTracker;
@@ -600,6 +600,8 @@ impl Room {
             self.send(socket, presence_frame(wire), out);
         }
         self.send_catch_up(socket, &join.cursors, wanted.as_ref(), out);
+        // a new seating: each holder says once more what of the joiner's writes it refused (U38)
+        self.to_clients(&seated_frame(&join.peer_id), Some(&join.peer_id), out);
         // what the joiner holds, in its own words, for everyone else's `delivered`
         let cursors = cursors_frame(&join.peer_id, &join.cursors, None, None, None);
         self.to_clients(&cursors, Some(&join.peer_id), out);

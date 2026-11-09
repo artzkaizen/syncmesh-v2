@@ -163,6 +163,9 @@ const decodeRefusal: ControlDecoder = (a) =>
     ? Result.ok({ kind: "refusal", wire: a } as const)
     : malformedFrame("refusal is not [wire]");
 
+const decodeSeated: ControlDecoder = (a) =>
+  asPeer(a).map((peer) => ({ kind: "seated", peer }) as const);
+
 /** One decoder per control tag; an unlisted tag is `unknown`, never an error (D14). */
 const CONTROL = new Map<number, ControlDecoder>([
   [KIND.join, decodeJoin],
@@ -180,6 +183,7 @@ const CONTROL = new Map<number, ControlDecoder>([
   [KIND.blobStored, decodeBlobHash("blob-stored")],
   [KIND.blobRefused, decodeBlobRefused],
   [KIND.refusal, decodeRefusal],
+  [KIND.seated, decodeSeated],
 ]);
 
 /**

@@ -35,6 +35,11 @@ export interface LinkSealOptions {
 export interface LinkSeal {
   /** Forgets the last socket's sealing, for a fresh one. */
   readonly reset: () => void;
+  /**
+   * The key this socket's room proved with its hello: every frame opened after it came from that
+   * key. `undefined` on a challenging room, or before its hello.
+   */
+  readonly relay: () => PeerId | undefined;
   /** The room challenged this socket (D33); a v2 join proves this nonce. */
   readonly challenged: (nonce: Uint8Array) => void;
   /** A frame as it goes out: sealed on a sealed link, as it is otherwise, `undefined` when a sealed link has no key yet. */
@@ -89,6 +94,7 @@ export function createLinkSeal(options: LinkSealOptions): LinkSeal {
       link = undefined;
       nonce = undefined;
     },
+    relay: () => link?.session()?.peer,
     challenged: (value) => void (nonce = value),
     seal: (frame) => (link === undefined ? frame : link.seal(frame)),
     joinable: () => {

@@ -213,6 +213,12 @@ is built and inert: `custody.vouch()` signs, `verifyReceipt` checks, `onReceipt`
 through `transport/src/transport.ts:414` — and **the client passes it nowhere**. The ledger is
 fed from `engine.acks()`, i.e. cursor frames, i.e. claims (`client/src/operations.ts:161`).
 
+> **Update 2026-11-09 (U17, U38, #44):** no longer inert. The client passes `onReceipt`,
+> `onRefusal` and `onLineage` to every transport (`client/src/operations.ts`, `wireOperations`),
+> the ledger keeps vouches per holder and incarnation, a relay room given `custody` signs its own
+> receipts, and `detachScope` / the sweep gate on `soleCustody()`, the held tier. The text below is
+> as it stood.
+
 Work: pass `onReceipt` from the client's transport context into `operationStore`, write the
 held tier, and make `unsettled()`'s copy say the weaker true thing — *"nobody has told me they
 have this"* — until a quarantine report exists on the wire. `incarnation` is already a
@@ -456,7 +462,7 @@ below are marked against that.
 | §2.8 one noun | **done** — `scopeReads` (`drizzle/src/scoped.ts`) substitutes every table in `from`/joins with the caller's scoped source; `read` is gone from the handler context and all `apps/issues` handlers |
 | §2.1 flat partitions | **done** — value form, `flat()`, per-kind `role()` narrowing on `drizzleTable`, and the tree form deleted (`syncSchema<C, PC>`, `MeshSchema.kinds`, zero occurrences of the old symbols) |
 | §2.5 signed custody | **owned by the other agent** (D28); not touched |
-| §2.3 grant-driven sweep | **done** — `createSweep` on `mesh.recovery.stores`; refusals reported, never bypassed; `detachScope` stays on the cursor tier until the relay frame (D28) |
+| §2.3 grant-driven sweep | **done** — `createSweep` on `mesh.recovery.stores`; refusals reported, never bypassed; `detachScope` stayed on the cursor tier until the relay frame (D28); since #44 (U38) it gates on `soleCustody()` |
 | §2.6 coverage on reads | **done** — `local-only \| partial \| caught-up` with source + checkpoint, mesh → `QueryCall` → `useLiveQuery` |
 | §2.7 tagged wire errors | **done** — smaller than written: the wire half already existed |
 

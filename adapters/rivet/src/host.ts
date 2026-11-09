@@ -87,6 +87,10 @@ const roomName = (key: readonly string[]): string => (key.length === 0 ? "main" 
  * `false`: a hibernated socket would wake into an instance with no link state for it. A socket the
  * actor drops on sleep is redialled by the client, which resumes from its cursors.
  *
+ * The room signs no custody (D28, U38), and there is no option for it: its key lives beside the
+ * log in the actor's SQLite, so a lost log takes the key with it and what the old key signed would
+ * never be withdrawn. Its acks still answer `synced()`; detach waits for a device's receipt.
+ *
  * @example
  * const relay = relayRivetActor({ posture });
  * export const room = actor({

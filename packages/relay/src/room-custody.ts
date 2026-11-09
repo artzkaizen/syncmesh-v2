@@ -31,9 +31,15 @@ export interface RoomCustody {
   readonly moved: () => void;
   /**
    * A peer's cursors arrived, so it is seated: its run is signed again once per position, and what
-   * of theirs is still parked here is said again.
+   * of theirs is parked here and not yet said to this seating is said.
    */
   readonly heard: (peer: PeerId) => void;
+  /**
+   * The room says `peer` sat down (U38): a new seating, so its run is signed to it again, and
+   * every refusal of its writes still parked here is said once more — once per seating, however
+   * many cursors frames it sends while it stays.
+   */
+  readonly seated: (peer: PeerId) => void;
   /**
    * A receipt (a session frame) or a refusal (the room's own tag): verified, and handed on when it
    * is about this device's writes. Whether the frame was one of the two.
@@ -74,13 +80,21 @@ export function createRoomCustody(
   // the run last signed per author, and the run last signed per author while it was seated: a
   // receipt sent while its author is away reaches nobody, and the room keeps none to hand over
   const signed = new Map<PeerId, SeqNum>(heldRuns(engine.coverage()));
-  const seated = new Map<PeerId, SeqNum>();
+  const toSeated = new Map<PeerId, SeqNum>();
   const sign = (author: PeerId, at: SeqNum): void => {
     if (custody.vouch(author)) signed.set(author, at);
   };
   const moved = (): void => {
     for (const [author, at] of heldRuns(engine.coverage()))
       if (author !== self && signed.get(author) !== at) sign(author, at);
+  };
+  /** Signs `peer`'s run to its seating, unless this seating was already sent that position. */
+  const signToSeated = (peer: PeerId, always: boolean): void => {
+    const at = heldRuns(engine.coverage()).get(peer);
+    if (peer === self || at === undefined || (!always && toSeated.get(peer) === at)) return;
+    if (!custody.vouch(peer)) return;
+    toSeated.set(peer, at);
+    signed.set(peer, at);
   };
   return {
     fold: async (batch, author) => {
@@ -96,12 +110,14 @@ export function createRoomCustody(
     heard: (peer) => {
       // a write folded while its author was away was signed to nobody: signed again now it is
       // here, once per position, because every peer's cursors would otherwise re-sign every run
-      const at = heldRuns(engine.coverage()).get(peer);
-      if (peer !== self && at !== undefined && seated.get(peer) !== at && custody.vouch(peer)) {
-        seated.set(peer, at);
-        signed.set(peer, at);
-      }
-      // still parked, said again: an author told we hold it above our cursor never re-offers it
+      signToSeated(peer, false);
+      // still parked and not said to this seating: an author told we hold it above our cursor
+      // never re-offers it
+      custody.repeat(peer);
+    },
+    seated: (peer) => {
+      custody.reseat(peer);
+      signToSeated(peer, true);
       custody.repeat(peer);
     },
     take: (frame) => {

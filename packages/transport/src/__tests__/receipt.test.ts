@@ -207,19 +207,29 @@ describe("refusal receipts — the refusing twin of custody (D32)", () => {
     link.close();
   });
 
-  test("still parked, it is said again on the next cursor exchange", async () => {
+  test("still parked, it is said once per link however many exchanges, and again on the next link", async () => {
     const author = ungranted(41);
     const holder = peer(80, "acct_y");
     (await write(author, "n1", "one")).unwrap();
     const link = refusing(author, holder);
     await link.settle();
-    const before = link.heard.length;
+    const first = link.heard.length;
+    expect(first).toBeGreaterThan(0);
 
-    link.wrote.resync(); // a cursor exchange; the parked event is not re-offered (D13 `ahead`)
-    await link.settle();
-
-    expect(link.heard.length).toBeGreaterThan(before);
+    // cursor exchanges; the parked event is not re-offered (D13 `ahead`), and one link is one
+    // seating, so the refusal it already carried is not signed again on each (U38)
+    for (let exchange = 0; exchange < 3; exchange += 1) {
+      link.wrote.resync();
+      await link.settle();
+    }
+    expect(link.heard.length).toBe(first);
     link.close();
+
+    // a new link is a new seating: what is still parked is said to it once more
+    const again = refusing(author, holder);
+    await again.settle();
+    expect(again.heard.map((r) => r.seq)).toEqual(link.heard.map((r) => r.seq));
+    again.close();
   });
 
   test("a table the refuser's build does not know reports unknown-table, not refused", async () => {

@@ -2,36 +2,38 @@ import type {
   Cursors,
   EventStore,
   StoreFailure,
-  StoredEvent,
   TelemetryEvent,
   TelemetryListener,
 } from "@syncmesh/engine";
 import type { PeerId, SyncEvent } from "@syncmesh/kernel";
 import type { BlobHomes, BlobLedger, BlobStore } from "@syncmesh/storage";
 
-import { createHub, trackCoverage, type Unsubscribe } from "@syncmesh/engine";
+import { createHub, heldRuns, type Unsubscribe } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 import { createPresenceStore } from "@syncmesh/transport";
-import { createIdentity, isRelayable, randomBytes, type Identity } from "@syncmesh/wire";
+import { createIdentity, randomBytes, type Identity } from "@syncmesh/wire";
 
 import type { RelayAdmission } from "./admission.js";
 import type { ConnectionOptions, RelayConnection } from "./connection.js";
-import type { Fanout, FanoutLink } from "./fanout.js";
+import type { Fanout } from "./fanout.js";
 import type { GrantCache } from "./grant-cache.js";
 import type { RelayLimits } from "./limits.js";
 import type { RelayRetention } from "./retention.js";
+import type { RoomCustodyOptions } from "./room-receipts.js";
 import type { RelaySocket } from "./sender.js";
 import type { Client, Fanned, RoomState } from "./state.js";
 import type { RoomTrust } from "./trust.js";
 
 import { createGate } from "./admission.js";
 import { createConnection } from "./connection.js";
-import { fanIn, fleetGreeting } from "./fan-in.js";
+import { hearFleet } from "./fan-in.js";
 import { HANDSHAKE_VERSION, RELAY_PROTOCOL_VERSIONS, kaFrame, speaksHandshake } from "./frames.js";
 import { createGrantCache } from "./grant-cache.js";
 import { DEFAULT_LIMITS, createBudget } from "./limits.js";
 import { roomRetention } from "./retention.js";
+import { roomCoverage, servable } from "./room-coverage.js";
+import { assertTruthfulCustody, createRoomReceipts } from "./room-receipts.js";
 
 export type { ConnectionOptions, RelayConnection } from "./connection.js";
 
@@ -66,6 +68,26 @@ export interface RelayRoomOptions {
    * durable store keeps one beside the epoch for exactly that reason.
    */
   readonly identity?: Identity;
+  /**
+   * Signs this room's own custody (D28, U38): what the log holds of each author's writes, as a
+   * `CustodyReceipt` under `identity` with `epoch` as the incarnation, sent to that author's
+   * socket when it sits down and within `every` of its writes landing. The author's ledger then
+   * counts the room as a holder, so `soleCustody()` stops listing what the room keeps and a
+   * device can detach a partition the room holds for it.
+   *
+   * A receipt licenses a deletion on the author's device, so the room signs only what is true for
+   * as long as the key names it, and throws at open on a definition that could not be:
+   * - `identity` must be given, and must outlive the log. A key minted per process, or kept in the
+   *   same file as the log, comes back as a different holder after the log is lost, and what the
+   *   old key signed is never withdrawn — the epoch can only retire what its own key signed.
+   * - `durable` must be true: a log in memory is gone on restart, and its receipts with it.
+   * - `retention.keepEventsFor` must be absent: a receipt says "everything through N", and a room
+   *   that trims holds only the end of that. A log trimmed before this open is not refused, but an
+   *   author whose events compaction removed is never signed for.
+   *
+   * Absent, the room signs nothing, as every room did before.
+   */
+  readonly custody?: RoomCustodyOptions;
   /**
    * Per-socket ceilings; each half defaults from `DEFAULT_LIMITS`. `rates` is all-or-nothing —
    * a partly-overridden rate table is a table where the class nobody thought about is the one
@@ -182,6 +204,7 @@ export async function openRelayRoom(
   const now = options.now ?? (() => Temporal.Now.instant());
   const versions = roomVersions(options.versions);
   const identity = roomIdentity(options.identity);
+  assertTruthfulCustody(options.custody, options, `relay room ${name}`);
   const boot = await store.all();
   if (boot.isErr()) return boot;
   // read before the log is walked, because it is what the walk starts from: a log already trimmed
@@ -190,19 +213,9 @@ export async function openRelayRoom(
   const trimmed = await store.compactedBelow();
   if (trimmed.isErr()) return Result.err(trimmed.error);
 
-  /**
-   * What catch-up can actually hand over: a synced entry whose author's signature was stored. An
-   * entry without one is dropped by `paged`, and a local one is out of `allSince`'s scope — so
-   * counting either into the room's position would advertise a place the room can never serve
-   * from. Any log the relay did not fill itself holds both (`StartRelayOptions.store`).
-   */
-  const servable = (entry: StoredEvent): boolean =>
-    isRelayable(entry) && entry.event.local !== true;
-  // contiguous, and over the same entries: a MAX cursor over a hole is a claim the room cannot
-  // take back, because every client asks for what is *above* the number it was given
-  const coverage = trackCoverage(trimmed.value);
-  for (const entry of boot.value) if (servable(entry)) coverage.note(entry.event);
+  const coverage = roomCoverage(trimmed.value, boot.value);
   const cursors = () => coverage.current().synced;
+  const held = () => heldRuns(coverage.current());
   let offset = boot.value.length;
 
   /** One grant per device, newest mint wins, so a revocation retires what it replaces. */
@@ -267,6 +280,15 @@ export async function openRelayRoom(
     now,
   );
   const keepalive = setInterval(() => toClients(kaFrame()), keepaliveMs);
+  const receipts =
+    options.custody === undefined
+      ? undefined
+      : createRoomReceipts(
+          // compaction removed the start of these authors' runs before this open: their cursors
+          // are advertised, so nobody is sent the trimmed events again, but never signed (U38)
+          { clients, held, trimmed: trimmed.value.synced, identity, epoch, now },
+          options.custody,
+        );
 
   const state: RoomState = {
     store,
@@ -277,6 +299,7 @@ export async function openRelayRoom(
     maxBacklog,
     versions,
     identity,
+    receipts,
     limits,
     budget,
     blobs: retention.blobs,
@@ -296,7 +319,9 @@ export async function openRelayRoom(
     appended: (entry) => {
       offset += 1;
       retention.keeper?.note(entry.event);
-      if (servable(entry)) coverage.note(entry.event);
+      if (!servable(entry)) return;
+      coverage.note(entry.event);
+      receipts?.appended(entry.event.peerId);
     },
     enqueue: (work) => void (queue = queue.then(work)),
     now,
@@ -304,15 +329,7 @@ export async function openRelayRoom(
     gate: options.admission === undefined ? undefined : createGate(options.admission, name),
   };
   // subscribed after the state exists, because a fanned-in frame is ingested through it
-  const offFan = await hearFleet(fan, fanIn(state), (maxFrame) =>
-    fleetGreeting({
-      version: Math.max(...versions),
-      keepaliveMs,
-      epoch,
-      cursors: cursors(),
-      maxFrame,
-    }),
-  );
+  const offFan = await hearFleet(fan, state);
 
   // said once, at open, and never again: which rooms grow forever is a thing an operator should
   // learn from a dashboard rather than from a disk alert (gap audit №8)
@@ -337,6 +354,7 @@ export async function openRelayRoom(
     },
     close: () => {
       clearInterval(keepalive);
+      receipts?.close();
       retention.stop();
       offFan?.();
       fan?.close();
@@ -344,31 +362,6 @@ export async function openRelayRoom(
       clients.clear();
     },
   });
-}
-
-/**
- * Subscribes the room to the rest of the fleet, waits until it hears it, and then greets it (gaps
- * U41).
- *
- * Served before it hears, the room would miss what another instance publishes meanwhile. And what
- * was published before this instance opened the room at all reached it as nothing, so the room
- * says where its log stands — a `hello` on the fan-out, carrying its cursors — and every instance
- * already holding the room answers with what lies above them (`fanIn`). It is the join's cursor
- * exchange, run between instances, rather than a subscription to every room at boot.
- *
- * Nothing waits for the answers: they are best-effort like everything else on the port, may come
- * from no instance at all, and land as live traffic on whatever sockets have joined by then.
- */
-async function hearFleet(
-  fan: FanoutLink | undefined,
-  deliver: (frame: Uint8Array) => void,
-  greeting: (maxFrame: number | undefined) => Uint8Array,
-): Promise<(() => void) | undefined> {
-  if (fan === undefined) return undefined;
-  const off = fan.onFrame(deliver);
-  await fan.heard?.();
-  fan.publish(greeting(fan.maxFrame));
-  return off;
 }
 
 /**

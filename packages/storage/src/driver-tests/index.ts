@@ -6,6 +6,7 @@ import { blobLedgerCases } from "./blob-ledger.js";
 import { blobCases } from "./blobs.js";
 import { captureCases, captureRuleCases } from "./capture.js";
 import { compactionCases } from "./compaction.js";
+import { custodyCases } from "./custody.js";
 import { derivedColumnCases } from "./derived-columns.js";
 import { docColumnCases } from "./doc-columns.js";
 import { docCases } from "./docs.js";
@@ -56,6 +57,7 @@ export function storeTests(openDriver: OpenDriver): readonly SuiteCase[] {
     ...blobCases(openDriver),
     ...blobLedgerCases(openDriver),
     ...docCases(openDriver),
+    ...custodyCases(openDriver),
   ];
 }
 

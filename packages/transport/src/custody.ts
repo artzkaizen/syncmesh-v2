@@ -34,16 +34,23 @@ export interface Custody {
   /** One arriving receipt: verified, and kept only when it is about this device's own writes. */
   readonly receive: (wire: Uint8Array) => void;
   /**
-   * Signs one refusal per event of `batch` that the quarantine now holds, and hands each back
-   * down the link (D32). Idempotent on `(refuser, author, seq, verdict)`, so saying it again
-   * costs bytes and nothing else.
+   * Signs one refusal per event of `batch` that the quarantine now holds and that was not yet said
+   * to its author's current seating, and hands each back down the link (D32). Idempotent on
+   * `(refuser, author, seq, verdict)` at the author, so a batch offered twice costs nothing more.
    */
   readonly refuse: (batch: readonly StoredEvent[]) => void;
   /**
-   * The same, for every event of `author` still parked: what a cursor exchange repeats, because a
-   * peer told we hold the event above our cursor never offers it again.
+   * The same, for every event of `author` still parked and not yet said to `author`'s current
+   * seating: what a cursor exchange repeats, because a peer told we hold the event above our
+   * cursor never offers it again. Once per refusal per seating, however many exchanges it lasts.
    */
   readonly repeat: (author: PeerId) => void;
+  /**
+   * `author` sat down again (U38): what was said to its last seating may never have reached it,
+   * so its parked refusals are said once more on the next {@link Custody.repeat}. A link's whole
+   * life is one seating; a relay room says when another begins.
+   */
+  readonly reseat: (author: PeerId) => void;
   /** One arriving refusal: verified, and kept only when it is about this device's own writes. */
   readonly receiveRefusal: (wire: Uint8Array) => void;
 }
@@ -71,9 +78,18 @@ export interface CustodyDeps {
 export function createCustody(deps: CustodyDeps): Custody {
   const { engine, identity, now, send, errors, incarnation, onReceipt, onRefusal } = deps;
   const framed = deps.refusalFrame ?? refusalFrame;
+  // per author, the refusals said to its current seating: one signature per refusal per seating,
+  // not one per cursor exchange — a holder would otherwise re-sign every parked write of an
+  // author each time that author folded anything
+  const said = new Map<PeerId, Set<string>>();
+  const unsaid = (parked: readonly Parked[]): readonly Parked[] =>
+    parked.filter((p) => said.get(p.entry.event.peerId)?.has(refusalKey(p)) !== true);
   const report = (parked: readonly Parked[]): void => {
-    for (const { entry, reason, verdict } of parked) {
+    for (const each of parked) {
+      const { entry, reason, verdict } = each;
       const { peerId: author, seqNum: seq } = entry.event;
+      const keys = said.get(author) ?? new Set<string>();
+      said.set(author, keys.add(refusalKey(each)));
       const wire = issueRefusal(identity, {
         author,
         seq,
@@ -110,9 +126,17 @@ export function createCustody(deps: CustodyDeps): Custody {
     },
     refuse: (batch) => {
       const offered = new Set(batch.map((entry) => entry.event.id));
-      report(engine.quarantine().filter((p) => offered.has(p.entry.event.id)));
+      report(unsaid(engine.quarantine().filter((p) => offered.has(p.entry.event.id))));
     },
-    repeat: (author) => report(engine.quarantine().filter((p) => p.entry.event.peerId === author)),
+    repeat: (author) => {
+      const parked = engine.quarantine().filter((p) => p.entry.event.peerId === author);
+      // what is no longer parked is forgotten, so the set never outgrows the quarantine
+      const current = new Set(parked.map(refusalKey));
+      for (const key of said.get(author) ?? [])
+        if (!current.has(key)) said.get(author)?.delete(key);
+      report(unsaid(parked));
+    },
+    reseat: (author) => void said.delete(author),
     receiveRefusal: (wire) => {
       const verified = verifyRefusal(wire);
       if (verified.isErr()) {
@@ -124,6 +148,9 @@ export function createCustody(deps: CustodyDeps): Custody {
     },
   };
 }
+
+/** One refusal as a seating hears it: the event, and the verdict this build reached on it. */
+const refusalKey = (parked: Parked): string => `${parked.entry.event.id}:${parked.verdict._tag}`;
 
 /** The frames that carry credentials rather than data: grants, the ask for one, and custody. */
 export function controlFrames(

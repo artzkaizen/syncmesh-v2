@@ -215,7 +215,7 @@ export function createEngine(options: EngineOptions): Engine {
   const { merge, hasAdapter, store: docStore } = docPath;
   const plain = omitUndefined({ events: store, docs: docStore, state: stateStore });
   const { shared: atomically, exclusive, turn } = gatedTransactions(atomic, plain, docPath.within);
-  const coverage = trackCoverage(boot?.coverage);
+  const coverage = trackCoverage(boot?.coverage, boot?.held);
   const errors = createHub<EngineError>();
   if (options.onError !== undefined) errors.subscribe(options.onError);
   const report = (hook: ListenerFailure["hook"]) => (cause: unknown) =>
