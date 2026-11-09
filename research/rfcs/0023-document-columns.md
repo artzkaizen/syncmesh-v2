@@ -533,13 +533,19 @@ adopts the coverage only when every page was complete and every checkpoint's flo
 the pages whose cell names a lineage must have come with a checkpoint (PR #49 fix round 1). A
 document still on its first lineage, never replaced, leaves no mark in its row, so for it the
 joiner still takes the sender's word. A checkpoint whose producer may not edit its row
-(`engine.mayEditDoc`, as for a provisional install) is not installed and earns no floor, and a
-page sheds checkpoints from its end until its encoded bytes fit a frame beside its rows.
+(`engine.mayEditDoc`, as for a provisional install) is not installed and earns no floor; since
+the install then answers `false` for the whole snapshot, a joiner takes no floor at all from a
+peer that may not edit some documented row it serves (a read-only member, an owner-only `update`
+rule, a relay that is not the authority). A page sheds checkpoints from its end until its encoded
+bytes fit a frame beside its rows, and a sender whose document runtime throws while serving sends
+its pages with no checkpoints, marked incomplete, so the exchange still closes (fix round 2).
 Departs: the snapshot does not ride the bulk profile as a blob; `DocRef.status` is not `behind`
 during a join, since the bytes arrive with the rows; there is no page-version negotiation, so a
 build from before version 2 cannot read a documented page, counts it missing and asks again
 without end (accepted before 1.0); each snapshot request makes the server materialise and sign a
-checkpoint per document, with no cache or rate limit.
+checkpoint per document, with no cache or rate limit; the page budget assumes the default frame,
+so a link with a smaller `maxFrameBytes`, or a page of rows alone past a frame, can still carry a
+page too large for it, as before version 2.
 
 ## 6 · Storage
 
@@ -563,7 +569,10 @@ checkpoint per document, with no cache or rate limit.
   wins, the column is `NULL` until the winner is materialised. `doc_snapshots` stays the engine's
   own copy. A boot that rebuilds the state from the log, or folds a log tail, writes each
   committed row's columns back from the held snapshot of the winning lineage the same way (PR #49
-  fix round 1). Departs: devices write full snapshots, not shallow ones (D41 choice 3), and the Rust
+  fix round 1), in the same `atomic` transaction as its commit; a snapshot install and a repair
+  commit their rows and the columns they reseat in one transaction as well. Without `atomic`, every
+  boot writes every document column afresh, which finishes any write a crash cut between its rows
+  and their columns (fix round 2). Departs: devices write full snapshots, not shallow ones (D41 choice 3), and the Rust
   device projects no document column yet (P7).
 
 ### 6.2 Engine tables, declared once in Drizzle 1.0
