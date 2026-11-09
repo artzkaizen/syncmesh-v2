@@ -1,42 +1,9 @@
-import type { SqlRow } from "@syncmesh/storage";
-
 import { attachLog } from "@syncmesh/storage";
 import { captureTests, storeTests } from "@syncmesh/storage/driver-tests";
-import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 
-import type { ExpoBindValue } from "../driver.js";
-
 import { expoSqliteDriverOver } from "../driver.js";
-
-/**
- * `expo-sqlite`'s four calls, over `bun:sqlite`.
- *
- * A phone is not available to a test runner, and the thing that could actually be wrong here is
- * not the phone: it is the shape of a row. `expo-sqlite` answers a query with **an object per
- * row** where every other binding in this repo answers with positional values, and the store
- * contract is written in positional values — so the adapter converts, and this is the suite that
- * says the conversion holds for blobs, nulls, bigints and the rest. `bun:sqlite`'s `.all()`
- * returns objects keyed by column in `SELECT` order, which is the same shape Expo returns for the
- * same reason, so the fake differs from the real binding in where it runs and nowhere else.
- */
-const fakeExpo = (path: string) => {
-  const db = new Database(path, { create: true, strict: true });
-  return {
-    closeSync: () => db.close(),
-    execSync: (sql: string) => db.run(sql),
-    prepareSync: (sql: string) => ({
-      // SAFETY: `.values()` is `bun:sqlite`'s positional answer — one array per row holding the
-      // values the statement named, in the order it named them, which is exactly what
-      // `executeForRawResultSync` returns on a device and exactly what `SqlRow` is
-      executeForRawResultSync: (params: ExpoBindValue[]) => ({
-        getAllSync: () => db.query(sql).values(...params) as readonly SqlRow[],
-      }),
-      finalizeSync: () => undefined,
-    }),
-    runSync: (sql: string, params: ExpoBindValue[]) => db.run(sql, [...params]),
-  };
-};
+import { fakeExpo } from "./fake-expo.js";
 
 describe("@syncmesh/sqlite-expo passes the store contract", () => {
   // one database per name, kept alive across a driver's `close`, so a case that reopens by name
