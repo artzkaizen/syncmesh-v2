@@ -56,8 +56,8 @@ describe("verifyLog on an inline log (D39)", () => {
     expect(verified.isErr() && verified.error._tag).toBe("NoIntegrityCheck");
   });
 
-  test("a check that reads damaged pages is damage", async () => {
-    const driver = inline(/^PRAGMA/, "database disk image is malformed (SQLITE_CORRUPT)");
+  test("a check that fails in any other words is damage, as workerd reports a torn page", async () => {
+    const driver = inline(/^PRAGMA/, "false == true");
     (await sqliteEventStore(driver)).unwrap();
     const verified = await verifyLog(driver);
     expect(verified.isErr() && verified.error._tag).toBe("StoreFailure");

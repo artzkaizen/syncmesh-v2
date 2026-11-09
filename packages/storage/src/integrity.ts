@@ -41,14 +41,19 @@ const quickCheck = (driver: SqlDriver): Promise<Result<void, StoreFailure>> =>
     return verdict(rows);
   });
 
-/** What SQLite says when it has read pages it cannot make sense of: the damage `quick_check` is for. */
-const DAMAGED = /SQLITE_CORRUPT|SQLITE_NOTADB|malformed|not a database/i;
+/**
+ * How a runtime says it will not run a statement: SQLite's authorizer, which is workerd's answer
+ * to most `PRAGMA`s, and the plain words another runtime's own gate would use. Anything else a
+ * check throws is the check failing: workerd reports a torn page it reads as an assertion
+ * (`false == true`), not as `SQLITE_CORRUPT`, so damage cannot be matched by name.
+ */
+const REFUSED = /not authorized|SQLITE_AUTH|not allowed|not permitted|not supported|unsupported/i;
 
 /**
  * `PRAGMA quick_check(<table>)` over each log table of a log that shares its database with the
  * state (`log: "inline"`): a Durable Object, which allows this one `PRAGMA`, and a Rivet actor.
- * A failure that names damaged pages is the database failing the check; any other refusal of the
- * `PRAGMA` (workerd's authorizer, another runtime's own wording) answers {@link NoIntegrityCheck}.
+ * A runtime that refuses the `PRAGMA` (workerd's authorizer, or another runtime's gate in its own
+ * words) answers {@link NoIntegrityCheck}; any other failure is the database failing the check.
  */
 const inlineQuickCheck = (
   driver: SqlDriver,
@@ -69,14 +74,14 @@ const inlineQuickCheck = (
         Result.tryPromise({
           try: () => driver.all(`PRAGMA quick_check(${table})`),
           catch: (cause) =>
-            cause instanceof Error && DAMAGED.test(cause.message)
-              ? new StoreFailure({
-                  message: `the log failed its integrity check on ${table}`,
-                  cause,
-                })
-              : new NoIntegrityCheck({
+            cause instanceof Error && REFUSED.test(cause.message)
+              ? new NoIntegrityCheck({
                   message:
                     "this runtime refuses PRAGMA quick_check, so the log's pages cannot be checked from here",
+                  cause,
+                })
+              : new StoreFailure({
+                  message: `the log failed its integrity check on ${table}`,
                   cause,
                 }),
         }),
