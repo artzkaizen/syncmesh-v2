@@ -298,6 +298,9 @@ struct Live {
     holdback: Holdback,
     /// A `Close` has been asked for; bytes that still arrive belong to a socket on its way out.
     closing: bool,
+    /// Peers' cursors and floors the room passed on while this session was still paging, the
+    /// latest per peer: judged once its catch-up has folded, against what it then holds.
+    heard_floors: BTreeMap<PeerId, (Cursors, Cursors)>,
 }
 
 /// One device's link to one room. See the module notes for how a host drives it.
@@ -514,6 +517,7 @@ impl RelayLink {
             relay_cursors: Cursors::new(),
             holdback: Holdback::new(self.options.gap_limit),
             closing: false,
+            heard_floors: BTreeMap::new(),
         });
         Vec::new()
     }
@@ -790,6 +794,15 @@ impl RelayLink {
                     self.reentitled = false;
                     // the room served a join: whatever floor it named before, it is past
                     self.clear_below(out);
+                    // the floors heard while paging, against what the catch-up handed over
+                    let heard = self
+                        .live
+                        .as_mut()
+                        .map(|live| std::mem::take(&mut live.heard_floors))
+                        .unwrap_or_default();
+                    for (peer, (theirs, floor)) in heard {
+                        self.judge_floor(engine, &peer, &theirs, &floor, out);
+                    }
                     out.push(Action::CaughtUp);
                 }
             }
@@ -872,6 +885,25 @@ impl RelayLink {
         }
     }
 
+    /// Says a peer's floor this device is below (gaps U52); nothing when it is not.
+    fn judge_floor(
+        &self,
+        engine: &Engine,
+        peer: &PeerId,
+        theirs: &Cursors,
+        floor: &Cursors,
+        out: &mut Vec<Action>,
+    ) {
+        let ours = engine.coverage().synced;
+        let below = below_floor(self.identity.peer_id(), &ours, theirs, floor);
+        if !below.is_empty() {
+            out.push(Action::BelowPeerFloor {
+                peer: peer.clone(),
+                floor: below,
+            });
+        }
+    }
+
     fn on_session(
         &mut self,
         engine: &mut Engine,
@@ -894,16 +926,16 @@ impl RelayLink {
                 out.push(Action::PeerHeard(from.clone()));
                 let theirs = cursors_to_map(&cursors);
                 // below the floor of a peer the room passed on: the room carries no state to
-                // answer it, so the host is told (gaps U52)
+                // answer it, so the host is told (gaps U52). A session still paging may be about
+                // to be handed that very run, so it is judged once the catch-up has folded
                 if let Some(floor) = floor.filter(|f| !f.is_empty()) {
-                    let ours = engine.coverage().synced;
                     let floor = cursors_to_map(&floor);
-                    let below = below_floor(self.identity.peer_id(), &ours, &theirs, &floor);
-                    if !below.is_empty() {
-                        out.push(Action::BelowPeerFloor {
-                            peer: from.clone(),
-                            floor: below,
-                        });
+                    match self.live.as_mut() {
+                        Some(live) if !live.caught_up || live.paging => {
+                            live.heard_floors
+                                .insert(from.clone(), (theirs.clone(), floor));
+                        }
+                        _ => self.judge_floor(engine, &from, &theirs, &floor, out),
                     }
                 }
                 engine.acknowledge(from, theirs, now_ms);
@@ -1582,6 +1614,8 @@ mod tests {
     fn a_peer_floor_the_room_passes_on_is_said_to_the_host() {
         let mut engine = engine(1);
         let mut link = joined(&mut engine);
+        link.on_bytes(&mut engine, &page_frame(&[], &[], false, 0, None), 0);
+        assert!(link.caught_up());
         let peer = identity(2).peer_id().clone();
         let author = identity(3).peer_id().clone();
         let seq = |n| SeqNum::parse(n).unwrap();
@@ -1607,6 +1641,65 @@ mod tests {
             !out.iter()
                 .any(|a| matches!(a, Action::BelowPeerFloor { .. }))
         );
+    }
+
+    /// A device the room was about to serve heard a peer's floor between its catch-up pages and
+    /// was told it was below it: the run it lacked was on the next page (gaps U52).
+    #[test]
+    fn a_peer_floor_heard_while_paging_is_judged_after_the_catch_up() {
+        let author = identity(3);
+        let mut writer = engine(3);
+        let wires: Vec<Vec<u8>> = (0..2)
+            .map(|n| {
+                let mut row = BTreeMap::new();
+                row.insert(
+                    "body".to_owned(),
+                    syncmesh_core::record::CellValue::text("x"),
+                );
+                let change = syncmesh_core::event::Change::Insert {
+                    table: "notes".into(),
+                    key: format!("k{n}"),
+                    row,
+                };
+                writer
+                    .mutate("notes.create", vec![change], None)
+                    .unwrap()
+                    .entry
+                    .envelope()
+                    .unwrap()
+            })
+            .collect();
+        let peer = identity(2).peer_id().clone();
+        let seq = |n| SeqNum::parse(n).unwrap();
+        let floor = cursors_frame(
+            &peer,
+            &[(author.peer_id().clone(), seq(2))],
+            Some(&[]),
+            Some(&[(author.peer_id().clone(), seq(2))]),
+            None,
+        );
+        let said = |out: &[Action]| {
+            out.iter()
+                .any(|a| matches!(a, Action::BelowPeerFloor { .. }))
+        };
+
+        // served the run: nothing is said, before or after the last page
+        let mut engine = engine(1);
+        let mut link = joined(&mut engine);
+        assert!(!said(&link.on_bytes(&mut engine, &floor, 1)));
+        let out = link.on_bytes(&mut engine, &page_frame(&[], &wires, false, 2, None), 2);
+        assert!(!said(&out), "{out:?}");
+        assert_eq!(
+            engine.coverage().synced.get(author.peer_id()),
+            Some(&seq(2))
+        );
+
+        // not served it: said once the catch-up has folded
+        let mut engine = self::engine(1);
+        let mut link = joined(&mut engine);
+        assert!(!said(&link.on_bytes(&mut engine, &floor, 1)));
+        let out = link.on_bytes(&mut engine, &page_frame(&[], &[], false, 0, None), 2);
+        assert!(said(&out), "{out:?}");
     }
 
     /// A link on a challenging room, answered and joined: what a refusal is read on.

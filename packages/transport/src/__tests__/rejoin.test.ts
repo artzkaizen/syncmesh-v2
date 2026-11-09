@@ -1,4 +1,4 @@
-import type { Cursors, Engine, Interest } from "@syncmesh/engine";
+import type { Cursors, FoldBatch, Interest } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
 import { LineageCellRefused } from "@syncmesh/kernel";
@@ -6,7 +6,8 @@ import { describe, expect, test } from "bun:test";
 
 import type { JoinPolicy } from "../join.js";
 
-import { belowPeerFloor, createRejoins } from "../rejoin.js";
+import { belowPeerFloor } from "../below-floor.js";
+import { createRejoins } from "../rejoin.js";
 import { peer } from "./fixtures.js";
 
 /**
@@ -316,12 +317,29 @@ describe("a relay's retention refusal (gaps U30)", () => {
 describe("a peer's floor heard through a relay", () => {
   const theirs = cursors([author, 9]);
   const floor = cursors([author, 5]);
-  /** This device's engine, as far as the record reads it: who it is and what it holds. */
-  const holding = (held: () => Cursors) =>
-    ({
+  /** This device's engine, as far as the record reads it: who it is, what it holds, its folds. */
+  const holding = (held: () => Cursors) => {
+    const folds = new Set<(batch: FoldBatch) => void>();
+    return {
       peerId: self,
       coverage: () => ({ synced: held(), local: new Map() }),
-    }) satisfies Pick<Engine, "peerId" | "coverage">;
+      onFoldBatch: (listener: (batch: FoldBatch) => void) => {
+        folds.add(listener);
+        return () => void folds.delete(listener);
+      },
+      /** Runs every fold listener, as a fold of anything would. */
+      fold: () => {
+        const batch = {
+          source: "remote",
+          eventCount: 1,
+          writeTables: new Set(),
+          writeKeys: new Map(),
+        } satisfies FoldBatch;
+        for (const listener of [...folds]) listener(batch);
+      },
+      listening: () => folds.size,
+    };
+  };
   const nothing = holding(() => new Map());
 
   test("raises a relayed issue, once per floor, and a moved floor replaces it", () => {
@@ -348,6 +366,25 @@ describe("a peer's floor heard through a relay", () => {
     );
     expect(rejoins.issues()).toHaveLength(1);
     held = cursors([author, 5]);
+    expect(rejoins.issues()).toEqual([]);
+  });
+
+  test("says it went on the fold that caught this device up, with nobody reading the list", () => {
+    const rejoins = createRejoins();
+    let held = cursors();
+    let changes = 0;
+    rejoins.onChange(() => (changes += 1));
+    const engine = holding(() => held);
+    rejoins.relayedFloor(engine, far, theirs, floor);
+    expect(changes).toBe(1);
+    // a fold that leaves this device below says nothing
+    engine.fold();
+    expect(changes).toBe(1);
+    held = cursors([author, 5]);
+    engine.fold();
+    expect(changes).toBe(2);
+    // nothing relayed is left standing, so nothing is listened to
+    expect(engine.listening()).toBe(0);
     expect(rejoins.issues()).toEqual([]);
   });
 

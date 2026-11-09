@@ -15,7 +15,9 @@ import type { RelayDial } from "./transport.js";
 
 import { uploadRefusal } from "./blob-channel.js";
 import { decodeRelayFrame } from "./frame-decode.js";
+import { heldPosition } from "./held-position.js";
 import { sendOutstanding } from "./outstanding.js";
+import { createRelayedFloors } from "./relayed-floors.js";
 import { createRoomCustody } from "./room-custody.js";
 import { scopedCoverage } from "./scoped.js";
 
@@ -124,32 +126,6 @@ const answerBlob = (hooks: SessionHooks, frame: BlobAnswer): void => {
 };
 
 /**
- * The furthest offset a session's frames have carried, said only once the holdback keeps nothing
- * back. Behind the fold chain alone is not enough: an event folded into the holdback was sent but
- * is not a row yet, and a wanted event that a burst puts ahead of its author's pass-over is
- * exactly that until the pass-over lands (D24).
- */
-const heldPosition = (
-  holdback: ReturnType<typeof createHoldback>,
-  say: ((offset: number) => void) | undefined,
-) => {
-  let unsaid: number | undefined;
-  return {
-    /** A frame carried `offset`, and everything sent below it has been through the fold chain. */
-    reached: (offset: number): void => {
-      if (unsaid === undefined || offset > unsaid) unsaid = offset;
-    },
-    /** Says what was reached, once the holdback has let go of every event it was handed. */
-    flush: (): void => {
-      if (unsaid === undefined || !holdback.empty()) return;
-      const offset = unsaid;
-      unsaid = undefined;
-      say?.(offset);
-    },
-  };
-};
-
-/**
  * The room's run of our own author, from its `hello`: never number at or below it (RFC 0024 G7).
  * A write this log numbered inside that run is said — it reuses a pair the room holds for another
  * event.
@@ -192,6 +168,18 @@ const caughtUpAnnounced = (engine: Engine, self: PeerId, hooks: SessionHooks): v
   hooks.onCaughtUp();
 };
 
+/** Everything the holdback can let go of for these authors, in run order. */
+const releaseHeld = async (
+  holdback: ReturnType<typeof createHoldback>,
+  custody: ReturnType<typeof createRoomCustody>,
+  authors: Iterable<PeerId>,
+): Promise<void> => {
+  for (const author of authors) {
+    const batch = holdback.drain(author);
+    if (batch.length > 0) await custody.fold(batch, author);
+  }
+};
+
 /** Everything one session subscribes to; the returned unsubscribes are the session's teardown. */
 export function wireSession(
   context: TransportContext,
@@ -208,13 +196,7 @@ export function wireSession(
   let abandoned = false;
   let relayCursors: Cursors = new Map();
 
-  /** Everything the holdback can let go of for these authors, in run order. */
-  const release = async (authors: Iterable<PeerId>): Promise<void> => {
-    for (const author of authors) {
-      const batch = holdback.drain(author);
-      if (batch.length > 0) await custody.fold(batch, author);
-    }
-  };
+  const release = (authors: Iterable<PeerId>) => releaseHeld(holdback, custody, authors);
 
   /**
    * `direct` skips the holdback, and only a widening re-page sets it.
@@ -268,6 +250,7 @@ export function wireSession(
       positions.flush();
     });
   };
+  const floors = createRelayedFloors(context, after, () => hooks.repaging?.() === true);
   /** Behind the fold chain: everything sent below `offset` is a row by the time it is said. */
   const position = (offset: number): void => after(() => positions.reached(offset));
   const lastPage = scopedCoverage({
@@ -309,7 +292,7 @@ export function wireSession(
       engine.acknowledge(frame.from, frame.cursors, now(), frame.schemaVersion);
       custody.heard(frame.from);
       // a peer's floor the room passed on: it carries no state to answer it, so say so (gaps U52)
-      context.rejoins?.relayedFloor(engine, frame.from, frame.cursors, frame.floor);
+      floors.heard(frame.from, frame.cursors, frame.floor);
     } else if (frame.kind === "grant-request") {
       const request = { peerId: frame.peerId };
       if (frame.invite !== undefined) Object.assign(request, { invite: frame.invite });
@@ -326,6 +309,7 @@ export function wireSession(
       lastPage(frame.scoped, repaging, asked);
       // only here: every page carries the room's tail, and only the last has delivered up to it
       position(frame.offset);
+      floors.caughtUp();
       // a pass-over (an empty last page after the first) moves a cursor and nothing else
       if (caughtUp && frame.events.length === 0 && frame.grants.length === 0) return;
       caughtUp = true;

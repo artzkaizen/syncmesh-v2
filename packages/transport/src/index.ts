@@ -33,16 +33,14 @@ export { createPresenceStore, presenceSlot } from "./presence.js";
 export type { JoinDeps, JoinExchange, JoinOutcome, JoinPolicy, SnapshotInstalled } from "./join.js";
 export { createJoinExchange } from "./join.js";
 export type {
-  Accepted,
   BelowFloor,
   BelowFloorReason,
   BelowPeerFloor,
   BelowRelayFloor,
-  Rejoins,
-  RejoinSession,
-  RejoinSessionDeps,
-} from "./rejoin.js";
-export { belowPeerFloor, belowRelayFloor, createRejoins } from "./rejoin.js";
+} from "./below-floor.js";
+export { belowPeerFloor, belowRelayFloor } from "./below-floor.js";
+export type { Accepted, Rejoins, RejoinSession, RejoinSessionDeps } from "./rejoin.js";
+export { createRejoins } from "./rejoin.js";
 export type { SnapshotFrame } from "./snap-frame.js";
 export {
   SNAP,
