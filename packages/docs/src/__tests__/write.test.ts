@@ -1,5 +1,12 @@
 import { sha256 } from "@noble/hashes/sha2.js";
-import { createEngine, createMemoryEventStore, createValidator } from "@syncmesh/engine";
+import {
+  createEngine,
+  createLink,
+  createMemoryDocStore,
+  createMemoryEventStore,
+  createMemoryStateStore,
+  createValidator,
+} from "@syncmesh/engine";
 import {
   createHlcClock,
   parsePartitionKey,
@@ -69,10 +76,12 @@ function sharedBlobs() {
 interface NodeOptions {
   readonly limits?: Partial<DocLimits>;
   readonly blobs?: DocBlobs;
+  /** Persisted state and an explicit doc log, so compaction may take covered events. */
+  readonly compacts?: boolean;
 }
 
 /** An engine with the doc column declared and the document runtime over it, on `oplog@1`. */
-function node(n: number, { limits = {}, blobs }: NodeOptions = {}) {
+function node(n: number, { limits = {}, blobs, compacts = false }: NodeOptions = {}) {
   const identity = createIdentity(seed(n)).unwrap();
   let ms = 1_700_000_000_000 + n * 1000;
   const now = () => Temporal.Instant.fromEpochMilliseconds((ms += 1));
@@ -83,6 +92,7 @@ function node(n: number, { limits = {}, blobs }: NodeOptions = {}) {
     validate,
     docs: DOCS,
     docAdapters: new Set([OPLOG_ID]),
+    ...(compacts && { stateStore: createMemoryStateStore(), docStore: createMemoryDocStore() }),
   });
   const documents = createDocuments({
     engine,
@@ -110,6 +120,9 @@ const deliver = async (from: Node, to: Node) => {
   const theirs = (await from.engine.eventsSince(to.engine.coverage().synced)).unwrap();
   (await to.engine.receiveBatch(theirs)).unwrap();
 };
+
+/** Well after every fixture clock, so every ack is past compaction's grace. */
+const FAR = Temporal.Instant.fromEpochMilliseconds(1_800_000_000_000);
 
 const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -267,6 +280,93 @@ describe("a lineage that lost is listed, read and brought back (RFC-0023 §5.3)"
     const after = (await a.documents.lineages(DOC)).unwrap();
     const winner = after.find((l) => l.winning);
     expect(winner?.parent).toBe(replaced.find((l) => l.winning)?.lineage);
+  });
+});
+
+describe("a doc log written before this build had the adapter (RFC-0023 §10)", () => {
+  test("its `adapter-missing` entries are read once the engine has the adapter", async () => {
+    const identity = createIdentity(seed(18)).unwrap();
+    const store = createMemoryEventStore();
+    const docStore = createMemoryDocStore();
+    const opened = (adapters: boolean) =>
+      createEngine({
+        peerId: identity.peerId,
+        clock: createHlcClock({ now: () => Temporal.Now.instant() }),
+        store,
+        docStore,
+        validate,
+        docs: DOCS,
+        ...(adapters && { docAdapters: new Set([OPLOG_ID]) }),
+      });
+    const before = opened(false);
+    (await before.mutate(EDIT, (tx) => tx.insert(NOTES, N1, row(N1)), { partition: W1 })).unwrap();
+    const doc = oplog().create(1n);
+    append(doc, "kept");
+    const update = oplog().snapshot(doc);
+    (
+      await before.mutate(
+        EDIT,
+        (tx) =>
+          tx.doc(NOTES, N1, { column: CONTENT, adapter: OPLOG_ID, update: { bytes: update } }),
+        { partition: W1 },
+      )
+    ).unwrap();
+    expect((await before.docLog()).unwrap().map((e) => e.state)).toEqual(["adapter-missing"]);
+    const engine = opened(true);
+    const documents = createDocuments({
+      engine,
+      adapters: [oplog()],
+      docs: DOCS,
+      procedure: EDIT,
+      autoMaterialise: false,
+    });
+    const read = (await documents.open<OpLog>(DOC)).unwrap();
+    expect(values(read.value)).toEqual(["kept"]);
+    (await read.close()).unwrap();
+  });
+});
+
+describe("a lineage whose events compaction took (RFC-0023 §5.3, §8.3)", () => {
+  /** A root edited, materialised, compacted, then replaced: the root is a lineage that lost. */
+  const compactedRoot = async () => {
+    const a = node(16, { compacts: true });
+    const b = node(17);
+    const link = createLink(a.engine, b.engine, { now: () => FAR });
+    await insertNote(a);
+    (
+      await a.documents.mutate(EDIT, (_tx, docs) =>
+        docs.change<OpLog>(DOC, (doc) => {
+          append(doc, "a");
+          append(doc, "b");
+        }),
+      )
+    ).unwrap();
+    (await link.catchUp()).unwrap();
+    (await a.documents.materialise(DOC)).unwrap();
+    expect((await a.engine.compact({ now: FAR })).unwrap().removed).toBe(2);
+    (await a.documents.replace(DOC, snapshotOf("new"))).unwrap();
+    return a;
+  };
+
+  test("is rebuilt from the snapshot still held of it, and restored whole", async () => {
+    const a = await compactedRoot();
+    const version = (await a.documents.openLineage<OpLog>(DOC, undefined)).unwrap();
+    expect(values(version.value)).toEqual(["a", "b"]);
+    expect(version.lost).toBe(0);
+    (await a.documents.restore(DOC, undefined)).unwrap();
+    expect(await read(a)).toEqual(["a", "b"]);
+  });
+
+  test("is reported lost once that snapshot is gone, and is never restored in part", async () => {
+    const a = await compactedRoot();
+    // the winner's own snapshot replaces the root's: nothing holds the root's updates any more
+    (await a.documents.materialise(DOC)).unwrap();
+    const version = (await a.documents.openLineage<OpLog>(DOC, undefined)).unwrap();
+    expect(values(version.value)).toEqual([]);
+    expect(version.lost).toBe(1);
+    const restored = await a.documents.restore(DOC, undefined);
+    expect(restored.isErr() && restored.error._tag).toBe("LineageIncomplete");
+    expect(await read(a)).toEqual(["new"]);
   });
 });
 

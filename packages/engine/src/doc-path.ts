@@ -27,13 +27,13 @@ import type { AtomicStores } from "./engine.js";
 import type { FoldPath } from "./fold.js";
 import type { DerivedRow } from "./state-store.js";
 import type { EventStore } from "./store.js";
-import type { Cursors } from "./sync.js";
+import type { Coverage, Cursors } from "./sync.js";
 import type { Undo } from "./undo.js";
 
 import { coversTail, writeDerived, type DerivedFrom } from "./doc-derived.js";
 import { createMemoryDocStore } from "./doc-log-memory.js";
 import { DocCoverStale, docKey } from "./doc-log.js";
-import { readTail, readUpdates } from "./doc-read.js";
+import { readLineageLog, readTail } from "./doc-read.js";
 import { StoreFailure, orThrow } from "./store.js";
 
 /** How an engine is told about documents. */
@@ -81,6 +81,23 @@ export interface DocTail {
   readonly updates: readonly TailUpdate[];
 }
 
+/**
+ * One lineage of a document as this device holds it (RFC-0023 §5.3): what a version that lost is
+ * rebuilt from — the snapshot, then the updates — and how much of it is past rebuilding here.
+ */
+export interface LineageLog {
+  /** The snapshot this device holds, when it is of this lineage. */
+  readonly snapshot?: DocSnapshot;
+  /** Every update of the lineage the snapshot does not hold, whatever its state, in the log's order. */
+  readonly updates: readonly TailUpdate[];
+  /**
+   * Parts of the lineage this device cannot read back: updates whose events compaction took after
+   * its snapshot was replaced, a genesis never received, or a root history an installed snapshot
+   * adopted without events. Anything above 0 is a partial version.
+   */
+  readonly lost: number;
+}
+
 /** What an engine answers about its documents. */
 export interface DocApi extends DocEditorApi {
   /**
@@ -98,15 +115,16 @@ export interface DocApi extends DocEditorApi {
   /** One document's snapshot and tail, read back from the log its events are kept in. */
   readonly docTail: (doc: DocAddress) => Promise<Result<DocTail, StoreFailure>>;
   /**
-   * Every update one lineage of the document holds in the log (RFC-0023 §5.3), whatever its state
-   * — a losing lineage's `orphaned` entries included — in the log's order: what a version that lost
-   * is rebuilt from. Absent `lineage` is the root. An update whose event compaction took is
-   * not among them; only the winner's `covered` entries can be, since nothing else is covered.
+   * One lineage of the document as this device can rebuild it (RFC-0023 §5.3) — a losing
+   * lineage's `orphaned` entries included: the snapshot held of it, if the one held is of it,
+   * then every update of it that snapshot does not hold. Absent `lineage` is the root. An update
+   * whose event compaction took is counted in {@link LineageLog.lost} once no snapshot of its
+   * lineage is held — which happens to a lineage that was materialised and then lost to a replace.
    */
   readonly docLineageLog: (
     doc: DocAddress,
     lineage: LineageId | undefined,
-  ) => Promise<Result<readonly TailUpdate[], StoreFailure>>;
+  ) => Promise<Result<LineageLog, StoreFailure>>;
   /**
    * Commits a materialised snapshot or an installed checkpoint, in the write transaction when the
    * engine has one (RFC-0023 §6.3). The entries it covers become compactable (§8.3). The cover's
@@ -135,7 +153,8 @@ export interface DocApi extends DocEditorApi {
 /** What the doc path reads once the engine has built it: state, coverage, the transaction. */
 export interface DocBindings {
   readonly getState: () => State;
-  readonly synced: () => ReadonlyMap<PeerId, SeqNum>;
+  /** This device's coverage: what it holds, and what a snapshot install adopted with no events (`floor`). */
+  readonly coverage: () => Coverage;
   readonly atomically: <T>(fn: (scoped: AtomicStores) => Promise<T>) => Promise<T>;
   /** Writes a cover's derived values into the row, inside its transaction (RFC-0023 §16.4). */
   readonly derive: FoldPath["derive"];
@@ -206,11 +225,7 @@ export function createDocPath(
       docHeads: docStore.heads,
       docTail: (doc) => readTail(options.store, docStore, bindings(), doc),
       docLineageLog: (doc, lineage) =>
-        Result.gen(async function* () {
-          const entries = yield* Result.await(docStore.entriesOf(doc));
-          const of = entries.filter((e) => e.lineage === lineage);
-          return Result.ok(yield* Result.await(readUpdates(options.store, bindings(), of)));
-        }),
+        readLineageLog(options.store, docStore, bindings(), doc, lineage),
       coverDoc: (doc, cover) => {
         const derived =
           cover.derived === undefined

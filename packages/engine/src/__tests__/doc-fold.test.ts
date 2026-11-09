@@ -586,3 +586,27 @@ describe("a lineage cell stays bounded however often a document is replaced (gap
     );
   });
 });
+
+describe("a lineage read back for a restore (RFC-0023 §5.3)", () => {
+  const DOC = { table: NOTES, key: N1, column: CONTENT };
+
+  test("whole on the device that wrote it, and lost where a snapshot install adopted its history", async () => {
+    const a = node(PEER_A, 100, true);
+    await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+    await write(a, (tx) => tx.doc(NOTES, N1, edit(1)));
+    await write(a, (tx) => tx.doc(NOTES, N1, replace(2)));
+    await write(a, (tx) => tx.doc(NOTES, N1, replace(3)));
+    const first = deriveLineage(PEER_A, seq(3), 0);
+    const held = async (n: Node, lineage: LineageId | undefined) =>
+      (await n.engine.docLineageLog(DOC, lineage)).unwrap();
+    expect((await held(a, undefined)).lost).toBe(0);
+    expect((await held(a, undefined)).updates).toHaveLength(1);
+    expect((await held(a, first)).lost).toBe(0);
+
+    // a joiner takes state: the cell names both geneses, and no event of either reached it
+    const c = node(PEER_C, 300, true);
+    (await c.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    expect((await held(c, first)).lost).toBe(1);
+    expect((await held(c, undefined)).lost).toBe(1);
+  });
+});

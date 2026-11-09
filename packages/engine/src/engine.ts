@@ -246,7 +246,7 @@ export function createEngine(options: EngineOptions): Engine {
   const covered = createCoveragePath({ coverage, store, turn, errors }, () =>
     persistCoverage(plain),
   );
-  docPath.bind({ ...foldPath, synced: () => coverage.current().synced, atomically });
+  docPath.bind({ ...foldPath, coverage: coverage.current, atomically });
   fold(boot?.replay ?? [], "boot");
 
   const before = {

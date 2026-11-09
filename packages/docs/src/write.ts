@@ -22,7 +22,7 @@ import type { Derive, DocsEngine } from "./materialise.js";
 import { columnAdapter } from "./adapter.js";
 import { carry } from "./blobs.js";
 import { burstChanges, exportBurst, invalidate } from "./entry.js";
-import { DocWriteConflict, FlushRefused } from "./errors.js";
+import { DocWriteConflict, FlushRefused, LineageIncomplete } from "./errors.js";
 import { listLineages, readLineage } from "./lineages.js";
 
 /**
@@ -312,7 +312,8 @@ export function createWrites(deps: WritesDeps) {
     /**
      * Brings a lineage that lost back as the document's winner (RFC-0023 §5.3, "recover the other
      * version"): a `replace()` with its snapshot, written on top of the lineage winning here, so
-     * it wins and the version it displaces is listed in turn.
+     * it wins and the version it displaces is listed in turn. A lineage this device holds only part
+     * of is refused ({@link LineageIncomplete}) rather than published partial.
      */
     restore: (address: DocAddress, lineage: LineageId | undefined, options?: MutateOptions) =>
       Result.gen(async function* () {
@@ -320,6 +321,14 @@ export function createWrites(deps: WritesDeps) {
         const version = yield* Result.await(
           readLineage(deps.engine, adapter, address, lineage, deps.fresh(), deps.blobs),
         );
+        if (version.lost + version.missing > 0)
+          return Result.err(
+            new LineageIncomplete({
+              lost: version.lost,
+              missing: version.missing,
+              message: "this device holds only part of that lineage; nothing was written",
+            }),
+          );
         return Result.ok(
           yield* Result.await(replaceWith(address, adapter.snapshot(version.value), options)),
         );

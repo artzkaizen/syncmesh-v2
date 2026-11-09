@@ -83,11 +83,18 @@ export interface LineageVersion<D> {
   readonly failed: number;
   /** Blob-carried updates of it no carrier holds yet, left out. */
   readonly missing: number;
+  /**
+   * Parts of it this device can no longer read back, left out: updates whose events compaction
+   * took once no snapshot of the lineage was held, or history it never received (see
+   * `LineageLog.lost`). Above 0, the version is partial and {@link Documents.restore} refuses it.
+   */
+  readonly lost: number;
 }
 
 /**
  * Rebuilds one lineage of the document at `address` — a version that lost to another `replace()`
- * included — from every update the doc log holds of it, on a fresh replica nothing flushes.
+ * included — from the snapshot held of it, if any, and every update of it the doc log holds, on a
+ * fresh replica nothing flushes.
  */
 export function readLineage<D>(
   engine: LineageEngine,
@@ -98,14 +105,15 @@ export function readLineage<D>(
   blobs: DocBlobs | undefined,
 ): Promise<Result<LineageVersion<D>, StoreFailure | UpdateRejected>> {
   return Result.gen(async function* () {
-    const updates = yield* Result.await(engine.docLineageLog(address, lineage));
-    const tail = await resolveTail({ updates }, blobs);
+    const log = yield* Result.await(engine.docLineageLog(address, lineage));
+    const tail = await resolveTail(log, blobs);
     const loaded = yield* load(adapter, tail, replica);
     return Result.ok({
       value: loaded.doc,
       ...(lineage !== undefined && { lineage }),
       failed: loaded.failed.length,
       missing: loaded.missing.length,
+      lost: log.lost,
     });
   });
 }

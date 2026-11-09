@@ -11,6 +11,7 @@ export {
   DocWriteConflict,
   FlushRefused,
   HandleInvalidated,
+  LineageIncomplete,
   NotADocColumn,
   UpdateTooLarge,
 } from "./errors.js";
