@@ -24,6 +24,7 @@
   "devDependencies": {
     "@happy-dom/global-registrator": "^18.0.1",
     "@syncmesh/config": "workspace:*",
+    "@syncmesh/docs": "workspace:*",
     "@syncmesh/engine": "workspace:*",
     "@syncmesh/kernel": "workspace:*",
     "@syncmesh/orpc": "workspace:*",

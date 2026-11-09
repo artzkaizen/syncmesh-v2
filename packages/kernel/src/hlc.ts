@@ -21,6 +21,9 @@ export interface HlcClockOptions {
   readonly maxDrift?: Temporal.Duration;
 }
 
+/** The largest logical counter an HLC holds on the wire, a u32. */
+export const LOGICAL_MAX = 0xff_ff_ff_ff;
+
 /**
  * How far ahead of a device's own clock a stamp may run before it is not believed (D34).
  *

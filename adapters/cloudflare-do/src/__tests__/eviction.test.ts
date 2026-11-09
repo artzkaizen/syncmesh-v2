@@ -206,4 +206,25 @@ describe("what an eviction may not lose on a sealed link (D36)", () => {
       Buffer.from(h2.subarray(1, 33)).toString("hex"),
     );
   });
+
+  test("a describe reports the key the room's hello signs with, under the object's own name, across an eviction (U13)", async () => {
+    const object = durableRelay(new Database(":memory:"), { name: "acme", keepaliveMs: 60_000 });
+    const described = async () =>
+      // SAFETY: `describeRoom` answers this map as JSON when the request does not ask for CBOR
+      (await (await object.describe(new Request("https://relay.example/routing/path"))).json()) as {
+        readonly room: string;
+        readonly relay: string;
+      };
+    const before = await described();
+    const listener = device(object.dial(), 40);
+    await tick(60);
+    const hello = listener.hellos[0];
+    if (hello === undefined) throw new Error("the room sent no hello");
+    // the peer id rides in the clear at bytes 1..33 of a hello
+    const signer = Buffer.from(hello.subarray(1, 33)).toString("hex");
+    expect(before.room).toBe("acme");
+    expect(before.relay).toBe(signer);
+    object.evict();
+    expect((await described()).relay).toBe(signer);
+  });
 });

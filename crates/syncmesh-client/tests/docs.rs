@@ -14,7 +14,8 @@ use syncmesh_client::{
     StateStore, StoreError, StoredEvent,
 };
 use syncmesh_core::doc::{
-    DocBlobRef, DocChange, DocColumns, DocUpdate, Id16, derive_lineage, lineage_of,
+    DocBlobRef, DocChange, DocColumns, DocUpdate, Id16, Settled, derive_lineage, lineage_of,
+    read_lineage_cell,
 };
 use syncmesh_core::event::{Change, PartitionKey, SeqNum, SyncEvent};
 use syncmesh_core::identity::Identity;
@@ -70,6 +71,7 @@ fn edit(byte: u8, lineage: Option<Id16>) -> Change {
         genesis: false,
         legacy: false,
         parent: None,
+        settles: None,
     })
 }
 
@@ -574,12 +576,12 @@ fn persisted_state_holding_another_rules_lineage_cell_is_rebuilt_from_the_log() 
         other => other,
     };
     let retag = |tagged: CellValue| match tagged {
-        CellValue::Array(items) => CellValue::Array(vec![JsonValue::Number(2.0), items[1].clone()]),
+        CellValue::Array(items) => CellValue::Array(vec![JsonValue::Number(3.0), items[1].clone()]),
         other => other,
     };
     for (persisted, found) in [
         (persisted_with(untag), "a lineage cell with no version"),
-        (persisted_with(retag), "a lineage cell of version 2"),
+        (persisted_with(retag), "a lineage cell of version 3"),
     ] {
         // never read as the root: the state is the log's, refold for refold
         let rebuilt = open_over(persisted).expect("rebuilt from the log, not refused");
@@ -833,4 +835,193 @@ fn an_install_stopped_before_its_relabel_is_relabelled_at_the_next_open() {
     );
     let heads = reopened.doc_heads().unwrap();
     assert_eq!((heads[0].lineage, heads[0].tail_count), (lineage(&a), 0));
+}
+
+#[test]
+fn a_replace_past_the_settle_window_anchors_the_walk_and_the_cell_stays_bounded() {
+    const DAY: i64 = 86_400_000;
+    let clock = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(1_000));
+    let read = std::sync::Arc::clone(&clock);
+    let mut a = Engine::open(
+        Identity::from_seed(&[1; 32]),
+        Box::new(MemoryEventStore::new()),
+        None,
+        EngineOptions {
+            docs: Some(docs()),
+            doc_adapters: BTreeSet::from(["loro@1".to_owned()]),
+            now_ms: Some(Box::new(move || {
+                read.load(std::sync::atomic::Ordering::Relaxed)
+            })),
+            ..EngineOptions::default()
+        },
+    )
+    .unwrap();
+    let mut entries = vec![write(&mut a, vec![insert()])];
+    let geneses = |e: &Engine| {
+        let cell = e
+            .state()
+            .record("notes", "n1")
+            .and_then(|r| r.cells.get("content"));
+        read_lineage_cell(cell.map(|c| &c.value)).geneses.len()
+    };
+    for i in 0..10u8 {
+        clock.store(
+            1_000 + (i64::from(i) + 1) * 31 * DAY,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        entries.push(write(&mut a, vec![replace(i)]));
+        assert_eq!(geneses(&a), 1, "replace {i}");
+    }
+    let Change::Doc(second) = &entries[2].event.changes[0] else {
+        panic!("a replace is a doc change");
+    };
+    assert_eq!(
+        second.settles.as_ref().map(|s| s.lineage),
+        Some(derive_lineage(a.peer_id(), SeqNum::parse(2).unwrap(), 0)),
+        "the second replace settles the walk at the first",
+    );
+    let last = entries.last().unwrap().event.seq_num;
+    assert_eq!(lineage(&a), Some(derive_lineage(a.peer_id(), last, 0)));
+    // a peer folding the same events backwards holds the same record
+    let mut b = engine(2, true);
+    for entry in entries.into_iter().rev() {
+        b.receive(entry).unwrap();
+    }
+    assert_eq!(
+        b.state().record("notes", "n1"),
+        a.state().record("notes", "n1")
+    );
+}
+
+#[test]
+fn an_anchor_naming_its_own_genesis_or_stamped_no_earlier_is_quarantined() {
+    let author = Identity::from_seed(&[9; 32]);
+    let Change::Doc(d) = replace(1) else {
+        unreachable!()
+    };
+    let lineage = derive_lineage(author.peer_id(), SeqNum::parse(1).unwrap(), 0);
+    let event = |settles: Settled| {
+        let event = SyncEvent {
+            peer_id: author.peer_id().clone(),
+            seq_num: SeqNum::parse(1).unwrap(),
+            hlc: syncmesh_core::hlc::Hlc::new(9_000, 0),
+            procedure: "notes.replace".into(),
+            partition: partition(),
+            changes: vec![Change::Doc(DocChange {
+                lineage: Some(lineage),
+                settles: Some(settles),
+                ..d.clone()
+            })],
+            sealed: false,
+            action: None,
+            undo_of: None,
+            schema_version: None,
+        };
+        StoredEvent::from_verified(syncmesh_core::sign_event(event, &author))
+    };
+    let stamped = |ms: i64| {
+        syncmesh_core::stamp::Stamp::new(
+            syncmesh_core::hlc::Hlc::new(ms, 0),
+            author.peer_id().clone(),
+        )
+    };
+    let quarantined = |settles: Settled| {
+        let mut a = engine(1, true);
+        a.receive(event(settles)).unwrap().report.quarantined
+    };
+    assert_eq!(
+        quarantined(Settled {
+            lineage: [7; 16],
+            stamp: stamped(8_999)
+        }),
+        0,
+        "an anchor this peer never held is fine: it carries its stamp"
+    );
+    for refused in [
+        Settled {
+            lineage: [7; 16],
+            stamp: stamped(9_000),
+        },
+        Settled {
+            lineage: [7; 16],
+            stamp: stamped(9_001),
+        },
+        Settled {
+            lineage,
+            stamp: stamped(8_999),
+        },
+    ] {
+        assert_eq!(quarantined(refused.clone()), 1, "{refused:?}");
+    }
+}
+
+#[test]
+fn an_anchor_on_an_edit_is_refused_as_the_codec_refuses_it() {
+    let mut a = engine(1, true);
+    write(&mut a, vec![insert()]);
+    let Change::Doc(d) = edit(1, None) else {
+        unreachable!()
+    };
+    let anchored = Change::Doc(DocChange {
+        settles: Some(Settled {
+            lineage: [7; 16],
+            stamp: syncmesh_core::stamp::Stamp::new(
+                syncmesh_core::hlc::Hlc::new(1, 0),
+                a.peer_id().clone(),
+            ),
+        }),
+        ..d
+    });
+    let refused = a.mutate("notes.edit", vec![anchored], partition());
+    assert!(
+        matches!(refused, Err(MutateError::DocRefused { .. })),
+        "{refused:?}"
+    );
+    assert!(a.doc_log().unwrap().is_empty());
+}
+
+#[test]
+fn a_settle_window_shorter_than_an_hour_is_taken_as_an_hour() {
+    let clock = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(1_000));
+    let read = std::sync::Arc::clone(&clock);
+    let mut a = Engine::open(
+        Identity::from_seed(&[1; 32]),
+        Box::new(MemoryEventStore::new()),
+        None,
+        EngineOptions {
+            docs: Some(docs()),
+            doc_adapters: BTreeSet::from(["loro@1".to_owned()]),
+            now_ms: Some(Box::new(move || {
+                read.load(std::sync::atomic::Ordering::Relaxed)
+            })),
+            lineage_settle_after_ms: 1_000,
+            ..EngineOptions::default()
+        },
+    )
+    .unwrap();
+    write(&mut a, vec![insert()]);
+    clock.store(86_400_000, std::sync::atomic::Ordering::Relaxed);
+    write(&mut a, vec![replace(1)]);
+    clock.store(86_400_000 + 60_000, std::sync::atomic::Ordering::Relaxed);
+    let sibling = write(&mut a, vec![replace(2)]);
+    let Change::Doc(d) = &sibling.event.changes[0] else {
+        panic!("a replace is a doc change");
+    };
+    assert_eq!(d.settles, None, "a minute is inside the hour");
+}
+
+#[test]
+fn a_joiner_whose_clock_runs_behind_stamps_its_replace_after_the_genesis_a_snapshot_brought() {
+    // A's clock reads about 9 s, R's about 3 s: inside the drift bound, so R believes A's stamps
+    let mut a = engine(9, true);
+    write(&mut a, vec![insert()]);
+    let parent = write(&mut a, vec![replace(1)]);
+    let mut r = engine(3, true);
+    r.install_snapshot(a.snapshot(None)).unwrap();
+    assert_eq!(lineage(&r), lineage(&a));
+    let child = write(&mut r, vec![replace(2)]);
+    assert!(
+        child.event.hlc > parent.event.hlc,
+        "a child genesis is stamped after the parent it adopted"
+    );
 }

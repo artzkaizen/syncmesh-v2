@@ -44,6 +44,8 @@ export interface RivetWebSocket {
 /**
  * The actor's WebSocket as the room's send port. Never `buffered`: the actor runtime owns the
  * outgoing queue, so there is no drain to flush against; `dropped` is a socket already gone.
+ * With no `buffered`, the room's presence hold (`Sender.sendLatest`, gaps U19) never engages
+ * here: a stalled client's presence queues in the runtime's socket.
  */
 export function rivetRelaySocket(ws: RivetWebSocket): RelaySocket {
   return {

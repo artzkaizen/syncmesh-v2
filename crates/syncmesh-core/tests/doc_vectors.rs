@@ -5,7 +5,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use syncmesh_core::doc::{DocBlobRef, DocChange, DocColumns, DocUpdate, Id16, parse_lineage_cells};
+use syncmesh_core::doc::{
+    DocBlobRef, DocChange, DocColumns, DocUpdate, Id16, Settled, parse_lineage_cells,
+};
 use syncmesh_core::doc_checkpoint::{DocCheckpoint, encode_doc_checkpoint_core};
 use syncmesh_core::envelope::envelope;
 use syncmesh_core::event::{PartitionKey, SeqNum};
@@ -47,7 +49,7 @@ fn producer() -> Identity {
 }
 
 fn doc(lineage: Option<Id16>, update: DocUpdate, genesis: bool) -> Change {
-    replace_of(lineage, update, genesis, None)
+    replace_of(lineage, update, genesis, None, None)
 }
 
 fn replace_of(
@@ -55,6 +57,7 @@ fn replace_of(
     update: DocUpdate,
     genesis: bool,
     parent: Option<Id16>,
+    settles: Option<Settled>,
 ) -> Change {
     Change::Doc(DocChange {
         table: "notes".into(),
@@ -66,6 +69,7 @@ fn replace_of(
         genesis,
         legacy: false,
         parent,
+        settles,
     })
 }
 
@@ -73,7 +77,7 @@ fn loro() -> DocUpdate {
     DocUpdate::Bytes(b"loro".to_vec())
 }
 
-/// The six frozen events, built here from scratch.
+/// The seven frozen events, built here from scratch.
 fn events() -> Vec<SyncEvent> {
     let a = author();
     let at = |n: u64, procedure: &str, changes: Vec<Change>| SyncEvent {
@@ -134,6 +138,21 @@ fn events() -> Vec<SyncEvent> {
                 DocUpdate::Bytes(vec![4, 5, 6]),
                 true,
                 Some(genesis),
+                None,
+            )],
+        ),
+        at(
+            7,
+            "notes.replace",
+            vec![replace_of(
+                Some(derive_lineage(a.peer_id(), seq(7), 0)),
+                DocUpdate::Bytes(vec![7, 8, 9]),
+                true,
+                Some(derive_lineage(a.peer_id(), seq(6), 0)),
+                Some(Settled {
+                    lineage: genesis,
+                    stamp: Stamp::new(Hlc::new(T0 + 3, 0), a.peer_id().clone()),
+                }),
             )],
         ),
     ]
@@ -169,11 +188,22 @@ fn every_frozen_lineage_tree_folds_to_one_record_and_one_winner_in_every_order()
             .iter()
             .map(|g| {
                 let parent = g["parent"].as_str().map(id16);
+                let settles = g["settles"].as_object().map(|s| Settled {
+                    lineage: id16(s["lineage"].as_str().unwrap()),
+                    stamp: Stamp::new(
+                        Hlc::new(
+                            s["ms"].as_i64().unwrap(),
+                            s["logical"].as_u64().unwrap() as u32,
+                        ),
+                        PeerId::parse(s["peer"].as_str().unwrap()).unwrap(),
+                    ),
+                });
                 let change = replace_of(
                     Some(id16(g["lineage"].as_str().unwrap())),
                     DocUpdate::Bytes(Vec::new()),
                     true,
                     parent,
+                    settles,
                 );
                 let stamp = Stamp::new(
                     Hlc::new(
@@ -271,7 +301,7 @@ fn every_frozen_lineage_derives_the_same() {
 fn every_frozen_lineage_cell_reaches_the_typescripts_verdict() {
     let file = vectors("doc-vectors.json");
     let cells = file["lineageCells"].as_array().unwrap();
-    assert_eq!(cells.len(), 4);
+    assert_eq!(cells.len(), 6);
     let docs = DocColumns::from([(
         "notes".to_owned(),
         BTreeMap::from([("content".to_owned(), "loro@1".to_owned())]),

@@ -1,6 +1,8 @@
+import type { RowKey, TableName } from "@syncmesh/kernel";
 import type { SqlDriver } from "@syncmesh/storage";
 
-import { sqlEventStore } from "@syncmesh/storage";
+import { hlcOf } from "@syncmesh/kernel";
+import { hashOf, sqlBlobLedger, sqlEventStore } from "@syncmesh/storage";
 import { CRASH_AUTHOR, entry } from "@syncmesh/storage/driver-tests";
 import { Temporal } from "@syncmesh/temporal";
 import { afterAll, describe, expect, test } from "bun:test";
@@ -127,5 +129,70 @@ describe.if(url !== "")("@syncmesh/postgres: two connections on one log", () => 
     const seen = [1, 2, 3, 4, 6].map((n) => entry(CRASH_AUTHOR, n, n * 10).event.id);
     expect(read.isOk() ? read.value.map((e) => e.event.id) : read.error.message).toEqual(seen);
     expect(fills).toEqual([]);
+  });
+
+  test("two ledgers saving one row at once both land: the later write and the delete", async () => {
+    const open = await fresh("ledger");
+    const first = await open();
+    const l1 = (await sqlBlobLedger(first.driver)).unwrap();
+    const watcher = await open();
+    let settled = false;
+    const waiting = async () => {
+      while (!settled) {
+        const rows = await watcher.client`SELECT 1 FROM pg_locks
+          WHERE locktype = 'advisory' AND NOT granted
+            AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`;
+        if (rows.length > 0) return "waiting";
+        await pause(POLL);
+      }
+      return "done";
+    };
+
+    // SAFETY: test fixture names; the brands are over these strings
+    const row = {
+      table: "notes" as TableName,
+      key: "n1" as RowKey,
+      hashes: [hashOf(Uint8Array.of(1))],
+    };
+    const stamp = (ms: number) => ({ hlc: hlcOf(ms, 0), peer: CRASH_AUTHOR });
+    const state = (written: number, deleted: number | undefined) => ({
+      rows: [
+        {
+          ...row,
+          written: stamp(written),
+          deleted: deleted === undefined ? undefined : stamp(deleted),
+        },
+      ],
+      windows: [],
+      sealed: [],
+      complete: undefined,
+    });
+
+    // the second ledger, stopped right after it reads the row: the first saves its delete there,
+    // and the second goes on only once that save has committed or is queued behind its lock
+    const second = await open();
+    let raced: Promise<unknown> | undefined;
+    const pausing: SqlDriver = {
+      ...second.driver,
+      all: async (sql, values) => {
+        const rows = await second.driver.all(sql, values);
+        if (raced === undefined && sql.startsWith("SELECT tbl, row_key")) {
+          raced = l1.save(state(1_700_000_000_000, 1_700_000_000_500)).then((r) => {
+            settled = true;
+            return r.unwrap();
+          });
+          await Promise.race([raced, waiting()]);
+        }
+        return rows;
+      },
+    };
+    const l2 = (await sqlBlobLedger(pausing)).unwrap();
+    (await l2.save(state(1_700_000_000_900, undefined))).unwrap();
+    await raced;
+
+    const kept = (await l1.load()).unwrap().rows;
+    expect(kept.map((r) => [r.written?.hlc, r.deleted?.hlc])).toEqual([
+      [hlcOf(1_700_000_000_900, 0), hlcOf(1_700_000_000_500, 0)],
+    ]);
   });
 });

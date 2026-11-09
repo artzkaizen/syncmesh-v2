@@ -1,10 +1,9 @@
 import type { EventStore } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
-import type { BlobHomes, BlobStore, SqlDriver, Stores } from "@syncmesh/storage";
+import type { BlobHomes, BlobLedger, BlobStore, SqlDriver, Stores } from "@syncmesh/storage";
 import type { Identity } from "@syncmesh/wire";
 
 import { omitUndefined, panic } from "@syncmesh/result";
-import { sqlBlobStore } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { bytesToHex, createIdentity, hexToBytes, randomBytes } from "@syncmesh/wire";
 
@@ -14,7 +13,7 @@ import type { RelayConnection, RelayRoomOptions } from "./room.js";
 import type { HeldRoom, OpenedRoom } from "./rooms.js";
 import type { RelaySocket } from "./sender.js";
 
-import { openBlobHomes } from "./blob-keeper.js";
+import { openDurableBlobs } from "./durable-blobs.js";
 import { DEFAULT_LIMITS } from "./limits.js";
 import { createRoomAccess } from "./posture.js";
 import { openRelayRoom } from "./room.js";
@@ -50,6 +49,8 @@ export interface RoomStore {
   readonly blobs?: BlobStore;
   /** Where each of those blobs may be read (D44), kept beside them so a reopened room still knows. */
   readonly blobHomes?: BlobHomes;
+  /** What the rows of this room referenced (gaps U18), kept beside those blobs so a trim forgets none of it. */
+  readonly blobLedger?: BlobLedger;
   /**
    * The key kept beside this log, for a host where the room is its own process — a Durable
    * Object — and the name a client pins is the object's rather than a fleet's. Given, it signs
@@ -205,19 +206,13 @@ export async function durableRoomStore(
   options: { readonly blobs?: boolean } = {},
 ): Promise<RoomStore> {
   const { driver } = stores;
-  let blobs: BlobStore | undefined;
-  let blobHomes: BlobHomes | undefined;
-  if (options.blobs !== false) {
-    const opened = await sqlBlobStore(driver);
-    if (opened.isOk()) blobs = opened.value;
-    blobHomes = await openBlobHomes(driver);
-  }
+  const blobs = options.blobs === false ? {} : await openDurableBlobs(driver);
   return {
     store: stores.events,
     epoch: await relayEpoch(driver),
     // a file the next process opens again: what this room acks survives its restart
     durable: true,
-    ...omitUndefined({ blobs, blobHomes }),
+    ...blobs,
     release: stores.close,
   };
 }
@@ -279,6 +274,7 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
       ...omitUndefined({
         blobs: held.blobs,
         blobHomes: held.blobHomes,
+        blobLedger: held.blobLedger,
         identity: held.identity,
         durable: held.durable,
       }),

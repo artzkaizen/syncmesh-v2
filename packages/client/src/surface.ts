@@ -1,3 +1,4 @@
+import type { Documents } from "@syncmesh/docs";
 import type { Engine } from "@syncmesh/engine";
 import type { EventId, InvalidPartitionKey, Stamp, Row as WireCells } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
@@ -205,6 +206,15 @@ export interface Mesh<
   readonly routes: RouteTable;
   /** The session: who is calling, until when, and how to end it ({@link Auth}). */
   readonly auth: Auth;
+  /**
+   * The document runtime (RFC-0023 §4.3): open a document column as its adapter's own document,
+   * edit it with the library's API, and the mesh flushes, folds and materialises it. Present when
+   * the mesh was given `documents` and its schema declares a document column.
+   *
+   * @example
+   * await using note = (await mesh.docs.open<LoroDoc>({ table, key, column })).unwrap();
+   */
+  readonly docs?: Documents;
   /** Local-only data with no replication promise ({@link Drafts}); absent with no SQL connection. */
   readonly drafts?: Drafts;
   /** Every transport's queue has run out; never rejects, never stops early (`createFlush`). */

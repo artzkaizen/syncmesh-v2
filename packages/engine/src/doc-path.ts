@@ -11,6 +11,7 @@ import type {
 
 import { getRecord, docLineage, withDocColumns } from "@syncmesh/kernel";
 import { Result, panic } from "@syncmesh/result";
+import { Temporal, durationMs } from "@syncmesh/temporal";
 import { bytesEqual } from "@syncmesh/wire";
 
 import type { DocEditorApi } from "./doc-editor.js";
@@ -26,12 +27,13 @@ import type { AtomicStores } from "./engine.js";
 import type { FoldPath } from "./fold.js";
 import type { DerivedRow } from "./state-store.js";
 import type { EventStore } from "./store.js";
-import type { Cursors } from "./sync.js";
+import type { Coverage, Cursors } from "./sync.js";
 import type { Undo } from "./undo.js";
 
 import { coversTail, writeDerived, type DerivedFrom } from "./doc-derived.js";
 import { createMemoryDocStore } from "./doc-log-memory.js";
 import { DocCoverStale, docKey } from "./doc-log.js";
+import { readLineageLog, readTail } from "./doc-read.js";
 import { StoreFailure, orThrow } from "./store.js";
 
 /** How an engine is told about documents. */
@@ -49,7 +51,34 @@ export interface DocEngineOptions {
   readonly docAdapters?: ReadonlySet<AdapterId>;
   /** Where the doc log and heads live; absent, an in-memory one. */
   readonly docStore?: DocStore;
+  /**
+   * How long after a `replace()` its lineage counts as settled (gaps U21): a genesis this engine
+   * writes names, as its anchor, the deepest lineage on the walk replaced at least this long
+   * before it, and every genesis stamped at or below that one leaves the lineage cell on every
+   * peer. A device that held an older `replace()` unsent for longer finds it off the walk, as
+   * RFC-0015 §2a treats a peer forgotten after `forgetPeersAfter`. Default 30 days; anything
+   * shorter than {@link MIN_LINEAGE_SETTLE_AFTER} is taken as that, since every peer trusts the
+   * anchor a misconfigured one writes.
+   */
+  readonly lineageSettleAfter?: Temporal.Duration;
 }
+
+/** {@link DocEngineOptions.lineageSettleAfter}'s default. */
+export const DEFAULT_LINEAGE_SETTLE_AFTER = Temporal.Duration.from({ days: 30 });
+
+/** The shortest {@link DocEngineOptions.lineageSettleAfter} an engine runs with. */
+export const MIN_LINEAGE_SETTLE_AFTER = Temporal.Duration.from({ hours: 1 });
+
+/**
+ * The settle window an engine runs with: the one given, the default, and never below the floor.
+ * Weeks, months and years are measured as {@link durationMs} measures them.
+ */
+export const settleWindow = (given: Temporal.Duration | undefined): Temporal.Duration => {
+  const window = given ?? DEFAULT_LINEAGE_SETTLE_AFTER;
+  return durationMs(window) < durationMs(MIN_LINEAGE_SETTLE_AFTER)
+    ? MIN_LINEAGE_SETTLE_AFTER
+    : window;
+};
 
 /** A tail entry with what it carries: its bytes inline, or the blob that holds them. */
 export type TailUpdate =
@@ -68,6 +97,24 @@ export interface DocTail {
   readonly updates: readonly TailUpdate[];
 }
 
+/**
+ * One lineage of a document as this device holds it (RFC-0023 §5.3): what a version that lost is
+ * rebuilt from — the snapshot, then the updates — and how much of it is past rebuilding here.
+ */
+export interface LineageLog {
+  /** The snapshot this device holds, when it is of this lineage. */
+  readonly snapshot?: DocSnapshot;
+  /** Every update of the lineage the snapshot does not hold, whatever its state, in the log's order. */
+  readonly updates: readonly TailUpdate[];
+  /**
+   * Parts of the lineage this device cannot read back: updates whose events compaction took after
+   * its snapshot was replaced, a genesis never received, or a root history an installed snapshot
+   * adopted without events. Anything above 0 is a partial version. Not an exact count: a genesis an
+   * anchor trimmed whose event compaction also took is counted twice, once each way.
+   */
+  readonly lost: number;
+}
+
 /** What an engine answers about its documents. */
 export interface DocApi extends DocEditorApi {
   /**
@@ -78,10 +125,23 @@ export interface DocApi extends DocEditorApi {
   readonly hasDocColumns: () => boolean;
   /** Every doc-log entry this engine holds (RFC-0023 §6.2). */
   readonly docLog: () => Promise<Result<readonly DocLogEntry[], StoreFailure>>;
+  /** One document's doc-log entries, every lineage and state. */
+  readonly docLogOf: (doc: DocAddress) => Promise<Result<readonly DocLogEntry[], StoreFailure>>;
   /** Every document's head: its winning lineage and where its tail stands. */
   readonly docHeads: () => Promise<Result<readonly DocHead[], StoreFailure>>;
   /** One document's snapshot and tail, read back from the log its events are kept in. */
   readonly docTail: (doc: DocAddress) => Promise<Result<DocTail, StoreFailure>>;
+  /**
+   * One lineage of the document as this device can rebuild it (RFC-0023 §5.3) — a losing
+   * lineage's `orphaned` entries included: the snapshot held of it, if the one held is of it,
+   * then every update of it that snapshot does not hold. Absent `lineage` is the root. An update
+   * whose event compaction took is counted in {@link LineageLog.lost} once no snapshot of its
+   * lineage is held — which happens to a lineage that was materialised and then lost to a replace.
+   */
+  readonly docLineageLog: (
+    doc: DocAddress,
+    lineage: LineageId | undefined,
+  ) => Promise<Result<LineageLog, StoreFailure>>;
   /**
    * Commits a materialised snapshot or an installed checkpoint, in the write transaction when the
    * engine has one (RFC-0023 §6.3). The entries it covers become compactable (§8.3). The cover's
@@ -110,7 +170,8 @@ export interface DocApi extends DocEditorApi {
 /** What the doc path reads once the engine has built it: state, coverage, the transaction. */
 export interface DocBindings {
   readonly getState: () => State;
-  readonly synced: () => ReadonlyMap<PeerId, SeqNum>;
+  /** This device's coverage: what it holds, and what a snapshot install adopted with no events (`floor`). */
+  readonly coverage: () => Coverage;
   readonly atomically: <T>(fn: (scoped: AtomicStores) => Promise<T>) => Promise<T>;
   /** Writes a cover's derived values into the row, inside its transaction (RFC-0023 §16.4). */
   readonly derive: FoldPath["derive"];
@@ -177,8 +238,11 @@ export function createDocPath(
     api: {
       hasDocColumns: () => docs !== undefined && docs.size > 0,
       docLog: docStore.entries,
+      docLogOf: docStore.entriesOf,
       docHeads: docStore.heads,
       docTail: (doc) => readTail(options.store, docStore, bindings(), doc),
+      docLineageLog: (doc, lineage) =>
+        readLineageLog(options.store, docStore, bindings(), doc, lineage),
       coverDoc: (doc, cover) => {
         const derived =
           cover.derived === undefined
@@ -268,48 +332,3 @@ function coverIfCurrent(
 const settled = () => {};
 
 const panicUnbound = (): never => panic("the doc path was read before the engine bound it");
-
-function readTail(
-  events: EventStore,
-  docStore: DocStore,
-  { getState, synced }: DocBindings,
-  doc: DocAddress,
-): Promise<Result<DocTail, StoreFailure>> {
-  return Result.gen(async function* () {
-    const lineage = docLineage(getRecord(getState(), doc.table, doc.key), doc.column);
-    const entries = yield* Result.await(docStore.entriesOf(doc));
-    const heads = yield* Result.await(docStore.heads());
-    const head = heads.find((h) => docKey(h) === docKey(doc));
-    const held = yield* Result.await(docStore.snapshotOf(doc));
-    const live = entries.filter(
-      (e) => e.lineage === lineage && (e.state === "tail" || e.state === "bytes-missing"),
-    );
-    // one read of the log: every author the tail names from just below its first entry, and
-    // every other author from where this engine already holds them, so nothing else comes back
-    const floor = new Map(synced());
-    for (const e of live) {
-      // SAFETY: one below a positive sequence; 0 reads the author's whole log
-      const below = (e.seq - 1) as SeqNum;
-      const at = floor.get(e.author);
-      if (at === undefined || below < at) floor.set(e.author, below);
-    }
-    const found = live.length === 0 ? [] : yield* Result.await(events.allSince(floor));
-    const byId = new Map(found.map((s) => [`${s.event.peerId}\u0000${String(s.event.seqNum)}`, s]));
-    const updates = live.flatMap((entry): TailUpdate[] => {
-      const change = byId.get(`${entry.author}\u0000${String(entry.seq)}`)?.event.changes[
-        entry.index
-      ];
-      if (change?.kind !== "doc") return [];
-      const { update } = change;
-      return update.bytes !== undefined
-        ? [{ entry, bytes: update.bytes }]
-        : [{ entry, blob: update.blob }];
-    });
-    return Result.ok({
-      updates,
-      ...(lineage !== undefined && { lineage }),
-      ...(head !== undefined && { head }),
-      ...(held !== undefined && held.lineage === lineage && { snapshot: held }),
-    });
-  });
-}

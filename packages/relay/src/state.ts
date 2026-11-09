@@ -94,6 +94,12 @@ export interface RoomState {
   readonly floor: () => Cursors;
   /** Every client but one — the author, who already has what it sent. */
   readonly toClients: (frame: Uint8Array, except?: PeerId) => void;
+  /**
+   * The same, for a value a newer one in `slot` supersedes — presence: a client whose socket is
+   * behind holds only the newest per slot rather than queueing each (D16, `Sender.sendLatest`).
+   * An absent slot is an ordinary frame.
+   */
+  readonly toClientsLatest: (slot: string | undefined, frame: Uint8Array, except?: PeerId) => void;
   /** The same, minus every client whose interest or entitlement excludes this event. */
   readonly toInterested: (frame: Uint8Array, event: SyncEvent, except?: PeerId) => Fanned;
   /** The same frame to the other instances serving this room; best-effort by design (D09-B). */

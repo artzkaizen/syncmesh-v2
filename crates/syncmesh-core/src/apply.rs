@@ -82,11 +82,14 @@ pub fn apply_change(
             spec.entry(doc.table.clone())
                 .or_default()
                 .insert(doc.column.clone(), StrategyName::Lineage);
-            let cell = crate::doc::lineage_cell(&crate::doc::Genesis {
-                lineage,
-                parent: doc.parent,
-                stamp: stamp.clone(),
-            });
+            let cell = crate::doc::lineage_cell(
+                &crate::doc::Genesis {
+                    lineage,
+                    parent: doc.parent,
+                    stamp: stamp.clone(),
+                },
+                doc.settles.as_ref(),
+            );
             let incoming = RowRecord {
                 cells: BTreeMap::from([(doc.column.clone(), cell)]),
                 partition: partition.map(|p| p.as_str().to_owned()),

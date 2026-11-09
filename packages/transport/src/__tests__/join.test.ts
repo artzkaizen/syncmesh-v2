@@ -304,8 +304,8 @@ describe("who vouches for a snapshot (book ch. 4)", () => {
       table: "notes",
       key: "n1",
       column: "content",
-      version: 2,
-      message: "notes/n1.content: a lineage cell of version 2; this build runs version 1",
+      version: 3,
+      message: "notes/n1.content: a lineage cell of version 3; this build runs versions 1 and 2",
     });
     const refusing = {
       ...joiner,

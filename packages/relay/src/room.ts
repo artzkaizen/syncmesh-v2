@@ -7,7 +7,7 @@ import type {
   TelemetryListener,
 } from "@syncmesh/engine";
 import type { PeerId, SyncEvent } from "@syncmesh/kernel";
-import type { BlobHomes, BlobStore } from "@syncmesh/storage";
+import type { BlobHomes, BlobLedger, BlobStore } from "@syncmesh/storage";
 
 import { createHub, trackCoverage, type Unsubscribe } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
@@ -86,6 +86,12 @@ export interface RelayRoomOptions {
    */
   readonly blobHomes?: BlobHomes;
   /**
+   * What the rows this room has seen referenced (gaps U18), kept beside the bytes by every durable
+   * host so a trim of the log or a restart forgets none of it. Absent, the room keeps it in
+   * memory, which holds for as long as its log has never been trimmed.
+   */
+  readonly blobLedger?: BlobLedger;
+  /**
    * What this room stops keeping. Absent, it keeps everything, which is what it did before
    * the option existed — a cap that trims history is one an operator has to ask for.
    */
@@ -128,6 +134,11 @@ export interface RelayRoomOptions {
 export interface RelayRoom {
   /** The log's lineage id, as every `hello` announces it; a describe over HTTP reports the same one. */
   readonly epoch: string;
+  /**
+   * The key this room signs its link hello with (D36) — the one a client pins with `relayKey`, and
+   * the one a describe reports. The host's key unless the room's store supplied its own.
+   */
+  readonly peerId: PeerId;
   readonly connect: (socket: RelaySocket, options?: ConnectionOptions) => RelayConnection;
   /**
    * Entries this room's log holds, counted up from what was there when it opened. A retention
@@ -204,11 +215,14 @@ export async function openRelayRoom(
   const clients = new Map<PeerId, Client>();
   /** Room-serialized async work: offsets and acks stay ordered. */
   let queue: Promise<unknown> = Promise.resolve();
-  const retention = roomRetention({
+  const telemetry = roomTelemetry(options.onTelemetry);
+  const retained = await roomRetention({
     store,
     policy: options.retention,
     blobs: options.blobs,
     homes: options.blobHomes,
+    ledger: options.blobLedger,
+    report: telemetry.emit,
     ceiling: () => coverage.current().synced,
     booted: trimmed.value.synced,
     held: boot.value,
@@ -221,14 +235,17 @@ export async function openRelayRoom(
       return next;
     },
   });
-  // a listener that throws is dropped here and nowhere else: an observer must never be able to
-  // stop a relay forwarding bytes, and the relay has no error channel to report it down
-  const telemetry = createHub<TelemetryEvent>(() => undefined);
-  if (options.onTelemetry !== undefined) telemetry.subscribe(options.onTelemetry);
+  if (retained.isErr()) return Result.err(retained.error);
+  const retention = retained.value;
 
   const toClients = (frame: Uint8Array, except?: PeerId): void => {
     for (const client of clients.values()) {
       if (client.peer !== except) client.sender.send(frame);
+    }
+  };
+  const toClientsLatest = (slot: string | undefined, frame: Uint8Array, except?: PeerId): void => {
+    for (const client of clients.values()) {
+      if (client.peer !== except) client.sender.sendLatest(slot, frame);
     }
   };
   const toInterested = (frame: Uint8Array, event: SyncEvent, except?: PeerId): Fanned => {
@@ -272,6 +289,7 @@ export async function openRelayRoom(
     cursors,
     floor: retention.floor,
     toClients,
+    toClientsLatest,
     toInterested,
     publish: (frame) => fan?.publish(frame),
     offset: () => offset,
@@ -299,6 +317,7 @@ export async function openRelayRoom(
 
   return Result.ok({
     epoch,
+    peerId: identity.peerId,
     connect: (socket, options) => createConnection(socket, state, options),
     offset: () => offset,
     clients: () => clients.size,
@@ -331,6 +350,17 @@ function roomVersions(listed: readonly number[] | undefined): readonly number[] 
       `a relay room lists ${HANDSHAKE_VERSION} alone or leaves it out: the link handshake and the challenge cannot share one socket (got ${versions.join(", ")})`,
     );
   return versions;
+}
+
+/**
+ * The room's telemetry hub, with the host's listener on it from the first event. A listener that
+ * throws is dropped here and nowhere else: an observer must never be able to stop a relay
+ * forwarding bytes, and the relay has no error channel to report it down.
+ */
+function roomTelemetry(listener: TelemetryListener | undefined) {
+  const telemetry = createHub<TelemetryEvent>(() => undefined);
+  if (listener !== undefined) telemetry.subscribe(listener);
+  return telemetry;
 }
 
 /** The room's identity: the one it was given, or a fresh one. Throws when one cannot be made. */

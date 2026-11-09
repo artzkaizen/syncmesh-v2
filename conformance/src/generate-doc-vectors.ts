@@ -105,6 +105,21 @@ export function docVectors() {
         }),
       ]),
     ],
+    [
+      "a genesis that settles the walk at the seq-3 lineage: rule 2 in key 5, its anchor in key 7 (gaps U21)",
+      at(7, { procedure: procedure("notes.replace") }, [
+        doc({
+          lineage: deriveLineage(author.peerId, seq(7), 0),
+          genesis: true,
+          parent: deriveLineage(author.peerId, seq(6), 0),
+          settles: {
+            lineage: genesisLineage,
+            stamp: { hlc: hlcOf(T0 + 3, 0), peer: author.peerId },
+          },
+          update: { bytes: Uint8Array.of(7, 8, 9) },
+        }),
+      ]),
+    ],
   ];
 
   const lineages = (

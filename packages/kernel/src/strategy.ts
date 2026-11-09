@@ -1,5 +1,5 @@
 import type { TableName } from "./change.js";
-import type { CellRule } from "./doc.js";
+import type { CellRule } from "./lineage.js";
 import type { Ordering } from "./primitives.js";
 import type { Cell, CellValue, ColumnName, JsonValue } from "./record.js";
 
