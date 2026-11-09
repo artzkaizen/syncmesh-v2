@@ -43,8 +43,8 @@ pub const GENESIS_RULE: i64 = 1;
 pub const SETTLED_RULE: i64 = 2;
 
 /// Where a document's lineage walk is settled (gaps U21), as the TypeScript's `SettledLineage`: a
-/// lineage on the walk and its genesis's stamp. Every genesis stamped at or below it, but the
-/// anchor itself, leaves the lineage cell, and the walk starts at the anchor instead of the root.
+/// lineage on the walk and its genesis's stamp. Every genesis stamped at or below it, the anchor's
+/// own among them, leaves the lineage cell, and the walk starts at the anchor instead of the root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settled {
     pub lineage: Id16,
@@ -52,9 +52,12 @@ pub struct Settled {
 }
 
 impl Settled {
-    /// Whether this anchor has passed `genesis`: it is the anchor, or stamped at or below it.
+    /// Whether this anchor has passed `genesis`: it is stamped at or below the anchor's stamp, the
+    /// anchor's own genesis among them, as the TypeScript's `passed`. The stamp alone decides, so
+    /// dropping only grows as the anchor gets later and the join stays order-free even when an
+    /// anchor names a lineage at a stamp that is not its genesis's.
     fn passed(&self, genesis: &Genesis) -> bool {
-        genesis.lineage == self.lineage || genesis.stamp <= self.stamp
+        genesis.stamp <= self.stamp
     }
 
     /// The later of two anchors: the larger stamp, then the larger lineage.

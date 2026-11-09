@@ -165,6 +165,37 @@ fn reference(geneses: &[(Change, Stamp)]) -> Option<Id16> {
     current
 }
 
+/// A genesis that also settles at `anchor`: lineage `(fill, ms)`.
+fn settling(
+    fill: u8,
+    ms: i64,
+    p: u8,
+    parent: Option<u8>,
+    anchor: Option<(u8, i64, u8)>,
+) -> (Change, Stamp) {
+    let (change, stamp) = genesis(fill, ms, p, parent);
+    let Change::Doc(d) = change else {
+        unreachable!()
+    };
+    let settles = anchor.map(|(l, at, by)| Settled {
+        lineage: [l; 16],
+        stamp: Stamp::new(Hlc::new(at, 0), peer(by)),
+    });
+    (Change::Doc(DocChange { settles, ..d }), stamp)
+}
+
+#[test]
+fn an_anchor_naming_a_lineage_at_another_stamp_trims_the_same_cell_in_any_order() {
+    // each anchor is older than its event and names another lineage, so both pass validation,
+    // but neither stamp is its lineage's genesis stamp
+    let l = genesis(0xa, 10, 1, None);
+    let x = settling(0xb, 12, 2, Some(0xa), Some((0xa, 5, 1)));
+    let y = settling(0xc, 15, 3, None, Some((0xd, 7, 1)));
+    let forward = fold(&[l.clone(), x.clone(), y.clone()]);
+    assert_eq!(fold(&[y.clone(), l.clone(), x.clone()]), forward);
+    assert_eq!(fold(&[x, y, l]), forward);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 300, ..ProptestConfig::default() })]
 
@@ -290,6 +321,35 @@ proptest! {
                 prop_assert!(g.stamp > anchor.stamp && g.lineage != anchor.lineage);
             }
         }
+    }
+
+    /// Any number of anchors, honest or not — each older than its event and naming any lineage but
+    /// its own, at any stamp — join to one cell and one winner in every order and replay, as the
+    /// TypeScript's "any number of anchors" property.
+    #[test]
+    fn any_number_of_anchors_join_to_one_cell_in_every_order(
+        specs in proptest::collection::btree_map(
+            (1i64..21, 0u8..3),
+            (proptest::option::of(0u8..6), proptest::option::of((0u8..6, 0i64..20, 0u8..3)), any::<u32>()),
+            1..7,
+        ),
+    ) {
+        let all: Vec<(Change, Stamp)> = specs
+            .iter()
+            .enumerate()
+            .map(|(i, ((ms, p), (parent, anchor, _)))| {
+                let i = i as u8;
+                let parent = parent.filter(|&f| f != i);
+                let anchor = anchor.filter(|&(l, at, _)| l != i && at < *ms);
+                settling(i, *ms, *p, parent, anchor)
+            })
+            .collect();
+        let mut shuffled: Vec<_> = specs.values().map(|(_, _, o)| *o).zip(all.clone()).collect();
+        shuffled.sort_by_key(|(o, _)| *o);
+        let shuffled: Vec<_> = shuffled.into_iter().map(|(_, g)| g).collect();
+        let forward = fold(&all);
+        prop_assert_eq!(&fold(&shuffled), &forward);
+        prop_assert_eq!(&fold(&[shuffled.clone(), all.clone()].concat()), &forward);
     }
 
     /// Flips and truncations of the frozen insert+genesis frame: refused unless byte-identical.

@@ -476,4 +476,76 @@ describe("a settled anchor trims the lineage cell and keeps the walk (gaps U21)"
       { numRuns: 500, seed: 21 },
     );
   });
+  test("an anchor naming a lineage at another stamp trims the same cell in any order", () => {
+    const l = genesis(lineage("a"), stamp(10, 0, PEER_A));
+    // each anchor is older than its event and names another lineage, so both pass validation,
+    // but neither stamp is its lineage's genesis stamp
+    const x = genesis(lineage("b"), stamp(12, 0, PEER_B), lineage("a"), {
+      lineage: lineage("a"),
+      stamp: stamp(5, 0, PEER_A),
+    });
+    const y = genesis(lineage("c"), stamp(15, 0, PEER_C), undefined, {
+      lineage: lineage("d"),
+      stamp: stamp(7, 0, PEER_A),
+    });
+    const forward = cellAfter([l, x, y]);
+    expect(cellAfter([y, l, x])).toEqual(forward);
+    expect(cellAfter([x, y, l])).toEqual(forward);
+    // the later anchor (d at 7) has not passed `a`, stamped 10, so `a` stays
+    expect(readLineageCell(forward).geneses.map((g) => g.lineage)).toContain(lineage("a"));
+  });
+
+  test("any number of anchors, honest or not, join to one cell in any order", () => {
+    const peers = [PEER_A, PEER_B, PEER_C];
+    const arbitrary = fc
+      .uniqueArray(
+        fc.record({
+          ms: fc.integer({ min: 1, max: 20 }),
+          peer: fc.nat({ max: 2 }),
+          parent: fc.option(fc.nat({ max: 5 }), { nil: undefined }),
+          anchor: fc.option(
+            fc.record({
+              lineage: fc.nat({ max: 5 }),
+              ms: fc.nat({ max: 19 }),
+              peer: fc.nat({ max: 2 }),
+            }),
+            { nil: undefined },
+          ),
+        }),
+        { minLength: 1, maxLength: 6, selector: ({ ms, peer }) => `${ms}/${peer}` },
+      )
+      .chain((gs) =>
+        fc.tuple(
+          fc.constant(gs),
+          fc.array(fc.nat(), { minLength: gs.length, maxLength: gs.length }),
+        ),
+      );
+    fc.assert(
+      fc.property(arbitrary, ([gs, order]) => {
+        const all = gs.map(({ ms, peer, parent, anchor }, i) =>
+          genesis(
+            lineage(i.toString(16)),
+            stamp(ms, 0, peers[peer] ?? PEER_A),
+            parent === undefined || parent === i ? undefined : lineage(parent.toString(16)),
+            // an anchor older than its event, naming any lineage but its own, at any stamp
+            anchor === undefined || anchor.lineage === i || anchor.ms >= ms
+              ? undefined
+              : {
+                  lineage: lineage(anchor.lineage.toString(16)),
+                  stamp: stamp(anchor.ms, 0, peers[anchor.peer] ?? PEER_A),
+                },
+          ),
+        );
+        const shuffled = all
+          .map((g, i) => [order[i] ?? 0, g] as const)
+          .sort(([x], [y]) => x - y)
+          .map(([, g]) => g);
+        const forward = canonicalState(applyAll(all));
+        expect(canonicalState(applyAll(shuffled))).toBe(forward);
+        expect(canonicalState(applyAll([...shuffled, ...all]))).toBe(forward);
+        expect(lineageAfter(shuffled)).toBe(lineageAfter(all));
+      }),
+      { numRuns: 1000, seed: 39 },
+    );
+  });
 });

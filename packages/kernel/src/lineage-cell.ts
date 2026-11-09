@@ -36,8 +36,8 @@ export interface Genesis {
 /**
  * Where a document's lineage walk is settled (gaps U21): a lineage on the walk and its genesis's
  * stamp. A genesis carries one (data key 7) when the lineage it names was replaced long enough ago
- * that no sibling stamped before it can still arrive. Every genesis at or below that stamp, but the
- * anchor itself, then leaves the lineage cell, and the walk starts at the anchor instead of the
+ * that no sibling stamped before it can still arrive. Every genesis at or below that stamp, the
+ * anchor's own among them, then leaves the lineage cell, and the walk starts at the anchor instead of the
  * root — which is what keeps the cell from growing with every `replace()`.
  */
 export interface SettledLineage {
@@ -251,12 +251,14 @@ export const laterAnchor = (
 };
 
 /**
- * Whether `settled` has passed `genesis`: it is the anchor itself, or stamped at or below it. A
- * passed genesis is off the walk for good, so the cell drops it.
+ * Whether `settled` has passed `genesis`: it is stamped at or below the anchor's stamp — the
+ * anchor's own genesis among them, stamped exactly there. A passed genesis is off the walk for
+ * good, so the cell drops it. The test reads the stamp alone, never the lineage the anchor names,
+ * so dropping only grows as the anchor gets later, and the join stays order-free even when an
+ * anchor names a lineage at a stamp that is not its genesis's.
  */
 export const passed = (genesis: Genesis, settled: SettledLineage | undefined) =>
-  settled !== undefined &&
-  (genesis.lineage === settled.lineage || compareStamp(genesis.stamp, settled.stamp) <= 0);
+  settled !== undefined && compareStamp(genesis.stamp, settled.stamp) <= 0;
 
 /**
  * A cell's value from its geneses and anchor, in normal form: a genesis the anchor passed is

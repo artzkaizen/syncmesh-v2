@@ -95,10 +95,11 @@ export function settleWalk(
  * anchors, with every genesis that anchor passed dropped (see {@link writeCell}). A lattice join —
  * commutative, associative, idempotent — so peers folding the same geneses in any order hold the
  * same cell, and the winner is read from it by {@link winningLineage}, never stored. Dropping is a
- * property of each genesis against the one anchor every peer converges on, so a cell trimmed here
- * and a cell not yet trimmed there join to the same value. Two entries for one lineage only come
- * from an author who signed two events at one sequence; the first by {@link firstGenesis} is
- * kept, on every peer alike. The cell's stamp is the later of the two.
+ * property of each genesis's stamp against the one anchor every peer converges on, so a cell
+ * trimmed here and a cell not yet trimmed there join to the same value. Two entries for one
+ * lineage only come from an author who signed two events at one sequence; the first by
+ * {@link firstGenesis} is kept, and with an anchor stamped between the two that is the one case
+ * where arrival order shows (RFC-0023 §16.1). The cell's stamp is the later of the two.
  */
 export const lineageRule: Strategy = (incoming, current) => {
   const held = readLineageCell(current?.value);
