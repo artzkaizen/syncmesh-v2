@@ -1,8 +1,9 @@
-//! The one piece of IO in this crate: a tokio task that dials a relay over a WebSocket and runs a
-//! [`RelayLink`] against it. Everything the link decides, it decides sans-IO; this loop only
-//! moves bytes, sleeps when told to, and turns the link's facts into [`LinkEvent`]s on a channel.
+//! The IO in this crate: a tokio task that dials a relay over a WebSocket and runs a [`RelayLink`]
+//! against it, and one that runs a [`PeerLink`] over any [`PeerMedium`] (gap U3's radios).
+//! Everything a link decides, it decides sans-IO; these loops only move bytes, sleep when told to,
+//! and turn the link's facts into events on a channel.
 //!
-//! The host talks to the running link through [`LinkCommand`]s and keeps the engine behind a
+//! The host talks to a running link through commands and keeps the engine behind a
 //! mutex it shares with the task, so a write made on the host's own thread and the fold of a
 //! relayed event never interleave inside the engine.
 
@@ -16,6 +17,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::blobs::PutRefusal;
 use crate::engine::{Engine, FoldBatch};
+use crate::peer::{PeerAction, PeerLink, PeerOptions};
 use crate::relay::{Action, RelayLink};
 use crate::store::{Cursors, StoredEvent};
 
@@ -367,5 +369,215 @@ pub async fn serve_room(listener: tokio::net::TcpListener, room: crate::room::Ro
                 .unwrap_or_else(PoisonError::into_inner)
                 .closed(id);
         });
+    }
+}
+
+// --- peer links -------------------------------------------------------------------------------
+
+/// A byte duplex a [`PeerLink`] runs over: a TCP socket, a Wi-Fi Aware data path, a WebSocket, a
+/// BLE characteristic's writes and notifications. [`StreamMedium`] adapts anything that is
+/// `AsyncRead + AsyncWrite`; [`MessageMedium`] anything that is a `Stream` and a `Sink` of whole
+/// messages. A medium of another shape implements this directly.
+///
+/// `write` must fail when the bytes did not leave: a loud failure ends the link and the next one
+/// resyncs from the cursors, a silent one leaves two devices believing different things.
+pub trait PeerMedium: Send {
+    /// The next read, or `None` once the medium has closed. Must be cancel-safe: the driver drops
+    /// a pending read when a command or a deadline comes first.
+    fn read(&mut self) -> impl std::future::Future<Output = Option<Vec<u8>>> + Send;
+    fn write(
+        &mut self,
+        bytes: Vec<u8>,
+    ) -> impl std::future::Future<Output = std::io::Result<()>> + Send;
+    fn close(&mut self) -> impl std::future::Future<Output = ()> + Send;
+}
+
+/// A medium that streams bytes with no boundaries; pair it with [`crate::peer::Framing::Stream`].
+#[derive(Debug)]
+pub struct StreamMedium<S> {
+    inner: S,
+    buffer: Vec<u8>,
+}
+
+impl<S> StreamMedium<S> {
+    pub fn new(inner: S) -> StreamMedium<S> {
+        StreamMedium {
+            inner,
+            buffer: vec![0; 64 * 1024],
+        }
+    }
+}
+
+impl<S> PeerMedium for StreamMedium<S>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+{
+    async fn read(&mut self) -> Option<Vec<u8>> {
+        use tokio::io::AsyncReadExt;
+        match self.inner.read(&mut self.buffer).await {
+            Ok(0) | Err(_) => None,
+            Ok(n) => Some(self.buffer[..n].to_vec()),
+        }
+    }
+
+    async fn write(&mut self, bytes: Vec<u8>) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        self.inner.write_all(&bytes).await?;
+        self.inner.flush().await
+    }
+
+    async fn close(&mut self) {
+        use tokio::io::AsyncWriteExt;
+        let _ = self.inner.shutdown().await;
+    }
+}
+
+/// A medium that keeps message boundaries; pair it with [`crate::peer::Framing::Messages`], or
+/// [`crate::peer::Framing::Fragments`] when each message is one BLE write.
+#[derive(Debug)]
+pub struct MessageMedium<T> {
+    inner: T,
+}
+
+impl<T> MessageMedium<T> {
+    pub fn new(inner: T) -> MessageMedium<T> {
+        MessageMedium { inner }
+    }
+}
+
+impl<T, E> PeerMedium for MessageMedium<T>
+where
+    T: futures_util::Stream<Item = Result<Vec<u8>, E>>
+        + futures_util::Sink<Vec<u8>, Error = E>
+        + Unpin
+        + Send,
+    E: std::fmt::Display + Send,
+{
+    async fn read(&mut self) -> Option<Vec<u8>> {
+        self.inner.next().await?.ok()
+    }
+
+    async fn write(&mut self, bytes: Vec<u8>) -> std::io::Result<()> {
+        self.inner
+            .send(bytes)
+            .await
+            .map_err(|e| std::io::Error::other(e.to_string()))
+    }
+
+    async fn close(&mut self) {
+        let _ = self.inner.close().await;
+    }
+}
+
+/// What a host asks of a running peer link.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a write is the command a link carries most; boxing it would allocate per write"
+)]
+pub enum PeerCommand {
+    /// This device wrote something (the entry `Engine::mutate` returned).
+    Write(StoredEvent),
+    Presence(Vec<u8>),
+    Grants(Vec<Vec<u8>>),
+    RequestGrant(Option<String>),
+    /// Ask for state rather than history (RFC-0019).
+    RequestSnapshot {
+        interest: Option<crate::interest::Interest>,
+        adopt_unvouched: bool,
+    },
+    /// Consent to install unvouched state from this peer up to its floor (D46).
+    AcceptFloor,
+    /// Something folded from another source; tell the peer where this device stands now.
+    RemoteFold,
+    Resync,
+    Close,
+}
+
+fn apply_peer(
+    link: &mut PeerLink,
+    engine: &Arc<Mutex<Engine>>,
+    command: PeerCommand,
+) -> Vec<PeerAction> {
+    let engine = || engine.lock().unwrap_or_else(PoisonError::into_inner);
+    match command {
+        PeerCommand::Write(entry) => link.on_local_write(&entry),
+        PeerCommand::Presence(wire) => link.send_presence(&wire),
+        PeerCommand::Grants(wires) => link.send_grants(&wires),
+        PeerCommand::RequestGrant(invite) => link.request_grant(invite.as_deref()),
+        PeerCommand::RequestSnapshot {
+            interest,
+            adopt_unvouched,
+        } => link.request_snapshot(interest.as_ref(), adopt_unvouched).1,
+        PeerCommand::AcceptFloor => link.accept_floor(&engine()).1,
+        PeerCommand::RemoteFold => link.on_remote_fold(&engine()),
+        PeerCommand::Resync => link.resync(&engine()),
+        PeerCommand::Close => link.close(),
+    }
+}
+
+/// Runs one peer link over `medium` until either end closes it. Sends our hello at once — both
+/// ends speak first — feeds every read to the link, ticks it at its deadline, writes what it asks,
+/// and reports its facts on `events`, the last of which is [`PeerAction::Ended`].
+pub async fn run_peer<M: PeerMedium>(
+    identity: syncmesh_core::identity::Identity,
+    options: PeerOptions,
+    engine: Arc<Mutex<Engine>>,
+    mut medium: M,
+    mut commands: mpsc::Receiver<PeerCommand>,
+    events: mpsc::Sender<PeerAction>,
+) {
+    let (mut link, first) = PeerLink::open(identity, options, now_ms());
+    let mut actions = first;
+    let reason = loop {
+        let mut close = None;
+        for action in actions {
+            match action {
+                PeerAction::Send(bytes) => {
+                    if close.is_none() && medium.write(bytes).await.is_err() {
+                        close = Some("the frame did not leave the medium".to_owned());
+                    }
+                }
+                PeerAction::SendLatest { units, .. } => {
+                    for bytes in units {
+                        if close.is_none() && medium.write(bytes).await.is_err() {
+                            close = Some("the frame did not leave the medium".to_owned());
+                        }
+                    }
+                }
+                PeerAction::Close { reason } => close = close.or(Some(reason)),
+                fact => {
+                    // a host that stopped listening has stopped caring; the link runs on
+                    let _ = events.send(fact).await;
+                }
+            }
+        }
+        if let Some(reason) = close {
+            medium.close().await;
+            break reason;
+        }
+        let deadline = link.next_deadline_ms();
+        let until = Duration::from_millis(deadline.map_or(0, |d| (d - now_ms()).max(0)) as u64);
+        actions = tokio::select! {
+            read = medium.read() => match read {
+                Some(bytes) => {
+                    let mut engine = engine.lock().unwrap_or_else(PoisonError::into_inner);
+                    link.on_bytes(&mut engine, &bytes, now_ms())
+                }
+                None => break "the medium closed".to_owned(),
+            },
+            command = commands.recv() => match command {
+                Some(command) => apply_peer(&mut link, &engine, command),
+                None => link.close(),
+            },
+            _ = tokio::time::sleep(until), if deadline.is_some() => {
+                let engine = engine.lock().unwrap_or_else(PoisonError::into_inner);
+                link.on_tick(&engine, now_ms())
+            }
+        };
+    };
+    for fact in link.on_closed(&reason) {
+        let _ = events.send(fact).await;
     }
 }

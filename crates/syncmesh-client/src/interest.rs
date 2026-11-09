@@ -96,6 +96,27 @@ pub fn interest_text(interest: Option<&Interest>) -> String {
     })
 }
 
+/// The slice a digest was counted over, as the TypeScript's `interestKey` writes it: the sorted
+/// partitions (`null` for every one) in a JSON array, and the window's `newest` after them when
+/// there is one. Two peers compare fingerprints only when they wrote the same key.
+///
+/// ```
+/// use syncmesh_client::{Interest, interest_key};
+/// assert_eq!(interest_key(None), "[null]");
+/// ```
+pub fn interest_key(interest: Option<&Interest>) -> String {
+    let partitions = interest.and_then(|i| i.partitions.as_ref()).map(|list| {
+        let mut names: Vec<&str> = list.iter().map(PartitionKey::as_str).collect();
+        names.sort_by(|a, b| syncmesh_core::cbor::cmp_utf16(a, b));
+        names
+    });
+    let partitions = serde_json::json!(partitions).to_string();
+    match interest.and_then(|i| i.window) {
+        Some(window) => format!("[{partitions},{}]", window.newest()),
+        None => format!("[{partitions}]"),
+    }
+}
+
 /// A scope as the TypeScript relay's `scopeText` writes it (D23, D24): the interest's text, or
 /// with an entitlement the interest's fields and then `entitlement`.
 pub fn scope_text(interest: Option<&Interest>, entitlement: Option<&str>) -> String {

@@ -7,13 +7,13 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use syncmesh_client::driver::serve_room;
+use syncmesh_client::driver::{StreamMedium, serve_room};
 use syncmesh_client::mesh::{Mesh, MeshEvent, MeshOptions};
 use syncmesh_client::relay::RelayOptions;
 use syncmesh_client::room::{Room, RoomOptions};
 use syncmesh_client::{
     BelowFloorReason, Cursors, Engine, EngineOptions, FloorSource, Manifest, MemoryEventStore,
-    ValidatorOptions,
+    PeerAction, PeerOptions, ValidatorOptions,
 };
 use syncmesh_core::event::{Change, PartitionKey};
 use syncmesh_core::grant::{GrantRequest, issue_grant};
@@ -486,4 +486,66 @@ async fn a_device_the_room_refuses_with_retention_waits_for_the_floor_instead_of
     .await
     .expect("the link dialled again once it held the floor");
     mesh.stop().await;
+}
+
+#[tokio::test]
+async fn two_meshes_with_no_relay_to_reach_converge_over_a_peer_link() {
+    // a port nothing listens on: the relay link dials and fails, and keeps failing
+    let nowhere = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!(
+        "ws://127.0.0.1:{}/nowhere",
+        nowhere.local_addr().unwrap().port()
+    );
+    drop(nowhere);
+    let key = Identity::from_seed(&[9; 32]).peer_id().clone();
+    let partition = PartitionKey::parse("project:demo").unwrap();
+    let mut a = device(1, &url, &key);
+    let mut b = device(2, &url, &key);
+    a.mutate("notes.create", vec![insert("n1", "offline")], None)
+        .unwrap();
+
+    // a cable between them: any byte duplex does
+    let (x, y) = tokio::io::duplex(64 * 1024);
+    let handle = tokio::runtime::Handle::current();
+    // no keepalive: nothing but the mesh handing a write on would carry it
+    let cable = || PeerOptions {
+        name: "cable".to_owned(),
+        keepalive_ms: None,
+        ..PeerOptions::default()
+    };
+    a.attach_peer(StreamMedium::new(x), cable(), &handle);
+    b.attach_peer(StreamMedium::new(y), cable(), &handle);
+    until(&mut a, |e| {
+        matches!(e, MeshEvent::Peer { link, fact: PeerAction::Established(peer) }
+            if link == "cable" && peer == Identity::from_seed(&[2; 32]).peer_id())
+    })
+    .await;
+    until(
+        &mut b,
+        |e| matches!(e, MeshEvent::Folded(batch) if batch.write_keys["notes"].contains("n1")),
+    )
+    .await;
+
+    // live writes and presence ride the peer link as they would the relay
+    b.mutate("notes.create", vec![insert("n2", "back")], None)
+        .unwrap();
+    until(
+        &mut a,
+        |e| matches!(e, MeshEvent::Folded(batch) if batch.write_keys["notes"].contains("n2")),
+    )
+    .await;
+    let mut value = BTreeMap::new();
+    value.insert("x".to_owned(), CellValue::Number(4.0));
+    // a short TTL: stopping waits out the heartbeat it sets
+    b.presence_set("cursor", &partition, value, 3_000);
+    until(&mut a, |e| matches!(e, MeshEvent::Presence(_))).await;
+    let here = a.presence_peers("cursor", &partition);
+    assert!(
+        here.iter()
+            .any(|entry| &entry.peer_id == Identity::from_seed(&[2; 32]).peer_id()),
+        "{here:?}"
+    );
+    assert_eq!(a.engine().state(), b.engine().state());
+    a.stop().await;
+    b.stop().await;
 }
