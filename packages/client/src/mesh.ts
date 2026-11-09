@@ -285,7 +285,7 @@ function assemble<C extends ColumnsMap, D extends SqlDialect, PC extends Presenc
     },
     transports: transportsSurface(links),
     stop: async () => {
-      await docs?.stop(); // a paced burst, and a blob waiting on a carrier, go before transports close
+      await docs?.stop(); // a paced burst goes, and a blob offer under way ends, before transports close
       swept.stop();
       wired.stop();
       syncStates.stop();

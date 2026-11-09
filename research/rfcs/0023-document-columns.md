@@ -242,7 +242,8 @@ is the hook. `mesh.docs.lineages(address)` lists every history with its winner,
 "recover the other version"). A lineage is rebuilt from the snapshot this device holds of it,
 when the one held is of it, then every update of it that snapshot does not hold. What can no
 longer be read back is counted as `lost` — updates whose events compaction took once a later
-materialisation replaced that lineage's snapshot, a genesis never received, or a root whose
+materialisation replaced that lineage's snapshot, a genesis never received (proved by its event
+once an anchor has trimmed it from the cell), or a root whose
 history an installed snapshot adopted without events — and `restore` refuses a lineage with
 anything `lost` or `missing` (`LineageIncomplete`) rather than publish part of it. Combining two
 lineages into one is not offered: an app that wants both versions merged opens both and writes
@@ -1018,8 +1019,14 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    key 7, `settles`, with genesis key 5 written as `2`. Folding it moves the cell to
    `[2, geneses, anchor]`: the walk starts at the anchor, and every genesis stamped at or below
    the anchor's stamp, the anchor's own included, leaves the cell. Of two anchors the later stamp
-   (then the larger lineage) holds. Dropping is a property of each genesis against the one anchor
-   every peer converges on, so the join stays a lattice join and a trimmed cell and an untrimmed
+   (then the larger lineage) holds. Dropping reads the genesis's stamp alone, never the lineage
+   the anchor names: a member can sign an anchor whose stamp is not its lineage's genesis stamp
+   (the validator never holds that genesis), and a test that also dropped "the anchor's own
+   lineage, whatever its stamp" let an earlier, smaller anchor drop a genesis the later one keeps,
+   which made the join depend on arrival order (found in #39's second fix round; both runtimes
+   now test several anchors at mismatched stamps in every order). Dropping is a property of each
+   genesis against the one anchor every peer converges on, and grows only as that anchor gets
+   later, so the join stays a lattice join and a trimmed cell and an untrimmed
    one join to the same value (the permutation tests in `kernel/doc.test` and
    `syncmesh-core/tests/doc_fold.rs`, and `doc-vectors.json`'s settled trees, in both runtimes).
    The validator refuses an anchor naming its own genesis or stamped no earlier than its event;
@@ -1042,7 +1049,8 @@ Answered by Jace on 2026-11-08, except 4. Each entry says the rule as built.
    validator checks only that an anchor is older than its event, so a build without the floor
    can still write a shorter one, and peers trust it — and only
    a genesis may carry key 7: the validators of both runtimes refuse it on an edit, as the codecs
-   do. **Known gap:** an author that signs two geneses at one sequence (equivocation) puts one
+   do. **Known gap:** the one order-dependence left is equivocation. An author that signs two
+   geneses at one sequence puts one
    lineage in the cell twice; the join keeps the first by stamp, and with an anchor between the
    two stamps the result depends on the order the three meet. Only a Byzantine author reaches
    it; keeping the later stamp per lineage would make the join associative again, and changes

@@ -48,7 +48,11 @@ export interface DocCarriers {
 /** A mesh's document runtime, and how it stops. */
 export interface MeshDocsRuntime {
   readonly documents: Documents;
-  /** Sends every burst still waiting on its pacing and every blob still waiting on a carrier, then stops. */
+  /**
+   * Sends every burst still waiting on its pacing, waits for a blob offer already under way, then
+   * stops. A blob still waiting on a carrier stays in this device's store, and the next start
+   * offers it again on its first link.
+   */
   readonly stop: () => Promise<void>;
 }
 
