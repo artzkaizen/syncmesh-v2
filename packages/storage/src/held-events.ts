@@ -1,5 +1,5 @@
 import type { StoreFailure } from "@syncmesh/engine";
-import type { EventId } from "@syncmesh/kernel";
+import type { EventId, PeerId, SeqNum } from "@syncmesh/kernel";
 
 import { eventId, parseEventId, parsePeerId, parseSeqNum } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
@@ -38,3 +38,35 @@ export const createHolding =
       );
       return Result.all(rows.map(heldId)).map((held) => new Set(held));
     });
+
+/** A row of the log read for its place in its author's run, decoded only if it is wanted. */
+export interface Placed {
+  readonly event: { readonly peerId: PeerId; readonly seqNum: SeqNum; readonly local: boolean };
+  readonly partition: string | null;
+  readonly row: SqlRow;
+}
+
+/**
+ * `(core, local, sig, peer, seq, partition)` rows as places in their authors' runs, cores left
+ * encoded: what a filtered read checks for holes before it decodes the events it keeps.
+ */
+export const parsePlaced = (rows: readonly SqlRow[]): Result<readonly Placed[], StoreFailure> =>
+  Result.all(
+    rows.map((row) =>
+      Result.gen(function* () {
+        const [, local, , peer, seq, partition] = row;
+        const peerId = yield* parsePeerId(String(peer)).mapError(
+          failure("stored peer id is invalid"),
+        );
+        const seqNum = yield* parseSeqNum(Number(seq)).mapError(
+          failure("stored sequence is invalid"),
+        );
+        const at = { peerId, seqNum, local: Number(local) === 1 };
+        return Result.ok({
+          event: at,
+          partition: partition === null ? null : String(partition),
+          row,
+        });
+      }),
+    ),
+  );

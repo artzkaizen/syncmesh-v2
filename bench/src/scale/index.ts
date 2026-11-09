@@ -29,8 +29,14 @@ import {
   parseSeqNum,
   parsePeerId,
 } from "@syncmesh/kernel";
+import { t, table } from "@syncmesh/schema";
+import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
+import { openStores, schemaName } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { encodeCbor, encodeEventCore, newContentKey, sealPayload } from "@syncmesh/wire";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { fanoutRoom } from "./fanout-room.js";
 import { path, runScale } from "./harness.js";
@@ -42,6 +48,13 @@ const ZERO = 0 as Logical;
 const column = (name: string) => name as ColumnName;
 const key = (n: number) => `n${n}` as RowKey;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
+
+/** The table the events below write, as an app declares it: what a durable store projects into. */
+const NOTES_TABLE = table("notes", {
+  title: t.text().primaryKey(),
+  done: t.boolean(),
+  body: t.text(),
+});
 
 const PEER = parsePeerId("a".repeat(64)).unwrap();
 /** The device that receives: never the author, so what it folds is somebody else's. */
@@ -224,6 +237,41 @@ await runScale([
       return { engine, next: () => ({ event: event((next += 1), rows) }) };
     },
     run: async ({ engine, next }) => (await engine.receive(next())).unwrap(),
+  }),
+
+  path({
+    name: "storage · receive one event into SQLite (log, state and tables)",
+    growth: "constant",
+    because:
+      "Receiving one event into a durable store asks the log for its author's head, appends it, and writes the row to the state sidecar, the row-sync table and the app's table. Cost that tracks the events already held means a statement reads the author's run rather than the end of its key — the head read did, through a MAX over a UNION, until the ten-million ladder found it (gaps O17).",
+    sizes: [1_000, 4_000, 16_000],
+    /** About 150 µs on a laptop at every size: a transaction of a few statements. */
+    budget: 5_000,
+    prepare: async (rows) => {
+      const dir = mkdtempSync(join(tmpdir(), "syncmesh-scale-"));
+      const driver = bunSqliteDriver(join(dir, "receive.db"), schemaName([NOTES_TABLE]));
+      const stores = (await openStores(driver, { tables: [NOTES_TABLE] })).unwrap();
+      const engine = createEngine({
+        peerId: DEVICE,
+        clock: createHlcClock({ now: () => Temporal.Now.instant() }),
+        store: stores.events,
+        stateStore: stores.state,
+        atomic: stores.atomic,
+      });
+      for (let at = 0; at < rows; at += 1_000) {
+        const page = Array.from({ length: Math.min(1_000, rows - at) }, (_, i) => ({
+          event: event(at + i + 1, rows),
+        }));
+        (await engine.receiveBatch(page)).unwrap();
+      }
+      let next = rows;
+      return { engine, dir, driver, next: () => ({ event: event((next += 1), rows) }) };
+    },
+    run: async ({ engine, next }) => (await engine.receive(next())).unwrap(),
+    release: async ({ driver, dir }) => {
+      await driver.close?.();
+      rmSync(dir, { recursive: true, force: true });
+    },
   }),
 
   path({

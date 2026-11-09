@@ -69,7 +69,35 @@ const heldCase = (openDriver: OpenDriver): SuiteCase => ({
   },
 });
 
+/** Rows a commit writes as several multi-row statements, and a load reads back in pages. */
+const manyCase = (openDriver: OpenDriver): SuiteCase => ({
+  name: "state: a commit of many rows lands as chunks, a key written twice keeps its last, and a paged load reads them all",
+  run: async () => {
+    const driver = await openDriver("state-many");
+    const store = await open(driver);
+    const keys = Array.from({ length: 1_300 }, (_, i) => `k${i}`);
+    const rows = keys.map((key, i) => ({
+      table: NOTES,
+      // SAFETY: suite keys, brands over the strings they name
+      key: key as typeof N1,
+      record: record(`body ${i}`, 1 + i),
+    }));
+    const [first] = rows;
+    if (first === undefined) throw new Error("the rows are fixed");
+    (await store.commit([...rows, { ...first, record: record("last", 5_000) }], coverage)).unwrap();
+    const paged = (await sqlStateStore(driver, { loadPage: 100 })).unwrap();
+    const loaded = (await paged.loadAll()).unwrap().get(NOTES);
+    equal(loaded?.size, 1_300, "every row");
+    equal(loaded?.has(N1), false, "no stray row");
+    const text = (key: string) =>
+      // SAFETY: as above
+      JSON.stringify(loaded?.get(key as typeof N1)?.cells.get(BODY)?.value ?? null);
+    equal([text("k0"), text("k1299")], ['"last"', '"body 1299"'], "values");
+  },
+});
+
 export const stateCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
+  manyCase(openDriver),
   {
     name: "state: remove drops a row and keeps the cursors (D45)",
     run: async () => {

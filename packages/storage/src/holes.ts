@@ -1,4 +1,4 @@
-import type { Coverage, StoredEvent } from "@syncmesh/engine";
+import type { Coverage } from "@syncmesh/engine";
 import type { PeerId } from "@syncmesh/kernel";
 
 import type { SqlRow } from "./driver.js";
@@ -27,8 +27,13 @@ const runKey = (peer: PeerId, local: boolean): string => `${local ? 1 : 0}:${pee
  * Nothing above an author's highest returned sequence is a hole here. A tear that takes an
  * author's newest events leaves no later event to show the gap; `lastSeq` refuses that page.
  */
+/** Where an entry sits in its author's run: all a hole check reads of it. */
+export interface Positioned {
+  readonly event: { readonly peerId: PeerId; readonly seqNum: number; readonly local?: boolean };
+}
+
 export function readHoles(
-  entries: readonly StoredEvent[],
+  entries: readonly Positioned[],
   start: (peer: PeerId, local: boolean) => number,
 ): readonly Hole[] {
   const runs = new Map<string, { peer: PeerId; local: boolean; seqs: number[] }>();

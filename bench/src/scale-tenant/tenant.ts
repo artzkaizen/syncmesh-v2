@@ -68,6 +68,13 @@ export const TABLES = [
 ];
 
 export const CHANGES_PER_EVENT = 10;
+
+/**
+ * What every event carries where a signature goes: never verified here (`join` measures that),
+ * but present, as on every event a relay delivers. An unsigned event from another author is a
+ * write this authority could never send, and boot reads every one of those back to say so.
+ */
+const SIGNED = new Uint8Array(64).fill(7);
 export const AUTHORS = 16;
 
 /** Cumulative weights over {@link TABLES}, in that order: activity and messages dominate. */
@@ -230,6 +237,7 @@ export function tenant(options: { readonly partitions: number; readonly seed: nu
           changes: Array.from({ length: CHANGES_PER_EVENT }, () => change(mode, team, clock)),
           partition: partitions[team] ?? panic("the team was drawn from the list"),
         },
+        sig: SIGNED,
       };
     });
 

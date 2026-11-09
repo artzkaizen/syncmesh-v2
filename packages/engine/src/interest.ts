@@ -320,7 +320,7 @@ export async function eventsWanted(
   theirs: Cursors,
   interest: Interest | undefined,
 ): Promise<Result<readonly StoredEvent[], StoreFailure>> {
-  const entries = await store.allSince(theirs);
+  const entries = await store.allSince(theirs, "synced", interest?.partitions);
   if (interest === undefined || entries.isErr()) return entries;
   return entries.map((all) => all.filter((entry) => matchesInterest(interest, entry.event)));
 }

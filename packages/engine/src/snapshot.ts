@@ -88,9 +88,9 @@ export function stateSnapshot(
   const { interest, localTable } = options;
   // tombstones travel: without them a joiner would resurrect every row anyone deleted; a local
   // table's rows never do, whatever the interest, because nothing but this device may hold them
-  const sliced = [...keyedRecords(state)].filter(
-    ({ table, record }) => localTable?.(table) !== true && rowsIn(record, interest),
-  );
+  const sliced: KeyedRecord[] = [];
+  for (const row of keyedRecords(state))
+    if (localTable?.(row.table) !== true && rowsIn(row.record, interest)) sliced.push(row);
   const window = wholeWindow(interest?.window);
   const rows = window === undefined ? sliced : windowRows(sliced, window);
   // the floor and the held run are this device's own account of its log, never part of what it

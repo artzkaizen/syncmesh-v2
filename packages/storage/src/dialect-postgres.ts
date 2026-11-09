@@ -171,7 +171,7 @@ export const POSTGRES: Dialect = {
       FROM syncmesh.events
       WHERE hlc_ms < $1 OR (hlc_ms = $1 AND hlc_logical < $2)
       ORDER BY hlc_ms DESC, hlc_logical DESC LIMIT $3`,
-    selectSince: `SELECT e.core, e.local, e.sig FROM syncmesh.events e
+    selectSince: `SELECT e.core, e.local, e.sig, e.peer, e.seq, e.partition FROM syncmesh.events e
       WHERE e.local = $1
         AND e.seq > COALESCE((SELECT f.value::bigint FROM jsonb_each_text($2::text::jsonb) AS f WHERE f.key = e.peer), 0)
       ORDER BY e.peer, e.seq`,
@@ -199,6 +199,7 @@ export const POSTGRES: Dialect = {
             THEN GREATEST(syncmesh.compaction.hlc_logical, excluded.hlc_logical)
           ELSE syncmesh.compaction.hlc_logical END,
         hlc_ms = GREATEST(syncmesh.compaction.hlc_ms, excluded.hlc_ms)`,
+    selectFloorStamps: `SELECT peer, hlc_ms, hlc_logical FROM syncmesh.compaction WHERE local = 0`,
     selectFloors: `SELECT peer, local, seq FROM syncmesh.compaction`,
     deleteEvent: `DELETE FROM syncmesh.events WHERE peer = $1 AND seq = $2 AND local = $3`,
     selectMaxHlc: `SELECT hlc_ms, hlc_logical FROM (

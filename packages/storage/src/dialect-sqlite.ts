@@ -217,7 +217,7 @@ const sqliteDialect = (log: LogPlacement): Dialect => {
       selectRecent: `SELECT peer, seq, local, hlc_ms, hlc_logical, partition, length(core) FROM ${t("events")}
         WHERE hlc_ms < ?1 OR (hlc_ms = ?1 AND hlc_logical < ?2)
         ORDER BY hlc_ms DESC, hlc_logical DESC LIMIT ?3`,
-      selectSince: `SELECT core, local, sig FROM ${t("events")}
+      selectSince: `SELECT core, local, sig, peer, seq, partition FROM ${t("events")}
         WHERE local = ?
           AND seq > COALESCE((SELECT value FROM json_each(?) WHERE key = ${t("events")}.peer), 0)
         ORDER BY peer, seq`,
@@ -244,6 +244,7 @@ const sqliteDialect = (log: LogPlacement): Dialect => {
             WHEN excluded.hlc_ms = hlc_ms THEN MAX(hlc_logical, excluded.hlc_logical)
             ELSE hlc_logical END,
           hlc_ms = MAX(hlc_ms, excluded.hlc_ms)`,
+      selectFloorStamps: `SELECT peer, hlc_ms, hlc_logical FROM ${t("compaction")} WHERE local = 0`,
       selectFloors: `SELECT peer, local, seq FROM ${t("compaction")}`,
       deleteEvent: `DELETE FROM ${t("events")} WHERE peer = ? AND seq = ? AND local = ?`,
       selectMaxHlc: `SELECT hlc_ms, hlc_logical FROM (

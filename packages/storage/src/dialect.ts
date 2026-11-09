@@ -37,6 +37,7 @@ export interface EventSql {
    * always binds three and the statement never has two shapes.
    */
   readonly selectRecent: string;
+  /** `core, local, sig, peer, seq, partition` above per-author cursors, by author and sequence. */
   readonly selectSince: string;
   /**
    * The rows with no signature whose author is not the bound peer — what a device can never send.
@@ -62,6 +63,8 @@ export interface EventSql {
   readonly deleteCompactable: string;
   readonly upsertFloor: string;
   readonly selectFloors: string;
+  /** Per author, the stamp of the newest synced event compaction removed, as `peer, hlc_ms, hlc_logical`. */
+  readonly selectFloorStamps: string;
   readonly selectMaxHlc: string;
   /** Deletes one event, recording no floor (D45). Binds `(peer, seq, local)`. */
   readonly deleteEvent: string;

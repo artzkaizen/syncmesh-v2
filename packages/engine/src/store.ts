@@ -1,4 +1,4 @@
-import type { Hlc, PeerId } from "@syncmesh/kernel";
+import type { Hlc, PartitionKey, PeerId } from "@syncmesh/kernel";
 import type { EventId, SeqNum, SyncEvent } from "@syncmesh/kernel";
 import type { SignedEvent } from "@syncmesh/wire";
 
@@ -125,10 +125,15 @@ export interface EventStore {
    * its own map, which is the cheapest form the question has there.
    */
   readonly stranded: (mine: PeerId) => Promise<Result<readonly StoredEvent[], StoreFailure>>;
-  /** Events in the scope above the given per-author cursors, ordered by author then sequence. Synced by default. */
+  /**
+   * Events in the scope above the given per-author cursors, ordered by author then sequence. Synced
+   * by default. With `partitions`, a store may leave out events in any other partition (an event in
+   * none is always kept) without decoding them; one that cannot returns them all.
+   */
   readonly allSince: (
     cursors: Cursors,
     scope?: SeqScope,
+    partitions?: readonly PartitionKey[],
   ) => Promise<Result<readonly StoredEvent[], StoreFailure>>;
   /** Highest sequence number this peer has appended in the scope, if any. */
   readonly lastSeq: (
@@ -144,6 +149,12 @@ export interface EventStore {
   ) => Promise<Result<number, StoreFailure>>;
   /** Per author and scope, the highest sequence number compaction has removed; empty until the first compaction. */
   readonly compactedBelow: () => Promise<Result<Coverage, StoreFailure>>;
+  /**
+   * Per author, the stamp of the newest synced event compaction removed: the clock an author's
+   * events not yet folded here are all above. Optional: a store that keeps no stamp with its floor
+   * declares nothing, and compaction then collects no tombstone over it (gaps O1).
+   */
+  readonly compactedStamps?: () => Promise<Result<ReadonlyMap<PeerId, Hlc>, StoreFailure>>;
   /**
    * Whether compaction removed this event: the log does not hold it, it is at or below its
    * author's floor in its scope ({@link EventStore.compactedBelow}), and it is not in a run below
@@ -302,6 +313,14 @@ export function createMemoryEventStore(seed: MemorySeed = {}): MemoryEventStore 
         synced: new Map([...floors.synced].map(([peer, f]) => [peer, f.seq])),
         local: new Map([...floors.local].map(([peer, f]) => [peer, f.seq])),
       }),
+    compactedStamps: () =>
+      ok(
+        new Map(
+          [...floors.synced].flatMap(([peer, { hlc }]) =>
+            hlc === undefined ? [] : [[peer, hlc] as const],
+          ),
+        ),
+      ),
     compacted: (event) =>
       ok(
         !events.has(event.id) &&

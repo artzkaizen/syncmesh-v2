@@ -1,23 +1,23 @@
-import type { Coverage, EventStore, StateCorrupt, StoredEvent } from "@syncmesh/engine";
-import type { Hlc, SeqNum } from "@syncmesh/kernel";
+import type { EventStore, StateCorrupt, StoredEvent } from "@syncmesh/engine";
+import type { Hlc, PeerId } from "@syncmesh/kernel";
 
-import { DEFAULT_RECENT, LogTorn, StoreFailure } from "@syncmesh/engine";
+import { DEFAULT_RECENT, StoreFailure } from "@syncmesh/engine";
 import { eventId } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { decodeEventCore, encodeEventCore } from "@syncmesh/wire";
 
-import type { GapSql } from "./dialect.js";
 import type { SqlDriver, SqlRow, SqlValue } from "./driver.js";
-import type { Hole } from "./holes.js";
+import type { Positioned } from "./holes.js";
+import type { LogReader } from "./whole-read.js";
 
 import { driverDialect } from "./dialect.js";
 import { evictEvents } from "./evict.js";
 import { createFloorReads } from "./floor-reads.js";
-import { createHolding } from "./held-events.js";
-import { readHoles, unaccounted } from "./holes.js";
+import { createHolding, parsePlaced } from "./held-events.js";
 import { insertRows } from "./many-rows.js";
 import { attempt, failure, headerRow, hlcRow, inTransaction } from "./sql.js";
 import { parseCoverage, parseSeqCell } from "./sql.js";
+import { readWhole } from "./whole-read.js";
 
 /**
  * The `core` column holds the bytes the author's signature covers, not a re-encode of what this
@@ -104,94 +104,6 @@ const hold = async (
   }
 };
 
-/** What a read of the log needs to tell a hole the log was written with from a torn one. */
-interface LogReader {
-  readonly driver: SqlDriver;
-  /** The store runs inside its caller's transaction (`SqlEventStoreOptions.nested`). */
-  readonly nested: boolean;
-  readonly gaps: GapSql;
-  readonly floors: () => Promise<Result<Coverage, StoreFailure>>;
-}
-
-type Select = () => Promise<Result<readonly StoredEvent[], StoreFailure>>;
-type Start = Parameters<typeof readHoles>[1];
-
-/**
- * The holes in `entries` that neither compaction nor the gap table accounts for: the floors
- * and the gaps are read only when the entries themselves show a hole.
- */
-const torn = (
-  reader: LogReader,
-  entries: readonly StoredEvent[],
-  start: Start,
-): Promise<Result<readonly Hole[], StoreFailure>> =>
-  Result.gen(async function* () {
-    const holes = readHoles(entries, start);
-    if (holes.length === 0) return Result.ok([]);
-    const floors = yield* Result.await(reader.floors());
-    const gaps = yield* Result.await(
-      attempt("reading the log's gaps failed", () => reader.driver.all(reader.gaps.selectAll)),
-    );
-    return Result.ok(unaccounted(holes, floors, gaps));
-  });
-
-/**
- * Runs `fn` where every statement sees the log at one instant: in one transaction, in the
- * driver's turn, under the dialect's `GapSql.snapshot`. A nested store reads in its caller's
- * transaction as it stands.
- */
-const atOnce = <T>(reader: LogReader, fn: () => Promise<Result<T, StoreFailure>>) => {
-  const { driver, gaps } = reader;
-  if (reader.nested) return fn();
-  return attempt("reading the log at one instant failed", () =>
-    inTransaction(driver, async () => {
-      if (gaps.snapshot !== undefined) await driver.run(gaps.snapshot);
-      return fn();
-    }),
-  ).then((read) => read.andThen((result) => result));
-};
-
-/**
- * What `select` reads, or `StoreFailure("log has a hole")` when a run is missing below a later
- * event of the same author that neither compaction nor the gap table accounts for.
- *
- * The first read takes the entries, the floors and the gaps as three statements, and an append
- * between them can show a sound log as torn: a late event that fills a gap deletes its row after
- * the entries were read without it. So a hole is refused only when a second read, of all three
- * at one instant ({@link atOnce}), still finds it. A healthy log pays nothing for that, and a
- * log whose holes are all recorded pays only the floors and the gaps.
- */
-const readWhole = (
-  reader: LogReader,
-  select: Select,
-  start: Start,
-): Promise<Result<readonly StoredEvent[], StoreFailure>> =>
-  Result.gen(async function* () {
-    const entries = yield* Result.await(select());
-    const seen = yield* Result.await(torn(reader, entries, start));
-    if (seen.length === 0) return Result.ok(entries);
-    const [again, missing] = yield* Result.await(
-      atOnce(reader, () =>
-        Result.gen(async function* () {
-          const read = yield* Result.await(select());
-          return Result.ok([read, yield* Result.await(torn(reader, read, start))] as const);
-        }),
-      ),
-    );
-    const [first] = missing;
-    if (first === undefined) return Result.ok(again);
-    const scope = first.local ? "local" : "synced";
-    const message = `log has a hole: ${missing.length} run(s) of events it held are gone, first ${first.peer} ${scope} ${first.from}..${first.to} — the disk lost committed pages; rejoin from a peer`;
-    // the runs ride as the cause, so a mesh can name them as a recovery issue and ask for them
-    // SAFETY: a hole lies between two sequence numbers the log held, so both ends are positive
-    const runs = missing.map((hole) => ({
-      ...hole,
-      from: hole.from as SeqNum,
-      to: hole.to as SeqNum,
-    }));
-    return Result.err(new StoreFailure({ message, cause: new LogTorn({ runs, message }) }));
-  });
-
 /**
  * Opens the event log in the database behind `driver`, creating or migrating its tables in the
  * driver's dialect — `events` on a device's SQLite, `_syncmesh_events` in an app's Postgres.
@@ -257,7 +169,10 @@ export function sqlEventStore(
     gaps: GAPS,
     floors: () => store.compactedBelow(),
   } satisfies LogReader;
-  const whole = (select: Select, start: Start) => readWhole(reader, select, start);
+  const whole = <E extends Positioned>(
+    select: () => Promise<Result<readonly E[], StoreFailure>>,
+    start: (peer: PeerId) => number,
+  ) => readWhole(reader, select, start);
 
   const appendAll = async (entries: readonly StoredEvent[]) => {
     await hold(driver, GAPS.lock, entries);
@@ -288,12 +203,22 @@ export function sqlEventStore(
         const rows = yield* Result.await(query("stranded failed", SQL.selectStranded, [mine]));
         return decodeRows(rows);
       }),
-    allSince: (cursors, scope = "synced") => {
+    allSince: (cursors, scope = "synced", partitions) => {
       const bind = [scope === "local" ? 1 : 0, JSON.stringify(Object.fromEntries(cursors))];
-      return whole(
-        () =>
-          query("allSince failed", SQL.selectSince, bind).then((rows) => rows.andThen(decodeRows)),
-        (peer) => cursors.get(peer) ?? 0,
+      const read = () => query("allSince failed", SQL.selectSince, bind);
+      const start = (peer: PeerId) => cursors.get(peer) ?? 0;
+      if (partitions === undefined)
+        return whole(() => read().then((rows) => rows.andThen(decodeRows)), start);
+      // the whole run is checked for holes, and only the events in `partitions` are decoded
+      const wanted = new Set<string>(partitions);
+      return whole(() => read().then((rows) => rows.andThen(parsePlaced)), start).then((held) =>
+        held.andThen((placed) =>
+          decodeRows(
+            placed.flatMap(({ partition, row }) =>
+              partition === null || wanted.has(partition) ? [row] : [],
+            ),
+          ),
+        ),
       );
     },
     lastSeq: (peer, scope) =>

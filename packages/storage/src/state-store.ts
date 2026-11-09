@@ -21,7 +21,6 @@ import {
 
 const corrupt = (message: string) => new StateCorrupt({ message });
 
-/** Cached rows per read at boot. */
 const LOAD_PAGE = 50_000;
 
 /**
@@ -75,6 +74,8 @@ export interface SqlStateStoreOptions {
   readonly projection?: Projection;
   /** The caller holds the transaction; see `SqlEventStoreOptions.nested`. */
   readonly nested?: boolean;
+  /** Cached rows per read when the state loads. Default 50,000. */
+  readonly loadPage?: number;
 }
 
 /**
@@ -90,7 +91,7 @@ export function sqlStateStore(
   driver: SqlDriver,
   options: SqlStateStoreOptions = {},
 ): Promise<Result<StateStore, StoreFailure>> {
-  const { projection } = options;
+  const { projection, loadPage = LOAD_PAGE } = options;
   const { state: SQL, migrate } = driverDialect(driver);
   const transaction = <T>(fn: () => Promise<T>): Promise<T> =>
     options.nested === true ? fn() : inTransaction(driver, fn);
@@ -106,7 +107,7 @@ export function sqlStateStore(
         let after: readonly [string, string] = ["", ""];
         for (;;) {
           const rows = yield* Result.await(
-            query("loadAll failed", SQL.selectRowsAfter, [...after, LOAD_PAGE]),
+            query("loadAll failed", SQL.selectRowsAfter, [...after, loadPage]),
           );
           for (const row of rows) {
             const [table, key, record] = yield* parseStateRow(row);
@@ -115,7 +116,7 @@ export function sqlStateStore(
             stored.set(table, records);
             after = [table, key];
           }
-          if (rows.length < LOAD_PAGE) break;
+          if (rows.length < loadPage) break;
         }
         // the blobs go in undecoded, and each is decoded when the engine first reads its row
         const state = new Map<TableName, TableState>();
