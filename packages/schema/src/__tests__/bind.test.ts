@@ -1,9 +1,16 @@
+import type { PolicyNode } from "@syncmesh/policy";
+
 import { evaluate } from "@syncmesh/policy";
 import { describe, expect, test } from "bun:test";
 
+import type { Combinators } from "../bind.js";
+import type { AnyColumn } from "../column.js";
+
+import { combinators } from "../bind.js";
 import { t } from "../column.js";
 import { syncSchema } from "../manifest.js";
 import { ladder, partition } from "../partition.js";
+import { assertType, type Equal } from "./fixtures.js";
 
 const org = partition("org", { roles: ladder("owner", "admin", "member") });
 const shelf = partition("shelf", { roles: org.roles });
@@ -83,5 +90,74 @@ describe("bound combinators", () => {
         },
       });
     expect(rejected).toBeInstanceOf(Function);
+  });
+});
+
+/**
+ * Named rules by convention (E06, U10): a rule reused across tables is a plain function of the
+ * combinators it needs, typed by the columns and roles it reads. No feature: `Combinators` takes
+ * any table that has those columns and roles, so the rule composes inside each table's `allow`
+ * like an inline one, and a table without them does not compile.
+ */
+const isOwner = ({ owner }: Combinators<{ createdBy: AnyColumn }, never>) => owner("createdBy");
+const isAdmin = ({ role }: Combinators<Record<never, AnyColumn>, "admin">) => role("admin");
+const canEdit = (c: Combinators<{ createdBy: AnyColumn }, "admin">) =>
+  c.any(isOwner(c), isAdmin(c));
+
+describe("named rules", () => {
+  const named = syncSchema({
+    tables: {
+      books: {
+        columns: { id: t.uuid().primaryKey(), title: t.text(), createdBy: t.text() },
+        partition: org,
+        allow: (c) => ({ $default: c.role("member"), update: canEdit(c), delete: isOwner(c) }),
+      },
+      reviews: {
+        columns: { id: t.uuid().primaryKey(), stars: t.integer(), createdBy: t.text() },
+        partition: shelf,
+        allow: (c) => ({ $default: c.all(isOwner(c), c.not(c.rowIs({ stars: 0 }))) }),
+      },
+    },
+  });
+
+  test("compose in every table that has their columns and roles, as the same AST written inline", () => {
+    const [books, reviews] = named.entries;
+    expect(books?.allow?.update).toEqual({
+      kind: "any",
+      of: [
+        { kind: "owner", column: "createdBy" },
+        { kind: "role", role: "admin" },
+      ],
+    });
+    expect(books?.allow?.delete).toEqual({ kind: "owner", column: "createdBy" });
+    expect(reviews?.allow?.$default).toEqual({
+      kind: "all",
+      of: [
+        { kind: "owner", column: "createdBy" },
+        { kind: "not", of: { kind: "rowIs", where: { stars: 0 } } },
+      ],
+    });
+    assertType<Equal<ReturnType<typeof canEdit>, PolicyNode>>();
+  });
+
+  test("a table without the rule's column does not compile, nor combinators without its role", () => {
+    const rejected = () =>
+      syncSchema({
+        tables: {
+          notes: {
+            columns: { id: t.uuid().primaryKey(), author: t.text() },
+            partition: org,
+            // @ts-expect-error `notes` has no `createdBy`
+            allow: (c) => ({ $default: isOwner(c) }),
+          },
+        },
+      });
+    expect(rejected).toBeInstanceOf(Function);
+    // `syncSchema` hands every table `role(name: string)`; where the roles are known — a
+    // `drizzleTable`, or combinators typed by hand — a rule naming another role does not compile
+    const readers = combinators<{ createdBy: AnyColumn }, "reader">();
+    // @ts-expect-error `reader` is the only role
+    expect(isAdmin(readers)).toEqual({ kind: "role", role: "admin" });
+    expect(isOwner(readers)).toEqual({ kind: "owner", column: "createdBy" });
   });
 });
