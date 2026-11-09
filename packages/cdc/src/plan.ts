@@ -6,7 +6,7 @@ import type { CaptureError } from "./errors.js";
 import type { ChangeMapping, ChangeMappings } from "./mapping.js";
 import type { ChangeMessage, SourceRow } from "./source.js";
 
-import { TruncateRefused } from "./errors.js";
+import { RowMoved, TruncateRefused } from "./errors.js";
 import { meshCells, meshKey, partitionOf, rowKey } from "./mapping.js";
 
 /** One partition's share of a transaction: exactly the changes one signed event will carry. */
@@ -181,19 +181,41 @@ function plannedTouch(
   }
   const row: SourceRow = last.t === "insert" ? last.row : last.after;
   const inserted = touch.born || touch.recreated;
-  // a row keeps the instance it was born in, so an update to a row the engine holds is filed
-  // there: the mapping sees only what the update carried, which need not be enough to place it
   const held = inserted ? undefined : deps.held.partitionOf(collection.name, key);
   const partition =
     held === undefined
       ? partitionOf(touch.table, key, touch.mapping, row)
-      : Result.ok<PartitionKey, CaptureError>(held);
+      : heldPartition(touch, held, row);
   if (partition.isErr()) return Result.err(partition.error);
   const cells = meshCells(collection, row);
   const change: Change = inserted
     ? { kind: "insert", table: collection.name, key, row: cells }
     : { kind: "update", table: collection.name, key, patch: cells };
   return Result.ok([partition.value, change]);
+}
+
+/**
+ * The instance an update to a row the engine holds is filed in: the one it holds the row in, since
+ * a row keeps the instance it was born in. The mapping is still asked, and an update it cannot
+ * place — one carrying only the columns it changed — goes where the row lives. One it places in a
+ * different instance is {@link RowMoved}: the database moved the row, which capture does not do.
+ */
+function heldPartition(
+  touch: Touch,
+  held: PartitionKey,
+  row: SourceRow,
+): Result<PartitionKey, CaptureError> {
+  const named = partitionOf(touch.table, touch.key, touch.mapping, row);
+  if (named.isErr() || named.value === held) return Result.ok(held);
+  return Result.err(
+    new RowMoved({
+      table: touch.table,
+      key: touch.key,
+      held,
+      named: named.value,
+      message: `${touch.table} ${touch.key} lives in ${held}, and the mapping now places it in ${named.value}: capture does not move a row between instances`,
+    }),
+  );
 }
 
 /**

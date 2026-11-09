@@ -78,19 +78,31 @@ describe("what a row's net effect is", () => {
     ]);
   });
 
-  test("an update to a held row is filed in the instance the row was born in, whatever it carries", async () => {
+  test("an update to a held row that names no instance is filed in the one the row was born in", async () => {
     const engine = await held();
-    // a staged update carries only what changed, and a database may move the column the mapping
-    // reads: neither may send the update to an instance whose peers never held the row
+    // a staged update carries only what changed: it may not go to an instance whose peers never
+    // held the row
     const planned = plan(engine, [
       { t: "update", table: "tasks", key: "t1", after: { title: "patched" } },
     ]);
-    const moved = plan(engine, [
+
+    expect(planned.map((event) => event.partition)).toEqual([ACME]);
+  });
+
+  test("an update that moves a held row to another instance stops capture", async () => {
+    const engine = await held();
+    // filed in acme, acme's peers would keep receiving a row the database says is globex's
+    const moved = planTransaction({ mappings, held: heldRows(engine) }, [
       { t: "update", table: "tasks", key: "t1", after: { id: "t1", orgId: "globex" } },
     ]);
 
-    expect(planned.map((event) => event.partition)).toEqual([ACME]);
-    expect(moved.map((event) => event.partition)).toEqual([ACME]);
+    expect(moved.isErr() && moved.error).toMatchObject({
+      _tag: "RowMoved",
+      table: "tasks",
+      key: "t1",
+      held: "org:acme",
+      named: "org:globex",
+    });
   });
 
   test("deleted, re-inserted and deleted again still tombstones the row this peer held", async () => {

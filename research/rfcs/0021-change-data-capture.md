@@ -123,12 +123,24 @@ folds them into **one signed event per partition touched** (one event is one
 partition, M6), commits them, writes the watermark, and only then acks it.
 
 `partition(row)` places a row the engine does not hold yet. An update to a row
-it holds is filed in the instance the engine holds it in, which is where the
-kernel keeps a row whatever a later event names (`cdc/src/plan.ts`): an update
-may carry only the columns it changed (TOAST, a staged sweep, RFC-0025), and
-a database that changes the column the mapping reads does not move the row to
-an instance whose peers never held it. Added 2026-11-08 (Jace delegated the
-call) with RFC-0025; moving a row between instances is not something CDC does.
+it holds goes to the instance the engine holds it in, which is where the kernel
+keeps a row whatever a later event names (`cdc/src/plan.ts`). The mapping is
+still asked:
+
+- When it cannot place the update (it returns `undefined`, or a name that is not
+  `kind:id`), the update goes where the row lives. An update may carry only the
+  columns it changed (TOAST, a staged sweep, RFC-0025).
+- When it names the held instance, nothing is in question.
+- When it names a different instance, capture stops with `RowMoved` (`held`,
+  `named`). The database changed the column the mapping reads, so the row
+  moved. Following it would send the update to peers that never held the row.
+  Filing it where the row lives would keep sending a row the database says is
+  another tenant's to the old tenant's peers. Moving a row between instances is
+  not something CDC does, so the stop is loud and the watermark stays put.
+
+Added 2026-11-08 (Jace delegated the call) with RFC-0025. In the first version,
+a moved row's updates were filed in the old instance without a word; a review
+caught that this leaks across tenants, and the stop replaced it.
 
 ## Direction is fixed, and that is the whole design
 
