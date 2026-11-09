@@ -367,8 +367,14 @@ const lower = (at: Cursors, cap: ReadonlyMap<PeerId, number>): Cursors => {
  * What the sender may claim for a request: its coverage only where it holds the asked slice. A
  * sender whose own cursors are scoped (D23) to a slice the asked interest is not inside claims
  * nothing, so a receiver never adopts an `at` for rows the sender never held (D46).
+ *
+ * A sender whose own cursors were adopted under a window claims nothing for any request: events
+ * are never windowed, so an update to a row it never held folds into a row it holds in part, and
+ * that row then ranks among its newest. Its window is not a window of whole rows (D23).
  */
 const heldScope = (own: Coverage, asked: Interest | undefined, snapshot: Snapshot): Snapshot => {
-  if (own.scope === undefined || narrows(asked, scopeFrom(own.scope).interest)) return snapshot;
+  if (own.scope === undefined) return snapshot;
+  const held = scopeFrom(own.scope).interest;
+  if (held?.window === undefined && narrows(asked, held)) return snapshot;
   return { ...snapshot, coverage: { synced: new Map(), local: new Map() } };
 };

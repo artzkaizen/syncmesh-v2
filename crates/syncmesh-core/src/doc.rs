@@ -2,8 +2,9 @@
 //! starts, and the one rule that decides between two of them. Frozen by
 //! `conformance/doc-vectors.json`, which the TypeScript generates and this reproduces.
 //!
-//! `data` map keys: `column`0 `adapter`1 `lineage`2 `bytes`3 `blob`4 `genesis`5 `parent`6. Exactly
-//! one of `bytes` and `blob`; unknown keys are skipped and never re-emitted.
+//! `data` map keys: `column`0 `adapter`1 `lineage`2 `bytes`3 `blob`4 `genesis`5 `parent`6
+//! `settles`7. Exactly one of `bytes` and `blob`; key 7 only on a genesis of [`SETTLED_RULE`];
+//! unknown keys are skipped and never re-emitted.
 
 use std::collections::BTreeMap;
 
@@ -24,6 +25,7 @@ const DOC_BYTES: i64 = 3;
 const DOC_BLOB: i64 = 4;
 const DOC_GENESIS: i64 = 5;
 const DOC_PARENT: i64 = 6;
+const DOC_SETTLES: i64 = 7;
 
 /// The version of the lineage rule, `1` for the first-genesis tree (RFC-0023 §16.1), as the
 /// TypeScript's `GENESIS_RULE`. A genesis carries it in key 5 — the last-writer-wins rule before it
@@ -32,6 +34,54 @@ const DOC_PARENT: i64 = 6;
 /// repair records, persisted state), so a build meets another rule's cell as a version it does
 /// not run ([`LineageCellRefused`]), never as the root.
 pub const GENESIS_RULE: i64 = 1;
+
+/// The first-genesis tree with a settled anchor (gaps U21), as the TypeScript's `SETTLED_RULE`:
+/// what a genesis carrying [`DocChange::settles`] writes in key 5, and the tag of a cell holding an
+/// anchor, `[2, { lineage → genesis }, [lineage, ms, logical, peer]]`. A build of
+/// [`GENESIS_RULE`] alone refuses both, rather than fold the genesis without trimming what its
+/// peers trim.
+pub const SETTLED_RULE: i64 = 2;
+
+/// Where a document's lineage walk is settled (gaps U21), as the TypeScript's `SettledLineage`: a
+/// lineage on the walk and its genesis's stamp. Every genesis stamped at or below it, the anchor's
+/// own among them, leaves the lineage cell, and the walk starts at the anchor instead of the root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settled {
+    pub lineage: Id16,
+    pub stamp: Stamp,
+}
+
+impl Settled {
+    /// Whether this anchor has passed `genesis`: it is stamped at or below the anchor's stamp, the
+    /// anchor's own genesis among them, as the TypeScript's `passed`. The stamp alone decides, so
+    /// dropping only grows as the anchor gets later and the join stays order-free even when an
+    /// anchor names a lineage at a stamp that is not its genesis's.
+    fn passed(&self, genesis: &Genesis) -> bool {
+        genesis.stamp <= self.stamp
+    }
+
+    /// The later of two anchors: the larger stamp, then the larger lineage.
+    fn later(a: Option<Settled>, b: Option<Settled>) -> Option<Settled> {
+        match (a, b) {
+            (Some(a), Some(b)) => Some(if (&a.stamp, a.lineage) >= (&b.stamp, b.lineage) {
+                a
+            } else {
+                b
+            }),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// The cell's third element: `[lineage, ms, logical, peer]`.
+    fn entry(&self) -> JsonValue {
+        JsonValue::Array(vec![
+            JsonValue::Text(lineage_text(&self.lineage)),
+            JsonValue::Number(self.stamp.hlc.ms as f64),
+            JsonValue::Number(f64::from(self.stamp.hlc.logical)),
+            JsonValue::Text(self.stamp.peer.as_str().to_owned()),
+        ])
+    }
+}
 
 /// A lineage or an action: 16 bytes on the wire, 32 lowercase hex characters wherever it is text.
 pub type Id16 = [u8; 16];
@@ -81,6 +131,9 @@ pub struct DocChange {
     /// Only on a genesis: the lineage it replaces, the one that won where it was written. `None`
     /// is the root. What [`winning_lineage`] walks.
     pub parent: Option<Id16>,
+    /// Only on a genesis of [`SETTLED_RULE`]: where the authoring device settled the walk as it
+    /// wrote it, so every genesis stamped at or below the anchor leaves the cell (gaps U21).
+    pub settles: Option<Settled>,
 }
 
 /// `^[a-z][a-z0-9-]*@[1-9][0-9]*$` — the adapter id's whole grammar, as the TypeScript's `parseAdapterId`.
@@ -172,23 +225,67 @@ pub fn doc_data_to_cbor(change: &DocChange) -> Value {
     if change.genesis {
         data.push((
             Key::Int(DOC_GENESIS),
-            if change.legacy {
-                Value::Bool(true)
-            } else {
-                Value::Int(GENESIS_RULE)
+            match (change.legacy, &change.settles) {
+                (true, _) => Value::Bool(true),
+                (false, None) => Value::Int(GENESIS_RULE),
+                (false, Some(_)) => Value::Int(SETTLED_RULE),
             },
         ));
     }
     if let Some(parent) = change.parent {
         data.push((Key::Int(DOC_PARENT), Value::Bytes(parent.to_vec())));
     }
+    if let Some(settles) = &change.settles {
+        data.push((Key::Int(DOC_SETTLES), settles_to_cbor(settles)));
+    }
     Value::map(data)
+}
+
+/// Key 7: `[lineage bstr(16), ms, logical, peer bstr(32)]` — the anchor and its genesis's stamp.
+fn settles_to_cbor(settles: &Settled) -> Value {
+    Value::Array(vec![
+        Value::Bytes(settles.lineage.to_vec()),
+        Value::Int(settles.stamp.hlc.ms),
+        Value::Int(i64::from(settles.stamp.hlc.logical)),
+        Value::Bytes(settles.stamp.peer.key_bytes().to_vec()),
+    ])
+}
+
+/// Key 7 back, or a refusal for anything [`settles_to_cbor`] never writes.
+fn settles_from_cbor(v: &Value) -> Result<Settled, &'static str> {
+    let Value::Array(items) = v else {
+        return Err("settles is not [lineage, ms, logical, peer]");
+    };
+    let [lineage, ms, logical, peer] = items.as_slice() else {
+        return Err("settles is not [lineage, ms, logical, peer]");
+    };
+    let lineage = id16(Some(lineage)).ok_or("the settled lineage is not 16 bytes")?;
+    let (Value::Int(ms), Value::Int(logical)) = (ms, logical) else {
+        return Err("the settled stamp is not an HLC");
+    };
+    if !(0..=MAX_SAFE_INTEGER).contains(ms) {
+        return Err("the settled stamp is not an HLC");
+    }
+    let logical = u32::try_from(*logical).map_err(|_| "the settled stamp is not an HLC")?;
+    let Value::Bytes(peer) = peer else {
+        return Err("the settled stamp's peer is not 32 bytes");
+    };
+    if peer.len() != 32 {
+        return Err("the settled stamp's peer is not 32 bytes");
+    }
+    let peer =
+        PeerId::parse(&to_hex(peer)).map_err(|_| "the settled stamp's peer is not a peer id")?;
+    Ok(Settled {
+        lineage,
+        stamp: Stamp::new(Hlc::new(*ms, logical), peer),
+    })
 }
 
 /// A doc change from its `data` map. Refuses what no fold could take — no column, a malformed
 /// adapter id, both or neither payload, a lineage or parent that is not 16 bytes, a `genesis` that
-/// is neither [`GENESIS_RULE`] nor the `true` of the rule before it, a parent on anything but a
-/// genesis — and skips keys it has no name for. A `true` genesis decodes as `legacy`, so a stored
+/// is neither [`GENESIS_RULE`], [`SETTLED_RULE`] (with its anchor, key 7) nor the `true` of the
+/// rule before them, a parent or an anchor on anything but a genesis — and skips keys it has no
+/// name for. A `true` genesis decodes as `legacy`, so a stored
 /// log that holds one still reads; admission is what refuses it. Never panics.
 pub fn doc_from_cbor(
     table: String,
@@ -213,11 +310,19 @@ pub fn doc_from_cbor(
         (None, blob @ Some(_)) => DocUpdate::Blob(blob_from_cbor(blob)?),
         _ => return Err("a doc change carries exactly one of bytes and blob"),
     };
-    let (genesis, legacy) = match m.get(&Key::Int(DOC_GENESIS)) {
-        None => (false, false),
-        Some(Value::Bool(true)) => (true, true),
-        Some(Value::Int(GENESIS_RULE)) => (true, false),
-        Some(_) => return Err("genesis is 1, the lineage rule's version"),
+    let settles = m.get(&Key::Int(DOC_SETTLES));
+    let (genesis, legacy, settles) = match (m.get(&Key::Int(DOC_GENESIS)), settles) {
+        (Some(Value::Int(SETTLED_RULE)), Some(anchor)) => {
+            (true, false, Some(settles_from_cbor(anchor)?))
+        }
+        (Some(Value::Int(SETTLED_RULE)), None) => {
+            return Err("a genesis of rule 2 names the lineage it settles");
+        }
+        (_, Some(_)) => return Err("only a genesis of rule 2 settles the walk"),
+        (None, None) => (false, false, None),
+        (Some(Value::Bool(true)), None) => (true, true, None),
+        (Some(Value::Int(GENESIS_RULE)), None) => (true, false, None),
+        (Some(_), None) => return Err("genesis is 1 or 2, the lineage rule's version"),
     };
     let lineage = match m.get(&Key::Int(DOC_LINEAGE)) {
         None => None,
@@ -240,6 +345,7 @@ pub fn doc_from_cbor(
         genesis,
         legacy,
         parent,
+        settles,
     })
 }
 
@@ -306,18 +412,37 @@ fn genesis_of(lineage: &str, entry: &JsonValue) -> Option<Genesis> {
         JsonValue::Text(hex) => Some(id16_text(hex)?),
         _ => return None,
     };
+    Some(Genesis {
+        lineage,
+        parent,
+        stamp: stamp_of(ms, logical, peer)?,
+    })
+}
+
+/// A stamp from an entry's `ms, logical, peer`, or `None` for anything else.
+fn stamp_of(ms: &JsonValue, logical: &JsonValue, peer: &JsonValue) -> Option<Stamp> {
     let JsonValue::Text(peer) = peer else {
         return None;
     };
     let ms = count(ms, MAX_SAFE_INTEGER as f64)?;
     let logical = count(logical, f64::from(u32::MAX))?;
-    Some(Genesis {
-        lineage,
-        parent,
-        stamp: Stamp::new(
-            Hlc::new(ms as i64, logical as u32),
-            PeerId::parse(peer).ok()?,
-        ),
+    Some(Stamp::new(
+        Hlc::new(ms as i64, logical as u32),
+        PeerId::parse(peer).ok()?,
+    ))
+}
+
+/// The anchor back from a cell's third element, or `None` for anything [`Settled::entry`] never writes.
+fn anchor_of(entry: &JsonValue) -> Option<Settled> {
+    let JsonValue::Array(fields) = entry else {
+        return None;
+    };
+    let [JsonValue::Text(lineage), ms, logical, peer] = fields.as_slice() else {
+        return None;
+    };
+    Some(Settled {
+        lineage: id16_text(lineage)?,
+        stamp: stamp_of(ms, logical, peer)?,
     })
 }
 
@@ -331,32 +456,51 @@ fn cell_version(value: &CellValue) -> Option<i64> {
     count(items.first()?, MAX_SAFE_INTEGER as f64).map(|n| n as i64)
 }
 
-/// The geneses half of a cell tagged [`GENESIS_RULE`], or `None` for any other value.
-fn rule_geneses(value: &CellValue) -> Option<&BTreeMap<String, JsonValue>> {
-    match value {
-        CellValue::Array(items)
-            if items.len() == 2 && cell_version(value) == Some(GENESIS_RULE) =>
-        {
-            match &items[1] {
-                JsonValue::Object(held) => Some(held),
-                _ => None,
-            }
-        }
+/// A cell tagged [`GENESIS_RULE`] (`[1, geneses]`) or [`SETTLED_RULE`] (`[2, geneses, anchor]`),
+/// its geneses as stored, or `None` for any other value.
+fn stored_cell(value: &CellValue) -> Option<(&BTreeMap<String, JsonValue>, Option<Settled>)> {
+    let CellValue::Array(items) = value else {
+        return None;
+    };
+    let JsonValue::Object(held) = items.get(1)? else {
+        return None;
+    };
+    match (cell_version(value), items.len()) {
+        (Some(GENESIS_RULE), 2) => Some((held, None)),
+        (Some(SETTLED_RULE), 3) => Some((held, Some(anchor_of(&items[2])?))),
         _ => None,
     }
 }
 
-/// Every genesis a lineage cell holds, by lineage id, as the TypeScript's `cellGeneses`. Within a
-/// cell of this rule's version an entry not in the rule's shape is skipped entry by entry, on every
-/// peer alike; a cell of another version holds nothing this rule reads, and
-/// [`parse_lineage_cells`] refuses it where it enters.
-pub fn geneses_of(value: Option<&CellValue>) -> Vec<Genesis> {
-    let Some(held) = value.and_then(rule_geneses) else {
-        return Vec::new();
+/// What a lineage cell holds, as the TypeScript's `LineageCell`: its geneses, and the anchor its
+/// walk starts from, if one settled it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LineageCell {
+    pub geneses: Vec<Genesis>,
+    pub settled: Option<Settled>,
+}
+
+/// A lineage cell read, as the TypeScript's `readLineageCell`. Within a cell of a version this
+/// build runs an entry not in the rule's shape is skipped entry by entry, on every peer alike; a
+/// cell of another version holds nothing this rule reads, and [`parse_lineage_cells`] refuses it
+/// where it enters.
+pub fn read_lineage_cell(value: Option<&CellValue>) -> LineageCell {
+    let Some((held, settled)) = value.and_then(stored_cell) else {
+        return LineageCell::default();
     };
-    held.iter()
-        .filter_map(|(lineage, entry)| genesis_of(lineage, entry))
-        .collect()
+    LineageCell {
+        geneses: held
+            .iter()
+            .filter_map(|(lineage, entry)| genesis_of(lineage, entry))
+            .collect(),
+        settled,
+    }
+}
+
+/// Every genesis a lineage cell holds, by lineage id, as the TypeScript's `cellGeneses` (see
+/// [`read_lineage_cell`]).
+pub fn geneses_of(value: Option<&CellValue>) -> Vec<Genesis> {
+    read_lineage_cell(value).geneses
 }
 
 /// A lineage cell that arrived outside an event — a snapshot page, a repair record, persisted state
@@ -374,14 +518,14 @@ impl std::fmt::Display for LineageCellRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let found = match self.version {
             None => "a lineage cell with no version".to_owned(),
-            Some(GENESIS_RULE) => {
-                format!("a lineage cell tagged {GENESIS_RULE} in a shape that version never writes")
+            Some(v @ (GENESIS_RULE | SETTLED_RULE)) => {
+                format!("a lineage cell tagged {v} in a shape that version never writes")
             }
             Some(v) => format!("a lineage cell of version {v}"),
         };
         write!(
             f,
-            "{}/{}.{}: {found}; this build runs version {GENESIS_RULE}",
+            "{}/{}.{}: {found}; this build runs versions {GENESIS_RULE} and {SETTLED_RULE}",
             self.table, self.key, self.column
         )
     }
@@ -389,8 +533,9 @@ impl std::fmt::Display for LineageCellRefused {
 
 impl std::error::Error for LineageCellRefused {}
 
-/// Checks every declared doc column's cell in `rows` against the lineage rule this build runs, as
-/// the TypeScript's `parseLineageCells`: the first cell not tagged [`GENESIS_RULE`] is refused, so
+/// Checks every declared doc column's cell in `rows` against the lineage rules this build runs, as
+/// the TypeScript's `parseLineageCells`: the first cell that is neither a [`GENESIS_RULE`] nor a
+/// [`SETTLED_RULE`] cell is refused, so
 /// a caller joins none of the rows rather than read it as the root or merge it by another rule. A
 /// column absent from a record is the root and passes.
 pub fn parse_lineage_cells<'a>(
@@ -405,7 +550,7 @@ pub fn parse_lineage_cells<'a>(
             let Some(cell) = record.cells.get(column) else {
                 continue;
             };
-            if rule_geneses(&cell.value).is_none() {
+            if stored_cell(&cell.value).is_none() {
                 return Err(LineageCellRefused {
                     table: table.to_owned(),
                     key: key.to_owned(),
@@ -418,14 +563,13 @@ pub fn parse_lineage_cells<'a>(
     Ok(())
 }
 
-/// The lineage a set of geneses settles on — **the one place the lineage rule lives** (RFC-0023
-/// §5.3, decided in §16.1 on 2026-11-08: first genesis wins), as the TypeScript's
-/// `winningLineage`. Among the geneses that replaced one lineage the smallest stamp wins; the walk
-/// starts at the root and follows each winner's winning child until nothing replaced it. A function
-/// of the set alone, so every arrival order and batching lands on one lineage.
-pub fn winning_lineage(geneses: &[Genesis]) -> Option<Id16> {
+/// The walk, in order: each winner's winning child, from the anchor (or the root) to the end.
+fn walk_path<'a>(geneses: &'a [Genesis], settled: Option<&Settled>) -> Vec<&'a Genesis> {
     let mut children: BTreeMap<Option<Id16>, &Genesis> = BTreeMap::new();
     for genesis in geneses {
+        if settled.is_some_and(|s| s.passed(genesis)) {
+            continue;
+        }
         match children.get(&genesis.parent) {
             Some(best) if genesis.first(best) != std::cmp::Ordering::Less => {}
             _ => {
@@ -434,26 +578,56 @@ pub fn winning_lineage(geneses: &[Genesis]) -> Option<Id16> {
         }
     }
     let mut walked = std::collections::BTreeSet::new();
-    let mut at = None;
+    let mut path = Vec::new();
+    let mut at = settled.map(|s| s.lineage);
     while let Some(next) = children.get(&at) {
         // one parent per genesis keeps the walk a path, but a peer can still name a cycle
         if !walked.insert(next.lineage) {
             break;
         }
+        path.push(*next);
         at = Some(next.lineage);
     }
-    at
+    path
 }
 
-/// How two lineage cells join: the union of their geneses by lineage id, the first by stamp kept
-/// where one lineage appears twice; the cell's stamp is the later of the two. A lattice join, as
-/// the TypeScript's `lineageRule`.
-pub fn lineage_rule(incoming: Cell, current: Option<Cell>) -> Cell {
-    let mut held: BTreeMap<Id16, Genesis> = geneses_of(current.as_ref().map(|c| &c.value))
+/// The lineage a set of geneses settles on — **the one place the lineage rule lives** (RFC-0023
+/// §5.3, decided in §16.1 on 2026-11-08: first genesis wins), as the TypeScript's
+/// `winningLineage`. Among the geneses that replaced one lineage the smallest stamp wins; the walk
+/// starts at the root — or at `settled`, when an anchor settled it (gaps U21), skipping every
+/// genesis the anchor passed — and follows each winner's winning child until nothing replaced it.
+/// A function of the set alone, so every arrival order and batching lands on one lineage.
+pub fn winning_lineage(geneses: &[Genesis], settled: Option<&Settled>) -> Option<Id16> {
+    walk_path(geneses, settled)
+        .last()
+        .map(|g| g.lineage)
+        .or(settled.map(|s| s.lineage))
+}
+
+/// Where a genesis written now may settle the walk of `value` (gaps U21), as the TypeScript's
+/// `settleWalk`: the deepest lineage on it whose genesis is stamped at or before `cutoff_ms`, or
+/// `None` when none is deeper than the anchor the cell already holds. The walk stops at the first
+/// genesis newer than the cutoff, so a lineage past one never settles ahead of it.
+pub fn settle_walk(value: Option<&CellValue>, cutoff_ms: i64) -> Option<Settled> {
+    let cell = read_lineage_cell(value);
+    walk_path(&cell.geneses, cell.settled.as_ref())
         .into_iter()
-        .map(|g| (g.lineage, g))
-        .collect();
-    for genesis in geneses_of(Some(&incoming.value)) {
+        .take_while(|g| g.stamp.hlc.ms <= cutoff_ms)
+        .last()
+        .map(|g| Settled {
+            lineage: g.lineage,
+            stamp: g.stamp.clone(),
+        })
+}
+
+/// A cell's value in normal form, as the TypeScript's `writeCell`: a genesis the anchor passed is
+/// dropped, one lineage appearing twice keeps its first, and the tag says which rule it holds.
+fn write_cell(geneses: impl IntoIterator<Item = Genesis>, settled: Option<Settled>) -> CellValue {
+    let mut held: BTreeMap<Id16, Genesis> = BTreeMap::new();
+    for genesis in geneses {
+        if settled.as_ref().is_some_and(|s| s.passed(&genesis)) {
+            continue;
+        }
         match held.get(&genesis.lineage) {
             Some(kept) if genesis.first(kept) != std::cmp::Ordering::Less => {}
             _ => {
@@ -461,35 +635,44 @@ pub fn lineage_rule(incoming: Cell, current: Option<Cell>) -> Cell {
             }
         }
     }
+    let entries = JsonValue::Object(
+        held.values()
+            .map(|g| (lineage_text(&g.lineage), g.entry()))
+            .collect(),
+    );
+    match settled {
+        None => CellValue::Array(vec![JsonValue::Number(GENESIS_RULE as f64), entries]),
+        Some(anchor) => CellValue::Array(vec![
+            JsonValue::Number(SETTLED_RULE as f64),
+            entries,
+            anchor.entry(),
+        ]),
+    }
+}
+
+/// How two lineage cells join: the union of their geneses by lineage id under the later of their
+/// anchors, every genesis that anchor passed dropped, the first by stamp kept where one lineage
+/// appears twice; the cell's stamp is the later of the two. A lattice join, as the TypeScript's
+/// `lineageRule`.
+pub fn lineage_rule(incoming: Cell, current: Option<Cell>) -> Cell {
+    let held = read_lineage_cell(current.as_ref().map(|c| &c.value));
+    let arriving = read_lineage_cell(Some(&incoming.value));
     let stamp = match current {
         Some(c) if incoming.stamp <= c.stamp => c.stamp,
         _ => incoming.stamp,
     };
-    let geneses = held
-        .values()
-        .map(|g| (lineage_text(&g.lineage), g.entry()))
-        .collect();
+    let settled = Settled::later(held.settled, arriving.settled);
     Cell {
-        value: tagged(geneses),
+        value: write_cell(held.geneses.into_iter().chain(arriving.geneses), settled),
         stamp,
     }
 }
 
-/// A cell's value: `[GENESIS_RULE, { lineage → [parent | null, ms, logical, peer] }]`.
-fn tagged(geneses: BTreeMap<String, JsonValue>) -> CellValue {
-    CellValue::Array(vec![
-        JsonValue::Number(GENESIS_RULE as f64),
-        JsonValue::Object(geneses),
-    ])
-}
-
-/// The lineage cell a genesis writes: the one genesis, stamped with it.
-pub fn lineage_cell(genesis: &Genesis) -> Cell {
+/// The lineage cell a genesis writes: the one genesis, stamped with it, and the anchor it settles
+/// the walk at when it carries one.
+pub fn lineage_cell(genesis: &Genesis, settles: Option<&Settled>) -> Cell {
     Cell {
-        value: tagged(BTreeMap::from([(
-            lineage_text(&genesis.lineage),
-            genesis.entry(),
-        )])),
+        value: write_cell([genesis.clone()], settles.cloned()),
         stamp: genesis.stamp.clone(),
     }
 }
@@ -510,10 +693,11 @@ pub fn with_doc_columns(merge: Option<&MergeSpec>, docs: &DocColumns) -> MergeSp
     joined
 }
 
-/// The lineage a record's doc column is on: the winner of the geneses its cell holds (see
-/// [`winning_lineage`]), or `None` for the root.
+/// The lineage a record's doc column is on: the winner of the geneses its cell holds, walked from
+/// its anchor (see [`winning_lineage`]), or `None` for the root.
 pub fn lineage_of(record: Option<&RowRecord>, column: &str) -> Option<Id16> {
-    winning_lineage(&geneses_of(record?.cells.get(column).map(|c| &c.value)))
+    let cell = read_lineage_cell(record?.cells.get(column).map(|c| &c.value));
+    winning_lineage(&cell.geneses, cell.settled.as_ref())
 }
 
 /// A lineage id as the TypeScript holds it, 32 lowercase hex characters.
@@ -544,16 +728,20 @@ mod tests {
             BTreeMap::from([("content".to_owned(), "loro@1".to_owned())]),
         )]);
         let peer = PeerId::parse(&"ab".repeat(32)).unwrap();
-        let held = lineage_cell(&Genesis {
-            lineage: [0xa1; 16],
-            parent: None,
-            stamp: Stamp::new(Hlc::new(1, 0), peer),
-        });
+        let held = lineage_cell(
+            &Genesis {
+                lineage: [0xa1; 16],
+                parent: None,
+                stamp: Stamp::new(Hlc::new(1, 0), peer),
+            },
+            None,
+        );
         let CellValue::Array(tagged) = &held.value else {
             panic!("a lineage cell is tagged with its rule's version");
         };
         let geneses = CellValue::from(tagged[1].clone());
         let version_two = CellValue::Array(vec![JsonValue::Number(2.0), tagged[1].clone()]);
+        let version_three = CellValue::Array(vec![JsonValue::Number(3.0), tagged[1].clone()]);
         let with = |value: CellValue| RowRecord {
             cells: BTreeMap::from([(
                 "content".to_owned(),
@@ -574,6 +762,7 @@ mod tests {
             (geneses, None),
             (CellValue::text(&lineage_text(&[0xa1; 16])), None),
             (version_two, Some(2)),
+            (version_three, Some(3)),
         ] {
             assert!(geneses_of(Some(&value)).is_empty());
             assert_eq!(verdict(value), Err(version));
@@ -626,6 +815,48 @@ mod tests {
                 .is_ok_and(|d| d.genesis && d.legacy)
         );
         assert!(with(vec![(Key::Int(DOC_GENESIS), Value::Int(2))]).is_err());
+        assert!(with(vec![(Key::Int(DOC_GENESIS), Value::Int(3))]).is_err());
+        let anchor = || {
+            Value::Array(vec![
+                Value::Bytes(vec![9; 16]),
+                Value::Int(5),
+                Value::Int(1),
+                Value::Bytes(vec![0xab; 32]),
+            ])
+        };
+        assert!(
+            with(vec![
+                (Key::Int(DOC_GENESIS), Value::Int(2)),
+                (Key::Int(DOC_SETTLES), anchor())
+            ])
+            .is_ok_and(|d| d.genesis
+                && d.settles
+                    .as_ref()
+                    .is_some_and(|s| s.lineage == [9; 16] && s.stamp.hlc == Hlc::new(5, 1)))
+        );
+        assert!(
+            with(vec![
+                (Key::Int(DOC_GENESIS), Value::Int(1)),
+                (Key::Int(DOC_SETTLES), anchor())
+            ])
+            .is_err()
+        );
+        assert!(with(vec![(Key::Int(DOC_SETTLES), anchor())]).is_err());
+        assert!(
+            with(vec![
+                (Key::Int(DOC_GENESIS), Value::Int(2)),
+                (
+                    Key::Int(DOC_SETTLES),
+                    Value::Array(vec![
+                        Value::Bytes(vec![9; 16]),
+                        Value::Int(-1),
+                        Value::Int(1),
+                        Value::Bytes(vec![0xab; 32]),
+                    ])
+                )
+            ])
+            .is_err()
+        );
         assert!(with(vec![(Key::Int(DOC_GENESIS), Value::Int(1))]).is_ok_and(|d| d.genesis));
         assert!(with(vec![(Key::Int(DOC_PARENT), Value::Bytes(vec![0; 16]))]).is_err());
         assert!(

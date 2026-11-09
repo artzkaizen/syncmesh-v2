@@ -21,14 +21,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use syncmesh_core::apply::{apply_change, merge_record};
 use syncmesh_core::doc::{
     DocColumns, Id16, LineageCellRefused, derive_lineage, lineage_of, parse_lineage_cells,
-    with_doc_columns,
+    read_lineage_cell, settle_walk, with_doc_columns,
 };
 use syncmesh_core::envelope::sign_event;
 use syncmesh_core::event::{
     Change, PartitionKey, PeerId, RowKey, SchemaVersion, SeqNum, SyncEvent, TableName,
 };
-use syncmesh_core::hlc::{DEFAULT_MAX_DRIFT_MS, HlcClock};
+use syncmesh_core::hlc::{DEFAULT_MAX_DRIFT_MS, Hlc, HlcClock};
 use syncmesh_core::identity::Identity;
+use syncmesh_core::record::RowRecord;
 use syncmesh_core::stamp::Stamp;
 use syncmesh_core::state::State;
 use syncmesh_core::strategy::MergeSpec;
@@ -39,7 +40,7 @@ use crate::doc_log::{
     lineage_moves, record_docs, relabel_docs,
 };
 use crate::doc_rules::{DerivedColumns, derived_refusal, doc_refusal, doc_verdict};
-use crate::interest::{Interest, interest_text, matches_interest, rows_in};
+use crate::interest::{Interest, interest_text, matches_interest, rows_in, window_rows};
 use crate::quarantine::{Parked, Quarantine};
 use crate::snapshot::{InstallError, Installed, Snapshot};
 use crate::store::{
@@ -203,6 +204,13 @@ pub struct Ack {
 
 pub type NowMs = Box<dyn Fn() -> i64 + Send>;
 
+/// [`EngineOptions::lineage_settle_after_ms`]'s default: 30 days, the TypeScript's.
+pub const DEFAULT_LINEAGE_SETTLE_AFTER_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+
+/// The shortest [`EngineOptions::lineage_settle_after_ms`] an engine runs with: one hour, the
+/// TypeScript's `MIN_LINEAGE_SETTLE_AFTER`. Every peer trusts the anchor a misconfigured one writes.
+pub const MIN_LINEAGE_SETTLE_AFTER_MS: i64 = 60 * 60 * 1000;
+
 pub struct EngineOptions {
     /// Per table and column, how concurrent writes merge; anything unnamed is `lww`.
     pub merge: Option<MergeSpec>,
@@ -229,6 +237,13 @@ pub struct EngineOptions {
     pub doc_store: Option<Box<dyn DocStore + Send>>,
     /// How many of this engine's own writes stay revertable. Default 0.
     pub undo_depth: usize,
+    /// How long after a `replace()` its lineage counts as settled (gaps U21), as the TypeScript's
+    /// `lineageSettleAfter`: a genesis this engine writes names, as its anchor, the deepest lineage
+    /// on the walk replaced at least this long before it, and every genesis stamped at or below
+    /// that one leaves the lineage cell on every peer. Default
+    /// [`DEFAULT_LINEAGE_SETTLE_AFTER_MS`], 30 days; anything shorter than
+    /// [`MIN_LINEAGE_SETTLE_AFTER_MS`] is taken as that.
+    pub lineage_settle_after_ms: i64,
     /// The app schema this build declares (D31): stamped on every event it writes, under key 9.
     /// A reading for the fleet, never a gate; `None` stamps nothing.
     pub schema_version: Option<SchemaVersion>,
@@ -248,6 +263,7 @@ impl Default for EngineOptions {
             derived: DerivedColumns::new(),
             doc_adapters: BTreeSet::new(),
             doc_store: None,
+            lineage_settle_after_ms: DEFAULT_LINEAGE_SETTLE_AFTER_MS,
             undo_depth: 0,
             schema_version: None,
             validator: None,
@@ -292,6 +308,7 @@ pub struct Engine {
     /// room said it holds (G7). Numbering never goes at or below it, whatever the log holds.
     own_floor: u64,
     undo_depth: usize,
+    lineage_settle_after_ms: i64,
     /// The last `undo_depth` own writes and the rows they touched as they read before.
     undo: VecDeque<Undo>,
     /// The persisted lineage cell that made `open` rebuild the state from the log.
@@ -425,6 +442,9 @@ impl Engine {
                 .unwrap_or_else(|| Box::new(MemoryDocStore::new())),
             own_floor: 0,
             undo_depth: options.undo_depth,
+            lineage_settle_after_ms: options
+                .lineage_settle_after_ms
+                .max(MIN_LINEAGE_SETTLE_AFTER_MS),
             undo: VecDeque::new(),
             refused_at_open: refused,
             schema_version: options.schema_version,
@@ -593,8 +613,16 @@ impl Engine {
             .enumerate()
             .map(|(index, change)| match change {
                 Change::Doc(mut d) if d.genesis => {
+                    let record = self.state.record(&d.table, &d.key);
                     d.lineage = Some(derive_lineage(&peer_id, seq_num, index as u32));
-                    d.parent = lineage_of(self.state.record(&d.table, &d.key), &d.column);
+                    d.parent = lineage_of(record, &d.column);
+                    // the anchor this write settles the walk at (gaps U21)
+                    d.settles = settle_walk(
+                        record
+                            .and_then(|r| r.cells.get(&d.column))
+                            .map(|c| &c.value),
+                        hlc.ms.saturating_sub(self.lineage_settle_after_ms),
+                    );
                     Change::Doc(d)
                 }
                 other => other,
@@ -982,10 +1010,11 @@ impl Engine {
 
     /// The rows this device holds, tombstones included, as one transferable value (RFC-0019,
     /// `engine.snapshot`). With an interest only the rows in it, and the snapshot then claims
-    /// completeness for that slice alone. The floor is this device's own account of its log and
+    /// completeness for that slice alone; a `window` keeps the newest live rows of it and every
+    /// tombstone (`window_rows`). The floor is this device's own account of its log and
     /// never part of what it claims.
     pub fn snapshot(&self, interest: Option<&Interest>) -> Snapshot {
-        let rows = self
+        let rows: Vec<SnapshotRow> = self
             .state
             .tables
             .iter()
@@ -996,6 +1025,11 @@ impl Engine {
                     .map(move |(key, record)| SnapshotRow::new(table, key, record.clone()))
             })
             .collect();
+        // a window keeps the newest live rows of the slice and every tombstone in it
+        let rows = match interest.and_then(|i| i.window) {
+            Some(window) => window_rows(rows, window),
+            None => rows,
+        };
         let coverage = Coverage {
             floor: Cursors::new(),
             ..self.coverage.current()
@@ -1027,6 +1061,12 @@ impl Engine {
         let before = self.state.clone();
         let mut write_keys: BTreeMap<TableName, BTreeSet<RowKey>> = BTreeMap::new();
         let count = snapshot.rows.len();
+        let now = self.now_ms();
+        for row in &snapshot.rows {
+            for hlc in row_stamps(&row.table, &row.record, &self.docs) {
+                self.clock.receive(hlc, now);
+            }
+        }
         for row in snapshot.rows {
             write_keys
                 .entry(row.table.clone())
@@ -1187,6 +1227,26 @@ impl Engine {
     pub fn all_events(&self) -> Result<Vec<StoredEvent>, StoreError> {
         self.store.all()
     }
+}
+
+/// Every clock reading a row carries, as the TypeScript's `rowStamps`: its write and delete
+/// stamps, each cell's stamp, and, in a doc column's lineage cell, each genesis's stamp and the
+/// anchor's. What the clock receives from a row that joins outside an event, so a genesis this
+/// device writes next is stamped after every one it adopted (gaps U21).
+fn row_stamps(table: &str, record: &RowRecord, docs: &DocColumns) -> Vec<Hlc> {
+    let mut stamps: Vec<Hlc> = record
+        .write_stamp
+        .iter()
+        .chain(&record.delete_stamp)
+        .chain(record.cells.values().map(|cell| &cell.stamp))
+        .map(|stamp| stamp.hlc)
+        .collect();
+    for column in docs.get(table).into_iter().flat_map(BTreeMap::keys) {
+        let cell = read_lineage_cell(record.cells.get(column).map(|cell| &cell.value));
+        stamps.extend(cell.geneses.iter().map(|genesis| genesis.stamp.hlc));
+        stamps.extend(cell.settled.iter().map(|settled| settled.stamp.hlc));
+    }
+    stamps
 }
 
 #[cfg(test)]

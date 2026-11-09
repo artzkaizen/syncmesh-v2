@@ -1,22 +1,32 @@
 import type {
   DocColumns,
+  Hlc,
   KeyedRecord,
   LineageCellRefused,
   MergeSpec,
   PartitionKey,
   RowKey,
+  RowRecord,
+  Stamp,
   State,
   TableName,
 } from "@syncmesh/kernel";
 
-import { keyedRecords, mergeRecord, parseLineageCells } from "@syncmesh/kernel";
+import {
+  compareStamp,
+  isVisible,
+  keyedRecords,
+  mergeRecord,
+  parseLineageCells,
+  readLineageCell,
+} from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
 import type { FoldBatch } from "./engine.js";
-import type { Interest } from "./interest.js";
+import type { Interest, InterestWindow } from "./interest.js";
 import type { Coverage } from "./sync.js";
 
-import { interestText, rowsIn } from "./interest.js";
+import { interestText, rowsIn, wholeWindow } from "./interest.js";
 import { lineageMoves } from "./lineage-moves.js";
 
 /**
@@ -48,7 +58,10 @@ export interface Installed {
 }
 
 export interface SnapshotOptions {
-  /** Only the rows this names; the snapshot then claims completeness for that slice alone. */
+  /**
+   * Only the rows this names; the snapshot then claims completeness for that slice alone. A
+   * `window` keeps the newest rows of the slice and every tombstone in it ({@link windowRows}).
+   */
   readonly interest?: Interest;
 }
 
@@ -66,7 +79,9 @@ export function stateSnapshot(
 ): Snapshot {
   const { interest } = options;
   // tombstones travel: without them a joiner would resurrect every row anyone deleted
-  const rows = [...keyedRecords(state)].filter(({ record }) => rowsIn(record, interest));
+  const sliced = [...keyedRecords(state)].filter(({ record }) => rowsIn(record, interest));
+  const window = wholeWindow(interest?.window);
+  const rows = window === undefined ? sliced : windowRows(sliced, window);
   // the floor and the held run are this device's own account of its log, never part of what it
   // claims to a joiner
   const { floor: _ownFloor, held: _ownHeld, ...claimed } = coverage;
@@ -74,6 +89,65 @@ export function stateSnapshot(
     ? { rows, coverage: claimed }
     : { rows, coverage: claimed, scope: interest };
 }
+
+/**
+ * The rows a window keeps (RFC-0019 §3): the `newest` live rows by each row's newest stamp, ties
+ * broken by table and then key in code-point order, and every tombstone whatever its age — a
+ * device that already holds a row outside the window must still learn it died. The rows keep the
+ * order they came in. Both runtimes keep the same rows (`conformance/interest-vectors.json`).
+ *
+ * @example
+ * windowRows(rows, { newest: 2 }); // the two most recently written live rows, and every delete
+ */
+export function windowRows(
+  rows: readonly SnapshotRow[],
+  window: InterestWindow,
+): readonly SnapshotRow[] {
+  const ranked = rows
+    .filter(({ record }) => isVisible(record))
+    .map((row) => ({ row, stamp: newestStamp(row.record) }))
+    .sort(byRecency);
+  const kept = new Set(ranked.slice(0, window.newest).map(({ row }) => row));
+  return rows.filter((row) => kept.has(row) || !isVisible(row.record));
+}
+
+interface Ranked {
+  readonly row: SnapshotRow;
+  readonly stamp: Stamp | undefined;
+}
+
+/** Newest first; then table, then key, so two rows one event wrote have one order everywhere. */
+const byRecency = (a: Ranked, b: Ranked): number => {
+  if (a.stamp !== undefined && b.stamp !== undefined) {
+    const order = compareStamp(b.stamp, a.stamp);
+    if (order !== 0) return order;
+  } else if (a.stamp !== b.stamp) return a.stamp === undefined ? 1 : -1;
+  return codePointOrder(a.row.table, b.row.table) || codePointOrder(a.row.key, b.row.key);
+};
+
+/** The latest stamp anywhere in a record: its write, its delete, or any cell's. */
+const newestStamp = (record: RowRecord): Stamp | undefined => {
+  let newest = record.deleteStamp;
+  const candidates = [record.writeStamp, ...[...record.cells.values()].map((cell) => cell.stamp)];
+  for (const stamp of candidates)
+    if (stamp !== undefined && (newest === undefined || compareStamp(stamp, newest) > 0))
+      newest = stamp;
+  return newest;
+};
+
+/**
+ * Strings by code point, which is Rust's byte order on UTF-8. JavaScript's `<` compares UTF-16
+ * code units, which puts a character above U+FFFF before one in U+E000–U+FFFF.
+ */
+const codePointOrder = (a: string, b: string): number => {
+  const left = [...a];
+  const right = [...b];
+  for (let i = 0; i < Math.min(left.length, right.length); i += 1) {
+    const diff = (left[i]?.codePointAt(0) ?? 0) - (right[i]?.codePointAt(0) ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return left.length - right.length;
+};
 
 /** What a snapshot install needs of the engine it lands in. */
 export interface InstallDeps {
@@ -87,6 +161,8 @@ export interface InstallDeps {
   readonly merge?: MergeSpec | undefined;
   /** The mesh's doc columns: their cells are checked before anything joins, and their moves relabelled. */
   readonly docs?: DocColumns | undefined;
+  /** The engine's clock, told every stamp a row brings in ({@link rowStamps}). */
+  readonly receive?: (hlc: Hlc) => void;
 }
 
 /**
@@ -106,13 +182,16 @@ export async function installSnapshot(
   deps: InstallDeps,
   snapshot: Snapshot,
 ): Promise<Result<Installed, LineageCellRefused>> {
-  const { getState, setState, adopt, persist, persistCoverage, notify, merge, docs } = deps;
+  const { getState, setState, adopt, persist, persistCoverage, notify, merge, docs, receive } =
+    deps;
   const checked = docs === undefined ? undefined : parseLineageCells(snapshot.rows, docs);
   if (checked?.isErr() === true) return Result.err(checked.error);
   const before = getState();
   let state = before;
   const writeKeys = new Map<TableName, Set<RowKey>>();
-  for (const { table, key, record } of snapshot.rows) {
+  for (const row of snapshot.rows) {
+    const { table, key, record } = row;
+    if (receive !== undefined) for (const hlc of rowStamps(row, docs)) receive(hlc);
     state = mergeRecord(state, table, key, record, merge);
     const keys = writeKeys.get(table) ?? new Set<RowKey>();
     keys.add(key);
@@ -149,6 +228,24 @@ export const partitionsIn = (snapshot: Snapshot): readonly PartitionKey[] => {
     if (record.partition !== undefined) seen.add(record.partition);
   return [...seen];
 };
+
+/**
+ * Every clock reading a row carries: its write and delete stamps, each cell's stamp, and, in a doc
+ * column's lineage cell, each genesis's stamp and the anchor's. What an engine's clock receives
+ * from a row that joins outside an event, so a genesis it writes next is stamped after every one
+ * it adopted (gaps U21).
+ */
+export function* rowStamps(row: KeyedRecord, docs: DocColumns | undefined): Iterable<Hlc> {
+  const { record } = row;
+  if (record.writeStamp !== undefined) yield record.writeStamp.hlc;
+  if (record.deleteStamp !== undefined) yield record.deleteStamp.hlc;
+  for (const cell of record.cells.values()) yield cell.stamp.hlc;
+  for (const column of docs?.get(row.table)?.keys() ?? []) {
+    const cell = readLineageCell(record.cells.get(column)?.value);
+    for (const genesis of cell.geneses) yield genesis.stamp.hlc;
+    if (cell.settled !== undefined) yield cell.settled.stamp.hlc;
+  }
+}
 
 /** What an engine offers for joining by state rather than by history (RFC-0019). */
 export interface SnapshotApi {

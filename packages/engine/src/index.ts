@@ -41,10 +41,12 @@ export {
 } from "./doc-log.js";
 export type { DerivedFrom } from "./doc-derived.js";
 export type { DocEditorApi } from "./doc-editor.js";
-export type { DocApi, DocEngineOptions, DocTail, TailUpdate } from "./doc-path.js";
+export type { DocApi, DocEngineOptions, DocTail, LineageLog, TailUpdate } from "./doc-path.js";
+export { DEFAULT_LINEAGE_SETTLE_AFTER, MIN_LINEAGE_SETTLE_AFTER } from "./doc-path.js";
 export type { EventHeader, RecentEvents } from "./recent.js";
 export { DEFAULT_RECENT, headerOf, recentHeaders } from "./recent.js";
 export type { Tx } from "./tx.js";
+export { record } from "./tx.js";
 export type { AtomicStores, EngineOptions } from "./options.js";
 export type {
   Engine,
@@ -166,10 +168,10 @@ export { can, why } from "./can.js";
 export type { ExplainedRule, PolicyWhy } from "./policy-why.js";
 export { createPolicyDenied } from "./policy-why.js";
 export type { Installed, Snapshot, SnapshotOptions, SnapshotRow } from "./snapshot.js";
-export { installSnapshot, partitionsIn, stateSnapshot } from "./snapshot.js";
+export { installSnapshot, partitionsIn, stateSnapshot, windowRows } from "./snapshot.js";
 export type { ChunkDeps, FeedApi, FeedState, FeedTracker } from "./feed.js";
 export { chunkSince, createFeedPath, receiveChunk, trackFeeds } from "./feed.js";
-export type { Interest, Scope } from "./interest.js";
+export type { Interest, InterestWindow, Scope } from "./interest.js";
 export {
   EVERYTHING,
   entitledInterest,
@@ -183,6 +185,7 @@ export {
   sameInterest,
   scopeFrom,
   scopeText,
+  wholeWindow,
 } from "./interest.js";
 export type { AccountLink, Dispute, LinkRow } from "./accounts.js";
 export { disputes, linkDevice, linkKey, linkedAuthor, links, unlinkDevice } from "./accounts.js";

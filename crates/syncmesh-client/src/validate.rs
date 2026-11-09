@@ -816,6 +816,7 @@ impl Validator {
         let at = DocEvent {
             peer: event.peer_id,
             seq: event.seq,
+            hlc: event.hlc,
             changes: event.changes,
             local: event.local,
         };

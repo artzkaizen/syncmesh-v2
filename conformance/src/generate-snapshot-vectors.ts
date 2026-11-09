@@ -31,6 +31,8 @@ export async function snapshotVectors() {
   const served = {
     everything: await serve(undefined),
     acme: await serve({ partitions: [part(String(ACME))] }),
+    // the newest acme row and acme's tombstone: a window is part of the interest (O13)
+    windowed: await serve({ partitions: [part(String(ACME))], window: { newest: 1 } }),
     certified: await serve(undefined, 2),
     // served by a holder of other events: a port's holder of `events` does not serve this one
     unsorted: await serve(undefined, 2, unsortedHistory()),
@@ -56,6 +58,11 @@ export async function snapshotVectors() {
     {
       description: "a scoped answer adopts its slice, scoped",
       served: "acme",
+      policy: { adoptUnvouched: true },
+    },
+    {
+      description: "a windowed answer adopts its window, scoped",
+      served: "windowed",
       policy: { adoptUnvouched: true },
     },
     {

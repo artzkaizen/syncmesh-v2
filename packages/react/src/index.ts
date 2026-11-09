@@ -3,6 +3,8 @@ export type { LiveCall, LiveDiff, LiveResult, QueryOptions } from "./use-live-qu
 export { useLiveQuery } from "./use-live-query.js";
 export type { QueryResult } from "./use-query.js";
 export { useQuery } from "./use-query.js";
+export type { DocSource, OpenedDoc, UseDoc } from "./use-doc.js";
+export { useDoc } from "./use-doc.js";
 export type { PresenceTopic } from "./use-presence.js";
 export { usePresence } from "./use-presence.js";
 export type { CanCall } from "./use-can.js";

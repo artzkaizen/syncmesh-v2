@@ -1,9 +1,11 @@
 import {
+  compareHlc,
   getRecord,
   docLineage,
   isJsonArray,
   parseAdapterId,
   parsePartitionKey,
+  readLineageCell,
   type CellValue,
   type ColumnName,
   type LineageId,
@@ -13,6 +15,7 @@ import {
   type SyncEvent,
 } from "@syncmesh/kernel";
 import { partition, syncSchema, t } from "@syncmesh/schema";
+import { Temporal } from "@syncmesh/temporal";
 import { deriveLineage } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import * as fc from "fast-check";
@@ -385,6 +388,23 @@ describe("a lineage cell that joins outside an event (RFC-0023 §5.3, §16.1)", 
     await relabelled(r, winner);
   });
 
+  test("a joiner whose clock runs behind stamps its replace after the genesis a snapshot or repair brought", async () => {
+    const a = node(PEER_A, 100, true);
+    await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+    a.clock.set(10 * 86_400_000);
+    const parent = await write(a, (tx) => tx.doc(NOTES, N1, replace(1)));
+    const joiners = [node(PEER_B, 50, true), node(PEER_C, 50, true)];
+    const [bySnapshot, byRepair] = joiners;
+    (await bySnapshot?.engine.installSnapshot(a.engine.snapshot()))?.unwrap();
+    (await byRepair?.engine.repairRows(NOTES, a.engine.rowRecords(NOTES, [N1])))?.unwrap();
+    for (const joiner of joiners) {
+      expect(lineageAt(joiner)).toBe(deriveLineage(PEER_A, parent.seqNum, 0));
+      const child = await write(joiner, (tx) => tx.doc(NOTES, N1, replace(2)));
+      expect(compareHlc(child.hlc, parent.hlc)).toBe(1);
+      expect(lineageAt(joiner)).toBe(deriveLineage(joiner.engine.peerId, child.seqNum, 0));
+    }
+  });
+
   test("a snapshot whose documents have no doc-log entries here adds no heads", async () => {
     const { a } = await scenario();
     const fresh = node(PEER_C, 50, true);
@@ -520,5 +540,168 @@ describe("a lineage cell that joins outside an event (RFC-0023 §5.3, §16.1)", 
     expect(cached.get(NOTES)?.get(N1)?.cells.get(CONTENT)?.value).toEqual(
       getRecord(a.engine.state(), NOTES, N1)?.cells.get(CONTENT)?.value,
     );
+  });
+});
+
+describe("a lineage cell stays bounded however often a document is replaced (gaps U21)", () => {
+  const DAY = 86_400_000;
+  const cellOf = (n: Node) => getRecord(n.engine.state(), NOTES, N1)?.cells.get(CONTENT)?.value;
+  const genesesIn = (value: CellValue | undefined) =>
+    isJsonArray(value) ? Object.keys(value[1] ?? {}).length : 0;
+
+  test("a replace past the settle window names its anchor, and every peer trims alike", async () => {
+    const a = node(PEER_A, 100, true);
+    const events: SyncEvent[] = [
+      await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" }))),
+    ];
+    const sizes: number[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      a.clock.set(100 + (i + 1) * 31 * DAY);
+      events.push(await write(a, (tx) => tx.doc(NOTES, N1, replace(i))));
+      sizes.push(genesesIn(cellOf(a)));
+    }
+    // from the second replace on, each settles the walk at the one before it
+    expect(sizes).toEqual([1, ...Array.from({ length: 11 }, () => 1)]);
+    const [, , second] = events;
+    const anchor = second?.changes[0]?.kind === "doc" ? second.changes[0].settles : undefined;
+    expect(anchor?.lineage).toBe(deriveLineage(PEER_A, seq(2), 0));
+    const last = events.at(-1)?.seqNum;
+    expect(docLineage(getRecord(a.engine.state(), NOTES, N1), CONTENT)).toBe(
+      last === undefined ? undefined : deriveLineage(PEER_A, last, 0),
+    );
+    // a peer folding the same events backwards holds the same record, byte for byte
+    const b = node(PEER_B, 50, true);
+    for (const event of [...events].reverse()) (await b.engine.receive({ event })).unwrap();
+    expect(getRecord(b.engine.state(), NOTES, N1)).toEqual(getRecord(a.engine.state(), NOTES, N1));
+  });
+
+  test("inside the window nothing settles, so a late first replace still wins", async () => {
+    const a = node(PEER_A, 100, true);
+    await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+    for (let i = 0; i < 4; i += 1) {
+      a.clock.set(100 + (i + 1) * DAY);
+      const replaced = await write(a, (tx) => tx.doc(NOTES, N1, replace(i)));
+      const change = replaced.changes[0];
+      expect(change?.kind === "doc" && change.settles).toBeUndefined();
+    }
+    expect(genesesIn(cellOf(a))).toBe(4);
+  });
+
+  test("a window shorter than an hour is taken as an hour", async () => {
+    const a = setup(PEER_A, 100, {
+      docs: DOCS,
+      validate,
+      docAdapters: new Set([LORO]),
+      lineageSettleAfter: Temporal.Duration.from({ seconds: 1 }),
+    });
+    await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+    a.clock.set(100 + DAY);
+    await write(a, (tx) => tx.doc(NOTES, N1, replace(1)));
+    a.clock.set(100 + DAY + 60_000);
+    const sibling = await write(a, (tx) => tx.doc(NOTES, N1, replace(2)));
+    const change = sibling.changes[0];
+    expect(change?.kind === "doc" && change.settles).toBeUndefined();
+  });
+
+  test("the window is the engine's to set", async () => {
+    const a = setup(PEER_A, 100, {
+      docs: DOCS,
+      validate,
+      docAdapters: new Set([LORO]),
+      lineageSettleAfter: Temporal.Duration.from({ hours: 1 }),
+    });
+    await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+    a.clock.set(100 + DAY);
+    await write(a, (tx) => tx.doc(NOTES, N1, replace(1)));
+    a.clock.set(100 + 2 * DAY);
+    const settling = await write(a, (tx) => tx.doc(NOTES, N1, replace(2)));
+    const change = settling.changes[0];
+    expect(change?.kind === "doc" && change.settles?.lineage).toBe(
+      deriveLineage(PEER_A, seq(2), 0),
+    );
+  });
+
+  test("a window in weeks or months is measured, not refused", async () => {
+    for (const given of [{ weeks: 6 }, { months: 1 }, { years: 1 }]) {
+      const a = setup(PEER_A, 100, {
+        docs: DOCS,
+        validate,
+        docAdapters: new Set([LORO]),
+        lineageSettleAfter: Temporal.Duration.from(given),
+      });
+      await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+      a.clock.set(100 + DAY);
+      await write(a, (tx) => tx.doc(NOTES, N1, replace(1)));
+      a.clock.set(100 + 2 * DAY);
+      const inside = (await write(a, (tx) => tx.doc(NOTES, N1, replace(2)))).changes[0];
+      expect(inside?.kind === "doc" && inside.settles).toBeUndefined();
+      a.clock.set(100 + 400 * DAY);
+      const past = (await write(a, (tx) => tx.doc(NOTES, N1, replace(3)))).changes[0];
+      expect(past?.kind === "doc" && past.settles?.lineage).toBe(deriveLineage(PEER_A, seq(3), 0));
+    }
+  });
+});
+
+describe("a lineage read back for a restore (RFC-0023 §5.3)", () => {
+  const DOC = { table: NOTES, key: N1, column: CONTENT };
+
+  test("whole on the device that wrote it, and lost where a snapshot install adopted its history", async () => {
+    const a = node(PEER_A, 100, true);
+    await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+    await write(a, (tx) => tx.doc(NOTES, N1, edit(1)));
+    await write(a, (tx) => tx.doc(NOTES, N1, replace(2)));
+    await write(a, (tx) => tx.doc(NOTES, N1, replace(3)));
+    const first = deriveLineage(PEER_A, seq(3), 0);
+    const held = async (n: Node, lineage: LineageId | undefined) =>
+      (await n.engine.docLineageLog(DOC, lineage)).unwrap();
+    expect((await held(a, undefined)).lost).toBe(0);
+    expect((await held(a, undefined)).updates).toHaveLength(1);
+    expect((await held(a, first)).lost).toBe(0);
+
+    // a joiner takes state: the cell names both geneses, and no event of either reached it
+    const c = node(PEER_C, 300, true);
+    (await c.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    expect((await held(c, first)).lost).toBe(1);
+    expect((await held(c, undefined)).lost).toBe(1);
+  });
+
+  test("lost on a joiner when an anchor trimmed the lineage's genesis and its event never came", async () => {
+    const DAY = 86_400_000;
+    const a = node(PEER_A, 100, true);
+    const b = node(PEER_B, 50, true);
+    const c = node(PEER_C, 300, true);
+    const held = async (n: Node, lineage: LineageId | undefined) =>
+      (await n.engine.docLineageLog(DOC, lineage)).unwrap();
+    const send = async (to: Node, event: SyncEvent) =>
+      (await to.engine.receive({ event })).unwrap();
+    await send(b, await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" }))));
+    a.clock.set(100 + DAY);
+    await write(a, (tx) => tx.doc(NOTES, N1, replace(1)));
+    // B replaces the root it holds: a sibling of A's first replace, which loses to it
+    b.clock.set(100 + 1.5 * DAY);
+    const sibling = await write(b, (tx) => tx.doc(NOTES, N1, replace(2)));
+    const orphan = sibling.changes[0]?.kind === "doc" ? sibling.changes[0].lineage : undefined;
+    await send(a, sibling);
+    a.clock.set(100 + 2 * DAY);
+    await write(a, (tx) => tx.doc(NOTES, N1, replace(3)));
+    // settles at the replace of day 2, so the sibling, stamped before it, leaves the cell
+    a.clock.set(100 + 40 * DAY);
+    await write(a, (tx) => tx.doc(NOTES, N1, replace(4)));
+    expect(
+      readLineageCell(
+        getRecord(a.engine.state(), NOTES, N1)?.cells.get(CONTENT)?.value,
+      ).geneses.some((g) => g.lineage === orphan),
+    ).toBe(false);
+    expect((await held(a, orphan)).lost).toBe(0);
+    // B, still apart, keeps editing what it replaced
+    b.clock.set(100 + 41 * DAY);
+    const late = await write(b, (tx) => tx.doc(NOTES, N1, edit(5, orphan)));
+
+    // a joiner takes A's state, then only B's late edit: the replace's snapshot never reached it
+    (await c.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    await send(c, late);
+    const read = await held(c, orphan);
+    expect(read.updates).toHaveLength(1);
+    expect(read.lost).toBeGreaterThan(0);
   });
 });

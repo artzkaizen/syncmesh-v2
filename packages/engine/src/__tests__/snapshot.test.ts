@@ -1,6 +1,7 @@
 import { parsePartitionKey, readRow } from "@syncmesh/kernel";
 import { describe, expect, test } from "bun:test";
 
+import { interestText } from "../interest.js";
 import { partitionsIn } from "../snapshot.js";
 import {
   CREATE,
@@ -62,6 +63,41 @@ describe("snapshot", () => {
     expect(scoped.rows.map((r) => String(r.key))).toEqual(["n1"]);
     expect(scoped.scope?.partitions?.map(String)).toEqual(["org:acme"]);
     expect(a.engine.snapshot().rows).toHaveLength(2);
+  });
+
+  test("a window keeps the newest rows of its slice, and every tombstone in it (O13)", async () => {
+    const a = setup(PEER_A, 100);
+    for (const id of ["n1", "n2", "n3", "n4"]) (await write(a, id, id)).unwrap();
+    (await write(a, "g1", "globex", GLOBEX)).unwrap();
+    (await remove(a, "n1")).unwrap();
+    // n2 is the oldest live row; editing it makes it the newest
+    (
+      await a.engine.mutate(
+        procedure("notes.update"),
+        (tx) => tx.update(NOTES, key("n2"), row({ title: "edited" })),
+        { partition: ACME },
+      )
+    ).unwrap();
+
+    const window = { partitions: [ACME], window: { newest: 2 } };
+    const snap = a.engine.snapshot({ interest: window });
+    // n2 (edited last) and n4 are the two newest live acme rows; n1's delete travels whatever its
+    // age, so a device that holds n1 learns it died; n3 and globex's g1 stay behind
+    expect(snap.rows.map((r) => String(r.key)).sort()).toEqual(["n1", "n2", "n4"]);
+    expect(snap.scope).toEqual(window);
+
+    // the joiner's cursors say they are true for that window and no more
+    const b = setup(PEER_B, 200);
+    await b.engine.installSnapshot(snap);
+    expect(b.engine.coverage().scope).toBe(interestText(window));
+    expect(readRow(b.engine.state(), NOTES, key("n3"))).toBeUndefined();
+  });
+
+  test("a window of no whole rows is no window: the whole slice travels (O13)", async () => {
+    const a = setup(PEER_A, 100);
+    for (const id of ["n1", "n2"]) (await write(a, id, id)).unwrap();
+    for (const newest of [0, -1, 1.5])
+      expect(a.engine.snapshot({ interest: { window: { newest } } }).rows).toHaveLength(2);
   });
 });
 

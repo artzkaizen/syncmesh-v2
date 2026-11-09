@@ -1,5 +1,12 @@
 import type { DocAddress, DocAppend, DocEntryRef } from "@syncmesh/engine";
-import type { LineageId, PartitionKey, Procedure, SyncEvent } from "@syncmesh/kernel";
+import type {
+  DocBlobRef,
+  DocChange,
+  LineageId,
+  PartitionKey,
+  Procedure,
+  SyncEvent,
+} from "@syncmesh/kernel";
 
 import { docEntryId } from "@syncmesh/engine";
 import { getRecord, docLineage } from "@syncmesh/kernel";
@@ -7,14 +14,17 @@ import { Result } from "@syncmesh/result";
 import { bytesEqual } from "@syncmesh/wire";
 
 import type { AnyAdapter, UpdateRejected } from "./adapter.js";
+import type { DocBlobs } from "./blobs.js";
+import type { BlobUnavailable, UpdateTooLarge } from "./errors.js";
 import type { Derive, DocsEngine } from "./materialise.js";
 
-import { FlushRefused, HandleInvalidated, UpdateTooLarge } from "./errors.js";
+import { carry, fetchUpdate } from "./blobs.js";
+import { FlushRefused, HandleInvalidated } from "./errors.js";
 
 /** Where an open document stands against the log (RFC-0023 §4.3). */
 export type DocStatus = "current" | "behind" | "invalidated";
 
-export type FlushError = UpdateTooLarge | FlushRefused | HandleInvalidated;
+export type FlushError = UpdateTooLarge | FlushRefused | HandleInvalidated | BlobUnavailable;
 
 /** One open replica, however many handles share it. */
 export interface Entry {
@@ -39,6 +49,17 @@ export interface Entry {
   timers: { idle?: ReturnType<typeof setTimeout>; max?: ReturnType<typeof setTimeout> };
 }
 
+/** Blob-carried updates each replica is still fetching: while any is, the replica is `behind`. */
+const fetching = new WeakMap<Entry, number>();
+
+/**
+ * Keeps a replica `behind` for `missing` blob-carried updates its load could not fetch: they wait
+ * for the next open or materialisation, and no later delivery marks the replica `current` meanwhile.
+ */
+export const holdBehind = (entry: Entry, missing: number) => {
+  if (missing > 0) fetching.set(entry, (fetching.get(entry) ?? 0) + missing);
+};
+
 const notify = (entry: Entry) => {
   for (const listener of entry.listeners) listener();
 };
@@ -52,7 +73,12 @@ const winnerAt = (engine: DocsEngine, address: DocAddress) =>
  * the one the replica was loaded on (§5.3): two histories never share a replica, so the handle is
  * invalidated and the app reopens.
  */
-export function deliver(engine: DocsEngine, held: Entry, appends: readonly DocAppend[]) {
+export function deliver(
+  engine: DocsEngine,
+  held: Entry,
+  appends: readonly DocAppend[],
+  blobs?: DocBlobs,
+) {
   const [first] = appends;
   if (first === undefined || held.status === "invalidated") return;
   if (winnerAt(engine, first.entry) !== held.lineage) return invalidate(held);
@@ -64,6 +90,38 @@ export function deliver(engine: DocsEngine, held: Entry, appends: readonly DocAp
     held,
     live.flatMap(({ update }) => (update.bytes === undefined ? [] : [update.bytes])),
   );
+  for (const { entry, update } of live)
+    if (update.blob !== undefined) void deliverBlob(engine, held, entry, update.blob, blobs);
+}
+
+/**
+ * A blob-carried update reaches an open replica once its bytes are fetched (RFC-0023 §5.4) — on
+ * the lineage it was folded on, and only while the replica is still on it; until then the
+ * document is `behind`. One no carrier holds yet waits for the next open or materialisation.
+ */
+async function deliverBlob(
+  engine: DocsEngine,
+  held: Entry,
+  entry: DocAppend["entry"],
+  blob: DocBlobRef,
+  blobs: DocBlobs | undefined,
+) {
+  if (blobs === undefined) return;
+  fetching.set(held, (fetching.get(held) ?? 0) + 1);
+  if (held.status === "current") {
+    held.status = "behind";
+    notify(held);
+  }
+  const bytes = await fetchUpdate(blobs, blob);
+  const left = (fetching.get(held) ?? 1) - 1;
+  fetching.set(held, left);
+  if (held.status === "invalidated" || winnerAt(engine, entry) !== held.lineage) return;
+  if (bytes === undefined) return;
+  applyTo(held, [bytes]);
+  if (left === 0 && held.status === "behind" && !held.adapter.pending(held.doc)) {
+    held.status = "current";
+    notify(held);
+  }
 }
 
 /** Folded updates onto an open replica; a refused one stays in the log, `failed` when materialised (§10). */
@@ -98,17 +156,15 @@ export const invalidate = (entry: Entry) => {
 };
 
 /**
- * Sends what the handle committed since its last flush as one event: a doc change per stashed
- * part. The row's derived columns, computed from the replica that holds exactly what is sent, land
- * in the same write's transaction (RFC-0023 §6.3), so a live query reads the title with the edit.
+ * Takes what the replica committed since its last export as the parts of one burst, moving its
+ * flushed version past them: refused, and the replica invalidated, when its lineage lost since it
+ * was loaded or the adapter cannot export. Empty when nothing was committed.
  */
-export async function flush(
+export function exportBurst(
   engine: DocsEngine,
-  procedure: Procedure,
   address: DocAddress,
   entry: Entry,
-  derive?: Derive<unknown>,
-): Promise<Result<SyncEvent | undefined, FlushError>> {
+): Result<readonly Uint8Array[], FlushError> {
   clearTimers(entry);
   if (entry.status === "invalidated")
     return Result.err(new HandleInvalidated({ message: "this document handle was invalidated" }));
@@ -126,36 +182,64 @@ export async function flush(
       new FlushRefused({ message: "the adapter could not export the burst", cause: stashed.error }),
     );
   }
-  const parts = entry.stash.splice(0);
-  if (parts.length === 0) return Result.ok(undefined);
-  const limit = entry.adapter.limits.maxUpdateBytes;
-  const over = parts.find((p) => p.length > limit);
-  if (over !== undefined) {
-    invalidate(entry);
-    return Result.err(
-      new UpdateTooLarge({
-        size: over.length,
-        limit,
-        message: "the burst is over the inline bound",
-      }),
-    );
-  }
-  const record = getRecord(engine.state(), address.table, address.key);
+  return Result.ok(entry.stash.splice(0));
+}
+
+/**
+ * The burst as the doc changes of one write, each carried inline or, past the inline bound with a
+ * blob store, by reference (see {@link carry}). A burst that cannot be carried invalidates the
+ * replica, whose operations then never leave it.
+ */
+export async function burstChanges(
+  address: DocAddress,
+  entry: Entry,
+  parts: readonly Uint8Array[],
+  blobs: DocBlobs | undefined,
+  partition: PartitionKey | undefined,
+): Promise<Result<readonly DocChange[], FlushError>> {
+  const carried = await carry(entry.adapter, parts, blobs, partition);
+  if (carried.isErr()) invalidate(entry);
   const { lineage } = entry;
+  return carried.map((updates) =>
+    updates.map((update): DocChange => ({
+      kind: "doc",
+      table: address.table,
+      key: address.key,
+      column: address.column,
+      adapter: entry.adapter.id,
+      update,
+      ...(lineage !== undefined && { lineage }),
+    })),
+  );
+}
+
+/**
+ * Sends what the handle committed since its last flush as one event: a doc change per stashed
+ * part. The row's derived columns, computed from the replica that holds exactly what is sent, land
+ * in the same write's transaction (RFC-0023 §6.3), so a live query reads the title with the edit.
+ */
+export async function flush(
+  engine: DocsEngine,
+  procedure: Procedure,
+  address: DocAddress,
+  entry: Entry,
+  derive?: Derive<unknown>,
+  blobs?: DocBlobs,
+): Promise<Result<SyncEvent | undefined, FlushError>> {
+  const parts = exportBurst(engine, address, entry);
+  if (parts.isErr()) return parts;
+  if (parts.value.length === 0) return Result.ok(undefined);
+  const partition = getRecord(engine.state(), address.table, address.key)?.partition;
   const derived = derive?.(entry.doc);
+  const changes = await burstChanges(address, entry, parts.value, blobs, partition);
+  if (changes.isErr()) return changes;
   const written = await engine.mutate(
     procedure,
     (tx) => {
-      for (const bytes of parts)
-        tx.doc(address.table, address.key, {
-          column: address.column,
-          adapter: entry.adapter.id,
-          update: { bytes },
-          ...(lineage !== undefined && { lineage }),
-        });
+      for (const { table, key, kind: _kind, ...write } of changes.value) tx.doc(table, key, write);
     },
     {
-      ...partitionOption(record?.partition),
+      ...partitionOption(partition),
       ...(derived !== undefined && {
         derived: [{ table: address.table, key: address.key, values: derived }],
       }),
@@ -176,5 +260,5 @@ export const clearTimers = (entry: Entry) => {
   entry.timers = {};
 };
 
-const partitionOption = (partition: PartitionKey | undefined) =>
+export const partitionOption = (partition: PartitionKey | undefined) =>
   partition === undefined ? {} : { partition };

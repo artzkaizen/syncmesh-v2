@@ -49,7 +49,7 @@ describe("the state file is named after the app's schema", () => {
     await reopened.close();
   });
 
-  test("a state file deleted on its own is installed again over the same shape (gaps U39)", async () => {
+  test("a state file deleted on its own is installed again over the same shape (gaps U40)", async () => {
     const log = join(dir, "deleted.db");
     const name = schemaName(ONE_COLUMN);
     const first = await openPair(log, name);

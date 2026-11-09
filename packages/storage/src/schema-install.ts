@@ -23,9 +23,10 @@ import { attempt } from "./sql.js";
  * column, add a table, change a dialect, and the text differs and everything is reinstalled.
  *
  * The one thing it cannot see is a change made *around* it: drop a trigger by hand and this will
- * still say the schema is installed. A whole state file deleted is the exception it does see: the
- * record is the log's, so it also asks the state half whether an install is there (gaps U39). That is the same bargain every migration table makes, and
- * the repair is the same — clear the row, or the file.
+ * still say the schema is installed. That is the same bargain every migration table makes, and
+ * the repair is the same — clear the row, or the file. A whole state file deleted is the one such
+ * change it does see: the record is the log's, so it also asks the state half whether an install
+ * is there (gaps U40).
  *
  * **A changed schema is only free while the log can still produce the rows.** The row it compares
  * lives in the log, which is shared; the file it is comparing against is the derived half, which

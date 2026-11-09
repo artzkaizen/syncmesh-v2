@@ -41,6 +41,13 @@
         "85060268686f6c6465723a310158708501815820d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af8182656e6f7465738364626f6479626964657469746c6581686f72673a61636d65818600626e33831b0000018bcfe47da40000f6008382006574686972648201626e338202657468726565"
       ]
     },
+    "windowed": {
+      "request": "83060078317b22706172746974696f6e73223a5b226f72673a61636d65225d2c2277696e646f77223a7b226e6577657374223a317d7d",
+      "frames": [
+        "88060168686f6c6465723a310102828258209c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca03825820d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af0378317b22706172746974696f6e73223a5b226f72673a61636d65225d2c2277696e646f77223a7b226e6577657374223a317d7df6",
+        "85060268686f6c6465723a310058c585018258209c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca5820d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af8182656e6f7465738364626f6479626964657469746c6581686f72673a61636d65828600626e32831b0000018bcfe47da20000831b0000018bcfe47da5000100838200667365636f6e648201626e3282026374776f8600626e33831b0000018bcfe47da40001f6008382006574686972648201626e338202657468726565"
+      ]
+    },
     "certified": {
       "request": "83060060",
       "frames": [
@@ -68,6 +75,7 @@
       "sent": ["84060368686f6c6465723a3180"],
       "synced": [],
       "floor": [],
+      "scope": null,
       "rows": ["n1", "n2", "n3", "n4"],
       "settled": {
         "kind": "installed",
@@ -91,6 +99,7 @@
         ["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 3],
         ["d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af", 3]
       ],
+      "scope": null,
       "rows": ["n1", "n2", "n3", "n4"],
       "settled": {
         "kind": "installed",
@@ -105,6 +114,7 @@
       "sent": [],
       "synced": [],
       "floor": [],
+      "scope": null,
       "rows": [],
       "settled": null
     },
@@ -116,6 +126,7 @@
       "sent": [],
       "synced": [],
       "floor": [],
+      "scope": null,
       "rows": [],
       "settled": null
     },
@@ -135,10 +146,35 @@
         ["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 3],
         ["d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af", 3]
       ],
+      "scope": "{\"partitions\":[\"org:acme\"]}",
       "rows": ["n1", "n2", "n3"],
       "settled": {
         "kind": "installed",
         "rows": 3,
+        "vouched": false
+      }
+    },
+    {
+      "description": "a windowed answer adopts its window, scoped",
+      "served": "windowed",
+      "policy": {
+        "adoptUnvouched": true
+      },
+      "request": "83060060",
+      "sent": ["84060368686f6c6465723a3180"],
+      "synced": [
+        ["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 3],
+        ["d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af", 3]
+      ],
+      "floor": [
+        ["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 3],
+        ["d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af", 3]
+      ],
+      "scope": "{\"partitions\":[\"org:acme\"],\"window\":{\"newest\":1}}",
+      "rows": ["n2", "n3"],
+      "settled": {
+        "kind": "installed",
+        "rows": 2,
         "vouched": false
       }
     },
@@ -153,6 +189,7 @@
       "sent": ["84060368686f6c6465723a3180"],
       "synced": [["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 2]],
       "floor": [["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 2]],
+      "scope": null,
       "rows": ["n1", "n2", "n3", "n4"],
       "settled": {
         "kind": "installed",
@@ -171,6 +208,7 @@
       "sent": ["84060368686f6c6465723a3180"],
       "synced": [["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 2]],
       "floor": [["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 2]],
+      "scope": null,
       "rows": ["u1"],
       "settled": {
         "kind": "installed",
@@ -188,6 +226,7 @@
       "sent": ["84060368686f6c6465723a3180"],
       "synced": [],
       "floor": [],
+      "scope": null,
       "rows": ["n1", "n2", "n3", "n4"],
       "settled": {
         "kind": "installed",
@@ -206,6 +245,7 @@
       "sent": ["84060368686f6c6465723a3180"],
       "synced": [["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 2]],
       "floor": [["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 2]],
+      "scope": null,
       "rows": ["n1", "n2", "n3", "n4"],
       "settled": {
         "kind": "installed",
@@ -225,6 +265,7 @@
       "sent": ["84060368686f6c6465723a3180"],
       "synced": [],
       "floor": [],
+      "scope": null,
       "rows": ["n1", "n2", "n3", "n4"],
       "settled": {
         "kind": "installed",
@@ -249,6 +290,7 @@
         ["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 3],
         ["d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af", 3]
       ],
+      "scope": null,
       "rows": ["n1", "n2", "n3", "n4"],
       "settled": {
         "kind": "installed",

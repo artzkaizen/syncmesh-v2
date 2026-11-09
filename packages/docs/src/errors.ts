@@ -56,6 +56,35 @@ export class CheckpointRefused extends TaggedError("CheckpointRefused")<{
 }> {}
 
 /**
+ * A blob-carried update could not be put (RFC-0023 §5.4, D18): the blob store refused the bytes,
+ * so the burst was not sent and the handle is invalidated.
+ */
+export class BlobUnavailable extends TaggedError("BlobUnavailable")<{
+  message: string;
+  cause?: unknown;
+}> {}
+
+/** One write both edited and replaced the document at this address; nothing was written. */
+export class DocWriteConflict extends TaggedError("DocWriteConflict")<{
+  table: string;
+  key: string;
+  column: string;
+  message: string;
+}> {}
+
+/**
+ * A lineage `restore()` would bring back only part of (RFC-0023 §5.3): updates of it this device
+ * can no longer read — their events compacted with no snapshot of it left, history it never
+ * received — or blob-carried ones no carrier holds yet. Nothing was written. Updates the adapter
+ * cannot read are not counted: a restore leaves them out, as every replica does.
+ */
+export class LineageIncomplete extends TaggedError("LineageIncomplete")<{
+  lost: number;
+  missing: number;
+  message: string;
+}> {}
+
+/**
  * A checkpoint of a sealed partition's document was asked of a device that holds no content key
  * for the partition: its snapshot would have gone to the host in the clear (RFC-0023 §11).
  */

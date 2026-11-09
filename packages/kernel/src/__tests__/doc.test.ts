@@ -1,23 +1,25 @@
+import { Temporal } from "@syncmesh/temporal";
 import { describe, expect, test } from "bun:test";
 import * as fc from "fast-check";
 
 import type { DocChange, LineageId } from "../doc.js";
 
 import { applyChange, mergeRecord } from "../apply.js";
+import { parseActionId, parseAdapterId, parseLineageId } from "../doc.js";
+import { getRecord, isVisible } from "../index.js";
 import {
   GENESIS_RULE,
+  SETTLED_RULE,
   cellGeneses,
-  docLineage,
-  parseActionId,
-  parseAdapterId,
   parseLineageCells,
-  parseLineageId,
-  withDocColumns,
-} from "../doc.js";
-import { getRecord, isVisible } from "../index.js";
+  readLineageCell,
+} from "../lineage-cell.js";
+import { docLineage, settleWalk, withDocColumns } from "../lineage.js";
+import { compareStamp } from "../stamp.js";
 import { emptyState } from "../state.js";
 import {
   applyAll,
+  canonicalState,
   column,
   insert,
   MERGE,
@@ -46,8 +48,18 @@ const doc = (extra: Partial<DocChange> = {}): DocChange => ({
   ...extra,
 });
 
-const genesis = (l: LineageId, at: Stamped["stamp"], parent?: LineageId): Stamped => ({
-  change: doc({ lineage: l, genesis: true, ...(parent !== undefined && { parent }) }),
+const genesis = (
+  l: LineageId,
+  at: Stamped["stamp"],
+  parent?: LineageId,
+  settles?: DocChange["settles"],
+): Stamped => ({
+  change: doc({
+    lineage: l,
+    genesis: true,
+    ...(parent !== undefined && { parent }),
+    ...(settles !== undefined && { settles }),
+  }),
   stamp: at,
 });
 
@@ -310,5 +322,230 @@ describe("a lineage cell kept outside events carries its rule's version (RFC-002
 
   test("a column that is not a doc column is not checked", () => {
     expect(parseLineageCells([withCell(geneses)], new Map()).isOk()).toBe(true);
+  });
+});
+
+describe("a settled anchor trims the lineage cell and keeps the walk (gaps U21)", () => {
+  const cellAfter = (changes: readonly Stamped[]) =>
+    getRecord(applyAll(changes), NOTES, N1)?.cells.get(CONTENT)?.value;
+  const at = (ms: number) => Temporal.Instant.fromEpochMilliseconds(ms);
+
+  test("every genesis the anchor passed leaves the cell, and the walk starts at the anchor", () => {
+    const a = genesis(lineage("a"), stamp(1, 0, PEER_A));
+    const loser = genesis(lineage("b"), stamp(5, 0, PEER_B));
+    const c = genesis(lineage("c"), stamp(9, 0, PEER_A), lineage("a"));
+    const anchor = { lineage: lineage("c"), stamp: stamp(9, 0, PEER_A) };
+    const d = genesis(lineage("d"), stamp(20, 0, PEER_B), lineage("c"), anchor);
+    for (const order of [
+      [a, loser, c, d],
+      [d, c, loser, a],
+      [c, d, a, loser],
+    ]) {
+      const cell = readLineageCell(cellAfter(order));
+      expect(cell.geneses.map((g) => g.lineage)).toEqual([lineage("d")]);
+      expect(cell.settled).toEqual(anchor);
+      expect(lineageAfter(order)).toBe(lineage("d"));
+    }
+    expect(cellAfter([a, d])).toEqual([
+      SETTLED_RULE,
+      { [lineage("d")]: [lineage("c"), 20, 0, PEER_B] },
+      [lineage("c"), 9, 0, PEER_A],
+    ]);
+  });
+
+  test("a genesis stamped below the anchor never wins, whenever it lands", () => {
+    const a = genesis(lineage("a"), stamp(1, 0, PEER_A));
+    const c = genesis(lineage("c"), stamp(9, 0, PEER_A), lineage("a"));
+    // replaced `a` before `c` did, so without the anchor it would win — and it was held back
+    // past the settle window
+    const late = genesis(lineage("e"), stamp(3, 0, PEER_C), lineage("a"));
+    expect(lineageAfter([a, c, late])).toBe(lineage("e"));
+    const anchor = { lineage: lineage("c"), stamp: stamp(9, 0, PEER_A) };
+    const d = genesis(lineage("d"), stamp(20, 0, PEER_B), lineage("c"), anchor);
+    expect(lineageAfter([a, c, d, late])).toBe(lineage("d"));
+    expect(lineageAfter([late, a, c, d])).toBe(lineage("d"));
+    expect(cellAfter([late, a, c, d])).toEqual(cellAfter([a, c, d, late]));
+  });
+
+  test("of two anchors the later one holds, and a cell with none stays tagged 1", () => {
+    const a = genesis(lineage("a"), stamp(1, 0, PEER_A));
+    const b = genesis(lineage("b"), stamp(4, 0, PEER_A), lineage("a"), {
+      lineage: lineage("a"),
+      stamp: stamp(1, 0, PEER_A),
+    });
+    const c = genesis(lineage("c"), stamp(8, 0, PEER_B), lineage("b"), {
+      lineage: lineage("b"),
+      stamp: stamp(4, 0, PEER_A),
+    });
+    expect(readLineageCell(cellAfter([c, b, a])).settled?.lineage).toBe(lineage("b"));
+    expect(cellAfter([c, b, a])).toEqual(cellAfter([a, b, c]));
+    expect(lineageAfter([c, b])).toBe(lineage("c"));
+    const plainCell = cellAfter([a]);
+    expect(Array.isArray(plainCell) && plainCell[0]).toBe(GENESIS_RULE);
+  });
+
+  test("settleWalk names the deepest lineage replaced by the cutoff, never past a newer one", () => {
+    const a = genesis(lineage("a"), stamp(1, 0, PEER_A));
+    const b = genesis(lineage("b"), stamp(4, 0, PEER_A), lineage("a"));
+    const c = genesis(lineage("c"), stamp(8, 0, PEER_B), lineage("b"));
+    const cell = cellAfter([a, b, c]);
+    expect(settleWalk(cell, at(0))).toBeUndefined();
+    expect(settleWalk(cell, at(5))).toEqual({ lineage: lineage("b"), stamp: stamp(4, 0, PEER_A) });
+    expect(settleWalk(cell, at(8))?.lineage).toBe(lineage("c"));
+    // nothing deeper than the anchor the cell already holds: nothing to settle
+    const settled = cellAfter([
+      a,
+      b,
+      genesis(lineage("c"), stamp(8, 0, PEER_B), lineage("b"), {
+        lineage: lineage("b"),
+        stamp: stamp(4, 0, PEER_A),
+      }),
+    ]);
+    expect(settleWalk(settled, at(5))).toBeUndefined();
+  });
+
+  test("an anchor written over every honest history keeps the walk's result, in any order", () => {
+    const peers = [PEER_A, PEER_B, PEER_C];
+    // `settled` geneses are all stamped by the cutoff (ms 0–6) and held when the anchor is
+    // computed; `later` ones are stamped after it (ms 8–14) and may hang anywhere
+    const arbitrary = fc
+      .tuple(
+        fc.uniqueArray(fc.record({ ms: fc.nat({ max: 6 }), peer: fc.nat({ max: 2 }) }), {
+          minLength: 1,
+          maxLength: 5,
+          selector: ({ ms, peer }) => `${ms}/${peer}`,
+        }),
+        fc.uniqueArray(
+          fc.record({ ms: fc.integer({ min: 8, max: 14 }), peer: fc.nat({ max: 2 }) }),
+          {
+            maxLength: 3,
+            selector: ({ ms, peer }) => `${ms}/${peer}`,
+          },
+        ),
+      )
+      .chain(([settled, later]) =>
+        fc.tuple(
+          fc.constant(settled),
+          fc.constant(later),
+          fc.array(fc.nat(), { minLength: 8, maxLength: 8 }),
+          fc.array(fc.nat(), { minLength: 9, maxLength: 9 }),
+          fc.nat({ max: 6 }),
+        ),
+      );
+    fc.assert(
+      fc.property(arbitrary, ([settled, later, parents, order, cutoffMs]) => {
+        // a genesis replaces only what was written before it, as an honest log's do
+        const tree = (stamps: readonly { ms: number; peer: number }[], from: number) =>
+          [...stamps]
+            .sort((x, y) => x.ms - y.ms || x.peer - y.peer)
+            .map(({ ms, peer }, i) => {
+              const at = from + i;
+              const parentAt = (parents[at] ?? 0) % (at + 1);
+              const parent = parentAt === at ? undefined : lineage(parentAt.toString(16));
+              return genesis(lineage(at.toString(16)), stamp(ms, 0, peers[peer] ?? PEER_A), parent);
+            });
+        // only what is stamped by the cutoff is promised complete
+        const held = tree(settled, 0).filter((g) => g.stamp.hlc[0].epochMilliseconds <= cutoffMs);
+        const rest = tree(settled, 0).filter((g) => g.stamp.hlc[0].epochMilliseconds > cutoffMs);
+        const anchor = settleWalk(cellAfter(held), at(cutoffMs));
+        const winner = lineageAfter(held);
+        const settling = genesis(lineage("f"), stamp(7, 0, PEER_A), winner, anchor);
+        const all = [...held, ...rest, settling, ...tree(later, settled.length)];
+        const shuffled = all
+          .map((g, i) => [order[i] ?? 0, g] as const)
+          .sort(([x], [y]) => x - y)
+          .map(([, g]) => g);
+        const forward = canonicalState(applyAll(all));
+        expect(canonicalState(applyAll(shuffled))).toBe(forward);
+        expect(canonicalState(applyAll([...shuffled, ...all]))).toBe(forward);
+        // the walk lands where the untrimmed rule lands on the same geneses
+        const untrimmed = all.map(({ change, stamp: s }) => {
+          // SAFETY: every change built here is a doc change
+          const { settles: _anchor, ...plain } = change as DocChange;
+          return { change: plain, stamp: s };
+        });
+        expect(lineageAfter(shuffled)).toBe(lineageAfter(untrimmed));
+        // and the cell keeps nothing the anchor passed
+        const { geneses, settled: kept } = readLineageCell(cellAfter(shuffled));
+        if (kept !== undefined)
+          for (const g of geneses) {
+            expect(compareStamp(g.stamp, kept.stamp)).toBe(1);
+            expect(g.lineage).not.toBe(kept.lineage);
+          }
+      }),
+      { numRuns: 500, seed: 21 },
+    );
+  });
+  test("an anchor naming a lineage at another stamp trims the same cell in any order", () => {
+    const l = genesis(lineage("a"), stamp(10, 0, PEER_A));
+    // each anchor is older than its event and names another lineage, so both pass validation,
+    // but neither stamp is its lineage's genesis stamp
+    const x = genesis(lineage("b"), stamp(12, 0, PEER_B), lineage("a"), {
+      lineage: lineage("a"),
+      stamp: stamp(5, 0, PEER_A),
+    });
+    const y = genesis(lineage("c"), stamp(15, 0, PEER_C), undefined, {
+      lineage: lineage("d"),
+      stamp: stamp(7, 0, PEER_A),
+    });
+    const forward = cellAfter([l, x, y]);
+    expect(cellAfter([y, l, x])).toEqual(forward);
+    expect(cellAfter([x, y, l])).toEqual(forward);
+    // the later anchor (d at 7) has not passed `a`, stamped 10, so `a` stays
+    expect(readLineageCell(forward).geneses.map((g) => g.lineage)).toContain(lineage("a"));
+  });
+
+  test("any number of anchors, honest or not, join to one cell in any order", () => {
+    const peers = [PEER_A, PEER_B, PEER_C];
+    const arbitrary = fc
+      .uniqueArray(
+        fc.record({
+          ms: fc.integer({ min: 1, max: 20 }),
+          peer: fc.nat({ max: 2 }),
+          parent: fc.option(fc.nat({ max: 5 }), { nil: undefined }),
+          anchor: fc.option(
+            fc.record({
+              lineage: fc.nat({ max: 5 }),
+              ms: fc.nat({ max: 19 }),
+              peer: fc.nat({ max: 2 }),
+            }),
+            { nil: undefined },
+          ),
+        }),
+        { minLength: 1, maxLength: 6, selector: ({ ms, peer }) => `${ms}/${peer}` },
+      )
+      .chain((gs) =>
+        fc.tuple(
+          fc.constant(gs),
+          fc.array(fc.nat(), { minLength: gs.length, maxLength: gs.length }),
+        ),
+      );
+    fc.assert(
+      fc.property(arbitrary, ([gs, order]) => {
+        const all = gs.map(({ ms, peer, parent, anchor }, i) =>
+          genesis(
+            lineage(i.toString(16)),
+            stamp(ms, 0, peers[peer] ?? PEER_A),
+            parent === undefined || parent === i ? undefined : lineage(parent.toString(16)),
+            // an anchor older than its event, naming any lineage but its own, at any stamp
+            anchor === undefined || anchor.lineage === i || anchor.ms >= ms
+              ? undefined
+              : {
+                  lineage: lineage(anchor.lineage.toString(16)),
+                  stamp: stamp(anchor.ms, 0, peers[anchor.peer] ?? PEER_A),
+                },
+          ),
+        );
+        const shuffled = all
+          .map((g, i) => [order[i] ?? 0, g] as const)
+          .sort(([x], [y]) => x - y)
+          .map(([, g]) => g);
+        const forward = canonicalState(applyAll(all));
+        expect(canonicalState(applyAll(shuffled))).toBe(forward);
+        expect(canonicalState(applyAll([...shuffled, ...all]))).toBe(forward);
+        expect(lineageAfter(shuffled)).toBe(lineageAfter(all));
+      }),
+      { numRuns: 1000, seed: 39 },
+    );
   });
 });
