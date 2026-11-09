@@ -131,6 +131,32 @@ describe("postgresFanout", () => {
     lone.publish(Uint8Array.of(5, 5));
     expect(atB).toEqual([2]); // b still hears the room
   });
+
+  test("a LISTEN acknowledged after close is released, not kept", async () => {
+    const pg = fakePostgres();
+    let acknowledge = (): void => undefined;
+    let released = false;
+    const slow = {
+      ...pg.client,
+      listen: (channel: string, onPayload: (payload: string) => void) =>
+        new Promise<() => void>((resolve) => {
+          acknowledge = () =>
+            void pg.client.listen(channel, onPayload).then((off) =>
+              resolve(() => {
+                released = true;
+                off();
+              }),
+            );
+        }),
+    };
+    const link = postgresFanout({ client: slow, prefix: "m" }).connect("r");
+    link.onFrame(() => undefined);
+    link.close(); // while the LISTEN is still pending
+    acknowledge();
+    await link.heard?.();
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(released).toBe(true);
+  });
 });
 
 describe("a room opened over postgresFanout", () => {

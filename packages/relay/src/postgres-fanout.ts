@@ -124,6 +124,10 @@ export function postgresFanout(options: PostgresFanoutOptions): Fanout {
       let stop: (() => void | Promise<void>) | undefined;
       let listening = false;
       let subscribed: Promise<void> = Promise.resolve();
+      /** Bumped by every subscribe and every close: a `LISTEN` acknowledged after either is released. */
+      let generation = 0;
+      const release = (off: () => void | Promise<void>): void =>
+        void Promise.resolve(off()).catch(() => undefined);
       return {
         publish: (frame) => {
           const oversize = frame.length > MAX_FRAME;
@@ -139,9 +143,15 @@ export function postgresFanout(options: PostgresFanoutOptions): Fanout {
           listeners.add(listener);
           if (!listening) {
             listening = true;
+            generation += 1;
+            const mine = generation;
             subscribed = client
               .listen(channel, deliver)
-              .then((off) => void (stop = off))
+              .then((off) => {
+                // closed (or closed and re-subscribed) while this one was pending: nobody holds it
+                if (mine === generation) stop = off;
+                else release(off);
+              })
               .catch(() => undefined);
           }
           return () => void listeners.delete(listener);
@@ -152,7 +162,8 @@ export function postgresFanout(options: PostgresFanoutOptions): Fanout {
           const off = stop;
           stop = undefined;
           listening = false;
-          if (off !== undefined) void Promise.resolve(off()).catch(() => undefined);
+          generation += 1;
+          if (off !== undefined) release(off);
         },
       };
     },

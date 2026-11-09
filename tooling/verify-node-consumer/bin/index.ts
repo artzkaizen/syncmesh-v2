@@ -82,10 +82,23 @@ const EVAL = {
   bun: ["-e"],
 } as const satisfies Record<Runtime, readonly string[]>;
 
-/** Runs `script` as an ES module in a fresh process of `runtime`; the failure text is the finding. */
+/** How long one step may run before it is a finding: a step that never exits is one. */
+const STEP_TIMEOUT_MS = 120_000;
+
+/**
+ * Runs `script` as an ES module in a fresh process of `runtime`; the failure text is the finding.
+ * A runtime that cannot start, and a step killed at {@link STEP_TIMEOUT_MS}, say so.
+ */
 const evaluate = (runtime: Runtime, cwd: string, script: string): string | undefined => {
-  const result = spawnSync(runtime, [...EVAL[runtime], script], { cwd, encoding: "utf8" });
-  return result.status === 0 ? undefined : (result.stderr || result.stdout).trim();
+  const result = spawnSync(runtime, [...EVAL[runtime], script], {
+    cwd,
+    encoding: "utf8",
+    timeout: STEP_TIMEOUT_MS,
+  });
+  if (result.error !== undefined) return `${runtime}: ${result.error.message}`;
+  if (result.status === 0) return undefined;
+  const said = (result.stderr || result.stdout).trim();
+  return result.signal === null ? said : `${runtime} killed by ${result.signal}\n${said}`.trim();
 };
 
 /**

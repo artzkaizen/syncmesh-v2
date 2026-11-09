@@ -11,8 +11,8 @@ import { observation, patient } from "./schema.js";
  * (D26).
  *
  * Every input names its practice (`practiceId`): both tables live in a `practice` partition, and
- * scope is input, never construction. A call without it is about the global tables, which hold
- * neither, so a write would be refused `WrongPartition` and a read would find nothing.
+ * scope is input, never construction. A call without it fails input validation (`InputInvalid`)
+ * before any partition is chosen.
  */
 
 /** An input about one practice: `practiceId` beside the call's own fields. */

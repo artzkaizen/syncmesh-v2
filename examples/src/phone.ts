@@ -3,6 +3,7 @@ import type { PeerId } from "@syncmesh/kernel";
 import { createClient, sqlite } from "@syncmesh/orpc";
 import { relayTransport, webSocketDial } from "@syncmesh/relay";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
+import { type Temporal, durationMs } from "@syncmesh/temporal";
 import { join } from "node:path";
 
 import { identityNamed } from "./identity.js";
@@ -21,14 +22,30 @@ export const until = async (
   return check();
 };
 
-/** A phone as `device.ts` builds one: its own SQLite file, its own key, the issuer's id as config. */
-export const phone = async (name: string, dialing: string, issuer: PeerId, dir: string) => {
+/**
+ * A phone as `device.ts` builds one: its own SQLite file, its own key, the issuer's id as config.
+ * `readyWithin` is how long its `ready()` and `settled()` wait for the relay's hello and catch-up
+ * before carrying on without them; the relay transport's default when absent.
+ */
+export const phone = async (
+  name: string,
+  dialing: string,
+  issuer: PeerId,
+  dir: string,
+  readyWithin?: Temporal.Duration,
+) => {
   const client = createClient({
     schema: notesSchema(),
     identity: identityNamed(`device:${name}`),
     storage: sqlite({ driver: bunSqliteDriver(join(dir, `device-${name}.db`)) }),
     trust: { issuer },
-    transports: [relayTransport({ dial: webSocketDial(dialing), reconnectMs: 20 })],
+    transports: [
+      relayTransport({
+        dial: webSocketDial(dialing),
+        reconnectMs: 20,
+        ...(readyWithin && { forceReadyAfter: durationMs(readyWithin) }),
+      }),
+    ],
   });
   await client.$ready; // `$mesh` throws until the mesh has opened
   return client.$mesh;

@@ -1,3 +1,4 @@
+import { Temporal } from "@syncmesh/temporal";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,9 +15,10 @@ import { admitted, phone, until } from "../phone.js";
  * then `bun run --cwd examples fleet:check`. CI runs exactly that (gaps U15).
  *
  * `fleet.test.ts` proves the shape in one process; this proves the containers: the image builds,
- * three relays fan out over a real Postgres, and nginx's round robin puts the server peer and
- * three phones on different instances. Every exchange below crosses between instances, the grant
- * requests included, so a fleet whose fan-out is broken fails at the first wait.
+ * three relays fan out over a real Postgres, and nginx's round robin spreads the server peer and
+ * three phones over the three instances. Four peers on three instances means one pair shares an
+ * instance, so most exchanges below cross between instances, the grant requests included, and a
+ * fleet whose fan-out is broken fails at the first wait that does.
  */
 
 /**
@@ -26,6 +28,11 @@ import { admitted, phone, until } from "../phone.js";
 const URLS = (Bun.env.RELAY_URL ?? `ws://localhost:5198/${ROOM}`).split(",");
 const dialing = (n: number): string => URLS[n % URLS.length] ?? `ws://localhost:5198/${ROOM}`;
 const WAIT = 30_000;
+/**
+ * How long a peer's `ready()` and `settled()` wait for its relay's hello: long enough that they
+ * mean the room is open on that peer's instance, rather than the transport's one-second default.
+ */
+const JOINED = Temporal.Duration.from({ seconds: 30 });
 const dir = mkdtempSync(join(tmpdir(), "syncmesh-fleet-check-"));
 
 const check = (held: boolean, what: string): void => {
@@ -33,7 +40,8 @@ const check = (held: boolean, what: string): void => {
   if (!held) process.exitCode = 1;
 };
 
-const backend = await openBackend({ dataDir: dir, relayUrl: dialing(0) });
+// `openBackend` awaits the server peer's own hello before it returns
+const backend = await openBackend({ dataDir: dir, relayUrl: dialing(0), readyWithin: JOINED });
 // empty until the phones open, so the element type has nothing to be inferred from
 const phones: Phone[] = [];
 try {
@@ -42,9 +50,10 @@ try {
   // shape still cannot promise")
   const names = ["alice", "bob", "carol"];
   for (const [n, name] of names.entries())
-    phones.push(await phone(name, dialing(n + 1), backend.issuer, dir));
+    phones.push(await phone(name, dialing(n + 1), backend.issuer, dir, JOINED));
   // joined, not merely open: a phone's socket is dialled after its mesh opens, and the room on
-  // its instance opens only when that socket arrives
+  // its instance opens only when that socket arrives. With `JOINED`, `settled()` waits for the
+  // relay's hello and catch-up instead of giving up on them after a second
   for (const mesh of phones) await mesh.settled();
   for (const [n, mesh] of phones.entries())
     check(

@@ -43,7 +43,8 @@ else with `LISTEN`/`NOTIFY` fits the same shape.
 
 **CI runs this file as written** (`.github/workflows/ci.yml`, job `fleet`): the image builds, the
 three relays come up, and [`check.ts`](check.ts) sends the server peer and three phones through
-nginx, so every grant and note crosses between instances. `RELAY_URL` may also list instances,
+nginx. Round robin spreads four peers over three instances, so most grants and notes cross
+between them; one pair shares an instance, and the check does not assert which. `RELAY_URL` may also list instances,
 comma-separated, which spreads the peers the same way without nginx. Running it found three
 faults that `fleet.test.ts`, which uses an in-process fan-out, could not: the relays could not
 boot (no keystore for the device key, now `createPlaintextVault()` with its boot notice), the

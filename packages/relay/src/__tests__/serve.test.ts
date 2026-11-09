@@ -62,6 +62,7 @@ describe("startRelay — D09-A, the embedded host", () => {
       const before = await probe(relay.url, a.identity);
       await until(() => helloOf(before) !== undefined && paged(before) >= 4);
       const epochBefore = helloOf(before);
+      expect(epochBefore).toBeDefined();
       expect(paged(before)).toBe(4); // the room's durable log holds everything
       before.close();
       await relay.stop();
@@ -70,6 +71,7 @@ describe("startRelay — D09-A, the embedded host", () => {
       const revived = await startRelay(0, { dataDir, keepaliveMs: 60_000, pageSize: 2 });
       const after = await probe(revived.url, a.identity);
       await until(() => helloOf(after) !== undefined);
+      expect(helloOf(after)).toBeDefined();
       expect(helloOf(after)?.epoch).toBe(epochBefore?.epoch ?? "?");
       after.close();
 

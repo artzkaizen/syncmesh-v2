@@ -40,8 +40,8 @@ const rows = (await api.observations.forPatient({ practiceId, patientId: "p1" })
 ```
 
 Every call names its practice: both tables live in a `practice` partition, and scope is input,
-never construction. A call without `practiceId` is about the global tables, so a write is refused
-`WrongPartition`.
+never construction. A call without `practiceId` fails input validation with `InputInvalid` before
+any partition is chosen.
 
 A mutation is a statement: it returns a handle whose `committed` resolves to
 `Result<{ eventId, data }, …>`. A query is inert until something runs it. In React that something is the hook, and the component names the call and
