@@ -355,7 +355,7 @@ first (`frames.ts:360-365`). The comment at `frames.ts:353-355` says the two spa
 claim one", and that is no longer true (N24). The Rust crate documents the overlap
 (`crates/syncmesh-core/src/relay_frames.rs:5-7`).
 
-### 5.4 Relay control frames (tags 8–22; `packages/relay/src/frames.ts:22-35`, decoders `:233-350`)
+### 5.4 Relay control frames (tags 8–23; `packages/relay/src/frames.ts:22-35`, decoders `:233-350`)
 
 On protocol v3 all of these travel sealed, so the link key authenticates the sender. Nothing
 inside them is signed except the v2 join proof.
@@ -377,6 +377,7 @@ inside them is signed except the v2 join proof.
 | 20 | `blob-stored` | room → client | link key | The quota answer to a put (D18); a malicious relay can claim it stored a blob it did not. | `frames.ts:268-271`               | `relay`, `join` |
 | 21 | `blob-refused` | room → client | link key | The quota refusal (D18); a malicious relay can refuse a put it could take. | `frames.ts:268-271`               | `relay`, `join` |
 | 22 | `refusal` | any joined device → room → author | the refuser's Ed25519 signature over the refusal core; the room verifies it and requires the signer to be the joined key (`custody-route.ts`) | Handed byte-identical to the author's socket alone and published to the room's other instances (D32, U17). A refusal is advisory: it gates nothing. | `frames.ts:268-271`               | `relay`, `join` |
+| 23 | `seated` | room → client, and room → its other instances | link key; not signed | A seating began (U38): each holder says its parked refusals of that peer once more. A malicious relay can send it at will, which costs the holder one signature per parked refusal of that peer, and can withhold it, which delays a refusal. Nothing gates on either. | `frames.ts`, `connection.ts` | `relay` |
 | 0–7 | `session`      | client ↔ room                           | as in §5.3                                                                                                                   | The room acts on event, grant and presence, and forwards grant-request, and cursors only when `from` is the joined key. A receipt is verified, its signer held to the joined key, and handed to its author alone (`custody-route.ts`, U17). Snapshot, digest and routes from a client are ignored.                                                                              | `frames.ts:369-376`               | —             |
 
 Per-connection decode order (`connection.ts:252-303`): size cap → unseal → **CBOR decode** →
@@ -403,7 +404,7 @@ spending a token (`:273-277`). A frame that throws in the decoder escapes (N4).
 ### 5.6 Frames that do not exist yet
 
 - **Feed chunks and chains** (RFC-0019): codec and engine only (row above).
-- **Receipts signed by the relay room itself** (D28): absent; gap U38. Devices' receipts cross a room (U17).
+- **Receipts signed by the relay room itself** (D28): built in U38, opt-in (`custody`), as a session `receipt` frame under the room's key; no frame of its own. Devices' receipts cross a room (U17).
 - **Accounts**: travel as `_links` rows, not as frames.
 
 ### 5.7 Vector gaps
@@ -533,7 +534,7 @@ refuses it (N3).
 | addendum 2      | Relay trusted a claimed identity (D33)                           | FIXED    | v2 proof (`proof.ts`), v3 impostor check (`connection.ts:162-166`). Both run before the seat is taken (`:200-206`).                                                                                                                                                                                                                              |
 | E24 posture     | "Any socket can join any room and pull the whole log" (E24.md:39) | OPEN     | Defaults at `posture.ts:51-56`. The RFC-0017 posture task is unchecked (E24.md:21).                                                                                                                                                                                                                                                              |
 | D24             | Authority visibility = admission                                  | PARTIAL  | Authorship is enforced (`validate.ts:184-208`). D24's watch-outs require the relay to filter an admitted subset and report a scope that names the entitlement. No such filter exists in `catchup.ts`.                                                                                                                                           |
-| D28             | Destructive actions licensed by a claim                           | OPEN     | `detach` still gates on `unsettled()`, built from cursor acks (`packages/storage/src/detach.ts:39-45`). `soleCustody` exists but gates nothing (D28 watch-out). Third-party cursor forgery makes this worse (N6).                                                                                                                               |
+| D28             | Destructive actions licensed by a claim                           | FIXED    | `detach` gates on `soleCustody()`, the signed tier (U38); a relay room that signs custody counts as a holder. Third-party cursor forgery (N6) now moves only the weaker `unsettled()` report. |
 | audit vectors   | "Vectors cover event cores, receipts, grants, accounts only"     | FIXED (stale) | 15 vector files (§5.0). Remaining gaps in §5.7.                                                                                                                                                                                                                                                                                             |
 
 ### 7.2 Findings made while preparing this document (unconfirmed unless stated)
