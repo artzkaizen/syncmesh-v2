@@ -74,6 +74,8 @@ export type { BudgetReport, StorageBudget } from "./budget.js";
 export { sweepBudget } from "./budget.js";
 export type { CaptureOptions } from "./capture.js";
 export { captureChanges, captureDdl, installCapture, tableDdl } from "./capture.js";
+export type { StrictCapture } from "./guard.js";
+export { installGuard } from "./guard.js";
 export type { Projection, ProjectionOptions } from "./projection.js";
 export { tablesProjection } from "./projection.js";
 export type { BlobError, BlobHash, BlobStore } from "./blob.js";

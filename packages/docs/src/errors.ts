@@ -54,3 +54,12 @@ export class CheckpointRefused extends TaggedError("CheckpointRefused")<{
   message: string;
   cause?: unknown;
 }> {}
+
+/**
+ * A checkpoint of a sealed partition's document was asked of a device that holds no content key
+ * for the partition: its snapshot would have gone to the host in the clear (RFC-0023 §11).
+ */
+export class SnapshotUnsealable extends TaggedError("SnapshotUnsealable")<{
+  partition: string;
+  message: string;
+}> {}

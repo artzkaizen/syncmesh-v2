@@ -1,7 +1,7 @@
 {
   "name": "@syncmesh/react-native",
   "version": "0.0.0",
-  "description": "What a mesh on a phone needs from the platform: the knocks, the entropy, the Ed25519 and the radio",
+  "description": "What a mesh on a phone needs from the platform: the knocks, the entropy, the Ed25519, the keystore and the radio",
   "license": "MIT",
   "files": [
     "dist"
@@ -51,6 +51,11 @@
       "@syncmesh/source": "./src/lan.ts",
       "types": "./dist/lan.d.ts",
       "default": "./dist/lan.js"
+    },
+    "./keystore": {
+      "@syncmesh/source": "./src/keystore.ts",
+      "types": "./dist/keystore.d.ts",
+      "default": "./dist/keystore.js"
     }
   },
   "dependencies": {
@@ -62,6 +67,7 @@
   },
   "devDependencies": {
     "@syncmesh/config": "workspace:*",
+    "@syncmesh/sqlite-bun": "workspace:*",
     "@types/bun": "catalog:",
     "expo": "~57.0.18",
     "expo-constants": "~57.0.18",
@@ -77,6 +83,7 @@
     "expo-constants": ">=17",
     "expo-crypto": ">=14",
     "expo-network": ">=7",
+    "expo-secure-store": ">=14",
     "react-native": ">=0.76",
     "react-native-quick-crypto": ">=1"
   },
@@ -94,6 +101,9 @@
       "optional": true
     },
     "react-native-quick-crypto": {
+      "optional": true
+    },
+    "expo-secure-store": {
       "optional": true
     }
   }

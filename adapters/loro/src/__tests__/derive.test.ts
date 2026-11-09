@@ -1,11 +1,11 @@
-import type { BackgroundError } from "@syncmesh/docs";
+import type { BackgroundError, SealingKeys } from "@syncmesh/docs";
 import type { Runnable } from "@syncmesh/drizzle";
 import type { Validator } from "@syncmesh/engine";
 import type { CellValue, ColumnName, Row, RowKey } from "@syncmesh/kernel";
 import type { DocumentAdapter } from "@syncmesh/schema";
 import type { SqlDriver } from "@syncmesh/storage";
 
-import { createDocuments } from "@syncmesh/docs";
+import { createDocuments, isSealedSnapshot } from "@syncmesh/docs";
 import { createLive } from "@syncmesh/drizzle";
 import {
   PolicyDenied,
@@ -28,7 +28,7 @@ import {
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
 import { openStores, schemaName } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
-import { createIdentity, signCheckpoint } from "@syncmesh/wire";
+import { FIRST_EPOCH, createIdentity, signCheckpoint } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import { sql } from "drizzle-orm";
 import { blob, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
@@ -84,7 +84,19 @@ interface NodeOptions {
   readonly schema?: typeof schema;
   readonly driver?: SqlDriver;
   readonly validate?: Validator;
+  /** The device's content keys for sealed partitions (D40). */
+  readonly keys?: SealingKeys;
+  /** Default `true`; off where a test rewrites rows outside syncmesh, as an app may (U5). */
+  readonly strict?: boolean;
 }
+
+/** One sealed workspace's content key, at the first epoch, as a key ring that holds it answers. */
+const keysFor = (key: Uint8Array): SealingKeys => ({
+  keyFor: (partition) => (partition === W1 ? key : undefined),
+  keyAt: (partition, epoch) => (partition === W1 && epoch === FIRST_EPOCH ? key : undefined),
+  epochFor: (partition) => (partition === W1 ? FIRST_EPOCH : undefined),
+});
+const WORKSPACE_KEY = Uint8Array.from({ length: 32 }, (_, i) => 200 - i);
 
 /** An engine over SQLite stores holding the app's `notes` table, with the document runtime over it. */
 async function storedNode(n: number, options: NodeOptions = {}) {
@@ -93,7 +105,9 @@ async function storedNode(n: number, options: NodeOptions = {}) {
   let ms = 1_700_000_000_000 + n * 1000;
   const now = () => Temporal.Instant.fromEpochMilliseconds((ms += 1));
   const driver = options.driver ?? bunSqliteDriver(":memory:");
-  const stores = (await openStores(driver, { tables: syncedTables(using) })).unwrap();
+  const stores = (
+    await openStores(driver, { tables: syncedTables(using), strict: options.strict ?? true })
+  ).unwrap();
   const withAdapter = options.adapter !== false;
   const engine = createEngine({
     peerId: identity.peerId,
@@ -115,6 +129,7 @@ async function storedNode(n: number, options: NodeOptions = {}) {
     pacing: FAST,
     autoMaterialise: false,
     derive: createDerivers(using),
+    ...(options.keys !== undefined && { keys: options.keys }),
     now,
     onError: (error) => errors.push(error),
   });
@@ -577,7 +592,8 @@ describe("derived columns catch up with the document between flushes (gaps U25)"
 
   test("a state rebuilt from the log gets its derived values back when the runtime starts", async () => {
     const driver = bunSqliteDriver(":memory:");
-    const a = await storedNode(28, { driver });
+    // the app below rewrites a row outside syncmesh, which strict capture would refuse (U5)
+    const a = await storedNode(28, { driver, strict: false });
     await insertNote(a);
     const doc = (await a.documents.open<LoroDoc>(DOC)).unwrap();
     type(doc.value, "Rebuilt", "one two");
@@ -620,9 +636,14 @@ describe("derived columns catch up with the document between flushes (gaps U25)"
 
 describe("an opaque host takes derived values from a device checkpoint (RFC-0023 §7.2)", () => {
   /** A device that edited the note, and a host without the adapter that folded the same events. */
-  const pair = async (n: number, sealed = false, validate?: Validator) => {
+  const pair = async (n: number, sealed = false, validate?: Validator, keys?: SealingKeys) => {
     const using = sealed ? schemaWith(plainTitle, true) : schema;
-    const device = await storedNode(n, { schema: using });
+    const held = keys ?? (sealed ? keysFor(WORKSPACE_KEY) : undefined);
+    const device = await storedNode(n, {
+      schema: using,
+      strict: false,
+      ...(held !== undefined && { keys: held }),
+    });
     const host = await storedNode(n + 50, {
       adapter: false,
       schema: using,
@@ -636,15 +657,17 @@ describe("an opaque host takes derived values from a device checkpoint (RFC-0023
     (await doc.close()).unwrap();
     await link.flush();
     expect(await until(async () => (await host.engine.docLog()).unwrap().length === 1)).toBe(true);
-    // forget the flush's values, so what the device's row holds next is the checkpoint's own work
+    // forget the flush's values, so what the device's row holds next is the checkpoint's own
+    // work: a write behind the mesh's back, which only a device with strict capture off may make
     await device.driver.run(`UPDATE notes SET title = NULL, "wordCount" = NULL`);
     const at = hlcOf(device.now().epochMilliseconds, 0);
-    const made = (await device.documents.checkpoint(DOC, device.identity, at)).unwrap();
-    return { device, host, link, made };
+    const checkpoint = await device.documents.checkpoint(DOC, device.identity, at);
+    return { device, host, link, checkpoint, at };
   };
 
   test("the host writes key 8's values to its row, provisionally, and keeps the long log", async () => {
-    const { device, host, link, made } = await pair(10);
+    const { device, host, link, checkpoint } = await pair(10);
+    const made = checkpoint.unwrap();
     expect(made.signed.checkpoint.derived).toEqual(
       new Map<ColumnName, CellValue>([
         [TITLE, "Board pack"],
@@ -668,11 +691,12 @@ describe("an opaque host takes derived values from a device checkpoint (RFC-0023
   });
 
   test("the host refuses values outside the derive list, of the wrong kind, or past what it holds", async () => {
-    const { device, host, link, made } = await pair(11);
-    const { checkpoint } = made.signed;
-    const install = (values: Row, covers = checkpoint.covers) =>
+    const { device, host, link, checkpoint } = await pair(11);
+    const made = checkpoint.unwrap();
+    const signedCore = made.signed.checkpoint;
+    const install = (values: Row, covers = signedCore.covers) =>
       host.documents.installProvisional(
-        signCheckpoint({ ...checkpoint, derived: values, covers }, device.identity).wire,
+        signCheckpoint({ ...signedCore, derived: values, covers }, device.identity).wire,
         device.identity.peerId,
         made.snapshot,
         DOC,
@@ -682,9 +706,9 @@ describe("an opaque host takes derived values from a device checkpoint (RFC-0023
     const wrongKind = await install(new Map<ColumnName, CellValue>([[WORDS, "many"]]));
     expect(wrongKind.isErr() && wrongKind.error._tag).toBe("CheckpointRefused");
     const ahead = await install(
-      checkpoint.derived,
+      signedCore.derived,
       new Map(
-        [...checkpoint.covers].map(([author, seq]) => [author, parseSeqNum(seq + 5).unwrap()]),
+        [...signedCore.covers].map(([author, seq]) => [author, parseSeqNum(seq + 5).unwrap()]),
       ),
     );
     expect(ahead.isErr() && ahead.error.message).toContain("has not folded");
@@ -704,7 +728,8 @@ describe("an opaque host takes derived values from a device checkpoint (RFC-0023
             )
           : open.validate(event, before),
     };
-    const { host, link, made } = await pair(13, false, readOnly);
+    const { host, link, checkpoint } = await pair(13, false, readOnly);
+    const made = checkpoint.unwrap();
     const forged = signCheckpoint(
       { ...made.signed.checkpoint, derived: new Map([[TITLE, "Pwned"]]) },
       reader,
@@ -723,7 +748,8 @@ describe("an opaque host takes derived values from a device checkpoint (RFC-0023
   });
 
   test("a sealed partition's checkpoint carries no derived values, and its columns stay unset on the host", async () => {
-    const { device, host, link, made } = await pair(12, true);
+    const { device, host, link, checkpoint } = await pair(12, true);
+    const made = checkpoint.unwrap();
     expect(made.signed.checkpoint.derived.size).toBe(0);
     // the device itself, holding the partition's key, computed its own title
     expect(await device.row()).toEqual({ title: "Board pack", words: 5 });
@@ -747,6 +773,143 @@ describe("an opaque host takes derived values from a device checkpoint (RFC-0023
       DOC,
     );
     expect(refused.isErr() && refused.error.message).toContain("sealed");
+    link.close();
+  });
+
+  /** Whether `needle` occurs anywhere in `haystack`, byte for byte. */
+  const contains = (haystack: Uint8Array, needle: Uint8Array) =>
+    Buffer.from(haystack).includes(Buffer.from(needle));
+
+  test("a sealed partition's snapshot reaches the host sealed to the partition key, and the host keeps ciphertext (U24)", async () => {
+    const { device, host, link, checkpoint } = await pair(14, true);
+    const made = checkpoint.unwrap();
+    const plain = (await device.engine.docTail(DOC)).unwrap().snapshot?.bytes;
+    expect(plain).toBeDefined();
+    expect(isSealedSnapshot(made.snapshot)).toBe(true);
+    // key 7 names the sealed bytes: the signature covers what the host stores
+    expect(made.signed.checkpoint.snapshot.size).toBe(made.snapshot.length);
+    if (plain !== undefined) expect(contains(made.snapshot, plain)).toBe(false);
+    // and none of the document's text is readable in what leaves the device
+    expect(contains(made.snapshot, new TextEncoder().encode("five words in this body"))).toBe(
+      false,
+    );
+    (
+      await host.documents.installProvisional(
+        made.signed.wire,
+        device.identity.peerId,
+        made.snapshot,
+        DOC,
+      )
+    ).unwrap();
+    const kept = (await host.engine.docTail(DOC)).unwrap().snapshot?.bytes;
+    expect(kept).toEqual(made.snapshot);
+    link.close();
+  });
+
+  test("a device with no key for the sealed partition produces no checkpoint, rather than a plaintext one", async () => {
+    const empty: SealingKeys = {
+      keyFor: () => undefined,
+      keyAt: () => undefined,
+      epochFor: () => undefined,
+    };
+    const { link, checkpoint } = await pair(15, true, undefined, empty);
+    expect(checkpoint.isErr() && checkpoint.error._tag).toBe("SnapshotUnsealable");
+    link.close();
+  });
+
+  test("the host refuses a sealed partition's checkpoint whose snapshot is not sealed", async () => {
+    const { device, host, link, checkpoint } = await pair(16, true);
+    const made = checkpoint.unwrap();
+    // an old build, or one put together by hand: the plaintext snapshot, signed as the checkpoint's
+    const plain = (await device.engine.docTail(DOC)).unwrap().snapshot?.bytes ?? new Uint8Array();
+    const leaking = signCheckpoint(
+      {
+        ...made.signed.checkpoint,
+        snapshot: {
+          hash: new Bun.CryptoHasher("sha256").update(plain).digest("hex"),
+          size: plain.length,
+        },
+      },
+      device.identity,
+    );
+    const refused = await host.documents.installProvisional(
+      leaking.wire,
+      device.identity.peerId,
+      plain,
+      DOC,
+    );
+    expect(refused.isErr() && refused.error.message).toContain("unsealed snapshot");
+    expect((await host.engine.docTail(DOC)).unwrap().snapshot).toBeUndefined();
+    link.close();
+  });
+
+  test("a joiner opens the host's ciphertext with the partition key; without it, or lifted to another document, it is refused", async () => {
+    const { device, host, link, checkpoint } = await pair(17, true);
+    const made = checkpoint.unwrap();
+    (
+      await host.documents.installProvisional(
+        made.signed.wire,
+        device.identity.peerId,
+        made.snapshot,
+        DOC,
+      )
+    ).unwrap();
+    const served = (await host.engine.docTail(DOC)).unwrap().snapshot?.bytes ?? new Uint8Array();
+    const sealedSchema = schemaWith(plainTitle, true);
+    const join = async (n: number, keys?: SealingKeys) => {
+      const joiner = await storedNode(n, {
+        schema: sealedSchema,
+        ...(keys !== undefined && { keys }),
+      });
+      await joiner.engine.installSnapshot(device.engine.snapshot());
+      return joiner;
+    };
+
+    const keyless = await join(18);
+    const blind = await keyless.documents.install(
+      made.signed.wire,
+      device.identity.peerId,
+      served,
+      DOC,
+    );
+    expect(blind.isErr() && blind.error.message).toContain("no content key");
+
+    const wrongKey = await join(19, keysFor(Uint8Array.from({ length: 32 }, () => 7)));
+    const garbled = await wrongKey.documents.install(
+      made.signed.wire,
+      device.identity.peerId,
+      served,
+      DOC,
+    );
+    expect(garbled.isErr() && garbled.error.message).toContain("does not open");
+
+    const member = await join(20, keysFor(WORKSPACE_KEY));
+    // the same sealed bytes, re-signed as another row's checkpoint: the seal is bound to its document
+    // SAFETY: a row key is opaque text
+    const N2 = "n2" as RowKey;
+    const lifted = signCheckpoint({ ...made.signed.checkpoint, key: N2 }, device.identity);
+    (
+      await member.engine.mutate(EDIT, (tx) => tx.insert(NOTES, N2, new Map([[ID, "n2"]])), {
+        partition: W1,
+      })
+    ).unwrap();
+    const moved = await member.documents.install(lifted.wire, device.identity.peerId, served, {
+      ...DOC,
+      key: N2,
+    });
+    expect(moved.isErr() && moved.error.message).toContain("does not open");
+
+    (
+      await member.documents.install(made.signed.wire, device.identity.peerId, served, DOC)
+    ).unwrap();
+    const opened = (await member.documents.open<LoroDoc>(DOC)).unwrap();
+    expect(opened.value.getText("title").toString()).toBe("Board pack");
+    // the joiner holds the key, so it keeps the snapshot in the clear and derives its own title
+    expect(
+      isSealedSnapshot((await member.engine.docTail(DOC)).unwrap().snapshot?.bytes ?? served),
+    ).toBe(false);
+    expect(await until(async () => (await member.row())?.title === "Board pack")).toBe(true);
+    await opened.close();
     link.close();
   });
 });

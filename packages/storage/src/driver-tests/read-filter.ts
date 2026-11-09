@@ -25,7 +25,7 @@ import type { OpenDriver } from "./index.js";
 
 import { installCapture } from "../capture.js";
 import { compileRead } from "../read-filter.js";
-import { JOBS } from "./fixtures.js";
+import { JOBS, asFold } from "./fixtures.js";
 
 export const LADDER: RoleSet = { names: ["owner", "dispatcher", "tech", "viewer"], ordered: true };
 const col = JOBS.columnNames;
@@ -78,13 +78,16 @@ export const RULES: readonly (readonly [string, AllowBlock])[] = [
 
 const seed = async (driver: SqlDriver) => {
   (await installCapture(driver, [JOBS])).unwrap();
-  for (const row of ROWS)
-    await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES (?, ?, ?, ?)`, [
-      row.id,
-      row.title,
-      row.rank,
-      row.done ? 1 : 0,
-    ]);
+  // the rows a fold would have written
+  await asFold(driver, async () => {
+    for (const row of ROWS)
+      await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES (?, ?, ?, ?)`, [
+        row.id,
+        row.title,
+        row.rank,
+        row.done ? 1 : 0,
+      ]);
+  });
 };
 
 export const readFilterCases = (openDriver: OpenDriver): readonly SuiteCase[] => [

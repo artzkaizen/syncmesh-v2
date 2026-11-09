@@ -11,5 +11,6 @@ export default library({
     "src/ble.ts",
     "src/p2p.ts",
     "src/lan.ts",
+    "src/keystore.ts",
   ],
 });

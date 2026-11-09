@@ -155,11 +155,14 @@ export function createClient<
 
   const opening = (async (): Promise<void> => {
     // `procedures`, `link` and `windows` are the client's own, and the api below is built from
-    // them; the mesh reads every other group exactly as the app wrote it
+    // them; `vault` and `onNotice` were spent minting the identity; the mesh reads every other group exactly as
+    // the app wrote it
     const {
       procedures: _procedures,
       link: _link,
       windows: _windows,
+      vault: _vault,
+      onNotice: _onNotice,
       ...meshOptions
     } = await named(options);
     const opened = await createMesh(meshOptions);

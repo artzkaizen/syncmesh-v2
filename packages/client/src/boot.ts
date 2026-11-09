@@ -11,7 +11,15 @@ import type {
 } from "@syncmesh/engine";
 import type { DocColumns, MergeSpec, PeerId, SchemaVersion, TableName } from "@syncmesh/kernel";
 import type { DocColumnEntry, Table } from "@syncmesh/schema";
-import type { OperationStore, RowSync, SqlDriver, StoreLocked, Stores } from "@syncmesh/storage";
+import type {
+  OpenStoresOptions,
+  OperationStore,
+  RowSync,
+  SqlDriver,
+  StoreLocked,
+  Stores,
+  StrictCapture,
+} from "@syncmesh/storage";
 import type { Temporal } from "@syncmesh/temporal";
 import type { Grant, Identity } from "@syncmesh/wire";
 
@@ -55,6 +63,8 @@ export interface BootOptions {
    */
   readonly stores?: Stores;
   readonly dataDir: string;
+  /** Refuse a write to a synced table outside a captured transaction (gaps U5); default `true`. */
+  readonly strict?: StrictCapture;
   /** Install RLS from the read rules on boot; postgres drivers only. */
   readonly rls?: boolean;
   readonly now: () => Temporal.Instant;
@@ -115,15 +125,15 @@ export interface SessionMarks {
 async function defaultStores(
   dir: string,
   name: string,
-  tables: readonly Table[],
+  opened: OpenStoresOptions,
 ): Promise<Result<Stores, MeshOpenError>> {
   if ("Bun" in globalThis) {
     const { defaultStore } = await import("@syncmesh/sqlite-bun");
-    return defaultStore({ name, dir, tables });
+    return defaultStore({ name, dir, ...opened });
   }
   if ("process" in globalThis) {
     const { defaultStore } = await import("@syncmesh/sqlite-node");
-    return defaultStore({ name, dir, tables });
+    return defaultStore({ name, dir, ...opened });
   }
   return Result.err(
     new NoDefaultStore({
@@ -194,8 +204,9 @@ function resolveStores(
 ): Promise<Result<Stores | undefined, MeshOpenError>> {
   if (options.store !== undefined) return Promise.resolve(Result.ok(undefined));
   if (options.stores !== undefined) return Promise.resolve(Result.ok(options.stores));
-  if (options.driver !== undefined) return openStores(options.driver, { tables });
-  return defaultStores(options.dataDir, String(options.identity.peerId), tables);
+  const opened = omitUndefined({ tables, strict: options.strict });
+  if (options.driver !== undefined) return openStores(options.driver, opened);
+  return defaultStores(options.dataDir, String(options.identity.peerId), opened);
 }
 
 /**

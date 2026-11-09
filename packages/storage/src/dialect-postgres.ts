@@ -3,6 +3,7 @@ import type { Rung } from "./ladder.js";
 
 import { POSTGRES_DOCS, POSTGRES_DOC_SNAPSHOTS, POSTGRES_DOC_TABLES } from "./dialect-docs.js";
 import { POSTGRES_GAPS, POSTGRES_GAP_TABLES } from "./dialect-gaps.js";
+import { PG_ARMED, POSTGRES_GUARD } from "./dialect-guard.js";
 import { POSTGRES_OPERATIONS } from "./dialect-operations.js";
 import { postgresCell, sqlType } from "./dialect-postgres-cells.js";
 import { tableColumns, literal, quote, type TableColumns } from "./identifiers.js";
@@ -49,7 +50,7 @@ const image = (columns: TableColumns, alias: string): string =>
     .join(", ")})::text`;
 
 /** A transaction-local setting is the guard: `SET LOCAL` dies with the transaction and locks no row across the pool. */
-const ARMED = `COALESCE(NULLIF(current_setting('syncmesh.armed', true), ''), '0') = '1'`;
+const ARMED = `${PG_ARMED} = '1'`;
 
 const capture: CaptureSql = {
   tableDdl: (table) => {
@@ -91,6 +92,7 @@ const capture: CaptureSql = {
   },
   arm: `SET LOCAL syncmesh.armed = '1'`,
   disarm: `SET LOCAL syncmesh.armed = '0'`,
+  ...POSTGRES_GUARD,
   selectLog: `SELECT tbl, key, op, old, new FROM ${CHANGES} ORDER BY seq`,
   clearLog: `DELETE FROM ${CHANGES}`,
   stampPartition: (table, pk, partitionColumn) =>
@@ -228,6 +230,9 @@ export const POSTGRES: Dialect = {
     ddl: META_DDL,
     read: `SELECT value FROM syncmesh.meta WHERE key = 'schema'`,
     write: `INSERT INTO syncmesh.meta (key, value) VALUES ('schema', $1)
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    readGuard: `SELECT value FROM syncmesh.meta WHERE key = 'guard'`,
+    writeGuard: `INSERT INTO syncmesh.meta (key, value) VALUES ('guard', $1)
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
   },
   migrate: async (driver) => {

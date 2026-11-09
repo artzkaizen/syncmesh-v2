@@ -5,7 +5,7 @@ import { policyContext } from "@syncmesh/engine";
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { evaluate, resolveAllow } from "@syncmesh/policy";
 import { installCapture, installRls, principalSettings } from "@syncmesh/storage";
-import { JOBS } from "@syncmesh/storage/driver-tests";
+import { JOBS, asFold } from "@syncmesh/storage/driver-tests";
 import { LADDER, PRINCIPALS, ROWS, RULES, asCells } from "@syncmesh/storage/driver-tests";
 import { describe, expect, test } from "bun:test";
 
@@ -25,13 +25,16 @@ describe("RLS from the read rules — Postgres itself is the filter", () => {
   test("for every rule and principal, a plain SELECT under the policy returns exactly the rows evaluate() admits", async () => {
     const driver = pgliteDriver(new PGlite());
     (await installCapture(driver, [JOBS])).unwrap();
-    for (const row of ROWS)
-      await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ($1, $2, $3, $4)`, [
-        row.id,
-        row.title,
-        row.rank,
-        row.done,
-      ]);
+    // the rows a fold would have written, past the strict guard (U5)
+    await asFold(driver, async () => {
+      for (const row of ROWS)
+        await driver.run(`INSERT INTO jobs (id, title, rank, done) VALUES ($1, $2, $3, $4)`, [
+          row.id,
+          row.title,
+          row.rank,
+          row.done,
+        ]);
+    });
     // superusers are outside RLS by Postgres's own rules: the app reads through a plain role
     await driver.run(`CREATE ROLE syncmesh_app NOLOGIN`);
     await driver.run(`GRANT USAGE ON SCHEMA public TO syncmesh_app`);
@@ -67,12 +70,14 @@ describe("RLS from the read rules — Postgres itself is the filter", () => {
   test("no rules leaves the table open; the partition setting pins reads; nothing survives the transaction", async () => {
     const driver = pgliteDriver(new PGlite());
     (await installCapture(driver, [JOBS])).unwrap();
-    await driver.run(
-      `INSERT INTO jobs (id, title, rank, done, "_partition") VALUES ('a', 't', 1, false, 'org:acme')`,
-    );
-    await driver.run(
-      `INSERT INTO jobs (id, title, rank, done, "_partition") VALUES ('b', 't', 2, false, 'org:globex')`,
-    );
+    await asFold(driver, async () => {
+      await driver.run(
+        `INSERT INTO jobs (id, title, rank, done, "_partition") VALUES ('a', 't', 1, false, 'org:acme')`,
+      );
+      await driver.run(
+        `INSERT INTO jobs (id, title, rank, done, "_partition") VALUES ('b', 't', 2, false, 'org:globex')`,
+      );
+    });
     (await installRls(driver, schemaFor(undefined))).unwrap();
     await driver.run(`CREATE ROLE syncmesh_app NOLOGIN`);
     await driver.run(`GRANT USAGE ON SCHEMA public TO syncmesh_app`);

@@ -13,6 +13,7 @@ import { bytesToHex, decodeCheckpoint } from "@syncmesh/wire";
 import type { DocsEngine } from "./materialise.js";
 
 import { CheckpointRefused } from "./errors.js";
+import { isSealedSnapshot } from "./sealed-snapshot.js";
 
 /** The hex sha-256 a checkpoint names its snapshot bytes by (RFC-0023 §5.5, D18). */
 export const snapshotHash = (bytes: Uint8Array) => bytesToHex(sha256(bytes));
@@ -67,7 +68,10 @@ export interface ProvisionalChecks {
   readonly adapter: AdapterId;
   /** The column's derive list, which key 8's values must stay inside; absent when it derives nothing. */
   readonly deriver?: DocDeriver;
-  /** The row's partition is sealed: key 8 must be empty and its derived columns stay unset (§11). */
+  /**
+   * The row's partition is sealed: key 8 must be empty and its derived columns stay unset, and the
+   * snapshot must be sealed to the partition key — the host keeps that ciphertext (§11, U24).
+   */
   readonly sealed: boolean;
 }
 
@@ -96,7 +100,8 @@ function provisionalDerived(
  * compactable, so the host keeps the long log a later audit replays.
  *
  * A sealed partition's checkpoint carrying any derived value is refused: it would be plaintext
- * read out of sealed content. Its derived columns stay unset on the host.
+ * read out of sealed content. Its derived columns stay unset on the host. So is one whose snapshot
+ * is not sealed ({@link isSealedSnapshot}); a sealed one is kept as the ciphertext it is.
  */
 export async function installProvisional(
   engine: DocsEngine,
@@ -121,6 +126,10 @@ export async function installProvisional(
     if (producerMay.isErr())
       return refuseCheckpoint("its producer may not update this row", producerMay.error);
     const derived = yield* provisionalDerived(checkpoint, checks);
+    // the host holds no key, so the seal is all it can check: a sealed partition's snapshot that
+    // is not sealed is plaintext of sealed content, and is not kept here (§11, gaps U24)
+    if (checks.sealed && !isSealedSnapshot(snapshot))
+      return refuseCheckpoint("a sealed partition's checkpoint carries an unsealed snapshot");
     const cursors = yield* Result.await(engine.cursors());
     const ahead = [...checkpoint.covers].some(([author, seq]) => (cursors.get(author) ?? 0) < seq);
     if (ahead) return refuseCheckpoint("the checkpoint claims changes this host has not folded");
