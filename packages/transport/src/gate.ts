@@ -120,6 +120,8 @@ export function createAdmissionGate(options: GateOptions) {
      * that verifies under this device's issuer is registered and this door asked again, so two
      * devices granted after they last met link over a radio on first contact. A peer with no
      * grant from our issuer still has only {@link AdmissionAsk.requesting}, which nothing sets yet.
+     * A presented grant is registered like any other, so it brings back one an operator removed
+     * with `GrantRegistry.revoke` here: this door has no revocation check of its own.
      */
     if (held === undefined) return "deny";
     const ours = new Set(partitions());

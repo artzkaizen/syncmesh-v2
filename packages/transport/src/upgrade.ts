@@ -226,11 +226,13 @@ export function createUpgrader(deps: UpgraderDeps): Upgrader {
       if (presented === undefined || peer === undefined) return;
       const decoded = decodeFrame(frame);
       if (decoded.isErr() || decoded.value.kind !== "grant") return;
+      // the first grant is the presentation, whatever it says: one verify per refused link. A
+      // grant for someone else that verifies is registered as a forwarded one would be, and
+      // presents nothing for this peer
+      const settle = presented;
+      presented = undefined;
       const registered = deps.grants?.register(decoded.value.wire);
-      if (registered === undefined) return;
-      // someone else's grant, forwarded ahead of the peer's own: not a presentation
-      if (registered.isOk() && registered.value.device !== peer) return;
-      presented(registered.isOk());
+      settle(registered?.isOk() === true && registered.value.device === peer);
     };
 
     /** The held end, so nothing the far side says between the handshake and the door is lost. */
