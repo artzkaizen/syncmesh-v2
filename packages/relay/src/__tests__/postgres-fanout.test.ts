@@ -1,8 +1,12 @@
 import { createMemoryEventStore } from "@syncmesh/engine";
+import { grantFrame } from "@syncmesh/transport";
 import { describe, expect, test } from "bun:test";
 
+import { relayedFrame } from "../frames.js";
+import { createGrantCache } from "../grant-cache.js";
 import { postgresFanout } from "../postgres-fanout.js";
 import { openRelayRoom } from "../room.js";
+import { mintFor, peer, until, write } from "./fixtures.js";
 
 /** Postgres in one object: every listener on a channel hears every notify, the notifier included. */
 const fakePostgres = () => {
@@ -187,5 +191,34 @@ describe("a room opened over postgresFanout", () => {
     const room = await opening;
     expect(opened).toBe(true);
     room.close();
+  });
+
+  test("hears what was fanned out before it opened, from the instance already serving it (gaps U41)", async () => {
+    const pg = fakePostgres();
+    const fanout = postgresFanout({ client: pg.client });
+    const open = (store = createMemoryEventStore(), grants = createGrantCache()) =>
+      openRelayRoom({ name: "main", store, grants, epoch: "e", keepaliveMs: 60_000, fanout });
+    const serving = (await open()).unwrap();
+
+    // a third instance fans out a grant and an event; only the room already open hears them
+    const alice = peer(2, "acct_alice");
+    const grant = mintFor(alice.identity, "acct_alice");
+    const event = await write(alice, "n1", "before");
+    const third = fanout.connect("main");
+    third.onFrame(() => undefined);
+    third.publish(grantFrame(grant));
+    third.publish(relayedFrame(event, 1));
+    expect(await until(() => serving.offset() === 1)).toBe(true);
+
+    const store = createMemoryEventStore();
+    const grants = createGrantCache();
+    const opened = (await open(store, grants)).unwrap();
+    expect(await until(() => opened.offset() === 1)).toBe(true);
+    expect((await store.all()).unwrap().map((entry) => entry.event.id)).toHaveLength(1);
+    expect(grants.all()).toEqual([grant]);
+    // and the room already serving took nothing twice from the answer it overheard
+    expect(serving.offset()).toBe(1);
+    for (const room of [serving, opened]) room.close();
+    third.close();
   });
 });

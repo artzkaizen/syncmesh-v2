@@ -1,10 +1,13 @@
-import { presenceSlot } from "@syncmesh/transport";
-import { decodeAndVerifyPresence } from "@syncmesh/wire";
+import type { Cursors } from "@syncmesh/engine";
+
+import { grantFrame, presenceSlot } from "@syncmesh/transport";
+import { decodeAndVerifyPresence, relayEnvelope } from "@syncmesh/wire";
 
 import type { RoomState } from "./state.js";
 
 import { routeCustody } from "./custody-route.js";
 import { decodeRelayFrame } from "./frame-decode.js";
+import { relayedFrame } from "./frames.js";
 import { absorbEvent } from "./ingest.js";
 import { admitGrant } from "./trust.js";
 
@@ -18,13 +21,15 @@ import { admitGrant } from "./trust.js";
  * narrowed its interest was sent whatever the other instance happened to relay, because a forward
  * goes to every socket and an ingest goes to the ones that asked.
  *
- * Nothing is published from here. The frame already reached every other instance from the one
- * that first sent it, so re-publishing would multiply one write by the size of the fleet.
+ * Nothing heard is published again. The frame already reached every other instance from the one
+ * that first sent it, so re-publishing would multiply one write by the size of the fleet. The one
+ * thing published from here is an answer: another instance's `hello`, sent when it opens the room,
+ * is answered with what this log holds above it (gaps U41).
  *
- * Best-effort stays best-effort: a frame the transport drops is not recovered by this. What
- * recovers it is a device that holds the event joining this instance and pushing everything above
- * the cursors the `hello` advertised — which is only possible because the log here is now the set
- * of events this instance actually heard, rather than nothing at all.
+ * Best-effort stays best-effort: a frame the transport drops while both instances hold the room
+ * is not recovered by this. What recovers it is a device that holds the event joining this
+ * instance and pushing everything above the cursors the `hello` advertised — or this instance
+ * opening the room afresh, after an idle eviction, and greeting the fleet again.
  */
 export function fanIn(room: RoomState): (frame: Uint8Array) => void {
   return (frame) => {
@@ -39,6 +44,11 @@ export function fanIn(room: RoomState): (frame: Uint8Array) => void {
         // the instance that sent it still holds the event for whoever asks it next
         if (absorbed.isErr()) return;
       });
+      return;
+    }
+    // another instance has just opened this room and says where its log stands (gaps U41)
+    if (value.kind === "hello") {
+      room.enqueue(() => catchUpInstance(room, value.cursors));
       return;
     }
     // a receipt or a refusal is for its author alone, here as from a socket (D32)
@@ -69,4 +79,31 @@ export function fanIn(room: RoomState): (frame: Uint8Array) => void {
     // the peer-to-peer facts pass through byte-identical, as they do from a socket
     room.toClients(frame);
   };
+}
+
+/**
+ * What another instance missed before it opened this room, sent back over the fan-out: every
+ * grant this room holds, then every event above the cursors its greeting named (gaps U41).
+ *
+ * The cursor exchange a device runs on every join, run between instances. An instance hears a
+ * room only from the moment it opens it, so what was fanned out before then reached it as
+ * nothing; this re-pages it from the instances that were listening. Grants go first, so the
+ * events they vouch for land after them on the opening instance's sockets.
+ *
+ * Every instance holding the room answers and every one hears the answers, so the opening
+ * instance takes each event once per answering instance and the rest take events they already
+ * hold: a `has` each, deduplicated by id, which is the price of a port with no addressing.
+ * Published straight from the log, one frame per event, on the room's queue — so a room with a
+ * long history spends its fan-out rate on it, and an event too large for the transport goes as
+ * the transport's own gap signal, exactly as it does live.
+ */
+async function catchUpInstance(room: RoomState, theirs: Cursors): Promise<void> {
+  const entries = await room.store.allSince(theirs);
+  // nothing to send it from: the opening instance still has whatever devices push on their joins
+  if (entries.isErr()) return;
+  for (const wire of room.grants.all()) room.publish(grantFrame(wire));
+  for (const entry of entries.value) {
+    const wire = relayEnvelope(entry);
+    if (wire !== undefined) room.publish(relayedFrame(wire, room.offset()));
+  }
 }

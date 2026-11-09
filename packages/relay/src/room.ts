@@ -28,7 +28,13 @@ import type { RoomTrust } from "./trust.js";
 import { createGate } from "./admission.js";
 import { createConnection } from "./connection.js";
 import { fanIn } from "./fan-in.js";
-import { HANDSHAKE_VERSION, RELAY_PROTOCOL_VERSIONS, kaFrame, speaksHandshake } from "./frames.js";
+import {
+  HANDSHAKE_VERSION,
+  RELAY_PROTOCOL_VERSIONS,
+  helloFrame,
+  kaFrame,
+  speaksHandshake,
+} from "./frames.js";
 import { createGrantCache } from "./grant-cache.js";
 import { DEFAULT_LIMITS, createBudget } from "./limits.js";
 import { roomRetention } from "./retention.js";
@@ -304,7 +310,9 @@ export async function openRelayRoom(
     gate: options.admission === undefined ? undefined : createGate(options.admission, name),
   };
   // subscribed after the state exists, because a fanned-in frame is ingested through it
-  const offFan = await hearFleet(fan, fanIn(state));
+  const offFan = await hearFleet(fan, fanIn(state), () =>
+    helloFrame(Math.max(...versions), keepaliveMs, epoch, cursors(), retention.floor()),
+  );
 
   // said once, at open, and never again: which rooms grow forever is a thing an operator should
   // learn from a dashboard rather than from a disk alert (gap audit №8)
@@ -339,16 +347,27 @@ export async function openRelayRoom(
 }
 
 /**
- * Subscribes the room to the rest of the fleet, and waits until it hears it: a room served before
- * then would miss what another instance publishes meanwhile (gaps U41).
+ * Subscribes the room to the rest of the fleet, waits until it hears it, and then greets it (gaps
+ * U41).
+ *
+ * Served before it hears, the room would miss what another instance publishes meanwhile. And what
+ * was published before this instance opened the room at all reached it as nothing, so the room
+ * says where its log stands — a `hello` on the fan-out, carrying its cursors — and every instance
+ * already holding the room answers with what lies above them (`fanIn`). It is the join's cursor
+ * exchange, run between instances, rather than a subscription to every room at boot.
+ *
+ * Nothing waits for the answers: they are best-effort like everything else on the port, may come
+ * from no instance at all, and land as live traffic on whatever sockets have joined by then.
  */
 async function hearFleet(
   fan: FanoutLink | undefined,
   deliver: (frame: Uint8Array) => void,
+  greeting: () => Uint8Array,
 ): Promise<(() => void) | undefined> {
   if (fan === undefined) return undefined;
   const off = fan.onFrame(deliver);
   await fan.heard?.();
+  fan.publish(greeting());
   return off;
 }
 
