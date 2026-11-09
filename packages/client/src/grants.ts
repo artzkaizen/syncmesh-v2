@@ -184,7 +184,10 @@ function createGrantRetry(engine: Engine, registry: GrantRegistry) {
   let retries: Promise<void> = Promise.resolve();
   const off = registry.onRegistered((grant) => {
     retries = retries.then(async () => {
-      const retried = await engine.retryAuthor(grant.device);
+      // a rejection is a panic, and it is said here: left on the chain it would skip every later
+      // retry and reject `close`
+      const tried = await Result.tryPromise(() => engine.retryAuthor(grant.device));
+      const retried = tried.andThen((settled) => settled);
       if (retried.isErr())
         console.warn(`events parked for ${grant.device} could not be retried:`, retried.error);
     });
