@@ -59,9 +59,6 @@ use crate::rejoin::{Accepted, PeerJoin, Rejoins};
 use crate::relay::cursors_to_map;
 use crate::store::{Ahead, StoredEvent};
 
-/// Frames held for the handshake before the peer is judged not to be answering (`maxPending`).
-pub const DEFAULT_MAX_PENDING: usize = 64;
-
 /// How many of a link's past session keys are kept to refuse a replayed hello with.
 pub const KEYS_REMEMBERED: usize = 64;
 

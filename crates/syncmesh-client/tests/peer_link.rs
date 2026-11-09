@@ -291,6 +291,42 @@ fn a_peer_that_restarts_on_the_same_link_supersedes_the_session() {
     assert!(a.link.is_established());
 }
 
+#[test]
+fn hellos_that_cross_on_a_live_link_settle_on_one_session_rather_than_re_keying_forever() {
+    let mut a = End::open(1, PeerOptions::default());
+    let mut b = End::open(2, PeerOptions::default());
+    pump(&mut a, &mut b, false);
+
+    // b restarts twice before a hears anything sealed: a supersedes on the first hello and its
+    // answer crosses the second, which is then the answer to a's, not a call for another
+    let engine = std::mem::replace(&mut b.engine, engine(2));
+    let first = End::over(engine, 2, PeerOptions::default());
+    let mut engine = first.engine;
+    write(&mut engine, "b1", "after two restarts");
+    let mut b = End::over(engine, 2, PeerOptions::default());
+    let actions = a.link.on_bytes(&mut a.engine, &first.hello, NOW);
+    a.take(actions);
+    pump(&mut a, &mut b, false);
+    let superseded = |end: &End| {
+        end.facts
+            .iter()
+            .filter(|f| matches!(f, PeerAction::Superseded(_)))
+            .count()
+    };
+    assert_eq!(superseded(&a), 2, "{:?}", a.facts);
+    assert!(superseded(&b) <= 1, "{:?}", b.facts);
+    assert!(a.link.is_established() && b.link.is_established());
+    assert_eq!(
+        body(&a.engine, "b1"),
+        Some(CellValue::text("after two restarts"))
+    );
+    let entry = write(&mut a.engine, "a1", "and back");
+    let actions = a.link.on_local_write(&entry);
+    a.take(actions);
+    pump(&mut a, &mut b, false);
+    assert_eq!(body(&b.engine, "a1"), Some(CellValue::text("and back")));
+}
+
 // --- the session, over plaintext frames -------------------------------------------------------
 
 /// A session on `engine` with a peer `n`, and the frames it opened with.

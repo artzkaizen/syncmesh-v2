@@ -210,12 +210,19 @@ session alone, over plaintext frames, for a medium that is already sealed and fr
 Behind `tokio`, `driver::run_peer` runs one over any `PeerMedium` — `StreamMedium` for
 `AsyncRead + AsyncWrite`, `MessageMedium` for a `Stream + Sink` of messages, or your own — and
 `Mesh::attach_peer` runs one beside the relay link, handing it every write, presence value and
-fold, and the relay what it folds:
+fold, and the relay and the other links what it folds. It returns a `PeerHandle`: its `id()` is
+what that link's `MeshEvent::Peer` facts carry (unique even when two links share a name), and
+`send`/`try_send` hand the link any `PeerCommand` — `AcceptFloor` (D46), `RequestSnapshot`,
+`RequestGrant`, `Grants` (the answer to a `GrantRequest` that link raised), `Resync`, `Close`:
 
 ```rust
 let socket = tokio::net::TcpStream::connect(addr).await?;
-mesh.attach_peer(StreamMedium::new(socket), PeerOptions::default(), &handle);
+let link = mesh.attach_peer(StreamMedium::new(socket), PeerOptions::default(), &handle);
+link.try_send(PeerCommand::AcceptFloor)?;
 ```
+
+Grants cross a peer link when it opens and when sent through its handle; the mesh forwards none
+between links (the TypeScript sends every newly registered grant to every link).
 
 What it does not do, as a TypeScript bridge with neither does not: no read gate (D40), so it
 carries everything to every peer, and no route table, so a `routes` frame is ignored. Frames

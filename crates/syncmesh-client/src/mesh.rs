@@ -15,6 +15,7 @@ use syncmesh_core::event::{Change, PartitionKey, PeerId};
 use syncmesh_core::identity::Identity;
 use syncmesh_core::record::Row;
 use syncmesh_core::relay_frames::{blob_get_frame, blob_put_frame};
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::blobs::{
@@ -59,6 +60,8 @@ pub enum MeshEvent {
     Folded(FoldBatch),
     /// Someone's presence changed at this topic and instance (arrived, moved, left, expired).
     Presence(PresenceTouch),
+    /// A device asked the relay's room for a grant. One asked over a peer link arrives as
+    /// [`MeshEvent::Peer`], so the answer can go back down that link ([`PeerHandle::send`]).
     GrantRequest {
         peer_id: PeerId,
         invite: Option<String>,
@@ -70,12 +73,14 @@ pub enum MeshEvent {
     Recovery,
     /// The link is over for good: a refusal, or `stop`.
     Ended(String),
-    /// A fact from a peer link [`Mesh::attach_peer`] runs, under the name its options gave it:
-    /// established, superseded, refused, a receipt or a refusal of this device's write, a
-    /// divergence, a join that settled, bytes dropped, the link ended. Its folds and presence
-    /// arrive as [`MeshEvent::Folded`] and [`MeshEvent::Presence`] like the relay's.
+    /// A fact from a peer link [`Mesh::attach_peer`] runs, under the id its [`PeerHandle`] holds
+    /// and the name its options gave it: established, superseded, refused, a grant request, a
+    /// receipt or a refusal of this device's write, a divergence, a join that settled, bytes
+    /// dropped, the link ended. Its folds and presence arrive as [`MeshEvent::Folded`] and
+    /// [`MeshEvent::Presence`] like the relay's.
     Peer {
-        link: String,
+        link: PeerLinkId,
+        name: String,
         fact: PeerAction,
     },
 }
@@ -103,14 +108,92 @@ struct Upload {
 /// partition it names.
 type Uploads = Arc<Mutex<HashMap<String, Vec<Upload>>>>;
 
-/// The peer links running beside the relay link, by name: where a write, a presence value or a
-/// fold elsewhere is handed on.
-type Peers = Arc<Mutex<Vec<(String, mpsc::Sender<PeerCommand>)>>>;
+/// One peer link a mesh runs, unique within it: two links attached under the same name are still
+/// two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PeerLinkId(u64);
+
+impl std::fmt::Display for PeerLinkId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "peer-link-{}", self.0)
+    }
+}
+
+/// A peer link [`Mesh::attach_peer`] runs: the id its [`MeshEvent::Peer`] facts carry, and where
+/// a [`PeerCommand`] reaches it — accept a floor (D46), ask for state or a grant, send grants,
+/// resync, close it.
+///
+/// ```ignore
+/// let link = mesh.attach_peer(StreamMedium::new(socket), PeerOptions::default(), &handle);
+/// link.try_send(PeerCommand::AcceptFloor)?;
+/// ```
+#[derive(Debug, Clone)]
+pub struct PeerHandle {
+    id: PeerLinkId,
+    name: String,
+    commands: mpsc::Sender<PeerCommand>,
+}
+
+impl PeerHandle {
+    pub fn id(&self) -> PeerLinkId {
+        self.id
+    }
+
+    /// The name its options gave it.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Hands `command` to the link once its queue has room.
+    pub async fn send(&self, command: PeerCommand) -> Result<(), PeerSendError> {
+        self.commands
+            .send(command)
+            .await
+            .map_err(|_| PeerSendError::Ended)
+    }
+
+    /// Hands `command` to the link now.
+    pub fn try_send(&self, command: PeerCommand) -> Result<(), PeerSendError> {
+        self.commands.try_send(command).map_err(|e| match e {
+            TrySendError::Full(_) => PeerSendError::Full,
+            TrySendError::Closed(_) => PeerSendError::Ended,
+        })
+    }
+
+    /// Whether the link has ended.
+    pub fn is_closed(&self) -> bool {
+        self.commands.is_closed()
+    }
+}
+
+/// Why a [`PeerHandle`] could not hand a command on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerSendError {
+    /// The link's queue is full; [`PeerHandle::send`] waits for room instead.
+    Full,
+    /// The link has ended.
+    Ended,
+}
+
+impl std::fmt::Display for PeerSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            PeerSendError::Full => "the peer link's command queue is full",
+            PeerSendError::Ended => "the peer link has ended",
+        })
+    }
+}
+
+impl std::error::Error for PeerSendError {}
+
+/// The peer links running beside the relay link: where a write, a presence value or a fold
+/// elsewhere is handed on.
+type Peers = Arc<Mutex<Vec<(PeerLinkId, mpsc::Sender<PeerCommand>)>>>;
 
 /// Hands `command` to every running peer link but `except`, forgetting the ones that have ended.
-fn to_peers(peers: &Peers, except: Option<&str>, command: &PeerCommand) {
-    lock(peers).retain(|(name, tx)| {
-        if Some(name.as_str()) != except {
+fn to_peers(peers: &Peers, except: Option<PeerLinkId>, command: &PeerCommand) {
+    lock(peers).retain(|(id, tx)| {
+        if Some(*id) != except {
             let _ = tx.try_send(command.clone());
         }
         !tx.is_closed()
@@ -157,6 +240,8 @@ pub struct Mesh {
     /// Where a peer link's facts join the relay's.
     event_tx: mpsc::Sender<MeshEvent>,
     peers: Peers,
+    /// The id the next attached peer link takes.
+    next_peer: u64,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     peer_tasks: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -238,6 +323,7 @@ impl Mesh {
             events,
             event_tx,
             peers,
+            next_peer: 0,
             tasks,
             peer_tasks: Vec::new(),
         })
@@ -248,19 +334,23 @@ impl Mesh {
     /// session registers grants in this mesh's registry and records floors in this mesh's
     /// [`Mesh::rejoins`] unless `options` names its own. Every write, presence value and fold from
     /// elsewhere is handed to it as to the relay, and what it folds is handed to the relay and to
-    /// every other peer link; its facts arrive as [`MeshEvent::Peer`]. The link ends when either
-    /// end closes it, or at [`Mesh::stop`].
+    /// every other peer link; its facts arrive as [`MeshEvent::Peer`] under the returned handle's
+    /// id, which is unique even when two links share a name. Grants cross a peer link at its open
+    /// and when sent through the handle; the mesh forwards none between links. The link ends when
+    /// either end closes it, or at [`Mesh::stop`].
     ///
     /// ```ignore
     /// let socket = tokio::net::TcpStream::connect(addr).await?;
-    /// mesh.attach_peer(StreamMedium::new(socket), PeerOptions::default(), &handle);
+    /// let link = mesh.attach_peer(StreamMedium::new(socket), PeerOptions::default(), &handle);
     /// ```
     pub fn attach_peer<M: PeerMedium + 'static>(
         &mut self,
         medium: M,
         mut options: PeerOptions,
         handle: &tokio::runtime::Handle,
-    ) {
+    ) -> PeerHandle {
+        let id = PeerLinkId(self.next_peer);
+        self.next_peer += 1;
         let name = options.name.clone();
         options
             .session
@@ -272,7 +362,7 @@ impl Mesh {
             .get_or_insert_with(|| self.rejoins.clone());
         let (commands, command_rx) = mpsc::channel(256);
         let (fact_tx, facts) = mpsc::channel(256);
-        lock(&self.peers).push((name.clone(), commands));
+        lock(&self.peers).push((id, commands.clone()));
         self.peer_tasks.push(handle.spawn(run_peer(
             self.identity.clone(),
             options,
@@ -282,13 +372,15 @@ impl Mesh {
             fact_tx,
         )));
         self.peer_tasks.push(handle.spawn(pump_peer(
-            name,
+            id,
+            name.clone(),
             facts,
             self.event_tx.clone(),
             self.presence.clone(),
             self.commands.clone(),
             self.peers.clone(),
         )));
+        PeerHandle { id, name, commands }
     }
 
     pub fn peer_id(&self) -> &PeerId {
@@ -665,6 +757,7 @@ async fn heartbeat(
 /// A peer link's facts to mesh events: its folds handed to the relay and the other peer links, its
 /// presence into the tier, an install it settled said as a recovery change too.
 async fn pump_peer(
+    id: PeerLinkId,
     name: String,
     mut facts: mpsc::Receiver<PeerAction>,
     events: mpsc::Sender<MeshEvent>,
@@ -676,7 +769,7 @@ async fn pump_peer(
         let out = match fact {
             PeerAction::Folded(batch) => {
                 let _ = relay.try_send(LinkCommand::RemoteFold);
-                to_peers(&peers, Some(&name), &PeerCommand::RemoteFold);
+                to_peers(&peers, Some(id), &PeerCommand::RemoteFold);
                 vec![MeshEvent::Folded(batch)]
             }
             PeerAction::Presence(wire) => {
@@ -689,25 +782,24 @@ async fn pump_peer(
             }
             // the session registered it in this mesh's registry before anything beside it folded
             PeerAction::Grant(_) => Vec::new(),
-            PeerAction::GrantRequest { peer_id, invite } => {
-                vec![MeshEvent::GrantRequest { peer_id, invite }]
-            }
             PeerAction::Snapshot(settled) => {
                 let installed = matches!(settled.outcome, JoinOutcome::Installed { .. });
                 if installed {
                     let _ = relay.try_send(LinkCommand::RemoteFold);
-                    to_peers(&peers, Some(&name), &PeerCommand::RemoteFold);
+                    to_peers(&peers, Some(id), &PeerCommand::RemoteFold);
                 }
                 vec![
                     MeshEvent::Peer {
-                        link: name.clone(),
+                        link: id,
+                        name: name.clone(),
                         fact: PeerAction::Snapshot(settled),
                     },
                     MeshEvent::Recovery,
                 ]
             }
             fact => vec![MeshEvent::Peer {
-                link: name.clone(),
+                link: id,
+                name: name.clone(),
                 fact,
             }],
         };

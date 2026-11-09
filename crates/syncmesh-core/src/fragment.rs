@@ -162,8 +162,10 @@ impl Reassembler {
             None => true,
         };
         if fresh {
-            self.forget(message);
-            self.order.push_back(message);
+            // a replaced id keeps its place in the eviction order, as `Map.set` does
+            if !self.held.contains_key(&message) {
+                self.order.push_back(message);
+            }
             self.held.insert(
                 message,
                 Partial {
@@ -299,5 +301,22 @@ mod tests {
         assert_eq!(gone[0].message, 0);
         assert_eq!(gone[0].why, Abandoned::Evicted);
         assert_eq!(reader.pending(), 2);
+    }
+
+    #[test]
+    fn an_id_reused_with_another_length_keeps_its_place_in_the_eviction_order() {
+        let mut reader = Reassembler::new(1024, 2);
+        for message in 0..2u32 {
+            let parts = fragment(&[1, 2, 3, 4], 10, message).unwrap();
+            assert_eq!(reader.accept(&parts[0]), None);
+        }
+        // the counter wrapped: id 0 names a longer message now, and is still the oldest
+        let longer = fragment(&[1, 2, 3, 4, 5, 6, 7, 8], 10, 0).unwrap();
+        assert_eq!(reader.accept(&longer[0]), None);
+        let parts = fragment(&[1, 2, 3, 4], 10, 2).unwrap();
+        assert_eq!(reader.accept(&parts[0]), None);
+        let gone = reader.take_abandoned();
+        assert_eq!(gone.len(), 1, "{gone:?}");
+        assert_eq!(gone[0].message, 0);
     }
 }

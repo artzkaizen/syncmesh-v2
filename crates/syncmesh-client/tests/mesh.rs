@@ -7,13 +7,13 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use syncmesh_client::driver::{StreamMedium, serve_room};
+use syncmesh_client::driver::{PeerCommand, StreamMedium, serve_room};
 use syncmesh_client::mesh::{Mesh, MeshEvent, MeshOptions};
 use syncmesh_client::relay::RelayOptions;
 use syncmesh_client::room::{Room, RoomOptions};
 use syncmesh_client::{
-    BelowFloorReason, Cursors, Engine, EngineOptions, FloorSource, Manifest, MemoryEventStore,
-    PeerAction, PeerOptions, ValidatorOptions,
+    BelowFloorReason, Cursors, Engine, EngineOptions, FloorSource, JoinOutcome, Manifest,
+    MemoryEventStore, PeerAction, PeerOptions, ValidatorOptions,
 };
 use syncmesh_core::event::{Change, PartitionKey};
 use syncmesh_core::grant::{GrantRequest, issue_grant};
@@ -513,11 +513,12 @@ async fn two_meshes_with_no_relay_to_reach_converge_over_a_peer_link() {
         keepalive_ms: None,
         ..PeerOptions::default()
     };
-    a.attach_peer(StreamMedium::new(x), cable(), &handle);
+    let a_link = a.attach_peer(StreamMedium::new(x), cable(), &handle);
     b.attach_peer(StreamMedium::new(y), cable(), &handle);
     until(&mut a, |e| {
-        matches!(e, MeshEvent::Peer { link, fact: PeerAction::Established(peer) }
-            if link == "cable" && peer == Identity::from_seed(&[2; 32]).peer_id())
+        matches!(e, MeshEvent::Peer { link, name, fact: PeerAction::Established(peer) }
+            if *link == a_link.id() && name == "cable"
+                && peer == Identity::from_seed(&[2; 32]).peer_id())
     })
     .await;
     until(
@@ -546,6 +547,188 @@ async fn two_meshes_with_no_relay_to_reach_converge_over_a_peer_link() {
         "{here:?}"
     );
     assert_eq!(a.engine().state(), b.engine().state());
+    a.stop().await;
+    b.stop().await;
+}
+
+/// A relay URL nothing answers at, so only peer links carry anything.
+async fn nowhere() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!(
+        "ws://127.0.0.1:{}/nowhere",
+        listener.local_addr().unwrap().port()
+    );
+    drop(listener);
+    url
+}
+
+/// Default options but no keepalive: nothing but the mesh handing something on carries it.
+fn quiet() -> PeerOptions {
+    PeerOptions {
+        keepalive_ms: None,
+        ..PeerOptions::default()
+    }
+}
+
+#[tokio::test]
+async fn a_fold_from_one_peer_link_reaches_another_that_shares_its_name() {
+    let url = nowhere().await;
+    let key = Identity::from_seed(&[9; 32]).peer_id().clone();
+    let handle = tokio::runtime::Handle::current();
+    // a hub between two spokes, every link under the default name
+    let mut hub = device(1, &url, &key);
+    let mut left = device(2, &url, &key);
+    let mut right = device(3, &url, &key);
+    let (x, y) = tokio::io::duplex(64 * 1024);
+    let to_left = hub.attach_peer(StreamMedium::new(x), quiet(), &handle);
+    left.attach_peer(StreamMedium::new(y), quiet(), &handle);
+    let (x, y) = tokio::io::duplex(64 * 1024);
+    let to_right = hub.attach_peer(StreamMedium::new(x), quiet(), &handle);
+    right.attach_peer(StreamMedium::new(y), quiet(), &handle);
+    assert_eq!(to_left.name(), to_right.name());
+    assert_ne!(to_left.id(), to_right.id());
+    for link in [to_left.id(), to_right.id()] {
+        until(&mut hub, |e| {
+            matches!(e, MeshEvent::Peer { link: l, fact: PeerAction::Established(_), .. }
+                if *l == link)
+        })
+        .await;
+    }
+    until(&mut right, |e| {
+        matches!(
+            e,
+            MeshEvent::Peer {
+                fact: PeerAction::Established(_),
+                ..
+            }
+        )
+    })
+    .await;
+    until(&mut left, |e| {
+        matches!(
+            e,
+            MeshEvent::Peer {
+                fact: PeerAction::Established(_),
+                ..
+            }
+        )
+    })
+    .await;
+
+    // left writes; the hub folds it off one link and offers it down the other
+    left.mutate("notes.create", vec![insert("n1", "across")], None)
+        .unwrap();
+    until(
+        &mut right,
+        |e| matches!(e, MeshEvent::Folded(batch) if batch.write_keys["notes"].contains("n1")),
+    )
+    .await;
+    assert_eq!(right.engine().state(), left.engine().state());
+    hub.stop().await;
+    left.stop().await;
+    right.stop().await;
+}
+
+#[tokio::test]
+async fn a_host_commands_a_peer_link_the_mesh_runs_through_its_handle() {
+    let url = nowhere().await;
+    let key = Identity::from_seed(&[9; 32]).peer_id().clone();
+    let issuer = Identity::from_seed(&[100; 32]);
+    let handle = tokio::runtime::Handle::current();
+    let mut a = granted_device(1, &url, &key, &issuer, None);
+    let mut b = granted_device(2, &url, &key, &issuer, None);
+    let (x, y) = tokio::io::duplex(64 * 1024);
+    let a_link = a.attach_peer(StreamMedium::new(x), quiet(), &handle);
+    let b_link = b.attach_peer(StreamMedium::new(y), quiet(), &handle);
+    until(&mut a, |e| {
+        matches!(
+            e,
+            MeshEvent::Peer {
+                fact: PeerAction::Established(_),
+                ..
+            }
+        )
+    })
+    .await;
+
+    // a grant request comes up under the link it arrived on, and the answer goes back down it
+    a_link
+        .try_send(PeerCommand::RequestGrant(Some("invite".to_owned())))
+        .unwrap();
+    let asked = until(&mut b, |e| {
+        matches!(
+            e,
+            MeshEvent::Peer {
+                fact: PeerAction::GrantRequest { .. },
+                ..
+            }
+        )
+    })
+    .await;
+    let MeshEvent::Peer {
+        link,
+        fact: PeerAction::GrantRequest { peer_id, invite },
+        ..
+    } = asked
+    else {
+        unreachable!()
+    };
+    assert_eq!(link, b_link.id());
+    assert_eq!(invite.as_deref(), Some("invite"));
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let grant = issue_grant(
+        &issuer,
+        &GrantRequest {
+            account: "acct_a".to_owned(),
+            device: peer_id.clone(),
+            role: Some("member".to_owned()),
+            partitions: vec![PartitionKey::parse("org:acme").unwrap()],
+            claims: BTreeMap::new(),
+            keys: Vec::new(),
+            valid_for_ms: 86_400_000,
+            now_ms,
+        },
+    );
+    b_link.try_send(PeerCommand::Grants(vec![grant])).unwrap();
+    timeout(STEP, async {
+        while a.grants().grant_for(&peer_id, now_ms).is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the grant came back down the link");
+
+    // a asks b for state rather than history, and installs it
+    b.mutate("notes.create", vec![insert("n1", "state")], None)
+        .unwrap();
+    until(
+        &mut a,
+        |e| matches!(e, MeshEvent::Folded(batch) if batch.write_keys["notes"].contains("n1")),
+    )
+    .await;
+    a_link
+        .try_send(PeerCommand::RequestSnapshot {
+            interest: None,
+            adopt_unvouched: true,
+        })
+        .unwrap();
+    until(&mut a, |e| {
+        matches!(e, MeshEvent::Peer { link, fact: PeerAction::Snapshot(settled), .. }
+            if *link == a_link.id()
+                && matches!(settled.outcome, JoinOutcome::Installed { .. }))
+    })
+    .await;
+
+    // closing one link through its handle ends it
+    a_link.try_send(PeerCommand::Close).unwrap();
+    until(&mut a, |e| {
+        matches!(e, MeshEvent::Peer { link, fact: PeerAction::Ended { .. }, .. }
+            if *link == a_link.id())
+    })
+    .await;
     a.stop().await;
     b.stop().await;
 }
