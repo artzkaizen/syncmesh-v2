@@ -1,8 +1,9 @@
-//! The one piece of IO in this crate: a tokio task that dials a relay over a WebSocket and runs a
-//! [`RelayLink`] against it. Everything the link decides, it decides sans-IO; this loop only
-//! moves bytes, sleeps when told to, and turns the link's facts into [`LinkEvent`]s on a channel.
+//! The IO in this crate: a tokio task that dials a relay over a WebSocket and runs a [`RelayLink`]
+//! against it, and one that runs a [`PeerLink`] over any [`PeerMedium`] (gap U3's radios).
+//! Everything a link decides, it decides sans-IO; these loops only move bytes, sleep when told to,
+//! and turn the link's facts into events on a channel.
 //!
-//! The host talks to the running link through [`LinkCommand`]s and keeps the engine behind a
+//! The host talks to a running link through commands and keeps the engine behind a
 //! mutex it shares with the task, so a write made on the host's own thread and the fold of a
 //! relayed event never interleave inside the engine.
 
@@ -16,6 +17,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::blobs::PutRefusal;
 use crate::engine::{Engine, FoldBatch};
+use crate::peer::{PeerAction, PeerLink, PeerOptions};
 use crate::relay::{Action, RelayLink};
 use crate::store::{Cursors, StoredEvent};
 
@@ -369,3 +371,402 @@ pub async fn serve_room(listener: tokio::net::TcpListener, room: crate::room::Ro
         });
     }
 }
+
+// --- peer links -------------------------------------------------------------------------------
+
+/// A byte duplex a [`PeerLink`] runs over: a TCP socket, a Wi-Fi Aware data path, a WebSocket, a
+/// BLE characteristic's writes and notifications. [`StreamMedium`] adapts anything that is
+/// `AsyncRead + AsyncWrite`; [`MessageMedium`] anything that is a `Stream` and a `Sink` of whole
+/// messages. A medium of another shape implements this directly.
+///
+/// It splits into a read half and a write half, which [`run_peer`] drives at once: a write the
+/// far side is slow to take never stops this side reading, so two devices that each owe the
+/// other more than the medium buffers both drain.
+pub trait PeerMedium: Send {
+    type Reader: PeerRead;
+    type Writer: PeerWrite;
+
+    fn split(self) -> (Self::Reader, Self::Writer);
+}
+
+/// The read half of a [`PeerMedium`].
+pub trait PeerRead: Send {
+    /// The next read, or `None` once the medium has closed. Must be cancel-safe: the driver drops
+    /// a pending read when a command or a deadline comes first.
+    fn read(&mut self) -> impl std::future::Future<Output = Option<Vec<u8>>> + Send;
+}
+
+/// The write half of a [`PeerMedium`].
+///
+/// `write` must fail when the bytes did not leave: a loud failure ends the link and the next one
+/// resyncs from the cursors, a silent one leaves two devices believing different things.
+pub trait PeerWrite: Send {
+    fn write(
+        &mut self,
+        bytes: Vec<u8>,
+    ) -> impl std::future::Future<Output = std::io::Result<()>> + Send;
+    fn close(&mut self) -> impl std::future::Future<Output = ()> + Send;
+}
+
+/// A medium that streams bytes with no boundaries; pair it with [`crate::peer::Framing::Stream`].
+#[derive(Debug)]
+pub struct StreamMedium<S> {
+    inner: S,
+}
+
+impl<S> StreamMedium<S> {
+    pub fn new(inner: S) -> StreamMedium<S> {
+        StreamMedium { inner }
+    }
+}
+
+/// The read half of a [`StreamMedium`].
+#[derive(Debug)]
+pub struct StreamReader<S> {
+    inner: tokio::io::ReadHalf<S>,
+    buffer: Vec<u8>,
+}
+
+/// The write half of a [`StreamMedium`].
+#[derive(Debug)]
+pub struct StreamWriter<S> {
+    inner: tokio::io::WriteHalf<S>,
+}
+
+impl<S> PeerMedium for StreamMedium<S>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send,
+{
+    type Reader = StreamReader<S>;
+    type Writer = StreamWriter<S>;
+
+    fn split(self) -> (StreamReader<S>, StreamWriter<S>) {
+        let (read, write) = tokio::io::split(self.inner);
+        (
+            StreamReader {
+                inner: read,
+                buffer: vec![0; 64 * 1024],
+            },
+            StreamWriter { inner: write },
+        )
+    }
+}
+
+impl<S> PeerRead for StreamReader<S>
+where
+    S: tokio::io::AsyncRead + Send,
+{
+    async fn read(&mut self) -> Option<Vec<u8>> {
+        use tokio::io::AsyncReadExt;
+        match self.inner.read(&mut self.buffer).await {
+            Ok(0) | Err(_) => None,
+            Ok(n) => Some(self.buffer[..n].to_vec()),
+        }
+    }
+}
+
+impl<S> PeerWrite for StreamWriter<S>
+where
+    S: tokio::io::AsyncWrite + Send,
+{
+    async fn write(&mut self, bytes: Vec<u8>) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        self.inner.write_all(&bytes).await?;
+        self.inner.flush().await
+    }
+
+    async fn close(&mut self) {
+        use tokio::io::AsyncWriteExt;
+        let _ = self.inner.shutdown().await;
+    }
+}
+
+/// A medium that keeps message boundaries; pair it with [`crate::peer::Framing::Messages`], or
+/// [`crate::peer::Framing::Fragments`] when each message is one BLE write.
+#[derive(Debug)]
+pub struct MessageMedium<T> {
+    inner: T,
+}
+
+impl<T> MessageMedium<T> {
+    pub fn new(inner: T) -> MessageMedium<T> {
+        MessageMedium { inner }
+    }
+}
+
+/// The read half of a [`MessageMedium`].
+#[derive(Debug)]
+pub struct MessageReader<T> {
+    inner: futures_util::stream::SplitStream<T>,
+}
+
+/// The write half of a [`MessageMedium`].
+#[derive(Debug)]
+pub struct MessageWriter<T> {
+    inner: futures_util::stream::SplitSink<T, Vec<u8>>,
+}
+
+impl<T, E> PeerMedium for MessageMedium<T>
+where
+    T: futures_util::Stream<Item = Result<Vec<u8>, E>>
+        + futures_util::Sink<Vec<u8>, Error = E>
+        + Send,
+    E: std::fmt::Display + Send,
+{
+    type Reader = MessageReader<T>;
+    type Writer = MessageWriter<T>;
+
+    fn split(self) -> (MessageReader<T>, MessageWriter<T>) {
+        let (write, read) = self.inner.split();
+        (
+            MessageReader { inner: read },
+            MessageWriter { inner: write },
+        )
+    }
+}
+
+impl<T, E> PeerRead for MessageReader<T>
+where
+    T: futures_util::Stream<Item = Result<Vec<u8>, E>> + Send,
+    E: Send,
+{
+    async fn read(&mut self) -> Option<Vec<u8>> {
+        self.inner.next().await?.ok()
+    }
+}
+
+impl<T, E> PeerWrite for MessageWriter<T>
+where
+    T: futures_util::Sink<Vec<u8>, Error = E> + Send,
+    E: std::fmt::Display + Send,
+{
+    async fn write(&mut self, bytes: Vec<u8>) -> std::io::Result<()> {
+        self.inner
+            .send(bytes)
+            .await
+            .map_err(|e| std::io::Error::other(e.to_string()))
+    }
+
+    async fn close(&mut self) {
+        let _ = self.inner.close().await;
+    }
+}
+
+/// Frames waiting for the write half, oldest first. A presence value replaces one still waiting
+/// under its slot (`FrameLink.sendLatest`, D16).
+#[derive(Default)]
+struct Outbox {
+    queued: std::collections::VecDeque<(Option<String>, Vec<Vec<u8>>)>,
+    /// Set once the link is over: write what is queued, then close the medium.
+    closing: bool,
+}
+
+/// The write half's side of a link: the outbox, and a wake-up when it changes.
+#[derive(Clone, Default)]
+struct Outgoing {
+    outbox: Arc<Mutex<Outbox>>,
+    changed: Arc<tokio::sync::Notify>,
+}
+
+impl Outgoing {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Outbox> {
+        self.outbox.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn send(&self, slot: Option<String>, units: Vec<Vec<u8>>) {
+        {
+            let mut outbox = self.lock();
+            let waiting = slot.as_ref().and_then(|slot| {
+                outbox
+                    .queued
+                    .iter_mut()
+                    .find(|(queued, _)| queued.as_ref() == Some(slot))
+            });
+            match waiting {
+                Some((_, held)) => *held = units,
+                None => outbox.queued.push_back((slot, units)),
+            }
+        }
+        self.changed.notify_one();
+    }
+
+    /// Ends the write half: after what is queued when `flush`, at once otherwise.
+    fn close(&self, flush: bool) {
+        {
+            let mut outbox = self.lock();
+            outbox.closing = true;
+            if !flush {
+                outbox.queued.clear();
+            }
+        }
+        self.changed.notify_one();
+    }
+
+    /// Writes what is queued until the link closes or a write fails; then closes the medium. A
+    /// failure is said on `failed`.
+    async fn drain<W: PeerWrite>(self, mut writer: W, failed: tokio::sync::oneshot::Sender<()>) {
+        loop {
+            let next = {
+                let mut outbox = self.lock();
+                match outbox.queued.pop_front() {
+                    Some((_, units)) => Some(units),
+                    None if outbox.closing => break,
+                    None => None,
+                }
+            };
+            let Some(units) = next else {
+                self.changed.notified().await;
+                continue;
+            };
+            for bytes in units {
+                if writer.write(bytes).await.is_err() {
+                    let _ = failed.send(());
+                    writer.close().await;
+                    return;
+                }
+            }
+        }
+        writer.close().await;
+    }
+}
+
+/// What a host asks of a running peer link.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a write is the command a link carries most; boxing it would allocate per write"
+)]
+pub enum PeerCommand {
+    /// This device wrote something (the entry `Engine::mutate` returned).
+    Write(StoredEvent),
+    Presence(Vec<u8>),
+    Grants(Vec<Vec<u8>>),
+    RequestGrant(Option<String>),
+    /// Ask for state rather than history (RFC-0019).
+    RequestSnapshot {
+        interest: Option<crate::interest::Interest>,
+        adopt_unvouched: bool,
+    },
+    /// Consent to install unvouched state from this peer up to its floor (D46).
+    AcceptFloor,
+    /// Something folded from another source; tell the peer where this device stands now.
+    RemoteFold,
+    Resync,
+    Close,
+}
+
+fn apply_peer(
+    link: &mut PeerLink,
+    engine: &Arc<Mutex<Engine>>,
+    command: PeerCommand,
+) -> Vec<PeerAction> {
+    let engine = || engine.lock().unwrap_or_else(PoisonError::into_inner);
+    match command {
+        PeerCommand::Write(entry) => link.on_local_write(&entry),
+        PeerCommand::Presence(wire) => link.send_presence(&wire),
+        PeerCommand::Grants(wires) => link.send_grants(&wires),
+        PeerCommand::RequestGrant(invite) => link.request_grant(invite.as_deref()),
+        PeerCommand::RequestSnapshot {
+            interest,
+            adopt_unvouched,
+        } => link.request_snapshot(interest.as_ref(), adopt_unvouched).1,
+        PeerCommand::AcceptFloor => link.accept_floor(&engine()).1,
+        PeerCommand::RemoteFold => link.on_remote_fold(&engine()),
+        PeerCommand::Resync => link.resync(&engine()),
+        PeerCommand::Close => link.close(),
+    }
+}
+
+/// Runs one peer link over `medium` until either end closes it. Sends our hello at once — both
+/// ends speak first — feeds every read to the link, ticks it at its deadline, queues what it asks
+/// to send for the medium's write half, which writes while this keeps reading, and reports its
+/// facts on `events`, the last of which is [`PeerAction::Ended`].
+pub async fn run_peer<M: PeerMedium>(
+    identity: syncmesh_core::identity::Identity,
+    options: PeerOptions,
+    engine: Arc<Mutex<Engine>>,
+    medium: M,
+    mut commands: mpsc::Receiver<PeerCommand>,
+    events: mpsc::Sender<PeerAction>,
+) {
+    let (mut reader, writer) = medium.split();
+    let outgoing = Outgoing::default();
+    let (failed_tx, mut failed) = tokio::sync::oneshot::channel();
+    let drain = outgoing.clone().drain(writer, failed_tx);
+    // owns what it reads: the command queue closes when the link is over, not when the last
+    // write leaves
+    let drive = async move {
+        let (mut link, first) = PeerLink::open(identity, options, now_ms());
+        let mut actions = first;
+        let mut write_failed = false;
+        let reason = loop {
+            let mut close = None;
+            for action in actions {
+                match action {
+                    PeerAction::Send(bytes) => outgoing.send(None, vec![bytes]),
+                    PeerAction::SendLatest { slot, units } => outgoing.send(Some(slot), units),
+                    PeerAction::Close { reason } => close = close.or(Some(reason)),
+                    fact => {
+                        // a host that stopped listening has stopped caring; the link runs on
+                        let _ = events.send(fact).await;
+                    }
+                }
+            }
+            if let Some(reason) = close {
+                break (reason, true);
+            }
+            let deadline = link.next_deadline_ms();
+            let until = Duration::from_millis(deadline.map_or(0, |d| (d - now_ms()).max(0)) as u64);
+            actions = tokio::select! {
+                read = reader.read() => match read {
+                    Some(bytes) => {
+                        let mut engine = engine.lock().unwrap_or_else(PoisonError::into_inner);
+                        link.on_bytes(&mut engine, &bytes, now_ms())
+                    }
+                    None => break ("the medium closed".to_owned(), false),
+                },
+                said = &mut failed, if !write_failed => {
+                    write_failed = true;
+                    if said.is_ok() {
+                        break ("the frame did not leave the medium".to_owned(), false);
+                    }
+                    Vec::new()
+                }
+                command = commands.recv() => match command {
+                    Some(command) => apply_peer(&mut link, &engine, command),
+                    None => link.close(),
+                },
+                _ = tokio::time::sleep(until), if deadline.is_some() => {
+                    let engine = engine.lock().unwrap_or_else(PoisonError::into_inner);
+                    link.on_tick(&engine, now_ms())
+                }
+            };
+        };
+        let (reason, flush) = reason;
+        // what the link said last (a refusal, a close) leaves before the medium closes; a medium
+        // that closed or failed takes nothing more
+        outgoing.close(flush);
+        for fact in link.on_closed(&reason) {
+            let _ = events.send(fact).await;
+        }
+        flush
+    };
+    let mut drain = std::pin::pin!(drain);
+    let mut drive = std::pin::pin!(drive);
+    let mut drained = false;
+    let flush = loop {
+        tokio::select! {
+            flush = &mut drive => break flush,
+            () = &mut drain, if !drained => drained = true,
+        }
+    };
+    // a write parked on a far side that stopped reading never finishes on its own: what is left
+    // gets a grace when the link asked for it, and dropping the writer ends the rest
+    if !drained && flush {
+        let _ = tokio::time::timeout(CLOSE_GRACE, drain).await;
+    }
+}
+
+/// How long a closing peer link waits for its last frames to leave before it drops the medium.
+pub const CLOSE_GRACE: Duration = Duration::from_secs(5);

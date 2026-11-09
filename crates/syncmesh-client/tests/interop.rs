@@ -34,6 +34,11 @@ fn repo_root() -> PathBuf {
         .expect("the crate sits two levels below the repo root")
 }
 
+/// Whether the workspace's packages are installed, which the TypeScript reference imports.
+fn installed() -> bool {
+    repo_root().join("node_modules").is_dir()
+}
+
 /// `which bun`, then the place Bun's own installer puts it.
 fn find_bun() -> Option<PathBuf> {
     let on_path = std::env::var_os("PATH").and_then(|path| {
@@ -58,7 +63,7 @@ async fn next_json(
             .await
             .expect("the TypeScript peer went quiet")
             .expect("reading the TypeScript peer's stdout")
-            .expect("the TypeScript peer ended early");
+            .expect("the TypeScript peer ended early (is the workspace built? `vp run -r build`)");
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
             && want(&value)
         {
@@ -94,8 +99,11 @@ fn insert(key: &str, body: &str) -> Change {
 
 #[tokio::test]
 async fn a_rust_device_converges_with_the_typescript_relay_and_peer() {
-    let Some(bun) = find_bun() else {
-        eprintln!("skipping: `bun` is not on PATH, and the TypeScript reference runs on it");
+    let Some(bun) = find_bun().filter(|_| installed()) else {
+        eprintln!(
+            "skipping: the TypeScript reference needs `bun` on PATH and an installed workspace \
+             (`vp install`, then `vp run -r build`)"
+        );
         return;
     };
     let mut child = Command::new(bun)

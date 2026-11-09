@@ -7,12 +7,13 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use syncmesh_client::driver::serve_room;
-use syncmesh_client::mesh::{Mesh, MeshEvent, MeshOptions};
+use syncmesh_client::driver::{PeerCommand, StreamMedium, serve_room};
+use syncmesh_client::mesh::{Mesh, MeshEvent, MeshOptions, PeerSendError};
 use syncmesh_client::relay::RelayOptions;
 use syncmesh_client::room::{Room, RoomOptions};
 use syncmesh_client::{
-    BelowFloorReason, Cursors, Engine, EngineOptions, FloorSource, Manifest, MemoryEventStore,
+    BelowFloorReason, Coverage, Cursors, Engine, EngineOptions, FloorSource, JoinOutcome, Manifest,
+    MemoryEventStore, MemoryStateStore, PeerAction, PeerOptions, RowWrite, StateStore, StoreError,
     ValidatorOptions,
 };
 use syncmesh_core::event::{Change, PartitionKey};
@@ -486,4 +487,554 @@ async fn a_device_the_room_refuses_with_retention_waits_for_the_floor_instead_of
     .await
     .expect("the link dialled again once it held the floor");
     mesh.stop().await;
+}
+
+#[tokio::test]
+async fn two_meshes_with_no_relay_to_reach_converge_over_a_peer_link() {
+    // a port nothing listens on: the relay link dials and fails, and keeps failing
+    let nowhere = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!(
+        "ws://127.0.0.1:{}/nowhere",
+        nowhere.local_addr().unwrap().port()
+    );
+    drop(nowhere);
+    let key = Identity::from_seed(&[9; 32]).peer_id().clone();
+    let partition = PartitionKey::parse("project:demo").unwrap();
+    let mut a = device(1, &url, &key);
+    let mut b = device(2, &url, &key);
+    a.mutate("notes.create", vec![insert("n1", "offline")], None)
+        .unwrap();
+
+    // a cable between them: any byte duplex does
+    let (x, y) = tokio::io::duplex(64 * 1024);
+    let handle = tokio::runtime::Handle::current();
+    // no keepalive: nothing but the mesh handing a write on would carry it
+    let cable = || PeerOptions {
+        name: "cable".to_owned(),
+        keepalive_ms: None,
+        ..PeerOptions::default()
+    };
+    let a_link = a.attach_peer(StreamMedium::new(x), cable(), &handle);
+    b.attach_peer(StreamMedium::new(y), cable(), &handle);
+    until(&mut a, |e| {
+        matches!(e, MeshEvent::Peer { link, name, fact: PeerAction::Established(peer) }
+            if *link == a_link.id() && name == "cable"
+                && peer == Identity::from_seed(&[2; 32]).peer_id())
+    })
+    .await;
+    until(
+        &mut b,
+        |e| matches!(e, MeshEvent::Folded(batch) if batch.write_keys["notes"].contains("n1")),
+    )
+    .await;
+
+    // live writes and presence ride the peer link as they would the relay
+    b.mutate("notes.create", vec![insert("n2", "back")], None)
+        .unwrap();
+    until(
+        &mut a,
+        |e| matches!(e, MeshEvent::Folded(batch) if batch.write_keys["notes"].contains("n2")),
+    )
+    .await;
+    let mut value = BTreeMap::new();
+    value.insert("x".to_owned(), CellValue::Number(4.0));
+    // a short TTL: stopping waits out the heartbeat it sets
+    b.presence_set("cursor", &partition, value, 600_000);
+    until(&mut a, |e| matches!(e, MeshEvent::Presence(_))).await;
+    let here = a.presence_peers("cursor", &partition);
+    assert!(
+        here.iter()
+            .any(|entry| &entry.peer_id == Identity::from_seed(&[2; 32]).peer_id()),
+        "{here:?}"
+    );
+    assert_eq!(a.engine().state(), b.engine().state());
+    a.stop().await;
+    b.stop().await;
+}
+
+/// A relay URL nothing answers at, so only peer links carry anything.
+async fn nowhere() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!(
+        "ws://127.0.0.1:{}/nowhere",
+        listener.local_addr().unwrap().port()
+    );
+    drop(listener);
+    url
+}
+
+/// Default options but no keepalive: nothing but the mesh handing something on carries it.
+fn quiet() -> PeerOptions {
+    PeerOptions {
+        keepalive_ms: None,
+        ..PeerOptions::default()
+    }
+}
+
+#[tokio::test]
+async fn a_fold_from_one_peer_link_reaches_another_that_shares_its_name() {
+    let url = nowhere().await;
+    let key = Identity::from_seed(&[9; 32]).peer_id().clone();
+    let handle = tokio::runtime::Handle::current();
+    // a hub between two spokes, every link under the default name
+    let mut hub = device(1, &url, &key);
+    let mut left = device(2, &url, &key);
+    let mut right = device(3, &url, &key);
+    let (x, y) = tokio::io::duplex(64 * 1024);
+    let to_left = hub.attach_peer(StreamMedium::new(x), quiet(), &handle);
+    left.attach_peer(StreamMedium::new(y), quiet(), &handle);
+    let (x, y) = tokio::io::duplex(64 * 1024);
+    let to_right = hub.attach_peer(StreamMedium::new(x), quiet(), &handle);
+    right.attach_peer(StreamMedium::new(y), quiet(), &handle);
+    assert_eq!(to_left.name(), to_right.name());
+    assert_ne!(to_left.id(), to_right.id());
+    // either link may open first, and a wait drops what it does not match
+    let mut open = std::collections::BTreeSet::new();
+    while open.len() < 2 {
+        if let MeshEvent::Peer {
+            link,
+            fact: PeerAction::Established(_),
+            ..
+        } = until(&mut hub, |e| {
+            matches!(
+                e,
+                MeshEvent::Peer {
+                    fact: PeerAction::Established(_),
+                    ..
+                }
+            )
+        })
+        .await
+        {
+            open.insert(link);
+        }
+    }
+    assert!(open.contains(&to_left.id()) && open.contains(&to_right.id()));
+    until(&mut right, |e| {
+        matches!(
+            e,
+            MeshEvent::Peer {
+                fact: PeerAction::Established(_),
+                ..
+            }
+        )
+    })
+    .await;
+    until(&mut left, |e| {
+        matches!(
+            e,
+            MeshEvent::Peer {
+                fact: PeerAction::Established(_),
+                ..
+            }
+        )
+    })
+    .await;
+
+    // left writes; the hub folds it off one link and offers it down the other
+    left.mutate("notes.create", vec![insert("n1", "across")], None)
+        .unwrap();
+    until(
+        &mut right,
+        |e| matches!(e, MeshEvent::Folded(batch) if batch.write_keys["notes"].contains("n1")),
+    )
+    .await;
+    assert_eq!(right.engine().state(), left.engine().state());
+    hub.stop().await;
+    left.stop().await;
+    right.stop().await;
+}
+
+#[tokio::test]
+async fn a_host_commands_a_peer_link_the_mesh_runs_through_its_handle() {
+    let url = nowhere().await;
+    let key = Identity::from_seed(&[9; 32]).peer_id().clone();
+    let issuer = Identity::from_seed(&[100; 32]);
+    let handle = tokio::runtime::Handle::current();
+    let mut a = granted_device(1, &url, &key, &issuer, None);
+    let mut b = granted_device(2, &url, &key, &issuer, None);
+    let (x, y) = tokio::io::duplex(64 * 1024);
+    let a_link = a.attach_peer(StreamMedium::new(x), quiet(), &handle);
+    let b_link = b.attach_peer(StreamMedium::new(y), quiet(), &handle);
+    until(&mut a, |e| {
+        matches!(
+            e,
+            MeshEvent::Peer {
+                fact: PeerAction::Established(_),
+                ..
+            }
+        )
+    })
+    .await;
+
+    // a grant request comes up under the link it arrived on, and the answer goes back down it
+    a_link
+        .try_send(PeerCommand::RequestGrant(Some("invite".to_owned())))
+        .unwrap();
+    let asked = until(&mut b, |e| {
+        matches!(
+            e,
+            MeshEvent::Peer {
+                fact: PeerAction::GrantRequest { .. },
+                ..
+            }
+        )
+    })
+    .await;
+    let MeshEvent::Peer {
+        link,
+        fact: PeerAction::GrantRequest { peer_id, invite },
+        ..
+    } = asked
+    else {
+        unreachable!()
+    };
+    assert_eq!(link, b_link.id());
+    assert_eq!(invite.as_deref(), Some("invite"));
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let grant = issue_grant(
+        &issuer,
+        &GrantRequest {
+            account: "acct_a".to_owned(),
+            device: peer_id.clone(),
+            role: Some("member".to_owned()),
+            partitions: vec![PartitionKey::parse("org:acme").unwrap()],
+            claims: BTreeMap::new(),
+            keys: Vec::new(),
+            valid_for_ms: 86_400_000,
+            now_ms,
+        },
+    );
+    b_link.try_send(PeerCommand::Grants(vec![grant])).unwrap();
+    timeout(STEP, async {
+        while a.grants().grant_for(&peer_id, now_ms).is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the grant came back down the link");
+
+    // a asks b for state rather than history, and installs it
+    b.mutate("notes.create", vec![insert("n1", "state")], None)
+        .unwrap();
+    until(
+        &mut a,
+        |e| matches!(e, MeshEvent::Folded(batch) if batch.write_keys["notes"].contains("n1")),
+    )
+    .await;
+    a_link
+        .try_send(PeerCommand::RequestSnapshot {
+            interest: None,
+            adopt_unvouched: true,
+        })
+        .unwrap();
+    until(&mut a, |e| {
+        matches!(e, MeshEvent::Peer { link, fact: PeerAction::Snapshot(settled), .. }
+            if *link == a_link.id()
+                && matches!(settled.outcome, JoinOutcome::Installed { .. }))
+    })
+    .await;
+
+    // closing one link through its handle ends it
+    a_link.try_send(PeerCommand::Close).unwrap();
+    until(&mut a, |e| {
+        matches!(e, MeshEvent::Peer { link, fact: PeerAction::Ended { .. }, .. }
+            if *link == a_link.id())
+    })
+    .await;
+    a.stop().await;
+    b.stop().await;
+}
+
+#[tokio::test]
+async fn two_meshes_with_a_backlog_each_way_converge_over_a_narrow_pipe() {
+    let url = nowhere().await;
+    let key = Identity::from_seed(&[9; 32]).peer_id().clone();
+    let handle = tokio::runtime::Handle::current();
+    let mut a = device(1, &url, &key);
+    let mut b = device(2, &url, &key);
+    // each side owes the other far more than the pipe holds, and both answer at once
+    for n in 0..60 {
+        a.mutate(
+            "notes.create",
+            vec![insert(&format!("a{n}"), "from a")],
+            None,
+        )
+        .unwrap();
+        b.mutate(
+            "notes.create",
+            vec![insert(&format!("b{n}"), "from b")],
+            None,
+        )
+        .unwrap();
+    }
+    let (x, y) = tokio::io::duplex(1024);
+    a.attach_peer(StreamMedium::new(x), quiet(), &handle);
+    b.attach_peer(StreamMedium::new(y), quiet(), &handle);
+    let has = |mesh: &Mesh, key: &str| mesh.engine().state().read_row("notes", key).is_some();
+    timeout(STEP, async {
+        while !(has(&a, "b59") && has(&b, "a59")) {
+            let _ = a.poll_events();
+            let _ = b.poll_events();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("both backlogs crossed");
+    assert_eq!(a.engine().state(), b.engine().state());
+    a.stop().await;
+    b.stop().await;
+}
+
+/// State that boots claiming `coverage`, floor and all, over no rows: a device whose log stands on
+/// what a snapshot once installed (D46).
+struct Floored {
+    rows: MemoryStateStore,
+    coverage: Coverage,
+}
+
+impl StateStore for Floored {
+    fn is_empty(&self) -> Result<bool, StoreError> {
+        Ok(false)
+    }
+
+    fn load_all(&self) -> Result<syncmesh_client::core::state::State, StoreError> {
+        self.rows.load_all()
+    }
+
+    fn load_coverage(&self) -> Result<Coverage, StoreError> {
+        Ok(self.coverage.clone())
+    }
+
+    fn commit(&mut self, rows: &[RowWrite], coverage: &Coverage) -> Result<(), StoreError> {
+        self.coverage = coverage.clone();
+        self.rows.commit(rows, coverage)
+    }
+
+    fn clear(&mut self) -> Result<(), StoreError> {
+        self.rows.clear()
+    }
+}
+
+#[tokio::test]
+async fn a_peer_link_the_mesh_runs_says_when_this_device_is_below_the_peers_floor() {
+    let url = nowhere().await;
+    let key = Identity::from_seed(&[9; 32]).peer_id().clone();
+    let handle = tokio::runtime::Handle::current();
+    // b stands on a floor for c's first two events, with nothing of c's in its log
+    let c = Identity::from_seed(&[3; 32]).peer_id().clone();
+    let mut floor = Cursors::new();
+    floor.insert(c.clone(), syncmesh_core::event::SeqNum::parse(2).unwrap());
+    let mut b = Mesh::open(
+        MeshOptions {
+            identity: Identity::from_seed(&[2; 32]),
+            url: url.clone(),
+            relay: RelayOptions {
+                relay_key: Some(key.clone()),
+                reconnect_ms: 50,
+                ..RelayOptions::default()
+            },
+            engine: EngineOptions::default(),
+            store: Box::new(MemoryEventStore::new()),
+            state_store: Some(Box::new(Floored {
+                rows: MemoryStateStore::new(),
+                coverage: Coverage {
+                    synced: floor.clone(),
+                    floor: floor.clone(),
+                    ..Coverage::default()
+                },
+            })),
+            blob_store: None,
+            issuer: None,
+        },
+        &handle,
+    )
+    .unwrap();
+    assert_eq!(b.engine().floor(), floor);
+    // a, empty and trusting no certificate, meets b: it cannot vouch for b's state, so it waits
+    let mut a = device(1, &url, &key);
+    let (x, y) = tokio::io::duplex(64 * 1024);
+    let a_link = a.attach_peer(StreamMedium::new(x), quiet(), &handle);
+    b.attach_peer(StreamMedium::new(y), quiet(), &handle);
+    until(&mut a, |e| matches!(e, MeshEvent::Recovery)).await;
+    let issues = a.below_floor();
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert_eq!(
+        issues[0].source,
+        FloorSource::Peer(Identity::from_seed(&[2; 32]).peer_id().clone())
+    );
+    assert_eq!(issues[0].reason, BelowFloorReason::Untrusted);
+
+    // the host consents down the link that raised it; the install clears the issue
+    a_link.try_send(PeerCommand::AcceptFloor).unwrap();
+    timeout(STEP, async {
+        loop {
+            let e = a.next_event().await.expect("the mesh ended");
+            if matches!(e, MeshEvent::Recovery) && a.below_floor().is_empty() {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the install cleared the floor");
+    assert_eq!(a.engine().coverage().synced.get(&c), floor.get(&c));
+    a.stop().await;
+    b.stop().await;
+}
+
+#[tokio::test]
+async fn a_mesh_stops_while_its_host_holds_a_handle_and_reads_no_events() {
+    let url = nowhere().await;
+    let key = Identity::from_seed(&[9; 32]).peer_id().clone();
+    let handle = tokio::runtime::Handle::current();
+    let mut a = device(1, &url, &key);
+    let mut b = device(2, &url, &key);
+    let (x, y) = tokio::io::duplex(64 * 1024);
+    let a_link = a.attach_peer(StreamMedium::new(x), quiet(), &handle);
+    b.attach_peer(StreamMedium::new(y), quiet(), &handle);
+    until(&mut a, |e| {
+        matches!(
+            e,
+            MeshEvent::Peer {
+                fact: PeerAction::Established(_),
+                ..
+            }
+        )
+    })
+    .await;
+    // b says far more than a's event queues hold, and a's host never reads it: a's link stalls
+    // reporting a presence value, and its command queue fills behind it. b's host keeps reading,
+    // so b keeps reading its end of the cable
+    let partition = PartitionKey::parse("project:demo").unwrap();
+    let (done, mut stopping) = tokio::sync::oneshot::channel::<()>();
+    let draining = tokio::spawn(async move {
+        for n in 0..1_000 {
+            let mut value = BTreeMap::new();
+            value.insert("x".to_owned(), CellValue::Number(f64::from(n)));
+            // a topic each, so no value supersedes another on the way; a long ttl, so a slow
+            // machine's backlog still arrives fresh and a's host is told of every value
+            b.presence_set(&format!("t{n}"), &partition, value, 600_000);
+            if n % 20 == 0 {
+                let _ = b.poll_events();
+                tokio::task::yield_now().await;
+            }
+        }
+        while stopping.try_recv().is_err() {
+            let _ = b.poll_events();
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        b.stop().await;
+    });
+    timeout(STEP, async {
+        while a_link.try_send(PeerCommand::Resync) != Err(PeerSendError::Full) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("a's link stalled and its queue filled");
+    timeout(STEP, a.stop())
+        .await
+        .expect("stop ended a stalled link the host still holds a handle to");
+    assert!(a_link.is_closed());
+    done.send(()).unwrap();
+    draining.await.unwrap();
+}
+
+/// One end of a cable whose app froze: once `frozen`, it reads nothing and never closes, and the
+/// stream behind it outlives it, so the far side's writes fill the pipe and stay there.
+struct Frozen {
+    inner: std::mem::ManuallyDrop<tokio::io::DuplexStream>,
+    frozen: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl tokio::io::AsyncRead for Frozen {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.frozen.load(std::sync::atomic::Ordering::SeqCst) {
+            return std::task::Poll::Pending;
+        }
+        std::pin::Pin::new(&mut *self.inner).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for Frozen {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut *self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut *self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn a_mesh_stops_a_link_whose_far_side_stays_connected_but_stops_reading() {
+    let url = nowhere().await;
+    let key = Identity::from_seed(&[9; 32]).peer_id().clone();
+    let handle = tokio::runtime::Handle::current();
+    let mut a = device(1, &url, &key);
+    let mut b = device(2, &url, &key);
+    let lively = || PeerOptions {
+        keepalive_ms: Some(1_000),
+        ..PeerOptions::default()
+    };
+    let (x, y) = tokio::io::duplex(1_024);
+    let frozen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let y = Frozen {
+        inner: std::mem::ManuallyDrop::new(y),
+        frozen: frozen.clone(),
+    };
+    let a_link = a.attach_peer(StreamMedium::new(x), lively(), &handle);
+    b.attach_peer(StreamMedium::new(y), lively(), &handle);
+    let established = |e: &MeshEvent| {
+        matches!(
+            e,
+            MeshEvent::Peer {
+                fact: PeerAction::Established(_),
+                ..
+            }
+        )
+    };
+    until(&mut a, established).await;
+    until(&mut b, established).await;
+    // b's app freezes on an open socket; a writes more than the pipe holds, so its write half
+    // parks inside a write that never finishes
+    frozen.store(true, std::sync::atomic::Ordering::SeqCst);
+    for n in 0..60 {
+        a.mutate(
+            "notes.create",
+            vec![insert(&format!("n{n}"), &"x".repeat(200))],
+            None,
+        )
+        .unwrap();
+    }
+    // a's liveness gives up on the silent peer
+    until(&mut a, |e| {
+        matches!(e, MeshEvent::Peer { link, fact: PeerAction::Ended { .. }, .. } if *link == a_link.id())
+    })
+    .await;
+    timeout(STEP, a.stop())
+        .await
+        .expect("stop ended a link whose write was parked on a peer that stopped reading");
+    b.stop().await;
 }

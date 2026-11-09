@@ -66,8 +66,9 @@ pub use snapshot_codec::{
     MalformedSnapshot, SnapshotRow, decode_snapshot_rows, encode_snapshot_rows,
 };
 
-// Session frames, length framing, relay control frames, the join proof and the link handshake
-// (D35 slice 4).
+// Session frames, BLE fragments, length framing, relay control frames, the join proof and the
+// link handshake (D35 slice 4).
+pub mod fragment;
 pub mod frames;
 pub mod framing;
 pub mod handshake;
@@ -75,6 +76,7 @@ pub mod join_proof;
 pub mod rejoin;
 pub mod relay_frames;
 
+pub use fragment::{FragmentError, Reassembler, fragment};
 pub use frames::{Frame, MalformedFrame, SnapshotFrame, decode_frame};
 pub use framing::{FrameReader, FramingError, frame_with_length};
 pub use handshake::{

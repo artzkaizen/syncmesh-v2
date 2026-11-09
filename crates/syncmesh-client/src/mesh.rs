@@ -1,5 +1,6 @@
 //! One device, assembled: the engine behind a mutex, the relay link running on the tokio driver,
-//! the ephemeral tier, the grant registry and blobs — the object an application holds.
+//! the peer links a host attaches beside it ([`Mesh::attach_peer`]), the ephemeral tier, the grant
+//! registry and blobs — the object an application holds.
 //!
 //! The pieces below are sans-IO and each is tested on its own; this file is only where they meet
 //! the runtime. A host calls [`Mesh::mutate`] on its own thread and reads [`Mesh::events`] for
@@ -14,16 +15,19 @@ use syncmesh_core::event::{Change, PartitionKey, PeerId};
 use syncmesh_core::identity::Identity;
 use syncmesh_core::record::Row;
 use syncmesh_core::relay_frames::{blob_get_frame, blob_put_frame};
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::blobs::{
     BLOB_ANSWER_WAIT, BlobError, BlobStore, MemoryBlobStore, PutRefusal, hash_of, verify_blob,
 };
-use crate::driver::{LinkCommand, LinkEvent, run_link};
+use crate::driver::{LinkCommand, LinkEvent, PeerCommand, PeerMedium, run_link, run_peer};
 use crate::engine::{
     Engine, EngineOptions, FoldBatch, MutateError, Mutated, RevertError, Reverted,
 };
 use crate::grants::GrantRegistry;
+use crate::join::JoinOutcome;
+use crate::peer::{PeerAction, PeerOptions};
 use crate::presence::{PresenceEntry, PresenceTier, PresenceTouch};
 use crate::random;
 use crate::rejoin::{BelowFloor, Rejoins};
@@ -50,12 +54,15 @@ pub struct MeshOptions {
 /// What the room did, as the application sees it. Every variant is a fact already applied to the
 /// engine, the tier or the registry; a reader that only wants rows can watch `Folded` alone.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum MeshEvent {
     Online(bool),
     CaughtUp,
     Folded(FoldBatch),
     /// Someone's presence changed at this topic and instance (arrived, moved, left, expired).
     Presence(PresenceTouch),
+    /// A device asked the relay's room for a grant. One asked over a peer link arrives as
+    /// [`MeshEvent::Peer`], so the answer can go back down that link ([`PeerHandle::send`]).
     GrantRequest {
         peer_id: PeerId,
         invite: Option<String>,
@@ -63,10 +70,23 @@ pub enum MeshEvent {
     PeerHeard(PeerId),
     Dropped(String),
     /// The issues [`Mesh::below_floor`] lists changed: a relay refused this device below its floor
-    /// (gaps U37), or that is over.
+    /// (gaps U37), a peer link found it below the peer's floor (D46, answered with
+    /// [`PeerCommand::AcceptFloor`] through that link's [`PeerHandle`]), a join a peer link asked
+    /// for settled, or the relay or a link cleared its issue. An issue that lapses on its own, or
+    /// that a fold from elsewhere settles, is not said here: [`Mesh::below_floor`] reads it.
     Recovery,
     /// The link is over for good: a refusal, or `stop`.
     Ended(String),
+    /// A fact from a peer link [`Mesh::attach_peer`] runs, under the id its [`PeerHandle`] holds
+    /// and the name its options gave it: established, superseded, refused, a grant request, a
+    /// receipt or a refusal of this device's write, a divergence, a join that settled, bytes
+    /// dropped, the link ended. Its folds and presence arrive as [`MeshEvent::Folded`] and
+    /// [`MeshEvent::Presence`] like the relay's.
+    Peer {
+        link: PeerLinkId,
+        name: String,
+        fact: PeerAction,
+    },
 }
 
 fn now_ms() -> i64 {
@@ -91,6 +111,135 @@ struct Upload {
 /// Puts in flight, by hash: a `blob-stored` settles every one, a refusal only those billed to the
 /// partition it names.
 type Uploads = Arc<Mutex<HashMap<String, Vec<Upload>>>>;
+
+/// One peer link a mesh runs, unique within it: two links attached under the same name are still
+/// two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PeerLinkId(u64);
+
+impl std::fmt::Display for PeerLinkId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "peer-link-{}", self.0)
+    }
+}
+
+/// A peer link [`Mesh::attach_peer`] runs: the id its [`MeshEvent::Peer`] facts carry, and where
+/// a [`PeerCommand`] reaches it — accept a floor (D46), ask for state or a grant, send grants,
+/// resync, close it.
+///
+/// ```ignore
+/// let link = mesh.attach_peer(StreamMedium::new(socket), PeerOptions::default(), &handle);
+/// link.try_send(PeerCommand::AcceptFloor)?;
+/// ```
+#[derive(Debug, Clone)]
+pub struct PeerHandle {
+    id: PeerLinkId,
+    name: String,
+    commands: mpsc::Sender<PeerCommand>,
+}
+
+impl PeerHandle {
+    pub fn id(&self) -> PeerLinkId {
+        self.id
+    }
+
+    /// The name its options gave it.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Hands `command` to the link once its queue has room.
+    pub async fn send(&self, command: PeerCommand) -> Result<(), PeerSendError> {
+        self.commands
+            .send(command)
+            .await
+            .map_err(|_| PeerSendError::Ended)
+    }
+
+    /// Hands `command` to the link now.
+    pub fn try_send(&self, command: PeerCommand) -> Result<(), PeerSendError> {
+        self.commands.try_send(command).map_err(|e| match e {
+            TrySendError::Full(_) => PeerSendError::Full,
+            TrySendError::Closed(_) => PeerSendError::Ended,
+        })
+    }
+
+    /// Whether the link has ended.
+    pub fn is_closed(&self) -> bool {
+        self.commands.is_closed()
+    }
+}
+
+/// Why a [`PeerHandle`] could not hand a command on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PeerSendError {
+    /// The link's queue is full; [`PeerHandle::send`] waits for room instead.
+    Full,
+    /// The link has ended.
+    Ended,
+}
+
+impl std::fmt::Display for PeerSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            PeerSendError::Full => "the peer link's command queue is full",
+            PeerSendError::Ended => "the peer link has ended",
+        })
+    }
+}
+
+impl std::error::Error for PeerSendError {}
+
+/// Every running peer link, by id, and where its commands go.
+type Links = Arc<Mutex<Vec<(PeerLinkId, mpsc::Sender<PeerCommand>)>>>;
+
+/// The peer links running beside the relay link: where a write, a presence value or a fold
+/// elsewhere is handed on, and where a command one could not take is said.
+#[derive(Clone)]
+struct Peers {
+    links: Links,
+    said: mpsc::Sender<MeshEvent>,
+}
+
+impl Peers {
+    fn new(said: mpsc::Sender<MeshEvent>) -> Peers {
+        Peers {
+            links: Arc::default(),
+            said,
+        }
+    }
+
+    /// Hands `command` to every running peer link but `except`, forgetting the ones that have
+    /// ended. A link whose queue is full loses it, said as [`MeshEvent::Dropped`]: the link's next
+    /// cursor exchange carries a lost write or fold, and the next heartbeat or set a lost presence
+    /// value.
+    fn hand(&self, except: Option<PeerLinkId>, command: &PeerCommand) {
+        let mut full = Vec::new();
+        lock(&self.links).retain(|(id, tx)| {
+            if Some(*id) != except
+                && let Err(TrySendError::Full(_)) = tx.try_send(command.clone())
+            {
+                full.push(*id);
+            }
+            !tx.is_closed()
+        });
+        let restores = match command {
+            PeerCommand::Presence(_) => "the next heartbeat or set restores the value",
+            _ => "its next cursor exchange carries it",
+        };
+        for id in full {
+            let _ = self.said.try_send(MeshEvent::Dropped(format!(
+                "{id} had no room for a command; {restores}"
+            )));
+        }
+    }
+
+    /// Every running link's sender, the list emptied: what [`Mesh::stop`] closes.
+    fn take(&self) -> Vec<mpsc::Sender<PeerCommand>> {
+        lock(&self.links).drain(..).map(|(_, tx)| tx).collect()
+    }
+}
 
 /// Everyone waiting on a blob answer from the room: fetches, and puts.
 #[derive(Clone, Default)]
@@ -129,7 +278,13 @@ pub struct Mesh {
     rejoins: Arc<Mutex<Rejoins>>,
     commands: mpsc::Sender<LinkCommand>,
     events: mpsc::Receiver<MeshEvent>,
+    /// Where a peer link's facts join the relay's.
+    event_tx: mpsc::Sender<MeshEvent>,
+    peers: Peers,
+    /// The id the next attached peer link takes.
+    next_peer: u64,
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    peer_tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Mesh {
@@ -176,13 +331,14 @@ impl Mesh {
         let (commands, command_rx) = mpsc::channel(256);
         let (link_tx, link_rx) = mpsc::channel(256);
         let (event_tx, events) = mpsc::channel(256);
+        let peers = Peers::new(event_tx.clone());
         let link = RelayLink::new(identity.clone(), relay).with_grants(grants.clone());
         let relay_name = link.name().to_owned();
         let tasks = vec![
             handle.spawn(run_link(link, engine.clone(), url, command_rx, link_tx)),
             handle.spawn(pump(
                 link_rx,
-                event_tx,
+                event_tx.clone(),
                 Pumped {
                     presence: presence.clone(),
                     grants: grants.clone(),
@@ -190,10 +346,11 @@ impl Mesh {
                     waits: waits.clone(),
                     rejoins: rejoins.clone(),
                     relay: relay_name,
+                    peers: peers.clone(),
                 },
                 commands.clone(),
             )),
-            handle.spawn(heartbeat(presence.clone(), commands.clone())),
+            handle.spawn(heartbeat(presence.clone(), commands.clone(), peers.clone())),
         ];
         Ok(Mesh {
             identity,
@@ -205,8 +362,66 @@ impl Mesh {
             rejoins,
             commands,
             events,
+            event_tx,
+            peers,
+            next_peer: 0,
             tasks,
+            peer_tasks: Vec::new(),
         })
+    }
+
+    /// Runs a peer link over `medium` beside the relay link (gap U3's radios): a socket, a Wi-Fi
+    /// Aware data path, a BLE characteristic — whatever reached another device directly. Its
+    /// session registers grants in this mesh's registry and records floors in this mesh's
+    /// [`Mesh::rejoins`] unless `options` names its own. Every write, presence value and fold from
+    /// elsewhere is handed to it as to the relay, and what it folds is handed to the relay and to
+    /// every other peer link; its facts arrive as [`MeshEvent::Peer`] under the returned handle's
+    /// id, which is unique even when two links share a name. Grants cross a peer link at its open
+    /// and when sent through the handle; the mesh forwards none between links. The link ends when
+    /// either end closes it, or at [`Mesh::stop`].
+    ///
+    /// ```ignore
+    /// let socket = tokio::net::TcpStream::connect(addr).await?;
+    /// let link = mesh.attach_peer(StreamMedium::new(socket), PeerOptions::default(), &handle);
+    /// ```
+    pub fn attach_peer<M: PeerMedium + 'static>(
+        &mut self,
+        medium: M,
+        mut options: PeerOptions,
+        handle: &tokio::runtime::Handle,
+    ) -> PeerHandle {
+        let id = PeerLinkId(self.next_peer);
+        self.next_peer += 1;
+        let name = options.name.clone();
+        options
+            .session
+            .grants
+            .get_or_insert_with(|| self.grants.clone());
+        options
+            .session
+            .rejoins
+            .get_or_insert_with(|| self.rejoins.clone());
+        let (commands, command_rx) = mpsc::channel(256);
+        let (fact_tx, facts) = mpsc::channel(256);
+        lock(&self.peers.links).push((id, commands.clone()));
+        self.peer_tasks.push(handle.spawn(run_peer(
+            self.identity.clone(),
+            options,
+            self.engine.clone(),
+            medium,
+            command_rx,
+            fact_tx,
+        )));
+        self.peer_tasks.push(handle.spawn(pump_peer(
+            id,
+            name.clone(),
+            facts,
+            self.event_tx.clone(),
+            self.presence.clone(),
+            self.commands.clone(),
+            self.peers.clone(),
+        )));
+        PeerHandle { id, name, commands }
     }
 
     pub fn peer_id(&self) -> &PeerId {
@@ -231,6 +446,8 @@ impl Mesh {
         let _ = self
             .commands
             .try_send(LinkCommand::Write(mutated.entry.clone()));
+        self.peers
+            .hand(None, &PeerCommand::Write(mutated.entry.clone()));
         Ok(mutated)
     }
 
@@ -256,6 +473,8 @@ impl Mesh {
             let _ = self
                 .commands
                 .try_send(LinkCommand::Write(mutated.entry.clone()));
+            self.peers
+                .hand(None, &PeerCommand::Write(mutated.entry.clone()));
         }
         Ok(reverted)
     }
@@ -263,12 +482,14 @@ impl Mesh {
     /// Publishes this device's value at a topic; conflated at every hop, never queued.
     pub fn presence_set(&self, topic: &str, partition: &PartitionKey, value: Row, ttl_ms: i64) {
         let wire = lock(&self.presence).set(topic, partition, value, ttl_ms, now_ms());
+        self.peers.hand(None, &PeerCommand::Presence(wire.clone()));
         let _ = self.commands.try_send(LinkCommand::Presence(wire));
     }
 
     /// An explicit departure from a topic.
     pub fn presence_clear(&self, topic: &str, partition: &PartitionKey) {
         let wire = lock(&self.presence).clear(topic, partition, now_ms());
+        self.peers.hand(None, &PeerCommand::Presence(wire.clone()));
         let _ = self.commands.try_send(LinkCommand::Presence(wire));
     }
 
@@ -396,8 +617,10 @@ impl Mesh {
     }
 
     /// Every floor this device is below, with why (`$recovery.belowFloor`): a relay that refused
-    /// it with `retention` (gaps U37), and the peers a host's own links raised in
-    /// [`Mesh::rejoins`]. [`MeshEvent::Recovery`] says when the relay's half changed.
+    /// it with `retention` (gaps U37), and the peers whose floors this mesh's peer links, or a
+    /// host's own links, raised in [`Mesh::rejoins`]. [`MeshEvent::Recovery`] says when the relay's
+    /// issue or one this mesh's peer links raised changed; a host that drives its own links reads
+    /// [`Rejoins::changes`] for theirs.
     pub fn below_floor(&self) -> Vec<BelowFloor> {
         let ours = lock(&self.engine).coverage().synced;
         lock(&self.rejoins).issues(&ours)
@@ -414,13 +637,30 @@ impl Mesh {
     /// relay's floor dials again once this device holds it (gaps U37).
     pub fn folded_elsewhere(&self) {
         let _ = self.commands.try_send(LinkCommand::RemoteFold);
+        self.peers.hand(None, &PeerCommand::RemoteFold);
     }
 
-    /// Departs every presence topic, stops the link, and waits for the tasks to end.
+    /// Departs every presence topic, stops the links, and waits for the tasks to end. Events not
+    /// yet read are dropped, so a link waiting to report one is free to stop.
     pub async fn stop(mut self) {
+        // nobody reads past here: a pump blocked on a full event queue lets go, and so does the
+        // link behind it
+        self.events.close();
         let departures = lock(&self.presence).stop(now_ms());
+        let links = self.peers.take();
         for wire in departures {
+            for link in &links {
+                let _ = link.send(PeerCommand::Presence(wire.clone())).await;
+            }
             let _ = self.commands.send(LinkCommand::Presence(wire)).await;
+        }
+        // waited for, not tried: a handle the host still holds keeps the queue open, so a lost
+        // close would leave the link running and this waiting on it
+        for link in links {
+            let _ = link.send(PeerCommand::Close).await;
+        }
+        for task in self.peer_tasks.drain(..) {
+            let _ = task.await;
         }
         let _ = self.commands.send(LinkCommand::Stop).await;
         for task in self.tasks.drain(..) {
@@ -438,6 +678,8 @@ struct Pumped {
     rejoins: Arc<Mutex<Rejoins>>,
     /// The relay link's name, which its floor issue is raised under.
     relay: String,
+    /// Told of every fold the relay brings, so they can offer it on.
+    peers: Peers,
 }
 
 /// Link facts to mesh events: presence into the tier, blob answers to their waiters, a relay's
@@ -455,6 +697,7 @@ async fn pump(
         waits,
         rejoins,
         relay,
+        peers,
     } = into;
     while let Some(fact) = link.recv().await {
         let out = match fact {
@@ -476,7 +719,10 @@ async fn pump(
                 vec![MeshEvent::Online(on)]
             }
             LinkEvent::CaughtUp => vec![MeshEvent::CaughtUp],
-            LinkEvent::Folded(batch) => vec![MeshEvent::Folded(batch)],
+            LinkEvent::Folded(batch) => {
+                peers.hand(None, &PeerCommand::RemoteFold);
+                vec![MeshEvent::Folded(batch)]
+            }
             LinkEvent::Presence(wire) => {
                 let mut tier = lock(&presence);
                 tier.receive(&wire, now_ms());
@@ -533,7 +779,11 @@ async fn pump(
 }
 
 /// Re-signs every live value at a third of its TTL, as the TypeScript's interval does.
-async fn heartbeat(presence: Arc<Mutex<PresenceTier>>, commands: mpsc::Sender<LinkCommand>) {
+async fn heartbeat(
+    presence: Arc<Mutex<PresenceTier>>,
+    commands: mpsc::Sender<LinkCommand>,
+    peers: Peers,
+) {
     loop {
         let (due, next) = {
             let mut tier = lock(&presence);
@@ -541,6 +791,7 @@ async fn heartbeat(presence: Arc<Mutex<PresenceTier>>, commands: mpsc::Sender<Li
             (tier.heartbeats_due(now), tier.next_heartbeat_ms())
         };
         for wire in due {
+            peers.hand(None, &PeerCommand::Presence(wire.clone()));
             if commands.send(LinkCommand::Presence(wire)).await.is_err() {
                 return;
             }
@@ -551,6 +802,65 @@ async fn heartbeat(presence: Arc<Mutex<PresenceTier>>, commands: mpsc::Sender<Li
         tokio::time::sleep(Duration::from_millis(wait)).await;
         if commands.is_closed() {
             return;
+        }
+    }
+}
+
+/// A peer link's facts to mesh events: its folds handed to the relay and the other peer links, its
+/// presence into the tier, an install it settled said as a recovery change too.
+async fn pump_peer(
+    id: PeerLinkId,
+    name: String,
+    mut facts: mpsc::Receiver<PeerAction>,
+    events: mpsc::Sender<MeshEvent>,
+    presence: Arc<Mutex<PresenceTier>>,
+    relay: mpsc::Sender<LinkCommand>,
+    peers: Peers,
+) {
+    while let Some(fact) = facts.recv().await {
+        let out = match fact {
+            PeerAction::Folded(batch) => {
+                let _ = relay.try_send(LinkCommand::RemoteFold);
+                peers.hand(Some(id), &PeerCommand::RemoteFold);
+                vec![MeshEvent::Folded(batch)]
+            }
+            PeerAction::Presence(wire) => {
+                let mut tier = lock(&presence);
+                tier.receive(&wire, now_ms());
+                tier.take_touched()
+                    .into_iter()
+                    .map(MeshEvent::Presence)
+                    .collect()
+            }
+            // the session registered it in this mesh's registry before anything beside it folded
+            PeerAction::Grant(_) => Vec::new(),
+            // the session raised or cleared a peer's floor in this mesh's record
+            PeerAction::Recovery => vec![MeshEvent::Recovery],
+            PeerAction::Snapshot(settled) => {
+                let installed = matches!(settled.outcome, JoinOutcome::Installed { .. });
+                if installed {
+                    let _ = relay.try_send(LinkCommand::RemoteFold);
+                    peers.hand(Some(id), &PeerCommand::RemoteFold);
+                }
+                vec![
+                    MeshEvent::Peer {
+                        link: id,
+                        name: name.clone(),
+                        fact: PeerAction::Snapshot(settled),
+                    },
+                    MeshEvent::Recovery,
+                ]
+            }
+            fact => vec![MeshEvent::Peer {
+                link: id,
+                name: name.clone(),
+                fact,
+            }],
+        };
+        for event in out {
+            if events.send(event).await.is_err() {
+                return;
+            }
         }
     }
 }
@@ -584,6 +894,7 @@ mod tests {
         let (commands, mut sent) = mpsc::channel(8);
         let blobs: Arc<Mutex<Box<dyn BlobStore + Send>>> =
             Arc::new(Mutex::new(Box::new(MemoryBlobStore::new())));
+        let peers = Peers::new(event_tx.clone());
         let pumping = tokio::spawn(pump(
             link_rx,
             event_tx,
@@ -594,6 +905,7 @@ mod tests {
                 waits: BlobWaits::default(),
                 rejoins: Arc::new(Mutex::new(Rejoins::new())),
                 relay: "relay".to_owned(),
+                peers,
             },
             commands,
         ));
@@ -619,6 +931,30 @@ mod tests {
 
         drop(link_tx);
         pumping.await.unwrap();
+    }
+
+    #[test]
+    fn a_command_a_full_peer_link_could_not_take_is_said() {
+        let (said, mut events) = mpsc::channel(8);
+        let peers = Peers::new(said);
+        let (tx, _rx) = mpsc::channel(1);
+        lock(&peers.links).push((PeerLinkId(0), tx));
+        peers.hand(None, &PeerCommand::Resync);
+        assert!(events.try_recv().is_err(), "the first fit");
+        peers.hand(None, &PeerCommand::Resync);
+        assert!(
+            matches!(events.try_recv(), Ok(MeshEvent::Dropped(why))
+                if why.contains("peer-link-0") && why.contains("cursor exchange")),
+            "the second was lost, and said"
+        );
+        peers.hand(None, &PeerCommand::Presence(Vec::new()));
+        assert!(
+            matches!(events.try_recv(), Ok(MeshEvent::Dropped(why)) if why.contains("heartbeat")),
+            "a lost presence value waits on the next heartbeat, not a cursor exchange"
+        );
+        // the link a fact came from is not handed it, so nothing is lost there
+        peers.hand(Some(PeerLinkId(0)), &PeerCommand::Resync);
+        assert!(events.try_recv().is_err());
     }
 
     #[test]

@@ -17,6 +17,7 @@
 
 pub mod blobs;
 pub mod coverage;
+pub mod digest;
 pub mod doc_log;
 pub mod doc_rules;
 pub mod docs;
@@ -26,6 +27,7 @@ pub mod holdback;
 pub mod interest;
 pub mod join;
 pub mod manifest;
+pub mod peer;
 pub mod presence;
 pub mod quarantine;
 pub mod random;
@@ -52,6 +54,7 @@ pub use blobs::{
     hash_of, put_answer, verify_blob,
 };
 pub use coverage::CoverageTracker;
+pub use digest::{row_digest, table_digests};
 pub use doc_log::{
     DocAddress, DocAppend, DocEntryState, DocHead, DocHeadMode, DocLogEntry, DocStore,
     MemoryDocStore, doc_digests,
@@ -63,8 +66,8 @@ pub use engine::{
 pub use grants::{GrantCache, GrantRegistry};
 pub use holdback::Holdback;
 pub use interest::{
-    Interest, InterestWindow, interest_from, interest_text, matches_interest, narrows,
-    same_interest, scope_from, scope_text, window_rows,
+    Interest, InterestWindow, interest_from, interest_key, interest_text, matches_interest,
+    narrows, same_interest, scope_from, scope_text, window_rows,
 };
 pub use join::{
     JoinExchange, JoinOptions, JoinOutcome, JoinPolicy, JoinStep, Settled, SnapshotInstalled,
@@ -72,6 +75,9 @@ pub use join::{
 };
 pub use manifest::{
     CheckSchema, ColumnDef, ColumnKind, Manifest, ManifestUnreadable, TableDef, Visibility,
+};
+pub use peer::{
+    Admits, Framing, PeerAction, PeerLink, PeerOptions, PeerSession, SessionOptions, presence_slot,
 };
 pub use presence::{
     MalformedPresence, Presence, PresenceEntry, PresenceStore, PresenceTier, PresenceTouch,
