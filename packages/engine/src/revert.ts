@@ -124,15 +124,19 @@ export function createRevert(deps: RevertDeps): Engine["revert"] {
     }
     // out of the ring before the write, so a second revert of it cannot run alongside this one
     undo.splice(index, 1);
-    const { changes, skipped } = compensate(getState(), entry, merge, validate?.retiredColumn);
     const { partition, local } = entry.event;
     const options: MutateOptions = {};
     if (partition !== undefined) Object.assign(options, { partition });
     if (local === true) Object.assign(options, { local });
+    // the rows are compensated against the state as it stands when the event is written, not
+    // before the document compensator's wait, so an edit that folds meanwhile is seen
     const write = (
       writes: readonly DocCompensation[],
-      left: readonly Skipped[],
+      gone: readonly Skipped[],
     ): Promise<Result<Reverted, RevertError>> => {
+      const { changes, skipped } = compensate(getState(), entry, merge, validate?.retiredColumn);
+      const rows = docs === undefined ? skipped : skipped.filter((s) => s.reason !== "document");
+      const left = [...rows, ...gone];
       if (changes.length === 0 && writes.length === 0)
         return Promise.resolve(Result.ok<Reverted>({ skipped: left }));
       return mutate(
@@ -149,19 +153,18 @@ export function createRevert(deps: RevertDeps): Engine["revert"] {
         return written.map((event): Reverted => ({ event, skipped: left }));
       });
     };
-    if (docs === undefined) return write([], skipped);
+    if (docs === undefined) return write([], []);
     const docChanges = entry.event.changes.filter((c) => c.kind === "doc");
     return docs(docChanges, id).then((compensated): Promise<Result<Reverted, RevertError>> => {
       if (compensated.isErr()) {
         restore(undo, undoDepth, index, entry);
         return Promise.resolve(Result.err(compensated.error));
       }
-      const rows = skipped.filter((s) => s.reason !== "document");
       const gone = compensated.value.flatMap(({ table, key, column, writes }): Skipped[] =>
         writes.length === 0 ? [{ table, key, column, reason: "superseded" }] : [],
       );
       const kept = compensated.value.filter(({ writes }) => writes.length > 0);
-      return write(kept, [...rows, ...gone]);
+      return write(kept, gone);
     });
   };
 }
