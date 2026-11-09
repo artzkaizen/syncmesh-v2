@@ -95,9 +95,11 @@ fn a_rust_holder_serves_the_typescripts_frames_byte_for_byte() {
     let doc = vectors();
     let mut holder = holder(&doc, "events");
     let acme = Interest::partitions([PartitionKey::parse("org:acme").unwrap()]);
+    let windowed = acme.clone().windowed(1);
     for (name, interest) in [
         ("everything", None),
         ("acme", Some(&acme)),
+        ("windowed", Some(&windowed)),
         ("certified", None),
     ] {
         let served = &doc["served"][name];
@@ -237,7 +239,7 @@ fn a_rust_joiner_reaches_the_typescripts_coverage_under_every_policy() {
     let issuer = PeerId::parse(doc["issuer"].as_str().unwrap()).unwrap();
     assert_eq!(identity(9).peer_id(), &issuer);
     let joins = doc["joins"].as_array().expect("joins");
-    assert_eq!(joins.len(), 11);
+    assert_eq!(joins.len(), 12);
     for case in joins {
         let what = case["description"].as_str().unwrap();
         let mut joiner = engine(
@@ -313,6 +315,7 @@ fn a_rust_joiner_reaches_the_typescripts_coverage_under_every_policy() {
         let coverage = joiner.coverage();
         assert_eq!(pairs(&coverage.synced), case["synced"], "{what}: synced");
         assert_eq!(pairs(&coverage.floor), case["floor"], "{what}: floor");
+        assert_eq!(json!(coverage.scope), case["scope"], "{what}: scope");
         let rows: Vec<Value> = joiner
             .state()
             .tables

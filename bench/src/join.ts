@@ -218,9 +218,11 @@ const state = holder.state();
 const coverage = holder.coverage();
 const full = stateSnapshot(state, coverage);
 const scoped = stateSnapshot(state, coverage, { interest: { partitions: mine } });
-// a window is not yet a field of `Interest`; taking the newest rows here measures what one would
-// cost, which is the point of the row — O(your screen) rather than O(the workspace)
-const windowed: Snapshot = { ...scoped, rows: scoped.rows.slice(-WINDOW) };
+// the newest rows of the same slice and its tombstones (O13) — O(your screen) rather than
+// O(the workspace)
+const windowed = stateSnapshot(state, coverage, {
+  interest: { partitions: mine, window: { newest: WINDOW } },
+});
 
 const results = [
   await replay(events),

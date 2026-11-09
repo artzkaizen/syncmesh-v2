@@ -156,6 +156,29 @@ describe("a cursor that asked for less", () => {
     room.close();
   });
 
+  test("a window dropped re-pages the rows the windowed snapshot left out (O13)", async () => {
+    const { room, author, stop } = await roomWithBoth();
+    const device = peer(80, "acct_b");
+    // joined by state, the newest acme row only: its cursor stands at 3 for that window alone
+    const windowed: Interest = { partitions: [ACME], window: { newest: 1 } };
+    await device.engine.installSnapshot(author.engine.snapshot({ interest: windowed }));
+    expect(bodyOf(device, "a2")).toBe("acme two");
+    expect(bodyOf(device, "a1")).toBeUndefined();
+
+    // the whole of acme now: the cursor at 3 claims nothing about a1, so the join asks from nothing
+    const whole = relayTransport({ dial: dialTo(room), reconnectMs: 10, interest: ACME_ONLY });
+    await whole.start(device.context);
+    await whole.whenReady();
+    await tick(30);
+    expect(bodyOf(device, "a1")).toBe("acme one");
+    expect(bodyOf(device, "g1")).toBeUndefined();
+    expect(device.engine.coverage().scope).toBe(interestText(ACME_ONLY));
+
+    await whole.stop();
+    await stop();
+    room.close();
+  });
+
   test("only the last page carries it, and only when a filter ran", async () => {
     const { room, stop } = await roomWithBoth(1); // one event per page
     const joiner = peer(80, "acct_b");

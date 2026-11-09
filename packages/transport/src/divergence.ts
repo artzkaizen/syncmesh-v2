@@ -2,7 +2,7 @@ import type { Ahead, Engine, Interest } from "@syncmesh/engine";
 import type { PeerId, SeqNum, TableName } from "@syncmesh/kernel";
 import type { Identity } from "@syncmesh/wire";
 
-import { sameAhead } from "@syncmesh/engine";
+import { sameAhead, wholeWindow } from "@syncmesh/engine";
 import { omitUndefined } from "@syncmesh/result";
 
 import type { Withheld } from "./withheld.js";
@@ -46,7 +46,7 @@ export const tableNames = (digests: ReadonlyMap<TableName, bigint>): ReadonlyMap
 /**
  * Their fingerprints against ours, or `undefined` when the comparison would mean nothing. Three
  * conditions, and each is the point of the feature: the same **slice**, or we are counting
- * different rows on purpose; the same **cursors**; and the same events held **above** them, or one
+ * different rows on purpose, and no window, which keeps a different subset on every device; the same **cursors**; and the same events held **above** them, or one
  * of us is simply one fold ahead and every catch-up would look like divergence (D13).
  *
  * The third is not redundant with the second. Contiguous cursors made "same cursor" weaker than
@@ -67,6 +67,9 @@ export function divergenceAgainst(
   withheld?: Withheld,
 ): readonly TableName[] | undefined {
   if (theirs.scope !== scope) return undefined;
+  // a window is a different subset of rows on each device that joined under it: the same cursors
+  // over different rows is the window, not a divergence
+  if (wholeWindow(interest?.window) !== undefined) return undefined;
   if (!sameCoverage(engine.coverage().synced, theirs.at)) return undefined;
   if (theirs.ahead === undefined || !sameAhead(engine.ahead(), theirs.ahead)) return undefined;
   return disagreements(
