@@ -95,7 +95,18 @@ JSON as text). The queue is `syncmesh.staged` on Postgres, beside the log in the
 schema, and `syncmesh_staged` in `main` on SQLite, where the table is, because a trigger cannot
 write an attached file.
 
-On Postgres the filing function is `syncmesh."stage_<table>"`. A table name runs to 64
+An outside update that changes the row's key is filed as two rows: a delete of the old key and an
+insert of the new one, with the whole new row. Filed as an update keyed by the new key, it would
+leave the old row in the mesh for good and file a row under the new key holding only the changed
+key column.
+
+On Postgres the filing function is `syncmesh."stage_<table>"`. It is `SECURITY DEFINER` with
+`search_path = pg_catalog, pg_temp`, owned by the role that opened the stores, and `EXECUTE` on it
+is revoked from `PUBLIC`: a trigger fires it whatever the writer may run, so a service whose role
+may write only the table files its writes with no grant on the `syncmesh` schema, the queue or its
+sequence, and still cannot call the function or read the queue itself. The namespace's `PUBLIC`
+grants (RFC-0022) would let such a role in today, but a database that revokes them, as a
+hardened deployment should, would otherwise refuse every outside write with a permission error. A table name runs to 64
 characters and Postgres cuts an identifier at 63 bytes, so for a name too long to fit the
 function is named by a prefix of it and sixteen hex digits of its SHA-256: two long names that
 share a prefix keep a function each.
@@ -119,17 +130,24 @@ transaction on the same connection:
 3. read every taken row above the last one sent, by sweep then arrival.
 
 Each sweep becomes one transaction on the stream, and its number, zero-padded to twenty digits,
-is the watermark. A sweep's rows are netted per row exactly as a capture nets a transaction's log
-(`netEffects`, `netChange` in `storage/src/capture.ts`): an insert carries the row, a delete the
-key, an update only the columns whose value differs from the row's first before-image, and a
-counter column its increment. The row's `_partition` rides along under that name, as the guard
-saw it when the write was filed: the row's own once the mesh placed it, `null` for a row the
+is the watermark. A sweep's rows are netted per row (`netOfWrites` in
+`storage/src/sweep-net.ts`, then `netChange`): an insert carries the row, a delete the key, an update the columns that
+one of the sweep's filed writes changed, each at its value in the last after-image, and a counter
+column the sum of those writes' increments. A capture can net a transaction by its first
+before-image and its last after-image because nothing else writes the row in between; a sweep
+cannot, since a fold or a captured write may land between two filed writes. Netted that way, the
+mesh's own write would ride the sweep under the authority's newer stamp and beat a later device
+edit to a column no outside writer touched, and a fold's counter increment would be counted twice.
+
+The row's `_partition` rides along under that name, as the guard saw it when the write was filed: the row's own once the mesh placed it, `null` for a row the
 outside writer inserted. It is `null` too for an update that committed after a sweep took the
 row's insert and before the fold of that sweep placed it, and that update carries only the
-columns it changed, so the mapping cannot be what places it. The bridge does (`cdc/src/plan.ts`):
-an update to a row the engine holds is filed in the instance the engine holds it in, which is
-where the kernel keeps a row whatever later events say. The mapping places only a row the engine
-does not hold. Given an update to a row the mesh never held, which has neither a `_partition`
+columns it changed, so the mapping cannot be what places it. The bridge does (`cdc/src/plan.ts`,
+RFC-0021): an update to a row the engine holds, which the mapping cannot place, is filed in the
+instance the engine holds it in, which is where the kernel keeps a row whatever later events say.
+One the mapping places in a different instance stops capture with `RowMoved`, since filing it
+in either instance would be wrong. With the documented mapping that happens only if an outside
+writer sets `_partition` itself. Given an update to a row the mesh never held, which has neither a `_partition`
 nor the columns that would place it, the mapping returns `undefined` and capture stops with
 `RowUnplaceable`; a guess such as `` `org:${String(row.orgId)}` `` would read `org:undefined` and
 sign the row into an instance no device syncs. Such a row exists only if the table was written
@@ -183,10 +201,12 @@ rather than enforced.
   authority's event of it goes through `engine.mutate` and its validator; a refusal stops the
   bridge with `EventRefused`, unacked, and the row in the table disagrees with the mesh until
   an operator decides. The same as CDC.
-- **Merged per field.** Only the columns the outside writer changed are in the update. Its stamp
-  is the authority's clock at the sweep, so it wins over any earlier-stamped write to the same
-  field, including a device's edit that was folded into the table between the outside write and
-  the sweep. Every peer converges on that.
+- **Merged per field.** Only the columns the outside writer changed are in the update; a mesh
+  write folded between two outside writes keeps its own stamp. The update's stamp is the
+  authority's clock at the sweep, so on a column the outside writer changed it wins over any
+  earlier-stamped write to that field, including a device's edit that was folded into the table
+  between the outside write and the sweep. That inverts real-time order on the one field, and
+  every peer converges on the outside value; the storage README says so too.
 - **Not a document or derived value.** `meshCells` leaves document and derived columns out
   (RFC-0023 §16.4, U28), so an outside write to one is not carried, and the next fold of the row
   writes the mesh's value back.
@@ -245,7 +265,16 @@ Not built by this RFC's change, each a follow-on with no decision outstanding:
   connection of its own: twenty updates and a transaction held open across sweeps reach the mesh
   with the last committed value and every event in the row's instance; the same race as above,
   with the update committed from the other connection.
-- `cdc/src/__tests__/plan.test.ts`: an update to a held row is filed in the instance the engine
-  holds it in, whether it carries only a changed column or a different partition column.
+- `cdc/src/__tests__/plan.test.ts`: an update to a held row that the mapping cannot place is
+  filed in the instance the engine holds it in; one the mapping places in another instance stops
+  capture with `RowMoved`.
+- `storage/src/__tests__/staged.test.ts` also: a captured mesh write between two outside writes
+  to one row is not in the sweep's patch, and a counter moves by the outside writes' increments
+  alone, not by a fold's between them.
+- `storage/src/driver-tests/staged.ts` also, on every driver: an outside update that changes a
+  row's key is filed and swept as a delete of the old key and an insert of the new one.
+- `adapters/postgres/src/__tests__/staged.test.ts` also: a service whose role may write only the
+  table, on a database where `PUBLIC` has no grant on the `syncmesh` schema, has its writes
+  staged, and cannot run the filing function itself.
 - `storage/src/__tests__/strict.test.ts`: the Postgres filing function's name fits 63 bytes and
   differs for two long table names that share a prefix.

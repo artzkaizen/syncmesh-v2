@@ -91,7 +91,11 @@ A table devices write offline and another service also writes on the authority's
 **staged**: the guard files an outside write in the staged-changes queue instead of refusing it,
 and `stagedChangeSource` hands each sweep of the queue to the CDC bridge, which signs it as the
 authority's event. Only the columns the outside writer changed travel, so a device's concurrent
-edit to another column survives.
+edit to another column survives, and so does a mesh write that landed between two outside writes
+to the row. The sweep's stamp is the authority's clock at the sweep, so on a column the outside
+writer did change it beats a device's edit that was folded in after the outside write but before
+the sweep: real-time order is inverted on that one field, and every peer converges on the outside
+value.
 
 ```ts
 const stores = (await openStores(driver, { tables, strict: { stage: ["tasks"] } })).unwrap();
@@ -112,8 +116,12 @@ await startCapture({
 });
 ```
 
-The fold's own writes are not filed, so a sweep never echoes. A `TRUNCATE` of a staged table is
-still refused on Postgres. One sweeper per database; `source.pending()` is the backlog.
+The fold's own writes are not filed, so a sweep never echoes. An outside update that changes a
+row's key is filed as a delete of the old key and an insert of the new one. A `TRUNCATE` of a
+staged table is still refused on Postgres. On Postgres the filing function runs as the role that
+opened the stores (`SECURITY DEFINER`, `search_path` pinned, `EXECUTE` revoked from `PUBLIC`), so
+a service whose role may write only the table needs no grant on the `syncmesh` schema or its
+queue. One sweeper per database; `source.pending()` is the backlog.
 `research/rfcs/0025-external-writers.md` has the three table classes and why the numbering is
 safe.
 
