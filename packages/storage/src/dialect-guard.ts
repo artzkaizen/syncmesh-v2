@@ -1,6 +1,9 @@
 import type { TableName } from "@syncmesh/kernel";
 import type { Table } from "@syncmesh/schema";
 
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@syncmesh/wire";
+
 import type { CaptureSql, StagedSql } from "./dialect.js";
 
 import { literal, quote, tableColumns, type TableColumns } from "./identifiers.js";
@@ -146,7 +149,21 @@ const PG_STAGE = `"syncmesh.stage"`;
 /** The staged-changes queue on Postgres, in the `syncmesh` schema beside the log. */
 const PG_STAGED = "syncmesh.staged";
 
-const pgStageFunction = (table: TableName) => `syncmesh."stage_${table}"`;
+/** Postgres cuts an identifier at 63 bytes, which would let two long table names share one function. */
+const PG_IDENTIFIER_BYTES = 63;
+
+/**
+ * A staged table's filing function: `stage_<table>`, or for a name too long to fit, a prefix of
+ * it and a hash of the whole, so every table keeps a function of its own.
+ */
+export const pgStageFunctionName = (table: TableName) => {
+  const plain = `stage_${table}`;
+  if (plain.length <= PG_IDENTIFIER_BYTES) return plain;
+  const hash = bytesToHex(sha256(new TextEncoder().encode(table))).slice(0, 16);
+  return `stage_${table.slice(0, PG_IDENTIFIER_BYTES - "stage_".length - hash.length - 1)}_${hash}`;
+};
+
+const pgStageFunction = (table: TableName) => `syncmesh."${pgStageFunctionName(table)}"`;
 
 const pgUnstage = (table: TableName) => [
   `DROP TRIGGER IF EXISTS ${PG_STAGE} ON ${quote(table)}`,

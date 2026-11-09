@@ -1,10 +1,11 @@
 import { parsePeerId, parseSeqNum } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
-import { syncSchema, t } from "@syncmesh/schema";
+import { parseTableName, syncSchema, t } from "@syncmesh/schema";
 import { describe, expect, test } from "bun:test";
 
 import type { SqlDriver } from "../driver.js";
 
+import { pgStageFunctionName } from "../dialect-guard.js";
 import { openStores, schemaName } from "../open-stores.js";
 import { openPair } from "./pair.js";
 
@@ -84,5 +85,19 @@ describe("strict capture at the open", () => {
     (await openStores(driver, { tables })).unwrap();
     expect(await raw(driver, tag("t2"))).toBe("applied");
     expect(await raw(driver)).toBe("refused");
+  });
+});
+
+describe("a staged table's filing function on Postgres", () => {
+  test("fits in 63 bytes and is its own, however long the table's name", () => {
+    const stem = "a".repeat(57);
+    const names = [`${stem}_one`, `${stem}_two`, "tasks"].map((name) =>
+      pgStageFunctionName(parseTableName(name).unwrap()),
+    );
+
+    // cut at 63 bytes, the two long names would file into one function and each other's table
+    expect(names.every((name) => new TextEncoder().encode(name).length <= 63)).toBe(true);
+    expect(new Set(names).size).toBe(3);
+    expect(names[2]).toBe("stage_tasks");
   });
 });
