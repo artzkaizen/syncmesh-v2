@@ -538,7 +538,10 @@ the install then answers `false` for the whole snapshot, a joiner takes no floor
 peer that may not edit some documented row it serves (a read-only member, an owner-only `update`
 rule, a relay that is not the authority). A page sheds checkpoints from its end until its encoded
 bytes fit a frame beside its rows, and a sender whose document runtime throws while serving sends
-its pages with no checkpoints, marked incomplete, so the exchange still closes (fix round 2).
+its pages with no checkpoints, marked incomplete, so the exchange still closes (fix round 2). A
+document runtime that rejects on either side is reported to `JoinDeps.onError` as
+`SnapshotDocsFailed`, and a joiner whose install rejects still settles, adopting no floor (fix
+round 3).
 Departs: the snapshot does not ride the bulk profile as a blob; `DocRef.status` is not `behind`
 during a join, since the bytes arrive with the rows; there is no page-version negotiation, so a
 build from before version 2 cannot read a documented page, counts it missing and asks again
@@ -572,8 +575,11 @@ page too large for it, as before version 2.
   fix round 1), in the same `atomic` transaction as its commit; a snapshot install and a repair
   commit their rows and the columns they reseat in one transaction as well. Without `atomic`, every
   boot writes every document column afresh, which finishes any write a crash cut between its rows
-  and their columns (fix round 2). Departs: devices write full snapshots, not shallow ones (D41 choice 3), and the Rust
-  device projects no document column yet (P7).
+  and their columns (fix round 2). An engine given `atomic` but no `docStore` restores no column at
+  boot, as without `atomic` (fix round 3). Departs: devices write full snapshots, not shallow ones
+  (D41 choice 3); the Rust device projects no document column yet (P7); a snapshot install or
+  repair whose transaction rolls back has already merged its rows into the engine's memory, which
+  holds them until the next boot while the database does not.
 
 ### 6.2 Engine tables, declared once in Drizzle 1.0
 
