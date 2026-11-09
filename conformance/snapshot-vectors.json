@@ -24,6 +24,212 @@
     "82586fa700010158209c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca020103821b0000018bcfe47da100056d706f6c6963792e766563746f7206686f72673a61636d650781a4000001656e6f7465730262753103a2626964627531657469746c65637a6564584030290a3fbfdd927a4c91227e135eb9f1586a864a75679f7ad9d7355435fbc880083d992409567c8cf963f21da0dac3f8611af6a24f66ce2d701c41d4ffd42904",
     "825868a700010158209c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca020203821b0000018bcfe47da200056d706f6c6963792e766563746f7206686f72673a61636d650781a4000101656e6f7465730262753103a164626f6479636162635840cb82df6ce84ea932109d3991004d6b2e4b83539ff775689ef57c3554f9744be7b3c7d6330990f124363d5f665c3c6b521e91a1207a6060c41fa792d7f246a50b"
   ],
+  "localSchema": {
+    "v": 1,
+    "schemaVersion": 1,
+    "tables": {
+      "notes": {
+        "partition": "org",
+        "visibility": "partition",
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "title": {
+            "kind": "text",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false
+          },
+          "body": {
+            "kind": "text",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false
+          }
+        },
+        "allow": {
+          "$default": {
+            "kind": "allow"
+          }
+        }
+      },
+      "drafts": {
+        "partition": "local",
+        "visibility": "partition",
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "body": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          }
+        }
+      }
+    },
+    "reserved": {
+      "_policy": {
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "rules": {
+            "kind": "json",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "version": {
+            "kind": "integer",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "grace": {
+            "kind": "integer",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false
+          }
+        }
+      },
+      "_corrections": {
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "eventId": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "table": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "key": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "reason": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "detail": {
+            "kind": "json",
+            "nullable": true,
+            "primaryKey": false,
+            "unique": false
+          }
+        }
+      },
+      "_revocations": {
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "at": {
+            "kind": "integer",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "reason": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          }
+        }
+      },
+      "_links": {
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "account": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "kind": {
+            "kind": "integer",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "at": {
+            "kind": "integer",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          },
+          "wire": {
+            "kind": "blob",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          }
+        }
+      },
+      "_cdc": {
+        "columns": {
+          "id": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": true,
+            "unique": false
+          },
+          "watermark": {
+            "kind": "text",
+            "nullable": false,
+            "primaryKey": false,
+            "unique": false
+          }
+        }
+      }
+    },
+    "roles": {
+      "org": {
+        "names": ["member"],
+        "ordered": false
+      }
+    },
+    "dropped": []
+  },
+  "draft": {
+    "id": "d1",
+    "body": "mine"
+  },
   "served": {
     "everything": {
       "request": "83060060",
@@ -51,7 +257,7 @@
     "certified": {
       "request": "83060060",
       "frames": [
-        "88060168686f6c6465723a310204828258209c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca03825820d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af036058dd825898a5000102582071c6e942898d2c8da09c0f0e0b0035178218149feb86f5ffceea32e4f1de2f7203a178403963376162613234376434623961386237396235366561623138323537346535663863643935343032383961316638393561303639653030356235386233636102041b0000018bcfe568000558205d130de8527df4df802812f4726d29236feb8e22e6a8ae43849fc46a3537045a5840baeaa6ff70d5cbce90eb69a94982a06ded05410b2239e1054a7bf6b0d33392f150fbe873fe16df648b9bb14008565bc17ef074d46beb964d1b0331c7fff32d08",
+        "88060168686f6c6465723a310204828258209c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca03825820d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af036058dd825898a5000202582071c6e942898d2c8da09c0f0e0b0035178218149feb86f5ffceea32e4f1de2f7203a178403963376162613234376434623961386237396235366561623138323537346535663863643935343032383961316638393561303639653030356235386233636102041b0000018bcfe568000558205d130de8527df4df802812f4726d29236feb8e22e6a8ae43849fc46a3537045a58405ba26deaa43fe99281c3806600a6ed94b36ee57f687ee2daec6349d262b8b5564583ce5441f15008beebd2de95391e6b9abd28277c754855adba1cba207fd70c",
         "85060268686f6c6465723a310058dc85018258209c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca5820d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af8182656e6f7465738364626f6479626964657469746c6581686f72673a61636d65828600626e31831b0000018bcfe47da30000f600838200666564697465648301626e31831b0000018bcfe47da100008302636f6e65831b0000018bcfe47da100008600626e32831b0000018bcfe47da20000831b0000018bcfe47da5000100838200667365636f6e648201626e3282026374776f",
         "85060268686f6c6465723a310158a28501815820d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af8182656e6f7465738364626f6479626964657469746c6582686f72673a61636d65686f72673a62657461828600626e33831b0000018bcfe47da40000f6008382006574686972648201626e3382026574687265658600626e34831b0000018bcfe47da60000f60183820066666f757274688201626e34820264666f7572"
       ]
@@ -59,8 +265,31 @@
     "unsorted": {
       "request": "83060060",
       "frames": [
-        "88060168686f6c6465723a310101818258209c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca026058dd825898a5000102582021002b08ffe2beae44b9f63a85d87b725568c4c1c549400f0a92ba662489dc9c03a178403963376162613234376434623961386237396235366561623138323537346535663863643935343032383961316638393561303639653030356235386233636102041b0000018bcfe568000558205d130de8527df4df802812f4726d29236feb8e22e6a8ae43849fc46a3537045a58407129bbd00ba71b03ba0e0fa5aa032ee8b5d1c52e9c9555f2bc97e873d7fe3d69cd3166290792f390decda4fedfef116afe500a1b427167dd1bd7c16c376c4f07",
-        "85060268686f6c6465723a3100588485018158209c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca8182656e6f74657383626964657469746c6564626f647981686f72673a61636d65818600627531831b0000018bcfe47da20000f600838300627531831b0000018bcfe47da100008301637a6564831b0000018bcfe47da10000820263616263"
+        "88060168686f6c6465723a310101818258209c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca026058dd825898a5000202582053901af31e89ea202fa370a6a58c75d284d4364113ddc262b370c3f9a90b7ddc03a178403963376162613234376434623961386237396235366561623138323537346535663863643935343032383961316638393561303639653030356235386233636102041b0000018bcfe568000558205d130de8527df4df802812f4726d29236feb8e22e6a8ae43849fc46a3537045a5840c39d6f0cf5884f290be2f4f0c4ccd7356b6a9692bb2b552f958982f7ae8f25f5e9ed085a0a5803c67ec5660a4a7972418bfd26206a27cfff2c5e6041cbf50506",
+        "85060268686f6c6465723a3100588485018158209c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca8182656e6f7465738364626f6479626964657469746c6581686f72673a61636d65818600627531831b0000018bcfe47da20000f600838200636162638301627531831b0000018bcfe47da100008302637a6564831b0000018bcfe47da10000"
+      ]
+    },
+    "legacy": {
+      "request": "83060060",
+      "frames": [
+        "88060168686f6c6465723a310101818258209c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca026058dd825898a5000202582053901af31e89ea202fa370a6a58c75d284d4364113ddc262b370c3f9a90b7ddc03a178403963376162613234376434623961386237396235366561623138323537346535663863643935343032383961316638393561303639653030356235386233636102041b0000018bcfe568000558205d130de8527df4df802812f4726d29236feb8e22e6a8ae43849fc46a3537045a5840c39d6f0cf5884f290be2f4f0c4ccd7356b6a9692bb2b552f958982f7ae8f25f5e9ed085a0a5803c67ec5660a4a7972418bfd26206a27cfff2c5e6041cbf50506",
+        "85060268686f6c6465723a3100588485018158209c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca8182656e6f7465738364626f6479626964657469746c6581686f72673a61636d65818600627531831b0000018bcfe47da20000f600838302637a6564831b0000018bcfe47da100008301627531831b0000018bcfe47da10000820063616263"
+      ]
+    },
+    "stale": {
+      "request": "83060060",
+      "frames": [
+        "88060168686f6c6465723a310204828258209c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca03825820d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af036058dd825898a5000102582071c6e942898d2c8da09c0f0e0b0035178218149feb86f5ffceea32e4f1de2f7203a178403963376162613234376434623961386237396235366561623138323537346535663863643935343032383961316638393561303639653030356235386233636102041b0000018bcfe568000558205d130de8527df4df802812f4726d29236feb8e22e6a8ae43849fc46a3537045a5840baeaa6ff70d5cbce90eb69a94982a06ded05410b2239e1054a7bf6b0d33392f150fbe873fe16df648b9bb14008565bc17ef074d46beb964d1b0331c7fff32d08",
+        "85060268686f6c6465723a310058dc85018258209c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca5820d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af8182656e6f7465738364626f6479626964657469746c6581686f72673a61636d65828600626e31831b0000018bcfe47da30000f600838200666564697465648301626e31831b0000018bcfe47da100008302636f6e65831b0000018bcfe47da100008600626e32831b0000018bcfe47da20000831b0000018bcfe47da5000100838200667365636f6e648201626e3282026374776f",
+        "85060268686f6c6465723a310158a28501815820d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af8182656e6f7465738364626f6479626964657469746c6582686f72673a61636d65686f72673a62657461828600626e33831b0000018bcfe47da40000f6008382006574686972648201626e3382026574687265658600626e34831b0000018bcfe47da60000f60183820066666f757274688201626e34820264666f7572"
+      ]
+    },
+    "local": {
+      "request": "83060060",
+      "frames": [
+        "88060168686f6c6465723a310204828258209c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca03825820d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af0360f6",
+        "85060268686f6c6465723a310058dc85018258209c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca5820d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af8182656e6f7465738364626f6479626964657469746c6581686f72673a61636d65828600626e31831b0000018bcfe47da30000f600838200666564697465648301626e31831b0000018bcfe47da100008302636f6e65831b0000018bcfe47da100008600626e32831b0000018bcfe47da20000831b0000018bcfe47da5000100838200667365636f6e648201626e3282026374776f",
+        "85060268686f6c6465723a310158a28501815820d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af8182656e6f7465738364626f6479626964657469746c6582686f72673a61636d65686f72673a62657461828600626e33831b0000018bcfe47da40000f6008382006574686972648201626e3382026574687265658600626e34831b0000018bcfe47da60000f60183820066666f757274688201626e34820264666f7572"
       ]
     }
   },
@@ -75,6 +304,7 @@
       "sent": ["84060368686f6c6465723a3180"],
       "synced": [],
       "floor": [],
+      "installed": [],
       "scope": null,
       "rows": ["n1", "n2", "n3", "n4"],
       "settled": {
@@ -99,6 +329,10 @@
         ["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 3],
         ["d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af", 3]
       ],
+      "installed": [
+        ["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 3],
+        ["d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af", 3]
+      ],
       "scope": null,
       "rows": ["n1", "n2", "n3", "n4"],
       "settled": {
@@ -114,6 +348,7 @@
       "sent": [],
       "synced": [],
       "floor": [],
+      "installed": [],
       "scope": null,
       "rows": [],
       "settled": null
@@ -126,6 +361,7 @@
       "sent": [],
       "synced": [],
       "floor": [],
+      "installed": [],
       "scope": null,
       "rows": [],
       "settled": null
@@ -143,6 +379,10 @@
         ["d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af", 3]
       ],
       "floor": [
+        ["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 3],
+        ["d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af", 3]
+      ],
+      "installed": [
         ["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 3],
         ["d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af", 3]
       ],
@@ -170,6 +410,10 @@
         ["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 3],
         ["d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af", 3]
       ],
+      "installed": [
+        ["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 3],
+        ["d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af", 3]
+      ],
       "scope": "{\"partitions\":[\"org:acme\"],\"window\":{\"newest\":1}}",
       "rows": ["n2", "n3"],
       "settled": {
@@ -189,6 +433,7 @@
       "sent": ["84060368686f6c6465723a3180"],
       "synced": [["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 2]],
       "floor": [["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 2]],
+      "installed": [["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 2]],
       "scope": null,
       "rows": ["n1", "n2", "n3", "n4"],
       "settled": {
@@ -198,7 +443,7 @@
       }
     },
     {
-      "description": "a certificate over cells that arrived out of column order still vouches",
+      "description": "a certificate over a row whose cells were first written out of column order vouches",
       "served": "unsorted",
       "policy": {
         "adoptUnvouched": false
@@ -208,12 +453,53 @@
       "sent": ["84060368686f6c6465723a3180"],
       "synced": [["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 2]],
       "floor": [["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 2]],
+      "installed": [["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 2]],
       "scope": null,
       "rows": ["u1"],
       "settled": {
         "kind": "installed",
         "rows": 1,
         "vouched": true
+      }
+    },
+    {
+      "description": "a page whose cells arrive out of column order, from a holder before U34, still vouches",
+      "served": "legacy",
+      "policy": {
+        "adoptUnvouched": false
+      },
+      "trust": true,
+      "request": "83060060",
+      "sent": ["84060368686f6c6465723a3180"],
+      "synced": [["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 2]],
+      "floor": [["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 2]],
+      "installed": [["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 2]],
+      "scope": null,
+      "rows": ["u1"],
+      "settled": {
+        "kind": "installed",
+        "rows": 1,
+        "vouched": true
+      }
+    },
+    {
+      "description": "a version 1 certificate is refused, and vouches for nothing",
+      "served": "stale",
+      "policy": {
+        "adoptUnvouched": false
+      },
+      "trust": true,
+      "request": "83060060",
+      "sent": ["84060368686f6c6465723a3180"],
+      "synced": [],
+      "floor": [],
+      "installed": [],
+      "scope": null,
+      "rows": ["n1", "n2", "n3", "n4"],
+      "settled": {
+        "kind": "installed",
+        "rows": 4,
+        "vouched": false
       }
     },
     {
@@ -226,6 +512,7 @@
       "sent": ["84060368686f6c6465723a3180"],
       "synced": [],
       "floor": [],
+      "installed": [],
       "scope": null,
       "rows": ["n1", "n2", "n3", "n4"],
       "settled": {
@@ -245,6 +532,7 @@
       "sent": ["84060368686f6c6465723a3180"],
       "synced": [["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 2]],
       "floor": [["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 2]],
+      "installed": [["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 2]],
       "scope": null,
       "rows": ["n1", "n2", "n3", "n4"],
       "settled": {
@@ -265,6 +553,7 @@
       "sent": ["84060368686f6c6465723a3180"],
       "synced": [],
       "floor": [],
+      "installed": [],
       "scope": null,
       "rows": ["n1", "n2", "n3", "n4"],
       "settled": {
@@ -287,6 +576,10 @@
         ["d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af", 3]
       ],
       "floor": [
+        ["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 3],
+        ["d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af", 3]
+      ],
+      "installed": [
         ["9c7aba247d4b9a8b79b56eab182574e5f8cd9540289a1f895a069e005b58b3ca", 3],
         ["d785b49583ee736c66cf55dc87474f4f337c971bfc3d69cba1e21e67763653af", 3]
       ],

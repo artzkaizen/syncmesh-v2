@@ -32,19 +32,12 @@ import { rowStamps } from "./snapshot.js";
 const MOD = 1n << 64n;
 
 /**
- * The record with its cells in column order. `encodeRecord` preserves insertion order, which is
- * right for a store — it round-trips what it was given — and wrong for a fingerprint: two peers
- * holding the identical row build its cells in whatever order their events arrived, so an
- * insertion-ordered hash would report them divergent forever. The digest sorts first.
+ * A row's contribution: the first 8 bytes of the hash of its record encoding. `encodeRecord` writes
+ * cells in column order, so two peers holding the identical row agree whatever order their events
+ * built its cells in.
  */
-const canonical = (record: RowRecord): RowRecord => ({
-  ...record,
-  cells: new Map([...record.cells].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
-});
-
-/** A row's contribution: the first 8 bytes of the hash of its canonical record encoding. */
 export function rowDigest(record: RowRecord): bigint {
-  const hash = sha256(encodeRecord(canonical(record)));
+  const hash = sha256(encodeRecord(record));
   let value = 0n;
   for (let i = 0; i < 8; i += 1) value = (value << 8n) | BigInt(hash[i] ?? 0);
   return value;

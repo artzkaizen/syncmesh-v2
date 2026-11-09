@@ -1,6 +1,6 @@
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
-import { belowPeerFloor } from "@syncmesh/transport";
+import { belowPeerFloor, belowRelayFloor } from "@syncmesh/transport";
 import { describe, expect, test } from "bun:test";
 
 import raw from "../../rejoin-vectors.json" with { type: "json" };
@@ -20,6 +20,13 @@ describe("rejoin vectors — frozen (D46)", () => {
       // SAFETY: the frozen file's own id
       const self = raw.self as PeerId;
       const below = belowPeerFloor(self, cursors(v.ours), cursors(v.theirs), cursors(v.floor));
+      expect([...below]).toEqual([...cursors(v.below)]);
+    });
+  }
+
+  for (const v of raw.relay) {
+    test(`relay: ${v.description}`, () => {
+      const below = belowRelayFloor(cursors(v.ours), cursors(v.floor));
       expect([...below]).toEqual([...cursors(v.below)]);
     });
   }

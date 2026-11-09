@@ -359,6 +359,22 @@ fn checkpoint_vectors_hash_the_rows_verify_and_remint() {
             Err(CheckpointError::BadSignature)
         );
     }
+
+    // the issuer's own signature over the same rows, in another format: refused as a version,
+    // never judged by its hash (gaps U34)
+    let refused = doc["refused"].as_array().expect("refused");
+    assert_eq!(refused.len(), 2);
+    for v in refused {
+        let wire = from_hex(text(v, "wireHex")).unwrap();
+        assert_eq!(
+            checkpoint::verify_checkpoint(&wire, &issuer_id, Some(&rows)),
+            Err(CheckpointError::UnknownVersion {
+                version: v["version"].as_i64()
+            }),
+            "{}",
+            text(v, "description")
+        );
+    }
 }
 
 /// What Rust signs from a seed of its own, Rust reads back with every field intact.

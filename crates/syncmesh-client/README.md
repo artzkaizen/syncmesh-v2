@@ -141,7 +141,22 @@ pages until its link closes. Rows and coverage commit before the doc log is rela
 stopped between the two leaves document heads naming the old winner, and the next `Engine::open`
 relabels them.
 
-A Rust holder serves a row's cells in column order, not the order they were first written (gaps
-U34): a certificate it relays from a TypeScript authority vouches for its page only when each
-row's cells were first written in column order. A certificate a Rust issuer mints over its own
-rows always does.
+A record's cells go out in column order in both runtimes (gaps U34), so a Rust holder and a
+TypeScript holder of one row serve the same bytes, and a certificate either runtime's authority
+mints vouches for either holder's pages. Certificates are version 2; a version 1 (minted before
+U34, over cells in first-written order) is refused as `CheckpointError::UnknownVersion` and vouches
+for nothing. A table the validator's manifest puts in the `local` kind never travels in a snapshot
+(gaps U36).
+
+An install records its floor in the log as well as in the state's coverage
+(`EventStore::installed_below`, gaps U37), once a state store has committed the rows. An open that
+finds an empty state store over that floor (the state file deleted or replaced) is refused as
+`StateCorrupt` instead of rebuilt from a log that never held the installed rows.
+
+A relay link refused with `retention` (gaps U37) says `Action::BelowFloor { floor }` and does not
+redial; the host raises the issue with `Rejoins::relay_refused(link.name(), floor)`, which lists
+it beside the peers' (`BelowFloorReason::Retention`). The link dials again once
+`RelayLink::on_remote_fold` (called after any fold or install from another source) finds the
+floor held, or on `wake`, and says `Action::FloorCleared` when the issue is over. `Mesh` does this
+itself: `Mesh::below_floor` lists the issues, `MeshEvent::Recovery` says they changed, and
+`Mesh::folded_elsewhere` tells the link a host's own peer link moved the device.

@@ -1,24 +1,39 @@
 /** The snapshot vectors' holder (gap U31): who signs, what it folds, and the frames it serves. */
-import type { Engine, Interest } from "@syncmesh/engine";
+import type { Engine, EventStore, Interest } from "@syncmesh/engine";
 import type { DocColumns, PeerId, SeqNum } from "@syncmesh/kernel";
 
-import { createEngine, createMemoryEventStore } from "@syncmesh/engine";
+import {
+  createEngine,
+  createMemoryEventStore,
+  createMemoryStateStore,
+  createValidator,
+} from "@syncmesh/engine";
 import { createHlcClock, parseAdapterId } from "@syncmesh/kernel";
+import { flat, local, partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
-import { createJoinExchange, decodeFrame } from "@syncmesh/transport";
+import {
+  createJoinExchange,
+  decodeFrame,
+  snapChunkFrame,
+  snapManifestFrame,
+} from "@syncmesh/transport";
 import {
   bytesToHex,
   checkpointHash,
   createIdentity,
   decodeAndVerify,
+  decodeCbor,
+  encodeCbor,
   encodeRecord,
   hexToBytes,
   issueCheckpoint,
+  type CborValue,
   type Identity,
 } from "@syncmesh/wire";
 
-import { createAuthors, insert, remove, update } from "../policy/changes.js";
-import { ACME, BETA, NOW, NOW_MS, column, table } from "../policy/schema.js";
+import { resignedAsVersion } from "../checkpoint-version.js";
+import { cells, createAuthors, insert, remove, update } from "../policy/changes.js";
+import { ACME, BETA, NOW, NOW_MS, column, key, procedure, table } from "../policy/schema.js";
 
 const seed = (start: number) => Uint8Array.from({ length: 32 }, (_, i) => (start + i * 7) % 256);
 export const HOLDER = createIdentity(seed(3)).unwrap();
@@ -55,9 +70,9 @@ export function history(): readonly string[] {
 }
 
 /**
- * A holder whose one row's cells are not in column order: the TypeScript keeps a record's cells
- * in the order they were first written (here `body` after `id` and `title`), and a certificate
- * hashes them in that order, so a port must hash a page's cells in the order they arrived.
+ * A holder whose one row's cells were not first written in column order (`body` after `id` and
+ * `title`). A record is encoded and hashed with its cells in column order whatever order they
+ * were written in (gaps U34), so a holder in either runtime serves this row as the same bytes.
  */
 export function unsortedHistory(): readonly string[] {
   const { sign } = createAuthors();
@@ -68,12 +83,39 @@ export function unsortedHistory(): readonly string[] {
   ];
 }
 
-export const engineFor = (peerId: PeerId, docs?: DocColumns) =>
+/**
+ * The schema the `local` holder runs (gaps U36): `notes` syncs in an `org`, `drafts` is the
+ * `local` kind, whose rows never leave the device that wrote them.
+ */
+export const SNAPSHOT_SCHEMA = syncSchema({
+  tables: {
+    notes: {
+      columns: { id: t.text().primaryKey(), title: t.text().nullable(), body: t.text().nullable() },
+      partition: partition("org", { roles: flat("member") }),
+      allow: ({ allow }) => ({ $default: allow }),
+    },
+    drafts: { columns: { id: t.text().primaryKey(), body: t.text() }, partition: local },
+  },
+});
+
+export const engineFor = (
+  peerId: PeerId,
+  options: {
+    readonly docs?: DocColumns | undefined;
+    readonly store?: EventStore;
+    readonly local?: boolean;
+  } = {},
+) =>
   createEngine({
     peerId,
     clock: createHlcClock({ now: () => NOW }),
-    store: createMemoryEventStore(),
-    ...(docs !== undefined && { docs }),
+    store: options.store ?? createMemoryEventStore(),
+    ...(options.docs !== undefined && { docs: options.docs }),
+    // the joiner keeps its rows in a state store, so an install records its floor in the log
+    ...(options.store !== undefined && { stateStore: createMemoryStateStore() }),
+    ...(options.local === true && {
+      validate: createValidator({ schema: SNAPSHOT_SCHEMA, grantFor: null }),
+    }),
   });
 
 export const pairs = (cursors: ReadonlyMap<PeerId, SeqNum> | undefined) =>
@@ -101,21 +143,41 @@ const certificateFor = (holder: Engine, coverage: number) => {
   });
 };
 
-async function holderWith(certificate?: number, events: readonly string[] = history()) {
-  const engine = engineFor(HOLDER.peerId);
+/** The draft the `local` holder writes to its `local` table before it serves. */
+export const DRAFT = { id: "d1", body: "mine" } as const;
+
+async function holderWith(
+  certificate: number | undefined,
+  events: readonly string[],
+  drafts: boolean,
+) {
+  const engine = engineFor(HOLDER.peerId, { local: drafts });
   const entries = events.map((hex) => decodeAndVerify(hexToBytes(hex).unwrap()).unwrap());
-  (await engine.receiveBatch(entries)).unwrap();
+  const received = (await engine.receiveBatch(entries)).unwrap();
+  if (received.folded !== entries.length) throw new Error("the holder folds every event");
+  if (drafts) {
+    const wrote = await engine.mutate(
+      procedure("drafts.create"),
+      (tx) => tx.insert(table("drafts"), key(DRAFT.id), cells(DRAFT)),
+      { local: true },
+    );
+    wrote.unwrap();
+  }
   const cert = certificate === undefined ? undefined : certificateFor(engine, certificate);
   return { engine, cert };
 }
 
-/** What the holder sends for one request. */
+/**
+ * What the holder sends for one request. `drafts`: the holder runs {@link SNAPSHOT_SCHEMA} and has
+ * written {@link DRAFT} to its `local` table, which the frames must leave out (gaps U36).
+ */
 export async function serve(
   interest: Interest | undefined,
   certificate?: number,
   events: readonly string[] = history(),
+  drafts = false,
 ) {
-  const { engine, cert } = await holderWith(certificate, events);
+  const { engine, cert } = await holderWith(certificate, events, drafts);
   const out = collector();
   const exchange = createJoinExchange({
     engine,
@@ -133,4 +195,46 @@ export async function serve(
   if (frame.kind !== "snap-req") throw new Error("expected a request");
   await exchange.dispatch(frame);
   return { request, frames: out.sent };
+}
+
+/** The frames as hex, decoded. */
+const decoded = (frames: readonly string[]) =>
+  frames.map((hex) => decodeFrame(hexToBytes(hex).unwrap()).unwrap());
+
+/** A decoded CBOR value read as an array, or a throw: the generator's pages are its own. */
+const fields = (value: CborValue | undefined, what: string): readonly CborValue[] => {
+  if (!Array.isArray(value)) throw new Error(`${what} is not an array`);
+  // SAFETY: an array the CBOR decoder built holds only decoded CBOR values
+  return value as readonly CborValue[];
+};
+
+/** A page's row `[table, key, write, delete, partition, cells]` with its cells reversed. */
+const reversedCells = (row: CborValue): CborValue => {
+  const parts = fields(row, "a row");
+  return [...parts.slice(0, 5), [...fields(parts[5], "a row's cells")].reverse()];
+};
+
+/**
+ * `frames` as a holder built before gaps U34 serves them: each page's rows with their cells in
+ * reverse column order. The rows and the certificate are unchanged.
+ */
+export function outOfColumnOrder(frames: readonly string[]): readonly string[] {
+  return decoded(frames).map((frame, i) => {
+    if (frame.kind !== "snap-chunk") return frames[i] ?? "";
+    const page = fields(decodeCbor(frame.bytes).unwrap(), "a page");
+    const rows = fields(page[4], "a page's rows").map(reversedCells);
+    const bytes = encodeCbor([...page.slice(0, 4), rows]);
+    return bytesToHex(snapChunkFrame(frame.id, frame.index, bytes));
+  });
+}
+
+/** `frames` with the manifest's certificate re-signed by the issuer as `version`. */
+export function certifiedAs(frames: readonly string[], version: number): readonly string[] {
+  return decoded(frames).map((frame, i) => {
+    if (frame.kind !== "snap-manifest" || frame.certificate === undefined) return frames[i] ?? "";
+    const older = resignedAsVersion(ISSUER, frame.certificate, version);
+    return bytesToHex(
+      snapManifestFrame(frame.id, frame.chunks, frame.rows, frame.at, frame.scope, older),
+    );
+  });
 }

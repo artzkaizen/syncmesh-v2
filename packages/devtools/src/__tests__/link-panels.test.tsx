@@ -261,7 +261,9 @@ describe("the transports panel draws what it can", () => {
         openTab={() => undefined}
         source={sourceOf({
           mediums: [BLE],
-          routes: [{ to: BOB, via: ALICE, hops: 2, expiresAt: at(NOW + 60_000) }],
+          // NOW is read when the file loads, so the panel sees less than this; 80s reads as 1m
+          // for the next 20 seconds, where 60s became 59s after half of one
+          routes: [{ to: BOB, via: ALICE, hops: 2, expiresAt: at(NOW + 80_000) }],
           recent: [
             {
               id: 1,
