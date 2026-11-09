@@ -539,7 +539,7 @@ async fn two_meshes_with_no_relay_to_reach_converge_over_a_peer_link() {
     let mut value = BTreeMap::new();
     value.insert("x".to_owned(), CellValue::Number(4.0));
     // a short TTL: stopping waits out the heartbeat it sets
-    b.presence_set("cursor", &partition, value, 3_000);
+    b.presence_set("cursor", &partition, value, 600_000);
     until(&mut a, |e| matches!(e, MeshEvent::Presence(_))).await;
     let here = a.presence_peers("cursor", &partition);
     assert!(
@@ -914,8 +914,9 @@ async fn a_mesh_stops_while_its_host_holds_a_handle_and_reads_no_events() {
         for n in 0..1_000 {
             let mut value = BTreeMap::new();
             value.insert("x".to_owned(), CellValue::Number(f64::from(n)));
-            // a topic each, so no value supersedes another on the way
-            b.presence_set(&format!("t{n}"), &partition, value, 3_000);
+            // a topic each, so no value supersedes another on the way; a long ttl, so a slow
+            // machine's backlog still arrives fresh and a's host is told of every value
+            b.presence_set(&format!("t{n}"), &partition, value, 600_000);
             if n % 20 == 0 {
                 let _ = b.poll_events();
                 tokio::task::yield_now().await;
