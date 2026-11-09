@@ -7,11 +7,13 @@ use std::sync::{Arc, Mutex};
 
 use syncmesh_client::peer::{DEFAULT_KEEPALIVE_MS, NOT_ADMITTED, QUIET, UNPINNED};
 use syncmesh_client::{
-    Engine, EngineOptions, Framing, JoinOutcome, Manifest, MemoryEventStore, MemoryStateStore,
-    PeerAction, PeerLink, PeerOptions, PeerSession, Rejoins, SessionOptions, ValidatorOptions,
+    Engine, EngineOptions, Framing, GrantRegistry, JoinOutcome, Manifest, MemoryEventStore,
+    MemoryStateStore, PeerAction, PeerLink, PeerOptions, PeerSession, Rejoins, SessionOptions,
+    ValidatorOptions,
 };
 use syncmesh_core::event::{Change, PartitionKey, PeerId};
-use syncmesh_core::frames::{Frame, decode_frame, event_frame};
+use syncmesh_core::frames::{Frame, decode_frame, event_frame, grant_frame};
+use syncmesh_core::grant::{GrantRequest, issue_grant};
 use syncmesh_core::identity::Identity;
 use syncmesh_core::record::{CellValue, Row};
 
@@ -520,6 +522,90 @@ fn snapshot_vectors() -> serde_json::Value {
     .iter()
     .collect();
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn policy_manifest() -> Manifest {
+    let path: PathBuf = [
+        env!("CARGO_MANIFEST_DIR"),
+        "..",
+        "..",
+        "conformance",
+        "policy-vectors.json",
+    ]
+    .iter()
+    .collect();
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    Manifest::from_json(&doc["schema"]).unwrap()
+}
+
+#[test]
+fn an_event_that_arrives_before_its_authors_grant_folds_when_the_grant_does() {
+    let issuer = identity(100);
+    let acme = PartitionKey::parse("org:acme").unwrap();
+    let mut author = engine(1);
+    let mut row = Row::new();
+    for (column, value) in [("id", "n1"), ("title", "early"), ("ownerId", "acct_a")] {
+        row.insert(column.to_owned(), CellValue::text(value));
+    }
+    let insert = Change::Insert {
+        table: "notes".into(),
+        key: "n1".into(),
+        row,
+    };
+    let entry = author
+        .mutate("notes.create", vec![insert], Some(acme.clone()))
+        .unwrap()
+        .entry;
+    let registry = Arc::new(Mutex::new(GrantRegistry::new(issuer.peer_id().clone())));
+    let mut judge = Engine::open(
+        identity(2),
+        Box::new(MemoryEventStore::new()),
+        None,
+        EngineOptions {
+            now_ms: Some(Box::new(|| NOW)),
+            validator: Some(ValidatorOptions {
+                grants: Some(Box::new(registry.clone())),
+                ..ValidatorOptions::new(policy_manifest())
+            }),
+            ..EngineOptions::default()
+        },
+    )
+    .unwrap();
+    let options = SessionOptions {
+        grants: Some(registry),
+        ..SessionOptions::default()
+    };
+    let (mut s, _) = session(&judge, 2, 1, options);
+    // the event first, parked for want of a grant; nothing else folds on this side (gaps U42)
+    s.on_frame(&mut judge, &event_frame(&entry.envelope().unwrap()), NOW);
+    let parked: Vec<_> = judge.quarantine().iter().map(|p| p.verdict.tag()).collect();
+    assert_eq!(parked, vec!["NoGrant"]);
+
+    let grant = issue_grant(
+        &issuer,
+        &GrantRequest {
+            account: "acct_a".to_owned(),
+            device: identity(1).peer_id().clone(),
+            role: Some("member".to_owned()),
+            partitions: vec![acme],
+            claims: std::collections::BTreeMap::new(),
+            keys: Vec::new(),
+            valid_for_ms: 86_400_000,
+            now_ms: NOW,
+        },
+    );
+    let actions = s.on_frame(&mut judge, &grant_frame(&grant), NOW);
+    let after: Vec<_> = judge.quarantine().iter().map(|p| p.verdict.tag()).collect();
+    assert!(after.is_empty(), "{after:?} {actions:?}");
+    assert!(judge.state().read_row("notes", "n1").is_some());
+    assert!(
+        actions.iter().any(|a| matches!(a, PeerAction::Folded(_))),
+        "{actions:?}"
+    );
+    // the same grant again changes nothing and retries nothing
+    let again = s.on_frame(&mut judge, &grant_frame(&grant), NOW);
+    assert!(!again.iter().any(|a| matches!(a, PeerAction::Folded(_))));
 }
 
 #[test]

@@ -392,16 +392,7 @@ impl PeerSession {
             } => self.on_cursors(engine, from, cursors, ahead, floor, now_ms, &mut out),
             Frame::Event { wire } => self.on_event(engine, &wire, now_ms, &mut out),
             Frame::Presence { wire } => out.push(PeerAction::Presence(wire)),
-            Frame::Grant { wire } => {
-                if let Some(registry) = &self.grants
-                    && let Err(e) = lock(registry).register(&wire, now_ms)
-                {
-                    out.push(PeerAction::Dropped(format!(
-                        "a peer's grant was refused: {e}"
-                    )));
-                }
-                out.push(PeerAction::Grant(wire));
-            }
+            Frame::Grant { wire } => self.grant_arrived(engine, wire, now_ms, &mut out),
             Frame::GrantRequest { peer_id, invite } => {
                 out.push(PeerAction::GrantRequest { peer_id, invite });
             }
@@ -522,6 +513,40 @@ impl PeerSession {
     }
 
     /// Verifies, holds back, folds; then the receipt, the refusals, and our cursors.
+    /// The grant into the registry, when the session has one, and then reported either way. A
+    /// grant that becomes the one the registry holds re-offers its device's events parked on a
+    /// capability verdict ([`Engine::retry_author`], gaps U42), and what folds is announced as
+    /// any fold is; one the registry already held, or held newer, retries nothing.
+    fn grant_arrived(
+        &self,
+        engine: &mut Engine,
+        wire: Vec<u8>,
+        now_ms: i64,
+        out: &mut Vec<PeerAction>,
+    ) {
+        if let Some(registry) = &self.grants {
+            // released before the retry: the validator reads the same registry
+            let registered = lock(registry).register_newer(&wire, now_ms);
+            match registered {
+                Ok(None) => {}
+                Ok(Some(device)) => match engine.retry_author(&device) {
+                    Ok(received) if received.batch.event_count > 0 => {
+                        out.push(PeerAction::Folded(received.batch));
+                        self.send_cursors(engine, out);
+                    }
+                    Ok(_) => {}
+                    Err(e) => out.push(PeerAction::Dropped(format!(
+                        "events parked for a granted device could not be retried: {e}"
+                    ))),
+                },
+                Err(e) => out.push(PeerAction::Dropped(format!(
+                    "a peer's grant was refused: {e}"
+                ))),
+            }
+        }
+        out.push(PeerAction::Grant(wire));
+    }
+
     fn on_event(
         &mut self,
         engine: &mut Engine,
