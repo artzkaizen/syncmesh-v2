@@ -54,6 +54,7 @@ pub struct MeshOptions {
 /// What the room did, as the application sees it. Every variant is a fact already applied to the
 /// engine, the tier or the registry; a reader that only wants rows can watch `Folded` alone.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum MeshEvent {
     Online(bool),
     CaughtUp,
@@ -69,7 +70,9 @@ pub enum MeshEvent {
     PeerHeard(PeerId),
     Dropped(String),
     /// The issues [`Mesh::below_floor`] lists changed: a relay refused this device below its floor
-    /// (gaps U37), or that is over.
+    /// (gaps U37), a peer link found it below the peer's floor (D46, answered with
+    /// [`PeerCommand::AcceptFloor`] through that link's [`PeerHandle`]), a join a peer link asked
+    /// for settled, or one of those is over.
     Recovery,
     /// The link is over for good: a refusal, or `stop`.
     Ended(String),
@@ -168,6 +171,7 @@ impl PeerHandle {
 
 /// Why a [`PeerHandle`] could not hand a command on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PeerSendError {
     /// The link's queue is full; [`PeerHandle::send`] waits for room instead.
     Full,
@@ -186,18 +190,49 @@ impl std::fmt::Display for PeerSendError {
 
 impl std::error::Error for PeerSendError {}
 
-/// The peer links running beside the relay link: where a write, a presence value or a fold
-/// elsewhere is handed on.
-type Peers = Arc<Mutex<Vec<(PeerLinkId, mpsc::Sender<PeerCommand>)>>>;
+/// Every running peer link, by id, and where its commands go.
+type Links = Arc<Mutex<Vec<(PeerLinkId, mpsc::Sender<PeerCommand>)>>>;
 
-/// Hands `command` to every running peer link but `except`, forgetting the ones that have ended.
-fn to_peers(peers: &Peers, except: Option<PeerLinkId>, command: &PeerCommand) {
-    lock(peers).retain(|(id, tx)| {
-        if Some(*id) != except {
-            let _ = tx.try_send(command.clone());
+/// The peer links running beside the relay link: where a write, a presence value or a fold
+/// elsewhere is handed on, and where a command one could not take is said.
+#[derive(Clone)]
+struct Peers {
+    links: Links,
+    said: mpsc::Sender<MeshEvent>,
+}
+
+impl Peers {
+    fn new(said: mpsc::Sender<MeshEvent>) -> Peers {
+        Peers {
+            links: Arc::default(),
+            said,
         }
-        !tx.is_closed()
-    });
+    }
+
+    /// Hands `command` to every running peer link but `except`, forgetting the ones that have
+    /// ended. A link whose queue is full loses it, said as [`MeshEvent::Dropped`]; its next cursor
+    /// exchange carries what the command would have.
+    fn hand(&self, except: Option<PeerLinkId>, command: &PeerCommand) {
+        let mut full = Vec::new();
+        lock(&self.links).retain(|(id, tx)| {
+            if Some(*id) != except
+                && let Err(TrySendError::Full(_)) = tx.try_send(command.clone())
+            {
+                full.push(*id);
+            }
+            !tx.is_closed()
+        });
+        for id in full {
+            let _ = self.said.try_send(MeshEvent::Dropped(format!(
+                "{id} had no room for a command; its next cursor exchange carries it"
+            )));
+        }
+    }
+
+    /// Every running link's sender, the list emptied: what [`Mesh::stop`] closes.
+    fn take(&self) -> Vec<mpsc::Sender<PeerCommand>> {
+        lock(&self.links).drain(..).map(|(_, tx)| tx).collect()
+    }
 }
 
 /// Everyone waiting on a blob answer from the room: fetches, and puts.
@@ -290,7 +325,7 @@ impl Mesh {
         let (commands, command_rx) = mpsc::channel(256);
         let (link_tx, link_rx) = mpsc::channel(256);
         let (event_tx, events) = mpsc::channel(256);
-        let peers = Peers::default();
+        let peers = Peers::new(event_tx.clone());
         let link = RelayLink::new(identity.clone(), relay).with_grants(grants.clone());
         let relay_name = link.name().to_owned();
         let tasks = vec![
@@ -362,7 +397,7 @@ impl Mesh {
             .get_or_insert_with(|| self.rejoins.clone());
         let (commands, command_rx) = mpsc::channel(256);
         let (fact_tx, facts) = mpsc::channel(256);
-        lock(&self.peers).push((id, commands.clone()));
+        lock(&self.peers.links).push((id, commands.clone()));
         self.peer_tasks.push(handle.spawn(run_peer(
             self.identity.clone(),
             options,
@@ -405,11 +440,8 @@ impl Mesh {
         let _ = self
             .commands
             .try_send(LinkCommand::Write(mutated.entry.clone()));
-        to_peers(
-            &self.peers,
-            None,
-            &PeerCommand::Write(mutated.entry.clone()),
-        );
+        self.peers
+            .hand(None, &PeerCommand::Write(mutated.entry.clone()));
         Ok(mutated)
     }
 
@@ -435,11 +467,8 @@ impl Mesh {
             let _ = self
                 .commands
                 .try_send(LinkCommand::Write(mutated.entry.clone()));
-            to_peers(
-                &self.peers,
-                None,
-                &PeerCommand::Write(mutated.entry.clone()),
-            );
+            self.peers
+                .hand(None, &PeerCommand::Write(mutated.entry.clone()));
         }
         Ok(reverted)
     }
@@ -447,14 +476,14 @@ impl Mesh {
     /// Publishes this device's value at a topic; conflated at every hop, never queued.
     pub fn presence_set(&self, topic: &str, partition: &PartitionKey, value: Row, ttl_ms: i64) {
         let wire = lock(&self.presence).set(topic, partition, value, ttl_ms, now_ms());
-        to_peers(&self.peers, None, &PeerCommand::Presence(wire.clone()));
+        self.peers.hand(None, &PeerCommand::Presence(wire.clone()));
         let _ = self.commands.try_send(LinkCommand::Presence(wire));
     }
 
     /// An explicit departure from a topic.
     pub fn presence_clear(&self, topic: &str, partition: &PartitionKey) {
         let wire = lock(&self.presence).clear(topic, partition, now_ms());
-        to_peers(&self.peers, None, &PeerCommand::Presence(wire.clone()));
+        self.peers.hand(None, &PeerCommand::Presence(wire.clone()));
         let _ = self.commands.try_send(LinkCommand::Presence(wire));
     }
 
@@ -582,8 +611,10 @@ impl Mesh {
     }
 
     /// Every floor this device is below, with why (`$recovery.belowFloor`): a relay that refused
-    /// it with `retention` (gaps U37), and the peers a host's own links raised in
-    /// [`Mesh::rejoins`]. [`MeshEvent::Recovery`] says when the relay's half changed.
+    /// it with `retention` (gaps U37), and the peers whose floors this mesh's peer links, or a
+    /// host's own links, raised in [`Mesh::rejoins`]. [`MeshEvent::Recovery`] says when the relay's
+    /// issue or one this mesh's peer links raised changed; a host that drives its own links reads
+    /// [`Rejoins::changes`] for theirs.
     pub fn below_floor(&self) -> Vec<BelowFloor> {
         let ours = lock(&self.engine).coverage().synced;
         lock(&self.rejoins).issues(&ours)
@@ -600,18 +631,28 @@ impl Mesh {
     /// relay's floor dials again once this device holds it (gaps U37).
     pub fn folded_elsewhere(&self) {
         let _ = self.commands.try_send(LinkCommand::RemoteFold);
-        to_peers(&self.peers, None, &PeerCommand::RemoteFold);
+        self.peers.hand(None, &PeerCommand::RemoteFold);
     }
 
-    /// Departs every presence topic, stops the links, and waits for the tasks to end.
+    /// Departs every presence topic, stops the links, and waits for the tasks to end. Events not
+    /// yet read are dropped, so a link waiting to report one is free to stop.
     pub async fn stop(mut self) {
+        // nobody reads past here: a pump blocked on a full event queue lets go, and so does the
+        // link behind it
+        self.events.close();
         let departures = lock(&self.presence).stop(now_ms());
+        let links = self.peers.take();
         for wire in departures {
-            to_peers(&self.peers, None, &PeerCommand::Presence(wire.clone()));
+            for link in &links {
+                let _ = link.send(PeerCommand::Presence(wire.clone())).await;
+            }
             let _ = self.commands.send(LinkCommand::Presence(wire)).await;
         }
-        to_peers(&self.peers, None, &PeerCommand::Close);
-        lock(&self.peers).clear();
+        // waited for, not tried: a handle the host still holds keeps the queue open, so a lost
+        // close would leave the link running and this waiting on it
+        for link in links {
+            let _ = link.send(PeerCommand::Close).await;
+        }
         for task in self.peer_tasks.drain(..) {
             let _ = task.await;
         }
@@ -673,7 +714,7 @@ async fn pump(
             }
             LinkEvent::CaughtUp => vec![MeshEvent::CaughtUp],
             LinkEvent::Folded(batch) => {
-                to_peers(&peers, None, &PeerCommand::RemoteFold);
+                peers.hand(None, &PeerCommand::RemoteFold);
                 vec![MeshEvent::Folded(batch)]
             }
             LinkEvent::Presence(wire) => {
@@ -744,7 +785,7 @@ async fn heartbeat(
             (tier.heartbeats_due(now), tier.next_heartbeat_ms())
         };
         for wire in due {
-            to_peers(&peers, None, &PeerCommand::Presence(wire.clone()));
+            peers.hand(None, &PeerCommand::Presence(wire.clone()));
             if commands.send(LinkCommand::Presence(wire)).await.is_err() {
                 return;
             }
@@ -774,7 +815,7 @@ async fn pump_peer(
         let out = match fact {
             PeerAction::Folded(batch) => {
                 let _ = relay.try_send(LinkCommand::RemoteFold);
-                to_peers(&peers, Some(id), &PeerCommand::RemoteFold);
+                peers.hand(Some(id), &PeerCommand::RemoteFold);
                 vec![MeshEvent::Folded(batch)]
             }
             PeerAction::Presence(wire) => {
@@ -787,11 +828,13 @@ async fn pump_peer(
             }
             // the session registered it in this mesh's registry before anything beside it folded
             PeerAction::Grant(_) => Vec::new(),
+            // the session raised or cleared a peer's floor in this mesh's record
+            PeerAction::Recovery => vec![MeshEvent::Recovery],
             PeerAction::Snapshot(settled) => {
                 let installed = matches!(settled.outcome, JoinOutcome::Installed { .. });
                 if installed {
                     let _ = relay.try_send(LinkCommand::RemoteFold);
-                    to_peers(&peers, Some(id), &PeerCommand::RemoteFold);
+                    peers.hand(Some(id), &PeerCommand::RemoteFold);
                 }
                 vec![
                     MeshEvent::Peer {
@@ -845,6 +888,7 @@ mod tests {
         let (commands, mut sent) = mpsc::channel(8);
         let blobs: Arc<Mutex<Box<dyn BlobStore + Send>>> =
             Arc::new(Mutex::new(Box::new(MemoryBlobStore::new())));
+        let peers = Peers::new(event_tx.clone());
         let pumping = tokio::spawn(pump(
             link_rx,
             event_tx,
@@ -855,7 +899,7 @@ mod tests {
                 waits: BlobWaits::default(),
                 rejoins: Arc::new(Mutex::new(Rejoins::new())),
                 relay: "relay".to_owned(),
-                peers: Peers::default(),
+                peers,
             },
             commands,
         ));
@@ -881,6 +925,24 @@ mod tests {
 
         drop(link_tx);
         pumping.await.unwrap();
+    }
+
+    #[test]
+    fn a_command_a_full_peer_link_could_not_take_is_said() {
+        let (said, mut events) = mpsc::channel(8);
+        let peers = Peers::new(said);
+        let (tx, _rx) = mpsc::channel(1);
+        lock(&peers.links).push((PeerLinkId(0), tx));
+        peers.hand(None, &PeerCommand::Resync);
+        assert!(events.try_recv().is_err(), "the first fit");
+        peers.hand(None, &PeerCommand::Resync);
+        assert!(
+            matches!(events.try_recv(), Ok(MeshEvent::Dropped(why)) if why.contains("peer-link-0")),
+            "the second was lost, and said"
+        );
+        // the link a fact came from is not handed it, so nothing is lost there
+        peers.hand(Some(PeerLinkId(0)), &PeerCommand::Resync);
+        assert!(events.try_recv().is_err());
     }
 
     #[test]

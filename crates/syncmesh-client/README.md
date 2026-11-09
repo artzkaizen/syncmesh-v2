@@ -204,7 +204,8 @@ hang up. The rest are facts: `Established`, `Superseded` (the peer restarted on 
 its new session replaced the old one; a replayed hello is dropped), `Refused` (another key than
 `peer_key`, or the `admits` door said no), `Folded`, `Presence`, `Grant`, `GrantRequest`,
 `Receipt` and `Refusal` (about this device's own writes), `Divergence` (RFC-0014: the same
-position, other rows), `Snapshot` (a join that settled), `Dropped`, `Ended`. `PeerSession` is the
+position, other rows), `Snapshot` (a join that settled), `Recovery` (the session raised or cleared
+a floor issue in its `Rejoins`, D46), `Dropped`, `Ended`. `PeerSession` is the
 session alone, over plaintext frames, for a medium that is already sealed and framed.
 
 Behind `tokio`, `driver::run_peer` runs one over any `PeerMedium` — `StreamMedium` for
@@ -216,7 +217,9 @@ through, and a presence value still waiting replaces the one before it under its
 fold, and the relay and the other links what it folds. It returns a `PeerHandle`: its `id()` is
 what that link's `MeshEvent::Peer` facts carry (unique even when two links share a name), and
 `send`/`try_send` hand the link any `PeerCommand` — `AcceptFloor` (D46), `RequestSnapshot`,
-`RequestGrant`, `Grants` (the answer to a `GrantRequest` that link raised), `Resync`, `Close`:
+`RequestGrant`, `Grants` (the answer to a `GrantRequest` that link raised), `Resync`, `Close`.
+A link that finds this device below its peer's floor says `MeshEvent::Recovery`, and
+`Mesh::below_floor` then names that peer; `AcceptFloor` down that link is the consent:
 
 ```rust
 let socket = tokio::net::TcpStream::connect(addr).await?;
@@ -225,7 +228,10 @@ link.try_send(PeerCommand::AcceptFloor)?;
 ```
 
 Grants cross a peer link when it opens and when sent through its handle; the mesh forwards none
-between links (the TypeScript sends every newly registered grant to every link).
+between links (the TypeScript sends every newly registered grant to every link). A command the
+mesh hands a link whose queue is full is lost and said as `MeshEvent::Dropped`; the link's next
+cursor exchange carries what it would have. `Mesh::stop` drops the events nobody read and waits
+for each link to take its close, so it ends even while the host holds a handle and reads nothing.
 
 What it does not do, as a TypeScript bridge with neither does not: no read gate (D40), so it
 carries everything to every peer, and no route table, so a `routes` frame is ignored. Frames

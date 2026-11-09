@@ -771,6 +771,10 @@ fn a_device_below_its_peers_floor_is_told_and_installs_state_once_it_consents() 
         issues[0].source,
         syncmesh_client::FloorSource::Peer(identity(2).peer_id().clone())
     );
+    assert!(
+        a.facts.contains(&PeerAction::Recovery),
+        "the session said it raised the issue"
+    );
 
     let (accepted, ask) = a.link.accept_floor(&a.engine);
     assert_eq!(accepted, Some(syncmesh_client::Accepted::Requested));

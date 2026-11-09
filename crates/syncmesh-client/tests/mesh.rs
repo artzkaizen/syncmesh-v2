@@ -8,12 +8,13 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use syncmesh_client::driver::{PeerCommand, StreamMedium, serve_room};
-use syncmesh_client::mesh::{Mesh, MeshEvent, MeshOptions};
+use syncmesh_client::mesh::{Mesh, MeshEvent, MeshOptions, PeerSendError};
 use syncmesh_client::relay::RelayOptions;
 use syncmesh_client::room::{Room, RoomOptions};
 use syncmesh_client::{
-    BelowFloorReason, Cursors, Engine, EngineOptions, FloorSource, JoinOutcome, Manifest,
-    MemoryEventStore, PeerAction, PeerOptions, ValidatorOptions,
+    BelowFloorReason, Coverage, Cursors, Engine, EngineOptions, FloorSource, JoinOutcome, Manifest,
+    MemoryEventStore, MemoryStateStore, PeerAction, PeerOptions, RowWrite, StateStore, StoreError,
+    ValidatorOptions,
 };
 use syncmesh_core::event::{Change, PartitionKey};
 use syncmesh_core::grant::{GrantRequest, issue_grant};
@@ -771,4 +772,157 @@ async fn two_meshes_with_a_backlog_each_way_converge_over_a_narrow_pipe() {
     assert_eq!(a.engine().state(), b.engine().state());
     a.stop().await;
     b.stop().await;
+}
+
+/// State that boots claiming `coverage`, floor and all, over no rows: a device whose log stands on
+/// what a snapshot once installed (D46).
+struct Floored {
+    rows: MemoryStateStore,
+    coverage: Coverage,
+}
+
+impl StateStore for Floored {
+    fn is_empty(&self) -> Result<bool, StoreError> {
+        Ok(false)
+    }
+
+    fn load_all(&self) -> Result<syncmesh_client::core::state::State, StoreError> {
+        self.rows.load_all()
+    }
+
+    fn load_coverage(&self) -> Result<Coverage, StoreError> {
+        Ok(self.coverage.clone())
+    }
+
+    fn commit(&mut self, rows: &[RowWrite], coverage: &Coverage) -> Result<(), StoreError> {
+        self.coverage = coverage.clone();
+        self.rows.commit(rows, coverage)
+    }
+
+    fn clear(&mut self) -> Result<(), StoreError> {
+        self.rows.clear()
+    }
+}
+
+#[tokio::test]
+async fn a_peer_link_the_mesh_runs_says_when_this_device_is_below_the_peers_floor() {
+    let url = nowhere().await;
+    let key = Identity::from_seed(&[9; 32]).peer_id().clone();
+    let handle = tokio::runtime::Handle::current();
+    // b stands on a floor for c's first two events, with nothing of c's in its log
+    let c = Identity::from_seed(&[3; 32]).peer_id().clone();
+    let mut floor = Cursors::new();
+    floor.insert(c.clone(), syncmesh_core::event::SeqNum::parse(2).unwrap());
+    let mut b = Mesh::open(
+        MeshOptions {
+            identity: Identity::from_seed(&[2; 32]),
+            url: url.clone(),
+            relay: RelayOptions {
+                relay_key: Some(key.clone()),
+                reconnect_ms: 50,
+                ..RelayOptions::default()
+            },
+            engine: EngineOptions::default(),
+            store: Box::new(MemoryEventStore::new()),
+            state_store: Some(Box::new(Floored {
+                rows: MemoryStateStore::new(),
+                coverage: Coverage {
+                    synced: floor.clone(),
+                    floor: floor.clone(),
+                    ..Coverage::default()
+                },
+            })),
+            blob_store: None,
+            issuer: None,
+        },
+        &handle,
+    )
+    .unwrap();
+    assert_eq!(b.engine().floor(), floor);
+    // a, empty and trusting no certificate, meets b: it cannot vouch for b's state, so it waits
+    let mut a = device(1, &url, &key);
+    let (x, y) = tokio::io::duplex(64 * 1024);
+    let a_link = a.attach_peer(StreamMedium::new(x), quiet(), &handle);
+    b.attach_peer(StreamMedium::new(y), quiet(), &handle);
+    until(&mut a, |e| matches!(e, MeshEvent::Recovery)).await;
+    let issues = a.below_floor();
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert_eq!(
+        issues[0].source,
+        FloorSource::Peer(Identity::from_seed(&[2; 32]).peer_id().clone())
+    );
+    assert_eq!(issues[0].reason, BelowFloorReason::Untrusted);
+
+    // the host consents down the link that raised it; the install clears the issue
+    a_link.try_send(PeerCommand::AcceptFloor).unwrap();
+    timeout(STEP, async {
+        loop {
+            let e = a.next_event().await.expect("the mesh ended");
+            if matches!(e, MeshEvent::Recovery) && a.below_floor().is_empty() {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the install cleared the floor");
+    assert_eq!(a.engine().coverage().synced.get(&c), floor.get(&c));
+    a.stop().await;
+    b.stop().await;
+}
+
+#[tokio::test]
+async fn a_mesh_stops_while_its_host_holds_a_handle_and_reads_no_events() {
+    let url = nowhere().await;
+    let key = Identity::from_seed(&[9; 32]).peer_id().clone();
+    let handle = tokio::runtime::Handle::current();
+    let mut a = device(1, &url, &key);
+    let mut b = device(2, &url, &key);
+    let (x, y) = tokio::io::duplex(64 * 1024);
+    let a_link = a.attach_peer(StreamMedium::new(x), quiet(), &handle);
+    b.attach_peer(StreamMedium::new(y), quiet(), &handle);
+    until(&mut a, |e| {
+        matches!(
+            e,
+            MeshEvent::Peer {
+                fact: PeerAction::Established(_),
+                ..
+            }
+        )
+    })
+    .await;
+    // b says far more than a's event queues hold, and a's host never reads it: a's link stalls
+    // reporting a presence value, and its command queue fills behind it. b's host keeps reading,
+    // so b keeps reading its end of the cable
+    let partition = PartitionKey::parse("project:demo").unwrap();
+    let (done, mut stopping) = tokio::sync::oneshot::channel::<()>();
+    let draining = tokio::spawn(async move {
+        for n in 0..1_000 {
+            let mut value = BTreeMap::new();
+            value.insert("x".to_owned(), CellValue::Number(f64::from(n)));
+            // a topic each, so no value supersedes another on the way
+            b.presence_set(&format!("t{n}"), &partition, value, 3_000);
+            if n % 20 == 0 {
+                let _ = b.poll_events();
+                tokio::task::yield_now().await;
+            }
+        }
+        while stopping.try_recv().is_err() {
+            let _ = b.poll_events();
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        b.stop().await;
+    });
+    timeout(STEP, async {
+        while a_link.try_send(PeerCommand::Resync) != Err(PeerSendError::Full) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("a's link stalled and its queue filled");
+    timeout(STEP, a.stop())
+        .await
+        .expect("stop ended a stalled link the host still holds a handle to");
+    assert!(a_link.is_closed());
+    done.send(()).unwrap();
+    draining.await.unwrap();
 }

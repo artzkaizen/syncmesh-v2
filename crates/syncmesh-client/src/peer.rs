@@ -237,6 +237,10 @@ pub enum PeerAction {
     },
     /// A join this device asked for ended (RFC-0019): installed, or refused whole.
     Snapshot(Settled),
+    /// This session raised or cleared a floor issue in its [`Rejoins`] record (D46): this device
+    /// is below the peer's floor and waits on [`PeerSession::accept_floor`], or that is over.
+    /// Re-read [`Rejoins::issues`]; a mesh says it as `MeshEvent::Recovery`.
+    Recovery,
     /// Bytes that became nothing, said: an unreadable frame, an event that does not verify.
     Dropped(String),
     /// The link is over; the session's open requests count as never answered.
@@ -246,6 +250,22 @@ pub enum PeerAction {
 }
 
 // --- the session ------------------------------------------------------------------------------
+
+/// Runs `step` on the recovery record under one lock, and says [`PeerAction::Recovery`] when it
+/// raised or cleared an issue there.
+fn on_record<T>(
+    rejoins: &Mutex<Rejoins>,
+    out: &mut Vec<PeerAction>,
+    step: impl FnOnce(&mut Rejoins) -> T,
+) -> T {
+    let mut record = lock(rejoins);
+    let before = record.changes();
+    let result = step(&mut record);
+    if record.changes() != before {
+        out.push(PeerAction::Recovery);
+    }
+    result
+}
 
 /// Frames offered in one turn, with the slot a presence value supersedes under.
 #[derive(Default)]
@@ -491,13 +511,9 @@ impl PeerSession {
         // below their floor, nothing above can reach us: state is the only answer (D46)
         if let Some(join) = self.join.as_mut() {
             let floor = floor.map(|f| cursors_to_map(&f));
-            let asks = join.on_cursors(
-                &mut lock(&self.rejoins),
-                engine,
-                &self.peer,
-                &theirs,
-                floor.as_ref(),
-            );
+            let asks = on_record(&self.rejoins, out, |rejoins| {
+                join.on_cursors(rejoins, engine, &self.peer, &theirs, floor.as_ref())
+            });
             for frame in asks {
                 turn.push(tag::SNAPSHOT, frame);
             }
@@ -650,7 +666,11 @@ impl PeerSession {
         let Some(join) = self.join.as_mut() else {
             return;
         };
-        match join.on_snapshot(&mut lock(&self.rejoins), engine, frame) {
+        let mut changed = Vec::new();
+        let step = on_record(&self.rejoins, &mut changed, |rejoins| {
+            join.on_snapshot(rejoins, engine, frame)
+        });
+        match step {
             Ok(step) => {
                 let mut turn = Turn::default();
                 for frame in step.send {
@@ -665,6 +685,7 @@ impl PeerSession {
                 "the store refused a snapshot install: {e}"
             ))),
         }
+        out.extend(changed);
     }
 
     /// This device wrote something: signed at `mutate`, sent as it was signed. A local-only write
@@ -716,14 +737,19 @@ impl PeerSession {
     /// decided sent down this link at once.
     pub fn accept_floor(&mut self, engine: &Engine) -> (Accepted, Vec<PeerAction>) {
         let ours = engine.coverage().synced;
-        let mut rejoins = lock(&self.rejoins);
-        let accepted = rejoins.accept(&self.peer, &ours);
-        let asks = self
-            .join
-            .as_mut()
-            .map(|join| join.flush(&mut rejoins))
-            .unwrap_or_default();
-        (accepted, asks.into_iter().map(PeerAction::Send).collect())
+        let mut changed = Vec::new();
+        let (accepted, asks) = on_record(&self.rejoins, &mut changed, |rejoins| {
+            let accepted = rejoins.accept(&self.peer, &ours);
+            let asks = self
+                .join
+                .as_mut()
+                .map(|join| join.flush(rejoins))
+                .unwrap_or_default();
+            (accepted, asks)
+        });
+        let mut out: Vec<PeerAction> = asks.into_iter().map(PeerAction::Send).collect();
+        out.extend(changed);
+        (accepted, out)
     }
 
     /// Asks the far side for a grant for this device (flow A step ②).
