@@ -36,7 +36,9 @@ describe("fleetGreeting (gaps U41)", () => {
     for (const [peer, at] of named) expect(cursors.get(peer)).toBe(at);
   });
 
-  test("carries no floor: an answer reads only the cursors", () => {
+  // a guard on the frame's shape, not on the cut: no fix makes it fail, a floor added back does
+  test("carries no floor, whole or cut: an answer reads only the cursors", () => {
     expect(greeted(fleetGreeting(base)).floor.size).toBe(0);
+    expect(greeted(fleetGreeting({ ...base, maxFrame: 4000 })).floor.size).toBe(0);
   });
 });

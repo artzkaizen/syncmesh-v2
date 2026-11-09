@@ -8,7 +8,13 @@ import { postgresFanout } from "../postgres-fanout.js";
 import { openRelayRoom } from "../room.js";
 import { entryOf, mintFor, peer, until, write } from "./fixtures.js";
 
-/** Postgres in one object: every listener on a channel hears every notify, the notifier included. */
+/** Postgres refuses a `NOTIFY` payload this long or longer. */
+const NOTIFY_LIMIT = 8000;
+
+/**
+ * Postgres in one object: every listener on a channel hears every notify, the notifier included,
+ * and a payload of 8000 characters or more is refused, as Postgres refuses it by default.
+ */
 const fakePostgres = () => {
   const channels = new Map<string, Set<(payload: string) => void>>();
   const notified: string[] = [];
@@ -23,6 +29,8 @@ const fakePostgres = () => {
         return Promise.resolve(() => void held.delete(onPayload));
       },
       notify: (channel: string, payload: string) => {
+        if (payload.length >= NOTIFY_LIMIT)
+          return Promise.reject(new Error("payload string too long"));
         notified.push(channel);
         for (const listener of [...(channels.get(channel) ?? [])]) listener(payload);
         return Promise.resolve();
@@ -99,6 +107,24 @@ describe("postgresFanout", () => {
 
     a.publish(Uint8Array.of(1));
     expect(heard).toEqual([1]); // and the link still works afterwards
+  });
+
+  test("a frame of maxFrame bytes, and of every size just under it, fits one notification", async () => {
+    const pg = fakePostgres();
+    const fanout = postgresFanout({ client: pg.client });
+    const a = fanout.connect("r");
+    const b = fanout.connect("r");
+    const heard: number[] = [];
+    b.onFrame((f) => void heard.push(f.length));
+    await Promise.resolve();
+
+    // base64 pads to whole groups of four: a limit counted in bytes alone lets the last two
+    // sizes through as payloads of exactly 8000 characters, which Postgres refuses unseen
+    const max = a.maxFrame ?? 0;
+    const sizes = [max - 3, max - 2, max - 1, max];
+    for (const size of sizes) a.publish(new Uint8Array(size));
+    await Promise.resolve();
+    expect(heard).toEqual(sizes);
   });
 
   test("a wake is not mistaken for a frame, and never reaches its own sender", async () => {
