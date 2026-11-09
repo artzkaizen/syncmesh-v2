@@ -1426,7 +1426,10 @@ fn a_retention_refusal_hands_over_what_the_room_lacks_before_hanging_up() {
     let other = identity(9).peer_id().clone();
     let floor = vec![(other, syncmesh_core::event::SeqNum::parse(3).unwrap())];
     net.feed(b, &hello_frame(2, 15_000, "epoch", &[], &floor));
-    net.feed(b, &retention_error_frame("retention", "below the floor", &floor));
+    net.feed(
+        b,
+        &retention_error_frame("retention", "below the floor", &floor),
+    );
     let events = net.devices[b]
         .sent
         .iter()
