@@ -430,6 +430,12 @@ impl EventStore for Flaky {
     fn max_hlc(&self) -> Result<Option<Hlc>, StoreError> {
         self.inner.max_hlc()
     }
+    fn installed_below(&self) -> Result<Cursors, StoreError> {
+        self.inner.installed_below()
+    }
+    fn record_installed(&mut self, floor: &Cursors) -> Result<(), StoreError> {
+        self.inner.record_installed(floor)
+    }
 }
 
 #[test]

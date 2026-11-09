@@ -59,5 +59,49 @@
       ],
       "below": [["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 3]]
     }
+  ],
+  "relay": [
+    {
+      "description": "a join below one author's floor",
+      "ours": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1]],
+      "floor": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 5]],
+      "below": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 5]]
+    },
+    {
+      "description": "at the floor is not below: the room serves what is above it",
+      "ours": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 5]],
+      "floor": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 5]],
+      "below": []
+    },
+    {
+      "description": "an author the join names nothing of is below any floor",
+      "ours": [],
+      "floor": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 2]],
+      "below": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 2]]
+    },
+    {
+      "description": "this device's own author counts: the room trimmed it too",
+      "ours": [["1111111111111111111111111111111111111111111111111111111111111111", 1]],
+      "floor": [["1111111111111111111111111111111111111111111111111111111111111111", 4]],
+      "below": [["1111111111111111111111111111111111111111111111111111111111111111", 4]]
+    },
+    {
+      "description": "only the authors still below, in the floor's order",
+      "ours": [
+        ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 9],
+        ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 1]
+      ],
+      "floor": [
+        ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 3],
+        ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 6]
+      ],
+      "below": [["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 3]]
+    },
+    {
+      "description": "a refusal naming no floor holds nothing",
+      "ours": [["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1]],
+      "floor": [],
+      "below": []
+    }
   ]
 }

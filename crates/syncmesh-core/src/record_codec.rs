@@ -2,10 +2,10 @@
 //! `[cells[[column, value, stamp]], writeStamp | null, deleteStamp | null, partition | null]`,
 //! every stamp as `[ms, logical, peer]` with the peer as its 32 key bytes.
 //!
-//! Cells go out in column order by UTF-8 bytes, because `RowRecord` holds them in a `BTreeMap`.
-//! The TypeScript writes them in its `Map`'s insertion order instead, so the same record can have
-//! two encodings; neither side signs a record, but a checkpoint hashes them, so a checkpoint's
-//! rows are carried as the bytes they arrived in (`CheckpointRow::record`) and never re-encoded.
+//! Cells go out in column order by UTF-8 bytes, because `RowRecord` holds them in a `BTreeMap`,
+//! and the TypeScript's `encodeRecord` sorts its `Map`'s cells the same way (gaps U34): one record
+//! has one encoding in both runtimes, whatever order its cells were written in, which is what lets
+//! a checkpoint certificate hash it.
 
 use crate::cbor::{Value, decode, encode};
 use crate::event::PartitionKey;
@@ -44,23 +44,14 @@ fn optional(stamp: Option<&Stamp>) -> Value {
     stamp.map_or(Value::Null, stamp_to_cbor)
 }
 
+/// The record's bytes, its cells in column order.
 pub fn encode_record(record: &RowRecord) -> Vec<u8> {
-    let cells: Vec<(&str, &Cell)> = record
+    let cells = record
         .cells
-        .iter()
-        .map(|(c, cell)| (c.as_str(), cell))
-        .collect();
-    encode_record_in(&cells, record)
-}
-
-/// [`encode_record`] with the cells in the order given, as the TypeScript writes a record whose
-/// `Map` holds them in that order; the stamps and partition are `record`'s.
-pub fn encode_record_in(cells: &[(&str, &Cell)], record: &RowRecord) -> Vec<u8> {
-    let cells = cells
         .iter()
         .map(|(column, cell)| {
             Value::Array(vec![
-                Value::Text((*column).to_owned()),
+                Value::Text(column.clone()),
                 cell_to_cbor(&cell.value),
                 stamp_to_cbor(&cell.stamp),
             ])

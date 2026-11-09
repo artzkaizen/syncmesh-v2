@@ -28,6 +28,7 @@ use std::collections::BTreeMap;
 
 use syncmesh_core::doc::Id16;
 
+use crate::coverage::higher_floor;
 use crate::doc_log::{DocAddress, DocEntryState, DocHead, DocHeadMode, DocLogEntry, DocStore};
 use crate::store::{Coverage, Cursors, EventStore, RowWrite, StateStore, StoreError, StoredEvent};
 
@@ -89,7 +90,60 @@ CREATE TABLE IF NOT EXISTS sm_events (
     local       INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS sm_events_peer_seq ON sm_events (peer, seq);
+CREATE TABLE IF NOT EXISTS sm_log_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 ";
+
+/// The key `sm_log_meta` keeps the installed floor under (`EventStore::installed_below`), as a JSON
+/// list of `[peer, seq]` pairs — the TypeScript logs' `installed` value. No row is no floor.
+const INSTALLED_KEY: &str = "installed";
+
+/// The installed floor as `sm_log_meta` holds it.
+fn installed_json(floor: &Cursors) -> String {
+    serde_json::Value::Array(
+        floor
+            .iter()
+            .map(|(peer, seq)| serde_json::json!([peer.as_str(), seq.get()]))
+            .collect(),
+    )
+    .to_string()
+}
+
+/// Reads [`installed_json`] back; anything else is a store fault, never an empty floor.
+fn installed_from_json(text: &str) -> Result<Cursors, StoreError> {
+    let unreadable = || StoreError::new("the installed floor is not a list of (peer, seq)");
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|_| unreadable())?;
+    let entries = value.as_array().ok_or_else(unreadable)?;
+    entries
+        .iter()
+        .map(|entry| {
+            let (Some(peer), Some(seq)) = (
+                entry.get(0).and_then(serde_json::Value::as_str),
+                entry.get(1).and_then(serde_json::Value::as_u64),
+            ) else {
+                return Err(unreadable());
+            };
+            let peer = PeerId::parse(peer).map_err(|_| unreadable())?;
+            let seq = SeqNum::parse(seq).ok_or_else(unreadable)?;
+            Ok((peer, seq))
+        })
+        .collect()
+}
+
+/// The installed floor inside whatever transaction `conn` is in.
+fn read_installed(conn: &Connection) -> Result<Cursors, StoreError> {
+    let text: Option<String> = conn
+        .query_row(
+            "SELECT value FROM sm_log_meta WHERE key = ?1",
+            params![INSTALLED_KEY],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(failed("installed_below"))?;
+    text.map_or_else(|| Ok(Cursors::new()), |text| installed_from_json(&text))
+}
 
 /// A log written before local-only writes existed has no `local` column; every row in it is
 /// synced, which is what the column's default says.
@@ -334,6 +388,26 @@ impl EventStore for SqliteEventStore {
             Ok(Hlc::new(ms, logical))
         })
         .transpose()
+    }
+
+    fn installed_below(&self) -> Result<Cursors, StoreError> {
+        read_installed(&self.conn)
+    }
+
+    /// Reads, raises and writes the floor in one immediate transaction, so two installs at once
+    /// both land.
+    fn record_installed(&mut self, floor: &Cursors) -> Result<(), StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(failed("begin"))?;
+        let raised = higher_floor(&read_installed(&tx)?, floor);
+        tx.execute(
+            "INSERT OR REPLACE INTO sm_log_meta (key, value) VALUES (?1, ?2)",
+            params![INSTALLED_KEY, installed_json(&raised)],
+        )
+        .map_err(failed("record_installed"))?;
+        tx.commit().map_err(failed("commit"))
     }
 }
 

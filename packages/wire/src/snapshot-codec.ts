@@ -17,6 +17,7 @@ import { decodeCbor } from "./cbor-decode.js";
 import { isSafeNonNegative, isString } from "./cbor-guards.js";
 import { encodeCbor } from "./cbor.js";
 import { bytesToHex, hexToBytes } from "./hex.js";
+import { canonicalCells } from "./record-codec.js";
 import { cellFromCbor, cellToCbor } from "./row-codec.js";
 
 /**
@@ -77,7 +78,9 @@ export function encodeSnapshotRows(rows: readonly KeyedRecord[]): Uint8Array {
   const encoded = rows.map(({ table, key, record }): CborValue => {
     const tableIndex = tables.of(table);
     const names = (columns[tableIndex] ??= dictionary<string>());
-    const cells = [...record.cells].map(([column, cell]): CborValue =>
+    // in the order `encodeRecord` writes them, so a TypeScript and a Rust holder of one row serve
+    // the same page (gaps U34)
+    const cells = canonicalCells(record).map(([column, cell]): CborValue =>
       // the row's write stamp covers the ordinary case: a row written by one event, whose cells
       // all sit at it. Only a cell some later write moved carries a stamp of its own.
       record.writeStamp !== undefined && compareStamp(cell.stamp, record.writeStamp) === 0

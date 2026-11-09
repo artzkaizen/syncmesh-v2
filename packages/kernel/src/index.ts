@@ -1,4 +1,5 @@
 export type { Brand, Ordering } from "./primitives.js";
+export { codePointOrder } from "./primitives.js";
 export type { Hlc, Logical, HlcClock, HlcClockOptions } from "./hlc.js";
 export { DEFAULT_MAX_DRIFT, LOGICAL_MAX, createHlcClock, compareHlc, hlcOf } from "./hlc.js";
 export type { PeerId } from "./peer-id.js";

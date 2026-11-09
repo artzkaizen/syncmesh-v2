@@ -23,7 +23,12 @@ import { verify, type Identity } from "./identity.js";
  * state hash and the key is not its own.
  */
 export interface CheckpointCertificate {
-  readonly v: 1;
+  /**
+   * The format: `2` hashes each record with its cells in column order (`encodeRecord`, gaps U34).
+   * `1` hashed them in the order the issuer first wrote them, which no other device can reproduce,
+   * so a `1` is refused ({@link UnknownCheckpointVersion}) rather than checked and found to differ.
+   */
+  readonly v: typeof CHECKPOINT_VERSION;
   /** The slice this checkpoint is for; absent means the issuer's whole state. */
   readonly partition?: PartitionKey;
   /** {@link checkpointHash} over the rows the checkpoint stands for. */
@@ -33,6 +38,9 @@ export interface CheckpointCertificate {
   readonly issuedAt: Temporal.Instant;
   readonly issuer: PeerId;
 }
+
+/** The certificate format this build mints and verifies; see {@link CheckpointCertificate.v}. */
+export const CHECKPOINT_VERSION = 2 as const;
 
 /** Certificate core map keys; additive like every other core in this package. */
 const KEY = {
@@ -48,6 +56,14 @@ export class MalformedCheckpoint extends TaggedError("MalformedCheckpoint")<{ me
 export class BadCheckpointSignature extends TaggedError("BadCheckpointSignature")<{
   message: string;
 }> {}
+/**
+ * A certificate in a format this build does not verify: a `1` from a build before gaps U34, whose
+ * hash no device can reproduce, or a later one. Nothing it signs is adopted.
+ */
+export class UnknownCheckpointVersion extends TaggedError("UnknownCheckpointVersion")<{
+  version: number | undefined;
+  message: string;
+}> {}
 /** The rows do not hash to what the certificate says — a page was altered, dropped or added. */
 export class CheckpointMismatch extends TaggedError("CheckpointMismatch")<{
   expected: string;
@@ -58,13 +74,15 @@ export class CheckpointMismatch extends TaggedError("CheckpointMismatch")<{
 export type CheckpointError =
   | MalformedCbor
   | MalformedCheckpoint
+  | UnknownCheckpointVersion
   | BadCheckpointSignature
   | CheckpointMismatch;
 
-/** One row as a checkpoint counts it: where it lives, and the bytes the state store holds. */
+/** One row as a checkpoint counts it: where it lives, and its record as `encodeRecord` writes it. */
 export interface CheckpointRow {
   readonly table: string;
   readonly key: string;
+  /** `encodeRecord`'s bytes: cells in column order, so every holder of the row hashes the same. */
   readonly record: Uint8Array;
 }
 
@@ -113,7 +131,7 @@ export interface CheckpointRequest {
 /** Mints a signed certificate as wire bytes: `[core, sig]`, the envelope events and grants use. */
 export function issueCheckpoint(issuer: Identity, request: CheckpointRequest): Uint8Array {
   const base = {
-    v: 1 as const,
+    v: CHECKPOINT_VERSION,
     stateHash: request.stateHash,
     coverage: request.coverage,
     issuedAt: request.now,
@@ -171,10 +189,18 @@ const splitCheckpoint = (wire: Uint8Array) =>
   );
 
 /* oxlint-disable anti-slop/no-runtime-typeof -- decoding CBOR is the I/O boundary: these checks are the parse */
+const unknownVersion = (version: CborValue | undefined) =>
+  new UnknownCheckpointVersion({
+    version: typeof version === "number" ? version : undefined,
+    message: `this build verifies checkpoint certificates of version ${CHECKPOINT_VERSION} only: ask the issuer for a fresh one`,
+  });
+
 function decodeCheckpointValue(
   value: CborValue,
-): Result<CheckpointCertificate, MalformedCheckpoint> {
+): Result<CheckpointCertificate, MalformedCheckpoint | UnknownCheckpointVersion> {
   if (!(value instanceof Map)) return malformed("checkpoint core is not a map");
+  const version = value.get(KEY.v);
+  if (version !== CHECKPOINT_VERSION) return Result.err(unknownVersion(version));
   const stateHash = value.get(KEY.stateHash);
   const issuer = value.get(KEY.issuer);
   const issuedAt = value.get(KEY.issuedAt);
@@ -196,7 +222,7 @@ function decodeCheckpointValue(
   if (author.isErr()) return malformed(author.error.message);
 
   const base = {
-    v: 1 as const,
+    v: CHECKPOINT_VERSION,
     stateHash,
     coverage: held,
     issuedAt: Temporal.Instant.fromEpochMilliseconds(issuedAt),

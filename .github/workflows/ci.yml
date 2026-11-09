@@ -11,7 +11,7 @@ concurrency:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     # a real Postgres for @syncmesh/postgres's logical-replication suite (PGlite has no
     # replication) and its store contract. A service cannot be given server flags, so wal_level
     # is set and the container restarted in the first step.
