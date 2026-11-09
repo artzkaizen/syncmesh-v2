@@ -441,8 +441,11 @@ The only refusal vectors are the two in `fragment-vectors.json`.
 ### 6.2 Storage
 
 See §2. The device seed is sealed by a keystore vault (D49, gaps U4), and since N26 was built (gaps
-U44) so are a hosted room's seed and a Durable Object's session keys. The issuer key is wherever
-the app keeps it.
+U44) so are a hosted room's seed and a Durable Object's session keys. A seed an earlier build left
+in plaintext is sealed in place with SQLite's `secure_delete` on and the WAL checkpointed, so its
+old bytes leave the file; a database that refuses either (a Durable Object's SQL surface may) says
+on `onNotice` that they may remain in free pages or a WAL frame until reused. The issuer key is
+wherever the app keeps it.
 
 ### 6.3 Rotation
 

@@ -32,9 +32,11 @@ import { attempt } from "./sql.js";
  * lives in the log, which is shared; the file it is comparing against is the derived half, which
  * `schemaName` gives a different name to for every shape. So changing a column normally opens
  * an empty file and refolds into it, and the previous shape's file is an orphan nobody reads.
- * Once the log has been compacted, or has taken rows from a snapshot install (gaps U33), that
- * stops being true — the old file holds rows no fold can produce again — and the open refuses
- * rather than silently presenting an empty database.
+ * Once the log has been compacted that stops being true — the old file holds rows no fold can
+ * produce again — and the open refuses rather than silently presenting an empty database. A log
+ * that took rows from a snapshot install is not refused (gaps U33): the new file folds whole above
+ * the install's floor, and the engine names what lies under it (`Engine.rebuiltBelow`) for the
+ * mesh to raise as a `$recovery` issue until peers send those rows again.
  */
 export const installSchema = (
   driver: SqlDriver,
