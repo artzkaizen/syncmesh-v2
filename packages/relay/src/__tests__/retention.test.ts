@@ -172,6 +172,31 @@ describe("the room-log retention cap", () => {
   });
 
   /**
+   * A refused socket now stays open for the hand-over, so a seated peer that re-joined below the
+   * floor on the same socket stayed among the room's clients and went on hearing its fan-out.
+   */
+  test("a seated peer that re-joins below the floor leaves the room's clients", async () => {
+    const { a, room, tick: setClock } = await fourEvents(2);
+    setClock(at(KEEP_MS + STEP_MS));
+    await room.sweep();
+
+    const j = peer(201, "acct_j").identity.peerId;
+    const s = fakeSocket();
+    const conn = room.connect(s.socket);
+    conn.receive(
+      joinFrame([1], j, new Map([[a.identity.peerId, room.floor().get(a.identity.peerId)!]])),
+    );
+    await tick();
+    expect(room.clients()).toBe(2);
+    conn.receive(joinFrame([1], j, new Map()));
+    await tick();
+    expect(s.ofKind("error")[0]?.code).toBe("retention");
+    expect(s.closedWith).toEqual([]);
+    expect(room.clients()).toBe(1);
+    room.close();
+  });
+
+  /**
    * The same refusal, one queue slot later. A sweep and a catch-up run on the same room queue and
    * the floor only moves when the sweep resolves, so a join that lands mid-pass reads the floor
    * from before it — is greeted, and would then be paged the run the sweep just took the bottom
@@ -485,6 +510,44 @@ describe("a device the room refuses with retention (gaps U30)", () => {
     await write(x, "x3", "after the refusal");
     expect(await landed(3)).toBe(3);
     expect(rejoins.issues()).toHaveLength(1);
+    await t.stop();
+    room.close();
+  }, 20_000);
+
+  /**
+   * The room says hello before it refuses, and the hello reset the backoff: every write below the
+   * floor cost a refused join on the first delay, however many came before it, where a room that
+   * keeps refusing should be dialled on a delay that doubles.
+   */
+  test("each write below the floor dials once more, on a delay that doubles", async () => {
+    const { room, tick: setClock } = await fourEvents(2, { versions: RELAY_PROTOCOL_VERSIONS });
+    setClock(at(KEEP_MS + STEP_MS));
+    await room.sweep();
+
+    const x = peer(93, "acct_x");
+    await write(x, "x1", "written while away");
+    const rejoins = createRejoins();
+    const to = dialTo(room);
+    const dialled: number[] = [];
+    const dial = () => {
+      dialled.push(performance.now());
+      return to.dial();
+    };
+    const t = relayTransport({ dial, reconnectMs: 20, maxReconnectMs: 5000 });
+    await t.start({ ...x.context, rejoins });
+    expect(await until(() => rejoins.issues().length === 1)).toBe(true);
+
+    const waits: number[] = [];
+    for (const body of ["x2", "x3", "x4"]) {
+      const before = dialled.length;
+      const wrote = performance.now();
+      await write(x, body, body);
+      expect(await until(() => dialled.length > before, 2000)).toBe(true);
+      waits.push((dialled.at(-1) ?? wrote) - wrote);
+      await tick(10);
+    }
+    // 20, 40, 80 ms: the third would be the first delay again had the hello reset it
+    expect(waits[2]).toBeGreaterThanOrEqual(70);
     await t.stop();
     room.close();
   }, 20_000);

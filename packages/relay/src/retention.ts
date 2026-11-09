@@ -6,11 +6,13 @@ import { memoryBlobHomes } from "@syncmesh/storage";
 import { Temporal, addToInstant, durationMs } from "@syncmesh/temporal";
 
 import type { BlobKeeper } from "./blob-keeper.js";
+import type { RelayFrame } from "./frames.js";
 import type { Conversation } from "./state.js";
 import type { RelayTelemetry } from "./telemetry.js";
 
 import { cappedBlobStore } from "./blob-cap.js";
 import { createBlobKeeper } from "./blob-keeper.js";
+import { helloFrame } from "./frames.js";
 
 /**
  * What a room stops keeping, and when. Every field is absent by default, and absent is what
@@ -240,6 +242,25 @@ export function refusedBelowFloor(
   if (!belowFloor(theirs, floor)) return false;
   refuse("retention", BELOW_FLOOR, false, floor);
   return true;
+}
+
+/**
+ * A joiner below the floor: told the room's position and refused, but not hung up on, so what it
+ * hands over still lands (see {@link refusedBelowFloor}). It takes no place among the room's
+ * clients — no catch-up, no fan-out — and its seat's grant still bounds its blob puts (D44).
+ */
+export function handsOver(
+  { room, sender, refuse }: Conversation,
+  join: Extract<RelayFrame, { kind: "join" }> & { readonly selected: number },
+): void {
+  // a refused join is no seat: whatever this peer held here stops hearing the room, and a socket
+  // it re-joined on stays open for the hand-over
+  const old = room.clients.get(join.peerId);
+  room.clients.delete(join.peerId);
+  if (old !== undefined && old.sender !== sender) old.socket.close("superseded by a newer join");
+  const { keepaliveMs, epoch, durable } = room;
+  sender.send(helloFrame(join.selected, keepaliveMs, epoch, room.cursors(), room.floor(), durable));
+  refusedBelowFloor(refuse, join.cursors, room.floor());
 }
 
 /** What a room lends its retention: the log, the bytes, where its ceiling is, and its clock. */

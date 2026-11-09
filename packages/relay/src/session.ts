@@ -359,7 +359,11 @@ export function wireSession(
       // the cursors the room's hello named goes over before it hangs up — its own writes and the
       // ones it carries for neighbours the room cannot reach (`refusedBelowFloor`)
       if (frame.code === "retention") pushOutstanding();
-      chain = chain.then(() => dialed.close());
+      // closed whatever the push did: the room no longer closes a refused socket itself
+      chain = chain.then(
+        () => dialed.close(),
+        () => dialed.close(),
+      );
     } else if (!custody.take(frame) && frame.kind === "session") onSession(frame.frame);
     // ka and unknown: the rearm above was the whole point
   });

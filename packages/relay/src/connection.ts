@@ -28,7 +28,7 @@ import { createBudget } from "./limits.js";
 import { createViewer } from "./passover.js";
 import { proofFailure } from "./proof-failure.js";
 import { newChallenge } from "./proof.js";
-import { belowFloor, refusedBelowFloor } from "./retention.js";
+import { belowFloor, handsOver } from "./retention.js";
 import { createSeat, type Seat } from "./seat.js";
 import { secureLink } from "./secure.js";
 import { createSender } from "./sender.js";
@@ -89,20 +89,6 @@ const sealing = (socket: RelaySocket, link: SecureLink): RelaySocket => ({
 /** Which bucket a frame spends from: bulk is priced apart from everything else. */
 const trafficClass = (kind: RelayFrame["kind"]): TrafficClass =>
   kind === "blob-put" || kind === "blob-get" ? "blob" : "event";
-
-/**
- * A joiner below the floor: told the room's position and refused, but not hung up on, so what it
- * hands over still lands (see {@link refusedBelowFloor}). It takes no place among the room's
- * clients — no catch-up, no fan-out — and its seat's grant still bounds its blob puts (D44).
- */
-function handsOver(
-  { room, sender, refuse }: Conversation,
-  join: Extract<RelayFrame, { kind: "join" }> & { readonly selected: number },
-): void {
-  const { keepaliveMs, epoch, durable } = room;
-  sender.send(helloFrame(join.selected, keepaliveMs, epoch, room.cursors(), room.floor(), durable));
-  refusedBelowFloor(refuse, join.cursors, room.floor());
-}
 
 /**
  * A proven, admitted joiner takes its seat: the old socket for the same key goes, the hello and

@@ -247,6 +247,7 @@ export class RelayLink {
         this.readiness.hello();
       },
       onRefused: (code) => {
+        if (code === "retention") this.redial.refused();
         if (code !== "version") return;
         this.report.refused(said.REFUSED);
         this.fatal = true;
@@ -319,9 +320,8 @@ export class RelayLink {
     this.ctx = context;
     this.stopped = false;
     this.refusals ??= refusalsOver(context, this.report.dropped);
-    this.readiness.arm(
-      Temporal.Duration.from({ milliseconds: this.options.forceReadyAfter ?? 1000 }),
-    );
+    const force = Temporal.Duration.from({ milliseconds: this.options.forceReadyAfter ?? 1000 });
+    this.readiness.arm(force);
     this.redial.attempt();
     return Promise.resolve();
   }
