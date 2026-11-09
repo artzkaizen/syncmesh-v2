@@ -98,7 +98,8 @@ const tagOf = (packet: Uint8Array): number | undefined =>
     : new DataView(packet.buffer, packet.byteOffset, LINK_TAG_BYTES).getUint32(0, false);
 
 export function bleLink(options: LinkOptions): FrameLink & {
-  readonly accept: (valueBase64: string) => void;
+  /** A packet in from the radio; says whether it was this link's — under its tag, or adopting one. */
+  readonly accept: (valueBase64: string) => boolean;
 } {
   const { radio, serviceUuid, characteristicUuid, peer, connectionId } = options;
   const listeners = new Set<(frame: Uint8Array) => void>();
@@ -210,12 +211,12 @@ export function bleLink(options: LinkOptions): FrameLink & {
       const decoded = base64ToBytes(valueBase64);
       if (decoded.isErr()) {
         options.onDropped?.(`a packet from ${peer} was not base64`);
-        return;
+        return false;
       }
       const under = tagOf(decoded.value);
       if (under === undefined) {
         options.onDropped?.(`a packet from ${peer} was too short to name its link`);
-        return;
+        return false;
       }
       if (connectionId === undefined) {
         // the dialled end answers under the newest tag its peer wrote with: a central that
@@ -225,10 +226,10 @@ export function bleLink(options: LinkOptions): FrameLink & {
         if (first) start();
       }
       // another central's notification from the same peripheral: addressed to it, not lost here
-      else if (under !== tag) return;
+      else if (under !== tag) return false;
       const frame = rx.accept(decoded.value.subarray(LINK_TAG_BYTES));
-      if (frame === undefined) return;
-      for (const listener of listeners) listener(frame);
+      if (frame !== undefined) for (const listener of listeners) listener(frame);
+      return true;
     },
   };
 }

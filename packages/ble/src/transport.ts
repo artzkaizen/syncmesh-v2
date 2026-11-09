@@ -13,6 +13,7 @@ import type { BleRadio, Unsubscribe } from "./radio.js";
 import type { BleSighting } from "./sighting.js";
 
 import { advertisement, groupTag, hintOf } from "./advert.js";
+import { carrying } from "./carrying.js";
 import { discovery } from "./dial.js";
 import { createRestart, stopRadio, watchPower } from "./lifecycle.js";
 import { bleLink } from "./link.js";
@@ -111,32 +112,6 @@ interface Held {
   readonly session: Upgraded;
   readonly connectionId?: string | undefined;
 }
-
-/**
- * When a proven link last carried a packet in: the evidence a `wake` reads before it restarts.
- *
- * `Transport.wake` must be free on a radio that is carrying, and a restart is not: it drops every
- * session this device holds, and the neighbour on the far side of each is told nothing — it keeps
- * a link to a session that no longer exists, believes it already has the peer, does not dial, and
- * waits out its liveness deadline, 12.5 seconds, before anything crosses again. A reachability
- * knock wakes every medium, so every network change did that to every Bluetooth neighbour (chaos
- * soak, `--blobs`, seed 3 at four devices). A proven link heard inside one keepalive is a radio
- * that works, and a wake leaves it alone; one that has heard nothing is restarted as before.
- */
-const carrying = (proven: ReadonlyMap<string, PeerId>, everyMs: number) => {
-  let heardAt: number | undefined;
-  return {
-    /** The link deadline, noting a proven link's packet as it re-arms the link's own. */
-    watching: <L extends { readonly heard: (hint: string) => void }>(liveness: L): L => ({
-      ...liveness,
-      heard: (hint: string): void => {
-        liveness.heard(hint);
-        if (proven.has(hint)) heardAt = Date.now();
-      },
-    }),
-    recently: (): boolean => heardAt !== undefined && Date.now() - heardAt < everyMs,
-  };
-};
 
 /** Closes whichever link is holding this peer, by the hint the radio knows it by. */
 const dropPeer = (
@@ -390,8 +365,9 @@ export function bleTransport(options: BleOptions): Transport {
         radio.onCharacteristicValueChanged((event) => {
           const hint = byConnection.get(event.connectionId);
           if (hint === undefined) return drop("a notification arrived on no link of ours");
-          alive.heard(hint);
-          held.get(hint)?.link.accept(event.valueBase64);
+          // only a packet under this link's tag is this link alive: another central's
+          // notification from the same peripheral says nothing about our session
+          if (held.get(hint)?.link.accept(event.valueBase64) === true) alive.heard(hint);
         }),
         radio.onCharacteristicWriteRequested((event) => {
           // the dialled side: whoever wrote is the peer, and this is the first we hear of them.
@@ -400,8 +376,7 @@ export function bleTransport(options: BleOptions): Transport {
           const hint = event.centralId ?? onlyInbound(held);
           if (hint === undefined) return drop("a write arrived and no peer could be named for it");
           const entry = held.get(hint) ?? hold(hint, undefined);
-          alive.heard(hint);
-          entry.link.accept(event.valueBase64);
+          if (entry.link.accept(event.valueBase64)) alive.heard(hint);
         }),
         // one number for every notification this peripheral sends, which is how the platform
         // reports it; a link reads it per send rather than holding a copy that could go stale
@@ -428,6 +403,7 @@ export function bleTransport(options: BleOptions): Transport {
       held.clear();
       byConnection.clear();
       proven.clear(); // a stopped radio reaches nobody, whatever it proved while it was up
+      working.forget();
       // a radio that will not stop is already gone; there is nobody left to report it to
       const stopped = await stopRadio(radio);
       if (stopped.isErr()) drop(`the radio did not shut down cleanly: ${String(stopped.error)}`);
