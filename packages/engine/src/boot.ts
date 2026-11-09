@@ -43,6 +43,11 @@ export interface Boot {
    * device folded past a hole, read back so the held run closes over them when the hole fills.
    */
   readonly held?: readonly SyncEvent[];
+  /**
+   * The floor the log records a snapshot install left (`EventStore.installedBelow`, gaps U33):
+   * what {@link Engine.rebuiltBelow} measures the coverage against. Absent is none.
+   */
+  readonly installed?: Cursors;
 }
 
 interface Cached {
@@ -54,9 +59,11 @@ interface Cached {
  * Boots an engine over its stores: opens persisted state when there is one, folds only the log above
  * its coverage, and moves the clock past the highest stored stamp before any write is numbered.
  * A corrupt or absent state store is rebuilt from the whole log — unless the log has been compacted,
- * or the state took rows from a snapshot install (its cursors carry a floor, and the log records
- * it as `installedBelow`), in which case boot fails with `StateCorrupt` rather than open a partial
- * state.
+ * in which case boot fails with `StateCorrupt` rather than open a partial state. A state that took
+ * rows from a snapshot install (its cursors carry a floor, and the log records it as
+ * `installedBelow`) is rebuilt too, without those rows, and the engine says what it lacks
+ * ({@link Engine.rebuiltBelow}): the mesh raises it as a `$recovery` issue and fetches it again
+ * from its peers (gaps U33, D46).
  *
  * **It also audits the log for writes this device can never send** ({@link StrandedWrites}) and
  * reports them on `options.onError`. Boot is the moment that matters: opening a log under a key
@@ -83,10 +90,11 @@ export function openEngine(
     const max = yield* Result.await(store.maxHlc());
     if (max !== undefined) clock.receive(max);
     const compacted = (yield* Result.await(store.compactedBelow())).synced;
+    const installed = yield* Result.await(store.installedBelow());
 
     const engine = createEngine({
       ...options,
-      boot: { state, coverage, replay, compacted, held },
+      boot: { state, coverage, replay, compacted, held, installed },
     });
     if (stateStore !== undefined) {
       const rows =
@@ -157,15 +165,6 @@ function load(
     const floors = yield* Result.await(store.compactedBelow());
     const partial = floors.synced.size > 0 || floors.local.size > 0;
     /**
-     * Rows a snapshot install brought have no events behind them (D46's floor). The state's cursors
-     * carry that floor, and so does the log (`installedBelow`): the log's copy is the one left
-     * when the cursors cannot be read or the state is not read at all (gaps U33).
-     */
-    const installed = yield* Result.await(store.installedBelow());
-    const UNHELD =
-      "it holds rows installed from a snapshot, which the log has no events for — rejoin from a peer";
-
-    /**
      * **An absent state store is checked too, and this used to return before it was.**
      *
      * The corrupt path below has always asked; the empty one went straight to a full replay. For
@@ -174,6 +173,10 @@ function load(
      * the moment the state store can be *discarded* — a schema change that opens a new state file
      * (RFC-0022), an operator clearing a cache — and then the difference is a device that rebuilds
      * two thirds of its rows and reports itself healthy.
+     *
+     * A floor a snapshot install left in the log is not refused: the log still holds every event
+     * it was sent, so the rebuild is whole above that floor, and the engine names what lies under
+     * it (`rebuiltBelow`) for the mesh to raise and fetch again (gaps U33).
      */
     if (yield* Result.await(stateStore.isEmpty())) {
       if (partial)
@@ -181,12 +184,6 @@ function load(
           new StateCorrupt({
             message:
               "there is no folded state and the log is compacted below what would rebuild it — rejoin from a peer",
-          }),
-        );
-      if (installed.size > 0)
-        return Result.err(
-          new StateCorrupt({
-            message: `there is no folded state, and the state this log was folded into ${UNHELD}`,
           }),
         );
       return Result.ok(undefined);
@@ -219,14 +216,12 @@ function load(
     }
     /**
      * **Rows a snapshot install brought have no events behind them** (D46's floor, persisted with
-     * the cursors and in the log), so the log rebuilds the state without them and the device would
-     * report itself healthy two snapshots short (gaps U22, U33). Refused like a compacted log, for
-     * the same reason, whether or not the cursors could be read.
+     * the cursors and in the log), so the log rebuilds the state without them (gaps U22, U33). The
+     * floor goes into the log first when only the cursors carried it, so the engine still names
+     * what the rebuild lacks (`rebuiltBelow`) and the device does not report itself whole.
      */
     const unheld = cursors.isOk() ? (cursors.value.floor ?? new Map()) : new Map();
-    if (unheld.size > 0 || installed.size > 0) {
-      return Result.err(new StateCorrupt({ message: `${loaded.error.message}; ${UNHELD}` }));
-    }
+    if (unheld.size > 0) yield* Result.await(store.recordInstalled(unheld));
     yield* Result.await(stateStore.clear());
     return Result.ok(undefined);
   });

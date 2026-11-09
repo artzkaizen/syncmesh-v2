@@ -1,20 +1,22 @@
+import type { SecretStore, SeedVault } from "@syncmesh/wire";
+
 import { Result } from "@syncmesh/result";
 import { bunSqliteDriver } from "@syncmesh/sqlite-bun";
-import { bytesToHex, hexToBytes, openPayload } from "@syncmesh/wire";
+import {
+  bytesToHex,
+  createPlaintextVault,
+  createSecretStoreVault,
+  createWebCryptoVault,
+  hexToBytes,
+  openPayload,
+  platformVault,
+} from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { SecretStore, SeedVault } from "../vault.js";
-
 import { deviceIdentity } from "../identity.js";
-import {
-  createPlaintextVault,
-  createSecretStoreVault,
-  createWebCryptoVault,
-  platformVault,
-} from "../vault.js";
 
 /**
  * The device key is the one thing a relay makes dangerous to get wrong. Two installs

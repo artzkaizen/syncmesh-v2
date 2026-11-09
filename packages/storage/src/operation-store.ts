@@ -101,8 +101,13 @@ export interface OperationStore {
    * So is every vouch of this holder for `author` above `throughSeq` signed at or before `atMs`:
    * a holder's latest receipt is its whole claim, and one that signs for less — after a purge
    * (D45) or a torn log (D39) — withdraws what it signed before. A receipt that arrives after a
-   * newer one from the same holder for the same author is not written at all: it neither
-   * withdraws what the newer one signed nor puts back what the newer one withdrew.
+   * newer one from the same holder for the same author, under the same incarnation, is not
+   * written at all: it neither withdraws what the newer one signed nor puts back what the newer
+   * one withdrew. One that arrives after a newer vouch of that holder under another incarnation
+   * withdraws that lineage's vouches and is not written either: a rebuilt store's clock may run
+   * behind the lost one's, so neither claim counts until the holder signs again. A late receipt
+   * from the lost store stamped above every vouch the rebuilt one has written is taken as the
+   * newer claim, since the store keeps no record of which incarnations a holder has retired.
    *
    * The order is the whole of it: a peer that lost its store and rebuilt arrives with a new
    * lineage, and the vouches it made with the store it lost have to stop counting before the new
@@ -276,9 +281,17 @@ export function operationStore(
         // insert after the withdrawal, would otherwise leave the holder's claim half-replaced
         write("vouch insert failed", () =>
           inTransaction(driver, async () => {
-            const newer = await driver.all(sql.selectNewerVouch, [holder, author, atMs]);
-            if (newer.length > 0) return;
+            const newer = await driver.all(sql.selectNewerVouch, [
+              holder,
+              atMs,
+              author,
+              incarnation,
+            ]);
+            if (newer.some(([held]) => held === incarnation)) return;
             await driver.run(sql.deleteStaleVouches, [holder, incarnation]);
+            // a newer vouch from another lineage: two stores' clocks give no order, so each one's
+            // claim is withdrawn and neither is written until the holder signs again
+            if (newer.length > 0) return;
             await driver.run(sql.deleteWithdrawnVouches, [holder, author, throughSeq, atMs]);
             await driver.run(sql.deleteCoveredRefusals, [holder, author, throughSeq]);
             await driver.run(sql.insertVouchesThrough, [

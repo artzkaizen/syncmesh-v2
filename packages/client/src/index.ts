@@ -81,18 +81,20 @@ export { keyRingFor, transportContextFor } from "./transport-context.js";
 
 export type { DeviceIdentityOptions } from "./identity.js";
 export { DeviceKeyUnavailable, deviceIdentity, deviceIncarnation } from "./identity.js";
+// the vault seam is wire's, where the relay reaches it too (N26); a client app imports it from here
 export type {
   CryptoKeyHolder,
   KeyStoreFactory,
   SecretStore,
   SecretStoreVaultOptions,
   SeedVault,
-} from "./vault.js";
+} from "@syncmesh/wire";
 export {
   PLAINTEXT_VAULT,
   createIndexedDbKeyHolder,
+  createKeyVault,
   createPlaintextVault,
   createSecretStoreVault,
   createWebCryptoVault,
   platformVault,
-} from "./vault.js";
+} from "@syncmesh/wire";

@@ -113,7 +113,7 @@ const named = {
   crash: crashTests(unused).map((c) => c.name),
   torn: tornTests({ ...unused, copy: () => {}, size: () => 0, zero: () => {} }).map((c) => c.name),
   open: [
-    "open: the log keeps a WAL like the derived half, so a write cut off is recovered (U44)",
+    "open: the log keeps a WAL like the derived half, so a write cut off is recovered (U46)",
     "open: a log that will not attach is refused as a value, and the pool goes back",
     "open: two directories in one thread are two pools, not one under two names",
     "open: two databases opened at once in one directory share its pool",

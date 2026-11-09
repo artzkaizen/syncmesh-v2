@@ -8,6 +8,7 @@ import type { Interest } from "./interest.js";
 import type { EventStore, StoreFailure, StoredEvent, TornRun } from "./store.js";
 import type { Coverage, Cursors } from "./sync.js";
 
+import { belowFloor } from "./coverage.js";
 import { ListenerFailure, type EngineError } from "./errors.js";
 import { eventsWanted } from "./interest.js";
 import { createHub, type Hub, type Unsubscribe } from "./listeners.js";
@@ -50,6 +51,16 @@ export interface CoverageApi {
     theirs: Cursors,
     interest?: Interest,
   ) => Promise<Result<readonly StoredEvent[], StoreFailure>>;
+  /**
+   * Per author, the floor a snapshot install left in the log that the synced coverage is below:
+   * rows a state rebuilt from the log no longer holds — its file deleted, unreadable, or new under
+   * a changed schema (gaps U33). Empty once events or an install bring the coverage back up. The
+   * mesh raises it as a `$recovery` issue (`BelowInstalledFloor`).
+   *
+   * @example
+   * engine.rebuiltBelow(); // Map { a => 3 }: a's first three came in a snapshot this state lost
+   */
+  readonly rebuiltBelow: () => Cursors;
 }
 
 export interface CoveragePathDeps {
@@ -59,6 +70,8 @@ export interface CoveragePathDeps {
   readonly turn: <T>(fn: () => Promise<T>) => Promise<T>;
   /** Where a torn read is said, once per tear (D39), and an `onAdopt` listener that throws. */
   readonly errors: Hub<EngineError>;
+  /** The floor the log records a snapshot install left, read at boot (gaps U33). */
+  readonly installed?: Cursors | undefined;
 }
 
 /** Every sequence of a run, as the ids the log would hold them under. */
@@ -118,6 +131,7 @@ export function createCoveragePath(
     onAdopt: adopted.subscribe,
     reopen,
     eventsSince,
+    rebuiltBelow: () => belowFloor(coverage.current().synced, deps.installed ?? new Map()),
   } satisfies CoverageApi;
   /** `adoptUnheld` for a snapshot install: what it adopts is said like any other adoption. */
   return { adoptUnheld: announced(coverage.adoptUnheld), api };

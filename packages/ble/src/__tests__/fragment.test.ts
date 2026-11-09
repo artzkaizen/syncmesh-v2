@@ -113,6 +113,25 @@ describe("reassembling", () => {
     expect(rx.pending()).toBe(0);
   });
 
+  test("markers for messages past the size cap count against the table's bound too", () => {
+    const abandoned: { message: number; why: string }[] = [];
+    const rx = reassembler({
+      maxMessageBytes: 100,
+      maxAssemblies: 2,
+      onAbandoned: (m, _b, why) => void abandoned.push({ message: m, why }),
+    });
+    rx.accept(cut(bytes(150), 60, 1)[0]!); // a live partial, oldest
+    // oversized at their first fragment: each given up on at once and kept as a marker
+    for (const id of [2, 3, 4]) rx.accept(cut(bytes(1000), 185, id)[0]!);
+    expect(abandoned).toEqual([
+      { message: 2, why: "too-large" },
+      { message: 3, why: "too-large" },
+      { message: 1, why: "evicted" },
+      { message: 4, why: "too-large" },
+    ]);
+    expect(rx.pending()).toBe(0);
+  });
+
   test("a sender whose counter wrapped onto a partial does not corrupt the newer message", () => {
     const rx = reassembler();
     rx.accept(cut(bytes(1000), 185, 42)[0]!); // a partial under id 42

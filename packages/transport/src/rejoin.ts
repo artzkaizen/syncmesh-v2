@@ -1,7 +1,7 @@
 import type { Cursors, Engine, Interest, Unsubscribe } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
-import { createHub } from "@syncmesh/engine";
+import { belowFloor, createHub } from "@syncmesh/engine";
 
 import type { JoinOutcome, JoinPolicy } from "./join.js";
 
@@ -62,7 +62,7 @@ export function belowPeerFloor(
  * belowRelayFloor(new Map([[a, 1], [b, 7]]), new Map([[a, 5], [b, 6]])) // Map { a => 5 }
  */
 export function belowRelayFloor(ours: Cursors, floor: Cursors): ReadonlyMap<PeerId, SeqNum> {
-  return new Map([...floor].filter(([author, seq]) => (ours.get(author) ?? 0) < seq));
+  return belowFloor(ours, floor);
 }
 
 /** Why a device below a peer's floor is still there, as a stable cause. */
@@ -102,10 +102,26 @@ export interface BelowRelayFloor {
 }
 
 /**
- * Below a floor, whichever side said so: a peer's cursors frame (D46) or a relay's `retention`
- * refusal (gaps U30). `reason` tells them apart.
+ * A device whose state was rebuilt from its log without rows a snapshot install had brought: the
+ * state file was deleted, could not be read, or is a new one under a changed schema (gaps U33).
+ * The log keeps every event it was sent, so the rebuild is whole above the install's floor and
+ * lacks what lies under it. The way back is the one a new device takes: a peer's events, or its
+ * state when it compacted (D46), or `$recovery.rebuild`; the issue clears once the coverage is
+ * back at the floor.
  */
-export type BelowFloor = BelowPeerFloor | BelowRelayFloor;
+export interface BelowInstalledFloor {
+  /** Per author this device's coverage is below, the floor its own install had left. */
+  readonly floor: Cursors;
+  readonly reason: "rebuilt";
+  readonly message: string;
+}
+
+/**
+ * Below a floor, whichever side said so: a peer's cursors frame (D46), a relay's `retention`
+ * refusal (gaps U30), or this device's own install, lost with its state (gaps U33). `reason`
+ * tells them apart.
+ */
+export type BelowFloor = BelowPeerFloor | BelowRelayFloor | BelowInstalledFloor;
 
 /** What {@link Rejoins.accept} did. */
 export type Accepted =
@@ -144,6 +160,12 @@ export interface Rejoins {
   readonly relayRefused: (relay: string, floor: Cursors, ours: () => Cursors) => void;
   /** Drops a relay's issue: the link holds the floor, was served, or stopped. */
   readonly relayCleared: (relay: string) => void;
+  /**
+   * The state was rebuilt from the log below the floor a snapshot install left (gaps U33): raises
+   * the device's {@link BelowInstalledFloor} issue, or replaces it. It clears once `ours` is at or
+   * above the floor for every author named.
+   */
+  readonly rebuilt: (floor: Cursors, ours: () => Cursors) => void;
 }
 
 export interface RejoinSessionDeps {
@@ -186,6 +208,9 @@ const MESSAGES = {
   unanswered: "asked for state in three sessions and no install completed",
 } satisfies Record<BelowFloorReason, string>;
 
+const REBUILT =
+  "this device's state was rebuilt from its log without rows a snapshot install had brought (its state file was deleted, unreadable, or new under a changed schema): they come back from peers like a new device's, or $recovery.rebuild asks for state now";
+
 const RETENTION =
   "the relay has trimmed its history below these cursors and refused the join: take state from a peer that folds (a peer link, or $recovery.rebuild); the link dials that room again once this device holds the floor, or when it is woken";
 
@@ -195,6 +220,8 @@ export function createRejoins(): Rejoins {
   const raised = new Map<PeerId, Raised<BelowPeerFloor>>();
   /** Relays that refused this device with `retention`, one issue per relay (gaps U30). */
   const relays = new Map<string, Raised<BelowRelayFloor>>();
+  /** The device's own install, lost with a state rebuilt from the log (gaps U33). */
+  let lost: Raised<BelowInstalledFloor> | undefined;
   /** Sessions asked per (peer, floor) with no install completed. */
   const attempts = new Map<string, number>();
   /**
@@ -239,6 +266,7 @@ export function createRejoins(): Rejoins {
       if (!stillBelow(held)) dropped = raised.delete(peer) || dropped;
     for (const [relay, held] of relays)
       if (!stillBelow(held)) dropped = relays.delete(relay) || dropped;
+    if (lost !== undefined && !stillBelow(lost)) [lost, dropped] = [undefined, true];
     return dropped;
   };
 
@@ -340,7 +368,8 @@ export function createRejoins(): Rejoins {
     issues: () => {
       // read from a getter a renderer calls: the change is told after it, never inside it
       if (sweep()) queueMicrotask(() => changes.emit());
-      return [...raised.values(), ...relays.values()].map(({ issue }) => issue);
+      const own = lost === undefined ? [] : [lost];
+      return [...raised.values(), ...relays.values(), ...own].map(({ issue }) => issue);
     },
     onChange: (listener) => changes.subscribe(() => listener()),
     accept: (peer) => {
@@ -365,6 +394,10 @@ export function createRejoins(): Rejoins {
     },
     relayCleared: (relay) => {
       if (relays.delete(relay)) changes.emit();
+    },
+    rebuilt: (floor, ours) => {
+      lost = { issue: { floor, reason: "rebuilt", message: REBUILT }, ours };
+      changes.emit();
     },
   };
 }

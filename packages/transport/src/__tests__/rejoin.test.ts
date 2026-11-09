@@ -308,3 +308,16 @@ describe("a relay's retention refusal (gaps U30)", () => {
     expect(told).toEqual(["changed", "changed", "changed"]);
   });
 });
+
+describe("a state rebuilt below its own install's floor (gaps U33)", () => {
+  test("is listed beside the others, and goes once the coverage is back at the floor", () => {
+    const rejoins = createRejoins();
+    let ours = cursors([author, 1]);
+    rejoins.rebuilt(cursors([author, 4]), () => ours);
+    expect(rejoins.issues()).toMatchObject([{ reason: "rebuilt", floor: cursors([author, 4]) }]);
+    // nothing to accept: the rows come back as events or as a peer's state, not from this issue
+    expect(rejoins.accept(far)).toBe("nothing-to-accept");
+    ours = cursors([author, 4]);
+    expect(rejoins.issues()).toEqual([]);
+  });
+});

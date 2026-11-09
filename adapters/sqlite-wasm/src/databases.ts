@@ -119,7 +119,7 @@ const walTaken = (db: Database, schema = "main"): boolean =>
  * The log's own journal, once it is attached: WAL and `synchronous = NORMAL`, as the derived half.
  *
  * **Not inherited.** `locking_mode` set without a schema covers databases attached later;
- * `journal_mode` does not, so the log was left on the rollback journal (U44). On the access-handle
+ * `journal_mode` does not, so the log was left on the rollback journal (U46). On the access-handle
  * pool that is not only slower but unsafe: its VFS answers every reserved-lock check with "held",
  * so SQLite never takes a journal left by a writer that died mid-transaction for a hot one, never
  * rolls it back, and the next open reads the half-written pages as `SQLITE_CORRUPT`. WAL recovers

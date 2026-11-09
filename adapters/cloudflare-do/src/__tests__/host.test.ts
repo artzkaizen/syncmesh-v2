@@ -238,3 +238,48 @@ describe("the room's socket cap (gap audit №5)", () => {
     db.close();
   });
 });
+
+describe("an object nobody is on can hibernate", () => {
+  test("the last socket's close closes the room and stops its keepalive; the next socket opens it again", async () => {
+    // the room's keepalive is the one interval with this period: count the ones left running
+    const KEEPALIVE = 7_777;
+    const running = new Set<unknown>();
+    const { setInterval: realSet, clearInterval: realClear } = globalThis;
+    // SAFETY: both forward every call to the real timers; only which keepalive timers live is read
+    globalThis.setInterval = ((fn: () => void, ms?: number) => {
+      const timer = realSet(fn, ms);
+      if (ms === KEEPALIVE) running.add(timer);
+      return timer;
+    }) as typeof globalThis.setInterval;
+    // SAFETY: as above
+    globalThis.clearInterval = ((timer?: Parameters<typeof realClear>[0]) => {
+      running.delete(timer);
+      realClear(timer);
+    }) as typeof globalThis.clearInterval;
+    try {
+      const db = new Database(":memory:");
+      const object = durableRelay(db, { keepaliveMs: KEEPALIVE });
+      const first = object.dial();
+      const second = object.dial();
+      expect(await until(async () => running.size === 1)).toBe(true);
+      first.close();
+      // one socket is still on the room: it stays open
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(running.size).toBe(1);
+      second.close();
+      expect(await until(async () => running.size === 0)).toBe(true);
+      // a socket after the object went quiet gets the room back, and the room speaks first
+      const third = object.dial();
+      let heard = 0;
+      third.onFrame(() => void (heard += 1));
+      expect(await until(async () => running.size === 1)).toBe(true);
+      expect(await until(async () => heard > 0)).toBe(true);
+      third.close();
+      expect(await until(async () => running.size === 0)).toBe(true);
+      db.close();
+    } finally {
+      globalThis.setInterval = realSet;
+      globalThis.clearInterval = realClear;
+    }
+  });
+});

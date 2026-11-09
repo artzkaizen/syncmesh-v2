@@ -156,6 +156,8 @@ export function reassembler(options: ReassemblyOptions = {}) {
       partial.bytes += body.length;
       if (partial.bytes > maxBytes) {
         abandon(message, partial, "too-large");
+        // its marker holds a slot like any partial, so the bound holds on this path too
+        makeRoom(message);
         return undefined;
       }
       makeRoom(message);

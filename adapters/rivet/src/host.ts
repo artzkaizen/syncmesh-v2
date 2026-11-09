@@ -7,6 +7,7 @@ import type {
   RoomStore,
   SocketSession,
 } from "@syncmesh/relay";
+import type { SeedVault } from "@syncmesh/wire";
 
 import {
   createRelayHost,
@@ -51,6 +52,14 @@ export interface RelayRivetActorOptions {
   readonly onTelemetry?: TelemetryListener;
   /** Serve blobs from the actor's own database (D18). Default true. */
   readonly blobs?: boolean;
+  /**
+   * What seals the room's signing seed in the actor's database (N26). Required: `createKeyVault`
+   * over a key the deployment provides, `createSecretStoreVault` over a keychain, or
+   * `createPlaintextVault()` for tests and development, which every open says.
+   */
+  readonly vault: SeedVault;
+  /** Where the plaintext vault's notice and a migration's report go. Default `console.warn`. */
+  readonly onNotice?: (message: string) => void;
 }
 
 /** The two raw hooks of a Rivet actor definition, already wired to a room. */
@@ -92,14 +101,22 @@ const roomName = (key: readonly string[]): string => (key.length === 0 ? "main" 
  * never be withdrawn. Its acks still answer `synced()`; detach waits for a device's receipt.
  *
  * @example
- * const relay = relayRivetActor({ posture });
+ * const relay = relayRivetActor({ posture, vault: createKeyVault(hexToBytes(process.env.RELAY_SEAL_KEY).unwrap()) });
  * export const room = actor({
  *   db: db(),
  *   onWebSocket: (c, ws) => relay.onWebSocket(c, ws),
  *   onRequest: (c, request) => relay.onRequest(c, request),
  * });
  */
-export function relayRivetActor(options: RelayRivetActorOptions = {}): RelayRivetActor {
+export function relayRivetActor(options: RelayRivetActorOptions): RelayRivetActor {
+  // SAFETY: a widening only — the type requires `vault`, and this reads it as possibly absent
+  // because a caller in plain JavaScript can still reach here without one
+  const { vault } = options as Partial<RelayRivetActorOptions>;
+  if (vault === undefined)
+    panic(
+      "a Rivet relay actor keeps its room key at rest: pass `vault` — createKeyVault over a key the deployment provides, or createPlaintextVault() for tests and development (N26)",
+    );
+  const secrets = omitUndefined({ vault, onNotice: options.onNotice });
   /** One host per live instance; the hooks are shared by every instance the process runs. */
   const hosts = new Map<string, Promise<RelayHost>>();
 
@@ -110,7 +127,7 @@ export function relayRivetActor(options: RelayRivetActorOptions = {}): RelayRive
    */
   const open = async (c: RivetRelayContext): Promise<RelayHost> => {
     const driver = rivetSqlDriver(c.db);
-    const identity = await relayIdentity(driver);
+    const identity = await relayIdentity(driver, secrets);
     const openRoomStore = async (): Promise<RoomStore> => {
       const store = (await sqliteEventStore(driver)).match({
         ok: (value) => value,

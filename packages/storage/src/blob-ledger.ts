@@ -184,9 +184,17 @@ function parseWindow([hash, ms]: SqlRow): Result<BlobWindow, StoreFailure> {
   return Result.ok({ hash: name, since: Temporal.Instant.fromEpochMilliseconds(at) });
 }
 
+/** Why a Postgres ledger over a driver with no transactions is refused at the open. */
+const UNLOCKED =
+  "a Postgres blob ledger needs a driver with transactions: instances sharing one store save under an advisory lock that only a transaction holds, and without it one instance's save writes over another's (pass a pooled driver that implements `transaction`)";
+
 /**
  * A ledger in the same database as the room's blobs and their homes, so a room reopened over a
  * trimmed log still knows what its kept blobs are for.
+ *
+ * On Postgres the driver must offer `transaction`: a store several relay instances share is saved
+ * under an advisory lock held for one transaction, and a driver that cannot hold one is refused at
+ * the open rather than let two saves overwrite each other's join (gaps U18).
  *
  * @example
  * ```ts
@@ -212,12 +220,10 @@ export async function sqlBlobLedger(driver: SqlDriver): Promise<Result<BlobLedge
   const deleteWindow = `DELETE FROM ${WINDOWS} WHERE hash = ${p(1)}`;
   const upsertMeta = `INSERT INTO ${META} (key, value) VALUES (${values(2)}) ON CONFLICT (key) DO UPDATE SET value = excluded.value`;
   // two instances on one Postgres that both read a row before either writes would each write their
-  // own join over the other's: the reads and the writes are taken under one lock per ledger. SQLite
-  // has one writer, and a driver with no transactions has no lock to hold past one statement
-  const lockSave =
-    postgres && driver.transaction !== undefined
-      ? `SELECT pg_advisory_xact_lock(hashtext(${p(1)}))`
-      : undefined;
+  // own join over the other's: the reads and the writes are taken under one lock per ledger, which
+  // only a transaction holds past one statement (a driver without one is refused below). SQLite
+  // has one writer
+  const lockSave = postgres ? `SELECT pg_advisory_xact_lock(hashtext(${p(1)}))` : undefined;
 
   const ledger: BlobLedger = {
     load: async () => {
@@ -305,6 +311,8 @@ export async function sqlBlobLedger(driver: SqlDriver): Promise<Result<BlobLedge
     `CREATE TABLE IF NOT EXISTS ${META} (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${WINDOWS} (hash TEXT PRIMARY KEY, since_ms ${integer} NOT NULL)`,
   ];
+  if (postgres && driver.transaction === undefined)
+    return Result.err(new StoreFailure({ message: UNLOCKED }));
   return attempt("blob ledger open failed", async () => {
     for (const sql of ddl) await driver.run(sql);
     return ledger;

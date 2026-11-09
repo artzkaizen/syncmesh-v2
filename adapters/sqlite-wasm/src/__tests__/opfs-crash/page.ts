@@ -135,7 +135,7 @@ const openCases = (death: Death) => {
   const opened = harness(death);
   return [
     {
-      name: "open: the log keeps a WAL like the derived half, so a write cut off is recovered (U44)",
+      name: "open: the log keeps a WAL like the derived half, so a write cut off is recovered (U46)",
       run: async () => {
         const driver = await opened.openDriver("journaled");
         const modes = [

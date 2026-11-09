@@ -61,9 +61,11 @@ export interface EngineOptions extends DocEngineOptions {
   /**
    * Where folded rows are kept between runs; absent, every boot refolds the log.
    *
-   * It must outlive a restart whenever the log does. A snapshot install records its floor in the
+   * It should outlive a restart whenever the log does. A snapshot install records its floor in the
    * log (`EventStore.installedBelow`), and a later boot that finds an empty state over that floor
-   * refuses with `StateCorrupt`, so a volatile state store over a persistent log opens once.
+   * rebuilds from the log without the installed rows and names them (`Engine.rebuiltBelow`, a
+   * `$recovery` issue), so a volatile state store over a persistent log fetches them again on
+   * every boot (gaps U33).
    */
   readonly stateStore?: StateStore;
   /** What to start from; `openEngine` builds it. Absent, the engine starts empty. */
