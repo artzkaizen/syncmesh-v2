@@ -21,14 +21,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use syncmesh_core::apply::{apply_change, merge_record};
 use syncmesh_core::doc::{
     DocColumns, Id16, LineageCellRefused, derive_lineage, lineage_of, parse_lineage_cells,
-    settle_walk, with_doc_columns,
+    read_lineage_cell, settle_walk, with_doc_columns,
 };
 use syncmesh_core::envelope::sign_event;
 use syncmesh_core::event::{
     Change, PartitionKey, PeerId, RowKey, SchemaVersion, SeqNum, SyncEvent, TableName,
 };
-use syncmesh_core::hlc::{DEFAULT_MAX_DRIFT_MS, HlcClock};
+use syncmesh_core::hlc::{DEFAULT_MAX_DRIFT_MS, Hlc, HlcClock};
 use syncmesh_core::identity::Identity;
+use syncmesh_core::record::RowRecord;
 use syncmesh_core::stamp::Stamp;
 use syncmesh_core::state::State;
 use syncmesh_core::strategy::MergeSpec;
@@ -1054,6 +1055,12 @@ impl Engine {
         let before = self.state.clone();
         let mut write_keys: BTreeMap<TableName, BTreeSet<RowKey>> = BTreeMap::new();
         let count = snapshot.rows.len();
+        let now = self.now_ms();
+        for row in &snapshot.rows {
+            for hlc in row_stamps(&row.table, &row.record, &self.docs) {
+                self.clock.receive(hlc, now);
+            }
+        }
         for row in snapshot.rows {
             write_keys
                 .entry(row.table.clone())
@@ -1214,6 +1221,26 @@ impl Engine {
     pub fn all_events(&self) -> Result<Vec<StoredEvent>, StoreError> {
         self.store.all()
     }
+}
+
+/// Every clock reading a row carries, as the TypeScript's `rowStamps`: its write and delete
+/// stamps, each cell's stamp, and, in a doc column's lineage cell, each genesis's stamp and the
+/// anchor's. What the clock receives from a row that joins outside an event, so a genesis this
+/// device writes next is stamped after every one it adopted (gaps U21).
+fn row_stamps(table: &str, record: &RowRecord, docs: &DocColumns) -> Vec<Hlc> {
+    let mut stamps: Vec<Hlc> = record
+        .write_stamp
+        .iter()
+        .chain(&record.delete_stamp)
+        .chain(record.cells.values().map(|cell| &cell.stamp))
+        .map(|stamp| stamp.hlc)
+        .collect();
+    for column in docs.get(table).into_iter().flat_map(BTreeMap::keys) {
+        let cell = read_lineage_cell(record.cells.get(column).map(|cell| &cell.value));
+        stamps.extend(cell.geneses.iter().map(|genesis| genesis.stamp.hlc));
+        stamps.extend(cell.settled.iter().map(|settled| settled.stamp.hlc));
+    }
+    stamps
 }
 
 #[cfg(test)]

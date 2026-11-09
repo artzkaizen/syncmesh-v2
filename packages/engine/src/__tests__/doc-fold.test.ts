@@ -1,4 +1,5 @@
 import {
+  compareHlc,
   getRecord,
   docLineage,
   isJsonArray,
@@ -385,6 +386,23 @@ describe("a lineage cell that joins outside an event (RFC-0023 §5.3, §16.1)", 
     const { a, r, winner } = await scenario();
     (await r.engine.repairRows(NOTES, a.engine.rowRecords(NOTES, [N1]))).unwrap();
     await relabelled(r, winner);
+  });
+
+  test("a joiner whose clock runs behind stamps its replace after the genesis a snapshot or repair brought", async () => {
+    const a = node(PEER_A, 100, true);
+    await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+    a.clock.set(10 * 86_400_000);
+    const parent = await write(a, (tx) => tx.doc(NOTES, N1, replace(1)));
+    const joiners = [node(PEER_B, 50, true), node(PEER_C, 50, true)];
+    const [bySnapshot, byRepair] = joiners;
+    (await bySnapshot?.engine.installSnapshot(a.engine.snapshot()))?.unwrap();
+    (await byRepair?.engine.repairRows(NOTES, a.engine.rowRecords(NOTES, [N1])))?.unwrap();
+    for (const joiner of joiners) {
+      expect(lineageAt(joiner)).toBe(deriveLineage(PEER_A, parent.seqNum, 0));
+      const child = await write(joiner, (tx) => tx.doc(NOTES, N1, replace(2)));
+      expect(compareHlc(child.hlc, parent.hlc)).toBe(1);
+      expect(lineageAt(joiner)).toBe(deriveLineage(joiner.engine.peerId, child.seqNum, 0));
+    }
   });
 
   test("a snapshot whose documents have no doc-log entries here adds no heads", async () => {

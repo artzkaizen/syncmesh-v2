@@ -255,8 +255,9 @@ export function createEngine(options: EngineOptions): Engine {
     partition: (table, key) => getRecord(getState(), table, key)?.partition,
   } satisfies StateLookup;
 
-  // what the snapshot install and the purge both read and replace, and revert reads
-  const held = { getState, setState, coverageOf: coverage.current, merge };
+  // what the snapshot install and the purge both read and replace, and revert reads; the clock
+  // a snapshot install tells of every stamp it brings
+  const held = { getState, setState, coverageOf: coverage.current, merge, receive: clock.receive };
   const purging = { ...held, unhold: coverage.evict, peerId, parked, folds, hasAdapter };
   const compactDeps = { store, stateStore, acks: fleet.acks, ...docPath.compaction };
   const compaction = createCompaction(compactDeps, coverage, boot?.compacted);
@@ -277,6 +278,7 @@ export function createEngine(options: EngineOptions): Engine {
     persist: (batch) => turn(() => persist(batch, plain)),
     notify,
     docs: options.docs,
+    receive: clock.receive,
   });
 
   const { receiveBatch, ...writes } = createWritePath({

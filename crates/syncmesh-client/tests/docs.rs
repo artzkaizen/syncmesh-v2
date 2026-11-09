@@ -1009,3 +1009,19 @@ fn a_settle_window_shorter_than_an_hour_is_taken_as_an_hour() {
     };
     assert_eq!(d.settles, None, "a minute is inside the hour");
 }
+
+#[test]
+fn a_joiner_whose_clock_runs_behind_stamps_its_replace_after_the_genesis_a_snapshot_brought() {
+    // A's clock reads about 9 s, R's about 3 s: inside the drift bound, so R believes A's stamps
+    let mut a = engine(9, true);
+    write(&mut a, vec![insert()]);
+    let parent = write(&mut a, vec![replace(1)]);
+    let mut r = engine(3, true);
+    r.install_snapshot(a.snapshot(None)).unwrap();
+    assert_eq!(lineage(&r), lineage(&a));
+    let child = write(&mut r, vec![replace(2)]);
+    assert!(
+        child.event.hlc > parent.event.hlc,
+        "a child genesis is stamped after the parent it adopted"
+    );
+}

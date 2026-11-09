@@ -1,5 +1,6 @@
 import type {
   DocColumns,
+  Hlc,
   LineageCellRefused,
   RowKey,
   RowRecord,
@@ -17,6 +18,7 @@ import type { Interest } from "./interest.js";
 
 import { rowsIn } from "./interest.js";
 import { lineageMoves } from "./lineage-moves.js";
+import { rowStamps } from "./snapshot.js";
 
 /**
  * Divergence, detected cheaply and healed by the ordinary merge (RFC-0014). A digest is a **sum**
@@ -146,6 +148,8 @@ export interface RepairDeps {
   readonly notify: (batch: FoldBatch) => void;
   /** The mesh's doc columns: their cells are checked before anything joins, and their moves relabelled. */
   readonly docs?: DocColumns | undefined;
+  /** The engine's clock, told every stamp a record brings in ({@link rowStamps}). */
+  readonly receive?: (hlc: Hlc) => void;
 }
 
 /**
@@ -155,7 +159,7 @@ export interface RepairDeps {
  * never that this peer has seen the events behind it.
  */
 export function createRepairPath(deps: RepairDeps): RepairApi {
-  const { getState, mergeInto, persist, notify, docs } = deps;
+  const { getState, mergeInto, persist, notify, docs, receive } = deps;
   return {
     digest: (interest) => tableDigests(getState(), interest),
     rowDigests: (table, interest) => rowDigests(getState(), table, interest),
@@ -173,6 +177,8 @@ export function createRepairPath(deps: RepairDeps): RepairApi {
       const checked = docs === undefined ? undefined : parseLineageCells(rows, docs);
       if (checked?.isErr() === true) return Result.err(checked.error);
       const before = getState();
+      if (receive !== undefined)
+        for (const row of rows) for (const hlc of rowStamps(row, docs)) receive(hlc);
       for (const { key, record } of records) mergeInto(table, key, record);
       const moves = docs === undefined ? [] : lineageMoves(before, getState(), rows, docs);
       const batch: FoldBatch = {

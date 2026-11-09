@@ -1,5 +1,6 @@
 import type {
   DocColumns,
+  Hlc,
   KeyedRecord,
   LineageCellRefused,
   MergeSpec,
@@ -9,7 +10,7 @@ import type {
   TableName,
 } from "@syncmesh/kernel";
 
-import { keyedRecords, mergeRecord, parseLineageCells } from "@syncmesh/kernel";
+import { keyedRecords, mergeRecord, parseLineageCells, readLineageCell } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
 import type { FoldBatch } from "./engine.js";
@@ -87,6 +88,8 @@ export interface InstallDeps {
   readonly merge?: MergeSpec | undefined;
   /** The mesh's doc columns: their cells are checked before anything joins, and their moves relabelled. */
   readonly docs?: DocColumns | undefined;
+  /** The engine's clock, told every stamp a row brings in ({@link rowStamps}). */
+  readonly receive?: (hlc: Hlc) => void;
 }
 
 /**
@@ -106,13 +109,16 @@ export async function installSnapshot(
   deps: InstallDeps,
   snapshot: Snapshot,
 ): Promise<Result<Installed, LineageCellRefused>> {
-  const { getState, setState, adopt, persist, persistCoverage, notify, merge, docs } = deps;
+  const { getState, setState, adopt, persist, persistCoverage, notify, merge, docs, receive } =
+    deps;
   const checked = docs === undefined ? undefined : parseLineageCells(snapshot.rows, docs);
   if (checked?.isErr() === true) return Result.err(checked.error);
   const before = getState();
   let state = before;
   const writeKeys = new Map<TableName, Set<RowKey>>();
-  for (const { table, key, record } of snapshot.rows) {
+  for (const row of snapshot.rows) {
+    const { table, key, record } = row;
+    if (receive !== undefined) for (const hlc of rowStamps(row, docs)) receive(hlc);
     state = mergeRecord(state, table, key, record, merge);
     const keys = writeKeys.get(table) ?? new Set<RowKey>();
     keys.add(key);
@@ -149,6 +155,24 @@ export const partitionsIn = (snapshot: Snapshot): readonly PartitionKey[] => {
     if (record.partition !== undefined) seen.add(record.partition);
   return [...seen];
 };
+
+/**
+ * Every clock reading a row carries: its write and delete stamps, each cell's stamp, and, in a doc
+ * column's lineage cell, each genesis's stamp and the anchor's. What an engine's clock receives
+ * from a row that joins outside an event, so a genesis it writes next is stamped after every one
+ * it adopted (gaps U21).
+ */
+export function* rowStamps(row: KeyedRecord, docs: DocColumns | undefined): Iterable<Hlc> {
+  const { record } = row;
+  if (record.writeStamp !== undefined) yield record.writeStamp.hlc;
+  if (record.deleteStamp !== undefined) yield record.deleteStamp.hlc;
+  for (const cell of record.cells.values()) yield cell.stamp.hlc;
+  for (const column of docs?.get(row.table)?.keys() ?? []) {
+    const cell = readLineageCell(record.cells.get(column)?.value);
+    for (const genesis of cell.geneses) yield genesis.stamp.hlc;
+    if (cell.settled !== undefined) yield cell.settled.stamp.hlc;
+  }
+}
 
 /** What an engine offers for joining by state rather than by history (RFC-0019). */
 export interface SnapshotApi {
