@@ -40,7 +40,7 @@ const FACTOR = 4;
  */
 const TOLERANCE = 1.6;
 
-export interface ScalePath<Fixture> {
+export interface ScalePath<Fixture, Out> {
   readonly name: string;
   /**
    * Why this class is the right one — quoted back verbatim when the path fails.
@@ -55,10 +55,15 @@ export interface ScalePath<Fixture> {
   readonly sizes: readonly number[];
   /** Built once per size and excluded from the measurement. */
   readonly prepare: (size: number) => Fixture | Promise<Fixture>;
-  /** The one call under test. Everything else belongs in `prepare`; the result is discarded. */
-  readonly run: (fixture: Fixture) => void;
+  /**
+   * The one call under test. Everything else belongs in `prepare`; the result is discarded, and a
+   * promise is awaited, so an async path is timed to its settlement.
+   */
+  readonly run: (fixture: Fixture) => Out;
   /** Per-call ceiling at the largest size, in microseconds. Absent means the curve is the whole claim. */
   readonly budget?: number;
+  /** Closes what `prepare` opened — a room's timers, a socket — once the size is measured. */
+  readonly release?: (fixture: Fixture) => void | Promise<void>;
 }
 
 /**
@@ -75,12 +80,21 @@ export interface ScaleRun {
   readonly growth: Growth;
   readonly sizes: readonly number[];
   readonly budget?: number | undefined;
-  /** Prepares the fixture for `size` — untimed — and returns the one call to measure. */
-  readonly at: (size: number) => Promise<() => void>;
+  /** Prepares the fixture for `size` — untimed — and returns the one call to measure, and its release. */
+  readonly at: (size: number) => Promise<Prepared>;
 }
 
-/** Declares one path. The generic is inferred from `prepare` and never written at a call site. */
-export const path = <Fixture>(declared: ScalePath<Fixture>): ScaleRun => ({
+/** The call under test, erased: `undefined` when it ran synchronously, its settlement when it did not. */
+export type Call = () => Promise<void> | undefined;
+
+/** One size's fixture, closed over: the call to time, and what to run once it has been timed. */
+export interface Prepared {
+  readonly call: Call;
+  readonly release: () => Promise<void>;
+}
+
+/** Declares one path. The generics are inferred from `prepare` and `run` and never written at a call site. */
+export const path = <Fixture, Out>(declared: ScalePath<Fixture, Out>): ScaleRun => ({
   name: declared.name,
   because: declared.because,
   growth: declared.growth,
@@ -88,8 +102,14 @@ export const path = <Fixture>(declared: ScalePath<Fixture>): ScaleRun => ({
   budget: declared.budget,
   at: async (size) => {
     const fixture = await declared.prepare(size);
-    return () => {
-      declared.run(fixture);
+    return {
+      call: () => {
+        const out = declared.run(fixture);
+        return out instanceof Promise ? out.then(() => undefined) : undefined;
+      },
+      release: async () => {
+        await declared.release?.(fixture);
+      },
     };
   },
 });
@@ -100,29 +120,78 @@ interface Measured {
   readonly each: number;
 }
 
+/** Calls `run` `times` times, awaiting each answer that is a promise; nanoseconds elapsed. */
+const timed = async (run: Call, times: number): Promise<number> => {
+  const started = Bun.nanoseconds();
+  for (let i = 0; i < times; i += 1) {
+    const settling = run();
+    if (settling !== undefined) await settling;
+  }
+  return Bun.nanoseconds() - started;
+};
+
 /**
- * The cost of one call, as the **fastest** of several rounds rather than the mean.
+ * How long one timed round lasts. Long enough that a timer read, a scheduler tick or one GC pause
+ * is a small fraction of it: at 0.01 µs a call, a round of a few thousand calls is a few
+ * microseconds, and one preemption inside it reads as a 3× regression.
+ */
+const ROUND_NS = 10_000_000;
+
+/** The most calls one round makes, however cheap the call: a ceiling on a round's length. */
+const MAX_CALLS = 4_000_000;
+
+/** Rounds per size. The fastest is kept; more rounds give a busy machine more chances to be quiet. */
+const ROUNDS = 7;
+
+/**
+ * Below this, per call, two sizes are the same cost as far as this gate can tell.
+ *
+ * A constant path at 10 ns and one at 30 ns differ by the jitter of the loop around them, not by
+ * anything the data did; the regressions this gate exists for are tens of microseconds at the
+ * largest size (`lastSeq` walking 16,000 events took 70 µs). Ratios are taken over costs raised to
+ * this floor, so a path too cheap to measure holds its shape by definition.
+ */
+const NOISE_FLOOR_US = 0.25;
+
+/**
+ * Each size's cost per call in microseconds, as the **fastest** of {@link ROUNDS} rounds.
  *
  * A microbenchmark's slow samples are the machine's, not the code's: a GC pause, a steal, another
  * package's test suite landing on the same core. Those only ever add time, so the minimum is the
- * closest this can get to what the code costs when nothing is in its way — and it is far steadier
- * across runs than a mean, which is what a gate needs to not be flaky.
+ * closest this can get to what the code costs when nothing is in its way.
+ *
+ * The sizes are **interleaved**, round by round, rather than measured one after another: a burst
+ * of load then lands on every size alike instead of on whichever size happened to be running,
+ * which is what turned a quiet 1× into a reported 1.8× on a shared runner.
  */
-const measure = (run: () => void, iterations: number): number => {
-  let best = Infinity;
-  for (let round = 0; round < 5; round += 1) {
-    for (let i = 0; i < Math.min(iterations, 100); i += 1) run();
-    const started = Bun.nanoseconds();
-    for (let i = 0; i < iterations; i += 1) run();
-    const each = (Bun.nanoseconds() - started) / iterations / 1_000;
-    if (each < best) best = each;
+const measure = async (calls: readonly Call[]): Promise<readonly number[]> => {
+  const iterations: number[] = [];
+  for (const run of calls) {
+    // doubled until a round is long enough to read, which also warms the path: a probe of three
+    // calls overstates a 10 ns call tenfold and would size its rounds a tenth as long as meant
+    let times = 3;
+    let took = await timed(run, times);
+    while (took < ROUND_NS / 4 && times < MAX_CALLS) {
+      times *= 2;
+      took = await timed(run, times);
+    }
+    iterations.push(
+      Math.min(Math.max(Math.ceil((times * ROUND_NS) / Math.max(took, 1)), 3), MAX_CALLS),
+    );
+  }
+  const best = calls.map(() => Infinity);
+  for (let round = 0; round < ROUNDS; round += 1) {
+    for (const [index, run] of calls.entries()) {
+      const times = iterations[index] ?? 3;
+      // a full collection before each round, untimed: otherwise a round over a large fixture
+      // pays for collecting that fixture's heap, which grows with the size and reads as growth
+      Bun.gc(true);
+      const each = (await timed(run, times)) / times / 1_000;
+      if (each < (best[index] ?? Infinity)) best[index] = each;
+    }
   }
   return best;
 };
-
-/** Iterations chosen so a round lasts long enough to be a measurement rather than a timer read. */
-const iterationsFor = (each: number): number =>
-  each > 500 ? 50 : each > 50 ? 500 : each > 5 ? 5_000 : 50_000;
 
 export interface Finding {
   readonly name: string;
@@ -140,19 +209,27 @@ export interface Finding {
 const fixed = (n: number, places = 2): string => (n >= 1000 ? n.toFixed(0) : n.toFixed(places));
 
 async function walk(declared: ScaleRun): Promise<Finding> {
-  const measured: Measured[] = [];
-  for (const size of declared.sizes) {
-    const run = await declared.at(size);
-    // one untimed call to size the loop, so a 900 µs path is not run 50,000 times
-    const probe = measure(run, 3);
-    measured.push({ size, each: measure(run, iterationsFor(probe)) });
-  }
+  const prepared: Prepared[] = [];
+  for (const size of declared.sizes) prepared.push(await declared.at(size));
+  const costs = await measure(prepared.map((p) => p.call));
+  for (const p of prepared) await p.release();
+  const measured = declared.sizes.map((size, index) => ({ size, each: costs[index] ?? Infinity }));
 
+  const floored = (each: number) => Math.max(each, NOISE_FLOOR_US);
   const ratios = measured
     .slice(1)
-    .map((point, index) => point.each / (measured[index]?.each ?? point.each));
+    .map((point, index) => floored(point.each) / floored(measured[index]?.each ?? point.each));
   const expected = declared.growth === "constant" ? 1 : FACTOR;
   const worst = ratios.length === 0 ? expected : Math.max(...ratios);
+  // first size to last, against the claim compounded over every step: one fast outlier at a
+  // middle size inflates the step after it, and leaves this untouched
+  const first = measured[0];
+  const overall =
+    first === undefined || measured.length < 2
+      ? 1
+      : floored(measured.at(-1)?.each ?? first.each) /
+        floored(first.each) /
+        expected ** (measured.length - 1);
   const last = measured.at(-1);
   const overBudget =
     declared.budget !== undefined && last !== undefined && last.each > declared.budget
@@ -168,8 +245,28 @@ async function walk(declared: ScaleRun): Promise<Finding> {
     expected,
     worst,
     overBudget,
-    failed: worst > expected * TOLERANCE || overBudget !== undefined,
+    // a wrong algorithm breaks both: every step past the claim, and the whole curve with it
+    failed: (worst > expected * TOLERANCE && overall > TOLERANCE) || overBudget !== undefined,
   };
+}
+
+/**
+ * How many times a path is walked before it is called a regression: once, and again from fresh
+ * fixtures each time it fails. A real regression fails every walk — the copy-per-write fold is
+ * 4× on every machine on every attempt — while a burst of load on a shared runner does not land
+ * on the same path three times running.
+ */
+const ATTEMPTS = 3;
+
+/** Walks a path until it holds or has failed {@link ATTEMPTS} times; the last finding, and how many walks. */
+async function settle(declared: ScaleRun): Promise<Finding & { readonly attempts: number }> {
+  let attempts = 1;
+  let found = await walk(declared);
+  while (found.failed && attempts < ATTEMPTS) {
+    attempts += 1;
+    found = await walk(declared);
+  }
+  return { ...found, attempts };
 }
 
 /**
@@ -181,8 +278,8 @@ async function walk(declared: ScaleRun): Promise<Finding> {
 /* oxlint-disable no-console -- this is the reporter: its output to a terminal and a CI log is
    the whole product, and a gate that wrote its findings anywhere else would not be read */
 export async function runScale(paths: readonly ScaleRun[]): Promise<void> {
-  const findings: Finding[] = [];
-  for (const declared of paths) findings.push(await walk(declared));
+  const findings: (Finding & { readonly attempts: number })[] = [];
+  for (const declared of paths) findings.push(await settle(declared));
 
   for (const found of findings) {
     const mark = found.failed ? "FAIL" : "ok  ";
@@ -193,7 +290,8 @@ export async function runScale(paths: readonly ScaleRun[]): Promise<void> {
       );
     const curve = found.ratios.map((r) => `${r.toFixed(1)}×`).join(", ");
     console.log(
-      `        growth ${curve || "—"} per ${FACTOR}× of size; ${found.expected}× is the claim`,
+      `        growth ${curve || "—"} per ${FACTOR}× of size; ${found.expected}× is the claim` +
+        (found.attempts > 1 ? ` (walk ${found.attempts} of ${ATTEMPTS})` : ""),
     );
     if (found.failed) {
       console.log(`        ${found.because}`);

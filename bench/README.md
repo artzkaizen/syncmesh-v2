@@ -1,7 +1,7 @@
 # bench
 
 Benchmarks that back the numbers quoted in the RFCs and decisions. `bun run bench` at the root runs
-`storage`; add one script per benchmark here.
+`storage`; `scale` is the gate `bun run ci` runs; add one script per benchmark here.
 
 ## scale (`src/scale/`) — the one that fails the build
 
@@ -24,8 +24,31 @@ and far too slow. **The class catches the wrong algorithm; the budget catches th
 Each path carries a `because`: the sentence quoted back when it fails, so a regression reads as a
 diagnosis rather than as two numbers that disagree.
 
-Adding one is a `path({ name, growth, because, sizes, prepare, run, budget? })` in
-`src/scale/index.ts`. Put everything but the single call under test in `prepare`.
+Adding one is a `path({ name, growth, because, sizes, prepare, run, budget?, release? })` in
+`src/scale/index.ts`. Put everything but the single call under test in `prepare`; a `run` that
+returns a promise is timed to its settlement, and `release` closes what `prepare` opened.
+
+### How it stays quiet on a shared runner
+
+The gate flaked on CI (`engine · memory store lastSeq`, 0.01 → 0.03 µs read as 1.8×), and a gate
+that cries wolf gets turned off. What changed (gaps U8):
+
+- **Rounds are timed, not counted.** Each size's call count is doubled until a round lasts
+  about 10 ms, so a timer read or one preemption is a small fraction of it. A three-call probe
+  used to size a 10 ns call's rounds at a tenth of that.
+- **Sizes are interleaved.** Seven rounds, each timing every size once, and the fastest kept per
+  size: a burst of load lands on every size alike instead of on whichever was running.
+- **A collection before every round.** Untimed, so a round over the largest fixture does not
+  pay for collecting a heap that grows with the size — which reads exactly like growth.
+- **A noise floor.** Ratios are taken over costs raised to 0.25 µs. Below that two sizes are the
+  same cost as far as a loop can tell; the regressions this exists for are tens of µs.
+- **The step and the whole curve.** A path fails its class only when its worst step and its
+  first-to-last growth (against the claim compounded over the steps) both break it. One fast
+  outlier at a middle size inflates the step after it and leaves the whole curve alone; a wrong
+  algorithm breaks both.
+- **A failure is walked again.** A path that fails is measured twice more from fresh fixtures and
+  regresses only if every walk fails. A wrong algorithm fails every time; a noisy neighbour does
+  not land on the same path three times running.
 
 ### Every path holds, and `bun run ci` runs the gate
 
@@ -40,6 +63,19 @@ growth column is the two consecutive 4× ratios.
 | `wire · encodeCbor`                       | linear in bytes, ≤ 200 µs | **3,767 µs** at 256 KiB         | 37 µs at 256 KiB (3.3×, 4.2×) |
 | `wire · sealPayload`                      | linear in bytes           | 3.7×, 3.6× — holds              | 3.4×, 3.9× — holds            |
 | `kernel · mergeCells`                     | constant in columns       | 0.39 → 1.19 µs (**1.4×, 2.1×**) | 0.66 → 0.42 µs (0.7×, 1.0×)   |
+
+Three more hot paths, added 2026-11-09 (gaps U8), same machine:
+
+| path                                      | claim                              | measured                             |
+| ----------------------------------------- | ---------------------------------- | ------------------------------------ |
+| `engine · receive one event`              | constant in rows held, ≤ 1,000 µs  | 47 → 48 µs (1.0×, 1.1×)              |
+| `wire · encodeEventCore (changes)`        | linear in changes, ≤ 5,000 µs      | 17 → 228 µs (3.5×, 3.7×)             |
+| `relay · fan-out one event (subscribers)` | linear in subscribers, ≤ 10,000 µs | 628 → 1,146 µs at 1,024 (1.1×, 1.6×) |
+
+The fan-out is timed from the author's frame to the last subscriber's send, over in-process
+sockets: verifying the signature and appending to the log once are most of it, so the curve is
+flat and the budget is the sharper claim. A room that scanned every client per subscriber went to
+1.3 s at 1,024 and failed both.
 
 What fixed them:
 
