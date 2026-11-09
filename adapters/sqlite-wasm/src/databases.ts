@@ -14,9 +14,15 @@ import { ATTACHED_LOG, statePath } from "@syncmesh/storage";
 import type { HeldPool, PoolFailure } from "./pool.js";
 import type { OpenedDatabase, OptionalVfs, VfsOptions, WasmStorage } from "./vfs.js";
 
-import { OpfsUnavailable, dropLease, holdPool } from "./pool.js";
+import { OpfsUnavailable, dropLease, holdPool, releaseWhenIdle } from "./pool.js";
 
 const dbFile = (name: string) => `${encodeURIComponent(name)}.db`;
+
+/**
+ * The log's URI on `vfs`. The VFS name is escaped, since a pool's carries the app's directory and
+ * an `&` or `#` in it would end the parameter early; SQLite decodes it again before it looks it up.
+ */
+const logUri = (path: string, vfs: string) => `file:${path}?vfs=${encodeURIComponent(vfs)}`;
 
 /**
  * Attaches this database's log beside it, under the name its tables are written against.
@@ -29,7 +35,9 @@ const dbFile = (name: string) => `${encodeURIComponent(name)}.db`;
  * That failure has no symptom until a reload.
  */
 const attached = (db: Database, path: string, vfs: string): Database => {
-  db.exec(`ATTACH DATABASE 'file:${path}?vfs=${vfs}' AS ${ATTACHED_LOG}`);
+  // bound rather than spliced: a store's name may carry a quote, and a pool's VFS name the app's
+  // directory, so neither is SQL
+  db.exec({ sql: `ATTACH DATABASE ? AS ${ATTACHED_LOG}`, bind: [logUri(path, vfs)] });
   return db;
 };
 
@@ -150,13 +158,11 @@ const pairOn = (
 
 export const memoryDatabase = (sqlite3: Sqlite3Static, options: VfsOptions): OpenedDatabase => {
   const log = `/${dbFile(options.name)}`;
-  const logUri = `file:${log}?vfs=memdb`;
   // the derived half is a second memory database, kept open for the same reason the log is
   const stateUri = `file:${statePath(log, options.schema)}?vfs=memdb`;
-  for (const held of [stateUri, logUri])
+  for (const held of [stateUri, logUri(log, "memdb")])
     if (!keepers.has(held)) keepers.set(held, new sqlite3.oo1.DB(held, "c"));
-  const db = new sqlite3.oo1.DB(stateUri, "c");
-  db.exec(`ATTACH DATABASE '${logUri}' AS ${ATTACHED_LOG}`);
+  const db = attached(new sqlite3.oo1.DB(stateUri, "c"), log, "memdb");
   return { db, storage: "memory", release: () => {} };
 };
 
@@ -173,9 +179,12 @@ function releaseOnce(pool: HeldPool, directory: string): () => void {
     if (released) return;
     released = true;
     pool.open -= 1;
-    if (pool.open > 0) return;
-    pool.util.pauseVfs();
-    dropLease(directory);
+    // an open of this directory under way may take a reference before the pool is given back
+    releaseWhenIdle(directory, () => {
+      if (pool.open > 0) return;
+      pool.util.pauseVfs();
+      dropLease(directory);
+    });
   };
 }
 

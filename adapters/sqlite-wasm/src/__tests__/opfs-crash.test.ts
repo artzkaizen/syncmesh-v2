@@ -72,8 +72,8 @@ beforeAll(async () => {
       return new Response(Bun.file(join(out, path === "/" ? "index.html" : path)));
     },
   });
-  // a profile on disk, as a browser's own is: an off-the-record context keeps OPFS in memory, and
-  // there a terminated worker's last writes do not all land (D39, "OPFS in a private window")
+  // a profile on disk, as a browser's own is, so the files a killed writer leaves are the ones a
+  // browser keeps; an off-the-record context keeps OPFS in memory, which is not what devices run
   profile = await mkdtemp(join(tmpdir(), "syncmesh-opfs-profile-"));
   context = await chromium.launchPersistentContext(profile);
   page = await context.newPage();
@@ -116,6 +116,9 @@ const named = {
     "open: the log keeps a WAL like the derived half, so a write cut off is recovered (U44)",
     "open: a log that will not attach is refused as a value, and the pool goes back",
     "open: two directories in one thread are two pools, not one under two names",
+    "open: two databases opened at once in one directory share its pool",
+    "open: a close that lands while another open grows the pool leaves that one the lease",
+    "open: a directory whose name is not SQL or URI safe still opens its own pool",
   ],
 };
 

@@ -82,3 +82,40 @@ describe("what the page is told when it cannot have a durable database", () => {
     await second.close?.();
   });
 });
+
+describe("what the host answers whatever its answer does", () => {
+  test("a store whose name carries a quote opens, rather than breaking the ATTACH", async () => {
+    const quoted = (
+      await host.open({
+        name: scoped("o'clock"),
+        schema: "test",
+        storage: "memory",
+        directory: "/syncmesh",
+        capacity: 8,
+      })
+    ).unwrap();
+    await quoted.run("CREATE TABLE syncmesh.kept (a TEXT)");
+    expect(await quoted.all("SELECT name FROM syncmesh.sqlite_master")).toEqual([["kept"]]);
+    await quoted.close?.();
+  });
+
+  test("a request whose answer throws is still answered, so the page is not left waiting", async () => {
+    const replies: unknown[] = [];
+    const port = {
+      postMessage: (message: unknown) => void replies.push(message),
+      onmessage: null as ((event: MessageEvent) => void) | null,
+    };
+    serveSqlite(port);
+    // a request that throws the moment the host reads what it asks for
+    const request = {
+      id: 7,
+      get kind(): never {
+        throw new Error("unreadable request");
+      },
+    };
+    port.onmessage?.(new MessageEvent("message", { data: request }));
+    // the reply is a few promise turns away; a macrotask is past all of them
+    await new Promise((next) => setImmediate(next));
+    expect(replies).toEqual([expect.objectContaining({ id: 7, ok: false })]);
+  });
+});

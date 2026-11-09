@@ -199,8 +199,62 @@ const openCases = (death: Death) => {
         if (seen.length > 0) throw new Error("the second directory opened the first one's log");
       },
     },
+    {
+      name: "open: two databases opened at once in one directory share its pool",
+      run: async () => {
+        // a directory of its own, so no case before this one has woken its pool
+        const directory = `/syncmesh-together-${crypto.randomUUID()}`;
+        const [first, second] = await Promise.all([
+          openIn(directory, "first"),
+          openIn(directory, "second"),
+        ]);
+        if (first.isErr() || second.isErr())
+          throw new Error(`refused at once: ${told(first.isErr() ? first.error : second.error)}`);
+        await first.value.run("CREATE TABLE syncmesh.kept (a TEXT)");
+        await second.value.run("CREATE TABLE syncmesh.kept (a TEXT)");
+        await first.value.close?.();
+        await second.value.close?.();
+      },
+    },
+    {
+      name: "open: a close that lands while another open grows the pool leaves that one the lease",
+      run: async () => {
+        const directory = `/syncmesh-grown-${crypto.randomUUID()}`;
+        const first = (await openIn(directory, "first", SLOTS / 4)).unwrap();
+        // the second asks for more slots than the pool has, so its open is still adding them
+        // when the last store before it closes
+        const growing = openIn(directory, "grown");
+        await new Promise((wake) => setTimeout(wake, GROWING));
+        await first.close?.();
+        const grown = await growing;
+        if (grown.isErr()) throw new Error(`refused beside a close: ${told(grown.error)}`);
+        const held = (await navigator.locks.query()).held ?? [];
+        const leased = held.some((lock) => lock.name === `syncmesh-opfs:${directory}/pool`);
+        await grown.value.run("CREATE TABLE syncmesh.kept (a TEXT)");
+        await grown.value.close?.();
+        if (!leased) throw new Error("the open store holds the pool without its lease");
+      },
+    },
+    {
+      name: "open: a directory whose name is not SQL or URI safe still opens its own pool",
+      run: async () => {
+        // the pool's VFS name carries the directory, and the ATTACH names the VFS
+        const directory = `/syncmesh-it's & #${crypto.randomUUID()}`;
+        const opened = await openIn(directory, "odd");
+        if (opened.isErr()) throw new Error(`refused: ${told(opened.error)}`);
+        await opened.value.run("CREATE TABLE syncmesh.kept (a TEXT)");
+        await opened.value.close?.();
+      },
+    },
   ];
 };
+
+/** Long enough for an open to be past the lease and into adding slots, short of finishing them. */
+const GROWING = 20;
+
+/** A store of its own under `directory`, refused at once if another context holds the pool. */
+const openIn = (directory: string, name: string, capacity = SLOTS) =>
+  wasmSqliteDriver({ name, schema: CRASH_SCHEMA, storage: "opfs-sahpool", directory, capacity });
 
 const suites = {
   crash: (death: Death) => crashTests(harness(death)),

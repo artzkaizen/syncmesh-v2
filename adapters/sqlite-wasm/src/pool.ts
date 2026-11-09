@@ -201,16 +201,19 @@ const leaseOn = (
   });
 };
 
-/** Idempotent within a thread, because two scoped stores (D07) share one pool and one lease. */
+/**
+ * Idempotent within a thread, because two scoped stores (D07) share one pool and one lease.
+ * Answers whether this call is the one that took it, which is the call that may give it back.
+ */
 const takeLease = async (
   directory: string,
   when: WhenPoolHeld,
-): Promise<Result<undefined, OpfsPoolHeld>> => {
-  if (leases.has(directory)) return Result.ok(undefined);
+): Promise<Result<boolean, OpfsPoolHeld>> => {
+  if (leases.has(directory)) return Result.ok(false);
   const lease = await leaseOn(directory, when);
   if (lease.isErr()) return lease;
   leases.set(directory, lease.value);
-  return Result.ok(undefined);
+  return Result.ok(true);
 };
 
 export const dropLease = (directory: string) => {
@@ -271,7 +274,6 @@ function poolIn(
 ): Promise<Result<HeldPool, PoolFailure>> {
   const current = pools.get(directory);
   if (current !== undefined) return current;
-  // a refused install is not remembered: the tab holding it may let go a second later
   // a refused install is remembered under its name unless told otherwise, and the next open would
   // be handed the same refusal however long it waited; the option is documented and untyped
   const options = {
@@ -392,7 +394,56 @@ const awake = async (directory: string) => {
  * `reserveMinimumCapacity` is the call that means "at least this many": it grows a pool that is
  * short and returns without side effects on one that is not.
  */
-export async function holdPool(
+export function holdPool(
+  install: NonNullable<OptionalVfs["installOpfsSAHPoolVfs"]>,
+  directory: string,
+  options: VfsOptions,
+): Promise<Result<HeldPool, PoolFailure>> {
+  return inTurn(directory, () => takePool(install, directory, options));
+}
+
+/**
+ * The opens of each directory under way on this thread, as the promise the last one settles.
+ *
+ * **One open of a directory at a time.** Each open asks the lease, the probe, the install, the
+ * wake and the reserve in turn, with an await between each, and every one of them reads what the
+ * one before it left. Two opens of one directory run side by side (two scoped stores opened by
+ * `Promise.all`, both answered by one worker) both asked the Web Lock before either had it, and the
+ * second was refused the lease its own thread was taking; under `"wait"` it queued behind it for
+ * as long as the first store stayed open. Past the lease, the second found no pool yet, probed the
+ * slots the first was installing on, and counted the first one's handles as another context's.
+ */
+const turns = new Map<string, Promise<unknown>>();
+
+const inTurn = <T>(directory: string, step: () => Promise<T>): Promise<T> => {
+  const taken = (turns.get(directory) ?? Promise.resolve()).then(step);
+  // settled either way, so a step that threw does not stop every open after it
+  const done = taken.then(
+    () => undefined,
+    () => undefined,
+  );
+  turns.set(directory, done);
+  void done.then(() => {
+    if (turns.get(directory) === done) turns.delete(directory);
+  });
+  return taken;
+};
+
+/**
+ * Gives `directory`'s pool back to the origin once no open of it is under way, and now if none is.
+ *
+ * A close that lands between an open's steps would otherwise pause the pool and drop the lease the
+ * open has just found held and counted on. Run after it instead, it finds the open's reference and
+ * leaves the pool alone.
+ */
+export const releaseWhenIdle = (directory: string, release: () => void) => {
+  // deferred, a give-back that throws has no caller left to answer; `pairOn` closes what it opened
+  // so that `pauseVfs` has no open handle to throw over
+  if (turns.has(directory)) void inTurn(directory, async () => release());
+  else release();
+};
+
+async function takePool(
   install: NonNullable<OptionalVfs["installOpfsSAHPoolVfs"]>,
   directory: string,
   options: VfsOptions,
@@ -400,16 +451,20 @@ export async function holdPool(
   const when = options.whenHeld ?? "refuse";
   const leased = await takeLease(directory, when);
   if (leased.isErr()) return leased;
+  // a lease this call did not take is another open's, which is still using it
+  const giveBack = () => {
+    if (leased.value) dropLease(directory);
+  };
   if (!(await awake(directory))) {
     const free = await reaped(directory, when);
     if (free.isErr()) {
-      dropLease(directory);
+      giveBack();
       return free;
     }
   }
   const held = await poolIn(install, directory, options.capacity);
   if (held.isErr()) {
-    dropLease(directory);
+    giveBack();
     return held;
   }
   const pool = held.value;
@@ -421,7 +476,7 @@ export async function holdPool(
       catch: poolFailure(directory),
     });
     if (woken.isErr()) {
-      dropLease(directory);
+      giveBack();
       return woken;
     }
   }
@@ -430,7 +485,7 @@ export async function holdPool(
     catch: poolFailure(directory),
   });
   if (reserved.isErr()) {
-    dropLease(directory);
+    giveBack();
     return reserved;
   }
   pool.open += 1;
