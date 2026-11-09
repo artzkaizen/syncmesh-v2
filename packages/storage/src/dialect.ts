@@ -170,6 +170,14 @@ export interface SchemaSql {
   readonly readGuard: string;
   /** Writes it. */
   readonly writeGuard: string;
+  /**
+   * A row when the database the app's tables live in holds an install, none when it does not.
+   *
+   * The fingerprint is kept with the log, so on SQLite it outlives a state file deleted on its
+   * own; a log that says "installed" over an empty state file would otherwise fold into tables
+   * that are not there.
+   */
+  readonly installed: string;
 }
 
 /**

@@ -9,7 +9,7 @@ import {
   tableDdl,
   tablesProjection,
 } from "@syncmesh/storage";
-import { Temporal } from "@syncmesh/temporal";
+import { Temporal, durationMs } from "@syncmesh/temporal";
 import { Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { mkdirSync } from "node:fs";
@@ -29,6 +29,12 @@ export interface BackendOptions {
   readonly relayUrl?: string;
   /** Called once per grant decision, for a console or a test to watch. */
   readonly onGrant?: (line: string) => void;
+  /**
+   * How long opening waits for the relay's hello before it carries on without one; the relay
+   * transport's own default (a second) when absent. A check that needs the room open on the
+   * relay's side before it goes on passes a longer one.
+   */
+  readonly readyWithin?: Temporal.Duration;
 }
 
 /**
@@ -80,7 +86,12 @@ export async function openBackend(options: BackendOptions) {
     storage: sqlite({ store, stateStore }),
     // this process is the room's root of trust: it holds the issuer key and answers grant requests
     trust: { issuer: identity.peerId, issuerKey: identity },
-    transports: [relayTransport({ dial: webSocketDial(dialing) })],
+    transports: [
+      relayTransport({
+        dial: webSocketDial(dialing),
+        ...(options.readyWithin && { forceReadyAfter: durationMs(options.readyWithin) }),
+      }),
+    ],
     // flow A: an ungranted device asked the room to exist. A real approval screen goes here —
     // the invite is the only thing binding this request to someone who was actually invited.
     admission: ({ peerId, invite }) => {

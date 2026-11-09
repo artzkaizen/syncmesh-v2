@@ -20,6 +20,7 @@
     "@syncmesh/engine": "workspace:*",
     "@syncmesh/kernel": "workspace:*",
     "@syncmesh/postgres": "workspace:*",
+    "@syncmesh/relay": "workspace:*",
     "@syncmesh/result": "workspace:*",
     "@syncmesh/schema": "workspace:*",
     "@syncmesh/sqlite-bun": "workspace:*",

@@ -5,6 +5,10 @@
   "description": "The two hosting shapes you run yourself: a relay embedded in a backend process, and a fleet behind a load balancer",
   "type": "module",
   "exports": {
+    "./rounds/practice": {
+      "@syncmesh/source": "./src/rounds/practice.ts",
+      "default": "./src/rounds/practice.ts"
+    },
     "./rounds/schema": {
       "@syncmesh/source": "./src/rounds/schema.ts",
       "default": "./src/rounds/schema.ts"
@@ -17,6 +21,7 @@
   "scripts": {
     "device": "bun --conditions=@syncmesh/source src/embedded/device.ts",
     "fleet": "docker compose -f src/fleet/compose.yaml up --build",
+    "fleet:check": "bun --conditions=@syncmesh/source src/fleet/check.ts",
     "rounds": "bun --conditions=@syncmesh/source src/rounds/device.ts",
     "server": "bun --conditions=@syncmesh/source src/embedded/server.ts"
   },

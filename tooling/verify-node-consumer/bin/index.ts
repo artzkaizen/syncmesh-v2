@@ -4,8 +4,11 @@
  * The consumer check the test suite cannot give us: Bun runs every test, and Bun tolerates what
  * Node rejects — extensionless imports, `bun:*` at the top level, a missing `exports` entry.
  * So: pack what would ship, install the tarballs into an empty project, and `import()` each
- * package with real `node`. The client gets one step more: open a mesh with no `store` so the
- * platform default resolves to the node adapter on Node.
+ * package with real `node` (and with `bun`, the packages that declare only `engines.bun`). The
+ * client gets one step more under each runtime: a durable round trip over the platform's default
+ * store, in three processes — write, reopen and read back, then delete the state and refold it
+ * from the log — so `@syncmesh/sqlite-node` is proved under Node and `@syncmesh/sqlite-bun` under
+ * Bun, each from its packed tarball.
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -71,16 +74,49 @@ const publishable = (): readonly Publishable[] =>
 const run = (command: string, args: readonly string[], cwd: string): string =>
   execFileSync(command, [...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
-/** `import()` in a fresh node process; the failure text is the finding. */
-const importWithNode = (cwd: string, script: string): string | undefined => {
-  const result = spawnSync("node", ["--input-type=module", "-e", script], {
+/** The runtimes a consumer imports with; `bun` for the packages that declare only `engines.bun`. */
+type Runtime = "node" | "bun";
+
+const EVAL = {
+  node: ["--input-type=module", "-e"],
+  bun: ["-e"],
+} as const satisfies Record<Runtime, readonly string[]>;
+
+/** How long one step may run before it is a finding: a step that never exits is one. */
+const STEP_TIMEOUT_MS = 120_000;
+
+/**
+ * Runs `script` as an ES module in a fresh process of `runtime`; the failure text is the finding.
+ * A runtime that cannot start, and a step killed at {@link STEP_TIMEOUT_MS}, say so.
+ */
+const evaluate = (runtime: Runtime, cwd: string, script: string): string | undefined => {
+  const result = spawnSync(runtime, [...EVAL[runtime], script], {
     cwd,
     encoding: "utf8",
+    timeout: STEP_TIMEOUT_MS,
   });
-  return result.status === 0 ? undefined : (result.stderr || result.stdout).trim();
+  if (result.error !== undefined) return `${runtime}: ${result.error.message}`;
+  if (result.status === 0) return undefined;
+  const said = (result.stderr || result.stdout).trim();
+  return result.signal === null ? said : `${runtime} killed by ${result.signal}\n${said}`.trim();
 };
 
-const clientSmoke = `
+/**
+ * One step of the durable round trip, as a script for a fresh process.
+ *
+ * The mesh opens with `sqlite({ dir })` and no driver, so the client picks the platform's default
+ * store itself: `@syncmesh/sqlite-node` under Node, `@syncmesh/sqlite-bun` under Bun, each
+ * resolved from the installed tarball. `adapter` is imported by name as well, so a package whose
+ * own entry does not load fails here and not only through the client's dynamic import.
+ *
+ * - `write` writes one row and stops the mesh.
+ * - `reopen` opens the same directory in a new process and reads the row back, then writes
+ *   another: the state file and the log both survived the process.
+ * - `refold` deletes the state files first, so the rows can only come back from the durable log.
+ */
+const durableStep = (adapter: string, step: "write" | "reopen" | "refold") => `
+  await import(${JSON.stringify(adapter)});
+  const { readdirSync, rmSync } = await import("node:fs");
   const { sqlite } = await import("@syncmesh/client");
   // the subpath too: an exports entry Node cannot resolve is exactly what Bun would forgive
   const { createMesh } = await import("@syncmesh/client/internal");
@@ -90,14 +126,49 @@ const clientSmoke = `
   const notes = sqliteTable("notes", { id: text().primaryKey(), body: text().notNull() });
   const schema = syncSchema({ tables: { notes: { columns: { id: t.text().primaryKey(), body: t.text() } } } });
   const identity = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 7 + i)).unwrap();
+  const step = ${JSON.stringify(step)};
+  if (step === "refold") {
+    const states = readdirSync("./data").filter((file) => file.includes(".state@"));
+    if (states.length === 0) throw new Error("no state file beside the log: " + readdirSync("./data").join(", "));
+    for (const file of states) rmSync("./data/" + file);
+  }
   const mesh = (
     await createMesh({ schema, identity, storage: sqlite({ dir: "./data" }), trust: { authority: identity.peerId } })
   ).unwrap();
   const { db } = mesh.on().unwrap();
-  await db.insert(notes).values({ id: "n1", body: "from node" });
-  if ((await db.select().from(notes)).length !== 1) throw new Error("the row did not come back");
+  const held = async () => (await db.select().from(notes)).map((row) => row.id).sort().join(",");
+  const want = { write: "", reopen: "n1", refold: "n1,n2" }[step];
+  if ((await held()) !== want) throw new Error(step + ": found [" + (await held()) + "], wanted [" + want + "]");
+  if (step === "write") await db.insert(notes).values({ id: "n1", body: "from " + ${JSON.stringify(adapter)} });
+  if (step === "reopen") await db.insert(notes).values({ id: "n2", body: "after a reopen" });
+  const after = { write: "n1", reopen: "n1,n2", refold: "n1,n2" }[step];
+  if ((await held()) !== after) throw new Error(step + ": the write did not come back");
   await mesh.stop();
 `;
+
+/** The durable round trip under one runtime, each step in its own process over one directory. */
+const durableRoundTrip = (
+  runtime: Runtime,
+  adapter: string,
+  project: string,
+): string | undefined => {
+  const dir = mkdtempSync(join(project, `durable-${runtime}-`));
+  try {
+    for (const step of ["write", "reopen", "refold"] as const) {
+      const failure = evaluate(runtime, dir, durableStep(adapter, step));
+      if (failure !== undefined) return `${step}: ${failure}`;
+    }
+    return undefined;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+/** Which adapter each runtime's default store is, and so which one its round trip proves. */
+const DEFAULT_STORE = {
+  node: "@syncmesh/sqlite-node",
+  bun: "@syncmesh/sqlite-bun",
+} as const satisfies Record<Runtime, string>;
 
 function main(): number {
   const packages = publishable();
@@ -148,23 +219,27 @@ function main(): number {
     );
 
     for (const { name, bunOnly: onBun, nativeOnly: onNative } of packages) {
-      if (onBun) {
-        process.stdout.write(`bun-only ${name} (installed, not imported: engines.bun)\n`);
-        continue;
-      }
       if (onNative) {
         process.stdout.write(`rn-only  ${name} (installed, not imported: a React Native peer)\n`);
         continue;
       }
-      const failure = importWithNode(project, `await import(${JSON.stringify(name)})`);
-      process.stdout.write(`${failure === undefined ? "imports " : "FAILS   "} ${name}\n`);
-      if (failure !== undefined) failures.push(`${name}\n${failure}`);
+      // a package that declares only `engines.bun` is imported with bun, from the same install
+      const runtime = onBun ? "bun" : "node";
+      const failure = evaluate(runtime, project, `await import(${JSON.stringify(name)})`);
+      process.stdout.write(
+        `${failure === undefined ? "imports " : "FAILS   "} ${name} (${runtime})\n`,
+      );
+      if (failure !== undefined) failures.push(`${name} (${runtime})\n${failure}`);
     }
-    const smoke = importWithNode(project, clientSmoke);
-    process.stdout.write(
-      `${smoke === undefined ? "runs    " : "FAILS   "} @syncmesh/client: durable mesh over node:sqlite\n`,
-    );
-    if (smoke !== undefined) failures.push(`client smoke\n${smoke}`);
+    for (const runtime of ["node", "bun"] as const) {
+      const adapter = DEFAULT_STORE[runtime];
+      const failure = durableRoundTrip(runtime, adapter, project);
+      process.stdout.write(
+        `${failure === undefined ? "durable " : "FAILS   "} ${adapter} (${runtime}): write, reopen, refold from the log\n`,
+      );
+      if (failure !== undefined)
+        failures.push(`${adapter} durable round trip (${runtime})\n${failure}`);
+    }
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

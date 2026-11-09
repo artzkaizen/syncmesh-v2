@@ -7,7 +7,7 @@ import { createFrameTransport, loopbackPair } from "@syncmesh/transport";
 import { createIdentity, issueGrant } from "@syncmesh/wire";
 
 import { procedures } from "./api.js";
-import { PRACTICE, roundsSchema } from "./schema.js";
+import { PRACTICE, PRACTICE_ID, roundsSchema } from "./schema.js";
 
 /**
  * Two phones on a ward with no signal, over an in-process radio.
@@ -78,9 +78,13 @@ const settle = async () => {
 };
 
 // Ann admits a patient and takes a reading. Every call is `api.*`; no handle, no SQL.
-(await ann.patients.admit({ id: "p1", name: "J. Okonkwo", bed: "4B" }).committed).unwrap();
+(
+  await ann.patients.admit({ practiceId: PRACTICE_ID, id: "p1", name: "J. Okonkwo", bed: "4B" })
+    .committed
+).unwrap();
 const first = (
   await ann.observations.record({
+    practiceId: PRACTICE_ID,
     patientId: "p1",
     code: "BP",
     value: "128/84",
@@ -92,13 +96,16 @@ const first = (
 await settle();
 
 // Raj, on the other phone, already has both — nothing was fetched.
-const onRaj = (await raj.observations.forPatient({ patientId: "p1" })).unwrap().data;
+const onRaj = (
+  await raj.observations.forPatient({ practiceId: PRACTICE_ID, patientId: "p1" })
+).unwrap().data;
 console.log("raj sees:", onRaj.map((o) => `${o.code} ${o.value}`).join(", "));
 
 // The radio goes down. Both keep writing.
 links.control.setOnline(false);
 const offline = (
   await raj.observations.record({
+    practiceId: PRACTICE_ID,
     patientId: "p1",
     code: "HR",
     value: "88",
@@ -107,10 +114,16 @@ const offline = (
   }).committed
 ).unwrap();
 (
-  await ann.observations.amend({ amends: first.data.id, value: "126/82", author: "ann" }).committed
+  await ann.observations.amend({
+    practiceId: PRACTICE_ID,
+    amends: first.data.id,
+    value: "126/82",
+    author: "ann",
+  }).committed
 ).unwrap();
 
-const reachOf = async (id: string) => (await raj.observations.reach({ id })).unwrap().data[0]?.sync;
+const reachOf = async (id: string) =>
+  (await raj.observations.reach({ practiceId: PRACTICE_ID, id })).unwrap().data[0]?.sync;
 console.log("raj's reading while offline:", await reachOf(offline.data.id));
 
 // the radio is back. A link that dropped frames while it was down asks from its last
@@ -125,7 +138,9 @@ for (const [who, side] of [
   ["ann", ann],
   ["raj", raj],
 ] as const) {
-  const rows = (await side.observations.forPatient({ patientId: "p1" })).unwrap().data;
+  const rows = (
+    await side.observations.forPatient({ practiceId: PRACTICE_ID, patientId: "p1" })
+  ).unwrap().data;
   console.log(
     `${who}:`,
     rows.map((o) => `${o.code}=${o.value}${o.amends === null ? "" : " (amends)"}`).join(" | "),

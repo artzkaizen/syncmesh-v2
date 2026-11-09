@@ -36,6 +36,10 @@ export default defineConfig({
       "tools/oxlint/syncmesh/**",
       "apps/*/src/routeTree.gen.ts",
     ],
+    // The vendored plugin's opt-in Effect group (`tools/oxlint/anti-slop/effect`) is not
+    // registered: it is for repositories that depend on `effect`, and no package here declares it
+    // (it reaches the lockfile only as an optional peer of drizzle-orm). Register it with
+    // `anti-slop-effect/no-service-constructor-imports` the day one does (gaps U8).
     jsPlugins: [
       { name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" },
       { name: "syncmesh", specifier: "./tools/oxlint/syncmesh/index.ts" },

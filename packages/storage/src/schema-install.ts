@@ -24,7 +24,9 @@ import { attempt } from "./sql.js";
  *
  * The one thing it cannot see is a change made *around* it: drop a trigger by hand and this will
  * still say the schema is installed. That is the same bargain every migration table makes, and
- * the repair is the same — clear the row, or the file.
+ * the repair is the same — clear the row, or the file. A whole state file deleted is the one such
+ * change it does see: the record is the log's, so it also asks the state half whether an install
+ * is there (gaps U40).
  *
  * **A changed schema is only free while the log can still produce the rows.** The row it compares
  * lives in the log, which is shared; the file it is comparing against is the derived half, which
@@ -47,15 +49,18 @@ export const installSchema = (
     // the strict guard has its own row: it is no part of the tables' shape, so turning it on or
     // off neither renames the state file nor counts as a shape change a compacted log refuses
     const guard = guardStatements(driver, tables, strict).join(";\n");
-    const [held, guarded] = yield* Result.await(
+    const [held, guarded, present] = yield* Result.await(
       attempt("could not read the installed schema", async () => {
         await driver.run(schema.ddl);
         const [row] = await driver.all(schema.read);
         const [guardRow] = await driver.all(schema.readGuard);
-        return [row?.[0], guardRow?.[0]] as const;
+        const installed = await driver.all(schema.installed);
+        return [row?.[0], guardRow?.[0], installed.length > 0] as const;
       }),
     );
-    if (held === wanted) {
+    // the record is the log's, and a state file deleted on its own leaves it behind: the same
+    // shape over a file with none of its tables is installed again and refolded into, not skipped
+    if (held === wanted && present) {
       if (guarded === guard) return Result.ok(undefined);
       yield* Result.await(installGuard(driver, tables, strict));
       yield* Result.await(

@@ -50,9 +50,42 @@ jobs:
         with:
           node-version: 24
       - run: bun install --frozen-lockfile
-      # Chromium for @syncmesh/browser's two-tab test (U11, U32): OPFS, Web Locks and a
-      # SharedWorker in a real browser, at the revision the installed playwright drives
+      # Chromium for @syncmesh/browser's two-tab test (U11, U32) — OPFS, Web Locks and a
+      # SharedWorker in a real browser — and for rounds-web's ward test (U6), at the revision the
+      # installed playwright drives
       - name: Install Chromium for the browser tests
         working-directory: adapters/browser
         run: bun x playwright install --with-deps chromium-headless-shell
       - run: bun run ci
+
+  # U15: the fleet's compose file as written — the image built from the repository, three relays
+  # fanning out over Postgres LISTEN/NOTIFY, nginx round-robining sockets between them — and a
+  # server peer and three phones dialled through it (`examples/src/fleet/check.ts`). Its own job
+  # because it needs no build of the workspace and nothing else needs Docker.
+  fleet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      - name: Start the fleet
+        run: docker compose -f examples/src/fleet/compose.yaml up --build --detach --wait
+      - name: Wait for the load balancer to reach a relay
+        run: |
+          # any answer but nginx's own "no upstream" means a relay is behind it
+          for _ in $(seq 60); do
+            code=$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' http://localhost:5198/acme || true)
+            case "$code" in 000|502|503|504) sleep 1 ;; *) echo "relay answered $code"; exit 0 ;; esac
+          done
+          exit 1
+      - name: Three phones and a server peer through the fleet
+        run: bun run --cwd examples fleet:check
+      - name: Fleet logs
+        if: always()
+        run: docker compose -f examples/src/fleet/compose.yaml logs --no-color
+      - name: Stop the fleet
+        if: always()
+        run: docker compose -f examples/src/fleet/compose.yaml down --volumes

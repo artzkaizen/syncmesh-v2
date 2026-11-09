@@ -17,7 +17,7 @@ import { createIdentity, isRelayable, randomBytes, type Identity } from "@syncme
 
 import type { RelayAdmission } from "./admission.js";
 import type { ConnectionOptions, RelayConnection } from "./connection.js";
-import type { Fanout } from "./fanout.js";
+import type { Fanout, FanoutLink } from "./fanout.js";
 import type { GrantCache } from "./grant-cache.js";
 import type { RelayLimits } from "./limits.js";
 import type { RelayRetention } from "./retention.js";
@@ -304,7 +304,7 @@ export async function openRelayRoom(
     gate: options.admission === undefined ? undefined : createGate(options.admission, name),
   };
   // subscribed after the state exists, because a fanned-in frame is ingested through it
-  const offFan = fan?.onFrame(fanIn(state));
+  const offFan = await hearFleet(fan, fanIn(state));
 
   // said once, at open, and never again: which rooms grow forever is a thing an operator should
   // learn from a dashboard rather than from a disk alert (gap audit №8)
@@ -336,6 +336,20 @@ export async function openRelayRoom(
       clients.clear();
     },
   });
+}
+
+/**
+ * Subscribes the room to the rest of the fleet, and waits until it hears it: a room served before
+ * then would miss what another instance publishes meanwhile (gaps U41).
+ */
+async function hearFleet(
+  fan: FanoutLink | undefined,
+  deliver: (frame: Uint8Array) => void,
+): Promise<(() => void) | undefined> {
+  if (fan === undefined) return undefined;
+  const off = fan.onFrame(deliver);
+  await fan.heard?.();
+  return off;
 }
 
 /**

@@ -2,6 +2,7 @@ import { Result, TaggedError } from "@syncmesh/result";
 import { describe, expect, test } from "bun:test";
 
 import { createHandler, httpLink, mutation } from "../index.js";
+import { createWrite } from "../write.js";
 
 class NameTaken extends TaggedError("NameTaken")<{ readonly room: string; message?: string }> {}
 class QuotaHit extends TaggedError("QuotaHit")<{ readonly used: number; message?: string }> {}
@@ -94,6 +95,39 @@ describe("request ids across httpLink", () => {
         nth: 4,
       });
       expect((await handler.call("nowhere.at", {})).isErr()).toBe(true);
+    } finally {
+      await server.stop(true);
+    }
+  });
+});
+
+describe("a mutation across httpLink", () => {
+  test("crosses as its local commit, not as the handle the in-process call returns", async () => {
+    const writing = {
+      rooms: {
+        reserve: (input: { readonly name: string }) =>
+          createWrite({
+            id: "w-1",
+            committed: Promise.resolve(
+              // SAFETY: an event id is `<author>-<seq>`; this one names no real event
+              Result.ok({ eventId: "peer-1" as never, data: { room: input.name } }),
+            ),
+          }),
+      },
+    };
+    // SAFETY: the test api mirrors the router's leaves; Api<R>'s full shape is not on trial here
+    const handler = createHandler({ procedures, api: writing as never });
+    const server = Bun.serve({ port: 0, fetch: (request) => handler(request) });
+    try {
+      const link = httpLink(`http://localhost:${server.port}`);
+      expect((await link("rooms.reserve", { name: "ward-3" })).unwrap()).toEqual({
+        eventId: "peer-1",
+        data: { room: "ward-3" },
+      });
+      expect((await handler.call("rooms.reserve", { name: "direct" })).unwrap()).toEqual({
+        eventId: "peer-1",
+        data: { room: "direct" },
+      });
     } finally {
       await server.stop(true);
     }

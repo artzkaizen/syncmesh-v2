@@ -234,6 +234,8 @@ export const POSTGRES: Dialect = {
     readGuard: `SELECT value FROM syncmesh.meta WHERE key = 'guard'`,
     writeGuard: `INSERT INTO syncmesh.meta (key, value) VALUES ('guard', $1)
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    // one database holds the record and the tables, so neither outlives the other
+    installed: `SELECT 1`,
   },
   migrate: async (driver) => {
     // before anything else: every name below is qualified into it, including `meta` itself

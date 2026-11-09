@@ -34,11 +34,23 @@ what round-robin without sticky sessions makes happen on the next reconnect. Unt
 instances hold different logs. [`../__tests__/fleet.test.ts`](../__tests__/fleet.test.ts) drops a
 frame and shows exactly that: nobody notices, nobody asks, and the phone that roams is the repair.
 
-**The fan-out is a port, and node-postgres is 20 lines against it.** [`postgres.ts`](postgres.ts) is the
-whole adapter — two connections, because Postgres will not take a `PUBLISH` on a connection in
-subscriber mode, and `bufferMode: true`, because a relay frame is signed bytes and a UTF-8 round
-trip would mangle most of them. `@syncmesh/relay` imports neither package: `PostgresPublisher` and
-`PostgresSubscriber` are structural, so iopostgres, NATS, or Postgres `LISTEN/NOTIFY` fit the same shape.
+**The fan-out is a port, and Bun's Postgres client is a dozen lines against it.**
+[`postgres.ts`](postgres.ts) is the whole adapter: `sql.listen`, which keeps a dedicated
+connection that actually reads notifications, and `sql.notify`. Frames travel base64, because a
+relay frame is signed bytes and a UTF-8 round trip would mangle most of them. `@syncmesh/relay`
+imports no driver: `PostgresListener` is structural, so postgres.js, node-postgres or anything
+else with `LISTEN`/`NOTIFY` fits the same shape.
+
+**CI runs this file as written** (`.github/workflows/ci.yml`, job `fleet`): the image builds, the
+three relays come up, and [`check.ts`](check.ts) sends the server peer and three phones through
+nginx. Round robin spreads four peers over three instances, so most grants and notes cross
+between them; one pair shares an instance, and the check does not assert which. `RELAY_URL` may also list instances,
+comma-separated, which spreads the peers the same way without nginx. Running it found three
+faults that `fleet.test.ts`, which uses an in-process fan-out, could not: the relays could not
+boot (no keystore for the device key, now `createPlaintextVault()` with its boot notice), the
+adapter issued a bare `LISTEN` whose notifications nothing read, so no frame ever crossed, and
+a grant request was never fanned out, so a phone on another instance than the server peer was
+never granted.
 
 **It is the same room.** `fleet.test.ts` runs the same two-phone scenario against a single relay
 and against two fanned-out instances, and compares `tableDigests` across the two hosts — not row
@@ -52,6 +64,13 @@ A phone cannot tell the instances apart **while the fan-out is delivering**. It 
 drops a frame, and no cursor exchange happens by itself to close the gap. A deployment that needs
 the stronger promise gives the instances a shared log — Postgres Streams or the Postgres event store
 — rather than a shared bus, which is D09's other half and is not what this example is.
+
+**An instance hears nothing for a room before its first socket in that room.** It opens a room,
+and so subscribes to the room's channel, when a device first connects to it. A grant fanned out
+before then never reaches it, and no peer sends it again, so a phone that lands there later holds
+the other phones' events unvouched. `check.ts` connects every phone before any asks for a grant
+for that reason (gaps U41). Once a room is open, the instance does not seat a socket in it until
+its `LISTEN` is acknowledged, so nothing published after that is missed.
 
 ## What it deliberately leaves out
 

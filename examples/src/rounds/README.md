@@ -33,19 +33,26 @@ Three files, and only one of them is the API.
 ## Calling it
 
 ```ts
-const api = roundsApi(mesh);
+const api = createClient({ schema: roundsSchema(), procedures, … });
 
-await api.observations.record({ patientId: "p1", code: "BP", value: "128/84", … });
-const rows = await api.observations.forPatient({ patientId: "p1" }).run();
+(await api.observations.record({ practiceId, patientId: "p1", code: "BP", value: "128/84", … })
+  .committed).unwrap();
+const rows = (await api.observations.forPatient({ practiceId, patientId: "p1" })).unwrap().data;
 ```
 
-A mutation runs eagerly and returns `Result<{ eventId, data }, …>`; a query is inert until
-something runs it. In React that something is the hook, and the component names the call and
+Every call names its practice: both tables live in a `practice` partition, and scope is input,
+never construction. A call without `practiceId` fails input validation with `InputInvalid` before
+any partition is chosen.
+
+A mutation is a statement: it returns a handle whose `committed` resolves to
+`Result<{ eventId, data }, …>`. A query is inert until something runs it. In React that something is the hook, and the component names the call and
 nothing else — no handle, no `db`, no query builder:
 
 ```tsx
 function Observations({ patientId }: { readonly patientId: string }) {
-  const { data, isPending, isSettled } = useLiveQuery(api.observations.forPatient({ patientId }));
+  const { data, isPending, isSettled } = useLiveQuery(
+    api.observations.forPatient({ practiceId, patientId }),
+  );
 
   if (isPending) return <Spinner />;
   if (data.length === 0) return isSettled ? <NoReadings /> : <StillSyncing />;

@@ -13,7 +13,7 @@ import { webSocketDial } from "../dial.js";
 import { DEFAULT_IDLE_AFTER } from "../rooms.js";
 import { hostTuning, startRelay } from "../serve.js";
 import { relayTransport } from "../transport.js";
-import { bodyOf, peer, secureProbe, tick, write } from "./fixtures.js";
+import { bodyOf, peer, secureProbe, tick, until, write } from "./fixtures.js";
 
 /** Raw client: dial, run the link handshake, join from empty cursors, and collect decoded frames — for looking at hellos and pages directly. */
 const probe = async (url: string, identity: Identity) => {
@@ -22,7 +22,18 @@ const probe = async (url: string, identity: Identity) => {
   return probing;
 };
 
+/** How many events a probe has been paged, however many pages they came in. */
+const paged = (probing: Awaited<ReturnType<typeof probe>>) =>
+  probing.frames
+    .filter((f): f is Extract<RelayFrame, { kind: "page" }> => f.kind === "page")
+    .reduce((n, page) => n + page.events.length, 0);
+
+const helloOf = (probing: Awaited<ReturnType<typeof probe>>) =>
+  probing.frames.find((f): f is Extract<RelayFrame, { kind: "hello" }> => f.kind === "hello");
+
 describe("startRelay — D09-A, the embedded host", () => {
+  // every wait below is on the thing the next line checks, never on a fixed delay: a loaded
+  // runner can take longer than any fixed tick, and then the assertion reads a room mid-flight
   test("two devices through a real WebSocket relay converge; a restart over the same dataDir keeps the epoch and re-sends no history", async () => {
     const dataDir = mkdtempSync(joinPath(tmpdir(), "syncmesh-relay-"));
     try {
@@ -39,48 +50,38 @@ describe("startRelay — D09-A, the embedded host", () => {
       const tb = relayTransport({ dial: webSocketDial(relay.url), reconnectMs: 20 });
       await tb.start(b.context);
       await tb.whenReady();
-      await tick(80);
+      await until(() => bodyOf(b, "n3") === "three");
       expect(bodyOf(b, "n3")).toBe("three"); // a's history reached b through the relay
 
       await write(b, "n4", "four");
-      await tick(80);
+      await until(() => bodyOf(a, "n4") === "four");
       expect(bodyOf(a, "n4")).toBe("four"); // and live traffic flows the other way
       await ta.stop();
       await tb.stop();
 
       const before = await probe(relay.url, a.identity);
-      await tick(80);
-      const epochBefore = before.frames.find((f) => f.kind === "hello");
-      const held = before.frames
-        .filter((f): f is Extract<RelayFrame, { kind: "page" }> => f.kind === "page")
-        .reduce((n, page) => n + page.events.length, 0);
-      expect(held).toBe(4); // the room's durable log holds everything
+      await until(() => helloOf(before) !== undefined && paged(before) >= 4);
+      const epochBefore = helloOf(before);
+      expect(epochBefore).toBeDefined();
+      expect(paged(before)).toBe(4); // the room's durable log holds everything
       before.close();
       await relay.stop();
 
       // the same file, a fresh process: same lineage, nothing re-sent to a caught-up joiner
       const revived = await startRelay(0, { dataDir, keepaliveMs: 60_000, pageSize: 2 });
       const after = await probe(revived.url, a.identity);
-      await tick(80);
-      const epochAfter = after.frames.find((f) => f.kind === "hello");
-      expect(epochAfter?.kind === "hello" && epochAfter.epoch).toBe(
-        epochBefore?.kind === "hello" ? epochBefore.epoch : "?",
-      );
+      await until(() => helloOf(after) !== undefined);
+      expect(helloOf(after)).toBeDefined();
+      expect(helloOf(after)?.epoch).toBe(epochBefore?.epoch ?? "?");
       after.close();
 
       const caught = relayTransport({ dial: webSocketDial(revived.url), reconnectMs: 20 });
-      const pages: number[] = [];
       await caught.start(a.context); // a already holds everything: its cursors cover the log
       await caught.whenReady();
-      await tick(80);
-      void pages;
       const check = await probe(revived.url, b.identity);
-      await tick(80);
+      await until(() => paged(check) >= 4);
       // b's empty-cursor probe still sees all 4 — the restart lost nothing
-      const total = check.frames
-        .filter((f): f is Extract<RelayFrame, { kind: "page" }> => f.kind === "page")
-        .reduce((n, page) => n + page.events.length, 0);
-      expect(total).toBe(4);
+      expect(paged(check)).toBe(4);
       check.close();
       await caught.stop();
       await revived.stop();

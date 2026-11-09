@@ -18,9 +18,10 @@ import type {
   TableName,
 } from "@syncmesh/kernel";
 
-import { createMemoryEventStore } from "@syncmesh/engine";
+import { createEngine, createMemoryEventStore } from "@syncmesh/engine";
 import {
   applyChange,
+  createHlcClock,
   emptyState,
   mergeRecord,
   eventStamp,
@@ -29,8 +30,9 @@ import {
   parsePeerId,
 } from "@syncmesh/kernel";
 import { Temporal } from "@syncmesh/temporal";
-import { encodeCbor, newContentKey, sealPayload } from "@syncmesh/wire";
+import { encodeCbor, encodeEventCore, newContentKey, sealPayload } from "@syncmesh/wire";
 
+import { fanoutRoom } from "./fanout-room.js";
 import { path, runScale } from "./harness.js";
 
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- bench fixtures; naming is not what is measured */
@@ -42,6 +44,8 @@ const key = (n: number) => `n${n}` as RowKey;
 /* oxlint-enable anti-slop/require-safety-comment-for-type-assertion */
 
 const PEER = parsePeerId("a".repeat(64)).unwrap();
+/** The device that receives: never the author, so what it folds is somebody else's. */
+const DEVICE = parsePeerId("b".repeat(64)).unwrap();
 
 const row = (seq: number): Row =>
   new Map<ColumnName, CellValue>([
@@ -50,10 +54,10 @@ const row = (seq: number): Row =>
     [column("body"), "x".repeat(120)],
   ]);
 
-const event = (seq: number, rows: number) => ({
+const event = (seq: number, rows: number, author = PEER) => ({
   v: 1 as const,
-  id: eventId(PEER, parseSeqNum(seq).unwrap()),
-  peerId: PEER,
+  id: eventId(author, parseSeqNum(seq).unwrap()),
+  peerId: author,
   seqNum: parseSeqNum(seq).unwrap(),
   hlc: [Temporal.Instant.fromEpochMilliseconds(1_700_000_000_000 + seq), ZERO] as const,
   procedure: PROCEDURE,
@@ -195,5 +199,65 @@ await runScale([
       };
     },
     run: ({ state, change, stamp }) => applyChange(state, change, stamp, undefined, undefined),
+  }),
+  path({
+    name: "engine · receive one event (fold and log)",
+    growth: "constant",
+    because:
+      "Receiving one event validates it, appends it to the log and folds its one change into the replica. Cost that tracks the rows already held means some step on the receive path — admission, the fold, the coverage — walks the replica per event, which makes every catch-up quadratic in the device's own state.",
+    sizes: [1_000, 4_000, 16_000],
+    /**
+     * About 50 µs on a laptop at every size, the fold a small part of it and the rest the
+     * engine's per-event admission and bookkeeping; the budget leaves a shared runner its 3–5×.
+     */
+    budget: 1_000,
+    prepare: async (rows) => {
+      const engine = createEngine({
+        peerId: DEVICE,
+        clock: createHlcClock({ now: () => Temporal.Now.instant() }),
+        store: createMemoryEventStore(),
+      });
+      const held = Array.from({ length: rows }, (_, i) => ({ event: event(i + 1, rows) }));
+      (await engine.receiveBatch(held)).unwrap();
+      let next = rows;
+      // built per call, so the clock includes one small event's construction: the same at every size
+      return { engine, next: () => ({ event: event((next += 1), rows) }) };
+    },
+    run: async ({ engine, next }) => (await engine.receive(next())).unwrap(),
+  }),
+
+  path({
+    name: "wire · encodeEventCore (changes)",
+    growth: "linear",
+    because:
+      "Every event a device writes is encoded once to be signed, stored and sent, and its size is its changes. Anything worse than linear in them is the encoder re-reading what it already wrote — and a bulk import of a few hundred rows is one event.",
+    sizes: [16, 64, 256],
+    /** About 250 µs on a laptop for 256 three-column rows; a quadratic writer is tens of ms. */
+    budget: 5_000,
+    prepare: (changes) => {
+      const one = event(1, changes);
+      const many = Array.from({ length: changes }, (_, i) => event(i + 1, changes).changes[0]!);
+      return { ...one, changes: many };
+    },
+    run: (built) => encodeEventCore(built),
+  }),
+
+  path({
+    name: "relay · fan-out one event (subscribers)",
+    growth: "linear",
+    because:
+      "A relay sends each event once to every socket that is interested in it, so its cost grows with the room, and no faster: the work per subscriber is an interest check and an enqueue of bytes encoded once. Faster growth is per-subscriber work that scans the others — re-encoding the frame per socket, or walking every client to decide each one.",
+    sizes: [64, 256, 1_024],
+    /**
+     * From the author's frame to the last subscriber's send. About 650 µs on a laptop at 64 and
+     * 1.2 ms at 1,024: verifying the signature and appending to the log, once, are most of it, so
+     * the curve is flat and the budget is the sharper claim. Work per subscriber that scans the
+     * others is a million steps at 1,024 — tens of milliseconds, far past it.
+     */
+    budget: 10_000,
+    prepare: (subscribers) =>
+      fanoutRoom(subscribers, (author, seq) => event(seq, 1, author), 4_000),
+    run: (room) => room.publish(),
+    release: (room) => room.close(),
   }),
 ]);

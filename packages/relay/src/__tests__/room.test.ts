@@ -2,7 +2,13 @@ import type { PeerId } from "@syncmesh/kernel";
 
 import { createMemoryEventStore } from "@syncmesh/engine";
 import { Temporal } from "@syncmesh/temporal";
-import { cursorsFrame, eventFrame, grantFrame, presenceFrame } from "@syncmesh/transport";
+import {
+  cursorsFrame,
+  eventFrame,
+  grantFrame,
+  grantRequestFrame,
+  presenceFrame,
+} from "@syncmesh/transport";
 import { decodeAndVerify, signPresence } from "@syncmesh/wire";
 import { fromALaterBuild } from "@syncmesh/wire/wire-tests";
 import { describe, expect, test } from "bun:test";
@@ -574,6 +580,27 @@ describe("fanout (D09-B)", () => {
     sb.setMode("sent");
     cb.drain();
     expect(sb.sent).toEqual([newer]);
+    one.close();
+    two.close();
+  });
+
+  test("a grant request reaches the granting peer on another instance (gaps U15)", async () => {
+    const asker = peer(40, "acct_a");
+    const issuer = peer(80, "acct_b");
+    const fanout = memoryFanout();
+    const one = await open({ fanout });
+    const two = await open({ fanout, store: createMemoryEventStore() });
+
+    const ca = one.connect(fakeSocket().socket);
+    ca.receive(join(asker.identity.peerId));
+    const si = fakeSocket();
+    two.connect(si.socket).receive(join(issuer.identity.peerId));
+    await tick();
+
+    // the phone asks where it landed; the peer that can answer is on the other box
+    ca.receive(grantRequestFrame(asker.identity.peerId, "join-acme"));
+    await tick();
+    expect(si.ofKind("session").filter((f) => f.frame.kind === "grant-request")).toHaveLength(1);
     one.close();
     two.close();
   });

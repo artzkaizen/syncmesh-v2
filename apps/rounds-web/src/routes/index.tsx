@@ -1,3 +1,4 @@
+import { PRACTICE_ID } from "@syncmesh/examples/rounds/practice";
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 
@@ -55,13 +56,13 @@ function Ward() {
   }, []);
 
   const loadPatients = useCallback(async () => {
-    const list = await api.patients.list();
+    const list = await api.patients.list({ practiceId: PRACTICE_ID });
     setPatients(list);
     setSelected((held) => held ?? list[0]?.id);
   }, []);
 
   const loadReadings = useCallback(async (patientId: string) => {
-    setReadings(await api.observations.forPatient({ patientId }));
+    setReadings(await api.observations.forPatient({ practiceId: PRACTICE_ID, patientId }));
   }, []);
 
   useEffect(() => {
@@ -77,6 +78,7 @@ function Ward() {
     act("admitting", async () => {
       const id = crypto.randomUUID();
       await api.patients.admit({
+        practiceId: PRACTICE_ID,
         id,
         name: `Patient ${id.slice(0, 4)}`,
         bed: `${String(patients.length + 1)}A`,
@@ -88,6 +90,7 @@ function Ward() {
     act("recording", async () => {
       if (selected === undefined) return;
       await api.observations.record({
+        practiceId: PRACTICE_ID,
         patientId: selected,
         code: "BP",
         value: `${String(110 + Math.floor(Math.random() * 30))}/${String(70 + Math.floor(Math.random() * 20))}`,

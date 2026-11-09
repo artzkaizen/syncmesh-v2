@@ -6,7 +6,7 @@ import { StoreFailure } from "@syncmesh/engine";
 import { eventId, hlcOf, parsePartitionKey, parsePeerId, parseSeqNum } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setSystemTime, test } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -325,12 +325,20 @@ describe("Writes", () => {
   });
 
   test("lists what is waiting, with its event and its age", async () => {
-    const panel = await mount(<Writes openTab={() => undefined} source={ledger([WRITE])} />);
-    const text = panel.text();
-    expect(text).toContain("issue.create");
-    expect(text).toContain("-7");
-    expect(text).toContain("45s");
-    panel.close();
+    // the clock held still: a stall between the stamp and the render would otherwise read 46s
+    const now = Date.now();
+    setSystemTime(new Date(now));
+    try {
+      const waiting = { ...WRITE, at: at(now - 45_000) };
+      const panel = await mount(<Writes openTab={() => undefined} source={ledger([waiting])} />);
+      const text = panel.text();
+      expect(text).toContain("issue.create");
+      expect(text).toContain("-7");
+      expect(text).toContain("45s");
+      panel.close();
+    } finally {
+      setSystemTime();
+    }
   });
 
   test("custody is read for the chosen write and named as delivery", async () => {

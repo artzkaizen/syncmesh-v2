@@ -1,8 +1,7 @@
 import { ladder, partition, syncSchema, t } from "@syncmesh/schema";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
-/** The ward this demo runs under: one practice, as `kind:id`. */
-export const PRACTICE = "practice:st-mary";
+export { PRACTICE, PRACTICE_ID } from "./practice.js";
 
 /**
  * The app's own tables, in Drizzle. The mesh materialises rows into these same tables, so a

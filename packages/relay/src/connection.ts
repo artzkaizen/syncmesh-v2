@@ -276,7 +276,11 @@ export function createConnection(
     if (frame.frame.kind === "event") ingest(frame.frame.wire);
     else if (frame.frame.kind === "grant") onGrant(bytes, frame.frame.wire);
     else if (frame.frame.kind === "presence") onPresence(bytes, frame.frame.wire);
-    else if (frame.frame.kind === "grant-request") room.toClients(bytes, me);
+    // across the fleet too: the peer that can answer is wherever its socket landed (gaps U15)
+    else if (frame.frame.kind === "grant-request") {
+      room.toClients(bytes, me);
+      room.publish(bytes);
+    }
     // peer-to-peer facts pass through byte-identical, cursors only from the key that joined: a
     // peer's cursors make every holder say again what of theirs it parked (D32), so one naming
     // somebody else is dropped

@@ -34,28 +34,21 @@ would pull SQLite and the relay into the browser graph. Verified — `dist/clien
 log, and this browser holds nothing; a subscription here would promise a freshness it cannot
 keep. Reads are one round trip.
 
-## Two things this cost, worth knowing before you copy it
+## Tested in a browser
 
-**The repo's `overrides: { vite: "catalog:" }` rewrites every `vite` to `vite-plus-core@0.3.0`,
-and TanStack Start wants `vite >=7`.** Bun's overrides are global with no per-package scoping, so
-the two cannot both be satisfied inside one install. This app is a workspace member (its
-`@syncmesh/*` deps resolve through `workspace:*`, which is why it cannot simply be moved out) and
-is built with `bunx vite`, which fetches upstream Vite rather than taking the override. That is a
-workaround, not a solution, and the real fix is a decision about whether the override should be
-repo-wide.
+`bun run --cwd apps/rounds-web test` (and so `vp run -r test` and CI) starts a relay, starts
+`vite dev` under **Node** in a scratch directory, and drives the page with Chromium: it admits two
+patients and records a reading, and fails on any page error or console error
+(`src/__tests__/ward.test.ts`). It replaced a manual smoke script, because every fault this app
+has had left the page rendering perfectly and doing nothing — a missing React Refresh runtime,
+`bun:sqlite` and `Bun.env` under Node, a mutation answering with its handle instead of its commit,
+and calls that named no practice and were refused `WrongPartition`. None of them is visible to a
+test that fetches html.
 
-Its scripts are named `web:*` for the same reason: `vp run -r build` would otherwise try to build
-this app with a `vite` that is not the one it needs, and fail the whole repo's CI. So the app is
-in the workspace for dependency resolution and outside it for the build, which is exactly as
-awkward as it sounds and is written down here rather than hidden.
+## Worth knowing before you copy it
 
-**And it is why `dev` is a rebuild loop rather than HMR.** Start's dev middleware installs only
-when Vite's SSR environment passes an `isRunnableDevEnvironment` check, and that check is a brand
-comparison against the `vite` _the plugin resolves_ — which here is `vite-plus-core`, while the
-CLI is upstream Vite. Two copies, so the check fails and the middleware silently declines to
-install; `vite dev` answered a bare 404 with no error at all until the check was forced. So
-`dev.ts` watches `src`, reruns the build (~1s) and restarts the server. Save, wait a beat,
-refresh — you just do not keep component state.
+The app pins upstream `vite` 7 for TanStack Start, beside the repo's Vite+; `vp run -r build`
+runs its `vite build` script.
 
 **`nodeSqliteDriver(path)` opens a file; it does not create the directory.** Only `defaultStore`
 does the `mkdir`, so a driver given `.syncmesh/x.db` on a fresh checkout fails with

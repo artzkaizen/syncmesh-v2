@@ -1,6 +1,8 @@
+import { createMemoryEventStore } from "@syncmesh/engine";
 import { describe, expect, test } from "bun:test";
 
 import { postgresFanout } from "../postgres-fanout.js";
+import { openRelayRoom } from "../room.js";
 
 /** Postgres in one object: every listener on a channel hears every notify, the notifier included. */
 const fakePostgres = () => {
@@ -128,5 +130,62 @@ describe("postgresFanout", () => {
     await Promise.resolve();
     lone.publish(Uint8Array.of(5, 5));
     expect(atB).toEqual([2]); // b still hears the room
+  });
+
+  test("a LISTEN acknowledged after close is released, not kept", async () => {
+    const pg = fakePostgres();
+    let acknowledge = (): void => undefined;
+    let released = false;
+    const slow = {
+      ...pg.client,
+      listen: (channel: string, onPayload: (payload: string) => void) =>
+        new Promise<() => void>((resolve) => {
+          acknowledge = () =>
+            void pg.client.listen(channel, onPayload).then((off) =>
+              resolve(() => {
+                released = true;
+                off();
+              }),
+            );
+        }),
+    };
+    const link = postgresFanout({ client: slow, prefix: "m" }).connect("r");
+    link.onFrame(() => undefined);
+    link.close(); // while the LISTEN is still pending
+    acknowledge();
+    await link.heard?.();
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    expect(released).toBe(true);
+  });
+});
+
+describe("a room opened over postgresFanout", () => {
+  test("is not served until its LISTEN is acknowledged (gaps U41)", async () => {
+    const pg = fakePostgres();
+    let acknowledge = (): void => undefined;
+    const slow = {
+      ...pg.client,
+      listen: (channel: string, onPayload: (payload: string) => void) =>
+        new Promise<() => void>((resolve) => {
+          acknowledge = () => void pg.client.listen(channel, onPayload).then(resolve);
+        }),
+    };
+    let opened = false;
+    const opening = openRelayRoom({
+      name: "main",
+      store: createMemoryEventStore(),
+      epoch: "e",
+      keepaliveMs: 60_000,
+      fanout: postgresFanout({ client: slow }),
+    }).then((room) => {
+      opened = true;
+      return room.unwrap();
+    });
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    expect(opened).toBe(false);
+    acknowledge();
+    const room = await opening;
+    expect(opened).toBe(true);
+    room.close();
   });
 });
