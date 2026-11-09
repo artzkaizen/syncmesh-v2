@@ -80,6 +80,19 @@ const gone = (pid: number) => {
   return probe.status !== 0;
 };
 
+/** Every runtime started and not yet disposed: a case that fails part-way leaves its open. */
+const running = new Set<Miniflare>();
+
+/**
+ * Stops every runtime a case left running, so a failed case does not leave a workerd process
+ * behind it; for `afterAll`.
+ */
+export const stopRuntimes = async () => {
+  const left = [...running];
+  running.clear();
+  await Promise.all(left.map((mf) => mf.dispose().catch(() => undefined)));
+};
+
 /** Starts workerd over `persist` with the bundled room as its only object class. */
 export async function startRuntime(script: string, persist: string): Promise<Runtime> {
   const before = workerds();
@@ -89,6 +102,7 @@ export async function startRuntime(script: string, persist: string): Promise<Run
     durableObjects: { ROOM: { className: "CrashRoom", useSQLite: true } },
     durableObjectsPersist: persist,
   });
+  running.add(mf);
   await mf.ready;
   const [pid] = [...workerds()].filter((candidate) => !before.has(candidate));
   if (pid === undefined) throw new Error("no workerd process appeared for this Miniflare");
@@ -108,8 +122,10 @@ export async function startRuntime(script: string, persist: string): Promise<Run
       while (!gone(pid)) await Bun.sleep(10);
     },
     // a killed runtime has nothing left for `dispose` to stop, and it answers so with a throw
-    dispose: () =>
-      mf.dispose().catch((cause: unknown) => (killed ? undefined : Promise.reject(cause))),
+    dispose: () => {
+      running.delete(mf);
+      return mf.dispose().catch((cause: unknown) => (killed ? undefined : Promise.reject(cause)));
+    },
   };
 }
 

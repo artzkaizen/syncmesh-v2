@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { bundleRoom, workerdHarness, workerdTornHarness } from "./workerd/harness.js";
+import { bundleRoom, stopRuntimes, workerdHarness, workerdTornHarness } from "./workerd/harness.js";
 
 /**
  * O16 on a real workerd: the crash suite every device driver passes, run against
@@ -21,7 +21,10 @@ import { bundleRoom, workerdHarness, workerdTornHarness } from "./workerd/harnes
 const dir = mkdtempSync(join(tmpdir(), "syncmesh-do-crash-"));
 let script = "";
 beforeAll(async () => void (script = await bundleRoom(dir)), 120_000);
-afterAll(() => rmSync(dir, { recursive: true, force: true }), 60_000);
+afterAll(async () => {
+  await stopRuntimes();
+  rmSync(dir, { recursive: true, force: true });
+}, 60_000);
 
 for (const death of ["sigkill", "reset"] as const)
   describe(`@syncmesh/cloudflare-do survives ${death === "sigkill" ? "kill -9 of workerd" : "a reset mid-batch"}`, () => {
