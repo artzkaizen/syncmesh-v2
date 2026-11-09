@@ -515,7 +515,7 @@ export function createFrameTransport(options: FrameTransportOptions): Transport 
           attach: (link, peer) => attach(link, peer),
           // one decision per peer is the door's own property, not this transport's: see
           // `oneSeatPerPeer`, which is what the mesh wraps its gate in
-          ...omitUndefined({ admits: ctx.admits }),
+          ...omitUndefined({ admits: ctx.admits, grants: ctx.grants }),
           onDropped: (why) => {
             note({ kind: "dropped", why });
             options.onDropped?.(why);

@@ -16,10 +16,15 @@ import type { RelayDial } from "./transport.js";
 export interface Redial {
   /** Dial now. */
   readonly attempt: () => void;
-  /** Schedule another attempt after the current delay, then double it. */
+  /** Schedule another attempt after the current delay, then double it; replaces one already scheduled. */
   readonly again: () => void;
   /** A session came up: the next failure starts from the first delay again. */
   readonly settled: () => void;
+  /**
+   * The session that came up was refused its join: the delay {@link Redial.settled} reset is
+   * back, so a room that keeps refusing is dialled on a delay that doubles, not on the first one.
+   */
+  readonly refused: () => void;
   /** Drop a scheduled attempt. It does not close anything — this unit holds no socket. */
   readonly cancel: () => void;
 }
@@ -45,9 +50,13 @@ export function createRedial(options: RedialOptions): Redial {
   const baseMs = options.reconnectMs ?? 500;
   const maxMs = options.maxReconnectMs ?? 30_000;
   let backoff = baseMs;
+  /** The delay before the last {@link Redial.settled}, which a refused join puts back. */
+  let unsettled = baseMs;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   const again = (): void => {
+    // one attempt scheduled at a time: a second reason to dial again is the same attempt
+    clearTimeout(timer);
     timer = setTimeout(attempt, backoff);
     backoff = Math.min(backoff * 2, maxMs);
   };
@@ -66,7 +75,11 @@ export function createRedial(options: RedialOptions): Redial {
   return {
     attempt,
     again,
-    settled: () => void (backoff = baseMs),
+    settled: () => {
+      unsettled = backoff;
+      backoff = baseMs;
+    },
+    refused: () => void (backoff = Math.max(backoff, unsettled)),
     cancel: () => clearTimeout(timer),
   };
 }

@@ -66,6 +66,9 @@ pub enum BelowFloorReason {
     /// A relay refused the join below the floor it trimmed to (gaps U30): it folds nothing and
     /// serves no state, so the way out is state from a peer.
     Retention,
+    /// The floor came through a relay, from a peer this device has no link of its own to ask: a
+    /// relay carries cursors and events, never state (gaps U52).
+    Relayed,
 }
 
 impl BelowFloorReason {
@@ -77,6 +80,7 @@ impl BelowFloorReason {
             BelowFloorReason::Incomplete => "incomplete",
             BelowFloorReason::Unanswered => "unanswered",
             BelowFloorReason::Retention => "retention",
+            BelowFloorReason::Relayed => "relayed",
         }
     }
 
@@ -97,6 +101,9 @@ impl BelowFloorReason {
             }
             BelowFloorReason::Retention => {
                 "the relay has trimmed its history below these cursors and refused the join: take state from a peer that folds (a peer link, or $recovery.rebuild); the link dials that room again once this device holds the floor, or when it is woken"
+            }
+            BelowFloorReason::Relayed => {
+                "this peer's floor reached this device through a relay, which carries no state, and no link of this device's own reaches the peer: take state from a peer link to it (accept it to adopt up to its floor once one opens) or $recovery.rebuild"
             }
         }
     }
@@ -273,6 +280,25 @@ impl Rejoins {
         if self.relays.remove(relay).is_some() {
             self.changes += 1;
         }
+    }
+
+    /// A peer's cursors frame came through a relay naming a floor this device is below
+    /// (`relay::Action::BelowPeerFloor`, gaps U52). The relay cannot carry the state that would
+    /// answer it, so the issue is raised as [`BelowFloorReason::Relayed`] — unless a link of this
+    /// device's own reaches the peer, whose session asks for that state itself, or that link
+    /// already raised the peer's issue. Answers whether the issues changed.
+    pub fn relayed_floor(&mut self, peer: &PeerId, below: Cursors) -> bool {
+        if below.is_empty() || self.live.contains_key(peer) {
+            return false;
+        }
+        if let Some(held) = self.raised.get(peer) {
+            // a link of this device's own judged that peer already: its reason is the better one
+            if held.reason != BelowFloorReason::Relayed || held.floor == below {
+                return false;
+            }
+        }
+        self.raise(peer, below, BelowFloorReason::Relayed);
+        true
     }
 
     /// Whether the app accepted every author of `below` at the floor it names.

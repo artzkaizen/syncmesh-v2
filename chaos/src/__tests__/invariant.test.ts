@@ -114,6 +114,29 @@ describe("checkHeld", () => {
     ]);
   });
 
+  /**
+   * Every refusal a device ever recorded excused it for the rest of the run, so a device refused
+   * at the heal and served later was never held to what it still lacked.
+   */
+  test("a refusal that cleared excuses nothing", () => {
+    const entries = ledgerWith(
+      {
+        kind: "refused",
+        device: "b",
+        transport: "relay",
+        code: "retention",
+        message: "below the floor",
+      },
+      { kind: "cleared", device: "b", transport: "relay" },
+    );
+    const report = checkHeld(entries, [
+      holding("a", ["pa-1", "pa-2"], { pa: 2 }),
+      holding("b", ["pa-1"], { pa: 1 }),
+    ]);
+    expect(report.refused).toEqual([]);
+    expect(report.violations).toHaveLength(1);
+  });
+
   test("a refusal does not excuse a cursor that claims an event the log lacks", () => {
     const entries = ledgerWith({
       kind: "refused",
@@ -125,6 +148,41 @@ describe("checkHeld", () => {
     const report = checkHeld(entries, [holding("b", ["pa-1"], { pa: 2 })]);
     expect(report.refused).toEqual([]);
     expect(report.violations).toHaveLength(1);
+  });
+});
+
+/**
+ * A run a device can take only as state (`reach.ts` `stateOnlyOver`) is excused only while its
+ * `$recovery` issue says it is below that run's floor: the device must have been told (gaps U52).
+ */
+describe("checkHeld, a run that survives only as state", () => {
+  const stateOnly = { reaches: () => true, stateOnly: () => true };
+  const below = {
+    kind: "below",
+    device: "b",
+    peer: "pc",
+    reason: "relayed",
+    floor: { pa: 2 },
+  } as const satisfies Fact;
+  const short = [holding("a", ["pa-1", "pa-2"], { pa: 2 }), holding("b", ["pa-1"], { pa: 1 })];
+
+  test("with no issue on the device, it is a violation: nobody told it", () => {
+    const report = checkHeld(ledgerWith(), short, stateOnly);
+    expect(report.refused).toEqual([]);
+    expect(report.violations).toHaveLength(1);
+  });
+
+  test("with a standing issue naming the author, it is excused", () => {
+    const report = checkHeld(ledgerWith(below), short, stateOnly);
+    expect(report.violations).toEqual([]);
+    expect(report.refused.map(({ device }) => device)).toEqual(["b"]);
+  });
+
+  test("an issue naming another author, or one that went, excuses nothing", () => {
+    const other = { ...below, floor: { pz: 2 } };
+    expect(checkHeld(ledgerWith(other), short, stateOnly).violations).toHaveLength(1);
+    const gone = { kind: "above", device: "b", peer: "pc" } as const;
+    expect(checkHeld(ledgerWith(below, gone), short, stateOnly).violations).toHaveLength(1);
   });
 });
 

@@ -110,10 +110,22 @@ function diff(oracle: Oracle, held: Held, devices: readonly string[]): readonly 
   return missing;
 }
 
-export function analyze(entries: readonly Entry[], held: Held): Report {
+export function analyze(
+  entries: readonly Entry[],
+  held: Held,
+  /** Whether this write could ever have reached this device (`reach.ts`); every one, by default. */
+  could: (write: Extract<Entry, { kind: "authored" }>, device: string) => boolean = () => true,
+): Report {
   const devices = [...held.keys()].sort();
   const oracle = oracleOf(entries);
-  const missing = diff(oracle, held, devices);
+  // per device, the oracle over only the writes that could ever have reached it
+  const missing = devices.flatMap((device) =>
+    diff(
+      oracleOf(entries.filter((entry) => entry.kind !== "authored" || could(entry, device))),
+      held,
+      [device],
+    ),
+  );
   return {
     authored: oracle.authored,
     rejected: oracle.rejected,

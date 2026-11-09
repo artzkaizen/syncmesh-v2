@@ -1,6 +1,7 @@
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
 import { createMemoryEventStore, tableDigests } from "@syncmesh/engine";
+import { parseSeqNum } from "@syncmesh/kernel";
 import { hashOf, memoryBlobStore } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { createRejoins, eventFrame, grantFrame } from "@syncmesh/transport";
@@ -155,7 +156,7 @@ describe("the room-log retention cap", () => {
     room.close();
   });
 
-  test("a joiner below the floor is refused and closed, never registered and never paged", async () => {
+  test("a joiner below the floor is told where the room is and refused, never registered and never paged", async () => {
     const { room, tick: setClock } = await fourEvents(2);
     setClock(at(KEEP_MS + STEP_MS));
     await room.sweep();
@@ -163,10 +164,36 @@ describe("the room-log retention cap", () => {
     const s = joinAt(room, peer(200, "acct_j").identity.peerId, 0);
     await tick();
     expect(s.ofKind("error")[0]?.code).toBe("retention");
-    expect(s.closedWith).toEqual(["retention"]);
     expect(s.ofKind("page")).toEqual([]); // no page with the bottom missing
-    expect(s.ofKind("hello")).toEqual([]);
+    // the room's position, so the device knows what to hand over; and the socket stays to take it
+    expect(s.ofKind("hello")).toHaveLength(1);
+    expect(s.closedWith).toEqual([]);
     expect(room.clients()).toBe(1); // the author that fed it, and nobody else
+    room.close();
+  });
+
+  /**
+   * A refused socket now stays open for the hand-over, so a seated peer that re-joined below the
+   * floor on the same socket stayed among the room's clients and went on hearing its fan-out.
+   */
+  test("a seated peer that re-joins below the floor leaves the room's clients", async () => {
+    const { a, room, tick: setClock } = await fourEvents(2);
+    setClock(at(KEEP_MS + STEP_MS));
+    await room.sweep();
+
+    const j = peer(201, "acct_j").identity.peerId;
+    const s = fakeSocket();
+    const conn = room.connect(s.socket);
+    conn.receive(
+      joinFrame([1], j, new Map([[a.identity.peerId, room.floor().get(a.identity.peerId)!]])),
+    );
+    await tick();
+    expect(room.clients()).toBe(2);
+    conn.receive(joinFrame([1], j, new Map()));
+    await tick();
+    expect(s.ofKind("error")[0]?.code).toBe("retention");
+    expect(s.closedWith).toEqual([]);
+    expect(room.clients()).toBe(1);
     room.close();
   });
 
@@ -187,7 +214,7 @@ describe("the room-log retention cap", () => {
 
     expect(s.ofKind("page")).toEqual([]);
     expect(s.ofKind("error")[0]?.code).toBe("retention");
-    expect(s.closedWith).toEqual(["retention"]);
+    expect(s.closedWith).toEqual([]);
     room.close();
   });
 
@@ -435,6 +462,138 @@ describe("a device the room refuses with retention (gaps U30)", () => {
     expect(await until(() => online)).toBe(true);
     expect(dials()).toBe(3);
     expect(rejoins.issues()).toEqual([]);
+    await t.stop();
+    room.close();
+  }, 20_000);
+
+  /**
+   * The refusal used to close the socket, so a device that wrote while it was away — or carried
+   * writes for a neighbour with no network — kept them until it held the floor, which a device
+   * that reaches the mesh only through this room never does. Nobody else was told (chaos soak,
+   * `--retention`: the relay-only sleeper's writes, on every seed that has one).
+   */
+  test("hands over what it wrote before it hangs up, though the room serves it nothing", async () => {
+    const {
+      store,
+      room,
+      tick: setClock,
+    } = await fourEvents(2, {
+      versions: RELAY_PROTOCOL_VERSIONS,
+    });
+    setClock(at(KEEP_MS + STEP_MS));
+    await room.sweep();
+
+    const x = peer(92, "acct_x");
+    await write(x, "x1", "written while away");
+    await write(x, "x2", "and again");
+    const rejoins = createRejoins();
+    const t = relayTransport({ dial: dialTo(room).dial, reconnectMs: 5 });
+    await t.start({ ...x.context, rejoins });
+    expect(await until(() => rejoins.issues().length === 1)).toBe(true);
+
+    const handed = async () =>
+      (await store.allSince(new Map()))
+        .unwrap()
+        .filter(({ event }) => event.peerId === x.identity.peerId).length;
+    const landed = async (count: number) => {
+      let held = 0;
+      for (let round = 0; round < 100 && held < count; round += 1) {
+        held = await handed();
+        await tick(15);
+      }
+      return held;
+    };
+    expect(await landed(2)).toBe(2);
+    // and still refused: nothing of the room's came back to a device below its floor
+    expect(bodyOf(x, "n3")).toBeUndefined();
+
+    // a write made while it waits for state is handed over too, by one more refused join
+    await write(x, "x3", "after the refusal");
+    expect(await landed(3)).toBe(3);
+    expect(rejoins.issues()).toHaveLength(1);
+    await t.stop();
+    room.close();
+  }, 20_000);
+
+  /**
+   * A refused device that compacted a run it carried is often the run's last holder, and a device
+   * that reaches it only through the room never heard its floor: a refused session sent no
+   * cursors frame (chaos soak, `--retention`, seed 9 at six devices, gaps U52).
+   */
+  test("says its position, floor and all, before it hangs up", async () => {
+    const { a, room, tick: setClock } = await fourEvents(2, { versions: RELAY_PROTOCOL_VERSIONS });
+    setClock(at(KEEP_MS + STEP_MS));
+    await room.sweep();
+
+    // a device the room serves, holding the room's floor, with no link of its own to x
+    const bob = peer(95, "acct_y");
+    bob.grants.register(mintFor(a.identity, "acct_a")).unwrap();
+    const history = (await a.engine.eventsSince(new Map())).unwrap();
+    (await bob.engine.receiveBatch(history.filter(({ event }) => event.seqNum <= 2))).unwrap();
+    const told = createRejoins();
+    const tb = relayTransport({ dial: dialTo(room).dial, reconnectMs: 5 });
+    await tb.start({ ...bob.context, rejoins: told });
+    await tb.whenReady();
+
+    // x carried c's run and compacted it before it came back below the room's floor
+    const c = peer(120, "acct_c");
+    const x = peer(94, "acct_x", 100, { compacts: true });
+    x.grants.register(mintFor(c.identity, "acct_c")).unwrap();
+    const run = [await write(c, "c1", "one"), await write(c, "c2", "two")];
+    (await x.engine.receiveBatch(run.map(entryOf))).unwrap();
+    const later = T0.add(MS(60_000));
+    const carried = new Map([[c.identity.peerId, parseSeqNum(run.length).unwrap()]]);
+    x.engine.acknowledge(peer(96, "acct_z").identity.peerId, carried, later);
+    (await x.engine.compact({ now: later, forgetPeersAfter: MS(1000) })).unwrap();
+
+    const rejoins = createRejoins();
+    const tx = relayTransport({ dial: dialTo(room).dial, reconnectMs: 5 });
+    await tx.start({ ...x.context, rejoins });
+    expect(await until(() => rejoins.issues().length === 1)).toBe(true);
+    // bob is below the floor x said on its way out, and nothing but x's refused session said it
+    expect(await until(() => told.issues().length === 1, 2000)).toBe(true);
+    expect(told.issues()).toMatchObject([
+      { peer: x.identity.peerId, reason: "relayed", floor: carried },
+    ]);
+    await tx.stop();
+    await tb.stop();
+    room.close();
+  }, 20_000);
+
+  /**
+   * The room says hello before it refuses, and the hello reset the backoff: every write below the
+   * floor cost a refused join on the first delay, however many came before it, where a room that
+   * keeps refusing should be dialled on a delay that doubles.
+   */
+  test("each write below the floor dials once more, on a delay that doubles", async () => {
+    const { room, tick: setClock } = await fourEvents(2, { versions: RELAY_PROTOCOL_VERSIONS });
+    setClock(at(KEEP_MS + STEP_MS));
+    await room.sweep();
+
+    const x = peer(93, "acct_x");
+    await write(x, "x1", "written while away");
+    const rejoins = createRejoins();
+    const to = dialTo(room);
+    const dialled: number[] = [];
+    const dial = () => {
+      dialled.push(performance.now());
+      return to.dial();
+    };
+    const t = relayTransport({ dial, reconnectMs: 20, maxReconnectMs: 5000 });
+    await t.start({ ...x.context, rejoins });
+    expect(await until(() => rejoins.issues().length === 1)).toBe(true);
+
+    const waits: number[] = [];
+    for (const body of ["x2", "x3", "x4"]) {
+      const before = dialled.length;
+      const wrote = performance.now();
+      await write(x, body, body);
+      expect(await until(() => dialled.length > before, 2000)).toBe(true);
+      waits.push((dialled.at(-1) ?? wrote) - wrote);
+      await tick(10);
+    }
+    // 20, 40, 80 ms: the third would be the first delay again had the hello reset it
+    expect(waits[2]).toBeGreaterThanOrEqual(70);
     await t.stop();
     room.close();
   }, 20_000);

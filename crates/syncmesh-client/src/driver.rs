@@ -32,7 +32,8 @@ pub enum LinkCommand {
     Grants(Vec<Vec<u8>>),
     /// A plaintext relay or session frame to seal and send — a blob get, say.
     RawFrame(Vec<u8>),
-    /// A `blob-put` frame for `hash`; the link says when it could not leave.
+    /// A `blob-put` frame for `hash`; the link says when it could not leave, and keeps it until a
+    /// relay answers or the socket it left on says nothing for `BLOB_ANSWER_WAIT`.
     BlobPut {
         hash: String,
         frame: Vec<u8>,
@@ -73,6 +74,11 @@ pub enum LinkEvent {
     BelowFloor(Cursors),
     /// The relay's floor issue is over.
     FloorCleared,
+    /// A peer's floor, passed on by the room, that this device is below (gaps U52).
+    BelowPeerFloor {
+        peer: PeerId,
+        floor: Cursors,
+    },
     /// Permanent; the task ends after this.
     Refused(String),
     /// The socket ended, and why the link thinks so where it was the one to hang up.
@@ -97,6 +103,7 @@ impl LinkEvent {
             Action::Dropped(why) => LinkEvent::Dropped(why),
             Action::BelowFloor { floor } => LinkEvent::BelowFloor(floor),
             Action::FloorCleared => LinkEvent::FloorCleared,
+            Action::BelowPeerFloor { peer, floor } => LinkEvent::BelowPeerFloor { peer, floor },
             Action::Refused { reason } => LinkEvent::Refused(reason),
             Action::Send(_) | Action::Close { .. } | Action::Redial { .. } => return None,
         })
@@ -142,14 +149,14 @@ fn apply(link: &mut RelayLink, engine: &Arc<Mutex<Engine>>, command: LinkCommand
         LinkCommand::Presence(wire) => link.send_presence(&wire),
         LinkCommand::Grants(wires) => link.send_grants(wires),
         LinkCommand::RawFrame(plain) => link.send_raw_frame(plain),
-        LinkCommand::BlobPut { hash, frame } => link.send_blob_put(hash, frame),
+        LinkCommand::BlobPut { hash, frame } => link.send_blob_put(hash, frame, now_ms()),
         LinkCommand::RemoteFold => {
             let engine = engine.lock().unwrap_or_else(PoisonError::into_inner);
             link.on_remote_fold(&engine)
         }
         LinkCommand::Resync => {
             let engine = engine.lock().unwrap_or_else(PoisonError::into_inner);
-            link.resync(&engine)
+            link.resync(&engine, now_ms())
         }
         LinkCommand::Wake => link.wake(),
         LinkCommand::Stop => link.stop(),

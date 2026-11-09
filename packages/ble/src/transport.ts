@@ -2,12 +2,18 @@ import type { PeerId } from "@syncmesh/kernel";
 import type { Transport, TransportContext, Upgraded } from "@syncmesh/transport";
 
 import { Result, omitUndefined } from "@syncmesh/result";
-import { createBackoff, createFrameTransport, createLiveness } from "@syncmesh/transport";
+import {
+  DEFAULT_KEEPALIVE_MS,
+  createBackoff,
+  createFrameTransport,
+  createLiveness,
+} from "@syncmesh/transport";
 
 import type { BleRadio, Unsubscribe } from "./radio.js";
 import type { BleSighting } from "./sighting.js";
 
 import { advertisement, groupTag, hintOf } from "./advert.js";
+import { carrying } from "./carrying.js";
 import { discovery } from "./dial.js";
 import { createRestart, stopRadio, watchPower } from "./lifecycle.js";
 import { bleLink } from "./link.js";
@@ -142,16 +148,20 @@ const linkDeadline = (
     readonly drop: (why: string) => void;
     readonly close: (hint: string) => void;
     readonly probe: () => void;
+    /** Where a proven link's packet is noted for `wake` (see {@link carrying}). */
+    readonly working: ReturnType<typeof carrying>;
   },
 ) =>
-  createLiveness<string>({
-    ...omitUndefined({ everyMs: options.keepaliveMs }),
-    probe: on.probe,
-    dead: (hint) => {
-      on.drop(`${hint} went quiet and was hung up on`);
-      on.close(hint);
-    },
-  });
+  on.working.watching(
+    createLiveness<string>({
+      ...omitUndefined({ everyMs: options.keepaliveMs }),
+      probe: on.probe,
+      dead: (hint) => {
+        on.drop(`${hint} went quiet and was hung up on`);
+        on.close(hint);
+      },
+    }),
+  );
 
 /**
  * Connect, find the characteristic, subscribe, and take whatever MTU we are given.
@@ -202,6 +212,7 @@ export function bleTransport(options: BleOptions): Transport {
   let stopLiveness: (() => void) | undefined;
   /** Holds the two reasons to restart to one at a time. See {@link createRestart}. */
   const restart = createRestart<TransportContext>();
+  const working = carrying(proven, options.keepaliveMs ?? DEFAULT_KEEPALIVE_MS);
 
   /**
    * What `open` was called with, kept so the radio coming back can repeat it.
@@ -253,6 +264,7 @@ export function bleTransport(options: BleOptions): Transport {
         drop,
         close: (hint) => closeLink(hint),
         probe: () => transport.resync?.(),
+        working,
       });
       stopLiveness = alive.stop;
       const seen = discovery(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs });
@@ -353,8 +365,9 @@ export function bleTransport(options: BleOptions): Transport {
         radio.onCharacteristicValueChanged((event) => {
           const hint = byConnection.get(event.connectionId);
           if (hint === undefined) return drop("a notification arrived on no link of ours");
-          alive.heard(hint);
-          held.get(hint)?.link.accept(event.valueBase64);
+          // only a packet under this link's tag is this link alive: another central's
+          // notification from the same peripheral says nothing about our session
+          if (held.get(hint)?.link.accept(event.valueBase64) === true) alive.heard(hint);
         }),
         radio.onCharacteristicWriteRequested((event) => {
           // the dialled side: whoever wrote is the peer, and this is the first we hear of them.
@@ -363,8 +376,7 @@ export function bleTransport(options: BleOptions): Transport {
           const hint = event.centralId ?? onlyInbound(held);
           if (hint === undefined) return drop("a write arrived and no peer could be named for it");
           const entry = held.get(hint) ?? hold(hint, undefined);
-          alive.heard(hint);
-          entry.link.accept(event.valueBase64);
+          if (entry.link.accept(event.valueBase64)) alive.heard(hint);
         }),
         // one number for every notification this peripheral sends, which is how the platform
         // reports it; a link reads it per send rather than holding a copy that could go stale
@@ -391,6 +403,7 @@ export function bleTransport(options: BleOptions): Transport {
       held.clear();
       byConnection.clear();
       proven.clear(); // a stopped radio reaches nobody, whatever it proved while it was up
+      working.forget();
       // a radio that will not stop is already gone; there is nobody left to report it to
       const stopped = await stopRadio(radio);
       if (stopped.isErr()) drop(`the radio did not shut down cleanly: ${String(stopped.error)}`);
@@ -432,9 +445,11 @@ export function bleTransport(options: BleOptions): Transport {
      * every peer and tears down scanning and advertising, so `start` is publishing into a clean
      * state rather than stacking a second scan on a live one. `@syncmesh/ble`'s own radio bridge
      * waits for `poweredOn` before any of it reaches the platform, so calling this while the
-     * adapter is still off costs a promise and nothing else.
+     * adapter is still off costs a promise and nothing else. A radio a proven link was heard on
+     * inside one keepalive is not restarted at all: see {@link carrying}.
      */
     wake: () => {
+      if (working.recently()) return;
       void reopen?.().catch((cause: unknown) =>
         drop(`the radio would not restart: ${cause instanceof Error ? cause.message : "unknown"}`),
       );

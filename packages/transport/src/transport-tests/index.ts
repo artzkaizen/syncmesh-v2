@@ -1,7 +1,7 @@
 export type { OpenChannel } from "./channel.js";
 export { channelTests } from "./channel.js";
 export type { Connect, Severable, SuiteNetwork, SuitePeer } from "./peers.js";
-export { severable, severableStream, suitePeers } from "./peers.js";
+export { bodyOf, severable, severableStream, suitePeers, write } from "./peers.js";
 
 import type { Quarantined, SuiteCase } from "@syncmesh/engine";
 

@@ -6,11 +6,13 @@ import { memoryBlobHomes } from "@syncmesh/storage";
 import { Temporal, addToInstant, durationMs } from "@syncmesh/temporal";
 
 import type { BlobKeeper } from "./blob-keeper.js";
+import type { RelayFrame } from "./frames.js";
 import type { Conversation } from "./state.js";
 import type { RelayTelemetry } from "./telemetry.js";
 
 import { cappedBlobStore } from "./blob-cap.js";
 import { createBlobKeeper } from "./blob-keeper.js";
+import { helloFrame } from "./frames.js";
 
 /**
  * What a room stops keeping, and when. Every field is absent by default, and absent is what
@@ -224,6 +226,13 @@ export function belowFloor(theirs: Cursors, floor: Cursors): boolean {
  * Refuses a join whose cursors are below the room's floor, with a typed `retention` error that
  * names the floor, so the device can say what it is below and stop dialling (gaps U30). Whether
  * it refused.
+ *
+ * **Not a hang-up.** The room serves this device nothing, but it still takes what the device
+ * hands it: the device sends everything it holds above the cursors the room's hello named, then
+ * closes. A refusal that closed the socket kept every write the device made while away — and
+ * every write it carried for a neighbour with no network — out of the room for as long as it
+ * waited for state, which for a device that reaches the mesh only through this room was for
+ * good, and nobody else was told (chaos soak, `--retention`, every seed with a relay-only sleeper).
  */
 export function refusedBelowFloor(
   refuse: Conversation["refuse"],
@@ -231,8 +240,27 @@ export function refusedBelowFloor(
   floor: Cursors,
 ): boolean {
   if (!belowFloor(theirs, floor)) return false;
-  refuse("retention", BELOW_FLOOR, true, floor);
+  refuse("retention", BELOW_FLOOR, false, floor);
   return true;
+}
+
+/**
+ * A joiner below the floor: told the room's position and refused, but not hung up on, so what it
+ * hands over still lands (see {@link refusedBelowFloor}). It takes no place among the room's
+ * clients — no catch-up, no fan-out — and its seat's grant still bounds its blob puts (D44).
+ */
+export function handsOver(
+  { room, sender, refuse }: Conversation,
+  join: Extract<RelayFrame, { kind: "join" }> & { readonly selected: number },
+): void {
+  // a refused join is no seat: whatever this peer held here stops hearing the room, and a socket
+  // it re-joined on stays open for the hand-over
+  const old = room.clients.get(join.peerId);
+  room.clients.delete(join.peerId);
+  if (old !== undefined && old.sender !== sender) old.socket.close("superseded by a newer join");
+  const { keepaliveMs, epoch, durable } = room;
+  sender.send(helloFrame(join.selected, keepaliveMs, epoch, room.cursors(), room.floor(), durable));
+  refusedBelowFloor(refuse, join.cursors, room.floor());
 }
 
 /** What a room lends its retention: the log, the bytes, where its ceiling is, and its clock. */

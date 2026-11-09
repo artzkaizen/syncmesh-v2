@@ -224,7 +224,7 @@ describe("two live sessions that re-key each other converge (chaos: three BLE ra
    * link. Driven through the stub so every frame is delivered by hand: a regression here is a
    * failed assertion, never a hung suite.
    */
-  test("a fresh hello is answered once; the answer to that answer is taken, not re-offered", () => {
+  test("a fresh hello is answered once; the answer to that answer is taken, not re-keyed", () => {
     const radio = stub();
     const alice = watch(radio.link, ALICE);
     const first = bobSays(radio);
@@ -240,12 +240,15 @@ describe("two live sessions that re-key each other converge (chaos: three BLE ra
 
     // Bob, live and established too, answers Alice's fresh hello with a fresh hello of his own —
     // exactly what a peer running this same code does. Alice's hello is unconfirmed, so this is
-    // the answer to it: she agrees under what she already offered and sends nothing more
+    // the answer to it: she agrees under what she already offered and offers only that again —
+    // a copy Bob, having agreed under it, drops, so nothing fresh is ever said and the pair stop
     const secret = ephemeralSecret();
     const answer = writeHello(BOB, secret);
     radio.deliver(answer.frame);
     expect(alice.superseded).toEqual([BOB.peerId, BOB.peerId]);
-    expect(radio.sent.filter((f) => f[0] === HELLO).length).toBe(hellosBefore + 1); // no third hello
+    const hellos = radio.sent.filter((f) => f[0] === HELLO);
+    expect(hellos).toHaveLength(hellosBefore + 2);
+    expect(hellos.at(-1)).toEqual(offered.frame); // no fresh hello
 
     // and the keys converged: what Bob derives from (his answer, Alice's offer) opens both ways
     const keys = sessionKeys(secret, answer, offered).unwrap();
@@ -268,6 +271,30 @@ describe("two live sessions that re-key each other converge (chaos: three BLE ra
     expect(hellos()).toBe(n + 1);
     after.send("second life");
     expect(alice.got).toEqual(["first life", "second life"]);
+  });
+});
+
+describe("a peer that hung up and opened a new session before it heard ours", () => {
+  /**
+   * A BLE peripheral's door refused this device and closed its half; the next write recreated a
+   * link there, whose new session said hello. Ours had gone out on the old one and was never
+   * offered again, so the new session held every frame we sealed as `a frame arrived before the
+   * session was open` and the pair never spoke again (chaos soak, `--grants fault`, seed 2).
+   */
+  test("its hello is answered with ours, so its new session can agree too", () => {
+    const radio = stub();
+    const alice = watch(radio.link, ALICE);
+    bobSays(radio); // agreed, and Bob never sealed anything: Alice's hello is unconfirmed
+    const hellos = () => radio.sent.filter((f) => f[0] === HELLO);
+    const before = hellos().length;
+
+    const fresh = bobSays(radio); // Bob's new session, which never saw Alice's hello
+    expect(hellos()).toHaveLength(before + 1);
+    // what it agrees from what Alice just sent opens both ways
+    fresh.send("on the new session");
+    expect(alice.got).toEqual(["on the new session"]);
+    alice.secure.send(bytes("and back"));
+    expect(text(unseal(fresh.keys.open, radio.sent.at(-1)!).unwrap())).toBe("and back");
   });
 });
 

@@ -63,7 +63,8 @@ pub enum MeshEvent {
     PeerHeard(PeerId),
     Dropped(String),
     /// The issues [`Mesh::below_floor`] lists changed: a relay refused this device below its floor
-    /// (gaps U37), or that is over.
+    /// (gaps U37), or that is over; a peer's floor came through the relay (gaps U52); or a fold
+    /// brought this device up to a floor an issue named.
     Recovery,
     /// The link is over for good: a refusal, or `stop`.
     Ended(String),
@@ -184,6 +185,7 @@ impl Mesh {
                 link_rx,
                 event_tx,
                 Pumped {
+                    engine: engine.clone(),
                     presence: presence.clone(),
                     grants: grants.clone(),
                     blobs: blobs.clone(),
@@ -300,8 +302,9 @@ impl Mesh {
     /// holder. A room that keeps no blobs (`no-store`), a code this build cannot name, and a relay
     /// that says nothing for [`BLOB_ANSWER_WAIT`] are not refusals: the bytes are here, and the put
     /// succeeds, as it did before rooms answered at all. A put made while the link is not up
-    /// answers at once, the same way: the frame could not leave, so nothing will answer it, and it
-    /// is not sent again on the next session — put it again once [`MeshEvent::Online`] says so.
+    /// answers at once, the same way, and the link keeps it: the next session carries the bytes.
+    /// So does one whose socket closed before the relay answered; that put answers within
+    /// [`BLOB_ANSWER_WAIT`] whatever happens to the link.
     pub async fn blob_put(
         &self,
         bytes: &[u8],
@@ -326,7 +329,8 @@ impl Mesh {
             Ok(Ok(Some(refusal))) => Err(refusal.into_error(&hash)),
             Ok(_) => Ok(hash),
             Err(_) => {
-                // silence: a relay that predates the answer; this wait is over, others are not
+                // silence: a relay that predates the answer, or a socket that closed under the put;
+                // the link keeps or lets go of the put on its own clock, and this wait is over
                 let mut held = lock(&self.waits.uploads);
                 if let Some(waits) = held.get_mut(&hash) {
                     waits.retain(|upload| !upload.settle.is_closed());
@@ -431,6 +435,8 @@ impl Mesh {
 
 /// What the pump writes link facts into.
 struct Pumped {
+    /// Read after a fold, so an issue the fold answered goes and is said to go.
+    engine: Arc<Mutex<Engine>>,
     presence: Arc<Mutex<PresenceTier>>,
     grants: Arc<Mutex<GrantRegistry>>,
     blobs: Arc<Mutex<Box<dyn BlobStore + Send>>>,
@@ -449,6 +455,7 @@ async fn pump(
     commands: mpsc::Sender<LinkCommand>,
 ) {
     let Pumped {
+        engine,
         presence,
         grants,
         blobs,
@@ -476,7 +483,16 @@ async fn pump(
                 vec![MeshEvent::Online(on)]
             }
             LinkEvent::CaughtUp => vec![MeshEvent::CaughtUp],
-            LinkEvent::Folded(batch) => vec![MeshEvent::Folded(batch)],
+            LinkEvent::Folded(batch) => {
+                // an issue this fold answered goes now, and is said to: a relay-only device has
+                // no other sweep, and a host waiting on `Recovery` would wait forever (gaps U52)
+                let ours = lock(&engine).coverage().synced;
+                if lock(&rejoins).sweep(&ours) {
+                    vec![MeshEvent::Folded(batch), MeshEvent::Recovery]
+                } else {
+                    vec![MeshEvent::Folded(batch)]
+                }
+            }
             LinkEvent::Presence(wire) => {
                 let mut tier = lock(&presence);
                 tier.receive(&wire, now_ms());
@@ -519,6 +535,13 @@ async fn pump(
             LinkEvent::FloorCleared => {
                 lock(&rejoins).relay_cleared(&relay);
                 vec![MeshEvent::Recovery]
+            }
+            LinkEvent::BelowPeerFloor { peer, floor } => {
+                if lock(&rejoins).relayed_floor(&peer, floor) {
+                    vec![MeshEvent::Recovery]
+                } else {
+                    Vec::new()
+                }
             }
             LinkEvent::Refused(why) => vec![MeshEvent::Ended(why)],
             LinkEvent::Closed(_) | LinkEvent::DialFailed(_) => Vec::new(),
@@ -568,6 +591,98 @@ mod tests {
     use super::*;
     use crate::presence::decode_and_verify_presence;
 
+    fn test_engine(identity: &Identity) -> Engine {
+        Engine::open(
+            identity.clone(),
+            Box::new(crate::store::MemoryEventStore::new()),
+            None,
+            EngineOptions::default(),
+        )
+        .unwrap()
+    }
+
+    /// A relay-only device caught up to a peer's floor and its subscribers never heard: the issue
+    /// went only when something read the list (gaps U52).
+    #[tokio::test]
+    async fn a_fold_that_answers_an_issue_says_so() {
+        let identity = Identity::from_seed(&[5; 32]);
+        let author = Identity::from_seed(&[6; 32]);
+        let peer = Identity::from_seed(&[7; 32]).peer_id().clone();
+        let mut writer = test_engine(&author);
+        let mut row = Row::new();
+        row.insert("body".to_owned(), CellValue::text("x"));
+        let entry = writer
+            .mutate(
+                "notes.create",
+                vec![Change::Insert {
+                    table: "notes".into(),
+                    key: "k".into(),
+                    row,
+                }],
+                None,
+            )
+            .unwrap()
+            .entry;
+        let engine = Arc::new(Mutex::new(test_engine(&identity)));
+        let rejoins = Arc::new(Mutex::new(Rejoins::new()));
+        let floor = [(author.peer_id().clone(), entry.event.seq_num)]
+            .into_iter()
+            .collect();
+        assert!(lock(&rejoins).relayed_floor(&peer, floor));
+
+        let (link_tx, link_rx) = mpsc::channel(8);
+        let (event_tx, mut events) = mpsc::channel(8);
+        let (commands, _sent) = mpsc::channel(8);
+        let pumping = tokio::spawn(pump(
+            link_rx,
+            event_tx,
+            Pumped {
+                engine: engine.clone(),
+                presence: Arc::new(Mutex::new(PresenceTier::new(
+                    identity.clone(),
+                    "s".to_owned(),
+                ))),
+                grants: Arc::new(Mutex::new(GrantRegistry::new(identity.peer_id().clone()))),
+                blobs: Arc::new(Mutex::new(Box::new(MemoryBlobStore::new()))),
+                waits: BlobWaits::default(),
+                rejoins: rejoins.clone(),
+                relay: "relay".to_owned(),
+            },
+            commands,
+        ));
+
+        let batch = lock(&engine).receive(entry).unwrap().batch;
+        link_tx
+            .send(LinkEvent::Folded(batch.clone()))
+            .await
+            .unwrap();
+        // nothing left to answer: a later fold is a fold and nothing more
+        link_tx
+            .send(LinkEvent::Folded(batch.clone()))
+            .await
+            .unwrap();
+        drop(link_tx);
+        pumping.await.unwrap();
+        let mut heard = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            heard.push(event);
+        }
+        assert_eq!(
+            heard,
+            vec![
+                MeshEvent::Folded(batch.clone()),
+                MeshEvent::Recovery,
+                MeshEvent::Folded(batch),
+                MeshEvent::Ended("stopped".to_owned()),
+            ]
+        );
+        assert!(
+            lock(&rejoins)
+                .issues(&lock(&engine).coverage().synced)
+                .is_empty()
+        );
+    }
+
     #[tokio::test]
     async fn announce_on_link_return_uses_the_clock() {
         let identity = Identity::from_seed(&[5; 32]);
@@ -588,6 +703,7 @@ mod tests {
             link_rx,
             event_tx,
             Pumped {
+                engine: Arc::new(Mutex::new(test_engine(&identity))),
                 presence: presence.clone(),
                 grants: Arc::new(Mutex::new(GrantRegistry::new(identity.peer_id().clone()))),
                 blobs,

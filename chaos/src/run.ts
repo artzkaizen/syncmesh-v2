@@ -7,9 +7,18 @@ import type { Switches, Wiring, World } from "./world.js";
 
 import { analyze, render, type Held } from "./analyze.js";
 import { key, table } from "./cells.js";
-import { checkDigests, checkHeld, renderInvariant, type Holding } from "./invariant.js";
+import {
+  checkDigests,
+  checkHeld,
+  renderInvariant,
+  heldTo,
+  standingFloors,
+  standingRefusals,
+  type Holding,
+} from "./invariant.js";
 import { createLedger, short } from "./ledger.js";
 import { seeded } from "./random.js";
+import { reachOver, stateOnlyOver } from "./reach.js";
 import { SMALL, runPlan, type Plan } from "./schedule.js";
 import { NOTE } from "./schema.js";
 import { createWorld } from "./world.js";
@@ -96,6 +105,12 @@ const connected = (wirings: readonly Wiring[]): boolean => {
 };
 
 /** What every device holds, read from its engine: the invariant's evidence. */
+/** Every device's issues read once more: one whose authors caught up since is said to be over. */
+async function rereadIssues(world: World): Promise<void> {
+  for (const device of world.devices) device.mesh.recovery.belowFloor();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 async function holdings(world: World): Promise<readonly Holding[]> {
   return Promise.all(
     world.devices.map(async (device) => {
@@ -190,6 +205,8 @@ const main = async () => {
   try {
     const outcome = await runPlan(world, plan, random, ledger, NOTES, switches);
 
+    await rereadIssues(world);
+
     // what every device holds at the end, read from its own state rather than from the log
     const held: Held = new Map(
       world.devices.map((device) => {
@@ -224,15 +241,25 @@ const main = async () => {
 
     // the durability invariant, from each engine's own log and cursors rather than its rows
     const holding = await holdings(world);
-    const invariant = checkHeld(ledger.entries(), holding);
+    const told = new Set(standingRefusals(ledger.entries()).keys());
+    const wirings = new Map(world.devices.map((device) => [device.name, device.wiring]));
+    const reaches = reachOver(wirings, told);
+    const stateOnly = stateOnlyOver(wirings, told, holding);
+    const floors = standingFloors(ledger.entries());
+    const invariant = checkHeld(ledger.entries(), holding, { reaches, stateOnly });
     const refused = new Set(invariant.refused.map((refusal) => refusal.device));
     const digests = checkDigests(holding, refused);
     for (const violation of [...invariant.violations, ...digests]) ledger.write(violation);
 
     // a device told by a typed refusal that it would not be served is reported as refused, not
     // as diverged: what the oracle demands of it is that it was told, and the invariant checks that
-    const converging: Held = new Map([...held].filter(([device]) => !refused.has(device)));
-    const report = analyze(ledger.entries(), converging);
+    // one cut off only from some writes is still held to the rest, by `analyze`'s own reach
+    const converging: Held = new Map(
+      [...held].filter(([device]) => !(refused.has(device) && told.has(device))),
+    );
+    const report = analyze(ledger.entries(), converging, (write, device) =>
+      heldTo(write, device, { reaches, stateOnly }, floors),
+    );
     const text = [
       render(report, ledger.entries()),
       renderInvariant(invariant, digests),

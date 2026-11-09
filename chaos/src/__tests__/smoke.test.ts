@@ -17,34 +17,19 @@ describe("chaos smoke", () => {
   }, 60_000);
 
   /**
-   * Found by the invariant, in the original schedule with no switch on. `bun src/run.ts --seed 4
-   * --devices 4 --ticks 10` fails every time:
-   *
-   *   VIOLATION held c: lacks b's update of n1 (seq 4, 4bddee55…-4): cursor 3
-   *
-   * c (Bluetooth only) reaches b and d over the air. At boot the ledger's `medium` lines show
-   * `c proven 4bddee55 the peer handshook again; the older session is gone` within a few ms of b
-   * handshaking with d, then a steady stream of `the frame did not open under the session key`.
-   * The cause, read from the code: a peripheral notifies with `setCharacteristicValue(…, true)`
-   * and names no central (`packages/ble/src/link.ts`), so every subscribed central gets every
-   * link's frames, and a central files them under its own link to that peripheral
-   * (`onCharacteristicValueChanged` in `packages/ble/src/transport.ts`). b's hello to d reads to
-   * c as b re-keying, c drops its live session, and nothing re-keys it. The BLE transport's, not
-   * the harness's — a sibling team owns it.
+   * Found by the invariant, in the original schedule with no switch on: `c` (Bluetooth only) lost
+   * its session to `b` whenever `b` greeted another central, because a peripheral notifies every
+   * subscribed central and the central filed the neighbour's hello under its own link. Fixed by
+   * naming the link in every packet (`@syncmesh/ble` `link.ts`, `LINK_TAG_BYTES`); the
+   * deterministic replay is `link.test.ts` "two centrals on one peripheral". A seed fixes the
+   * schedule for one build only, so these two say only that the seeds that found it still pass.
    */
-  test.todo("seed 4, 4 devices, 10 ticks: a session replaced by a neighbour's hello", async () => {
+  test("seed 4, 4 devices, 10 ticks: a neighbour's hello no longer replaces a session", async () => {
     const { code } = await runChaos(["--seed", "4", "--devices", "4", "--ticks", "10"]);
     expect(code).toBe(0);
   }, 60_000);
 
-  /**
-   * The same fault under the smoke's old seed. A seed fixes the schedule for one build only: seed
-   * 11 authors a different run on main than after gap/sweep merged into it. Under this build it
-   * leaves c (Bluetooth only) holding d's update of n3 at cursor 2, and its ledger shows the
-   * neighbour's-hello re-key and the frames that no longer open. Seeds 17, 23 and 27 fail the same
-   * way on main before this merge.
-   */
-  test.todo("seed 11, 4 devices, 8 ticks: the same session replaced by a neighbour's hello", async () => {
+  test("seed 11, 4 devices, 8 ticks: the same", async () => {
     const { code } = await runChaos(["--seed", "11", "--devices", "4", "--ticks", "8"]);
     expect(code).toBe(0);
   }, 60_000);

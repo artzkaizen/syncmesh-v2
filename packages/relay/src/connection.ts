@@ -30,7 +30,7 @@ import { createBudget } from "./limits.js";
 import { createViewer } from "./passover.js";
 import { proofFailure } from "./proof-failure.js";
 import { newChallenge } from "./proof.js";
-import { refusedBelowFloor } from "./retention.js";
+import { belowFloor, handsOver } from "./retention.js";
 import { createSeat, type Seat } from "./seat.js";
 import { secureLink } from "./secure.js";
 import { createSender } from "./sender.js";
@@ -94,7 +94,8 @@ const trafficClass = (kind: RelayFrame["kind"]): TrafficClass =>
 
 /**
  * A proven, admitted joiner takes its seat: the old socket for the same key goes, the hello and
- * who is here go out, and the catch-up is queued under the grant it sat down with (D40).
+ * who is here go out, and the catch-up is queued under the grant it sat down with (D40). One
+ * below the room's floor only hands over (`handsOver`).
  */
 function sitDown(
   conversation: Conversation,
@@ -109,6 +110,7 @@ function sitDown(
   const { peerId: peer, cursors: theirs, interest: wanted, selected } = join;
   const { seat, socket, refuse, closed } = held;
   seat.take(wanted, grant);
+  if (belowFloor(theirs, room.floor())) return handsOver(conversation, join);
   // what this socket is sent, withheld and told it was passed over: its interest, its grant and
   // the authority's gate, one view for the catch-up and the live fan-out alike (D23, D24, D40)
   const view = createViewer(room, sender, {
@@ -209,7 +211,7 @@ export function createConnection(
   const seat = createSeat(room, hangUp);
 
   const onJoin = (frame: Extract<RelayFrame, { kind: "join" }>): void => {
-    const { versions, peerId: peer, cursors: theirs } = frame;
+    const { versions, peerId: peer } = frame;
     const selected = selectVersion(versions, room.versions);
     if (selected === undefined) {
       refuse("version", `this relay speaks ${room.versions.join(", ")}`, true);
@@ -239,10 +241,10 @@ export function createConnection(
      * its holdback until that overflowed into a re-join, which re-requests the same missing run
      * from the same room, forever.
      *
-     * Not permanent the way a version refusal is: the socket closes and the refusal names the
-     * floor, so the client raises `BelowRelayFloor` and holds off its redial until its next join
-     * would be at or above that floor, or it is woken (gaps U30). The join after that succeeds.
-     * This room simply is not where that history lives any more.
+     * Not permanent the way a version refusal is: the refusal names the floor, so the client
+     * raises `BelowRelayFloor`, hands over what the room lacks, closes, and holds off its redial
+     * until its next join would be at or above that floor, or it is woken (gaps U30). The join
+     * after that succeeds. This room simply is not where that history lives any more.
      *
      * This is the cheap half — before hello, before registration, before any page — and it reads
      * the floor as it stands right now. A sweep already on the room's queue has not moved it yet,
@@ -257,7 +259,6 @@ export function createConnection(
     // a gated room seats a proven key only under a grant for it (D40): the one already cached
     // from an earlier visit, or the one the device is about to send
     seat.admit(peer, (grant) => {
-      if (refusedBelowFloor(refuse, theirs, room.floor())) return;
       me = peer;
       const held = { socket, seat, refuse: hangUp, closed: () => closed };
       sitDown(conversation, { ...frame, selected }, held, grant);

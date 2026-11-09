@@ -19,9 +19,18 @@ id, author and sequence. Each device must hold each such event: in its log
 (`engine.eventsSince` from nothing), or below a floor its own state stands in for — a
 `compacted` floor or `covered` adopted state, with `engine.cursors()` past the event. A device
 that recorded a typed refusal (`refused`, e.g. the relay's `retention`) is reported as refused
-for the events it lacks rather than as a violation — it was told. Everything else is a
-`violation` line in the ledger and the report. Per-table `engine.digest()` must agree across
-every device that is not refused.
+for the events it lacks rather than as a violation — it was told. So is a device that is _cut off_:
+once the relay serves nobody it refused, no way is left from an event's author to it
+(`src/reach.ts`; a refused device still hands the room what it holds, so the cut is one way). And
+so is one whose missing run can reach it only as state: no device whose log still holds it has a
+way to it through devices that could log it too, and nothing that serves state reaches it — a
+relay serves none, so under `--retention`, whose devices forget a peer silent for 200 ms and
+compact past it, a relay-only device is often that device. That one is excused only while its own
+`$recovery` issue names the run's author (a `below` line, from a peer's floor the room passed on;
+gaps U52): untold, it is a violation.
+Everything else is a `violation` line in the ledger and the report. Per-table `engine.digest()`
+must agree across every device that is neither. The cell oracle holds each device to the writes
+that could reach it.
 
 ## Switches
 
@@ -31,11 +40,16 @@ All off by default; the original run is unchanged by any of this.
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `--grants fault` | Device `a` holds the issuer key. Some other devices start with no grant anywhere and are granted mid-run (by half-time, under fault) through `mesh.grants.issue` on `a`; the device is handed its wire directly, every other peer learns it through sync — `a`'s links send it on registration, the relay's grant cache forwards it, each receiver's links pass it on. A device writing before its own grant is refused locally (`rejected`); one writing before its peers hold it is quarantined there and must be re-offered — though grants travel ahead of events on every path (a session opens with grants, the relay hands its grant cache over first), and no run has reached that quarantine yet. The oracle still demands convergence. |
 | `--blobs`        | A write sometimes `mesh.blobs.put`s seeded bytes first and references the hash in its title. After heal every device `fetch`es every referenced blob; the bytes must be identical and hash (sha-256, computed here) to the reference. A device with no blob-carrying medium — Bluetooth carries none — answers `NoSuchCapability`, which is recorded, not counted.                                                                                                                                                                                                                                                                                                                                                                               |
-| `--retention`    | The relay keeps events for 400 ms (`retention.keepEventsFor`), awake devices `engine.compact` at random mid-run with `forgetPeersAfter` 200 ms and once more before heal, and one device (the _sleeper_) is dark from tick 0 until heal. The relay's `retention` refusal is read off the socket's close reason into a `refused` line.                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `--retention`    | The relay keeps events for 400 ms (`retention.keepEventsFor`), awake devices `engine.compact` at random mid-run with `forgetPeersAfter` 200 ms and once more before heal, and one device (the _sleeper_) is dark from tick 0 until heal. The relay's `retention` refusal is read off the device's own `$recovery` issue (`mesh.recovery.belowFloor()`, gaps U30) into a `refused` line.                                                                                                                                                                                                                                                                                                                                                          |
 
 Any switch also makes every radio re-advertise once a tick, as a real one does continuously: the
 virtual air only announces when asked, and a link a door refused, or one that failed, is only
 ever rebuilt by a later advertisement.
+
+Whenever the schedule gives a device its relay back — a flip, coming back from dark, the heal —
+the device's mesh is knocked, as a phone's reachability callback knocks it
+(`reachability()` in `@syncmesh/react-native`). Without it a device whose network came back waited
+out the relay's redial backoff, up to 30 s, and the heal ended first.
 
 ## Many runs
 

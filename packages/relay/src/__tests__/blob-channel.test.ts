@@ -1,4 +1,5 @@
 import { parsePartitionKey } from "@syncmesh/kernel";
+import { Temporal } from "@syncmesh/temporal";
 import { BLOB_MISSING } from "@syncmesh/transport";
 import { describe, expect, test } from "bun:test";
 
@@ -13,6 +14,7 @@ const bytes = Uint8Array.of(1, 2, 3);
 describe("the relay's blob channel", () => {
   test("a refusal settles only the uploads billed to the partition it names", async () => {
     const channel = createBlobChannel(() => true);
+    channel.seated();
     const toAcme = channel.capability.upload(HASH, bytes, { partition: ACME });
     const toGlobex = channel.capability.upload(HASH, bytes, { partition: GLOBEX });
     const refusal = { reason: "quota", partition: ACME, limit: 10, used: 10 } as const;
@@ -26,6 +28,7 @@ describe("the relay's blob channel", () => {
 
   test("a stored answer settles every upload of the hash, whatever it is billed to", async () => {
     const channel = createBlobChannel(() => true);
+    channel.seated();
     const uploads = [
       channel.capability.upload(HASH, bytes, { partition: ACME }),
       channel.capability.upload(HASH, bytes, {}),
@@ -41,10 +44,12 @@ describe("the relay's blob channel", () => {
       sent.push(decoded.kind);
       return true;
     });
-    // asked before the join: nothing leaves on a session the room has not seated
+    // asked before the join: nothing leaves on a session the room has not seated, and the put
+    // is answered now rather than held on a relay that is not there
     const fetched = channel.capability.download(HASH, { timeoutMs: 5000 });
     const put = channel.capability.upload(HASH, bytes, { partition: ACME });
     expect(sent).toEqual([]);
+    expect(await put).toBeUndefined();
     channel.seated();
     expect(sent).toEqual(["blob-get", "blob-put"]);
     // a re-join on the same socket sends nothing twice
@@ -57,7 +62,6 @@ describe("the relay's blob channel", () => {
     channel.answer(HASH, undefined);
     channel.settle(HASH, undefined);
     expect(await fetched).toBe(BLOB_MISSING);
-    expect(await put).toBeUndefined();
     // answered requests are not asked again
     channel.unseated();
     channel.seated();
@@ -100,5 +104,69 @@ describe("the relay's blob channel", () => {
     up = true;
     channel.seated();
     expect(sent).toEqual(["blob-get"]);
+  });
+
+  /**
+   * A put made while no relay was up waited out `BLOB_ANSWER_WAIT` for one, answered ok, and was
+   * forgotten: the bytes never left the device, and every other device's fetch said
+   * `BlobNotFound` (chaos soak, `--blobs`, seeds 2 and 6).
+   */
+  test("a put with no seat is answered at once, and the bytes leave on the first seat after", async () => {
+    const sent: string[] = [];
+    const channel = createBlobChannel((frame) => {
+      sent.push(decodeRelayFrame(frame).unwrap().kind);
+      return true;
+    });
+    const put = channel.capability.upload(HASH, bytes, { partition: ACME });
+    const late = Symbol("still waiting");
+    expect(await Promise.race([put, Bun.sleep(50).then(() => late)])).toBeUndefined();
+    channel.seated();
+    expect(sent).toEqual(["blob-put"]);
+    // answered by the relay: never offered again
+    channel.settle(HASH, undefined);
+    channel.unseated();
+    channel.seated();
+    expect(sent).toEqual(["blob-put"]);
+  });
+
+  test("a put whose frame did not leave a seated session is answered, and goes on the next seat", async () => {
+    let up = false;
+    const sent: string[] = [];
+    const channel = createBlobChannel((frame) => {
+      if (up) sent.push(decodeRelayFrame(frame).unwrap().kind);
+      return up;
+    });
+    channel.seated(); // the socket is closing under the seat: nothing leaves
+    const put = channel.capability.upload(HASH, bytes, {});
+    const late = Symbol("still waiting");
+    expect(await Promise.race([put, Bun.sleep(50).then(() => late)])).toBeUndefined();
+    up = true;
+    channel.unseated();
+    channel.seated();
+    expect(sent).toEqual(["blob-put"]);
+  });
+
+  /**
+   * A put that left on a seated session whose socket then closed unanswered was held until a
+   * later seat, so with no later seat — offline for good, the link stopped, a refused room that
+   * is never dialled again — `mesh.blobs.put` never returned.
+   */
+  test("a put whose socket closes before the answer is answered within the wait, and goes on the next seat", async () => {
+    const sent: string[] = [];
+    const channel = createBlobChannel(
+      (frame) => {
+        sent.push(decodeRelayFrame(frame).unwrap().kind);
+        return true;
+      },
+      Temporal.Duration.from({ milliseconds: 20 }),
+    );
+    channel.seated();
+    const put = channel.capability.upload(HASH, bytes, {});
+    channel.unseated();
+    const late = Symbol("still waiting");
+    expect(await Promise.race([put, Bun.sleep(200).then(() => late)])).toBeUndefined();
+    // kept: the next seat carries the bytes
+    channel.seated();
+    expect(sent).toEqual(["blob-put", "blob-put"]);
   });
 });

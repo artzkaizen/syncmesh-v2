@@ -20,8 +20,8 @@ use syncmesh_core::grant::{GrantRequest, issue_grant};
 use syncmesh_core::identity::Identity;
 use syncmesh_core::record::CellValue;
 use syncmesh_core::relay_frames::{
-    PageScope, RelayFrame, blob_get_frame, blob_put_frame, decode_relay_frame, page_frame,
-    relayed_frame,
+    PageScope, RelayFrame, blob_get_frame, blob_put_frame, decode_relay_frame, hello_frame,
+    page_frame, relayed_frame, retention_error_frame,
 };
 
 fn identity(n: u8) -> Identity {
@@ -1477,7 +1477,90 @@ fn a_blob_put_with_no_live_link_is_said_unsent_at_once() {
     let bytes = b"the bytes of a blob".to_vec();
     let hash = syncmesh_core::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(&bytes));
     assert_eq!(
-        link.send_blob_put(hash.clone(), blob_put_frame(&hash, &bytes, None)),
+        link.send_blob_put(hash.clone(), blob_put_frame(&hash, &bytes, None), 0),
         vec![Action::BlobPutUnsent { hash }]
+    );
+}
+
+/// A put made while the link was down was said unsent, answered, and forgotten: the bytes never
+/// left the device and every other device's fetch came back empty (chaos soak, `--blobs`, seeds 2
+/// and 6; `relay/src/blob-channel.ts`). Kept, it goes out on the next join and the room stores it.
+#[test]
+fn a_blob_put_with_no_live_link_goes_out_on_the_next_join() {
+    let mut net = Net::new(room_with(vec![1, 2], 15_000));
+    let a = net.add(1, v2_options());
+    let bytes = b"put while offline".to_vec();
+    let hash = syncmesh_core::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(&bytes));
+    let actions = net.devices[a].link.send_blob_put(
+        hash.clone(),
+        blob_put_frame(&hash, &bytes, None),
+        net.now,
+    );
+    assert_eq!(actions, vec![Action::BlobPutUnsent { hash: hash.clone() }]);
+    net.apply_device(a, actions);
+    assert_eq!(net.room.blob(&hash), None);
+    net.dial(a);
+    assert_eq!(net.room.blob(&hash), Some(bytes.as_slice()));
+    let puts = |net: &Net| {
+        net.devices[a]
+            .sent
+            .iter()
+            .filter(|b| matches!(decode_relay_frame(b), Ok(RelayFrame::BlobPut { .. })))
+            .count()
+    };
+    assert_eq!(puts(&net), 1);
+    // answered: a later session does not send it again
+    net.queue.push_back(Msg::DeviceHungUp { device: a });
+    net.pump();
+    net.advance(1_000);
+    assert!(net.devices[a].socket.is_some(), "redialled");
+    assert_eq!(puts(&net), 1);
+}
+
+/// A room below whose floor this device has fallen still takes what the device hands it before it
+/// hangs up (`relay/src/retention.ts` `refusedBelowFloor`): the refusal used to close at once, so
+/// a device that wrote while away kept those writes until it held the floor, which one that
+/// reaches the mesh only through the room never does (chaos soak, `--retention`).
+#[test]
+fn a_retention_refusal_hands_over_what_the_room_lacks_before_hanging_up() {
+    let mut net = Net::new(room_with(vec![1, 2], 15_000));
+    let b = net.add(2, v2_options());
+    net.dial(b);
+    write(&mut net.devices[b].engine, "n1", "written while away", None);
+    write(&mut net.devices[b].engine, "n2", "and again", None);
+    net.devices[b].sent.clear();
+    // the room's position, and then its refusal: below a floor naming some other author
+    let other = identity(9).peer_id().clone();
+    let floor = vec![(other, syncmesh_core::event::SeqNum::parse(3).unwrap())];
+    net.feed(b, &hello_frame(2, 15_000, "epoch", &[], &floor));
+    net.feed(
+        b,
+        &retention_error_frame("retention", "below the floor", &floor),
+    );
+    let events = net.devices[b]
+        .sent
+        .iter()
+        .filter(|bytes| {
+            matches!(
+                decode_relay_frame(bytes),
+                Ok(RelayFrame::Session(Frame::Event { .. }))
+            )
+        })
+        .count();
+    assert_eq!(events, 2);
+    assert!(
+        net.queue
+            .iter()
+            .any(|msg| matches!(msg, Msg::DeviceHungUp { device } if *device == b))
+    );
+    // and then its position, whose floor tells a device below it that only state will do: a
+    // refused session said none, so one that reaches it only through the room never heard (U52)
+    let last = net.devices[b]
+        .sent
+        .last()
+        .map(|bytes| decode_relay_frame(bytes));
+    assert!(
+        matches!(last, Some(Ok(RelayFrame::Session(Frame::Cursors { .. })))),
+        "{last:?}"
     );
 }
