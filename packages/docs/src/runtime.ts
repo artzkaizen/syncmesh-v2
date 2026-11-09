@@ -1,7 +1,6 @@
 import type { DocAddress, DocCoverStale, FoldBatch, StoreFailure } from "@syncmesh/engine";
-import type { AdapterId, DocColumns, Hlc, PeerId, Procedure } from "@syncmesh/kernel";
+import type { AdapterId, DocColumns, PeerId, Procedure } from "@syncmesh/kernel";
 import type { DeriveFailed, Derivers } from "@syncmesh/schema";
-import type { Identity } from "@syncmesh/wire";
 
 import { docKey } from "@syncmesh/engine";
 import { getRecord, kindOf } from "@syncmesh/kernel";
@@ -19,10 +18,10 @@ import { columnAdapter, resolveAdapterId } from "./adapter.js";
 import { withBlobs } from "./blobs.js";
 import { installProvisional } from "./checkpoint.js";
 import { DEFAULT_PACING, createHandles, createRefs } from "./documents.js";
-import { installCheckpoint } from "./install.js";
-import { materialise, produceCheckpoint } from "./materialise.js";
+import { materialise } from "./materialise.js";
 import { createRederive } from "./rederive.js";
 import { replicaId } from "./replica.js";
+import { createCheckpoints } from "./runtime-checkpoints.js";
 import { createWrites } from "./write.js";
 
 /** What a background materialisation can fail with. */
@@ -225,6 +224,17 @@ export function createDocuments(options: DocumentsOptions) {
       );
     });
 
+  const checkpoints = createCheckpoints({
+    engine,
+    docs,
+    adapters,
+    fresh,
+    now,
+    derive,
+    sealing,
+    adapterAt,
+  });
+
   const maintain = createMaintain(engine, adapters, materialiseAt, options.onError);
   const unmaintain =
     options.autoMaterialise === false ? () => {} : engine.onFoldBatch((b) => void maintain(b));
@@ -244,45 +254,14 @@ export function createDocuments(options: DocumentsOptions) {
     /** Writes the snapshot and covers the tail it holds; compaction may then take those events. */
     materialise: materialiseAt,
     /** A signed {@link produceCheckpoint} of the document, with its snapshot bytes. */
-    checkpoint: (address: DocAddress, producer: Identity, at: Hlc) =>
-      Result.gen(async function* () {
-        const adapter = yield* adapterAt(address);
-        return Result.ok(
-          yield* Result.await(
-            produceCheckpoint(
-              engine,
-              adapter,
-              address,
-              producer,
-              fresh(),
-              at,
-              derive(address),
-              ...sealing(address),
-            ),
-          ),
-        );
-      }),
+    checkpoint: checkpoints.checkpoint,
     /** Installs a checkpoint `producer` signed, with the snapshot it names (see {@link installCheckpoint}). */
-    install: (wire: Uint8Array, producer: PeerId, snapshot: Uint8Array, address: DocAddress) =>
-      Result.gen(async function* () {
-        const adapter = yield* adapterAt(address);
-        return Result.ok(
-          yield* Result.await(
-            installCheckpoint(
-              engine,
-              adapter,
-              address,
-              wire,
-              producer,
-              snapshot,
-              fresh(),
-              now(),
-              derive(address),
-              ...sealing(address),
-            ),
-          ),
-        );
-      }),
+    install: checkpoints.install,
+    /**
+     * The documents behind snapshot pages (E30 P5), signed as `producer`: what a mesh hands its
+     * join exchange (`SnapshotDocs`), so a joiner takes each document's checkpoint with its row.
+     */
+    pages: checkpoints.pages,
     /**
      * What an opaque host — no adapter, or a sealed partition — does with a device's checkpoint
      * (see {@link installProvisional}): keeps its snapshot and writes the derived values key 8

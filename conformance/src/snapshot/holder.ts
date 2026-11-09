@@ -2,13 +2,14 @@
 import type { Engine, EventStore, Interest } from "@syncmesh/engine";
 import type { DocColumns, PeerId, SeqNum } from "@syncmesh/kernel";
 
+import { snapshotHash } from "@syncmesh/docs";
 import {
   createEngine,
   createMemoryEventStore,
   createMemoryStateStore,
   createValidator,
 } from "@syncmesh/engine";
-import { createHlcClock, parseAdapterId } from "@syncmesh/kernel";
+import { createHlcClock, hlcOf, parseAdapterId } from "@syncmesh/kernel";
 import { flat, local, partition, syncSchema, t } from "@syncmesh/schema";
 import { Temporal } from "@syncmesh/temporal";
 import {
@@ -16,6 +17,7 @@ import {
   decodeFrame,
   snapChunkFrame,
   snapManifestFrame,
+  type SnapshotDocs,
 } from "@syncmesh/transport";
 import {
   bytesToHex,
@@ -27,6 +29,7 @@ import {
   encodeRecord,
   hexToBytes,
   issueCheckpoint,
+  signCheckpoint,
   type CborValue,
   type Identity,
 } from "@syncmesh/wire";
@@ -176,6 +179,7 @@ export async function serve(
   certificate?: number,
   events: readonly string[] = history(),
   drafts = false,
+  docs?: SnapshotDocs,
 ) {
   const { engine, cert } = await holderWith(certificate, events, drafts);
   const out = collector();
@@ -185,6 +189,7 @@ export async function serve(
     idPrefix: "holder",
     rowsPerChunk: ROWS_PER_CHUNK,
     ...(cert !== undefined && { certificate: () => cert }),
+    ...(docs !== undefined && { docs }),
   });
   const ask = collector();
   createJoinExchange({ engine: engineFor(JOINER.peerId), send: ask.send, idPrefix: "x" }).request(
@@ -238,3 +243,35 @@ export function certifiedAs(frames: readonly string[], version: number): readonl
     );
   });
 }
+
+/**
+ * The documents a holder with a document runtime serves beside its rows (RFC-0023 §5.5, E30 P5):
+ * for each row of a page, a checkpoint {@link ISSUER} signed of its `content` column, naming
+ * snapshot bytes that spell the row's key. A page holding a tombstone says it is not complete and
+ * every other page says it is, so the frozen pages hold both.
+ */
+export const DOCUMENTED: SnapshotDocs = {
+  serve: (rows) =>
+    Promise.resolve({
+      checkpoints: rows.map(({ table: at, key: row }) => {
+        const snapshot = new TextEncoder().encode(String(row));
+        const signed = signCheckpoint(
+          {
+            table: at,
+            key: row,
+            column: column("content"),
+            adapter: parseAdapterId("loro@1").unwrap(),
+            covers: new Map(),
+            version: Uint8Array.of(0x01),
+            snapshot: { hash: snapshotHash(snapshot), size: snapshot.length },
+            derived: new Map(),
+            at: hlcOf(NOW_MS, 0),
+          },
+          ISSUER,
+        );
+        return { producer: ISSUER.peerId, checkpoint: signed.wire, snapshot };
+      }),
+      complete: rows.every(({ record }) => record.deleteStamp === undefined),
+    }),
+  install: () => Promise.resolve(false),
+};

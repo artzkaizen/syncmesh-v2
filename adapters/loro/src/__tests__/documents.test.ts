@@ -4,6 +4,7 @@ import { AdapterMissing, DocPending, HandleInvalidated, UpdateTooLarge } from "@
 import { DocCoverStale } from "@syncmesh/engine";
 import { eventId, hlcOf, parseAdapterId, parseLineageId, parseSeqNum } from "@syncmesh/kernel";
 import { Temporal } from "@syncmesh/temporal";
+import { createJoinExchange, decodeFrame, type JoinExchange } from "@syncmesh/transport";
 import { signCheckpoint } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import { LoroDoc } from "loro-crdt";
@@ -178,6 +179,68 @@ describe("loro@1 history: materialise, compact, then a late joiner", () => {
     await link.flush();
     const dc = (await c.documents.open<LoroDoc>(DOC)).unwrap();
     expect(await until(() => body(dc.value) === "> one two three four ")).toBe(true);
+    link.close();
+  });
+
+  test("a joiner below the compaction floor is handed the document in the snapshot's pages, and adopts the floor (E30 P5)", async () => {
+    const a = node(15);
+    await insertNote(a);
+    const da = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    for (const word of ["one ", "two "]) {
+      type(da.value, body(da.value).length, word);
+      (await da.flush()).unwrap();
+    }
+    (await da.close()).unwrap();
+    (await a.documents.materialise(DOC)).unwrap();
+    const relay = node(44);
+    const toRelay = await linked(a, relay);
+    a.engine.acknowledge(
+      relay.engine.peerId,
+      relay.engine.coverage().synced,
+      Temporal.Now.instant(),
+    );
+    toRelay.close();
+    (await a.engine.compact({ now: Temporal.Now.instant() })).unwrap();
+    // the row's insert is gone from the log: no history can bring the row to a joiner now
+    expect((await a.engine.eventsSince(new Map())).unwrap()).toHaveLength(2);
+    const floor = a.engine.coverage().synced;
+
+    // two join exchanges back to back, carrying no events: whatever the joiner holds came in pages
+    const c = node(32);
+    const queue: (() => Promise<void>)[] = [];
+    const route = (to: () => JoinExchange) => (_what: string, bytes: Uint8Array) => {
+      const frame = decodeFrame(bytes).unwrap();
+      if (frame.kind.startsWith("snap-"))
+        // SAFETY: a frame whose kind starts with "snap-" is a SnapshotFrame (`dispatch.ts`)
+        queue.push(() => to().dispatch(frame as Parameters<JoinExchange["dispatch"]>[0]));
+    };
+    const held: JoinExchange = createJoinExchange({
+      engine: a.engine,
+      send: route(() => joined),
+      idPrefix: "a",
+      docs: a.documents.pages(a.identity),
+    });
+    const joined: JoinExchange = createJoinExchange({
+      engine: c.engine,
+      send: route(() => held),
+      idPrefix: "c",
+      docs: c.documents.pages(c.identity),
+    });
+    joined.requestUnder(undefined, { adoptUnvouched: true, floor });
+    while (queue.length > 0) await queue.shift()?.();
+
+    // the floor adopted, which the rows alone could never earn on a schema with documents (D46)
+    expect(c.engine.coverage().synced).toEqual(floor);
+    expect((await c.engine.docLog()).unwrap()).toEqual([]);
+    const dc = (await c.documents.open<LoroDoc>(DOC)).unwrap();
+    expect(body(dc.value)).toBe("one two ");
+    // and an edit above the floor arrives as history, on top of the snapshot
+    const link = await linked(a, c);
+    const again = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(again.value, 0, "> ");
+    (await again.flush()).unwrap();
+    await link.flush();
+    expect(await until(() => body(dc.value) === "> one two ")).toBe(true);
     link.close();
   });
 

@@ -31,7 +31,9 @@ export const createSessionJoin = (
   const paged = rowsPerChunk === undefined ? gated : { ...gated, rowsPerChunk };
   const reported = onSnapshot === undefined ? paged : { ...paged, onSnapshot };
   const vouching = certificate === undefined ? reported : { ...reported, certificate };
-  const join = createJoinExchange(trust === undefined ? vouching : { ...vouching, trust });
+  const documented =
+    options.snapshotDocs === undefined ? vouching : { ...vouching, docs: options.snapshotDocs };
+  const join = createJoinExchange(trust === undefined ? documented : { ...documented, trust });
   const rejoin = (options.rejoins ?? createRejoins()).session({
     engine,
     trusted: trust !== undefined,

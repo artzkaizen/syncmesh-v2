@@ -19,12 +19,15 @@ import { portableSchema } from "@syncmesh/schema";
  * with the certificate re-signed as version 1: a joiner still vouches for the first and refuses
  * the second. `local` is served by a holder that wrote a row to a `local` table (gaps U36), which
  * its frames leave out: they are `everything`'s, byte for byte. Each join reports the floor its
- * log kept for a rebuild to refuse on (`installed`, gaps U37).
+ * log kept for a rebuild to refuse on (`installed`, gaps U37). `documented` is served by a holder
+ * whose pages carry its rows' document checkpoints (version 2, E30 P5): a port decodes and
+ * re-encodes each page to the bytes sent, checkpoints and completeness included.
  */
 import { ACME, part } from "./policy/schema.js";
 import {
   A,
   B,
+  DOCUMENTED,
   DRAFT,
   HOLDER,
   ISSUER,
@@ -53,6 +56,8 @@ export async function snapshotVectors() {
     legacy: { request: unsorted.request, frames: outOfColumnOrder(unsorted.frames) },
     stale: { request: certified.request, frames: certifiedAs(certified.frames, 1) },
     local: await serve(undefined, undefined, history(), true),
+    // version 2 pages: each carries its rows' document checkpoints (RFC-0023 §5.5, E30 P5)
+    documented: await serve(undefined, undefined, history(), false, DOCUMENTED),
   };
   const below = (n: number) => [[A.peerId, n]] as const;
   const cases: readonly JoinCase[] = [

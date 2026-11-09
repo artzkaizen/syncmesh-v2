@@ -3,13 +3,14 @@ import type {
   ColumnName,
   KeyedRecord,
   PartitionKey,
+  PeerId,
   RowKey,
   Stamp,
   TableName,
 } from "@syncmesh/kernel";
 
 import { compareStamp, hlcOf, parsePartitionKey, parsePeerId } from "@syncmesh/kernel";
-import { Result, TaggedError } from "@syncmesh/result";
+import { Result } from "@syncmesh/result";
 
 import type { CborValue } from "./cbor.js";
 
@@ -19,6 +20,19 @@ import { encodeCbor } from "./cbor.js";
 import { bytesToHex, hexToBytes } from "./hex.js";
 import { canonicalCells } from "./record-codec.js";
 import { cellFromCbor, cellToCbor } from "./row-codec.js";
+import {
+  DOCS_VERSION,
+  MalformedSnapshot,
+  ROWS_VERSION,
+  malformed,
+  pageDocsCbor,
+  readPageDocs,
+  parsePageVersion,
+  type SnapshotPage,
+} from "./snapshot-page.js";
+
+export { MalformedSnapshot } from "./snapshot-page.js";
+export type { PageCheckpoint, PageDocs, SnapshotPage } from "./snapshot-page.js";
 
 /**
  * A snapshot small enough to be worth sending (RFC-0019). Stored as-is, a `RowRecord` costs more
@@ -36,10 +50,6 @@ import { cellFromCbor, cellToCbor } from "./row-codec.js";
  * are the ones that went in — the codec is an encoding, never a lossy summary.
  */
 
-export class MalformedSnapshot extends TaggedError("MalformedSnapshot")<{ message: string }> {}
-
-const malformed = (message: string) => Result.err(new MalformedSnapshot({ message }));
-
 /** Assigns each distinct value an index the first time it is seen, in insertion order. */
 const dictionary = <T>() => {
   const indexes = new Map<T, number>();
@@ -56,15 +66,22 @@ const dictionary = <T>() => {
   };
 };
 
-const VERSION = 1;
-
 /**
  * `[version, peers, tables, partitions, rows]`, where a row is
  * `[tableIndex, key, writeStamp, deleteStamp, partitionIndex, cells]` and a cell is
  * `[columnIndex, value]` when it sits at the row's write stamp and `[columnIndex, value, stamp]`
  * when it does not.
  */
-export function encodeSnapshotRows(rows: readonly KeyedRecord[]): Uint8Array {
+export const encodeSnapshotRows = (rows: readonly KeyedRecord[]): Uint8Array =>
+  encodeSnapshotPage({ rows });
+
+/**
+ * {@link encodeSnapshotRows}, and with `docs` version 2:
+ * `[2, peers, tables, partitions, rows, checkpoints, complete]`, where a checkpoint is
+ * `[producerIndex, envelope, snapshot]` and its producer joins the peers dictionary after every
+ * peer the rows name.
+ */
+export function encodeSnapshotPage({ rows, docs }: SnapshotPage): Uint8Array {
   const peers = dictionary<string>();
   const partitions = dictionary<string>();
   const tables = dictionary<string>();
@@ -96,39 +113,45 @@ export function encodeSnapshotRows(rows: readonly KeyedRecord[]): Uint8Array {
       cells,
     ];
   });
+  // after the rows: a producer joins the peers dictionary behind every peer they name
+  const tail = pageDocsCbor(docs, peers.of);
   return encodeCbor([
-    VERSION,
+    docs === undefined ? ROWS_VERSION : DOCS_VERSION,
     peers.values.map((peer) => hexToBytes(peer).unwrap()),
     tables.values.map((table, i): CborValue => [table, columns[i]?.values ?? []]),
     partitions.values,
     encoded,
+    ...tail,
   ]);
 }
 
 /** The dictionaries a row is read against, resolved once rather than per cell. */
 interface Dictionaries {
-  readonly peers: readonly string[];
+  readonly peers: readonly PeerId[];
   readonly tables: readonly (readonly [TableName, readonly ColumnName[]])[];
   readonly partitions: readonly PartitionKey[];
 }
 
-export function decodeSnapshotRows(
+/** A page's rows, whichever version carried them. */
+export const decodeSnapshotRows = (
   bytes: Uint8Array,
-): Result<readonly KeyedRecord[], MalformedSnapshot> {
+): Result<readonly KeyedRecord[], MalformedSnapshot> =>
+  decodeSnapshotPage(bytes).map((page) => page.rows);
+
+/** A page of either version: its rows, and on version 2 its documents. */
+export function decodeSnapshotPage(bytes: Uint8Array): Result<SnapshotPage, MalformedSnapshot> {
   return Result.gen(function* () {
     const value = yield* decodeCbor(bytes).mapError(
       (e) => new MalformedSnapshot({ message: e.message }),
     );
-    if (!Array.isArray(value) || value.length !== 5)
-      return malformed("snapshot is not a quintuple");
-    const [version, peersValue, tablesValue, partitionsValue, rowsValue] = value;
-    if (version !== VERSION)
-      return malformed(`snapshot version ${String(version)} is not ${VERSION}`);
+    const [version, peersValue, tablesValue, partitionsValue, rowsValue, ...tail] =
+      yield* parsePageVersion(value);
     const dictionaries = yield* readDictionaries(peersValue, tablesValue, partitionsValue);
     if (!Array.isArray(rowsValue)) return malformed("rows are not an array");
     const rows: KeyedRecord[] = [];
     for (const row of rowsValue) rows.push(yield* readRow(row, dictionaries));
-    return Result.ok(rows);
+    if (version === ROWS_VERSION) return Result.ok({ rows });
+    return Result.ok({ rows, docs: yield* readPageDocs(tail, dictionaries.peers) });
   });
 }
 
@@ -139,7 +162,7 @@ function readDictionaries(
 ): Result<Dictionaries, MalformedSnapshot> {
   return Result.gen(function* () {
     if (!Array.isArray(peersValue)) return malformed("peers are not an array");
-    const peers: string[] = [];
+    const peers: PeerId[] = [];
     for (const peer of peersValue) {
       if (!(peer instanceof Uint8Array)) return malformed("peer id is not bytes");
       peers.push(

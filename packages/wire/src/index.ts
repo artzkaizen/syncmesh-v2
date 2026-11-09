@@ -15,7 +15,14 @@ export {
 export { isBoolean, isNumber, isSafeNonNegative, isString } from "./cbor-guards.js";
 export { MalformedRow, cellFromCbor, cellToCbor, rowFromCbor, rowToCbor } from "./row-codec.js";
 export { MalformedRecord, decodeRecord, encodeRecord } from "./record-codec.js";
-export { MalformedSnapshot, decodeSnapshotRows, encodeSnapshotRows } from "./snapshot-codec.js";
+export type { PageCheckpoint, PageDocs, SnapshotPage } from "./snapshot-codec.js";
+export {
+  MalformedSnapshot,
+  decodeSnapshotPage,
+  decodeSnapshotRows,
+  encodeSnapshotPage,
+  encodeSnapshotRows,
+} from "./snapshot-codec.js";
 export type { Identity } from "./identity.js";
 export { InvalidSeed, SEED_LENGTH, createIdentity, verify } from "./identity.js";
 export { MalformedEvent, decodeEventCore, encodeEventCore } from "./event-codec.js";

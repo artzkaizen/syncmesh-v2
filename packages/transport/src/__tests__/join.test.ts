@@ -1,5 +1,6 @@
 import type { Interest } from "@syncmesh/engine";
-import type { PeerId, SeqNum } from "@syncmesh/kernel";
+import type { KeyedRecord, PeerId, SeqNum } from "@syncmesh/kernel";
+import type { PageCheckpoint } from "@syncmesh/wire";
 
 import { LineageCellRefused, readRow } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
@@ -13,7 +14,13 @@ import {
 import { describe, expect, test } from "bun:test";
 
 import type { BridgeError, BridgeOptions } from "../bridge.js";
-import type { JoinExchange, JoinOutcome, JoinPolicy, SnapshotInstalled } from "../join.js";
+import type {
+  JoinExchange,
+  JoinOutcome,
+  JoinPolicy,
+  SnapshotDocs,
+  SnapshotInstalled,
+} from "../join.js";
 import type { Peer } from "./fixtures.js";
 
 import { bridgeFramedLink } from "../bridge.js";
@@ -456,7 +463,12 @@ describe("only an answer is taken (D46, gaps U20)", () => {
 
 describe("what an install below a floor adopts (D46)", () => {
   /** Two join exchanges wired back to back, the joiner asking under a whole policy. */
-  const exchanges = (holder: Peer, joiner: Peer, joinerEngine = joiner.engine) => {
+  const exchanges = (
+    holder: Peer,
+    joiner: Peer,
+    joinerEngine = joiner.engine,
+    docs: { readonly holder?: SnapshotDocs; readonly joiner?: SnapshotDocs } = {},
+  ) => {
     const queue: (() => Promise<void>)[] = [];
     const route = (to: () => JoinExchange) => (_what: string, bytes: Uint8Array) => {
       const frame = decodeFrame(bytes).unwrap();
@@ -469,11 +481,13 @@ describe("what an install below a floor adopts (D46)", () => {
       engine: holder.engine,
       send: route(() => joined),
       idPrefix: "holder",
+      ...(docs.holder !== undefined && { docs: docs.holder }),
     });
     const joined: JoinExchange = createJoinExchange({
       engine: joinerEngine,
       send: route(() => held),
       idPrefix: "joiner",
+      ...(docs.joiner !== undefined && { docs: docs.joiner }),
     });
     const settle = async () => {
       while (queue.length > 0) await queue.shift()?.();
@@ -534,6 +548,91 @@ describe("what an install below a floor adopts (D46)", () => {
     await pair.settle();
     expect(joiner.engine.state().get(NOTES)?.size).toBe(3);
     expect(joiner.engine.coverage().synced.size).toBe(0);
+  });
+
+  describe("documents riding the pages (RFC-0023 §5.5, E30 P5)", () => {
+    const CHECKPOINT = (holder: Peer): PageCheckpoint => ({
+      producer: holder.identity.peerId,
+      checkpoint: Uint8Array.of(1, 2, 3),
+      snapshot: Uint8Array.of(4, 5),
+    });
+    /** A holder whose pages carry one checkpoint, and a joiner that records what it installs. */
+    const documented = (holder: Peer, complete: boolean) => {
+      const taken: { readonly checkpoints: readonly PageCheckpoint[]; readonly rows: number }[] =
+        [];
+      const served: (readonly KeyedRecord[])[] = [];
+      const holderDocs: SnapshotDocs = {
+        serve: (rows) => {
+          served.push(rows);
+          return Promise.resolve({ checkpoints: [CHECKPOINT(holder)], complete });
+        },
+        install: () => Promise.resolve(false),
+      };
+      return { holderDocs, taken, served };
+    };
+
+    test("a schema with document columns adopts the floor once each page carried its documents and they installed", async () => {
+      const holder = peer(40, "acct_x");
+      const joiner = peer(80, "acct_y");
+      for (let i = 1; i <= 3; i += 1) (await write(holder, `n${i}`, `body ${i}`)).unwrap();
+      const withDocs = { ...joiner.engine, hasDocColumns: () => true };
+      const { holderDocs, taken, served } = documented(holder, true);
+      const joinerDocs: SnapshotDocs = {
+        serve: () => Promise.resolve({ checkpoints: [], complete: false }),
+        install: (checkpoints) => {
+          // the rows are in before any document is: a checkpoint is checked against its row
+          taken.push({ checkpoints, rows: joiner.engine.state().get(NOTES)?.size ?? 0 });
+          return Promise.resolve(true);
+        },
+      };
+      const pair = exchanges(holder, joiner, withDocs, { holder: holderDocs, joiner: joinerDocs });
+      // SAFETY: test fixture; the holder wrote three
+      pair.ask({ adoptUnvouched: true, floor: new Map([[holder.identity.peerId, 3 as SeqNum]]) });
+      await pair.settle();
+      expect(served.map((rows) => rows.length)).toEqual([3]);
+      expect(taken).toEqual([{ checkpoints: [CHECKPOINT(holder)], rows: 3 }]);
+      expect(Number(joiner.engine.coverage().synced.get(holder.identity.peerId))).toBe(3);
+      expect(pair.outcomes.map(({ kind }) => kind)).toEqual(["installed"]);
+    });
+
+    for (const [why, complete, installs] of [
+      ["the holder could not checkpoint every document", false, true],
+      ["a checkpoint did not install", true, false],
+    ] as const)
+      test(`below a floor, nothing is adopted when ${why}`, async () => {
+        const holder = peer(40, "acct_x");
+        const joiner = peer(80, "acct_y");
+        for (let i = 1; i <= 3; i += 1) (await write(holder, `n${i}`, `body ${i}`)).unwrap();
+        const withDocs = { ...joiner.engine, hasDocColumns: () => true };
+        const { holderDocs } = documented(holder, complete);
+        const joinerDocs: SnapshotDocs = {
+          serve: () => Promise.resolve({ checkpoints: [], complete: false }),
+          install: () => Promise.resolve(installs),
+        };
+        const pair = exchanges(holder, joiner, withDocs, {
+          holder: holderDocs,
+          joiner: joinerDocs,
+        });
+        // SAFETY: test fixture; the holder wrote three
+        pair.ask({ adoptUnvouched: true, floor: new Map([[holder.identity.peerId, 3 as SeqNum]]) });
+        await pair.settle();
+        expect(joiner.engine.state().get(NOTES)?.size).toBe(3);
+        expect(joiner.engine.coverage().synced.size).toBe(0);
+      });
+
+    test("a joiner that takes no documents adopts nothing below a floor, whatever the pages carried", async () => {
+      const holder = peer(40, "acct_x");
+      const joiner = peer(80, "acct_y");
+      for (let i = 1; i <= 3; i += 1) (await write(holder, `n${i}`, `body ${i}`)).unwrap();
+      const withDocs = { ...joiner.engine, hasDocColumns: () => true };
+      const { holderDocs } = documented(holder, true);
+      const pair = exchanges(holder, joiner, withDocs, { holder: holderDocs });
+      // SAFETY: test fixture; the holder wrote three
+      pair.ask({ adoptUnvouched: true, floor: new Map([[holder.identity.peerId, 3 as SeqNum]]) });
+      await pair.settle();
+      expect(joiner.engine.state().get(NOTES)?.size).toBe(3);
+      expect(joiner.engine.coverage().synced.size).toBe(0);
+    });
   });
 
   test("a sender scoped to another slice claims no coverage for the one asked", async () => {
