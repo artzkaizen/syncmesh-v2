@@ -1405,7 +1405,7 @@ fn a_blob_put_with_no_live_link_is_said_unsent_at_once() {
     let bytes = b"the bytes of a blob".to_vec();
     let hash = syncmesh_core::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(&bytes));
     assert_eq!(
-        link.send_blob_put(hash.clone(), blob_put_frame(&hash, &bytes, None)),
+        link.send_blob_put(hash.clone(), blob_put_frame(&hash, &bytes, None), 0),
         vec![Action::BlobPutUnsent { hash }]
     );
 }
@@ -1419,9 +1419,11 @@ fn a_blob_put_with_no_live_link_goes_out_on_the_next_join() {
     let a = net.add(1, v2_options());
     let bytes = b"put while offline".to_vec();
     let hash = syncmesh_core::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(&bytes));
-    let actions = net.devices[a]
-        .link
-        .send_blob_put(hash.clone(), blob_put_frame(&hash, &bytes, None));
+    let actions = net.devices[a].link.send_blob_put(
+        hash.clone(),
+        blob_put_frame(&hash, &bytes, None),
+        net.now,
+    );
     assert_eq!(actions, vec![Action::BlobPutUnsent { hash: hash.clone() }]);
     net.apply_device(a, actions);
     assert_eq!(net.room.blob(&hash), None);

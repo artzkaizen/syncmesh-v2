@@ -39,7 +39,7 @@ use syncmesh_core::relay_frames::{
     join_core, join_frame,
 };
 
-use crate::blobs::{PutRefusal, put_answer};
+use crate::blobs::{BLOB_ANSWER_WAIT, PutRefusal, put_answer};
 use crate::engine::{Engine, FoldBatch};
 use crate::grants::GrantRegistry;
 use crate::holdback::Holdback;
@@ -260,13 +260,15 @@ impl SealedLink {
 }
 
 /// A blob put kept until a relay answers it (`relay/src/blob-channel.ts`): the frame, the
-/// partition its bytes are billed to, and the session it last left on.
+/// partition its bytes are billed to, the session it last left on, and when that session's
+/// silence lets it go.
 #[derive(Debug)]
 struct KeptPut {
     hash: String,
     partition: Option<PartitionKey>,
     frame: Vec<u8>,
     sent_in: Option<u64>,
+    silent_at_ms: i64,
 }
 
 /// One dialed socket's worth of state; gone when the socket is.
@@ -424,12 +426,23 @@ impl RelayLink {
             .and_then(SealedLink::session_peer)
     }
 
-    /// When `on_tick` next has something to do, in the host's clock.
+    /// When `on_tick` next has something to do, in the host's clock: the liveness deadline, or a
+    /// put on this socket running out of [`BLOB_ANSWER_WAIT`].
     pub fn next_deadline_ms(&self) -> Option<i64> {
-        self.live
-            .as_ref()
-            .filter(|l| !l.closing)
-            .and_then(|l| l.deadline_ms)
+        let live = self.live.as_ref().filter(|l| !l.closing)?;
+        let silent = self.puts_on_this_socket().map(|put| put.silent_at_ms).min();
+        match (live.deadline_ms, silent) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// The kept puts that left on the socket now up, the only ones whose silence means anything.
+    fn puts_on_this_socket(&self) -> impl Iterator<Item = &KeptPut> {
+        let session = self.live.as_ref().map(|_| self.session);
+        self.puts
+            .iter()
+            .filter(move |put| session.is_some() && put.sent_in == session)
     }
 
     /// Peers still claimed, with the ones that have gone quiet dropped on the way past. Nothing
@@ -504,8 +517,19 @@ impl RelayLink {
 
     /// The liveness deadline: a relay that announced a keepalive and then said nothing for 2.5×
     /// it is hung up on, and the reconnect that follows re-joins. A hello-less relay arms nothing.
+    ///
+    /// And a put's silence: one that left on this socket and heard nothing for
+    /// [`BLOB_ANSWER_WAIT`] is a relay that predates `blob-stored`, and is let go — counted from
+    /// when it left on this socket, as `blob-channel.ts` `offerUpload` counts it. One kept while
+    /// the link was down and sent by a later join gets its own wait there; without it such a put
+    /// went out again on every socket for as long as the process lived.
     pub fn on_tick(&mut self, now_ms: i64) -> Vec<Action> {
         let mut out = Vec::new();
+        if self.live.as_ref().is_some_and(|l| !l.closing) {
+            let session = self.session;
+            self.puts
+                .retain(|put| put.sent_in != Some(session) || put.silent_at_ms > now_ms);
+        }
         let due = self
             .live
             .as_ref()
@@ -604,7 +628,7 @@ impl RelayLink {
                 live.link = Some(link);
                 // our hello answers the room's, in the clear; it is the last thing that travels so
                 out.push(Action::Send(hello));
-                self.join(engine, &mut out);
+                self.join(engine, now_ms, &mut out);
                 return out;
             }
             None => raw.to_vec(),
@@ -652,7 +676,7 @@ impl RelayLink {
                 if let Some(live) = self.live.as_mut() {
                     live.nonce = Some(nonce);
                 }
-                self.join(engine, out);
+                self.join(engine, now_ms, out);
             }
             RelayFrame::Hello {
                 keepalive_ms,
@@ -699,7 +723,7 @@ impl RelayLink {
                 let repaging = self.repaging;
                 // an overflow re-joins and abandons the rest of this page's events; the last-page
                 // handling still runs, exactly as the TypeScript's synchronous half of it does
-                self.fold(engine, &events, repaging, out);
+                self.fold(engine, &events, repaging, now_ms, out);
                 if !more {
                     let passed_over = events.is_empty() && grants_empty;
                     if let Some(scoped) = scoped {
@@ -735,7 +759,7 @@ impl RelayLink {
                 }
             }
             RelayFrame::Relayed { wire, .. } => {
-                self.fold(engine, std::slice::from_ref(&wire), false, out);
+                self.fold(engine, std::slice::from_ref(&wire), false, now_ms, out);
             }
             RelayFrame::Blob { hash, bytes } => out.push(Action::BlobAnswer {
                 hash,
@@ -832,7 +856,7 @@ impl RelayLink {
                 out.push(Action::GrantRequest { peer_id, invite });
             }
             Frame::Event { wire } => {
-                self.fold(engine, std::slice::from_ref(&wire), false, out);
+                self.fold(engine, std::slice::from_ref(&wire), false, now_ms, out);
             }
             // withheld is a peer link's (D40): a relay narrows by its own scoped page instead
             Frame::Digest { .. }
@@ -855,6 +879,7 @@ impl RelayLink {
         engine: &mut Engine,
         wires: &[Vec<u8>],
         direct: bool,
+        now_ms: i64,
         out: &mut Vec<Action>,
     ) -> bool {
         let mut authors: BTreeSet<PeerId> = BTreeSet::new();
@@ -879,7 +904,7 @@ impl RelayLink {
                 return false;
             };
             if live.holdback.put(entry, engine) {
-                self.join(engine, out);
+                self.join(engine, now_ms, out);
                 return true;
             }
             authors.insert(author);
@@ -1137,7 +1162,7 @@ impl RelayLink {
     /// this key, and the room holds the join to that name. On a challenging room it signs the
     /// challenge, and nothing is sent before that challenge has arrived. Every registered grant
     /// follows the join, so the room can hand them to the next joiner.
-    fn join(&mut self, engine: &Engine, out: &mut Vec<Action>) {
+    fn join(&mut self, engine: &Engine, now_ms: i64, out: &mut Vec<Action>) {
         let Some(live) = self.live.as_ref() else {
             return;
         };
@@ -1176,6 +1201,7 @@ impl RelayLink {
         for (at, frame) in unsent {
             if self.send_left(frame, out) {
                 self.puts[at].sent_in = Some(session);
+                self.puts[at].silent_at_ms = silent_at(now_ms);
             }
         }
     }
@@ -1191,9 +1217,9 @@ impl RelayLink {
 
     /// A fresh join from our contiguous position on the same socket — what the host calls when
     /// it has reason to believe the room holds something the session missed.
-    pub fn resync(&mut self, engine: &Engine) -> Vec<Action> {
+    pub fn resync(&mut self, engine: &Engine, now_ms: i64) -> Vec<Action> {
         let mut out = Vec::new();
-        self.join(engine, &mut out);
+        self.join(engine, now_ms, &mut out);
         out
     }
 
@@ -1290,8 +1316,9 @@ impl RelayLink {
     /// join. One that cannot leave now is said at once ([`Action::BlobPutUnsent`]), so the put
     /// that asked does not wait out an answer that cannot come — and is kept all the same, so the
     /// next join carries the bytes. Answering such a put and forgetting it acknowledged bytes that
-    /// never left the device (chaos soak, `--blobs`, seeds 2 and 6).
-    pub fn send_blob_put(&mut self, hash: String, plain: Vec<u8>) -> Vec<Action> {
+    /// never left the device (chaos soak, `--blobs`, seeds 2 and 6). Silence for
+    /// [`BLOB_ANSWER_WAIT`] on the socket it left on lets it go ([`RelayLink::on_tick`]).
+    pub fn send_blob_put(&mut self, hash: String, plain: Vec<u8>, now_ms: i64) -> Vec<Action> {
         let partition = match decode_relay_frame(&plain) {
             Ok(RelayFrame::BlobPut { partition, .. }) => partition,
             _ => None,
@@ -1303,21 +1330,18 @@ impl RelayLink {
             partition,
             frame: plain,
             sent_in: left.then_some(self.session),
+            silent_at_ms: silent_at(now_ms),
         });
         if !left {
             out.push(Action::BlobPutUnsent { hash });
         }
         out
     }
+}
 
-    /// The put of `hash` waited out its answer. Silence on the socket it left on is a relay that
-    /// predates `blob-stored`: it is let go. One whose socket closed first, or that never left,
-    /// stays for the next join.
-    pub fn blob_put_silent(&mut self, hash: &str) {
-        let (session, live) = (self.session, self.live.is_some());
-        self.puts
-            .retain(|put| put.hash != hash || !live || put.sent_in != Some(session));
-    }
+/// When a put that leaves at `now_ms` has waited out its answer.
+fn silent_at(now_ms: i64) -> i64 {
+    now_ms.saturating_add(i64::try_from(BLOB_ANSWER_WAIT.as_millis()).unwrap_or(i64::MAX))
 }
 
 #[cfg(test)]
@@ -1444,6 +1468,52 @@ mod tests {
         assert!(matches!(out[0], Action::Refused { .. }));
         assert!(matches!(out[1], Action::Close { .. }));
         assert!(link.is_refused());
+    }
+
+    /// A put kept while the link was down was sent on every socket after, for as long as the
+    /// process lived, against a relay that predates `blob-stored`: the caller was answered at
+    /// once, so nothing ever told the link the put had been met with silence. Each socket it
+    /// leaves on now gives it [`BLOB_ANSWER_WAIT`], counted from when it left there, and that
+    /// socket's silence lets it go.
+    #[test]
+    fn a_put_kept_while_down_is_let_go_by_the_silence_of_the_socket_it_left_on() {
+        let mut engine = engine(1);
+        let mut link = RelayLink::new(
+            identity(1),
+            RelayOptions {
+                versions: vec![2],
+                ..RelayOptions::default()
+            },
+        );
+        let bytes = b"put while offline".to_vec();
+        let hash = crate::blobs::hash_of(&bytes);
+        let frame = syncmesh_core::relay_frames::blob_put_frame(&hash, &bytes, None);
+        let wait = i64::try_from(BLOB_ANSWER_WAIT.as_millis()).unwrap();
+        assert_eq!(
+            link.send_blob_put(hash.clone(), frame, 0),
+            vec![Action::BlobPutUnsent { hash }]
+        );
+        let sends = |out: &[Action]| out.iter().filter(|a| matches!(a, Action::Send(_))).count();
+        // first socket: the join and the put; it closes before the wait runs out, so it is kept
+        link.on_dialed(1_000);
+        let out = link.on_bytes(&mut engine, &challenge_frame(&[7; 32]), 1_000);
+        assert_eq!(sends(&out), 2);
+        assert_eq!(link.next_deadline_ms(), Some(1_000 + wait));
+        link.on_closed(5_000);
+        // second socket: it goes again, and its wait starts there, not at the first send
+        link.on_dialed(6_000);
+        let out = link.on_bytes(&mut engine, &challenge_frame(&[7; 32]), 6_000);
+        assert_eq!(sends(&out), 2);
+        assert_eq!(link.next_deadline_ms(), Some(6_000 + wait));
+        assert!(link.on_tick(6_000 + wait - 1).is_empty());
+        assert_eq!(link.next_deadline_ms(), Some(6_000 + wait));
+        assert!(link.on_tick(6_000 + wait).is_empty());
+        assert_eq!(link.next_deadline_ms(), None);
+        link.on_closed(20_000);
+        // let go: the next socket carries the join alone
+        link.on_dialed(21_000);
+        let out = link.on_bytes(&mut engine, &challenge_frame(&[7; 32]), 21_000);
+        assert_eq!(sends(&out), 1);
     }
 
     /// A link on a challenging room, answered and joined: what a refusal is read on.

@@ -322,11 +322,8 @@ impl Mesh {
             Ok(Ok(Some(refusal))) => Err(refusal.into_error(&hash)),
             Ok(_) => Ok(hash),
             Err(_) => {
-                // silence: a relay that predates the answer, which the link lets go of the put
-                // for — unless the socket it left on closed first; this wait is over, others are not
-                let _ = self
-                    .commands
-                    .try_send(LinkCommand::BlobPutSilent { hash: hash.clone() });
+                // silence: a relay that predates the answer, or a socket that closed under the put;
+                // the link keeps or lets go of the put on its own clock, and this wait is over
                 let mut held = lock(&self.waits.uploads);
                 if let Some(waits) = held.get_mut(&hash) {
                     waits.retain(|upload| !upload.settle.is_closed());

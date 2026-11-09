@@ -33,15 +33,10 @@ pub enum LinkCommand {
     /// A plaintext relay or session frame to seal and send — a blob get, say.
     RawFrame(Vec<u8>),
     /// A `blob-put` frame for `hash`; the link says when it could not leave, and keeps it until a
-    /// relay answers.
+    /// relay answers or the socket it left on says nothing for `BLOB_ANSWER_WAIT`.
     BlobPut {
         hash: String,
         frame: Vec<u8>,
-    },
-    /// The put of `hash` waited out its answer: let go of it if the relay it left on is still the
-    /// one up, since that relay predates `blob-stored`.
-    BlobPutSilent {
-        hash: String,
     },
     /// Something folded from another source; push what the relay lacks and report our cursors.
     RemoteFold,
@@ -148,18 +143,14 @@ fn apply(link: &mut RelayLink, engine: &Arc<Mutex<Engine>>, command: LinkCommand
         LinkCommand::Presence(wire) => link.send_presence(&wire),
         LinkCommand::Grants(wires) => link.send_grants(wires),
         LinkCommand::RawFrame(plain) => link.send_raw_frame(plain),
-        LinkCommand::BlobPut { hash, frame } => link.send_blob_put(hash, frame),
-        LinkCommand::BlobPutSilent { hash } => {
-            link.blob_put_silent(&hash);
-            Vec::new()
-        }
+        LinkCommand::BlobPut { hash, frame } => link.send_blob_put(hash, frame, now_ms()),
         LinkCommand::RemoteFold => {
             let engine = engine.lock().unwrap_or_else(PoisonError::into_inner);
             link.on_remote_fold(&engine)
         }
         LinkCommand::Resync => {
             let engine = engine.lock().unwrap_or_else(PoisonError::into_inner);
-            link.resync(&engine)
+            link.resync(&engine, now_ms())
         }
         LinkCommand::Wake => link.wake(),
         LinkCommand::Stop => link.stop(),
