@@ -122,6 +122,32 @@ describe("operationStore", () => {
     ]);
   });
 
+  test("a vouch whose insert fails leaves the holder's earlier claim whole", async () => {
+    const driver = await openPair();
+    let failing = false;
+    // the same connection, with the vouch insert made to fail on demand
+    const flaky = {
+      ...driver,
+      run: (sql: string, params?: Parameters<typeof driver.run>[1]) =>
+        failing && sql.includes("INSERT") && sql.includes("vouches")
+          ? Promise.reject(new Error("the disk filled between the delete and the insert"))
+          : driver.run(sql, params),
+    };
+    const store = (await operationStore(flaky)).unwrap();
+    for (const n of [1, 2, 3])
+      (await store.record({ id: `op-${n}`, peer: A, seq: seq(n), label: "l", atMs: n })).unwrap();
+    (await store.vouch(B, A, seq(3), "inc-1", 10)).unwrap();
+
+    // a new lineage that signs for less: its deletes and its insert land together or not at all
+    failing = true;
+    expect((await store.vouch(B, A, seq(1), "inc-2", 20)).isErr()).toBe(true);
+    failing = false;
+    expect((await store.soleCustody()).unwrap()).toEqual([]);
+    expect((await store.vouchesOf(A, seq(3))).unwrap()).toEqual([
+      { holder: B, incarnation: "inc-1", atMs: 10 },
+    ]);
+  });
+
   test("a correction marks the displaced write and keeps the why", async () => {
     const { store } = await open();
     (await store.record({ id: "op-1", peer: A, seq: seq(1), label: "l", atMs: 1 })).unwrap();

@@ -57,7 +57,6 @@ export const GRANDFATHERED: ReadonlySet<string> = new Set([
   "standInFor",
   "standingOf",
   "stateOf",
-  "sweepFor",
   "syncOf",
   "totalOf",
   "transportContextFor",

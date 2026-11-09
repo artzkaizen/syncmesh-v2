@@ -9,7 +9,7 @@ import type { OperationRefusal, RefusalRow } from "./operation-refusals.js";
 
 import { driverDialect, namespaceDdl } from "./dialect.js";
 import { createRefusalReads } from "./operation-refusals.js";
-import { attempt } from "./sql.js";
+import { attempt, inTransaction } from "./sql.js";
 
 /* oxlint-disable anti-slop/no-runtime-typeof -- decoding SQL rows *is* this file's I/O boundary: the driver hands back positional SqlValues, and the checks here are the parse that restores the row's contract */
 
@@ -107,6 +107,8 @@ export interface OperationStore {
    * The order is the whole of it: a peer that lost its store and rebuilt arrives with a new
    * lineage, and the vouches it made with the store it lost have to stop counting before the new
    * ones land. Doing it the other way round leaves a peer vouching for events it no longer has.
+   * The check, the deletes and the insert are one transaction where the driver offers one, so a
+   * failure part way leaves the holder's earlier claim standing whole.
    */
   readonly vouch: (
     holder: PeerId,
@@ -253,20 +255,24 @@ export function operationStore(
           driver.run(sql.insertReceiptsThrough, [holder, atMs, author, throughSeq]),
         ),
       vouch: (holder, author, throughSeq, incarnation, atMs) =>
-        write("vouch insert failed", async () => {
-          const newer = await driver.all(sql.selectNewerVouch, [holder, author, atMs]);
-          if (newer.length > 0) return;
-          await driver.run(sql.deleteStaleVouches, [holder, incarnation]);
-          await driver.run(sql.deleteWithdrawnVouches, [holder, author, throughSeq, atMs]);
-          await driver.run(sql.deleteCoveredRefusals, [holder, author, throughSeq]);
-          await driver.run(sql.insertVouchesThrough, [
-            holder,
-            incarnation,
-            atMs,
-            author,
-            throughSeq,
-          ]);
-        }),
+        // one transaction: a newer receipt landing between the check and the insert, or a failed
+        // insert after the withdrawal, would otherwise leave the holder's claim half-replaced
+        write("vouch insert failed", () =>
+          inTransaction(driver, async () => {
+            const newer = await driver.all(sql.selectNewerVouch, [holder, author, atMs]);
+            if (newer.length > 0) return;
+            await driver.run(sql.deleteStaleVouches, [holder, incarnation]);
+            await driver.run(sql.deleteWithdrawnVouches, [holder, author, throughSeq, atMs]);
+            await driver.run(sql.deleteCoveredRefusals, [holder, author, throughSeq]);
+            await driver.run(sql.insertVouchesThrough, [
+              holder,
+              incarnation,
+              atMs,
+              author,
+              throughSeq,
+            ]);
+          }),
+        ),
       vouchesOf: (peer, seq) =>
         Result.gen(async function* () {
           const held = yield* Result.await(rows(sql.selectVouches, [peer, seq]));

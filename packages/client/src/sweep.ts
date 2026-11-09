@@ -26,9 +26,9 @@ export interface SweepCandidate {
   readonly reason: SweepReason;
 }
 
-/** A candidate `detachScope` refused: it still holds writes no peer has acknowledged. */
+/** A candidate `detachScope` refused: it still holds writes no peer has signed for holding. */
 export interface SweepRefusal extends SweepCandidate {
-  /** Operation ids whose events no peer holds yet — what `DetachRefused` reported. */
+  /** Operation ids whose events no peer has signed for holding — what `DetachRefused` reported. */
   readonly unsent: readonly string[];
 }
 
@@ -72,7 +72,7 @@ export interface SweepDeps {
 }
 
 export function createSweep(deps: SweepDeps): StoreSweep {
-  const reasonFor = (scope: StoreScope): SweepReason | undefined => {
+  const candidateReason = (scope: StoreScope): SweepReason | undefined => {
     if (scope === "user" || RESERVED_KINDS.has(kindOf(scope))) return undefined;
     const live = deps.grants.grantFor(deps.self);
     if (live !== undefined) return live.partitions.includes(scope) ? undefined : "not-granted";
@@ -86,7 +86,7 @@ export function createSweep(deps: SweepDeps): StoreSweep {
     const found: SweepCandidate[] = [];
     for (const scope of deps.scopes()) {
       if (requested.has(scope)) continue;
-      const reason = reasonFor(scope);
+      const reason = candidateReason(scope);
       if (reason !== undefined) found.push({ scope, reason });
     }
     return found;
@@ -144,7 +144,8 @@ export interface MeshSweep {
   readonly stop: () => void;
 }
 
-export function sweepFor(deps: {
+/** The sweep a mesh runs: grant requests shield every open store, and stores no grant covers are shed. */
+export function createMeshSweep(deps: {
   readonly self: PeerId;
   readonly grants: SweepDeps["grants"];
   readonly over: SweepOver | undefined;
