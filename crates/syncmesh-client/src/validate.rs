@@ -502,6 +502,15 @@ impl Validator {
             .is_some_and(|c| c.retired)
     }
 
+    /// Whether the manifest puts the table in the `local` kind: its rows never leave this device,
+    /// so a snapshot leaves them out (gaps U36).
+    pub fn local_table(&self, table: &str) -> bool {
+        self.manifest
+            .tables
+            .get(table)
+            .is_some_and(|t| t.partition == "local")
+    }
+
     /// Who `peer` writes as in `partition`, as the ladder would resolve it: its live grant where
     /// this validator reads grants, else the instance's `_links` row in an accounts mesh, else
     /// nobody. What [`Validator::can`] is asked for on this device's behalf.

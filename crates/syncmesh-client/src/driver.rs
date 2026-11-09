@@ -17,7 +17,7 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::blobs::PutRefusal;
 use crate::engine::{Engine, FoldBatch};
 use crate::relay::{Action, RelayLink};
-use crate::store::StoredEvent;
+use crate::store::{Cursors, StoredEvent};
 
 /// What a host asks of a running link.
 #[derive(Debug, Clone, PartialEq)]
@@ -32,10 +32,16 @@ pub enum LinkCommand {
     Grants(Vec<Vec<u8>>),
     /// A plaintext relay or session frame to seal and send — a blob get, say.
     RawFrame(Vec<u8>),
-    /// A `blob-put` frame for `hash`; the link says when it could not leave.
+    /// A `blob-put` frame for `hash`; the link says when it could not leave, and keeps it until a
+    /// relay answers.
     BlobPut {
         hash: String,
         frame: Vec<u8>,
+    },
+    /// The put of `hash` waited out its answer: let go of it if the relay it left on is still the
+    /// one up, since that relay predates `blob-stored`.
+    BlobPutSilent {
+        hash: String,
     },
     /// Something folded from another source; push what the relay lacks and report our cursors.
     RemoteFold,
@@ -69,6 +75,10 @@ pub enum LinkEvent {
     },
     PeerHeard(PeerId),
     Dropped(String),
+    /// The room refused the join with `retention`; the link holds off below this floor (gaps U37).
+    BelowFloor(Cursors),
+    /// The relay's floor issue is over.
+    FloorCleared,
     /// Permanent; the task ends after this.
     Refused(String),
     /// The socket ended, and why the link thinks so where it was the one to hang up.
@@ -91,6 +101,8 @@ impl LinkEvent {
             Action::BlobPutUnsent { hash } => LinkEvent::BlobPutUnsent { hash },
             Action::PeerHeard(peer) => LinkEvent::PeerHeard(peer),
             Action::Dropped(why) => LinkEvent::Dropped(why),
+            Action::BelowFloor { floor } => LinkEvent::BelowFloor(floor),
+            Action::FloorCleared => LinkEvent::FloorCleared,
             Action::Refused { reason } => LinkEvent::Refused(reason),
             Action::Send(_) | Action::Close { .. } | Action::Redial { .. } => return None,
         })
@@ -137,6 +149,10 @@ fn apply(link: &mut RelayLink, engine: &Arc<Mutex<Engine>>, command: LinkCommand
         LinkCommand::Grants(wires) => link.send_grants(wires),
         LinkCommand::RawFrame(plain) => link.send_raw_frame(plain),
         LinkCommand::BlobPut { hash, frame } => link.send_blob_put(hash, frame),
+        LinkCommand::BlobPutSilent { hash } => {
+            link.blob_put_silent(&hash);
+            Vec::new()
+        }
         LinkCommand::RemoteFold => {
             let engine = engine.lock().unwrap_or_else(PoisonError::into_inner);
             link.on_remote_fold(&engine)
@@ -159,26 +175,27 @@ pub async fn run_link(
     mut commands: mpsc::Receiver<LinkCommand>,
     events: mpsc::Sender<LinkEvent>,
 ) {
-    let mut wait_ms: u64 = 0;
+    // `None` waits for a command alone: the link holds off below a relay's floor (gaps U37)
+    let mut wait_ms: Option<u64> = Some(0);
     loop {
         // the backoff, interruptible by a command: a stop must not wait out thirty seconds
-        let sleep = tokio::time::sleep(Duration::from_millis(wait_ms));
+        let sleep = tokio::time::sleep(Duration::from_millis(wait_ms.unwrap_or(0)));
         tokio::pin!(sleep);
         loop {
             tokio::select! {
-                _ = &mut sleep => break,
+                _ = &mut sleep, if wait_ms.is_some() => break,
                 command = commands.recv() => {
                     let Some(command) = command else {
                         link.stop();
                         return;
                     };
-                    let woken = matches!(command, LinkCommand::Wake);
                     let stopping = matches!(command, LinkCommand::Stop);
                     let asked = report(apply(&mut link, &engine, command), &events).await;
                     if stopping || link.is_stopped() || link.is_refused() {
                         return;
                     }
-                    if woken && asked.redial == Some(0) {
+                    // a wake, or a fold that brought this device up to the floor it held off below
+                    if asked.redial == Some(0) {
                         break;
                     }
                 }
@@ -192,7 +209,7 @@ pub async fn run_link(
                 let asked = report(link.on_dial_failed(now_ms()), &events).await;
                 match asked.redial {
                     Some(after) => {
-                        wait_ms = after;
+                        wait_ms = Some(after);
                         continue;
                     }
                     None => return,
@@ -250,7 +267,8 @@ pub async fn run_link(
         }
         let asked = report(link.on_closed(now_ms()), &events).await;
         match asked.redial {
-            Some(after) => wait_ms = after,
+            Some(after) => wait_ms = Some(after),
+            None if link.is_holding() => wait_ms = None,
             None => return,
         }
     }

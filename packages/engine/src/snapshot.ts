@@ -13,6 +13,7 @@ import type {
 } from "@syncmesh/kernel";
 
 import {
+  codePointOrder,
   compareStamp,
   isVisible,
   keyedRecords,
@@ -25,6 +26,7 @@ import { Result } from "@syncmesh/result";
 import type { FoldBatch } from "./engine.js";
 import type { Interest, InterestWindow } from "./interest.js";
 import type { Coverage } from "./sync.js";
+import type { Validator } from "./validate.js";
 
 import { interestText, rowsIn, wholeWindow } from "./interest.js";
 import { lineageMoves } from "./lineage-moves.js";
@@ -63,6 +65,12 @@ export interface SnapshotOptions {
    * `window` keeps the newest rows of the slice and every tombstone in it ({@link windowRows}).
    */
   readonly interest?: Interest;
+  /**
+   * Tables whose rows never leave this device — the schema's `local` kind
+   * (`Validator.localTable`). Their rows are left out of the snapshot, as their events are left
+   * out of every sync (gaps U36). Absent, every table travels.
+   */
+  readonly localTable?: (table: TableName) => boolean;
 }
 
 /**
@@ -77,9 +85,12 @@ export function stateSnapshot(
   coverage: Coverage,
   options: SnapshotOptions = {},
 ): Snapshot {
-  const { interest } = options;
-  // tombstones travel: without them a joiner would resurrect every row anyone deleted
-  const sliced = [...keyedRecords(state)].filter(({ record }) => rowsIn(record, interest));
+  const { interest, localTable } = options;
+  // tombstones travel: without them a joiner would resurrect every row anyone deleted; a local
+  // table's rows never do, whatever the interest, because nothing but this device may hold them
+  const sliced = [...keyedRecords(state)].filter(
+    ({ table, record }) => localTable?.(table) !== true && rowsIn(record, interest),
+  );
   const window = wholeWindow(interest?.window);
   const rows = window === undefined ? sliced : windowRows(sliced, window);
   // the floor and the held run are this device's own account of its log, never part of what it
@@ -133,20 +144,6 @@ const newestStamp = (record: RowRecord): Stamp | undefined => {
     if (stamp !== undefined && (newest === undefined || compareStamp(stamp, newest) > 0))
       newest = stamp;
   return newest;
-};
-
-/**
- * Strings by code point, which is Rust's byte order on UTF-8. JavaScript's `<` compares UTF-16
- * code units, which puts a character above U+FFFF before one in U+E000–U+FFFF.
- */
-const codePointOrder = (a: string, b: string): number => {
-  const left = [...a];
-  const right = [...b];
-  for (let i = 0; i < Math.min(left.length, right.length); i += 1) {
-    const diff = (left[i]?.codePointAt(0) ?? 0) - (right[i]?.codePointAt(0) ?? 0);
-    if (diff !== 0) return diff;
-  }
-  return left.length - right.length;
 };
 
 /** What a snapshot install needs of the engine it lands in. */
@@ -255,10 +252,19 @@ export interface SnapshotApi {
 
 /** Both halves against one engine's state, so `createEngine` states the wiring once. */
 export function createSnapshotPath(
-  deps: InstallDeps & { readonly coverageOf: () => Coverage },
+  /** The engine's doc columns, and its validator, whose `localTable` names the `local` kind. */
+  settings: { readonly docs?: DocColumns | undefined; readonly validate?: Validator | undefined },
+  deps: Omit<InstallDeps, "docs"> & { readonly coverageOf: () => Coverage },
 ): SnapshotApi {
+  const installing = { ...deps, docs: settings.docs };
+  const localTable = settings.validate?.localTable;
   return {
-    snapshot: (options) => stateSnapshot(deps.getState(), deps.coverageOf(), options),
-    installSnapshot: (snap) => installSnapshot(deps, snap),
+    snapshot: (options) =>
+      stateSnapshot(
+        deps.getState(),
+        deps.coverageOf(),
+        localTable === undefined ? options : { localTable, ...options },
+      ),
+    installSnapshot: (snap) => installSnapshot(installing, snap),
   };
 }

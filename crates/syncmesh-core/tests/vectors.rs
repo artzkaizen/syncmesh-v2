@@ -120,7 +120,7 @@ fn wire_vectors_fold_to_one_state_in_any_order() {
 /// Every other signed thing on the wire is `[core, sig]` over canonical CBOR, signed by the key the
 /// document names. The core is not re-shaped here (those codecs are a later slice), but its bytes
 /// must already be canonical: decode → encode reproduces them.
-fn check_signed_vectors(file: &str, signer_key: &str) {
+fn check_signed_vectors(file: &str, signer_key: &str, version: i64) {
     let doc = vectors(file);
     let signer = from_hex(doc[signer_key].as_str().unwrap()).unwrap();
     let list = doc["vectors"].as_array().unwrap();
@@ -147,37 +147,46 @@ fn check_signed_vectors(file: &str, signer_key: &str) {
             "{file} {}: envelope is canonical",
             v["description"]
         );
-        // a signed core is a map with integer keys, version 1 under key 0
+        // a signed core is a map with integer keys, its format's version under key 0
         let Value::Map(m) = value else {
             panic!("{file}: core is a map")
         };
-        assert_eq!(m.get(&Key::Int(0)), Some(&Value::Int(1)), "{file}: v=1");
+        assert_eq!(
+            m.get(&Key::Int(0)),
+            Some(&Value::Int(version)),
+            "{file}: v={version}"
+        );
     }
 }
 
 #[test]
 fn grant_vectors_are_signed_by_the_issuer() {
-    check_signed_vectors("grant-vectors.json", "issuerId");
+    check_signed_vectors("grant-vectors.json", "issuerId", 1);
 }
 
 #[test]
 fn account_link_vectors_are_signed_by_the_account() {
-    check_signed_vectors("account-vectors.json", "accountId");
+    check_signed_vectors("account-vectors.json", "accountId", 1);
 }
 
 #[test]
 fn receipt_vectors_are_signed_by_the_holder() {
-    check_signed_vectors("receipt-vectors.json", "holderId");
+    check_signed_vectors("receipt-vectors.json", "holderId", 1);
 }
 
 #[test]
 fn refusal_vectors_are_signed_by_the_refuser() {
-    check_signed_vectors("refusal-vectors.json", "refuserId");
+    check_signed_vectors("refusal-vectors.json", "refuserId", 1);
 }
 
 #[test]
 fn checkpoint_vectors_are_signed_by_the_issuer() {
-    check_signed_vectors("checkpoint-vectors.json", "issuerId");
+    // version 2 since gaps U34: cells hashed in column order
+    check_signed_vectors(
+        "checkpoint-vectors.json",
+        "issuerId",
+        syncmesh_core::CheckpointCertificate::VERSION,
+    );
 }
 
 /// What Rust signs, Rust reads back: the envelope round-trips and the signature binds the exact core.

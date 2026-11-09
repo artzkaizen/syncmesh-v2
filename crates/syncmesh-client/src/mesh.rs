@@ -26,6 +26,7 @@ use crate::engine::{
 use crate::grants::GrantRegistry;
 use crate::presence::{PresenceEntry, PresenceTier, PresenceTouch};
 use crate::random;
+use crate::rejoin::{BelowFloor, Rejoins};
 use crate::relay::{RelayLink, RelayOptions};
 use crate::store::{EventStore, StateStore, StoreError};
 
@@ -61,6 +62,9 @@ pub enum MeshEvent {
     },
     PeerHeard(PeerId),
     Dropped(String),
+    /// The issues [`Mesh::below_floor`] lists changed: a relay refused this device below its floor
+    /// (gaps U37), or that is over.
+    Recovery,
     /// The link is over for good: a refusal, or `stop`.
     Ended(String),
 }
@@ -122,6 +126,7 @@ pub struct Mesh {
     grants: Arc<Mutex<GrantRegistry>>,
     blobs: Arc<Mutex<Box<dyn BlobStore + Send>>>,
     waits: BlobWaits,
+    rejoins: Arc<Mutex<Rejoins>>,
     commands: mpsc::Sender<LinkCommand>,
     events: mpsc::Receiver<MeshEvent>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
@@ -167,19 +172,25 @@ impl Mesh {
             blob_store.unwrap_or_else(|| Box::new(MemoryBlobStore::new())),
         ));
         let waits = BlobWaits::default();
+        let rejoins = Arc::new(Mutex::new(Rejoins::new()));
         let (commands, command_rx) = mpsc::channel(256);
         let (link_tx, link_rx) = mpsc::channel(256);
         let (event_tx, events) = mpsc::channel(256);
         let link = RelayLink::new(identity.clone(), relay).with_grants(grants.clone());
+        let relay_name = link.name().to_owned();
         let tasks = vec![
             handle.spawn(run_link(link, engine.clone(), url, command_rx, link_tx)),
             handle.spawn(pump(
                 link_rx,
                 event_tx,
-                presence.clone(),
-                grants.clone(),
-                blobs.clone(),
-                waits.clone(),
+                Pumped {
+                    presence: presence.clone(),
+                    grants: grants.clone(),
+                    blobs: blobs.clone(),
+                    waits: waits.clone(),
+                    rejoins: rejoins.clone(),
+                    relay: relay_name,
+                },
                 commands.clone(),
             )),
             handle.spawn(heartbeat(presence.clone(), commands.clone())),
@@ -191,6 +202,7 @@ impl Mesh {
             grants,
             blobs,
             waits,
+            rejoins,
             commands,
             events,
             tasks,
@@ -283,8 +295,9 @@ impl Mesh {
     /// holder. A room that keeps no blobs (`no-store`), a code this build cannot name, and a relay
     /// that says nothing for [`BLOB_ANSWER_WAIT`] are not refusals: the bytes are here, and the put
     /// succeeds, as it did before rooms answered at all. A put made while the link is not up
-    /// answers at once, the same way: the frame could not leave, so nothing will answer it, and it
-    /// is not sent again on the next session — put it again once [`MeshEvent::Online`] says so.
+    /// answers at once, the same way, and the link keeps it: the next session carries the bytes.
+    /// So does one whose socket closed before the relay answered; that put answers within
+    /// [`BLOB_ANSWER_WAIT`] whatever happens to the link.
     pub async fn blob_put(
         &self,
         bytes: &[u8],
@@ -309,7 +322,11 @@ impl Mesh {
             Ok(Ok(Some(refusal))) => Err(refusal.into_error(&hash)),
             Ok(_) => Ok(hash),
             Err(_) => {
-                // silence: a relay that predates the answer; this wait is over, others are not
+                // silence: a relay that predates the answer, which the link lets go of the put
+                // for — unless the socket it left on closed first; this wait is over, others are not
+                let _ = self
+                    .commands
+                    .try_send(LinkCommand::BlobPutSilent { hash: hash.clone() });
                 let mut held = lock(&self.waits.uploads);
                 if let Some(waits) = held.get_mut(&hash) {
                     waits.retain(|upload| !upload.settle.is_closed());
@@ -378,6 +395,27 @@ impl Mesh {
         let _ = self.commands.try_send(LinkCommand::Wake);
     }
 
+    /// Every floor this device is below, with why (`$recovery.belowFloor`): a relay that refused
+    /// it with `retention` (gaps U37), and the peers a host's own links raised in
+    /// [`Mesh::rejoins`]. [`MeshEvent::Recovery`] says when the relay's half changed.
+    pub fn below_floor(&self) -> Vec<BelowFloor> {
+        let ours = lock(&self.engine).coverage().synced;
+        lock(&self.rejoins).issues(&ours)
+    }
+
+    /// The mesh's recovery record, for a host that drives its own peer links ([`crate::PeerJoin`])
+    /// so their floors and the relay's are one list.
+    pub fn rejoins(&self) -> MutexGuard<'_, Rejoins> {
+        lock(&self.rejoins)
+    }
+
+    /// Something folded or installed from a source this mesh does not run (a host's own peer
+    /// link, a snapshot): the link pushes what the relay lacks, and a link holding off below the
+    /// relay's floor dials again once this device holds it (gaps U37).
+    pub fn folded_elsewhere(&self) {
+        let _ = self.commands.try_send(LinkCommand::RemoteFold);
+    }
+
     /// Departs every presence topic, stops the link, and waits for the tasks to end.
     pub async fn stop(mut self) {
         let departures = lock(&self.presence).stop(now_ms());
@@ -391,17 +429,33 @@ impl Mesh {
     }
 }
 
-/// Link facts to mesh events: presence into the tier, blob answers to their waiters, everything
-/// else forwarded.
-async fn pump(
-    mut link: mpsc::Receiver<LinkEvent>,
-    events: mpsc::Sender<MeshEvent>,
+/// What the pump writes link facts into.
+struct Pumped {
     presence: Arc<Mutex<PresenceTier>>,
     grants: Arc<Mutex<GrantRegistry>>,
     blobs: Arc<Mutex<Box<dyn BlobStore + Send>>>,
     waits: BlobWaits,
+    rejoins: Arc<Mutex<Rejoins>>,
+    /// The relay link's name, which its floor issue is raised under.
+    relay: String,
+}
+
+/// Link facts to mesh events: presence into the tier, blob answers to their waiters, a relay's
+/// floor into the recovery record, everything else forwarded.
+async fn pump(
+    mut link: mpsc::Receiver<LinkEvent>,
+    events: mpsc::Sender<MeshEvent>,
+    into: Pumped,
     commands: mpsc::Sender<LinkCommand>,
 ) {
+    let Pumped {
+        presence,
+        grants,
+        blobs,
+        waits,
+        rejoins,
+        relay,
+    } = into;
     while let Some(fact) = link.recv().await {
         let out = match fact {
             LinkEvent::Online(on) => {
@@ -458,6 +512,14 @@ async fn pump(
             }
             LinkEvent::PeerHeard(peer) => vec![MeshEvent::PeerHeard(peer)],
             LinkEvent::Dropped(why) => vec![MeshEvent::Dropped(why)],
+            LinkEvent::BelowFloor(floor) => {
+                lock(&rejoins).relay_refused(&relay, floor);
+                vec![MeshEvent::Recovery]
+            }
+            LinkEvent::FloorCleared => {
+                lock(&rejoins).relay_cleared(&relay);
+                vec![MeshEvent::Recovery]
+            }
             LinkEvent::Refused(why) => vec![MeshEvent::Ended(why)],
             LinkEvent::Closed(_) | LinkEvent::DialFailed(_) => Vec::new(),
         };
@@ -525,10 +587,14 @@ mod tests {
         let pumping = tokio::spawn(pump(
             link_rx,
             event_tx,
-            presence.clone(),
-            Arc::new(Mutex::new(GrantRegistry::new(identity.peer_id().clone()))),
-            blobs,
-            BlobWaits::default(),
+            Pumped {
+                presence: presence.clone(),
+                grants: Arc::new(Mutex::new(GrantRegistry::new(identity.peer_id().clone()))),
+                blobs,
+                waits: BlobWaits::default(),
+                rejoins: Arc::new(Mutex::new(Rejoins::new())),
+                relay: "relay".to_owned(),
+            },
             commands,
         ));
 

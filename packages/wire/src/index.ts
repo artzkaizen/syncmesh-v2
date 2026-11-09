@@ -98,8 +98,10 @@ export type {
 } from "./checkpoint.js";
 export {
   BadCheckpointSignature,
+  CHECKPOINT_VERSION,
   CheckpointMismatch,
   MalformedCheckpoint,
+  UnknownCheckpointVersion,
   checkpointHash,
   encodeCheckpoint,
   issueCheckpoint,

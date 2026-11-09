@@ -4,7 +4,10 @@ import { describe, expect, test } from "bun:test";
 
 import type { CheckpointRow } from "../checkpoint.js";
 
+import { decodeCbor } from "../cbor-decode.js";
+import { encodeCbor } from "../cbor.js";
 import { checkpointHash, issueCheckpoint, verifyCheckpoint } from "../checkpoint.js";
+import { splitEnvelope } from "../envelope.js";
 import { createIdentity } from "../identity.js";
 
 const authority = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 11 + i)).unwrap();
@@ -23,7 +26,7 @@ const mint = (over: readonly CheckpointRow[] = rows) =>
 describe("checkpoint certificates — who vouches for a snapshot (book ch. 4)", () => {
   test("the authority's certificate verifies, and carries the coverage it claims", () => {
     const held = verifyCheckpoint(mint(), authority.peerId, rows).unwrap();
-    expect(held.v).toBe(1);
+    expect(held.v).toBe(2);
     expect(held.issuer).toBe(authority.peerId);
     expect([...held.coverage]).toEqual([[authority.peerId, 42]]);
     expect(held.issuedAt.epochMilliseconds).toBe(T0.epochMilliseconds);
@@ -67,5 +70,21 @@ describe("checkpoint certificates — who vouches for a snapshot (book ch. 4)", 
     expect(verifyCheckpoint(Uint8Array.of(1, 2, 3), authority.peerId).isErr()).toBe(true);
     const other = parsePeerId("a".repeat(64)).unwrap();
     expect(verifyCheckpoint(mint(), other).isErr()).toBe(true);
+  });
+
+  test("a certificate of another version is refused, not checked against a hash it cannot mean (U34)", () => {
+    // version 1 hashed cells in the order the issuer first wrote them: the same rows, re-signed
+    // under a 1, verify neither as a match nor as a mismatch
+    const { core } = splitEnvelope(mint()).unwrap();
+    const fields = decodeCbor(core).unwrap();
+    if (!(fields instanceof Map)) throw new Error("a certificate core is a map");
+    for (const version of [1, 3]) {
+      const older = encodeCbor(new Map([...fields, [0, version]]));
+      const wire = encodeCbor([older, authority.sign(older)]);
+      const refused = verifyCheckpoint(wire, authority.peerId, rows);
+      const error = refused.match({ ok: () => undefined, err: (e) => e });
+      expect(error?._tag).toBe("UnknownCheckpointVersion");
+      expect(error?._tag === "UnknownCheckpointVersion" && error.version).toBe(version);
+    }
   });
 });

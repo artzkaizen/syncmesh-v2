@@ -5,7 +5,9 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use syncmesh_client::sqlite::{SqliteBlobStore, SqliteEventStore, open_in_memory, open_stores};
+use syncmesh_client::sqlite::{
+    SqliteBlobStore, SqliteEventStore, SqliteStateStore, open_in_memory, open_stores,
+};
 use syncmesh_client::store::{rows_for, write_keys_of};
 use syncmesh_client::{
     Coverage, Cursors, Engine, EngineOptions, EventStore, MemoryEventStore, StateStore, StoredEvent,
@@ -97,6 +99,36 @@ impl TempDir {
     fn db(&self) -> PathBuf {
         self.0.join("device.db")
     }
+
+    fn file(&self, name: &str) -> PathBuf {
+        self.0.join(name)
+    }
+}
+
+/// Deletes a database file and its WAL companions, as an operator clearing a cache would.
+fn delete_database(path: &std::path::Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let mut file = path.as_os_str().to_owned();
+        file.push(suffix);
+        let _ = std::fs::remove_file(PathBuf::from(file));
+    }
+}
+
+/// A device over a log and a state store in two files, so the state can be lost on its own.
+fn split_engine(dir: &TempDir) -> Result<Engine, syncmesh_client::StoreError> {
+    Engine::open(
+        identity(1),
+        Box::new(SqliteEventStore::open(&dir.file("log.db"))?),
+        Some(Box::new(SqliteStateStore::open(&dir.file("state.db"))?)),
+        EngineOptions::default(),
+    )
+}
+
+fn floor(pairs: &[(u8, u64)]) -> Cursors {
+    pairs
+        .iter()
+        .map(|&(n, seq)| (peer(n), SeqNum::parse(seq).unwrap()))
+        .collect()
 }
 
 impl Drop for TempDir {
@@ -416,4 +448,167 @@ fn a_log_holding_a_legacy_genesis_still_reads() {
     let held = std::slice::from_ref(&old);
     assert_eq!(log.all().unwrap(), held);
     assert_eq!(log.all_since(&Cursors::new()).unwrap(), held);
+}
+
+/// Gaps U37, the Rust half of U33: a snapshot install's floor is kept in the log as well as with
+/// the state's coverage, so a state file deleted or replaced is refused at the next open instead
+/// of rebuilt from a log that never held the installed rows.
+#[test]
+fn an_installs_floor_is_kept_in_the_log_and_a_lost_state_is_refused_not_rebuilt() {
+    let dir = TempDir::new("installed");
+    let mut holder = memory_engine(2);
+    for key in ["a", "b"] {
+        holder
+            .mutate("notes.create", vec![insert(key, key)], None)
+            .unwrap();
+    }
+    {
+        let mut x = split_engine(&dir).unwrap();
+        x.install_snapshot(holder.snapshot(None)).unwrap();
+        assert_eq!(
+            x.floor(),
+            floor(&[(2, 2)]),
+            "nothing in this log stands behind them"
+        );
+        assert_eq!(x.installed_below().unwrap(), floor(&[(2, 2)]));
+    }
+    // the state reopens as it was: the rows and the floor
+    {
+        let x = split_engine(&dir).unwrap();
+        assert!(x.state().read_row("notes", "b").is_some());
+    }
+    delete_database(&dir.file("state.db"));
+    let Err(refused) = split_engine(&dir) else {
+        panic!("a state lost over an installed floor opened");
+    };
+    assert!(
+        refused.to_string().contains("StateCorrupt"),
+        "refused, not rebuilt without the installed rows: {refused}"
+    );
+    // nothing was cleared: the log still holds the floor for the next attempt
+    let log = SqliteEventStore::open(&dir.file("log.db")).unwrap();
+    assert_eq!(log.installed_below().unwrap(), floor(&[(2, 2)]));
+}
+
+/// A state installed by a build from before the log kept the floor gives it to the log at its next
+/// readable open, so losing the state after that is refused too.
+#[test]
+fn a_state_installed_before_the_log_kept_its_floor_gives_it_to_the_log() {
+    let dir = TempDir::new("backfill");
+    {
+        let mut state = SqliteStateStore::open(&dir.file("state.db")).unwrap();
+        let coverage = Coverage {
+            synced: floor(&[(2, 4)]),
+            floor: floor(&[(2, 4)]),
+            ..Coverage::default()
+        };
+        state.commit(&[], &coverage).unwrap();
+    }
+    assert!(
+        SqliteEventStore::open(&dir.file("log.db"))
+            .unwrap()
+            .installed_below()
+            .unwrap()
+            .is_empty()
+    );
+    {
+        let x = split_engine(&dir).unwrap();
+        assert_eq!(x.installed_below().unwrap(), floor(&[(2, 4)]));
+    }
+    delete_database(&dir.file("state.db"));
+    assert!(split_engine(&dir).is_err());
+}
+
+/// The floor rises per author and never falls, survives a reopen, and a value that does not read
+/// is a store fault rather than no floor.
+#[test]
+fn the_installed_floor_only_rises_and_survives_a_reopen() {
+    let dir = TempDir::new("raise");
+    {
+        let mut log = SqliteEventStore::open(&dir.db()).unwrap();
+        log.record_installed(&floor(&[(2, 5), (3, 1)])).unwrap();
+        log.record_installed(&floor(&[(2, 3), (3, 4)])).unwrap();
+    }
+    let log = SqliteEventStore::open(&dir.db()).unwrap();
+    assert_eq!(log.installed_below().unwrap(), floor(&[(2, 5), (3, 4)]));
+    drop(log);
+    let conn = rusqlite::Connection::open(dir.db()).unwrap();
+    conn.execute(
+        "UPDATE sm_log_meta SET value = '{\"not\": \"a list\"}' WHERE key = 'installed'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    assert!(
+        SqliteEventStore::open(&dir.db())
+            .unwrap()
+            .installed_below()
+            .is_err()
+    );
+}
+
+/// No state store holds the rows, so no floor is recorded: one over nothing that holds them would
+/// refuse every later boot.
+#[test]
+fn an_install_with_no_state_store_records_no_floor() {
+    let mut holder = memory_engine(2);
+    holder
+        .mutate("notes.create", vec![insert("a", "a")], None)
+        .unwrap();
+    let mut x = memory_engine(1);
+    x.install_snapshot(holder.snapshot(None)).unwrap();
+    assert_eq!(x.floor(), floor(&[(2, 1)]));
+    assert!(x.installed_below().unwrap().is_empty());
+}
+
+/// A state store whose commit fails once an install's floor rides it: disk full, a quota.
+struct RefusingInstalls;
+
+impl StateStore for RefusingInstalls {
+    fn is_empty(&self) -> Result<bool, syncmesh_client::StoreError> {
+        Ok(true)
+    }
+    fn load_all(&self) -> Result<State, syncmesh_client::StoreError> {
+        Ok(State::new())
+    }
+    fn load_coverage(&self) -> Result<Coverage, syncmesh_client::StoreError> {
+        Ok(Coverage::default())
+    }
+    fn commit(
+        &mut self,
+        _rows: &[syncmesh_client::RowWrite],
+        coverage: &Coverage,
+    ) -> Result<(), syncmesh_client::StoreError> {
+        if coverage.floor.is_empty() {
+            Ok(())
+        } else {
+            Err(syncmesh_client::StoreError::new("the disk is full"))
+        }
+    }
+    fn clear(&mut self) -> Result<(), syncmesh_client::StoreError> {
+        Ok(())
+    }
+}
+
+/// The floor is recorded only once a state store committed the rows it stands for: a floor over
+/// a state that never landed would refuse every later boot instead of folding the log again.
+#[test]
+fn an_install_whose_state_commit_fails_leaves_no_floor_in_the_log() {
+    let dir = TempDir::new("refused-commit");
+    let mut holder = memory_engine(2);
+    holder
+        .mutate("notes.create", vec![insert("a", "a")], None)
+        .unwrap();
+    {
+        let mut x = Engine::open(
+            identity(1),
+            Box::new(SqliteEventStore::open(&dir.db()).unwrap()),
+            Some(Box::new(RefusingInstalls)),
+            EngineOptions::default(),
+        )
+        .unwrap();
+        assert!(x.install_snapshot(holder.snapshot(None)).is_err());
+    }
+    let log = SqliteEventStore::open(&dir.db()).unwrap();
+    assert!(log.installed_below().unwrap().is_empty());
 }

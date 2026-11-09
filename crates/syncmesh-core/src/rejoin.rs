@@ -1,4 +1,5 @@
-//! Rejoining from state (D46): which of a peer's compaction floors this device is below.
+//! Rejoining from state (D46): which of a peer's compaction floors this device is below, and which
+//! of a relay's `retention` floor a join is still below (gaps U30, U37).
 //!
 //! A peer that compacted sends its floor at index 4 of the cursors frame. A device whose
 //! contiguous cursor for an author is under that peer's floor cannot be sent that author's
@@ -39,6 +40,33 @@ pub fn below_peer_floor(
         .iter()
         .filter(|(author, seq)| {
             author != own && seq.get() <= at(theirs, author) && at(ours, author) < seq.get()
+        })
+        .cloned()
+        .collect()
+}
+
+/// Per author, in the floor's order, the floor a relay's `retention` refusal names that a join
+/// sending `ours` is still below. Unlike [`below_peer_floor`] every author counts, this device's
+/// own included: the room trimmed it and refused the join for it. Empty means the next join would
+/// be served.
+///
+/// ```
+/// use syncmesh_core::event::{PeerId, SeqNum};
+/// use syncmesh_core::rejoin::below_relay_floor;
+/// let a = PeerId::parse(&"aa".repeat(32)).unwrap();
+/// let b = PeerId::parse(&"bb".repeat(32)).unwrap();
+/// let n = |n| SeqNum::parse(n).unwrap();
+/// let below = below_relay_floor(&[(a.clone(), n(1)), (b.clone(), n(7))], &[(a.clone(), n(5)), (b, n(6))]);
+/// assert_eq!(below, vec![(a, n(5))]);
+/// ```
+pub fn below_relay_floor(ours: &[(PeerId, SeqNum)], floor: &[(PeerId, SeqNum)]) -> Cursors {
+    floor
+        .iter()
+        .filter(|(author, seq)| {
+            ours.iter()
+                .find(|(peer, _)| peer == author)
+                .map_or(0, |(_, held)| held.get())
+                < seq.get()
         })
         .cloned()
         .collect()

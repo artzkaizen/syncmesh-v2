@@ -13,6 +13,8 @@ use syncmesh_core::hlc::Hlc;
 use syncmesh_core::record::RowRecord;
 use syncmesh_core::state::State;
 
+use crate::coverage::higher_floor;
+
 /// Per author, the highest sequence below which a peer holds **every** event — the contiguous half
 /// of D13's pair, and the only half anti-entropy can ask a question with.
 pub type Cursors = BTreeMap<PeerId, SeqNum>;
@@ -123,6 +125,13 @@ pub trait EventStore {
     /// Highest local-only sequence number this peer has appended, if any.
     fn last_local_seq(&self, peer: &PeerId) -> Result<Option<SeqNum>, StoreError>;
     fn max_hlc(&self) -> Result<Option<Hlc>, StoreError>;
+    /// Per author, the floor a snapshot install left below this log's own history
+    /// (`EventStore.installedBelow`, gaps U33/U37): rows the state holds with no event here behind
+    /// them. Empty until an install records one. Kept with the log, so it outlives a state store
+    /// that is deleted or replaced, and a rebuild over it refuses instead of dropping those rows.
+    fn installed_below(&self) -> Result<Cursors, StoreError>;
+    /// Raises [`EventStore::installed_below`] to `floor`, per author; never lowers it.
+    fn record_installed(&mut self, floor: &Cursors) -> Result<(), StoreError>;
 }
 
 /// One materialised row on its way to the state store.
@@ -188,6 +197,7 @@ pub fn rows_for(state: &State, keys: &BTreeMap<TableName, BTreeSet<RowKey>>) -> 
 #[derive(Debug, Default)]
 pub struct MemoryEventStore {
     events: BTreeMap<String, StoredEvent>,
+    installed: Cursors,
 }
 
 impl MemoryEventStore {
@@ -272,6 +282,15 @@ impl EventStore for MemoryEventStore {
 
     fn max_hlc(&self) -> Result<Option<Hlc>, StoreError> {
         Ok(self.events.values().map(|e| e.event.hlc).max())
+    }
+
+    fn installed_below(&self) -> Result<Cursors, StoreError> {
+        Ok(self.installed.clone())
+    }
+
+    fn record_installed(&mut self, floor: &Cursors) -> Result<(), StoreError> {
+        self.installed = higher_floor(&self.installed, floor);
+        Ok(())
     }
 }
 

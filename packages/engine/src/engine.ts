@@ -261,7 +261,7 @@ export function createEngine(options: EngineOptions): Engine {
   const purging = { ...held, unhold: coverage.evict, peerId, parked, folds, hasAdapter };
   const compactDeps = { store, stateStore, acks: fleet.acks, ...docPath.compaction };
   const compaction = createCompaction(compactDeps, coverage, boot?.compacted);
-  const snapshots = createSnapshotPath({
+  const snapshots = createSnapshotPath(options, {
     ...held,
     adopt: covered.adoptUnheld,
     // in a turn, so a purge never runs between a snapshot's state commit and its own (D45)
@@ -269,7 +269,6 @@ export function createEngine(options: EngineOptions): Engine {
     persistCoverage: () =>
       turn(() => persistInstall(store, coverage, errors, () => persistCoverage(plain))),
     notify,
-    docs: options.docs,
   });
 
   const repair = createRepairPath({

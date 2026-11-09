@@ -5,10 +5,14 @@
  * Which of a peer's compaction floors a device is below (D46): given this device's own id, its
  * contiguous cursors, the peer's cursors and the floor the peer sent at index 4 of its cursors
  * frame, the authors and floors that send it asking for state. Both runtimes run the same rule.
+ *
+ * `relay` is the same question about a relay's `retention` refusal (gaps U30, U37): given the
+ * cursors this device's next join would send and the floor the refusal named, the floor its issue
+ * names. Non-empty, the link raises it and stops dialling; empty, it dials as for any other close.
  */
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
-import { belowPeerFloor } from "@syncmesh/transport";
+import { belowPeerFloor, belowRelayFloor } from "@syncmesh/transport";
 
 type Pairs = readonly (readonly [string, number])[];
 
@@ -81,6 +85,41 @@ const cases: readonly {
   },
 ];
 
+const relayCases: readonly {
+  readonly description: string;
+  readonly ours: Pairs;
+  readonly floor: Pairs;
+}[] = [
+  { description: "a join below one author's floor", ours: [[A, 1]], floor: [[A, 5]] },
+  {
+    description: "at the floor is not below: the room serves what is above it",
+    ours: [[A, 5]],
+    floor: [[A, 5]],
+  },
+  {
+    description: "an author the join names nothing of is below any floor",
+    ours: [],
+    floor: [[A, 2]],
+  },
+  {
+    description: "this device's own author counts: the room trimmed it too",
+    ours: [[SELF, 1]],
+    floor: [[SELF, 4]],
+  },
+  {
+    description: "only the authors still below, in the floor's order",
+    ours: [
+      [A, 9],
+      [B, 1],
+    ],
+    floor: [
+      [B, 3],
+      [A, 6],
+    ],
+  },
+  { description: "a refusal naming no floor holds nothing", ours: [[A, 1]], floor: [] },
+];
+
 export function rejoinVectors() {
   return {
     self: SELF,
@@ -90,6 +129,12 @@ export function rejoinVectors() {
       theirs,
       floor,
       below: [...belowPeerFloor(SELF, cursors(ours), cursors(theirs), cursors(floor))],
+    })),
+    relay: relayCases.map(({ description, ours, floor }) => ({
+      description,
+      ours,
+      floor,
+      below: [...belowRelayFloor(cursors(ours), cursors(floor))],
     })),
   };
 }

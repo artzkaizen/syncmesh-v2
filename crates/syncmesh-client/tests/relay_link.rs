@@ -1410,6 +1410,39 @@ fn a_blob_put_with_no_live_link_is_said_unsent_at_once() {
     );
 }
 
+/// A put made while the link was down was said unsent, answered, and forgotten: the bytes never
+/// left the device and every other device's fetch came back empty (chaos soak, `--blobs`, seeds 2
+/// and 6; `relay/src/blob-channel.ts`). Kept, it goes out on the next join and the room stores it.
+#[test]
+fn a_blob_put_with_no_live_link_goes_out_on_the_next_join() {
+    let mut net = Net::new(room_with(vec![1, 2], 15_000));
+    let a = net.add(1, v2_options());
+    let bytes = b"put while offline".to_vec();
+    let hash = syncmesh_core::to_hex(&<sha2::Sha256 as sha2::Digest>::digest(&bytes));
+    let actions = net.devices[a]
+        .link
+        .send_blob_put(hash.clone(), blob_put_frame(&hash, &bytes, None));
+    assert_eq!(actions, vec![Action::BlobPutUnsent { hash: hash.clone() }]);
+    net.apply_device(a, actions);
+    assert_eq!(net.room.blob(&hash), None);
+    net.dial(a);
+    assert_eq!(net.room.blob(&hash), Some(bytes.as_slice()));
+    let puts = |net: &Net| {
+        net.devices[a]
+            .sent
+            .iter()
+            .filter(|b| matches!(decode_relay_frame(b), Ok(RelayFrame::BlobPut { .. })))
+            .count()
+    };
+    assert_eq!(puts(&net), 1);
+    // answered: a later session does not send it again
+    net.queue.push_back(Msg::DeviceHungUp { device: a });
+    net.pump();
+    net.advance(1_000);
+    assert!(net.devices[a].socket.is_some(), "redialled");
+    assert_eq!(puts(&net), 1);
+}
+
 /// A room below whose floor this device has fallen still takes what the device hands it before it
 /// hangs up (`relay/src/retention.ts` `refusedBelowFloor`): the refusal used to close at once, so
 /// a device that wrote while away kept those writes until it held the floor, which one that

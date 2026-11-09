@@ -1,11 +1,12 @@
 import type { Cursors, Interest } from "@syncmesh/engine";
 import type { TransportContext } from "@syncmesh/transport";
 
+import { belowRelayFloor } from "@syncmesh/transport";
+
 import type { LinkReport } from "./link-report.js";
 import type { SessionHooks } from "./session.js";
 
 import * as said from "./link-reasons.js";
-import { belowFloor } from "./retention.js";
 import { joinPosition } from "./scoped.js";
 
 /**
@@ -47,12 +48,11 @@ export function createRetained(
 
   const refused = (ctx: TransportContext, roomFloor: Cursors): void => {
     const next = () => joinPosition(ctx, interest, reentitled()).cursors;
-    const held = next();
-    const floor = new Map([...roomFloor].filter(([author, seq]) => (held.get(author) ?? 0) < seq));
+    const floor = belowRelayFloor(next(), roomFloor);
     if (floor.size === 0) return;
     release();
     const check = () => {
-      if (belowFloor(next(), floor)) return;
+      if (belowRelayFloor(next(), floor).size > 0) return;
       release();
       ctx.rejoins?.relayCleared(name);
       dial();

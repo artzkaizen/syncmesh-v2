@@ -6,12 +6,18 @@ import type { PeerId } from "@syncmesh/kernel";
  * A checkpoint is what lets a snapshot stop being provisional (book ch. 4): the authority signs
  * the hash of the rows and the coverage they stand for. The rows are frozen beside the
  * certificate so a port can reproduce the hash and not only check the signature.
+ *
+ * `refused` holds certificates of another format, signed by the same issuer over the same rows:
+ * a version 1 (cells hashed in first-written order, before gaps U34) and a later one. Both
+ * runtimes refuse them as a version they do not verify, never as a match or a mismatch.
  */
 import type { CheckpointRow } from "@syncmesh/wire";
 
 import { parsePartitionKey } from "@syncmesh/kernel";
 import { Temporal } from "@syncmesh/temporal";
 import { bytesToHex, checkpointHash, createIdentity, issueCheckpoint } from "@syncmesh/wire";
+
+import { resignedAsVersion } from "./checkpoint-version.js";
 
 const ISSUER_SEED = Uint8Array.from({ length: 32 }, (_, i) => i + 1);
 const AUTHOR_SEED = Uint8Array.from({ length: 32 }, (_, i) => 200 + i);
@@ -28,11 +34,9 @@ export function checkpointVectors() {
   const author = createIdentity(AUTHOR_SEED).unwrap();
   const stateHash = checkpointHash(ROWS);
   const coverage = new Map<PeerId, number>([[author.peerId, 42]]);
+  const whole = { stateHash, coverage, now: NOW };
   const cases = [
-    {
-      description: "the issuer's whole state",
-      request: { stateHash, coverage, now: NOW },
-    },
+    { description: "the issuer's whole state", request: whole },
     {
       description: "one partition",
       request: { partition: parsePartitionKey("org:acme").unwrap(), stateHash, coverage, now: NOW },
@@ -50,6 +54,12 @@ export function checkpointVectors() {
     vectors: cases.map(({ description, request }) => ({
       description,
       wireHex: bytesToHex(issueCheckpoint(issuer, request)),
+    })),
+    refused: [1, 3].map((version) => ({
+      description:
+        version === 1 ? "version 1: cells hashed in first-written order" : "a later version",
+      version,
+      wireHex: bytesToHex(resignedAsVersion(issuer, issueCheckpoint(issuer, whole), version)),
     })),
   };
 }

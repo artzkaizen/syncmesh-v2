@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use syncmesh_core::envelope::decode_and_verify;
-use syncmesh_core::event::{PeerId, SeqNum};
+use syncmesh_core::event::{PartitionKey, PeerId, SeqNum};
 use syncmesh_core::frames::{
     Frame, cursors_frame, event_frame, grant_frame, grant_request_frame, presence_frame,
 };
@@ -33,6 +33,7 @@ use syncmesh_core::handshake::{
 };
 use syncmesh_core::identity::Identity;
 use syncmesh_core::join_proof::prove_join;
+use syncmesh_core::rejoin::below_relay_floor;
 use syncmesh_core::relay_frames::{
     HANDSHAKE_VERSION, PageScope, RELAY_PROTOCOL_VERSIONS, RelayFrame, decode_relay_frame,
     join_core, join_frame,
@@ -60,6 +61,8 @@ pub const UNSECURED: &str =
 pub const UNPINNED: &str =
     "the relay's hello is signed by a key other than the one this device was told to expect";
 pub const STOPPED: &str = "the link was stopped";
+/// The room refused the join with `retention`, and the link waits instead of redialling (gaps U37).
+pub const RETAINED: &str = "the relay has trimmed its history below this device's cursors, so it waits for state from a peer before dialling that room again";
 pub const WOKEN: &str = "the network changed, so this link is being re-established";
 
 /// What the host is asked to do, or told. `Send`, `Close` and `Redial` are requests; the rest are
@@ -107,6 +110,17 @@ pub enum Action {
     BlobPutUnsent {
         hash: String,
     },
+    /// The room refused the join with `retention` (gaps U30, U37): per author, the floor its next
+    /// join is still below. The link does not redial on the close that follows; it dials again
+    /// once [`RelayLink::on_remote_fold`] finds the floor held, or on [`RelayLink::wake`], and once
+    /// more after its backoff for each new write or carried-in event, to hand it over. Raise
+    /// D46's issue for it: [`crate::Rejoins::relay_refused`] under [`RelayLink::name`].
+    BelowFloor {
+        floor: Cursors,
+    },
+    /// The relay's issue is over — the floor is held (a dial follows), a join was served, or the
+    /// link stopped: [`crate::Rejoins::relay_cleared`].
+    FloorCleared,
     /// Another device spoke through this relay, so the relay demonstrably carries it.
     PeerHeard(PeerId),
     /// Bytes that became nothing, said: a frame this build cannot decode, an event whose
@@ -245,6 +259,16 @@ impl SealedLink {
     }
 }
 
+/// A blob put kept until a relay answers it (`relay/src/blob-channel.ts`): the frame, the
+/// partition its bytes are billed to, and the session it last left on.
+#[derive(Debug)]
+struct KeptPut {
+    hash: String,
+    partition: Option<PartitionKey>,
+    frame: Vec<u8>,
+    sent_in: Option<u64>,
+}
+
 /// One dialed socket's worth of state; gone when the socket is.
 #[derive(Debug)]
 struct Live {
@@ -279,11 +303,21 @@ pub struct RelayLink {
     reentitled: bool,
     online: bool,
     backoff_ms: u64,
+    /// The delay before the last hello reset it, which a `retention` refusal puts back.
+    unsettled_ms: u64,
+    /// After a `retention` refusal, the floor the next join must hold before the link dials again.
+    held: Option<Cursors>,
+    /// Whether a `BelowFloor` was said and no `FloorCleared` since.
+    below: bool,
     heard: BTreeMap<PeerId, i64>,
     /// Every grant wire the host registered, re-sent straight after every join.
     grant_wires: Vec<Vec<u8>>,
     /// Where a grant that arrives is registered before anything beside it folds.
     grants: Option<Arc<Mutex<GrantRegistry>>>,
+    /// Blob puts no relay has answered yet, sent again on every join they have not left on.
+    puts: Vec<KeptPut>,
+    /// Counts the sockets this link has closed; a kept put names the one it left on.
+    session: u64,
 }
 
 impl std::fmt::Debug for RelayLink {
@@ -301,6 +335,7 @@ impl RelayLink {
     pub fn new(identity: Identity, options: RelayOptions) -> RelayLink {
         RelayLink {
             backoff_ms: options.reconnect_ms,
+            unsettled_ms: options.reconnect_ms,
             identity,
             options,
             live: None,
@@ -309,9 +344,13 @@ impl RelayLink {
             repaging: false,
             reentitled: false,
             online: false,
+            held: None,
+            below: false,
             heard: BTreeMap::new(),
             grant_wires: Vec::new(),
             grants: None,
+            puts: Vec::new(),
+            session: 0,
         }
     }
 
@@ -365,6 +404,12 @@ impl RelayLink {
     /// Permanently refused: nothing will be dialled again.
     pub fn is_refused(&self) -> bool {
         self.fatal
+    }
+
+    /// Holding off after a `retention` refusal: a close is not redialled until the floor is held
+    /// or the link is woken.
+    pub fn is_holding(&self) -> bool {
+        self.held.is_some()
     }
 
     pub fn caught_up(&self) -> bool {
@@ -425,16 +470,17 @@ impl RelayLink {
         Vec::new()
     }
 
-    /// The socket closed, for whatever reason. Unless stopped or refused, a redial follows on the
-    /// current backoff, which doubles; a hello resets it.
+    /// The socket closed, for whatever reason. Unless stopped, refused or holding off below a
+    /// relay's floor, a redial follows on the current backoff, which doubles; a hello resets it.
     pub fn on_closed(&mut self, _now_ms: i64) -> Vec<Action> {
         let mut out = Vec::new();
         self.live = None;
+        self.session += 1;
         if self.online {
             self.online = false;
             out.push(Action::Online(false));
         }
-        if self.stopped || self.fatal {
+        if self.stopped || self.fatal || self.held.is_some() {
             return out;
         }
         out.push(self.redial_later());
@@ -479,11 +525,15 @@ impl RelayLink {
     /// at once. Hanging up first matters — after a Wi-Fi drop the old socket is usually not
     /// closed, merely orphaned — and the backoff is reset, because a network that just came back
     /// should not wait out a delay earned while it was gone.
+    ///
+    /// A link holding off below a relay's floor makes one dial: a room still above this device
+    /// refuses it again, and it holds off again.
     pub fn wake(&mut self) -> Vec<Action> {
         let mut out = Vec::new();
         if self.stopped || self.fatal {
             return out;
         }
+        self.held = None;
         self.backoff_ms = self.options.reconnect_ms;
         if self.live.is_none() {
             out.push(Action::Redial { after_ms: 0 });
@@ -493,10 +543,13 @@ impl RelayLink {
         out
     }
 
-    /// Ends the link for good: the socket is closed and nothing is dialled again.
+    /// Ends the link for good: the socket is closed and nothing is dialled again. A relay's issue
+    /// goes with it.
     pub fn stop(&mut self) -> Vec<Action> {
         let mut out = Vec::new();
         self.stopped = true;
+        self.held = None;
+        self.clear_below(&mut out);
         if self.live.take().is_some() {
             out.push(Action::Close {
                 reason: STOPPED.to_owned(),
@@ -625,6 +678,7 @@ impl RelayLink {
                     live.keepalive_ms = Some(keepalive_ms);
                 }
                 self.rearm(now_ms);
+                self.unsettled_ms = self.backoff_ms;
                 self.backoff_ms = self.options.reconnect_ms;
                 self.online = true;
                 out.push(Action::Online(true));
@@ -675,6 +729,8 @@ impl RelayLink {
                     self.send_cursors(engine, out);
                     self.repaging = false;
                     self.reentitled = false;
+                    // the room served a join: whatever floor it named before, it is past
+                    self.clear_below(out);
                     out.push(Action::CaughtUp);
                 }
             }
@@ -688,23 +744,54 @@ impl RelayLink {
             RelayFrame::BlobMissing { hash } => out.push(Action::BlobAnswer { hash, bytes: None }),
             RelayFrame::BlobStored { .. } | RelayFrame::BlobRefused { .. } => {
                 if let Some((hash, refusal)) = put_answer(&frame) {
+                    self.puts.retain(|put| {
+                        put.hash != hash
+                            || refusal
+                                .as_ref()
+                                .is_some_and(|r| r.partition() != put.partition.as_ref())
+                    });
                     out.push(Action::BlobPutAnswer { hash, refusal });
                 }
             }
-            // a `retention` refusal's floor has nowhere to go here: the recovery record (`Rejoins`,
-            // gaps U31) takes peer floors only, so it hangs up and redials on its backoff (gaps U37)
-            RelayFrame::Error { code, message, .. } => {
+            RelayFrame::Error {
+                code,
+                message,
+                floor,
+            } => {
                 if code == "version" {
                     self.fatal = true;
                     out.push(Action::Refused {
                         reason: REFUSED.to_owned(),
                     });
                 }
-                // below the room's floor and served nothing, but still heard: what this device
-                // holds above the cursors the room's hello named goes over before it hangs up
-                // (`relay/src/retention.ts` `refusedBelowFloor`)
                 if code == "retention" {
+                    // below the room's floor and served nothing, but still heard: what this
+                    // device holds above the cursors the room's hello named goes over before it
+                    // hangs up (`relay/src/retention.ts` `refusedBelowFloor`)
                     self.push_outstanding(engine, out);
+                    // the room said hello before it refused, and that hello is not a session:
+                    // the delay it reset is back, so a room that keeps refusing is dialled on a
+                    // delay that doubles (`redial.ts` `refused`)
+                    self.backoff_ms = self.backoff_ms.max(self.unsettled_ms);
+                }
+                // the room serves no state and every redial meets the same refusal: hold off
+                // until this device holds the floor some other way (gaps U37), or has something
+                // new to hand over. A floor the next join already holds, or a relay that names
+                // none, redials as any close does
+                if code == "retention"
+                    && let Some(floor) = floor
+                {
+                    let below = cursors_to_map(&below_relay_floor(
+                        &self.next_join(engine).1,
+                        &floor,
+                    ));
+                    if !below.is_empty() {
+                        self.held = Some(below.clone());
+                        self.below = true;
+                        out.push(Action::BelowFloor { floor: below });
+                        self.hang_up(RETAINED, out);
+                        return;
+                    }
                 }
                 self.hang_up(&format!("{code}: {message}"), out);
             }
@@ -1000,16 +1087,47 @@ impl RelayLink {
     /// interest; the engine dedups on what it has stored, so the repair is complete. Narrowing
     /// keeps the cursor, because a cursor true for a wider slice is true for a smaller one.
     fn ask_from(&mut self, engine: &Engine) -> Vec<(PeerId, SeqNum)> {
+        let (repaging, cursors) = self.next_join(engine);
+        self.repaging = repaging;
+        cursors
+    }
+
+    /// Whether the next join asks from nothing, and the cursors it sends: what [`Self::ask_from`]
+    /// will answer, read without deciding it.
+    fn next_join(&self, engine: &Engine) -> (bool, Vec<(PeerId, SeqNum)>) {
         let coverage = engine.coverage();
-        self.repaging = self.reentitled
+        let repaging = self.reentitled
             || !narrows(
                 self.options.interest.as_ref(),
                 scope_from(coverage.scope.as_deref()).interest.as_ref(),
             );
-        if self.repaging {
+        let cursors = if repaging {
             Vec::new()
         } else {
             cursors_to_pairs(&coverage.synced)
+        };
+        (repaging, cursors)
+    }
+
+    /// Something new to hand over while holding off below a relay's floor (`retained.ts`
+    /// `fresh`): the hold ends without clearing the issue, and the link dials once more after its
+    /// backoff — at once if the socket is already gone, or on the close still to come. The room
+    /// refuses that join again and takes the hand-over, and the refusal holds off again. Holding
+    /// off until the floor was held kept every write after the first refusal off the room on a
+    /// device that reaches the mesh only through it (chaos soak, `--retention`, seed 22).
+    fn fresh(&mut self, out: &mut Vec<Action>) {
+        if self.held.take().is_none() || self.stopped || self.fatal {
+            return;
+        }
+        if self.live.is_none() {
+            out.push(self.redial_later());
+        }
+    }
+
+    /// Says the relay's issue is over, once.
+    fn clear_below(&mut self, out: &mut Vec<Action>) {
+        if std::mem::take(&mut self.below) {
+            out.push(Action::FloorCleared);
         }
     }
 
@@ -1043,6 +1161,30 @@ impl RelayLink {
         for wire in self.grant_wires.clone() {
             self.send_safe(grant_frame(&wire), out);
         }
+        // behind the join and its grants, so a put is answered under the seat they make; a
+        // re-join on the same socket sends nothing twice
+        let session = self.session;
+        let unsent: Vec<(usize, Vec<u8>)> = self
+            .puts
+            .iter()
+            .enumerate()
+            .filter(|(_, put)| put.sent_in != Some(session))
+            .map(|(at, put)| (at, put.frame.clone()))
+            .collect();
+        for (at, frame) in unsent {
+            if self.send_left(frame, out) {
+                self.puts[at].sent_in = Some(session);
+            }
+        }
+    }
+
+    /// Sends like [`Self::send_safe`], and says whether anything left.
+    fn send_left(&mut self, plain: Vec<u8>, out: &mut Vec<Action>) -> bool {
+        let before = out.len();
+        self.send_safe(plain, out);
+        out[before..]
+            .iter()
+            .any(|action| matches!(action, Action::Send(_)))
     }
 
     /// A fresh join from our contiguous position on the same socket — what the host calls when
@@ -1055,8 +1197,15 @@ impl RelayLink {
 
     /// This device wrote something. After catch-up it goes out at once; before, the push after the
     /// last page covers it, since it is already in the store the push reads.
+    ///
+    /// A link holding off below a relay's floor dials once more after its backoff: the room takes
+    /// what a refused device hands over before it hangs up, so the write still reaches it.
     pub fn on_local_write(&mut self, entry: &StoredEvent) -> Vec<Action> {
         let mut out = Vec::new();
+        if self.held.is_some() {
+            self.fresh(&mut out);
+            return out;
+        }
         if !self.caught_up() {
             return out;
         }
@@ -1070,8 +1219,27 @@ impl RelayLink {
     /// what moved it. Saying so alone was the hole — a device that learns an event over
     /// Bluetooth and only reports its new cursor tells the relay that something happened and
     /// never what. Only once caught up; before that the push after the last page covers it.
+    ///
+    /// Also what a host calls after a snapshot install or any other adoption: a link holding off
+    /// below a relay's floor dials again at once when its next join holds it (gaps U37), and
+    /// otherwise once more after its backoff, to hand over what moved.
     pub fn on_remote_fold(&mut self, engine: &Engine) -> Vec<Action> {
         let mut out = Vec::new();
+        if let Some(floor) = &self.held {
+            let floor = cursors_to_pairs(floor);
+            if below_relay_floor(&self.next_join(engine).1, &floor).is_empty() {
+                self.held = None;
+                self.clear_below(&mut out);
+                self.backoff_ms = self.options.reconnect_ms;
+                if self.live.is_none() && !self.stopped && !self.fatal {
+                    out.push(Action::Redial { after_ms: 0 });
+                }
+            } else {
+                // still below, but now carrying a neighbour's events: hand them over
+                self.fresh(&mut out);
+            }
+            return out;
+        }
         if !self.caught_up() {
             return out;
         }
@@ -1115,15 +1283,38 @@ impl RelayLink {
         out
     }
 
-    /// A `blob-put` frame for `hash`, sealed and sent as [`RelayLink::send_raw_frame`] sends one;
-    /// one that cannot leave is said at once ([`Action::BlobPutUnsent`]), so the put that asked
-    /// does not wait out an answer that cannot come.
+    /// A `blob-put` frame for `hash`, sealed and sent as [`RelayLink::send_raw_frame`] sends one,
+    /// and kept until a relay answers it: one whose socket closes first goes again on the next
+    /// join. One that cannot leave now is said at once ([`Action::BlobPutUnsent`]), so the put
+    /// that asked does not wait out an answer that cannot come — and is kept all the same, so the
+    /// next join carries the bytes. Answering such a put and forgetting it acknowledged bytes that
+    /// never left the device (chaos soak, `--blobs`, seeds 2 and 6).
     pub fn send_blob_put(&mut self, hash: String, plain: Vec<u8>) -> Vec<Action> {
-        let mut out = self.send_raw_frame(plain);
-        if !out.iter().any(|action| matches!(action, Action::Send(_))) {
+        let partition = match decode_relay_frame(&plain) {
+            Ok(RelayFrame::BlobPut { partition, .. }) => partition,
+            _ => None,
+        };
+        let mut out = Vec::new();
+        let left = self.send_left(plain.clone(), &mut out);
+        self.puts.push(KeptPut {
+            hash: hash.clone(),
+            partition,
+            frame: plain,
+            sent_in: left.then_some(self.session),
+        });
+        if !left {
             out.push(Action::BlobPutUnsent { hash });
         }
         out
+    }
+
+    /// The put of `hash` waited out its answer. Silence on the socket it left on is a relay that
+    /// predates `blob-stored`: it is let go. One whose socket closed first, or that never left,
+    /// stays for the next join.
+    pub fn blob_put_silent(&mut self, hash: &str) {
+        let (session, live) = (self.session, self.live.is_some());
+        self.puts
+            .retain(|put| put.hash != hash || !live || put.sent_in != Some(session));
     }
 }
 
@@ -1132,7 +1323,9 @@ mod tests {
     use super::*;
     use crate::engine::EngineOptions;
     use crate::store::MemoryEventStore;
-    use syncmesh_core::relay_frames::{challenge_frame, error_frame, hello_frame};
+    use syncmesh_core::relay_frames::{
+        challenge_frame, error_frame, hello_frame, page_frame, retention_error_frame,
+    };
 
     fn identity(n: u8) -> Identity {
         Identity::from_seed(&[n; 32])
@@ -1249,6 +1442,203 @@ mod tests {
         assert!(matches!(out[0], Action::Refused { .. }));
         assert!(matches!(out[1], Action::Close { .. }));
         assert!(link.is_refused());
+    }
+
+    /// A link on a challenging room, answered and joined: what a refusal is read on.
+    fn joined(engine: &mut Engine) -> RelayLink {
+        let mut link = RelayLink::new(
+            identity(1),
+            RelayOptions {
+                versions: vec![2],
+                ..RelayOptions::default()
+            },
+        );
+        link.on_dialed(0);
+        link.on_bytes(engine, &challenge_frame(&[7; 32]), 0);
+        link
+    }
+
+    fn signed_by(author: u8, count: usize) -> Vec<StoredEvent> {
+        let mut writer = self::engine(author);
+        for i in 0..count {
+            let mut row = std::collections::BTreeMap::new();
+            row.insert(
+                "body".to_owned(),
+                syncmesh_core::record::CellValue::text("x"),
+            );
+            writer
+                .mutate(
+                    "notes.create",
+                    vec![syncmesh_core::event::Change::Insert {
+                        table: "notes".into(),
+                        key: format!("k{i}"),
+                        row,
+                    }],
+                    None,
+                )
+                .unwrap();
+        }
+        writer.events_since(&Cursors::new(), None).unwrap()
+    }
+
+    /// Gaps U37: the TypeScript's `retained.ts`, in the sans-IO link.
+    #[test]
+    fn a_retention_refusal_holds_off_until_the_floor_is_held_and_says_so() {
+        let mut engine = engine(1);
+        let author = identity(2).peer_id().clone();
+        let seq = |n| SeqNum::parse(n).unwrap();
+        let mut link = joined(&mut engine);
+        let refusal = retention_error_frame("retention", "below", &[(author.clone(), seq(3))]);
+        let out = link.on_bytes(&mut engine, &refusal, 0);
+        let floor: Cursors = [(author.clone(), seq(3))].into_iter().collect();
+        assert_eq!(
+            out,
+            vec![
+                Action::BelowFloor {
+                    floor: floor.clone()
+                },
+                Action::Close {
+                    reason: RETAINED.to_owned()
+                }
+            ]
+        );
+        assert!(link.is_holding());
+        // no redial on the close: the room would refuse every one the same way
+        assert!(link.on_closed(1).is_empty());
+        // one that brings it to the floor clears the issue and dials at once
+        engine.receive_batch(signed_by(2, 3)).unwrap();
+        assert_eq!(
+            link.on_remote_fold(&engine),
+            vec![Action::FloorCleared, Action::Redial { after_ms: 0 }]
+        );
+        assert!(!link.is_holding());
+        assert!(link.on_remote_fold(&engine).is_empty(), "said once");
+    }
+
+    /// Holding off until the floor was held kept everything written, or carried in, after the
+    /// first refusal off the room for good on a device that reaches the mesh only through it
+    /// (chaos soak, `--retention`, seed 22; `retained.ts` `fresh`).
+    #[test]
+    fn a_write_or_a_fold_below_the_floor_dials_once_more_to_hand_it_over() {
+        let mut engine = engine(1);
+        let author = identity(2).peer_id().clone();
+        let refusal = retention_error_frame(
+            "retention",
+            "below",
+            &[(author.clone(), SeqNum::parse(3).unwrap())],
+        );
+        let mut link = joined(&mut engine);
+        link.on_bytes(&mut engine, &refusal, 0);
+        assert!(link.on_closed(1).is_empty());
+        // a write while held: one dial after the backoff, the issue still raised
+        let wrote = signed_by(1, 1).remove(0);
+        assert_eq!(
+            link.on_local_write(&wrote),
+            vec![Action::Redial { after_ms: 500 }]
+        );
+        assert!(!link.is_holding());
+        assert!(
+            link.on_local_write(&wrote).is_empty(),
+            "one dial, not one per write"
+        );
+        // refused again; a neighbour's events carried in, still below, dial once more
+        link.on_dialed(2);
+        link.on_bytes(&mut engine, &challenge_frame(&[8; 32]), 2);
+        link.on_bytes(&mut engine, &refusal, 2);
+        assert!(link.on_closed(3).is_empty());
+        engine.receive_batch(signed_by(2, 2)).unwrap();
+        assert_eq!(
+            link.on_remote_fold(&engine),
+            vec![Action::Redial { after_ms: 1000 }]
+        );
+    }
+
+    /// The room says hello before it refuses, and the hello reset the backoff: every redial at a
+    /// room that keeps refusing waited the first delay, forever.
+    #[test]
+    fn a_hello_the_room_then_refuses_does_not_reset_the_backoff() {
+        let mut engine = engine(1);
+        let author = identity(2).peer_id().clone();
+        let floor = [(author, SeqNum::parse(3).unwrap())];
+        let mut link = joined(&mut engine);
+        let mut waits = Vec::new();
+        for at in 0..4 {
+            link.on_bytes(&mut engine, &hello_frame(2, 15_000, "e", &[], &[]), at);
+            link.on_bytes(
+                &mut engine,
+                &retention_error_frame("retention", "below", &floor),
+                at,
+            );
+            link.on_closed(at);
+            let wrote = signed_by(1, 1).remove(0);
+            for action in link.on_local_write(&wrote) {
+                if let Action::Redial { after_ms } = action {
+                    waits.push(after_ms);
+                }
+            }
+            link.on_dialed(at);
+            link.on_bytes(&mut engine, &challenge_frame(&[8; 32]), at);
+        }
+        assert_eq!(waits, vec![500, 1000, 2000, 4000]);
+    }
+
+    #[test]
+    fn a_woken_link_dials_once_and_a_served_join_or_a_stop_clears_the_issue() {
+        let mut engine = engine(1);
+        let author = identity(2).peer_id().clone();
+        let refusal = retention_error_frame(
+            "retention",
+            "below",
+            &[(author.clone(), SeqNum::parse(3).unwrap())],
+        );
+        let mut link = joined(&mut engine);
+        link.on_bytes(&mut engine, &refusal, 0);
+        link.on_closed(1);
+        // woken: one dial, and the issue stays until a join is served
+        assert_eq!(link.wake(), vec![Action::Redial { after_ms: 0 }]);
+        assert!(!link.is_holding());
+        link.on_dialed(2);
+        link.on_bytes(&mut engine, &challenge_frame(&[8; 32]), 2);
+        let served = link.on_bytes(&mut engine, &page_frame(&[], &[], false, 0, None), 2);
+        assert!(served.contains(&Action::FloorCleared), "{served:?}");
+        assert!(served.contains(&Action::CaughtUp));
+        // refused again, then stopped: the issue goes with the link
+        link.on_closed(3);
+        link.on_dialed(4);
+        link.on_bytes(&mut engine, &challenge_frame(&[9; 32]), 4);
+        assert!(matches!(
+            link.on_bytes(&mut engine, &refusal, 4)[0],
+            Action::BelowFloor { .. }
+        ));
+        assert!(link.stop().contains(&Action::FloorCleared));
+    }
+
+    #[test]
+    fn a_refusal_the_next_join_already_holds_or_that_names_no_floor_redials_as_any_close() {
+        let mut engine = engine(1);
+        engine.receive_batch(signed_by(2, 3)).unwrap();
+        let author = identity(2).peer_id().clone();
+        let held =
+            retention_error_frame("retention", "below", &[(author, SeqNum::parse(3).unwrap())]);
+        for refusal in [held, error_frame("retention", "below")] {
+            let mut link = joined(&mut engine);
+            let out = link.on_bytes(&mut engine, &refusal, 0);
+            // what the device holds is handed over first, then the close
+            assert_eq!(
+                out.last(),
+                Some(&Action::Close {
+                    reason: "retention: below".to_owned()
+                })
+            );
+            assert!(
+                out[..out.len() - 1]
+                    .iter()
+                    .all(|action| matches!(action, Action::Send(_))),
+                "{out:?}"
+            );
+            assert!(!link.is_holding());
+            assert_eq!(link.on_closed(1), vec![Action::Redial { after_ms: 500 }]);
+        }
     }
 
     #[test]

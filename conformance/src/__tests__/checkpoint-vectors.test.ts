@@ -44,4 +44,14 @@ describe("checkpoint certificate vectors — frozen", () => {
       expect(forged.isErr() && forged.error._tag).toBe("BadCheckpointSignature");
     });
   }
+
+  for (const v of raw.refused) {
+    test(`refused: ${v.description}`, () => {
+      // the issuer's own signature over the same rows: refused as a version, not judged by hash
+      const refused = verifyCheckpoint(hexToBytes(v.wireHex).unwrap(), ISSUER, rows);
+      const error = refused.match({ ok: () => undefined, err: (e) => e });
+      expect(error?._tag).toBe("UnknownCheckpointVersion");
+      expect(error?._tag === "UnknownCheckpointVersion" && error.version).toBe(v.version);
+    });
+  }
 });
