@@ -48,31 +48,57 @@ const SQLITE_STAGED = "syncmesh_staged";
 const sqliteGuardName = (table: TableName, op: (typeof SQLITE_OPS)[number]) =>
   `"_syncmesh_strict.${table}.${op}"`;
 
+/** The staging triggers: one per operation, and `REKEY` for an update that changes the key. */
+const SQLITE_STAGE_TRIGGERS = [...SQLITE_OPS, "REKEY"] as const;
+
 // the same prefix as the refusing triggers, so `guardedTables` finds a staged table too
-const sqliteStageName = (table: TableName, op: (typeof SQLITE_OPS)[number]) =>
-  `"_syncmesh_strict.${table}.stage_${op}"`;
+const sqliteStageName = (table: TableName, trigger: (typeof SQLITE_STAGE_TRIGGERS)[number]) =>
+  `"_syncmesh_strict.${table}.stage_${trigger}"`;
 
-const sqliteUnguard = (table: TableName) =>
-  SQLITE_OPS.flatMap((op) => [
-    `DROP TRIGGER IF EXISTS ${sqliteGuardName(table, op)}`,
-    `DROP TRIGGER IF EXISTS ${sqliteStageName(table, op)}`,
-  ]);
+const sqliteUnstage = (table: TableName) =>
+  SQLITE_STAGE_TRIGGERS.map(
+    (trigger) => `DROP TRIGGER IF EXISTS ${sqliteStageName(table, trigger)}`,
+  );
 
-/** The three triggers that file a staged table's unarmed writes, dropped first so a changed column list replaces them. */
+const sqliteUnguard = (table: TableName) => [
+  ...SQLITE_OPS.map((op) => `DROP TRIGGER IF EXISTS ${sqliteGuardName(table, op)}`),
+  ...sqliteUnstage(table),
+];
+
+/**
+ * The triggers that file a staged table's unarmed writes, dropped first so a changed column list
+ * replaces them. An update that changes the key is filed as a delete of the old key and an insert
+ * of the new one: as an update it would leave the old row in the mesh and a partial one under the
+ * new key.
+ */
 const sqliteStaging = (table: Table, image: Image): readonly string[] => {
   const pk = table.columnNames[table.primaryKey];
   if (pk === undefined) return [];
   const columns = tableColumns(table);
   const key = (alias: "NEW" | "OLD") => `CAST(${alias}.${quote(pk)} AS TEXT)`;
-  const values = {
-    INSERT: `'insert', ${key("NEW")}, NEW."_partition", NULL, ${image(columns, "NEW")}`,
-    UPDATE: `'update', ${key("NEW")}, NEW."_partition", ${image(columns, "OLD")}, ${image(columns, "NEW")}`,
-    DELETE: `'delete', ${key("OLD")}, OLD."_partition", ${image(columns, "OLD")}, NULL`,
+  const rows = {
+    insert: `'insert', ${key("NEW")}, NEW."_partition", NULL, ${image(columns, "NEW")}`,
+    update: `'update', ${key("NEW")}, NEW."_partition", ${image(columns, "OLD")}, ${image(columns, "NEW")}`,
+    delete: `'delete', ${key("OLD")}, OLD."_partition", ${image(columns, "OLD")}, NULL`,
   };
-  return SQLITE_OPS.flatMap((op) => [
-    `DROP TRIGGER IF EXISTS ${sqliteStageName(table.name, op)}`,
-    `CREATE TRIGGER ${sqliteStageName(table.name, op)} AFTER ${op} ON ${quote(table.name)} WHEN ${AT_REST} BEGIN INSERT INTO ${SQLITE_STAGED} (tbl, op, key, part, old, new) VALUES (${literal(table.name)}, ${values[op]}); END`,
-  ]);
+  const same = `OLD.${quote(pk)} IS NEW.${quote(pk)}`;
+  const triggers = {
+    INSERT: ["INSERT", AT_REST, [rows.insert]],
+    UPDATE: ["UPDATE", `${AT_REST} AND ${same}`, [rows.update]],
+    DELETE: ["DELETE", AT_REST, [rows.delete]],
+    REKEY: ["UPDATE", `${AT_REST} AND NOT (${same})`, [rows.delete, rows.insert]],
+  } as const;
+  return SQLITE_STAGE_TRIGGERS.flatMap((trigger) => {
+    const [op, when, filed] = triggers[trigger];
+    const inserts = filed.map(
+      (values) =>
+        `INSERT INTO ${SQLITE_STAGED} (tbl, op, key, part, old, new) VALUES (${literal(table.name)}, ${values});`,
+    );
+    return [
+      `DROP TRIGGER IF EXISTS ${sqliteStageName(table.name, trigger)}`,
+      `CREATE TRIGGER ${sqliteStageName(table.name, trigger)} AFTER ${op} ON ${quote(table.name)} WHEN ${when} BEGIN ${inserts.join(" ")} END`,
+    ];
+  });
 };
 
 /** The SQLite guard, filing staged tables' writes in the image `image` builds. */
@@ -91,14 +117,14 @@ export const sqliteGuard = (image: Image): GuardSql => ({
           ...sqliteStaging(table, image),
         ];
       }
-      return SQLITE_OPS.flatMap((op) => {
-        const name = sqliteGuardName(table.name, op);
-        const refusal = `'syncmesh: ${op} on synced table ${table.name} outside a captured write would diverge from the log; write through the mesh, or open the stores with strict: false'`;
-        return [
-          `DROP TRIGGER IF EXISTS ${sqliteStageName(table.name, op)}`,
-          `CREATE TRIGGER IF NOT EXISTS ${name} BEFORE ${op} ON ${quote(table.name)} WHEN ${AT_REST} BEGIN SELECT RAISE(ABORT, ${refusal}); END`,
-        ];
-      });
+      return [
+        ...sqliteUnstage(table.name),
+        ...SQLITE_OPS.map((op) => {
+          const name = sqliteGuardName(table.name, op);
+          const refusal = `'syncmesh: ${op} on synced table ${table.name} outside a captured write would diverge from the log; write through the mesh, or open the stores with strict: false'`;
+          return `CREATE TRIGGER IF NOT EXISTS ${name} BEFORE ${op} ON ${quote(table.name)} WHEN ${AT_REST} BEGIN SELECT RAISE(ABORT, ${refusal}); END`;
+        }),
+      ];
     }),
   ],
   // 2 is the fold's: the guard lets it by and the capture triggers, which fire on 1, log nothing
@@ -184,9 +210,10 @@ const pgTruncateGuard = (on: string) => [
 ];
 
 /**
- * The function and trigger that file a staged table's unarmed row writes. The function runs as the
- * role that installed it, so a service whose role may write only the table still files its writes
- * — it needs no grant on the `syncmesh` schema, its queue or the queue's sequence.
+ * The function and trigger that file a staged table's unarmed row writes, an update that changes
+ * the key as a delete and an insert. The function runs as the role that installed it, so a service
+ * whose role may write only the table still files its writes — it needs no grant on the
+ * `syncmesh` schema, its queue or the queue's sequence.
  */
 const pgStaging = (table: Table, image: Image): readonly string[] => {
   const pk = table.columnNames[table.primaryKey];
@@ -201,6 +228,9 @@ const pgStaging = (table: Table, image: Image): readonly string[] => {
     BEGIN
       IF ${PG_ARMED} = '0' THEN
         IF TG_OP = 'INSERT' THEN
+          ${file(`'insert', NEW.${quote(pk)}::text, NEW."_partition", NULL, ${image(columns, "NEW")}`)}
+        ELSIF TG_OP = 'UPDATE' AND NEW.${quote(pk)} IS DISTINCT FROM OLD.${quote(pk)} THEN
+          ${file(`'delete', OLD.${quote(pk)}::text, OLD."_partition", ${image(columns, "OLD")}, NULL`)}
           ${file(`'insert', NEW.${quote(pk)}::text, NEW."_partition", NULL, ${image(columns, "NEW")}`)}
         ELSIF TG_OP = 'UPDATE' THEN
           ${file(`'update', NEW.${quote(pk)}::text, NEW."_partition", ${image(columns, "OLD")}, ${image(columns, "NEW")}`)}

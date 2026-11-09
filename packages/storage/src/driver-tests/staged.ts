@@ -75,6 +75,35 @@ const reader = (stream: ChangeStream) => stream.changes[Symbol.asyncIterator]();
 const mark = (n: number) => parseWatermark(String(n).padStart(20, "0")).unwrap();
 const watermark = (n: number) => `commit ${mark(n)}`;
 
+/** An outside update that changes the key: as an update it would leave the old row in the mesh. */
+const rekeyCase = (openDriver: OpenDriver): SuiteCase => ({
+  name: "stage: an outside update that changes a row's key is swept as a delete of the old key and an insert of the new",
+  run: async () => {
+    const driver = await openDriver("stage-rekey");
+    const L = sqlText(driver);
+    (await installCapture(driver, [jobs, counters], { strict: { stage: ["jobs"] } })).unwrap();
+    await asFold(driver, () =>
+      driver.run(
+        `INSERT INTO jobs (id, title, rank, done, "_partition") VALUES ('j1', 'kept', 1, ${L.F}, 'org:acme')`,
+      ),
+    );
+    await driver.run(`UPDATE jobs SET id = 'j9', rank = 2 WHERE id = 'j1'`);
+    equal(await queued(driver), ["jobs delete j1", "jobs insert j9"], "filed as two writes");
+    const stream = await opened(driver).start({ after: null });
+    equal(
+      await nextTransaction(reader(stream)),
+      [
+        "begin",
+        "delete jobs j1",
+        `insert jobs _partition="org:acme" done=false dueAt=null hours=null id="j9" meta=null photo=null rank=2 title="kept"`,
+        watermark(1),
+      ],
+      "the old key gone, the new one whole and in the row's instance",
+    );
+    stream.stop();
+  },
+});
+
 export const stagedCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   {
     name: "stage: an unarmed write to a staged table is filed, not refused; a captured write, the fold's and an unstaged table's are not",
@@ -205,4 +234,5 @@ export const stagedCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
       resumed.stop();
     },
   },
+  rekeyCase(openDriver),
 ];
