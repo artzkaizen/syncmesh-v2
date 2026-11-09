@@ -122,14 +122,21 @@ export interface OperationStore {
     seq: SeqNum,
   ) => Promise<ResultType<readonly VouchRow[], StoreFailure>>;
   /**
-   * Forgets every vouch `holder` made under an incarnation other than `incarnation`: the holder
-   * proved it speaks from that lineage now (a relay room's `hello`, D28 §2), so what it signed out
-   * of a store it lost no longer counts, though it has not signed anything out of the new one yet.
-   * The same withdrawal {@link OperationStore.vouch} makes first, without a receipt to record.
+   * Forgets every vouch `holder` made under an incarnation other than `incarnation`, and every
+   * vouch it made for `author` above `held`: the holder proved it speaks from that lineage now and
+   * holds `author`'s writes through `held` (a relay room's `hello`, D28 §2). What it signed out of
+   * a store it lost no longer counts, though it has not signed anything out of the new one yet;
+   * nor does what it signed out of a log that came back shorter under the same lineage — a
+   * restored backup, a commit the disk lost. The withdrawals {@link OperationStore.vouch} makes
+   * first, without a receipt to record. One transaction where the driver offers one.
+   *
+   * @param held - `author`'s run the holder holds; `undefined` when it holds none of it.
    */
   readonly retireLineages: (
     holder: PeerId,
     incarnation: string,
+    author: PeerId,
+    held: SeqNum | undefined,
   ) => Promise<ResultType<void, StoreFailure>>;
   /**
    * Records one peer's signed refusal of one of this device's writes, replacing that peer's
@@ -283,9 +290,13 @@ export function operationStore(
             ]);
           }),
         ),
-      retireLineages: (holder, incarnation) =>
+      retireLineages: (holder, incarnation, author, held) =>
         write("vouch withdrawal failed", () =>
-          driver.run(sql.deleteStaleVouches, [holder, incarnation]),
+          inTransaction(driver, async () => {
+            await driver.run(sql.deleteStaleVouches, [holder, incarnation]);
+            // a run that holds nothing is a run through 0: every vouch above it goes
+            await driver.run(sql.deleteUnheldVouches, [holder, author, held ?? 0]);
+          }),
         ),
       vouchesOf: (peer, seq) =>
         Result.gen(async function* () {

@@ -97,14 +97,26 @@ describe("operationStore", () => {
     (await store.vouch(C, A, seq(1), "inc-9", 10)).unwrap();
 
     // B said hello from inc-2: what it signed out of inc-1 is gone, and nobody else's vouch is
-    (await store.retireLineages(B, "inc-2")).unwrap();
+    (await store.retireLineages(B, "inc-2", A, seq(1))).unwrap();
     expect((await store.vouchesOf(A, seq(1))).unwrap()).toEqual([
       { holder: C, incarnation: "inc-9", atMs: 10 },
     ]);
     // the lineage it is in now keeps what it signed
     (await store.vouch(B, A, seq(1), "inc-2", 20)).unwrap();
-    (await store.retireLineages(B, "inc-2")).unwrap();
+    (await store.retireLineages(B, "inc-2", A, seq(1))).unwrap();
     expect((await store.vouchesOf(A, seq(1))).unwrap().map((v) => v.holder)).toEqual([C, B]);
+  });
+
+  test("a holder that proves a shorter run under the same lineage stops counting above it", async () => {
+    const { store } = await open();
+    for (const n of [1, 2, 3])
+      (await store.record({ id: `op-${n}`, peer: A, seq: seq(n), label: "l", atMs: n })).unwrap();
+    (await store.vouch(B, A, seq(3), "inc-1", 10)).unwrap();
+    expect((await store.soleCustody()).unwrap()).toEqual([]);
+
+    // B's hello under inc-1 says it holds A through 1: a restored backup, a commit the disk lost
+    (await store.retireLineages(B, "inc-1", A, seq(1))).unwrap();
+    expect((await store.soleCustody()).unwrap().map((op) => op.id)).toEqual(["op-2", "op-3"]);
   });
 
   test("a holder that signs for less withdraws what it signed above it, and a stale one does not", async () => {

@@ -297,6 +297,12 @@ export interface OperationSql {
    * (a purge, D45; a torn log, D39) and it signs for less than it did (D32).
    */
   readonly deleteWithdrawnVouches: string;
+  /**
+   * `holder, author, through_seq`: the vouches a holder signed for `author` above what it proved
+   * it holds now, whenever it signed them — its log came back shorter under the same lineage
+   * (`retireLineages`, D28 §2).
+   */
+  readonly deleteUnheldVouches: string;
   /** `holder, incarnation, at_ms, author, through_seq`: one vouch per op the signature covers. */
   readonly insertVouchesThrough: string;
   /** `holder, incarnation, at_ms` per vouch of one event — `peer, seq`. */

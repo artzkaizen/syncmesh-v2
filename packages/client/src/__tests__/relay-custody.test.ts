@@ -7,7 +7,7 @@ import { Temporal } from "@syncmesh/temporal";
 import { createIdentity, issueGrant, type Identity } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
-import { mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -179,6 +179,60 @@ describe("a relay room that lost its log (D28 §2, U38)", () => {
     } finally {
       await relay.stop();
       for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("a relay room restored from a backup (D28 §2)", () => {
+  test("what it signed past the backup stops counting at its hello, under the same epoch", async () => {
+    const live = mkdtempSync(join(tmpdir(), "syncmesh-relay-restored-"));
+    const backup = mkdtempSync(join(tmpdir(), "syncmesh-relay-backup-"));
+    const relayKey = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 200 + i)).unwrap();
+    const signing = () =>
+      startRelay(0, {
+        dataDir: live,
+        keepaliveMs: 60_000,
+        identity: relayKey,
+        custody: { every: Temporal.Duration.from({ milliseconds: 50 }) },
+      });
+    let relay = await signing();
+    let url = relay.url;
+    try {
+      const a = await open(() => url, deviceA, T0);
+      a.grants.register(grantFor(deviceA, "acct_a", T0)).unwrap();
+      await a.ready();
+      const db = a.on("org:acme").unwrap().db;
+      await db.insert(notes).values({ id: "n1", body: "hello" });
+      const ledger = a.operations ?? panicNoLedger();
+      const sole = async () => (await ledger.soleCustody()).unwrap().length;
+      expect(await until(async () => (await sole()) === 0)).toBe(true);
+
+      // the backup holds the first write and the epoch it was signed under
+      await relay.stop();
+      cpSync(live, backup, { recursive: true });
+      relay = await signing();
+      url = relay.url;
+      await db.insert(notes).values({ id: "n2", body: "again" });
+      expect(await until(async () => (await sole()) === 0)).toBe(true);
+
+      // restored, under the same epoch and a room that signs nothing: only its hello's cursor can
+      // say it no longer holds the second write
+      await relay.stop();
+      relay = await startRelay(0, { dataDir: backup, keepaliveMs: 60_000, identity: relayKey });
+      url = relay.url;
+      expect(await until(async () => (await sole()) === 1)).toBe(true);
+      // SAFETY: this device's second write, so its event is sequence 2 — a branded integer
+      const second = 2 as SeqNum;
+      expect((await ledger.vouchesOf(deviceA.peerId, second)).unwrap()).toEqual([]);
+      // SAFETY: its first, sequence 1, which the restored log still holds
+      const first = 1 as SeqNum;
+      expect((await ledger.vouchesOf(deviceA.peerId, first)).unwrap().map((v) => v.holder)).toEqual(
+        [relay.peerId],
+      );
+      await a.stop();
+    } finally {
+      await relay.stop();
+      for (const dir of [live, backup]) rmSync(dir, { recursive: true, force: true });
     }
   });
 });

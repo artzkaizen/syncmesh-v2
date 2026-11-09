@@ -114,6 +114,11 @@ export interface RelayDurableHost {
  * All three callbacks are load-bearing: `join` is what accepts the socket for hibernation, and
  * `leave` is what takes a closed one out of the room's client table.
  *
+ * The room signs no custody (D28, U38), and there is no option for it: its key is kept in the
+ * object's own SQLite beside the log, so a lost log takes the key with it and what the old key
+ * signed would never be withdrawn. Its acks still answer `synced()`; detach waits for a device's
+ * receipt.
+ *
  * @example
  * export class Relay extends DurableObject<Env> {
  *   #relay = relayDurableHost(this.ctx, { posture: { trust: { issuers: [ISSUER] } } });

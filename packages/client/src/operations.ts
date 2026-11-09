@@ -1,4 +1,4 @@
-import type { Engine, StoreFailure } from "@syncmesh/engine";
+import type { Cursors, Engine, StoreFailure } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
 import type {
@@ -103,10 +103,11 @@ export interface OpenedOperations {
   /** A verified refusal of one of this device's writes (D32), handed to the transports likewise. */
   readonly refused: (refusal: RefusalReceipt) => void;
   /**
-   * A holder proved which lineage of its store it speaks from now (D28 §2): what it signed out of
-   * any other stops counting. Handed to the transports likewise.
+   * A holder proved which lineage of its store it speaks from now and what it holds (D28 §2): what
+   * it signed out of any other, or of this device's writes above `held`, stops counting. Handed to
+   * the transports likewise.
    */
-  readonly relineaged: (holder: PeerId, incarnation: string) => void;
+  readonly relineaged: (holder: PeerId, incarnation: string, held: Cursors) => void;
   /**
    * The store a writer must be given: the caller's rows, plus the notification a local commit
    * owes its listeners. Handing the bare store to a writer instead is how a record lands that
@@ -128,7 +129,7 @@ export interface WiredOperations {
   readonly custody?: {
     readonly onReceipt: (receipt: CustodyReceipt) => void;
     readonly onRefusal: (refusal: RefusalReceipt) => void;
-    readonly onLineage: (holder: PeerId, incarnation: string) => void;
+    readonly onLineage: (holder: PeerId, incarnation: string, held: Cursors) => void;
   };
   readonly stop: () => void;
 }
@@ -282,12 +283,13 @@ export function openOperations(deps: {
   };
 
   /**
-   * A holder's proven lineage, made durable: its vouches out of any other are forgotten, in
-   * arrival order with the vouches themselves, so a receipt that came after the `hello` is kept.
+   * A holder's proven lineage, made durable: its vouches out of any other, and those for this
+   * device's writes above what it holds now, are forgotten, in arrival order with the vouches
+   * themselves, so a receipt that came after the `hello` is kept.
    */
-  const relineaged = (holder: PeerId, incarnation: string): void => {
+  const relineaged = (holder: PeerId, incarnation: string, held: Cursors): void => {
     inOrder(() =>
-      store.retireLineages(holder, incarnation).then((written) => {
+      store.retireLineages(holder, incarnation, self, held.get(self)).then((written) => {
         // evidence, not silence: the holder's stale vouches keep counting until it next signs
         if (written.isErr()) console.warn(`lineage of ${holder} not recorded:`, written.error);
         else changed();
