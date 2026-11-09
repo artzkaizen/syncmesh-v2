@@ -1,5 +1,6 @@
 import type { KeyedRecord } from "@syncmesh/kernel";
 
+import { Result } from "@syncmesh/result";
 import {
   encodeSnapshotPage,
   type PageCheckpoint,
@@ -23,10 +24,15 @@ export interface SnapshotDocs {
    */
   readonly serve: (rows: readonly KeyedRecord[]) => Promise<PageDocs>;
   /**
-   * Installs the checkpoints a whole snapshot carried, after its rows; `true` once this device
-   * holds every one of those documents at least as far as its checkpoint covers.
+   * Installs the checkpoints a whole snapshot carried, after its `rows`; `true` once this device
+   * holds every one of those documents at least as far as its checkpoint covers, and the pages
+   * carried a checkpoint for every document of `rows` that names a lineage. The sender's
+   * `complete` is a claim this checks rather than takes.
    */
-  readonly install: (checkpoints: readonly PageCheckpoint[]) => Promise<boolean>;
+  readonly install: (
+    rows: readonly KeyedRecord[],
+    checkpoints: readonly PageCheckpoint[],
+  ) => Promise<boolean>;
 }
 
 /**
@@ -54,13 +60,16 @@ export function fittedPage(rows: readonly KeyedRecord[], docs: PageDocs): Uint8A
 
 /**
  * The documents follow the rows they are columns of, since a checkpoint is checked against the
- * lineage its row's cell names. Whether this device now holds every document the pages stood
- * for: none were there to hold when the pages were complete and carried no checkpoint.
+ * lineage its row's cell names; the checkpoints of an incomplete page are installed too. Whether
+ * this device now holds every document the pages stood for: pages that said they were incomplete
+ * stand for none, and a device that takes no documents holds none.
  */
-export const installDocs = (docs: SnapshotDocs | undefined, carried: PageDocs): Promise<boolean> =>
-  docs === undefined || carried.checkpoints.length === 0
-    ? Promise.resolve(carried.complete)
-    : docs.install(carried.checkpoints);
+const installDocs = async (
+  docs: SnapshotDocs | undefined,
+  rows: readonly KeyedRecord[],
+  carried: PageDocs,
+): Promise<boolean> =>
+  docs !== undefined && (await docs.install(rows, carried.checkpoints)) && carried.complete;
 
 /**
  * Every checkpoint a snapshot's pages carried, and whether each page said it carried all of its
@@ -70,3 +79,19 @@ export const carriedDocs = (pages: readonly SnapshotPage[], takes: boolean): Pag
   checkpoints: pages.flatMap((page) => [...(page.docs?.checkpoints ?? [])]),
   complete: takes && pages.every((page) => page.docs?.complete === true),
 });
+
+/**
+ * Installs the documents the pages carried, then, when the adoption was `gated` on them and they
+ * all held, runs `adopt`: the coverage after the documents it waited on. `adopt` installs no rows,
+ * so only the store refuses it; nothing to adopt is `Ok(undefined)`.
+ */
+export async function adoptAfterDocs<T, E>(
+  docs: SnapshotDocs | undefined,
+  rows: readonly KeyedRecord[],
+  carried: PageDocs,
+  gated: boolean,
+  adopt: () => Promise<Result<T, E>>,
+): Promise<Result<T | undefined, E>> {
+  const held = await installDocs(docs, rows, carried);
+  return held && gated ? adopt() : Result.ok(undefined);
+}

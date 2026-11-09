@@ -14,7 +14,7 @@ import type { SnapshotDocs } from "./join-docs.js";
 import type { SnapshotFrame } from "./snap-frame.js";
 import type { Withheld } from "./withheld.js";
 
-import { carriedDocs, fittedPage, installDocs } from "./join-docs.js";
+import { adoptAfterDocs, carriedDocs, fittedPage } from "./join-docs.js";
 import { snapAckFrame, snapChunkFrame, snapManifestFrame, snapRequestFrame } from "./snap-frame.js";
 import { servable } from "./withheld.js";
 
@@ -144,6 +144,13 @@ interface Incoming {
   readonly policy: JoinPolicy;
 }
 
+/** The pages of a join that has all of them, in the order the manifest numbered them. */
+const inOrder = (held: Incoming) =>
+  [...Array(held.chunks).keys()].flatMap((i) => {
+    const page = held.pages.get(i);
+    return page === undefined ? [] : [page];
+  });
+
 export interface JoinExchange {
   /**
    * Asks the far side for state instead of history, narrowed to what this device wants.
@@ -264,10 +271,7 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
    * for verification. The history still arrives, still verifies, and merges over the top.
    */
   const complete = async (id: string, held: Incoming): Promise<void> => {
-    const pages = [...Array(held.chunks).keys()].flatMap((i) => {
-      const page = held.pages.get(i);
-      return page === undefined ? [] : [page];
-    });
+    const pages = inOrder(held);
     const rows = pages.flatMap((page) => [...page.rows]);
     const carried = carriedDocs(pages, deps.docs !== undefined);
     const signed = certified(held, rows);
@@ -285,7 +289,10 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
       held.policy.settled?.({ kind: "refused", refused: installed.error });
       return deps.onRefused?.(installed.error);
     }
-    if ((await installDocs(deps.docs, carried)) && gated) await installRows(held, wanted, []);
+    const adoption = await adoptAfterDocs(deps.docs, rows, carried, gated, () =>
+      installRows(held, wanted, []),
+    );
+    if (adoption.isErr()) deps.onRefused?.(adoption.error);
     const plain = { rows: installed.value.rows, provisional: !vouched };
     const report = held.scope === undefined ? plain : { ...plain, scope: held.scope };
     onSnapshot?.(report);

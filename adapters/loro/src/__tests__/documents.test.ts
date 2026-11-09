@@ -1,10 +1,15 @@
 import type { BackgroundError } from "@syncmesh/docs";
 
 import { AdapterMissing, DocPending, HandleInvalidated, UpdateTooLarge } from "@syncmesh/docs";
-import { DocCoverStale } from "@syncmesh/engine";
+import { DocCoverStale, type Cursors } from "@syncmesh/engine";
 import { eventId, hlcOf, parseAdapterId, parseLineageId, parseSeqNum } from "@syncmesh/kernel";
 import { Temporal } from "@syncmesh/temporal";
-import { createJoinExchange, decodeFrame, type JoinExchange } from "@syncmesh/transport";
+import {
+  createJoinExchange,
+  decodeFrame,
+  type JoinExchange,
+  type SnapshotDocs,
+} from "@syncmesh/transport";
 import { signCheckpoint } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import { LoroDoc } from "loro-crdt";
@@ -24,6 +29,7 @@ import {
   linked,
   node,
   type,
+  type Node,
   until,
 } from "./fixtures.js";
 
@@ -222,7 +228,11 @@ describe("loro@1 history: materialise, compact, then a late joiner", () => {
     link.close();
   });
 
-  test("a joiner below the compaction floor is handed the document in the snapshot's pages, and adopts the floor (E30 P5)", async () => {
+  /**
+   * A holder that materialised and compacted the note's document, and the floor it left; with
+   * `replaced`, the document was written whole by a `replace()`, so the row's cell names its lineage.
+   */
+  const compactedHolder = async (replaced = false) => {
     const a = node(15);
     await insertNote(a);
     const da = (await a.documents.open<LoroDoc>(DOC)).unwrap();
@@ -230,7 +240,9 @@ describe("loro@1 history: materialise, compact, then a late joiner", () => {
       type(da.value, body(da.value).length, word);
       (await da.flush()).unwrap();
     }
+    const whole = da.value.export({ mode: "snapshot" });
     (await da.close()).unwrap();
+    if (replaced) (await a.documents.replace(DOC, whole)).unwrap();
     (await a.documents.materialise(DOC)).unwrap();
     const relay = node(44);
     const toRelay = await linked(a, relay);
@@ -242,11 +254,20 @@ describe("loro@1 history: materialise, compact, then a late joiner", () => {
     toRelay.close();
     (await a.engine.compact({ now: Temporal.Now.instant() })).unwrap();
     // the row's insert is gone from the log: no history can bring the row to a joiner now
-    expect((await a.engine.eventsSince(new Map())).unwrap()).toHaveLength(2);
-    const floor = a.engine.coverage().synced;
+    expect((await a.engine.eventsSince(new Map())).unwrap()).toHaveLength(replaced ? 3 : 2);
+    return { a, floor: a.engine.coverage().synced };
+  };
 
-    // two join exchanges back to back, carrying no events: whatever the joiner holds came in pages
-    const c = node(32);
+  /**
+   * Two join exchanges back to back, carrying no events: whatever `c` holds came in pages. The
+   * holder serves its pages through `serve`, its own runtime's when not given.
+   */
+  const joinThroughPages = async (
+    a: Node,
+    c: Node,
+    floor: Cursors,
+    serve: SnapshotDocs["serve"] = a.documents.pages(a.identity).serve,
+  ) => {
     const queue: (() => Promise<void>)[] = [];
     const route = (to: () => JoinExchange) => (_what: string, bytes: Uint8Array) => {
       const frame = decodeFrame(bytes).unwrap();
@@ -258,7 +279,7 @@ describe("loro@1 history: materialise, compact, then a late joiner", () => {
       engine: a.engine,
       send: route(() => joined),
       idPrefix: "a",
-      docs: a.documents.pages(a.identity),
+      docs: { ...a.documents.pages(a.identity), serve },
     });
     const joined: JoinExchange = createJoinExchange({
       engine: c.engine,
@@ -268,6 +289,12 @@ describe("loro@1 history: materialise, compact, then a late joiner", () => {
     });
     joined.requestUnder(undefined, { adoptUnvouched: true, floor });
     while (queue.length > 0) await queue.shift()?.();
+  };
+
+  test("a joiner below the compaction floor is handed the document in the snapshot's pages, and adopts the floor (E30 P5)", async () => {
+    const { a, floor } = await compactedHolder();
+    const c = node(32);
+    await joinThroughPages(a, c, floor);
 
     // the floor adopted, which the rows alone could never earn on a schema with documents (D46)
     expect(c.engine.coverage().synced).toEqual(floor);
@@ -282,6 +309,23 @@ describe("loro@1 history: materialise, compact, then a late joiner", () => {
     await link.flush();
     expect(await until(() => body(dc.value) === "> one two ")).toBe(true);
     link.close();
+  });
+
+  test("a page that claims to be complete but leaves out a document's checkpoint earns no floor (E30 P5)", async () => {
+    const { a, floor } = await compactedHolder(true);
+    const c = node(33);
+    const honest = a.documents.pages(a.identity).serve;
+    // a holder that drops the checkpoints and still says the page carries all of them
+    await joinThroughPages(a, c, floor, async (rows) => ({
+      checkpoints: (await honest(rows)).checkpoints.slice(1),
+      complete: true,
+    }));
+    expect(c.engine.state().get(NOTES)?.size).toBe(1);
+    expect(c.engine.coverage().synced.size).toBe(0);
+    // and the honest pages of the same holder do earn it
+    const d = node(34);
+    await joinThroughPages(a, d, floor);
+    expect(d.engine.coverage().synced).toEqual(floor);
   });
 
   test("a checkpoint is refused when forged, tampered, or of a snapshot that does not reproduce its version", async () => {

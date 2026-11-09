@@ -206,7 +206,7 @@ export function createSnapshotDocs(
   let bound: SnapshotDocs | undefined;
   const late: SnapshotDocs = {
     serve: (rows) => bound?.serve(rows) ?? Promise.resolve({ checkpoints: [], complete: false }),
-    install: (checkpoints) => bound?.install(checkpoints) ?? Promise.resolve(false),
+    install: (rows, checkpoints) => bound?.install(rows, checkpoints) ?? Promise.resolve(false),
   };
   const runs = options !== undefined && docColumns(schema) !== undefined;
   return {

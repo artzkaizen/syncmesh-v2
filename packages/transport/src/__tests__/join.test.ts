@@ -575,7 +575,7 @@ describe("what an install below a floor adopts (D46)", () => {
       const { holderDocs, taken, served } = documented(holder, true);
       const joinerDocs: SnapshotDocs = {
         serve: () => Promise.resolve({ checkpoints: [], complete: false }),
-        install: (checkpoints) => {
+        install: (_rows, checkpoints) => {
           // the rows are in before any document is: a checkpoint is checked against its row
           taken.push({ checkpoints, rows: joiner.engine.state().get(NOTES)?.size ?? 0 });
           return Promise.resolve(true);
@@ -630,7 +630,7 @@ describe("what an install below a floor adopts (D46)", () => {
       const taken: (readonly PageCheckpoint[])[] = [];
       const joinerDocs: SnapshotDocs = {
         serve: () => Promise.resolve({ checkpoints: [], complete: false }),
-        install: (checkpoints) => {
+        install: (_rows, checkpoints) => {
           taken.push(checkpoints);
           return Promise.resolve(true);
         },

@@ -4,6 +4,7 @@ import type { Result } from "@syncmesh/result";
 import type { Identity, PageCheckpoint, PageDocs } from "@syncmesh/wire";
 
 import { docKey } from "@syncmesh/engine";
+import { docLineage } from "@syncmesh/kernel";
 import { decodeCheckpoint } from "@syncmesh/wire";
 
 import type { DocsEngine, ProducedCheckpoint } from "./materialise.js";
@@ -47,8 +48,9 @@ export interface PageDocsDeps {
  * leaves the page `complete: false`.
  *
  * Installing runs each checkpoint through `install` — the full check of {@link installCheckpoint},
- * version re-derived from the bytes — and answers whether every document's head now covers at
- * least what its checkpoint covers, on the lineage it was of. A checkpoint refused because this
+ * version re-derived from the bytes — and answers whether every document of the rows that names a
+ * lineage came with a checkpoint, and every document's head now covers at least what its
+ * checkpoint covers, on the lineage it was of. A checkpoint refused because this
  * device already holds a newer snapshot still counts: the head is past it.
  */
 export function createPageDocs(deps: PageDocsDeps, producer: Identity) {
@@ -78,7 +80,10 @@ export function createPageDocs(deps: PageDocsDeps, producer: Identity) {
         }
       return { checkpoints, complete };
     },
-    install: async (checkpoints: readonly PageCheckpoint[]): Promise<boolean> => {
+    install: async (
+      rows: readonly KeyedRecord[],
+      checkpoints: readonly PageCheckpoint[],
+    ): Promise<boolean> => {
       const claimed = checkpoints.flatMap(({ producer: by, checkpoint, snapshot }) => {
         const decoded = decodeCheckpoint(checkpoint, by);
         return decoded.isOk()
@@ -91,6 +96,15 @@ export function createPageDocs(deps: PageDocsDeps, producer: Identity) {
       }
       const heads = await engine.docHeads();
       if (heads.isErr() || claimed.length < checkpoints.length) return false;
+      // every document a row names a lineage for came with a checkpoint: a page's `complete` is
+      // the sender's word, and one left out would lose the updates a floor removed
+      const carried = new Set(claimed.map(({ claim }) => docKey(claim)));
+      const named = rows.flatMap(({ table, key, record }) =>
+        [...(docs.get(table)?.keys() ?? [])].flatMap((column) =>
+          docLineage(record, column) === undefined ? [] : [docKey({ table, key, column })],
+        ),
+      );
+      if (!named.every((doc) => carried.has(doc))) return false;
       const held = new Map(heads.value.map((head) => [docKey(head), head]));
       return claimed.every(({ claim }) => {
         const head = held.get(docKey(claim));

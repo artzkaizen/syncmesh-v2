@@ -210,7 +210,7 @@ describe("documents through a mesh (RFC-0023 §4.3)", () => {
     const served = paged.snapshotDocs ?? panicked();
     // started before the runtime: nothing to hand, so nothing is claimed
     expect(await served.serve(rows)).toEqual({ checkpoints: [], complete: false });
-    expect(await served.install([])).toBe(false);
+    expect(await served.install(rows, [])).toBe(false);
     const identity = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 46 + i)).unwrap();
     paged.bind(docs, identity);
     const page = await served.serve(rows);
