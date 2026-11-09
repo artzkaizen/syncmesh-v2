@@ -22,6 +22,7 @@ import {
 } from "@syncmesh/relay";
 import { omitUndefined, panic } from "@syncmesh/result";
 import { sqliteEventStore } from "@syncmesh/storage";
+import { Temporal } from "@syncmesh/temporal";
 
 import type { DurableSqlStorage } from "./driver.js";
 import type { DurableWebSocket } from "./socket.js";
@@ -119,6 +120,9 @@ export interface RelayDurableHost {
  * signed would never be withdrawn. Its acks still answer `synced()`; detach waits for a device's
  * receipt.
  *
+ * The room closes when its last socket leaves, keepalive and all, so the platform can hibernate
+ * the object; the next socket opens it again from the same SQLite.
+ *
  * @example
  * export class Relay extends DurableObject<Env> {
  *   #relay = relayDurableHost(this.ctx, { posture: { trust: { issuers: [ISSUER] } } });
@@ -186,12 +190,14 @@ export function relayDurableHost(
       onTelemetry: options.onTelemetry,
       // an object that faces the internet states who reads it (D40): trust, or open on purpose
       posture: hostedPosture(options.posture, [name]),
+      // the room closes on its last release, keepalive and all, so the object can hibernate
+      idleAfter: Temporal.Duration.from({ seconds: 0 }),
     }),
   );
   const limits = { ...DEFAULT_LIMITS, ...options.limits };
   const seats = Math.min(limits.maxConnections, limits.maxRoomConnections);
-  // held for the life of the instance: an object that has woken its sockets is never idle, and
-  // there is no eviction here but the platform's own, which takes the whole instance with it
+  // held while the object has a socket: the last one to leave releases it, which closes the room
+  // and stops its keepalive, so the platform can hibernate the object; the next socket opens it again
   let opening: Promise<HeldRoom> | undefined;
 
   /**
@@ -282,6 +288,12 @@ export function relayDurableHost(
       live.delete(ws);
       resume.forget(ws);
       conn?.closed();
+      // the last socket gone: a room left open would tick its keepalive and keep the object awake
+      const others = ctx.getWebSockets().some((other) => other !== ws);
+      if (live.size > 0 || others || opening === undefined) return;
+      const held = opening;
+      opening = undefined;
+      void held.then((room) => room.release());
     },
   };
 }

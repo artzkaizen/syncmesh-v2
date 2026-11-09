@@ -53,6 +53,7 @@
         "@syncmesh/relay": "workspace:*",
         "@syncmesh/result": "workspace:*",
         "@syncmesh/storage": "workspace:*",
+        "@syncmesh/temporal": "workspace:*",
         "@syncmesh/wire": "workspace:*",
       },
       "devDependencies": {
@@ -61,7 +62,6 @@
         "@syncmesh/engine": "workspace:*",
         "@syncmesh/schema": "workspace:*",
         "@syncmesh/sqlite-bun": "workspace:*",
-        "@syncmesh/temporal": "workspace:*",
         "@syncmesh/transport": "workspace:*",
         "@types/bun": "catalog:",
         "drizzle-orm": "catalog:",
