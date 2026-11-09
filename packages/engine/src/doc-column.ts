@@ -4,7 +4,7 @@ import { Result } from "@syncmesh/result";
 
 import type { DocAddress, DocStore } from "./doc-log.js";
 import type { FoldBatch, FoldSource } from "./fold.js";
-import type { DocColumnBytes } from "./state-store.js";
+import type { DocColumnBytes, RowWrite } from "./state-store.js";
 import type { StoreFailure } from "./store.js";
 
 import { docKey } from "./doc-log.js";
@@ -44,6 +44,17 @@ export function docsReseated(batch: FoldBatch, docs: DocColumns | undefined): Do
     if (batch.writeKeys.get(entry.table)?.has(entry.key) === true)
       add({ table: entry.table, key: entry.key, column: entry.column });
   return [...out.values()];
+}
+
+/**
+ * Each document column of `rows`: what a boot that committed them writes afresh, because the
+ * commit projects rows without their documents' bytes and a rebuilt state starts with none.
+ */
+export function rowDocs(rows: readonly RowWrite[], docs: DocColumns | undefined): DocAddress[] {
+  if (docs === undefined || docs.size === 0) return [];
+  return rows.flatMap(({ table, key }) =>
+    [...(docs.get(table)?.keys() ?? [])].map((column) => ({ table, key, column })),
+  );
 }
 
 /**

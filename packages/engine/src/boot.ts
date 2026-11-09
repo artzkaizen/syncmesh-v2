@@ -10,11 +10,12 @@ import {
 import { Result } from "@syncmesh/result";
 
 import type { Engine, EngineOptions } from "./engine.js";
-import type { StateStore } from "./state-store.js";
+import type { RowWrite, StateStore } from "./state-store.js";
 import type { EventStore, StoreFailure, StoredEvent } from "./store.js";
 import type { Coverage, Cursors } from "./sync.js";
 
 import { heldBelowCursors } from "./coverage.js";
+import { docColumnWrites, rowDocs } from "./doc-column.js";
 import { docAppends, recordDocs } from "./doc-log.js";
 import { createEngine } from "./engine.js";
 import { StateCorrupt, allRows, rowWrites, eventWriteKeys } from "./state-store.js";
@@ -29,6 +30,26 @@ const docTables = (state: State, docs: DocColumns): State =>
       return records === undefined ? [] : [[table, records] as const];
     }),
   );
+
+/**
+ * Writes the document columns of the rows a boot committed: the commit projects rows without their
+ * documents' bytes, so a rebuilt state, or a row the replayed tail wrote, takes its column back
+ * from the snapshot held of the winning lineage (RFC-0023 §6.1).
+ */
+function restoreDocColumns(
+  { docStore, docs }: Pick<EngineOptions, "docStore" | "docs">,
+  stateStore: StateStore,
+  state: State,
+  rows: readonly RowWrite[],
+): Promise<Result<void, StoreFailure>> {
+  const reseated = rowDocs(rows, docs);
+  const write = stateStore.writeDocColumns;
+  if (docStore === undefined || write === undefined || reseated.length === 0)
+    return Promise.resolve(Result.ok(undefined));
+  return docColumnWrites(docStore, reseated, (doc) =>
+    docLineage(getRecord(state, doc.table, doc.key), doc.column),
+  ).then((writes) => (writes.isOk() ? write(writes.value) : writes));
+}
 
 /** What `createEngine` starts from: persisted state, what it covers, and the log tail above it. */
 export interface Boot {
@@ -95,6 +116,7 @@ export function openEngine(
           : rowWrites(engine.state(), eventWriteKeys(replay.map((entry) => entry.event)));
       if (cached === undefined || rows.length > 0)
         yield* Result.await(stateStore.commit(rows, engine.coverage()));
+      yield* Result.await(restoreDocColumns(options, stateStore, engine.state(), rows));
     }
     // the replayed tail's doc entries, for a log that was appended outside a transaction with them;
     // a re-append of what is already there is a no-op, so an atomic store loses nothing by it

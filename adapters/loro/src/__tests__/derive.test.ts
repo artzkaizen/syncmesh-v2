@@ -734,6 +734,35 @@ describe("the document column holds the snapshot (RFC-0023 §6.1)", () => {
     const rows = (await b.driver.all(`SELECT id FROM notes`)).length;
     expect(rows).toBe(1);
   });
+
+  test("a state rebuilt from the log takes its columns back from the held snapshots", async () => {
+    // the app below clears the state file outside syncmesh, which strict capture would refuse (U5)
+    const a = await storedNode(68, { strict: false });
+    await insertNote(a);
+    const doc = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(doc.value, "Rebuilt", "x");
+    (await doc.close()).unwrap();
+    (await a.documents.materialise(DOC)).unwrap();
+    const held = (await a.stores.docs.snapshotOf(DOC)).unwrap();
+    a.documents.stop();
+    // a state file thrown away: boot refolds the rows from the log, and the snapshot is still held
+    (await a.stores.state.clear()).unwrap();
+    (
+      await openEngine({
+        peerId: a.identity.peerId,
+        clock: createHlcClock({ now: a.now }),
+        store: a.stores.events,
+        stateStore: a.stores.state,
+        docStore: a.stores.docs,
+        atomic: a.stores.atomic,
+        validate: createValidator({ schema, grantFor: null, docs: DOCS }),
+        docs: DOCS,
+        docAdapters: new Set([LORO_ID]),
+      })
+    ).unwrap();
+    expect(await column(a)).toEqual(held?.bytes ?? null);
+    expect(read(await column(a))).toBe("Rebuilt");
+  });
 });
 
 describe("an opaque host takes derived values from a device checkpoint (RFC-0023 §7.2)", () => {
