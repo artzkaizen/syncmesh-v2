@@ -176,6 +176,8 @@ export interface DocBindings {
   /** Writes a cover's derived values into the row, inside its transaction (RFC-0023 §16.4). */
   readonly derive: FoldPath["derive"];
   readonly notifyDerived: FoldPath["notifyDerived"];
+  /** Writes a cover's snapshot into the row's document column, inside its transaction (§6.1). */
+  readonly writeDocColumns: FoldPath["writeDocColumns"];
 }
 
 type DocOptions = DocEngineOptions & { readonly merge?: MergeSpec | undefined };
@@ -257,6 +259,12 @@ export function createDocPath(
                   const store = scoped.docs ?? docStore;
                   const done = await coverIfCurrent(store, bindings(), doc, cover);
                   if (done.isErr()) return Result.err(done.error);
+                  // the app's column holds what the head now covers (RFC-0023 §6.1)
+                  const { table, key, column } = doc;
+                  await bindings().writeDocColumns(
+                    [{ table, key, column, bytes: cover.snapshot }],
+                    scoped,
+                  );
                   // a tail entry folded since the snapshot was read is newer than its values
                   const whole = orThrow(
                     await coversTail(store, doc, cover.lineage, cover.derivedIncludes),

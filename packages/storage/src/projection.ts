@@ -1,4 +1,4 @@
-import type { DerivedRow, RowWrite, WriteKeys } from "@syncmesh/engine";
+import type { DerivedRow, DocColumnBytes, RowWrite, WriteKeys } from "@syncmesh/engine";
 import type { Table } from "@syncmesh/schema";
 
 import { counterValue, isVisible } from "@syncmesh/kernel";
@@ -21,6 +21,12 @@ export interface Projection {
    * derive are not written.
    */
   readonly derive: (rows: readonly DerivedRow[]) => Promise<void>;
+  /**
+   * Sets document columns to their snapshot bytes (RFC-0023 §6.1), or `NULL` where none is held,
+   * guard at rest: an `UPDATE` of the existing row, so a row the fold has not written yet is left
+   * alone. A column the table does not declare as a document is not written.
+   */
+  readonly writeDocColumns: (writes: readonly DocColumnBytes[]) => Promise<void>;
   readonly clear: () => Promise<void>;
   /** Deletes these rows from the app's tables and their sync state, as a purge does (D45). */
   readonly remove: (keys: WriteKeys) => Promise<void>;
@@ -77,7 +83,15 @@ export function tablesProjection(
           .filter(([, , column]) => column.def.derived !== undefined)
           .map(([, name, column]) => [name, column] as const),
       );
-      return [String(table.name), { columns, upsert, remove, key, derived }] as const;
+      const documents = new Map(
+        tableColumns(table)
+          .filter(([, , column]) => column.def.doc !== undefined)
+          .map(([, name, column]) => [
+            name,
+            `UPDATE ${quote(table.name)} SET ${quote(name)} = ${dialect.placeholder(1, column.def.kind)} WHERE ${key} = ${dialect.placeholder(2)}`,
+          ]),
+      );
+      return [String(table.name), { columns, upsert, remove, key, derived, documents }] as const;
     }),
   );
   const rowSync = options.rowSync;
@@ -122,6 +136,12 @@ export function tablesProjection(
         );
       }
     },
+    writeDocColumns: async (writes) => {
+      for (const { table, key, column, bytes } of writes) {
+        const update = statements.get(String(table))?.documents.get(column);
+        if (update !== undefined) await driver.run(update, [bytes ?? null, String(key)]);
+      }
+    },
     clear: async () => {
       await rowSync?.clear();
       for (const table of byName.values()) await driver.run(`DELETE FROM ${quote(table.name)}`);
@@ -139,6 +159,7 @@ export function tablesProjection(
   return {
     apply: (rows) => folding(driver, () => projection.apply(rows)),
     derive: (rows) => folding(driver, () => projection.derive(rows)),
+    writeDocColumns: (writes) => folding(driver, () => projection.writeDocColumns(writes)),
     clear: () => folding(driver, () => projection.clear()),
     remove: (keys) => folding(driver, () => projection.remove(keys)),
     prepare: async () => {

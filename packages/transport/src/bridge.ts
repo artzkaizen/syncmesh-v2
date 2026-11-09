@@ -11,6 +11,7 @@ import type { CustodyDeps } from "./custody.js";
 import type { Divergence } from "./divergence.js";
 import type { FrameClass } from "./frame-parts.js";
 import type { CursorsFrame } from "./frame.js";
+import type { SnapshotDocs } from "./join-docs.js";
 import type { SnapshotInstalled } from "./join.js";
 import type { FrameLink } from "./link.js";
 import type { BridgeError } from "./outbound.js";
@@ -78,6 +79,8 @@ export interface BridgeOptions {
   readonly rowsPerChunk?: number;
   /** This device's checkpoint certificate, relayed with any state it sends (book ch. 4). */
   readonly certificate?: () => Uint8Array | undefined;
+  /** The documents behind a snapshot's rows, served and installed as checkpoints (E30 P5). */
+  readonly snapshotDocs?: SnapshotDocs;
   /**
    * This device's storage lineage, for the custody receipts it signs (book ch. 10). A device
    * that lost its database and rebuilt announces a fresh one, so an author can tell "still

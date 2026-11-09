@@ -16,7 +16,7 @@ export { OPLOG_ID, append, oplog, values } from "./oplog.js";
 
 /** One property an adapter broke, and how. */
 export interface AdapterFailure {
-  /** Which property: `converges`, `idempotent`, `pending`, `snapshot`, `since`, `total`, `watchLocal`, `empty`. */
+  /** Which property: `converges`, `idempotent`, `pending`, `snapshot`, `since`, `total`, `watchLocal`, `empty`, `compensate`. */
   readonly check: string;
   readonly message: string;
 }
@@ -78,6 +78,8 @@ interface Suite<D> {
   readonly edit: (doc: D) => Uint8Array | undefined;
   /** The next edit number, used once. */
   readonly next: () => number;
+  /** A replica id no document of the run has, for an update the suite asks the adapter to make. */
+  readonly replica: () => bigint;
 }
 
 /**
@@ -209,6 +211,48 @@ function watchLocal<D>(suite: Suite<D>) {
 }
 
 /**
+ * A write taken back and given again (RFC-0023 §9): compensating an edit reads like the document
+ * before it, compensating it a second time finds nothing standing, compensating the compensation
+ * reads like the document with it again, and foreign bytes are a value.
+ */
+function compensates<D>(suite: Suite<D>) {
+  const { adapter, fail, guarded, fresh, script, edit } = suite;
+  const doc = fresh();
+  if (edit(doc) === undefined) return;
+  const without = script.read(doc);
+  const action = edit(doc);
+  if (action === undefined) return;
+  const withIt = script.read(doc);
+  const undo = guarded("compensate", "compensate", () =>
+    adapter.compensate(doc, [action], suite.replica()),
+  );
+  const taken = undo?.isOk() === true ? undo.value : undefined;
+  if (taken === undefined)
+    return fail("compensate", "an edit that still shows was not compensated");
+  adapter.apply(doc, [taken]);
+  if (script.read(doc) !== without)
+    fail("compensate", "the document does not read as it did before the compensated edit");
+  const twice = guarded("compensate", "compensate", () =>
+    adapter.compensate(doc, [action], suite.replica()),
+  );
+  if (twice?.isOk() === true && twice.value !== undefined)
+    fail("compensate", "an edit already taken back was compensated again");
+  const redo = guarded("compensate", "compensate", () =>
+    adapter.compensate(doc, [taken], suite.replica()),
+  );
+  if (redo?.isOk() !== true || redo.value === undefined)
+    return fail("compensate", "a compensation was not itself compensated (redo)");
+  adapter.apply(doc, [redo.value]);
+  if (script.read(doc) !== withIt)
+    fail("compensate", "compensating the compensation does not give the edit back");
+  for (const bytes of NOISE)
+    guarded("compensate", "compensate of foreign bytes", () =>
+      adapter.compensate(doc, [bytes], suite.replica()),
+    );
+  return undefined;
+}
+
+/**
  * Checks `adapter` against the SPI's properties, with `script` to edit and read its documents:
  *
  * - **converges** — three replicas edit concurrently, two of them after importing another's
@@ -223,6 +267,9 @@ function watchLocal<D>(suite: Suite<D>) {
  * - **total** — no bytes, noise, truncations or flipped bits make an import throw.
  * - **watchLocal** — a local commit calls the listener, and a stopped one is never called again.
  * - **empty** — two empty documents of different replicas have one version.
+ * - **compensate** — compensating an edit reads like the document before it, a second time finds
+ *   nothing standing, compensating the compensation gives the edit back (redo), and foreign
+ *   bytes are a value.
  *
  * Every member call is checked for a throw, which is a failure of its own: the SPI is total.
  *
@@ -252,6 +299,7 @@ export function checkAdapter<D>(
     },
     fresh: () => adapter.create((replica += 1n)),
     next: () => (edits += 1),
+    replica: () => (replica += 1n),
     edit: (doc) => {
       const before = adapter.version(doc);
       script.edit(doc, (edits += 1));
@@ -269,6 +317,7 @@ export function checkAdapter<D>(
   since(suite, made.updates, full);
   total(suite, made.updates);
   watchLocal(suite);
+  compensates(suite);
   if (!bytesEqual(adapter.version(suite.fresh()), adapter.version(suite.fresh())))
     fail("empty", "two empty documents have different versions");
   return failures.length === 0 ? Result.ok(undefined) : refused(adapter, failures);

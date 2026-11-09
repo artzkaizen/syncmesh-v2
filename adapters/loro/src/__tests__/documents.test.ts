@@ -1,10 +1,18 @@
 import type { BackgroundError } from "@syncmesh/docs";
 
 import { AdapterMissing, DocPending, HandleInvalidated, UpdateTooLarge } from "@syncmesh/docs";
-import { DocCoverStale } from "@syncmesh/engine";
+import { DocCoverStale, PolicyDenied, type Cursors, type Validator } from "@syncmesh/engine";
 import { eventId, hlcOf, parseAdapterId, parseLineageId, parseSeqNum } from "@syncmesh/kernel";
+import { seed } from "@syncmesh/kernel/test-fixtures";
+import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
-import { signCheckpoint } from "@syncmesh/wire";
+import {
+  createJoinExchange,
+  decodeFrame,
+  type JoinExchange,
+  type SnapshotDocs,
+} from "@syncmesh/transport";
+import { createIdentity, decodeCheckpoint, signCheckpoint } from "@syncmesh/wire";
 import { describe, expect, test } from "bun:test";
 import { LoroDoc } from "loro-crdt";
 
@@ -23,7 +31,9 @@ import {
   linked,
   node,
   type,
+  type Node,
   until,
+  validate,
 } from "./fixtures.js";
 
 describe("loro@1 through the engine: open, flush, fold, converge", () => {
@@ -129,6 +139,46 @@ describe("loro@1 handles: opens that race a read of the log", () => {
   });
 });
 
+describe("loro@1 undo: a revert takes an edit back and keeps everyone else's (RFC-0023 §9, E30 P6)", () => {
+  test("an edit is reverted under a colleague's later edits, and both devices read the same", async () => {
+    const a = node(16, { undoDepth: 8 });
+    const b = node(17, { undoDepth: 8 });
+    await insertNote(a);
+    const link = await linked(a, b);
+    const da = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(da.value, 0, "Hello");
+    (await da.flush()).unwrap();
+    type(da.value, 5, " world");
+    da.value.getMap("meta").set("tone", "warm");
+    da.value.commit();
+    const action = (await da.flush()).unwrap();
+    await link.flush();
+    // b edits after a's, around it: before it and after it
+    const db = (await b.documents.open<LoroDoc>(DOC)).unwrap();
+    expect(await until(() => body(db.value) === "Hello world")).toBe(true);
+    type(db.value, 0, "> ");
+    type(db.value, body(db.value).length, "!");
+    (await db.flush()).unwrap();
+    await link.flush();
+    expect(await until(() => body(da.value) === "> Hello world!")).toBe(true);
+
+    const reverted = (await a.documents.revert(action?.id ?? panicked())).unwrap();
+    expect(reverted.skipped).toEqual([]);
+    expect(await until(() => body(da.value) === "> Hello!")).toBe(true);
+    expect(da.value.getMap("meta").get("tone")).toBeUndefined();
+    await link.flush();
+    expect(await until(() => body(db.value) === "> Hello!")).toBe(true);
+
+    // the revert is a write of its own: reverting it gives the edit back
+    (await a.documents.revert(reverted.event?.id ?? panicked())).unwrap();
+    expect(await until(() => body(da.value) === "> Hello world!")).toBe(true);
+    expect(da.value.getMap("meta").get("tone")).toBe("warm");
+    (await da.close()).unwrap();
+    (await db.close()).unwrap();
+    link.close();
+  });
+});
+
 describe("loro@1 history: materialise, compact, then a late joiner", () => {
   test("past the history bound the tail is materialised, compaction takes its events, and a joiner installs the checkpoint", async () => {
     const a = node(13, { limits: { snapshotEvery: 3 } });
@@ -179,6 +229,134 @@ describe("loro@1 history: materialise, compact, then a late joiner", () => {
     const dc = (await c.documents.open<LoroDoc>(DOC)).unwrap();
     expect(await until(() => body(dc.value) === "> one two three four ")).toBe(true);
     link.close();
+  });
+
+  /**
+   * A holder that materialised and compacted the note's document, and the floor it left; with
+   * `replaced`, the document was written whole by a `replace()`, so the row's cell names its lineage.
+   */
+  const compactedHolder = async (replaced = false) => {
+    const a = node(15);
+    await insertNote(a);
+    const da = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    for (const word of ["one ", "two "]) {
+      type(da.value, body(da.value).length, word);
+      (await da.flush()).unwrap();
+    }
+    const whole = da.value.export({ mode: "snapshot" });
+    (await da.close()).unwrap();
+    if (replaced) (await a.documents.replace(DOC, whole)).unwrap();
+    (await a.documents.materialise(DOC)).unwrap();
+    const relay = node(44);
+    const toRelay = await linked(a, relay);
+    a.engine.acknowledge(
+      relay.engine.peerId,
+      relay.engine.coverage().synced,
+      Temporal.Now.instant(),
+    );
+    toRelay.close();
+    (await a.engine.compact({ now: Temporal.Now.instant() })).unwrap();
+    // the row's insert is gone from the log: no history can bring the row to a joiner now
+    expect((await a.engine.eventsSince(new Map())).unwrap()).toHaveLength(replaced ? 3 : 2);
+    return { a, floor: a.engine.coverage().synced };
+  };
+
+  /**
+   * Two join exchanges back to back, carrying no events: whatever `c` holds came in pages. The
+   * holder serves its pages through `serve`, its own runtime's when not given.
+   */
+  const joinThroughPages = async (
+    a: Node,
+    c: Node,
+    floor: Cursors,
+    serve: SnapshotDocs["serve"] = a.documents.pages(a.identity).serve,
+  ) => {
+    const queue: (() => Promise<void>)[] = [];
+    const route = (to: () => JoinExchange) => (_what: string, bytes: Uint8Array) => {
+      const frame = decodeFrame(bytes).unwrap();
+      if (frame.kind.startsWith("snap-"))
+        // SAFETY: a frame whose kind starts with "snap-" is a SnapshotFrame (`dispatch.ts`)
+        queue.push(() => to().dispatch(frame as Parameters<JoinExchange["dispatch"]>[0]));
+    };
+    const held: JoinExchange = createJoinExchange({
+      engine: a.engine,
+      send: route(() => joined),
+      idPrefix: "a",
+      docs: { ...a.documents.pages(a.identity), serve },
+    });
+    const joined: JoinExchange = createJoinExchange({
+      engine: c.engine,
+      send: route(() => held),
+      idPrefix: "c",
+      docs: c.documents.pages(c.identity),
+    });
+    joined.requestUnder(undefined, { adoptUnvouched: true, floor });
+    while (queue.length > 0) await queue.shift()?.();
+  };
+
+  test("a joiner below the compaction floor is handed the document in the snapshot's pages, and adopts the floor (E30 P5)", async () => {
+    const { a, floor } = await compactedHolder();
+    const c = node(32);
+    await joinThroughPages(a, c, floor);
+
+    // the floor adopted, which the rows alone could never earn on a schema with documents (D46)
+    expect(c.engine.coverage().synced).toEqual(floor);
+    expect((await c.engine.docLog()).unwrap()).toEqual([]);
+    const dc = (await c.documents.open<LoroDoc>(DOC)).unwrap();
+    expect(body(dc.value)).toBe("one two ");
+    // and an edit above the floor arrives as history, on top of the snapshot
+    const link = await linked(a, c);
+    const again = (await a.documents.open<LoroDoc>(DOC)).unwrap();
+    type(again.value, 0, "> ");
+    (await again.flush()).unwrap();
+    await link.flush();
+    expect(await until(() => body(dc.value) === "> one two ")).toBe(true);
+    link.close();
+  });
+
+  test("a page that claims to be complete but leaves out a document's checkpoint earns no floor (E30 P5)", async () => {
+    const { a, floor } = await compactedHolder(true);
+    const c = node(33);
+    const honest = a.documents.pages(a.identity).serve;
+    // a holder that drops the checkpoints and still says the page carries all of them
+    await joinThroughPages(a, c, floor, async (rows) => ({
+      checkpoints: (await honest(rows)).checkpoints.slice(1),
+      complete: true,
+    }));
+    expect(c.engine.state().get(NOTES)?.size).toBe(1);
+    expect(c.engine.coverage().synced.size).toBe(0);
+    // and the honest pages of the same holder do earn it
+    const d = node(34);
+    await joinThroughPages(a, d, floor);
+    expect(d.engine.coverage().synced).toEqual(floor);
+  });
+
+  test("a checkpoint signed by a producer that may not edit the row earns no floor (E30 P5)", async () => {
+    const { a, floor } = await compactedHolder();
+    const reader = createIdentity(seed(98)).unwrap();
+    // the joiner's rules: the reader holds the partition, but its grant edits nothing
+    const readOnly: Validator = {
+      validate: (event, before) =>
+        event.peerId === reader.peerId
+          ? Result.err(
+              new PolicyDenied({ table: "notes", key: "n1", op: "update", message: "a reader" }),
+            )
+          : validate.validate(event, before),
+    };
+    const c = node(35, { validate: readOnly });
+    const honest = a.documents.pages(a.identity).serve;
+    // the holder's own checkpoints, signed again by the reader as if it had made them
+    await joinThroughPages(a, c, floor, async (rows) => {
+      const served = await honest(rows);
+      const checkpoints = served.checkpoints.map((entry) => {
+        const core = decodeCheckpoint(entry.checkpoint, entry.producer).unwrap().checkpoint;
+        return { ...entry, producer: reader.peerId, checkpoint: signCheckpoint(core, reader).wire };
+      });
+      return { ...served, checkpoints };
+    });
+    expect(c.engine.state().get(NOTES)?.size).toBe(1);
+    expect(c.engine.coverage().synced.size).toBe(0);
+    expect((await c.engine.docHeads()).unwrap()).toEqual([]);
   });
 
   test("a checkpoint is refused when forged, tampered, or of a snapshot that does not reproduce its version", async () => {
@@ -645,3 +823,7 @@ describe("loro@1 materialisations never cover what their snapshot lacks", () => 
     expect((await a.documents.open<LoroDoc>(DOC)).unwrap().status()).toBe("behind");
   });
 });
+
+const panicked = (): never => {
+  throw new Error("expected a value");
+};

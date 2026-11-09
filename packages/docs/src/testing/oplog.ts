@@ -6,6 +6,10 @@
  * runtime and its conformance suite with, and what a layer above it (a client, a hook) can test
  * documents with, with no CRDT library in the loop. Not for app data: it never compacts.
  *
+ * An operation may retract others (`x`): its value is empty and it hides the ones it names, while
+ * it is not itself retracted. That is what `compensate` writes, so an undo, and a redo that
+ * retracts the undo, are operations like any other.
+ *
  * @module
  */
 import { isJsonArray, jsonObject, parseAdapterId, type JsonValue } from "@syncmesh/kernel";
@@ -20,12 +24,16 @@ import {
 
 export const OPLOG_ID = parseAdapterId("oplog@1").unwrap();
 
-/** One operation: replica, its number on that replica (from 1), the version it was made at, and its value. */
+/**
+ * One operation: replica, its number on that replica (from 1), the version it was made at, and its
+ * value; or, with `x`, the operations it retracts.
+ */
 interface Op {
   readonly r: string;
   readonly n: number;
   readonly deps: Readonly<Record<string, number>>;
   readonly v: string;
+  readonly x?: readonly string[];
 }
 
 /** The document an app edits: what it has applied, what waits on dependencies, and its listeners. */
@@ -67,7 +75,7 @@ const isCount = (n: JsonValue | undefined, from: number): n is number =>
 function opOf(value: JsonValue): Op | undefined {
   const held = jsonObject(value);
   const deps = jsonObject(held?.["deps"]);
-  const { r, n, v } = held ?? {};
+  const { r, n, v, x } = held ?? {};
   if (typeof r !== "string" || typeof v !== "string" || !isCount(n, 1) || deps === undefined)
     return undefined;
   const at: Record<string, number> = {};
@@ -75,7 +83,9 @@ function opOf(value: JsonValue): Op | undefined {
     if (!isCount(count, 0)) return undefined;
     at[replica] = count;
   }
-  return { r, n, deps: at, v };
+  if (x === undefined) return { r, n, deps: at, v };
+  if (!isJsonArray(x) || !x.every((key) => typeof key === "string")) return undefined;
+  return { r, n, deps: at, v, x: x.filter((key) => typeof key === "string") };
 }
 
 /** A version back from its JSON: `[replica, count]` pairs, or `undefined`. */
@@ -130,11 +140,34 @@ export function append(doc: OpLog, value: string) {
   for (const listener of doc.listeners) listener();
 }
 
-/** What an app reads: every applied value, by replica and then number. */
-export const values = (doc: OpLog): readonly string[] =>
-  [...doc.applied.values()]
+/**
+ * Whether each applied operation shows: one is hidden while an operation that shows retracts it.
+ * A retraction comes after what it names, so following them never loops.
+ */
+function showing(doc: OpLog): (op: Op) => boolean {
+  const by = new Map<string, Op[]>();
+  for (const op of doc.applied.values())
+    for (const key of op.x ?? []) by.set(key, [...(by.get(key) ?? []), op]);
+  const seen = new Map<string, boolean>();
+  const shows = (op: Op): boolean => {
+    const key = opKey(op);
+    const held = seen.get(key);
+    if (held !== undefined) return held;
+    const answer = !(by.get(key) ?? []).some(shows);
+    seen.set(key, answer);
+    return answer;
+  };
+  return shows;
+}
+
+/** What an app reads: every value that shows, by replica and then number. */
+export const values = (doc: OpLog): readonly string[] => {
+  const shows = showing(doc);
+  return [...doc.applied.values()]
+    .filter((op) => op.x === undefined && shows(op))
     .sort((a, b) => (a.r === b.r ? a.n - b.n : a.r < b.r ? -1 : 1))
     .map((op) => op.v);
+};
 
 /** The `oplog@1` adapter. */
 export function oplog(limits: Partial<DocLimits> = {}): DocumentAdapter<OpLog> {
@@ -176,5 +209,27 @@ export function oplog(limits: Partial<DocLimits> = {}): DocumentAdapter<OpLog> {
       doc.listeners.add(listener);
       return () => void doc.listeners.delete(listener);
     },
+    compensate: (doc, updates, replica) =>
+      Result.gen(function* () {
+        const ops: Op[] = [];
+        for (const update of updates) ops.push(...(yield* parseOps(update)));
+        const shows = showing(doc);
+        // what still shows of the write: an undo hides it, a redo hides the undo
+        const standing = ops.filter((op) => {
+          const held = doc.applied.get(opKey(op));
+          return held !== undefined && shows(held);
+        });
+        if (standing.length === 0) return Result.ok(undefined);
+        const at = clock(doc);
+        const r = replica.toString();
+        const op = {
+          r,
+          n: (at.get(r) ?? 0) + 1,
+          deps: Object.fromEntries(at),
+          v: "",
+          x: standing.map(opKey).sort(),
+        };
+        return Result.ok(exportOps([op]));
+      }),
   };
 }

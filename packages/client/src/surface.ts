@@ -146,6 +146,10 @@ export interface Mesh<
   readonly synced: (
     options: SyncedOptions,
   ) => Promise<Result<void, NoSuchCapability | DurabilityLost>>;
+  /**
+   * Reverts one of the engine's last `undoDepth` writes (`engine.revert`); a mesh with `documents`
+   * takes its document updates back too, through their adapter (RFC-0023 §9).
+   */
   readonly revert: (id: EventId) => Promise<Result<unknown, unknown>>;
   readonly canRevert: (id: EventId) => boolean;
   /**

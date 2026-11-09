@@ -80,6 +80,8 @@ export function transportContextFor(base: {
   readonly trust?: TransportContext["trust"];
   /** The checkpoint this device relays with any state it serves. */
   readonly certificate?: TransportContext["certificate"];
+  /** The documents behind the rows of a snapshot, as checkpoints in its pages (E30 P5). */
+  readonly snapshotDocs?: TransportContext["snapshotDocs"];
 }): TransportContext & { readonly routes: RouteTable } {
   const routes = createRouteTable({ self: base.identity.peerId, now: base.now });
   if (base.servesAuthority) routes.serve("authority");
@@ -123,6 +125,7 @@ export function transportContextFor(base: {
   // both were passed here and dropped before D46: no snapshot a mesh took was ever vouched for
   if (base.trust !== undefined) Object.assign(context, { trust: base.trust });
   if (base.certificate !== undefined) Object.assign(context, { certificate: base.certificate });
+  if (base.snapshotDocs !== undefined) Object.assign(context, { snapshotDocs: base.snapshotDocs });
   if (base.issuer !== undefined) {
     const sealedKinds = base.sealedKinds ?? new Set<string>();
     const readGate = createReadGate({

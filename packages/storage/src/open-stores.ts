@@ -268,10 +268,13 @@ export function openStores(
         evict: opensFirst(events.evict),
         recordInstalled: opensFirst(events.recordInstalled),
       } satisfies EventStore,
-      state:
-        state.derive === undefined
-          ? writesState
-          : { ...writesState, derive: opensFirst(state.derive) },
+      state: {
+        ...writesState,
+        ...(state.derive !== undefined && { derive: opensFirst(state.derive) }),
+        ...(state.writeDocColumns !== undefined && {
+          writeDocColumns: opensFirst(state.writeDocColumns),
+        }),
+      },
       docs: {
         ...docs,
         append: opensFirst(docs.append),

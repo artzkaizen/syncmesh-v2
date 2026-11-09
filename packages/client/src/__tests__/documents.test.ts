@@ -13,6 +13,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { createSnapshotDocs } from "../documents.js";
 import { createMesh } from "../mesh.js";
 import { sqlite } from "../options.js";
 
@@ -186,6 +187,37 @@ describe("documents through a mesh (RFC-0023 §4.3)", () => {
       rmSync(dataDir, { recursive: true, force: true });
     }
   }, 30_000);
+
+  test("a mesh's snapshot pages carry its documents once the runtime is up (E30 P5)", async () => {
+    const a = await open(46);
+    const { name: table, columnNames } = schema().tables.notes;
+    const address = { table, key: N1, column: columnNames.content };
+    const docs = a.docs ?? panicked();
+    (
+      await docs.mutate(
+        CREATE,
+        (tx, writes) => {
+          tx.insert(table, address.key, new Map([[columnNames.id, "n1"]]));
+          writes.change<OpLog>(address, (doc) => append(doc, "paged"));
+        },
+        { partition: W1 },
+      )
+    ).unwrap();
+    const rows = a.engine.snapshot().rows;
+    // no runtime, or no document column: pages carry rows alone
+    expect(createSnapshotDocs(schema(), undefined).snapshotDocs).toBeUndefined();
+    const paged = createSnapshotDocs(schema(), { adapters: [oplog()] });
+    const served = paged.snapshotDocs ?? panicked();
+    // started before the runtime: nothing to hand, so nothing is claimed
+    expect(await served.serve(rows)).toEqual({ checkpoints: [], complete: false });
+    expect(await served.install(rows, [])).toBe(false);
+    const identity = createIdentity(Uint8Array.from({ length: 32 }, (_, i) => 46 + i)).unwrap();
+    paged.bind(docs, identity);
+    const page = await served.serve(rows);
+    expect(page.complete).toBe(true);
+    expect(page.checkpoints.map((c) => c.producer)).toEqual([identity.peerId]);
+    await a.stop();
+  });
 
   test("without `documents` a mesh folds and keeps the column, and has no runtime to open it", async () => {
     const a = await open(41);

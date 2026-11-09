@@ -180,6 +180,36 @@ describe("revert compensates only the cells that still hold the write (RFC-0023 
     expect(readRow(b.state(), NOTES, N1)).toEqual(readRow(a.state(), NOTES, N1));
   });
 
+  test("a colleague's edit that lands while the documents are compensated survives the undo", async () => {
+    const { a, b, deliver, back } = pair();
+    await deliver(await a.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ title: "t" }))));
+    const content = column("content");
+    const mine = (
+      await a.mutate(CREATE, (tx) => {
+        tx.update(NOTES, N1, row({ title: "mine" }));
+        tx.doc(NOTES, N1, {
+          column: content,
+          adapter: parseAdapterId("loro@1").unwrap(),
+          update: { bytes: Uint8Array.of(1) },
+        });
+      })
+    ).unwrap();
+    (await b.receive({ event: mine })).unwrap();
+    const theirs = await b.mutate(CREATE, (tx) => tx.update(NOTES, N1, row({ title: "theirs" })));
+    // the compensator awaits its document's tail; the colleague's edit folds meanwhile
+    const r = (
+      await a.revert(mine.id, async () => {
+        await back(theirs);
+        return Result.ok([]);
+      })
+    ).unwrap();
+    expect(r.event).toBeUndefined();
+    expect(r.skipped).toEqual([
+      { table: NOTES, key: N1, column: column("title"), reason: "superseded" },
+    ]);
+    expect(readRow(a.state(), NOTES, N1)).toEqual(row({ title: "theirs" }));
+  });
+
   test("when every cell was changed since, nothing is written and all of it is reported", async () => {
     const { a, b, deliver, back } = pair();
     await deliver(await a.mutate(CREATE, (tx) => tx.insert(NOTES, N1, row({ title: "t" }))));
