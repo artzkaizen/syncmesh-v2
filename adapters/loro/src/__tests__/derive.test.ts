@@ -1,6 +1,6 @@
 import type { BackgroundError, SealingKeys } from "@syncmesh/docs";
 import type { Runnable } from "@syncmesh/drizzle";
-import type { Validator } from "@syncmesh/engine";
+import type { AtomicStores, StateStore, Validator } from "@syncmesh/engine";
 import type { CellValue, ColumnName, Row, RowKey } from "@syncmesh/kernel";
 import type { DocumentAdapter } from "@syncmesh/schema";
 import type { SqlDriver } from "@syncmesh/storage";
@@ -9,6 +9,7 @@ import { createDocuments, isSealedSnapshot } from "@syncmesh/docs";
 import { createLive } from "@syncmesh/drizzle";
 import {
   PolicyDenied,
+  StoreFailure,
   createEngine,
   createLink,
   createValidator,
@@ -88,7 +89,15 @@ interface NodeOptions {
   readonly keys?: SealingKeys;
   /** Default `true`; off where a test rewrites rows outside syncmesh, as an app may (U5). */
   readonly strict?: boolean;
+  /** Wraps the state store the engine writes through, inside `atomic` and out. */
+  readonly state?: (state: StateStore) => StateStore;
 }
+
+/** A state store whose column writes fail: the process dying between a commit and its columns. */
+const powerCut = (state: StateStore): StateStore => ({
+  ...state,
+  writeDocColumns: () => Promise.resolve(Result.err(new StoreFailure({ message: "power cut" }))),
+});
 
 /** One sealed workspace's content key, at the first epoch, as a key ring that holds it answers. */
 const keysFor = (key: Uint8Array): SealingKeys => ({
@@ -109,13 +118,15 @@ async function storedNode(n: number, options: NodeOptions = {}) {
     await openStores(driver, { tables: syncedTables(using), strict: options.strict ?? true })
   ).unwrap();
   const withAdapter = options.adapter !== false;
+  const scope = options.state ?? ((state: StateStore) => state);
   const engine = createEngine({
     peerId: identity.peerId,
     clock: createHlcClock({ now }),
     store: stores.events,
-    stateStore: stores.state,
+    stateStore: scope(stores.state),
     docStore: stores.docs,
-    atomic: stores.atomic,
+    atomic: <T>(fn: (scoped: AtomicStores) => Promise<T>) =>
+      stores.atomic((scoped) => fn({ ...scoped, state: scope(scoped.state) })),
     validate: options.validate ?? createValidator({ schema: using, grantFor: null, docs: DOCS }),
     docs: DOCS,
     ...(withAdapter && { docAdapters: new Set([LORO_ID]) }),
@@ -735,33 +746,79 @@ describe("the document column holds the snapshot (RFC-0023 §6.1)", () => {
     expect(rows).toBe(1);
   });
 
-  test("a state rebuilt from the log takes its columns back from the held snapshots", async () => {
+  /** A note whose document is materialised, with the snapshot its doc log holds of it. */
+  const materialised = async (n: number, title: string) => {
     // the app below clears the state file outside syncmesh, which strict capture would refuse (U5)
-    const a = await storedNode(68, { strict: false });
+    const a = await storedNode(n, { strict: false });
     await insertNote(a);
     const doc = (await a.documents.open<LoroDoc>(DOC)).unwrap();
-    type(doc.value, "Rebuilt", "x");
+    type(doc.value, title, "x");
     (await doc.close()).unwrap();
     (await a.documents.materialise(DOC)).unwrap();
     const held = (await a.stores.docs.snapshotOf(DOC)).unwrap();
     a.documents.stop();
+    return { a, held };
+  };
+  /** Boots `a`'s stores again, with `atomic` or without it, through `state` where one is given. */
+  const boot = (a: StoredNode, atomic: boolean, state?: (s: StateStore) => StateStore) => {
+    const scope = state ?? ((s: StateStore) => s);
+    return openEngine({
+      peerId: a.identity.peerId,
+      clock: createHlcClock({ now: a.now }),
+      store: a.stores.events,
+      stateStore: scope(a.stores.state),
+      docStore: a.stores.docs,
+      ...(atomic && {
+        atomic: <T>(fn: (scoped: AtomicStores) => Promise<T>) =>
+          a.stores.atomic((scoped) => fn({ ...scoped, state: scope(scoped.state) })),
+      }),
+      validate: createValidator({ schema, grantFor: null, docs: DOCS }),
+      docs: DOCS,
+      docAdapters: new Set([LORO_ID]),
+    });
+  };
+
+  test("a state rebuilt from the log takes its columns back from the held snapshots", async () => {
+    const { a, held } = await materialised(68, "Rebuilt");
     // a state file thrown away: boot refolds the rows from the log, and the snapshot is still held
     (await a.stores.state.clear()).unwrap();
-    (
-      await openEngine({
-        peerId: a.identity.peerId,
-        clock: createHlcClock({ now: a.now }),
-        store: a.stores.events,
-        stateStore: a.stores.state,
-        docStore: a.stores.docs,
-        atomic: a.stores.atomic,
-        validate: createValidator({ schema, grantFor: null, docs: DOCS }),
-        docs: DOCS,
-        docAdapters: new Set([LORO_ID]),
-      })
-    ).unwrap();
+    (await boot(a, true)).unwrap();
     expect(await column(a)).toEqual(held?.bytes ?? null);
     expect(read(await column(a))).toBe("Rebuilt");
+  });
+
+  test("a rebuild that dies before its columns commits no rows either, so the next boot rebuilds again", async () => {
+    const { a, held } = await materialised(69, "Interrupted");
+    (await a.stores.state.clear()).unwrap();
+    expect((await boot(a, true, powerCut)).isErr()).toBe(true);
+    // the commit went down with the columns: the cursors were not advanced past the tail
+    expect((await a.stores.state.isEmpty()).unwrap()).toBe(true);
+    (await boot(a, true)).unwrap();
+    expect(await column(a)).toEqual(held?.bytes ?? null);
+    expect(read(await column(a))).toBe("Interrupted");
+  });
+
+  test("a repair whose columns fail commits none of its rows either", async () => {
+    const { a } = await materialised(71, "Repaired");
+    const b = await storedNode(72, { state: powerCut });
+    const records = a.engine.rowRecords(NOTES, [N1]);
+    const repaired = await Result.tryPromise(() => b.engine.repairRows(NOTES, records));
+    expect(repaired.isErr()).toBe(true);
+    // the rows and the columns they reseat are one transaction: neither landed
+    expect(await b.row()).toBeUndefined();
+  });
+
+  test("without atomic, a boot writes every document column afresh, finishing one a crash cut short", async () => {
+    const { a, held } = await materialised(70, "Finished");
+    (await a.stores.state.clear()).unwrap();
+    // each store commits on its own: the rows land, and the columns do not
+    expect((await boot(a, false, powerCut)).isErr()).toBe(true);
+    expect((await a.stores.state.isEmpty()).unwrap()).toBe(false);
+    expect(await column(a)).toBeNull();
+    // the next boot has no tail to replay, and writes the column anyway
+    (await boot(a, false)).unwrap();
+    expect(await column(a)).toEqual(held?.bytes ?? null);
+    expect(read(await column(a))).toBe("Finished");
   });
 });
 

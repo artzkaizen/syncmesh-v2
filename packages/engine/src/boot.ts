@@ -11,7 +11,7 @@ import { Result } from "@syncmesh/result";
 
 import type { Engine, EngineOptions } from "./engine.js";
 import type { RowWrite, StateStore } from "./state-store.js";
-import type { EventStore, StoreFailure, StoredEvent } from "./store.js";
+import type { EventStore, StoredEvent } from "./store.js";
 import type { Coverage, Cursors } from "./sync.js";
 
 import { heldBelowCursors } from "./coverage.js";
@@ -19,6 +19,7 @@ import { docColumnWrites, rowDocs } from "./doc-column.js";
 import { docAppends, recordDocs } from "./doc-log.js";
 import { createEngine } from "./engine.js";
 import { StateCorrupt, allRows, rowWrites, eventWriteKeys } from "./state-store.js";
+import { StoreFailure, orThrow } from "./store.js";
 import { strandedWrites } from "./stranded.js";
 import { EMPTY_COVERAGE, heldRuns } from "./sync.js";
 
@@ -32,12 +33,13 @@ const docTables = (state: State, docs: DocColumns): State =>
   );
 
 /**
- * Writes the document columns of the rows a boot committed: the commit projects rows without their
- * documents' bytes, so a rebuilt state, or a row the replayed tail wrote, takes its column back
- * from the snapshot held of the winning lineage (RFC-0023 §6.1).
+ * Writes the document columns of `rows`: the commit projects rows without their documents' bytes,
+ * so a rebuilt state, or a row the replayed tail wrote, takes its column back from the snapshot
+ * held of the winning lineage (RFC-0023 §6.1).
  */
 function restoreDocColumns(
-  { docStore, docs }: Pick<EngineOptions, "docStore" | "docs">,
+  docStore: EngineOptions["docStore"],
+  docs: EngineOptions["docs"],
   stateStore: StateStore,
   state: State,
   rows: readonly RowWrite[],
@@ -49,6 +51,55 @@ function restoreDocColumns(
   return docColumnWrites(docStore, reseated, (doc) =>
     docLineage(getRecord(state, doc.table, doc.key), doc.column),
   ).then((writes) => (writes.isOk() ? write(writes.value) : writes));
+}
+
+/**
+ * Commits what a boot folded and writes the document columns of the rows it committed.
+ *
+ * **With `atomic`, both land in one transaction.** The commit advances the cursors past the tail,
+ * so a crash between it and the columns would leave the next boot nothing to replay, and every
+ * column of a rebuilt row `NULL` until its document happened to be materialised again.
+ *
+ * **Without `atomic`, every document column the state holds is written afresh**, not only the
+ * committed rows': each store commits on its own there, so any earlier write (a fold, a snapshot
+ * install, a repair, this boot) may have died between its rows and their columns, and boot is
+ * where that protocol finishes the interrupted work (`EngineOptions.atomic`). It costs one
+ * snapshot read and one column write per document per boot.
+ */
+function seat(
+  options: EngineOptions,
+  stateStore: StateStore,
+  engine: Engine,
+  rows: readonly RowWrite[],
+  rebuilt: boolean,
+): Promise<Result<void, StoreFailure>> {
+  const { atomic, docStore, docs } = options;
+  const state = engine.state();
+  const commit = (into: StateStore) =>
+    rebuilt || rows.length > 0
+      ? into.commit(rows, engine.coverage())
+      : Promise.resolve(Result.ok<void, StoreFailure>(undefined));
+  if (atomic === undefined)
+    return Result.gen(async function* () {
+      yield* Result.await(commit(stateStore));
+      const held = docs === undefined ? [] : allRows(docTables(state, docs));
+      yield* Result.await(restoreDocColumns(docStore, docs, stateStore, state, held));
+      return Result.ok(undefined);
+    });
+  if (!rebuilt && rows.length === 0) return Promise.resolve(Result.ok(undefined));
+  return Result.tryPromise({
+    try: () =>
+      atomic(async (scoped) => {
+        const into = scoped.state ?? stateStore;
+        orThrow(await commit(into));
+        orThrow(await restoreDocColumns(scoped.docs ?? docStore, docs, into, state, rows));
+      }),
+    // a store failure inside the transaction, rolling the commit back with it
+    catch: (cause) =>
+      cause instanceof StoreFailure
+        ? cause
+        : new StoreFailure({ message: "the boot's commit failed", cause }),
+  });
 }
 
 /** What `createEngine` starts from: persisted state, what it covers, and the log tail above it. */
@@ -114,9 +165,7 @@ export function openEngine(
         cached === undefined
           ? allRows(engine.state())
           : rowWrites(engine.state(), eventWriteKeys(replay.map((entry) => entry.event)));
-      if (cached === undefined || rows.length > 0)
-        yield* Result.await(stateStore.commit(rows, engine.coverage()));
-      yield* Result.await(restoreDocColumns(options, stateStore, engine.state(), rows));
+      yield* Result.await(seat(options, stateStore, engine, rows, cached === undefined));
     }
     // the replayed tail's doc entries, for a log that was appended outside a transaction with them;
     // a re-append of what is already there is a no-op, so an atomic store loses nothing by it

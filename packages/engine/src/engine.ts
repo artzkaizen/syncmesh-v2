@@ -277,8 +277,9 @@ export function createEngine(options: EngineOptions): Engine {
   const snapshots = createSnapshotPath(options, {
     ...held,
     adopt: covered.adoptUnheld,
-    // in a turn, so a purge never runs between a snapshot's state commit and its own (D45)
-    persist: (batch: FoldBatch) => turn(() => persist(batch, plain)),
+    // in a turn, so a purge never runs between a snapshot's state commit and its own (D45); in
+    // one transaction, so the rows and the document columns they reseat land together
+    persist: (batch: FoldBatch) => atomically((scoped) => persist(batch, scoped)),
     persistCoverage: () =>
       turn(() => persistInstall(store, coverage, errors, () => persistCoverage(plain))),
     notify,
@@ -287,7 +288,8 @@ export function createEngine(options: EngineOptions): Engine {
   const repair = createRepairPath({
     getState,
     mergeInto: (table, key, record) => setState(mergeRecord(getState(), table, key, record, merge)),
-    persist: (batch) => turn(() => persist(batch, plain)),
+    // rows, a lineage the repair moved and the columns that follow it, together
+    persist: (batch) => atomically((scoped) => persist(batch, scoped)),
     notify,
     docs: options.docs,
     receive: clock.receive,
