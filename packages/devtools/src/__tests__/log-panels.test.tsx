@@ -325,7 +325,10 @@ describe("Writes", () => {
   });
 
   test("lists what is waiting, with its event and its age", async () => {
-    const panel = await mount(<Writes openTab={() => undefined} source={ledger([WRITE])} />);
+    // stamped here, not when the file loaded: a suite that takes a second to reach this test
+    // would otherwise read 46s
+    const waiting = { ...WRITE, at: at(Date.now() - 45_000) };
+    const panel = await mount(<Writes openTab={() => undefined} source={ledger([waiting])} />);
     const text = panel.text();
     expect(text).toContain("issue.create");
     expect(text).toContain("-7");
