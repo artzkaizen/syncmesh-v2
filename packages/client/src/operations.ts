@@ -234,7 +234,8 @@ export function openOperations(deps: {
           receipt.issuedAt.epochMilliseconds,
         )
         .then((written) => {
-          // evidence, not silence: the holder re-vouches on the next exchange either way
+          // evidence, not silence: a holder signs again only when its run moves or this device
+          // sits down again (U38), so a lost row stays lost until then
           if (written.isErr()) console.warn(`vouch for ${receipt.holder} failed:`, written.error);
           else changed();
         }),
@@ -256,7 +257,8 @@ export function openOperations(deps: {
           refusal.issuedAt.epochMilliseconds,
         )
         .then((written) => {
-          // evidence, not silence: the refuser repeats it on the next exchange while it is parked
+          // evidence, not silence: the refuser says it again once per seating while it is parked
+          // (D32, U38), so a lost row comes back when this device next sits down
           if (written.isErr())
             console.warn(`refusal from ${refusal.refuser} failed:`, written.error);
           else changed();

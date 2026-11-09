@@ -16,7 +16,7 @@ import type { RelaySocket } from "./sender.js";
 import { openDurableBlobs } from "./durable-blobs.js";
 import { DEFAULT_LIMITS } from "./limits.js";
 import { createRoomAccess } from "./posture.js";
-import { assertTruthfulCustody } from "./room-receipts.js";
+import { assertTruthfulCustody, hostedCustody } from "./room-receipts.js";
 import { openRelayRoom } from "./room.js";
 import { createRoomTable } from "./rooms.js";
 
@@ -283,9 +283,7 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
         blobLedger: held.blobLedger,
         identity: held.identity,
         durable: held.durable,
-        // signed under the host's key alone, and only over a log that outlives the process: a key
-        // kept beside the log is lost with it, and what it signed would never be withdrawn
-        custody: held.durable === true && held.identity === undefined ? options.custody : undefined,
+        custody: hostedCustody(options.custody, held, name),
       }),
       name,
       grants,

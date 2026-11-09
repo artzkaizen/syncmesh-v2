@@ -5,7 +5,7 @@ import { createMemoryEventStore } from "@syncmesh/engine";
 import { parseSeqNum } from "@syncmesh/kernel";
 import { Temporal, durationMs } from "@syncmesh/temporal";
 import { createIdentity } from "@syncmesh/wire";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 
 import type { RelayDial } from "../transport.js";
 
@@ -129,6 +129,57 @@ describe("the relay room signs its own custody (D28, U38)", () => {
     ).toContain("trims its log");
   });
 
+  test("a log trimmed before this open signs nothing for the author it trimmed, and still signs for the rest", async () => {
+    const store = createMemoryEventStore();
+    const trimmedAuthor = peer(40, "acct_a");
+    const whole = peer(41, "acct_a");
+    // an earlier run, without custody, holds n1..n3 of one author and is then compacted through 2;
+    // the other author was there too, so it is not refused below the floor when it comes back
+    const before = await openRoom({ store });
+    const earlier = [
+      await attach(trimmedAuthor.context, dialTo(before).dial),
+      await attach(whole.context, dialTo(before).dial),
+    ];
+    for (const n of [1, 2, 3]) await write(trimmedAuthor, `n${n}`, "before");
+    const trimmedId = trimmedAuthor.identity.peerId;
+    expect(await until(() => whole.engine.coverage().synced.get(trimmedId) === 3)).toBe(true);
+    const logged = async (count: number) => {
+      for (let tries = 0; tries < 300; tries += 1) {
+        if ((await store.all()).unwrap().length === count) return true;
+        await tick(15);
+      }
+      return false;
+    };
+    expect(await logged(3)).toBe(true);
+    for (const transport of earlier) await transport.stop();
+    before.close();
+    const floor = new Map([[trimmedId, parseSeqNum(2).unwrap()]]);
+    const later = Temporal.Now.instant().add({ hours: 1 });
+    expect((await store.compactBelow(floor, "synced", later)).unwrap()).toBe(2);
+
+    const room = await openRoom({
+      store,
+      identity: ROOM_KEY,
+      durable: true,
+      custody: { every: EVERY },
+    });
+    const trimmedLedger = keeping();
+    const wholeLedger = keeping();
+    const { dial } = dialTo(room);
+    await attach({ ...trimmedAuthor.context, onReceipt: trimmedLedger.onReceipt }, dial);
+    await attach({ ...whole.context, onReceipt: wholeLedger.onReceipt }, dial);
+    await write(trimmedAuthor, "n4", "after");
+    await write(whole, "w1", "after");
+    expect(await until(() => wholeLedger.fromRoom().length > 0)).toBe(true);
+    expect(await logged(3)).toBe(true);
+    await tick(WINDOWS);
+    // the room holds n3..n4 of the trimmed author, not n1..n2: a receipt through 4 would license
+    // deleting the only copy of what it trimmed
+    expect(trimmedLedger.fromRoom()).toHaveLength(0);
+    expect(wholeLedger.fromRoom()[0]?.throughSeq).toBe(ONE);
+    room.close();
+  });
+
   test("a host asked to sign needs a key of its own; a room whose store brings its key signs nothing", async () => {
     const custody = { every: EVERY };
     const openRoomStore = () =>
@@ -143,7 +194,11 @@ describe("the relay room signs its own custody (D28, U38)", () => {
     const host = createRelayHost({ openRoomStore, custody, identity: ROOM_KEY });
     const author = peer(40, "acct_a");
     const ledger = keeping();
+    const warned = spyOn(console, "warn").mockImplementation(() => undefined);
     const held = await host.acquire("main");
+    // said where an operator reads it, not dropped: the room was asked to sign and will not
+    expect(warned.mock.calls.flat().join(" ")).toContain("signs no custody");
+    warned.mockRestore();
     const { dial } = dialTo(held.room);
     await attach({ ...author.context, onReceipt: ledger.onReceipt }, dial);
     await write(author, "n1", "one");

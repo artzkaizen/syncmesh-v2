@@ -309,7 +309,8 @@ export const seatedFrame = (peer: PeerId): Uint8Array =>
 
 /**
  * The sender slot a seating goes out under (`Sender.sendLatest`): a newer seating of the same peer
- * supersedes one a stalled socket has not been sent yet, so seatings never fill its backlog.
+ * supersedes one a stalled socket has not been sent yet, so seatings never fill its backlog. A slot
+ * is held only until the socket drains, so a stalled socket holds at most one per peer that joined.
  */
 export const seatedSlot = (peer: PeerId): string => `seated:${peer}`;
 
