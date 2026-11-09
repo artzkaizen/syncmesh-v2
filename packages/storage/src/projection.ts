@@ -7,6 +7,7 @@ import type { SqlDriver } from "./driver.js";
 import type { RowSync } from "./row-sync.js";
 
 import { driverDialect } from "./dialect.js";
+import { folding } from "./guard.js";
 import { tableColumns, quote, valueColumns } from "./identifiers.js";
 
 /** A cell in the form the column's SQL type holds it on SQLite — what the fold writes and what a compiled rule compares against. */
@@ -23,6 +24,8 @@ export interface Projection {
   readonly clear: () => Promise<void>;
   /** Deletes these rows from the app's tables and their sync state, as a purge does (D45). */
   readonly remove: (keys: WriteKeys) => Promise<void>;
+  /** Run once when the state store opens, outside any transaction: what the fold's guard state needs. */
+  readonly prepare?: () => Promise<void>;
 }
 
 export interface ProjectionOptions {
@@ -42,8 +45,8 @@ export interface ProjectionOptions {
 
 /**
  * The fold's side of the two writers (D20): a visible record is UPSERTed into its table, a
- * tombstoned one deleted, with the capture guard at rest so none of it is logged as the app's
- * own. Stamps stay in the sidecar; the app's tables hold values only, in the driver's dialect.
+ * tombstoned one deleted, with the capture guard in its fold state so none of it is logged as the
+ * app's own and the strict guard lets it by. Stamps stay in the sidecar; the app's tables hold values only, in the driver's dialect.
  * A document column is left out of both the insert and the update: its cell is the lineage, and
  * the column holds the snapshot the materialiser writes (RFC-0023 §6.1).
  */
@@ -78,7 +81,7 @@ export function tablesProjection(
     }),
   );
   const rowSync = options.rowSync;
-  return {
+  const projection: Projection = {
     apply: async (rows) => {
       // the same commit the rows land in: a query cannot see a row without its sync state
       await rowSync?.apply(rows);
@@ -130,6 +133,16 @@ export function tablesProjection(
         if (plan === undefined) continue;
         for (const key of set) await driver.run(plan.remove, [key]);
       }
+    },
+  };
+  // every write here is the fold's, so each passes the strict guard (gaps U5) and only these do
+  return {
+    apply: (rows) => folding(driver, () => projection.apply(rows)),
+    derive: (rows) => folding(driver, () => projection.derive(rows)),
+    clear: () => folding(driver, () => projection.clear()),
+    remove: (keys) => folding(driver, () => projection.remove(keys)),
+    prepare: async () => {
+      for (const sql of dialect.capture.guardRow) await driver.run(sql);
     },
   };
 }

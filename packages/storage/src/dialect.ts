@@ -166,6 +166,10 @@ export interface SchemaSql {
   readonly read: string;
   /** Writes it, under this dialect's own placeholder. */
   readonly write: string;
+  /** The strict-capture guard last installed ({@link CaptureSql.guardDdl}), or no rows. */
+  readonly readGuard: string;
+  /** Writes it. */
+  readonly writeGuard: string;
 }
 
 export interface CaptureSql {
@@ -176,6 +180,27 @@ export interface CaptureSql {
   /** Triggers log only between these two, inside the transaction. */
   readonly arm: string;
   readonly disarm: string;
+  /**
+   * The strict-capture guard (gaps U5): one trigger set per table that refuses a write made with
+   * capture at rest — and on Postgres a `TRUNCATE` at any time but the fold's — or, for a table
+   * the guard leaves out, the statements that drop it. Run after {@link CaptureSql.captureDdl}.
+   */
+  readonly guardDdl: (
+    tables: readonly Table[],
+    guarded: (table: Table) => boolean,
+  ) => readonly string[];
+  /** Drops the strict guard from one table, whether or not it carries one. */
+  readonly unguardDdl: (table: TableName) => readonly string[];
+  /** One row per table that carries a strict guard now: its name, in the first cell. */
+  readonly guardedTables: string;
+  /**
+   * The fold's own writes into the app's tables pass the guard between these two, inside the
+   * transaction; capture already armed stays armed.
+   */
+  readonly fold: string;
+  readonly unfold: string;
+  /** What `fold` and `unfold` need to exist, for a projection over tables capture was never installed on. */
+  readonly guardRow: readonly string[];
   /** `tbl, key, op, old, new` in log order. */
   readonly selectLog: string;
   readonly clearLog: string;

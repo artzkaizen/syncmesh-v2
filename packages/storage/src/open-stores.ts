@@ -3,21 +3,23 @@ import type { PartitionKey } from "@syncmesh/kernel";
 import type { Table } from "@syncmesh/schema";
 
 import { sha256 } from "@noble/hashes/sha2.js";
-import { StoreFailure, refoldable } from "@syncmesh/engine";
+import { StoreFailure } from "@syncmesh/engine";
 import { Result } from "@syncmesh/result";
 import { bytesToHex } from "@syncmesh/wire";
 
 import type { SqlDialect, SqlDriver } from "./driver.js";
+import type { StrictCapture } from "./guard.js";
 import type { ProjectionOptions } from "./projection.js";
 
-import { captureStatements, installCapture } from "./capture.js";
-import { ATTACHED_LOG, driverDialect, logPlacement } from "./dialect.js";
+import { captureStatements } from "./capture.js";
+import { ATTACHED_LOG, logPlacement } from "./dialect.js";
 import { sqlDocStore } from "./doc-store.js";
 import { sqlEventStore } from "./event-store.js";
 import { closeSession, openSession, reopenSession } from "./integrity.js";
 import { journalPosition, journalingDriver, recoverJournal } from "./journal.js";
 import { tablesProjection } from "./projection.js";
-import { rowSyncDdlFor, rowSyncTable, type RowSync } from "./row-sync.js";
+import { rowSyncTable, type RowSync } from "./row-sync.js";
+import { installSchema } from "./schema-install.js";
 import { attempt, inTransaction } from "./sql.js";
 import { sqlStateStore } from "./state-store.js";
 
@@ -78,6 +80,11 @@ export interface OpenStoresOptions extends ProjectionOptions {
    * triggers are added. Absent, state lives only in the sidecar.
    */
   readonly tables?: readonly Table[];
+  /**
+   * Refuse a write to `tables` made outside a captured transaction (gaps U5). Default `true`; see
+   * {@link StrictCapture}. Changing it is installed at the next open.
+   */
+  readonly strict?: StrictCapture;
 }
 
 /**
@@ -96,62 +103,6 @@ export const schemaName = (tables: readonly Table[], dialect: SqlDialect = "sqli
   bytesToHex(
     sha256(new TextEncoder().encode(captureStatements({ dialect }, tables).join(";"))),
   ).slice(0, 12);
-
-/**
- * The app's tables and their capture, installed **only when this database has not got them.**
- *
- * Every statement here is `IF NOT EXISTS`, so running them all on every launch was correct and
- * quietly wasteful: forty-odd statements to parse, per open, to discover there was nothing to do.
- * What replaces that is one read of one row. The row holds the exact DDL last installed, so
- * "unchanged" is string equality rather than a version somebody has to remember to bump — add a
- * column, add a table, change a dialect, and the text differs and everything is reinstalled.
- *
- * The one thing it cannot see is a change made *around* it: drop a trigger by hand and this will
- * still say the schema is installed. That is the same bargain every migration table makes, and
- * the repair is the same — clear the row, or the file.
- *
- * **A changed schema is only free while the log can still produce the rows.** The row it compares
- * lives in the log, which is shared; the file it is comparing against is the derived half, which
- * `schemaName` gives a different name to for every shape. So changing a column normally opens
- * an empty file and refolds into it, and the previous shape's file is an orphan nobody reads.
- * Once the log has been compacted, or has taken rows from a snapshot install (gaps U33), that
- * stops being true — the old file holds rows no fold can produce again — and the open refuses
- * rather than silently presenting an empty database.
- */
-const installed = (
-  driver: SqlDriver,
-  tables: readonly Table[],
-  events: EventStore,
-): Promise<Result<void, StoreFailure>> =>
-  Result.gen(async function* () {
-    const { schema, name: dialect } = driverDialect(driver);
-    const rowSyncDdl = rowSyncDdlFor(dialect);
-    const wanted = [...captureStatements(driver, tables), ...rowSyncDdl].join(";\n");
-    const held = yield* Result.await(
-      attempt("could not read the installed schema", async () => {
-        await driver.run(schema.ddl);
-        const [row] = await driver.all(schema.read);
-        return row?.[0];
-      }),
-    );
-    if (held === wanted) return Result.ok(undefined);
-    if (held !== undefined && !(yield* Result.await(refoldable(events)))) {
-      return Result.err(
-        new StoreFailure({
-          message:
-            "the app's tables changed shape and this log cannot rebuild every row — it has been compacted, or rows came from a snapshot install with no events behind them, and those exist only in the state file the previous shape wrote, so there is nothing left to refold them from. Keep the previous schema, or rejoin from a peer.",
-        }),
-      );
-    }
-    yield* Result.await(
-      attempt("the app schema failed to install", async () => {
-        await installCapture(driver, tables).then((done) => done.unwrap());
-        for (const statement of rowSyncDdl) await driver.run(statement);
-        await driver.run(schema.write, [wanted]);
-      }),
-    );
-    return Result.ok(undefined);
-  });
 
 /**
  * A store's files, all derived from one stable name: **the log's**.
@@ -242,14 +193,18 @@ export function openStores(
     const stateOptions = {};
     let rowSync: RowSync | undefined;
     if (options.tables !== undefined) {
-      yield* Result.await(installed(driver, options.tables, events));
+      yield* Result.await(installSchema(driver, options.tables, events, options.strict));
       rowSync = rowSyncTable(driver);
       const projectionOptions = { rowSync };
       if (options.partitionColumn !== undefined)
         Object.assign(projectionOptions, { partitionColumn: options.partitionColumn });
-      Object.assign(stateOptions, {
-        projection: tablesProjection(driver, options.tables, projectionOptions),
-      });
+      // the capture installed above already made what the fold's guard state needs
+      const { prepare: _prepared, ...projection } = tablesProjection(
+        driver,
+        options.tables,
+        projectionOptions,
+      );
+      Object.assign(stateOptions, { projection });
     }
     const state = yield* Result.await(sqlStateStore(driver, stateOptions));
     const docs = yield* Result.await(sqlDocStore(driver));

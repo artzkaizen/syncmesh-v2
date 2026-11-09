@@ -62,6 +62,27 @@ React Native ships no WebCrypto, and the engine needs `getRandomValues` before i
 all — the device key is an Ed25519 seed. `randomUUID` is the half that is easy to miss, and leaving
 it out fails several layers later inside the engine. Import it first, for its effect.
 
+## The keystore — `@syncmesh/react-native/keystore`
+
+```ts
+import { createSecureStoreVault } from "@syncmesh/react-native/keystore";
+
+const app = createClient({ schema, storage: sqlite({ driver }), vault: createSecureStoreVault() });
+```
+
+The device's signing seed, sealed under a key the iOS Keychain or Android Keystore holds, through
+`expo-secure-store` (an optional peer: install it and rebuild the binary). React Native has no
+keystore the mesh can find by itself, so `createClient` without a `vault` is refused there rather
+than storing the seed in plaintext. The key is `AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY` by default: a
+mesh woken in the background on a locked phone still opens, and a backup restored onto another
+phone carries the sealed seed but not the key, so it is refused instead of becoming a second copy
+of this device.
+
+Each seal gets its own keychain item, `syncmesh.device-seed-key.<32 hex>` (`name` sets the
+prefix). With `requireAuthentication` a boot reads the key once, so that is one prompt per boot.
+Items outlive the app on iOS: a reinstall seals under a new item and the old one stays behind,
+unread.
+
 ## The dev server — `@syncmesh/react-native/dev-server`
 
 ```ts

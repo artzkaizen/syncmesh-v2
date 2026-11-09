@@ -7,7 +7,7 @@ import type { OpenDriver } from "./index.js";
 
 import { captureChanges, installCapture } from "../capture.js";
 import { openStores } from "../open-stores.js";
-import { ACME, DOC_NOTES, N1, sqlText, stamp } from "./fixtures.js";
+import { ACME, DOC_NOTES, N1, asFold, sqlText, stamp } from "./fixtures.js";
 
 /*
  * A document column in the app's table (RFC-0023 §6.1): the kernel's cell holds the lineage, the
@@ -38,7 +38,10 @@ export const docColumnCases = (openDriver: OpenDriver): readonly SuiteCase[] => 
       const fresh = (await read())?.[1] ?? null;
       equal(fresh === null ? null : String(fresh), null, "a new row's snapshot starts empty");
       const snapshot = Uint8Array.of(7, 8, 9);
-      await driver.run(`UPDATE doc_notes SET content = ${L.p(1)}`, [snapshot]);
+      // the materialiser's write, which passes the strict guard as the fold's does
+      await asFold(driver, () =>
+        driver.run(`UPDATE doc_notes SET content = ${L.p(1)}`, [snapshot]),
+      );
       (await state.commit([write(note("two", 2))], NONE)).unwrap();
       const [title, content] = (await read()) ?? [];
       equal(String(title), "two", "the row's values still land");
