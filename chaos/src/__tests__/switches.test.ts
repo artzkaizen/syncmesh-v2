@@ -82,10 +82,21 @@ describe("--blobs", () => {
  * job sets `SYNCMESH_CHAOS_TIMING=1`.
  */
 describe.if(process.env.SYNCMESH_CHAOS_TIMING === "1")("--retention", () => {
+  /**
+   * Seed 10's sleeper, `d`, is relay-only: it is dark from the first tick to heal, so the room
+   * swept past it whatever the machine's speed, and it has no radio to catch up from first. Seed
+   * 11's sleeper has no relay, so its refusal came from a device the schedule happened to take off
+   * the relay; since the schedule knocks a device whose relay comes back (gaps U51), that device
+   * re-joins before the floor passes it and nothing is refused.
+   */
   test("a device below the relay's floor is refused as a value, and the invariant still holds", async () => {
-    const { code, out, entries } = await runChaos(small(11, "--retention"));
+    const { code, out, entries } = await runChaos(small(10, "--retention"));
+    const sleeper = entries.flatMap((entry) =>
+      entry.kind === "note" && entry.text.startsWith("sleeper: ") ? [entry.text.slice(9)] : [],
+    );
+    expect(sleeper).toEqual(["d"]);
     const refusals = entries.filter((entry) => entry.kind === "refused");
-    expect(refusals.length).toBeGreaterThan(0);
+    expect(refusals.some((entry) => entry.kind === "refused" && entry.device === "d")).toBe(true);
     expect(refusals.every((entry) => entry.kind === "refused" && entry.code === "retention")).toBe(
       true,
     );
