@@ -10,6 +10,7 @@ import { getRecord } from "@syncmesh/kernel";
 import { Result, omitUndefined } from "@syncmesh/result";
 import { createDerivers } from "@syncmesh/schema";
 import { BlobNotFound, isBlobHash } from "@syncmesh/storage";
+import { NO_DOCS } from "@syncmesh/transport";
 
 import type { Blobs } from "./blobs.js";
 import type { BootOptions } from "./boot.js";
@@ -205,7 +206,7 @@ export function createSnapshotDocs(
 ) {
   let bound: SnapshotDocs | undefined;
   const late: SnapshotDocs = {
-    serve: (rows) => bound?.serve(rows) ?? Promise.resolve({ checkpoints: [], complete: false }),
+    serve: (rows) => bound?.serve(rows) ?? Promise.resolve(NO_DOCS),
     install: (rows, checkpoints) => bound?.install(rows, checkpoints) ?? Promise.resolve(false),
   };
   const runs = options !== undefined && docColumns(schema) !== undefined;

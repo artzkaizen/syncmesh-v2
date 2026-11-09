@@ -14,7 +14,7 @@ import type { SnapshotDocs } from "./join-docs.js";
 import type { SnapshotFrame } from "./snap-frame.js";
 import type { Withheld } from "./withheld.js";
 
-import { adoptAfterDocs, carriedDocs, fittedPage } from "./join-docs.js";
+import { adoptAfterDocs, carriedDocs, fittedPage, servedDocs } from "./join-docs.js";
 import { snapAckFrame, snapChunkFrame, snapManifestFrame, snapRequestFrame } from "./snap-frame.js";
 import { servable } from "./withheld.js";
 
@@ -218,9 +218,9 @@ export function createJoinExchange(deps: JoinDeps): JoinExchange {
       sendPages(pages.map((rows) => encodeSnapshotPage({ rows })));
       return undefined;
     }
-    return Promise.all(pages.map(async (rows) => fittedPage(rows, await docs.serve(rows)))).then(
-      sendPages,
-    );
+    return Promise.all(
+      pages.map(async (rows) => fittedPage(rows, await servedDocs(docs, rows))),
+    ).then(sendPages);
   };
 
   const onManifest = (frame: Extract<SnapshotFrame, { kind: "snap-manifest" }>): void => {

@@ -71,6 +71,9 @@ export interface DocumentAdapter<D> {
    * compensation is made against the document as `updates` left it and merges with everything
    * since as a concurrent edit would, so later edits by anyone stand. `undefined` when nothing
    * of `updates` still shows in `doc`. Compensating a compensation is redo.
+   *
+   * Required since `@syncmesh/docs` added revert: an adapter written against the SPI before it
+   * implements this before it type-checks, and `checkAdapter` checks it (`compensate`).
    */
   readonly compensate: (
     doc: D,

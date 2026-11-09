@@ -12,11 +12,11 @@ describe("fittedPage", () => {
     (await write(holder, "n1", "x".repeat(PAGE_FRAME_BYTES - PAGE_DOCS_BUDGET / 2))).unwrap();
     const { rows } = holder.engine.snapshot();
     // inside the checkpoint budget on its own, past the frame beside the row
-    const checkpoint: PageCheckpoint = {
+    const checkpoint = {
       producer: holder.identity.peerId,
       checkpoint: Uint8Array.of(1, 2, 3),
       snapshot: new Uint8Array(PAGE_DOCS_BUDGET - 1024),
-    };
+    } satisfies PageCheckpoint;
     const page = fittedPage(rows, { checkpoints: [checkpoint], complete: true });
     expect(page.length).toBeLessThanOrEqual(PAGE_FRAME_BYTES);
     const decoded = decodeSnapshotPage(page).unwrap();

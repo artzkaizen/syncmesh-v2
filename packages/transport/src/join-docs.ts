@@ -35,6 +35,16 @@ export interface SnapshotDocs {
   ) => Promise<boolean>;
 }
 
+/** What a page carries of its documents when serving them failed: nothing, and not complete. */
+export const NO_DOCS = { checkpoints: [], complete: false } satisfies PageDocs;
+
+/**
+ * `docs.serve(rows)`, or no checkpoints and an incomplete page when it rejects: the pages still go
+ * out, so the joiner's exchange closes, and it adopts no floor for the documents it was not sent.
+ */
+export const servedDocs = (docs: SnapshotDocs, rows: readonly KeyedRecord[]): Promise<PageDocs> =>
+  Result.tryPromise(() => docs.serve(rows)).then((served) => served.unwrapOr(NO_DOCS));
+
 /**
  * The most a page spends on its documents' checkpoints: half a frame, so a page of rows and
  * checkpoints still travels as one frame on every link ({@link DEFAULT_MAX_FRAME_BYTES}).

@@ -643,6 +643,29 @@ describe("what an install below a floor adopts (D46)", () => {
       expect(joiner.engine.coverage().synced.size).toBe(0);
     });
 
+    test("a holder whose documents fail to serve still sends its pages, marked incomplete", async () => {
+      const holder = peer(40, "acct_x");
+      const joiner = peer(80, "acct_y");
+      for (let i = 1; i <= 3; i += 1) (await write(holder, `n${i}`, `body ${i}`)).unwrap();
+      const withDocs = { ...joiner.engine, hasDocColumns: () => true };
+      const holderDocs: SnapshotDocs = {
+        serve: () => Promise.reject(new Error("the doc store is gone")),
+        install: () => Promise.resolve(false),
+      };
+      const joinerDocs: SnapshotDocs = {
+        serve: () => Promise.resolve({ checkpoints: [], complete: false }),
+        install: () => Promise.resolve(true),
+      };
+      const pair = exchanges(holder, joiner, withDocs, { holder: holderDocs, joiner: joinerDocs });
+      // SAFETY: test fixture; the holder wrote three
+      pair.ask({ adoptUnvouched: true, floor: new Map([[holder.identity.peerId, 3 as SeqNum]]) });
+      await pair.settle();
+      // the exchange closes: the rows land, and no floor is taken for documents never sent
+      expect(pair.outcomes.map(({ kind }) => kind)).toEqual(["installed"]);
+      expect(joiner.engine.state().get(NOTES)?.size).toBe(3);
+      expect(joiner.engine.coverage().synced.size).toBe(0);
+    });
+
     test("a joiner that takes no documents adopts nothing below a floor, whatever the pages carried", async () => {
       const holder = peer(40, "acct_x");
       const joiner = peer(80, "acct_y");
