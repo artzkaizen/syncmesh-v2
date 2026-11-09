@@ -30,14 +30,8 @@ export type {
   PresenceTouch,
 } from "./presence.js";
 export { createPresenceStore, presenceSlot } from "./presence.js";
-export type {
-  JoinDeps,
-  JoinExchange,
-  JoinOutcome,
-  JoinPolicy,
-  SnapshotDocs,
-  SnapshotInstalled,
-} from "./join.js";
+export type { JoinDeps, JoinExchange, JoinOutcome, JoinPolicy, SnapshotInstalled } from "./join.js";
+export type { SnapshotDocs } from "./join-docs.js";
 export { createJoinExchange } from "./join.js";
 export type {
   Accepted,

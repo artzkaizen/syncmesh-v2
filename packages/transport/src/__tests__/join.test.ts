@@ -14,18 +14,14 @@ import {
 import { describe, expect, test } from "bun:test";
 
 import type { BridgeError, BridgeOptions } from "../bridge.js";
-import type {
-  JoinExchange,
-  JoinOutcome,
-  JoinPolicy,
-  SnapshotDocs,
-  SnapshotInstalled,
-} from "../join.js";
+import type { SnapshotDocs } from "../join-docs.js";
+import type { JoinExchange, JoinOutcome, JoinPolicy, SnapshotInstalled } from "../join.js";
 import type { Peer } from "./fixtures.js";
 
 import { bridgeFramedLink } from "../bridge.js";
 import { cursorsFrame, decodeFrame } from "../frame.js";
-import { PAGE_DOCS_BUDGET, createJoinExchange } from "../join.js";
+import { PAGE_DOCS_BUDGET } from "../join-docs.js";
+import { createJoinExchange } from "../join.js";
 import { loopbackPair } from "../link.js";
 import { snapChunkFrame, snapManifestFrame } from "../snap-frame.js";
 import { ACME, BODY, CREATE, GLOBEX, NOTES, T0, key, mintFor, peer, write } from "./fixtures.js";
