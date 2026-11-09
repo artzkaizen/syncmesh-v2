@@ -138,6 +138,18 @@ still asked:
   another tenant's to the old tenant's peers. Moving a row between instances is
   not something CDC does, so the stop is loud and the watermark stays put.
 
+A stop on `RowMoved` or `RowUnplaceable` is a liveness stop: the transaction is
+unacked, and a restart replays it and stops again. Fixing the row in the
+database does not help, since the replay carries the images as they were
+committed. The way out is the mapping. Restart with one that returns the held
+instance, or `undefined`, for that row and the update is filed where the row
+lives; one that names an instance for a row it could not place before files it
+there. Then move the row deliberately, as a delete in the old instance and an
+insert in the new one. On `main` before this change, a row whose tenant column
+changed was filed silently wherever the mapping named, so the stop is new
+behaviour for logical replication too. Decided 2026-11-08 (Jace delegated the
+call).
+
 Added 2026-11-08 (Jace delegated the call) with RFC-0025. In the first version,
 a moved row's updates were filed in the old instance without a word; a review
 caught that this leaks across tenants, and the stop replaced it.

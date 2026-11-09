@@ -95,7 +95,10 @@ edit to another column survives, and so does a mesh write that landed between tw
 to the row. The sweep's stamp is the authority's clock at the sweep, so on a column the outside
 writer did change it beats a device's edit that was folded in after the outside write but before
 the sweep: real-time order is inverted on that one field, and every peer converges on the outside
-value.
+value. If another outside write to the row follows that fold in the same sweep, the column
+carries the device's value instead, signed again under the authority's stamp. A tenant column
+the outside writer changes does not move the row: a staged row's instance is its `_partition`,
+and moving a row between tenants is a delete and an insert.
 
 ```ts
 const stores = (await openStores(driver, { tables, strict: { stage: ["tasks"] } })).unwrap();

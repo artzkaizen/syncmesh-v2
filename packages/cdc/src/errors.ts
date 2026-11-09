@@ -53,7 +53,9 @@ export class RowUnplaceable extends TaggedError("RowUnplaceable")<{
  * the database changed the column the mapping reads. Refused rather than followed — a row keeps
  * the instance it was born in (the kernel files it there), so the update could reach only peers
  * that never held the row; and refused rather than filed where the row lives, which would keep
- * sending a row the database says is another tenant's to the old one's peers.
+ * sending a row the database says is another tenant's to the old one's peers. The stop is unacked
+ * and a restart replays it; restart with a mapping that returns the held instance, or
+ * `undefined`, for the row to file the update where the row lives.
  */
 export class RowMoved extends TaggedError("RowMoved")<{
   table: string;

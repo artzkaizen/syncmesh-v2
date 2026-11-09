@@ -147,7 +147,14 @@ RFC-0021): an update to a row the engine holds, which the mapping cannot place, 
 instance the engine holds it in, which is where the kernel keeps a row whatever later events say.
 One the mapping places in a different instance stops capture with `RowMoved`, since filing it
 in either instance would be wrong. With the documented mapping that happens only if an outside
-writer sets `_partition` itself. Given an update to a row the mesh never held, which has neither a `_partition`
+writer sets `_partition` itself. So an outside `UPDATE tasks SET "orgId" = 'globex'` on a row the
+mesh placed in `org:acme` does not stop capture and does not move the row: the guard files it with
+`_partition = 'org:acme'`, the mapping reads `_partition` first, and the update reaches acme's
+peers with the new `orgId`. A staged table's tenant is its `_partition`, not the column the
+mapping would read for a new row; moving a row between tenants is a delete and an insert. A
+mapping that must refuse such a write compares the tenant column with `_partition` and returns
+the column's instance, which stops capture with `RowMoved`. The way out of that stop, or of
+`RowUnplaceable`, is RFC-0021's: restart with a mapping that places the row. Given an update to a row the mesh never held, which has neither a `_partition`
 nor the columns that would place it, the mapping returns `undefined` and capture stops with
 `RowUnplaceable`; a guess such as `` `org:${String(row.orgId)}` `` would read `org:undefined` and
 sign the row into an instance no device syncs. Such a row exists only if the table was written
@@ -206,7 +213,12 @@ rather than enforced.
   authority's clock at the sweep, so on a column the outside writer changed it wins over any
   earlier-stamped write to that field, including a device's edit that was folded into the table
   between the outside write and the sweep. That inverts real-time order on the one field, and
-  every peer converges on the outside value; the storage README says so too.
+  every peer converges on the outside value; the storage README says so too. When a later outside
+  write to the same row follows that fold in the same sweep, the column carries the folded value
+  instead, signed again under the authority's stamp: the device's value survives but loses its
+  own stamp. A column a mesh write changed between two outside writes travels even when the last
+  of them set it back to its value before the first, since the mesh may still hold the mesh
+  write's value while the table holds the outside one (`sweep-net.ts`).
 - **Not a document or derived value.** `meshCells` leaves document and derived columns out
   (RFC-0023 §16.4, U28), so an outside write to one is not carried, and the next fold of the row
   writes the mesh's value back.
@@ -270,7 +282,10 @@ Not built by this RFC's change, each a follow-on with no decision outstanding:
   capture with `RowMoved`.
 - `storage/src/__tests__/staged.test.ts` also: a captured mesh write between two outside writes
   to one row is not in the sweep's patch, and a counter moves by the outside writes' increments
-  alone, not by a fold's between them.
+  alone, not by a fold's between them; an outside write that sets a column back to its value
+  before a mesh write still reaches the mesh, so the table and the mesh agree. The authority in
+  that test opens its engine with the schema's merge spec, so a counter ends the same in the
+  table and the mesh.
 - `storage/src/driver-tests/staged.ts` also, on every driver: an outside update that changes a
   row's key is filed and swept as a delete of the old key and an insert of the new one.
 - `adapters/postgres/src/__tests__/staged.test.ts` also: a service whose role may write only the
