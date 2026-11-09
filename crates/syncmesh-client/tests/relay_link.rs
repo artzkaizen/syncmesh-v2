@@ -913,6 +913,62 @@ fn a_scoped_interest_receives_its_slice_carries_the_scope_and_widening_repages_f
     assert_eq!(Net::folded_count(&net.take_facts(b)), 0);
 }
 
+/// O13: a window is part of the interest. A device that joined by a windowed snapshot holds
+/// cursors true for that window alone, so a link asking for the whole partition asks from nothing
+/// and the rows the window left out arrive; a link asking for no more than the window keeps them.
+#[test]
+fn a_window_dropped_repages_the_rows_a_windowed_snapshot_left_out() {
+    let mut net = Net::new(room_with(vec![1, 2], 15_000));
+    let a = net.add(1, v2_options());
+    let windowed = Interest::partitions([acme()]).windowed(1);
+    let b = net.add(
+        2,
+        RelayOptions {
+            interest: Some(windowed.clone()),
+            ..v2_options()
+        },
+    );
+    write(&mut net.devices[a].engine, "n1", "acme one", Some(acme()));
+    write(&mut net.devices[a].engine, "n2", "acme two", Some(acme()));
+    let snapshot = net.devices[a].engine.snapshot(Some(&windowed));
+    net.devices[b]
+        .engine
+        .install_snapshot(snapshot)
+        .expect("installs");
+    assert!(body_of(&net.devices[b].engine, "n1").is_none());
+    net.dial(a);
+    // the window asked for again: the cursor is kept and nothing below it comes
+    net.dial(b);
+    let joins = net.joins_sent(b);
+    assert_eq!(joins[0].cursors.len(), 1, "{:?}", joins[0].cursors);
+    net.take_facts(b);
+    assert!(body_of(&net.devices[b].engine, "n1").is_none());
+    // the whole partition: the window's cursors claim nothing about n1, so the join starts over
+    let stopped = net.devices[b].link.stop();
+    net.apply_device(b, stopped);
+    net.pump();
+    net.devices[b].link = RelayLink::new(
+        identity(2),
+        RelayOptions {
+            interest: Some(Interest::partitions([acme()])),
+            ..v2_options()
+        },
+    );
+    net.devices[b].sent.clear();
+    net.dial(b);
+    let joins = net.joins_sent(b);
+    assert!(joins[0].cursors.is_empty(), "{:?}", joins[0].cursors);
+    net.take_facts(b);
+    assert_eq!(
+        body_of(&net.devices[b].engine, "n1").as_deref(),
+        Some("acme one")
+    );
+    assert_eq!(
+        net.devices[b].engine.coverage().scope.as_deref(),
+        Some(r#"{"partitions":["org:acme"]}"#)
+    );
+}
+
 /// What a gated TypeScript relay sends (D24): a pass-over whose scope names the entitlement as
 /// well as the interest, exactly as `scopeText` writes it.
 #[test]

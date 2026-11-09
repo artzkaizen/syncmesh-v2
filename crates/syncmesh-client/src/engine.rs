@@ -39,7 +39,7 @@ use crate::doc_log::{
     lineage_moves, record_docs, relabel_docs,
 };
 use crate::doc_rules::{DerivedColumns, derived_refusal, doc_refusal, doc_verdict};
-use crate::interest::{Interest, interest_text, matches_interest, rows_in};
+use crate::interest::{Interest, interest_text, matches_interest, rows_in, window_rows};
 use crate::quarantine::{Parked, Quarantine};
 use crate::snapshot::{InstallError, Installed, Snapshot};
 use crate::store::{
@@ -982,10 +982,11 @@ impl Engine {
 
     /// The rows this device holds, tombstones included, as one transferable value (RFC-0019,
     /// `engine.snapshot`). With an interest only the rows in it, and the snapshot then claims
-    /// completeness for that slice alone. The floor is this device's own account of its log and
+    /// completeness for that slice alone; a `window` keeps the newest live rows of it and every
+    /// tombstone (`window_rows`). The floor is this device's own account of its log and
     /// never part of what it claims.
     pub fn snapshot(&self, interest: Option<&Interest>) -> Snapshot {
-        let rows = self
+        let rows: Vec<SnapshotRow> = self
             .state
             .tables
             .iter()
@@ -996,6 +997,11 @@ impl Engine {
                     .map(move |(key, record)| SnapshotRow::new(table, key, record.clone()))
             })
             .collect();
+        // a window keeps the newest live rows of the slice and every tombstone in it
+        let rows = match interest.and_then(|i| i.window) {
+            Some(window) => window_rows(rows, window),
+            None => rows,
+        };
         let coverage = Coverage {
             floor: Cursors::new(),
             ..self.coverage.current()

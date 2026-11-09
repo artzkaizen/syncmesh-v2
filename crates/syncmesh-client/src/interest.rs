@@ -1,51 +1,112 @@
 //! What a device wants from a room (`engine/src/interest.ts`), so a sender drops the rest before
 //! it becomes bytes. An interest **narrows** and never widens: it is a request, not a permission.
-//! Partitions and nothing finer (book ch. 3): a device holds a partition entire or not at all.
+//! Partitions and nothing finer (book ch. 3): a device holds a partition entire or not at all. A
+//! snapshot alone can be windowed to the newest rows of its slice (RFC-0019 §3).
 
 use syncmesh_core::event::{PartitionKey, SyncEvent};
+use syncmesh_core::snapshot_codec::SnapshotRow;
+use syncmesh_core::stamp::Stamp;
 
 /// Only these instances; `None` is every instance the policy already allows.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Interest {
     pub partitions: Option<Vec<PartitionKey>>,
+    /// Only the newest rows of the slice, for a snapshot; `None` is every row. Events are never
+    /// windowed, and a coverage adopted under a window claims nothing about the rows outside it,
+    /// so dropping or growing the window re-pages them (D23).
+    pub window: Option<InterestWindow>,
+}
+
+/// How many rows a windowed snapshot carries (`InterestWindow`): the `newest` live rows of its
+/// slice by each row's newest stamp, plus every tombstone in the slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InterestWindow {
+    /// A positive whole number of live rows.
+    pub newest: u64,
 }
 
 impl Interest {
     /// Nothing narrowed: the sender filters nothing.
-    pub const EVERYTHING: Interest = Interest { partitions: None };
+    pub const EVERYTHING: Interest = Interest {
+        partitions: None,
+        window: None,
+    };
 
     pub fn partitions<I: IntoIterator<Item = PartitionKey>>(partitions: I) -> Interest {
         Interest {
             partitions: Some(partitions.into_iter().collect()),
+            window: None,
+        }
+    }
+
+    /// The same interest, its snapshots windowed to the `newest` live rows.
+    #[must_use]
+    pub fn windowed(self, newest: u64) -> Interest {
+        Interest {
+            window: Some(InterestWindow { newest }),
+            ..self
         }
     }
 
     fn is_everything(&self) -> bool {
-        self.partitions.is_none()
+        self.partitions.is_none() && self.window.is_none()
     }
 }
 
-/// An interest as wire text — `JSON.stringify(interest)` exactly, so the join a Rust device sends
-/// re-encodes to the same core a TypeScript device would sign: `""` for none, `{}` for
-/// everything, `{"partitions":["org:acme"]}` otherwise. Key order is the TypeScript object's.
-pub fn interest_text(interest: Option<&Interest>) -> String {
-    match interest {
-        None => String::new(),
-        Some(Interest { partitions: None }) => "{}".to_owned(),
-        Some(Interest {
-            partitions: Some(list),
-        }) => {
-            let items: Vec<serde_json::Value> = list
-                .iter()
-                .map(|p| serde_json::Value::String(p.as_str().to_owned()))
-                .collect();
-            serde_json::json!({ "partitions": items }).to_string()
-        }
+/// An interest's fields as JSON members in their one order — `partitions`, then `window` — which
+/// is the order the TypeScript's `interestText` writes them in. Written by hand: a JSON map here
+/// sorts its keys, and `entitlement` must follow them.
+fn interest_members(interest: &Interest) -> Vec<String> {
+    let mut members = Vec::new();
+    if let Some(list) = &interest.partitions {
+        let items: Vec<&str> = list.iter().map(PartitionKey::as_str).collect();
+        members.push(format!("\"partitions\":{}", serde_json::json!(items)));
     }
+    if let Some(window) = interest.window {
+        members.push(format!("\"window\":{{\"newest\":{}}}", window.newest));
+    }
+    members
+}
+
+/// An interest as wire text — the TypeScript's `interestText` exactly, so the join a Rust device
+/// sends re-encodes to the same core a TypeScript device would sign: `""` for none, `{}` for
+/// everything, `{"partitions":["org:acme"],"window":{"newest":50}}` otherwise.
+pub fn interest_text(interest: Option<&Interest>) -> String {
+    interest.map_or_else(String::new, |interest| {
+        format!("{{{}}}", interest_members(interest).join(","))
+    })
+}
+
+/// A scope as the TypeScript relay's `scopeText` writes it (D23, D24): the interest's text, or
+/// with an entitlement the interest's fields and then `entitlement`.
+pub fn scope_text(interest: Option<&Interest>, entitlement: Option<&str>) -> String {
+    let Some(entitlement) = entitlement else {
+        return interest_text(interest);
+    };
+    let mut members = interest_members(interest.unwrap_or(&Interest::EVERYTHING));
+    members.push(format!(
+        "\"entitlement\":{}",
+        serde_json::json!(entitlement)
+    ));
+    format!("{{{}}}", members.join(","))
+}
+
+/// The largest whole number a JSON reader in JavaScript holds exactly (`Number.MAX_SAFE_INTEGER`).
+const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+
+/// A window as the wire carried it, or `None` for one this build cannot read (`parseWindow`).
+fn parse_window(value: &serde_json::Value) -> Option<InterestWindow> {
+    let newest = value.as_object()?.get("newest")?.as_f64()?;
+    let whole = newest.fract() == 0.0 && newest > 0.0 && newest <= MAX_SAFE_INTEGER;
+    // a positive whole number at most 2^53 - 1 fits a u64 exactly
+    whole.then_some(InterestWindow {
+        newest: newest as u64,
+    })
 }
 
 /// The interest some text carried, or `None` for text that named none. Junk is `None` too,
-/// deliberately: an unreadable request falls back to "everything", never to "nothing".
+/// deliberately: an unreadable request falls back to "everything", never to "nothing". A window
+/// this build cannot read is dropped for the same reason: no window is the wider request.
 pub fn interest_from(text: Option<&str>) -> Option<Interest> {
     let text = text?;
     if text.is_empty() {
@@ -65,7 +126,44 @@ pub fn interest_from(text: Option<&str>) -> Option<Interest> {
         // a list that is not a list is a request this build cannot read: everything, not nothing
         Some(_) => return None,
     };
-    Some(Interest { partitions })
+    let window = object.get("window").and_then(parse_window);
+    Some(Interest { partitions, window })
+}
+
+/// The rows a window keeps (`windowRows`, RFC-0019 §3): the `newest` live rows by each row's
+/// newest stamp, ties broken by table and then key, and every tombstone whatever its age. The rows
+/// keep the order they came in.
+pub fn window_rows(rows: Vec<SnapshotRow>, window: InterestWindow) -> Vec<SnapshotRow> {
+    let mut ranked: Vec<(usize, Option<&Stamp>)> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.record.is_visible())
+        .map(|(i, row)| (i, newest_stamp(&row.record)))
+        .collect();
+    ranked.sort_by(|(a, sa), (b, sb)| {
+        // newest first, a row with no stamp last; then table, then key, by code point
+        sb.cmp(sa)
+            .then_with(|| rows[*a].table.cmp(&rows[*b].table))
+            .then_with(|| rows[*a].key.cmp(&rows[*b].key))
+    });
+    let take = usize::try_from(window.newest).unwrap_or(usize::MAX);
+    let kept: std::collections::BTreeSet<usize> =
+        ranked.into_iter().take(take).map(|(i, _)| i).collect();
+    rows.into_iter()
+        .enumerate()
+        .filter(|(i, row)| kept.contains(i) || !row.record.is_visible())
+        .map(|(_, row)| row)
+        .collect()
+}
+
+/// The latest stamp anywhere in a record: its write, its delete, or any cell's.
+fn newest_stamp(record: &syncmesh_core::record::RowRecord) -> Option<&Stamp> {
+    record
+        .write_stamp
+        .iter()
+        .chain(record.delete_stamp.iter())
+        .chain(record.cells.values().map(|cell| &cell.stamp))
+        .max()
 }
 
 /// Whether one event is in the partitions the asker named.
@@ -113,7 +211,7 @@ pub fn scope_from(text: Option<&str>) -> Scope {
         .and_then(|v| v.get("entitlement")?.as_str().map(str::to_owned));
     // `{}` beside an entitlement is the relay writing back "no interest", not an interest of `{}`
     let interest = match (&entitlement, interest) {
-        (Some(_), Some(Interest { partitions: None })) => None,
+        (Some(_), Some(interest)) if interest.is_everything() => None,
         (_, interest) => interest,
     };
     Scope {
@@ -125,15 +223,15 @@ pub fn scope_from(text: Option<&str>) -> Scope {
 /// Whether two interests ask for the same slice however they were spelled (`sameInterest`):
 /// `None` and [`Interest::EVERYTHING`] are one request, and so are one list in two orders.
 pub fn same_interest(a: Option<&Interest>, b: Option<&Interest>) -> bool {
-    fn key(i: Option<&Interest>) -> Option<Vec<&str>> {
-        let mut sorted: Vec<&str> = i?
-            .partitions
-            .as_ref()?
-            .iter()
-            .map(PartitionKey::as_str)
-            .collect();
-        sorted.sort_unstable();
-        Some(sorted)
+    type Key<'a> = (Option<Vec<&'a str>>, Option<u64>);
+    fn key(i: Option<&Interest>) -> Key<'_> {
+        let Some(i) = i else { return (None, None) };
+        let sorted = i.partitions.as_ref().map(|list| {
+            let mut sorted: Vec<&str> = list.iter().map(PartitionKey::as_str).collect();
+            sorted.sort_unstable();
+            sorted
+        });
+        (sorted, i.window.map(|w| w.newest))
     }
     key(a) == key(b)
 }
@@ -149,11 +247,18 @@ pub fn narrows(next: Option<&Interest>, previous: Option<&Interest>) -> bool {
         return true;
     }
     let Some(next) = next else { return false };
-    match (&next.partitions, &previous.partitions) {
+    let partitions = match (&next.partitions, &previous.partitions) {
         (_, None) => true,
         (None, Some(_)) => false,
         (Some(n), Some(p)) => n.iter().all(|x| p.contains(x)),
-    }
+    };
+    // no window is every row, the widest a window can be; a smaller count narrows
+    let window = match (next.window, previous.window) {
+        (_, None) => true,
+        (None, Some(_)) => false,
+        (Some(n), Some(p)) => n.newest <= p.newest,
+    };
+    partitions && window
 }
 
 #[cfg(test)]

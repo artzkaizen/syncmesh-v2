@@ -20,30 +20,85 @@ import type { Cursors } from "./sync.js";
 export interface Interest {
   /** Only these instances. Absent, every instance the policy already allows. */
   readonly partitions?: readonly PartitionKey[];
+  /**
+   * Only the newest rows of the slice, for a snapshot (RFC-0019 §3): what a device that renders
+   * one screen joins with. Absent, every row.
+   *
+   * A window narrows a snapshot and nothing else. Events are never windowed — every new event is
+   * among the newest — and a relay, which folds nothing, serves the whole slice and names the
+   * window in the coverage it hands back, the narrower claim. A coverage adopted under a window
+   * claims nothing about the rows outside it, so dropping or growing the window later re-pages
+   * them (D23).
+   */
+  readonly window?: InterestWindow;
+}
+
+/**
+ * How many rows a windowed snapshot carries: the `newest` live rows of its slice by each row's
+ * newest stamp, plus every tombstone in the slice, so a device that already holds a row never
+ * keeps it after its delete.
+ *
+ * @example
+ * const interest = { partitions: [team], window: { newest: 2_000 } } satisfies Interest;
+ */
+export interface InterestWindow {
+  /** A positive whole number of live rows. */
+  readonly newest: number;
 }
 
 /** An interest with nothing in it: the sender filters nothing, which is the old behaviour exactly. */
 export const EVERYTHING: Interest = {};
 
 /**
- * An interest as wire text. It is already JSON — two lists and the policy AST — so it travels as
- * JSON rather than earning a codec of its own, which also means a build that never reads the
- * position simply serves everything (D14's additive rule).
+ * An interest's fields in their one order — `partitions`, then `window` — so a TypeScript and a
+ * Rust device write the same text for the same request, whatever order the app spelled it in.
+ */
+const canonical = (interest: Interest): Interest => ({
+  ...(interest.partitions !== undefined && { partitions: interest.partitions }),
+  ...(interest.window !== undefined && { window: { newest: interest.window.newest } }),
+});
+
+/**
+ * An interest as wire text. It is already JSON — a list and a window — so it travels as JSON
+ * rather than earning a codec of its own, which also means a build that never reads the position
+ * simply serves everything (D14's additive rule). Written in one key order (`partitions`,
+ * `window`), so the same request is the same text in both runtimes.
+ *
+ * @example
+ * interestText({ window: { newest: 50 }, partitions: [acme] }); // '{"partitions":["org:acme"],"window":{"newest":50}}'
  */
 export const interestText = (interest: Interest | undefined): string =>
-  interest === undefined ? "" : JSON.stringify(interest);
+  interest === undefined ? "" : JSON.stringify(canonical(interest));
+
+/** What the wire may have put where a window goes: anything, until `newest` is read. */
+interface WireInterest extends Omit<Interest, "window"> {
+  readonly window?: { readonly newest?: unknown };
+}
+
+/**
+ * The interest a parsed text holds, its window kept only when `newest` is a positive whole number
+ * this build can count exactly; any other window is dropped, the wider request.
+ */
+const readInterest = ({ window, ...rest }: WireInterest): Interest => {
+  const newest = window?.newest;
+  // SAFETY: `isSafeInteger` has just said it is a number, and a whole one
+  return Number.isSafeInteger(newest) && (newest as number) > 0
+    ? { ...rest, window: { newest: newest as number } }
+    : rest;
+};
 
 /**
  * The interest some text carried, or `undefined` for text that named none. Junk is `undefined`
  * too, deliberately: an unreadable request must fall back to "everything the policy allows",
- * never to "nothing", which would silently starve a device rather than showing a bug.
+ * never to "nothing", which would silently starve a device rather than showing a bug. A window
+ * this build cannot read is dropped for the same reason: no window is the wider request.
  */
 export const interestFrom = (text: string | undefined): Interest | undefined => {
   if (text === undefined || text === "") return undefined;
   return Result.try({
-    // SAFETY: parsed at the wire boundary and read only through Interest's own optional fields;
-    // a predicate that is not a PolicyNode simply matches nothing when evaluated
-    try: () => JSON.parse(text) as Interest,
+    // SAFETY: parsed at the wire boundary and read only through Interest's own optional fields,
+    // the window through `readInterest`; `null` throws on the destructure and reads as junk
+    try: () => readInterest(JSON.parse(text) as WireInterest),
     catch: () => undefined,
   }).unwrapOr(undefined);
 };
@@ -91,7 +146,11 @@ export function rowsIn(record: RowRecord, interest: Interest | undefined): boole
 export function interestKey(interest: Interest): string {
   const sorted = (values: readonly string[] | undefined) =>
     values === undefined ? null : [...values].map(String).sort();
-  return JSON.stringify([sorted(interest.partitions)]);
+  const window = interest.window?.newest;
+  // a windowless key keeps its old text, so two builds that never window still agree on it
+  return JSON.stringify(
+    window === undefined ? [sorted(interest.partitions)] : [sorted(interest.partitions), window],
+  );
 }
 
 /**
@@ -108,10 +167,21 @@ export function narrows(next: Interest | undefined, previous: Interest | undefin
   // an unscoped cursor is already the stronger claim; nothing can widen past everything
   if (previous === undefined || isEverything(previous)) return true;
   if (next === undefined) return false;
-  return within(next.partitions, previous.partitions);
+  return within(next.partitions, previous.partitions) && windowWithin(next.window, previous.window);
 }
 
-const isEverything = (interest: Interest): boolean => interest.partitions === undefined;
+const isEverything = (interest: Interest): boolean =>
+  interest.partitions === undefined && interest.window === undefined;
+
+/** No window is every row, so it is the widest a window can be; a smaller count narrows. */
+const windowWithin = (
+  next: InterestWindow | undefined,
+  previous: InterestWindow | undefined,
+): boolean => {
+  if (previous === undefined) return true;
+  if (next === undefined) return false;
+  return next.newest <= previous.newest;
+};
 
 /** `undefined` means "all of them", so it is the widest value a list can take, never the emptiest. */
 const within = (
@@ -150,7 +220,9 @@ export const matchesInterest = (interest: Interest | undefined, event: SyncEvent
  * scopeText({ partitions: [acme] }, "clinic:a") // '{"partitions":["org:acme"],"entitlement":"clinic:a"}'
  */
 export const scopeText = (interest: Interest | undefined, entitlement?: string): string =>
-  entitlement === undefined ? interestText(interest) : JSON.stringify({ ...interest, entitlement });
+  entitlement === undefined
+    ? interestText(interest)
+    : JSON.stringify({ ...canonical(interest ?? EVERYTHING), entitlement });
 
 /** The two halves of a scope as {@link scopeText} wrote them; junk reads as no scope at all. */
 export interface Scope {
@@ -170,8 +242,7 @@ export const scopeFrom = (text: string | undefined): Scope => {
   if (parsed === undefined) return { interest: undefined, entitlement: undefined };
   const { entitlement, ...interest } = parsed;
   // `{}` beside an entitlement is the relay writing back "no interest", not an interest of `{}`
-  const asked =
-    entitlement !== undefined && interest.partitions === undefined ? undefined : interest;
+  const asked = entitlement !== undefined && isEverything(interest) ? undefined : interest;
   return { interest: asked, entitlement };
 };
 
@@ -217,7 +288,10 @@ export function entitledInterest(
 ): Interest {
   const asked = interest?.partitions;
   const kept = asked === undefined ? [...granted] : asked.filter((p) => granted.includes(p));
-  return { partitions: [...new Set(kept)].sort() };
+  const partitions = [...new Set(kept)].sort();
+  // the cut is to partitions; a window asked for stays asked for, or the scope would claim more
+  const window = interest?.window;
+  return window === undefined ? { partitions } : { partitions, window };
 }
 
 /**

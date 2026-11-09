@@ -185,7 +185,7 @@ everything below it is represented by state.
 | Piece | State |
 |---|---|
 | `mergeRecord` — stamp-respecting row merge | **built** (`src/core/kernel.ts`) |
-| `Engine.snapshotFor({interest, window})` | **built** — partition, table, predicate and window scoping |
+| `Engine.snapshotFor({interest, window})` | **built** — partition, table, predicate and window scoping. Today: `engine.snapshot({ interest: { partitions, window: { newest } } })` keeps the newest live rows and every tombstone, and its coverage is adopted scoped to the window; widening re-pages (D23, O13) |
 | `Engine.installScopedSnapshot()` | **built** — merges, adopts cursors, emits one fold batch |
 | Tombstones included in a scoped snapshot | **built** |
 | `bench/join.ts` — the four strategies | **built** |
@@ -205,6 +205,8 @@ devices that joined with different scopes converge once their interests meet.
 
 - Should a windowed snapshot advertise its window boundary, so the client
   knows where backfill must start rather than guessing?
+  (Still open after O13: the window is a count, `{ newest }`, carried in the
+  scope; no boundary stamp travels, and no backfill request exists.)
 - Does a provisional (unsigned) snapshot need to be marked in state, so a UI
   can distinguish "verified" from "shown pending audit"?
 - Backfill by key range or by time range? Time is what users scroll by; keys

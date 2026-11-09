@@ -1,0 +1,354 @@
+{
+  "texts": [
+    {
+      "description": "no interest is no text",
+      "interest": null,
+      "text": ""
+    },
+    {
+      "description": "everything",
+      "interest": {},
+      "text": "{}"
+    },
+    {
+      "description": "partitions alone keep the text they always had",
+      "interest": {
+        "partitions": ["org:acme"]
+      },
+      "text": "{\"partitions\":[\"org:acme\"]}"
+    },
+    {
+      "description": "a window is written after the partitions, whatever order the app used",
+      "interest": {
+        "window": {
+          "newest": 50
+        },
+        "partitions": ["org:acme", "org:globex"]
+      },
+      "text": "{\"partitions\":[\"org:acme\",\"org:globex\"],\"window\":{\"newest\":50}}"
+    },
+    {
+      "description": "a window alone",
+      "interest": {
+        "window": {
+          "newest": 5
+        }
+      },
+      "text": "{\"window\":{\"newest\":5}}"
+    }
+  ],
+  "read": [
+    {
+      "description": "junk is no interest",
+      "text": "not json",
+      "reads": ""
+    },
+    {
+      "description": "a window of none is no window",
+      "text": "{\"partitions\":[\"org:acme\"],\"window\":{\"newest\":0}}",
+      "reads": "{\"partitions\":[\"org:acme\"]}"
+    },
+    {
+      "description": "a fractional window is no window",
+      "text": "{\"window\":{\"newest\":2.5}}",
+      "reads": "{}"
+    },
+    {
+      "description": "a window that is not an object is no window",
+      "text": "{\"window\":\"lots\"}",
+      "reads": "{}"
+    },
+    {
+      "description": "a whole number written with a point is that number",
+      "text": "{\"window\":{\"newest\":7.0}}",
+      "reads": "{\"window\":{\"newest\":7}}"
+    },
+    {
+      "description": "a field this build does not know is dropped",
+      "text": "{\"partitions\":[],\"rank\":1}",
+      "reads": "{\"partitions\":[]}"
+    }
+  ],
+  "scopes": [
+    {
+      "description": "an interest-only scope is the interest's text",
+      "interest": "{\"partitions\":[\"org:acme\"]}",
+      "entitlement": null,
+      "text": "{\"partitions\":[\"org:acme\"]}",
+      "reads": {
+        "interest": "{\"partitions\":[\"org:acme\"]}",
+        "entitlement": null
+      }
+    },
+    {
+      "description": "an entitlement follows the window",
+      "interest": "{\"partitions\":[\"org:acme\"],\"window\":{\"newest\":50}}",
+      "entitlement": "clinic:a",
+      "text": "{\"partitions\":[\"org:acme\"],\"window\":{\"newest\":50},\"entitlement\":\"clinic:a\"}",
+      "reads": {
+        "interest": "{\"partitions\":[\"org:acme\"],\"window\":{\"newest\":50}}",
+        "entitlement": "clinic:a"
+      }
+    },
+    {
+      "description": "no interest beside an entitlement reads back as none",
+      "interest": "",
+      "entitlement": "clinic:a",
+      "text": "{\"entitlement\":\"clinic:a\"}",
+      "reads": {
+        "interest": "",
+        "entitlement": "clinic:a"
+      }
+    },
+    {
+      "description": "a window alone beside an entitlement is an interest",
+      "interest": "{\"window\":{\"newest\":5}}",
+      "entitlement": "clinic:a",
+      "text": "{\"window\":{\"newest\":5},\"entitlement\":\"clinic:a\"}",
+      "reads": {
+        "interest": "{\"window\":{\"newest\":5}}",
+        "entitlement": "clinic:a"
+      }
+    }
+  ],
+  "narrows": [
+    {
+      "description": "an unscoped cursor survives anything",
+      "next": "{\"partitions\":[\"org:acme\"],\"window\":{\"newest\":5}}",
+      "previous": "",
+      "narrows": true,
+      "same": false
+    },
+    {
+      "description": "everything again over a slice widens",
+      "next": "",
+      "previous": "{\"partitions\":[\"org:acme\"]}",
+      "narrows": false,
+      "same": false
+    },
+    {
+      "description": "dropping a partition narrows",
+      "next": "{\"partitions\":[\"org:acme\"]}",
+      "previous": "{\"partitions\":[\"org:acme\",\"org:globex\"]}",
+      "narrows": true,
+      "same": false
+    },
+    {
+      "description": "adding a partition widens",
+      "next": "{\"partitions\":[\"org:acme\",\"org:globex\"]}",
+      "previous": "{\"partitions\":[\"org:acme\"]}",
+      "narrows": false,
+      "same": false
+    },
+    {
+      "description": "a smaller window narrows",
+      "next": "{\"partitions\":[\"org:acme\"],\"window\":{\"newest\":50}}",
+      "previous": "{\"partitions\":[\"org:acme\"],\"window\":{\"newest\":100}}",
+      "narrows": true,
+      "same": false
+    },
+    {
+      "description": "the same window narrows",
+      "next": "{\"partitions\":[\"org:acme\"],\"window\":{\"newest\":50}}",
+      "previous": "{\"partitions\":[\"org:acme\"],\"window\":{\"newest\":50}}",
+      "narrows": true,
+      "same": true
+    },
+    {
+      "description": "windowing an unwindowed slice narrows",
+      "next": "{\"partitions\":[\"org:acme\"],\"window\":{\"newest\":50}}",
+      "previous": "{\"partitions\":[\"org:acme\"]}",
+      "narrows": true,
+      "same": false
+    },
+    {
+      "description": "dropping the window widens",
+      "next": "{\"partitions\":[\"org:acme\"]}",
+      "previous": "{\"partitions\":[\"org:acme\"],\"window\":{\"newest\":50}}",
+      "narrows": false,
+      "same": false
+    },
+    {
+      "description": "growing the window widens",
+      "next": "{\"partitions\":[\"org:acme\"],\"window\":{\"newest\":100}}",
+      "previous": "{\"partitions\":[\"org:acme\"],\"window\":{\"newest\":50}}",
+      "narrows": false,
+      "same": false
+    },
+    {
+      "description": "everything over a window alone widens",
+      "next": "{}",
+      "previous": "{\"window\":{\"newest\":5}}",
+      "narrows": false,
+      "same": false
+    },
+    {
+      "description": "the same window in another partition order",
+      "next": "{\"partitions\":[\"org:globex\",\"org:acme\"],\"window\":{\"newest\":5}}",
+      "previous": "{\"partitions\":[\"org:acme\",\"org:globex\"],\"window\":{\"newest\":5}}",
+      "narrows": true,
+      "same": true
+    }
+  ],
+  "windows": {
+    "rows": [
+      {
+        "table": "notes",
+        "key": "a",
+        "write": [1000, 0, "1111111111111111111111111111111111111111111111111111111111111111"]
+      },
+      {
+        "table": "tasks",
+        "key": "a",
+        "write": [1000, 0, "1111111111111111111111111111111111111111111111111111111111111111"]
+      },
+      {
+        "table": "notes",
+        "key": "b",
+        "write": [1000, 0, "1111111111111111111111111111111111111111111111111111111111111111"]
+      },
+      {
+        "table": "notes",
+        "key": "c",
+        "write": [900, 0, "1111111111111111111111111111111111111111111111111111111111111111"],
+        "cell": [2000, 0, "2222222222222222222222222222222222222222222222222222222222222222"]
+      },
+      {
+        "table": "notes",
+        "key": "d",
+        "write": [1500, 0, "1111111111111111111111111111111111111111111111111111111111111111"],
+        "delete": [1600, 0, "1111111111111111111111111111111111111111111111111111111111111111"]
+      },
+      {
+        "table": "notes",
+        "key": "e",
+        "write": [1700, 0, "1111111111111111111111111111111111111111111111111111111111111111"],
+        "delete": [1200, 0, "1111111111111111111111111111111111111111111111111111111111111111"]
+      },
+      {
+        "table": "notes",
+        "key": "f",
+        "write": [1000, 1, "1111111111111111111111111111111111111111111111111111111111111111"]
+      },
+      {
+        "table": "notes",
+        "key": "g",
+        "write": [1000, 0, "2222222222222222222222222222222222222222222222222222222222222222"]
+      },
+      {
+        "table": "notes",
+        "key": "𐀀",
+        "write": [800, 0, "1111111111111111111111111111111111111111111111111111111111111111"]
+      },
+      {
+        "table": "notes",
+        "key": "",
+        "write": [800, 0, "1111111111111111111111111111111111111111111111111111111111111111"]
+      },
+      {
+        "table": "notes",
+        "key": "h",
+        "delete": [100, 0, "1111111111111111111111111111111111111111111111111111111111111111"]
+      }
+    ],
+    "cases": [
+      {
+        "newest": 1,
+        "kept": [
+          ["notes", "c"],
+          ["notes", "d"],
+          ["notes", "h"]
+        ]
+      },
+      {
+        "newest": 2,
+        "kept": [
+          ["notes", "c"],
+          ["notes", "d"],
+          ["notes", "e"],
+          ["notes", "h"]
+        ]
+      },
+      {
+        "newest": 3,
+        "kept": [
+          ["notes", "c"],
+          ["notes", "d"],
+          ["notes", "e"],
+          ["notes", "f"],
+          ["notes", "h"]
+        ]
+      },
+      {
+        "newest": 5,
+        "kept": [
+          ["notes", "a"],
+          ["notes", "c"],
+          ["notes", "d"],
+          ["notes", "e"],
+          ["notes", "f"],
+          ["notes", "g"],
+          ["notes", "h"]
+        ]
+      },
+      {
+        "newest": 6,
+        "kept": [
+          ["notes", "a"],
+          ["notes", "b"],
+          ["notes", "c"],
+          ["notes", "d"],
+          ["notes", "e"],
+          ["notes", "f"],
+          ["notes", "g"],
+          ["notes", "h"]
+        ]
+      },
+      {
+        "newest": 7,
+        "kept": [
+          ["notes", "a"],
+          ["tasks", "a"],
+          ["notes", "b"],
+          ["notes", "c"],
+          ["notes", "d"],
+          ["notes", "e"],
+          ["notes", "f"],
+          ["notes", "g"],
+          ["notes", "h"]
+        ]
+      },
+      {
+        "newest": 8,
+        "kept": [
+          ["notes", "a"],
+          ["tasks", "a"],
+          ["notes", "b"],
+          ["notes", "c"],
+          ["notes", "d"],
+          ["notes", "e"],
+          ["notes", "f"],
+          ["notes", "g"],
+          ["notes", ""],
+          ["notes", "h"]
+        ]
+      },
+      {
+        "newest": 100,
+        "kept": [
+          ["notes", "a"],
+          ["tasks", "a"],
+          ["notes", "b"],
+          ["notes", "c"],
+          ["notes", "d"],
+          ["notes", "e"],
+          ["notes", "f"],
+          ["notes", "g"],
+          ["notes", "𐀀"],
+          ["notes", ""],
+          ["notes", "h"]
+        ]
+      }
+    ]
+  }
+}
