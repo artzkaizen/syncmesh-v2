@@ -16,6 +16,7 @@ import type { RelaySocket } from "./sender.js";
 import { openDurableBlobs } from "./durable-blobs.js";
 import { DEFAULT_LIMITS } from "./limits.js";
 import { createRoomAccess } from "./posture.js";
+import { assertTruthfulCustody, hostedCustody } from "./room-receipts.js";
 import { openRelayRoom } from "./room.js";
 import { createRoomTable } from "./rooms.js";
 
@@ -34,6 +35,7 @@ export type RoomTuning = Partial<
     | "blobs"
     | "onTelemetry"
     | "admission"
+    | "custody"
   >
 >;
 
@@ -54,7 +56,8 @@ export interface RoomStore {
   /**
    * The key kept beside this log, for a host where the room is its own process — a Durable
    * Object — and the name a client pins is the object's rather than a fleet's. Given, it signs
-   * this room's hello in place of the host's key (D36).
+   * this room's hello in place of the host's key (D36), and the room signs no custody: a key
+   * lost with the log names a new holder, and what the old one signed is never withdrawn (U38).
    */
   readonly identity?: Identity;
   /** Gives back whatever opening took: file handles, and nothing for borrowed stores. */
@@ -223,6 +226,9 @@ export async function durableRoomStore(
  * Bun, Node and Durable Objects each mount this same core and differ only in those two.
  */
 export function createRelayHost(options: RelayHostOptions): RelayHost {
+  // a single log of the caller's says whether it is durable; every room log the host opens does
+  const durable = options.singleRoom === undefined || options.singleRoom.durable === true;
+  assertTruthfulCustody(options.custody, { ...options, durable }, "a relay host");
   const access = createRoomAccess(options.posture);
   // one key for every room this process opens, so the relay has one name a client can pin (D36)
   const identity =
@@ -251,6 +257,8 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
    * thing an epoch is supposed to mean it is not.
    */
   const singleEpoch = options.singleRoom?.epoch ?? crypto.randomUUID();
+  /** The rooms already said to sign no custody, so an idle eviction does not say it again. */
+  const unsigned = new Set<string>();
 
   const open = async (name: string, grants: GrantCache): Promise<OpenedRoom> => {
     if (options.singleRoom !== undefined) {
@@ -260,7 +268,7 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
         grants,
         store: options.singleRoom.store,
         epoch: singleEpoch,
-        ...omitUndefined({ durable: options.singleRoom.durable }),
+        ...omitUndefined({ durable: options.singleRoom.durable, custody: options.custody }),
       });
       // the caller opened that store and the caller closes it; an eviction here borrows nothing
       return room.match({
@@ -277,6 +285,7 @@ export function createRelayHost(options: RelayHostOptions): RelayHost {
         blobLedger: held.blobLedger,
         identity: held.identity,
         durable: held.durable,
+        custody: hostedCustody(options.custody, held, name, unsigned),
       }),
       name,
       grants,

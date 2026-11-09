@@ -8,7 +8,20 @@ import type { EngineError } from "../errors.js";
 import { openEngine } from "../boot.js";
 import { StateCorrupt, createMemoryStateStore, type StateStore } from "../state-store.js";
 import { StoreFailure } from "../store.js";
-import { CREATE, N1, NOTES, PEER_A, column, fakeClock, key, row, seq, setup } from "./fixtures.js";
+import { heldRuns } from "../sync.js";
+import {
+  CREATE,
+  N1,
+  NOTES,
+  PEER_A,
+  PEER_B,
+  column,
+  fakeClock,
+  key,
+  row,
+  seq,
+  setup,
+} from "./fixtures.js";
 
 const body = (engine: Engine, k: RowKey) => readRow(engine.state(), NOTES, k)?.get(column("body"));
 const N2 = key("n2");
@@ -203,5 +216,40 @@ describe("openEngine — a write interrupted between its two commits", () => {
     // a cursor above the log would be a claim to have folded what nobody wrote — the unrecoverable
     // direction, and the reason the durable half commits first
     expect(Number(cursor)).toBeLessThanOrEqual(events.length);
+  });
+});
+
+describe("openEngine — the held run's far side, rebuilt from the log (D32, U38)", () => {
+  test("a scoped holder that restarts still closes its held run over what it folded past a hole", async () => {
+    const stateStore = createMemoryStateStore();
+    const a = setup(PEER_A, 500, { stateStore });
+    const b = setup(PEER_B, 100);
+    for (const n of [1, 2, 3, 4, 5])
+      (
+        await b.engine.mutate(CREATE, (tx) => tx.insert(NOTES, key(`n${n}`), row({ body: "b" })))
+      ).unwrap();
+    const written = (await b.store.all()).unwrap();
+    const only = (...seqs: number[]) => written.filter((e) => seqs.includes(e.event.seqNum));
+    // 3 is withheld from A: it folds 1, 2, 4 and 5, then a scoped coverage stands past the hole
+    (await a.engine.receiveBatch(only(1, 2, 4, 5))).unwrap();
+    a.engine.adoptCoverage({
+      synced: new Map([[PEER_B, seq(5)]]),
+      local: new Map(),
+      scope: "org:acme",
+    });
+    expect(heldRuns(a.engine.coverage()).get(PEER_B)).toBe(seq(2));
+    // a write of A's own commits the coverage, scope and held run with it
+    (await a.engine.mutate(CREATE, (tx) => tx.insert(NOTES, N2, row({ body: "a" })))).unwrap();
+    const persisted = (await stateStore.loadCursors()).unwrap();
+    expect(persisted.scope).toBe("org:acme");
+    expect(heldRuns(persisted).get(PEER_B)).toBe(seq(2));
+
+    const again = (
+      await openEngine({ peerId: PEER_A, clock: fakeClock(900), store: a.store, stateStore })
+    ).unwrap();
+    expect(heldRuns(again.coverage()).get(PEER_B)).toBe(seq(2));
+    // a wider grant fills the hole: the run closes over 4 and 5, which only the log remembered
+    (await again.receiveBatch(only(3))).unwrap();
+    expect(heldRuns(again.coverage()).get(PEER_B)).toBe(seq(5));
   });
 });

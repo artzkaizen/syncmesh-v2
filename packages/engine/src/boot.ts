@@ -1,4 +1,4 @@
-import type { DocColumns, State } from "@syncmesh/kernel";
+import type { DocColumns, State, SyncEvent } from "@syncmesh/kernel";
 
 import {
   docLineage,
@@ -14,11 +14,12 @@ import type { StateStore } from "./state-store.js";
 import type { EventStore, StoreFailure, StoredEvent } from "./store.js";
 import type { Coverage, Cursors } from "./sync.js";
 
+import { heldBelowCursors } from "./coverage.js";
 import { docAppends, recordDocs } from "./doc-log.js";
 import { createEngine } from "./engine.js";
 import { StateCorrupt, allRows, rowWrites, eventWriteKeys } from "./state-store.js";
 import { strandedWrites } from "./stranded.js";
-import { EMPTY_COVERAGE } from "./sync.js";
+import { EMPTY_COVERAGE, heldRuns } from "./sync.js";
 
 /** The tables of `state` that declare a doc column, and no others. */
 const docTables = (state: State, docs: DocColumns): State =>
@@ -37,6 +38,11 @@ export interface Boot {
   readonly replay: readonly StoredEvent[];
   /** Per author, the highest synced sequence compaction removed (`compactedBelow`); absent is none. */
   readonly compacted?: Cursors;
+  /**
+   * The synced events the log holds between the held run and the cursors (D32, U38): what a scoped
+   * device folded past a hole, read back so the held run closes over them when the hole fills.
+   */
+  readonly held?: readonly SyncEvent[];
 }
 
 interface Cached {
@@ -73,11 +79,15 @@ export function openEngine(
     const synced = yield* Result.await(store.allSince(coverage.synced, "synced"));
     const local = yield* Result.await(store.allSince(coverage.local, "local"));
     const replay = [...synced, ...local];
+    const held = yield* Result.await(heldTail(store, coverage));
     const max = yield* Result.await(store.maxHlc());
     if (max !== undefined) clock.receive(max);
     const compacted = (yield* Result.await(store.compactedBelow())).synced;
 
-    const engine = createEngine({ ...options, boot: { state, coverage, replay, compacted } });
+    const engine = createEngine({
+      ...options,
+      boot: { state, coverage, replay, compacted, held },
+    });
     if (stateStore !== undefined) {
       const rows =
         cached === undefined
@@ -105,6 +115,27 @@ export function openEngine(
     }
     return Result.ok(engine);
   });
+}
+
+/**
+ * The log between the held run and the cursors: every synced event above the run a receipt signs
+ * and at or below the cursor, which boot does not replay. Read only when the run can stand below
+ * the cursors ({@link heldBelowCursors}); empty otherwise.
+ */
+function heldTail(
+  store: EventStore,
+  coverage: Coverage,
+): Promise<Result<readonly SyncEvent[], StoreFailure>> {
+  if (!heldBelowCursors(coverage)) return Promise.resolve(Result.ok([]));
+  return store
+    .allSince(heldRuns(coverage), "synced")
+    .then((read) =>
+      read.map((entries) =>
+        entries
+          .map((entry) => entry.event)
+          .filter((event) => event.seqNum <= (coverage.synced.get(event.peerId) ?? 0)),
+      ),
+    );
 }
 
 /** The cache if it is usable; `undefined` when it is empty or was corrupt and has been cleared. */

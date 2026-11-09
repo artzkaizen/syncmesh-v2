@@ -33,6 +33,13 @@ export const KIND = {
    * relay or a client built before it ignores the frame.
    */
   refusal: 22,
+  /**
+   * A joiner took its seat: sent by the room to every other socket in it, and to the room's other
+   * instances (D32, U38). A holder says again what of the joiner's writes it refused once per
+   * seating, not once per cursors frame. Additive, so a relay or a client built before it ignores
+   * the frame.
+   */
+  seated: 23,
 } as const;
 
 /**
@@ -169,6 +176,8 @@ export type RelayFrame =
    * session tag, 7, is below the relay's — and passes as a `session` frame.
    */
   | { readonly kind: "refusal"; readonly wire: Uint8Array }
+  /** `peer` sat down in this room, on this instance or another: a new seating begins (U38). */
+  | { readonly kind: "seated"; readonly peer: PeerId }
   /** A tag this build does not know; ignored, never an error (D14's additive vector). */
   | { readonly kind: "unknown" };
 
@@ -293,6 +302,17 @@ export const blobStoredFrame = (hash: string): Uint8Array => encodeCbor([KIND.bl
 
 /** `[wire]` — a refusal receipt across a relay, under the control tag its session tag collides with. */
 export const roomRefusalFrame = (wire: Uint8Array): Uint8Array => encodeCbor([KIND.refusal, wire]);
+
+/** `[peer]` — a joiner took its seat; the room's own frame, never a client's. */
+export const seatedFrame = (peer: PeerId): Uint8Array =>
+  encodeCbor([KIND.seated, hexToBytes(peer).unwrap()]);
+
+/**
+ * The sender slot a seating goes out under (`Sender.sendLatest`): a newer seating of the same peer
+ * supersedes one a stalled socket has not been sent yet, so seatings never fill its backlog. A slot
+ * is held only until the socket drains, so a stalled socket holds at most one per peer that joined.
+ */
+export const seatedSlot = (peer: PeerId): string => `seated:${peer}`;
 
 /** `[hash, code, limit, used, partition?]` — the partition last, absent for the unnamed budget. */
 export const blobRefusedFrame = (

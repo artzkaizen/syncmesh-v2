@@ -90,6 +90,35 @@ describe("operationStore", () => {
     expect((await store.vouchesOf(A, seq(2))).unwrap()).toEqual([]);
   });
 
+  test("a holder that proves a new lineage stops counting for the old one before it signs again", async () => {
+    const { store } = await open();
+    (await store.record({ id: "op-1", peer: A, seq: seq(1), label: "l", atMs: 1 })).unwrap();
+    (await store.vouch(B, A, seq(1), "inc-1", 10)).unwrap();
+    (await store.vouch(C, A, seq(1), "inc-9", 10)).unwrap();
+
+    // B said hello from inc-2: what it signed out of inc-1 is gone, and nobody else's vouch is
+    (await store.retireLineages(B, "inc-2", A, seq(1))).unwrap();
+    expect((await store.vouchesOf(A, seq(1))).unwrap()).toEqual([
+      { holder: C, incarnation: "inc-9", atMs: 10 },
+    ]);
+    // the lineage it is in now keeps what it signed
+    (await store.vouch(B, A, seq(1), "inc-2", 20)).unwrap();
+    (await store.retireLineages(B, "inc-2", A, seq(1))).unwrap();
+    expect((await store.vouchesOf(A, seq(1))).unwrap().map((v) => v.holder)).toEqual([C, B]);
+  });
+
+  test("a holder that proves a shorter run under the same lineage stops counting above it", async () => {
+    const { store } = await open();
+    for (const n of [1, 2, 3])
+      (await store.record({ id: `op-${n}`, peer: A, seq: seq(n), label: "l", atMs: n })).unwrap();
+    (await store.vouch(B, A, seq(3), "inc-1", 10)).unwrap();
+    expect((await store.soleCustody()).unwrap()).toEqual([]);
+
+    // B's hello under inc-1 says it holds A through 1: a restored backup, a commit the disk lost
+    (await store.retireLineages(B, "inc-1", A, seq(1))).unwrap();
+    expect((await store.soleCustody()).unwrap().map((op) => op.id)).toEqual(["op-2", "op-3"]);
+  });
+
   test("a holder that signs for less withdraws what it signed above it, and a stale one does not", async () => {
     const { store } = await open();
     for (const n of [1, 2, 3])
@@ -119,6 +148,32 @@ describe("operationStore", () => {
     expect((await store.soleCustody()).unwrap().map((op) => op.id)).toEqual(["op-2", "op-3"]);
     expect((await store.vouchesOf(A, seq(1))).unwrap()).toEqual([
       { holder: B, incarnation: "inc-1", atMs: 20 },
+    ]);
+  });
+
+  test("a vouch whose insert fails leaves the holder's earlier claim whole", async () => {
+    const driver = await openPair();
+    let failing = false;
+    // the same connection, with the vouch insert made to fail on demand
+    const flaky = {
+      ...driver,
+      run: (sql: string, params?: Parameters<typeof driver.run>[1]) =>
+        failing && sql.includes("INSERT") && sql.includes("vouches")
+          ? Promise.reject(new Error("the disk filled between the delete and the insert"))
+          : driver.run(sql, params),
+    };
+    const store = (await operationStore(flaky)).unwrap();
+    for (const n of [1, 2, 3])
+      (await store.record({ id: `op-${n}`, peer: A, seq: seq(n), label: "l", atMs: n })).unwrap();
+    (await store.vouch(B, A, seq(3), "inc-1", 10)).unwrap();
+
+    // a new lineage that signs for less: its deletes and its insert land together or not at all
+    failing = true;
+    expect((await store.vouch(B, A, seq(1), "inc-2", 20)).isErr()).toBe(true);
+    failing = false;
+    expect((await store.soleCustody()).unwrap()).toEqual([]);
+    expect((await store.vouchesOf(A, seq(3))).unwrap()).toEqual([
+      { holder: B, incarnation: "inc-1", atMs: 10 },
     ]);
   });
 

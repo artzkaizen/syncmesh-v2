@@ -1,5 +1,5 @@
 //! The relay's control vocabulary (`relay/src/frames.ts`, D14, D33): its own additive tag space,
-//! 8–22, above the session frames, so grants and events pass through a relay byte-identical
+//! 8–23, above the session frames, so grants and events pass through a relay byte-identical
 //! under their existing tags and a later version adds tags without renumbering these.
 //!
 //! Tag 8 is `routes` among the session frames and `join` here. The relay decoder asks its own
@@ -31,6 +31,8 @@ pub mod tag {
     /// A signed refusal receipt on its way to its author (D32): the session tag for it, 9, is
     /// `hello` here.
     pub const REFUSAL: u8 = 22;
+    /// A joiner took its seat (U38): each holder says once more what of its writes it refused.
+    pub const SEATED: u8 = 23;
 }
 
 /// The protocol this build speaks; `join` offers, `hello` picks the highest in common.
@@ -157,6 +159,11 @@ pub enum RelayFrame {
     Refusal {
         wire: Vec<u8>,
     },
+    /// The room's word that `peer` took its seat, on this instance or another (U38): a new
+    /// seating, so every holder says once more what of that peer's writes it refused.
+    Seated {
+        peer: PeerId,
+    },
     /// A tag this build does not know; ignored, never an error (D14).
     Unknown,
 }
@@ -181,6 +188,7 @@ impl RelayFrame {
             RelayFrame::BlobStored { .. } => "blob-stored",
             RelayFrame::BlobRefused { .. } => "blob-refused",
             RelayFrame::Refusal { .. } => "refusal",
+            RelayFrame::Seated { .. } => "seated",
             RelayFrame::Unknown => "unknown",
         }
     }
@@ -242,6 +250,7 @@ impl RelayFrame {
                 partition,
             } => blob_refused_frame(hash, code, *limit, *used, partition.as_ref()),
             RelayFrame::Refusal { wire } => room_refusal_frame(wire),
+            RelayFrame::Seated { peer } => seated_frame(peer),
             RelayFrame::Unknown => return None,
         })
     }
@@ -407,6 +416,11 @@ pub fn blob_stored_frame(hash: &str) -> Vec<u8> {
 /// `[wire]` — a refusal receipt across a relay, under the control tag its session tag collides with.
 pub fn room_refusal_frame(wire: &[u8]) -> Vec<u8> {
     tagged(tag::REFUSAL, vec![Value::Bytes(wire.to_vec())])
+}
+
+/// `[peer]` — a joiner took its seat; the room's own frame, never a client's.
+pub fn seated_frame(peer: &PeerId) -> Vec<u8> {
+    tagged(tag::SEATED, vec![peer_value(peer)])
 }
 
 /// `[hash, code, limit, used, partition?]` — the partition last, absent for the unnamed budget.
@@ -587,6 +601,7 @@ fn decode_control(t: u64, p: &[Option<&Value>; 5]) -> Option<Result<RelayFrame, 
             Some(wire) => Ok(RelayFrame::Refusal { wire }),
             None => shape("refusal is not [wire]"),
         },
+        tag::SEATED => as_peer(a).map(|peer| RelayFrame::Seated { peer }),
         tag::BLOB_STORED => match text(a) {
             Some(hash) => Ok(RelayFrame::BlobStored { hash }),
             None => shape("blob-stored is not [hash]"),

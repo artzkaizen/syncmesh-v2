@@ -25,7 +25,7 @@ once the relay serves nobody it refused, no way is left from an event's author t
 so is one whose missing run can reach it only as state: no device whose log still holds it has a
 way to it through devices that could log it too, and nothing that serves state reaches it — a
 relay serves none, so under `--retention`, whose devices forget a peer silent for 200 ms and
-compact past it, a relay-only device is often that device. It is not told; gaps U51.
+compact past it, a relay-only device is often that device. It is not told; gaps U52.
 Everything else is a `violation` line in the ledger and the report. Per-table `engine.digest()`
 must agree across every device that is neither. The cell oracle holds each device to the writes
 that could reach it.

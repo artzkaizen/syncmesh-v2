@@ -87,7 +87,7 @@ const excuse = (
   if (!why.reaches(entry.device, device))
     return `cut off: every way from ${entry.device} runs through a device the relay refused`;
   if (why.stateOnly(device, entry.author, entry.seqNum))
-    return `state only: ${entry.device}'s run from here reaches this device in no log, and nothing that carries state does (gaps U51)`;
+    return `state only: ${entry.device}'s run from here reaches this device in no log, and nothing that carries state does (gaps U52)`;
   return undefined;
 };
 

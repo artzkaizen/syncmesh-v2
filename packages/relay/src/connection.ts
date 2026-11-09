@@ -20,6 +20,8 @@ import {
   challengeFrame,
   errorFrame,
   helloFrame,
+  seatedFrame,
+  seatedSlot,
   selectVersion,
   speaksHandshake,
 } from "./frames.js";
@@ -133,6 +135,13 @@ function sitDown(
     for (const entry of here)
       sender.sendLatest(presenceSlot(entry.wire), presenceFrame(entry.wire));
     sendCatchUp(conversation, theirs, view.catchUp);
+    // what the room holds of the joiner's writes, signed to it (U38)
+    room.receipts?.seated(peer);
+    // a new seating, here and on every other instance: each holder says again, once, what of the
+    // joiner's writes it refused while it was away (D32, U38)
+    const seated = seatedFrame(peer);
+    room.toClientsLatest(seatedSlot(peer), seated, peer);
+    room.publish(seated);
     // what the joiner holds, in its own words, for everyone else's `delivered`
     room.toClients(cursorsFrame(peer, theirs), peer);
     return here.length;

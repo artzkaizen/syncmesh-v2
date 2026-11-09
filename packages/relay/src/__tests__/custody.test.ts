@@ -262,6 +262,42 @@ describe("custody over a relay (D32, U17)", () => {
     expect(heard[0]?.verdict).toBe("NoGrant");
     room.close();
   });
+
+  test("a parked write is said once per seating of its author, however many cursors it sends, and again when it sits down again (U38)", async () => {
+    const room = await openRoom();
+    const author = ungranted(41);
+    const refuser = peer(80, "acct_b");
+    const writer = peer(90, "acct_c");
+    const heard: RefusalReceipt[] = [];
+    const { dial } = dialTo(room);
+    const seated = await attach({ ...author.context, onRefusal: (r) => void heard.push(r) }, dial);
+    await attach(refuser.context, dial);
+    await attach(writer.context, dial);
+    await write(author, "n1", "one");
+    // the writer is granted nothing for the author either: both park it, and both say so once
+    const refusers = [refuser.identity.peerId, writer.identity.peerId].sort();
+    const by = (said: readonly RefusalReceipt[]) => said.map((r) => r.refuser).sort();
+    expect(await until(() => heard.length >= 2)).toBe(true);
+
+    // every write the author folds sends its cursors through the room; none of them is a new seating
+    for (const n of [1, 2, 3]) await write(writer, `w${n}`, "elsewhere");
+    expect(
+      await until(() => author.engine.coverage().synced.get(writer.identity.peerId) === 3),
+    ).toBe(true);
+    await tick(50);
+    expect(by(heard)).toEqual(refusers);
+
+    // away and back: the room says it sat down, and the refuser says it once more
+    await seated.stop();
+    const again: RefusalReceipt[] = [];
+    await attach({ ...author.context, onRefusal: (r) => void again.push(r) }, dial);
+    expect(await until(() => again.length >= 2)).toBe(true);
+    await write(writer, "w4", "elsewhere");
+    await tick(50);
+    expect(by(again)).toEqual(refusers);
+    expect(again.map((r) => r.seq)).toEqual([ONE, ONE]);
+    room.close();
+  });
 });
 
 describe("the room hands a custody frame to its author and nobody else", () => {
@@ -354,6 +390,25 @@ describe("the room hands a custody frame to its author and nobody else", () => {
     expect(cursorsFrom(author)).toHaveLength(0);
     expect(cursorsFrom(spoofer)).toHaveLength(before + 1);
     room.close();
+  });
+
+  test("a seating is said to every other socket, on this instance and the others, and not to the joiner (U38)", async () => {
+    const fanout = memoryFanout();
+    const east = await scriptedRoom({ fanout });
+    const west = await scriptedRoom({ fanout });
+    const author = peer(40, "acct_a");
+    const near = seat(east, peer(80, "acct_b"));
+    const far = seat(west, peer(90, "acct_c"));
+    await tick();
+    const sa = seat(east, author);
+    await tick();
+    const seatings = (socket: ReturnType<typeof fakeSocket>) =>
+      socket.frames().filter((f) => f.kind === "seated" && f.peer === author.identity.peerId);
+    expect(seatings(near)).toHaveLength(1);
+    expect(seatings(far)).toHaveLength(1);
+    expect(seatings(sa)).toHaveLength(0);
+    east.close();
+    west.close();
   });
 
   test("across the fleet: an author seated on another instance of the room still hears it", async () => {
