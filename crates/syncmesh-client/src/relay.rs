@@ -350,10 +350,11 @@ impl RelayLink {
 
     /// The grant into the registry, when the link has one, and then reported either way.
     ///
-    /// A grant the registry takes is followed by [`Engine::retry_author`] for the device it names
-    /// (gaps U42): an event of that device's that arrived first — over another relay instance, or
-    /// another transport — sits parked `NoGrant`, and the grant landing is new state no fold
-    /// announces. A link with no registry leaves both to the host that registers the
+    /// A grant that becomes the one the registry holds is followed by [`Engine::retry_author`]
+    /// for the device it names (gaps U42): an event of that device's that arrived first — over
+    /// another relay instance, or another transport — sits parked `NoGrant`, and the grant landing
+    /// is new state no fold announces. A grant the registry already held, or held a newer mint
+    /// than, retries nothing. A link with no registry leaves both to the host that registers the
     /// [`Action::Grant`].
     fn grant_arrived(
         &self,
@@ -367,10 +368,10 @@ impl RelayLink {
             let registered = registry
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .register(&wire, now_ms)
-                .map(|grant| grant.device.clone());
+                .register_newer(&wire, now_ms);
             match registered {
-                Ok(device) => match engine.retry_author(&device) {
+                Ok(None) => {}
+                Ok(Some(device)) => match engine.retry_author(&device) {
                     Ok(received) if received.batch.event_count > 0 => {
                         out.push(Action::Folded(received.batch));
                     }

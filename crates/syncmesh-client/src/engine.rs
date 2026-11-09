@@ -918,11 +918,16 @@ impl Engine {
     /// the grant that vouches for it, and in a room where no later batch folds nothing else would
     /// offer it again. What the ladder still refuses is parked again.
     pub fn retry_author(&mut self, author: &PeerId) -> Result<Received, StoreError> {
-        let (retry, kept): (Vec<Parked>, Vec<Parked>) = self
-            .parked
-            .take()
-            .into_iter()
-            .partition(|p| &p.entry.event.peer_id == author && p.verdict.is_capability());
+        let refused = |p: &Parked| &p.entry.event.peer_id == author && p.verdict.is_capability();
+        // nothing of theirs is parked: no re-park of the rest, and no empty write to the store
+        if !self.parked.list().any(refused) {
+            return Ok(Received {
+                report: ReceiveReport::default(),
+                batch: self.fold(&[], FoldSource::Remote),
+            });
+        }
+        let (retry, kept): (Vec<Parked>, Vec<Parked>) =
+            self.parked.take().into_iter().partition(|p| refused(p));
         // back first, so a store emptied by `take` is whole again before anything can fail
         for parked in kept {
             self.parked.park(parked);
