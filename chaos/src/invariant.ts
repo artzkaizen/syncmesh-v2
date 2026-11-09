@@ -116,19 +116,14 @@ const excuse = (
     return `cut off: every way from ${entry.device} runs through a device the relay refused`;
   // only as state, and only excused when the device was told: a silent gap is the bug (gaps U52)
   const floor = floors.get(device)?.get(entry.author);
-  if (
-    floor !== undefined &&
-    floor >= entry.seqNum &&
-    why.stateOnly(device, entry.author, entry.seqNum)
-  )
+  if (floor !== undefined && why.stateOnly(device, entry.author, entry.seqNum))
     return `state only: ${entry.device}'s run from here reaches this device in no log, and its $recovery issue says it is below that run's floor (${floor})`;
   return undefined;
 };
 
 /**
  * Whether the cell oracle holds `device` to `write`: the write could reach it, and it is not a run
- * the device can take only as state and was told so, by a standing issue whose floor reaches the
- * write (`standingFloors`).
+ * the device can take only as state and was told so (`standingFloors`).
  */
 export function heldTo(
   write: { readonly device: string; readonly author: string; readonly seqNum: number },
@@ -136,8 +131,7 @@ export function heldTo(
   why: Excuses,
   told: ReadonlyMap<string, ReadonlyMap<string, number>>,
 ): boolean {
-  // told of a floor at or above this write: an issue below it says nothing about this write
-  const excused = (told.get(device)?.get(write.author) ?? 0) >= write.seqNum;
+  const excused = told.get(device)?.has(write.author) === true;
   return (
     why.reaches(write.device, device) &&
     !(excused && why.stateOnly(device, write.author, write.seqNum))

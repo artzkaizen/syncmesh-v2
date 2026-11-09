@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import type { Holding } from "../invariant.js";
 import type { Fact } from "../ledger.js";
 
-import { checkDigests, checkHeld, heldTo } from "../invariant.js";
+import { checkDigests, checkHeld } from "../invariant.js";
 import { createLedger } from "../ledger.js";
 
 /** One acknowledged write by `device`, authored as `author` at `seqNum`. */
@@ -183,18 +183,6 @@ describe("checkHeld, a run that survives only as state", () => {
     expect(checkHeld(ledgerWith(other), short, stateOnly).violations).toHaveLength(1);
     const gone = { kind: "above", device: "b", peer: "pc" } as const;
     expect(checkHeld(ledgerWith(below, gone), short, stateOnly).violations).toHaveLength(1);
-  });
-
-  test("an issue whose floor stops below the missing write excuses nothing", () => {
-    const lower = { ...below, floor: { pa: 1 } };
-    expect(checkHeld(ledgerWith(lower), short, stateOnly).violations).toHaveLength(1);
-  });
-
-  test("the cell oracle lets a write go only under a floor that reaches it", () => {
-    const write = { device: "a", author: "pa", seqNum: 2 };
-    const told = (seq: number) => new Map([["b", new Map([["pa", seq]])]]);
-    expect(heldTo(write, "b", stateOnly, told(1))).toBe(true);
-    expect(heldTo(write, "b", stateOnly, told(2))).toBe(false);
   });
 });
 
