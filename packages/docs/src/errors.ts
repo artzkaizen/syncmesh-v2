@@ -54,3 +54,20 @@ export class CheckpointRefused extends TaggedError("CheckpointRefused")<{
   message: string;
   cause?: unknown;
 }> {}
+
+/**
+ * A blob-carried update could not be put (RFC-0023 §5.4, D18): the blob store refused the bytes,
+ * so the burst was not sent and the handle is invalidated.
+ */
+export class BlobUnavailable extends TaggedError("BlobUnavailable")<{
+  message: string;
+  cause?: unknown;
+}> {}
+
+/** One write both edited and replaced the document at this address; nothing was written. */
+export class DocWriteConflict extends TaggedError("DocWriteConflict")<{
+  table: string;
+  key: string;
+  column: string;
+  message: string;
+}> {}

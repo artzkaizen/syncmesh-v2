@@ -21,6 +21,7 @@
     }
   },
   "dependencies": {
+    "@syncmesh/docs": "workspace:*",
     "@syncmesh/drizzle": "workspace:*",
     "@syncmesh/engine": "workspace:*",
     "@syncmesh/kernel": "workspace:*",

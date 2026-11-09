@@ -595,6 +595,7 @@
       "name": "@syncmesh/client",
       "version": "0.0.0",
       "dependencies": {
+        "@syncmesh/docs": "workspace:*",
         "@syncmesh/drizzle": "workspace:*",
         "@syncmesh/engine": "workspace:*",
         "@syncmesh/kernel": "workspace:*",
@@ -797,6 +798,7 @@
       "devDependencies": {
         "@happy-dom/global-registrator": "^18.0.1",
         "@syncmesh/config": "workspace:*",
+        "@syncmesh/docs": "workspace:*",
         "@syncmesh/engine": "workspace:*",
         "@syncmesh/kernel": "workspace:*",
         "@syncmesh/orpc": "workspace:*",

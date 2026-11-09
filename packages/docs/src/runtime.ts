@@ -1,5 +1,5 @@
 import type { DocAddress, DocCoverStale, FoldBatch, StoreFailure } from "@syncmesh/engine";
-import type { DocColumns, Hlc, PeerId, Procedure } from "@syncmesh/kernel";
+import type { AdapterId, DocColumns, Hlc, PeerId, Procedure } from "@syncmesh/kernel";
 import type { DeriveFailed, Derivers } from "@syncmesh/schema";
 import type { Identity } from "@syncmesh/wire";
 
@@ -9,17 +9,20 @@ import { Result } from "@syncmesh/result";
 import { Temporal } from "@syncmesh/temporal";
 
 import type { AnyAdapter } from "./adapter.js";
+import type { DocBlobs } from "./blobs.js";
 import type { FlushError, OpenDoc, OpenError, Pacing } from "./documents.js";
 import type { DocPending, DocTooLarge } from "./errors.js";
 import type { Derive, DocsEngine } from "./materialise.js";
 
 import { columnAdapter, resolveAdapterId } from "./adapter.js";
+import { withBlobs } from "./blobs.js";
 import { installProvisional } from "./checkpoint.js";
-import { DEFAULT_PACING, createHandles } from "./documents.js";
+import { DEFAULT_PACING, createHandles, createRefs } from "./documents.js";
 import { installCheckpoint } from "./install.js";
 import { materialise, produceCheckpoint } from "./materialise.js";
 import { createRederive } from "./rederive.js";
 import { replicaId } from "./replica.js";
+import { createWrites } from "./write.js";
 
 /** What a background materialisation can fail with. */
 export type MaintainError = OpenError | DocTooLarge | DocPending | DocCoverStale | StoreFailure;
@@ -65,8 +68,53 @@ export interface DocumentsOptions {
    */
   readonly onError?: (error: BackgroundError) => void;
   readonly now?: () => Temporal.Instant;
+  /**
+   * Where blob-carried updates are put and fetched (RFC-0023 §5.4, D18): `mesh.blobs`. Given one,
+   * a burst or a `replace()` past the adapter's inline `maxUpdateBytes` travels as a blob
+   * reference, up to `maxSnapshotBytes`, and an update that arrived by reference is fetched before
+   * it is applied, loaded or materialised. Absent, such a burst is refused (`UpdateTooLarge`) and
+   * such an update leaves its document `behind`.
+   */
+  readonly blobs?: DocBlobs;
   /** A fresh 16-byte nonce per replica; `crypto.getRandomValues` by default. */
   readonly nonce?: () => Uint8Array;
+}
+
+/** Whether the row at `address` is in a sealed partition, whose derived values never leave it (§11). */
+function sealedAt(engine: DocsEngine, derive: Derivers | undefined, address: DocAddress) {
+  const partition = getRecord(engine.state(), address.table, address.key)?.partition;
+  return partition !== undefined && derive?.sealedKinds.has(kindOf(partition)) === true;
+}
+
+/**
+ * Materialises each document a fold touched once its tail passes the adapter's bounds (RFC-0023
+ * §8.2): one materialisation per document at a time, and a fold that lands meanwhile is picked up
+ * by the next.
+ */
+function createMaintain(
+  engine: DocsEngine,
+  adapters: ReadonlyMap<AdapterId, AnyAdapter>,
+  materialiseAt: (address: DocAddress) => Promise<Result<unknown, MaintainError>>,
+  onError: ((error: BackgroundError) => void) | undefined,
+) {
+  const running = new Set<string>();
+  return async (batch: FoldBatch) => {
+    if (batch.docs === undefined) return;
+    const heads = await engine.docHeads();
+    if (heads.isErr()) return onError?.(heads.error);
+    const touched = new Set(batch.docs.map((d) => docKey(d.entry)));
+    for (const head of heads.value) {
+      const key = docKey(head);
+      const adapter = adapters.get(head.adapter);
+      if (!touched.has(key) || running.has(key) || adapter === undefined) continue;
+      const { snapshotEvery, snapshotEveryBytes } = adapter.limits;
+      if (head.tailCount < snapshotEvery && head.tailBytes < snapshotEveryBytes) continue;
+      running.add(key);
+      const done = await materialiseAt(head);
+      running.delete(key);
+      if (done.isErr()) onError?.(done.error);
+    }
+  };
 }
 
 /**
@@ -82,7 +130,8 @@ export interface DocumentsOptions {
  * note.value.commit(); // flushed as one doc change after 300 ms of quiet
  */
 export function createDocuments(options: DocumentsOptions) {
-  const { engine, docs } = options;
+  const { docs, blobs, procedure } = options;
+  const engine = withBlobs(options.engine, blobs);
   const adapters = new Map(options.adapters.map((a) => [a.id, a]));
   const now = options.now ?? (() => Temporal.Now.instant());
   const nonce = options.nonce ?? (() => crypto.getRandomValues(new Uint8Array(16)));
@@ -98,10 +147,7 @@ export function createDocuments(options: DocumentsOptions) {
       return computed.isOk() ? computed.value : undefined;
     };
   };
-  const sealed = (address: DocAddress) => {
-    const partition = getRecord(engine.state(), address.table, address.key)?.partition;
-    return partition !== undefined && options.derive?.sealedKinds.has(kindOf(partition)) === true;
-  };
+  const sealed = (address: DocAddress) => sealedAt(engine, options.derive, address);
   const rederive =
     options.derive === undefined
       ? undefined
@@ -134,6 +180,19 @@ export function createDocuments(options: DocumentsOptions) {
     pacing: options.pacing ?? DEFAULT_PACING,
     nonce,
     ...(options.onError !== undefined && { onError: options.onError }),
+    ...(blobs !== undefined && { blobs }),
+  });
+  const writes = createWrites({
+    engine,
+    docs,
+    adapters,
+    blobs,
+    fresh,
+    procedure,
+    open: (address) => handles.open(address),
+    held: (address) => handles.held(address),
+    derive: flushDerive,
+    onFailed: (address) => rederive?.flushFailed(address),
   });
 
   const adapterAt = (address: DocAddress) => columnAdapter(docs, adapters, address);
@@ -146,25 +205,7 @@ export function createDocuments(options: DocumentsOptions) {
       );
     });
 
-  // one materialisation per document at a time; a fold that lands meanwhile is picked up next
-  const running = new Set<string>();
-  const maintain = async (batch: FoldBatch) => {
-    if (batch.docs === undefined) return;
-    const heads = await engine.docHeads();
-    if (heads.isErr()) return options.onError?.(heads.error);
-    const touched = new Set(batch.docs.map((d) => docKey(d.entry)));
-    for (const head of heads.value) {
-      const key = docKey(head);
-      const adapter = adapters.get(head.adapter);
-      if (!touched.has(key) || running.has(key) || adapter === undefined) continue;
-      const { snapshotEvery, snapshotEveryBytes } = adapter.limits;
-      if (head.tailCount < snapshotEvery && head.tailBytes < snapshotEveryBytes) continue;
-      running.add(key);
-      const done = await materialiseAt(head);
-      running.delete(key);
-      if (done.isErr()) options.onError?.(done.error);
-    }
-  };
+  const maintain = createMaintain(engine, adapters, materialiseAt, options.onError);
   const unmaintain =
     options.autoMaterialise === false ? () => {} : engine.onFoldBatch((b) => void maintain(b));
   if (options.rederiveAtStart !== false) void rederive?.rederive();
@@ -173,6 +214,13 @@ export function createDocuments(options: DocumentsOptions) {
     /** Opens a document column; two opens share one replica, and the last close lets it go. */
     open: <D>(address: DocAddress): Promise<Result<OpenDoc<D>, OpenError>> =>
       handles.open<D>(address),
+    /** The stable {@link DocRef} of the document at `address`: the same object for the same address. */
+    ref: createRefs((address) => handles.open(address)),
+    /**
+     * Flushes every open document now. A host calls it before it stops, so a burst still waiting
+     * on its pacing is sent rather than lost; a failed flush goes to `onError`.
+     */
+    flush: () => handles.flushAll(),
     /** Writes the snapshot and covers the tail it holds; compaction may then take those events. */
     materialise: materialiseAt,
     /** A signed {@link produceCheckpoint} of the document, with its snapshot bytes. */
@@ -246,6 +294,7 @@ export function createDocuments(options: DocumentsOptions) {
      * syncmesh. Does nothing without `derive`.
      */
     rederive: (address?: DocAddress) => rederive?.rederive(address) ?? Promise.resolve(),
+    ...writes,
     stop: () => {
       unmaintain();
       rederive?.stop();

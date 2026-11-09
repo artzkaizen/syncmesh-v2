@@ -25,6 +25,8 @@ export type DocsEngine = Pick<
   | "mutate"
   | "onFoldBatch"
   | "docTail"
+  | "docLogOf"
+  | "docLineageLog"
   | "coverDoc"
   | "docHeads"
   | "state"

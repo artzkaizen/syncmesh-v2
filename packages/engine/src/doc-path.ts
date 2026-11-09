@@ -33,6 +33,7 @@ import type { Undo } from "./undo.js";
 import { coversTail, writeDerived, type DerivedFrom } from "./doc-derived.js";
 import { createMemoryDocStore } from "./doc-log-memory.js";
 import { DocCoverStale, docKey } from "./doc-log.js";
+import { readTail, readUpdates } from "./doc-read.js";
 import { StoreFailure, orThrow } from "./store.js";
 
 /** How an engine is told about documents. */
@@ -90,10 +91,22 @@ export interface DocApi extends DocEditorApi {
   readonly hasDocColumns: () => boolean;
   /** Every doc-log entry this engine holds (RFC-0023 §6.2). */
   readonly docLog: () => Promise<Result<readonly DocLogEntry[], StoreFailure>>;
+  /** One document's doc-log entries, every lineage and state. */
+  readonly docLogOf: (doc: DocAddress) => Promise<Result<readonly DocLogEntry[], StoreFailure>>;
   /** Every document's head: its winning lineage and where its tail stands. */
   readonly docHeads: () => Promise<Result<readonly DocHead[], StoreFailure>>;
   /** One document's snapshot and tail, read back from the log its events are kept in. */
   readonly docTail: (doc: DocAddress) => Promise<Result<DocTail, StoreFailure>>;
+  /**
+   * Every update one lineage of the document holds in the log (RFC-0023 §5.3), whatever its state
+   * — a losing lineage's `orphaned` entries included — in the log's order: what a version that lost
+   * is rebuilt from. Absent `lineage` is the root. An update whose event compaction took is
+   * not among them; only the winner's `covered` entries can be, since nothing else is covered.
+   */
+  readonly docLineageLog: (
+    doc: DocAddress,
+    lineage: LineageId | undefined,
+  ) => Promise<Result<readonly TailUpdate[], StoreFailure>>;
   /**
    * Commits a materialised snapshot or an installed checkpoint, in the write transaction when the
    * engine has one (RFC-0023 §6.3). The entries it covers become compactable (§8.3). The cover's
@@ -189,8 +202,15 @@ export function createDocPath(
     api: {
       hasDocColumns: () => docs !== undefined && docs.size > 0,
       docLog: docStore.entries,
+      docLogOf: docStore.entriesOf,
       docHeads: docStore.heads,
       docTail: (doc) => readTail(options.store, docStore, bindings(), doc),
+      docLineageLog: (doc, lineage) =>
+        Result.gen(async function* () {
+          const entries = yield* Result.await(docStore.entriesOf(doc));
+          const of = entries.filter((e) => e.lineage === lineage);
+          return Result.ok(yield* Result.await(readUpdates(options.store, bindings(), of)));
+        }),
       coverDoc: (doc, cover) => {
         const derived =
           cover.derived === undefined
@@ -280,48 +300,3 @@ function coverIfCurrent(
 const settled = () => {};
 
 const panicUnbound = (): never => panic("the doc path was read before the engine bound it");
-
-function readTail(
-  events: EventStore,
-  docStore: DocStore,
-  { getState, synced }: DocBindings,
-  doc: DocAddress,
-): Promise<Result<DocTail, StoreFailure>> {
-  return Result.gen(async function* () {
-    const lineage = docLineage(getRecord(getState(), doc.table, doc.key), doc.column);
-    const entries = yield* Result.await(docStore.entriesOf(doc));
-    const heads = yield* Result.await(docStore.heads());
-    const head = heads.find((h) => docKey(h) === docKey(doc));
-    const held = yield* Result.await(docStore.snapshotOf(doc));
-    const live = entries.filter(
-      (e) => e.lineage === lineage && (e.state === "tail" || e.state === "bytes-missing"),
-    );
-    // one read of the log: every author the tail names from just below its first entry, and
-    // every other author from where this engine already holds them, so nothing else comes back
-    const floor = new Map(synced());
-    for (const e of live) {
-      // SAFETY: one below a positive sequence; 0 reads the author's whole log
-      const below = (e.seq - 1) as SeqNum;
-      const at = floor.get(e.author);
-      if (at === undefined || below < at) floor.set(e.author, below);
-    }
-    const found = live.length === 0 ? [] : yield* Result.await(events.allSince(floor));
-    const byId = new Map(found.map((s) => [`${s.event.peerId}\u0000${String(s.event.seqNum)}`, s]));
-    const updates = live.flatMap((entry): TailUpdate[] => {
-      const change = byId.get(`${entry.author}\u0000${String(entry.seq)}`)?.event.changes[
-        entry.index
-      ];
-      if (change?.kind !== "doc") return [];
-      const { update } = change;
-      return update.bytes !== undefined
-        ? [{ entry, bytes: update.bytes }]
-        : [{ entry, blob: update.blob }];
-    });
-    return Result.ok({
-      updates,
-      ...(lineage !== undefined && { lineage }),
-      ...(head !== undefined && { head }),
-      ...(held !== undefined && held.lineage === lineage && { snapshot: held }),
-    });
-  });
-}

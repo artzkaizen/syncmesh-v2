@@ -56,6 +56,11 @@ export function bootSettings<C extends ColumnsMap, D extends SqlDialect, PC exte
       stateStore: local?.stateStore,
       rls: served?.rls,
       undoDepth: options.undoDepth,
+      lineageSettleAfter: options.lineageSettleAfter,
+      docAdapters:
+        options.documents === undefined
+          ? undefined
+          : new Set(options.documents.adapters.map((adapter) => adapter.id)),
       clockDrift: options.clockDrift,
       onError: options.onError,
     }),
