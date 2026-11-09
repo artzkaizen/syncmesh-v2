@@ -633,6 +633,8 @@ impl Engine {
                     let record = self.state.record(&d.table, &d.key);
                     d.lineage = Some(derive_lineage(&peer_id, seq_num, index as u32));
                     d.parent = lineage_of(record, &d.column);
+                    // written under this build's rule, never an earlier one the write named (U39)
+                    d.rule = None;
                     // the anchor this write settles the walk at (gaps U21)
                     d.settles = settle_walk(
                         record

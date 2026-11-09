@@ -115,6 +115,7 @@ fn content(key: &str, genesis: bool) -> Change {
         update: DocUpdate::Bytes(vec![1, 2, 3]),
         genesis,
         legacy: false,
+        rule: None,
         parent: None,
         settles: None,
     })
@@ -430,6 +431,7 @@ fn a_document_never_rides_a_local_only_write() {
         update: DocUpdate::Bytes(vec![1]),
         genesis: false,
         legacy: false,
+        rule: None,
         parent: None,
         settles: None,
     });

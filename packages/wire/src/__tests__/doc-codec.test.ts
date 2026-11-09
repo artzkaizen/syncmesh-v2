@@ -1,5 +1,6 @@
 import {
   GENESIS_RULE,
+  LINEAGE_RULE,
   SETTLED_RULE,
   hlcOf,
   parseActionId,
@@ -96,14 +97,14 @@ describe("a doc change on the wire (tag 6)", () => {
     const parent = parseLineageId("1e".repeat(16)).unwrap();
     const core = encodeEventCore(event([doc({ lineage: LINEAGE, genesis: true, parent })]));
     const data = asMap(asMap(asArray(asMap(decodeCbor(core).unwrap()).get(7))[0]).get(3));
-    expect(data.get(DOC.genesis)).toBe(GENESIS_RULE);
+    expect(data.get(DOC.genesis)).toBe(LINEAGE_RULE);
     expect(id16(data.get(DOC.parent))).toBe(parent);
     const root = encodeEventCore(event([doc({ lineage: LINEAGE, genesis: true })]));
     const rootData = asMap(asMap(asArray(asMap(decodeCbor(root).unwrap()).get(7))[0]).get(3));
     expect(rootData.has(DOC.parent)).toBe(false);
   });
 
-  test("a genesis that settles the walk is rule 2 in key 5, with its anchor in key 7 (gaps U21)", () => {
+  test("a genesis that settles the walk is rule 3 in key 5, with its anchor in key 7 (gaps U21, U39)", () => {
     const settles = { lineage: LINEAGE, stamp: { hlc: hlcOf(7, 3), peer: IDENTITY_B.peerId } };
     const change = doc({
       lineage: parseLineageId("2d".repeat(16)).unwrap(),
@@ -116,10 +117,30 @@ describe("a doc change on the wire (tag 6)", () => {
     const data = asMap(
       asMap(asArray(asMap(decodeCbor(encodeEventCore(event([change]))).unwrap()).get(7))[0]).get(3),
     );
-    expect(data.get(DOC.genesis)).toBe(SETTLED_RULE);
+    expect(data.get(DOC.genesis)).toBe(LINEAGE_RULE);
     const [lineage, ms, logical, peer] = asArray(data.get(DOC.settles));
     expect([id16(lineage), ms, logical]).toEqual([LINEAGE, 7, 3]);
     expect(peer instanceof Uint8Array && bytesToHex(peer)).toBe(IDENTITY_B.peerId);
+  });
+
+  test("a genesis of rule 1 or 2 decodes with its rule and re-encodes byte for byte (gaps U39)", () => {
+    const one = withData((d) => d.set(DOC.lineage, new Uint8Array(16)).set(DOC.genesis, 1));
+    const two = withData((d) =>
+      d.set(DOC.lineage, new Uint8Array(16)).set(DOC.genesis, 2).set(DOC.settles, ANCHOR),
+    );
+    for (const [core, rule] of [
+      [one, GENESIS_RULE],
+      [two, SETTLED_RULE],
+    ] as const) {
+      const decoded = decodeEventCore(core).unwrap();
+      expect(decoded.changes[0]).toMatchObject({ genesis: true, rule });
+      expect(bytesEqual(encodeEventCore(decoded), core)).toBe(true);
+    }
+    const three = decodeEventCore(
+      withData((d) => d.set(DOC.lineage, new Uint8Array(16)).set(DOC.genesis, 3)),
+    ).unwrap();
+    expect(three.changes[0]).toMatchObject({ genesis: true });
+    expect(three.changes[0]).not.toHaveProperty("rule");
   });
 
   test("a genesis written under last-writer-wins (`true`) decodes as legacy and re-encodes byte for byte", () => {
@@ -150,9 +171,14 @@ describe("a doc change on the wire (tag 6)", () => {
     ],
     ["a lineage that is not 16 bytes", (d) => d.set(DOC.lineage, new Uint8Array(15))],
     ["a genesis that is not the rule's version", (d) => d.set(DOC.genesis, false)],
-    ["a genesis of a rule this build does not know", (d) => d.set(DOC.genesis, 3)],
+    ["a genesis of a rule this build does not know", (d) => d.set(DOC.genesis, 4)],
     ["a genesis of rule 2 that settles nothing", (d) => d.set(DOC.genesis, SETTLED_RULE)],
     ["an anchor on a genesis of rule 1", (d) => d.set(DOC.genesis, 1).set(DOC.settles, ANCHOR)],
+    ["an anchor on a legacy genesis", (d) => d.set(DOC.genesis, true).set(DOC.settles, ANCHOR)],
+    [
+      "an anchor of rule 3 whose stamp is not an HLC",
+      (d) => d.set(DOC.genesis, 3).set(DOC.settles, [new Uint8Array(16), -1, 0, PEER_KEY]),
+    ],
     ["an anchor on an edit that is not a genesis", (d) => d.set(DOC.settles, ANCHOR)],
     [
       "an anchor whose lineage is not 16 bytes",
