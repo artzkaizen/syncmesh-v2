@@ -209,6 +209,19 @@ describe("a doc change against the schema (RFC-0023 §10)", () => {
     expect(verdict([settling(anchor(NOW.epochMilliseconds + 1))])).toBe("ok");
   });
 
+  test("an anchor on an edit is refused, as the codec refuses it (gaps U21)", () => {
+    const anchor = {
+      lineage: parseLineageId("0a".repeat(16)).unwrap(),
+      stamp: { hlc: hlcOf(NOW.epochMilliseconds - 1, 0), peer: editor.peerId },
+    };
+    const at = { seqNum: seq(4), hlc: hlcOf(NOW.epochMilliseconds, 0) };
+    for (const when of [at, undefined])
+      expect(verdict([doc({ settles: anchor })], when)).toEqual({
+        tag: "DocChangeRefused",
+        rung: "lineage",
+      });
+  });
+
   test("a genesis written under the lineage rule before §16.1 is refused, numbered or not", () => {
     const at = { seqNum: seq(4) };
     const derived = deriveLineage(editor.peerId, seq(4), 0);

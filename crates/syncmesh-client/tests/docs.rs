@@ -954,3 +954,28 @@ fn an_anchor_naming_its_own_genesis_or_stamped_no_earlier_is_quarantined() {
         assert_eq!(quarantined(refused.clone()), 1, "{refused:?}");
     }
 }
+
+#[test]
+fn an_anchor_on_an_edit_is_refused_as_the_codec_refuses_it() {
+    let mut a = engine(1, true);
+    write(&mut a, vec![insert()]);
+    let Change::Doc(d) = edit(1, None) else {
+        unreachable!()
+    };
+    let anchored = Change::Doc(DocChange {
+        settles: Some(Settled {
+            lineage: [7; 16],
+            stamp: syncmesh_core::stamp::Stamp::new(
+                syncmesh_core::hlc::Hlc::new(1, 0),
+                a.peer_id().clone(),
+            ),
+        }),
+        ..d
+    });
+    let refused = a.mutate("notes.edit", vec![anchored], partition());
+    assert!(
+        matches!(refused, Err(MutateError::DocRefused { .. })),
+        "{refused:?}"
+    );
+    assert!(a.doc_log().unwrap().is_empty());
+}

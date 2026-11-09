@@ -119,10 +119,17 @@ pub fn check_doc(
         );
     }
     if !change.genesis {
-        return change.parent.and(refuse(
-            DocRung::Lineage,
-            "only a genesis names the lineage it replaces",
-        ));
+        if change.parent.is_some() {
+            return refuse(
+                DocRung::Lineage,
+                "only a genesis names the lineage it replaces",
+            );
+        }
+        // the codec refuses key 7 on anything else: stored here, it would stop the author's stream
+        return change
+            .settles
+            .as_ref()
+            .and(refuse(DocRung::Lineage, "only a genesis settles the walk"));
     }
     if change.legacy {
         return refuse(

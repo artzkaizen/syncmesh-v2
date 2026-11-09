@@ -69,10 +69,14 @@ export function checkDoc(
       "adapter",
       `${change.column} is merged by ${declaredAdapter}, not ${change.adapter}`,
     );
-  if (change.genesis !== true)
-    return change.parent === undefined
+  if (change.genesis !== true) {
+    if (change.parent !== undefined)
+      return refuse(change, "lineage", "only a genesis names the lineage it replaces");
+    // the codec refuses key 7 on anything else: stored here, it would stop the author's stream
+    return change.settles === undefined
       ? Result.ok(undefined)
-      : refuse(change, "lineage", "only a genesis names the lineage it replaces");
+      : refuse(change, "lineage", "only a genesis settles the walk");
+  }
   if (change.legacy === true)
     return refuse(
       change,
