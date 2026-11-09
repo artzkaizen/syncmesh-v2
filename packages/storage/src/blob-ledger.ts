@@ -87,7 +87,7 @@ export interface BlobLedger {
   /**
    * Joins these rows into what was kept for them ({@link joinBlobRows}), keeps the later start of
    * each of these windows or forgets it, adds these sealed partitions and records `complete` — in one transaction where the
-   * driver has them.
+   * driver has them, and on Postgres under a lock, so two instances saving at once both land.
    */
   readonly save: (state: BlobLedgerState) => Promise<Result<void, StoreFailure>>;
   /**
@@ -211,6 +211,13 @@ export async function sqlBlobLedger(driver: SqlDriver): Promise<Result<BlobLedge
   const upsertWindow = `INSERT INTO ${WINDOWS} AS kept (hash, since_ms) VALUES (${values(2)}) ON CONFLICT (hash) DO UPDATE SET since_ms = CASE WHEN excluded.since_ms > kept.since_ms THEN excluded.since_ms ELSE kept.since_ms END`;
   const deleteWindow = `DELETE FROM ${WINDOWS} WHERE hash = ${p(1)}`;
   const upsertMeta = `INSERT INTO ${META} (key, value) VALUES (${values(2)}) ON CONFLICT (key) DO UPDATE SET value = excluded.value`;
+  // two instances on one Postgres that both read a row before either writes would each write their
+  // own join over the other's: the reads and the writes are taken under one lock per ledger. SQLite
+  // has one writer, and a driver with no transactions has no lock to hold past one statement
+  const lockSave =
+    postgres && driver.transaction !== undefined
+      ? `SELECT pg_advisory_xact_lock(hashtext(${p(1)}))`
+      : undefined;
 
   const ledger: BlobLedger = {
     load: async () => {
@@ -246,6 +253,7 @@ export async function sqlBlobLedger(driver: SqlDriver): Promise<Result<BlobLedge
     save: async (state) => {
       const saved = await attempt("blob ledger write failed", () =>
         inTransaction(driver, async () => {
+          if (lockSave !== undefined) await driver.all(lockSave, [`syncmesh.blob_ledger:${ROWS}`]);
           // every row read and joined before anything is written: a kept row that does not read
           // leaves the ledger as it was, not half saved
           const joined: BlobRow[] = [];
