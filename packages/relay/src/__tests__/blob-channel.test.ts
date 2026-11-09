@@ -1,4 +1,5 @@
 import { parsePartitionKey } from "@syncmesh/kernel";
+import { Temporal } from "@syncmesh/temporal";
 import { BLOB_MISSING } from "@syncmesh/transport";
 import { describe, expect, test } from "bun:test";
 
@@ -143,5 +144,29 @@ describe("the relay's blob channel", () => {
     channel.unseated();
     channel.seated();
     expect(sent).toEqual(["blob-put"]);
+  });
+
+  /**
+   * A put that left on a seated session whose socket then closed unanswered was held until a
+   * later seat, so with no later seat — offline for good, the link stopped, a refused room that
+   * is never dialled again — `mesh.blobs.put` never returned.
+   */
+  test("a put whose socket closes before the answer is answered within the wait, and goes on the next seat", async () => {
+    const sent: string[] = [];
+    const channel = createBlobChannel(
+      (frame) => {
+        sent.push(decodeRelayFrame(frame).unwrap().kind);
+        return true;
+      },
+      Temporal.Duration.from({ milliseconds: 20 }),
+    );
+    channel.seated();
+    const put = channel.capability.upload(HASH, bytes, {});
+    channel.unseated();
+    const late = Symbol("still waiting");
+    expect(await Promise.race([put, Bun.sleep(200).then(() => late)])).toBeUndefined();
+    // kept: the next seat carries the bytes
+    channel.seated();
+    expect(sent).toEqual(["blob-put", "blob-put"]);
   });
 });

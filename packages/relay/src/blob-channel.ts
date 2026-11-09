@@ -53,20 +53,27 @@ interface Upload extends Asked {
  * session ended unanswered is sent again on the next seat.
  *
  * **An upload that cannot leave when it is made — no session seated, or a socket going down
- * under it — is answered at once and kept until a relay answers it.** It used to wait out {@link BLOB_ANSWER_WAIT} for a relay that was not there and
- * then be forgotten, so a blob put offline was acknowledged and never left the device, and the
- * put held its caller for ten seconds doing it (chaos soak, `--blobs`, seeds 2 and 6). Only
- * silence on the session the upload left on — a relay that predates `blob-stored` — ends the
- * wait without an answer. A refusal that arrives for an upload already answered is not heard by
- * its caller: the relay stored nothing, and this device is still the bytes' only holder. A socket the room closes to re-seat it
- * (a narrowed or widened grant, D40) drops what it was asked last, and the answer to that is the
- * room's under the new seat, not a deadline.
+ * under it — is answered at once and kept until a relay answers it.** It used to wait out
+ * {@link BLOB_ANSWER_WAIT} for a relay that was not there and then be forgotten, so a blob put
+ * offline was acknowledged and never left the device, and the put held its caller for ten seconds
+ * doing it (chaos soak, `--blobs`, seeds 2 and 6). An upload that left is answered by the relay or
+ * within {@link BLOB_ANSWER_WAIT}, whichever comes first. Silence on the session it left on — a
+ * relay that predates `blob-stored` — lets it go; a session that ended first answers the caller
+ * and keeps the upload for the next seat, as an offline put is kept. A refusal that arrives for
+ * an upload already answered is not heard by its caller: the relay stored nothing, and this
+ * device is still the bytes' only holder. A socket the room closes to re-seat it (a narrowed or
+ * widened grant, D40) drops what it was asked last, and the answer to that is the room's under
+ * the new seat, not a deadline.
  *
  * `capability` is the object the transport hands the mesh, typed as the seam so it can grow with
  * it; `answer` and `settle` stay here, because an inbound frame settling a wait is the relay's
  * business.
  */
-export function createBlobChannel(send: (frame: Uint8Array) => boolean) {
+export function createBlobChannel(
+  send: (frame: Uint8Array) => boolean,
+  /** How long an upload that left waits for its answer; {@link BLOB_ANSWER_WAIT} unless a test says. */
+  answerWait = BLOB_ANSWER_WAIT,
+) {
   /**
    * Downloads in flight, by hash: two fetches of one photo are two waits, and the first answer
    * that names the hash settles both.
@@ -87,9 +94,9 @@ export function createBlobChannel(send: (frame: Uint8Array) => boolean) {
   };
 
   /**
-   * Offers an upload, and waits {@link BLOB_ANSWER_WAIT} from the moment it leaves. Silence on
-   * the session it left on is a relay built before `blob-stored`: the wait ends with no answer
-   * and the upload is let go. A session that ended first sends it again on the next seat.
+   * Offers an upload, and waits `answerWait` from the moment it leaves. Silence on the session it
+   * left on is a relay built before `blob-stored`: the upload is let go. A session that ended
+   * first keeps it, so the next seat sends it again.
    */
   const offerUpload = (upload: Upload): void => {
     offer(upload);
@@ -100,7 +107,7 @@ export function createBlobChannel(send: (frame: Uint8Array) => boolean) {
       if (!seated || session !== leftIn) return;
       keep(uploading, upload.hash, (held) => held !== upload);
       upload.settle(undefined);
-    }, durationMs(BLOB_ANSWER_WAIT));
+    }, durationMs(answerWait));
   };
 
   /** Keeps only the waits of this hash that `still` holds, and forgets the hash when none are left. */
@@ -113,6 +120,9 @@ export function createBlobChannel(send: (frame: Uint8Array) => boolean) {
   const capability: TransportBlobs = {
     upload: (hash, bytes, options = {}) =>
       new Promise((resolve) => {
+        // the caller's own deadline, which no re-seat restarts: a put that left on a socket that
+        // then closed is answered here, and kept for the next seat, rather than held until one
+        const answered = setTimeout(() => resolve(undefined), durationMs(answerWait));
         const mine: Upload = {
           hash,
           frame: blobPutFrame(hash, bytes, options.partition),
@@ -120,6 +130,7 @@ export function createBlobChannel(send: (frame: Uint8Array) => boolean) {
           partition: options.partition,
           silence: undefined,
           settle: (refusal) => {
+            clearTimeout(answered);
             clearTimeout(mine.silence);
             resolve(refusal);
           },
@@ -129,7 +140,10 @@ export function createBlobChannel(send: (frame: Uint8Array) => boolean) {
         offerUpload(mine);
         // it did not leave — no seat, or a socket going down under it — so there is no relay to
         // wait on: the put is answered now, and the next seat carries the bytes
-        if (mine.sentIn !== session || !seated) resolve(undefined);
+        if (mine.sentIn !== session || !seated) {
+          clearTimeout(answered);
+          resolve(undefined);
+        }
       }),
     download: (hash, { timeoutMs }) =>
       new Promise((resolve) => {
