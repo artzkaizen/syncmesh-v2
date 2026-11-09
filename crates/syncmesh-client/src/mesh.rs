@@ -517,6 +517,13 @@ async fn pump(
                 lock(&rejoins).relay_cleared(&relay);
                 vec![MeshEvent::Recovery]
             }
+            LinkEvent::BelowPeerFloor { peer, floor } => {
+                if lock(&rejoins).relayed_floor(&peer, floor) {
+                    vec![MeshEvent::Recovery]
+                } else {
+                    Vec::new()
+                }
+            }
             LinkEvent::Refused(why) => vec![MeshEvent::Ended(why)],
             LinkEvent::Closed(_) | LinkEvent::DialFailed(_) => Vec::new(),
         };

@@ -1,7 +1,12 @@
 import type { Cursors, EngineOptions, Interest } from "@syncmesh/engine";
 import type { TransportContext } from "@syncmesh/transport";
 
-import { createEngine, createMemoryEventStore, createValidator } from "@syncmesh/engine";
+import {
+  createEngine,
+  createMemoryEventStore,
+  createMemoryStateStore,
+  createValidator,
+} from "@syncmesh/engine";
 import {
   createHlcClock,
   parsePartitionKey,
@@ -97,10 +102,13 @@ export const peer = (
     partitions,
     granted = true,
     schemaVersion,
+    compacts = false,
   }: {
     readonly partitions?: readonly PartitionKey[];
     readonly granted?: boolean;
     readonly schemaVersion?: SchemaVersion;
+    /** Gives the engine a state store, which compaction needs: state is then not only the log. */
+    readonly compacts?: boolean;
   } = {},
 ) => {
   const identity = createIdentity(seed(n)).unwrap();
@@ -113,7 +121,10 @@ export const peer = (
     clock,
     store: createMemoryEventStore(),
     validate: createValidator({ schema, grantFor: (p) => grants.grantFor(p) }),
-    ...omitUndefined({ schemaVersion }),
+    ...omitUndefined({
+      schemaVersion,
+      stateStore: compacts ? createMemoryStateStore() : undefined,
+    }),
   };
   const engine = createEngine(options);
   const context: TransportContext = { engine, identity, grants, now: () => T0 };

@@ -143,6 +143,25 @@ export interface Cleared extends Base {
   readonly transport: string;
 }
 
+/**
+ * A device raised D46's issue for a peer's floor, as `$recovery.belowFloor()` reports it: per
+ * full author id, the floor it is below, and why it has not taken the state that would answer it.
+ */
+export interface Below extends Base {
+  readonly kind: "below";
+  readonly device: string;
+  readonly peer: string;
+  readonly reason: string;
+  readonly floor: Readonly<Record<string, number>>;
+}
+
+/** A peer's floor issue the device recorded is over: it caught up, however it got there. */
+export interface Above extends Base {
+  readonly kind: "above";
+  readonly device: string;
+  readonly peer: string;
+}
+
 /** A blob was put or read. `outcome` is `ok`, `mismatch`, or the error's tag. */
 export interface BlobFact extends Base {
   readonly kind: "blob";
@@ -175,6 +194,8 @@ export type Entry =
   | Covered
   | Refused
   | Cleared
+  | Below
+  | Above
   | BlobFact
   | Violation;
 

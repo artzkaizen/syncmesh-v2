@@ -1,6 +1,7 @@
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
 import { createMemoryEventStore, tableDigests } from "@syncmesh/engine";
+import { parseSeqNum } from "@syncmesh/kernel";
 import { hashOf, memoryBlobStore } from "@syncmesh/storage";
 import { Temporal } from "@syncmesh/temporal";
 import { createRejoins, eventFrame, grantFrame } from "@syncmesh/transport";
@@ -511,6 +512,51 @@ describe("a device the room refuses with retention (gaps U30)", () => {
     expect(await landed(3)).toBe(3);
     expect(rejoins.issues()).toHaveLength(1);
     await t.stop();
+    room.close();
+  }, 20_000);
+
+  /**
+   * A refused device that compacted a run it carried is often the run's last holder, and a device
+   * that reaches it only through the room never heard its floor: a refused session sent no
+   * cursors frame (chaos soak, `--retention`, seed 9 at six devices, gaps U52).
+   */
+  test("says its position, floor and all, before it hangs up", async () => {
+    const { a, room, tick: setClock } = await fourEvents(2, { versions: RELAY_PROTOCOL_VERSIONS });
+    setClock(at(KEEP_MS + STEP_MS));
+    await room.sweep();
+
+    // a device the room serves, holding the room's floor, with no link of its own to x
+    const bob = peer(95, "acct_y");
+    bob.grants.register(mintFor(a.identity, "acct_a")).unwrap();
+    const history = (await a.engine.eventsSince(new Map())).unwrap();
+    (await bob.engine.receiveBatch(history.filter(({ event }) => event.seqNum <= 2))).unwrap();
+    const told = createRejoins();
+    const tb = relayTransport({ dial: dialTo(room).dial, reconnectMs: 5 });
+    await tb.start({ ...bob.context, rejoins: told });
+    await tb.whenReady();
+
+    // x carried c's run and compacted it before it came back below the room's floor
+    const c = peer(120, "acct_c");
+    const x = peer(94, "acct_x", 100, { compacts: true });
+    x.grants.register(mintFor(c.identity, "acct_c")).unwrap();
+    const run = [await write(c, "c1", "one"), await write(c, "c2", "two")];
+    (await x.engine.receiveBatch(run.map(entryOf))).unwrap();
+    const later = T0.add(MS(60_000));
+    const carried = new Map([[c.identity.peerId, parseSeqNum(run.length).unwrap()]]);
+    x.engine.acknowledge(peer(96, "acct_z").identity.peerId, carried, later);
+    (await x.engine.compact({ now: later, forgetPeersAfter: MS(1000) })).unwrap();
+
+    const rejoins = createRejoins();
+    const tx = relayTransport({ dial: dialTo(room).dial, reconnectMs: 5 });
+    await tx.start({ ...x.context, rejoins });
+    expect(await until(() => rejoins.issues().length === 1)).toBe(true);
+    // bob is below the floor x said on its way out, and nothing but x's refused session said it
+    expect(await until(() => told.issues().length === 1, 2000)).toBe(true);
+    expect(told.issues()).toMatchObject([
+      { peer: x.identity.peerId, reason: "relayed", floor: carried },
+    ]);
+    await tx.stop();
+    await tb.stop();
     room.close();
   }, 20_000);
 

@@ -11,6 +11,8 @@ import {
   checkDigests,
   checkHeld,
   renderInvariant,
+  heldTo,
+  standingFloors,
   standingRefusals,
   type Holding,
 } from "./invariant.js";
@@ -103,6 +105,12 @@ const connected = (wirings: readonly Wiring[]): boolean => {
 };
 
 /** What every device holds, read from its engine: the invariant's evidence. */
+/** Every device's issues read once more: one whose authors caught up since is said to be over. */
+async function rereadIssues(world: World): Promise<void> {
+  for (const device of world.devices) device.mesh.recovery.belowFloor();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 async function holdings(world: World): Promise<readonly Holding[]> {
   return Promise.all(
     world.devices.map(async (device) => {
@@ -197,6 +205,8 @@ const main = async () => {
   try {
     const outcome = await runPlan(world, plan, random, ledger, NOTES, switches);
 
+    await rereadIssues(world);
+
     // what every device holds at the end, read from its own state rather than from the log
     const held: Held = new Map(
       world.devices.map((device) => {
@@ -235,6 +245,7 @@ const main = async () => {
     const wirings = new Map(world.devices.map((device) => [device.name, device.wiring]));
     const reaches = reachOver(wirings, told);
     const stateOnly = stateOnlyOver(wirings, told, holding);
+    const floors = standingFloors(ledger.entries());
     const invariant = checkHeld(ledger.entries(), holding, { reaches, stateOnly });
     const refused = new Set(invariant.refused.map((refusal) => refusal.device));
     const digests = checkDigests(holding, refused);
@@ -246,11 +257,8 @@ const main = async () => {
     const converging: Held = new Map(
       [...held].filter(([device]) => !(refused.has(device) && told.has(device))),
     );
-    const report = analyze(
-      ledger.entries(),
-      converging,
-      (write, device) =>
-        reaches(write.device, device) && !stateOnly(device, write.author, write.seqNum),
+    const report = analyze(ledger.entries(), converging, (write, device) =>
+      heldTo(write, device, { reaches, stateOnly }, floors),
     );
     const text = [
       render(report, ledger.entries()),

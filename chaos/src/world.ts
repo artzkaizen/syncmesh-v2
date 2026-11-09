@@ -90,12 +90,24 @@ function report(mesh: Mesh, name: string, ledger: Ledger): void {
     }),
   );
   // the relay's `retention` refusal as the device itself reports it: a `$recovery` issue
-  // (gaps U30), raised whether or not the room also closed the socket with the code
+  // (gaps U30), raised whether or not the room also closed the socket with the code — and a
+  // peer's floor it is below, however that floor reached it (D46, gaps U52)
   const told = new Set<string>();
+  const below = new Map<string, string>();
   mesh.recovery.onBelowFloor(() => {
     const standing = new Set<string>();
+    const peers = new Set<string>();
     for (const issue of mesh.recovery.belowFloor()) {
-      if (issue.reason !== "retention") continue;
+      if (issue.reason !== "retention") {
+        const peer = short(issue.peer);
+        const floor = Object.fromEntries(issue.floor);
+        const key = `${issue.reason} ${JSON.stringify(floor)}`;
+        peers.add(peer);
+        if (below.get(peer) === key) continue;
+        below.set(peer, key);
+        ledger.write({ kind: "below", device: name, peer, reason: issue.reason, floor });
+        continue;
+      }
       standing.add(issue.relay);
       if (told.has(issue.relay)) continue;
       told.add(issue.relay);
@@ -111,6 +123,10 @@ function report(mesh: Mesh, name: string, ledger: Ledger): void {
     for (const relay of [...told].filter((relay) => !standing.has(relay))) {
       told.delete(relay);
       ledger.write({ kind: "cleared", device: name, transport: relay });
+    }
+    for (const peer of [...below.keys()].filter((peer) => !peers.has(peer))) {
+      below.delete(peer);
+      ledger.write({ kind: "above", device: name, peer });
     }
   });
   mesh.engine.onQuarantine(({ event, reason }) =>

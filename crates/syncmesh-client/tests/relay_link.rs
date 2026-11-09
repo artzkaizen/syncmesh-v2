@@ -1481,4 +1481,14 @@ fn a_retention_refusal_hands_over_what_the_room_lacks_before_hanging_up() {
             .iter()
             .any(|msg| matches!(msg, Msg::DeviceHungUp { device } if *device == b))
     );
+    // and then its position, whose floor tells a device below it that only state will do: a
+    // refused session said none, so one that reaches it only through the room never heard (U52)
+    let last = net.devices[b]
+        .sent
+        .last()
+        .map(|bytes| decode_relay_frame(bytes));
+    assert!(
+        matches!(last, Some(Ok(RelayFrame::Session(Frame::Cursors { .. })))),
+        "{last:?}"
+    );
 }

@@ -73,11 +73,39 @@ export function standingRefusals(entries: readonly Entry[]): ReadonlyMap<string,
 }
 
 /**
- * Why a device may lack what `author` wrote: the typed refusal it was given, or no way left from
- * the author to it once the relay serves nobody it refused (`reach.ts`). `undefined` when neither.
+ * Per device, per full author id, the highest peer floor a `$recovery` issue still says it is
+ * below at the end of the run (D46): what it was told about a run it can take only as state.
+ */
+export function standingFloors(
+  entries: readonly Entry[],
+): ReadonlyMap<string, ReadonlyMap<string, number>> {
+  const issues = new Map<string, Map<string, Readonly<Record<string, number>>>>();
+  for (const entry of entries) {
+    if (entry.kind === "above") issues.get(entry.device)?.delete(entry.peer);
+    if (entry.kind !== "below") continue;
+    const device = issues.get(entry.device) ?? new Map();
+    device.set(entry.peer, entry.floor);
+    issues.set(entry.device, device);
+  }
+  return new Map(
+    [...issues].map(([device, peers]) => {
+      const floor = new Map<string, number>();
+      for (const marks of peers.values())
+        for (const [author, seq] of Object.entries(marks))
+          floor.set(author, Math.max(floor.get(author) ?? 0, seq));
+      return [device, floor];
+    }),
+  );
+}
+
+/**
+ * Why a device may lack what `author` wrote: the typed refusal it was given, no way left from
+ * the author to it once the relay serves nobody it refused (`reach.ts`), or a run it can take
+ * only as state and a standing issue that tells it so. `undefined` when none.
  */
 const excuse = (
   refusals: ReadonlyMap<string, string>,
+  floors: ReadonlyMap<string, ReadonlyMap<string, number>>,
   why: Excuses,
   entry: { readonly device: string; readonly author: string; readonly seqNum: number },
   device: string,
@@ -86,10 +114,29 @@ const excuse = (
   if (told !== undefined) return told;
   if (!why.reaches(entry.device, device))
     return `cut off: every way from ${entry.device} runs through a device the relay refused`;
-  if (why.stateOnly(device, entry.author, entry.seqNum))
-    return `state only: ${entry.device}'s run from here reaches this device in no log, and nothing that carries state does (gaps U52)`;
+  // only as state, and only excused when the device was told: a silent gap is the bug (gaps U52)
+  const floor = floors.get(device)?.get(entry.author);
+  if (floor !== undefined && why.stateOnly(device, entry.author, entry.seqNum))
+    return `state only: ${entry.device}'s run from here reaches this device in no log, and its $recovery issue says it is below that run's floor (${floor})`;
   return undefined;
 };
+
+/**
+ * Whether the cell oracle holds `device` to `write`: the write could reach it, and it is not a run
+ * the device can take only as state and was told so (`standingFloors`).
+ */
+export function heldTo(
+  write: { readonly device: string; readonly author: string; readonly seqNum: number },
+  device: string,
+  why: Excuses,
+  told: ReadonlyMap<string, ReadonlyMap<string, number>>,
+): boolean {
+  const excused = told.get(device)?.has(write.author) === true;
+  return (
+    why.reaches(write.device, device) &&
+    !(excused && why.stateOnly(device, write.author, write.seqNum))
+  );
+}
 
 /** What `reach.ts` knows that a device's own holding cannot say. */
 export interface Excuses {
@@ -109,6 +156,7 @@ export function checkHeld(
 ): InvariantReport {
   const floors = floorsFrom(entries);
   const refusals = standingRefusals(entries);
+  const told = standingFloors(entries);
   const violations: Fact<Violation>[] = [];
   const refused: RefusedEvent[] = [];
   let checked = 0;
@@ -125,7 +173,7 @@ export function checkHeld(
         covered += 1;
         continue;
       }
-      const refusal = excuse(refusals, why, entry, holding.device);
+      const refusal = excuse(refusals, told, why, entry, holding.device);
       if (refusal !== undefined && cursor < entry.seqNum) {
         refused.push({ device: holding.device, eventId: entry.eventId, refusal });
         continue;

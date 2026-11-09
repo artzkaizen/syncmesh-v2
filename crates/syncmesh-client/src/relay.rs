@@ -44,6 +44,7 @@ use crate::engine::{Engine, FoldBatch};
 use crate::grants::GrantRegistry;
 use crate::holdback::Holdback;
 use crate::interest::{Interest, interest_text, narrows, same_interest, scope_from};
+use crate::rejoin::below_floor;
 use crate::store::{Coverage, Cursors, StoredEvent};
 
 /// How long a peer stays claimed after it was last heard through this relay. Long against the
@@ -121,6 +122,13 @@ pub enum Action {
     /// The relay's issue is over — the floor is held (a dial follows), a join was served, or the
     /// link stopped: [`crate::Rejoins::relay_cleared`].
     FloorCleared,
+    /// A peer's cursors frame came through the room naming a floor this device is below: per
+    /// author, that floor (D46, gaps U52). The room carries no state to answer it; raise the
+    /// issue with [`crate::Rejoins::relayed_floor`].
+    BelowPeerFloor {
+        peer: PeerId,
+        floor: Cursors,
+    },
     /// Another device spoke through this relay, so the relay demonstrably carries it.
     PeerHeard(PeerId),
     /// Bytes that became nothing, said: a frame this build cannot decode, an event whose
@@ -791,8 +799,10 @@ impl RelayLink {
                 if code == "retention" {
                     // below the room's floor and served nothing, but still heard: what this
                     // device holds above the cursors the room's hello named goes over before it
-                    // hangs up (`relay/src/retention.ts` `refusedBelowFloor`)
+                    // hangs up (`relay/src/retention.ts` `refusedBelowFloor`) — and then its
+                    // position, whose floor tells a device below it that only state will do (U52)
                     self.push_outstanding(engine, out);
+                    self.send_cursors(engine, out);
                     // the room said hello before it refused, and that hello is not a session:
                     // the delay it reset is back, so a room that keeps refusing is dialled on a
                     // delay that doubles (`redial.ts` `refused`)
@@ -845,12 +855,31 @@ impl RelayLink {
         match frame {
             Frame::Presence { wire } => out.push(Action::Presence(wire)),
             Frame::Grant { wire } => self.grant_arrived(wire, now_ms, out),
-            Frame::Cursors { from, cursors, .. } => {
+            Frame::Cursors {
+                from,
+                cursors,
+                floor,
+                ..
+            } => {
                 // cursors rather than events, deliberately: a relayed event may be history from a
                 // device that left hours ago, while cursors are a live peer reporting now
                 self.heard.insert(from.clone(), now_ms);
                 out.push(Action::PeerHeard(from.clone()));
-                engine.acknowledge(from, cursors_to_map(&cursors), now_ms);
+                let theirs = cursors_to_map(&cursors);
+                // below the floor of a peer the room passed on: the room carries no state to
+                // answer it, so the host is told (gaps U52)
+                if let Some(floor) = floor.filter(|f| !f.is_empty()) {
+                    let ours = engine.coverage().synced;
+                    let floor = cursors_to_map(&floor);
+                    let below = below_floor(self.identity.peer_id(), &ours, &theirs, &floor);
+                    if !below.is_empty() {
+                        out.push(Action::BelowPeerFloor {
+                            peer: from.clone(),
+                            floor: below,
+                        });
+                    }
+                }
+                engine.acknowledge(from, theirs, now_ms);
             }
             Frame::GrantRequest { peer_id, invite } => {
                 out.push(Action::GrantRequest { peer_id, invite });
@@ -1055,14 +1084,18 @@ impl RelayLink {
     }
 
     /// Our contiguous position, for every other peer's `delivered`; the relay passes it on.
+    /// The floor this device claims with no log behind it rides at index 4 (D46), as on a peer
+    /// link, so a device below it that reaches this one only through the room is told (gaps U52).
     fn send_cursors(&mut self, engine: &Engine, out: &mut Vec<Action>) {
         let pairs = cursors_to_pairs(&engine.coverage().synced);
         // with the schema this build declares (D31), for every other peer's fleet reading. Index
-        // 5 needs index 3 written, so that frame says what is held above the cursors, truthfully
+        // 5 or 4 needs index 3 written, so that frame says what is held above the cursors, truthfully
         let version = engine.schema_version();
+        let floor = cursors_to_pairs(&engine.floor());
+        let floor = (!floor.is_empty()).then_some(floor.as_slice());
         let ahead: Vec<(PeerId, Vec<SeqNum>)> = engine.ahead().into_iter().collect();
-        let held = version.map(|_| ahead.as_slice());
-        let frame = cursors_frame(self.identity.peer_id(), &pairs, held, None, version);
+        let held = (version.is_some() || floor.is_some()).then_some(ahead.as_slice());
+        let frame = cursors_frame(self.identity.peer_id(), &pairs, held, floor, version);
         self.send_safe(frame, out);
     }
 
@@ -1516,6 +1549,39 @@ mod tests {
         assert_eq!(sends(&out), 1);
     }
 
+    /// A peer's floor the room passed on reached a device below it and said nothing: a relay
+    /// session read the cursors and dropped the floor, and the room carries no state (gaps U52).
+    #[test]
+    fn a_peer_floor_the_room_passes_on_is_said_to_the_host() {
+        let mut engine = engine(1);
+        let mut link = joined(&mut engine);
+        let peer = identity(2).peer_id().clone();
+        let author = identity(3).peer_id().clone();
+        let seq = |n| SeqNum::parse(n).unwrap();
+        let frame = cursors_frame(
+            &peer,
+            &[(author.clone(), seq(9))],
+            Some(&[]),
+            Some(&[(author.clone(), seq(5))]),
+            None,
+        );
+        let out = link.on_bytes(&mut engine, &frame, 1);
+        assert!(
+            out.contains(&Action::BelowPeerFloor {
+                peer: peer.clone(),
+                floor: [(author.clone(), seq(5))].into_iter().collect(),
+            }),
+            "{out:?}"
+        );
+        // with no floor, or one this device is not below, nothing is said
+        let frame = cursors_frame(&peer, &[(author.clone(), seq(9))], None, None, None);
+        let out = link.on_bytes(&mut engine, &frame, 2);
+        assert!(
+            !out.iter()
+                .any(|a| matches!(a, Action::BelowPeerFloor { .. }))
+        );
+    }
+
     /// A link on a challenging room, answered and joined: what a refusal is read on.
     fn joined(engine: &mut Engine) -> RelayLink {
         let mut link = RelayLink::new(
@@ -1563,9 +1629,17 @@ mod tests {
         let refusal = retention_error_frame("retention", "below", &[(author.clone(), seq(3))]);
         let out = link.on_bytes(&mut engine, &refusal, 0);
         let floor: Cursors = [(author.clone(), seq(3))].into_iter().collect();
+        // its position goes out first, for a device below its floor to hear (gaps U52)
+        let [Action::Send(said), rest @ ..] = out.as_slice() else {
+            panic!("expected the cursors frame first, got {out:?}");
+        };
+        assert!(matches!(
+            decode_relay_frame(said),
+            Ok(RelayFrame::Session(Frame::Cursors { .. }))
+        ));
         assert_eq!(
-            out,
-            vec![
+            rest,
+            [
                 Action::BelowFloor {
                     floor: floor.clone()
                 },
@@ -1678,10 +1752,11 @@ mod tests {
         link.on_closed(3);
         link.on_dialed(4);
         link.on_bytes(&mut engine, &challenge_frame(&[9; 32]), 4);
-        assert!(matches!(
-            link.on_bytes(&mut engine, &refusal, 4)[0],
-            Action::BelowFloor { .. }
-        ));
+        assert!(
+            link.on_bytes(&mut engine, &refusal, 4)
+                .iter()
+                .any(|action| matches!(action, Action::BelowFloor { .. }))
+        );
         assert!(link.stop().contains(&Action::FloorCleared));
     }
 

@@ -74,6 +74,11 @@ pub enum LinkEvent {
     BelowFloor(Cursors),
     /// The relay's floor issue is over.
     FloorCleared,
+    /// A peer's floor, passed on by the room, that this device is below (gaps U52).
+    BelowPeerFloor {
+        peer: PeerId,
+        floor: Cursors,
+    },
     /// Permanent; the task ends after this.
     Refused(String),
     /// The socket ended, and why the link thinks so where it was the one to hang up.
@@ -98,6 +103,7 @@ impl LinkEvent {
             Action::Dropped(why) => LinkEvent::Dropped(why),
             Action::BelowFloor { floor } => LinkEvent::BelowFloor(floor),
             Action::FloorCleared => LinkEvent::FloorCleared,
+            Action::BelowPeerFloor { peer, floor } => LinkEvent::BelowPeerFloor { peer, floor },
             Action::Refused { reason } => LinkEvent::Refused(reason),
             Action::Send(_) | Action::Close { .. } | Action::Redial { .. } => return None,
         })

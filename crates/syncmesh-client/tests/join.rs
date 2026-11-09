@@ -845,3 +845,48 @@ fn a_relays_refusal_is_listed_beside_the_peers_and_cleared_by_the_link() {
     rejoins.relay_cleared("relay");
     assert_eq!(rejoins.changes(), after, "a second clear changes nothing");
 }
+
+/// Gaps U52: a peer's floor a relay passed on is an issue of its own, raised once per floor, gone
+/// once the device catches up — and never over the issue a link of this device's own raised.
+#[test]
+fn a_floor_heard_through_a_relay_raises_a_relayed_issue() {
+    let mut rejoins = Rejoins::new();
+    let peer = identity(2).peer_id().clone();
+    let author = identity(3).peer_id().clone();
+    let floor: Cursors = [(author.clone(), seq(4))].into_iter().collect();
+    assert!(rejoins.relayed_floor(&peer, floor.clone()));
+    assert!(
+        !rejoins.relayed_floor(&peer, floor.clone()),
+        "the same floor twice"
+    );
+    assert_eq!(
+        rejoins.issues(&Cursors::new()),
+        vec![BelowFloor {
+            source: FloorSource::Peer(peer.clone()),
+            floor: floor.clone(),
+            reason: BelowFloorReason::Relayed,
+        }]
+    );
+    assert_eq!(BelowFloorReason::Relayed.as_str(), "relayed");
+    assert!(rejoins.issues(&floor).is_empty(), "caught up, however");
+    assert!(!rejoins.relayed_floor(&peer, Cursors::new()));
+
+    // a link of this device's own to the peer asks for the state itself
+    let x_engine = engine(1);
+    let theirs: Cursors = [(author.clone(), seq(9))].into_iter().collect();
+    let untrusting = JoinExchange::new(JoinOptions::new("y"));
+    let mut link = PeerJoin::open(&mut rejoins, untrusting, None);
+    link.on_cursors(&mut rejoins, &x_engine, &peer, &theirs, Some(&floor));
+    assert!(!rejoins.relayed_floor(&peer, floor.clone()));
+    link.close(&mut rejoins);
+    let raised = rejoins.issues(&Cursors::new());
+    assert_eq!(raised.len(), 1);
+    assert_eq!(raised[0].reason, BelowFloorReason::Untrusted);
+    // and its issue stands once it is gone
+    let moved: Cursors = [(author, seq(6))].into_iter().collect();
+    assert!(!rejoins.relayed_floor(&peer, moved));
+    assert_eq!(
+        rejoins.issues(&Cursors::new())[0].reason,
+        BelowFloorReason::Untrusted
+    );
+}

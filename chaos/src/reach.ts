@@ -73,8 +73,8 @@ const search = (
  * What makes this reachable at all is `--retention`'s own setting: devices compact with
  * `forgetPeersAfter` 200 ms, so a device away for longer is forgotten and compacted past, by
  * design, and must rejoin from state (RFC-0015 §3). Seeds 1 and 9 at six devices: a relay-only
- * device forgotten by every Bluetooth device that held what it lacked. That it is not *told* is
- * gaps U52.
+ * device forgotten by every Bluetooth device that held what it lacked. The invariant excuses it
+ * only while its `$recovery` issue says so (gaps U52, `invariant.ts` `standingFloors`).
  */
 export function stateOnlyOver(
   wirings: ReadonlyMap<string, Wiring>,

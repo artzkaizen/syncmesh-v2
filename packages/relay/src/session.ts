@@ -172,14 +172,19 @@ const adoptOwnRun = async (
  * Our contiguous position, for every other peer's `delivered`, with the schema this build
  * declares (D31) for their fleet reading. Index 5 needs index 3 written, so a versioned frame
  * says what is held above the cursors too, truthfully; an undeclared one is the frame it was.
+ * The floor this device's log was compacted below rides at index 4 (D46), as on a peer link, so
+ * a device below it that reaches this one only through the room is told (gaps U52).
  *
  * Sent after every fold of a remote batch, and once each join has caught up: the room's join
  * frame for us carries no version, and a device that only writes folds nothing remote.
  */
-const ownCursorsFrame = (engine: Engine, self: PeerId): Uint8Array =>
-  engine.schemaVersion === undefined
+const ownCursorsFrame = (engine: Engine, self: PeerId): Uint8Array => {
+  const { schemaVersion } = engine;
+  const floor = engine.floor();
+  return floor.size === 0 && schemaVersion === undefined
     ? cursorsFrame(self, engine.coverage().synced)
-    : cursorsFrame(self, engine.coverage().synced, engine.ahead(), undefined, engine.schemaVersion);
+    : cursorsFrame(self, engine.coverage().synced, engine.ahead(), floor, schemaVersion);
+};
 
 /** A join that has caught up: our position and build go out, then the hook fires. */
 const caughtUpAnnounced = (engine: Engine, self: PeerId, hooks: SessionHooks): void => {
@@ -283,9 +288,10 @@ export function wireSession(
    * with what is sent — the relay says where it is on `hello`, and between two of those this is
    * what we know it has.
    */
-  const pushOutstanding = (): void => {
+  const pushOutstanding = (then?: Uint8Array): void => {
     chain = chain.then(async () => {
       relayCursors = await sendOutstanding(context, relayCursors, hooks.sendSafe);
+      if (then !== undefined) hooks.sendSafe(then);
     });
   };
 
@@ -302,6 +308,8 @@ export function wireSession(
       hooks.onPeerHeard?.(frame.from);
       engine.acknowledge(frame.from, frame.cursors, now(), frame.schemaVersion);
       custody.heard(frame.from);
+      // a peer's floor the room passed on: it carries no state to answer it, so say so (gaps U52)
+      context.rejoins?.relayedFloor(engine, frame.from, frame.cursors, frame.floor);
     } else if (frame.kind === "grant-request") {
       const request = { peerId: frame.peerId };
       if (frame.invite !== undefined) Object.assign(request, { invite: frame.invite });
@@ -356,9 +364,9 @@ export function wireSession(
     } else if (frame.kind === "error") {
       hooks.onRefused(frame.code, frame.floor);
       // below the room's floor, served nothing, and still heard: what this device holds above
-      // the cursors the room's hello named goes over before it hangs up — its own writes and the
-      // ones it carries for neighbours the room cannot reach (`refusedBelowFloor`)
-      if (frame.code === "retention") pushOutstanding();
+      // the hello's cursors goes over before it hangs up, carried writes too (`refusedBelowFloor`),
+      // then its position, whose floor tells a device below it that only state will do (U52)
+      if (frame.code === "retention") pushOutstanding(ownCursorsFrame(engine, identity.peerId));
       // closed whatever the push did: the room no longer closes a refused socket itself
       chain = chain.then(
         () => dialed.close(),

@@ -74,7 +74,12 @@ export type BelowFloorReason =
   /** An install completed and some authors are still below: withheld tables, a scoped sender, doc columns. */
   | "incomplete"
   /** Three sessions asked and no install completed (the link dropped, or the state was refused). */
-  | "unanswered";
+  | "unanswered"
+  /**
+   * The floor came through a relay, from a peer this device has no link of its own to ask: a
+   * relay carries cursors and events, never state (gaps U52).
+   */
+  | "relayed";
 
 /** A device below a peer's compaction floor, and what is known about why (D46). */
 export interface BelowPeerFloor {
@@ -144,6 +149,19 @@ export interface Rejoins {
   readonly relayRefused: (relay: string, floor: Cursors, ours: () => Cursors) => void;
   /** Drops a relay's issue: the link holds the floor, was served, or stopped. */
   readonly relayCleared: (relay: string) => void;
+  /**
+   * A peer's cursors frame came through a relay (gaps U52). When `engine`'s device is below its
+   * floor ({@link belowPeerFloor}), the relay cannot carry the state that would answer it, so the
+   * issue is raised as `relayed` — unless a link of this device's own reaches the peer, whose
+   * session asks for that state itself, or that link already raised the peer's issue. A frame
+   * with no floor (an older build, or no compaction) raises nothing.
+   */
+  readonly relayedFloor: (
+    engine: Pick<Engine, "peerId" | "coverage">,
+    peer: PeerId,
+    theirs: Cursors,
+    floor: Cursors | undefined,
+  ) => void;
 }
 
 export interface RejoinSessionDeps {
@@ -184,6 +202,8 @@ const MESSAGES = {
   incomplete:
     "the peer's state did not cover these authors up to its floor (withheld tables, a scope it does not hold, or document columns)",
   unanswered: "asked for state in three sessions and no install completed",
+  relayed:
+    "this peer's floor reached this device through a relay, which carries no state, and no link of this device's own reaches the peer: take state from a peer link to it (accept it to adopt up to its floor once one opens) or $recovery.rebuild",
 } satisfies Record<BelowFloorReason, string>;
 
 const RETENTION =
@@ -365,6 +385,16 @@ export function createRejoins(): Rejoins {
     },
     relayCleared: (relay) => {
       if (relays.delete(relay)) changes.emit();
+    },
+    relayedFloor: (engine, peer, theirs, floor) => {
+      if (floor === undefined) return;
+      const below = belowPeerFloor(engine.peerId, engine.coverage().synced, theirs, floor);
+      if (below.size === 0 || live.has(peer)) return;
+      const held = raised.get(peer)?.issue;
+      // a link of this device's own judged that peer already: its reason is the better one
+      if (held !== undefined && held.reason !== "relayed") return;
+      if (held !== undefined && floorKey(peer, held.floor) === floorKey(peer, below)) return;
+      raise(peer, below, "relayed", () => engine.coverage().synced);
     },
   };
 }
