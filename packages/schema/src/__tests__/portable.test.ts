@@ -122,6 +122,8 @@ describe("the manifest as a port reads it (gap U3)", () => {
             counted: t.text().check(z.string().regex(/^a{,2}$/)),
             templated: t.text().check(z.templateLiteral([z.string().length(2)])),
             keyed: t.json(z.looseRecord(z.string().regex(/^\w+$/), z.number())),
+            spanned: t.text().check(z.string().regex(new RegExp("^[ -\uffff]{2}$"))),
+            ranged: t.text().check(z.string().regex(new RegExp("^[\u4e00-\u9fff]{2}$"))),
           },
         },
       },
@@ -166,6 +168,10 @@ describe("the manifest as a port reads it (gap U3)", () => {
     expect(schemaOf("counted")).toEqual({ type: "string" });
     // a template literal's own pattern and a loose record's key patterns are read alike
     expect(schemaOf("templated")).toEqual({ type: "string" });
+    // without `u` a range over the surrogates takes either half of "😀" alone, so `^[ -\uffff]{2}$`
+    // passes it; a code-point engine reads the range without them and would refuse it
+    expect(schemaOf("spanned")).toEqual({ type: "string" });
+    expect(schemaOf("ranged")).toEqual({ type: "string", pattern: "^[\u4e00-\u9fff]{2}$" });
     expect(schemaOf("keyed")).toEqual({
       type: "object",
       patternProperties: { "^[A-Za-z0-9_]+$": { type: "number" } },

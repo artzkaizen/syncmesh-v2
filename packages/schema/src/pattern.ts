@@ -78,9 +78,21 @@ const spelledEscape = (scan: PatternScan): Spelled => {
   return SAME_ESCAPES.has(escaped) ? `\\${escaped}` : undefined;
 };
 
+/**
+ * Whether the `-` at `at` makes a range over the surrogates: without `u` such a range matches
+ * either half of "😀" alone, which no code-point engine can say.
+ */
+const spansSurrogates = ({ source, at, units }: PatternScan): boolean => {
+  const to = source.charCodeAt(at + 1);
+  return (
+    units && source.charAt(at + 1) !== "]" && to >= 0xd800 && source.charCodeAt(at - 1) <= 0xdfff
+  );
+};
+
 const spelledInClass = (scan: PatternScan, char: string): Spelled => {
   const next = scan.source.charAt(scan.at + 1);
   if (char === "[" || (CLASS_SET_OPERATORS.test(char) && next === char)) return undefined;
+  if (char === "-" && spansSurrogates(scan)) return undefined;
   if (char === "]") {
     scan.inClass = false;
     scan.unitAtom = scan.unitClass;
@@ -128,7 +140,8 @@ const spelledChar = (scan: PatternScan, char: string): Spelled => {
  * time, so `/^.{2}$/` passes "😀"; such an atom is kept only as a `*` run, which takes the same
  * strings either way. A pattern with a literal outside the BMP, a `\b`, a backreference, a
  * named group, a lookbehind, a `\p` or `\u` escape, a nested or empty class, a negated
- * shorthand inside a class, a `{,n}`, or a flag a pattern cannot carry is left out.
+ * shorthand inside a class, a class range over the surrogates without `u`, a `{,n}`, or a flag a
+ * pattern cannot carry is left out.
  */
 export const spelledPattern = ({ source, flags }: RegExp): Spelled => {
   if (UNSAID_FLAGS.test(flags)) return undefined;
