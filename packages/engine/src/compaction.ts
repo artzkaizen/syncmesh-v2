@@ -31,6 +31,11 @@ export interface CompactOptions {
   readonly forgetPeersAfter?: Temporal.Duration;
   /** Measured now: given, compaction runs only when `dueForCompaction` says the log has earned it, and otherwise removes nothing. Absent, the caller has already decided and it always runs. */
   readonly sizes?: LogSizes;
+  /**
+   * Keeps every tombstone. By default a run also drops the rows deleted at or below the stamp
+   * every author's compaction floor has passed (`tombstoneFrontier`, gaps O1).
+   */
+  readonly keepTombstones?: boolean;
 }
 
 /** What the log costs a boot, against what the state it can be opened from costs instead. */
@@ -59,6 +64,8 @@ export const dueForCompaction = ({ incrementalBytes, snapshotBytes }: LogSizes):
 
 export interface Compaction {
   readonly removed: number;
+  /** Tombstones the run collected: rows dropped from the state and the state store. */
+  readonly tombstones: number;
   /** The floor actually applied, after clamping to what the state store had persisted; empty when `sizes` said the log had not earned a compaction. */
   readonly floor: Coverage;
 }
@@ -188,7 +195,7 @@ export function compactLog(
     );
   }
   if (options.sizes !== undefined && !dueForCompaction(options.sizes)) {
-    return Promise.resolve(Result.ok({ removed: 0, floor: EMPTY_COVERAGE }));
+    return Promise.resolve(Result.ok({ removed: 0, tombstones: 0, floor: EMPTY_COVERAGE }));
   }
   return Result.gen(async function* () {
     const persisted = yield* Result.await(stateStore.loadCursors());
@@ -207,7 +214,7 @@ export function compactLog(
     const olderThan = keepAtLeast === undefined ? now : addToInstant(now, keepAtLeast.negated());
     const a = yield* Result.await(store.compactBelow(synced, "synced", olderThan));
     const b = yield* Result.await(store.compactBelow(local, "local", olderThan));
-    return Result.ok({ removed: a + b, floor: { synced, local } });
+    return Result.ok({ removed: a + b, tombstones: 0, floor: { synced, local } });
   });
 }
 
@@ -219,7 +226,10 @@ export function compactLog(
  * state store persists with the cursors.
  */
 export function createCompaction(
-  deps: CompactDeps,
+  deps: CompactDeps & {
+    /** Collects the tombstones the floors now settle; answers how many (`collectTombstones`). */
+    readonly collect: () => Promise<Result<number, StoreFailure>>;
+  },
   coverage: CoverageTracker,
   compacted: Cursors | undefined,
 ) {
@@ -230,7 +240,9 @@ export function createCompaction(
       Result.gen(async function* () {
         const ran = yield* Result.await(compactLog(deps, options));
         removed = higherFloor(removed, (yield* Result.await(deps.store.compactedBelow())).synced);
-        return Result.ok(ran);
+        const skipped = options.sizes !== undefined && !dueForCompaction(options.sizes);
+        if (skipped || options.keepTombstones === true) return Result.ok(ran);
+        return Result.ok({ ...ran, tombstones: yield* Result.await(deps.collect()) });
       }),
   };
 }

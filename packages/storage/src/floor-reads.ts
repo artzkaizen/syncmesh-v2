@@ -1,13 +1,15 @@
 import type { Coverage, Cursors, EventStore } from "@syncmesh/engine";
+import type { Hlc, PeerId } from "@syncmesh/kernel";
 
 import { StoreFailure, higherFloor } from "@syncmesh/engine";
+import { parsePeerId } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { isSafeNonNegative, isString } from "@syncmesh/wire";
 
 import type { SqlDriver, SqlRow, SqlValue } from "./driver.js";
 
 import { driverDialect } from "./dialect.js";
-import { attempt, failure, onConnection, parseCoverage } from "./sql.js";
+import { attempt, failure, hlcRow, onConnection, parseCoverage } from "./sql.js";
 
 /** The `installed` value in `meta`: a JSON list of `[peer, seq]` pairs, or no row at all. */
 const parseInstalled = (value: SqlValue | undefined): Result<Cursors, StoreFailure> =>
@@ -36,7 +38,7 @@ const parseInstalled = (value: SqlValue | undefined): Result<Cursors, StoreFailu
 
 /**
  * The SQL log's answers about what lies under its floors: which events compaction removed (gaps
- * U1), and the floor a snapshot install left (gaps U33).
+ * U1), the stamps it removed them up to (gaps O1), and the floor a snapshot install left (gaps U33).
  *
  * "Removed" is read off what the log already keeps. The gap table records every run the log was
  * written without, and compaction leaves those rows in place, so an event at or below its
@@ -46,7 +48,7 @@ export function createFloorReads(
   driver: SqlDriver,
   transaction: <T>(fn: () => Promise<T>) => Promise<T>,
   floors: () => Promise<Result<Coverage, StoreFailure>>,
-): Pick<EventStore, "compacted" | "installedBelow" | "recordInstalled"> {
+): Pick<EventStore, "compacted" | "compactedStamps" | "installedBelow" | "recordInstalled"> {
   const { events, gaps } = driverDialect(driver);
   // a driver with no transaction (a Durable Object's) still takes its turn, so two raises in one
   // process run one after the other
@@ -75,6 +77,19 @@ export function createFloorReads(
           query("compacted failed", gaps.selectAt, [event.peerId, local, event.seqNum]),
         );
         return Result.ok(gap === undefined || Number(gap[1]) < event.seqNum);
+      }),
+    compactedStamps: () =>
+      Result.gen(async function* () {
+        const rows = yield* Result.await(query("compactedStamps failed", events.selectFloorStamps));
+        const stamps = new Map<PeerId, Hlc>();
+        for (const [peer, ms, logical] of rows) {
+          const peerId = yield* parsePeerId(String(peer)).mapError(
+            failure("stored peer id is invalid"),
+          );
+          const stamp = yield* hlcRow([ms ?? null, logical ?? null]);
+          if (stamp !== undefined) stamps.set(peerId, stamp);
+        }
+        return Result.ok(stamps);
       }),
     installedBelow,
     // read, raised and written in one transaction under the dialect's lock: two installs at once

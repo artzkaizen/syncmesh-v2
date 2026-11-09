@@ -1,7 +1,14 @@
 import type { AdapterId, MergeSpec, RowKey, State, TableName } from "@syncmesh/kernel";
 import type { Result } from "@syncmesh/result";
 
-import { applyChange, getRecord, docLineage, eventStamp, isVisible } from "@syncmesh/kernel";
+import {
+  applyChange,
+  getRecord,
+  docLineage,
+  eventStamp,
+  isVisible,
+  withoutEntries,
+} from "@syncmesh/kernel";
 
 import type { CoverageTracker } from "./coverage.js";
 import type { DocAddress, DocAppend, DocStore, LineageMove } from "./doc-log.js";
@@ -116,6 +123,14 @@ export interface FoldPath {
   readonly derive: (rows: readonly DerivedRow[], into: PersistInto) => Promise<void>;
   /** After the derived write's transaction: one `derive` batch naming the rows it wrote. */
   readonly notifyDerived: (rows: readonly DerivedRow[]) => void;
+  /**
+   * The rows whose records are tombstones: deleted, and not written since. Kept as the fold
+   * writes; a state replaced whole (a snapshot install, a repair, a purge, boot) is walked once,
+   * the next time it is asked.
+   */
+  readonly tombstones: () => WriteKeys;
+  /** Drops these rows from the state, as if nothing had ever written them (gaps O1). */
+  readonly forget: (keys: WriteKeys) => void;
 }
 
 /** The keys derived values were written under, joined onto what a fold already touched. */
@@ -149,6 +164,19 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
   const { merge, coverage, feeds, folds, telemetry, errors, atomic, initial, hasAdapter } = deps;
   // every table packed past its warm rows, so a replica costs its bytes and not its objects
   let state = packState(initial);
+  // the tombstones as the fold leaves them; `undefined` until a walk of a state set whole
+  let tombstones = initial.size === 0 ? new Map<TableName, Set<RowKey>>() : undefined;
+  const noteTombstones = (keys: WriteKeys) => {
+    if (tombstones === undefined) return;
+    for (const [table, set] of keys)
+      for (const key of set) {
+        const record = getRecord(state, table, key);
+        const held = tombstones.get(table);
+        if (record !== undefined && !isVisible(record))
+          tombstones.set(table, (held ?? new Set()).add(key));
+        else held?.delete(key);
+      }
+  };
   const report = (written: Result<void, StoreFailure>) => {
     if (written.isOk()) return;
     if (atomic) throw written.error;
@@ -174,6 +202,7 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
         hasAdapter,
       );
       state = packState(state);
+      noteTombstones(writeKeys);
       const appeared = hiddenKeys(state, hidden, true);
       return {
         source,
@@ -194,7 +223,10 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
 
   return {
     getState: () => state,
-    setState: (next) => void (state = packState(next)),
+    setState: (next) => {
+      state = packState(next);
+      tombstones = undefined;
+    },
     fold,
     persist: async (batch, into) => {
       if (batch.eventCount === 0 || into === undefined) return;
@@ -222,6 +254,26 @@ export function createFoldPath(deps: FoldDeps): FoldPath {
     },
     notifyDerived: (rows) => {
       if (rows.length > 0) folds.emit(withDerivedKeys(NO_KEYS, rows));
+    },
+    tombstones: () => {
+      if (tombstones === undefined) {
+        tombstones = new Map();
+        for (const [table, rows] of state)
+          for (const [key, record] of rows)
+            if (!isVisible(record))
+              tombstones.set(table, (tombstones.get(table) ?? new Set()).add(key));
+      }
+      return tombstones;
+    },
+    forget: (keys) => {
+      const next = new Map(state);
+      for (const [table, set] of keys) {
+        const rows = state.get(table);
+        if (rows === undefined) continue;
+        next.set(table, withoutEntries(rows, set));
+        for (const key of set) tombstones?.get(table)?.delete(key);
+      }
+      state = next;
     },
   };
 }

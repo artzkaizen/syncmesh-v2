@@ -9,7 +9,7 @@ import type {
 } from "@syncmesh/kernel";
 
 import { sha256 } from "@noble/hashes/sha2.js";
-import { parseLineageCells } from "@syncmesh/kernel";
+import { isVisible, parseLineageCells } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 import { encodeRecord } from "@syncmesh/wire";
 
@@ -43,17 +43,20 @@ export function rowDigest(record: RowRecord): bigint {
   return value;
 }
 
-const sum = (values: Iterable<bigint>): bigint => {
-  let total = 0n;
-  for (const value of values) total = (total + value) % MOD;
-  return total;
-};
+/**
+ * Whether a digest counts the row: in the slice, and visible. A tombstone is left out: compaction
+ * collects it on each peer's own schedule (gaps O1), so two peers that agree on every row they
+ * show can differ on which deletes they still hold, and that is not divergence.
+ */
+const counted = (record: RowRecord, interest: Interest | undefined): boolean =>
+  isVisible(record) && rowsIn(record, interest);
 
 /** One table's digest, and the digest of every table, as the fingerprints a peer compares. */
 export type TableDigests = ReadonlyMap<TableName, bigint>;
 
 /**
- * Per table, the sum of its rows' digests — over the slice an interest names, when one is given.
+ * Per table, the sum of its visible rows' digests — over the slice an interest names, when one is
+ * given.
  * A table with no rows in that slice is absent, not zero-valued, because an absent table and an
  * empty one are the same fact.
  *
@@ -63,9 +66,11 @@ export type TableDigests = ReadonlyMap<TableName, bigint>;
 export function tableDigests(state: State, interest?: Interest): TableDigests {
   const digests = new Map<TableName, bigint>();
   for (const [table, rows] of state) {
-    const within = [...rows.values()].filter((record) => rowsIn(record, interest));
-    if (within.length === 0) continue;
-    digests.set(table, sum(within.map(rowDigest)));
+    // summed as it walks: a table of millions is never held decoded at once
+    let total: bigint | undefined;
+    for (const record of rows.values())
+      if (counted(record, interest)) total = ((total ?? 0n) + rowDigest(record)) % MOD;
+    if (total !== undefined) digests.set(table, total);
   }
   return digests;
 }
@@ -78,11 +83,10 @@ export function rowDigests(
 ): ReadonlyMap<RowKey, bigint> {
   const rows = state.get(table);
   if (rows === undefined) return new Map();
-  return new Map(
-    [...rows]
-      .filter(([, record]) => rowsIn(record, interest))
-      .map(([key, record]) => [key, rowDigest(record)]),
-  );
+  const digests = new Map<RowKey, bigint>();
+  for (const [key, record] of rows)
+    if (counted(record, interest)) digests.set(key, rowDigest(record));
+  return digests;
 }
 
 /** The tables whose digests differ — including one present on only one side. */

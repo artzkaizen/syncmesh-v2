@@ -1,13 +1,6 @@
 import type { PeerId, Row, RowKey, Stamp, State, TableName } from "@syncmesh/kernel";
 
-import {
-  emptyState,
-  getRecord,
-  isVisible,
-  mergeRecord,
-  readRow,
-  readRowsIn,
-} from "@syncmesh/kernel";
+import { emptyState, getRecord, mergeRecord, readRow, readRowsIn } from "@syncmesh/kernel";
 import { type EventId, type PartitionKey, type Procedure, type SyncEvent } from "@syncmesh/kernel";
 import { Result, omitUndefined } from "@syncmesh/result";
 
@@ -53,6 +46,7 @@ import { createSnapshotPath } from "./snapshot.js";
 import { strandedWrites, type StrandedWrites } from "./stranded.js";
 import { mergeAhead } from "./sync.js";
 import { type TelemetryEvent, type TelemetryListener } from "./telemetry.js";
+import { collectTombstones, deleteStamp } from "./tombstones.js";
 import { createWritePath, type WritePathApi } from "./writes.js";
 
 export type { AtomicStores, EngineOptions, MutateOptions } from "./options.js";
@@ -266,7 +260,10 @@ export function createEngine(options: EngineOptions): Engine {
   // a snapshot install tells of every stamp it brings
   const held = { getState, setState, coverageNow: coverage.current, merge, receive: clock.receive };
   const purging = { ...held, unhold: coverage.evict, peerId, parked, folds, hasAdapter };
-  const compactDeps = { store, stateStore, acks: fleet.acks, ...docPath.compaction };
+  const authors = () => coverage.current().synced;
+  const collected = { ...foldPath, store, exclusive, docs: options.docs, authors };
+  const collect = () => collectTombstones(collected);
+  const compactDeps = { store, stateStore, acks: fleet.acks, ...docPath.compaction, collect };
   const compaction = createCompaction(compactDeps, coverage, boot?.compacted);
   const snapshots = createSnapshotPath(options, {
     ...held,
@@ -333,12 +330,7 @@ export function createEngine(options: EngineOptions): Engine {
     ...chains,
     state: getState,
     rowsIn: (table, partition) => readRowsIn(getState(), table, partition),
-    deletedAt: (table, key) => {
-      const record = getRecord(getState(), table, key);
-      // a visible row is not deleted even when it carries a tombstone: an edit stamped above the
-      // delete is the CRDT's answer to a concurrent pair, and `isVisible` is where that is decided
-      return record === undefined || isVisible(record) ? undefined : record.deleteStamp;
-    },
+    deletedAt: (table, key) => deleteStamp(getState(), table, key),
     revert,
     canRevert: (id) => undo.some((u) => u.event.id === id),
     cursors: () => Promise.resolve(Result.ok(coverage.current().synced)),

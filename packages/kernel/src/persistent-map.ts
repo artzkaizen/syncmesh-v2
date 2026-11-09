@@ -225,6 +225,22 @@ class PackedMap<K, V, P> implements ReadonlyMap<K, V> {
     }
   }
 
+  /** A new lineage without `keys`, every other slot kept as it is held: nothing is unpacked. */
+  without(keys: ReadonlySet<K>): PackedMap<K, V, P> {
+    const map = new Map<K, V | P>();
+    for (const [key, slot] of this.#slots.entries()) if (!keys.has(key)) map.set(key, slot);
+    const { packing } = this.#warmth;
+    const kept = [...this.#warmth.warm].filter(
+      ([key]) => map.get(key) === this.#warmth.warm.get(key),
+    );
+    return new PackedMap(new PersistentMap({ map, epoch: 0 }), {
+      packing,
+      warm: new Map(kept),
+      order: kept.map(([key]) => key),
+      head: 0,
+    });
+  }
+
   get(key: K): V | undefined {
     const slot = this.#slots.get(key);
     const { packing } = this.#warmth;
@@ -312,3 +328,17 @@ export const isPackedMap = <K, V>(map: ReadonlyMap<K, V>): boolean => map instan
  */
 export const withEntry = <K, V>(map: ReadonlyMap<K, V>, key: K, value: V): ReadonlyMap<K, V> =>
   map instanceof PackedMap ? map.with(key, value) : PersistentMap.from(map).with(key, value);
+
+/**
+ * `map` without `keys`, leaving `map` untouched: a copy of what remains, so O(size). A packed map
+ * stays packed and nothing in it is unpacked.
+ */
+export const withoutEntries = <K, V>(
+  map: ReadonlyMap<K, V>,
+  keys: ReadonlySet<K>,
+): ReadonlyMap<K, V> => {
+  if (map instanceof PackedMap) return map.without(keys);
+  const kept = new Map<K, V>();
+  for (const [key, value] of map) if (!keys.has(key)) kept.set(key, value);
+  return kept;
+};

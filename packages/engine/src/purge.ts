@@ -10,7 +10,7 @@ import type {
   TableName,
 } from "@syncmesh/kernel";
 
-import { applyChange, docLineage, getRecord, eventStamp } from "@syncmesh/kernel";
+import { applyChange, docLineage, getRecord, eventStamp, withoutEntries } from "@syncmesh/kernel";
 import { Result } from "@syncmesh/result";
 
 import type { CoverageTracker } from "./coverage.js";
@@ -159,7 +159,7 @@ const without = (state: State, keys: WriteKeys): State => {
   for (const [table, set] of keys) {
     const records = state.get(table);
     if (records === undefined) continue;
-    next.set(table, new Map([...records].filter(([key]) => !set.has(key))));
+    next.set(table, withoutEntries(records, set));
   }
   return next;
 };

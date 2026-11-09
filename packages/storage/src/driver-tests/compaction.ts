@@ -28,6 +28,26 @@ const floors = async (store: Awaited<ReturnType<typeof filled>>) => {
 
 export const compactionCases = (openDriver: OpenDriver): readonly SuiteCase[] => [
   {
+    name: "compaction: compactedStamps is the stamp of each author's newest synced event removed, after a reopen too (gaps O1)",
+    run: async () => {
+      const store = await filled(await openDriver("compaction-stamps"));
+      equal((await store.compactedStamps?.())?.unwrap().size, 0, "none before a run");
+      const floor = new Map([
+        [A, seq(2)],
+        [B, seq(1)],
+      ]);
+      (await store.compactBelow(floor, "synced", at(100))).unwrap();
+      (await store.compactBelow(new Map([[A, seq(1)]]), "local", at(100))).unwrap();
+      const reopened = (await sqlEventStore(await openDriver("compaction-stamps"))).unwrap();
+      const stamps = (await reopened.compactedStamps?.())?.unwrap();
+      equal(
+        [stamps?.get(A)?.[0].epochMilliseconds, stamps?.get(B)?.[0].epochMilliseconds],
+        [20, 10],
+        "stamps",
+      );
+    },
+  },
+  {
     name: "compaction: compactBelow removes per author, in scope, older than the cut; records the highest removed",
     run: async () => {
       const store = await filled(await openDriver("compaction-below"));

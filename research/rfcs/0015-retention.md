@@ -57,9 +57,48 @@ An event is **compactable** when both hold [proposed policy]:
 2. `age > retention.keepAtLeastDays` — grace for peers that were offline
    but will return; inside the window they still delta-sync.
 
-Compaction deletes those events, drops tombstones below the floor, and
+Compaction deletes those events, drops tombstones below the floor (§2b, built), and
 writes a **checkpoint** `{ floorCursors, stateHash }` — a durable record of
 "state as of these cursors" [proposed].
+
+### 2b · Tombstones [built, gaps O1]
+
+Decided 2026-11-09 (Jace delegated the call). A compaction run, after it removes events, drops the
+tombstones the floors settle: a row deleted and not written since, whose every stamp is at or below
+the **tombstone frontier** — the oldest of the stamps compaction removed each author's events up to,
+over every author the state holds a synced cursor for (`tombstoneFrontier`, `engine/src/tombstones.ts`).
+An author with no compacted floor yet means no frontier, and nothing is collected. The row leaves the
+in-memory state, the state store's sidecar and the row-sync table (`StateStore.remove`), inside the
+engine's exclusive turn. `CompactOptions.keepTombstones` keeps them; `Compaction.tombstones` counts
+what went.
+
+Why it is safe: an author's stamps rise with its sequence, so an event not yet folded here is above
+its author's floor stamp, and so above the frontier; every event at or below the frontier is under
+its author's floor, which only ever rises once every counted peer has acked it. So every counted
+peer holds the delete, and nothing yet to arrive can reach the row with a stamp that loses to it. A
+late peer that is still counted pins the floor below the delete it has not acked, catches up from
+the log, and converges (`engine/src/__tests__/tombstones.test.ts`).
+
+A digest (RFC-0014) now counts visible rows only: compaction collects a tombstone on each peer's own
+schedule, and two peers that show the same rows are not divergent because one still holds a delete.
+
+Departures, each a gap row of its own where it needs one:
+
+- **A forgotten peer** (`forgetPeersAfter`, or one not heard from since this device restarted, since
+  acks live in memory) that missed a delete keeps that row when it rejoins from state (§3): the
+  snapshot no longer carries the tombstone, and the install merges. Telling a joiner which of its
+  rows the sender collected needs the snapshot to carry the frontier (gaps U44).
+- **A write that reaches a collected row** after its frontier starts the row afresh: the cells from
+  before the delete are gone, where a peer still holding the tombstone shows them under the new
+  write (an update resurrects a deleted row with its old cells, RFC-0014 §1) until a repair merges
+  the two. Only a write stamped above every author's compacted floor can do this.
+- **An author that stops writing** pins the frontier at its last compacted write, so deletes after it
+  are kept until it writes again or compaction forgets it.
+- **A row with a document column** is never collected: its lineage cell and doc log are not
+  compaction's to drop. A store with no floor stamps (`EventStore.compactedStamps` absent: the
+  `localStorage` log) collects nothing. `engine.deletedAt` reads a collected row as never written.
+- An older build counts tombstones in its digest, so between it and this one, with the same cursors,
+  a table holding a tombstone reads as divergent until both run this build.
 
 ### 2a · Dead peers [decided, D15]
 
