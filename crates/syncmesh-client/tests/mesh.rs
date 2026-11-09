@@ -11,7 +11,10 @@ use syncmesh_client::driver::serve_room;
 use syncmesh_client::mesh::{Mesh, MeshEvent, MeshOptions};
 use syncmesh_client::relay::RelayOptions;
 use syncmesh_client::room::{Room, RoomOptions};
-use syncmesh_client::{EngineOptions, Manifest, MemoryEventStore, ValidatorOptions};
+use syncmesh_client::{
+    BelowFloorReason, Cursors, Engine, EngineOptions, FloorSource, Manifest, MemoryEventStore,
+    ValidatorOptions,
+};
 use syncmesh_core::event::{Change, PartitionKey};
 use syncmesh_core::grant::{GrantRequest, issue_grant};
 use syncmesh_core::identity::Identity;
@@ -375,4 +378,112 @@ async fn a_late_joiner_admits_an_event_whose_grant_came_on_the_same_page() {
 
     a.stop().await;
     b.stop().await;
+}
+
+/// A room that challenges, takes the join and refuses it with `retention` below `floor`, every
+/// time; counts the sockets it was dialled on.
+fn retaining_room(
+    listener: tokio::net::TcpListener,
+    floor: Vec<(syncmesh_core::event::PeerId, syncmesh_core::event::SeqNum)>,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use futures_util::{SinkExt, StreamExt};
+    use std::sync::atomic::Ordering;
+    use syncmesh_core::relay_frames::{challenge_frame, retention_error_frame};
+    use tokio_tungstenite::tungstenite::Message;
+    let dials = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = dials.clone();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let floor = floor.clone();
+            tokio::spawn(async move {
+                let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
+                    return;
+                };
+                let challenge = challenge_frame(&[7; 32]);
+                if socket
+                    .send(Message::Binary(challenge.into()))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                // the join
+                let _ = socket.next().await;
+                let refusal = retention_error_frame("retention", "trimmed", &floor);
+                let _ = socket.send(Message::Binary(refusal.into())).await;
+                let _ = socket.close(None).await;
+            });
+        }
+    });
+    (format!("ws://127.0.0.1:{port}/retained"), dials)
+}
+
+/// Gaps U37: a Rust device the room refuses with `retention` raises the relay's issue, stops
+/// redialling, and dials again once it holds the floor — the TypeScript's `retained.ts`.
+#[tokio::test]
+async fn a_device_the_room_refuses_with_retention_waits_for_the_floor_instead_of_redialling() {
+    use std::sync::atomic::Ordering;
+    // what another device wrote, and the floor the room trimmed that author to
+    let mut author = Engine::open(
+        Identity::from_seed(&[4; 32]),
+        Box::new(MemoryEventStore::new()),
+        None,
+        EngineOptions::default(),
+    )
+    .unwrap();
+    for i in 0..3 {
+        author
+            .mutate("notes.create", vec![insert(&format!("k{i}"), "x")], None)
+            .unwrap();
+    }
+    let written = author.events_since(&Cursors::new(), None).unwrap();
+    let floor = vec![(
+        author.peer_id().clone(),
+        syncmesh_core::event::SeqNum::parse(3).unwrap(),
+    )];
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (url, dials) = retaining_room(listener, floor);
+    let mut mesh = Mesh::open(
+        MeshOptions {
+            identity: Identity::from_seed(&[1; 32]),
+            url,
+            relay: RelayOptions {
+                versions: vec![2],
+                reconnect_ms: 20,
+                ..RelayOptions::default()
+            },
+            engine: EngineOptions::default(),
+            store: Box::new(MemoryEventStore::new()),
+            state_store: None,
+            blob_store: None,
+            issuer: None,
+        },
+        &tokio::runtime::Handle::current(),
+    )
+    .unwrap();
+
+    until(&mut mesh, |e| matches!(e, MeshEvent::Recovery)).await;
+    let issues = mesh.below_floor();
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].source, FloorSource::Relay("relay".to_owned()));
+    assert_eq!(issues[0].reason, BelowFloorReason::Retention);
+    // twenty backoffs' worth of quiet: one dial, where a redialling link makes a dozen
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(dials.load(Ordering::SeqCst), 1);
+
+    // the history arrives some other way: the link clears the issue and dials again
+    mesh.engine().receive_batch(written).unwrap();
+    mesh.folded_elsewhere();
+    until(&mut mesh, |e| matches!(e, MeshEvent::Recovery)).await;
+    assert!(mesh.below_floor().is_empty());
+    timeout(STEP, async {
+        while dials.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the link dialled again once it held the floor");
+    mesh.stop().await;
 }

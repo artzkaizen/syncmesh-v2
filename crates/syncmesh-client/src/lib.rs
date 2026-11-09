@@ -79,7 +79,9 @@ pub use presence::{
     sign_presence,
 };
 pub use quarantine::{ParkReason, Parked};
-pub use rejoin::{Accepted, BelowFloor, BelowFloorReason, PeerJoin, Rejoins, below_floor};
+pub use rejoin::{
+    Accepted, BelowFloor, BelowFloorReason, FloorSource, PeerJoin, Rejoins, below_floor,
+};
 pub use relay::{Action, RelayLink, RelayOptions};
 pub use room::{Room, RoomAction, RoomOptions, SocketId};
 pub use snapshot::{InstallError, Installed, Snapshot};

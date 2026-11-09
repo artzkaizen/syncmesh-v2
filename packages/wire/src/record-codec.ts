@@ -1,6 +1,6 @@
 import type { Cell, ColumnName, PeerId, RowRecord, Stamp } from "@syncmesh/kernel";
 
-import { hlcOf, parsePartitionKey, parsePeerId } from "@syncmesh/kernel";
+import { codePointOrder, hlcOf, parsePartitionKey, parsePeerId } from "@syncmesh/kernel";
 import { Result, TaggedError } from "@syncmesh/result";
 
 import type { CborValue } from "./cbor.js";
@@ -24,9 +24,26 @@ const stampToCbor = (stamp: Stamp): CborValue => [
 const optional = (stamp: Stamp | undefined): CborValue =>
   stamp === undefined ? null : stampToCbor(stamp);
 
-/** `[cells[[column, value, stamp]], writeStamp | null, deleteStamp | null, partition | null]`, stamps as `[ms, logical, peer]`. */
+/**
+ * A record's cells in one order everywhere: by column name, compared as UTF-8 bytes (gaps U34).
+ * A `Map` keeps the order its cells were first written in, which two devices that folded the same
+ * events in different orders do not share, and which a Rust record (a sorted map) never had.
+ *
+ * @example
+ * canonicalCells(record).map(([column]) => column); // ["body", "id", "title"]
+ */
+export function canonicalCells(record: RowRecord) {
+  return [...record.cells].sort(([a], [b]) => codePointOrder(a, b));
+}
+
+/**
+ * `[cells[[column, value, stamp]], writeStamp | null, deleteStamp | null, partition | null]`,
+ * stamps as `[ms, logical, peer]`, the cells in {@link canonicalCells} order: one record has one
+ * encoding, whichever order its cells were written in, so a checkpoint over it hashes the same on
+ * every device and in both runtimes.
+ */
 export function encodeRecord(record: RowRecord): Uint8Array {
-  const cells = [...record.cells].map(([column, cell]): CborValue => [
+  const cells = canonicalCells(record).map(([column, cell]): CborValue => [
     column,
     cellToCbor(cell.value),
     stampToCbor(cell.stamp),
@@ -104,11 +121,11 @@ const optionalStamp = (value: CborValue | undefined): Result<Stamp | undefined, 
  */
 const peers = new Map<string, PeerId>();
 
-const keyOf = (bytes: Uint8Array): string => String.fromCharCode(...bytes);
+const peerKey = (bytes: Uint8Array): string => String.fromCharCode(...bytes);
 
 /** The peer id for these bytes, validated the first time and remembered after. */
 function internPeer(bytes: Uint8Array): Result<PeerId, MalformedRecord> {
-  const key = keyOf(bytes);
+  const key = peerKey(bytes);
   const known = peers.get(key);
   if (known !== undefined) return Result.ok(known);
   return parsePeerId(bytesToHex(bytes))

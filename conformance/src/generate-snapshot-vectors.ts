@@ -1,3 +1,5 @@
+import { portableSchema } from "@syncmesh/schema";
+
 /**
  * Regenerates conformance/snapshot-vectors.json from fixed seeds. Run only when the join exchange
  * deliberately changes (README rule 3): `bun conformance/src/generate-snapshot-vectors.ts`.
@@ -9,33 +11,48 @@
  * holds the same events must serve the same bytes, and a port that takes the same frames must
  * reach the same coverage.
  *
- * Cells are written in column order, tables and keys in sorted order and authors in id order, so
- * the TypeScript's insertion-ordered maps and a port's sorted ones see the same order — except in
- * `unsorted`, whose point is a record whose cells are not, which only a joiner takes.
+ * Tables and keys are written in sorted order and authors in id order, so the TypeScript's
+ * insertion-ordered maps and a port's sorted ones see the same order. A record's cells go out in
+ * column order in both runtimes (gaps U34), so `unsorted` — a row whose cells were first written
+ * out of that order — is served as the same bytes by a holder in either. `legacy` is that page as
+ * a holder built before U34 served it, cells out of column order, and `stale` the certified frames
+ * with the certificate re-signed as version 1: a joiner still vouches for the first and refuses
+ * the second. `local` is served by a holder that wrote a row to a `local` table (gaps U36), which
+ * its frames leave out: they are `everything`'s, byte for byte. Each join reports the floor its
+ * log kept for a rebuild to refuse on (`installed`, gaps U37).
  */
 import { ACME, part } from "./policy/schema.js";
 import {
   A,
   B,
+  DRAFT,
   HOLDER,
   ISSUER,
   JOINER,
   ROWS_PER_CHUNK,
+  SNAPSHOT_SCHEMA,
+  certifiedAs,
   history,
+  outOfColumnOrder,
   serve,
   unsortedHistory,
 } from "./snapshot/holder.js";
 import { join, type JoinCase } from "./snapshot/joiner.js";
 
 export async function snapshotVectors() {
+  const unsorted = await serve(undefined, 2, unsortedHistory());
+  const certified = await serve(undefined, 2);
   const served = {
     everything: await serve(undefined),
     acme: await serve({ partitions: [part(String(ACME))] }),
     // the newest acme row and acme's tombstone: a window is part of the interest (O13)
     windowed: await serve({ partitions: [part(String(ACME))], window: { newest: 1 } }),
-    certified: await serve(undefined, 2),
+    certified,
     // served by a holder of other events: a port's holder of `events` does not serve this one
-    unsorted: await serve(undefined, 2, unsortedHistory()),
+    unsorted,
+    legacy: { request: unsorted.request, frames: outOfColumnOrder(unsorted.frames) },
+    stale: { request: certified.request, frames: certifiedAs(certified.frames, 1) },
+    local: await serve(undefined, undefined, history(), true),
   };
   const below = (n: number) => [[A.peerId, n]] as const;
   const cases: readonly JoinCase[] = [
@@ -72,8 +89,22 @@ export async function snapshotVectors() {
       trust: true,
     },
     {
-      description: "a certificate over cells that arrived out of column order still vouches",
+      description:
+        "a certificate over a row whose cells were first written out of column order vouches",
       served: "unsorted",
+      policy: { adoptUnvouched: false },
+      trust: true,
+    },
+    {
+      description:
+        "a page whose cells arrive out of column order, from a holder before U34, still vouches",
+      served: "legacy",
+      policy: { adoptUnvouched: false },
+      trust: true,
+    },
+    {
+      description: "a version 1 certificate is refused, and vouches for nothing",
+      served: "stale",
       policy: { adoptUnvouched: false },
       trust: true,
     },
@@ -110,8 +141,11 @@ export async function snapshotVectors() {
     rowsPerChunk: ROWS_PER_CHUNK,
     docs: { boards: { content: "loro@1" } },
     events: history(),
-    // what the `unsorted` holder folded: a port's holder of these keeps the cells' order or not (U34)
+    // what the `unsorted` holder folded: a port's holder of these serves `unsorted` (U34)
     unsortedEvents: unsortedHistory(),
+    // what the `local` holder runs, and the row it wrote to its `local` table (U36)
+    localSchema: portableSchema(SNAPSHOT_SCHEMA),
+    draft: DRAFT,
     served,
     joins,
   };

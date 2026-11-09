@@ -6,9 +6,9 @@
 use std::collections::BTreeMap;
 
 use syncmesh_client::{
-    Accepted, BelowFloorReason, Cursors, Engine, EngineOptions, Interest, JoinExchange,
-    JoinOptions, JoinOutcome, JoinPolicy, MemoryEventStore, MemoryStateStore, PeerJoin, Rejoins,
-    Settled, StateStore, Withheld,
+    Accepted, BelowFloor, BelowFloorReason, Cursors, Engine, EngineOptions, FloorSource, Interest,
+    JoinExchange, JoinOptions, JoinOutcome, JoinPolicy, MemoryEventStore, MemoryStateStore,
+    PeerJoin, Rejoins, Settled, StateStore, Withheld,
 };
 use syncmesh_core::checkpoint::{
     CheckpointRequest, CheckpointRow, checkpoint_hash, issue_checkpoint,
@@ -813,4 +813,35 @@ fn an_accepted_ask_a_closed_session_never_sent_is_sent_by_the_next() {
             .len(),
         1
     );
+}
+
+/// Gaps U37: a relay's `retention` refusal is an issue beside the peers', named by the relay and
+/// cleared by the link (which reads its next join's cursors), never by a sweep of the coverage.
+#[test]
+fn a_relays_refusal_is_listed_beside_the_peers_and_cleared_by_the_link() {
+    let mut rejoins = Rejoins::new();
+    let author = identity(3).peer_id().clone();
+    let floor: Cursors = [(author.clone(), seq(4))].into_iter().collect();
+    let before = rejoins.changes();
+    rejoins.relay_refused("relay", floor.clone());
+    assert_eq!(rejoins.changes(), before + 1);
+    let issue = BelowFloor {
+        source: FloorSource::Relay("relay".to_owned()),
+        floor: floor.clone(),
+        reason: BelowFloorReason::Retention,
+    };
+    assert_eq!(rejoins.issues(&Cursors::new()), vec![issue.clone()]);
+    assert_eq!(BelowFloorReason::Retention.as_str(), "retention");
+    // a coverage at the floor does not clear it: a re-paging join sends nothing, whatever it says
+    assert_eq!(rejoins.issues(&floor), vec![issue]);
+    // nothing to accept from a relay: it serves no state
+    assert_eq!(
+        rejoins.accept(&author, &Cursors::new()),
+        Accepted::NothingToAccept
+    );
+    rejoins.relay_cleared("relay");
+    assert!(rejoins.issues(&Cursors::new()).is_empty());
+    let after = rejoins.changes();
+    rejoins.relay_cleared("relay");
+    assert_eq!(rejoins.changes(), after, "a second clear changes nothing");
 }

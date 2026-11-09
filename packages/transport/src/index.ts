@@ -42,7 +42,7 @@ export type {
   RejoinSession,
   RejoinSessionDeps,
 } from "./rejoin.js";
-export { belowPeerFloor, createRejoins } from "./rejoin.js";
+export { belowPeerFloor, belowRelayFloor, createRejoins } from "./rejoin.js";
 export type { SnapshotFrame } from "./snap-frame.js";
 export {
   SNAP,

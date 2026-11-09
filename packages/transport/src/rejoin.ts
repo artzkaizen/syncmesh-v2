@@ -52,6 +52,19 @@ export function belowPeerFloor(
   return below;
 }
 
+/**
+ * Per author, in the floor's order, the floor a relay's `retention` refusal names that a join
+ * sending `ours` is still below (gaps U30, U37). Unlike {@link belowPeerFloor} every author counts,
+ * this device's own included: the room trimmed it and refused the join for it. Empty means the next
+ * join would be served, and the link dials.
+ *
+ * @example
+ * belowRelayFloor(new Map([[a, 1], [b, 7]]), new Map([[a, 5], [b, 6]])) // Map { a => 5 }
+ */
+export function belowRelayFloor(ours: Cursors, floor: Cursors): ReadonlyMap<PeerId, SeqNum> {
+  return new Map([...floor].filter(([author, seq]) => (ours.get(author) ?? 0) < seq));
+}
+
 /** Why a device below a peer's floor is still there, as a stable cause. */
 export type BelowFloorReason =
   /** The mesh has no `trust`: nothing can vouch for the state, so nothing was asked until accepted. */

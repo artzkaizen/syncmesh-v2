@@ -2,6 +2,7 @@
 import type { Cursors } from "@syncmesh/engine";
 import type { PeerId, SeqNum } from "@syncmesh/kernel";
 
+import { createMemoryEventStore } from "@syncmesh/engine";
 import {
   createJoinExchange,
   decodeFrame,
@@ -68,7 +69,8 @@ export async function join(
   spec: JoinCase,
   served: Readonly<Record<string, { readonly frames: readonly string[] }>>,
 ) {
-  const engine = engineFor(JOINER.peerId, spec.docs === true ? DOCS : undefined);
+  const store = createMemoryEventStore();
+  const engine = engineFor(JOINER.peerId, { docs: spec.docs === true ? DOCS : undefined, store });
   const out = collector();
   const outcomes: JoinOutcome[] = [];
   const exchange = createJoinExchange({
@@ -87,6 +89,8 @@ export async function join(
     sent: out.sent,
     synced: pairs(coverage.synced),
     floor: pairs(coverage.floor),
+    // what the log keeps of that floor, for a rebuild over a lost state to refuse on (gaps U37)
+    installed: pairs((await store.installedBelow()).unwrap()),
     // the slice the adopted cursors are true for: a window travels with them (D23, O13)
     scope: coverage.scope ?? null,
     rows: [...(engine.state().get(table("notes"))?.keys() ?? [])].map(String).sort(),

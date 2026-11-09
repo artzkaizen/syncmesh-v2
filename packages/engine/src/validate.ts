@@ -136,6 +136,11 @@ export interface Validator {
    * a delete brings the row back without writing a column this build refuses. Absent, none is.
    */
   readonly retiredColumn?: (table: TableName, column: ColumnName) => boolean;
+  /**
+   * Whether the schema puts the table in the `local` kind: its rows never leave this device, so a
+   * snapshot this engine serves leaves them out (gaps U36). Absent, none is.
+   */
+  readonly localTable?: (table: TableName) => boolean;
 }
 
 const RESERVED = new Set(["global", "user", "local"]);
@@ -188,6 +193,7 @@ export function createValidator(options: ValidatorOptions): Validator {
       const entry = entries.get(table);
       return entry !== undefined && retiredColumn(entry.table, column);
     },
+    localTable: (table) => entries.get(table)?.partition === "local",
   };
 }
 

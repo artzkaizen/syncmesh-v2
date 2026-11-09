@@ -37,6 +37,20 @@ describe("record codec", () => {
     expect(decoded.deleteStamp?.hlc[0].epochMilliseconds).toBe(0);
   });
 
+  test("one record has one encoding, whichever order its cells were written in (U34)", () => {
+    const reversed: RowRecord = { ...record, cells: new Map([...record.cells].reverse()) };
+    expect(encodeRecord(reversed)).toEqual(encodeRecord(record));
+    // by UTF-8 bytes, as Rust orders a `String`: "\u{1F600}" after "\uFF00", which `<` reverses
+    const wide = (names: readonly string[]): RowRecord => ({
+      cells: new Map(names.map((name) => [col(name), { value: name, stamp: stamp(1) }])),
+    });
+    const columns = (bytes: Uint8Array) => [...decodeRecord(bytes).unwrap().cells.keys()];
+    const written = ["title", "\u{1F600}", "\uFF00", "id"];
+    expect(columns(encodeRecord(wide(written)))).toEqual(
+      ["id", "title", "\uFF00", "\u{1F600}"].map(col),
+    );
+  });
+
   test("absent stamps stay absent", () => {
     const decoded = decodeRecord(encodeRecord({ cells: new Map() })).unwrap();
     expect(decoded).not.toHaveProperty("writeStamp");

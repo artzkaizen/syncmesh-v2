@@ -1,8 +1,10 @@
 import { parsePartitionKey, readRow } from "@syncmesh/kernel";
+import { local, partition, syncSchema, t } from "@syncmesh/schema";
 import { describe, expect, test } from "bun:test";
 
 import { interestText } from "../interest.js";
 import { partitionsIn } from "../snapshot.js";
+import { createValidator } from "../validate.js";
 import {
   CREATE,
   N1,
@@ -195,5 +197,63 @@ describe("installSnapshot", () => {
     expect(notified).toBe(0);
     // no fold, and the coverage it took on is still said (D45)
     expect(adopted).toEqual([b.engine.coverage()]);
+  });
+});
+
+describe("a local table never travels in a snapshot (gaps U36)", () => {
+  const schema = syncSchema({
+    tables: {
+      notes: {
+        columns: { id: t.text().primaryKey(), title: t.text() },
+        partition: partition("org"),
+        allow: ({ allow }) => ({ $default: allow }),
+      },
+      drafts: { columns: { id: t.text().primaryKey(), title: t.text() }, partition: local },
+    },
+  });
+  const DRAFTS = schema.tables.drafts.name;
+
+  const drafting = async () => {
+    const a = setup(PEER_A, 100, { validate: createValidator({ schema, grantFor: null }) });
+    const shared = row({ id: "n1", title: "shared" });
+    (
+      await a.engine.mutate(CREATE, (tx) => tx.insert(NOTES, key("n1"), shared), {
+        partition: ACME,
+      })
+    ).unwrap();
+    const draft = row({ id: "d1", title: "mine" });
+    const alone = { local: true };
+    (
+      await a.engine.mutate(
+        procedure("drafts.create"),
+        (tx) => tx.insert(DRAFTS, key("d1"), draft),
+        alone,
+      )
+    ).unwrap();
+    expect(readRow(a.engine.state(), DRAFTS, key("d1"))).toBeDefined();
+    return a;
+  };
+
+  test("the manifest's local kind is left out, whatever the interest", async () => {
+    const a = await drafting();
+    const tables = (snap: ReturnType<Side["engine"]["snapshot"]>) =>
+      snap.rows.map((r) => String(r.table));
+    expect(tables(a.engine.snapshot())).toEqual(["notes"]);
+    // an unpinned local row passes any interest; the kind is what keeps it home
+    expect(tables(a.engine.snapshot({ interest: { partitions: [ACME] } }))).toEqual(["notes"]);
+  });
+
+  test("a joiner of that snapshot never holds the draft", async () => {
+    const a = await drafting();
+    const b = setup(PEER_B, 200);
+    (await b.engine.installSnapshot(a.engine.snapshot())).unwrap();
+    expect(readRow(b.engine.state(), DRAFTS, key("d1"))).toBeUndefined();
+    expect(readRow(b.engine.state(), NOTES, key("n1"))).toBeDefined();
+  });
+
+  test("a caller can still name which tables stay home", async () => {
+    const a = await drafting();
+    const snap = a.engine.snapshot({ localTable: () => false });
+    expect(snap.rows.map((r) => String(r.table)).sort()).toEqual(["drafts", "notes"]);
   });
 });

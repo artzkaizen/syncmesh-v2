@@ -40,11 +40,16 @@ pub struct CheckpointCertificate {
 }
 
 impl CheckpointCertificate {
-    pub const VERSION: i64 = 1;
+    /// The format this build mints and verifies. `2` hashes each record with its cells in column
+    /// order (`record_codec`, gaps U34); `1` hashed them in the order the issuer first wrote them,
+    /// which no other device can reproduce, so a `1` is refused rather than checked and found to
+    /// differ.
+    pub const VERSION: i64 = 2;
 }
 
-/// One row as a checkpoint counts it: where it lives, and the record bytes the state store holds.
-/// The bytes are hashed as they are, never decoded and re-encoded (see `record_codec`).
+/// One row as a checkpoint counts it: where it lives, and its record as `encode_record` writes it
+/// (cells in column order, as the TypeScript's `encodeRecord` writes them). The bytes are hashed
+/// as they are.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckpointRow {
     pub table: String,
@@ -58,6 +63,11 @@ pub enum CheckpointError {
     Malformed(&'static str),
     /// The signature does not cover the received core, or is not the issuer's.
     BadSignature,
+    /// A format this build does not verify: a `1` from a build before gaps U34, whose hash no
+    /// device can reproduce, or a later one. `None` when the core names no version it can read.
+    UnknownVersion {
+        version: Option<i64>,
+    },
     /// The rows do not hash to what the certificate says — a row was altered, dropped or added.
     Mismatch {
         expected: String,
@@ -73,6 +83,11 @@ impl std::fmt::Display for CheckpointError {
             CheckpointError::BadSignature => {
                 f.write_str("signature does not cover the received core, or is not the issuer's")
             }
+            CheckpointError::UnknownVersion { .. } => write!(
+                f,
+                "this build verifies checkpoint certificates of version {} only: ask the issuer for a fresh one",
+                CheckpointCertificate::VERSION
+            ),
             CheckpointError::Mismatch { expected, actual } => write!(
                 f,
                 "the rows do not hash to what this certificate vouches for: expected {expected}, got {actual}"
@@ -210,8 +225,9 @@ pub fn verify_checkpoint(
     })
 }
 
-/// Decodes a certificate core without judging its signature. Like the TypeScript it checks no
-/// version and ignores keys it has no name for.
+/// Decodes a certificate core without judging its signature. A version other than
+/// [`CheckpointCertificate::VERSION`] is refused before anything else is read, as the TypeScript
+/// refuses it; keys it has no name for are ignored.
 ///
 /// Stricter than the TypeScript in two places, both where it accepts any `typeof "number"`: a
 /// coverage sequence must be a non-negative safe integer (it is a count of events), and `issuedAt`
@@ -222,6 +238,11 @@ pub fn decode_checkpoint_core(core: &[u8]) -> Result<CheckpointCertificate, Chec
         return malformed("checkpoint core is not a map");
     };
     let get = |k: i64| m.get(&Key::Int(k));
+    match get(KEY_V) {
+        Some(Value::Int(v)) if *v == CheckpointCertificate::VERSION => {}
+        Some(Value::Int(v)) => return Err(CheckpointError::UnknownVersion { version: Some(*v) }),
+        _ => return Err(CheckpointError::UnknownVersion { version: None }),
+    }
     let Some(Value::Bytes(state_hash)) = get(KEY_STATE_HASH) else {
         return malformed("stateHash is not bytes");
     };
@@ -341,6 +362,7 @@ mod tests {
         let key = authority().public_key().to_vec();
         let with = |k: i64, v: Value| {
             let mut m = vec![
+                (Key::Int(0), Value::Int(CheckpointCertificate::VERSION)),
                 (Key::Int(2), Value::Bytes(vec![0; 32])),
                 (Key::Int(3), Value::map([])),
                 (Key::Int(4), Value::Int(0)),
@@ -382,7 +404,16 @@ mod tests {
                 "{says}"
             );
         }
-        // no version check, like the TypeScript
-        assert!(verify_checkpoint(&with(0, Value::Int(9)), authority().peer_id(), None).is_ok());
+        // another version is refused before its shape is read, as the TypeScript refuses it (U34)
+        for (v, version) in [
+            (Value::Int(1), Some(1)),
+            (Value::Int(9), Some(9)),
+            (Value::text("2"), None),
+        ] {
+            assert_eq!(
+                verify_checkpoint(&with(0, v), authority().peer_id(), None),
+                Err(CheckpointError::UnknownVersion { version })
+            );
+        }
     }
 }

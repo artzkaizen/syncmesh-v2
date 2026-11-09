@@ -271,6 +271,11 @@ impl Default for EngineOptions {
     }
 }
 
+/// Why a state with installed rows is refused rather than rebuilt from the log, as the
+/// TypeScript's `StateCorrupt` says it.
+const UNHELD: &str =
+    "it holds rows installed from a snapshot, which the log has no events for — rejoin from a peer";
+
 fn system_now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -364,14 +369,28 @@ impl Engine {
     /// have no events behind them, and such a state is refused as `StateCorrupt` instead.
     pub fn open(
         identity: Identity,
-        store: Box<dyn EventStore + Send>,
+        mut store: Box<dyn EventStore + Send>,
         mut state_store: Option<Box<dyn StateStore + Send>>,
         options: EngineOptions,
     ) -> Result<Engine, StoreError> {
+        // rows a snapshot install brought have no events behind them, and the log keeps the floor
+        // they stand at (gaps U37): a state store that is empty over it was deleted or replaced,
+        // and folding the log would rebuild it without them
+        let installed = store.installed_below()?;
         let (mut state, mut coverage) = match &state_store {
             Some(s) if !s.is_empty()? => (s.load_all()?, s.load_coverage()?),
+            Some(_) if !installed.is_empty() => {
+                return Err(StoreError::new(format!(
+                    "StateCorrupt: there is no folded state, and the state this log was folded \
+                     into {UNHELD}"
+                )));
+            }
             _ => (State::new(), Coverage::default()),
         };
+        // a state installed before the log kept the floor gives it to the log now
+        if !coverage.floor.is_empty() {
+            store.record_installed(&coverage.floor)?;
+        }
         let mut validator = options.validator.map(Validator::new);
         let docs = options
             .docs
@@ -394,15 +413,13 @@ impl Engine {
             parse_lineage_cells(rows, docs).err()
         });
         if let Some(cell) = &refused
-            && !coverage.floor.is_empty()
+            && !(coverage.floor.is_empty() && installed.is_empty())
         {
             // rows a snapshot installed have no events behind them: a rebuild from the log would
             // drop them without a word, so the state is refused instead, as the TypeScript's
-            // `StateCorrupt` refuses it (gap U22). Nothing is cleared
+            // `StateCorrupt` refuses it (gaps U22, U37). Nothing is cleared
             return Err(StoreError::new(format!(
-                "StateCorrupt: the state holds {} and rows a snapshot installed, which the log \
-                 cannot rebuild; rejoin from a peer's state",
-                cell
+                "StateCorrupt: the state holds {cell}; {UNHELD}"
             )));
         }
         if refused.is_some() {
@@ -1012,12 +1029,15 @@ impl Engine {
     /// `engine.snapshot`). With an interest only the rows in it, and the snapshot then claims
     /// completeness for that slice alone; a `window` keeps the newest live rows of it and every
     /// tombstone (`window_rows`). The floor is this device's own account of its log and
-    /// never part of what it claims.
+    /// never part of what it claims. A table the validator's manifest puts in the `local` kind is
+    /// left out whatever the interest: its rows never leave this device (gaps U36).
     pub fn snapshot(&self, interest: Option<&Interest>) -> Snapshot {
+        let validator = self.validator.as_ref();
         let rows: Vec<SnapshotRow> = self
             .state
             .tables
             .iter()
+            .filter(|(table, _)| !validator.is_some_and(|v| v.local_table(table)))
             .flat_map(|(table, records)| {
                 records
                     .iter()
@@ -1087,9 +1107,13 @@ impl Engine {
         }
         let mut coverage = self.coverage.clone();
         coverage.adopt_unheld(&adopted);
-        if let Some(store) = self.state_store.as_mut() {
-            store.commit(&rows_for(&self.state, &write_keys), &coverage.current())?;
-        }
+        let committed = match self.state_store.as_mut() {
+            Some(store) => {
+                store.commit(&rows_for(&self.state, &write_keys), &coverage.current())?;
+                true
+            }
+            None => false,
+        };
         self.coverage = coverage;
         let (state, adapters) = (&self.state, &self.doc_adapters);
         relabel_docs(
@@ -1098,6 +1122,14 @@ impl Engine {
             |doc| lineage_of(state.record(&doc.table, &doc.key), &doc.column),
             |a| adapters.contains(a),
         )?;
+        // the log keeps the floor too, once the state that holds its rows has committed (gaps
+        // U37): a floor over no state that holds the rows would refuse every later boot. A record
+        // that fails is the install's error; the state holds the floor, and the next open copies
+        // it into the log
+        let floor = self.coverage.current().floor;
+        if committed && !floor.is_empty() {
+            self.store.record_installed(&floor)?;
+        }
         Ok(Installed {
             rows: count,
             batch: FoldBatch {
@@ -1114,6 +1146,13 @@ impl Engine {
     /// until an install adopts something the log does not hold, since this crate never compacts.
     pub fn floor(&self) -> Cursors {
         self.coverage.current().floor
+    }
+
+    /// The floor the log keeps for rows a snapshot installed ([`EventStore::installed_below`]):
+    /// what a boot over an empty or unreadable state refuses on. Empty with no state store, since
+    /// an install records it only once a state store holds the rows.
+    pub fn installed_below(&self) -> Result<Cursors, StoreError> {
+        self.store.installed_below()
     }
 
     /// Whether the mesh declares document columns: a snapshot answering a floor then adopts no

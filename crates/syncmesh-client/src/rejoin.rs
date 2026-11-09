@@ -22,6 +22,12 @@
 //! after [`Rejoins::accept`] answers `Requested` it calls [`PeerJoin::flush`] on its links. The
 //! TypeScript sweeps its issues on every fold; here [`Rejoins::sweep`] is called after one, and
 //! [`Rejoins::issues`] sweeps before it answers.
+//!
+//! **A relay's floor reads the same** (gaps U30, U37). A relay link refused with `retention` says
+//! so with `relay::Action::BelowFloor`; the host gives it to [`Rejoins::relay_refused`], which
+//! raises the issue under the relay's name beside the peers', and `relay::Action::FloorCleared`
+//! to [`Rejoins::relay_cleared`]. The link itself decides when that is: it holds the floor, a
+//! join was served, or it stopped.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -46,7 +52,7 @@ pub fn below_floor(own: &PeerId, ours: &Cursors, theirs: &Cursors, floor: &Curso
     ))
 }
 
-/// Why a device below a peer's floor is still there, as a stable cause.
+/// Why a device below a floor is still there, as a stable cause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BelowFloorReason {
     /// The mesh has no `trust`: nothing can vouch for the state, so nothing was asked until accepted.
@@ -57,6 +63,9 @@ pub enum BelowFloorReason {
     Incomplete,
     /// Three sessions asked and no install completed.
     Unanswered,
+    /// A relay refused the join below the floor it trimmed to (gaps U30): it folds nothing and
+    /// serves no state, so the way out is state from a peer.
+    Retention,
 }
 
 impl BelowFloorReason {
@@ -67,6 +76,7 @@ impl BelowFloorReason {
             BelowFloorReason::Unvouched => "unvouched",
             BelowFloorReason::Incomplete => "incomplete",
             BelowFloorReason::Unanswered => "unanswered",
+            BelowFloorReason::Retention => "retention",
         }
     }
 
@@ -85,15 +95,28 @@ impl BelowFloorReason {
             BelowFloorReason::Unanswered => {
                 "asked for state in three sessions and no install completed"
             }
+            BelowFloorReason::Retention => {
+                "the relay has trimmed its history below these cursors and refused the join: take state from a peer that folds (a peer link, or $recovery.rebuild); the link dials that room again once this device holds the floor, or when it is woken"
+            }
         }
     }
 }
 
-/// A device below a peer's compaction floor, and what is known about why (D46).
+/// Who named the floor: a peer on its cursors frame (D46), or a relay's `retention` refusal
+/// (gaps U30), by the relay transport's name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FloorSource {
+    Peer(PeerId),
+    Relay(String),
+}
+
+/// A device below a floor, and what is known about why (D46). The TypeScript's `BelowFloor`
+/// union: `source` says which side named it, and a relay's reason is always
+/// [`BelowFloorReason::Retention`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BelowFloor {
-    pub peer: PeerId,
-    /// Per author this device is below, the floor the peer claimed.
+    pub source: FloorSource,
+    /// Per author this device is below, the floor the peer claimed or the room trimmed to.
     pub floor: Cursors,
     pub reason: BelowFloorReason,
 }
@@ -156,6 +179,8 @@ struct Session {
 #[derive(Debug, Default)]
 pub struct Rejoins {
     raised: BTreeMap<PeerId, BelowFloor>,
+    /// Relays that refused this device with `retention`, one issue per relay name (gaps U37).
+    relays: BTreeMap<String, BelowFloor>,
     attempts: BTreeMap<String, u32>,
     /// (peer, floor) pairs with a request on the wire, and whether it was an accepted one.
     inflight: BTreeMap<String, bool>,
@@ -190,7 +215,7 @@ impl Rejoins {
 
     fn raise(&mut self, peer: &PeerId, floor: Cursors, reason: BelowFloorReason) {
         let issue = BelowFloor {
-            peer: peer.clone(),
+            source: FloorSource::Peer(peer.clone()),
             floor,
             reason,
         };
@@ -204,8 +229,10 @@ impl Rejoins {
         }
     }
 
-    /// Drops every issue whose authors caught up, however they got there; whether any went. What
-    /// a host calls after a fold.
+    /// Drops every peer's issue whose authors caught up, however they got there; whether any
+    /// went. What a host calls after a fold. A relay's issue is the link's to clear
+    /// ([`Rejoins::relay_cleared`]): it reads the cursors its next join sends, which a re-page
+    /// empties whatever the coverage says.
     pub fn sweep(&mut self, ours: &Cursors) -> bool {
         let before = self.raised.len();
         self.raised.retain(|_, issue| still_below(issue, ours));
@@ -216,10 +243,36 @@ impl Rejoins {
         dropped
     }
 
-    /// The peers this device is still below, with why; swept against `ours` first.
+    /// The peers and relays this device is still below, with why; the peers' swept against
+    /// `ours` first.
     pub fn issues(&mut self, ours: &Cursors) -> Vec<BelowFloor> {
         self.sweep(ours);
-        self.raised.values().cloned().collect()
+        self.raised
+            .values()
+            .chain(self.relays.values())
+            .cloned()
+            .collect()
+    }
+
+    /// A relay refused this device's join with `retention` (`relay::Action::BelowFloor`): raises
+    /// its issue under the relay's name, or replaces it. Nothing here asks the relay for state; it
+    /// serves none.
+    pub fn relay_refused(&mut self, relay: &str, floor: Cursors) {
+        let issue = BelowFloor {
+            source: FloorSource::Relay(relay.to_owned()),
+            floor,
+            reason: BelowFloorReason::Retention,
+        };
+        self.relays.insert(relay.to_owned(), issue);
+        self.changes += 1;
+    }
+
+    /// Drops a relay's issue (`relay::Action::FloorCleared`): the link holds the floor, was
+    /// served, or stopped.
+    pub fn relay_cleared(&mut self, relay: &str) {
+        if self.relays.remove(relay).is_some() {
+            self.changes += 1;
+        }
     }
 
     /// Whether the app accepted every author of `below` at the floor it names.

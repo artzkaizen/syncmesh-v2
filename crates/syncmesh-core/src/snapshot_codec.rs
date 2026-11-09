@@ -5,10 +5,10 @@
 //! when it does not, and a stamp is `[ms, logical, peerIndex]`.
 //!
 //! Peers, tables, each table's columns and partitions are dictionaries, indexed in the order they
-//! are first seen. The TypeScript sees cells in its `Map`'s insertion order and this crate in
-//! column order, so the two can encode one record differently; both decode either. A decoded row
-//! keeps the order its cells arrived in ([`SnapshotRow::columns`]), because a checkpoint hashes a
-//! record as the TypeScript encodes it, and that is the arrival order.
+//! are first seen. A row's cells go out in column order, as the TypeScript writes them since gaps
+//! U34, so a holder in either runtime serves one row as the same bytes. Either decodes a page whose
+//! cells arrive in any order (a holder built before U34), and a checkpoint hashes the decoded record
+//! in column order whatever order it arrived in.
 
 use std::collections::BTreeMap;
 
@@ -16,7 +16,6 @@ use crate::cbor::{Value, decode, encode};
 use crate::event::{PartitionKey, PeerId};
 use crate::hlc::Hlc;
 use crate::record::{Cell, RowRecord};
-use crate::record_codec::encode_record_in;
 use crate::row_codec::{cell_from_cbor, cell_to_cbor};
 use crate::signed::{peer_from_bytes, safe_non_negative};
 use crate::stamp::Stamp;
@@ -29,34 +28,21 @@ pub struct SnapshotRow {
     pub table: String,
     pub key: String,
     pub record: RowRecord,
-    /// The record's columns in the order the page listed them; empty for a row built here, which
-    /// is read in column order.
-    pub columns: Vec<String>,
 }
 
 impl SnapshotRow {
-    /// A row as this crate holds it: its cells in column order.
     pub fn new(table: impl Into<String>, key: impl Into<String>, record: RowRecord) -> SnapshotRow {
         SnapshotRow {
             table: table.into(),
             key: key.into(),
             record,
-            columns: Vec::new(),
         }
     }
 
-    /// The record as the TypeScript's `encodeRecord` writes the one it decoded from the same
-    /// page: cells in arrival order. What a checkpoint certificate hashes.
+    /// The record as `encode_record` writes it, cells in column order: what a checkpoint
+    /// certificate hashes, as the TypeScript's `encodeRecord` writes the same record.
     pub fn record_bytes(&self) -> Vec<u8> {
-        if self.columns.is_empty() {
-            return crate::record_codec::encode_record(&self.record);
-        }
-        let cells: Vec<(&str, &Cell)> = self
-            .columns
-            .iter()
-            .filter_map(|c| self.record.cells.get(c).map(|cell| (c.as_str(), cell)))
-            .collect();
-        encode_record_in(&cells, &self.record)
+        crate::record_codec::encode_record(&self.record)
     }
 }
 
@@ -129,16 +115,8 @@ pub fn encode_snapshot_rows(rows: &[SnapshotRow]) -> Vec<u8> {
             columns.push(Dictionary::new());
         }
         let record = &row.record;
-        let ordered: Vec<(&String, &Cell)> = if row.columns.is_empty() {
-            record.cells.iter().collect()
-        } else {
-            row.columns
-                .iter()
-                .filter_map(|c| record.cells.get_key_value(c))
-                .collect()
-        };
-        let mut cells = Vec::with_capacity(ordered.len());
-        for (column, cell) in ordered {
+        let mut cells = Vec::with_capacity(record.cells.len());
+        for (column, cell) in &record.cells {
             let name = index(columns[table_index].of(column));
             // the row's write stamp covers the ordinary case: only a cell some later write moved
             // carries a stamp of its own
@@ -319,7 +297,6 @@ fn read_row(row: &Value, dicts: &Dictionaries) -> Result<SnapshotRow, MalformedS
         return malformed("cells are not an array");
     };
     let mut record = RowRecord::default();
-    let mut columns = Vec::with_capacity(cells.len());
     for cell in cells {
         let (column, value, stamp) = match cell.as_array() {
             Some([column, value]) => (column, value, None),
@@ -336,9 +313,6 @@ fn read_row(row: &Value, dicts: &Dictionaries) -> Result<SnapshotRow, MalformedS
                 None => return malformed("a cell has no stamp and neither has its row"),
             },
         };
-        if !record.cells.contains_key(column) {
-            columns.push(column.clone());
-        }
         record.cells.insert(column.clone(), Cell { value, stamp });
     }
     record.write_stamp = write_stamp;
@@ -347,12 +321,7 @@ fn read_row(row: &Value, dicts: &Dictionaries) -> Result<SnapshotRow, MalformedS
         Value::Null => None,
         index => Some(at(&dicts.partitions, index, "partition")?.clone()),
     };
-    Ok(SnapshotRow {
-        table: table.clone(),
-        key: key.to_owned(),
-        record,
-        columns,
-    })
+    Ok(SnapshotRow::new(table.clone(), key, record))
 }
 
 /// Reads one page back. Never panics; every fault is a [`MalformedSnapshot`].
@@ -419,7 +388,6 @@ mod tests {
         assert_eq!(back.len(), 2);
         assert_eq!(back[0].record, rows[0].record);
         assert_eq!(back[1].record, rows[1].record);
-        assert_eq!(back[0].columns, vec!["done".to_owned(), "title".to_owned()]);
         assert_eq!(encode_snapshot_rows(&back), bytes);
     }
 

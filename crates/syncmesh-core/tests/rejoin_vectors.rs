@@ -1,10 +1,11 @@
-//! Which of a peer's compaction floors a device is below, against
-//! `conformance/rejoin-vectors.json` (D46): the TypeScript's `belowFloor`, answer for answer.
+//! Which of a peer's compaction floors a device is below, and which of a relay's `retention` floor
+//! a join is still below, against `conformance/rejoin-vectors.json` (D46, gaps U37): the
+//! TypeScript's `belowPeerFloor` and `belowRelayFloor`, answer for answer.
 
 use std::path::PathBuf;
 
 use syncmesh_core::event::{PeerId, SeqNum};
-use syncmesh_core::rejoin::below_peer_floor;
+use syncmesh_core::rejoin::{below_peer_floor, below_relay_floor};
 
 fn vectors() -> serde_json::Value {
     let path: PathBuf = [
@@ -48,6 +49,18 @@ fn below_peer_floor_matches_every_frozen_answer() {
             &pairs(&v["theirs"]),
             &pairs(&v["floor"]),
         );
+        assert_eq!(below, pairs(&v["below"]), "{what}");
+    }
+}
+
+#[test]
+fn below_relay_floor_matches_every_frozen_answer() {
+    let doc = vectors();
+    let list = doc["relay"].as_array().expect("relay");
+    assert_eq!(list.len(), 6);
+    for v in list {
+        let what = v["description"].as_str().expect("description");
+        let below = below_relay_floor(&pairs(&v["ours"]), &pairs(&v["floor"]));
         assert_eq!(below, pairs(&v["below"]), "{what}");
     }
 }
