@@ -20,15 +20,16 @@ import { CRASH_AUTHOR, CRASH_TABLES } from "./crash.js";
  * subset (9,991 of 10,000), 2 were refused as values, 9 hit no event page.
  *
  * Runner-neutral like the crash suite: the adapter supplies the crash child and the file handling,
- * since what a page is and how a file is copied belong to the platform.
+ * since what a page is and how a file is copied belong to the platform — synchronously on a disk,
+ * or as a promise where the file sits behind a worker (OPFS) or a runtime (workerd).
  */
 export interface TornHarness extends CrashHarness {
   /** Copies the database `from` to `to`, by the names the harness opens them under. */
-  readonly copy: (from: string, to: string) => void;
+  readonly copy: (from: string, to: string) => void | Promise<void>;
   /** The log file's size in bytes. */
-  readonly size: (name: string) => number;
+  readonly size: (name: string) => number | Promise<number>;
   /** Writes `length` zero bytes into the log file at `offset`: what a power cut leaves of a page. */
-  readonly zero: (name: string, offset: number, length: number) => void;
+  readonly zero: (name: string, offset: number, length: number) => void | Promise<void>;
 }
 
 const PAGE = 4096;
@@ -57,9 +58,9 @@ const fill = async (harness: TornHarness, name: string, atLeast: number): Promis
 };
 
 /** Half a page of zeros a quarter of the way into the page `at` ninths through `name`. */
-const tearAt = (harness: TornHarness, name: string, at: number) => {
-  const page = Math.floor((harness.size(name) / PAGE) * (at / 9));
-  harness.zero(name, page * PAGE + PAGE / 4, PAGE / 2);
+const tearAt = async (harness: TornHarness, name: string, at: number) => {
+  const page = Math.floor(((await harness.size(name)) / PAGE) * (at / 9));
+  await harness.zero(name, page * PAGE + PAGE / 4, PAGE / 2);
   return page;
 };
 
@@ -94,8 +95,8 @@ export function tornTests(harness: TornHarness): readonly SuiteCase[] {
         let holes = 0;
         for (const at of POSITIONS) {
           const name = `torn-${at}`;
-          harness.copy("torn-base", name);
-          const page = tearAt(harness, name, at);
+          await harness.copy("torn-base", name);
+          const page = await tearAt(harness, name, at);
           const { opened, reads } = await readBack(harness, name);
           // the base closed cleanly, so nothing checked the pages at open: this is the read's answer
           check(opened.isOk(), `page ${page}: a cleanly closed copy opens without a page check`);
@@ -118,12 +119,12 @@ export function tornTests(harness: TornHarness): readonly SuiteCase[] {
         let refused = 0;
         for (const at of POSITIONS) {
           const name = `torn-crash-${at}`;
-          harness.copy("torn-crash", name);
+          await harness.copy("torn-crash", name);
           // a session that never reached `close`: the process died with the store open
           const crashed = await harness.openDriver(name);
           (await openStores(crashed, { tables: CRASH_TABLES })).unwrap();
           await crashed.close?.();
-          const page = tearAt(harness, name, at);
+          const page = await tearAt(harness, name, at);
           const { opened, reads } = await readBack(harness, name);
           if (opened.isErr()) {
             check(
@@ -152,8 +153,8 @@ export function tornTests(harness: TornHarness): readonly SuiteCase[] {
         let found = 0;
         for (const at of POSITIONS) {
           const name = `torn-verify-${at}`;
-          harness.copy("torn-verify", name);
-          tearAt(harness, name, at);
+          await harness.copy("torn-verify", name);
+          await tearAt(harness, name, at);
           const driver = await harness.openDriver(name);
           const torn = await verifyLog(driver);
           if (torn.isErr()) {
@@ -169,7 +170,7 @@ export function tornTests(harness: TornHarness): readonly SuiteCase[] {
       name: "torn: a torn tail — `lastSeq` refuses it as a value, and no read throws",
       run: async () => {
         await fill(harness, "torn-tail", 2_000);
-        harness.zero("torn-tail", harness.size("torn-tail") - PAGE / 2, PAGE / 2);
+        await harness.zero("torn-tail", (await harness.size("torn-tail")) - PAGE / 2, PAGE / 2);
         const driver = await harness.openDriver("torn-tail");
         const stores = (await openStores(driver, { tables: CRASH_TABLES })).unwrap();
         // a tear that takes an author's newest events leaves no later event to show the hole, so

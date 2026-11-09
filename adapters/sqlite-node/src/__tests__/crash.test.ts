@@ -1,4 +1,4 @@
-import { CRASH_SCHEMA, crashTests, linesOf } from "@syncmesh/storage/driver-tests";
+import { CRASH_SCHEMA, crashTests, streamLines } from "@syncmesh/storage/driver-tests";
 import { afterAll, describe, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,7 +18,7 @@ describe("@syncmesh/sqlite-node, under Node, survives kill -9", () => {
         stderr: "inherit",
       });
       return {
-        lines: linesOf(child.stdout),
+        lines: streamLines(child.stdout),
         kill: async () => {
           child.kill("SIGKILL");
           await child.exited;
