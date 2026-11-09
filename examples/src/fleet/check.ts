@@ -6,7 +6,7 @@ import type { Phone } from "../phone.js";
 
 import { openBackend } from "../embedded/backend.js";
 import { identityNamed } from "../identity.js";
-import { INSTANCE, ROOM, notes } from "../notes.js";
+import { INSTANCE, INVITE, ROOM, notes } from "../notes.js";
 import { admitted, phone, until } from "../phone.js";
 
 /**
@@ -55,13 +55,23 @@ try {
   // its author's grant is parked until something else folds (gaps U42), and that race is the
   // client's, not the fleet's
   const peers = names.map((name) => identityNamed(`device:${name}`).peerId);
-  check(
-    await until(
-      () => phones.every((mesh) => peers.every((peer) => mesh.grants.grantFor(peer) !== undefined)),
-      WAIT,
-    ),
-    "every phone holds every other phone's grant",
-  );
+  const lacks = (peer: (typeof peers)[number]) =>
+    phones.some((mesh) => mesh.grants.grantFor(peer) === undefined);
+  // the fan-out is best-effort (README): a grant one instance did not hear is asked for again,
+  // which mints a newer one and fans it out afresh — the repair the README names. Each ask is
+  // said, so a run that needed one shows it
+  const spread = await until(async () => {
+    if (!(await until(() => peers.every((peer) => !lacks(peer)), 5_000))) {
+      for (const [n, peer] of peers.entries())
+        if (lacks(peer)) {
+          console.log(`      ${names[n]}'s grant did not reach every phone; asking again`);
+          phones[n]?.requestGrant(INVITE);
+        }
+      return false;
+    }
+    return true;
+  }, WAIT);
+  check(spread, "every phone holds every other phone's grant");
   for (const [n, mesh] of phones.entries()) {
     const missing = names.filter((name) => {
       const peer = identityNamed(`device:${name}`).peerId;
