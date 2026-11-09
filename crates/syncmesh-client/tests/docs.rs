@@ -979,3 +979,33 @@ fn an_anchor_on_an_edit_is_refused_as_the_codec_refuses_it() {
     );
     assert!(a.doc_log().unwrap().is_empty());
 }
+
+#[test]
+fn a_settle_window_shorter_than_an_hour_is_taken_as_an_hour() {
+    let clock = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(1_000));
+    let read = std::sync::Arc::clone(&clock);
+    let mut a = Engine::open(
+        Identity::from_seed(&[1; 32]),
+        Box::new(MemoryEventStore::new()),
+        None,
+        EngineOptions {
+            docs: Some(docs()),
+            doc_adapters: BTreeSet::from(["loro@1".to_owned()]),
+            now_ms: Some(Box::new(move || {
+                read.load(std::sync::atomic::Ordering::Relaxed)
+            })),
+            lineage_settle_after_ms: 1_000,
+            ..EngineOptions::default()
+        },
+    )
+    .unwrap();
+    write(&mut a, vec![insert()]);
+    clock.store(86_400_000, std::sync::atomic::Ordering::Relaxed);
+    write(&mut a, vec![replace(1)]);
+    clock.store(86_400_000 + 60_000, std::sync::atomic::Ordering::Relaxed);
+    let sibling = write(&mut a, vec![replace(2)]);
+    let Change::Doc(d) = &sibling.event.changes[0] else {
+        panic!("a replace is a doc change");
+    };
+    assert_eq!(d.settles, None, "a minute is inside the hour");
+}

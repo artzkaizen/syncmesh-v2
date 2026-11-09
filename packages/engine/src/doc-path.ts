@@ -56,13 +56,26 @@ export interface DocEngineOptions {
    * writes names, as its anchor, the deepest lineage on the walk replaced at least this long
    * before it, and every genesis stamped at or below that one leaves the lineage cell on every
    * peer. A device that held an older `replace()` unsent for longer finds it off the walk, as
-   * RFC-0015 §2a treats a peer forgotten after `forgetPeersAfter`. Default 30 days.
+   * RFC-0015 §2a treats a peer forgotten after `forgetPeersAfter`. Default 30 days; anything
+   * shorter than {@link MIN_LINEAGE_SETTLE_AFTER} is taken as that, since every peer trusts the
+   * anchor a misconfigured one writes.
    */
   readonly lineageSettleAfter?: Temporal.Duration;
 }
 
 /** {@link DocEngineOptions.lineageSettleAfter}'s default. */
 export const DEFAULT_LINEAGE_SETTLE_AFTER = Temporal.Duration.from({ days: 30 });
+
+/** The shortest {@link DocEngineOptions.lineageSettleAfter} an engine runs with. */
+export const MIN_LINEAGE_SETTLE_AFTER = Temporal.Duration.from({ hours: 1 });
+
+/** The settle window an engine runs with: the one given, the default, and never below the floor. */
+export const settleWindow = (given: Temporal.Duration | undefined): Temporal.Duration => {
+  const window = given ?? DEFAULT_LINEAGE_SETTLE_AFTER;
+  return Temporal.Duration.compare(window, MIN_LINEAGE_SETTLE_AFTER) < 0
+    ? MIN_LINEAGE_SETTLE_AFTER
+    : window;
+};
 
 /** A tail entry with what it carries: its bytes inline, or the blob that holds them. */
 export type TailUpdate =

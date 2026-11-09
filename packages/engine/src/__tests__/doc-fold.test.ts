@@ -568,6 +568,22 @@ describe("a lineage cell stays bounded however often a document is replaced (gap
     expect(genesesIn(cellOf(a))).toBe(4);
   });
 
+  test("a window shorter than an hour is taken as an hour", async () => {
+    const a = setup(PEER_A, 100, {
+      docs: DOCS,
+      validate,
+      docAdapters: new Set([LORO]),
+      lineageSettleAfter: Temporal.Duration.from({ seconds: 1 }),
+    });
+    await write(a, (tx) => tx.insert(NOTES, N1, row({ id: "n1", title: "t" })));
+    a.clock.set(100 + DAY);
+    await write(a, (tx) => tx.doc(NOTES, N1, replace(1)));
+    a.clock.set(100 + DAY + 60_000);
+    const sibling = await write(a, (tx) => tx.doc(NOTES, N1, replace(2)));
+    const change = sibling.changes[0];
+    expect(change?.kind === "doc" && change.settles).toBeUndefined();
+  });
+
   test("the window is the engine's to set", async () => {
     const a = setup(PEER_A, 100, {
       docs: DOCS,

@@ -42,7 +42,7 @@ export {
 export type { DerivedFrom } from "./doc-derived.js";
 export type { DocEditorApi } from "./doc-editor.js";
 export type { DocApi, DocEngineOptions, DocTail, LineageLog, TailUpdate } from "./doc-path.js";
-export { DEFAULT_LINEAGE_SETTLE_AFTER } from "./doc-path.js";
+export { DEFAULT_LINEAGE_SETTLE_AFTER, MIN_LINEAGE_SETTLE_AFTER } from "./doc-path.js";
 export type { EventHeader, RecentEvents } from "./recent.js";
 export { DEFAULT_RECENT, headerOf, recentHeaders } from "./recent.js";
 export type { Tx } from "./tx.js";

@@ -206,6 +206,10 @@ pub type NowMs = Box<dyn Fn() -> i64 + Send>;
 /// [`EngineOptions::lineage_settle_after_ms`]'s default: 30 days, the TypeScript's.
 pub const DEFAULT_LINEAGE_SETTLE_AFTER_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
+/// The shortest [`EngineOptions::lineage_settle_after_ms`] an engine runs with: one hour, the
+/// TypeScript's `MIN_LINEAGE_SETTLE_AFTER`. Every peer trusts the anchor a misconfigured one writes.
+pub const MIN_LINEAGE_SETTLE_AFTER_MS: i64 = 60 * 60 * 1000;
+
 pub struct EngineOptions {
     /// Per table and column, how concurrent writes merge; anything unnamed is `lww`.
     pub merge: Option<MergeSpec>,
@@ -236,7 +240,8 @@ pub struct EngineOptions {
     /// `lineageSettleAfter`: a genesis this engine writes names, as its anchor, the deepest lineage
     /// on the walk replaced at least this long before it, and every genesis stamped at or below
     /// that one leaves the lineage cell on every peer. Default
-    /// [`DEFAULT_LINEAGE_SETTLE_AFTER_MS`], 30 days.
+    /// [`DEFAULT_LINEAGE_SETTLE_AFTER_MS`], 30 days; anything shorter than
+    /// [`MIN_LINEAGE_SETTLE_AFTER_MS`] is taken as that.
     pub lineage_settle_after_ms: i64,
     /// The app schema this build declares (D31): stamped on every event it writes, under key 9.
     /// A reading for the fleet, never a gate; `None` stamps nothing.
@@ -436,7 +441,9 @@ impl Engine {
                 .unwrap_or_else(|| Box::new(MemoryDocStore::new())),
             own_floor: 0,
             undo_depth: options.undo_depth,
-            lineage_settle_after_ms: options.lineage_settle_after_ms,
+            lineage_settle_after_ms: options
+                .lineage_settle_after_ms
+                .max(MIN_LINEAGE_SETTLE_AFTER_MS),
             undo: VecDeque::new(),
             refused_at_open: refused,
             schema_version: options.schema_version,

@@ -32,7 +32,7 @@ import { type CoverageApi, createCoveragePath, persistInstall } from "./coverage
 import { trackCoverage } from "./coverage.js";
 import { createRepairPath } from "./digest.js";
 import { createDocEditor } from "./doc-editor.js";
-import { DEFAULT_LINEAGE_SETTLE_AFTER, createDocPath } from "./doc-path.js";
+import { createDocPath, settleWindow } from "./doc-path.js";
 import {
   ListenerFailure,
   type ValidationError,
@@ -290,7 +290,7 @@ export function createEngine(options: EngineOptions): Engine {
     validate,
     before,
     undoDepth,
-    settleAfter: options.lineageSettleAfter ?? DEFAULT_LINEAGE_SETTLE_AFTER,
+    settleAfter: settleWindow(options.lineageSettleAfter),
     undo,
     atomically,
     atomic: atomic !== undefined,
