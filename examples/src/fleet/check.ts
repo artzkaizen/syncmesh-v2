@@ -2,7 +2,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { Phone } from "../phone.js";
+
 import { openBackend } from "../embedded/backend.js";
+import { identityNamed } from "../identity.js";
 import { INSTANCE, ROOM, notes } from "../notes.js";
 import { admitted, phone, until } from "../phone.js";
 
@@ -31,7 +34,8 @@ const check = (held: boolean, what: string): void => {
 };
 
 const backend = await openBackend({ dataDir: dir, relayUrl: dialing(0) });
-const phones = [];
+// empty until the phones open, so the element type has nothing to be inferred from
+const phones: Phone[] = [];
 try {
   // every phone on before any asks: an instance opens a room at its first socket, and a grant
   // fanned out before that is a frame it never hears and nobody sends again (README, "What this
@@ -44,6 +48,17 @@ try {
       await admitted(mesh, WAIT),
       `${names[n]} is granted by the server peer through the fleet`,
     );
+  // each phone holds every other's grant before anyone writes: an event that arrives ahead of
+  // its author's grant is parked until something else folds (gaps U42), and that race is the
+  // client's, not the fleet's
+  const peers = names.map((name) => identityNamed(`device:${name}`).peerId);
+  check(
+    await until(
+      () => phones.every((mesh) => peers.every((peer) => mesh.grants.grantFor(peer) !== undefined)),
+      WAIT,
+    ),
+    "every phone holds every other phone's grant",
+  );
   const [alice, bob, carol] = phones;
   if (alice === undefined || bob === undefined || carol === undefined)
     throw new Error("three phones were opened");

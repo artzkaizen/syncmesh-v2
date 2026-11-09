@@ -34,11 +34,11 @@ export const phone = async (name: string, dialing: string, issuer: PeerId, dir: 
   return client.$mesh;
 };
 
+/** One phone's mesh, as {@link phone} opens it. */
+export type Phone = Awaited<ReturnType<typeof phone>>;
+
 /** Asks for a grant with the invite and waits until the phone may write. */
-export const admitted = async (
-  mesh: Awaited<ReturnType<typeof phone>>,
-  ms?: number,
-): Promise<boolean> => {
+export const admitted = async (mesh: Phone, ms?: number): Promise<boolean> => {
   await mesh.ready();
   mesh.requestGrant(INVITE);
   return until(() => mesh.can("notes.insert", undefined, INSTANCE), ms);
