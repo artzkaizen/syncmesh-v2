@@ -6,7 +6,7 @@ import type { CaptureError } from "./errors.js";
 import type { ChangeMapping, ChangeMappings } from "./mapping.js";
 import type { ChangeMessage, SourceRow } from "./source.js";
 
-import { TruncateRefused } from "./errors.js";
+import { RowMoved, TruncateRefused } from "./errors.js";
 import { meshCells, meshKey, partitionOf, rowKey } from "./mapping.js";
 
 /** One partition's share of a transaction: exactly the changes one signed event will carry. */
@@ -15,9 +15,12 @@ export interface PlannedEvent {
   readonly changes: readonly Change[];
 }
 
-/** What the engine already holds, for the two messages that cannot say it themselves. */
+/** What the engine already holds, for the messages that cannot say it themselves. */
 export interface HeldRows {
-  /** The instance a row was born in. A delete carries no row, so its instance can only be read. */
+  /**
+   * The instance a row was born in. A delete carries no row, and an update may carry only the
+   * columns it changed, so for both the instance the engine holds is the answer.
+   */
   readonly partitionOf: (table: TableName, key: RowKey) => PartitionKey | undefined;
   /** Every live key of a collection, for the one message that is table-wide: `truncate`. */
   readonly liveKeys: (table: TableName) => readonly RowKey[];
@@ -177,14 +180,42 @@ function plannedTouch(
     return Result.ok([partition, { kind: "delete", table: collection.name, key }]);
   }
   const row: SourceRow = last.t === "insert" ? last.row : last.after;
-  const partition = partitionOf(touch.table, key, touch.mapping, row);
+  const inserted = touch.born || touch.recreated;
+  const held = inserted ? undefined : deps.held.partitionOf(collection.name, key);
+  const partition =
+    held === undefined
+      ? partitionOf(touch.table, key, touch.mapping, row)
+      : heldPartition(touch, held, row);
   if (partition.isErr()) return Result.err(partition.error);
   const cells = meshCells(collection, row);
-  const change: Change =
-    touch.born || touch.recreated
-      ? { kind: "insert", table: collection.name, key, row: cells }
-      : { kind: "update", table: collection.name, key, patch: cells };
+  const change: Change = inserted
+    ? { kind: "insert", table: collection.name, key, row: cells }
+    : { kind: "update", table: collection.name, key, patch: cells };
   return Result.ok([partition.value, change]);
+}
+
+/**
+ * The instance an update to a row the engine holds is filed in: the one it holds the row in, since
+ * a row keeps the instance it was born in. The mapping is still asked, and an update it cannot
+ * place — one carrying only the columns it changed — goes where the row lives. One it places in a
+ * different instance is {@link RowMoved}: the database moved the row, which capture does not do.
+ */
+function heldPartition(
+  touch: Touch,
+  held: PartitionKey,
+  row: SourceRow,
+): Result<PartitionKey, CaptureError> {
+  const named = partitionOf(touch.table, touch.key, touch.mapping, row);
+  if (named.isErr() || named.value === held) return Result.ok(held);
+  return Result.err(
+    new RowMoved({
+      table: touch.table,
+      key: touch.key,
+      held,
+      named: named.value,
+      message: `${touch.table} ${touch.key} lives in ${held}, and the mapping now places it in ${named.value}: capture does not move a row between instances`,
+    }),
+  );
 }
 
 /**

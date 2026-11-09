@@ -82,7 +82,51 @@ openStores(driver, { tables, strict: { except: ["imports"] } }); // every table 
 `sqlite({ strict })` and `postgres({ strict })` take the same setting. Changing it is no shape
 change, so it never renames the state file. A table taken out of `tables` loses its guard at the
 next open. The guard catches mistakes, not a hostile writer: a role that sets the capture setting
-itself gets past it.
+itself gets past it. A write `except` lets through reaches no peer: use it for a table the mesh
+does not sync from this database, never for one it does.
+
+## A table something else writes too (RFC-0025)
+
+A table devices write offline and another service also writes on the authority's database is
+**staged**: the guard files an outside write in the staged-changes queue instead of refusing it,
+and `stagedChangeSource` hands each sweep of the queue to the CDC bridge, which signs it as the
+authority's event. Only the columns the outside writer changed travel, so a device's concurrent
+edit to another column survives, and so does a mesh write that landed between two outside writes
+to the row. The sweep's stamp is the authority's clock at the sweep, so on a column the outside
+writer did change it beats a device's edit that was folded in after the outside write but before
+the sweep: real-time order is inverted on that one field, and every peer converges on the outside
+value. If another outside write to the row follows that fold in the same sweep, the column
+carries the device's value instead, signed again under the authority's stamp. A tenant column
+the outside writer changes does not move the row: a staged row's instance is its `_partition`,
+and moving a row between tenants is a delete and an insert.
+
+```ts
+const stores = (await openStores(driver, { tables, strict: { stage: ["tasks"] } })).unwrap();
+const source = stagedChangeSource({ name: "staged", driver: stores.driver, tables });
+await startCapture({
+  engine,
+  source,
+  mappings: {
+    tasks: {
+      collection: schema.tables.tasks,
+      // the row's own partition, or one for a row the outside writer inserted
+      partition: (row) => {
+        const org = scalarText(row.orgId);
+        return scalarText(row._partition) ?? (org === undefined ? undefined : `org:${org}`);
+      },
+    },
+  },
+});
+```
+
+The fold's own writes are not filed, so a sweep never echoes. An outside update that changes a
+row's key is filed as a delete of the old key and an insert of the new one. A `TRUNCATE` of a
+staged table is still refused on Postgres. On Postgres the filing function runs as the role that
+opened the stores (`SECURITY DEFINER`, `search_path` pinned, `EXECUTE` revoked from `PUBLIC`), so
+a service whose role may write only the table needs no grant on the `syncmesh` schema or its
+queue. One sweeper per database; `source.pending()` is the backlog.
+`research/rfcs/0025-external-writers.md` has the three table classes and why the numbering is
+safe.
 
 ## A damaged log is refused (D39)
 

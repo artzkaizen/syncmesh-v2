@@ -13,6 +13,7 @@ import { eventCases } from "./events.js";
 import { holeCases } from "./holes.js";
 import { journalCases } from "./journal.js";
 import { readFilterCases } from "./read-filter.js";
+import { stagedCases } from "./staged.js";
 import { strictCases } from "./strict.js";
 
 export { LADDER, PRINCIPALS, ROWS, RULES, asCells } from "./read-filter.js";
@@ -67,6 +68,7 @@ export function captureTests(openDriver: OpenDriver): readonly SuiteCase[] {
     ...captureCases(openDriver),
     ...captureRuleCases(openDriver),
     ...strictCases(openDriver),
+    ...stagedCases(openDriver),
     ...tablesCases(openDriver),
     ...journalCases(openDriver),
     ...docColumnCases(openDriver),

@@ -264,7 +264,10 @@ Two channels.
   "pinned by the driver suite against `can()`" (`read-filter.ts:14-18`). Whether the Postgres
   compiler is pinned the same way is for the reviewer to confirm (§8 item 5).
 - **External writers.** These are meant to come in through `packages/cdc` (watermarks,
-  `_cdc.apply`) (`packages/cdc/src/capture.ts:19-20`).
+  `_cdc.apply`) (`packages/cdc/src/capture.ts:19-20`). Since RFC-0025 a table named in
+  `strict: { stage }` files an uncaptured write in `syncmesh.staged` instead of refusing it, and
+  `stagedChangeSource` sweeps it into an authority-signed event; the write itself is still not
+  judged before it lands.
 
 ### 4.5 App code ↔ engine (capture guard)
 

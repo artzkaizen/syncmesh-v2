@@ -22,6 +22,9 @@ export interface ChangeMapping {
   readonly collection: Table;
   /**
    * The instance a row belongs to, read from the row the database sent: `` `org:${row.org_id}` ``.
+   * An update to a row the engine holds stays in the instance the row was born in, which is where
+   * the kernel keeps it, when this returns `undefined` for it; naming another instance stops
+   * capture with `RowMoved`.
    * Config and not a column for now, so a table can be published without a migration; a column
    * the database owns is the auditable alternative and stays open (RFC-0021).
    */

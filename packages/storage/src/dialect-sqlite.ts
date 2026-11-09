@@ -4,7 +4,7 @@ import type { Rung } from "./ladder.js";
 
 import { SQLITE_DOCS, SQLITE_DOC_SNAPSHOTS, SQLITE_DOC_TABLES } from "./dialect-docs.js";
 import { sqliteGapTables, sqliteGaps } from "./dialect-gaps.js";
-import { SQLITE_GUARD, SQLITE_GUARD_ROW, SQLITE_ROW as GUARD } from "./dialect-guard.js";
+import { SQLITE_GUARD_ROW, SQLITE_ROW as GUARD, sqliteGuard } from "./dialect-guard.js";
 import { sqliteOperations } from "./dialect-operations.js";
 import { sqliteCell, sqlType } from "./dialect-sqlite-cells.js";
 import { tableColumns, literal, quote, type TableColumns } from "./identifiers.js";
@@ -72,7 +72,7 @@ const capture: CaptureSql = {
   },
   arm: `UPDATE ${GUARD} SET armed = 1 WHERE id = 1`,
   disarm: `UPDATE ${GUARD} SET armed = 0 WHERE id = 1`,
-  ...SQLITE_GUARD,
+  ...sqliteGuard(image),
   selectLog: `SELECT tbl, key, op, old, new FROM ${CHANGES} ORDER BY seq`,
   clearLog: `DELETE FROM ${CHANGES}`,
   stampPartition: (table, pk, partitionColumn) =>

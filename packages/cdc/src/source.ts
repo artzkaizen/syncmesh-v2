@@ -16,8 +16,9 @@ import { Result, TaggedError } from "@syncmesh/result";
  * CDC-backed table is not offline-writable, because an offline write against a database we do
  * not own is a promise we cannot keep.
  *
- * Two sources ship: `manualChangeSource` here, and `postgresChangeSource` in
- * `@syncmesh/postgres` — a logical replication slot read through `pgoutput`, whose standby
+ * Three sources ship: `manualChangeSource` here, `stagedChangeSource` in `@syncmesh/storage` —
+ * the staged-changes queue a staged table's guard files outside writes into (RFC-0025) — and
+ * `postgresChangeSource` in `@syncmesh/postgres` — a logical replication slot read through `pgoutput`, whose standby
  * status updates move the slot only past transactions that were decoded whole **and** acked.
  * That is the one failure the port exists to make impossible: a source that acks what it has
  * not decoded. Everything above the port — the transaction fold, the watermark, the backfill,

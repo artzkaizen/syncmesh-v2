@@ -3,7 +3,7 @@ import type { Rung } from "./ladder.js";
 
 import { POSTGRES_DOCS, POSTGRES_DOC_SNAPSHOTS, POSTGRES_DOC_TABLES } from "./dialect-docs.js";
 import { POSTGRES_GAPS, POSTGRES_GAP_TABLES } from "./dialect-gaps.js";
-import { PG_ARMED, POSTGRES_GUARD } from "./dialect-guard.js";
+import { PG_ARMED, postgresGuard } from "./dialect-guard.js";
 import { POSTGRES_OPERATIONS } from "./dialect-operations.js";
 import { postgresCell, sqlType } from "./dialect-postgres-cells.js";
 import { tableColumns, literal, quote, type TableColumns } from "./identifiers.js";
@@ -92,7 +92,7 @@ const capture: CaptureSql = {
   },
   arm: `SET LOCAL syncmesh.armed = '1'`,
   disarm: `SET LOCAL syncmesh.armed = '0'`,
-  ...POSTGRES_GUARD,
+  ...postgresGuard(image),
   selectLog: `SELECT tbl, key, op, old, new FROM ${CHANGES} ORDER BY seq`,
   clearLog: `DELETE FROM ${CHANGES}`,
   stampPartition: (table, pk, partitionColumn) =>
